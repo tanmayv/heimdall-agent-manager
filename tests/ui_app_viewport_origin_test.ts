@@ -286,10 +286,13 @@ test('the composer dock padding is static geometry, never the inferred keyboard 
   const pad = cssRule('.ui-float-dock-pad');
   assert.match(pad, /padding-bottom:\s*max\(0\.75rem,\s*env\(safe-area-inset-bottom,\s*0px\)\);/);
   assert.doesNotMatch(pad, /--app-viewport-bottom-offset|--app-viewport-height|vh|innerHeight/);
-  // Main and auxiliary chat (both AgentChatPane) and the demo still use the class.
+  // AgentChatPane delegates the composer form's static mobile padding to the shared form.
   const pane = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/workbench/AgentChatPane.tsx'), 'utf8');
-  assert.ok((pane.match(/ui-float-dock-pad/g) ?? []).length >= 2, 'conversation and pane docks');
-  for (const rel of ['src/ui/components/workbench/AgentChatPane.tsx', 'src/ui/dev/composerDemo.tsx', 'src/ui/components/chat/MessageComposer.tsx']) {
+  const shared = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/chat/FloatingComposerDock.tsx'), 'utf8');
+  assert.match(pane, /<FloatingComposerForm mobile={isMobile}/, 'agent composer uses the shared mobile form');
+  assert.match(shared, /mobile \? 'ui-float-dock-pad' : 'pb-4'/, 'shared mobile form applies static padding');
+  assert.match(pane, /ui-float-dock-pad/, 'action tray keeps static mobile padding');
+  for (const rel of ['src/ui/components/workbench/AgentChatPane.tsx', 'src/ui/dev/composerDemo.tsx', 'src/ui/components/chat/MessageComposer.tsx', 'src/ui/components/chat/FloatingComposerDock.tsx']) {
     const src = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
     assert.doesNotMatch(src.replace(/function KeyboardReadout[\s\S]*?\n}\n/, ''), /--app-viewport-bottom-offset|visualViewport|innerHeight/, `${rel}: composer reads no keyboard geometry`);
   }

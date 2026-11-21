@@ -1,6 +1,10 @@
+import { FloatingComposerDock, FloatingComposerForm, FloatingComposerCard } from '../chat/FloatingComposerDock';
+import { PlainMessageBody } from '../chat/PlainMessageBody';
+import { formatMessageTimestamp } from '../chat/formatMessageTimestamp';
+import { ComposerAttachmentTray } from '../chat/ComposerAttachmentTray';
+import { useComposerAttachments } from '../chat/useComposerAttachments';
 import { acceptAssistantSnapshot, hasPendingAcpResponse } from '../../api/acpChatStream';
 import React, {
-  type ClipboardEvent,
   type FormEvent,
   useCallback,
   useEffect,
@@ -43,7 +47,6 @@ import {
   useRestartAgentInstanceMutation,
   useStopAgentInstanceMutation,
 } from '../../api/endpoints/agents';
-import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import {
@@ -77,14 +80,6 @@ import {
   decryptEmbeddedVaultTokens,
   maskVaultArmored,
 } from '../../utils/vaultContent';
-import {
-  artifactKindForFile,
-  artifactLinkFromResponse,
-  artifactMimeForFile,
-  artifactUploadName,
-  clipboardFilesFromEvent,
-} from '../../utils/artifactUpload';
-import { MAX_UPLOAD_BYTES, UPLOAD_TOO_LARGE_ERROR } from '../ArtifactUpload';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import Icon from '../Icon';
 import Markdown from '../Markdown';
@@ -110,7 +105,7 @@ import AtMentionPopup, { type MentionEntity } from '../chat/AtMentionPopup';
 import ChatMessageList from '../chat/ChatMessageList';
 import { useSettleWithoutReveal, type StreamRevealOptions } from '../chat/streamReveal';
 import InstanceReconfigurationProgress from '../chat/InstanceReconfigurationProgress';
-import { MessageComposerInput, MessageComposerActions, MessageComposerMorphShell, MessageComposerStatus, useComposerDockInset, useComposerExpanded } from '../chat/MessageComposer';
+import { MessageComposerInput, MessageComposerActions, MessageComposerStatus, useComposerDockInset, useComposerExpanded } from '../chat/MessageComposer';
 import RuntimeConfigurationOptions from '../chat/RuntimeConfigurationOptions';
 import { usePaneDeferredRefresh, usePaneMarkRead, usePanePollPolicy, usePaneVisible, visiblePollInterval } from './paneVisibility';
 import {
@@ -122,7 +117,7 @@ import {
 import { permissionToggleRequest, permissionToggleState } from './permissionToggleModel';
 import { type TaskLike } from '../chat/chainTaskInference';
 import { groupTranscriptMessages, isAgentStartMessage } from '../chat/transcriptGrouping';
-import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from '../chat/types';
+import type { ChatDeliveryStatus, ChatMessage } from '../chat/types';
 import type { SplitDirection } from '../../tiling/types';
 import { replaceVaultTokens } from '../../utils/vaultCrypto.ts';
 import { appendArtifactLinks } from '../../utils/artifactUpload';
@@ -242,15 +237,6 @@ type Message = {
   sending?: boolean;
 };
 
-type PendingAttachment = {
-  localId: string;
-  id: string;
-  name: string;
-  file: File;
-  status: 'uploading' | 'uploaded' | 'error';
-  error: string;
-};
-
 const modelOrder = ['cheap', 'normal', 'smart'];
 
 function errMsg(err: any, fallback: string): string {
@@ -261,7 +247,6 @@ function errMsg(err: any, fallback: string): string {
   );
 }
 
-const EMPTY_TIMESTAMP: ChatTimestamp = { label: '', iso: '' };
 const EMPTY_DELIVERY: ChatDeliveryStatus = { glyph: '', label: '', tone: '' };
 /** Composer width below which the model pill shows only the provider icon. */
 const COMPACT_MODEL_PILL_WIDTH = 300;
@@ -590,15 +575,6 @@ function messageCreatedUnixMs(message: Message): number {
   );
 }
 
-function formatMessageTimestamp(unixMs: number): ChatTimestamp {
-  if (!unixMs) return EMPTY_TIMESTAMP;
-  const date = new Date(unixMs);
-  if (Number.isNaN(date.getTime())) return EMPTY_TIMESTAMP;
-  return {
-    label: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    iso: date.toISOString(),
-  };
-}
 
 function looksLikeInternalId(value: string): boolean {
   return /^(agt|inst|chat|conv|usr|brg|task|chain|proj|art)_[a-z0-9]/i.test(
@@ -822,7 +798,6 @@ export function AgentChatPane({
     useRetryInstanceConfigurationMutation();
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
   const [stopInstance, stopState] = useStopAgentInstanceMutation();
-  const [createArtifact] = useCreateArtifactMutation();
 
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
   const agentInstanceId = String(
@@ -1108,7 +1083,13 @@ export function AgentChatPane({
     resetKey: `${isMobile}:${conversation?.conversation_id || conversation?.conversationId || ''}:${agentInstanceId}`,
   });
   const [error, setError] = useState('');
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const { attachments, setAttachments, uploadAttachment, handlePaste: handleComposerPaste } = useComposerAttachments({
+    metadata: { originKind: 'conversation_chat', originRef: conversationId, projectId, agentId, agentInstanceId, chainId },
+    namePrefix: 'conversation-attachment',
+    canUpload: () => !desktopUpdateFrozen() && !configurationInputBlocked && !sendingRef.current,
+    onUploadStart: () => setError(''),
+    errorText: err => errMsg(err, 'Upload failed'),
+  });
   const updateFilePickerPending = useRef(false);
   // Mirrors updateFilePickerPending as render state: the native file chooser holds the
   // morphing composer open until it reports a choice or a cancel.
@@ -1766,63 +1747,6 @@ export function AgentChatPane({
     }
   }
 
-  async function uploadAttachment(file: File, existingLocalId = '') {
-    if (desktopUpdateFrozen()) return;
-    if (configurationInputBlocked || sendingRef.current) return;
-    const localId =
-      existingLocalId || `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const name = artifactUploadName(file, 'conversation-attachment');
-    const tooLarge = file.size > MAX_UPLOAD_BYTES;
-    setError('');
-    setAttachments((current) => {
-      const without = current.filter((item) => item.localId !== localId);
-      return [
-        ...without,
-        {
-          localId,
-          id: '',
-          name,
-          file,
-          status: tooLarge ? 'error' : 'uploading',
-          error: tooLarge
-            ? UPLOAD_TOO_LARGE_ERROR
-            : '',
-        },
-      ];
-    });
-    if (tooLarge) return;
-    try {
-      const res = await createArtifact({
-        file,
-        name,
-        mime: artifactMimeForFile(file),
-        kind: artifactKindForFile(file),
-        originKind: 'conversation_chat',
-        originRef: conversationId,
-        projectId,
-        agentId,
-        agentInstanceId,
-        chainId,
-      }).unwrap();
-      const link = artifactLinkFromResponse(res);
-      const id = link.replace(/^artifact:\/\//i, '');
-      if (!id) throw new Error('Upload failed: Hub did not return an artifact id.');
-      setAttachments((current) =>
-        current.map((item) =>
-          item.localId === localId ? { ...item, id, status: 'uploaded', error: '' } : item,
-        ),
-      );
-    } catch (err: any) {
-      setAttachments((current) =>
-        current.map((item) =>
-          item.localId === localId
-            ? { ...item, status: 'error', error: errMsg(err, 'Upload failed') }
-            : item,
-        ),
-      );
-    }
-  }
-
   function handleAttachmentInput(event: any) {
     updateFilePickerPending.current = false;
     setFilePickerOpen(false);
@@ -1842,13 +1766,6 @@ export function AgentChatPane({
     }
   }
 
-  function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    if (configurationInputBlocked || sendingRef.current) return;
-    const files = clipboardFilesFromEvent(event);
-    if (files.length === 0) return;
-    event.preventDefault();
-    files.forEach((file) => void uploadAttachment(file));
-  }
 
   async function submitTrayMode() {
     if (desktopUpdateFrozen()) return;
@@ -2250,11 +2167,8 @@ export function AgentChatPane({
       );
     }
     return (
-      <div className="flex flex-col gap-1">
-        {message.metadata?.acp && message.messageStatus === 'failed' && (
-          <div role="status" data-debug-id={`conversation-assistant-failed-${message.messageId}`} className="mb-1 text-xs text-muted">Response interrupted.</div>
-        )}
-        <ThreadMessageBody body={message.body} reveal={reveal}
+      <PlainMessageBody body={message.body} artifactIds={message.artifactIds} messageId={message.messageId}
+        debugPrefix="conversation-thread" textContent={<ThreadMessageBody body={message.body} reveal={reveal}
           onQuote={!message.isUser && (!message.messageType || message.messageType === 'text') ? async selectedText => {
             const epoch = (reduxStore.getState() as any).composerContext?.epoch;
             const generation = routeGeneration.current;
@@ -2273,20 +2187,11 @@ export function AgentChatPane({
             dispatch(addComposerQuote({ target: quoteTargetId, quote }));
             if (ownTargetId !== quoteTargetId) openCurrentChainCoordinator();
           } : undefined}
-          quoteDisabledReason={!chainId ? 'This message has no chain coordinator.' : !chainConversationQuery.data?.coordinatorAgentInstanceId ? 'The chain coordinator is unavailable.' : ''} />
-        {message.artifactIds && message.artifactIds.length > 0 && (
-          <div className="mt-2 flex max-w-full flex-wrap gap-2">
-            {message.artifactIds.map((id) => (
-              <ArtifactAttachmentPreview
-                key={id}
-                artifactId={id}
-                session={{ daemonUrl: '', clientToken: '' }}
-                debugId={`conversation-thread-artifact-${message.messageId}-${id}`}
-              />
-            ))}
-          </div>
+          quoteDisabledReason={!chainId ? 'This message has no chain coordinator.' : !chainConversationQuery.data?.coordinatorAgentInstanceId ? 'The chain coordinator is unavailable.' : ''} />}>
+        {message.metadata?.acp && message.messageStatus === 'failed' && (
+          <div role="status" data-debug-id={`conversation-assistant-failed-${message.messageId}`} className="mb-1 text-xs text-muted">Response interrupted.</div>
         )}
-      </div>
+      </PlainMessageBody>
     );
   }
 
@@ -2715,17 +2620,11 @@ export function AgentChatPane({
       </Menu>
     );
     return (
-      <form
+      <FloatingComposerForm mobile={isMobile} raised={showNeedYouPill}
         ref={composerContainerRef as any}
         onSubmit={submit}
         data-debug-id="conversation-composer-shell"
-        // REQ-CM-1: keep the side gutter at every pane width. `sm:` is a viewport breakpoint, so
-        // `sm:px-0` left the card flush against the border of a narrow split pane. The shell is
-        // 1.5rem wider than the max-w-4xl card so wide panes keep the card at full max-w-4xl.
-        className={`w-full max-w-[calc(56rem+1.5rem)] mx-auto px-3 ${showNeedYouPill ? 'pt-5' : 'pt-2'} ${
-          isMobile ? 'ui-float-dock-pad' : 'pb-4'
-        }`}
-      >
+>
         <div className="mx-auto w-full max-w-4xl">
           {vaultSendBlocked ? (
             <div
@@ -2746,111 +2645,9 @@ export function AgentChatPane({
           ) : null}
           {!trayModeItem ? <ComposerContextChips quotes={quotes} disabled={normalSendBusy}
             onRemove={id => dispatch(removeComposerQuote({ target: ownTargetId, id }))} /> : null}
-          {attachments.length > 0 && (
-            <div
-              data-debug-id="conversation-attachment-tray"
-              className="mb-2 space-y-2 rounded-2xl border border-subtle bg-surface-raised p-2 text-xs text-primary"
-            >
-              {attachments.map((a) => (
-                <div
-                  key={a.localId}
-                  data-debug-id={`conversation-attachment-${a.localId}`}
-                  className="rounded-xl border border-subtle bg-surface px-2.5 py-2"
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span
-                      className={
-                        a.status === 'uploaded'
-                          ? 'text-success'
-                          : a.status === 'error'
-                          ? 'text-danger'
-                          : 'text-accent'
-                      }
-                    >
-                      {a.status === 'uploading'
-                        ? '⇧'
-                        : a.status === 'uploaded'
-                        ? '✓'
-                        : '!'}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate" title={a.name}>
-                      {a.name}
-                    </span>
-                    <span
-                      className={
-                        a.status === 'uploaded'
-                          ? 'text-success'
-                          : a.status === 'error'
-                          ? 'text-danger'
-                          : 'text-accent'
-                      }
-                    >
-                      {a.status === 'uploading'
-                        ? 'Uploading…'
-                        : a.status === 'uploaded'
-                        ? 'Uploaded'
-                        : 'Failed'}
-                    </span>
-                    {a.status === 'error' ? (
-                      <button
-                        type="button"
-                        data-debug-id={`conversation-attachment-retry-${a.localId}`}
-                        onClick={() => void uploadAttachment(a.file, a.localId)}
-                        className={`rounded-full border border-subtle text-primary hover:bg-neutral-soft ${isMobile ? 'min-h-11 px-4' : 'px-2 py-0.5'}`}
-                      >
-                        Retry
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      data-debug-id={`conversation-attachment-remove-${a.localId}`}
-                      disabled={normalSendBusy}
-                      onClick={() =>
-                        setAttachments((prev) =>
-                          prev.filter((item) => item.localId !== a.localId),
-                        )
-                      }
-                      className={`rounded-full border border-subtle text-muted hover:bg-neutral-soft hover:text-primary ${isMobile ? 'min-h-11 px-4' : 'px-2 py-0.5'}`}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                  {a.status === 'uploading' ? (
-                    <div
-                      data-debug-id={`conversation-attachment-progress-${a.localId}`}
-                      className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-soft"
-                    >
-                      <div className="h-full w-1/2 animate-pulse rounded-full bg-accent" />
-                    </div>
-                  ) : null}
-                  {a.error ? (
-                    <div
-                      data-debug-id={`conversation-attachment-error-${a.localId}`}
-                      className="mt-1 text-danger"
-                    >
-                      {a.error}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-              {hasUploadingAttachments ? (
-                <div
-                  data-debug-id="conversation-attachment-uploading-hint"
-                  className="text-caption text-muted"
-                >
-                  You can keep typing. Send unlocks when uploads finish.
-                </div>
-              ) : null}
-              {hasFailedAttachments ? (
-                <div
-                  data-debug-id="conversation-attachment-failed-hint"
-                  className="text-caption text-danger"
-                >
-                  Retry or remove failed uploads before sending.
-                </div>
-              ) : null}
-            </div>
-          )}
+          <ComposerAttachmentTray attachments={attachments} isMobile={isMobile} disabled={normalSendBusy}
+            onRetry={a => void uploadAttachment(a.file, a.localId)}
+            onRemove={localId => setAttachments(prev => prev.filter(item => item.localId !== localId))} />
           <input
             ref={fileInputRef}
             data-debug-id="conversation-attach-input"
@@ -2859,19 +2656,13 @@ export function AgentChatPane({
             className="hidden"
             onChange={handleAttachmentInput}
           />
-          <MessageComposerMorphShell
+          <FloatingComposerCard
             expansion={composerExpansion}
             debugPrefix="conversation"
             debugId="conversation-composer-card"
             // REQ-FROST-1/2: the frost rim and stacked backdrop layers stay; the shell owns
             // geometry, borders while open, and motion.
-            className="ui-frost-card isolate rounded-[28px] border px-5"
             leading={<>
-              <div data-debug-id="conversation-composer-frost" aria-hidden="true" className="ui-frost-gradient -z-10">
-                <span />
-                <span />
-                <span />
-              </div>
               {showNeedYouPill ? (
                 <div className="absolute -top-4 right-4 z-10">
                   <NeedYouPill
@@ -3111,9 +2902,9 @@ export function AgentChatPane({
                 composerInput
               )}
             </div>
-          </MessageComposerMorphShell>
+          </FloatingComposerCard>
         </div>
-      </form>
+      </FloatingComposerForm>
     );
   }
 
@@ -3617,16 +3408,7 @@ export function AgentChatPane({
             onOpenShell={(sessionId) => navigateTo(shellViewHref(sessionId))}
           />
         </ChatMessageList>
-        <div
-          ref={composerDockRef}
-          data-debug-id="conversation-thread-composer-dock"
-          data-floating="true"
-          // REQ-FROST-1 / REQ-PORT-4: float over the transcript on every form factor. Touches
-          // in the gaps around the card fall through to the transcript (`.ui-float-dock`).
-          // REQ-CM-1: max-w-4xl plus the composer's px-3 gutter on both sides.
-          className="ui-float-dock absolute inset-x-0 bottom-0 z-20 mx-auto w-full max-w-[calc(56rem+1.5rem)]"
-        >
-          <div aria-hidden="true" className="ui-frost-tail" />
+        <FloatingComposerDock ref={composerDockRef} data-debug-id="conversation-thread-composer-dock">
           {trayNotice ? (
             <div className="pointer-events-none mb-2 flex justify-center px-3">
               <div
@@ -3663,7 +3445,7 @@ export function AgentChatPane({
           ) : (
             renderComposer()
           )}
-        </div>
+        </FloatingComposerDock>
       </div>
 
       <Modal

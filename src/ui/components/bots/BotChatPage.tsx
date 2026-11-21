@@ -1,3 +1,7 @@
+import { FloatingComposerDock, FloatingComposerForm, FloatingComposerCard } from '../chat/FloatingComposerDock';
+import { PlainMessageBody } from '../chat/PlainMessageBody';
+import { ComposerAttachmentTray } from '../chat/ComposerAttachmentTray';
+import { useComposerAttachments } from '../chat/useComposerAttachments';
 import { Alert, Badge, Button, Spinner, Text } from '@ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useDispatch } from 'react-redux';
@@ -7,17 +11,12 @@ import {
 } from '../../api/endpoints/bots';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import { apiErrorText, queryErrorStatus } from '../../api/cookieFetch';
-import Markdown from '../Markdown';
-import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
-import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
-import { MAX_UPLOAD_BYTES, UPLOAD_TOO_LARGE_ERROR } from '../ArtifactUpload';
-import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 
-type Upload = { key: string; id: string; name: string; file: File; state: 'uploading' | 'uploaded' | 'failed'; error: string };
+
 
 import ChatMessageList from '../chat/ChatMessageList';
 import {
-  MessageComposerActions, MessageComposerInput, MessageComposerMorphShell, useComposerDockInset, useComposerExpanded,
+  MessageComposerActions, MessageComposerInput, useComposerDockInset, useComposerExpanded,
 } from '../chat/MessageComposer';
 import type { StreamRevealOptions } from '../chat/streamReveal';
 import type { ChatMessage } from '../chat/types';
@@ -75,25 +74,13 @@ function BotChatView({ bot }: { bot: BotView }) {
   const isMobile = useIsMobile();
   const head = useGetUnifiedBotMessagesQuery({ limit: BOT_HISTORY_PAGE_SIZE });
   const [send] = useSendBotWebMessageMutation();
-  const [createArtifact] = useCreateArtifactMutation();
-  const [uploads, setUploads] = useState<Upload[]>([]);
+  const { attachments: uploads, setAttachments: setUploads, uploadAttachment: upload, handlePaste } = useComposerAttachments({
+    metadata: { originKind: 'bot_chat', originRef: bot.bot_id },
+    namePrefix: 'bot-attachment',
+    errorText: error => apiErrorText(error, 'Upload failed. Try again.'),
+  });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const uploadBusy = uploads.some(u => u.state !== 'uploaded');
-
-  async function upload(file: File, key = newIdempotencyKey()) {
-    const name = artifactUploadName(file, 'bot-attachment');
-    const tooLarge = file.size > MAX_UPLOAD_BYTES;
-    setUploads(rows => [...rows.filter(u => u.key !== key), { key, id: '', name, file, state: tooLarge ? 'failed' : 'uploading', error: tooLarge ? UPLOAD_TOO_LARGE_ERROR : '' }]);
-    if (tooLarge) return;
-    try {
-      const result = await createArtifact({ file, name, mime: artifactMimeForFile(file), kind: artifactKindForFile(file), originKind: 'bot_chat', originRef: bot.bot_id }).unwrap();
-      const id = artifactLinkFromResponse(result).replace(/^artifact:\/\//i, '');
-      if (!id) throw new Error('Upload failed: Hub did not return an artifact ID.');
-      setUploads(rows => rows.map(u => u.key === key ? { ...u, id, state: 'uploaded', error: '' } : u));
-    } catch (error) {
-      setUploads(rows => rows.map(u => u.key === key ? { ...u, state: 'failed', error: apiErrorText(error, 'Upload failed. Try again.') } : u));
-    }
-  }
+  const uploadBusy = uploads.some(u => u.status !== 'uploaded');
   const [known, setKnown] = useState<ReadonlyMap<string, UnifiedBotMessage>>(() => new Map());
   const [pending, setPending] = useState<PendingBotSend[]>([]);
   // message_id → idempotency key of the composer send that stored it (stable row keys).
@@ -111,7 +98,7 @@ function BotChatView({ bot }: { bot: BotView }) {
     jumpDebugId: 'bot-chat-jump-latest-btn',
     resetKey: `${isMobile}:${bot.bot_id}`,
   });
-  const expansion = useComposerExpanded({ draft: text, hasAttachments: uploads.length > 0, uploadActive: uploads.some(u => u.state === 'uploading') });
+  const expansion = useComposerExpanded({ draft: text, hasAttachments: uploads.length > 0, uploadActive: uploads.some(u => u.status === 'uploading') });
 
   // Every head refresh (initial load, bot_changed invalidation, own send) is folded
   // into the accumulated history rather than replacing it.
@@ -188,12 +175,8 @@ function BotChatView({ bot }: { bot: BotView }) {
   const renderBody = useCallback(({ message, reveal }: { message: ChatMessage; reveal?: StreamRevealOptions }) =>
     botChatMeta(message)?.purged
       ? <span className="italic text-muted">This message was removed by retention.</span>
-       : <div className="flex min-w-0 flex-col gap-2">
-          {message.body ? <Markdown source={message.body} compact copyAll={false} reveal={reveal} /> : null}
-          {message.artifactIds?.length ? <div className="flex max-w-full flex-wrap items-start gap-2">
-            {message.artifactIds.map(id => <ArtifactAttachmentPreview key={id} artifactId={id} session={{ daemonUrl: '', clientToken: '' }} debugId={`bot-chat-artifact-${message.messageId}-${id}`} />)}
-          </div> : null}
-        </div>, []);
+       : <PlainMessageBody body={message.body} artifactIds={message.artifactIds} messageId={message.messageId}
+          debugPrefix="bot-chat" reveal={reveal} />, []);
 
   const emptyState = head.isLoading ? <Loading />
     : head.isError ? <div data-debug-id="bot-chat-history-error" className="min-w-0 p-4"><Alert tone="danger">{botChatErrorText(headStatus, apiErrorText(head.error, 'Could not load messages.'))}</Alert></div>
@@ -230,11 +213,9 @@ function BotChatView({ bot }: { bot: BotView }) {
         scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
       />
       {/* The coordinator chat's floating composer dock (AgentChatPane, REQ-FROST-1/2). */}
-      <div ref={composerDockRef} data-debug-id="bot-chat-composer-dock" data-floating="true"
-        className="ui-float-dock absolute inset-x-0 bottom-0 z-20 mx-auto w-full max-w-[calc(56rem+1.5rem)]">
-        <div aria-hidden="true" className="ui-frost-tail" />
-        <form onSubmit={submit} data-debug-id="bot-chat-composer-shell"
-          className={`mx-auto w-full max-w-[calc(56rem+1.5rem)] px-3 pt-2 ${isMobile ? 'ui-float-dock-pad' : 'pb-4'}`}>
+      <FloatingComposerDock ref={composerDockRef} data-debug-id="bot-chat-composer-dock">
+
+        <FloatingComposerForm mobile={isMobile} onSubmit={submit} data-debug-id="bot-chat-composer-shell">
           <div className="mx-auto w-full max-w-4xl space-y-2">
             {notice ? <div className="pointer-events-none flex justify-center">
               <div role="status" data-debug-id="bot-chat-queue-notice" data-tone={notice.tone}
@@ -245,34 +226,25 @@ function BotChatView({ bot }: { bot: BotView }) {
             {composerError ? <div data-debug-id="bot-chat-composer-error" className="min-w-0"><Alert tone="danger">{composerError}</Alert></div> : null}
             <input ref={fileInputRef} type="file" multiple hidden data-debug-id="bot-chat-upload-input"
               onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; files.forEach(file => void upload(file)); }} />
-            {uploads.length ? <div data-debug-id="bot-chat-attachments" className="flex max-w-full flex-wrap gap-2">
-              {uploads.map(u => <div key={u.key} data-debug-id={`bot-chat-attachment-${u.key}`} className="ui-frost-card min-w-0 max-w-full rounded-xl px-3 py-2 text-sm">
-                <div className="flex min-w-0 items-center gap-2">
-                <span className="min-w-0 flex-1 truncate">{u.name}</span>
-                {u.state === 'uploading' ? <Spinner /> : null}
-                {u.state === 'failed' ? <button type="button" data-debug-id={`bot-chat-upload-retry-${u.key}`} onClick={() => void upload(u.file, u.key)} className="min-h-11 px-2">Retry</button> : null}
-                <button type="button" aria-label={`Remove ${u.name}`} data-debug-id={`bot-chat-upload-remove-${u.key}`} onClick={() => setUploads(rows => rows.filter(row => row.key !== u.key))} className="min-h-11 shrink-0 px-2">×</button>
-                </div>
-                {u.error ? <p role="alert" className="max-w-full break-words text-xs text-danger">{u.error}</p> : null}
-              </div>)}
-            </div> : null}
-            <MessageComposerMorphShell expansion={expansion} debugPrefix="bot-chat" debugId="bot-chat-composer-card"
-              className="ui-frost-card isolate rounded-[28px] border px-5"
-              leading={<div data-debug-id="bot-chat-composer-frost" aria-hidden="true" className="ui-frost-gradient -z-10"><span /><span /><span /></div>}
+            <ComposerAttachmentTray attachments={uploads} isMobile={isMobile} debugPrefix="bot-chat"
+              debugIds={{ tray: 'bot-chat-attachments', retry: 'bot-chat-upload-retry', remove: 'bot-chat-upload-remove' }}
+              onRetry={a => void upload(a.file, a.localId)}
+              onRemove={localId => setUploads(rows => rows.filter(row => row.localId !== localId))} />
+            <FloatingComposerCard expansion={expansion} debugPrefix="bot-chat" debugId="bot-chat-composer-card"
               actions={<MessageComposerActions debugPrefix="bot-chat" mobile={isMobile} provider="" model=""
                 onUpload={() => fileInputRef.current?.click()} sendDisabled={uploadBusy || (!text.trim() && uploads.length === 0)} morph={expansion} />}>
               <MessageComposerInput mobile={isMobile} morph debugId="bot-chat-input" ref={textareaRef}
                 aria-label={`Message ${bot.display_name}`} value={text}
                 onChange={(event) => { setText(event.target.value); if (composerError) setComposerError(''); }}
-                onPaste={event => { const files = clipboardFilesFromEvent(event); if (files.length) { event.preventDefault(); files.forEach(file => void upload(file)); } }}
+                onPaste={handlePaste}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); }
                 }}
                 placeholder={isMobile ? `Message ${bot.display_name}…` : `Message ${bot.display_name}… (Cmd/Ctrl+Enter to send)`} />
-            </MessageComposerMorphShell>
+            </FloatingComposerCard>
           </div>
-        </form>
-      </div>
+        </FloatingComposerForm>
+      </FloatingComposerDock>
     </div>
   </>;
 }

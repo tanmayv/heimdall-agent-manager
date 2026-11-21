@@ -207,17 +207,7 @@ export function botDeliveryStatus(message: ChatMessage): ChatDeliveryStatus {
   return { glyph: '✓', label: 'Queued', tone: 'text-faint' };
 }
 
-/** Same short form as the coordinator chat (time only) for today; date and time otherwise. */
-export function formatBotChatTimestamp(unixMs: number, now = Date.now()): ChatTimestamp {
-  if (!unixMs) return { label: '', iso: '' };
-  const date = new Date(unixMs);
-  if (Number.isNaN(date.getTime())) return { label: '', iso: '' };
-  const sameDay = new Date(now).toDateString() === date.toDateString();
-  return {
-    label: sameDay ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : formatBotMessageTime(date.toISOString()),
-    iso: date.toISOString(),
-  };
-}
+export { formatMessageTimestamp as formatBotChatTimestamp } from '../chat/formatMessageTimestamp';
 
 export function formatBotMessageTime(iso: string): string {
   const date = new Date(iso);

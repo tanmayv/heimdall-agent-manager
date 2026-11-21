@@ -510,3 +510,51 @@ test('attachments: refreshed and purged history update preview IDs', () => {
  const purged = model.botChatMessages([{ ...original, body_purged: true } as any], [], new Map())[0];
  assert.deepEqual(purged.artifactIds, []);
 });
+
+
+test('shared uploads preserve bot origin metadata and the 20-file send limit', async () => {
+  const state = hub();
+  await fixture(state, 'chat', async h => {
+    const files = Array.from({ length: 21 }, (_, i) => new h.dom.window.File(['hello'], `notes-${i}.pdf`, { type: 'application/pdf' }));
+    const picker = h.get('bot-chat-upload-input') as HTMLInputElement;
+    Object.defineProperty(picker, 'files', { configurable: true, value: files });
+    await act(async () => picker.dispatchEvent(new h.dom.window.Event('change', { bubbles: true })));
+    await h.settle(); await h.settle();
+    const uploads = h.requests.filter((r: any) => r.path === '/artifacts' && r.method === 'POST');
+    assert.equal(uploads.length, 21);
+    for (const request of uploads) {
+      assert.equal(request.body.origin_kind, 'bot_chat');
+      assert.equal(request.body.origin_ref, 'bot_a');
+      assert.equal(request.body.agent_id, undefined, 'bot upload does not claim agent ownership');
+      assert.equal(request.body.agent_instance_id, undefined);
+    }
+    await h.click('bot-chat-composer-send-btn');
+    assert.match(h.get('bot-chat-composer-error').textContent, /up to 20 files/);
+    assert.equal(h.requests.some((r: any) => r.path.endsWith('/web/messages')), false);
+    await act(async () => h.all('[data-debug-id^="bot-chat-upload-remove-"]')[0].click());
+    await h.click('bot-chat-composer-send-btn');
+    assert.equal(h.requests.find((r: any) => r.path.endsWith('/web/messages')).body.artifact_ids.length, 20);
+  });
+});
+
+test('shared uploads reject oversized files before posting and keep send blocked', async () => {
+  await fixture(hub(), 'chat', async h => {
+    const file = new h.dom.window.File(['small'], 'oversized.pdf', { type: 'application/pdf' });
+    Object.defineProperty(file, 'size', { value: 16 * 1024 * 1024 });
+    const picker = h.get('bot-chat-upload-input') as HTMLInputElement;
+    Object.defineProperty(picker, 'files', { configurable: true, value: [file] });
+    await act(async () => picker.dispatchEvent(new h.dom.window.Event('change', { bubbles: true })));
+    await h.settle();
+    assert.match(h.get('bot-chat-attachments').textContent, /Failed/);
+    assert.equal(h.requests.some((r: any) => r.path === '/artifacts' && r.method === 'POST'), false);
+    assert.equal((h.get('bot-chat-composer-send-btn') as HTMLButtonElement).disabled, true);
+  });
+});
+
+test('bot and agent timestamps share the same formatter for today, older dates and invalid dates', async () => {
+  const { formatMessageTimestamp } = await import('../src/ui/components/chat/formatMessageTimestamp.ts');
+  assert.equal(model.formatBotChatTimestamp, formatMessageTimestamp);
+  for (const value of [0, NaN, Date.now(), Date.UTC(2020, 0, 1)]) {
+    assert.deepEqual(model.formatBotChatTimestamp(value), formatMessageTimestamp(value));
+  }
+});
