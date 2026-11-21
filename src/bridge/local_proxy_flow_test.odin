@@ -29,7 +29,9 @@ proxy_flow_test_reset :: proc() {
 	if bridge_proxy_streams == nil do bridge_proxy_init()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	for item in bridge_tunnel_data_outgoing do delete(item.json, runtime.heap_allocator())
-	clear(&bridge_tunnel_data_outgoing)
+	// Retained process globals must not borrow a test rollback allocator.
+	delete(bridge_tunnel_data_outgoing)
+	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing, runtime.heap_allocator())
 	bridge_tunnel_data_outgoing_bytes = 0
 	sync.mutex_unlock(&bridge_runtime_mutex)
 }

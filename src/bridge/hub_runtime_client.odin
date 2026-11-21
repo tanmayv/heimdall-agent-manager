@@ -253,7 +253,7 @@ bridge_hub_runtime_init :: proc() {
 	bridge_shell_exited_outgoing = make([dynamic]Bridge_Shell_Exited_Outgoing)
 	bridge_runtime_status_outgoing = make([dynamic]string)
 	bridge_tunnel_streams = make(map[string]^Bridge_Tunnel_Stream, runtime.heap_allocator())
-	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing)
+	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing, runtime.heap_allocator())
 	bridge_tunnel_data_outgoing_bytes = 0
 	bridge_proxy_init()
 	bridge_lsp_init()
@@ -6643,7 +6643,7 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 		// REQ-VOICE-6: wait for room rather than queueing a whole response. A
 		// stream torn down or stalled while waiting ends here like a closed socket.
 		if bridge_tunnel_outgoing_wait_room(bridge_tunnel_stream_registered, local_stream_id) != .Ok {
-			delete(frame)
+			delete(frame, heap)
 			break
 		}
 		bridge_tunnel_outgoing_push(frame)
