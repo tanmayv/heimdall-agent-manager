@@ -1873,8 +1873,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   // Routes whose own header sits in the top chrome row, so no spacer is drawn.
   const ownsTopChromeRow = isWorkspaceRoute || path === BOT_CHAT_ROUTE;
   const hideTopLeftCluster = isMobile && isWorkspaceRoute && isCurrentAuxPaneOpen;
-  // Phone bot chat shares the conversation header; retain branding on larger screens.
-  const showBrand = !(isWorkspaceRoute || (isMobile && path === BOT_CHAT_ROUTE)) || !isEffectiveCollapsed;
+  // Bot chat shares the conversation header at every width; hide branding when collapsed.
+  const showBrand = !(isWorkspaceRoute || path === BOT_CHAT_ROUTE) || !isEffectiveCollapsed;
   // REQ-MAC-CHROME-1: 0 everywhere except the windowed macOS hidden title bar.
   const { insetLeft: rawControlsInset } = useWindowChrome();
   const controlsInset = isMobile ? 0 : rawControlsInset;
@@ -1882,7 +1882,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   const chromeHeight = topChromeHeight(isMobile);
   const chromeIconButtonClass = chromeIconButtonSizeClass(isMobile);
   // Fixed sidebar control, plus the wordmark when the sidebar is open or the
-  // route is not an agent conversation. They do not move with the sidebar.
+  // route is not an agent conversation or bot chat. They do not move with the sidebar.
   const sidebarToggleButton = (
     <button
       data-debug-id="shell-sidebar-collapse-toggle"
