@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import {
   INITIAL_VOICE_RECORDER_STATE,
   MIC_UNAVAILABLE_ERROR,
@@ -14,6 +14,8 @@ import {
   type VoiceRecorderState,
 } from '../../utils/audioArtifact';
 
+import { analyseMicrophone, type AudioContextConstructor } from '../../utils/audioWaveform';
+
 type RecorderCtor = {
   new (stream: MediaStream, options?: MediaRecorderOptions): MediaRecorder;
   isTypeSupported?: (mime: string) => boolean;
@@ -24,6 +26,7 @@ export type VoiceRecorderEnv = {
   getUserMedia?: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
   MediaRecorder?: RecorderCtor;
   now?: () => number;
+  AudioContext?: AudioContextConstructor;
 };
 
 function browserEnv(): VoiceRecorderEnv {
@@ -38,6 +41,7 @@ function browserEnv(): VoiceRecorderEnv {
 
 export type VoiceRecorder = VoiceRecorderState & {
   supported: boolean;
+  amplitudes: number[];
   start: () => Promise<void>;
   /** Finish recording and move to preview. */
   stop: () => void;
@@ -62,6 +66,8 @@ export function useVoiceRecorder({ maxDurationMs = VOICE_MAX_DURATION_MS, maxByt
   env?: VoiceRecorderEnv;
 } = {}): VoiceRecorder {
   const [state, dispatch] = useReducer(voiceRecorderReducer, INITIAL_VOICE_RECORDER_STATE);
+  const [amplitudes, setAmplitudes] = useState<number[]>([]);
+  const analysisRef = useRef<(() => void) | null>(null);
   const envRef = useRef<VoiceRecorderEnv>(env || browserEnv());
   if (env) envRef.current = env;
   const streamRef = useRef<MediaStream | null>(null);
@@ -79,6 +85,8 @@ export function useVoiceRecorder({ maxDurationMs = VOICE_MAX_DURATION_MS, maxByt
   const supported = Boolean(envRef.current.getUserMedia && envRef.current.MediaRecorder);
 
   const releaseStream = useCallback(() => {
+    analysisRef.current?.();
+    analysisRef.current = null;
     clearInterval(timerRef.current);
     timerRef.current = undefined;
     streamRef.current?.getTracks().forEach((track) => { try { track.stop(); } catch {} });
@@ -114,6 +122,7 @@ export function useVoiceRecorder({ maxDurationMs = VOICE_MAX_DURATION_MS, maxByt
       dispatch({ type: 'failed', error: MIC_UNAVAILABLE_ERROR });
       return;
     }
+    setAmplitudes([]);
     const session = ++sessionRef.current;
     dispatch({ type: 'start' });
     let stream: MediaStream;
@@ -141,6 +150,7 @@ export function useVoiceRecorder({ maxDurationMs = VOICE_MAX_DURATION_MS, maxByt
     let bytes = 0;
     discardRef.current = false;
     recorder.ondataavailable = (event: BlobEvent) => {
+      if (session !== sessionRef.current || !mountedRef.current) return;
       if (!event.data || event.data.size === 0) return;
       chunks.push(event.data);
       bytes += event.data.size;
@@ -156,8 +166,8 @@ export function useVoiceRecorder({ maxDurationMs = VOICE_MAX_DURATION_MS, maxByt
       dispatch({ type: 'failed', error: describeMicError(event?.error) });
     };
     recorder.onstop = () => {
-      releaseStream();
-      if (recorderRef.current === recorder) recorderRef.current = null;
+      // A late stop from a cancelled session must not release a newer microphone.
+      if (recorderRef.current === recorder) { releaseStream(); recorderRef.current = null; }
       if (discardRef.current || session !== sessionRef.current || !mountedRef.current) return;
       const mime = baseMimeType(recorder.mimeType || mimeType || 'audio/webm') || 'audio/webm';
       const blob = new Blob(chunks, { type: mime });
@@ -180,6 +190,9 @@ export function useVoiceRecorder({ maxDurationMs = VOICE_MAX_DURATION_MS, maxByt
       dispatch({ type: 'failed', error: describeMicError(err) });
       return;
     }
+    analysisRef.current = analyseMicrophone(stream, (values) => {
+      if (mountedRef.current && session === sessionRef.current) setAmplitudes(values);
+    }, envRef.current.AudioContext);
     startedAtRef.current = now();
     dispatch({ type: 'granted' });
     timerRef.current = setInterval(() => {
@@ -223,5 +236,5 @@ export function useVoiceRecorder({ maxDurationMs = VOICE_MAX_DURATION_MS, maxByt
     };
   }, [releaseStream, revokePreview]);
 
-  return { ...state, supported, start, stop, cancel, discard, take, dismissError };
+  return { ...state, amplitudes, supported, start, stop, cancel, discard, take, dismissError };
 }
