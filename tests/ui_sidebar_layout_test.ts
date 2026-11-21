@@ -56,7 +56,7 @@ test('hidden sidebar renders no rail; the fixed top-left cluster compacts on age
   assert.match(cluster, /\{sidebarToggleButton\}\s*\{showBrand \? brandLink : null\}/);
   assert.doesNotMatch(cluster, /vaultStatusButton/);
   assert.equal(source.split('{sidebarToggleButton}').length - 1, 1, 'toggle rendered exactly once');
-  assert.match(source, /const showBrand = !isWorkspaceRoute/);
+  assert.match(source, /const showBrand = !\(isWorkspaceRoute \|\| \(isMobile && path === BOT_CHAT_ROUTE\)\) \|\| !isEffectiveCollapsed/);
   assert.match(source, /const topLeftClusterWidth = computeTopLeftClusterWidth\(isMobile, showBrand, controlsInset\)/);
   // The sidebar animates its width (desktop) / slides (mobile) and its header reserves the cluster.
   assert.match(source, /isEffectiveCollapsed \? 'invisible w-0' : 'visible w-80 border-r border-subtle'/);
@@ -87,7 +87,7 @@ test('hidden sidebar renders no rail; the fixed top-left cluster compacts on age
   assert.match(source, /localStorage\.setItem\('heimdall:shell:sidebar-collapsed'/);
 });
 
-test('Ninjy wordmark is visible on Home and hidden only on agent conversations', () => {
+test('Ninjy wordmark compacts on agent conversations and phone bot chat', () => {
   assert.equal(isAgentConversationRoute('/home'), false);
   assert.equal(isAgentConversationRoute('/cards'), false);
   assert.equal(isAgentConversationRoute('/conversations'), false);

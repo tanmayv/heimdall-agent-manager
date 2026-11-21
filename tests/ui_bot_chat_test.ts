@@ -435,6 +435,7 @@ test('phone width (390px): chat and sidebar avoid fixed widths and let content w
   const shell = readFileSync(new URL('../src/ui/components/shell/AppShell.tsx', import.meta.url), 'utf8');
   // /bot owns the top chrome row like the agent workspace: no shell spacer above
   // its header, its own full-width outlet, and the collapsed-sidebar reserve.
+  assert.match(shell, /const showBrand = !\(isWorkspaceRoute \|\| \(isMobile && path === BOT_CHAT_ROUTE\)\) \|\| !isEffectiveCollapsed;/);
   assert.match(shell, /const ownsTopChromeRow = isWorkspaceRoute \|\| path === BOT_CHAT_ROUTE;/);
   assert.match(shell, /\{!ownsTopChromeRow \? \(\s*<div\s+aria-hidden="true"\s+data-debug-id="shell-top-spacer"/);
   assert.match(shell, /if \(path === BOT_CHAT_ROUTE\) \{[\s\S]*?<BotChatPage headerLeading=\{workspaceLeading\} \/>[\s\S]*?\n  \}/);
