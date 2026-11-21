@@ -153,3 +153,14 @@ acp_bootstrap_link_and_default_model_are_system_only :: proc(t: ^testing.T) {
         testing.expect(t, !acp_descriptor_shape_valid(d))
     }
 }
+
+@(test)
+acp_descriptor_protocol_registry_is_explicit :: proc(t: ^testing.T) {
+    for provider in ([]string{"claude", "copilot", "kiro"}) {
+        d, known := acp_provider_descriptor(provider)
+        testing.expect(t, known && d.protocol == .ACP)
+    }
+    d := ACP_CLAUDE_DESCRIPTOR
+    d.protocol = ACP_Protocol(99)
+    testing.expect(t, !acp_descriptor_shape_valid(d))
+}

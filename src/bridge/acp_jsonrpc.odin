@@ -12,6 +12,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import "core:unicode/utf8"
+import contracts "odin_test:contracts"
 
 ACP_RPC_MAX_LINE :: 4*1024*1024
 ACP_RPC_QUEUE_BYTES :: 1024*1024
@@ -98,6 +99,8 @@ ACP_RPC_Work :: struct { bytes, delivery_id: string, ack: u64 }
 ACP_RPC_Client :: struct {
     io: ACP_RPC_IO,
     callbacks: ACP_RPC_Callbacks,
+    protocol: contracts.ACP_Protocol,
+    policy: ACP_RPC_Policy,
     state: ACP_State,
     // Only dispatcher accesses these maps or state. Queue locks never cover
     // callbacks or JSON/persistence/I/O work.
@@ -127,11 +130,15 @@ ACP_RPC_Client :: struct {
     reader, writer, dispatcher: ^thread.Thread,
 }
 
-acp_rpc_open :: proc(io: ACP_RPC_IO, callbacks: ACP_RPC_Callbacks) -> (^ACP_RPC_Client, bool) {
+acp_rpc_open :: proc(io: ACP_RPC_IO, callbacks: ACP_RPC_Callbacks, protocol: contracts.ACP_Protocol = .ACP, policy: ACP_RPC_Policy = ACP_RPC_POLICY_ACP) -> (^ACP_RPC_Client, bool) {
     context.allocator = runtime.heap_allocator()
     if io.write == nil || io.close == nil || !acp_state_component_ok(io.launch_epoch) ||
        !acp_state_component_ok(io.instance) || (io.state_path == "" && callbacks.checkpoint == nil) { return nil, false }
+    if protocol != .ACP && protocol != .Codex_App_Server do return nil, false
+    if policy.role == nil || policy.timeout == nil || policy.inbound_timeout == nil || policy.cancel_timeout == nil do return nil, false
     c := new(ACP_RPC_Client)
+    c.protocol = protocol
+    c.policy = policy
     c.io = io
     c.io.launch_epoch = strings.clone(io.launch_epoch)
     c.io.instance = strings.clone(io.instance)
@@ -327,21 +334,9 @@ acp_rpc_now :: proc(c: ^ACP_RPC_Client) -> i64 {
     if c.io.now_ms != nil do return c.io.now_ms(c.io.data)
     return time.to_unix_nanoseconds(time.now())/1_000_000
 }
-acp_rpc_role :: proc(method: string) -> ACP_RPC_Role {
-    switch method {
-    case "initialize": return .Initialize
-    case "session/new": return .New
-    case "session/load": return .Load
-    case "session/set_config_option": return .Config
-    case "session/prompt": return .Prompt
-    case "_session/steering": return .Steering
-    }
-    return .Other
-}
 acp_rpc_deadline :: proc(c: ^ACP_RPC_Client, method: string, timeout_ms: i64) -> i64 {
-    if method == "session/prompt" do return 0
-    limit: i64 = 15000
-    if method == "session/new" || method == "session/load" do limit = 60000
+    limit := c.policy.timeout(method)
+    if limit == 0 do return 0
     if timeout_ms > 0 do limit = min(limit, timeout_ms)
     return acp_rpc_now(c) + limit
 }
@@ -385,15 +380,16 @@ acp_rpc_parse :: proc(raw: string) -> (json.Value, bool) {
 acp_rpc_quote :: proc(s: string) -> string {
     b, _ := json.marshal(s, allocator = context.temp_allocator); return string(b)
 }
-acp_rpc_envelope :: proc(id_json, method, params, field, value: string) -> string {
+acp_rpc_envelope :: proc(id_json, method, params, field, value: string, protocol: contracts.ACP_Protocol = .ACP) -> string {
     b: strings.Builder; strings.builder_init(&b, context.temp_allocator)
-    strings.write_string(&b, `{"jsonrpc":"2.0"`)
-    if id_json != "" { strings.write_string(&b, `,"id":`); strings.write_string(&b, id_json) }
+    strings.write_string(&b, "{")
+    if protocol == .ACP do strings.write_string(&b, `"jsonrpc":"2.0",`)
+    if id_json != "" { strings.write_string(&b, `"id":`); strings.write_string(&b, id_json); strings.write_string(&b, ",") }
     if method != "" {
-        strings.write_string(&b, `,"method":`); strings.write_string(&b, acp_rpc_quote(method))
+        strings.write_string(&b, `"method":`); strings.write_string(&b, acp_rpc_quote(method))
         strings.write_string(&b, `,"params":`); strings.write_string(&b, params)
     } else {
-        strings.write_string(&b, `,"`); strings.write_string(&b, field); strings.write_string(&b, `":`); strings.write_string(&b, value)
+        strings.write_string(&b, `"`); strings.write_string(&b, field); strings.write_string(&b, `":`); strings.write_string(&b, value)
     }
     strings.write_string(&b, "}\n"); return strings.to_string(b)
 }
@@ -447,20 +443,25 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
             pending_bytes := len(cmd.a)+len(cmd.b)+2*len(c.state.launch_epoch)+128
             for p in c.state.pending_outbound do pending_bytes += len(p.id)+len(p.method)+len(p.params_json)+len(p.delivery_id)
             if len(c.state.pending_outbound) >= ACP_RPC_MAX_PENDING_OUTBOUND || pending_bytes > ACP_RPC_PENDING_OUTBOUND_BYTES do return
+            // Codex uses signed integer IDs on the wire. Keep epoch-scoped
+            // internal IDs so journals/completions retain the same identity.
+            if c.protocol == .Codex_App_Server && c.state.next_rpc_id > u64(max(i64)) do return
             id = strings.clone(fmt.tprintf("ham:%s:%d", c.state.launch_epoch, c.state.next_rpc_id))
             c.state.next_rpc_id += 1
         }
-        line := acp_rpc_envelope(acp_rpc_quote(id) if id != "" else "", cmd.a, cmd.b, "", "")
+        wire_id := acp_rpc_quote(id) if id != "" else ""
+        if id != "" && c.protocol == .Codex_App_Server do wire_id = fmt.tprintf("%d", c.state.next_rpc_id-1)
+        line := acp_rpc_envelope(wire_id, cmd.a, cmd.b, "", "", c.protocol)
         start := len(c.state.pending_writes)
         delivery, ok := acp_rpc_stage(c, line)
         if !ok { delete(id); return }
         if cmd.kind == .Request {
-            role := acp_rpc_role(cmd.a)
+            role := c.policy.role(cmd.a)
             c.outbound[id] = len(c.state.pending_outbound)
             append(&c.state.pending_outbound, ACP_RPC_Pending{id, strings.clone(cmd.a), strings.clone(cmd.b), acp_rpc_deadline(c, cmd.a, cmd.timeout_ms), strings.clone(delivery), role})
             c.completions[id] = cmd.completion
-        } else if cmd.a == "session/cancel" {
-            for &p in c.state.pending_outbound { if p.role == .Prompt do p.deadline_unix_ms = acp_rpc_now(c)+10000 }
+        } else if cancel_timeout := c.policy.cancel_timeout(cmd.a); cancel_timeout > 0 {
+            for &p in c.state.pending_outbound { if p.role == .Prompt do p.deadline_unix_ms = acp_rpc_now(c)+cancel_timeout }
         }
         cmd.ok = acp_rpc_send_staged(c, start)
         if cmd.ok && id != "" do cmd.id = ACP_RPC_ID(strings.clone(id))
@@ -473,12 +474,12 @@ acp_rpc_execute :: proc(c: ^ACP_RPC_Client, cmd: ^ACP_RPC_Command) {
         line: string
         if cmd.kind == .Reply {
             if !acp_rpc_json(cmd.b) do return
-            line = acp_rpc_envelope(p.id_json, "", "", "result", cmd.b)
+            line = acp_rpc_envelope(p.id_json, "", "", "result", cmd.b, c.protocol)
         } else {
             if !utf8.valid_string(cmd.err.message) || cmd.err.data_json != "" && !acp_rpc_json(cmd.err.data_json) do return
             error_json := strings.concatenate({`{"code":`, fmt.tprintf("%d", cmd.err.code), `,"message":`, acp_rpc_quote(cmd.err.message),
                 `,"data":`, cmd.err.data_json if cmd.err.data_json != "" else "null", "}"}, context.temp_allocator)
-            line = acp_rpc_envelope(p.id_json, "", "", "error", error_json)
+            line = acp_rpc_envelope(p.id_json, "", "", "error", error_json, c.protocol)
         }
         pending_bytes := len(line)+len(c.state.launch_epoch)+64
         for pending in c.state.pending_inbound do pending_bytes += acp_rpc_inbound_bytes(pending)
@@ -648,7 +649,8 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
     obj, object_ok := v.(json.Object)
     if !object_ok { acp_rpc_fail(c, "acp_protocol_error"); return }
     version, _ := obj["jsonrpc"].(string)
-    if version != "2.0" { acp_rpc_fail(c, "acp_protocol_error"); return }
+    _, has_version := obj["jsonrpc"]
+    if (c.protocol == .ACP || has_version) && version != "2.0" { acp_rpc_fail(c, "acp_protocol_error"); return }
     method_value, has_method := obj["method"]
     id, has_id := obj["id"]
     result, has_result := obj["result"]
@@ -681,7 +683,7 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
             acp_rpc_fail(c, "acp_protocol_error"); return
         }
         deadline: i64
-        if method == "session/request_permission" do deadline = acp_rpc_now(c)+300000
+        if limit := c.policy.inbound_timeout(method); limit > 0 do deadline = acp_rpc_now(c)+limit
         c.inbound[strings.clone(key)] = len(c.state.pending_inbound)
         append(&c.state.pending_inbound, ACP_RPC_Inbound{id_json = strings.clone(id_json), method = strings.clone(method), params_json = strings.clone(params), deadline_unix_ms = deadline})
         if !params_ok { acp_rpc_reply_error(c, id_json, {code = -32602, message = "Invalid params"}); return }
@@ -704,10 +706,16 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
         rpc_error = {code = int(code), message = message}
         if data, present := error_object["data"]; present do rpc_error.data_json = acp_rpc_value_json(data)
     }
-    // Outgoing IDs are strings; a numeric response cannot alias one.
-    outgoing_id, string_id := id.(string)
+    // Preserve ACP's string/numeric distinction. Codex correlates only integer
+    // responses with the epoch-scoped internal ID created for that counter.
+    outgoing_id, matching_type := id.(string)
+    if c.protocol == .Codex_App_Server {
+        counter, integer_id := id.(json.Integer)
+        matching_type = integer_id && counter > 0
+        outgoing_id = fmt.tprintf("ham:%s:%d", c.state.launch_epoch, counter)
+    }
     idx, found := c.outbound[outgoing_id]
-    if !string_id || !found {
+    if !matching_type || !found {
         if !c.unknown_ids[id_json] {
             if len(c.unknown_ids) < ACP_RPC_UNKNOWN_ID_COUNT && c.unknown_id_bytes+len(id_json) <= ACP_RPC_UNKNOWN_ID_BYTES {
                 c.unknown_ids[strings.clone(id_json)] = true
@@ -773,14 +781,14 @@ acp_rpc_raw_id :: proc(line: string) -> string {
 
 // Shared by normal restore and the one-time legacy binding migration. This
 // validates framing, counters, identities and bounded queues without callbacks.
-acp_rpc_restore_checkpoint_valid :: proc(state: ^ACP_State, restore_completion_available: bool) -> bool {
+acp_rpc_restore_checkpoint_valid :: proc(state: ^ACP_State, restore_completion_available: bool, policy: ACP_RPC_Policy = ACP_RPC_POLICY_ACP) -> bool {
     if len(state.pending_inbound) > ACP_RPC_MAX_PENDING_INBOUND || len(state.recent_inbound) > ACP_RPC_RECENT_INBOUND_COUNT do return false
     if len(state.pending_outbound) > ACP_RPC_MAX_PENDING_OUTBOUND do return false
     // Validate the entire checkpoint before exposing any of it to callbacks.
     seen := make(map[string]bool, allocator = context.temp_allocator)
     outbound_bytes := 0
     for p in state.pending_outbound {
-        if p.id == "" || seen[p.id] || !strings.has_prefix(p.id, fmt.tprintf("ham:%s:", state.launch_epoch)) || !acp_rpc_params_ok(p.params_json) || p.role != acp_rpc_role(p.method) do return false
+        if p.id == "" || seen[p.id] || !strings.has_prefix(p.id, fmt.tprintf("ham:%s:", state.launch_epoch)) || !acp_rpc_params_ok(p.params_json) || p.role != policy.role(p.method) do return false
         counter, counter_ok := strconv.parse_u64(strings.trim_prefix(p.id, fmt.tprintf("ham:%s:", state.launch_epoch)))
         if !counter_ok || counter == 0 || counter >= state.next_rpc_id do return false
         if !restore_completion_available do return false
@@ -846,7 +854,7 @@ acp_rpc_restore_state :: proc(c: ^ACP_RPC_Client, raw: string) -> bool {
     valid := false
     defer { if !valid do acp_state_delete(&state) }
     if state.instance != c.io.instance || state.launch_epoch != c.io.launch_epoch do return false
-    if !acp_rpc_restore_checkpoint_valid(&state, c.callbacks.restore_completion != nil) do return false
+    if !acp_rpc_restore_checkpoint_valid(&state, c.callbacks.restore_completion != nil, c.policy) do return false
     partial, _ := base64.decode(state.partial_line_base64)
     defer delete(partial)
     acp_state_delete(&c.state); c.state = state
