@@ -57,6 +57,18 @@ A new proposal can add work to an active chain mid-work. Its `kind` is `task` or
 Decide a pending proposal before proposing another.
 
 ## 2. Propose, approve, publish
+To start a new chain with its own coordinator (usually only when the user asks for one),
+name the durable agent, its bridge, and a provider and model enabled on that bridge
+(`./bin/ham-ctl bridge providers --bridge <brg_id>` lists them: use a `providers[].provider`
+with `enabled: true` and one of its `models[].model_id`). `--kind` is optional; every chain is `mixed_work`.
+```bash
+./bin/ham-ctl task-chain create --title 'Fix flaky auth tests' \
+  --coordinator agt_coord --bridge brg_main --provider claude --model opus [--project proj_x]
+```
+A rejected create (missing or unknown provider/model, bad agent, bridge or project) returns
+the error and creates nothing, so fix the arguments and run it again; there is no orphan
+chain to clean up.
+
 ```bash
 cat > proposal.json <<'EOF'
 {

@@ -238,16 +238,27 @@ bridge_provider_status_response :: proc(
 	return respond_success(strings.to_string(b), request_id, server_time)
 }
 
+// allow_instance admits bridge-relayed instance tokens as well as user tokens
+// (require_auth_any). Only read-only views pass true; ownership is still
+// enforced by bridge_service.get_bridge either way.
 provider_owned_bridge :: proc(
 	h: ^Provider_Handlers,
 	req: Request,
 	bridge_id: string,
+	allow_instance := false,
 ) -> (
 	domain.Bridge,
 	bool,
 	Response,
 ) {
-	auth_ctx, auth_ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx: contracts.Auth_Context
+	auth_ok: bool
+	auth_resp: Response
+	if allow_instance {
+		auth_ctx, auth_ok, auth_resp = require_auth_any(h.auth, req)
+	} else {
+		auth_ctx, auth_ok, auth_resp = require_auth(h.auth, req)
+	}
 	if !auth_ok do return {}, false, auth_resp
 	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
 	if !bridge_ok do return {}, false, respond_error(bridge_err, req.request_id)
@@ -259,9 +270,11 @@ provider_owned_bridge :: proc(
 }
 
 // GET /api/v1/bridges/:bridge_id/provider-status -- Hub DB only.
+// Agents reach it through `ham-ctl bridge providers --bridge <id>` to learn the
+// provider and model ids a launch accepts, so relayed instance tokens are allowed.
 bridge_provider_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Provider_Handlers)(ctx)
-	bridge, ok, response := provider_owned_bridge(h, req, path_part(req.path, 4))
+	bridge, ok, response := provider_owned_bridge(h, req, path_part(req.path, 4), allow_instance = true)
 	if !ok do return response
 	defer domain.bridge_destroy(&bridge)
 	return bridge_provider_status_response(

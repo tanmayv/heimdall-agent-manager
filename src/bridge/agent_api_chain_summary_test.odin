@@ -24,3 +24,15 @@ bridge_task_chain_get_summary_routes_read_only_envelope :: proc(t: ^testing.T) {
 		testing.expect(t, bridge_agent_method_allowed(m), "set_summary still allowed")
 	}
 }
+
+// `bridge providers --bridge <id>` must hit a registered hub GET route: the
+// per-bridge provider view is /provider-status (wiring.odin), not /providers.
+@(test)
+bridge_providers_routes_to_provider_status :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator // route params are temp-allocated
+	r := bridge_agent_route("agent.bridge.providers", `{"bridge_id":"brg_abc"}`)
+	testing.expect(t, r.kind == .Raw && r.http_method == .GET, "providers is a raw GET")
+	testing.expect_value(t, bridge_agent_route_target(r), "/api/v1/bridges/brg_abc/provider-status")
+	all := bridge_agent_route("agent.bridge.providers", "{}")
+	testing.expect_value(t, bridge_agent_route_target(all), "/api/v1/bridges")
+}

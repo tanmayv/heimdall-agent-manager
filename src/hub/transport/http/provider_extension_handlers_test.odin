@@ -1409,3 +1409,56 @@ test_provider_transport_http_busy_is_storage_error :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(response.body, "internal_error"), response.body)
 	testing.expect(t, !strings.contains(response.body, "invalid_transport"))
 }
+
+// `ham-ctl bridge providers --bridge <id>` relays an instance token to
+// provider-status so agents can learn the provider and model ids a launch
+// accepts. Ownership still applies, and the mutating provider routes stay
+// user-only.
+@(test)
+provider_status_accepts_relayed_instance_token_read_only :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := extension_test_setup(t, "status_instance_token")
+	defer extension_test_teardown(f)
+
+	agent_bridge, a_ok, a_err := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, bridge_service.Device_Enroll_Input{
+		owner_user_id = f.owner_user_id, bridge_public_key = "04aabb",
+		bridge_key_fingerprint = "aaaa bbbb cccc dddd", machine_hostname = "agent-host",
+	})
+	if !testing.expectf(t, a_ok, "agent bridge enrolled (%s)", a_err.message) do return
+	other_owner, f_ok, _ := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, bridge_service.Device_Enroll_Input{
+		owner_user_id = "someone_else", bridge_public_key = "04aabb",
+		bridge_key_fingerprint = "aaaa bbbb cccc dddd", machine_hostname = "foreign-host",
+	})
+	if !testing.expect(t, f_ok, "foreign bridge enrolled") do return
+	_, inst_ok, inst_err := iface.agent_save_instance(&f.ag_repo, domain.Agent_Instance{
+		agent_instance_id = "inst_status_reader", owner_user_id = domain.User_ID(f.owner_user_id),
+		agent_id = "agt_status_reader", bridge_id = agent_bridge.bridge.bridge_id, display_name = "reader",
+		runtime_status = "running", startup_status = "ready",
+		created_at = "2026-11-21T00:00:00Z", updated_at = "2026-11-21T00:00:00Z",
+	})
+	if !testing.expectf(t, inst_ok, "instance saved (%s)", inst_err.message) do return
+	extension_test_status(t, f, "claude", "present", "current")
+
+	headers := []contracts.HTTP_Header{
+		{name = "Authorization", value = strings.concatenate({"Bearer ", agent_bridge.bridge_token})},
+		{name = "X-Heimdall-Instance-Token", value = "hit_inst_status_reader"},
+	}
+	instance_request :: proc(headers: []contracts.HTTP_Header, method, path: string) -> Request {
+		return {method = method, path = path, body = "{}", request_id = "req_status_inst", remote_addr = "127.0.0.1:4444", headers = headers}
+	}
+
+	ok_resp := bridge_provider_status_handler(&f.ph, instance_request(headers, "GET", fmt.tprintf("/api/v1/bridges/%s/provider-status", f.bridge_id)))
+	testing.expectf(t, ok_resp.status == 200, "instance token reads an owned bridge's provider-status: %d %s", ok_resp.status, ok_resp.body)
+	testing.expect(t, strings.contains(ok_resp.body, `"provider":"claude"`), ok_resp.body)
+	testing.expect(t, strings.contains(ok_resp.body, `"models":[`), ok_resp.body)
+
+	foreign_resp := bridge_provider_status_handler(&f.ph, instance_request(headers, "GET", fmt.tprintf("/api/v1/bridges/%s/provider-status", other_owner.bridge.bridge_id)))
+	testing.expect_value(t, foreign_resp.status, 404)
+
+	bare := []contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", agent_bridge.bridge_token})}}
+	bare_resp := bridge_provider_status_handler(&f.ph, instance_request(bare, "GET", fmt.tprintf("/api/v1/bridges/%s/provider-status", f.bridge_id)))
+	testing.expect(t, bare_resp.status != 200, "a bare bridge token is still refused")
+
+	put_resp := bridge_provider_enable_handler(&f.ph, instance_request(headers, "PUT", fmt.tprintf("/api/v1/bridges/%s/providers/claude", f.bridge_id)))
+	testing.expect(t, put_resp.status == 401 || put_resp.status == 403, fmt.tprintf("mutating provider route stays user-only: %d %s", put_resp.status, put_resp.body))
+}

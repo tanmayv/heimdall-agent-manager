@@ -1424,7 +1424,8 @@ ctl_agentmode_task_chain_create_params :: proc(args: []string, positional_title:
 	defer delete(fields)
 	append(&fields, json_kv("title", title))
 	if desc != "" do append(&fields, json_kv("description", desc))
-	append(&fields, json_kv("kind", option_value(args, "--kind", "team_work")))
+	// Every chain is mixed_work (the hub refuses other kinds), so that is the default.
+	append(&fields, json_kv("kind", option_value(args, "--kind", "mixed_work")))
 	if coord := option_value(args, "--coordinator", option_value(args, "--coordinator-agent-id", "")); coord != "" {
 		append(&fields, json_kv("coordinator_agent_id", coord))
 	}
@@ -1925,7 +1926,7 @@ print_help_bridge :: proc() {
 	fmt.println("VERBS")
 	fmt.println("  list [--scope hub|configured|all]   List bridges. default all: Hub-registered")
 	fmt.println("                                      + locally-configured peers + this host (self).")
-	fmt.println("  providers [--bridge <id>]           Providers (+ models) for one/all Hub bridges.")
+	fmt.println("  providers --bridge <id>             Providers (+ models) of one Hub bridge; no --bridge lists bridges only.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl bridge list")
