@@ -82,6 +82,13 @@ Bridge_Log_Code :: enum u8 {
 	telemetry_collector_failed,
 	search_index_error,
 	internal,
+	// agents (appended): the PTY host cannot host piped (ACP) children, so the
+	// Bridge does not advertise acp_runtime_v1. reason says why, stage what probed.
+	acp_runtime_unavailable,
+	// agents (appended): an adopted PTY host is stale (older build or an executable
+	// outside the current bin dir). stage = the decision (retired, or why it was
+	// kept), reason = why it is stale, agents = how many agents it still hosts.
+	pty_host_stale,
 }
 
 BRIDGE_LOG_CODE_NAMES :: [Bridge_Log_Code]string{
@@ -120,6 +127,8 @@ BRIDGE_LOG_CODE_NAMES :: [Bridge_Log_Code]string{
 	.telemetry_collector_failed = "telemetry_collector_failed",
 	.search_index_error         = "search_index_error",
 	.internal                   = "internal",
+	.acp_runtime_unavailable    = "acp_runtime_unavailable",
+	.pty_host_stale             = "pty_host_stale",
 }
 
 // Field keys. Int-valued keys carry a JSON integer; symbol-valued keys carry a
@@ -135,6 +144,7 @@ Bridge_Log_Key :: enum u8 {
 	attempt,      // int
 	port,         // int
 	duration_ms,  // int
+	agents,       // int (appended)
 }
 
 BRIDGE_LOG_KEY_NAMES :: [Bridge_Log_Key]string{
@@ -148,6 +158,7 @@ BRIDGE_LOG_KEY_NAMES :: [Bridge_Log_Key]string{
 	.attempt      = "attempt",
 	.port         = "port",
 	.duration_ms  = "duration_ms",
+	.agents       = "agents",
 }
 
 bridge_log_key_is_symbolic :: proc(key: Bridge_Log_Key) -> bool {
@@ -178,6 +189,11 @@ Bridge_Log_Sym :: enum u8 {
 	launch_agent, wake_agent, shell_start, shell_restart, agent_pty_input, provider_test, bridge_update,
 	// stage (appended: values above keep their numbers)
 	windows_credential_manager,
+	// ACP runtime probe: stage = what triggered it, reason = why it failed
+	provider_scan, daemon_restart, retry,
+	daemon_unavailable, no_reply, bad_reply, lacks_piped_spawn,
+	// stale PTY host: stage = decision, reason = stale_exe_path or a probe reason above
+	retired, agents_still_hosted, launch_in_progress, list_failed, stop_failed, stale_exe_path,
 }
 
 BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
@@ -242,6 +258,19 @@ BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
 	.agent_pty_input  = "agent_pty_input",
 	.provider_test    = "provider_test",
 	.bridge_update    = "bridge_update",
+	.provider_scan    = "provider_scan",
+	.daemon_restart   = "daemon_restart",
+	.retry            = "retry",
+	.daemon_unavailable = "daemon_unavailable",
+	.no_reply         = "no_reply",
+	.bad_reply        = "bad_reply",
+	.lacks_piped_spawn = "lacks_piped_spawn",
+	.retired          = "retired",
+	.agents_still_hosted = "agents_still_hosted",
+	.launch_in_progress = "launch_in_progress",
+	.list_failed      = "list_failed",
+	.stop_failed      = "stop_failed",
+	.stale_exe_path   = "stale_exe_path",
 }
 
 // Name -> enum lookups (linear over small tables; only the hub's validator and
@@ -375,6 +404,8 @@ BRIDGE_LOG_CODE_DEFAULT_CLASS :: [Bridge_Log_Code]Bridge_Error_Class{
 	.telemetry_collector_failed = .retriable,
 	.search_index_error         = .retriable,
 	.internal                   = .fatal,       // a bug: report, never loop on it
+	.acp_runtime_unavailable    = .retriable,   // re-probed on daemon restart, scan and backoff
+	.pty_host_stale             = .retriable,   // replaced once its agents drain
 }
 
 bridge_error_class_name :: proc(class: Bridge_Error_Class) -> string {

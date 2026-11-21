@@ -85,6 +85,15 @@ bridge_os_process_lstart_and_command :: proc(pid: int) -> (start_unix_sec: i64, 
 	return lstart_sec, strings.clone(strings.trim_space(output[24:]), context.temp_allocator), true
 }
 
+// bridge_os_realpath resolves symlinks and relative parts of an existing path.
+bridge_os_realpath :: proc(path: string, allocator := context.allocator) -> (string, bool) {
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	resolved := posix.realpath(cpath, nil)
+	if resolved == nil do return "", false
+	defer posix.free(rawptr(resolved))
+	return strings.clone(string(resolved), allocator), true
+}
+
 // bridge_os_exe_base reduces a command line to its executable's base name.
 bridge_os_exe_base :: proc(command: string) -> string {
 	exe := command

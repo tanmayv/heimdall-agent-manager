@@ -411,9 +411,9 @@ bridge_hub_runtime_worker :: proc() {
 		// Nothing negotiated on a previous connection carries over: only this
 		// connection's bridge_ready can re-enable a heartbeat omission.
 		bridge_hub_reset_heartbeat_negotiation()
-		if socket, daemon_ok := bridge_pty_host_ensure_daemon(); daemon_ok {
-			sync.atomic_store(&bridge_acp_runtime_supported, pty_host_supports_pipes(socket))
-		}
+		// REQ-ACP-1: probed here so the hello carries it, and again on daemon
+		// restart/adoption, provider scan and a retry schedule (acp_runtime_probe.odin).
+		bridge_acp_runtime_probe_on_connect()
 		hello := bridge_hub_hello_json()
 		if !ws.send_text(&conn, hello) {
 			log_failure(&last_failure, &attempts, "WS connected but sending hello failed (connection dropped immediately)", .hub_connect_failed, blog_sym(.stage, .hello), blog_sym(.reason, .write_error))
@@ -639,6 +639,8 @@ bridge_hub_apply_ready_settings :: proc(text: string) {
 	// means the legacy members stay.
 	sync.atomic_store(&bridge_hub_heartbeat_metadata_omission, extract_json_bool(text, "heartbeat_metadata_omission", false))
 	sync.atomic_store(&bridge_hub_diagnostics_frame_v1, extract_json_bool(text, "diagnostics_frame_v1", false))
+	// Absent on hubs that predate bridge_features_update (acp_runtime_probe.odin).
+	sync.atomic_store(&bridge_hub_features_update_supported, extract_json_bool(text, contracts.BRIDGE_READY_FEATURES_UPDATE, false))
 }
 
 // Per-connection heartbeat negotiation (minimal heartbeat plan §4.4, T4). Both start
@@ -666,6 +668,7 @@ BRIDGE_DIAGNOSTICS_SENDER_AVAILABLE :: true
 bridge_hub_reset_heartbeat_negotiation :: proc() {
 	sync.atomic_store(&bridge_hub_heartbeat_metadata_omission, false)
 	sync.atomic_store(&bridge_hub_diagnostics_frame_v1, false)
+	sync.atomic_store(&bridge_hub_features_update_supported, false)
 }
 
 // Bridge_Heartbeat_Shape selects which optional member groups a heartbeat carries.
@@ -776,6 +779,9 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		// Stop before ANY drain or heartbeat in the iteration receiving retirement.
 		if sync.atomic_load(&bridge_hub_traffic_stopped) do break
 		bridge_bot_drain(conn, connection_generation)
+		// Before command results: a provider scan that flipped acp_runtime_v1 must
+		// re-advertise it ahead of its report (provider_path_store.odin).
+		bridge_acp_features_drain(conn)
 		bridge_command_dispatch_drain(conn, connection_generation)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
@@ -825,6 +831,9 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(true)
 		}
 		bridge_diagnostics_tick(conn, &diagnostics_cadence, now, sync.atomic_load(&bridge_hub_heartbeat_interval_ns))
+		// REQ-ACP-1: re-probe piped-spawn support off-thread when the daemon changed or
+		// a retry is due; bridge_acp_features_drain (above) re-advertises a change.
+		bridge_acp_runtime_probe_tick(now)
 		// Yield after a bounded burst. Idle connections retain the low-wake cadence;
 		// busy connections do not artificially process only 40 frames per second.
 		time.sleep(1 * time.Millisecond if inbound_count > 0 || pty_more else 25 * time.Millisecond)
@@ -4605,7 +4614,6 @@ Bridge_Hello_Wire :: struct {
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
 BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1}
-bridge_acp_runtime_supported: bool
 bridge_runtime_features :: proc() -> []string {
 	features := make([dynamic]string, allocator = context.temp_allocator)
 	append(&features, ..BRIDGE_RUNTIME_FEATURES[:])

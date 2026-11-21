@@ -140,3 +140,15 @@ BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES :: 10 * 1024 * 1024
 // Advertise only after detecting compatible daemon piped hosting. Old Bridges
 // cannot safely ignore explicit ACP launch payloads.
 BRIDGE_FEATURE_ACP_RUNTIME :: "acp_runtime_v1"
+
+// bridge_features_update (Bridge -> Hub, after bridge_ready) replaces this
+// connection's advertised feature list without a reconnect, e.g. when a re-probe
+// finds the PTY host can now host ACP runtimes:
+//   {"type":"bridge_features_update","protocol_version":1,"features":["…",…]}
+// The list is a full replacement, exactly like hello's. A Bridge sends it only to a
+// Hub whose bridge_ready carried BRIDGE_READY_FEATURES_UPDATE (true); against an
+// older Hub it falls back to a metadata-bearing heartbeat (legacy connection) or a
+// reconnect (heartbeat metadata omission negotiated, where the hello is the only
+// metadata authority).
+BRIDGE_FEATURES_UPDATE_FRAME_TYPE :: "bridge_features_update"
+BRIDGE_READY_FEATURES_UPDATE :: "features_update"

@@ -138,6 +138,12 @@ bridge_os_exe_base :: proc(command: string) -> string {
 	return strings.trim_suffix(exe, ".exe")
 }
 
+// bridge_os_realpath: not implemented on Windows; stale PTY host detection then
+// relies on the Capabilities probe alone (pty_host_stale.odin).
+bridge_os_realpath :: proc(path: string, allocator := context.allocator) -> (string, bool) {
+	return "", false
+}
+
 bridge_os_disk_free :: proc(path: string) -> (free_bytes: i64, ok: bool) {
 	avail, total, free: win.ULARGE_INTEGER
 	wpath := win.utf8_to_wstring(path, context.temp_allocator)

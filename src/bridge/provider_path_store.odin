@@ -434,6 +434,11 @@ bridge_provider_handle_discover_frame :: proc(conn: ^ws.Connection, frame_type, 
 		bridge_provider_discover_refuse_not_ready(conn, request_id)
 		return true
 	}
+	// REQ-ACP-1: a provider scan is the user's "try again" for ACP too. Probed before
+	// the report so a flipped acp_runtime_v1 is re-advertised (hub loop drain, ahead of
+	// command results) before the hub answers the scan with acp_runtime_supported.
+	// Skipped while supported: launches re-check support themselves.
+	if !sync.atomic_load(&bridge_acp_runtime_supported) do _, _ = bridge_acp_runtime_probe(.Provider_Scan)
 	results := bridge_provider_discover(filter,profile_id,probe_deadline)
 	defer {
 		for &result in results do bridge_provider_path_destroy(&result)

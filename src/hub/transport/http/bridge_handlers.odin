@@ -2479,6 +2479,10 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			for s in superseded do delete(s)
 			delete(superseded)
 		}
+	case contracts.BRIDGE_FEATURES_UPDATE_FRAME_TYPE:
+		// A mid-connection feature change (an ACP re-probe): same generation barrier
+		// as the heartbeat; a stale or malformed frame changes nothing.
+		_ = bridge_apply_features_update(h, bridge_id, connection_generation, text)
 	case "bridge_diagnostics":
 		// Plan §4.3: same socket auth and generation as heartbeat (checked on entry and
 		// again under the commit lock). Rejections are counted, never fatal.
@@ -3359,6 +3363,8 @@ bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool,
 	// This hub bounds the session by its credential and accepts in-band
 	// bridge_reauth after a refresh (bridge_ws_try_reauth).
 	strings.write_string(&b, ",\"credential_reauth\":true")
+	// This hub applies bridge_features_update (bridge_apply_features_update).
+	strings.write_string(&b, ",\"" + contracts.BRIDGE_READY_FEATURES_UPDATE + "\":true")
 	strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }
@@ -3563,6 +3569,29 @@ bridge_apply_heartbeat_liveness :: proc(h: ^Bridge_Handlers, bridge_id: string, 
 	defer domain.bridge_destroy(&bridge)
 	if moved || caps_changed do publish_bridge_changed(h.event_bus, bridge, "capabilities_changed")
 	return result
+}
+
+// bridge_apply_features_update applies a bridge_features_update frame: the stored
+// features are replaced and become this connection's expected list, so later
+// heartbeats on a metadata-omission connection keep matching (no Resync_Required).
+// Under the generation barrier like heartbeat metadata; a frame from a replaced
+// connection, or one without a features array, writes nothing. A changed record
+// publishes capabilities_changed, which refreshes the providers view.
+bridge_apply_features_update :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, text: string) -> Heartbeat_Metadata_Result {
+	if h == nil || h.bridges == nil do return .Applied
+	features, found := jsonx.extract_raw_array(text, "features", true, context.temp_allocator, sort_keys = true)
+	if !found do return .Applied
+	c, current := bridge_runtime_state_enter(h, bridge_id, generation)
+	if !current do return .Stale
+	changed, err := bridge_service.update_runtime_features(h.bridges, bridge_id, features)
+	if err.code == .None do project_service.bridge_runtime_connection_set_metadata_features(c, features)
+	bridge_runtime_state_leave(h, c)
+	if err.code != .None || !changed do return .Applied
+	if bridge, ok, _ := iface.bridge_get_bridge(h.bridges.repo, bridge_id); ok {
+		publish_bridge_changed(h.event_bus, bridge, "capabilities_changed")
+		domain.bridge_destroy(&bridge)
+	}
+	return .Applied
 }
 
 bridge_vault_status_summary_json :: proc(vault_status: string) -> string {

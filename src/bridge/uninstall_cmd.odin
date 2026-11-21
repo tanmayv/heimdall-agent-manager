@@ -158,13 +158,21 @@ bridge_uninstall_snapshot :: proc(u: ^Bridge_Uninstall) {
 	if u.hub != "" do _ = bridge_keystore_set_hub(u.hub)
 	// Snapshot before Secrets removes identity records. Only this profile's run
 	// directory supplies candidates; never scan shared temporary socket directories.
-	run := bridgesvc.pjoin(l.data_dir, "run")
 	bridge_uninstall_add_pty_identity(u, u.bridge_id)
-	if infos, err := os.read_directory_by_path(run, -1, context.temp_allocator); err == nil {
-		for info in infos {
-			if info.name == "pty-host.sock" || (strings.has_prefix(info.name, "pty-host-") && strings.has_suffix(info.name, ".sock")) {
-				append(&u.pty_sockets, bridge_unix_socket_bounded_path(bridgesvc.pjoin(run, info.name)))
-			}
+	bridge_profile_pty_sockets(l.data_dir, &u.pty_sockets)
+}
+
+// bridge_profile_pty_sockets appends the PTY host sockets found in a profile's run
+// directory (<data_dir>/run, the service's --local-run-dir): pty-host.sock or
+// pty-host-<id>.sock (pty_host_socket_path). Only that directory is read, never a
+// shared temporary socket directory. Setup uses it too (setup_pty_host.odin).
+bridge_profile_pty_sockets :: proc(data_dir: string, out: ^[dynamic]string) {
+	run := bridgesvc.pjoin(data_dir, "run")
+	infos, err := os.read_directory_by_path(run, -1, context.temp_allocator)
+	if err != nil do return
+	for info in infos {
+		if info.name == "pty-host.sock" || (strings.has_prefix(info.name, "pty-host-") && strings.has_suffix(info.name, ".sock")) {
+			append(out, bridge_unix_socket_bounded_path(bridgesvc.pjoin(run, info.name)))
 		}
 	}
 }

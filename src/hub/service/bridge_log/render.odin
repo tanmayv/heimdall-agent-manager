@@ -33,6 +33,8 @@ render_title :: proc(code: string) -> string {
 	case .pty_host_spawn_failed:      return "Could not start the PTY host daemon"
 	case .pty_host_unreachable:       return "The PTY host daemon is not answering"
 	case .pty_host_exited:            return "The PTY host daemon exited"
+	case .pty_host_stale:             return "A stale PTY host daemon from an earlier install is running; it is replaced once it hosts no agents"
+	case .acp_runtime_unavailable:    return "The PTY host cannot host ACP runtimes yet; ACP stays unavailable until a re-probe succeeds"
 	case .agent_launch_failed:        return "Agent launch failed"
 	case .agent_exited_early:         return "Agent exited right after launch"
 	case .agent_bootstrap_invalid:    return "Agent bootstrap could not be assembled"
@@ -79,6 +81,7 @@ render_message :: proc(code, fields_json: string, allocator := context.allocator
 		case .attempt:      strings.write_string(&b, "attempt ")
 		case .port:         strings.write_string(&b, "port ")
 		case .duration_ms:  strings.write_string(&b, "after ")
+		case .agents:       strings.write_string(&b, "agents hosted: ")
 		}
 		if contracts.bridge_log_key_is_symbolic(key) {
 			strings.write_string(&b, strings.trim(raw, "\""))

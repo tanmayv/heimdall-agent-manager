@@ -359,7 +359,7 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 
 	case .Binaries:
 		// Quiesce before touching bin/, even on platforms that permit renaming
-		// running executables. PTY daemons/sessions intentionally stay alive.
+		// running executables.
 		if s.was_running && !s.stopped_for_setup {
 			if ok, msg := bridge_setup_stop_for_rollback(s); !ok {
 				return {failure = .Fatal, message = fmt.tprintf("cannot stop the previous Bridge before updating: %s", msg)}
@@ -367,6 +367,10 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			s.stopped_for_setup = true
 		}
 		if !s.copy_binaries do return {ok = true, message = "skipped"}
+		// The PTY host daemon outlives the service. An idle one is stopped so it does
+		// not keep running the old ham-pty-host from bin.bak*; one hosting agents
+		// stays alive and the new bridge replaces it later (setup_pty_host.odin).
+		bridge_setup_quiesce_pty_host(s)
 		bak := strings.concatenate({l.bin_dir, ".bak"}, context.temp_allocator)
 		if os.exists(bak) {
 			// A live PTY daemon may still execute from an earlier backup. Keep

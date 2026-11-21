@@ -18,8 +18,11 @@ On Windows, a runtime PID is checked against the exact profile executable and it
 creation time. Identity verification and termination use the same process handle.
 An intentional stop exits successfully so Task Scheduler does not schedule a failure
 restart. PTY daemons and detached updaters inherit no Bridge log handles. Updates
-stop only the Bridge process, preserving live PTY sessions; uninstall explicitly
-shuts down the selected profile's PTY daemon before removing its files.
+stop the Bridge process and, before swapping `bin/`, the profile's PTY daemon only
+when it hosts no agents (otherwise it keeps running from `bin.bak*` and the updated
+Bridge replaces it once its agents have exited, so an old `ham-pty-host` never keeps
+ACP unavailable; bridge_log code `pty_host_stale`). Uninstall explicitly shuts down
+the selected profile's PTY daemon before removing its files.
 
 A busy `bin.bak` is retained and the next update uses a unique `bin.bak-*` directory.
 Rollback restores the backup of its own transaction. If shutdown or binary restore
@@ -82,7 +85,7 @@ executable). Steps, in order:
 |---|---|---|
 | `lock` | `<state dir>/.install.lock` = `"<pid> <unix seconds>"`, written to a temp file and hard-linked into place (exclusive create where hard links are unsupported), so it is never seen half-written | released |
 | `stage` | records (once) whether the old service was installed/running; copies bundle binaries to `<data dir>/.staging` (`skipped` when run from the installed `bin/`) | staging removed |
-| `binaries` | `bin/` -> `bin.bak/`, staging -> `bin/` | `bin.bak/` restored |
+| `binaries` | stops the profile's PTY daemon if it hosts no agents (one `progress` event says whether it was stopped or kept for its agents), then `bin/` -> `bin.bak/`, staging -> `bin/` | `bin.bak/` restored |
 | `config` | writes `config.toml` only when missing, `hub-url`, `profile`; refuses a state dir of another hub | previous files restored |
 | `ports` | allocate / keep the profile's ports | previous `ports.json` restored |
 | `service` | renders the service file **on every run** and registers it (daemon-reload + enable / `schtasks /Create /F`) | previous file restored, re-registered |

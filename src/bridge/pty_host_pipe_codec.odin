@@ -217,11 +217,30 @@ pty_host_decode_pipe_reply :: proc(payload: []byte) -> (reply: Pty_Host_Reply, o
 // Explicitly negotiate support before sending a new tag. An old daemon closing
 // the socket, timing out, or returning Error always means unsupported.
 pty_host_supports_pipes :: proc(socket_path: string) -> bool {
+    return pty_host_probe_pipes(socket_path) == .Supported
+}
+
+// Pty_Host_Pipe_Probe is why a Capabilities exchange did or did not establish
+// piped-spawn support (REQ-ACP-2 logs it).
+Pty_Host_Pipe_Probe :: enum {
+    Supported,
+    No_Reply,          // dial/write failed, the socket closed, the 2s deadline passed, or the reply did not decode
+    Bad_Reply,         // a well-formed reply that is not Capabilities/Error
+    Lacks_Piped_Spawn, // Capabilities without piped_spawn_v1, or Error (an older daemon)
+}
+
+Pty_Host_Request_Proc :: #type proc(socket_path: string, request: []byte, timeout_ms: int) -> (Pty_Host_Reply, bool)
+
+pty_host_probe_pipes :: proc(socket_path: string, request: Pty_Host_Request_Proc = pty_host_request_deadline) -> Pty_Host_Pipe_Probe {
     frame := pty_host_encode_pipe_request({kind = .Capabilities}); defer delete(frame)
-    reply, ok := pty_host_request_deadline(socket_path, frame, 2000)
-    if !ok do return false
+    reply, ok := request(socket_path, frame, 2000)
+    if !ok do return .No_Reply
     defer pty_host_reply_delete(reply)
-    return reply.kind == .Capabilities && reply.piped_spawn_v1
+    #partial switch reply.kind {
+    case .Capabilities: return .Supported if reply.piped_spawn_v1 else .Lacks_Piped_Spawn
+    case .Error:        return .Lacks_Piped_Spawn
+    }
+    return .Bad_Reply
 }
 
 pty_host_spawn_pipe :: proc(socket_path: string, req: Pty_Host_Spawn_Request) -> (Pty_Host_Reply, bool) {

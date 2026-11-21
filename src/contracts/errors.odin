@@ -144,6 +144,8 @@ BRIDGE_LOG_CODE_ERROR_CODE :: [Bridge_Log_Code]Error_Code{
 	.outbox_persist_failed      = .Internal_Error,
 	.pty_host_spawn_failed      = .Internal_Error,
 	.pty_host_unreachable       = .Bridge_Busy,
+	.acp_runtime_unavailable    = .Bridge_Busy,
+	.pty_host_stale             = .Bridge_Busy,
 	.pty_host_exited            = .Bridge_Busy,
 	.agent_launch_failed        = .Internal_Error,
 	.agent_exited_early         = .Internal_Error,

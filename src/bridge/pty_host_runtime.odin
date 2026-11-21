@@ -85,6 +85,14 @@ PTY_HOST_DAEMON_KILL_GRACE :: 2 * time.Second
 // a daemon the bridge has replaced. Read/written atomically.
 pty_host_daemon_generation: u64
 
+// pty_host_daemon_epoch is bumped whenever ensure_daemon starts OR adopts a daemon
+// (the first successful ping of one this process had not yet bound to), i.e. every
+// time the daemon behind the socket may have changed. The ACP runtime probe
+// (acp_runtime_probe.odin) re-checks piped-spawn support when it moves: an adopted
+// daemon can be an older build without it, and a daemon that was not reachable when
+// the hub connection opened can come up later. Read/written atomically.
+pty_host_daemon_epoch: u64
+
 // Pty_Host_Daemon_Identity identifies the daemon currently BOUND to the socket path,
 // whoever started it: a daemon binds by unlink + bind, which creates a new socket
 // inode with a fresh ctime. Comparing inode AND ctime (not inode alone) matters because
@@ -237,6 +245,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 		return socket, true
 	}
 	if bridge_pty_host_ping(socket) {
+		if !pty_host_daemon_started do sync.atomic_add(&pty_host_daemon_epoch, 1)
 		pty_host_daemon_started = true
 		bridge_dependency_breaker_record(breaker_key, true)
 		return socket, true
@@ -249,6 +258,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 		for _ in 0..<3 {
 			time.sleep(500 * time.Millisecond)
 			if bridge_pty_host_ping(socket) {
+				if !pty_host_daemon_started do sync.atomic_add(&pty_host_daemon_epoch, 1)
 				pty_host_daemon_started = true
 				bridge_dependency_breaker_record(breaker_key, true)
 				return socket, true
@@ -288,6 +298,7 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	deadline := time.time_add(time.now(), 5 * time.Second)
 	for time.now()._nsec < deadline._nsec {
 		if bridge_pty_host_ping(socket) {
+			sync.atomic_add(&pty_host_daemon_epoch, 1)
 			pty_host_daemon_started = true
 			bridge_dependency_breaker_record(breaker_key, true)
 			return socket, true
@@ -903,6 +914,9 @@ bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 	}
 	if strings.trim_space(instance) == "" do return
 	fmt.println("bridge pty-host: child exited", instance, "code", code)
+	// A stale daemon kept for its agents may have just drained: re-check now rather
+	// than at the next backoff step (pty_host_stale.odin).
+	if sync.atomic_load(&pty_host_stale_pending) do sync.atomic_store(&acp_probe_next_retry_ns, 1)
 	bridge_runtime_set_pty_process_alive(instance, false)
 	// bridge_log relay: an agent that dies within BLOG_EARLY_EXIT_WINDOW of its
 	// launch (the launch record still has the tick) is almost always a provider

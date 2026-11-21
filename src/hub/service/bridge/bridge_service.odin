@@ -359,6 +359,46 @@ update_runtime_metadata :: proc(service: ^Bridge_Service, bridge_id, frame: stri
 	return iface.bridge_update_runtime(service.repo, .Capabilities, bridge_id, platform.clock_now(service.clock), record, row.capabilities_json)
 }
 
+// update_runtime_features replaces only the `features` list of the stored capability
+// record (bridge_features_update, contracts.BRIDGE_FEATURES_UPDATE_FRAME_TYPE): the
+// other runtime keys and the enrollment record are carried over from the row as
+// stored. Same compare-and-set as update_runtime_metadata; an unchanged record writes
+// nothing. features_raw is a canonical array (bridge_runtime_features_raw).
+update_runtime_features :: proc(service: ^Bridge_Service, bridge_id, features_raw: string) -> (changed: bool, err: domain.Domain_Error) {
+	row, ok, get_err := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !ok do return false, get_err
+	defer domain.bridge_destroy(&row)
+	if row.status == .Revoked do return false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	frame := bridge_features_replacement_frame(row.capabilities_json, features_raw, context.temp_allocator)
+	record := bridge_capabilities_record(row.capabilities_json, frame, context.temp_allocator)
+	if record == row.capabilities_json do return false, domain.Domain_Error{}
+	return iface.bridge_update_runtime(service.repo, .Capabilities, bridge_id, platform.clock_now(service.clock), record, row.capabilities_json)
+}
+
+// bridge_features_replacement_frame is a runtime frame equivalent to the stored record
+// with only `features` replaced, so bridge_capabilities_record keeps every other key.
+bridge_features_replacement_frame :: proc(existing, features_raw: string, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
+	strings.write_string(&b, `{"features":`)
+	strings.write_string(&b, features_raw)
+	for key in BRIDGE_RUNTIME_CAPABILITY_KEYS {
+		if key == "features" do continue
+		if raw, found := jsonx.extract_raw_array(existing, key, true, context.temp_allocator, sort_keys = true); found {
+			strings.write_string(&b, `,"`); write_service_json_string(&b, key); strings.write_string(&b, `":`)
+			strings.write_string(&b, raw)
+		}
+	}
+	for key in BRIDGE_RUNTIME_CAPABILITY_STRING_KEYS {
+		if value, found := jsonx.extract_string_found(existing, key, true, context.temp_allocator); found {
+			strings.write_string(&b, `,"`); write_service_json_string(&b, key); strings.write_string(&b, `":"`)
+			write_service_json_string(&b, value)
+			strings.write_byte(&b, '"')
+		}
+	}
+	strings.write_byte(&b, '}')
+	return strings.to_string(b)
+}
+
 // update_runtime_capabilities is liveness + legacy metadata in one call (the shape the
 // heartbeat arm used before they were split; kept for callers that apply a whole
 // runtime frame). Both halves are narrow fenced writes — no full-row save.

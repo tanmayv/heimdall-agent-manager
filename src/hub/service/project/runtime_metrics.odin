@@ -197,6 +197,7 @@ bridge_frame_kind :: proc(frame_type: string) -> string {
 	case frame_type == "bot_deliver": return "bot"
 	case frame_type == "bridge_heartbeat":                 return "heartbeat"
 	case frame_type == "bridge_diagnostics":               return "diagnostics"
+	case frame_type == "bridge_features_update":           return "metadata"
 	case frame_type == "agent_instance_status":            return "agent_status"
 	case frame_type == "command_result":                   return "command_result"
 	case frame_type == "shell_pty_output":                 return "shell_pty_output"

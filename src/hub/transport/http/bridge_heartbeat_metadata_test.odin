@@ -340,3 +340,54 @@ test_replaced_generation_cannot_overwrite_hello_metadata :: proc(t: ^testing.T) 
 	if c != nil do project_service.bridge_runtime_connection_release(&f.registry, c)
 	testing.expect(t, strings.contains(installed, contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION), installed)
 }
+
+// bridge_features_update (ACP re-probe): on a negotiated connection the hello is the
+// only metadata authority for heartbeats, so a Bridge whose PTY host gained piped
+// spawn after connecting re-advertises through this frame. It replaces only the
+// features, becomes the connection's expected list (later beats do not resync), keeps
+// the enrollment record, publishes one capabilities_changed, and a replaced
+// generation writes nothing.
+@(test)
+test_features_update_flips_acp_runtime_without_reconnect :: proc(t: ^testing.T) {
+	f := meta_fixture_open(t)
+	defer meta_fixture_close(f)
+	gen := meta_connect(t, f, meta_hello(META_FEATURES_NEGOTIATING))
+	testing.expect(t, meta_connection_negotiated(f, gen), "negotiated connection")
+	testing.expect(t, !contracts.bridge_supports_acp_runtime(meta_record(t, f)), "hello without acp_runtime_v1")
+
+	ready := bridge_ready_payload("brg_x", gen, false, "", true, true)
+	defer delete(ready)
+	testing.expect(t, strings.contains(ready, `"features_update":true`), ready)
+
+	with_acp := `["capture_agent_pane","get_agent_pane","instance_reconfiguration_v1","tool_stream_demand_v2","heartbeat_metadata_omission","acp_runtime_v1"]`
+	frame := fmt.tprintf(`{{"type":"%s","protocol_version":1,"features":%s}}`, contracts.BRIDGE_FEATURES_UPDATE_FRAME_TYPE, with_acp)
+	seq := f.bus.event_seq
+	testing.expect_value(t, bridge_apply_features_update(&f.bh, f.bridge_id, gen, frame), Heartbeat_Metadata_Result.Applied)
+	record := meta_record(t, f)
+	testing.expect(t, contracts.bridge_supports_acp_runtime(record), "acp_runtime_supported flips without a reconnect")
+	testing.expect(t, strings.contains(record, `"enrolled_via"`) && strings.contains(record, `"public_key":"04approved"`), record)
+	testing.expect(t, strings.contains(record, `"capabilities":[]`), "other runtime keys survive")
+	testing.expect(t, f.bus.event_seq > seq, "capabilities_changed published")
+	admission, api := meta_tool_support(t, f)
+	testing.expect(t, admission && api, "the rest of the hello features are kept")
+
+	// Later negotiated beats accept the updated list as this connection's own.
+	testing.expect_value(t, bridge_apply_heartbeat_liveness(&f.bh, f.bridge_id, gen, META_BEAT_MINIMAL), Heartbeat_Metadata_Result.Applied)
+
+	// Same list again: no write, no notification.
+	seq = f.bus.event_seq
+	testing.expect_value(t, bridge_apply_features_update(&f.bh, f.bridge_id, gen, frame), Heartbeat_Metadata_Result.Applied)
+	testing.expect_value(t, meta_record(t, f), record)
+	testing.expect_value(t, f.bus.event_seq, seq)
+
+	// A frame without a features array changes nothing.
+	testing.expect_value(t, bridge_apply_features_update(&f.bh, f.bridge_id, gen, `{"type":"bridge_features_update"}`), Heartbeat_Metadata_Result.Applied)
+	testing.expect_value(t, meta_record(t, f), record)
+
+	// A replaced generation's late frame is fenced.
+	gen2 := meta_connect(t, f, meta_hello(META_FEATURES_NEGOTIATING))
+	testing.expect(t, gen2 != gen, "new generation")
+	testing.expect(t, !contracts.bridge_supports_acp_runtime(meta_record(t, f)), "the new hello is a full replacement")
+	testing.expect_value(t, bridge_apply_features_update(&f.bh, f.bridge_id, gen, frame), Heartbeat_Metadata_Result.Stale)
+	testing.expect(t, !contracts.bridge_supports_acp_runtime(meta_record(t, f)), "stale frame wrote nothing")
+}
