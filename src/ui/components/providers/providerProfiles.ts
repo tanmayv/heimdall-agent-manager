@@ -243,13 +243,16 @@ export const providerProfilesApi = {
 
 export type ConfigDirectoryMode = 'inherit' | 'random' | 'custom';
 
+/** Providers whose profile can own a private config directory on the bridge. */
+export const configDirectoryProviders = new Set(['claude', 'kiro']);
+
 export function configDirectoryMode(value = ''): ConfigDirectoryMode {
   if (!value.trim()) return 'inherit';
-  return /(?:^|[\\/])\.heimdall-claude-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
+  return /(?:^|[\\/])\.heimdall-(?:claude|kiro)-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
     ? 'random'
     : 'custom';
 }
 
-export function generateConfigDirectory(): string {
-  return '~/.heimdall-claude-' + crypto.randomUUID();
+export function generateConfigDirectory(provider = 'claude'): string {
+  return `~/.heimdall-${provider === 'kiro' ? 'kiro' : 'claude'}-` + crypto.randomUUID();
 }
