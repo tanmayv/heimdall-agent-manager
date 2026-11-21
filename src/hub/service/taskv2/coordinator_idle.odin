@@ -187,7 +187,10 @@ rebuild_coordinator_idle_timers :: proc(svc: ^Service) {
 // or "" when the coordinator may be stopped now.
 coordinator_idle_guard :: proc(svc: ^Service, inst: domain.Agent_Instance, now_ms: i64) -> string {
 	if inst.runtime_status == "busy" || inst.activity_status == "busy" do return "busy"
-	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held do return "lease"
+	// Only an ACTIVE claim is live work. A waiting claim (submitted for review,
+	// blocked on the user) permits no work, and is exactly the idle-waiting
+	// case Y must stop (a Solo coordinator waiting on the user's review).
+	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held && lease.phase == domain.LEASE_PHASE_ACTIVE do return "lease"
 	if inst.started_at != "" {
 		if started := to_ms(inst.started_at); started > 0 && now_ms - started < COORDINATOR_IDLE_START_GRACE_SECONDS * 1000 do return "starting"
 	}
@@ -242,6 +245,14 @@ fire_coordinator_idle :: proc(svc: ^Service, t: Timer, now_ms: i64) -> (stop: Co
 // A failed stop (bridge offline, reconfiguration in flight) retries later; the
 // retry re-checks liveness, so a gone instance ends the loop.
 coordinator_idle_stop_after_commit :: proc(svc: ^Service, stop: Coordinator_Idle_Stop, now_ms: i64) {
+	// Close the window between the fire UoW's reads and the stop: a user event
+	// that committed meanwhile moved the stamp (its newer timer owns the
+	// decision) or left unread input the coordinator must see first.
+	if current, found, _ := iface.agent_get_user_activity(svc.agents, stop.instance_id); !found || current != stop.armed do return
+	if inst, found, _ := iface.agent_get_instance(svc.agents, stop.instance_id); found && coordinator_has_unread_user_input(svc, inst) {
+		timers_arm(svc, stop.kind, stop.instance_id, now_ms + COORDINATOR_IDLE_RETRY_SECONDS * 1000, stop.armed)
+		return
+	}
 	ok := false
 	msg := ""
 	if svc.coordinator_stop != nil {

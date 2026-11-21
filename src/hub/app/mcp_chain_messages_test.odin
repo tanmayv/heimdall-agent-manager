@@ -42,6 +42,14 @@ mcp_message_test_transform :: proc(ctx:rawptr,job:vault.Control_Job)->(string,bo
 	return vault.control_job_transform(job,&p.kr)
 }
 
+MCP_Message_User_Activity :: struct {calls,coordinator_hits:int}
+
+mcp_message_user_activity :: proc(ctx:rawptr,instance_id:string) {
+	a:=(^MCP_Message_User_Activity)(ctx)
+	a.calls+=1
+	if instance_id=="inst_message_a" do a.coordinator_hits+=1
+}
+
 mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View,raw:string) {
 	owner:=domain.User_ID(view.owner);now:=mcp_task_test_now(nil)
 	g.repos.agents=sqlite.new_agent_repository(&g.sqlite_agents,&g.db)
@@ -55,6 +63,10 @@ mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Han
 	g.agents.bridge_command_sink={ctx=&sink,send_runtime_command=mcp_runtime_test_send}
 	g.content=content.new_content_service_with_runtime(&g.repos.content,&g.repos.agents,&g.repos.bridges,nil,&g.repos.taskchains,g.agents.bridge_command_sink,&g.clock,&g.ids)
 	g.content.title_nudge_cooldown_seconds=3600
+	// Coordinator idle-stop reset (REQ-CIS-1): only an accepted, delivered user
+	// message counts; refused calls and replays do not.
+	activity:MCP_Message_User_Activity
+	g.content.user_activity=content.User_Activity_Hook{ctx=&activity,run=mcp_message_user_activity}
 	attention_probe:=MCP_Task_Attention_Probe{factory=&g.uow_factory}
 	attention:=contracts.Attention_Notifier{ctx=&attention_probe,notify=mcp_task_attention_probe};g.content.attention=&attention
 	g.content_handlers={content=&g.content,agents=&g.agents,event_bus=&g.event_bus}
@@ -112,7 +124,10 @@ mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Han
 	testing.expect(t,strings.contains(mcp_task_test_call(h,headers,"chains.message",args).body,"coordinator_unavailable"))
 	g.repos.agents=original_agents
 	testing.expect(t,len(sink.commands)==0 && attention_probe.notices==0)
+	testing.expect_value(t,activity.calls,0)
 	first:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.message",args));if first==nil do return
+	testing.expect_value(t,activity.calls,1)
+	testing.expect(t,activity.coordinator_hits==1,"the reset names the chain coordinator")
 	testing.expect(t,first["coordinator_agent_instance_id"].(json.String)=="inst_message_a" && first["conversation_id"].(json.String)=="chat_message_a" && first["status"].(json.String)=="accepted")
 	rows,_:=iface.content_list_messages(&g.repos.content,"chat_message_a",owner,100,"")
 	if !testing.expect(t,len(rows)==1) do return
@@ -123,6 +138,7 @@ mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Han
 	testing.expect(t,len(sink.commands)==1 && strings.contains(sink.commands[0].body_json,"notify_agent_message") && strings.contains(sink.commands[0].body_json,`"sender":"user"`) && !sink.inside_transaction && attention_probe.notices==1 && !attention_probe.inside_transaction)
 	retry:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.message",args));if retry==nil do return
 	testing.expect(t,retry["message_id"].(json.String)==first["message_id"].(json.String) && len(sink.commands)==1 && attention_probe.notices==1)
+	testing.expect_value(t,activity.calls,1)
 	args["body"]=json.String("Changed content")
 	testing.expect(t,strings.contains(mcp_task_test_call(h,headers,"chains.message",args).body,"idempotency_conflict"))
 	args["body"]=json.String("Private coordinator message")

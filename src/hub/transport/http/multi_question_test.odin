@@ -100,6 +100,14 @@ mq_http_notification :: proc(ctx: rawptr, command: project_service.Runtime_Comma
 	return true, {}
 }
 
+MQ_User_Activity :: struct { calls: int, last: string }
+
+mq_user_activity :: proc(ctx: rawptr, instance_id: string) {
+	a := (^MQ_User_Activity)(ctx)
+	a.calls += 1
+	a.last = strings.clone(instance_id, context.temp_allocator)
+}
+
 mq_http_open :: proc(t: ^testing.T, f: ^MQ_HTTP_Fixture, tag: string) {
 	f.base = mq_http_base_open(t)
 	f.repo = sqlite.new_content_repository(&f.impl, &f.base.conn)
@@ -175,7 +183,12 @@ test_multi_question_http_roundtrip_and_replay :: proc(t: ^testing.T) {
 	f: MQ_HTTP_Fixture
 	mq_http_open(t, &f, "mq_roundtrip")
 	defer mq_http_base_close(f.base)
+	// Coordinator idle-stop reset (REQ-CIS-1): the agent's question is not a user
+	// event; the user's answer is, once (a replay is not a new event).
+	activity: MQ_User_Activity
+	f.svc.user_activity = content_service.User_Activity_Hook{ctx = &activity, run = mq_user_activity}
 	source := mq_http_source(t, &f)
+	testing.expect_value(t, activity.calls, 0)
 	before := list_chat_messages_handler(&f.handlers, mq_http_req(f.base, "/api/v1/chats/chat_mq/messages", ""))
 	testing.expect(t, strings.contains(before.body, `"question_answer":null`), "unanswered source read model")
 	testing.expect(t, strings.contains(before.body, `"is_latest_message":true`), "latest hint supplied on source")
@@ -185,6 +198,8 @@ test_multi_question_http_roundtrip_and_replay :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(response.body, `"replayed":false`), "first request reports inserted")
 	testing.expect(t, strings.contains(response.body, `"message_type":"multi_question_answer"`), "answer delivered with explicit type")
 	testing.expect_value(t, sync.atomic_load(&f.notifications), 1)
+	testing.expect_value(t, activity.calls, 1)
+	testing.expect_value(t, activity.last, "inst_mq")
 	auth := contracts.Auth_Context{kind = .Session, user_id = f.base.owner_user_id}
 	inbox, e := content_service.list_agent_inbox_messages(&f.svc, auth, {agent_instance_id = "inst_mq", unread_only = true, receiver_only = true})
 	testing.expect_value(t, e.code, domain.Error_Code.None)
@@ -205,6 +220,7 @@ test_multi_question_http_roundtrip_and_replay :: proc(t: ^testing.T) {
 	testing.expect_value(t, replay.status, 200)
 	testing.expect(t, strings.contains(replay.body, `"replayed":true`), "same-key replay succeeds after newer message")
 	testing.expect_value(t, sync.atomic_load(&f.notifications), 1)
+	testing.expect_value(t, activity.calls, 1)
 	conflict := mq_http_answer(&f, source.message_id, mq_http_submission("another_device"))
 	testing.expect_value(t, conflict.status, 409)
 	testing.expect(t, strings.contains(conflict.body, "question_answered"), "another key cannot answer twice")

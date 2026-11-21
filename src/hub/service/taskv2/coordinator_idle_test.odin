@@ -314,3 +314,52 @@ test_coordinator_idle_review_resets_only_for_user_verdicts :: proc(t: ^testing.T
 	if !testing.expect(t, proxied, fmt.tprintf("proxy review: %s", perr.message)) do return
 	testing.expect(t, idle_stamp(ifx) > after_user, "review post --on-behalf-of user resets the stamp")
 }
+
+// A WAITING claim (submitted and awaiting the user's review, or blocked on the
+// user) permits no work: it must not defer Y. Otherwise a Solo coordinator
+// idling on the user is never stopped. Only an active claim defers.
+@(test)
+test_coordinator_idle_waiting_claim_does_not_defer :: proc(t: ^testing.T) {
+	ifx, ok := idle_fixture(t, "cis_waiting")
+	defer idle_fixture_close(ifx)
+	if !ok do return
+	fx := ifx.fx
+	rebuild_timers(&fx.svc)
+	task := seed_task(t, fx, ifx.chain, "task_cis_waiting")
+	now := platform.clock_now(&fx.clock)
+	testing.expect(t, sqlite.exec(&fx.conn, fmt.tprintf("INSERT INTO task_leases(lease_id, task_id, chain_id, owner_user_id, attempt_no, holder_instance_id, kind, granted_at, expires_at, hard_deadline_at, delivery, phase) VALUES ('lease_cis_wait','%s','%s','u1',1,'inst_coord','work','%s','','','wake','waiting');", task.task_id, ifx.chain.chain_id, now)), "seed waiting claim")
+	lease, held, _ := iface.taskchain_get_lease_by_holder(&fx.repo, "inst_coord")
+	if !testing.expect(t, held && lease.phase == domain.LEASE_PHASE_WAITING, "waiting claim stored") do return
+	idle_tick(ifx, IDLE_Y + 1)
+	if !testing.expect_value(t, len(ifx.stops.ids), 1) do return
+	testing.expect_value(t, ifx.stops.reasons[0], COORDINATOR_IDLE_REASON)
+}
+
+// The stop re-checks the stamp and unread input right before stop_instance:
+// a user event that committed after the fire's reads cancels (stamp moved) or
+// defers (unread input) the stop.
+@(test)
+test_coordinator_idle_stop_rechecks_after_commit :: proc(t: ^testing.T) {
+	ifx, ok := idle_fixture(t, "cis_recheck")
+	defer idle_fixture_close(ifx)
+	if !ok do return
+	fx := ifx.fx
+	note_user_activity(&fx.svc, "inst_coord")
+	armed := idle_stamp(ifx)
+	fixture_advance(fx, 60)
+	note_user_activity(&fx.svc, "inst_coord") // the late user event
+	stop := Coordinator_Idle_Stop{owner = "u1", instance_id = "inst_coord", reason = COORDINATOR_IDLE_REASON, kind = .Coordinator_Idle, armed = armed}
+	coordinator_idle_stop_after_commit(&fx.svc, stop, idle_now(ifx))
+	testing.expect_value(t, len(ifx.stops.ids), 0)
+	// Same stamp, but an unread user message arrived: defer and retry.
+	stop.armed = idle_stamp(ifx)
+	_, msg_ok, _ := iface.content_save_message(&ifx.content, domain.Chat_Message{message_id = "msg_cis_late", conversation_id = "conv_coord", owner_user_id = "u1", direction = "user_to_agent", sender_agent_id = "agt_c", sender_agent_instance_id = "inst_coord", body = "wait", artifact_ids_json = "[]", message_type = "text", message_status = "complete", metadata_json = "{}", created_at = platform.clock_now(&fx.clock)})
+	testing.expect(t, msg_ok, "save late message")
+	before := timers_armed_count(&fx.svc)
+	coordinator_idle_stop_after_commit(&fx.svc, stop, idle_now(ifx))
+	testing.expect_value(t, len(ifx.stops.ids), 0)
+	testing.expect_value(t, timers_armed_count(&fx.svc), before + 1)
+	testing.expect(t, sqlite.exec(&fx.conn, "UPDATE chat_messages SET read_at = '2099-01-01T00:00:00Z' WHERE message_id = 'msg_cis_late';"), "mark read")
+	coordinator_idle_stop_after_commit(&fx.svc, stop, idle_now(ifx))
+	testing.expect_value(t, len(ifx.stops.ids), 1)
+}
