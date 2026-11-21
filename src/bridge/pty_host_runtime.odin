@@ -311,6 +311,60 @@ bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	return "", false
 }
 
+// ---- spawn gate ----------------------------------------------------------
+
+// Every request that starts a child on the daemon (Spawn, Restart, pipe Spawn)
+// passes this gate, so a stale daemon being retired (pty_host_stale.odin) can
+// never be handed a new child between its last idle check and its stop. The
+// gate closes only while no spawn is in flight and only for the swap; a spawn
+// arriving meanwhile waits for the replacement daemon (same socket path) instead
+// of failing.
+PTY_HOST_SPAWN_GATE_WAIT :: 15 * time.Second
+pty_host_spawn_gate_wait := PTY_HOST_SPAWN_GATE_WAIT // tests shorten it
+PTY_HOST_SPAWN_GATE_REFUSAL :: "the PTY host is being replaced; retry shortly"
+
+pty_host_spawn_gate_mutex:  sync.Mutex
+pty_host_spawn_gate_cond:   sync.Cond
+pty_host_spawn_gate_closed: bool
+pty_host_spawn_in_flight:   int
+
+pty_host_spawn_enter :: proc(wait: Maybe(time.Duration) = nil) -> bool {
+	wait := wait.? or_else pty_host_spawn_gate_wait
+	sync.mutex_lock(&pty_host_spawn_gate_mutex)
+	defer sync.mutex_unlock(&pty_host_spawn_gate_mutex)
+	deadline := time.time_add(time.now(), wait)
+	for pty_host_spawn_gate_closed {
+		remaining := time.diff(time.now(), deadline)
+		if remaining <= 0 do return false
+		_ = sync.cond_wait_with_timeout(&pty_host_spawn_gate_cond, &pty_host_spawn_gate_mutex, remaining)
+	}
+	pty_host_spawn_in_flight += 1
+	return true
+}
+
+pty_host_spawn_leave :: proc() {
+	sync.mutex_lock(&pty_host_spawn_gate_mutex)
+	pty_host_spawn_in_flight -= 1
+	sync.mutex_unlock(&pty_host_spawn_gate_mutex)
+}
+
+// pty_host_spawn_gate_close closes the gate; false (nothing changed) while a spawn
+// is in flight or another swap holds it.
+pty_host_spawn_gate_close :: proc() -> bool {
+	sync.mutex_lock(&pty_host_spawn_gate_mutex)
+	defer sync.mutex_unlock(&pty_host_spawn_gate_mutex)
+	if pty_host_spawn_gate_closed || pty_host_spawn_in_flight > 0 do return false
+	pty_host_spawn_gate_closed = true
+	return true
+}
+
+pty_host_spawn_gate_open :: proc() {
+	sync.mutex_lock(&pty_host_spawn_gate_mutex)
+	pty_host_spawn_gate_closed = false
+	sync.cond_broadcast(&pty_host_spawn_gate_cond)
+	sync.mutex_unlock(&pty_host_spawn_gate_mutex)
+}
+
 // bridge_pty_host_ping sends a Ping and expects a Pong. Used both for readiness
 // polling and liveness checks.
 bridge_pty_host_ping :: proc(socket: string) -> bool {
@@ -451,6 +505,8 @@ bridge_pty_host_spawn :: proc(socket: string, req: Pty_Host_Spawn_Request) -> (i
 // failed: the daemon's own Error message when it refused, or a fixed description when
 // it never answered. err_msg is "" on success; the caller owns it either way.
 bridge_pty_host_spawn_detailed :: proc(socket: string, req: Pty_Host_Spawn_Request) -> (pid: i32, ok: bool, err_msg: string) {
+	if !pty_host_spawn_enter() do return 0, false, strings.clone(PTY_HOST_SPAWN_GATE_REFUSAL)
+	defer pty_host_spawn_leave()
 	frame := pty_host_encode_spawn(req)
 	defer delete(frame)
 	for attempt in 1..=PTY_HOST_SPAWN_MAX_ATTEMPTS {
@@ -471,6 +527,11 @@ bridge_pty_host_spawn_detailed :: proc(socket: string, req: Pty_Host_Spawn_Reque
 // bridge_pty_host_restart re-spawns an instance from its remembered spec. Maps
 // the bridge's relaunch/wake of an already-registered instance.
 bridge_pty_host_restart :: proc(socket, instance: string) -> (i32, bool) {
+	if !pty_host_spawn_enter() {
+		fmt.eprintln("bridge pty-host restart refused:", PTY_HOST_SPAWN_GATE_REFUSAL)
+		return 0, false
+	}
+	defer pty_host_spawn_leave()
 	frame := pty_host_encode_restart(instance)
 	defer delete(frame)
 	reply, ok := pty_host_request(socket, frame)

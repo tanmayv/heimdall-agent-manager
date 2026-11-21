@@ -244,6 +244,11 @@ pty_host_probe_pipes :: proc(socket_path: string, request: Pty_Host_Request_Proc
 }
 
 pty_host_spawn_pipe :: proc(socket_path: string, req: Pty_Host_Spawn_Request) -> (Pty_Host_Reply, bool) {
+    // The spawn gate (pty_host_runtime.odin): never hand a child to a daemon being retired.
+    if !pty_host_spawn_enter() {
+        return {kind = .Error, instance = strings.clone(req.instance), message = strings.clone(PTY_HOST_SPAWN_GATE_REFUSAL)}, true
+    }
+    defer pty_host_spawn_leave()
     if !pty_host_supports_pipes(socket_path) {
         return {kind = .Error, instance = strings.clone(req.instance), message = strings.clone("unsupported_runtime_transport")}, true
     }

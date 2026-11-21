@@ -49,8 +49,8 @@ Pty_Host_Stale_IO :: struct {
 	peer_pid:     proc(socket: string) -> (int, bool),
 	exe_path:     proc(pid: int) -> (string, bool),
 	expected_exe: proc() -> (string, bool),
-	agents:       proc(socket: string) -> (int, bool),
-	reserve:      proc() -> bool, // close launch admission for the swap
+	agents:       proc(socket: string) -> (int, bool), // RUNNING children (alive entries)
+	reserve:      proc() -> bool, // close the spawn gate for the swap
 	release:      proc(),
 	stop:         proc(socket: string) -> (bool, string),
 }
@@ -60,8 +60,8 @@ pty_host_stale_io := Pty_Host_Stale_IO{
 	exe_path     = pty_host_stale_exe_path,
 	expected_exe = pty_host_stale_expected_exe,
 	agents       = pty_host_stale_agent_count,
-	reserve      = pty_host_stale_reserve,
-	release      = pty_host_stale_release,
+	reserve      = pty_host_spawn_gate_close,
+	release      = pty_host_spawn_gate_open,
 	stop         = bridge_update_stop_pty_host,
 }
 
@@ -104,8 +104,8 @@ PTY_HOST_STALE_REASON_SYMS := [Pty_Host_Stale_Reason]Blog_Sym{
 // Only an ADOPTED daemon is ever retired: one this process started runs the
 // current binary by construction, and retiring it for a failed probe would only
 // loop. On .Replaced the caller starts the current daemon (ensure_daemon) and
-// re-probes; launch admission is held closed across the stop so no agent is
-// spawned on the daemon being retired.
+// re-probes; the spawn gate (pty_host_runtime.odin) is held closed across the stop
+// so no agent, shell or ACP child is spawned on the daemon being retired.
 bridge_pty_host_stale_reconcile :: proc(socket: string, probe: Pty_Host_Pipe_Probe, io := pty_host_stale_io) -> (action: Pty_Host_Stale_Action, reason: Pty_Host_Stale_Reason) {
 	pid, has_pid := io.peer_pid(socket)
 	if has_pid && bridge_pty_host_is_own_daemon(pid) {
@@ -134,9 +134,9 @@ bridge_pty_host_stale_reconcile :: proc(socket: string, probe: Pty_Host_Pipe_Pro
 		fmt.eprintfln("bridge pty-host: keeping the stale daemon while it hosts %d agents; it is replaced once they have exited", agents)
 		return keep(.Kept_Agents_Hosted, .agents_still_hosted, reason, agents), reason
 	}
-	if !io.reserve() do return keep(.Kept_Unverified, .launch_in_progress, reason, 0), reason
+	if !io.reserve() do return keep(.Kept_Unverified, .spawn_in_progress, reason, 0), reason
 	defer io.release()
-	// Admission is closed now: a launch that raced the first listing shows up here.
+	// The gate is closed now: a spawn that raced the first listing shows up here.
 	agents, listed = io.agents(socket)
 	if !listed do return keep(.Kept_Unverified, .list_failed, reason, 0), reason
 	if agents > 0 do return keep(.Kept_Agents_Hosted, .agents_still_hosted, reason, agents), reason
@@ -187,33 +187,21 @@ pty_host_stale_canonical :: proc(path: string) -> (string, bool) {
 	return bridge_os_realpath(path, context.temp_allocator)
 }
 
+// pty_host_stale_agent_count counts the RUNNING children (agents and shell runs)
+// on the daemon. List also returns exited tombstones (alive=false), which the
+// daemon keeps for up to an hour (tools/pty_host/src/daemon.rs TOMBSTONE_TTL) and
+// prunes only on the next spawn or exit; counting them would keep a drained stale
+// daemon forever. Dropping tombstones loses nothing: reconcile treats a
+// not-alive entry exactly like a missing one (agent_reconcile.odin).
 pty_host_stale_agent_count :: proc(socket: string) -> (int, bool) {
 	reply, ok := bridge_pty_host_list(socket)
 	if !ok do return 0, false
 	defer pty_host_reply_delete(reply)
-	return len(reply.agents), true
+	return pty_host_running_agent_count(reply.agents), true
 }
 
-// Launch admission (auto_update.odin) is closed for the few seconds the swap
-// takes. A reservation already held (an update in progress) is left alone: the
-// reconcile backs off and the update handles the daemon itself.
-PTY_HOST_STALE_RESERVE_MS :: i64(60_000)
-pty_host_stale_reserved_until: i64
-
-pty_host_stale_reserve :: proc() -> bool {
-	sync.mutex_lock(&bridge_auto_update_mutex)
-	defer sync.mutex_unlock(&bridge_auto_update_mutex)
-	now := bridge_runtime_now_ms()
-	if bridge_auto_update_launches > 0 || now < bridge_auto_update_reserved_until do return false
-	bridge_auto_update_reserved_until = now + PTY_HOST_STALE_RESERVE_MS
-	pty_host_stale_reserved_until = bridge_auto_update_reserved_until
-	return true
-}
-
-pty_host_stale_release :: proc() {
-	sync.mutex_lock(&bridge_auto_update_mutex)
-	defer sync.mutex_unlock(&bridge_auto_update_mutex)
-	// Only our own reservation: an update may have replaced it meanwhile.
-	if bridge_auto_update_reserved_until == pty_host_stale_reserved_until do bridge_auto_update_reserved_until = 0
-	pty_host_stale_reserved_until = 0
+pty_host_running_agent_count :: proc(agents: []Pty_Host_Agent_Info) -> int {
+	n := 0
+	for a in agents do if a.alive do n += 1
+	return n
 }

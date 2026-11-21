@@ -4,6 +4,8 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:thread"
+import "core:time"
 import bridgesvc "odin_test:lib/bridgesvc"
 
 // Scripted processes for the stale-daemon seam (pty_host_stale.odin).
@@ -19,6 +21,7 @@ stale_test_reserves: int
 stale_test_releases: int
 stale_test_lists: int
 stale_test_reserved: bool
+stale_test_tombstones: bool // agents(): count a List reply with two exited entries via the real counter
 
 STALE_TEST_EXPECTED :: "/opt/heimdall/bin/ham-pty-host"
 STALE_TEST_BACKUP :: "/opt/heimdall/bin.bak-1-2/ham-pty-host"
@@ -29,6 +32,11 @@ stale_test_io := Pty_Host_Stale_IO{
 	expected_exe = proc() -> (string, bool) { return STALE_TEST_EXPECTED, true },
 	agents       = proc(socket: string) -> (int, bool) {
 		stale_test_lists += 1
+		if stale_test_tombstones {
+			list := make([]Pty_Host_Agent_Info, 2 + stale_test_agents, context.temp_allocator)
+			for i in 2 ..< len(list) do list[i].alive = true
+			return pty_host_running_agent_count(list), stale_test_list_ok
+		}
 		if stale_test_reserved && stale_test_agents_after_reserve >= 0 do return stale_test_agents_after_reserve, stale_test_list_ok
 		return stale_test_agents, stale_test_list_ok
 	},
@@ -64,6 +72,7 @@ stale_test_begin :: proc(steps: []ACP_Probe_Test_Step) -> ACP_Probe_IO {
 	stale_test_list_ok, stale_test_reserve_ok, stale_test_stop_ok = true, true, true
 	stale_test_stops, stale_test_reserves, stale_test_releases, stale_test_lists = 0, 0, 0, 0
 	stale_test_reserved = false
+	stale_test_tombstones = false
 	sync.atomic_store(&pty_host_stale_pending, false)
 	return saved
 }
@@ -187,6 +196,24 @@ test_stale_reconcile_guards :: proc(t: ^testing.T) {
 	testing.expect(t, !sync.atomic_load(&pty_host_stale_pending), "healthy clears pending")
 }
 
+// Exited tombstones (alive=false) the daemon keeps for an hour are not running
+// agents: a daemon holding only tombstones is idle and is replaced.
+@(test)
+test_stale_daemon_with_only_tombstones_is_replaced :: proc(t: ^testing.T) {
+	agents := []Pty_Host_Agent_Info{{instance_id = "a", alive = false}, {instance_id = "b", alive = false, has_exit_code = true}}
+	testing.expect_value(t, pty_host_running_agent_count(agents), 0)
+	agents[1].alive = true
+	testing.expect_value(t, pty_host_running_agent_count(agents), 1)
+
+	saved := stale_test_begin([]ACP_Probe_Test_Step{.Silent, .Pipes})
+	defer stale_test_end(saved)
+	stale_test_tombstones = true
+	stale_test_agents = 0 // running children; the scripted List also carries two tombstones
+	outcome, _ := bridge_acp_runtime_probe(.Retry)
+	testing.expect_value(t, stale_test_stops, 1)
+	testing.expect_value(t, outcome, ACP_Probe_Outcome.Supported)
+}
+
 // The daemon this process started is never retired, even if its probe failed:
 // it runs the current binary, and retiring it would only loop.
 @(test)
@@ -241,35 +268,56 @@ test_stale_exe_path_reports_own_image :: proc(t: ^testing.T) {
 	}
 }
 
-// Stale retirement shares launch admission with auto-update without clobbering it.
+// The spawn gate: a swap is refused while a spawn is in flight; a spawn arriving
+// during a swap waits for the replacement (and gives up after its wait).
 @(test)
-test_stale_reserve_respects_update_admission :: proc(t: ^testing.T) {
+test_pty_host_spawn_gate :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
-	sync.mutex_lock(&auto_test_mutex)
-	defer sync.mutex_unlock(&auto_test_mutex)
-	defer {
-		sync.mutex_lock(&bridge_auto_update_mutex)
-		bridge_auto_update_reserved_until = 0
-		pty_host_stale_reserved_until = 0
-		sync.mutex_unlock(&bridge_auto_update_mutex)
-	}
+	defer pty_host_spawn_gate_open()
 
-	testing.expect(t, bridge_auto_update_launch_enter())
-	testing.expect(t, !pty_host_stale_reserve(), "a launch in preparation keeps the daemon")
-	bridge_auto_update_launch_leave()
+	testing.expect(t, pty_host_spawn_enter(0))
+	testing.expect(t, !pty_host_spawn_gate_close(), "a spawn in flight keeps the daemon")
+	pty_host_spawn_leave()
 
-	testing.expect(t, pty_host_stale_reserve())
-	testing.expect(t, !bridge_auto_update_launch_enter(), "no launch while the daemon is swapped")
-	pty_host_stale_release()
-	testing.expect(t, bridge_auto_update_launch_enter(), "admission reopened")
-	bridge_auto_update_launch_leave()
+	testing.expect(t, pty_host_spawn_gate_close())
+	testing.expect(t, !pty_host_spawn_gate_close(), "one swap at a time")
+	testing.expect(t, !pty_host_spawn_enter(20 * time.Millisecond), "no spawn while the daemon is swapped")
 
-	// An update's reservation is neither taken over nor released.
-	testing.expect(t, bridge_auto_update_reserve_forced())
-	testing.expect(t, !pty_host_stale_reserve(), "an update in progress owns the daemon")
-	pty_host_stale_release()
-	testing.expect(t, !bridge_auto_update_launch_enter(), "the update's reservation stands")
+	// A waiting spawn proceeds as soon as the swap ends.
+	entered: bool
+	th := thread.create_and_start_with_poly_data(&entered, proc(entered: ^bool) {
+		entered^ = pty_host_spawn_enter(5 * time.Second)
+		if entered^ do pty_host_spawn_leave()
+	})
+	time.sleep(50 * time.Millisecond)
+	pty_host_spawn_gate_open()
+	thread.join(th)
+	thread.destroy(th)
+	testing.expect(t, entered, "the waiting spawn went through after the gate reopened")
+}
+
+// The real spawn paths honour the gate: refused before any request is sent.
+@(test)
+test_pty_host_spawn_refused_while_gate_closed :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	saved_wait := pty_host_spawn_gate_wait
+	pty_host_spawn_gate_wait = 10 * time.Millisecond
+	defer pty_host_spawn_gate_wait = saved_wait
+	testing.expect(t, pty_host_spawn_gate_close())
+	defer pty_host_spawn_gate_open()
+
+	req := Pty_Host_Spawn_Request{instance = "gate-test"}
+	_, ok, msg := bridge_pty_host_spawn_detailed("/tmp/no-such-pty-host.sock", req)
+	defer delete(msg)
+	testing.expect(t, !ok, "shell/agent Spawn refused during the swap")
+	testing.expect_value(t, msg, PTY_HOST_SPAWN_GATE_REFUSAL)
+	_, restarted := bridge_pty_host_restart("/tmp/no-such-pty-host.sock", "gate-test")
+	testing.expect(t, !restarted, "Restart refused during the swap")
+	reply, received := pty_host_spawn_pipe("/tmp/no-such-pty-host.sock", req)
+	defer pty_host_reply_delete(reply)
+	testing.expect(t, received && reply.kind == .Error && reply.message == PTY_HOST_SPAWN_GATE_REFUSAL, "ACP pipe Spawn refused during the swap")
 }
 
 // ---- setup (update) path ------------------------------------------------
@@ -358,4 +406,58 @@ test_setup_finds_profile_pty_host_sockets :: proc(t: ^testing.T) {
 	missing := make([dynamic]string, context.temp_allocator)
 	bridge_profile_pty_sockets(bridgesvc.pjoin(root, "absent"), &missing)
 	testing.expect_value(t, len(missing), 0)
+}
+
+// Step level: the Binaries step stops the idle PTY host while bin/ still holds the
+// old binaries, i.e. BEFORE the bin/ -> bin.bak rename, and then swaps. This is
+// the step every update path reaches (ham-bridge update and --auto-worker run the
+// new bundle's setup; the hub-driven update hands off to `update --detach`).
+setup_step_test_bin_dir: string
+setup_step_test_stopped_before_swap: bool
+setup_step_test_stops: int
+
+@(test)
+test_setup_binaries_step_stops_idle_pty_host_before_rename :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	root := strings.concatenate({bridge_scratch_root(context.temp_allocator), "/setup-binaries-pty-host"}, context.temp_allocator)
+	_ = os.remove_all(root)
+	defer _ = os.remove_all(root)
+	l := bridgesvc.Layout{data_dir = root, bin_dir = bridgesvc.pjoin(root, "bin"), state_dir = bridgesvc.pjoin(root, "state")}
+	staging := bridgesvc.pjoin(root, ".staging")
+	for dir in ([]string{l.bin_dir, staging, bridgesvc.pjoin(root, "run")}) do _ = os.make_directory_all(dir)
+	_ = os.write_entire_file(bridgesvc.pjoin(l.bin_dir, "OLD"), []u8{})
+	_ = os.write_entire_file(bridgesvc.pjoin(staging, "NEW"), []u8{})
+	_ = os.write_entire_file(bridgesvc.pjoin(root, "run", "pty-host-brg_step.sock"), []u8{})
+
+	saved_io := bridge_setup_pty_host_io
+	defer bridge_setup_pty_host_io = saved_io
+	setup_step_test_bin_dir = l.bin_dir
+	setup_step_test_stopped_before_swap, setup_step_test_stops = false, 0
+	bridge_setup_pty_host_io = Bridge_Setup_Pty_Host_IO{
+		ping   = proc(socket: string) -> bool { return true },
+		agents = proc(socket: string) -> (int, bool) { return 0, true },
+		stop   = proc(socket: string) -> (bool, string) {
+			setup_step_test_stops += 1
+			setup_step_test_stopped_before_swap = os.exists(bridgesvc.pjoin(setup_step_test_bin_dir, "OLD"))
+			return true, ""
+		},
+	}
+
+	s := Bridge_Setup{host = bridge_service_host(), layout = l, staging = staging, copy_binaries = true, pid = 1, json_progress = true}
+	result := bridge_setup_run(&s, .Binaries)
+	testing.expect(t, result.ok, result.message)
+	testing.expect_value(t, setup_step_test_stops, 1)
+	testing.expect(t, setup_step_test_stopped_before_swap, "the daemon is stopped before bin/ is renamed")
+	testing.expect(t, os.exists(bridgesvc.pjoin(l.bin_dir, "NEW")), "then the new binaries are installed")
+
+	// A daemon with running agents is kept and the swap still happens.
+	_ = os.remove_all(l.bin_dir); _ = os.remove_all(bridgesvc.pjoin(root, "bin.bak"))
+	_ = os.make_directory_all(l.bin_dir); _ = os.make_directory_all(staging)
+	_ = os.write_entire_file(bridgesvc.pjoin(staging, "NEW"), []u8{})
+	bridge_setup_pty_host_io.agents = proc(socket: string) -> (int, bool) { return 2, true }
+	setup_step_test_stops = 0
+	result = bridge_setup_run(&s, .Binaries)
+	testing.expect(t, result.ok, result.message)
+	testing.expect_value(t, setup_step_test_stops, 0)
 }

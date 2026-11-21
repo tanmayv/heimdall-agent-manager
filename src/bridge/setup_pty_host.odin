@@ -19,7 +19,7 @@ import bridgesvc "odin_test:lib/bridgesvc"
 Bridge_Setup_Pty_Host_Outcome :: enum {
 	None_Running, // nothing answers on the profile's socket (or it cannot be located)
 	Stopped,      // idle daemon stopped
-	Kept_Agents,  // agents still run on it
+	Kept_Agents,  // agents or shell runs are still running on it (tombstones do not count)
 	Kept_Unknown, // it answers but its agents could not be listed
 	Stop_Failed,
 }
@@ -30,6 +30,9 @@ Bridge_Setup_Pty_Host_IO :: struct {
 	agents: proc(socket: string) -> (int, bool),
 	stop:   proc(socket: string) -> (bool, string),
 }
+
+// What the Binaries step uses (tests replace it to observe the step's ordering).
+bridge_setup_pty_host_io: Bridge_Setup_Pty_Host_IO
 
 // bridge_setup_stop_idle_pty_host stops the daemon on socket when it hosts no
 // agents. message (temp-allocated) explains the outcome for setup's progress.
@@ -43,7 +46,7 @@ bridge_setup_stop_idle_pty_host :: proc(socket: string, io: Bridge_Setup_Pty_Hos
 		return .Kept_Unknown, "PTY host kept: its agents could not be listed; the updated bridge replaces it once it is idle"
 	}
 	if agents > 0 {
-		return .Kept_Agents, fmt.tprintf("PTY host kept: %d agents still run on it; the updated bridge replaces it once they have exited", agents)
+		return .Kept_Agents, fmt.tprintf("PTY host kept: %d agents or shell runs are still running on it; the updated bridge replaces it once they have exited", agents)
 	}
 	if ok, detail := stop(socket); !ok {
 		return .Stop_Failed, fmt.tprintf("PTY host not stopped (%s); the updated bridge replaces it once it is idle", detail)
@@ -60,7 +63,7 @@ bridge_setup_quiesce_pty_host :: proc(s: ^Bridge_Setup) {
 	bridge_profile_pty_sockets(s.layout.data_dir, &sockets)
 	for socket in sockets {
 		defer delete(socket)
-		outcome, message := bridge_setup_stop_idle_pty_host(socket)
+		outcome, message := bridge_setup_stop_idle_pty_host(socket, bridge_setup_pty_host_io)
 		if outcome == .None_Running do continue
 		// "progress" is the protocol's in-step information line
 		// (docs/bridge-setup-progress.md); a kept daemon is not a step failure.

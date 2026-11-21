@@ -193,7 +193,7 @@ Bridge_Log_Sym :: enum u8 {
 	provider_scan, daemon_restart, retry,
 	daemon_unavailable, no_reply, bad_reply, lacks_piped_spawn,
 	// stale PTY host: stage = decision, reason = stale_exe_path or a probe reason above
-	retired, agents_still_hosted, launch_in_progress, list_failed, stop_failed, stale_exe_path,
+	retired, agents_still_hosted, spawn_in_progress, list_failed, stop_failed, stale_exe_path,
 }
 
 BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
@@ -267,7 +267,7 @@ BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
 	.lacks_piped_spawn = "lacks_piped_spawn",
 	.retired          = "retired",
 	.agents_still_hosted = "agents_still_hosted",
-	.launch_in_progress = "launch_in_progress",
+	.spawn_in_progress = "spawn_in_progress",
 	.list_failed      = "list_failed",
 	.stop_failed      = "stop_failed",
 	.stale_exe_path   = "stale_exe_path",
