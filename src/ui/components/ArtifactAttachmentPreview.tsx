@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
-import { VaultText } from './vault/VaultText';
+import { VaultText, useDecryptedText } from './vault/VaultText';
 import { Icon } from '@ui';
+import { selectIsVaultUnlocked } from '../store/vaultSlice';
+import { containsVaultArmored, getActiveVaultKey } from '../utils/vaultContent';
+import { openArtifactContentBlob, safeArtifactAltText, type ArtifactLockReason } from '../utils/artifactContentVault';
 
 export type ArtifactPreviewMeta = {
   artifact_id?: string;
@@ -30,6 +33,9 @@ type ArtifactPreviewState = {
   loadingMeta: boolean;
   loadingContent: boolean;
   error: string;
+  /** The content is vault-sealed and this device cannot open it now; `contentUrl` stays empty. */
+  locked: boolean;
+  lockReason: ArtifactLockReason;
 };
 
 function artifactIdOf(row: ArtifactPreviewMeta | null | undefined, fallback = ''): string {
@@ -48,6 +54,8 @@ function artifactExt(row: ArtifactPreviewMeta | null | undefined): string {
   const explicit = String(row?.ext || '').toLowerCase().replace(/^\./, '');
   if (explicit) return explicit;
   const name = String(row?.name || '').toLowerCase();
+  // A sealed name's "extension" is base64 ciphertext, not a file type.
+  if (containsVaultArmored(name)) return '';
   const dot = name.lastIndexOf('.');
   return dot >= 0 ? name.slice(dot + 1) : '';
 }
@@ -85,13 +93,26 @@ async function fetchArtifactJson(url: string, token: string): Promise<any> {
   return body?.artifact || body?.data || body;
 }
 
-async function fetchArtifactBlobUrl(url: string, token: string): Promise<string> {
+async function fetchArtifactBlob(url: string, token: string): Promise<Blob> {
   const response = await fetch(url, {
     credentials: 'include',
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   });
   if (!response.ok) throw new Error(`Artifact image failed (${response.status})`);
-  return URL.createObjectURL(await response.blob());
+  return response.blob();
+}
+
+/** Placeholder for an image preview that has no displayable URL yet. Never ciphertext. */
+export function artifactPreviewStatusText(preview: Pick<ArtifactPreviewState, 'locked' | 'lockReason' | 'loadingContent' | 'loadingMeta'>): string {
+  if (preview.locked) return preview.lockReason === 'other_vault' ? 'Encrypted by a previous vault' : 'Encrypted — unlock vault to view';
+  if (preview.loadingContent || preview.loadingMeta) return 'Loading image…';
+  return 'Image unavailable';
+}
+
+/** Accessible name for an artifact image: the decrypted name, else `fallback` (never ciphertext). */
+export function useArtifactAltText(name: string | null | undefined, fallback: string): string {
+  const decrypted = useDecryptedText(name || '');
+  return safeArtifactAltText(decrypted.text, fallback);
 }
 
 export function useArtifactPreview({ artifactId = '', artifact = null, session: sessionProp }: { artifactId?: string; artifact?: ArtifactPreviewMeta | null; session?: ArtifactPreviewSession }): ArtifactPreviewState {
@@ -105,6 +126,8 @@ export function useArtifactPreview({ artifactId = '', artifact = null, session: 
   const [contentUrl, setContentUrl] = useState('');
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState('');
+  const [lockReason, setLockReason] = useState<ArtifactLockReason>('');
+  const isUnlocked = useSelector(selectIsVaultUnlocked);
 
   useEffect(() => {
     setFetchedMeta(null);
@@ -122,17 +145,26 @@ export function useArtifactPreview({ artifactId = '', artifact = null, session: 
   const meta = propMeta || fetchedMeta;
   const image = isArtifactImage(meta);
 
+  // `isUnlocked` re-runs this so a sealed image appears on unlock and is dropped on lock.
   useEffect(() => {
     setContentUrl('');
+    setLockReason('');
     if (!id || !image) return;
     let cancelled = false;
     let nextUrl = '';
     setLoadingContent(true);
-    fetchArtifactBlobUrl(joinArtifactUrl(session.daemonUrl, `/api/v1/artifacts/${encodeURIComponent(id)}/content`), token)
-      .then((url) => {
-        nextUrl = url;
-        if (cancelled) URL.revokeObjectURL(nextUrl);
-        else setContentUrl(nextUrl);
+    fetchArtifactBlob(joinArtifactUrl(session.daemonUrl, `/api/v1/artifacts/${encodeURIComponent(id)}/content`), token)
+      // The active CryptoKey is a module-level ref, so it is read when the bytes arrive.
+      .then((blob) => openArtifactContentBlob(blob, isUnlocked ? getActiveVaultKey() : null))
+      .then((opened) => {
+        if (cancelled) return;
+        // Never make an object URL from ciphertext: the <img> would fail and paint its alt.
+        if (opened.locked) {
+          setLockReason(opened.lockReason || 'locked');
+          return;
+        }
+        nextUrl = URL.createObjectURL(opened.blob);
+        setContentUrl(nextUrl);
       })
       .catch((err) => { if (!cancelled) setError(String(err?.message || err || 'Artifact image failed')); })
       .finally(() => { if (!cancelled) setLoadingContent(false); });
@@ -140,7 +172,7 @@ export function useArtifactPreview({ artifactId = '', artifact = null, session: 
       cancelled = true;
       if (nextUrl) URL.revokeObjectURL(nextUrl);
     };
-  }, [id, image, session.daemonUrl, token]);
+  }, [id, image, session.daemonUrl, token, isUnlocked]);
 
   return useMemo(() => ({
     id,
@@ -150,7 +182,9 @@ export function useArtifactPreview({ artifactId = '', artifact = null, session: 
     loadingMeta,
     loadingContent,
     error,
-  }), [id, meta, image, contentUrl, loadingMeta, loadingContent, error]);
+    locked: lockReason !== '',
+    lockReason,
+  }), [id, meta, image, contentUrl, loadingMeta, loadingContent, error, lockReason]);
 }
 
 export function ArtifactImagePreview({
@@ -171,9 +205,10 @@ export function ArtifactImagePreview({
   placeholderClassName?: string;
 }) {
   const preview = useArtifactPreview({ artifactId, artifact, session });
+  const altText = useArtifactAltText(alt || preview.meta?.name, 'Artifact image');
   if (!preview.isImage) return <span className={placeholderClassName}>No preview</span>;
-  if (!preview.contentUrl) return <span className={placeholderClassName}>{preview.loadingContent ? 'Loading image…' : 'Image unavailable'}</span>;
-  return <img data-debug-id={debugId} src={preview.contentUrl} alt={alt || artifactName(preview.meta, preview.id)} loading="lazy" className={className} />;
+  if (!preview.contentUrl) return <span className={placeholderClassName}>{artifactPreviewStatusText(preview)}</span>;
+  return <img data-debug-id={debugId} src={preview.contentUrl} alt={altText} loading="lazy" className={className} />;
 }
 
 export function ArtifactAttachmentPreview({
@@ -192,6 +227,7 @@ export function ArtifactAttachmentPreview({
   const preview = useArtifactPreview({ artifactId, artifact, session });
   const id = preview.id || artifactId;
   const label = artifactName(preview.meta, id);
+  const altText = useArtifactAltText(preview.meta?.name, 'Artifact image');
   const target = href || `#/library/artifacts/${encodeURIComponent(id)}`;
 
   if (preview.isImage) {
@@ -199,9 +235,9 @@ export function ArtifactAttachmentPreview({
       <a data-debug-id={`${debugId}-link`} href={target} className="group block min-w-0 max-w-[min(320px,100%)] overflow-hidden rounded-xl border border-subtle bg-surface text-left hover:border-accent/40 hover:bg-surface-raised">
         <div className="grid max-h-56 min-h-[120px] place-items-center overflow-hidden bg-surface-raised">
           {preview.contentUrl ? (
-            <img data-debug-id={`${debugId}-image`} src={preview.contentUrl} alt={label} loading="lazy" className="max-h-56 w-full object-contain" />
+            <img data-debug-id={`${debugId}-image`} src={preview.contentUrl} alt={altText} loading="lazy" className="max-h-56 w-full object-contain" />
           ) : (
-            <div className="px-3 py-8 text-xs text-faint">{preview.loadingContent || preview.loadingMeta ? 'Loading image…' : 'Image unavailable'}</div>
+            <div className="px-3 py-8 text-xs text-faint">{artifactPreviewStatusText(preview)}</div>
           )}
         </div>
         <div className="flex items-center gap-2 px-2.5 py-1.5 text-caption text-muted">
