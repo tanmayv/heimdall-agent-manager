@@ -77,3 +77,79 @@ acp_copilot_platforms_pin_only_linux_amd64_and_darwin_arm64 :: proc(t: ^testing.
         testing.expect(t, !supported)
     }
 }
+
+@(test)
+acp_kiro_system_descriptor_is_detect_only :: proc(t: ^testing.T) {
+    d, known := acp_provider_descriptor("kiro")
+    testing.expect(t, known && d.launch == .System && acp_descriptor_shape_valid(d))
+    testing.expect(t, d.pkg.integrity == "" && d.node_min_major == 0 && len(d.platforms) == 0)
+    // v2-only flags would silently switch kiro-cli to its v2 engine.
+    testing.expect_value(t, len(d.args), 3)
+    for arg in d.args do testing.expect(t, arg != "--model" && arg != "--agent" && arg != "-a" && arg != "--trust-all-tools")
+    testing.expect(t, d.permission_policy == .Once_Only && d.model_category == "model")
+    testing.expect(t, acp_descriptor_system_os_supported(d, "linux") && acp_descriptor_system_os_supported(d, "darwin"))
+    testing.expect(t, !acp_descriptor_system_os_supported(d, "windows"))
+
+    // A system shape cannot carry download pins, and adapters cannot borrow it.
+    invalid := d; invalid.pkg.integrity = "sha512-x"
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    invalid = d; invalid.node_min_major = 22
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    invalid = d; invalid.system_os = nil
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    invalid = d; invalid.system_os = {"linux", "linux"}
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    invalid = d; invalid.cli_version_prefix = ""
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    invalid = d; invalid.pkg.name = "other"
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    invalid = d; invalid.cli_version = "3.5.0"
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    claude, _ := acp_provider_descriptor("claude")
+    invalid = claude; invalid.cli_version_prefix = "claude "
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+}
+
+@(test)
+acp_cli_version_minimum_and_pins :: proc(t: ^testing.T) {
+    kiro, _ := acp_provider_descriptor("kiro")
+    for accepted in ([]string{"3.5.0", "3.5.1", "3.10.0", "4.0.0", "10.0.0"}) {
+        testing.expectf(t, acp_descriptor_cli_version_accepted(kiro, accepted), "%s accepted", accepted)
+    }
+    for rejected in ([]string{"3.4.9", "2.21.4", "3.5", "v3.5.0", "3.5.0-beta", "03.5.0", ""}) {
+        testing.expectf(t, !acp_descriptor_cli_version_accepted(kiro, rejected), "%s rejected", rejected)
+    }
+    copilot, _ := acp_provider_descriptor("copilot")
+    testing.expect(t, acp_descriptor_cli_version_accepted(copilot, "1.0.114"))
+    testing.expect(t, !acp_descriptor_cli_version_accepted(copilot, "1.0.115"))
+    claude, _ := acp_provider_descriptor("claude")
+    testing.expect(t, acp_descriptor_cli_version_accepted(claude, "2.9.1"))
+    testing.expect_value(t, acp_semver_compare("3.10.0", "3.9.9"), 1)
+    testing.expect_value(t, acp_semver_compare("3.5.0", "3.5.0"), 0)
+    testing.expect_value(t, acp_semver_compare("2.21.4", "3.5.0"), -1)
+}
+
+@(test)
+acp_kiro_recipe_binds_only_kiro :: proc(t: ^testing.T) {
+    raw :: `{"command":"kiro-cli","args":["acp","--agent-engine","v3"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.5.0"}`
+    testing.expect(t, acp_provider_recipe_valid("kiro", raw))
+    testing.expect(t, !acp_provider_recipe_valid("claude", raw))
+    testing.expect(t, !acp_provider_recipe_valid("copilot", raw))
+    testing.expect(t, !acp_recipe_valid(`{"command":"kiro-cli","args":["acp","--agent-engine","v2"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.5.0"}`))
+    testing.expect(t, !acp_recipe_valid(`{"command":"kiro-cli","args":["acp","--agent-engine","v3","--trust-all-tools"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.5.0"}`))
+    testing.expect(t, !acp_recipe_valid(`{"command":"kiro-cli","args":["acp","--agent-engine","v3"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.4.0"}`))
+}
+
+@(test)
+acp_bootstrap_link_and_default_model_are_system_only :: proc(t: ^testing.T) {
+    kiro, _ := acp_provider_descriptor("kiro")
+    testing.expect(t, kiro.bootstrap_resource_link && kiro.agent_default_model == "default")
+    for provider in ([]string{"claude", "copilot"}) {
+        d, _ := acp_provider_descriptor(provider)
+        testing.expect(t, !d.bootstrap_resource_link && d.agent_default_model == "")
+        d.bootstrap_resource_link = true
+        testing.expect(t, !acp_descriptor_shape_valid(d))
+        d.bootstrap_resource_link = false; d.agent_default_model = "default"
+        testing.expect(t, !acp_descriptor_shape_valid(d))
+    }
+}

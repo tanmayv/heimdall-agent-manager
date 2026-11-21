@@ -32,9 +32,8 @@ acp_provider_binding_valid :: proc(b: ACP_Runtime_Binding) -> bool {
     if !known || b.descriptor_id != d.id || b.descriptor_revision != d.revision ||
        b.package_name != d.pkg.name || b.package_version != d.pkg.version || b.package_integrity != d.pkg.integrity ||
        b.platform != fmt.tprintf("%v/%v", ODIN_OS, ODIN_ARCH) || !profile_id_valid(b.profile) ||
-       !bridge_bootstrap_is_safe_bootstrap_name(b.bootstrap_filename) || b.bootstrap_filename == "" ||
-       !contracts.exact_adapter_version(b.cli_version) { return false }
-    return d.cli_version == "" || d.cli_version == b.cli_version
+       !bridge_bootstrap_is_safe_bootstrap_name(b.bootstrap_filename) || b.bootstrap_filename == "" { return false }
+    return contracts.acp_descriptor_cli_version_accepted(d, b.cli_version)
 }
 
 acp_provider_binding_equal :: proc(a, b: ACP_Runtime_Binding) -> bool {
@@ -144,12 +143,12 @@ acp_runtime_upgrade_legacy_state :: proc(s: ^ACP_State, intent: ACP_Hub_Intent, 
     return true, ""
 }
 
-// Shared by installation probes and managed spawns. Native argv is the
-// resolved CLI plus fixed ACP flags; adapter argv is the managed package bin.
+// Shared by installation probes and managed spawns. Native and system argv is
+// the resolved CLI plus fixed ACP flags; adapter argv is the managed package bin.
 acp_provider_launch_argv :: proc(d: contracts.ACP_Provider_Descriptor, root, resolved_cli: string) -> ([]string, bool) {
     argv := make([dynamic]string, allocator = context.temp_allocator)
     switch d.launch {
-    case .Native:
+    case .Native, .System:
         if resolved_cli == "" do return nil, false
         append(&argv, resolved_cli)
     case .Adapter:

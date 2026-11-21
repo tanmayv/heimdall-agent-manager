@@ -10,6 +10,7 @@ import { providerSetupApi, type BridgeProviderStatus, type ProviderSetupResponse
 import ProviderRuntimeControl from './ProviderRuntimeControl';
 import {
   configDirectoryMode,
+  configDirectoryProviders,
   generateConfigDirectory,
   type ConfigDirectoryMode,
   decodeProfileArgs,
@@ -115,7 +116,7 @@ export function ProfileRuntimeEditor({
   const randomDirectory = useRef(directoryMode === 'random' ? profile.config.config_dir || '' : '');
   const customDirectory = useRef(directoryMode === 'custom' ? profile.config.config_dir || '' : '');
   const directoryError =
-    profile.provider === 'claude' &&
+    configDirectoryProviders.has(profile.provider) &&
     directoryMode === 'custom' &&
     !profile.config.config_dir?.trim()
       ? 'Enter a custom config directory.'
@@ -126,7 +127,7 @@ export function ProfileRuntimeEditor({
   const changeDirectoryMode = (mode: ConfigDirectoryMode) => {
     if (directoryMode === 'custom') customDirectory.current = profile.config.config_dir || '';
     if (mode === 'random' && !randomDirectory.current)
-      randomDirectory.current = generateConfigDirectory();
+      randomDirectory.current = generateConfigDirectory(profile.provider);
     setDirectoryMode(mode);
     config(
       'config_dir',
@@ -152,7 +153,7 @@ export function ProfileRuntimeEditor({
       <section className="space-y-3">
         <Text as="h2" role="heading">Runtime</Text>
         {row('binary_path', 'Binary', 'Optional executable name or absolute path on this bridge.')}
-        {profile.provider === 'claude' ? (
+        {configDirectoryProviders.has(profile.provider) ? (
           <div className="space-y-2">
             <label className="block space-y-1">
               <span className="text-sm font-medium">Config directory</span>
@@ -194,10 +195,12 @@ export function ProfileRuntimeEditor({
             ) : null}
             <p className="text-xs text-muted">
               {directoryMode === 'inherit'
-                ? 'Use the bridge’s default Claude configuration.'
+                ? `Use the bridge’s default ${profile.provider === 'kiro' ? 'Kiro login and settings' : 'Claude configuration'}.`
                 : directoryMode === 'random'
                   ? 'A new private directory is created on save. Sign in once for this profile. The directory stays the same when reopened.'
-                  : 'Sets CLAUDE_CONFIG_DIR. Use an absolute path or ~ for the bridge home.'}
+                  : profile.provider === 'kiro'
+                    ? 'Sets KIRO_HOME, and XDG_DATA_HOME to <directory>/data for the Kiro login. Use an absolute path or ~ for the bridge home.'
+                    : 'Sets CLAUDE_CONFIG_DIR. Use an absolute path or ~ for the bridge home.'}
             </p>
             {directoryError ? (
               <p role="alert" className="text-xs text-danger">

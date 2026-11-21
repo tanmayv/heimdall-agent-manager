@@ -3,7 +3,8 @@ export type RuntimeTransport = 'pty' | 'acp';
 export interface AcpAdapterStatus {
   provider?: string;
   profile?: string;
-  runtime_kind?: 'adapter' | 'native';
+  /** 'system' runtimes are user-installed CLIs the bridge only detects and checks. */
+  runtime_kind?: 'adapter' | 'native' | 'system';
   installed: boolean;
   version: string | null;
   node_version: string | null;
@@ -49,7 +50,7 @@ export function normalizeProviderRuntime(raw: any): ProviderRuntimeFields {
       error: textOrNull(adapter.error), checked_at: textOrNull(adapter.checked_at),
       ...(typeof adapter.provider === 'string' ? { provider: adapter.provider } : {}),
       ...(typeof adapter.profile === 'string' ? { profile: adapter.profile } : {}),
-      ...(adapter.runtime_kind === 'adapter' || adapter.runtime_kind === 'native' ? { runtime_kind: adapter.runtime_kind } : {}),
+      ...(adapter.runtime_kind === 'adapter' || adapter.runtime_kind === 'native' || adapter.runtime_kind === 'system' ? { runtime_kind: adapter.runtime_kind } : {}),
     } : null,
   };
 }
@@ -57,9 +58,19 @@ export const acpInstallTerminal = (status: string) => ['succeeded', 'failed', 'c
 export function latestAcpInstall(commands: ProviderSetupCommand[] | undefined, provider: string) {
   return [...(commands || [])].reverse().find((c): c is AcpInstallCommand => c.kind === 'install_acp_adapter' && c.provider === provider);
 }
+export const acpSystemRuntime = (adapter: AcpAdapterStatus | null) => adapter?.runtime_kind === 'system';
 export function acpDisabledReason(supported: boolean | undefined, adapter: AcpAdapterStatus | null): string {
   const runtime = adapter?.runtime_kind === 'native' ? 'runtime' : 'adapter';
   if (!supported) return 'Update this bridge and its PTY host to enable ACP runtime support, then scan providers.';
+  if (acpSystemRuntime(adapter)) {
+    // Heimdall never installs a system CLI: it is detected on the bridge host.
+    if (adapter?.state === 'installing') return 'Wait for the CLI check to finish.';
+    if (adapter?.error === 'acp_adapter_unsupported_platform') return 'This ACP runtime is not supported on this platform.';
+    if (adapter?.state === 'missing') return adapter.error || 'Install the CLI on the bridge host (or set the profile binary), then Re-check.';
+    if (adapter?.state === 'outdated') return adapter.error || 'Upgrade the CLI on the bridge host, then Re-check.';
+    if (adapter?.state === 'error') return adapter.error || 'The CLI check failed. Re-check after fixing it on the bridge host.';
+    return '';
+  }
   if (adapter?.state === 'missing_node') return 'Install Node 22 or newer on the bridge host, then scan providers.';
   if (adapter?.state === 'installing') return `Wait for ${runtime} installation to finish.`;
   if (adapter?.error === 'acp_adapter_unsupported_platform') return 'This ACP runtime is not supported on this platform.';
@@ -68,6 +79,7 @@ export function acpDisabledReason(supported: boolean | undefined, adapter: AcpAd
 }
 export function acpAdapterSummary(adapter: AcpAdapterStatus | null): string {
   const state = adapter?.state.replaceAll('_', ' ') || 'not checked';
+  if (acpSystemRuntime(adapter)) return `ACP system CLI: ${state} · Version: ${adapter?.version || 'unknown'}`;
   const runtime = adapter?.runtime_kind === 'native' ? 'native runtime' : 'adapter';
   return `ACP ${runtime}: ${state} · Version: ${adapter?.version || 'unknown'} · Node: ${adapter?.node_version || 'unknown'}`;
 }

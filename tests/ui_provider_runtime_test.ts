@@ -329,3 +329,28 @@ test('Runtime control displays Claude binary failures from adapter status', asyn
     }
   } finally { await h.cleanup(); }
 });
+
+test('detect-only system CLI status uses Re-check, never Node or install wording', async () => {
+  const kiroAdapter = { installed: false, version: '3.4.0', node_version: null, state: 'outdated', provider: 'kiro', runtime_kind: 'system',
+    error: 'acp_kiro_outdated: The selected Kiro executable is older than the minimum supported version 3.5.0; upgrade it on the bridge host', checked_at: '2026-11-21T00:00:00Z' };
+  const system = normalizeProviderRuntime({ transports: ['acp'], default_transport: 'acp', acp_adapter: kiroAdapter });
+  assert.deepEqual(system.transports, ['acp']);
+  assert.equal(system.effective_transport, 'acp');
+  assert.equal(system.acp_adapter?.runtime_kind, 'system');
+  assert.equal(acpAdapterSummary(system.acp_adapter), 'ACP system CLI: outdated · Version: 3.4.0');
+  assert.match(acpDisabledReason(true, system.acp_adapter), /older than the minimum supported version 3\.5\.0/);
+  assert.match(acpDisabledReason(true, { ...system.acp_adapter!, state: 'missing', error: null }), /Install the CLI on the bridge host/);
+  assert.equal(acpDisabledReason(true, { ...system.acp_adapter!, state: 'ready', error: null }), '');
+  assert.doesNotMatch(acpDisabledReason(true, { ...system.acp_adapter!, state: 'missing_node', error: null }), /Node/);
+  const h = await browser();
+  try {
+    const status = row({ provider: 'kiro', profile_id: 'kiro', display_name: 'Kiro', ...system });
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
+    const button = h.doc.querySelector('[data-debug-id="providers-acp-install-kiro"]');
+    assert.equal(button?.textContent, 'Re-check');
+    assert.match(h.doc.querySelector('select')!.title, /supports only ACP/);
+    const text = h.doc.body.textContent || '';
+    assert.doesNotMatch(text, /Node|Install adapter|Install runtime/);
+    assert.match(text, /ACP system CLI: outdated/);
+  } finally { await h.cleanup(); }
+});

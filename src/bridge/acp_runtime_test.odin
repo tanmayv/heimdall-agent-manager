@@ -396,3 +396,44 @@ t4_acp_recovered_first_starter_requires_bootstrap_resource :: proc(t: ^testing.T
         f.r.d.stopped = true; acp_runtime_destroy(f.r); acp_test_delete(&f.f)
     }
 }
+
+KIRO_TEST_SESSION :: `{"sessionId":"kiro-session","configOptions":[{"id":"model","category":"model","type":"select","currentValue":"auto","options":[{"value":"auto","name":"Auto"}]}]}`
+
+// Kiro does not advertise embeddedContext signed out, so its descriptor opts in
+// to the baseline resource_link bootstrap; its default model sends no
+// set_config_option. Claude/Copilot keep failing closed (tests above).
+@(test)
+acp_kiro_bootstrap_resource_link_and_agent_default_model :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    previous_records := bridge_local_token_records
+    bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record, allocator = runtime.heap_allocator())
+    defer { delete(bridge_local_token_records); bridge_local_token_records = previous_records }
+    for model in ([]string{"default", "unlisted-model"}) {
+        cwd := fmt.tprintf("%s/.cache/heimdall-tests/kiro-bootstrap-%d", os.get_env("HOME", context.temp_allocator), time.tick_now()._nsec)
+        bridge_make_directory_all(cwd); defer os.remove_all(cwd)
+        _ = os.write_entire_file(strings.concatenate({cwd, "/AGENTS.md"}, context.temp_allocator), string("unique kiro bootstrap marker"))
+        instance := "inst_kiro_default_model" if model == "default" else "inst_kiro_unlisted_model"
+        f: T4_Runtime_Test; t4_runtime_open(&f, instance, cwd, "kiro")
+        acp_runtime_replace(&f.r.model, model)
+        acp_runtime_replace(&f.r.binding.cli_version, "3.5.0"); acp_runtime_replace(&f.r.binding.bootstrap_filename, "AGENTS.md")
+        testing.expect(t, t4_runtime_call(&f, "begin"))
+        t4_runtime_reply(t, &f, 0, `{"protocolVersion":1,"agentCapabilities":{"loadSession":false,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":false}}}`, 1)
+        t4_runtime_reply(t, &f, 1, KIRO_TEST_SESSION, 2)
+        if model == "default" {
+            if acp_test_wait(t, &f.f, .Writes, 3) {
+                sync.mutex_lock(&f.f.mu)
+                prompt := f.f.writes[2].bytes
+                testing.expect(t, strings.contains(prompt, `"session/prompt"`) && strings.contains(prompt, "EXACT starter text"))
+                testing.expect(t, strings.contains(prompt, `"type":"resource_link"`) && strings.contains(prompt, `"name":"AGENTS.md"`))
+                testing.expect(t, strings.contains(prompt, strings.concatenate({"file://", cwd, "/AGENTS.md"}, context.temp_allocator)))
+                testing.expect(t, !strings.contains(prompt, "unique kiro bootstrap marker") && !strings.contains(prompt, `"type":"resource"`))
+                for write in f.f.writes do testing.expect(t, !strings.contains(write.bytes, "set_config_option"))
+                sync.mutex_unlock(&f.f.mu)
+            }
+            testing.expect(t, f.r.d.ready && f.r.d.error == "")
+        } else {
+            testing.expect_value(t, f.r.d.error, "acp_model_unavailable")
+        }
+        f.r.d.stopped = true; acp_runtime_destroy(f.r); acp_test_delete(&f.f); bridge_runtime_set_status(instance, "stopped", "idle")
+    }
+}

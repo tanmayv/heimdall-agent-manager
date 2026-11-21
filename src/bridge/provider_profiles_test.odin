@@ -123,6 +123,9 @@ test_profile_driver_validation :: proc(t: ^testing.T) {
 	p.config.config_dir = "/abs/cfg"
 	p.provider = "copilot"
 	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Dir_Unsupported)
+	p.provider = "kiro"
+	p.config.launch_args = ""
+	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
 	p = Provider_Profile {
 		provider = "claude",
 		config = Provider_Profile_Config{home_path = "/abs/codex"},

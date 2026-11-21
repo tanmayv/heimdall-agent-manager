@@ -35,7 +35,7 @@ Provider_Profile_Env :: struct {
 // Empty fields use the discovered binary / inherited driver directory.
 Provider_Profile_Config :: struct {
 	binary_path:      string `json:"binary_path"`,
-	config_dir:       string `json:"config_dir"`, // claude
+	config_dir:       string `json:"config_dir"`, // claude, kiro
 	home_path:        string `json:"home_path"`, // codex
 	shadow_home_path: string `json:"shadow_home_path"`, // prepared by P1c
 	launch_args:      string `json:"launch_args"`,
@@ -300,7 +300,7 @@ profile_validate :: proc(p: ^Provider_Profile) -> Profile_Error {
 	for path in ([]string{c.config_dir, c.home_path, c.shadow_home_path}) {
 		if path != "" && !profile_path_absolute(path) do return .Path_Invalid
 	}
-	if c.config_dir != "" && p.provider != "claude" do return .Config_Dir_Unsupported
+	if c.config_dir != "" && p.provider != "claude" && p.provider != "kiro" do return .Config_Dir_Unsupported
 	if (c.home_path != "" || c.shadow_home_path != "") && p.provider != "codex" do return .Config_Invalid
 	ag_config :=
 		c.auth_method != "" ||
@@ -381,6 +381,12 @@ profile_env_plan :: proc(
 	c := &p.config
 	if p.provider == "claude" && c.config_dir != "" {
 		profile_env_set(&plan, "CLAUDE_CONFIG_DIR", c.config_dir)
+	}
+	// Kiro keeps settings under KIRO_HOME but its credential store
+	// (kiro-cli/data.sqlite3) under XDG_DATA_HOME, so both must move together.
+	if p.provider == "kiro" && c.config_dir != "" {
+		profile_env_set(&plan, "KIRO_HOME", c.config_dir)
+		profile_env_set(&plan, "XDG_DATA_HOME", strings.concatenate({c.config_dir, "/data"}, allocator))
 	}
 	if p.provider == "codex" {
 		dir := c.shadow_home_path if c.shadow_home_path != "" else c.home_path

@@ -460,3 +460,91 @@ c3_acp_copilot_darwin_layout_resolves_versions_and_launches_without_patching :: 
     _, reason, diagnostic = acp_provider_cli_version(&pp)
     testing.expect(t, reason == "acp_copilot_not_runnable" && diagnostic == "cli_version_mismatch")
 }
+
+@(private = "file") kiro_npm_called: bool
+@(private = "file") kiro_probe_calls: int
+
+kiro_fake_runner :: proc(argv: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
+    kiro_npm_called = true
+    return "", "", 1, false, false
+}
+
+kiro_fake_profile_probe :: proc(pp: ^Provider_Profile, root, scratch: string) -> (bool, string) {
+    kiro_probe_calls += 1
+    return pp.provider == "kiro" && root != scratch, ""
+}
+
+@(test)
+acp_kiro_system_status_recheck_and_launch :: proc(t: ^testing.T) {
+    st := p1c_test_setup(t); defer p1c_test_teardown(st)
+    context.allocator = context.temp_allocator
+    old_runner, old_profile_probe := acp_adapter_runner, acp_adapter_profile_probe_hook
+    defer { acp_adapter_runner = old_runner; acp_adapter_profile_probe_hook = old_profile_probe }
+    acp_adapter_runner = kiro_fake_runner; acp_adapter_profile_probe_hook = kiro_fake_profile_probe
+    kiro_npm_called = false; kiro_probe_calls = 0
+    names := make([]string, 3); copy(names, []string{"claude", "codex", "kiro"})
+    g_profile_test_catalog = names
+    snapshot := bridge_provider_catalog_snapshot
+    snapshot.etag = "sha256:kiro"
+    snapshot.providers[1] = {provider = "kiro", binary = "kiro-cli", state = "active", transports = {"acp"}, default_transport = "acp",
+        acp_recipe = {command = "kiro-cli", args = {"acp", "--agent-engine", "v3"}, protocol_version = 1,
+            adapter_package = "kiro-cli", adapter_version = "3.5.0", env = make(map[string]string)}}
+    defer delete(snapshot.providers[1].acp_recipe.env)
+    binary := profile_join(st.dir, "kiro-cli")
+    home := profile_join(st.dir, "kiro-home")
+    pp := Provider_Profile{profile_id = "kiro", provider = "kiro", enabled = true, config = {binary_path = binary, config_dir = home}}
+    raw, _ := json.marshal(Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION, profiles = {pp}})
+    p1c_put(t, g_profile_test_store_path, string(raw))
+
+    // Not installed: detect-only status says missing; Re-check never installs.
+    status := acp_adapter_status("kiro")
+    testing.expect_value(t, status.state, "missing")
+    testing.expect(t, strings.has_prefix(status.error, "acp_kiro_not_found"))
+    ok, reason := acp_adapter_install("kiro", snapshot.etag, "3.5.0")
+    testing.expect(t, !ok && reason == "acp_kiro_not_found")
+
+    // Older than the minimum: outdated, with the detected version.
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'kiro-cli 3.4.0\\n'\n", true)
+    status = acp_adapter_status("kiro")
+    testing.expect(t, status.state == "outdated" && status.version == "3.4.0")
+    testing.expect_value(t, status.error, "acp_kiro_outdated: The selected Kiro executable is older than the minimum supported version 3.5.0; upgrade it on the bridge host")
+    ok, reason = acp_adapter_install("kiro", snapshot.etag, "3.5.0")
+    testing.expect(t, !ok && reason == "acp_kiro_outdated")
+
+    // Not runnable (e.g. a glibc build on NixOS) is an error, not missing.
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'Could not start dynamically linked executable token=secret' >&2\nexit 127\n", true)
+    status = acp_adapter_status("kiro")
+    testing.expect(t, status.state == "error" && strings.has_prefix(status.error, "acp_kiro_not_runnable") && !strings.contains(status.error, "secret"))
+
+    // A supported CLI is detected under the profile's isolated dirs, then
+    // certified by Re-check without npm or Node.
+    p1c_put(t, binary, fmt.tprintf("#!/bin/sh\n[ \"$KIRO_HOME\" = %q ] && [ \"$XDG_DATA_HOME\" = %q ] || exit 42\nprintf 'kiro-cli 3.5.0\\n'\n", home, profile_join(home, "data")), true)
+    status = acp_adapter_status("kiro")
+    testing.expect(t, status.installed && status.version == "3.5.0" && status.state == "error" && status.node_version == "")
+    ok, reason = acp_adapter_install("kiro", snapshot.etag, "3.5.0")
+    testing.expect(t, ok && reason == "")
+    testing.expect(t, !kiro_npm_called && kiro_probe_calls == 1)
+    testing.expect_value(t, acp_adapter_status("kiro").state, "ready")
+    status_json := acp_adapter_status_json("kiro")
+    testing.expect(t, strings.contains(status_json, `"runtime_kind":"system"`) && strings.contains(status_json, `"node_version":null`) && strings.contains(status_json, `"version":"3.5.0"`))
+    // Re-check of an already certified profile does not probe again.
+    ok, reason = acp_adapter_install("kiro", snapshot.etag, "3.5.0")
+    testing.expect(t, ok && kiro_probe_calls == 1)
+
+    // An upgraded CLI invalidates the certification until the next Re-check.
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'kiro-cli 3.6.0\\n'\n", true)
+    status = acp_adapter_status("kiro")
+    testing.expect(t, status.state == "error" && status.version == "3.6.0")
+
+    // Managed launches use the detected CLI, fixed v3 flags and profile dirs.
+    r := acp_runtime_new("inst_kiro_launch", "epoch", st.dir, "kiro", "kiro", "etag", "", "ask", {})
+    defer acp_runtime_destroy(r)
+    spawn, built := acp_runtime_build_spawn(r, "endpoint", "synthetic-agent-token", &pp)
+    testing.expect(t, built && len(spawn.argv) == 4 && spawn.argv[0] == binary && spawn.argv[1] == "acp" && spawn.argv[2] == "--agent-engine" && spawn.argv[3] == "v3")
+    seen := 0
+    for pair in spawn.env {
+        if pair[0] == "KIRO_HOME" { testing.expect_value(t, pair[1], home); seen += 1 }
+        if pair[0] == "XDG_DATA_HOME" { testing.expect_value(t, pair[1], profile_join(home, "data")); seen += 1 }
+    }
+    testing.expect_value(t, seen, 2)
+}
