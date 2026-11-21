@@ -25,6 +25,41 @@ work_control_chain :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, c
 	return chain, true, domain.Domain_Error{}
 }
 
+// work_task_write_chain authorizes the per-task state writes any agent of the
+// chain's owner may perform — cancel, hold, release, answer, reopen — without
+// being a member or coordinator of that chain. It differs from
+// work_control_chain ONLY in who is authorized: an agent actor passes when it
+// is the chain's coordinator OR an agent instance owned by the chain's owner.
+// Owner isolation is explicit (the instance row's owner must equal the chain
+// owner; an unknown instance or an unwired agent repository fails closed), and
+// the active-chain requirement is unchanged. Graph shaping (dependencies,
+// workflow runs, plans, lease assignment/transfer) keeps work_control_chain.
+work_task_write_chain :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	chain, ok, err := iface.taskchain_get_chain(svc.repo, chain_id)
+	if !ok do return {}, false, err
+	if chain.owner_user_id != owner do return {}, false, domain.domain_error(.Not_Found, "chain not found")
+	if !task_write_actor_authorized(svc, chain, actor) do return {}, false, domain.domain_error(.Forbidden, "chain owner or an agent of the chain's owner required")
+	if chain.status != .Active do return {}, false, domain.domain_error(.Conflict, "chain must be active")
+	return chain, true, domain.Domain_Error{}
+}
+
+// task_write_actor_authorized: the hub, the owning user, or any agent instance
+// of the chain's owner (membership/coordinator role is not required).
+task_write_actor_authorized :: proc(svc: ^Service, chain: domain.Task_Chain, actor: Actor) -> bool {
+	switch actor.kind {
+	case ACTOR_HUB:
+		return true
+	case ACTOR_USER:
+		return actor.id == string(chain.owner_user_id)
+	case ACTOR_AGENT, ACTOR_COORDINATOR:
+		if is_coordinator(svc, chain, actor.id) do return true
+		if actor.id == "" || svc.agents == nil do return false
+		inst, found, _ := iface.agent_get_instance(svc.agents, actor.id)
+		return found && inst.owner_user_id == chain.owner_user_id
+	}
+	return false
+}
+
 work_actor_kind :: proc(actor: Actor) -> string {
 	if actor.kind == ACTOR_COORDINATOR do return ACTOR_AGENT
 	return actor.kind

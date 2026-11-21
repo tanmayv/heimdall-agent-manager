@@ -196,7 +196,7 @@ test_recheck_leaves_leased_task_untouched :: proc(t: ^testing.T) {
 
 // Only the chain owner or its coordinator may re-check.
 @(test)
-test_recheck_requires_owner_or_coordinator :: proc(t: ^testing.T) {
+test_recheck_requires_owner_or_owners_agent :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "recheck_authz")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
@@ -204,8 +204,16 @@ test_recheck_requires_owner_or_coordinator :: proc(t: ^testing.T) {
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	// REQ-AUTHZ-2: any agent instance of the chain's owner may re-check; an
+	// instance of another owner (or an unknown one) may not.
 	_, wok, werr := task_recheck(&fx.svc, task, Actor{kind = ACTOR_AGENT, id = "inst_w1"})
-	testing.expect(t, !wok && werr.code == .Forbidden, "a worker may not re-check")
+	testing.expect(t, wok, fmt.tprintf("a same-owner worker may re-check: %s", werr.message))
+	now := platform.clock_now(&fx.clock)
+	_, _, _ = iface.agent_save_instance(&fx.agents, domain.Agent_Instance{agent_instance_id = "inst_other_owner", owner_user_id = "u2", agent_id = "agt_w", created_at = now, updated_at = now})
+	_, xok, xerr := task_recheck(&fx.svc, task, Actor{kind = ACTOR_AGENT, id = "inst_other_owner"})
+	testing.expect(t, !xok && xerr.code == .Forbidden, "another owner's instance may not re-check")
+	_, uok, uerr := task_recheck(&fx.svc, task, Actor{kind = ACTOR_AGENT, id = "inst_unknown"})
+	testing.expect(t, !uok && uerr.code == .Forbidden, "an unknown instance may not re-check")
 	_, cok, cerr := task_recheck(&fx.svc, task, Actor{kind = ACTOR_AGENT, id = "inst_coord"})
 	testing.expect(t, cok, fmt.tprintf("the coordinator may re-check: %s", cerr.message))
 }

@@ -21,7 +21,7 @@ task_control_precondition :: proc(svc:^Service,task:domain.Task,actor:Actor,acti
 		if !domain.task_state_is_terminal(task.state) do return domain.domain_error(.Conflict,"only a done or cancelled task can be reopened")
 	case:return domain.domain_error(.Validation_Failed,"unknown control action")
 	}
-	if _,ok,err:=work_control_chain(svc,task.owner_user_id,actor,task.chain_id);!ok do return err
+	if _,ok,err:=work_task_write_chain(svc,task.owner_user_id,actor,task.chain_id);!ok do return err
 	if action=="answer" || action=="reopen" {
 		if err:=workflow_require_current_task(svc,task);err.code!=.None do return err
 	}

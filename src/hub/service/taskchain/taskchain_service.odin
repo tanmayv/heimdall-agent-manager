@@ -418,13 +418,24 @@ get_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, cha
 	return chain, true, domain.Domain_Error{}
 }
 
+// get_chain_for_owner_write (REQ-AUTHZ-1): the owner-scoped authorizer for the
+// chain writes any agent instance of the owner may perform without being a
+// member or coordinator — today only change_chain_status (active / cancelled /
+// archived). It enforces exactly what get_chain_for_read does (require_owner);
+// the verb keeps its own non-membership guards. Other chain writes stay on the
+// membership-gated get_chain plus their coordinator checks.
+get_chain_for_owner_write :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	return get_chain_for_read(service, auth, chain_id)
+}
+
 // get_chain_for_read (REQ-SEC-3): the READ-ONLY authorizer. It enforces ONLY
 // ownership (require_owner) — an Instance_Token may read ANY chain of its own
 // owner, even one it does not belong to (e.g. the Curator or a worker inspecting
 // another coordinator's chain). It deliberately DROPS the membership check that
 // get_chain applies; owner isolation is untouched (cross-owner still 404s via
 // require_owner). WRITES must NOT use this — they call the membership-gated
-// get_chain (plus their own coordinator/assignee guards).
+// get_chain (plus their own coordinator/assignee guards), or the explicitly
+// owner-scoped get_chain_for_owner_write for the verbs listed there.
 get_chain_for_read :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := iface.taskchain_get_chain(service.repo, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
@@ -705,11 +716,11 @@ publish_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 
 change_chain_status_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, next: domain.Task_Chain_Status) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	if next == .Completed do return {}, false, domain.domain_error(.Validation_Failed, "use complete with expected_work_revision and final summary")
-	chain, ok, err := get_chain(service, auth, chain_id)
+	// REQ-AUTHZ-1: any agent instance of the chain's owner may change its
+	// status; membership and the coordinator role are not required. Owner
+	// isolation stays (cross-owner is refused by require_owner).
+	chain, ok, err := get_chain_for_owner_write(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
-	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
-		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
-	}
 	if chain.publish_state != .Published do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "draft chain has no execution status")
  if next == .Cancelled && service.engine != nil {
   if err := taskv2.work_require_chain_merges_settled(service.engine, chain); err.code != .None do return {}, false, err
@@ -1114,17 +1125,30 @@ task_has_work_lease :: proc(service: ^Taskchain_Service, task_id: domain.Task_ID
 	return false
 }
 
+// task_leased_by reports whether instance_id holds any lease (work or review,
+// active or waiting) on the task.
+task_leased_by :: proc(service: ^Taskchain_Service, task_id: domain.Task_ID, instance_id: string) -> bool {
+	if instance_id == "" do return false
+	leases, err := iface.taskchain_list_leases_by_task(service.repo, task_id)
+	if err.code != .None do return true // fail closed: an unreadable lease set is treated as held
+	for l in leases do if l.holder_instance_id == instance_id do return true
+	return false
+}
+
 update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, input: Update_Task_Input) -> (domain.Task, bool, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// REQ-AUTHZ-2: any agent instance of the task's owner may update it.
+	task, ok, err := get_task_for_owner_write(service, auth, task_id)
 	if !ok do return domain.Task{}, false, err
 	if err := require_manual_task(task); err.code != .None do return {}, false, err
 	chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
 	if !chain_ok do return domain.Task{}, false, chain_err
-
-	if auth.kind == .Instance_Token {
-		if !is_chain_coordinator(service, chain, auth.agent_instance_id) {
-			return domain.Task{}, false, domain.domain_error(.Forbidden, "only the chain coordinator or the owner can update a task")
-		}
+	// An instance holding a lease on this task (its worker or a reviewer) may not
+	// rewrite the task it is being judged on — e.g. weaken its own acceptance or
+	// swap its reviewers — unless it coordinates the chain. This invariant used to
+	// ride on the coordinator-only gate; it is kept explicitly now that the gate
+	// is gone.
+	if auth.kind == .Instance_Token && task_leased_by(service, task.task_id, auth.agent_instance_id) && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
+		return domain.Task{}, false, domain.domain_error(.Forbidden, "a lease holder cannot update the task it holds; ask the coordinator or the owner")
 	}
 
 	changed := make([dynamic]string, context.temp_allocator)
@@ -1693,6 +1717,16 @@ get_task_for_read :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 	return task, true, domain.Domain_Error{}
 }
 
+// get_task_for_owner_write (REQ-AUTHZ-2): the owner-scoped authorizer for the
+// task writes any agent instance of the owner may perform without being a
+// member or coordinator of the task's chain: update, cancel, hold, release,
+// answer, reopen and recheck. It enforces exactly what get_task_for_read does
+// (require_owner; cross-owner stays 404). Lease fencing, review eligibility and
+// self-review protection are separate checks and are unaffected.
+get_task_for_owner_write :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> (domain.Task, bool, domain.Domain_Error) {
+	return get_task_for_read(service, auth, task_id)
+}
+
 update_chain_coordinator :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, coordinator_agent_instance_id: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
@@ -2210,20 +2244,14 @@ effective_placement :: proc(service: ^Taskchain_Service, chain: domain.Task_Chai
 	return out
 }
 
-// cancel_task is a human/coordinator verb: the engine records `cancelled`,
-// reclaims any lease (stop[] the holder) and re-plans the chain. Dependents are
-// not touched (a cancelled prerequisite unblocks them — the human decided).
+// cancel_task is an owner-scoped verb (REQ-AUTHZ-2): the owner or any of the
+// owner's agent instances. The engine records `cancelled`, reclaims any lease
+// (stop[] the holder) and re-plans the chain. Dependents are not touched (a
+// cancelled prerequisite unblocks them — the caller decided).
 cancel_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, reason: string) -> (domain.Task, bool, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	task, ok, err := get_task_for_owner_write(service, auth, task_id)
 	if !ok do return domain.Task{}, false, err
 	if err := require_manual_task(task); err.code != .None do return {}, false, err
-	if auth.kind == .Instance_Token {
-		chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
-		if !chain_ok do return domain.Task{}, false, chain_err
-		if !is_chain_coordinator(service, chain, auth.agent_instance_id) {
-			return domain.Task{}, false, domain.domain_error(.Forbidden, "only the chain coordinator or the owner can cancel a task")
-		}
-	}
 	if service.engine == nil do return domain.Task{}, false, domain.domain_error(.Internal_Error, "task engine is not configured")
 	if eng_err := taskv2.cancel_task(service.engine, task, engine_actor(auth), reason); eng_err.code != .None do return domain.Task{}, false, eng_err
 	if fresh, fresh_ok, _ := iface.taskchain_get_task(service.repo, task.task_id); fresh_ok do task = fresh
@@ -2318,20 +2346,6 @@ cancel_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	out, ok, err := cancel_task_impl(service, auth, task_id, reason)
 	if cerr := verb_end(&v, ok); cerr.code != .None do return domain.Task{}, false, cerr
 	return out, ok, err
-}
-
-// require_coordinator_for_task: instance tokens may shape the board (create /
-// update / depend / publish / cancel) only as the chain coordinator.
-require_coordinator_for_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, what: string) -> domain.Domain_Error {
-	if auth.kind != .Instance_Token do return domain.Domain_Error{}
-	task, ok, err := iface.taskchain_get_task(service.repo, task_id)
-	if !ok do return err
-	chain, cok, cerr := iface.taskchain_get_chain(service.repo, task.chain_id)
-	if !cok do return cerr
-	if !is_chain_coordinator(service, chain, auth.agent_instance_id) {
-		return domain.domain_error(.Forbidden, fmt.tprintf("only the chain coordinator or the owner can %s", what))
-	}
-	return domain.Domain_Error{}
 }
 
 complete_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, revision: i64, summary: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {

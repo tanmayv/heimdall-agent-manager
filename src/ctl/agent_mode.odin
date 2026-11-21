@@ -484,7 +484,7 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_v2_task_publish(endpoint, token, tid, args, unblock = true)
 	case "hold", "release":
-		// Coordinator/owner (REQ-TV2-5): hold stops new dispatch and asks a
+		// Owner or any of its agents (REQ-TV2-5, REQ-AUTHZ-2): hold stops new dispatch and asks a
 		// current holder to checkpoint; release lets the task dispatch again.
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
@@ -496,7 +496,7 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
         if tid == "" { print_agent_help([]string{"task"}); return }
         ctl_v2_task_action(endpoint, token, tid, args, "cancel", ctl_v2_task_cancel_body(args))
 	case "recheck":
-		// Coordinator/owner: recompute gate, readiness, dispatch and merge-back.
+		// Owner or any of its agents: recompute gate, readiness, dispatch and merge-back.
 		tid := pos(tokens, 1)
 		if tid == "" { print_agent_help([]string{"task"}); return }
 		ctl_v2_task_action(endpoint, token, tid, args, "recheck", ctl_empty_object_body())
@@ -1985,9 +1985,10 @@ print_help_task_chain :: proc() {
 	fmt.println("                                      --auto-approve publishes immediately when the user said 'go ahead').")
 	fmt.println("  decide [<chain-id>] --decision approve|reject [--reason <text>]")
 	fmt.println("                                      Approve or reject a pending proposal on the chain.")
-	fmt.println("  set-status <active|cancelled|archived> [--chain <id>] Change chain status (coordinator only).")
-	fmt.println("  archive [<chain-id>]                Archive a task chain (coordinator only).")
-	fmt.println("  unarchive [<chain-id>]              Restore an archived task chain to active (coordinator only).")
+	fmt.println("  set-status <active|cancelled|archived> [--chain <id>] Change chain status (any agent of the owner;")
+	fmt.println("                                      chain membership is not required).")
+	fmt.println("  archive [<chain-id>]                Archive a task chain (any agent of the owner).")
+	fmt.println("  unarchive [<chain-id>]              Restore an archived task chain to active (any agent of the owner).")
 	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
 	fmt.println("                                      published to its tasks — until then nothing in the")
 	fmt.println("                                      chain is scheduled.")
@@ -2068,15 +2069,16 @@ print_help_task :: proc() {
 	fmt.println("")
 	fmt.println("VERBS")
     fmt.println("  cancel <task-id> [--reason <text>] [--request-id <id>] [--expected-generation <n>]")
+    fmt.println("                                          Cancel any task of your owner (chain membership not required).")
 
 	fmt.println("  list                                    List your chain's tasks; each carries a comment_summary")
 	fmt.println("                                          (count, last_comment_at, author, preview) — not bodies.")
 	fmt.println("  show <task-id>                          Show a task + brief + comment_summary (no bodies).")
-	fmt.println("  unblock <task-id> [--note <reason>]     Coordinator/owner clears a blocker and retries matching.")
-	fmt.println("  hold <task-id> --reason <text>          Coordinator/owner: no new lease until released; a current holder is asked to checkpoint (lease handoff).")
-	fmt.println("  release <task-id>                       Coordinator/owner: clear a hold so the task can dispatch again.")
+	fmt.println("  unblock <task-id> [--note <reason>]     Owner or any of its agents clears a blocker and retries matching.")
+	fmt.println("  hold <task-id> --reason <text>          Owner or any of its agents: no new lease until released; a current holder is asked to checkpoint (lease handoff).")
+	fmt.println("  release <task-id>                       Owner or any of its agents: clear a hold so the task can dispatch again.")
 	fmt.println("                                          Dispatch failures do not spend attempts; fix the cause first.")
-	fmt.println("  recheck <task-id>                       Coordinator/owner: recompute the review gate (current reviewers and")
+	fmt.println("  recheck <task-id>                       Owner or any of its agents: recompute the review gate (current reviewers and")
 	fmt.println("                                          user-approval flag), readiness, dispatch and a done task's merge-back.")
 	fmt.println("                                          Never approves, never touches a live lease; a repeat is a no-op.")
 	fmt.println("                                          Prints {task, changed, actions[], reasons[], message}.")
@@ -2093,7 +2095,8 @@ print_help_task :: proc() {
 	fmt.println("      assignee, reviewers, budget, output, on_output, requires_user_approval, approver, gate.")
 	fmt.println("      Flags override its fields. Other keys are rejected (unknown_brief_fields). --verify,")
 	fmt.println("      --auto-submit and --require-independent-verify were removed: ignored with a warning.")
-	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
+	fmt.println("  update <task-id>                        Edit an existing task (any agent of the owner;")
+	fmt.println("                                          dependency edits stay coordinator-only).")
 	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>]")
 	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval | --no-require-user-approval]")
 	fmt.println("      [--depends-on <id,id>] [--bridge <bridge-id>] + the same BRIEF flags as create")
@@ -2129,7 +2132,7 @@ print_help_task :: proc() {
 	fmt.println("  ham-ctl task update task_1 --acceptance 'retries 3x with backoff' --acceptance 'logs each retry'")
 	fmt.println("  ham-ctl task update task_1 --assignee agt_worker --reviewer agt_a --reviewer agt_b")
 	fmt.println("  ham-ctl task publish task_1")
-	fmt.println("  ham-ctl task unblock task_1 [--note <reason>]  (coordinator/owner; retry a dispatch block after fixing placement)")
+	fmt.println("  ham-ctl task unblock task_1 [--note <reason>]  (owner or any of its agents; retry a dispatch block after fixing placement)")
 	fmt.println("  ham-ctl task fetch task_1 facet:task_1:2:handoff")
 	fmt.println("  ham-ctl task fetch task_1 src/main.odin@HEAD")
 	fmt.println("  ham-ctl task readiness task_1   (why a task is not ready: each prerequisite's state, merge state and reason)")

@@ -461,7 +461,9 @@ agent_action_chain_set_description_handler :: proc(ctx: rawptr, req: Request) ->
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
-// agent_action_chain_set_status_handler lets a chain coordinator mutate status (REQ-CHAIN-1).
+// agent_action_chain_set_status_handler lets any agent instance of the chain's
+// owner change its status (REQ-CHAIN-1, REQ-AUTHZ-1); chain membership and the
+// coordinator role are not required. Cross-owner chains are refused.
 agent_action_chain_set_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
@@ -930,15 +932,8 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	params := json_object_raw(req.body, "params")
 	task_id := domain.Task_ID(json_string(params, "task_id"))
 	if strings.trim_space(string(task_id)) == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
-	// Coordinator-only, matching create/depend: resolve the task's chain and check
-	// the caller is its coordinator (when one is set).
-	if task, task_ok, _ := taskchain_service.get_task(h.taskchains, auth, task_id); task_ok {
-		if chain, chain_ok, _ := taskchain_service.get_chain(h.taskchains, auth, task.chain_id); chain_ok {
-			if chain.coordinator_agent_instance_id != "" && chain.coordinator_agent_instance_id != inst.agent_instance_id {
-				return respond_error(domain.domain_error(.Forbidden, "only chain coordinator can update tasks"), req.request_id)
-			}
-		}
-	}
+	// REQ-AUTHZ-2: any agent instance of the task's owner may update it; the
+	// service (update_task) enforces owner isolation.
 	has_deps := strings.contains(params, "\"depends_on\"")
 	deps := json_array_of_strings(params, "depends_on")
 	has_priority := strings.contains(params, "\"priority\"")

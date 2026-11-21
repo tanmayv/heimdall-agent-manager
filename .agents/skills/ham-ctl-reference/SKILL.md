@@ -52,7 +52,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `issue`, `chat`, `memory`, `ar
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
 - `task-chain set-status --status <active|completed|cancelled> [--chain <id>]` — change
-  the chain status (coordinator only). Chain statuses are exactly `active`, `completed`,
+  the chain status (any agent instance of the chain's owner; membership not required). Chain statuses are exactly `active`, `completed`,
   `cancelled`. This is how a coordinator completes a chain.
 - `task-chain reconcile <chain-id>` — self-heal / kick off a chain: promote actionable
   tasks, set each agent's current task, and nudge idle agents. **The chain id is REQUIRED**
