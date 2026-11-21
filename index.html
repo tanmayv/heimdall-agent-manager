@@ -3,6 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <!--
+      Path-style deep links (REQ-PATH-1/2): the app is hash-routed, but links such as
+      https://<host>/library/artifacts/<id> reach this page through the static server's
+      index.html fallback. Assets are relative (vite `base: './'`), so at that depth they
+      would resolve under /library/artifacts/ and the app would never boot. Before any
+      relative URL below is resolved, rewrite the URL to /#<pathname><search> so assets
+      load from the root and the router opens the matching view. Only known UI route
+      roots are rewritten; /, /index.html, /api/ (including the sign-in callback),
+      /assets/, /p/ and any existing hash route are left alone. Inline on purpose: an
+      external script would itself resolve against the deep path. Covered by
+      tests/ui_path_route_boot_test.ts.
+    -->
+    <script id="heimdall-path-route-boot">
+      (function () {
+        try {
+          var roots = ['actions', 'agents', 'c', 'cards', 'chains', 'conversations', 'device', 'home', 'issues', 'library', 'mcp', 'memory', 'projects', 'settings', 'setup', 'shells', 'skills', 'workspace'];
+          var l = window.location;
+          if (l.protocol !== 'http:' && l.protocol !== 'https:') return;
+          if (l.hash && l.hash.length > 1) return;
+          var m = /^\/([^/]+)(?:\/|$)/.exec(l.pathname || '');
+          if (!m || roots.indexOf(m[1]) < 0) return;
+          window.history.replaceState(window.history.state, '', '/#' + l.pathname + l.search);
+        } catch (_err) {
+          // Non-fatal: main.tsx still folds legacy routes when the app can boot.
+        }
+      })();
+    </script>
+    <!--
       `interactive-widget=resizes-content` is RETAINED but is INERT on the surface this app
       was measured on: on iOS WebKit (iPhone, standalone PWA) `window.innerHeight` stayed
       constant at 812 while the keyboard took the visual viewport to 409 — i.e. the content
