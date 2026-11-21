@@ -88,7 +88,7 @@ test_task_chain_create_params_plaintext :: proc(t: ^testing.T) {
 	args := []string{
 		"--title", "Alpha Task Chain",
 		"--description", "Autonomous task chain for deployment.",
-		"--kind", "team_work",
+		"--kind", "mixed_work",
 		"--coordinator", "agt_coord_1",
 		"--bridge", "brg_local_1",
 		"--project", "proj_alpha",
@@ -101,7 +101,7 @@ test_task_chain_create_params_plaintext :: proc(t: ^testing.T) {
 
 	testing.expect(t, strings.contains(params, `"title":"Alpha Task Chain"`), "title should remain plaintext")
 	testing.expect(t, strings.contains(params, `"description":"Autonomous task chain for deployment."`), "description should remain plaintext")
-	testing.expect(t, strings.contains(params, `"kind":"team_work"`), "kind should be team_work")
+	testing.expect(t, strings.contains(params, `"kind":"mixed_work"`), "kind should be mixed_work")
 	testing.expect(t, strings.contains(params, `"coordinator_agent_id":"agt_coord_1"`), "coordinator_agent_id should match")
 	testing.expect(t, strings.contains(params, `"bridge_id":"brg_local_1"`), "bridge_id should match")
 	testing.expect(t, strings.contains(params, `"project_id":"proj_alpha"`), "project_id should match")
@@ -130,7 +130,7 @@ test_task_chain_create_params_aliases :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(params, `"coordinator_agent_id":"agt_coord_2"`), "coordinator-agent-id alias should work")
 	testing.expect(t, strings.contains(params, `"bridge_id":"brg_2"`), "bridge-id alias should work")
 	testing.expect(t, strings.contains(params, `"project_id":"proj_2"`), "project-id alias should work")
-	testing.expect(t, strings.contains(params, `"kind":"team_work"`), "default kind should be team_work")
+	testing.expect(t, strings.contains(params, `"kind":"mixed_work"`), "default kind should be mixed_work")
 }
 
 @(test)

@@ -64,6 +64,7 @@ test_hub_request_bodies_omit_unset_fields :: proc(t: ^testing.T) {
 	// Always-sent fields stay even when empty.
 	expect_json(t, Ctl_Artifact_Update_Body{}, `{"name":"","description":""}`)
 	expect_json(t, Ctl_Chain_Create_Body{title = "t", kind = "mixed_work"}, `{"title":"t","description":"","kind":"mixed_work","coordinator_agent_id":"","bridge_id":"","project_id":""}`)
+	expect_json(t, Ctl_Chain_Create_Body{title = "t", kind = "mixed_work", coordinator_agent_id = "agt_c", bridge_id = "brg_b", provider = "claude", model = "opus"}, `{"title":"t","description":"","kind":"mixed_work","coordinator_agent_id":"agt_c","bridge_id":"brg_b","project_id":"","provider":"claude","model":"opus"}`)
 	expect_json(t, Ctl_Memory_Create_Body{body = "b", type = "fact"}, `{"body":"b","type":"fact","title":"","description":"","evidence":"","agent_ids":[],"project_ids":[],"bridge_ids":[],"template_ids":[]}`)
 	// Presence-checked flags: an explicit empty / false value is still sent.
 	upd: Ctl_Task_Update_Body

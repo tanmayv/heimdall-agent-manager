@@ -407,7 +407,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	if action == "create" {
 		title := option_value(args, "--title", "")
 		if title == "" {
-			fmt.println("usage: ham-ctl task-chains create --title <title> [--description <text>] [--kind <kind>] [--coordinator <id>] [--bridge <id>] [--project <id>]")
+			fmt.println("usage: ham-ctl task-chains create --title <title> [--description <text>] [--coordinator <agt_id> --bridge <brg_id> --provider <id> --model <id> [--provider-profile <id>]] [--project <id>]")
 			return
 		}
 		desc := option_value(args, "--description", "")
@@ -425,6 +425,9 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 			coordinator_agent_id = option_value(args, "--coordinator-agent-id", option_value(args, "--coordinator", "")),
 			bridge_id            = option_value(args, "--bridge-id", option_value(args, "--bridge", "")),
 			project_id           = option_value(args, "--project-id", option_value(args, "--project", "")),
+			provider             = option_value(args, "--provider", ""),
+			provider_profile     = option_value(args, "--provider-profile", ""),
+			model                = option_value(args, "--model", ""),
 		}
 		ctl_tasks_request(transport, {method = .POST, path = ctl_api("task-chains"), body = httpc.json_body(body)})
 		return
@@ -878,6 +881,11 @@ Ctl_Chain_Create_Body :: struct {
 	coordinator_agent_id: string `json:"coordinator_agent_id"`,
 	bridge_id:            string `json:"bridge_id"`,
 	project_id:           string `json:"project_id"`,
+	// The coordinator launch needs a provider and model; without them the hub
+	// refuses the create (and, since the fix, writes nothing).
+	provider:             string `json:"provider,omitempty"`,
+	provider_profile:     string `json:"provider_profile,omitempty"`,
+	model:                string `json:"model,omitempty"`,
 }
 
 Ctl_Chain_Update_Body :: struct {

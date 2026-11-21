@@ -1397,25 +1397,73 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
 		if perr := agent_service.validate_launch_project(h.agents, auth_ctx, domain.Project_ID(project_id), json_string(req.body, "bridge_id")); perr.code != .None do return respond_error(perr, req.request_id)
 	}
-	chain, created, err := taskchain_service.create_chain(h.taskchains, auth_ctx, taskchain_service.Create_Chain_Input{
+	chain_input := taskchain_service.Create_Chain_Input{
 		title = json_string(req.body, "title"),
 		description = json_string(req.body, "description"),
 		owner_user_id = json_string(req.body, "owner_user_id"),
 		kind = json_string(req.body, "kind"),
 		coordinator_agent_id = coord_inst_id,
-	})
-	if !created do return respond_error(err, req.request_id)
-	if coord_agent_id := json_string(req.body, "coordinator_agent_id"); coord_agent_id != "" {
-		if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
-		inst, inst_created, inst_err := agent_service.create_instance(h.agents, auth_ctx, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"),provider_profile=json_string(req.body,"provider_profile"), model = json_string(req.body, "model"), project_id = domain.Project_ID(json_string(req.body, "project_id")), chain_id = string(chain.chain_id)})
-		if !inst_created do return respond_error(inst_err, req.request_id)
-		publish_instance_created(h.event_bus, inst)
-		chain, created, err = taskchain_service.update_chain_coordinator(h.taskchains, auth_ctx, chain.chain_id, inst.agent_instance_id)
-		if !created do return respond_error(err, req.request_id)
 	}
+	coord_agent_id := json_string(req.body, "coordinator_agent_id")
+	if coord_agent_id == "" {
+		chain, created, err := taskchain_service.create_chain(h.taskchains, auth_ctx, chain_input)
+		if !created do return respond_error(err, req.request_id)
+		publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "created")
+		b := strings.builder_make(); write_chain_json(&b, chain)
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+	}
+	if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
+	chain, inst, generation, prep_err := create_chain_with_prepared_coordinator(h, auth_ctx, chain_input, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"), provider_profile = json_string(req.body, "provider_profile"), model = json_string(req.body, "model"), project_id = domain.Project_ID(json_string(req.body, "project_id"))})
+	if prep_err.code != .None do return respond_error(prep_err, req.request_id)
+	// The launch is network I/O, so it runs only after the chain, instance and
+	// membership rows are committed (no network I/O inside a SQLite tx).
+	if sent, send_err := agent_service.send_instance_launch(h.agents, inst); !sent {
+		project_service.bridge_runtime_instance_cancel_reservation(h.agents.bridge_runtime_registry, inst.bridge_id, generation, inst.agent_instance_id)
+		return respond_error(send_err, req.request_id)
+	}
+	publish_instance_created(h.event_bus, inst)
+	updated, update_ok, update_err := taskchain_service.update_chain_coordinator(h.taskchains, auth_ctx, chain.chain_id, inst.agent_instance_id)
+	if !update_ok do return respond_error(update_err, req.request_id)
+	chain = updated
 	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "created")
 	b := strings.builder_make(); write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+// create_chain_with_prepared_coordinator writes the chain row and prepares its
+// coordinator (validation, runtime reservation, instance, conversation and
+// coordinator membership) in ONE unit of work, so any launch-validation failure
+// (missing provider/model, unknown model, bad agent or bridge, offline bridge,
+// bad project) rolls the chain back and leaves no orphan draft chain. Nothing
+// here touches the network; the caller sends the launch after the commit and
+// must cancel the returned reservation generation if it gives up.
+create_chain_with_prepared_coordinator :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, chain_input: taskchain_service.Create_Chain_Input, inst_input: agent_service.Create_Instance_Input) -> (chain: domain.Task_Chain, inst: domain.Agent_Instance, generation: int, err: domain.Domain_Error) {
+	if h.taskchains == nil || h.taskchains.uow_factory == nil do return {}, {}, 0, domain.domain_error(.Internal_Error, "unit of work is not configured")
+	uow, began, begin_err := iface.unit_of_work_begin(h.taskchains.uow_factory)
+	if !began do return {}, {}, 0, begin_err
+	finished := false
+	defer if !finished do iface.unit_of_work_rollback(&uow)
+	created: bool
+	chain, created, err = taskchain_service.create_chain(h.taskchains, auth_ctx, chain_input)
+	if !created {
+		if err.code == .None do err = domain.domain_error(.Internal_Error, "task chain was not created")
+		return {}, {}, 0, err
+	}
+	input := inst_input
+	input.chain_id = string(chain.chain_id)
+	prepared: bool
+	inst, generation, prepared, err = agent_service.prepare_instance(h.agents, auth_ctx, input)
+	if !prepared {
+		if err.code == .None do err = domain.domain_error(.Internal_Error, "coordinator instance was not prepared")
+		return {}, {}, 0, err
+	}
+	committed, commit_err := iface.unit_of_work_commit(&uow)
+	finished = true
+	if !committed {
+		project_service.bridge_runtime_instance_cancel_reservation(h.agents.bridge_runtime_registry, inst.bridge_id, generation, inst.agent_instance_id)
+		return {}, {}, 0, commit_err
+	}
+	return chain, inst, generation, {}
 }
 
 // chain_patch_title_source records who renamed a chain so the chain-scoped title
