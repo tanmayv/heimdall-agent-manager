@@ -27,7 +27,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `issue`, `chat`, `memory`, `ar
 ## bridge — discover bridges and their providers
 - `bridge list [--scope hub|configured|all]` — bridges you can target. Default `all` =
   Hub-registered + locally-configured peers + this host (self).
-- `bridge providers [--bridge <id>]` — providers (and tiers) for one bridge, or all.
+- `bridge providers --bridge <id>` — that bridge's providers and their models: `providers[].provider` (with `enabled`) and `providers[].models[].model_id`. These are the `--provider` / `--model` values a launch accepts. Without `--bridge` it returns the bridge list only (no providers or models); use `bridge list` to find bridge ids.
 
 ## agents — durable identities, templates, and runtime instances
 - `agents list` — your durable agent identities.
@@ -43,7 +43,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `issue`, `chat`, `memory`, `ar
 ## task-chain — your task chains
 - `task-chain list [--mine] [--project <id>]` — chains (`--mine` = ones you coordinate).
 - `task-chain show [<chain-id>]` — show a chain (defaults to your current chain), including embedded `tasks` and `directories`.
-- `task-chain create --title <title> [--description <desc>] [--coordinator <agt_id> --bridge <brg_id> --provider <p> --model <m> [--provider-profile <id>]] [--project <proj_id>]` — create a task chain (always `mixed_work`; `--kind` is optional and only `mixed_work` is accepted). With `--coordinator`, the Hub launches that durable agent as the chain's coordinator on `--bridge`, so `--provider` and `--model` are required and must be enabled and present on that bridge (e.g. `--provider claude --model opus`); list them with `bridge providers`. `--project` needs `--coordinator`. A rejected create (missing or unknown provider/model, bad agent, bridge or project, offline bridge) returns the error and creates nothing: no chain and no instance.
+- `task-chain create --title <title> [--description <desc>] [--coordinator <agt_id> --bridge <brg_id> --provider <p> --model <m> [--provider-profile <id>]] [--project <proj_id>]` — create a task chain (always `mixed_work`; `--kind` is optional and only `mixed_work` is accepted). With `--coordinator`, the Hub launches that durable agent as the chain's coordinator on `--bridge`, so `--provider` and `--model` are required and must be enabled and present on that bridge (e.g. `--provider claude --model opus`); list them with `bridge providers --bridge <brg_id>` (use a provider with `enabled: true` and one of its `models[].model_id`). `--project` needs `--coordinator`. A rejected create (missing or unknown provider/model, bad agent, bridge or project, offline bridge) returns the error and creates nothing: no chain and no instance.
   ```bash
   ./bin/ham-ctl task-chain create --title 'Fix flaky auth tests' \
     --coordinator agt_coord --bridge brg_main --provider claude --model opus [--project proj_x]

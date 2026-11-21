@@ -1926,7 +1926,7 @@ print_help_bridge :: proc() {
 	fmt.println("VERBS")
 	fmt.println("  list [--scope hub|configured|all]   List bridges. default all: Hub-registered")
 	fmt.println("                                      + locally-configured peers + this host (self).")
-	fmt.println("  providers [--bridge <id>]           Providers (+ models) for one/all Hub bridges.")
+	fmt.println("  providers --bridge <id>             Providers (+ models) of one Hub bridge; no --bridge lists bridges only.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl bridge list")
