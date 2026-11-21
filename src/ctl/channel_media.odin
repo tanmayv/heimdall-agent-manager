@@ -167,8 +167,7 @@ ctl_channel_resolve_attachment_scratch :: proc(
 	if mime == "" do mime = a.mime
 	size, size_ok := fetched["size"].(json.Integer)
 	if !size_ok do return out
-	kind := "file"
-	if a.kind == "image" do kind = "image"
+	kind := ctl_channel_artifact_kind(a.kind)
 	encoded := base64.encode(transmute([]byte)sealed, allocator = context.temp_allocator)
 	params, _ := json.marshal(struct {
 			name, kind, content_base64, content_type: string,
@@ -191,6 +190,18 @@ ctl_channel_resolve_attachment_scratch :: proc(
 	out.size = i64(size)
 	out.error = ""
 	return out
+}
+
+// ctl_channel_artifact_kind maps an inbound channel attachment kind to the
+// artifact kind it is stored as. Voice notes and audio keep their own kinds so
+// agents can tell them apart from documents (REQ-VOICE-5); video, documents and
+// unknown kinds stay generic files.
+ctl_channel_artifact_kind :: proc(attachment_kind: string) -> string {
+	switch attachment_kind {
+	case "image", "voice", "audio":
+		return attachment_kind
+	}
+	return "file"
 }
 
 ctl_channel_read_media :: proc(endpoint, token, verb, params: string, args: []string) {

@@ -1022,7 +1022,7 @@ agent_action_artifact_create_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	}
 	// Task attribution comes from the authenticated instance's native lease
 	// binding, never a caller-supplied task/chain or actor override.
-	artifact, saved, err := content_service.create_artifact(h.content, auth, content_service.Artifact_Input{kind = json_string(params, "kind"), name = json_string(params, "name"), description = json_string(params, "description"), content_type = json_string(params, "content_type"), content = content, filename = json_string(params, "filename"), agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, chain_id = inst.chain_id, task_id = string(inst.current_task_id), project_id = inst.project_id})
+	artifact, saved, err := content_service.create_artifact(h.content, auth, content_service.Artifact_Input{kind = json_string(params, "kind"), name = json_string(params, "name"), description = json_string(params, "description"), content_type = json_string(params, "content_type"), mime = json_string(params, "mime"), content = content, filename = json_string(params, "filename"), agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, chain_id = inst.chain_id, task_id = string(inst.current_task_id), project_id = inst.project_id})
 	if !saved do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "artifact_create", fmt.tprintf("created artifact \"%s\"", artifact.name))
 	b := strings.builder_make()

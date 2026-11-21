@@ -489,5 +489,45 @@ acp_chat_input_text :: proc(row:json.Object,kr:^vault.Vault_Keyring) -> (string,
     sender:=acp_event_string(row,"sender_agent_instance_id")
     if acp_event_string(row,"direction")=="user_to_agent" do sender="user"
     if sender=="" do sender=acp_event_string(row,"direction")
-    return fmt.tprintf("[Heimdall message context]\nsender: %s\nmessage_id: %s\nanswer_metadata: %s\nartifact_refs: %s\nAttachments are fetchable artifact references. Inline images/resources are not supplied in this text prompt.\n[/Heimdall message context]\n\n%s",sender,acp_event_string(row,"message_id"),decrypted,acp_event_json(row["artifact_ids"]),body),true
+    return fmt.tprintf("[Heimdall message context]\nsender: %s\nmessage_id: %s\nanswer_metadata: %s\nartifact_refs: %s\nAttachments are fetchable artifact references. Inline images/resources are not supplied in this text prompt.\n[/Heimdall message context]\n\n%s",sender,acp_event_string(row,"message_id"),decrypted,acp_chat_artifact_refs_text(row),body),true
+}
+
+// acp_chat_artifact_refs_text renders the prompt's artifact_refs value as
+// `[art_x (voice, audio/ogg), art_y (file)]` from the hub's `artifacts`
+// descriptors so an agent can tell a voice note from a document (REQ-VOICE-5).
+// Rows without descriptors (older hubs) fall back to the bare artifact_ids list.
+acp_chat_artifact_refs_text :: proc(row:json.Object) -> string {
+    b:=strings.builder_make(context.temp_allocator)
+    strings.write_byte(&b,'[')
+    count:=0
+    if refs,ok:=row["artifacts"].(json.Array);ok && len(refs)>0 {
+        for v in refs {
+            ref,is_obj:=v.(json.Object)
+            if !is_obj do continue
+            id:=acp_event_string(ref,"artifact_id")
+            if id=="" do continue
+            if count>0 do strings.write_string(&b,", ")
+            count+=1
+            strings.write_string(&b,id)
+            kind:=acp_event_string(ref,"kind")
+            mime:=acp_event_string(ref,"mime")
+            available,has_available:=ref["available"].(json.Boolean)
+            switch {
+            case has_available && !available: strings.write_string(&b," (unavailable)")
+            case kind!="" && mime!="": fmt.sbprintf(&b," (%s, %s)",kind,mime)
+            case kind!="": fmt.sbprintf(&b," (%s)",kind)
+            case mime!="": fmt.sbprintf(&b," (%s)",mime)
+            }
+        }
+    } else if ids,ok:=row["artifact_ids"].(json.Array);ok {
+        for v in ids {
+            id,is_str:=v.(json.String)
+            if !is_str || id=="" do continue
+            if count>0 do strings.write_string(&b,", ")
+            count+=1
+            strings.write_string(&b,string(id))
+        }
+    }
+    strings.write_byte(&b,']')
+    return strings.to_string(b)
 }

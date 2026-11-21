@@ -421,3 +421,38 @@ test_channel_media_large_attachments_release_scratch :: proc(t: ^testing.T) {
 	testing.expect(t, first_peak > size)
 	testing.expect(t, first_peak < 96 * 1024 * 1024)
 }
+
+// REQ-VOICE-5: inbound voice notes and audio keep their own artifact kinds.
+@(test)
+ctl_channel_artifact_kind_maps_voice_and_audio :: proc(t: ^testing.T) {
+	testing.expect_value(t, ctl_channel_artifact_kind("voice"), "voice")
+	testing.expect_value(t, ctl_channel_artifact_kind("audio"), "audio")
+	testing.expect_value(t, ctl_channel_artifact_kind("image"), "image")
+	testing.expect_value(t, ctl_channel_artifact_kind("document"), "file")
+	testing.expect_value(t, ctl_channel_artifact_kind("video"), "file")
+	testing.expect_value(t, ctl_channel_artifact_kind(""), "file")
+}
+
+// REQ-VOICE-5: a fetched Telegram/WhatsApp voice note is created as kind voice
+// with the original audio mime as content_type.
+@(test)
+test_channel_media_voice_note_creates_voice_artifact :: proc(t: ^testing.T) {
+	kr := tkr("1111111111111111111111111111111111111111111111111111111111111111")
+	replies := []string {
+		"{\"v\":1,\"ok\":true,\"data\":{\"data\":{\"outcome\":\"fetched\",\"mime\":\"audio/ogg\",\"size\":3,\"content_base64\":\"AP+A\"}}}\n",
+		"{\"ok\":true,\"data\":{\"artifact_id\":\"created\"}}\n",
+		"{\"ok\":true,\"data\":{\"artifact_id\":\"art_voice\"}}\n",
+	}
+	fb := fake_bridge_start(t, replies)
+	if fb == nil do return
+	defer fake_bridge_stop(fb)
+	c := Ctl_Channel_Media_Context{endpoint = fb.endpoint, token = "test", keyring = kr}
+	out := ctl_channel_resolve_attachment(&c, {attachment_id = "cha", kind = "voice", name = "", mime = "audio/ogg", state = "pending"})
+	testing.expect_value(t, out.error, "")
+	testing.expect_value(t, out.artifact_id, "art_voice")
+	testing.expect_value(t, out.mime, "audio/ogg")
+	request := fake_bridge_request(fb, 1)
+	testing.expect_value(t, ctl_channel_string(request, "method", ""), "agent.artifact.create")
+	testing.expect_value(t, ctl_channel_string(request, "kind", ""), "voice")
+	testing.expect_value(t, ctl_channel_string(request, "content_type", ""), "audio/ogg")
+}
