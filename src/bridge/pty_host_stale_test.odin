@@ -21,7 +21,11 @@ stale_test_reserves: int
 stale_test_releases: int
 stale_test_lists: int
 stale_test_reserved: bool
-stale_test_tombstones: bool // agents(): count a List reply with two exited entries via the real counter
+stale_test_tombstones: bool
+stale_test_daemon_up: bool  // the scripted socket has a daemon behind it
+stale_test_starts: int
+stale_test_waiter: ^thread.Thread
+stale_test_waiter_saw_daemon: bool // agents(): count a List reply with two exited entries via the real counter
 
 STALE_TEST_EXPECTED :: "/opt/heimdall/bin/ham-pty-host"
 STALE_TEST_BACKUP :: "/opt/heimdall/bin.bak-1-2/ham-pty-host"
@@ -49,10 +53,16 @@ stale_test_io := Pty_Host_Stale_IO{
 	stop         = proc(socket: string) -> (bool, string) {
 		stale_test_stops += 1
 		if !stale_test_stop_ok do return false, "pid survived SIGKILL"
+		stale_test_daemon_up = false
+		return true, ""
+	},
+	start        = proc() -> (string, bool) {
+		stale_test_starts += 1
 		// The current daemon replaces it: from now on it is healthy and idle.
 		stale_test_exe = STALE_TEST_EXPECTED
 		stale_test_agents = 0
-		return true, ""
+		stale_test_daemon_up = true
+		return "/tmp/acp-probe-test.sock", true
 	},
 }
 
@@ -73,6 +83,7 @@ stale_test_begin :: proc(steps: []ACP_Probe_Test_Step) -> ACP_Probe_IO {
 	stale_test_stops, stale_test_reserves, stale_test_releases, stale_test_lists = 0, 0, 0, 0
 	stale_test_reserved = false
 	stale_test_tombstones = false
+	stale_test_daemon_up, stale_test_starts = true, 0
 	sync.atomic_store(&pty_host_stale_pending, false)
 	return saved
 }
@@ -92,6 +103,7 @@ test_stale_idle_daemon_replaced_then_acp_advertised :: proc(t: ^testing.T) {
 
 	bridge_acp_runtime_probe_on_connect()
 	testing.expect_value(t, stale_test_stops, 1)
+	testing.expect_value(t, stale_test_starts, 1)
 	testing.expect_value(t, stale_test_reserves, 1)
 	testing.expect_value(t, stale_test_releases, 1)
 	testing.expect(t, acp_features_advertised(), "the replacement daemon supports piped spawn: acp_runtime_v1 is advertised")
@@ -194,6 +206,40 @@ test_stale_reconcile_guards :: proc(t: ^testing.T) {
 	testing.expect_value(t, action, Pty_Host_Stale_Action.Healthy)
 	testing.expect_value(t, reason, Pty_Host_Stale_Reason.None)
 	testing.expect(t, !sync.atomic_load(&pty_host_stale_pending), "healthy clears pending")
+}
+
+// A spawn arriving during a retire waits on the real spawn gate and is released
+// only once the replacement daemon is up: never into the gap between the stop
+// and the start.
+@(test)
+test_spawn_waiting_on_retire_lands_on_replacement :: proc(t: ^testing.T) {
+	saved := stale_test_begin([]ACP_Probe_Test_Step{.Silent, .Pipes})
+	defer stale_test_end(saved)
+	defer pty_host_spawn_gate_open()
+	io := stale_test_io
+	io.reserve = pty_host_spawn_gate_close
+	io.release = pty_host_spawn_gate_open
+	io.stop = proc(socket: string) -> (bool, string) {
+		stale_test_stops += 1
+		stale_test_daemon_up = false
+		// A shell/agent spawn arrives while the old daemon is being retired.
+		stale_test_waiter_saw_daemon = false
+		stale_test_waiter = thread.create_and_start(proc() {
+			if pty_host_spawn_enter(5 * time.Second) {
+				stale_test_waiter_saw_daemon = stale_test_daemon_up
+				pty_host_spawn_leave()
+			}
+		})
+		time.sleep(50 * time.Millisecond) // let it block on the gate
+		return true, ""
+	}
+	action, _ := bridge_pty_host_stale_reconcile("/tmp/x.sock", .No_Reply, io)
+	thread.join(stale_test_waiter)
+	thread.destroy(stale_test_waiter)
+	testing.expect_value(t, action, Pty_Host_Stale_Action.Replaced)
+	testing.expect_value(t, stale_test_starts, 1)
+	testing.expect(t, stale_test_waiter_saw_daemon, "the waiting spawn proceeded only after the replacement daemon was up")
+	testing.expect(t, !pty_host_spawn_gate_closed, "the gate is open again")
 }
 
 // Exited tombstones (alive=false) the daemon keeps for an hour are not running

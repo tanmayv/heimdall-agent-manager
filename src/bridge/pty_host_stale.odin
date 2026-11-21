@@ -53,6 +53,7 @@ Pty_Host_Stale_IO :: struct {
 	reserve:      proc() -> bool, // close the spawn gate for the swap
 	release:      proc(),
 	stop:         proc(socket: string) -> (bool, string),
+	start:        proc() -> (string, bool), // start the current daemon (ensure_daemon)
 }
 
 pty_host_stale_io := Pty_Host_Stale_IO{
@@ -63,6 +64,7 @@ pty_host_stale_io := Pty_Host_Stale_IO{
 	reserve      = pty_host_spawn_gate_close,
 	release      = pty_host_spawn_gate_open,
 	stop         = bridge_update_stop_pty_host,
+	start        = bridge_pty_host_ensure_daemon,
 }
 
 // A stale daemon is kept and re-checked (acp_runtime_probe.odin schedules the retry).
@@ -103,9 +105,11 @@ PTY_HOST_STALE_REASON_SYMS := [Pty_Host_Stale_Reason]Blog_Sym{
 // socket, given its Capabilities probe, and stops it when it is stale and idle.
 // Only an ADOPTED daemon is ever retired: one this process started runs the
 // current binary by construction, and retiring it for a failed probe would only
-// loop. On .Replaced the caller starts the current daemon (ensure_daemon) and
-// re-probes; the spawn gate (pty_host_runtime.odin) is held closed across the stop
-// so no agent, shell or ACP child is spawned on the daemon being retired.
+// loop. The spawn gate (pty_host_runtime.odin) is held closed from the idle
+// re-check through the stop AND the start of the current daemon, so no agent,
+// shell or ACP child is spawned on the daemon being retired, and a spawn that
+// waited meanwhile lands on the replacement rather than on an empty socket. On
+// .Replaced the caller re-probes (its ensure_daemon then only pings).
 bridge_pty_host_stale_reconcile :: proc(socket: string, probe: Pty_Host_Pipe_Probe, io := pty_host_stale_io) -> (action: Pty_Host_Stale_Action, reason: Pty_Host_Stale_Reason) {
 	pid, has_pid := io.peer_pid(socket)
 	if has_pid && bridge_pty_host_is_own_daemon(pid) {
@@ -146,6 +150,11 @@ bridge_pty_host_stale_reconcile :: proc(socket: string, probe: Pty_Host_Pipe_Pro
 	}
 	blog_warn(.pty_host_stale, blog_sym(.stage, .retired), blog_sym(.reason, PTY_HOST_STALE_REASON_SYMS[reason]), blog_int(.agents, 0))
 	fmt.eprintln("bridge pty-host: retired the stale daemon; starting the current ham-pty-host")
+	// Still behind the gate (released by the defer above, after this).
+	if _, started := io.start(); !started {
+		// ensure_daemon logged why; the next spawn or probe starts it again.
+		fmt.eprintln("bridge pty-host: the current ham-pty-host did not come up after the retire; it is started on next use")
+	}
 	return .Replaced, reason
 }
 

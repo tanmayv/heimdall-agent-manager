@@ -92,7 +92,7 @@ bridge_acp_runtime_probe :: proc(trigger: ACP_Probe_Trigger) -> (outcome: ACP_Pr
 	if daemon_ok {
 		probe = pty_host_probe_pipes(socket, acp_probe_io.request)
 		// An adopted daemon left over from an older install is retired once idle and
-		// the current one started and probed in its place (pty_host_stale.odin).
+		// the current one started in its place (pty_host_stale.odin); probe that one.
 		if acp_probe_io.reconcile != nil {
 			if action, _ := acp_probe_io.reconcile(socket, probe); action == .Replaced {
 				socket, daemon_ok = acp_probe_io.ensure_daemon()
