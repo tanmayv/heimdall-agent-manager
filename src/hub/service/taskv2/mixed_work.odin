@@ -325,6 +325,8 @@ work_chain_complete :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, 
 	_, commit_err := end_uow(svc, &u, complete)
 	if !complete do return {}, false, cerr
 	if commit_err.code != .None do return {}, false, commit_err
+	// X applies while the chain is Completed: (re)arm it for the coordinator.
+	arm_coordinator_idle_for_chain(svc, chain)
 	return chain, true, domain.Domain_Error{}
 }
 

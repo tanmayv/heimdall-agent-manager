@@ -102,6 +102,7 @@ answer_questions :: proc(s: ^Content_Service, auth: contracts.Auth_Context, cid,
 	_, _, _ = iface.content_save_conversation(s.content, c)
 	notify_agent_message(s, c, "user_to_agent", "user", saved.message_id, "User")
 	record_activity_and_maybe_nudge(s, cid, now)
+	note_user_activity(s, c.agent_instance_id)
 	return saved, true, {}
 }
 

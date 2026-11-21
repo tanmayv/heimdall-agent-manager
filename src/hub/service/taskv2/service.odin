@@ -81,6 +81,17 @@ Service :: struct {
 	// between) hold_stale reminders to the coordinator; <= 0 uses
 	// HOLD_STALE_SECONDS.
 	hold_stale_seconds:  int,
+	// Coordinator idle-stop timers (coordinator_idle.odin, REQ-CIS-1): seconds
+	// after the last user event; 0 disables. Wiring copies Hub_Config.
+	coordinator_idle_completed_seconds: int,
+	coordinator_idle_seconds:           int,
+	// coordinator_stop replaces agent.stop_instance for idle stops (tests);
+	// returns whether the stop was sent.
+	coordinator_stop:     proc(ctx: rawptr, owner: domain.User_ID, instance_id, reason: string) -> bool,
+	coordinator_stop_ctx: rawptr,
+	// content: chat inbox reads for the idle-stop unread-user-input guard.
+	// nil (bare tests) skips that guard.
+	content:              ^iface.Content_Repository,
 }
 
 new_service :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Service {
