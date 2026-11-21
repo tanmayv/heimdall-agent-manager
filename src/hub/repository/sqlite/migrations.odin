@@ -719,6 +719,8 @@ MIGRATION_230_EXTENSION_VERSION_SYNC :: #load("migrations/230_extension_version_
 MIGRATION_231_EXTENSION_VERSION_SYNC :: #load("migrations/231_extension_version_sync_0_5_70.sql", string)
 MIGRATION_232_KIRO_ACP_PROVIDER :: #load("migrations/232_kiro_acp_provider.sql", string)
 
+MIGRATION_233_EXTENSION_VERSION_SYNC :: #load("migrations/233_extension_version_sync_0_5_71.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -966,6 +968,7 @@ migration_order :: [?]string {
 	"230_extension_version_sync_0_5_69.sql",
 	"231_extension_version_sync_0_5_70.sql",
 	"232_kiro_acp_provider.sql",
+	"233_extension_version_sync_0_5_71.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1505,6 +1508,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "233_extension_version_sync_0_5_71.sql" do return strings.clone(MIGRATION_233_EXTENSION_VERSION_SYNC)
 	if name == "232_kiro_acp_provider.sql" do return strings.clone(MIGRATION_232_KIRO_ACP_PROVIDER)
 	if name == "231_extension_version_sync_0_5_70.sql" do return strings.clone(MIGRATION_231_EXTENSION_VERSION_SYNC)
 	if name == "230_extension_version_sync_0_5_69.sql" do return strings.clone(MIGRATION_230_EXTENSION_VERSION_SYNC)
