@@ -66,6 +66,11 @@ bridge_os_kill :: proc(pid: int) -> bool {
 	return bool(win.TerminateProcess(h, 1))
 }
 
+// bridge_os_pid_is_zombie: Windows has no unreaped-zombie state that
+// bridge_os_pid_alive mistakes for a live process (an exited process signals its
+// handle), so this is always false.
+bridge_os_pid_is_zombie :: proc(pid: int) -> bool { return false }
+
 // bridge_os_pid_alive: only "no such process" proves pid gone; a process we may
 // not open still exists.
 bridge_os_pid_alive :: proc(pid: int) -> bool {

@@ -243,7 +243,7 @@ The bridge is a flat Odin package (`package main`, [src/bridge](../src/bridge));
   `extension_permission.odin`, `permission_relay.odin` and `extension_blockers.odin` relay permission requests to the hub as agent blockers.
 - **Providers.** `provider_catalog_cache.odin` (catalog snapshot pushed by the hub), `provider_profiles.odin`/`provider_store.odin`,
   `provider_model_discovery.odin` (probes run only on `provider_models_discover`).
-- **Auto-update.** [auto_update.odin](../src/bridge/auto_update.odin) (quiet-window updates under a kernel lock),
+- **Auto-update.** [auto_update.odin](../src/bridge/auto_update.odin) (quiet-window updates, forced after `auto_update_max_defer_hours`, under a kernel lock),
   `update_cmd.odin`, `release_fetch.odin`, `bridge_update`/`bridge_uninstall` commands, `recovery_command.odin`.
 - **Filesystem and VCS.** [fs_management.odin](../src/bridge/fs_management.odin) (sandboxed `fs_*` commands confined to a trusted root),
   `vcs_api.odin` with `vcs_git.odin`/`vcs_jj.odin` (backing the UI's VCS panel and the task worktree/merge commands),

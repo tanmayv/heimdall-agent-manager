@@ -46,6 +46,22 @@ bridge_os_pid_alive :: proc(pid: int) -> bool {
 	return posix.errno() != .ESRCH
 }
 
+// bridge_os_pid_is_zombie: pid has exited but its parent has not reaped it yet
+// (`ps` state Z). kill(pid, 0) still succeeds for such a process, so callers that
+// wait for a process to go away must not take bridge_os_pid_alive alone as proof
+// that it is still running. false when ps cannot report pid at all.
+bridge_os_pid_is_zombie :: proc(pid: int) -> bool {
+	if pid <= 0 do return false
+	c_ps_cmd := strings.clone_to_cstring(fmt.tprintf("LC_ALL=C ps -p %d -o stat= 2>/dev/null", pid))
+	defer delete(c_ps_cmd)
+	f := posix.popen(c_ps_cmd, "r")
+	if f == nil do return false
+	defer posix.pclose(f)
+	buf: [64]byte
+	n := posix.fread(&buf, 1, size_of(buf) - 1, f)
+	return strings.has_prefix(strings.trim_space(string(buf[:n])), "Z")
+}
+
 // bridge_os_process_lstart_and_command returns the start time and command line of
 // pid as `ps` reports them. Force C locale and UTC timezone so the lstart format is
 // predictable and in UTC on both Linux and macOS.

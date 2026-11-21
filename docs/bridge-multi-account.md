@@ -178,8 +178,24 @@ The setting applies only to that profile and is preserved by updates. A running
 update finishes its current transaction; disabling the setting prevents the next
 automatic update. Manual updates remain available.
 
-A profile with continuously running agents waits indefinitely for a quiet window;
-automatic updates never force those agents to stop. This includes agents preserved
-by the PTY host across bridge restarts. If the PTY host cannot be queried, the
-profile defers the update until its agent state can be verified. Stop long-lived
-agents to permit the next automatic check, or use the manual Update action.
+Automatic updates still prefer a quiet window, but an update that stays overdue
+is eventually forced. Once a profile has had no quiet window for
+`auto_update_max_defer_hours` (default 24) after its scheduled check, the bridge
+logs it and shows a notice on the bridge in the Hub ("auto-update to vX forcing
+in ~2 min; K agents will be stopped"). About two minutes later it stops the PTY
+host and every agent it hosts (agents preserved across bridge restarts
+included), then runs the same verified, rolled-back-on-failure update. Stopped
+agents do not restart on their own; their terminal status reaches the Hub. The
+outcome (succeeded, or failed / rolled back) is reported on the bridge too. If
+the agents finish during the notice, the update goes through the quiet window
+instead.
+
+```toml
+[bridge]
+auto_update_max_defer_hours = 24  # 0 = never force: wait for a quiet window indefinitely
+```
+
+With `0`, a profile with continuously running agents waits indefinitely, as
+before. If the PTY host cannot be queried, the quiet window is never granted,
+so only forcing (or a manual update) can proceed. Stop long-lived agents to
+permit the next automatic check, or use the manual Update action.

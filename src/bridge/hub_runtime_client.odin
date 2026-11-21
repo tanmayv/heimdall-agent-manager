@@ -1886,22 +1886,43 @@ bridge_update_stop_pty_host :: proc(socket: string) -> (ok: bool, detail: string
 	if !bridge_update_pid_is_pty_host(pid) {
 		return false, fmt.tprintf("failed to stop bridge-owned PTY host: pid %d serving %s is not ham-pty-host; update aborted before restart", pid, socket)
 	}
+	return bridge_update_stop_pty_host_pid(pid)
+}
+
+// bridge_update_pty_host_exited: pid no longer runs. When pid is the daemon THIS
+// process started it is reaped here (os.process_wait under pty_host_daemon_lock),
+// which is what makes it disappear: SIGTERM alone leaves our own child a zombie
+// that kill(pid, 0) still reports, and waiting for that to change can only time
+// out (REQ-AUP-1). A zombie of some other parent (a daemon an earlier bridge
+// process started) is just as dead, so it counts as gone too.
+bridge_update_pty_host_exited :: proc(pid: int) -> bool {
+	sync.mutex_lock(&pty_host_daemon_lock)
+	if pty_host_daemon_has_process && pty_host_daemon_process.pid == pid {
+		_ = bridge_pty_host_daemon_process_running(&pty_host_daemon_process, &pty_host_daemon_has_process)
+	}
+	sync.mutex_unlock(&pty_host_daemon_lock)
+	return !bridge_os_pid_alive(pid) || bridge_os_pid_is_zombie(pid)
+}
+
+// bridge_update_stop_pty_host_pid signals the identified PTY host daemon pid:
+// SIGTERM, then SIGKILL after term_grace, then gives up after kill_grace.
+bridge_update_stop_pty_host_pid :: proc(pid: int, term_grace := PTY_HOST_DAEMON_TERM_GRACE, kill_grace := PTY_HOST_DAEMON_KILL_GRACE) -> (ok: bool, detail: string) {
 	gone :: proc(pid: int, within: time.Duration) -> bool {
 		deadline := time.time_add(time.now(), within)
-		for bridge_os_pid_alive(pid) {
+		for !bridge_update_pty_host_exited(pid) {
 			if time.diff(time.now(), deadline) <= 0 do return false
 			time.sleep(50 * time.Millisecond)
 		}
 		return true
 	}
 	_ = bridge_os_terminate(pid)
-	if !gone(pid, PTY_HOST_DAEMON_TERM_GRACE) {
+	if !gone(pid, term_grace) {
 		_ = bridge_os_kill(pid)
-		if !gone(pid, PTY_HOST_DAEMON_KILL_GRACE) {
+		if !gone(pid, kill_grace) {
 			return false, fmt.tprintf("failed to stop bridge-owned PTY host (pid %d survived SIGKILL); update aborted before restart", pid)
 		}
 	}
-	// Reap it if this process started it, and make the next use start a new one.
+	// Forget a reaped own daemon, and make the next use start a new one.
 	sync.mutex_lock(&pty_host_daemon_lock)
 	_ = bridge_pty_host_daemon_process_running(&pty_host_daemon_process, &pty_host_daemon_has_process)
 	pty_host_daemon_started = false
