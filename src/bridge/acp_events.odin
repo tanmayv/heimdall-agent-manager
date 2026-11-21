@@ -285,7 +285,7 @@ acp_events_config :: proc(r:^ACP_Runtime,update:json.Object) {
     for category in ([]string{r.descriptor.model_category,r.descriptor.permission_category}) {
         if category=="" do continue
         value:=r.model if category==r.descriptor.model_category else r.mode
-        if value=="" do continue
+        if value=="" || (category==r.descriptor.model_category && !acp_runtime_model_selected(r)) do continue
         id,selected:=acp_config_selection(raw,category,value,selected=true);delete(id)
         if !selected { acp_runtime_error(r,"acp_model_unavailable" if category==r.descriptor.model_category else "acp_permission_mode_unsupported");return }
     }

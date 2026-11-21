@@ -229,8 +229,19 @@ acp_runtime_configure :: proc(r: ^ACP_Runtime, category, value, failure: string)
     acp_runtime_request(r, "session/set_config_option", string(raw))
 }
 
+// Embedded resources are optional in ACP; resource_link is baseline. Only a
+// descriptor that opts in may fall back to linking the bootstrap file.
+acp_runtime_bootstrap_supported :: proc(r: ^ACP_Runtime) -> bool {
+    return r.d.embedded_context || r.descriptor.bootstrap_resource_link
+}
+
+// The descriptor's agent-default model keeps the agent's own model choice.
+acp_runtime_model_selected :: proc(r: ^ACP_Runtime) -> bool {
+    return r.model != "" && (r.descriptor.agent_default_model == "" || r.model != r.descriptor.agent_default_model)
+}
+
 acp_runtime_ready :: proc(r: ^ACP_Runtime) {
-    if !r.d.starter_sent && !r.d.embedded_context { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
+    if !r.d.starter_sent && !acp_runtime_bootstrap_supported(r) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
     r.d.ready = true
     acp_events_ready(r)
     acp_runtime_replace(&r.d.phase, "ready")
@@ -257,13 +268,22 @@ acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap 
     text := make(json.Object, allocator = context.temp_allocator)
     text["type"] = json.String("text"); text["text"] = json.String(input.text); append(&blocks, text)
     if bootstrap {
-        if !r.d.embedded_context { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-        content, err := os.read_entire_file(strings.concatenate({r.run_dir, "/", r.binding.bootstrap_filename}, context.temp_allocator), context.temp_allocator)
-        if err != nil { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-        resource := make(json.Object, allocator = context.temp_allocator)
-        resource["uri"] = json.String(strings.concatenate({"file://", r.run_dir, "/", r.binding.bootstrap_filename}, context.temp_allocator))
-        resource["mimeType"] = json.String("text/markdown"); resource["text"] = json.String(string(content))
-        block := make(json.Object, allocator = context.temp_allocator); block["type"] = json.String("resource"); block["resource"] = resource
+        if !acp_runtime_bootstrap_supported(r) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
+        path := strings.concatenate({r.run_dir, "/", r.binding.bootstrap_filename}, context.temp_allocator)
+        uri := strings.concatenate({"file://", path}, context.temp_allocator)
+        block := make(json.Object, allocator = context.temp_allocator)
+        if r.d.embedded_context {
+            content, err := os.read_entire_file(path, context.temp_allocator)
+            if err != nil { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
+            resource := make(json.Object, allocator = context.temp_allocator)
+            resource["uri"] = json.String(uri)
+            resource["mimeType"] = json.String("text/markdown"); resource["text"] = json.String(string(content))
+            block["type"] = json.String("resource"); block["resource"] = resource
+        } else {
+            if !os.exists(path) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
+            block["type"] = json.String("resource_link"); block["uri"] = json.String(uri)
+            block["name"] = json.String(r.binding.bootstrap_filename); block["mimeType"] = json.String("text/markdown")
+        }
         append(&blocks, block)
     }
     raw, _ := json.marshal(struct{sessionId: string, prompt: []json.Value}{r.session, blocks[:]}, allocator = context.temp_allocator)
@@ -313,7 +333,7 @@ acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
             raw, _ := json.marshal(struct{sessionId, cwd: string, mcpServers: []string}{r.session, r.run_dir, {}}, allocator = context.temp_allocator)
             acp_runtime_request(r, "session/load", string(raw))
         } else {
-            if !r.d.embedded_context { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
+            if !acp_runtime_bootstrap_supported(r) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
             acp_runtime_replace(&r.d.phase, "new")
             acp_runtime_request(r, "session/new", acp_runtime_session_params(r))
         }
@@ -325,7 +345,7 @@ acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
         }
         r.d.replay_only = false
         acp_runtime_replace(&r.d.config_json, result.result_json)
-        if r.model != "" { acp_runtime_configure(r, "model", r.model, "acp_model_unavailable") }
+        if acp_runtime_model_selected(r) { acp_runtime_configure(r, "model", r.model, "acp_model_unavailable") }
         else { acp_runtime_configure(r, "mode", r.mode, "acp_permission_mode_unsupported") }
     case "model", "mode":
         category := r.d.phase
@@ -555,7 +575,7 @@ acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^P
     d, known := contracts.acp_provider_descriptor(pp.provider)
     if !known do return {}, false
     resolved := ""
-    if d.launch == .Native {
+    if d.launch == .Native || d.launch == .System {
         command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
         resolved = profile_resolve_binary(command, full)
     }

@@ -395,3 +395,33 @@ test_action_create_params_validation_errors :: proc(t: ^testing.T) {
 	testing.expect(t, !ok3, "missing operations when no type should fail")
 }
 
+
+// REQ-VOICE-5: --artifact is repeatable (and comma-separated) and lands in artifact_ids.
+@(test)
+test_chat_send_with_artifact_flags :: proc(t: ^testing.T) {
+	sync.mutex_lock(&vault_test_mutex)
+	defer sync.mutex_unlock(&vault_test_mutex)
+	sb := ctl_vault_test_sandbox_open("chat-send-artifact-flags")
+	defer ctl_vault_test_sandbox_close(&sb)
+
+	args := []string{"--artifact", "art_voice1", "--artifact", "art_doc2,art_img3"}
+	out := unseal_out(ctl_agentmode_chat_send_params("user", "Voice reply attached.", with_kr(args)))
+
+	val, err := json.parse_string(out, allocator = context.temp_allocator)
+	testing.expect(t, err == .None, "params must be valid JSON")
+	obj := val.(json.Object)
+	testing.expect_value(t, string(obj["to"].(json.String)), "user")
+	ids, ok := obj["artifact_ids"].(json.Array)
+	testing.expect(t, ok, "artifact_ids must be an array")
+	testing.expect_value(t, len(ids), 3)
+	if len(ids) == 3 {
+		testing.expect_value(t, string(ids[0].(json.String)), "art_voice1")
+		testing.expect_value(t, string(ids[1].(json.String)), "art_doc2")
+		testing.expect_value(t, string(ids[2].(json.String)), "art_img3")
+	}
+	_, has_options := obj["options"]
+	testing.expect(t, !has_options, "artifact-only send must not add options")
+
+	plain := unseal_out(ctl_agentmode_chat_send_params("user", "No attachments.", with_kr([]string{})))
+	testing.expect(t, !strings.contains(plain, "artifact_ids"), "send without --artifact must not add artifact_ids")
+}

@@ -144,3 +144,22 @@ test_runtime_descriptor_readiness_rejects_status_identity_substitution :: proc(t
   transport_test_replace(ready, `"version":"0.108.0"`, `"version":"0.108.1"`),
  }) { testing.expect(t, !acp_adapter_ready(raw, TRANSPORT_TEST_RECIPE, "claude")) }
 }
+
+KIRO_TRANSPORT_TEST_RECIPE :: `{"command":"kiro-cli","args":["acp","--agent-engine","v3"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.5.0"}`
+
+@(test)
+test_runtime_kiro_readiness_accepts_detected_versions_at_or_above_minimum :: proc(t: ^testing.T) {
+ ready :: `{"installed":true,"state":"ready","version":"3.5.0","checked_at":"2026-11-21T00:00:00Z","provider":"kiro","profile":"kiro","runtime_kind":"system"}`
+ testing.expect(t, acp_adapter_ready(ready, KIRO_TRANSPORT_TEST_RECIPE, "kiro"))
+ testing.expect(t, acp_adapter_ready(transport_test_replace(ready, `"version":"3.5.0"`, `"version":"3.12.1"`), KIRO_TRANSPORT_TEST_RECIPE, "kiro"))
+ testing.expect(t, !acp_adapter_ready(ready, KIRO_TRANSPORT_TEST_RECIPE, "claude"))
+ testing.expect(t, !acp_adapter_ready(ready, TRANSPORT_TEST_RECIPE, "kiro"))
+ for raw in ([]string{
+  transport_test_replace(ready, `"version":"3.5.0"`, `"version":"3.4.9"`),
+  transport_test_replace(ready, `"version":"3.5.0"`, `"version":"3.5"`),
+  transport_test_replace(ready, `"runtime_kind":"system"`, `"runtime_kind":"native"`),
+  transport_test_replace(ready, `,"runtime_kind":"system"`, ``),
+  transport_test_replace(ready, `"state":"ready"`, `"state":"outdated"`),
+  transport_test_replace(ready, `"profile":"kiro"`, `"profile":"work"`),
+ }) { testing.expect(t, !acp_adapter_ready(raw, KIRO_TRANSPORT_TEST_RECIPE, "kiro")) }
+}

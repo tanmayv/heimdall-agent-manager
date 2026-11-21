@@ -1546,8 +1546,11 @@ ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string)
 	defer delete(opts)
 	acts := collect_multi_values(args, "--actions", "--action", "--action-id", "--action-ids")
 	defer delete(acts)
+	// REQ-VOICE-5: attach already-created artifacts (e.g. an audio/ogg voice reply).
+	arts := collect_multi_values(args, "--artifacts", "--artifact", "--artifact-id", "--artifact-ids")
+	defer delete(arts)
 
-	if len(opts) == 0 && len(acts) == 0 {
+	if len(opts) == 0 && len(acts) == 0 && len(arts) == 0 {
 		return json_object(json_kv("to", to), json_kv("body", chat_body))
 	}
 
@@ -1561,6 +1564,9 @@ ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string)
 	if len(acts) > 0 {
 		append(&fields, json_string_array_field("action_ids", acts[:]))
 		append(&fields, json_string_array_field("actions", acts[:]))
+	}
+	if len(arts) > 0 {
+		append(&fields, json_string_array_field("artifact_ids", arts[:]))
 	}
 	return json_object_from_slice(fields[:])
 }
@@ -2148,6 +2154,7 @@ print_help_chat :: proc() {
 	fmt.println("  send --to <user|agent-instance-id> --body <t> | --stdin        Send a message.")
 	fmt.println("      [--options <a,b> | --option <opt>] [--expected-answers <...>] [--choices <...>]")
 	fmt.println("      [--actions <a,b> | --action <act>]")
+	fmt.println("      [--artifact <art-id>]...  Attach existing artifacts (repeatable or comma-separated; e.g. a voice reply).")
 	fmt.println("      [--questions-file <path.json>]  Version 1 grouped questions (user only; cannot combine with flat options).")
 	fmt.println("      Question text and option labels are vault-encrypted; each question also accepts custom text.")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
@@ -2161,6 +2168,10 @@ print_help_chat :: proc() {
 	fmt.println(`  questions.json: {"version":1,"questions":[{"id":"target","text":"Where?","options":[{"id":"stage","label":"Staging"},{"id":"prod","label":"Production"}]}]}`)
 	fmt.println("  selection_mode defaults to single; use multiple to select several options. IDs: 1-64 ASCII letters/digits/_/-. Max 12 questions, 12 options each.")
 	fmt.println("  ham-ctl chat send --to inst_reviewer --body 'Can you LGTM inst_task_1?'")
+	fmt.println("  ham-ctl chat send --to user --body 'Voice reply attached.' --artifact art_voice123")
+	fmt.println("")
+	fmt.println("  Received messages list attachments as `artifacts: [{artifact_id, kind, mime}]`;")
+	fmt.println("  kind is voice/audio/image/file/... and mime its media type (e.g. audio/ogg).")
 }
 
 print_help_artifact :: proc() {
@@ -2171,6 +2182,7 @@ print_help_artifact :: proc() {
 	fmt.println("       [--kind <kind>] [--since <ts>] [--until <ts>] [--sort <field>]")
 	fmt.println("       [--order <asc|desc>] [--limit <n>] [--cursor <c>] [--include-deleted]")
 	fmt.println("  create --name <name> [--kind <kind>] [--content <text>|--file <path>|--stdin]")
+	fmt.println("       [--content-type <mime>]  Media type, stored as content_type and mime (e.g. audio/ogg).")
 	fmt.println("  create --name <name> --kind html-bundle (--directory <dir>|--file <bundle.zip>) [--entry <page.html>]")
 	fmt.println("       Static site viewed in the Artifact Viewer: local HTML/CSS/images/fonts only;")
 	fmt.println("       no JavaScript, no remote URLs (both are dropped when the page renders).")
@@ -2190,6 +2202,7 @@ print_help_artifact :: proc() {
 	fmt.println("  ham-ctl artifact list --limit 10")
 	fmt.println("  ham-ctl artifact list --kind markdown --sort created_at --order desc")
 	fmt.println("  ham-ctl artifact create --name test-log --kind markdown --file /tmp/test.log")
+	fmt.println("  ham-ctl artifact create --name reply.ogg --kind audio --content-type audio/ogg --file reply.ogg")
 	fmt.println("  ham-ctl artifact create --name site --kind html-bundle --directory ./site")
 	fmt.println("  ham-ctl artifact create --name report --kind html-bundle --directory ./site --entry docs/index.html")
 	fmt.println("  (cd site && zip -r ../site.zip .) && ham-ctl artifact create --name site --kind html-bundle --file site.zip")

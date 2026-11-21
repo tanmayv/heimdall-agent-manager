@@ -9,6 +9,8 @@ const {
   profileEnvelope,
   generateProfileId,
   configDirectoryMode,
+  configDirectoryProviders,
+  generateConfigDirectory,
   profileIdentityError,
   encodeProfileArgs,
   decodeProfileArgs,
@@ -695,4 +697,9 @@ test('random directory recognition handles resolved Windows and Unix paths witho
   }
   assert.equal(configDirectoryMode(''), 'inherit');
   assert.equal(configDirectoryMode('/private/account'), 'custom');
+  assert.equal(configDirectoryMode('~/.heimdall-kiro-12345678-1234-1234-1234-123456789abc'), 'random');
+  assert.equal(configDirectoryMode('~/.heimdall-copilot-12345678-1234-1234-1234-123456789abc'), 'custom');
+  assert.match(generateConfigDirectory('kiro'), /^~\/\.heimdall-kiro-[0-9a-f-]{36}$/);
+  assert.match(generateConfigDirectory(), /^~\/\.heimdall-claude-/);
+  assert.ok(configDirectoryProviders.has('kiro') && configDirectoryProviders.has('claude') && !configDirectoryProviders.has('copilot'));
 });

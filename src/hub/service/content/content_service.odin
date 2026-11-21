@@ -2,6 +2,7 @@ package content
 
 import eventinbox "odin_test:hub/service/eventinbox"
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strconv"
@@ -410,9 +411,23 @@ mark_read_with_receipts :: proc(s:^Content_Service, auth:contracts.Auth_Context,
 	if len(marked_ids)>0 do notify_conversation_attention(s,saved)
 	return saved,marked_ids[:],true,{}
 }
-message_body_for_response :: proc(s:^Content_Service, m:domain.Chat_Message)->string{ if artifact_refs_have_missing(s,m.owner_user_id,m.artifact_ids_json) do return strings.concatenate({m.body,"\n[artifact unavailable/deleted]"}); return m.body }
+// message_body_for_response appends the unavailable marker when any resolved
+// attachment is missing; refs come from message_artifact_refs so a row resolves
+// its artifacts once.
+message_body_for_response :: proc(m:domain.Chat_Message, refs:[]Message_Artifact_Ref)->string{ for r in refs { if !r.available do return strings.concatenate({m.body,"\n[artifact unavailable/deleted]"}, context.temp_allocator) }; return m.body }
 
-create_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,input:Artifact_Input)->(domain.Artifact,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if size_err:=validate_artifact_content_size(input.content); size_err.code!=.None do return {},false,size_err; if ok_ctx,ctx_err:=artifact_context_owned(s,owner,input); !ok_ctx do return {},false,ctx_err; name:=input.name; if name=="" do name=input.filename; if name=="" do name="artifact"; kind:=input.kind; if kind=="" do kind="file"; now:=platform.clock_now(s.clock); a:=domain.Artifact{artifact_id=platform.generate_id(s.ids,"art_"),owner_user_id=owner,kind=kind,name=name,description=input.description,content_type=input.content_type,size_bytes=len(input.content),content=input.content,mime=input.mime,ext=input.ext,sha256=input.sha256,origin_kind=input.origin_kind,origin_ref=input.origin_ref,agent_id=input.agent_id,agent_instance_id=input.agent_instance_id,chain_id=input.chain_id,task_id=input.task_id,project_id=input.project_id,created_at=now,updated_at=now}; return iface.content_save_artifact(s.content,a) }
+// artifact_mime_pair fills whichever of mime / content_type the caller omitted from
+// the other, so `artifact create --content-type audio/ogg` (agents send only
+// content_type) stores mime too and readers such as chat artifact descriptors and
+// bot media see one consistent media type (REQ-VOICE-5).
+artifact_mime_pair :: proc(mime, content_type: string) -> (string, string) {
+	m := strings.trim_space(mime)
+	c := strings.trim_space(content_type)
+	if m == "" do m = c
+	if c == "" do c = m
+	return m, c
+}
+create_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,input:Artifact_Input)->(domain.Artifact,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if size_err:=validate_artifact_content_size(input.content); size_err.code!=.None do return {},false,size_err; if ok_ctx,ctx_err:=artifact_context_owned(s,owner,input); !ok_ctx do return {},false,ctx_err; name:=input.name; if name=="" do name=input.filename; if name=="" do name="artifact"; kind:=input.kind; if kind=="" do kind="file"; mime,content_type:=artifact_mime_pair(input.mime,input.content_type); now:=platform.clock_now(s.clock); a:=domain.Artifact{artifact_id=platform.generate_id(s.ids,"art_"),owner_user_id=owner,kind=kind,name=name,description=input.description,content_type=content_type,size_bytes=len(input.content),content=input.content,mime=mime,ext=input.ext,sha256=input.sha256,origin_kind=input.origin_kind,origin_ref=input.origin_ref,agent_id=input.agent_id,agent_instance_id=input.agent_instance_id,chain_id=input.chain_id,task_id=input.task_id,project_id=input.project_id,created_at=now,updated_at=now}; return iface.content_save_artifact(s.content,a) }
 list_artifacts :: proc(s: ^Content_Service, auth: contracts.Auth_Context, filter: domain.Artifact_List_Filter) -> ([]domain.Artifact, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
@@ -593,6 +608,39 @@ conversation_title_from_input :: proc(explicit_title, fallback: string) -> strin
 	return strings.trim_space(strings.to_string(b))
 }
 artifact_json_or_empty :: proc(v:string)->string{ if strings.trim_space(v)=="" do return "[]"; return v }
+// Message_Artifact_Ref describes one chat attachment for agent-facing message
+// rows: kind and media type let an agent tell a voice note from a document without
+// fetching it first (REQ-VOICE-5). available=false marks a deleted/foreign id.
+Message_Artifact_Ref :: struct {
+	artifact_id: string,
+	kind:        string,
+	mime:        string,
+	available:   bool,
+}
+
+// message_artifact_refs resolves a message's artifact_ids JSON array, in order,
+// to owner-scoped descriptors (temp-allocated). Malformed JSON yields none.
+message_artifact_refs :: proc(s: ^Content_Service, owner: domain.User_ID, ids_json: string) -> []Message_Artifact_Ref {
+	trimmed := strings.trim_space(ids_json)
+	if trimmed == "" || trimmed == "[]" do return nil
+	parsed, perr := json.parse_string(trimmed, allocator = context.temp_allocator)
+	if perr != nil do return nil
+	ids, is_array := parsed.(json.Array)
+	if !is_array do return nil
+	out := make([dynamic]Message_Artifact_Ref, 0, len(ids), context.temp_allocator)
+	for v in ids {
+		id, is_string := v.(json.String)
+		if !is_string || id == "" do continue
+		ref := Message_Artifact_Ref{artifact_id = string(id)}
+		if a, found, _ := iface.content_get_artifact(s.content, string(id)); found && a.owner_user_id == owner {
+			ref.available = true
+			ref.kind = strings.clone(a.kind, context.temp_allocator)
+			ref.mime = strings.clone(a.mime if a.mime != "" else a.content_type, context.temp_allocator)
+		}
+		append(&out, ref)
+	}
+	return out[:]
+}
 artifacts_owned_json :: proc(s:^Content_Service, owner:domain.User_ID, ids_json:string)->bool{ return !artifact_refs_have_missing(s,owner,ids_json) }
 artifact_refs_have_missing :: proc(s:^Content_Service, owner:domain.User_ID, ids_json:string)->bool{ if strings.trim_space(ids_json)=="" || ids_json=="[]" do return false; search:=0; for search<len(ids_json){ rel:=strings.index(ids_json[search:],"\""); if rel<0 do break; start:=search+rel+1; end:=start; for end<len(ids_json)&&ids_json[end]!='"' do end+=1; if end>start { a,ok,_:=iface.content_get_artifact(s.content,ids_json[start:end]); if !ok || a.owner_user_id!=owner do return true }; search=end+1 }; return false }
 

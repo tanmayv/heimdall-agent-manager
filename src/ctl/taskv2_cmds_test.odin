@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import httpc "odin_test:lib/httpc"
 
 // Task System v2 (M2) ctl surface: the brief param builder behind
 // `task create/update` and the per-task rendering of a publish 422
@@ -353,6 +354,20 @@ test_workflow_cancel_params_require_execution :: proc(t: ^testing.T) {
  defer delete(params)
  testing.expect_value(t,id,"wrun_1")
  testing.expect(t,strings.contains(params,`"execution_no":2`),"execution is carried through the transport")
+}
+
+// `task cancel` must send the hub's whole cancel contract: the hub refuses a
+// cancel without reason and request_id (task_cancel.odin), and a generation
+// precondition (> 0) is only sent when asked for.
+@(test)
+test_task_cancel_body_carries_cancel_contract :: proc(t: ^testing.T) {
+ defaults := string(ctl_v2_task_cancel_body([]string{"ham-ctl","task","cancel","task_a"}).(httpc.Json_Body).encoded)
+ testing.expectf(t,strings.contains(defaults,`"reason":"Task cancellation requested via CLI"`),"default reason: %s",defaults)
+ testing.expectf(t,strings.contains(defaults,`"request_id":"req_`),"generated request_id: %s",defaults)
+ // json.marshal keeps the zero; the hub reads 0 as "no generation precondition".
+ testing.expectf(t,strings.contains(defaults,`"expected_generation":0`),"no generation precondition unless asked: %s",defaults)
+ explicit := string(ctl_v2_task_cancel_body([]string{"ham-ctl","task","cancel","task_a","--reason","obsolete","--request-id","cancel-1","--expected-generation","4"}).(httpc.Json_Body).encoded)
+ testing.expect_value(t,explicit,`{"reason":"obsolete","request_id":"cancel-1","expected_generation":4}`)
 }
 
 @(test)

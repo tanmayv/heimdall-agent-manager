@@ -1977,21 +1977,6 @@ get_task_facet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(raw, req.request_id, auth_ctx_server_time(req))
 }
 
-cancel_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
-	if !ok do return auth_resp
-	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
-	task_id := domain.Task_ID(path_part(req.path, 6))
-	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
-	task, changed, err := taskchain_service.cancel_task(h.taskchains, auth_ctx, task_id, json_string(req.body, "reason"))
-	if !changed do return respond_error(err, req.request_id)
-	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
-	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
-	b := strings.builder_make(); write_task_json(&b, task)
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
-}
-
 list_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -3254,6 +3239,11 @@ task_cancel_handler :: proc(ctx: rawptr, req: Request) -> Response {
         expected_generation = i64(jsonx.extract_int(req.body, "expected_generation", 0, true)),
     })
     if !success do return respond_error(cancel_err, req.request_id)
+    // Open task views and boards refresh from these, as for every other task write.
+    if result.changed {
+        publish_task_changed(h, string(result.task.owner_user_id), string(result.task.task_id), string(result.task.chain_id), "updated")
+        publish_chain_changed(h, string(result.task.owner_user_id), string(result.task.chain_id), "updated")
+    }
     wire := struct {
         task: Simple_Task_Wire `json:"task"`,
         changed: bool `json:"changed"`,

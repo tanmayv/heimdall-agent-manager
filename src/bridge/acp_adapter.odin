@@ -28,6 +28,7 @@ ACP_Adapter_Status :: struct {
 ACP_Adapter_Lock_State :: enum { Acquired, Busy, Error }
 
 acp_adapter_platform_supported :: proc(d: contracts.ACP_Provider_Descriptor) -> bool {
+    if d.launch == .System do return contracts.acp_descriptor_system_os_supported(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator))
     if d.launch != .Native do return true
     _, supported := contracts.acp_descriptor_platform_package(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
     return supported
@@ -90,6 +91,9 @@ acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
 acp_adapter_files_valid_for_platform :: proc(root, provider, platform_os, platform_arch: string) -> bool {
     d, known := contracts.acp_provider_descriptor(provider)
     if !known do return false
+    // A system CLI is user-installed: there are no managed files to verify,
+    // and the root only holds the lock and per-profile probe markers.
+    if d.launch == .System do return true
     context.allocator = context.temp_allocator
     manifest, me := os.read_entire_file(strings.concatenate({root, "/node_modules/", d.pkg.name, "/package.json"}), context.temp_allocator)
     lock, le := os.read_entire_file(strings.concatenate({root, "/package-lock.json"}), context.temp_allocator)
@@ -149,6 +153,7 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
     if !acp_adapter_platform_supported(d) {
         s.state = "error"; s.error = "acp_adapter_unsupported_platform"; return s
     }
+    if d.launch == .System do return acp_adapter_system_status(d, profile, s)
     out, diagnostic, _, ran, _ := acp_adapter_runner({"node", "--version"}, 2*time.Second)
     defer { delete(out); delete(diagnostic) }
     if !ran || !acp_adapter_node_compatible(out, d.node_min_major) { s.state = "missing_node"; s.error = "Node 22 or newer is required"; return s }
@@ -196,6 +201,53 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
     return s
 }
 
+// Detect-only status is computed live from the selected profile: nothing is
+// installed, so there is no persisted install record to replay.
+acp_adapter_system_status :: proc(d: contracts.ACP_Provider_Descriptor, profile: string, status: ACP_Adapter_Status) -> ACP_Adapter_Status {
+    context.allocator = context.temp_allocator
+    s := status
+    root := acp_adapter_root(d.provider); defer delete(root)
+    lock_path := strings.concatenate({root, ".lock"})
+    if os.exists(lock_path) {
+        lock, state := acp_adapter_lock_acquire(lock_path)
+        if state == .Busy { s.state = "installing"; return s }
+        if state == .Error { s.state = "error"; s.error = "acp_adapter_lock_failed"; return s }
+        acp_adapter_lock_release(lock)
+    }
+    pp, perr := profile_lookup(d.provider, profile)
+    if perr != .None {
+        s.state = "error"; s.error = strings.concatenate({"acp_", d.provider, "_not_found: ", acp_adapter_probe_message("profile_unavailable", d.provider)}); return s
+    }
+    version, reason, diagnostic := acp_provider_cli_version(&pp)
+    if reason != "" {
+        s.state = "error"
+        if diagnostic == strings.concatenate({d.provider, "_missing"}) {
+            s.state = "missing"
+        } else if diagnostic == "cli_version_outdated" {
+            s.state = "outdated"; s.version = version
+        }
+        s.error = reason
+        if message := acp_adapter_probe_message(diagnostic, d.provider); message != "" do s.error = strings.concatenate({reason, ": ", message})
+        return s
+    }
+    s.installed = true
+    s.version = version
+    binding := acp_provider_binding(d, pp.profile_id, version, bridge_bootstrap_agents_md_name(pp.provider), pp.updated_at)
+    if acp_provider_binding_valid(binding) && acp_adapter_marker_matches(root, binding) {
+        s.state = "ready"
+    } else { s.state = "error"; s.error = "ACP initialize probe is required for the selected profile; use Re-check" }
+    return s
+}
+
+acp_adapter_runtime_kind :: proc(d: contracts.ACP_Provider_Descriptor) -> string {
+    switch d.launch {
+    case .Adapter: return "adapter"
+    case .Native: return "native"
+    case .System: return "system"
+    }
+    return ""
+}
+
 acp_adapter_status_json :: proc(provider: string, override: string = "", profile: string = "") -> string {
     if _, ok := acp_adapter_recipe(provider); !ok do return strings.clone("null")
     d, _ := contracts.acp_provider_descriptor(provider)
@@ -209,7 +261,7 @@ acp_adapter_status_json :: proc(provider: string, override: string = "", profile
         error, checked_at: json.Value,
         provider, runtime_kind, profile: string,
     }{s.installed, nullable(s.version), nullable(s.node_version), s.state, nullable(s.error), nullable(s.checked_at),
-        provider, "adapter" if d.launch == .Adapter else "native", profile_effective_id(provider, profile)})
+        provider, acp_adapter_runtime_kind(d), profile_effective_id(provider, profile)})
     return string(raw)
 }
 
@@ -258,7 +310,9 @@ acp_adapter_probe_message :: proc(reason: string, provider: string = "claude") -
     if reason == strings.concatenate({provider, "_version_timeout"}, context.temp_allocator) do return fmt.tprintf("%s --version did not finish before the deadline", d.display_name)
     if reason == strings.concatenate({provider, "_version_spawn_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version could not be executed", d.display_name)
     if reason == strings.concatenate({provider, "_version_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version exited with a non-zero status", d.display_name)
+    if reason == "cli_version_mismatch" && d.launch == .System do return fmt.tprintf("The selected %s executable did not report a %sX.Y.Z version", d.display_name, d.cli_version_prefix)
     if reason == "cli_version_mismatch" do return fmt.tprintf("The selected %s executable does not report the pinned CLI version %s", d.display_name, d.cli_version)
+    if reason == "cli_version_outdated" do return fmt.tprintf("The selected %s executable is older than the minimum supported version %s; upgrade it on the bridge host", d.display_name, d.pkg.version)
     switch reason {
     case "host_unavailable": return "The pipe daemon is unavailable"
     case "spawn_failed": return "The adapter process could not be spawned"
@@ -290,6 +344,13 @@ acp_adapter_probe_env :: proc(pp: ^Provider_Profile) -> ([][2]string, bool) {
 
 acp_provider_parse_cli_version :: proc(d: contracts.ACP_Provider_Descriptor, output: string) -> (string, bool) {
     text := strings.trim_space(output)
+    if d.launch == .System {
+        // `kiro-cli 3.5.0`: the descriptor label, then the first token only.
+        if d.cli_version_prefix == "" || !strings.has_prefix(text, d.cli_version_prefix) do return "", false
+        text = strings.trim_prefix(text, d.cli_version_prefix)
+        if end := strings.index_any(text, " \t\r\n"); end >= 0 do text = text[:end]
+        return text, len(text) <= 64 && contracts.exact_adapter_version(text)
+    }
     if d.launch == .Native {
         // Copilot prints a product label and a trailing full stop, followed by
         // an update hint. Never accept a different semver found in diagnostics.
@@ -321,10 +382,11 @@ acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration =
         append(&env, strings.concatenate({pair[0], "=", pair[1]}))
         if pair[0] == d.executable_env do binary = pair[1]
     }
-    if d.launch == .Native {
+    if d.launch == .Native || d.launch == .System {
         command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
         binary = profile_resolve_binary(command, env[:])
     }
+    if binary == "" && d.launch == .System do return "", strings.concatenate({"acp_", d.provider, "_not_found"}), strings.concatenate({d.provider, "_missing"})
     out, stderr, exit_code, ran, timed_out := bridge_process_run_capture_status_env({binary, "--version"}, min(timeout, 3*time.Second), env[:])
     defer { delete(out); delete(stderr) }
     if !ran || timed_out || exit_code != 0 {
@@ -337,6 +399,8 @@ acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration =
     // Only a validated numeric version can leave this boundary.
     text, valid := acp_provider_parse_cli_version(d, out)
     if !valid do return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), "cli_version_mismatch"
+    // A detected system CLI below the minimum is reported with its version.
+    if !contracts.acp_descriptor_cli_version_accepted(d, text) do return strings.clone(text), strings.concatenate({"acp_", d.provider, "_outdated"}), "cli_version_outdated"
     return strings.clone(text), "", ""
 }
 
@@ -367,7 +431,7 @@ acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) 
     env, env_ok := acp_adapter_probe_env(pp)
     if !env_ok do return false, strings.concatenate({d.provider, "_missing"})
     resolved := ""
-    if d.launch == .Native {
+    if d.launch == .Native || d.launch == .System {
         child_env := make([dynamic]string)
         for pair in env do append(&child_env, strings.concatenate({pair[0], "=", pair[1]}, context.temp_allocator))
         command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
@@ -463,7 +527,10 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     if reason != "" do return false, reason
     binding, bound := acp_adapter_binding_hook(provider, provider)
     if !bound do return false, "acp_adapter_probe_failed"
-    if before.installed {
+    // A system CLI is never installed: Re-check only probes the detected binary
+    // and certifies the selected profile.
+    if d.launch == .System && bridge_make_directory_all(root) != nil do return false, "acp_adapter_directory_failed"
+    if before.installed || d.launch == .System {
         if acp_adapter_marker_matches(root, binding) do return true, ""
         scratch := strings.concatenate({root, fmt.tprintf(".stage-probe-%d", time.tick_now()._nsec)}, context.temp_allocator)
         if bridge_make_directory_all(scratch) != nil do return false, "acp_adapter_directory_failed"
