@@ -486,3 +486,241 @@ test('macOS packaging declares the microphone entitlement and usage description'
   const builder = fs.readFileSync(new URL('../electron-builder.yml', import.meta.url), 'utf8');
   assert.match(builder, /extendInfo:\s*\n(?:\s*#.*\n)*\s*NSMicrophoneUsageDescription: \S/);
 });
+
+// --- real waveform analysis and resource ownership --------------------------------------
+const wave = await import('../src/ui/utils/audioWaveform.ts');
+const { AudioWaveform } = await import('../src/ui/components/chat/AudioWaveform.tsx');
+
+test('waveform peaks preserve silence and channel maxima with bounded bins', () => {
+  const channels = [new Float32Array([0, 0.2, -0.6, 0]), new Float32Array([0, -0.8, 0.1, 0.4])];
+  const buffer = { length: 4, numberOfChannels: 2, getChannelData: (i: number) => channels[i] };
+  const peaks = wave.audioPeaks(buffer, 2);
+  assert.ok(Math.abs(peaks[0] - 0.8) < 1e-6);
+  assert.ok(Math.abs(peaks[1] - 0.6) < 1e-6);
+  assert.equal(wave.audioPeaks(buffer, 500).length, wave.WAVEFORM_BINS);
+  assert.deepEqual(wave.audioPeaks({ ...buffer, getChannelData: () => new Float32Array(4) }, 2), [0, 0]);
+  assert.equal(wave.sampleAmplitude(new Float32Array(256)), 0);
+  assert.ok(wave.sampleAmplitude(new Float32Array([0.9])) > wave.sampleAmplitude(new Float32Array([0.05])));
+  for (const duration of [NaN, Infinity, 0, -1, 61]) assert.equal(wave.waveformAdmitted(duration), false);
+});
+
+function analysisFake() {
+  let level = 0.1;
+  let closed = 0;
+  let disconnected = 0;
+  let sourceStream: any;
+  const contexts: any[] = [];
+  class Context {
+    state = 'running';
+    options: any;
+    constructor(options?: any) { this.options = options; contexts.push(this); }
+    createMediaStreamSource(stream: any) { sourceStream = stream; return { connect() {}, disconnect() { disconnected++; } }; }
+    createAnalyser() { return { fftSize: 256, getFloatTimeDomainData(samples: Float32Array) { samples.fill(level); }, disconnect() { disconnected++; } }; }
+    resume() { return Promise.resolve(); }
+    close() { closed++; return Promise.resolve(); }
+    decodeAudioData() {
+      return Promise.resolve({ length: 4, numberOfChannels: 1, duration: 4, sampleRate: 16000,
+        getChannelData: () => new Float32Array([0, 0.2, -0.9, 0.4]) });
+    }
+  }
+  return { Context: Context as any, contexts, setLevel: (value: number) => { level = value; },
+    counts: () => ({ closed, disconnected }), source: () => sourceStream };
+}
+
+test('live analysis samples the supplied stream, bounds history, and cancels frames/context', async () => {
+  const fake = analysisFake();
+  const originalRAF = globalThis.requestAnimationFrame;
+  const originalCancel = globalThis.cancelAnimationFrame;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  let nextId = 0;
+  globalThis.requestAnimationFrame = (callback) => { callbacks.set(++nextId, callback); return nextId; };
+  globalThis.cancelAnimationFrame = (id) => { callbacks.delete(id); };
+  let values: number[] = [];
+  const stream = { getTracks: () => assert.fail('analysis must not own microphone tracks') } as any;
+  try {
+    const cleanup = wave.analyseMicrophone(stream, (peaks) => { values = peaks; }, fake.Context);
+    const frame = (time: number) => {
+      const [id, callback] = callbacks.entries().next().value!;
+      callbacks.delete(id); callback(time);
+    };
+    frame(0);
+    assert.ok(values[0] > 0 && values[0] < 0.2);
+    fake.setLevel(0.8);
+    for (let i = 1; i <= 200; i++) frame(i * 50);
+    assert.equal(values.length, wave.LIVE_BINS);
+    assert.ok(values.every((value) => value > 0.79));
+    assert.equal(fake.source(), stream);
+    cleanup(); cleanup();
+    assert.equal(callbacks.size, 0);
+    assert.deepEqual(fake.counts(), { closed: 1, disconnected: 2 });
+  } finally { globalThis.requestAnimationFrame = originalRAF; globalThis.cancelAnimationFrame = originalCancel; }
+});
+
+test('recorder analysis shares the one mic request and closes on stop/cancel/error/unmount', async () => {
+  for (const ending of ['stop', 'cancel', 'error', 'unmount']) {
+    const fake = fakeEnv();
+    const analysis = analysisFake();
+    const mounted = await mount(h(RecorderProbe, { env: { ...fake.env, AudioContext: analysis.Context } }));
+    await act(async () => { await hookValue.start(); });
+    assert.equal(fake.tracks.length, 1, 'one microphone acquisition');
+    assert.equal(analysis.contexts.length, 1);
+    if (ending === 'unmount') await mounted.unmount();
+    else await act(async () => {
+      if (ending === 'error') fake.recorders[0].onerror({ error: new Error('failed') });
+      else hookValue[ending]();
+      await Promise.resolve();
+    });
+    assert.equal(analysis.counts().closed, 1, ending);
+    assert.equal(fake.tracks[0].stopped, true, ending);
+  }
+});
+
+test('cancel before microphone permission resolves never constructs an analyser or recorder', async () => {
+  const analysis = analysisFake();
+  let resolve!: (stream: any) => void;
+  const env = { ...fakeEnv().env, AudioContext: analysis.Context, getUserMedia: () => new Promise<any>((r) => { resolve = r; }) };
+  let stopped = 0;
+  await mount(h(RecorderProbe, { env }));
+  let pending!: Promise<void>;
+  await act(async () => { pending = hookValue.start(); });
+  await act(async () => { hookValue.cancel(); resolve({ getTracks: () => [{ stop() { stopped++; } }] }); await pending; });
+  assert.equal(stopped, 1);
+  assert.equal(analysis.contexts.length, 0);
+  assert.equal(hookValue.phase, 'idle');
+});
+
+test('bounded decode rejects unsupported sources, duration and bytes; failures preserve fallback', async () => {
+  const originalContext = (globalThis as any).AudioContext;
+  const originalFetch = globalThis.fetch;
+  const fake = analysisFake();
+  let requests = 0;
+  (globalThis as any).AudioContext = fake.Context;
+  globalThis.fetch = (async () => { requests++; return new Response(new Uint8Array(16)); }) as any;
+  try {
+    const signal = new AbortController().signal;
+    assert.equal(await wave.decodeWaveform('https://remote.test/a', 4, signal), null);
+    assert.equal(await wave.decodeWaveform('blob:large', 61, signal), null);
+    assert.equal(requests, 0);
+    const peaks = await wave.decodeWaveform('blob:valid', 4, signal);
+    assert.ok(Array.isArray(peaks) && Math.max(...peaks) > 0.89);
+    assert.equal(fake.contexts[0].options.sampleRate, wave.WAVEFORM_SAMPLE_RATE);
+    assert.equal(fake.counts().closed, 1);
+    globalThis.fetch = (async () => new Response(new Uint8Array(wave.MAX_WAVEFORM_BYTES + 1))) as any;
+    assert.equal(await wave.decodeWaveform('blob:oversize', 4, signal), null);
+    assert.equal(fake.contexts.length, 1, 'oversize bytes never reach decoder');
+    class Broken extends fake.Context { decodeAudioData() { return Promise.reject(new Error('Safari decode failure')); } }
+    (globalThis as any).AudioContext = Broken;
+    globalThis.fetch = (async () => new Response(new Uint8Array(16))) as any;
+    const { container } = await mount(h(AudioPlayer, { src: 'blob:broken', durationHintMs: 4_000, debugId: 'fallback' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    assert.equal(q<HTMLInputElement>(container, 'fallback-seek')!.disabled, false);
+    assert.equal(q(container, 'fallback-error'), null, 'analysis failure is not playback failure');
+    await click(q(container, 'fallback-toggle'));
+    assert.equal(q(container, 'fallback')!.getAttribute('data-playing'), 'true');
+  } finally { (globalThis as any).AudioContext = originalContext; globalThis.fetch = originalFetch; }
+});
+
+test('decode has one active job and aborted completion cannot publish peaks', async () => {
+  const originalContext = (globalThis as any).AudioContext;
+  const originalFetch = globalThis.fetch;
+  let resolve!: (buffer: any) => void;
+  let closed = 0;
+  class Pending {
+    decodeAudioData() { return new Promise((r) => { resolve = r; }); }
+    close() { closed++; return Promise.resolve(); }
+  }
+  (globalThis as any).AudioContext = Pending;
+  globalThis.fetch = (async () => new Response(new Uint8Array(16))) as any;
+  try {
+    const controller = new AbortController();
+    const first = wave.decodeWaveform('blob:first', 4, controller.signal);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(await wave.decodeWaveform('blob:second', 4, new AbortController().signal), 'busy');
+    controller.abort();
+    resolve({ duration: 4 });
+    assert.equal(await first, null);
+    assert.equal(closed, 1);
+  } finally { (globalThis as any).AudioContext = originalContext; globalThis.fetch = originalFetch; }
+});
+
+test('player source replacement ignores late decoded results without playing', async () => {
+  const originalContext = (globalThis as any).AudioContext;
+  const originalFetch = globalThis.fetch;
+  let resolve!: (buffer: any) => void;
+  class Pending {
+    decodeAudioData() { return new Promise((r) => { resolve = r; }); }
+    close() { return Promise.resolve(); }
+  }
+  (globalThis as any).AudioContext = Pending;
+  globalThis.fetch = (async () => new Response(new Uint8Array(16))) as any;
+  played.length = 0;
+  try {
+
+    const mounted = await mount(h(AudioPlayer, { src: 'blob:old', durationHintMs: 4_000, debugId: 'stale' }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+
+    await mounted.render(h(AudioPlayer, { src: '', debugId: 'stale' }));
+
+    await act(async () => { resolve({ duration: 4 }); await Promise.resolve(); });
+    assert.equal(mounted.container.querySelector('rect'), null);
+    assert.deepEqual(played, [], 'decoding never invokes play');
+    assert.equal(q<HTMLInputElement>(mounted.container, 'stale-seek')!.disabled, true);
+  } finally { (globalThis as any).AudioContext = originalContext; globalThis.fetch = originalFetch; }
+});
+
+test('reduced motion uses current measured level without flowing history', async () => {
+  const original = globalThis.matchMedia;
+  globalThis.matchMedia = (() => ({ matches: true, addEventListener() {}, removeEventListener() {} })) as any;
+  try {
+    const { container } = await mount(h(AudioWaveform, { live: true, peaks: [0.1, 0.8] }));
+    const bars = Array.from(container.querySelectorAll('rect'));
+    assert.equal(bars.length, wave.LIVE_BINS);
+    assert.ok(bars.every((bar) => Math.abs(Number(bar.getAttribute('height')) - 24) < 1e-6));
+    assert.equal(container.firstElementChild!.getAttribute('aria-hidden'), 'true');
+  } finally { globalThis.matchMedia = original; }
+});
+
+test('a delayed stop event from a cancelled recording cannot release a new stream', async () => {
+  const fake = fakeEnv();
+  const analysis = analysisFake();
+  await mount(h(RecorderProbe, { env: { ...fake.env, AudioContext: analysis.Context } }));
+  await act(async () => { await hookValue.start(); });
+  const lateStop = fake.recorders[0].onstop;
+  fake.recorders[0].onstop = () => {};
+  await act(async () => { hookValue.cancel(); });
+  await act(async () => { await hookValue.start(); });
+  await act(async () => { lateStop(); });
+  assert.equal(fake.tracks[1].stopped, false);
+  assert.equal(hookValue.phase, 'recording');
+  assert.equal(analysis.counts().closed, 1, 'new analyser remains open');
+  await act(async () => { hookValue.stop(); });
+  assert.equal(analysis.counts().closed, 2);
+});
+
+test('automatic duration and byte stops release the microphone analyser', async () => {
+  for (const limit of ['duration', 'bytes']) {
+    const fake = fakeEnv();
+    const analysis = analysisFake();
+    await mount(h(RecorderProbe, { env: { ...fake.env, AudioContext: analysis.Context }, maxDurationMs: 1000 }));
+    await act(async () => { await hookValue.start(); });
+    await act(async () => {
+      if (limit === 'bytes') fake.recorders[0].emit(audio.VOICE_MAX_BYTES);
+      else { fake.advance(1100); await new Promise((r) => setTimeout(r, 300)); }
+    });
+    assert.equal(hookValue.phase, 'preview');
+    assert.equal(analysis.counts().closed, 1);
+    assert.equal(fake.tracks[0].stopped, true);
+  }
+});
+
+test('unsupported or failing microphone analysis leaves recording and preview usable', async () => {
+  const fake = fakeEnv();
+  class BrokenContext { constructor() { throw new Error('Web Audio unavailable'); } }
+  await mount(h(RecorderProbe, { env: { ...fake.env, AudioContext: BrokenContext as any } }));
+  await act(async () => { await hookValue.start(); });
+  assert.equal(hookValue.phase, 'recording');
+  assert.deepEqual(hookValue.amplitudes, []);
+  await act(async () => { hookValue.stop(); });
+  assert.equal(hookValue.phase, 'preview');
+  assert.equal(fake.tracks[0].stopped, true);
+});
