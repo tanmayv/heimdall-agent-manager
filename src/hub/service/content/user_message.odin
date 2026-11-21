@@ -51,3 +51,12 @@ note_user_activity :: proc(s:^Content_Service, instance_id:string) {
 	if s==nil || s.user_activity.run==nil || instance_id=="" do return
 	s.user_activity.run(s.user_activity.ctx,instance_id)
 }
+
+// note_action_card_answered: the user accepting / rejecting / discarding an
+// action card an agent sent them (chat send --actions) is a user event for
+// that agent. Cards no message carried (curator cards) have no addressee.
+note_action_card_answered :: proc(s:^Content_Service, owner:domain.User_ID, card_id:string) {
+	if s==nil || s.user_activity.run==nil do return
+	sender,found,_:=iface.content_action_card_sender(s.content,owner,card_id)
+	if found do note_user_activity(s,sender)
+}
