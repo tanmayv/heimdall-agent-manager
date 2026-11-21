@@ -191,6 +191,15 @@ task_engine_on_start_success :: proc(ctx: rawptr, inst: domain.Agent_Instance) {
 	taskv2.on_start_success((^taskv2.Service)(ctx), inst)
 }
 
+// task_engine_wake_coordinator (REQ-CIS-2): a [taskv2] notice went to a
+// coordinator; start it if it is stopped and not user-stopped. Runs on the
+// taskv2 timer thread, after commit and outside every taskv2 lock.
+task_engine_wake_coordinator :: proc(ctx: rawptr, owner, instance_id: string) {
+	graph := (^App_Graph)(ctx)
+	if graph == nil do return
+	_ = http.coordinator_wake_after_task_notice(&graph.agent_action_handlers, owner, instance_id, time.to_unix_nanoseconds(time.now()) / 1_000_000)
+}
+
 // task_engine_on_instance_changed runs after a taskv2 commit that rewrote an
 // instance's current-task pointer; it re-reads the committed row.
 task_engine_on_instance_changed :: proc(ctx: rawptr, instance_id, change: string) {
@@ -427,6 +436,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.task_engine.on_tasks_changed_ctx = rawptr(graph)
 	graph.task_engine.on_instance_changed = task_engine_on_instance_changed
 	graph.task_engine.on_instance_changed_ctx = rawptr(graph)
+	graph.task_engine.wake_coordinator = task_engine_wake_coordinator
+	graph.task_engine.wake_coordinator_ctx = rawptr(graph)
 	taskchain_service.set_engine(&graph.taskchains, &graph.task_engine)
 	taskchain_service.set_uow_factory(&graph.taskchains, &graph.uow_factory)
 	// Instance lifecycle → engine: ONE chokepoint for every death path

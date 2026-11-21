@@ -9,6 +9,7 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import agent_service "odin_test:hub/service/agent"
+import content_service "odin_test:hub/service/content"
 
 Coordinator_Wake_Outcome :: enum {
 	Not_Needed, Started, Not_Coordinator, User_Stopped, Rate_Limited, Failed,
@@ -122,15 +123,43 @@ coordinator_wake_guard_reset :: proc() {
 	coordinator_wake_guard_destroy(&coordinator_wake_guard)
 }
 
+// Coordinator_Wake_Chains: which chain statuses make a stopped coordinator
+// worth starting. Agent messages wake only Active chains; [taskv2] notices also
+// reach Completed chains (a review or reopen notice after the chain finished).
+Coordinator_Wake_Chains :: enum { Active_Only, Active_Or_Completed }
+
+COORDINATOR_WAKE_TASK_NOTICE_SENDER :: "taskv2"
+
 coordinator_wake_after_agent_message :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, sender: domain.Agent_Instance, target_instance_id, conversation_id: string, now_ms: i64) -> Coordinator_Wake_Outcome {
+	return coordinator_wake_stopped_instance(h, auth, target_instance_id, conversation_id, sender.agent_instance_id, sender.agent_instance_id, .Active_Only, now_ms)
+}
+
+// coordinator_wake_after_task_notice (REQ-CIS-2): a [taskv2] coordinator notice
+// was sent to a coordinator that may be stopped. The bridge holds the notice
+// until the PTY is alive, so starting the instance is all that delivery needs.
+// Runs after the taskv2 commit, off every taskv2 lock (taskv2 drains these on
+// its timer thread). The same rules as the agent-message wake apply: never a
+// user-stopped instance, never a bot, and at most one start per target per
+// COORDINATOR_WAKE_TARGET_MIN_INTERVAL_MS. The sender window is per target
+// ("taskv2:<target>") so one busy chain cannot use up the wakes of another.
+coordinator_wake_after_task_notice :: proc(h: ^Agent_Action_Handlers, owner, target_instance_id: string, now_ms: i64) -> Coordinator_Wake_Outcome {
+	auth := contracts.Auth_Context{kind = .Internal_User, user_id = owner}
+	sender_key := strings.concatenate({COORDINATOR_WAKE_TASK_NOTICE_SENDER, ":", target_instance_id}, context.temp_allocator)
+	return coordinator_wake_stopped_instance(h, auth, target_instance_id, "", COORDINATOR_WAKE_TASK_NOTICE_SENDER, sender_key, .Active_Or_Completed, now_ms)
+}
+
+// coordinator_wake_stopped_instance restarts a stopped/failed/unreachable chain
+// coordinator through restart_stopped_conversation_instance. An empty
+// conversation_id resolves to the instance's own conversation.
+coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, target_instance_id, conversation_id, sender_label, sender_key: string, chains_scope: Coordinator_Wake_Chains, now_ms: i64) -> Coordinator_Wake_Outcome {
 	outcome := Coordinator_Wake_Outcome.Failed
 	code := domain.Error_Code.Internal_Error
 	defer {
 		switch outcome {
-		case .Started: fmt.printf("coordinator_wake: started target=%s sender=%s\n", target_instance_id, sender.agent_instance_id)
+		case .Started: fmt.printf("coordinator_wake: started target=%s sender=%s\n", target_instance_id, sender_label)
 		case .Not_Coordinator, .User_Stopped, .Rate_Limited:
-			fmt.printf("coordinator_wake: skipped reason=%s target=%s sender=%s\n", coordinator_wake_outcome_string(outcome), target_instance_id, sender.agent_instance_id)
-		case .Failed: fmt.printf("coordinator_wake: failed target=%s sender=%s code=%s\n", target_instance_id, sender.agent_instance_id, code)
+			fmt.printf("coordinator_wake: skipped reason=%s target=%s sender=%s\n", coordinator_wake_outcome_string(outcome), target_instance_id, sender_label)
+		case .Failed: fmt.printf("coordinator_wake: failed target=%s sender=%s code=%s\n", target_instance_id, sender_label, code)
 		case .Not_Needed:
 		}
 	}
@@ -157,15 +186,23 @@ coordinator_wake_after_agent_message :: proc(h: ^Agent_Action_Handlers, auth: co
 	if h.taskchains == nil do return outcome
 	chains, chains_err := iface.taskchain_list_chains_by_coordinator(h.taskchains.repo, target_instance_id, domain.User_ID(auth.user_id))
 	if chains_err.code != .None { outcome = .Failed; code = chains_err.code; return outcome }
-	active := false
-	for chain in chains do if chain.status == .Active { active = true; break }
-	if !active do return outcome
+	eligible := false
+	for chain in chains {
+		if chain.status == .Active || (chains_scope == .Active_Or_Completed && chain.status == .Completed) { eligible = true; break }
+	}
+	if !eligible do return outcome
 	outcome = .User_Stopped
 	if target.stopped_by == agent_service.STOPPED_BY_USER do return outcome
+	cid := conversation_id
+	if cid == "" do cid = target.conversation_id
+	if cid == "" && h.content != nil {
+		if conv, conv_ok, _ := content_service.get_conversation_by_instance(h.content, auth, target_instance_id); conv_ok do cid = conv.conversation_id
+	}
+	if cid == "" { outcome = .Failed; code = .Not_Found; return outcome }
 	outcome = .Rate_Limited
-	if !coordinator_wake_guard_try(sender.agent_instance_id, target_instance_id, now_ms) do return outcome
+	if !coordinator_wake_guard_try(sender_key, target_instance_id, now_ms) do return outcome
 	ch := Content_Handlers{auth = h.auth, agents = h.agents, content = h.content, event_bus = h.event_bus}
-	restarted, restart_err := restart_stopped_conversation_instance(&ch, auth, conversation_id)
+	restarted, restart_err := restart_stopped_conversation_instance(&ch, auth, cid)
 	if !restarted { outcome = .Failed; code = restart_err.code; return outcome }
 	outcome = .Started
 	return outcome

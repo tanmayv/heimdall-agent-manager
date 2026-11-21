@@ -67,6 +67,15 @@ Service :: struct {
 	// notify_observer sees every 1-line coordinator attention notification after commit (tests).
 	notify_observer:     proc(ctx: rawptr, instance_id, trigger, line: string),
 	notify_observer_ctx: rawptr,
+	// wake_coordinator (REQ-CIS-2) starts a stopped coordinator that was sent a
+	// [taskv2] notice; nil disables the wake (bare tests). Called from the timer
+	// thread, off every taskv2 lock and outside any UoW (coordinator_wake.odin).
+	wake_coordinator:     proc(ctx: rawptr, owner, instance_id: string),
+	wake_coordinator_ctx: rawptr,
+	// pending_coordinator_wakes: coordinator instance -> chain owner, queued by
+	// flush_effects and drained by the timer thread; guarded by state_mutex,
+	// keys and values heap-owned.
+	pending_coordinator_wakes: map[string]string,
 	// on_instance_changed runs after commit for every instance whose current
 	// task pointer or idle stamp changed (wiring publishes agent_instance).
 	on_instance_changed:     proc(ctx: rawptr, instance_id, change: string),
@@ -476,6 +485,7 @@ flush_effects :: proc(svc: ^Service, e: ^Effects) {
 		if svc.notify_observer != nil {
 			svc.notify_observer(svc.notify_observer_ctx, n.coordinator_instance_id, n.trigger, n.line)
 		}
+		queue_coordinator_wake(svc, n.coordinator_instance_id, n.owner)
 		if n.bridge_id != "" && svc.bridge_command_sink.send_runtime_command != nil {
 			cmd_id := platform.generate_id(svc.ids, "cmd_notify_")
 			cmd_json := agent_notice_command_json(cmd_id, n.coordinator_instance_id, n.chain_id, n.trigger, n.line, n.task_id, n.expected_state)

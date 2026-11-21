@@ -11,6 +11,7 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
+import agent_service "odin_test:hub/service/agent"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 
@@ -333,4 +334,131 @@ test_coordinator_wake_guard_capacity_preserves_live_limits :: proc(t: ^testing.T
 	testing.expect(t, coordinator_wake_guard_try_locked(&g, "new_sender", "new_target", 3_600_000))
 	testing.expect_value(t, len(g.last_target_ms), 1)
 	testing.expect_value(t, len(g.sender_windows), 1)
+}
+
+// ---- REQ-CIS-2: [taskv2] notices wake a stopped coordinator ---------------------
+
+coordinator_wake_launches :: proc(c: ^Coordinator_Wake_Fixture) -> int {
+	count := 0
+	for command in c.commands do if strings.contains(command, `"type":"launch_agent"`) do count += 1
+	return count
+}
+
+coordinator_wake_set_stopped :: proc(t: ^testing.T, c: ^Coordinator_Wake_Fixture, stopped_by := "") {
+	testing.expect(t, sqlite.exec(&c.f.conn, fmt.tprintf("UPDATE agent_instances SET runtime_status='stopped', stopped_by='%s' WHERE agent_instance_id='inst_wake';", stopped_by)))
+}
+
+// coordinator_wake_idle_stop stops the running coordinator the way the idle
+// timer does (agent.stop_instance with a non-"user" reason), then records the
+// bridge's stopped report.
+coordinator_wake_idle_stop :: proc(t: ^testing.T, c: ^Coordinator_Wake_Fixture, reason: string) {
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE agent_instances SET runtime_status='running' WHERE agent_instance_id='inst_wake';"))
+	auth := contracts.Auth_Context{kind = .Internal_User, user_id = string(c.f.owner)}
+	_, stopped, stop_err := agent_service.stop_instance(c.f.ah.agents, auth, "inst_wake", {reason = reason})
+	testing.expectf(t, stopped, "stop %s: %s", reason, stop_err.message)
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE agent_instances SET runtime_status='stopped' WHERE agent_instance_id='inst_wake';"))
+	inst, _, _ := iface.agent_get_instance(&c.f.ag_repo, "inst_wake")
+	testing.expect_value(t, inst.stopped_by, "")
+}
+
+coordinator_wake_notice_at :: proc(c: ^Coordinator_Wake_Fixture, now: i64) -> Coordinator_Wake_Outcome {
+	return coordinator_wake_after_task_notice(&c.f.ah, string(c.f.owner), "inst_wake", now)
+}
+
+@(test)
+test_task_notice_wakes_idle_stopped_coordinator :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	coordinator_wake_idle_stop(t, c, "coordinator_idle")
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Started)
+	testing.expect_value(t, coordinator_wake_launches(c), 1)
+	inst, _, _ := iface.agent_get_instance(&c.f.ag_repo, "inst_wake")
+	testing.expect_value(t, inst.runtime_status, "launching")
+}
+
+@(test)
+test_task_notice_does_not_wake_user_stopped_coordinator :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	coordinator_wake_set_stopped(t, c, "user")
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.User_Stopped)
+	testing.expect_value(t, coordinator_wake_launches(c), 0)
+	inst, _, _ := iface.agent_get_instance(&c.f.ag_repo, "inst_wake")
+	testing.expect_value(t, inst.stopped_by, "user")
+}
+
+@(test)
+test_task_notice_burst_starts_coordinator_once :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Started)
+	// A notice that lands before the launch is reported is not needed at all.
+	testing.expect_value(t, coordinator_wake_notice_at(c, 100), Coordinator_Wake_Outcome.Not_Needed)
+	// Even if the instance reads as stopped again, the burst is throttled.
+	coordinator_wake_set_stopped(t, c)
+	for now in ([]i64{200, 60_000, 119_999}) {
+		testing.expect_value(t, coordinator_wake_notice_at(c, now), Coordinator_Wake_Outcome.Rate_Limited)
+	}
+	testing.expect_value(t, coordinator_wake_launches(c), 1)
+	testing.expect_value(t, coordinator_wake_notice_at(c, 120_000), Coordinator_Wake_Outcome.Started)
+	testing.expect_value(t, coordinator_wake_launches(c), 2)
+}
+
+@(test)
+test_task_notice_wakes_coordinator_of_completed_chain :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE task_chains SET status='completed', completion_summary='finished', completed_at='now';"))
+	coordinator_wake_idle_stop(t, c, "coordinator_idle_completed")
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Started)
+	testing.expect_value(t, coordinator_wake_launches(c), 1)
+}
+
+@(test)
+test_task_notice_skips_cancelled_chain_bot_and_non_coordinator :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE task_chains SET status='cancelled';"))
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Not_Coordinator)
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE task_chains SET status='active';"))
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE agents SET template_id='tmpl_bot' WHERE agent_id='agt_wake';"))
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Not_Coordinator)
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE agents SET template_id='tmpl_worker' WHERE agent_id='agt_wake';"))
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE task_chain_members SET role='worker' WHERE agent_instance_id='inst_wake';"))
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Not_Coordinator)
+	testing.expect_value(t, coordinator_wake_launches(c), 0)
+}
+
+@(test)
+test_task_notice_wake_resolves_conversation_by_instance :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	testing.expect(t, sqlite.exec(&c.f.conn, "UPDATE agent_instances SET conversation_id='' WHERE agent_instance_id='inst_wake';"))
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Started)
+	testing.expect_value(t, coordinator_wake_launches(c), 1)
+}
+
+@(test)
+test_task_notice_wake_ignores_other_owner :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t, other_owner = true); defer coordinator_wake_fixture_destroy(c)
+	testing.expect_value(t, coordinator_wake_notice_at(c, 0), Coordinator_Wake_Outcome.Failed)
+	testing.expect_value(t, coordinator_wake_launches(c), 0)
+}
+
+// The idle stop reasons must not read as a user stop: a user chat message to
+// the coordinator still restarts it (restart_stopped_conversation_instance is
+// the chat send path, content_handlers.odin).
+@(test)
+test_user_chat_wakes_idle_stopped_coordinator :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	for reason, i in ([]string{"coordinator_idle", "coordinator_idle_completed"}) {
+		c := coordinator_wake_fixture(t)
+		coordinator_wake_idle_stop(t, c, reason)
+		ch := Content_Handlers{auth = c.f.ah.auth, agents = c.f.ah.agents, content = c.f.ah.content, event_bus = c.f.ah.event_bus}
+		restarted, err := restart_stopped_conversation_instance(&ch, {kind = .Internal_User, user_id = string(c.f.owner)}, "chat_wake")
+		testing.expectf(t, restarted, "%s: %s", reason, err.message)
+		testing.expectf(t, coordinator_wake_launches(c) == 1, "%s: launches=%d (case %d)", reason, coordinator_wake_launches(c), i)
+		coordinator_wake_fixture_destroy(c)
+	}
 }
