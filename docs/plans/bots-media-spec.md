@@ -841,10 +841,10 @@ bots_media_link_text :: proc(s: ^Bots_Service, caption, name, artifact_id: strin
 
 - `label := name if name != "" else COPY_MEDIA_DEFAULT_LINK_NAME`.
 - `origin := strings.trim_right(s.ui_origin, "/")`.
-- `line := fmt.tprintf(COPY_MEDIA_LINK_FORMAT, label, origin + "/library/artifacts/" + artifact_id)` when `origin != ""`, else `fmt.tprintf(COPY_MEDIA_LINK_NO_ORIGIN_FORMAT, label, artifact_id)`.
+- `line := fmt.tprintf(COPY_MEDIA_LINK_FORMAT, label, origin + ARTIFACT_UI_ROUTE_PREFIX + artifact_id)` when `origin != ""`, else `fmt.tprintf(COPY_MEDIA_LINK_NO_ORIGIN_FORMAT, label, artifact_id)`.
 - Result: `line` when `caption == ""`, else `caption + "\n\n" + line`.
 
-`/library/artifacts/<id>` is the web app's artifact viewer route (`src/ui/components/shell/AppShell.tsx:1263-1264`); it needs a Ninjy sign-in, as artifact content routes do (`src/hub/transport/http/content_handlers.odin:310-312`).
+`ARTIFACT_UI_ROUTE_PREFIX` is `"/#/library/artifacts/"`, so the link is `<ui_origin>/#/library/artifacts/<id>`. The web app is hash-routed: `/library/artifacts/<id>` is the artifact viewer's hash route (`src/ui/components/shell/AppShell.tsx:1310-1311`), and a link without the `#` does not open the viewer. The link needs a Ninjy sign-in, as artifact content routes do (`src/hub/transport/http/content_handlers.odin:310-312`).
 
 `Bots_Service` (`service.odin:16-38`) also gains `ui_origin: string`; wiring sets it from `config.ui_origin` (`src/hub/app/config_bind.odin:77`) in the `graph.bots` literal (`wiring.odin:636`).
 
@@ -1154,7 +1154,7 @@ Odin tests run per package with a unique output under `$HOME`: `odin test <pkg> 
 | 8 | Telegram photo from another `from_id` in the bound chat | no row, nothing sent |
 | 9 | WhatsApp image (PNG) | `/_control/uploads` has the PNG `sha256`; `sent` has `type:"image"` with caption `got image` |
 | 10 | WhatsApp voice (`audio`, `voice:true`, OGG) | `sent` has `type:"audio"` with `voice:true` and no caption, then text `got voice` |
-| 11 | WhatsApp video (MP4) | inbound kind `document`; reply is text containing `got document` and either `/library/artifacts/art_` or `find artifact art_`; SQL outbound attachment `link` |
+| 11 | WhatsApp video (MP4) | inbound kind `document`; reply is text containing `got document` and either `/#/library/artifacts/art_` or `find artifact art_`; SQL outbound attachment `link` |
 | 12 | WhatsApp document with `expired:true`, caption `lost` | SQL attachment `unavailable`; reply `echo: lost` (the mock found no artifact) |
 | 13 | WhatsApp document with `declare_size` 16,777,216, caption `big` | `COPY_MEDIA_TOO_LARGE` exactly once; SQL attachment `too_large`; reply `echo: big` |
 | 14 | sticky-close the WhatsApp window; inject an image, caption `late` | no upload; SQL outbound row `held` whose body contains the artifact id; then open the window and inject `here`: `sent` has the held link text before `echo: here` |
@@ -1348,7 +1348,7 @@ Odin tests run per package with a unique output under `$HOME`: `odin test <pkg> 
 | `src/hub/repository/sqlite/migrations/209_bots.sql:59-78`, `211_bots_whatsapp.sql:80-96` | `channel_messages` (plaintext body, no attachment column), `channel_push_events` |
 | `src/hub/app/wiring.odin:636`, `:658`, `:861-863` | `Bots_Service` literal, `Bot_Agent_Handlers`, channel routes |
 | `src/hub/app/config_bind.odin:77` | `ui_origin` |
-| `src/ui/components/shell/AppShell.tsx:1263-1264` | `/library/artifacts/<id>` viewer route |
+| `src/ui/components/shell/AppShell.tsx:1310-1311` | `#/library/artifacts/<id>` viewer hash route |
 | `src/lib/httpc/httpc.odin:54-65`, `:121-137` | timeouts, stall timeout, response cap, `Body` union (no multipart) |
 | `src/lib/httpc/headers_body.odin:100-125` | `json_body`, `form_body`, `raw_body`, `relay_json_body` |
 | `src/lib/httpc/send.odin:30-77` | `send_json`, `download_to_file` |

@@ -336,7 +336,7 @@ test_delivery_failed_native_media_marks_held :: proc(t: ^testing.T) {
 @(test)
 test_link_text_with_and_without_ui_origin :: proc(t: ^testing.T) {
 	s := Bots_Service{ui_origin="https://ninjy.example///"}
-	testing.expect_value(t,bots_media_link_text(&s,"caption","doc","art_1"),"caption\n\n📎 doc: https://ninjy.example/library/artifacts/art_1\nOpens after you sign in to Ninjy.")
+	testing.expect_value(t,bots_media_link_text(&s,"caption","doc","art_1"),"caption\n\n📎 doc: https://ninjy.example/#/library/artifacts/art_1\nOpens after you sign in to Ninjy.")
 	s.ui_origin=""
 	testing.expect_value(t,bots_media_link_text(&s,"","","art_1"),"📎 File: open Ninjy, go to Library and find artifact art_1.")
 }

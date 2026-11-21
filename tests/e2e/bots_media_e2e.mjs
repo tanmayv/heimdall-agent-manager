@@ -246,7 +246,7 @@ try {
   });
   await step(11,'WhatsApp video falls back to artifact link',async()=>{
     await waMedia('video',mp4,{mime_type:'video/mp4'});
-    await poll(async()=> (await waSent()).some(m=>m.type==='text'&&m.text.includes('got document')&&/\/library\/artifacts\/art_|find artifact art_/.test(m.text)),'video link');
+    await poll(async()=> (await waSent()).some(m=>m.type==='text'&&m.text.includes('got document')&&/\/#\/library\/artifacts\/art_|find artifact art_/.test(m.text)),'video link');
     const rows=await attachments('whatsapp');
     assert.ok(rows.some(a=>a.direction==='inbound'&&a.mime==='video/mp4'&&a.kind==='document'));
     assert.ok(rows.some(a=>a.direction==='outbound'&&a.state==='link'));

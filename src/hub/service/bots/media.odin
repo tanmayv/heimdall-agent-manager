@@ -15,6 +15,8 @@ BOT_MEDIA_NAME_MAX_BYTES :: 200
 BOT_MEDIA_MIME_MAX_BYTES :: 127
 MEDIA_SEND_REQUEST_BUDGET_MS :: 17_000
 MEDIA_SEND_MIN_CALL_MS :: 1_000
+// The web UI is hash-routed: the artifact viewer lives at <ui_origin>/#/library/artifacts/<id>.
+ARTIFACT_UI_ROUTE_PREFIX :: "/#/library/artifacts/"
 
 bots_media_limit :: proc(a: ^channel.Channel_Adapter) -> i64 {
 	if a == nil || a.media_fetch == nil do return 0
@@ -203,7 +205,7 @@ bots_media_link_text :: proc(s: ^Bots_Service, caption, name, artifact_id: strin
 	origin := strings.trim_right(s.ui_origin, "/")
 	line := ""
 	if origin != "" {
-		url := strings.concatenate({origin, "/library/artifacts/", artifact_id}, context.temp_allocator)
+		url := strings.concatenate({origin, ARTIFACT_UI_ROUTE_PREFIX, artifact_id}, context.temp_allocator)
 		line = fmt.tprintf(COPY_MEDIA_LINK_FORMAT, label, url)
 	} else {line = fmt.tprintf(COPY_MEDIA_LINK_NO_ORIGIN_FORMAT, label, artifact_id)}
 	if caption == "" do return line
