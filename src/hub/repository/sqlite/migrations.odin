@@ -701,6 +701,8 @@ MIGRATION_224_COPILOT_ACP_TRANSPORT :: #load("migrations/224_copilot_acp_transpo
 
 MIGRATION_225_EXTENSION_VERSION_SYNC :: #load("migrations/225_extension_version_sync_0_5_64.sql", string)
 
+MIGRATION_226_EXTENSION_VERSION_SYNC :: #load("migrations/226_extension_version_sync_0_5_65.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -938,6 +940,7 @@ migration_order :: [?]string {
 	"224_copilot_acp_transport.sql",
 	"225_extension_version_sync_0_5_64.sql",
 	"bots_web_001_channel.sql",
+	"226_extension_version_sync_0_5_65.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1464,6 +1467,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "226_extension_version_sync_0_5_65.sql" do return strings.clone(MIGRATION_226_EXTENSION_VERSION_SYNC)
 	if name == "225_extension_version_sync_0_5_64.sql" do return strings.clone(MIGRATION_225_EXTENSION_VERSION_SYNC)
 	if name == "224_copilot_acp_transport.sql" do return strings.clone(MIGRATION_224_COPILOT_ACP_TRANSPORT)
 	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
