@@ -13,7 +13,7 @@ Agent_Repo_SQLite :: struct {
 
 new_agent_repository :: proc(impl: ^Agent_Repo_SQLite, conn: ^Conn) -> iface.Agent_Repository {
 	impl.conn = conn
-	return iface.Agent_Repository{ctx = rawptr(impl), runtime_busy=agent_runtime_busy_sqlite, list_agent_refs=agent_catalog_agents, list_instance_refs=agent_catalog_instances, reconfiguration_begin = instance_reconfiguration_begin_sqlite, reconfiguration_get = instance_reconfiguration_get_sqlite, reconfiguration_advance = instance_reconfiguration_advance_sqlite, reconfiguration_list = instance_reconfiguration_list_sqlite, save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, get_instance = agent_get_instance_sqlite, delete_instance = agent_delete_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_instances_by_chain = agent_list_instances_by_chain_sqlite, list_tool_instances_by_chain = agent_list_tool_instances_by_chain_sqlite, get_tool_instance = agent_get_tool_instance_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite, update_token_usage = agent_update_token_usage_sqlite, add_token_totals = agent_add_token_totals_sqlite}
+	return iface.Agent_Repository{ctx = rawptr(impl), runtime_busy=agent_runtime_busy_sqlite, list_agent_refs=agent_catalog_agents, list_instance_refs=agent_catalog_instances, reconfiguration_begin = instance_reconfiguration_begin_sqlite, reconfiguration_get = instance_reconfiguration_get_sqlite, reconfiguration_advance = instance_reconfiguration_advance_sqlite, reconfiguration_list = instance_reconfiguration_list_sqlite, save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, get_instance = agent_get_instance_sqlite, delete_instance = agent_delete_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_instances_by_chain = agent_list_instances_by_chain_sqlite, list_tool_instances_by_chain = agent_list_tool_instances_by_chain_sqlite, get_tool_instance = agent_get_tool_instance_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite, update_token_usage = agent_update_token_usage_sqlite, add_token_totals = agent_add_token_totals_sqlite, touch_user_activity = agent_touch_user_activity_sqlite, get_user_activity = agent_get_user_activity_sqlite}
 }
 
 agent_delete_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (bool, domain.Domain_Error) {
@@ -288,6 +288,32 @@ instance_token_columns_from_stmt :: proc(inst: ^domain.Agent_Instance, stmt: sql
 	inst.token_total_output_tokens = sqlite3_column_int64(stmt, col + 4)
 	inst.token_runs_counted = int(sqlite3_column_int64(stmt, col + 5))
 	inst.token_totals_last_run = int(last_run)
+}
+
+// agent_touch_user_activity_sqlite: monotonic (RFC 3339 UTC stamps compare
+// lexically), so a late writer with an older stamp never moves it back.
+agent_touch_user_activity_sqlite :: proc(ctx: rawptr, instance_id, at: string) -> (bool, domain.Domain_Error) {
+	impl := (^Agent_Repo_SQLite)(ctx)
+	if instance_id == "" || at == "" do return false, {}
+	stmt: sqlite3_stmt = nil
+	query := "UPDATE agent_instances SET user_activity_at = ?1 WHERE agent_instance_id = ?2 AND user_activity_at < ?1;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false, domain.domain_error(.Internal_Error, "failed to prepare user activity update")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, at); bind_text(stmt, 2, instance_id)
+	rc, changes := step_changes(impl.conn.db, stmt)
+	if rc != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "user activity could not be saved")
+	return changes > 0, {}
+}
+
+agent_get_user_activity_sqlite :: proc(ctx: rawptr, instance_id: string) -> (string, bool, domain.Domain_Error) {
+	impl := (^Agent_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT user_activity_at FROM agent_instances WHERE agent_instance_id = ?;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return "", false, domain.domain_error(.Internal_Error, "failed to prepare user activity lookup")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, instance_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return "", false, {}
+	return column_text(stmt, 0), true, {}
 }
 
 agent_update_token_usage_sqlite :: proc(ctx: rawptr, instance_id, bridge_id, usage_json, updated_at: string) -> (bool, domain.Domain_Error) {

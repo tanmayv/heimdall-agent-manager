@@ -697,6 +697,8 @@ MIGRATION_BOTS_WEB_002_ATTACHMENTS :: #load("migrations/bots_web_002_attachments
 MIGRATION_BOTS_WEB_001_CHANNEL :: #load("migrations/bots_web_001_channel.sql", string)
 
 MIGRATION_WHATSAPP_001_INVITE_ONLY :: #load("migrations/whatsapp_001_invite_only.sql", string)
+// Coordinator idle-stop timers: agent_instances.user_activity_at.
+MIGRATION_COORDINATOR_IDLE_001_USER_ACTIVITY :: #load("migrations/coordinator_idle_001_user_activity.sql", string)
 
 MIGRATION_224_COPILOT_ACP_TRANSPORT :: #load("migrations/224_copilot_acp_transport.sql", string)
 
@@ -943,6 +945,7 @@ migration_order :: [?]string {
 	"bots_web_001_channel.sql",
 	"226_extension_version_sync_0_5_65.sql",
 	"bots_web_002_attachments.sql",
+	"coordinator_idle_001_user_activity.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1371,6 +1374,11 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		// A single ALTER; a database that already has the column needs nothing.
+		if name == "coordinator_idle_001_user_activity.sql" && table_column_exists(conn, "agent_instances", "user_activity_at") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 108 is a single ALTER; a database that already has the column needs nothing.
 		if name == "108_agent_permission_mode.sql" && table_column_exists(conn, "agents", "permission_mode") {
 			mark_migration_applied(conn, name)
@@ -1481,6 +1489,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "bots_web_002_attachments.sql" do return strings.clone(MIGRATION_BOTS_WEB_002_ATTACHMENTS)
 	if name == "bots_web_001_channel.sql" do return strings.clone(MIGRATION_BOTS_WEB_001_CHANNEL)
 	if name == "whatsapp_001_invite_only.sql" do return strings.clone(MIGRATION_WHATSAPP_001_INVITE_ONLY)
+	if name == "coordinator_idle_001_user_activity.sql" do return strings.clone(MIGRATION_COORDINATOR_IDLE_001_USER_ACTIVITY)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
