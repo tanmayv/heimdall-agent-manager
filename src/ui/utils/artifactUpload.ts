@@ -1,3 +1,5 @@
+import { AUDIO_ARTIFACT_KIND, extensionForAudioMime } from './audioArtifact';
+
 export function artifactExtensionForMime(mime: string): string {
   const normalized = String(mime || '').toLowerCase();
   if (normalized === 'image/png') return '.png';
@@ -8,6 +10,7 @@ export function artifactExtensionForMime(mime: string): string {
   if (normalized === 'text/csv') return '.csv';
   if (normalized === 'text/html') return '.html';
   if (normalized === 'application/json') return '.json';
+  if (normalized.startsWith('audio/')) return extensionForAudioMime(normalized);
   if (normalized.startsWith('text/')) return '.txt';
   return '';
 }
@@ -23,6 +26,7 @@ export function artifactKindForFile(file: File): string {
   const name = artifactUploadName(file).toLowerCase();
   const mime = String(file?.type || '').toLowerCase();
   if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/')) return AUDIO_ARTIFACT_KIND;
   if (mime === 'text/markdown' || name.endsWith('.md') || name.endsWith('.markdown')) return 'markdown';
   if (mime === 'text/csv' || name.endsWith('.csv')) return 'csv';
   if (mime === 'text/html' || name.endsWith('.html') || name.endsWith('.htm')) return 'html';

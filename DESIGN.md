@@ -280,7 +280,7 @@ Never set UI controls in the serif; never set prose replies in the sans.
 
 ## Iconography
 
-- Use only the app's own set: 59 glyphs in `Icon.tsx` (SVG copies in `assets/brand/icons/`). 24px grid, ~1.8px round strokes, `currentColor`.
+- Use only the app's own set: 61 glyphs in `Icon.tsx` (SVG copies in `assets/brand/icons/`). 24px grid, ~1.8px round strokes, `currentColor`.
 - Sizes: `sm` 14 in sm controls and badges, `md` 16 in buttons, rows and menus, `lg` 20 in empty states and tiles, `xl` 24 for hero moments.
 - Icons sit in `ink-muted` beside a label and `ink` when they are the content; a status colour only inside Alert, Toast or a status component.
 - No emoji, no text glyphs (×, ›, ✓) and no second icon library.

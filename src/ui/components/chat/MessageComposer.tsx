@@ -122,6 +122,11 @@ export type ComposerActionsProps = {
   /** Opens the attachment picker. Omit for a text-only composer: no upload button. */
   onUpload?: () => void;
   uploadDisabled?: boolean;
+  /** Starts a voice recording (REQ-VOICE-4). Omit for a composer without voice: no mic button. */
+  onRecord?: () => void;
+  recordDisabled?: boolean;
+  /** A recording is in progress or being previewed: the mic button shows pressed. */
+  recordActive?: boolean;
   onPaneToggle?: () => void; paneExpanded?: boolean; sendDisabled: boolean;
   /** Opens the chain's Tasks surface; the button is hidden when omitted (no chain). */
   onOpenTasks?: () => void;
@@ -134,20 +139,21 @@ export type ComposerActionsProps = {
    *  anchored at the lower right and grow. Omit for the classic toolbar row. */
   morph?: { expanded: boolean };
 };
-/** Bottom row of the composer card: upload, terminal, tasks | model pill, send. Same
+/** Bottom row of the composer card: upload, mic, terminal, tasks | model pill, send. Same
  *  controls on every form factor; mobile only gets larger tap targets. Upload and the
  *  model pill are left out when their handlers are (a text-only composer). */
 export function MessageComposerActions(props: ComposerActionsProps) {
   return props.morph ? <MorphComposerActions {...props} morph={props.morph} /> : <ClassicComposerActions {...props} />;
 }
 
-function ClassicComposerActions({ debugPrefix: p, mobile, compactModel, provider, model, onSettings, onUpload, uploadDisabled, onPaneToggle, paneExpanded, sendDisabled, onOpenTasks, pendingActions, readOnly, extraActions }: ComposerActionsProps) {
+function ClassicComposerActions({ debugPrefix: p, mobile, compactModel, provider, model, onSettings, onUpload, uploadDisabled, onRecord, recordDisabled, recordActive, onPaneToggle, paneExpanded, sendDisabled, onOpenTasks, pendingActions, readOnly, extraActions }: ComposerActionsProps) {
   const btn = mobile ? 'h-10 w-10 rounded-full' : 'h-9 w-9 rounded-xl';
   const iconSize = mobile ? 20 : 18;
   const send = !readOnly && !pendingActions ? <button type="submit" data-debug-id={`${p}-composer-send-btn`} disabled={sendDisabled} aria-label="Send message" className={`grid ${btn} shrink-0 place-items-center bg-accent text-accent-fg disabled:opacity-40`}><Icon name="arrow-up" size={iconSize} /></button> : null;
   return <div data-debug-id={`${p}-composer-toolbar`} className="mt-2 flex min-w-0 items-center justify-between gap-1.5">
     {!pendingActions && !readOnly ? <div className="flex shrink-0 items-center gap-0.5 sm:gap-1.5">
       {onUpload ? <button type="button" data-debug-id={`${p}-attach-btn`} disabled={uploadDisabled} aria-label="Upload attachment" onClick={onUpload} className={`grid ${btn} place-items-center text-muted hover:bg-neutral-soft disabled:opacity-40`}><Icon name="plus" size={mobile ? 22 : 19} /></button> : null}
+      {onRecord ? <button type="button" data-debug-id={`${p}-mic-btn`} disabled={recordDisabled} aria-label="Record voice message" aria-pressed={Boolean(recordActive)} onClick={onRecord} className={`grid ${btn} place-items-center ${recordActive ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-neutral-soft'} disabled:opacity-40`}><Icon name="mic" size={iconSize} /></button> : null}
       {onPaneToggle ? <button type="button" data-debug-id={`${p}-request-pane-btn`} aria-label="Open terminal" aria-pressed={paneExpanded} onClick={onPaneToggle} className={`grid ${btn} place-items-center ${paneExpanded ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-neutral-soft'}`}><Icon name="terminal" size={iconSize} /></button> : null}
       {onOpenTasks ? <button type="button" data-debug-id={`${p}-tasks-btn`} aria-label="Open tickets" onClick={onOpenTasks} className={`grid ${btn} place-items-center text-muted hover:bg-neutral-soft`}><Icon name="tasks" size={iconSize} /></button> : null}
       {extraActions}
@@ -161,11 +167,11 @@ function ClassicComposerActions({ debugPrefix: p, mobile, compactModel, provider
 
 /** Morph layout: same controls, debug IDs and labels as the classic toolbar. The toolbar
  *  wrapper is `display: contents` so both groups position against the shell. */
-function MorphComposerActions({ debugPrefix: p, compactModel, provider, model, onSettings, onUpload, uploadDisabled, onPaneToggle, paneExpanded, sendDisabled, onOpenTasks, pendingActions, readOnly, extraActions, morph }: ComposerActionsProps & { morph: { expanded: boolean } }) {
+function MorphComposerActions({ debugPrefix: p, compactModel, provider, model, onSettings, onUpload, uploadDisabled, onRecord, recordDisabled, recordActive, onPaneToggle, paneExpanded, sendDisabled, onOpenTasks, pendingActions, readOnly, extraActions, morph }: ComposerActionsProps & { morph: { expanded: boolean } }) {
   const tool = 'grid h-11 w-11 shrink-0 place-items-center rounded-[var(--radius-md)]';
   const hidden = !morph.expanded;
   const toolCount = !pendingActions && !readOnly
-    ? (onUpload ? 1 : 0) + (onPaneToggle ? 1 : 0) + (onOpenTasks ? 1 : 0) + countControls(extraActions) : 0;
+    ? (onUpload ? 1 : 0) + (onRecord ? 1 : 0) + (onPaneToggle ? 1 : 0) + (onOpenTasks ? 1 : 0) + countControls(extraActions) : 0;
   const showTools = toolCount > 0;
   // Width of the open tool row (44px buttons, 4px gaps), so the open trailing group can stop
   // short of it: on a phone-width card a long model name would otherwise cover the tools.
@@ -174,6 +180,7 @@ function MorphComposerActions({ debugPrefix: p, compactModel, provider, model, o
     style={{ [MORPH_TOOLS_WIDTH_VAR]: `${toolsWidth}px` } as CSSProperties}>
     {showTools ? <div data-debug-id={`${p}-composer-morph-tools`} data-composer-morph-tools="" {...inertWhen(hidden)} className="flex items-center gap-1">
       {onUpload ? <button type="button" data-debug-id={`${p}-attach-btn`} disabled={uploadDisabled} aria-label="Upload attachment" onClick={onUpload} className={`${tool} text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-40`}><Icon name="plus" size={20} /></button> : null}
+      {onRecord ? <button type="button" data-debug-id={`${p}-mic-btn`} disabled={recordDisabled} aria-label="Record voice message" aria-pressed={Boolean(recordActive)} onClick={onRecord} className={`${tool} ${recordActive ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'} disabled:opacity-40`}><Icon name="mic" size={20} /></button> : null}
       {onPaneToggle ? <button type="button" data-debug-id={`${p}-request-pane-btn`} aria-label="Open terminal" aria-pressed={paneExpanded} onClick={onPaneToggle} className={`${tool} ${paneExpanded ? 'bg-accent/20 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}><Icon name="terminal" size={20} /></button> : null}
       {onOpenTasks ? <button type="button" data-debug-id={`${p}-tasks-btn`} aria-label="Open tickets" onClick={onOpenTasks} className={`${tool} text-muted hover:bg-neutral-soft hover:text-primary`}><Icon name="tasks" size={20} /></button> : null}
       {extraActions}

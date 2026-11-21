@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { VaultText } from './vault/VaultText';
 import { Icon } from '@ui';
+import { isAudioArtifact } from '../utils/audioArtifact';
+import { ArtifactAudioPreview } from './ArtifactAudioPreview';
 
 export type ArtifactPreviewMeta = {
   artifact_id?: string;
@@ -193,6 +195,11 @@ export function ArtifactAttachmentPreview({
   const id = preview.id || artifactId;
   const label = artifactName(preview.meta, id);
   const target = href || `#/library/artifacts/${encodeURIComponent(id)}`;
+
+  // REQ-VOICE-3: audio plays inline from vault-decrypted content (useArtifactContentState).
+  if (isAudioArtifact(preview.meta)) {
+    return <ArtifactAudioPreview artifactId={id} meta={preview.meta} session={session} debugId={debugId} href={target} label={label} />;
+  }
 
   if (preview.isImage) {
     return (

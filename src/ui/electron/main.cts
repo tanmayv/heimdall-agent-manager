@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, nativeImage, Menu, shell, session, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, Menu, shell, session, Notification, systemPreferences } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -19,6 +19,7 @@ const { installDesktopUpdates } = require('./desktopUpdatesMain.cjs');
 let desktopUpdates: any = null;
 const installChoice = require('./installChoice.cjs');
 const { installNotifications } = require('./notifications.cjs');
+const { installMediaPermissions } = require('./mediaPermissions.cjs');
 const windowChrome = require('./windowChrome.cjs');
 const windowsIdentity = require('./windowsIdentity.cjs');
 
@@ -469,6 +470,8 @@ app.whenReady().then(async () => {
   app.setName(APP_DISPLAY_NAME);
   app.setAboutPanelOptions?.({ applicationName: APP_DISPLAY_NAME });
   installAppMenu();
+  // REQ-VOICE-4: microphone (audio only) for the app's own origin; camera and other origins refused.
+  installMediaPermissions({ session: session.defaultSession, trustedOrigins: trustedUiOrigins, systemPreferences });
   desktopUpdates = installDesktopUpdates({ app, ipcMain, dialog, getWindow: () => mainWindow,
     trustedOrigins: trustedUiOrigins, bridgeBusy: () => bridgeManager.operationRunning() });
 
