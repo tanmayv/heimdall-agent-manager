@@ -226,6 +226,9 @@ Bridge_Tunnel_Data_Outgoing :: struct {
 bridge_tunnel_streams:      map[string]^Bridge_Tunnel_Stream
 bridge_tunnel_mu:           sync.Mutex
 bridge_tunnel_data_outgoing: [dynamic]Bridge_Tunnel_Data_Outgoing
+// Total len(json) of the frames queued in bridge_tunnel_data_outgoing; guarded by
+// bridge_runtime_mutex with the queue. Producers wait on it (REQ-VOICE-6).
+bridge_tunnel_data_outgoing_bytes: int
 // Queue of instance ids whose status changed on a BACKGROUND thread (e.g. the
 // pty-host events worker applying a ChildExited) and must be pushed to the hub
 // immediately, without waiting for the next 45s bridge_heartbeat. The hub runtime
@@ -251,6 +254,7 @@ bridge_hub_runtime_init :: proc() {
 	bridge_runtime_status_outgoing = make([dynamic]string)
 	bridge_tunnel_streams = make(map[string]^Bridge_Tunnel_Stream, runtime.heap_allocator())
 	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing)
+	bridge_tunnel_data_outgoing_bytes = 0
 	bridge_proxy_init()
 	bridge_lsp_init()
 }
@@ -805,7 +809,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		// left records behind; that counts as "busy" for the sleep below, so a pane
 		// streaming faster than one budget per 25 ms is not throttled by the idle cadence.
 		pty_more := bridge_pty_stream_drain_outgoing(conn)
-		bridge_tunnel_data_drain_outgoing(conn)
+		// REQ-VOICE-6: byte-budgeted like the pty drain, and busy for the same reason.
+		tunnel_more := bridge_tunnel_data_drain_outgoing(conn)
 		bridge_lsp_drain_outgoing(conn)
 		// bridge_log relay: at most one frame per iteration, only after
 		// bridge_ready (this loop), gated by the telemetry switch inside.
@@ -836,7 +841,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		bridge_acp_runtime_probe_tick(now)
 		// Yield after a bounded burst. Idle connections retain the low-wake cadence;
 		// busy connections do not artificially process only 40 frames per second.
-		time.sleep(1 * time.Millisecond if inbound_count > 0 || pty_more else 25 * time.Millisecond)
+		time.sleep(1 * time.Millisecond if inbound_count > 0 || pty_more || tunnel_more else 25 * time.Millisecond)
 	}
 }
 
@@ -6354,21 +6359,105 @@ bridge_hub_runtime_start :: proc() {
 
 // ---- T8: preview tunnel frame handlers (REQ-SH-CONTRACT §6) ----
 
-// bridge_tunnel_data_drain_outgoing flushes queued tunnel_data/tunnel_close WS frames.
-bridge_tunnel_data_drain_outgoing :: proc(conn: ^ws.Connection) {
+// ---- REQ-VOICE-6: flow control for the tunnel/proxy outgoing queue ----
+//
+// bridge_tunnel_data_outgoing carries preview responses (tunnel_data) and proxy
+// request bodies (proxy_data). Both used to be unbounded on BOTH sides:
+//
+//   - producers (bridge_proxy_serve_client reading a local upload, and
+//     bridge_tunnel_tcp_to_ws_worker reading a local server's response) appended
+//     every chunk with no limit, so a 60 MB upload became ~80 MB of queued base64;
+//   - the drain wrote the WHOLE queue in one go on the runtime loop, which is also
+//     the connection's only READER.
+//
+// While that drain ran the bridge read nothing from the hub. The hub's reader for
+// this bridge forwards each proxy_data as tunnel_data to the target bridge
+// synchronously — and when the target is THIS bridge (a process reaching a server on
+// its own host through the relay), that write backs up into a bridge that is not
+// reading, so the hub stops reading too and each side blocks writing to the other.
+// The first 5 s write deadline to fire ends it: the hub shuts the socket down, the
+// bridge sees EOF (hub_ws_closed reason=eof) and the upload hangs until the hub's
+// 120 s idle timeout.
+//
+// The fix keeps the loop reading: producers wait while the queue holds more than
+// BRIDGE_TUNNEL_OUTGOING_CAP_BYTES, and each loop tick sends at most
+// BRIDGE_TUNNEL_DRAIN_BUDGET_BYTES before going back to read. The budget is well
+// under what one tick reads (BRIDGE_HUB_INBOUND_BUDGET frames of up to 6000 payload
+// bytes the hub chunks to), so the bridge always consumes the hub's tunnel_data
+// faster than it produces proxy_data and the cycle cannot close.
+BRIDGE_TUNNEL_OUTGOING_CAP_BYTES  :: 1024 * 1024
+BRIDGE_TUNNEL_DRAIN_BUDGET_BYTES  :: 64 * 1024
+// How long a producer waits for room before giving up on its stream. The queue
+// only stays full when nothing is draining it (the hub connection is down).
+BRIDGE_TUNNEL_OUTGOING_STALL      :: 30 * time.Second
+
+Bridge_Tunnel_Room :: enum {
+	Ok,
+	Gone,    // the stream was torn down (or hub traffic stopped) while waiting
+	Stalled, // the queue did not drain within BRIDGE_TUNNEL_OUTGOING_STALL
+}
+
+// bridge_tunnel_outgoing_push appends one frame (ownership moves to the queue).
+// Never waits: close frames and other small control frames must always get out.
+bridge_tunnel_outgoing_push :: proc(frame_json: string) {
 	sync.mutex_lock(&bridge_runtime_mutex)
-	if len(bridge_tunnel_data_outgoing) == 0 {
-		sync.mutex_unlock(&bridge_runtime_mutex)
-		return
-	}
-	items := bridge_tunnel_data_outgoing[:]
-	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing, runtime.heap_allocator())
+	append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = frame_json})
+	bridge_tunnel_data_outgoing_bytes += len(frame_json)
 	sync.mutex_unlock(&bridge_runtime_mutex)
+}
+
+bridge_tunnel_outgoing_queued_bytes :: proc() -> int {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	return bridge_tunnel_data_outgoing_bytes
+}
+
+// bridge_tunnel_outgoing_wait_room blocks a DATA producer until the queue is under
+// its cap. `alive(id)` is polled so a stream torn down while waiting stops at once.
+// Must never be called from the runtime loop thread: that thread is the drain.
+bridge_tunnel_outgoing_wait_room :: proc(alive: proc(string) -> bool, id: string, stall := BRIDGE_TUNNEL_OUTGOING_STALL) -> Bridge_Tunnel_Room {
+	started := time.tick_now()
+	for bridge_tunnel_outgoing_queued_bytes() >= BRIDGE_TUNNEL_OUTGOING_CAP_BYTES {
+		if sync.atomic_load(&bridge_hub_traffic_stopped) || !alive(id) do return .Gone
+		if time.tick_since(started) >= stall do return .Stalled
+		time.sleep(1 * time.Millisecond)
+	}
+	return .Ok
+}
+
+// bridge_tunnel_outgoing_take removes the frames one drain may send: whole frames,
+// in order, until their bytes reach `budget` (always at least one). Returns them and
+// whether more remain queued.
+bridge_tunnel_outgoing_take :: proc(budget: int) -> (items: []Bridge_Tunnel_Data_Outgoing, more: bool) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	n := len(bridge_tunnel_data_outgoing)
+	if n == 0 do return nil, false
+	k, bytes := 0, 0
+	for k < n && (k == 0 || bytes < budget) {
+		bytes += len(bridge_tunnel_data_outgoing[k].json)
+		k += 1
+	}
+	items = make([]Bridge_Tunnel_Data_Outgoing, k, runtime.heap_allocator())
+	copy(items, bridge_tunnel_data_outgoing[:k])
+	remove_range(&bridge_tunnel_data_outgoing, 0, k)
+	bridge_tunnel_data_outgoing_bytes -= bytes
+	return items, len(bridge_tunnel_data_outgoing) > 0
+}
+
+// bridge_tunnel_data_drain_outgoing sends one budget's worth of queued
+// tunnel_*/proxy_* frames and reports whether more remain (the loop then skips its
+// idle sleep). See the REQ-VOICE-6 note above for why it must not send everything.
+bridge_tunnel_data_drain_outgoing :: proc(conn: ^ws.Connection) -> bool {
+	items, more := bridge_tunnel_outgoing_take(BRIDGE_TUNNEL_DRAIN_BUDGET_BYTES)
+	if items == nil do return false
 	for item in items {
 		_ = ws.send_text(conn, item.json)
-		delete(item.json)
+		// Every producer builds its frame on the heap allocator.
+		delete(item.json, runtime.heap_allocator())
 	}
-	delete(items)
+	delete(items, runtime.heap_allocator())
+	return more
 }
 
 // bridge_preview_dial_loopback connects to a preview server without ever leaving the
@@ -6551,9 +6640,13 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 		strings.write_string(&b, "\",\"last\":false}")
 		frame := strings.to_string(b)
 		delete(encoded)
-		sync.mutex_lock(&bridge_runtime_mutex)
-		append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = frame})
-		sync.mutex_unlock(&bridge_runtime_mutex)
+		// REQ-VOICE-6: wait for room rather than queueing a whole response. A
+		// stream torn down or stalled while waiting ends here like a closed socket.
+		if bridge_tunnel_outgoing_wait_room(bridge_tunnel_stream_registered, local_stream_id) != .Ok {
+			delete(frame)
+			break
+		}
+		bridge_tunnel_outgoing_push(frame)
 	}
 
 	// TCP closed — enqueue tunnel_close to hub.
@@ -6562,9 +6655,7 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	bridge_runtime_write_json_string(&b2, local_stream_id)
 	strings.write_string(&b2, "\",\"reason\":\"connection_closed\"}")
 	close_frame := strings.to_string(b2)
-	sync.mutex_lock(&bridge_runtime_mutex)
-	append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = close_frame})
-	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_tunnel_outgoing_push(close_frame)
 
 	// Independent-key probe: whoever removes the map key owns the struct free.
 	// If !found, bridge_hub_handle_tunnel_close already removed+freed the struct —
