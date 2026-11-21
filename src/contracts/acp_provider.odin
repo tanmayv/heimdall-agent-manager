@@ -25,6 +25,12 @@ ACP_Provider_Descriptor :: struct {
     // precedes the version in its `--version` output.
     system_os: []string,
     cli_version_prefix: string,
+    // System only. agent_default_model is the catalog model id that keeps the
+    // agent's own default model (no session/set_config_option). With
+    // bootstrap_resource_link, an agent that does not advertise embeddedContext
+    // gets the bootstrap file as a baseline ACP resource_link instead.
+    agent_default_model: string,
+    bootstrap_resource_link: bool,
     command: string,
     args: []string,
     env: [][2]string,
@@ -72,6 +78,7 @@ ACP_KIRO_DESCRIPTOR :: ACP_Provider_Descriptor{
     command = "kiro-cli", args = {"acp", "--agent-engine", "v3"},
     protocol_version = 1,
     cli_command = "kiro-cli", cli_version_prefix = "kiro-cli ",
+    agent_default_model = "default", bootstrap_resource_link = true,
     bootstrap_filename = "AGENTS.md",
     auth_guidance = "Run kiro-cli login --use-device-flow on the bridge host using the selected provider profile (its KIRO_HOME and XDG_DATA_HOME), or configure the profile's sensitive KIRO_API_KEY environment row, then restart this instance.",
     permission_policy = .Once_Only, model_category = "model",
@@ -101,7 +108,7 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     switch d.launch {
     case .Adapter, .Native:
         if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||
-           len(d.system_os) != 0 || d.cli_version_prefix != "" { return false }
+           len(d.system_os) != 0 || d.cli_version_prefix != "" || d.agent_default_model != "" || d.bootstrap_resource_link { return false }
         if d.launch == .Adapter && d.executable_env == "" do return false
         if d.launch == .Native && (d.executable_env != "" || d.cli_package != d.pkg.name || d.cli_version != d.pkg.version || len(d.platforms) == 0) do return false
     case .System:

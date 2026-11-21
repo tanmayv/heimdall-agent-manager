@@ -139,3 +139,17 @@ acp_kiro_recipe_binds_only_kiro :: proc(t: ^testing.T) {
     testing.expect(t, !acp_recipe_valid(`{"command":"kiro-cli","args":["acp","--agent-engine","v3","--trust-all-tools"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.5.0"}`))
     testing.expect(t, !acp_recipe_valid(`{"command":"kiro-cli","args":["acp","--agent-engine","v3"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.4.0"}`))
 }
+
+@(test)
+acp_bootstrap_link_and_default_model_are_system_only :: proc(t: ^testing.T) {
+    kiro, _ := acp_provider_descriptor("kiro")
+    testing.expect(t, kiro.bootstrap_resource_link && kiro.agent_default_model == "default")
+    for provider in ([]string{"claude", "copilot"}) {
+        d, _ := acp_provider_descriptor(provider)
+        testing.expect(t, !d.bootstrap_resource_link && d.agent_default_model == "")
+        d.bootstrap_resource_link = true
+        testing.expect(t, !acp_descriptor_shape_valid(d))
+        d.bootstrap_resource_link = false; d.agent_default_model = "default"
+        testing.expect(t, !acp_descriptor_shape_valid(d))
+    }
+}
