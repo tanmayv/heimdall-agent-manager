@@ -1873,7 +1873,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   // Routes whose own header sits in the top chrome row, so no spacer is drawn.
   const ownsTopChromeRow = isWorkspaceRoute || path === BOT_CHAT_ROUTE;
   const hideTopLeftCluster = isMobile && isWorkspaceRoute && isCurrentAuxPaneOpen;
-  const showBrand = !isWorkspaceRoute || !isEffectiveCollapsed;
+  // Phone bot chat shares the conversation header; retain branding on larger screens.
+  const showBrand = !(isWorkspaceRoute || (isMobile && path === BOT_CHAT_ROUTE)) || !isEffectiveCollapsed;
   // REQ-MAC-CHROME-1: 0 everywhere except the windowed macOS hidden title bar.
   const { insetLeft: rawControlsInset } = useWindowChrome();
   const controlsInset = isMobile ? 0 : rawControlsInset;
