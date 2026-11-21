@@ -5,7 +5,7 @@ import domain "odin_test:hub/domain"
 
 // Caller-supplied binding identity is authenticated and constructed by the service.
 // A transaction protects both on-demand binding creation and durable idempotency.
-web_message_store_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, message: domain.Channel_Message) -> (domain.Channel_Message, bool, domain.Domain_Error) {
+web_message_store_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, message: domain.Channel_Message, attachments: []domain.Channel_Attachment) -> (domain.Channel_Message, bool, domain.Domain_Error) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return {}, false, bot_repo_error(conn)
 	guard := tx_repository_enter()
@@ -43,6 +43,10 @@ web_message_store_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, m
 		"INSERT INTO channel_messages (message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, created_at) VALUES (?, ?, ?, ?, 'inbound', ?, ?, ?, ?);",
 		{row.message_id, row.binding_id, row.owner_user_id, row.bot_id, row.provider_update_key, row.external_message_id, row.body, row.created_at})
 	if insert_err.code != .None do return {}, false, insert_err
+	for a in attachments {
+		row.attachment = a
+		if e := bot_repo_insert_attachment(conn, row); e.code != .None do return {}, false, e
+	}
 	_, touch_err := bot_repo_write(conn, "UPDATE channel_bindings SET last_inbound_at = ? WHERE binding_id = ?;", {message.created_at, active.binding_id})
 	if touch_err.code != .None do return {}, false, touch_err
 	if !exec(conn, "COMMIT;") do return {}, false, bot_repo_error(conn)

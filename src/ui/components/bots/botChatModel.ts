@@ -50,7 +50,7 @@ export function mergeBotMessages(
 
 function sameMessage(a: UnifiedBotMessage, b: UnifiedBotMessage): boolean {
   return a.body === b.body && a.body_purged === b.body_purged && a.send_state === b.send_state &&
-    a.read_at === b.read_at && a.replied_at === b.replied_at && a.provider === b.provider && a.created_at === b.created_at;
+    JSON.stringify(a.attachments ?? []) === JSON.stringify(b.attachments ?? []) && a.read_at === b.read_at && a.replied_at === b.replied_at && a.provider === b.provider && a.created_at === b.created_at;
 }
 
 /** Oldest first, so the newest message renders at the bottom. */
@@ -62,6 +62,7 @@ export function botTimeline(known: ReadonlyMap<string, UnifiedBotMessage>): Unif
 export interface PendingBotSend {
   key: string;
   text: string;
+  artifact_ids?: string[];
   state: 'sending' | 'sent' | 'failed';
   message_id: string;
   error: string;
@@ -158,6 +159,7 @@ export function botChatMessages(
       key: sentKeys.get(message.message_id) ?? message.message_id,
       messageId: message.message_id,
       body: message.body_purged ? '' : message.body,
+      artifactIds: message.body_purged ? [] : (message.attachments ?? []).map(a => a.artifact_id).filter(Boolean),
       isUser: mine,
       createdUnixMs: isoToUnixMs(message.created_at),
       deliveredUnixMs: 0,
@@ -175,6 +177,7 @@ export function botChatMessages(
       key: send.key,
       messageId: send.message_id || send.key,
       body: send.text,
+      artifactIds: send.artifact_ids,
       isUser: true,
       createdUnixMs: 0,
       deliveredUnixMs: 0,

@@ -86,3 +86,66 @@ test_web_unified_history_mixed_providers_paging_and_owner_scope :: proc(t: ^test
 	empty := bot_unified_messages_handler(&f.handlers, bot_http_request(f, "GET", "/api/v1/bots/me/messages", ""))
 	testing.expect(t, empty.status == 200 && strings.contains(empty.body, `"next_cursor":""`))
 }
+
+@(test)
+test_web_artifacts_validation_atomicity_history_and_agent_read :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t, paired = false); defer bot_channel_destroy(c)
+	f := c.f
+	bot_media_http_artifact(t,c,"art_first",string(f.wire.owner))
+	bot_media_http_artifact(t,c,"art_second",string(f.wire.owner))
+	bot_media_http_artifact(t,c,"art_foreign","foreign")
+	bot_media_http_artifact(t,c,"art_deleted",string(f.wire.owner),"gone")
+	path := "/api/v1/bots/me/channels/web/messages"
+	for tc in ([]struct {ids: string, status: int}{
+		{`null`,400},{`{}`,400},{`[1]`,400},{`[""]`,400},{`["art_first","art_first"]`,400},
+		{`["art_foreign"]`,404},{`["art_missing"]`,404},{`["art_deleted"]`,404},
+		{`["art_first","art_foreign"]`,404},
+	}) {
+		body := strings.concatenate({`{"text":"","idempotency_key":"invalid","artifact_ids":`,tc.ids,"}"},context.temp_allocator)
+		r := bot_web_messages_handler(&f.handlers,bot_http_request(f,"POST",path,body))
+		testing.expectf(t,r.status==tc.status,"%s: %d %s",body,r.status,r.body)
+	}
+	many := make([]string,21,context.temp_allocator)
+	for &id in many do id="art_first"
+	encoded,_ := json.marshal(many,allocator=context.temp_allocator)
+	bad := strings.concatenate({`{"text":"","idempotency_key":"many","artifact_ids":`,string(encoded),"}"},context.temp_allocator)
+	testing.expect_value(t,bot_web_messages_handler(&f.handlers,bot_http_request(f,"POST",path,bad)).status,400)
+	body := `{"text":"","idempotency_key":"upload","artifact_ids":["art_first","art_second"]}`
+	// Attachment write failure rolls back the message and on-demand binding.
+	testing.expect(t,sqlite.exec(&f.wire.conn,"CREATE TRIGGER reject_upload BEFORE INSERT ON channel_attachments BEGIN SELECT RAISE(ABORT,'injected'); END;"))
+	rejected := bot_web_messages_handler(&f.handlers,bot_http_request(f,"POST",path,body))
+	testing.expect(t,rejected.status>=400)
+	b,found,_ := iface.binding_get_active_by_owner(&f.bot_repo,string(f.wire.owner),"web")
+	defer domain.channel_binding_destroy(&b)
+	testing.expect(t,!found)
+	testing.expect(t,sqlite.exec(&f.wire.conn,"DROP TRIGGER reject_upload;"))
+	first := bot_web_messages_handler(&f.handlers,bot_http_request(f,"POST",path,body))
+	testing.expectf(t,first.status==201,"%s",first.body)
+	testing.expect_value(t,bot_web_messages_handler(&f.handlers,bot_http_request(f,"POST",path,body)).status,200)
+	conflict := `{"text":"","idempotency_key":"upload","artifact_ids":["art_second","art_first"]}`
+	testing.expect_value(t,bot_web_messages_handler(&f.handlers,bot_http_request(f,"POST",path,conflict)).status,409)
+	// A text-only body equal to the attachment payload encoding is still a conflict.
+	encoded_payload,_ := json.marshal([]string{"","art_first","art_second"},allocator=context.temp_allocator)
+	collision,_ := json.marshal(struct {text,idempotency_key: string}{string(encoded_payload),"upload"},allocator=context.temp_allocator)
+	testing.expect_value(t,bot_web_messages_handler(&f.handlers,bot_http_request(f,"POST",path,string(collision))).status,409)
+	history := bot_unified_messages_handler(&f.handlers,bot_http_request(f,"GET","/api/v1/bots/me/messages",""))
+	wire: struct {data: struct {messages: []Bot_History_Message}}
+	_ = json.unmarshal(transmute([]byte)history.body,&wire,allocator=context.temp_allocator)
+	testing.expect(t,history.status==200 && len(wire.data.messages)==1)
+	if len(wire.data.messages)!=1 do return
+	m := wire.data.messages[0]
+	testing.expect(t,m.provider=="web" && m.body=="" && len(m.attachments)==2)
+	for a in m.attachments do testing.expect(t,a.state=="stored" && a.artifact_id!="" && a.name=="file" && a.size==6)
+	read := bot_channel_read(c)
+	testing.expectf(t,read.status==200 && strings.contains(read.body,"art_first") && strings.contains(read.body,"art_second"),"%s",read.body)
+	agent_history := bot_agent_channel_history_handler(&c.h,bot_channel_req(c,"history",`{"params":{}}`))
+	testing.expect(t,agent_history.status==200 && strings.contains(agent_history.body,"art_first"))
+	// Normal agent artifact fetch can retrieve the attached bytes.
+	fetch_req := wire_agent_request(f.wire,"artifact_content",`{"params":{"artifact_id":"art_first"}}`)
+	fetched := agent_action_artifact_content_handler(&f.wire.ah,fetch_req)
+	testing.expectf(t,fetched.status==200 && strings.contains(fetched.body,"sealed"),"%s",fetched.body)
+	testing.expect_value(t,iface.messages_purge_binding(&f.bot_repo,m.binding_id).code,domain.Error_Code.None)
+	purged := bot_unified_messages_handler(&f.handlers,bot_http_request(f,"GET","/api/v1/bots/me/messages",""))
+	testing.expect(t,purged.status==200 && !strings.contains(purged.body,"art_first"))
+}

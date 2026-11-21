@@ -38,3 +38,24 @@ web_migration_text :: proc(conn: ^Conn, query: string) -> string {
 	if sqlite3_step(stmt) != SQLITE_ROW do return ""
 	return strings.clone(column_text_unowned(stmt, 0), context.temp_allocator)
 }
+
+@(test)
+test_web_attachment_migration_preserves_native_rows_and_recovers_ledger :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	conn,_,e:=open(":memory:")
+	if !testing.expect(t,e.code==.None) do return
+	defer close(&conn)
+	ok,err:=run_migrations(&conn,stop_before="bots_web_002_attachments.sql")
+	if !testing.expect(t,ok && err.code==.None) do return
+	testing.expect(t,exec(&conn,`INSERT INTO channel_attachments VALUES('cha_keep','chm_keep','chb_keep','alice','bot_a','inbound','document','ref','file.pdf','application/pdf',42,'art_keep','stored','created','updated');`))
+	before:=web_migration_text(&conn,"SELECT attachment_id||':'||message_id||':'||file_ref||':'||artifact_id||':'||state||':'||updated_at FROM channel_attachments;")
+	ok,err=run_migrations(&conn)
+	testing.expect(t,ok && err.code==.None)
+	testing.expect_value(t,web_migration_text(&conn,"SELECT attachment_id||':'||message_id||':'||file_ref||':'||artifact_id||':'||state||':'||updated_at FROM channel_attachments;"),before)
+	testing.expect(t,exec(&conn,`INSERT INTO channel_attachments SELECT 'cha_second',message_id,binding_id,owner_user_id,bot_id,direction,kind,file_ref,name,mime,size_bytes,artifact_id,state,created_at,updated_at FROM channel_attachments;`))
+	testing.expect_value(t,web_migration_text(&conn,"SELECT count(*) FROM channel_attachments;"),"2")
+	testing.expect(t,exec(&conn,"DELETE FROM schema_migrations WHERE version='bots_web_002_attachments.sql';"))
+	ok,err=run_migrations(&conn)
+	testing.expect(t,ok && err.code==.None && migration_applied(&conn,"bots_web_002_attachments.sql"))
+	testing.expect_value(t,web_migration_text(&conn,"SELECT count(*) FROM channel_attachments;"),"2")
+}

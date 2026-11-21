@@ -12,11 +12,15 @@ pairing, a WhatsApp entitlement, templates, or a reply window.
 {"text":"Hello","idempotency_key":"a-client-generated-request-id"}
 ```
 
-Text must be nonblank valid UTF-8, up to 16384 bytes. The key must be nonblank
-valid UTF-8, up to 200 bytes. Keep the same key and text when retrying a request.
+The optional `artifact_ids` array accepts up to 20 distinct IDs of existing,
+nondeleted artifacts belonging to the authenticated owner. Invalid arrays return
+400; missing, deleted or foreign artifacts return 404. Text may be empty or blank
+when attachments are present; otherwise it must be nonblank. Text is valid UTF-8,
+up to 16384 bytes. The key must be nonblank
+valid UTF-8, up to 200 bytes. Keep the same key, text and ordered artifact IDs when retrying a request.
 The server creates an active web binding on demand and atomically stores the
-inbound message. Keys are scoped to the bot; the same key/text returns the same
-message even after body retention. Reusing a key with different text returns 409.
+inbound message and its attachment references in one transaction. Keys are scoped to the bot; the same key/text returns the same
+message even after body retention. Reusing a key with different text or attachments returns 409.
 The durable payload hash is kept in the local message's external_message_id;
 no external service receives it.
 
@@ -37,7 +41,9 @@ input continues to use the existing routing rules.
 
 Returns `data: {messages, next_cursor}`. Each message has `message_id`,
 `binding_id`, `provider` (`telegram`, `whatsapp`, or `web`), `direction`,
-`body`, `body_purged`, `send_state`, `created_at`, `read_at`, and `replied_at`.
+`body`, `body_purged`, `send_state`, `created_at`, `read_at`, and `replied_at`, plus `attachments` with the same metadata as agent channel read/history.
+Web uploads are immediately `stored` and expose `artifact_id` for normal artifact fetch.
+Purged messages expose no attachments.
 It includes both directions and revoked bindings belonging to this bot and owner.
 Existing retention and purge behavior applies.
 

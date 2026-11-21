@@ -26,7 +26,7 @@ const { default: vault } = await import('../src/ui/store/vaultSlice.ts');
 const { default: auxPanes } = await import('../src/ui/store/auxPanesSlice.ts');
 
 type Msg = { message_id: string; binding_id: string; provider: 'telegram' | 'whatsapp' | 'web'; direction: string; body: string;
-  body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string };
+  attachments?: any[]; body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string };
 
 function bot(overrides: Record<string, unknown> = {}) {
   return { bot_id: 'bot_a', display_name: 'Ninjy bot', status: 'ready', status_detail: '',
@@ -49,6 +49,8 @@ function hub(initial: Msg[] = []) {
     bot: bot() as any,
     messages: [...initial],
     sendStatus: 0,
+    uploadStatus: 0,
+    uploads: [] as any[],
     holdSend: null as null | { release: () => void },
     page(limit: number, cursor: string) {
       const desc = [...this.messages].sort((a, b) => model.compareBotMessages(b as any, a as any));
@@ -69,7 +71,7 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
   Object.defineProperty(dom.window, 'innerWidth', { value: width, configurable: true });
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node,
-    navigator: dom.window.navigator, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window), IS_REACT_ACT_ENVIRONMENT: true,
+    FileReader: dom.window.FileReader, navigator: dom.window.navigator, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window), IS_REACT_ACT_ENVIRONMENT: true,
     // The shared composer and list size themselves with ResizeObserver; jsdom has none.
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -85,6 +87,16 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
     const method = init.method || 'GET';
     const body = init.body ? JSON.parse(init.body) : undefined;
     requests.push({ path, search: url.search, method, body });
+    if (path === '/artifacts' && method === 'POST') {
+      if (state.uploadStatus) return Response.json({ error: { message: 'Upload unavailable' } }, { status: state.uploadStatus });
+      const artifact = { artifact_id: 'art_upload_' + state.uploads.length, name: body.name, kind: body.kind, mime: body.mime };
+      state.uploads.push(artifact);
+      return Response.json({ data: artifact }, { status: 201 });
+    }
+    if (path.startsWith('/artifacts/')) {
+      const artifact = state.uploads.find(a => path === '/artifacts/' + a.artifact_id);
+      return Response.json({ data: artifact ?? { artifact_id: path.split('/').pop(), name: 'existing.txt', kind: 'file', mime: 'application/pdf' } });
+    }
     if (path === '/me/experiments') return Response.json({ data: { experiments: [{ key: 'bots', enabled: state.enabled }] } });
     if (!state.enabled && path.startsWith('/bots/')) return Response.json({ error: { code: 'forbidden', message: 'Experiment off' } }, { status: 403 });
     if (path === '/bots/me') return state.bot ? Response.json({ data: state.bot }) : Response.json({ error: { code: 'not_found', message: 'No bot' } }, { status: 404 });
@@ -98,7 +110,7 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
       const existing = state.messages.find((m) => m.binding_id === 'web:' + body.idempotency_key);
       if (existing) return Response.json({ data: { message_id: existing.message_id, created: false } });
       const id = 'bmsg_web_' + state.messages.length;
-      state.messages.push(msg(9000, { message_id: id, binding_id: 'web:' + body.idempotency_key, provider: 'web', direction: 'inbound', body: body.text, read_at: '', replied_at: '', created_at: '2026-11-20T09:30:00Z' }));
+      state.messages.push(msg(9000, { message_id: id, binding_id: 'web:' + body.idempotency_key, provider: 'web', direction: 'inbound', body: body.text, attachments: (body.artifact_ids ?? []).map((id: string) => ({ attachment_id: id, artifact_id: id, state: 'stored' })), read_at: '', replied_at: '', created_at: '2026-11-20T09:30:00Z' }));
       return Response.json({ data: { message_id: id, created: true } }, { status: 201 });
     }
     throw new Error('Unexpected request: ' + method + ' ' + path);
@@ -384,17 +396,18 @@ test('chat header: one compact row with only the bot name (status lives in the s
   });
 });
 
-test('composer: the shared morph composer with only text and send controls', async () => {
+test('composer: the shared morph composer with upload and send controls', async () => {
   const state = hub([msg(1)]);
   await fixture(state, 'chat', async (h) => {
     const card = h.get('bot-chat-composer-card')!;
     assert.equal(card.getAttribute('data-composer-morph'), '', 'same MessageComposerMorphShell as the coordinator chat');
     assert.equal(card.getAttribute('data-expanded'), 'false');
     assert.ok(h.get('bot-chat-input')!.hasAttribute('data-composer-morph-field'));
-    for (const id of ['bot-chat-runtime-menu-btn', 'bot-chat-attach-btn', 'bot-chat-request-pane-btn', 'bot-chat-tasks-btn', 'bot-chat-composer-morph-tools', 'bot-chat-composer-morph-context']) {
+    for (const id of ['bot-chat-runtime-menu-btn', 'bot-chat-request-pane-btn', 'bot-chat-tasks-btn', 'bot-chat-composer-morph-context']) {
       assert.equal(h.get(id), null, id + ' is not shown for the bot');
     }
-    assert.equal(card.querySelectorAll('button').length, 1, 'send is the only control');
+    assert.ok(h.get('bot-chat-attach-btn'), 'upload control is shown');
+    assert.equal(card.querySelectorAll('button').length, 2, 'upload and send controls');
     assert.ok(h.get('bot-chat-composer-send-btn')!.hasAttribute('data-composer-morph-send'));
     await h.type('draft');
     assert.equal(card.getAttribute('data-expanded'), 'true', 'a draft holds it open');
@@ -426,4 +439,73 @@ test('phone width (390px): chat and sidebar avoid fixed widths and let content w
   assert.match(shell, /\{!ownsTopChromeRow \? \(\s*<div\s+aria-hidden="true"\s+data-debug-id="shell-top-spacer"/);
   assert.match(shell, /if \(path === BOT_CHAT_ROUTE\) \{[\s\S]*?<BotChatPage headerLeading=\{workspaceLeading\} \/>[\s\S]*?\n  \}/);
   assert.equal(shell.match(/<BotChatPage\b/g)!.length, 1, 'mounted only by the dedicated outlet');
+});
+
+
+test('attachments: picker and paste upload once, send attachment-only, and persist chips in history', async () => {
+ const state = hub();
+ await fixture(state, 'chat', async h => {
+  const file = new h.dom.window.File(['hello'], 'notes.pdf', { type: 'application/pdf' });
+  let picked = false;
+  const picker = h.get('bot-chat-upload-input') as HTMLInputElement;
+  picker.click = () => { picked = true; };
+  await h.click('bot-chat-attach-btn');
+  assert.equal(picked, true);
+  Object.defineProperty(picker, 'files', { configurable: true, value: [file] });
+  await act(async () => picker.dispatchEvent(new h.dom.window.Event('change', { bubbles: true })));
+  await h.settle(); await h.settle();
+  assert.equal(state.uploads.length, 1);
+  assert.match(h.get('bot-chat-attachments').textContent, /notes.pdf/);
+  const image = new h.dom.window.File(['image'], 'screen.png', { type: 'image/png' });
+  const event = new h.dom.window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', { value: { files: [image], items: [{ kind: 'file', getAsFile: () => image }] } });
+  await act(async () => h.get('bot-chat-input').dispatchEvent(event));
+  await h.settle(); await h.settle();
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(state.uploads.length, 2, 'clipboard files/items do not duplicate the upload');
+  assert.equal((h.get('bot-chat-composer-send-btn') as HTMLButtonElement).disabled, false);
+  await h.click('bot-chat-composer-send-btn');
+  const send = h.requests.find((r: any) => r.path.endsWith('/web/messages'));
+  assert.deepEqual(send.body.artifact_ids, ['art_upload_0', 'art_upload_1']);
+  assert.equal(send.body.text, '');
+  assert.equal(h.get('bot-chat-attachments'), null);
+  await h.settle();
+  assert.equal(h.all('a[data-debug-id^="bot-chat-artifact-"]').length, 2);
+  assert.equal(state.messages[0].attachments?.length, 2);
+ });
+});
+
+test('attachments: failures block send, retry succeeds, remove clears draft, and plain paste stays native', async () => {
+ const state = hub(); state.uploadStatus = 503;
+ await fixture(state, 'chat', async h => {
+  const picker = h.get('bot-chat-upload-input') as HTMLInputElement;
+  const file = new h.dom.window.File(['text'], 'retry.pdf', { type: 'application/pdf' });
+  Object.defineProperty(picker, 'files', { configurable: true, value: [file] });
+  await act(async () => picker.dispatchEvent(new h.dom.window.Event('change', { bubbles: true })));
+  await h.settle(); await h.settle();
+  assert.equal((h.get('bot-chat-composer-send-btn') as HTMLButtonElement).disabled, true);
+  assert.match(h.get('bot-chat-attachments').textContent, /Upload unavailable/);
+  state.uploadStatus = 0;
+  const retry = h.all('[data-debug-id^="bot-chat-upload-retry-"]')[0];
+  await act(async () => retry.click()); await h.settle(); await h.settle();
+  assert.equal(state.uploads.length, 1);
+  assert.equal((h.get('bot-chat-composer-send-btn') as HTMLButtonElement).disabled, false);
+  await act(async () => h.all('[data-debug-id^="bot-chat-upload-remove-"]')[0].click());
+  assert.equal(h.get('bot-chat-attachments'), null);
+  const plain = new h.dom.window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(plain, 'clipboardData', { value: { files: [], items: [], getData: () => 'hello' } });
+  await act(async () => h.get('bot-chat-input').dispatchEvent(plain));
+  assert.equal(plain.defaultPrevented, false);
+  assert.equal(state.uploads.length, 1);
+ });
+});
+
+test('attachments: refreshed and purged history update preview IDs', () => {
+ const original = msg(1, { attachments: [{ artifact_id: 'art_a' }] });
+ const known = model.mergeBotMessages(new Map(), [original as any]);
+ const changed = model.mergeBotMessages(known, [{ ...original, attachments: [{ artifact_id: 'art_b' }] } as any]);
+ assert.notEqual(changed, known);
+ assert.deepEqual(model.botChatMessages(model.botTimeline(changed), [], new Map())[0].artifactIds, ['art_b']);
+ const purged = model.botChatMessages([{ ...original, body_purged: true } as any], [], new Map())[0];
+ assert.deepEqual(purged.artifactIds, []);
 });

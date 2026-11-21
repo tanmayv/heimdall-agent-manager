@@ -29,7 +29,8 @@ export interface BotWhatsApp {
 }
 export interface WhatsAppPairing { pairing_url: string; pairing_text: string; phone_display: string; expires_at: string }
 export interface BotMessage { message_id: string; direction: string; body: string; body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string }
-export interface UnifiedBotMessage extends BotMessage { binding_id: string; provider: 'telegram' | 'whatsapp' | 'web' }
+export interface BotAttachment { attachment_id: string; artifact_id: string; name: string; mime: string; size: number; kind: string; state: string }
+export interface UnifiedBotMessage extends BotMessage { binding_id: string; provider: 'telegram' | 'whatsapp' | 'web'; attachments?: BotAttachment[] }
 export interface BotMessagePage { messages: UnifiedBotMessage[]; next_cursor: string }
 export interface BotDelivery { delivery_id: string; state: string; round: number; waiting_reason: string; finish_reason: string; created_at: string; finished_at: string; attempts: { attempt_id: string; bridge_id: string; state: string; report: Record<string, unknown> }[] }
 
@@ -68,7 +69,7 @@ export const botsApi = heimdallApi.injectEndpoints({
       },
       providesTags: ['Bot'],
     }),
-    sendBotWebMessage: build.mutation<{ message_id: string; created: boolean }, { text: string; idempotency_key: string }>({
+    sendBotWebMessage: build.mutation<{ message_id: string; created: boolean }, { text: string; idempotency_key: string; artifact_ids?: string[] }>({
       queryFn: (body) => request(root + '/channels/web/messages', 'POST', body), invalidatesTags: ['Bot'],
     }),
     getBotMessages: build.query<{ messages: BotMessage[] }, number | void>({ queryFn: (limit = 50) => request(root + '/channels/telegram/messages?limit=' + limit), providesTags: ['Bot'] }),

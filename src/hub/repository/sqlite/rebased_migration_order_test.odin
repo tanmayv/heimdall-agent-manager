@@ -115,7 +115,7 @@ test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 	for name, i in expected do testing.expect_value(t, tail[i], name)
 	prev, events_prev := 0, 0
 	for name in order {
-		if name == "native_001_oidc_identities.sql" || name == "whatsapp_001_invite_only.sql" || name == "bots_web_001_channel.sql" do continue
+		if name == "native_001_oidc_identities.sql" || name == "whatsapp_001_invite_only.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" do continue
 		if strings.has_prefix(name, "events_") {
 			if !testing.expectf(t, len(name) > 10, "%s has an events sequence", name) do continue
 			n, n_ok := strconv.parse_int(name[7:10])

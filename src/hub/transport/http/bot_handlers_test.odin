@@ -53,7 +53,7 @@ bot_http_fixture :: proc(t: ^testing.T, enabled := true) -> ^Bot_HTTP_Fixture {
 	f.content_repo = sqlite.new_content_repository(&f.content_impl, &f.wire.conn)
 	f.providers.repo = &f.provider_repo
 	f.service = {repo = &f.bot_repo, uow_factory = &f.uow, experiments = &f.experiments, agents = &f.wire.ag_svc, bridges = &f.wire.br_repo, providers = &f.providers, clock = &f.wire.clock, ids = &f.wire.ids, timers = bots.default_bot_timer_config()}
-	f.handlers = {auth = &f.wire.auth_svc, bots = &f.service, experiments = &f.experiments}
+	f.handlers = {auth = &f.wire.auth_svc, bots = &f.service, experiments = &f.experiments, content = &f.content_repo}
 	_, err := iface.experiment_set(&f.experiments, {owner_user_id = string(f.wire.owner), key = "bots", enabled = enabled, updated_at = "now"})
 	testing.expect_value(t, err.code, domain.Error_Code.None)
 	return f

@@ -4,7 +4,7 @@ import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
 	// Web intake atomically creates the local binding and deduplicates the message.
-	web_message_store: proc(ctx: rawptr, binding: domain.Channel_Binding, message: domain.Channel_Message) -> (domain.Channel_Message, bool, domain.Domain_Error),
+	web_message_store: proc(ctx: rawptr, binding: domain.Channel_Binding, message: domain.Channel_Message, attachments: []domain.Channel_Attachment) -> (domain.Channel_Message, bool, domain.Domain_Error),
 	messages_page: proc(ctx: rawptr, owner, bot_id, before: string, limit: int) -> ([]domain.Channel_Message, domain.Domain_Error),
 
 	attachment_set_state: proc(ctx: rawptr, attachment_id: string, from, to: domain.Channel_Attachment_State, updated_at: string) -> (changed: bool, err: domain.Domain_Error),
@@ -751,9 +751,9 @@ attachment_set_state :: proc(repo: ^Bot_Repository, attachment_id: string, from,
 	return repo.attachment_set_state(repo.ctx, attachment_id, from, to, updated_at)
 }
 
-web_message_store :: proc(repo: ^Bot_Repository, binding: domain.Channel_Binding, message: domain.Channel_Message) -> (domain.Channel_Message, bool, domain.Domain_Error) {
+web_message_store :: proc(repo: ^Bot_Repository, binding: domain.Channel_Binding, message: domain.Channel_Message, attachments: []domain.Channel_Attachment) -> (domain.Channel_Message, bool, domain.Domain_Error) {
 	if repo == nil || repo.web_message_store == nil do return {}, false, domain.domain_error(.Internal_Error, "bot repository is not configured")
-	return repo.web_message_store(repo.ctx, binding, message)
+	return repo.web_message_store(repo.ctx, binding, message, attachments)
 }
 messages_page :: proc(repo: ^Bot_Repository, owner, bot_id, before: string, limit: int) -> ([]domain.Channel_Message, domain.Domain_Error) {
 	if repo == nil || repo.messages_page == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")

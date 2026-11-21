@@ -246,3 +246,13 @@ are in a separate collapsed disclosure.
 - `settings-bots-whatsapp-reminder` — WhatsApp card reminder.
 - `settings-bots-whatsapp-notice` — WhatsApp card notice.
 - `settings-bots-whatsapp-held-item-{index}` — WhatsApp card held item {index}.
+
+
+### Bot web attachments
+
+`BotChatPage.tsx` uses `bot-chat-attach-btn` to open the hidden
+`bot-chat-upload-input`. Draft uploads appear under `bot-chat-attachments`;
+each has `bot-chat-attachment-<local-key>`, `bot-chat-upload-retry-<local-key>`
+(on failure), and `bot-chat-upload-remove-<local-key>`. Stored attachment previews
+use `bot-chat-artifact-<message-id>-<artifact-id>-link` and, for loaded images,
+the corresponding `-image` ID. Local keys survive upload retries.

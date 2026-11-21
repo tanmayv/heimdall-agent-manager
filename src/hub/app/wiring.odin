@@ -681,7 +681,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.user_handlers.catalog = &graph.event_inbox
 	graph.event_inbox_handlers = http.Event_Inbox_Handlers{agent_actions = &graph.agent_action_handlers, inbox = &graph.event_inbox}
 	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
-	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo}
+	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo, content = &graph.repos.content}
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.agent_action_handlers.providers = &graph.providers

@@ -693,6 +693,7 @@ MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions
 MIGRATION_EVENTS_002_TOPICS :: #load("migrations/events_002_topics.sql", string)
 
 MIGRATION_223_EXTENSION_VERSION_SYNC :: #load("migrations/223_extension_version_sync_0_5_63.sql", string)
+MIGRATION_BOTS_WEB_002_ATTACHMENTS :: #load("migrations/bots_web_002_attachments.sql", string)
 MIGRATION_BOTS_WEB_001_CHANNEL :: #load("migrations/bots_web_001_channel.sql", string)
 
 MIGRATION_WHATSAPP_001_INVITE_ONLY :: #load("migrations/whatsapp_001_invite_only.sql", string)
@@ -941,6 +942,7 @@ migration_order :: [?]string {
 	"225_extension_version_sync_0_5_64.sql",
 	"bots_web_001_channel.sql",
 	"226_extension_version_sync_0_5_65.sql",
+	"bots_web_002_attachments.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -994,8 +996,12 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
-		// The paging index is created in the same transaction as the widened
-		// binding constraint, so it also proves commit after a lost ledger write.
+		// The message index proves the attachment table rebuild committed atomically.
+		if name == "bots_web_002_attachments.sql" && sqlite_object_exists(conn, "channel_attachments_message") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// The paging index proves the binding constraint upgrade committed atomically.
 		if name == "bots_web_001_channel.sql" && sqlite_object_exists(conn, "channel_messages_history_page") {
 			mark_migration_applied(conn, name)
 			continue
@@ -1417,7 +1423,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1472,6 +1478,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "224_copilot_acp_transport.sql" do return strings.clone(MIGRATION_224_COPILOT_ACP_TRANSPORT)
 	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
 	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
+	if name == "bots_web_002_attachments.sql" do return strings.clone(MIGRATION_BOTS_WEB_002_ATTACHMENTS)
 	if name == "bots_web_001_channel.sql" do return strings.clone(MIGRATION_BOTS_WEB_001_CHANNEL)
 	if name == "whatsapp_001_invite_only.sql" do return strings.clone(MIGRATION_WHATSAPP_001_INVITE_ONLY)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
