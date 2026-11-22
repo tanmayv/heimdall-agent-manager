@@ -983,7 +983,7 @@ Pipeline_Delivery :: struct {
 	attempt:               int,
 	ack_reply:             string,
 	stream_sequence:       i64,
-	expires_at, created_at, forwarded_at, updated_at: string,
+	retry_at, expires_at, created_at, forwarded_at, updated_at: string,
 }
 pipeline_delivery_destroy    :: proc(d: ^Pipeline_Delivery)
 pipeline_deliveries_destroy  :: proc(rows: []Pipeline_Delivery)
