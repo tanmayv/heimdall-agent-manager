@@ -2498,7 +2498,7 @@ Every call passes `Requirements.features = {contracts.BRIDGE_FEATURE_EVENT_PIPEL
 ```odin
 // src/hub/service/actions/router.odin — registered at wiring as the delivery.Sink of kind "prompt"
 on_delivery_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery)
-on_delivery_replace :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: delivery.Replace_Why) -> bool
+on_delivery_replace :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: delivery.Replace_Why) -> (bool, domain.Domain_Error)
 // Closes the action's open run if its delivery has expired (6.8.4). Rows only.
 expire_open_run :: proc(r: ^Router, uow: ^iface.Unit_Of_Work, action_id: domain.Action_ID)
 ```
@@ -2517,6 +2517,8 @@ The sink's `still_valid` is nil: a prompt delivery is valid until it expires.
 #### 6.13.5 Placing a prompt again
 
 `on_delivery_replace` (called by the pipeline for a `routed` delivery on a dropped or downgraded bridge, and for a `fatal` answer):
+
+The declines below return `false, {}`. Any repository or routing error returns `false, err`, so the pipeline rolls back every write in this attempt (6.11.4); successful replacement returns `true, {}`.
 
 1. Load the run and the action. Return false when the run is not `routed` with this delivery, when the action is gone, or when `target_kind != "agent"`.
 2. Call the effect's `plan` with `exclude` = the bridges in `d.excluded_bridges_json` plus `d.bridge_id`. `plan.ok == false` → return false. (The "one named machine" rule of 6.13.3 does not apply here: the machine is in the exclude list.)
