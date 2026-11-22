@@ -279,6 +279,7 @@ bot_repo_scan_channel_message :: proc(stmt: sqlite3_stmt) -> domain.Channel_Mess
 	value.created_at = column_text(stmt, 11)
 	value.read_at = column_text(stmt, 12)
 	value.replied_at = column_text(stmt, 13)
+	value.action_ids_json = column_text(stmt, 14)
 	return value
 }
 
@@ -587,7 +588,7 @@ message_insert_outbound_sqlite :: proc(ctx: rawptr, msg: domain.Channel_Message)
 	defer if with_attachment && !released do exec(conn, "ROLLBACK TO channel_message_insert; RELEASE channel_message_insert;")
 	changes, err := bot_repo_write(
 		conn,
-		`INSERT INTO channel_messages (message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+		`INSERT INTO channel_messages (message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
 		{
 			msg.message_id,
 			msg.binding_id,
@@ -603,6 +604,7 @@ message_insert_outbound_sqlite :: proc(ctx: rawptr, msg: domain.Channel_Message)
 			msg.created_at,
 			msg.read_at,
 			msg.replied_at,
+			msg.action_ids_json,
 		},
 	)
 	_ = changes
@@ -644,7 +646,7 @@ messages_pending_sqlite :: proc(
 	conn := bot_repo_conn(ctx)
 	return bot_repo_list_channel_message(
 		conn,
-		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE bot_id = ? AND direction = 'inbound' AND replied_at = '' ORDER BY created_at, message_id LIMIT ?;`,
+		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE bot_id = ? AND direction = 'inbound' AND replied_at = '' ORDER BY created_at, message_id LIMIT ?;`,
 		{bot_id, fmt.tprintf("%d", limit)},
 	)
 }
@@ -660,7 +662,7 @@ messages_history_sqlite :: proc(
 	conn := bot_repo_conn(ctx)
 	return bot_repo_list_channel_message(
 		conn,
-		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE bot_id = ? ORDER BY created_at DESC, message_id DESC LIMIT ?;`,
+		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE bot_id = ? ORDER BY created_at DESC, message_id DESC LIMIT ?;`,
 		{bot_id, fmt.tprintf("%d", limit)},
 	)
 }
@@ -685,7 +687,7 @@ messages_purge_binding_sqlite :: proc(ctx: rawptr, binding_id: string) -> domain
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
-		`UPDATE channel_messages SET body = '', body_purged = 1 WHERE binding_id = ?;`,
+		`UPDATE channel_messages SET body = '', body_purged = 1, action_ids_json = '' WHERE binding_id = ?;`,
 		{binding_id},
 	)
 	_ = changes
@@ -704,7 +706,7 @@ messages_purge_older_than_sqlite :: proc(ctx: rawptr, cutoff: string) -> (int, d
 	conn := bot_repo_conn(ctx)
 	count, err := bot_repo_write(
 		conn,
-		"UPDATE channel_messages SET body = '', body_purged = 1 WHERE created_at < ? AND body_purged = 0;",
+		"UPDATE channel_messages SET body = '', body_purged = 1, action_ids_json = '' WHERE created_at < ? AND body_purged = 0;",
 		{cutoff},
 	)
 	if err.code != .None do return 0, err
@@ -1454,7 +1456,7 @@ messages_mark_replied_binding_sqlite :: proc(
 messages_held_sqlite :: proc(ctx: rawptr, binding_id: string) -> ([]domain.Channel_Message, domain.Domain_Error) {
 	return bot_repo_list_channel_message(
 		bot_repo_conn(ctx),
-		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE binding_id = ? AND send_state = 'held' AND body_purged = 0 ORDER BY created_at, message_id;`,
+		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE binding_id = ? AND send_state = 'held' AND body_purged = 0 ORDER BY created_at, message_id;`,
 		{binding_id},
 	)
 }
@@ -1469,7 +1471,7 @@ message_get_outbound_by_external_sqlite :: proc(
 ) {
 	rows, err := bot_repo_list_channel_message(
 		bot_repo_conn(ctx),
-		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE binding_id = ? AND external_message_id = ? AND direction = 'outbound' LIMIT 1;`,
+		`SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE binding_id = ? AND external_message_id = ? AND direction = 'outbound' LIMIT 1;`,
 		{binding_id, external_message_id},
 	)
 	defer delete(rows)

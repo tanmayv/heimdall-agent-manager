@@ -49,6 +49,7 @@ Bot_History_Message :: struct {
 	body_purged: bool,
 	send_state, created_at, read_at, replied_at: string,
 	attachments: []Bot_Channel_Attachment_Wire,
+	metadata: json.Object `json:"metadata,omitempty"`,
 }
 bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bot_Handlers)(ctx)
@@ -79,7 +80,21 @@ bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		defer domain.channel_binding_destroy(&binding)
 		if e.code != .None do return respond_error(e, req.request_id)
 		if !found || binding.owner_user_id != auth.user_id || binding.bot_id != bot.bot_id do return respond_error(domain.domain_error(.Internal_Error, "message binding missing"), req.request_id)
-		wire[i] = {m.message_id, m.binding_id, binding.provider, domain.channel_direction_text(m.direction), m.body, m.body_purged, domain.channel_send_state_text(m.send_state), m.created_at, m.read_at, m.replied_at, nil if m.body_purged else bot_channel_attachment_wires(attachments, m.message_id)}
+		metadata: json.Object
+		if binding.provider == domain.CHANNEL_PROVIDER_WEB && m.direction == .Outbound && !m.body_purged && m.action_ids_json != "" {
+			ids: []string
+			if json.unmarshal(transmute([]u8)m.action_ids_json, &ids, allocator = context.temp_allocator) == nil && len(ids) > 0 {
+				visible, card_err := bot_visible_action_ids(h.cards, domain.User_ID(auth.user_id), ids)
+				if card_err.code != .None do return respond_error(card_err, req.request_id)
+				if len(visible) > 0 {
+					values := make(json.Array, len(visible), context.temp_allocator)
+					for id, index in visible do values[index] = json.String(id)
+					metadata = make(json.Object, 1, context.temp_allocator)
+					metadata["action_ids"] = values
+				}
+			}
+		}
+		wire[i] = {m.message_id, m.binding_id, binding.provider, domain.channel_direction_text(m.direction), m.body, m.body_purged, domain.channel_send_state_text(m.send_state), m.created_at, m.read_at, m.replied_at, nil if m.body_purged else bot_channel_attachment_wires(attachments, m.message_id), metadata}
 	}
 	next := ""
 	if len(messages) > limit do next = messages[limit-1].message_id

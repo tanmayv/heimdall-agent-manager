@@ -1,5 +1,7 @@
 package contracts
 
+BOT_WEB_MAX_ACTION_IDS :: 16
+
 BRIDGE_FEATURE_BOT_DELIVER_V1 :: "bot_deliver_v1"
 BOT_DELIVER_FRAME :: "bot_deliver"
 BOT_DELIVERY_REPORT_FRAME :: "bot_delivery_report"

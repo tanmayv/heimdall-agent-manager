@@ -90,3 +90,16 @@ test_channel_send_artifact_flag_rules :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, strings.contains(CHANNEL_HELP, "Send an artifact as a photo, document or voice note"))
 }
+
+
+@(test)
+test_channel_send_action_params :: proc(t: ^testing.T) {
+	params, err := ctl_channel_params("send", []string{"--text", "review", "--actions", "crd_one,crd_two", "--action", "crd_three"})
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, params, `{"text":"review","action_ids":["crd_one","crd_two","crd_three"]}`)
+	params, err = ctl_channel_params("send", []string{"--text", "review"})
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, params, `{"text":"review"}`)
+	_, err = ctl_channel_params("send", []string{"--artifact", "art_one", "--action", "crd_one"})
+	testing.expect(t, err != "")
+}

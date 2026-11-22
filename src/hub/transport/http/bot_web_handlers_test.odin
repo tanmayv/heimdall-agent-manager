@@ -149,3 +149,33 @@ test_web_artifacts_validation_atomicity_history_and_agent_read :: proc(t: ^testi
 	purged := bot_unified_messages_handler(&f.handlers,bot_http_request(f,"GET","/api/v1/bots/me/messages",""))
 	testing.expect(t,purged.status==200 && !strings.contains(purged.body,"art_first"))
 }
+
+
+@(test)
+test_bot_runtime_identity_requires_current_owned_agent :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := bot_http_fixture(t)
+	defer bot_http_destroy(f)
+	bot := bot_http_create(t, f)
+	defer domain.bot_destroy(&bot)
+	id := f.wire.instance_id
+	testing.expect_value(t, iface.bot_set_instance(&f.bot_repo, bot.bot_id, id, "now").code, domain.Error_Code.None)
+	req := bot_http_request(f, "GET", "/api/v1/bots/me", "")
+	before := bot_me_handler(&f.handlers, req)
+	testing.expect_value(t, before.status, 200)
+	testing.expect(t, !strings.contains(before.body, id))
+	testing.expect(t, sqlite.exec(&f.wire.conn, fmt.tprintf("UPDATE agent_instances SET agent_id = '%s', conversation_id = 'chat_bot_runtime' WHERE agent_instance_id = '%s';", bot.agent_id, id)))
+	after := bot_me_handler(&f.handlers, req)
+	testing.expect_value(t, after.status, 200)
+	testing.expect(t, strings.contains(after.body, id) && strings.contains(after.body, `"conversation_id":"chat_bot_runtime"`))
+	_, saved, err := iface.agent_save_instance(&f.wire.ag_repo, {
+		agent_instance_id = "inst_foreign_bot", owner_user_id = "wire_foreign_owner",
+		agent_id = bot.agent_id, bridge_id = f.wire.bridge_foreign, conversation_id = "chat_foreign_bot",
+		runtime_status = "running", created_at = "now", updated_at = "now",
+	})
+	testing.expectf(t, saved && err.code == .None, "%v", err)
+	testing.expect_value(t, iface.bot_set_instance(&f.bot_repo, bot.bot_id, "inst_foreign_bot", "now").code, domain.Error_Code.None)
+	foreign_response := bot_me_handler(&f.handlers, req)
+	testing.expect_value(t, foreign_response.status, 200)
+	testing.expect(t, !strings.contains(foreign_response.body, "inst_foreign_bot") && !strings.contains(foreign_response.body, "chat_foreign_bot"))
+}
