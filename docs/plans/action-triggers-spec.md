@@ -604,6 +604,7 @@ stream_delete_message :: proc(conn: ^Connection, stream: string, sequence: u64) 
 | N7 | After `MaxDeliver` is exhausted the message is **not** redelivered, but it **stays** in the work-queue stream until `max_age` or until it is deleted. The max-deliveries advisory is emitted only while a pull request is waiting on that consumer. Its body is `{"type":"io.nats.jetstream.advisory.v1.max_deliver","stream":"HEIM_DELIVER","consumer":"brg_<bridge>","stream_seq":<n>,"deliveries":<n>}`; it has no message id |
 | N8 | A repeated `Nats-Msg-Id` inside the duplicate window is reported as a duplicate and stored once |
 | N9 | A consumer can be deleted, and a stream can be purged with a wildcard subject filter (`dlv.*.b2.>`) |
+| N10 | **A message that was nak'd with a delay keeps counting against `MaxAckPending` until it is redelivered and acked.** With `MaxAckPending` 2 and two messages nak'd with an 8 s delay, the consumer reports `NumAckPending` 2 and a third message is held back for the whole delay. The pipeline therefore does not use `MaxAckPending` as its in-flight limit (6.11.4) |
 
 #### 6.3.6 Stream `HEIM_DELIVER`
 
@@ -629,6 +630,8 @@ The relay creates this stream in the same connect block as `HEIM_EVENTS` (`src/h
 Why a second stream and not `HEIM_EVENTS`: the matcher and the event inbox read `ev.>` and must not see commands; `HEIM_EVENTS` keeps messages for 14 days and uses rollups, while a delivery must disappear when acked; a bridge's backlog can be purged when the bridge is deleted; and nothing irreversible is added to `HEIM_EVENTS` (risk K1 does not grow).
 
 Per-bridge consumers on this stream are created by package `delivery` (6.11.3), not by the relay.
+
+**`ack_reply_async`.** `ack_reply_async :: proc(conn: ^Connection, reply: string) -> Error` publishes `+ACK` to `reply` and returns. It does not wait for the server (the existing `ack_reply`, `src/lib/nats/nats.odin:330`, is a request with a timeout and blocks its caller). The pipeline uses only the async form (6.11.4).
 
 ### 6.4 Schema (T9)
 
@@ -759,6 +762,7 @@ CREATE TABLE pipeline_deliveries (
   attempt INTEGER NOT NULL DEFAULT 0,      -- num_delivered of the newest forward
   ack_reply TEXT NOT NULL DEFAULT '',      -- JetStream reply subject of the newest forward
   stream_sequence INTEGER NOT NULL DEFAULT 0,
+  retry_at TEXT NOT NULL DEFAULT '',       -- set by a retry answer: when JetStream redelivers; '' while a frame is in flight
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   forwarded_at TEXT NOT NULL DEFAULT '',   -- first forward
@@ -932,11 +936,14 @@ Pipeline_Delivery_Repository :: struct {
 	insert: proc(ctx: rawptr, d: domain.Pipeline_Delivery) -> domain.Domain_Error,
 	get:    proc(ctx: rawptr, delivery_id: string) -> (domain.Pipeline_Delivery, bool, domain.Domain_Error),
 	// Compare-and-set on state: writes every mutable column of next only if the stored state equals from_state.
+	// changed = false means another thread moved the row first. EVERY caller MUST branch on it (6.11.4, 6.11.5).
 	transition: proc(ctx: rawptr, next: domain.Pipeline_Delivery, from_state: string) -> (changed: bool, err: domain.Domain_Error),
 	// Open rows of one bridge, oldest first. state_filter "" = routed and forwarded.
 	open_for_bridge: proc(ctx: rawptr, bridge_id, state_filter: string, limit: int) -> ([]domain.Pipeline_Delivery, domain.Domain_Error),
 	// The open row with this ref, if any (at most one per ref by construction).
 	open_by_ref: proc(ctx: rawptr, ref: string) -> (domain.Pipeline_Delivery, bool, domain.Domain_Error),
+	// Frames in flight for one bridge: rows in state forwarded with retry_at = '' and updated_at > since.
+	in_flight: proc(ctx: rawptr, bridge_id, since: string) -> (int, domain.Domain_Error),
 	// Open rows with expires_at <= now, oldest first.
 	expired: proc(ctx: rawptr, now: string, limit: int) -> ([]domain.Pipeline_Delivery, domain.Domain_Error),
 	// Deletes closed rows with updated_at < cutoff.
@@ -1473,7 +1480,7 @@ This section replaces section 6.11 of the v6 spec ("Wake and delivery"). Nothing
 | Subject | `dlv.<owner_user_id>.<bridge_id>.<kind>`; `kind` is `prompt`, `notice`, `bot` or `lease`. Each token MUST pass `nats.subject_token` |
 | Stream | `HEIM_DELIVER` (6.3.6) |
 | Publish | Only through `event_outbox`, in the caller's transaction. Outbox `event_id` = `delivery_id`, so `Nats-Msg-Id` = `delivery_id` (F3). `headers_json` = `{}` |
-| Consumer per bridge | Durable `brg_<bridge_id>`; `filter_subjects = ["dlv.*.<bridge_id>.>"]`; explicit ack; `ack_wait_ns` 60 s; `max_deliver` 8; `max_ack_pending` 16; `deliver_new = false` |
+| Consumer per bridge | Durable `brg_<bridge_id>`; `filter_subjects = ["dlv.*.<bridge_id>.>"]`; explicit ack; `ack_wait_ns` 60 s; `max_deliver` 8; `max_ack_pending` 256; `deliver_new = false` |
 | Advisory stream | `HEIM_DELIVER_ADVISORIES`, subjects `["$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.HEIM_DELIVER.>"]`, limits retention, `max_age` 14 days, duplicate window 2 minutes; durable consumer `hub_delivery_dlq` (`ack_wait_ns` 1 s, unlimited `max_deliver`), modelled on `prepare_advisories` (`src/hub/service/eventinbox/runtime.odin:232`) |
 
 Constants (package `contracts`, file `delivery_wire.odin`):
@@ -1484,7 +1491,8 @@ EVENT_DELIVER_FRAME        :: "event_deliver"
 DELIVERY_ID_PREFIX         :: "dlv_"
 DELIVERY_MAX_DELIVER       :: 8
 DELIVERY_ACK_WAIT_MS       :: 60_000
-DELIVERY_MAX_ACK_PENDING   :: 16
+DELIVERY_MAX_ACK_PENDING   :: 256      // bounds open deliveries per bridge, waiting retries included (N10)
+DELIVERY_MAX_IN_FLIGHT     :: 16       // frames sent to one bridge and not yet answered; the hub enforces it (6.11.4)
 DELIVERY_HANDLER_BUDGET_MS :: 30_000   // the bridge handler's deadline; MUST stay below DELIVERY_ACK_WAIT_MS
 DELIVERY_RETRY_MIN_MS      :: 10_000
 DELIVERY_RETRY_MAX_MS      :: 300_000
@@ -1628,18 +1636,39 @@ Package `delivery` owns one NATS connection and these threads. Each follows the 
 | Thread | Count | Blocks on | Does |
 |---|---|---|---|
 | Supervisor | 1 | `nats.fetch` on the advisory consumer (1 s server-side wait, like the matcher's fetch) | Connects; creates the advisory stream and consumer; at start and after every reconnect runs `expire_due` and wakes every forwarder; drains advisories (6.11.8) |
-| Forwarder | 1 per bridge that ever connected with the feature since hub start | a semaphore while the bridge is not live or NATS is not connected; otherwise `nats.fetch(pull, 16, 1000)` | Forwards deliveries of its bridge |
+| Forwarder | 1 per bridge that ever connected with the feature since hub start | its semaphore while the bridge is not live, NATS is not connected, or the in-flight limit is reached; otherwise `nats.fetch(pull, n, 1000)` | Forwards deliveries of its bridge; sends the JetStream answers for its bridge (the answer queue below) |
 
 There is no sleep and no timer in the package: a thread either waits on a semaphore that an event signals, or blocks in a JetStream fetch. `grep -n "time.sleep\|thread.sleep" src/hub/service/delivery/*.odin` MUST print nothing outside test files.
+
+**Who may touch the NATS connection.** Only the supervisor and the forwarders call package `nats`. `on_command_result`, `route`, `expire` and the bridge hooks run on other threads (a WebSocket reader, a request handler) and MUST NOT make any NATS call: they write rows and, where an answer needs a JetStream call, put it on the bridge's answer queue.
+
+```odin
+// Guards Service.conn. Shared: held by a forwarder or the supervisor around every nats call, including the whole
+// processing of a fetched batch (its messages belong to the connection). Exclusive: held by the supervisor only,
+// to close and replace the connection. Service.connected is written under the exclusive lock.
+Service.conn_lock: sync.RW_Mutex
+// Per forwarder; guarded by Forwarder.mutex, which is a leaf lock: nothing else is taken while it is held.
+Answer_Op :: enum { Ack, Nak_Delay, In_Progress, Term }
+Answer    :: struct { op: Answer_Op, reply: string, delay_ms: i64 } // reply is cloned into the queue's own allocator
+Forwarder.answers: [dynamic]Answer
+```
+
+Lock order: `conn_lock`, then a unit of work, then `Forwarder.mutex`. A thread never acquires `conn_lock` while it is inside a unit of work, and never begins waiting on a semaphore while it holds `conn_lock`. The supervisor releases every lock before it opens a unit of work for `expire_due`. Enqueueing an answer signals the forwarder's semaphore; it does not wait. An answer for a bridge that has no forwarder is dropped: the message is redelivered after AckWait and the gate handles it. Answers still queued when the connection is replaced are dropped for the same reason (their reply subjects stay valid on the server, but dropping is simpler and safe).
+
+All four answer calls on the forwarder are plain publishes followed by nothing: the forwarder does not wait for the server's response to an ack. `nats.ack_reply` with its 2000 ms request (`src/lib/nats/nats.odin:330`) is **not** used by the pipeline; T1 adds `ack_reply_async` (6.3.5). A lost ack costs one redelivery, which the gate acks because the row is closed.
 
 A forwarder is created by the first `on_bridge_online` of a capable bridge and lives until `stop` or `on_bridge_deleted`. `on_bridge_online` and the supervisor's reconnect step signal its semaphore. `on_bridge_offline` does not stop it: the forwarder sees that the bridge is not live (`project_service.bridge_runtime_registry_has_live`, `src/hub/service/project/runtime_registry.odin:419`) and waits. At most 256 forwarders exist; a capable bridge beyond that is logged once and counted in `Service.forwarders_refused`, and its deliveries wait in the stream (risk V-K3).
 
 **One forwarder pass**
 
 1. If NATS is not connected or the bridge has no live connection: wait on the semaphore; start again.
+1a. Take `conn_lock` shared for the rest of the pass. Drain the answer queue: swap it out under `Forwarder.mutex`, then make each call.
+1b. **In-flight limit.** In one read-only unit of work, `n = DELIVERY_MAX_IN_FLIGHT - in_flight(bridge_id, now - DELIVERY_ACK_WAIT_MS)`. If `n <= 0`: release `conn_lock`, wait on the semaphore for at most 1 s (`sync.sema_wait_with_timeout`), start again. Every answer signals the semaphore, so the wait normally ends at once when a slot frees; the 1 s bound only covers answers that never arrive, whose rows leave the count when they are older than AckWait.
 2. If this forwarder has no pull binding for the current connection: `nats.consumer_add` with the settings of 6.11.1 (an existing durable is kept), then `nats.pull_bind(conn, "HEIM_DELIVER", "brg_<bridge_id>")`.
-3. `nats.fetch(pull, 16, 1000)`. For each message, run the gate below. Destroy the batch on every path.
-4. `free_all(context.allocator)`.
+3. `nats.fetch(pull, n, 1000)`. For each message, run the gate below. Destroy the batch on every path.
+4. Release `conn_lock`. `free_all(context.allocator)`.
+
+The limit exists because the bridge's dispatcher queues at most 32 lifecycle commands (`src/bridge/hub_command_dispatch.odin:121`) and refuses the rest. It is counted in the database and not through `MaxAckPending`, because a delivery that waits for a delayed retry holds a `MaxAckPending` slot for the whole delay (N10): with a limit of 16 there, sixteen prompts for busy agents would hold back every other delivery of that bridge for up to 15 minutes. A waiting retry has `retry_at` set and is not in flight. `DELIVERY_MAX_ACK_PENDING` (256) only bounds how many open deliveries one bridge can have in total; reaching it needs 256 deliveries that are in flight or waiting for a retry at once (risk V-K18).
 
 **The forward gate, for one message** (REQ-PIPE-3, REQ-PIPE-10)
 
@@ -1654,9 +1683,11 @@ A forwarder is created by the first `on_bridge_online` of a capable bridge and l
 | Open and the kind's `still_valid` returns false | write `failed`, reason `superseded`; `on_final`; commit; `nats.ack` |
 | Open otherwise | step 3 |
 
-3. `transition` to `forwarded` (from `routed` or from `forwarded`) with `attempt = num_delivered`, `ack_reply`, `stream_sequence`, `updated_at`, and `forwarded_at` if it is empty. **Commit.**
+3. In the **same** unit of work that loaded the row: `transition` to `forwarded` (from the state just read, `routed` or `forwarded`) with `attempt = num_delivered`, `ack_reply`, `stream_sequence`, `retry_at = ""`, `updated_at`, and `forwarded_at` if it is empty. **Commit.** If `changed` is false, another thread closed the row in between: treat it as the closed-row case (`nats.ack`, no frame).
 4. Only after the commit: build `Event_Deliver_Wire` (`final = attempt >= DELIVERY_MAX_DELIVER`) and send it with `project_service.bridge_command_send_runtime` (`src/hub/service/project/project_service.odin:82`).
-5. If the send reports failure: `nats.nak_reply_delay(conn, reply, 2000)`. The row stays `forwarded`. It is never moved back to `routed`: a failed socket write may have sent part of the frame.
+5. If the send reports failure: make **no** JetStream call. The message stays pending and is redelivered after AckWait (60 s). The row stays `forwarded`; it is never moved back to `routed`, because a failed socket write may have sent part of the frame. The forwarder ends this pass without handling the rest of the batch (those messages are redelivered too) and, before its next pass, waits on its semaphore for at most 5 s. A failed send therefore costs one of the 8 attempts per minute at most, not one every few seconds, so a connection that is reported live while its writes fail cannot use up a delivery before the disconnect is noticed (risk V-K19).
+
+**Every transition acts on `changed`.** Load and `transition` always happen in one unit of work (units of work are serialised, so this costs nothing). `on_final`, `replace` and the JetStream answer run only when the transition changed the row. This is what makes "`on_final` is called exactly once per delivery" true. It applies to the gate, to `on_command_result`, to `expire`, to the offline rules and to the advisory handler.
 
 The forwarder does not ack, nak or terminate a forwarded message by itself in any other case. The message stays pending until the answer arrives (6.11.5) or AckWait passes.
 
@@ -1664,17 +1695,17 @@ Because `forwarded` is committed before the frame is sent, **a delivery in state
 
 #### 6.11.5 What the hub does with the answer
 
-`on_command_result` runs on the bridge's WebSocket reader thread. It parses the delivery id and the attempt from `command_id`, the status with `jsonx.extract_string(text, "status", top_level_only = false)` (as the bots line does, `src/hub/transport/http/bridge_handlers.odin:2557`), `outcome`, `class` and `retry_after_ms` the same way, and the reason from `contracts.wire_error_parse` (field `cause`).
+`on_command_result` runs on the bridge's WebSocket reader thread. It does database work only and never calls NATS: the JetStream column of the table below is put on the bridge's answer queue after the commit, and that bridge's forwarder makes the call (6.11.4), normally within milliseconds and at worst after its current fetch returns (1 s). It parses the delivery id and the attempt from `command_id`, the status with `jsonx.extract_string(text, "status", top_level_only = false)` (as the bots line does, `src/hub/transport/http/bridge_handlers.odin:2557`), `outcome`, `class` and `retry_after_ms` the same way, and the reason from `contracts.wire_error_parse` (field `cause`).
 
 It loads the row. It ignores the answer when the row is missing, belongs to another bridge, or is not `forwarded`. A closed row makes every later answer a no-op: result handling is idempotent (REQ-PIPE-4).
 
-| Answer | Hub state (one unit of work) | JetStream (after the commit) |
+| Answer | Hub state (one unit of work; later columns apply only when `changed`) | JetStream (queued after the commit) |
 |---|---|---|
-| `accepted` | none | `nats.in_progress_reply(conn, row.ack_reply)`, only when the answer's attempt equals `row.attempt` |
-| `succeeded` (from any attempt) | row → `done` with `outcome` (`notified` when the field is missing); `on_final` | `nats.ack_reply(conn, row.ack_reply, 2000)` |
-| `failed`, class `retry`, answer's attempt = `row.attempt` < 8 | `reason` is stored on the row; the state stays `forwarded` | `nats.nak_reply_delay(conn, row.ack_reply, retry_delay_ms(row.attempt, retry_after_ms))` |
-| `failed`, class `retry`, on attempt 8 | as `fatal` with reason `no_answer` (a bridge MUST NOT send this, REQ-BRG-4) | `nats.term_reply` |
-| `failed`, class `fatal` or no class, answer's attempt = `row.attempt` | the kind's `replace(…, .Fatal_Answer)` when `row.round < DELIVERY_MAX_ROUNDS - 1`; true → row `replaced`; otherwise row → `failed` with the answer's reason (`start_failed` when it is empty) and `on_final` | `nats.term_reply(conn, row.ack_reply)` |
+| `accepted` | none | `In_Progress`, only when the answer's attempt equals `row.attempt` |
+| `succeeded` (from any attempt) | row → `done` with `outcome` (`notified` when the field is missing); `on_final` | `Ack` |
+| `failed`, class `retry`, answer's attempt = `row.attempt` < 8 | `reason` and `retry_at = now + delay` are stored on the row (a `transition` from `forwarded` to `forwarded`); the state stays `forwarded` | `Nak_Delay` with `retry_delay_ms(row.attempt, retry_after_ms)` |
+| `failed`, class `retry`, on attempt 8 | as `fatal` with reason `no_answer` (a bridge MUST NOT send this, REQ-BRG-4) | `Term` |
+| `failed`, class `fatal` or no class, answer's attempt = `row.attempt` | the kind's `replace(…, .Fatal_Answer)` when `row.round < DELIVERY_MAX_ROUNDS - 1`; true → row `replaced`; otherwise row → `failed` with the answer's reason (`start_failed` when it is empty) and `on_final` | `Term` |
 | `failed` from an older attempt | none | none |
 | no answer | none | redelivery after AckWait (60 s) |
 
@@ -1683,7 +1714,7 @@ It loads the row. It ignores the answer when the row is missing, belongs to anot
 retry_delay_ms :: proc(attempt: int, asked_ms: i64) -> i64 // clamp(max(asked_ms, 10_000 << (attempt-1)), 10_000, 300_000)
 ```
 
-If a JetStream call after the commit fails, nothing is rolled back: the message is redelivered later and the forward gate acks it, because the row is closed.
+If a queued JetStream call fails or is dropped, nothing is rolled back: the message is redelivered later and the forward gate acks it, because the row is closed.
 
 A `fatal` answer is the bridge stating that it did not act. That is why such a delivery may be placed again (OFF-4).
 
@@ -1765,7 +1796,7 @@ A `final` attempt always ends with `succeeded` or with `failed` and class `fatal
 5. Record the result with `bridge_task_wake_record_result` (`src/bridge/agent_wake.odin:263`), as today, so back-off and parking stay shared with the other wake callers.
 6. A launch failure is classified by `err.class`: `.retriable` → retriable with `err.retry_after_ms`; `.recoverable` and `.fatal` → fatal, reason `launch_failed`. After a failed launch the bridge reports the failed status as the wake path does (`bridge_wake_report_failed_status`, `src/bridge/hub_runtime_client.odin:2676`), which lets the hub release the reservation (10.2).
 
-`Already_Active` is answered `succeeded`, `started`.
+`Already_Active` is answered `succeeded`, `started`. So is a start-begin that the hub refuses with `already_running` (6.12.4): the bridge's local snapshot can miss a start that the hub has opened but whose launch has not reached the bridge yet, and the hub's row is the authority.
 
 **Kinds `lease` and `bot`.** Row 0, row 1 and the ledger rules apply. The effect is `Flow`; the handlers are specified in T20 and T19. Before those tasks, the executor answers `failed`, `fatal`, reason `unknown_kind` for them.
 
@@ -1866,15 +1897,16 @@ start_begin_for_delivery :: proc(service: ^Agent_Service, owner: domain.User_ID,
 1. `delivery_id` is empty → `Validation_Failed`.
 2. Load the instance with `iface.agent_get_instance`. Not found, another owner or another bridge → `Not_Found` (the same check as the manifest, `src/hub/service/agent/agent_service.odin:2247`).
 3. **Idempotency.** If `inst.start_delivery_id == delivery_id` and `inst.runtime_status == "launching"`: return `launch_command_json_full(service, command_id, inst)` with `reused = true`. Nothing is written and nothing is reserved.
-4. Clear the user stop: `inst = clear_user_stop(service, inst)` (`src/hub/service/agent/agent_service.odin:888`), as `start_instance` does under the same mutex (`src/hub/service/agent/agent_service.odin:912`). This is the "no stop check" rule (B3). It is a write, not a read: `start_begin.odin` MUST NOT contain a comparison on `stopped_by`.
-5. `relaunch_prepare_locked(service, {kind = .Internal_User, user_id = owner}, inst, inst.provider, inst.model)`. An error is returned unchanged.
-6. `validate_frozen_runtime_transport(service, saved)` (`src/hub/service/agent/agent_service.odin:2722`), which `send_frozen_instance_launch` runs before a hub-sent launch (`src/hub/service/agent/agent_service.odin:424`). On an error: mark the row `failed` exactly as the send-failure branch of `relaunch_instance_locked` does, cancel the reservation, return the error.
-7. Set `saved.start_delivery_id = delivery_id` and save.
-8. Return `launch_command_json_full(service, command_id, saved)` (`src/hub/service/agent/agent_service.odin:1781`), `saved.run_count`, `reused = false`.
+4. **Live-row guard.** If `runtime_expected_active(inst.runtime_status)` (`src/hub/service/agent/agent_service.odin:1758`): return `Conflict` with the same message and the same details as `start_instance` (`src/hub/service/agent/agent_service.odin:906`): `details_json = {"code":"already_running","runtime_status":"<status>"}`. Nothing is written, nothing is reserved, `run_count` and `launch_epoch` are unchanged. `start_instance` has this check outside `relaunch_instance_locked`, so the moved code does not contain it; without it a start-begin for a second delivery, or one that races a manual start, a restart or a lease wake, would open a new generation on a live row, and the hub would then refuse the live process's status frames and its start-success as superseded.
+5. **User stop.** Set `inst.stopped_by = ""` on the in-memory copy only. Do **not** call `clear_user_stop` (`src/hub/service/agent/agent_service.odin:888`): it saves at once, and a start that is refused in step 6 or 7 would then have erased the user's stop although nothing started; task leasing reads that mark (v7-Q4). `relaunch_prepare_locked` copies `inst` into the row it saves, so the mark is cleared in the same save that opens the generation, and only then. This is a write, not a read: `start_begin.odin` MUST NOT contain a comparison on `stopped_by`.
+6. `relaunch_prepare_locked(service, {kind = .Internal_User, user_id = owner}, inst, inst.provider, inst.model)`. An error is returned unchanged; the stored row is untouched.
+7. `validate_frozen_runtime_transport(service, saved)` (`src/hub/service/agent/agent_service.odin:2722`), which `send_frozen_instance_launch` runs before a hub-sent launch (`src/hub/service/agent/agent_service.odin:424`). On an error: mark the row `failed` exactly as the send-failure branch of `relaunch_instance_locked` does, cancel the reservation, return the error. (The generation was opened, so the stop mark stays cleared in this one case, as it does when a manual start fails at its send.)
+8. Set `saved.start_delivery_id = delivery_id` and save.
+9. Return `launch_command_json_full(service, command_id, saved)` (`src/hub/service/agent/agent_service.odin:1781`), `saved.run_count`, `reused = false`.
 
 `command_id` is `"sb_" + delivery_id` in both the fresh and the reused case, so a repeated call returns identical bytes.
 
-The reservation taken in step 5 is **kept**. It is consumed by the bridge's first status frame for the instance, released by a failed or stopped status frame, and otherwise expires after one minute (V17, 10.2). The row is not marked `failed` when the bridge never launches: the bridge's status frame, the reservation expiry and the stale-instance reaper (`src/hub/app/reaper.odin:255`) recover it, and the delivery is retried.
+The reservation taken in step 6 is **kept**. It is consumed by the bridge's first status frame for the instance, released by a failed or stopped status frame, and otherwise expires after one minute (V17, 10.2). The row is not marked `failed` when the bridge never launches: the bridge's status frame, the reservation expiry and the stale-instance reaper (`src/hub/app/reaper.odin:255`) recover it, and the delivery is retried.
 
 The run generation does not depend on the order of later messages: `start-success` is accepted whether it arrives before or after the `command_result`, and also when the `command_result` is lost, because the generation was committed before the process existed.
 
@@ -1911,11 +1943,14 @@ The request is built like the existing bot switch call (`src/bridge/bot_delivery
 | Start-begin result | Class | Reason |
 |---|---|---|
 | No URL or credential; transport error; HTTP status 0, 429 or 5xx | retriable | — |
-| 409 or 423 (the configuration changed or a reconfiguration is running) | retriable | — |
+| 409 whose error details carry `"code":"already_running"` (step 4 of 6.12.2) | **not a failure** | The hub already has a live generation for this instance: a start from another cause is under way or done. The bridge sends no launch, releases its wake gate without recording a failure, and answers `succeeded` with outcome `started`, exactly as for `Already_Active`. The stored message is found by the start-success step of that generation (as in row 6 of 6.11.6) |
+| any other 409, or 423 (the configuration changed or a reconfiguration is running) | retriable | — |
 | 401 or 403 | retriable (the credential is being refreshed) | — |
 | 404 | fatal | `target_missing` |
 | any other 4xx | fatal | `start_refused` |
 | 200 without `data.launch` | fatal | `start_refused` |
+
+The bridge finds the code by searching the response body for the string field `code` with `extract_json_string`-style parsing at any depth (the hub writes `details_json` into the error body as it does for `start_instance`; `ham-ctl` reads the same field). **Assumption:** `respond_error` includes `details_json` in the body of a 409. T16 verifies it in `test_start_begin_route` and, if it does not, adds the details to this one handler's response.
 
 #### 6.12.5 Creating an instance without starting it
 
@@ -2362,6 +2397,8 @@ Further tests in `src/lib/nats/nats_test.odin` (scenarios called from `test_jets
 | `scenario_term_reply` | After `term_reply`: no redelivery within `ack_wait` + 1 s, and `subject_count` of the subject is 0 |
 | `scenario_ack_reply_work_queue` | `ack_reply` on a stored reply subject removes the message from the work-queue stream |
 | `scenario_max_deliver_advisory` | With `max_deliver` 3 and `ack_wait` 1 s, on a stream that captures `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.>`: after the third delivery and one more waiting fetch, one advisory is stored whose body has the stream, the consumer and `stream_seq`; the message is not delivered a fourth time; `subject_count` of its subject is still 1 |
+| `scenario_delayed_nak_counts_toward_max_ack_pending` | With `max_ack_pending` 2: fetch two messages and nak both with `nak_reply_delay` of 3 s; a third message is **not** delivered within 2 s; after the delay the two are redelivered. This pins fact N10. If the third message **is** delivered, stop and report: the in-flight design of 6.11.4 is then stricter than needed but still correct |
+| `scenario_ack_reply_async` | `ack_reply_async(conn, reply)` returns without waiting; after `flush`, the message is gone from a work-queue stream |
 | `scenario_delete_message` | After `stream_delete_message` of that sequence, `subject_count` is 0; deleting it again returns `deleted = false` and no error |
 
 Further tests in `src/hub/service/eventrelay/relay_test.odin`:
@@ -2371,6 +2408,8 @@ Further tests in `src/hub/service/eventrelay/relay_test.odin`:
 | `test_relay_creates_delivery_stream` | After one `step`, `nats.stream_info` finds `HEIM_DELIVER`, and a publish to `dlv.u.b.prompt` is accepted |
 | `test_relay_publishes_delivery_row_once` | An outbox row with subject `dlv.u.b.prompt` and `event_id` `dlv_1` is published; `subject_count` is 1. A second row with the same `event_id` cannot be inserted (unique constraint of `event_outbox`) |
 | `test_relay_delivery_row_does_not_block_events` | A `dlv.` row followed by an `ev.` row: both end published |
+
+**Async ack (v7 rework).** T1 also adds `ack_reply_async :: proc(conn: ^Connection, reply: string) -> Error`: a plain publish of `+ACK` to the reply subject, with no request and no wait (the existing `ack_reply` stays for the event inbox). It is specified with the other reply calls in 6.3.5.
 
 ### T2. `src/lib/schedule`
 
@@ -2753,7 +2792,7 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 9. Wiring and the hooks in `bridge_handlers.odin`.
 10. The boundary tests and the flake check.
 
-**Reconnect handling** is an **implementer choice** inside these constraints: only the supervisor creates or closes the NATS connection; a forwarder that gets a connection error drops its pull binding, reports the error to the supervisor (an atomic flag plus the supervisor's wake-up) and waits on its semaphore; after a reconnect each forwarder creates a new pull binding (step 2 of the pass). Follow `eventrelay.step_inner` (`src/hub/service/eventrelay/relay.odin:93`) for the connect and back-off pattern; the supervisor's back-off wait is the advisory fetch timeout or, while not connected, a wait of at most 5 s between connect attempts, as the relay does.
+**Reconnect handling** is an **implementer choice** inside these constraints: only the supervisor creates or closes the NATS connection, and only while it holds `conn_lock` exclusively (6.11.4); no thread other than the supervisor and the forwarders calls package `nats`; a forwarder that gets a connection error drops its pull binding, reports the error to the supervisor (an atomic flag plus the supervisor's wake-up) and waits on its semaphore; after a reconnect each forwarder creates a new pull binding (step 2 of the pass). Follow `eventrelay.step_inner` (`src/hub/service/eventrelay/relay.odin:93`) for the connect and back-off pattern; the supervisor's back-off wait is the advisory fetch timeout or, while not connected, a wait of at most 5 s between connect attempts, as the relay does.
 
 **Test double.** The tests need a bridge. Build a fake in the test package: a `project.Bridge_Command_Sink` whose `send_runtime_command` records each frame and returns what the test set (sent or offline), and a registry stub that reports the bridge live or not. The test then calls `on_command_result` with the answer it wants. NATS is a real server through `natstest`.
 
@@ -2785,10 +2824,16 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 | `test_gate_expires` | a message whose row has `expires_at` in the past: row `failed`, `bridge_offline`; `on_final`; acked; no frame |
 | `test_gate_still_valid_false` | row `failed`, `superseded`; no frame |
 | `test_gate_unknown_delivery_is_terminated` | a body with an unknown `delivery_id`, and a body that is not JSON: terminated, counted, no frame |
-| `test_send_failure_keeps_forwarded` | the fake sink reports offline: the row stays `forwarded` (never back to `routed`); the message is redelivered after about 2 s |
+| `test_send_failure_keeps_forwarded` | the fake sink reports offline: the row stays `forwarded` (never back to `routed`); no nak is sent; the message is redelivered after AckWait (the test sets the service's AckWait to 1 s through a test-only field) with `attempt` 2; the rest of the fetched batch was not sent |
 | `test_final_flag_on_last_attempt` | with `max_deliver` lowered to 3 in the test: the third frame has `final` true |
 | `test_retry_on_final_attempt_is_fatal` | `failed`/`retry` answered on the last attempt → row `failed`, `no_answer` |
 | `test_result_is_idempotent` | the same `succeeded` answer twice; a `failed` after `succeeded`; an answer for an unknown id; an answer from another bridge: one `on_final` in total, no error |
+| `test_transition_lost_cas_is_a_no_op` | the row is closed by `expire` between the gate's load and a second forward of the same message (drive it with two sequential gate calls on a redelivered message); and two `succeeded` answers handled one after the other: `on_final` once, one `Ack` queued, no frame for the closed row |
+| `test_answers_are_queued_not_sent_on_caller_thread` | `on_command_result` with the NATS server stopped returns at once and leaves one `Answer` in the queue; no `nats` call happened on the calling thread (the fake connection counts calls per thread id) |
+| `test_reconnect_while_answers_arrive` | a thread feeds 200 answers through `on_command_result` while the test restarts the NATS server twice: no crash, no leak under the tracking allocator, every row ends `done`, and after the last reconnect the stream holds no message of those deliveries |
+| `test_in_flight_limit` | 40 routed deliveries for one bridge and a bridge that answers nothing: exactly 16 frames are sent; after 4 `succeeded` answers 4 more are sent |
+| `test_waiting_retries_do_not_block_other_deliveries` | 20 deliveries answered `retry` (their rows have `retry_at` set), then one new delivery for another instance of the same bridge: it is forwarded at once, while the 20 wait for their delay |
+| `test_in_flight_ignores_stale_rows` | 16 rows `forwarded` with `updated_at` older than AckWait and no answer: a new delivery is forwarded |
 | `test_succeeded_from_older_attempt_counts` | attempt 1 is not answered, attempt 2 is forwarded, then `succeeded` arrives with `command_id` `<id>:1` → row `done`, the message is acked |
 | `test_off1_route_does_not_check_liveness` | `route` to an offline capable bridge succeeds (the caller decides, OFF-1 exception) |
 | `test_off2_routed_delivery_is_replaced_on_disconnect` | `on_bridge_offline` with one `routed` row and a replacing sink: old row `replaced`, new row on the other bridge; when the old bridge returns, its message is acked without a frame |
@@ -2809,7 +2854,10 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 | `test_relaunch_split_keeps_behaviour` (`service/agent`) | `start_instance` on a stopped row: the same row fields, the same `launch_agent` command bytes (apart from generated ids) and the same reservation as before the split. Record the expected bytes from `origin/main` before the change |
 | `test_start_begin_opens_generation` (`service/agent`) | a stopped row with `run_count` 3: after the call the row is `launching`, `startup_status` `starting`, `run_count` 4, `start_delivery_id` set, a reservation exists; the returned text equals `launch_command_json_full` for the saved row with command id `sb_<delivery_id>` |
 | `test_start_begin_is_idempotent_per_delivery` (`service/agent`) | the same delivery id twice: `run_count` bumped once, `reused` true, identical bytes. A different delivery id afterwards bumps again |
-| `test_start_begin_clears_user_stop` (`service/agent`) | a row with `stopped_by = "user"`: after the call `stopped_by` is empty and the row is `launching` |
+| `test_start_begin_clears_user_stop` (`service/agent`) | a row with `stopped_by = "user"`: after a successful call `stopped_by` is empty and the row is `launching`. Refused cases, each with `stopped_by = "user"` before: the bridge is offline; the quota reservation fails; the provider is not allowed → the error is returned and the stored row still has `stopped_by = "user"`, the old `run_count` and the old `launch_epoch` |
+| `test_start_begin_refuses_live_row` (`service/agent`) | for a row that is `launching` from another delivery, `launching` from a hub-sent start (empty `start_delivery_id`), `running`, and `idle`: `Conflict` with details code `already_running`; `run_count`, `launch_epoch`, `start_delivery_id` and `stopped_by` unchanged; no reservation was taken |
+| `test_start_begin_route` (`transport/http`) | the route needs the bridge token; 200 returns `data.launch`, `run_count`, `reused`; a live row returns 409 whose body contains `"code":"already_running"`; another bridge's instance returns 404 |
+| `test_start_begin_race_with_manual_start` (`service/agent`) | `start_instance` and `start_begin_for_delivery` for the same stopped row from two threads, 100 rounds: exactly one opens a generation each round; the other gets `already_running`; `run_count` grows by 1 per round |
 | `test_start_begin_wrong_bridge_or_owner` (`service/agent`) | `Not_Found`; nothing written |
 | `test_start_begin_offline_bridge` (`service/agent`) | the bridge has no live connection → `Bridge_Offline`; `run_count` unchanged |
 | `test_start_begin_acp_epoch` (`service/agent`) | an ACP instance: a new `launch_epoch` is minted; a status frame carrying that epoch is applied (`apply_bridge_status_report`); one carrying the old epoch is refused as superseded |
@@ -3560,10 +3608,10 @@ Delivery_Port :: struct {
 | REQ-SCHED-4 | T8, T14 | the T8 grep; `test_heartbeat_ack_with_schedule_fields_is_ignored`, `test_old_bridge_heartbeat_ok` |
 | REQ-SCHED-5 | T1, T9, T10 | `test_relay_drops_definitions_when_unsupported`, `test_actions_api_schedules_unsupported`, `test_c18_no_schedule_support` |
 | REQ-PIPE-1 | T1, T16 | `scenario_work_queue_ack_removes`, `scenario_work_queue_disjoint_consumers`, `test_relay_creates_delivery_stream`, `test_relay_publishes_delivery_row_once`, `test_route_writes_row_and_outbox`, `test_route_validation` |
-| REQ-PIPE-2 | T16 | `test_forward_and_ack`, `test_incapable_bridge_gets_no_consumer`, `test_start_stop_clean`, the sleep grep of T16 |
+| REQ-PIPE-2 | T16 | `test_forward_and_ack`, `test_incapable_bridge_gets_no_consumer`, `test_start_stop_clean`, `test_in_flight_limit`, `test_waiting_retries_do_not_block_other_deliveries`, `test_in_flight_ignores_stale_rows`, `test_reconnect_while_answers_arrive`, `test_answers_are_queued_not_sent_on_caller_thread`, the sleep grep of T16 |
 | REQ-PIPE-3 | T16 | `test_gate_drops_closed_rows`, `test_gate_expires`, `test_gate_still_valid_false`, `test_gate_unknown_delivery_is_terminated` |
-| REQ-PIPE-4 | T1, T16 | `scenario_nak_reply_delay`, `scenario_in_progress_reply`, `scenario_term_reply`, `test_accepted_keeps_message`, `test_retry_redelivers_after_delay`, `test_fatal_terminates`, `test_retry_delay_table`, `test_result_is_idempotent`, `test_succeeded_from_older_attempt_counts` |
-| REQ-PIPE-5 | T16 | `test_relaunch_split_keeps_behaviour`, `test_start_begin_opens_generation`, `test_start_begin_is_idempotent_per_delivery`, `test_start_begin_clears_user_stop`, `test_start_begin_acp_epoch`, `test_start_begin_failed_status_releases_reservation`, `test_start_success_before_command_result`, `test_start_success_when_command_result_is_lost`, `test_pipeline_never_reads_stopped_by`; E2E E5 |
+| REQ-PIPE-4 | T1, T16 | `scenario_nak_reply_delay`, `scenario_in_progress_reply`, `scenario_term_reply`, `test_accepted_keeps_message`, `test_retry_redelivers_after_delay`, `test_fatal_terminates`, `test_retry_delay_table`, `test_result_is_idempotent`, `test_transition_lost_cas_is_a_no_op`, `scenario_delayed_nak_counts_toward_max_ack_pending`, `scenario_ack_reply_async`, `test_succeeded_from_older_attempt_counts` |
+| REQ-PIPE-5 | T16 | `test_relaunch_split_keeps_behaviour`, `test_start_begin_opens_generation`, `test_start_begin_is_idempotent_per_delivery`, `test_start_begin_clears_user_stop`, `test_start_begin_refuses_live_row`, `test_start_begin_race_with_manual_start`, `test_start_begin_acp_epoch`, `test_start_begin_failed_status_releases_reservation`, `test_start_success_before_command_result`, `test_start_success_when_command_result_is_lost`, `test_pipeline_never_reads_stopped_by`; E2E E5 |
 | REQ-PIPE-6 | T16 | `test_off1_route_does_not_check_liveness`, `test_off2_routed_delivery_is_replaced_on_disconnect`, `test_off2b_forwarded_delivery_is_not_replaced`, `test_off2_max_three_rounds`, `test_off3_waits_for_reconnect`, `test_off3_expired_on_reconnect`, `test_off4_exhausted_from_advisory`, `test_off5_expire_due_at_start`, `test_forward_launch_drop_reconnect_single_effect`; E2E E14 to E16 |
 | REQ-PIPE-7 | T1, T16 | `scenario_max_deliver_advisory`, `scenario_delete_message`, `test_off4_exhausted_from_advisory`, `test_retry_on_final_attempt_is_fatal` |
 | REQ-PIPE-8 | T16, T10, T14, T18, T19, T20 | `test_route_refuses_incapable_bridge`, `test_incapable_bridge_gets_no_consumer`, `test_downgraded_bridge_closes_deliveries`, `test_place_requires_pipeline_feature`, `test_old_bridge_is_not_a_candidate`; E2E E18 |
@@ -3637,6 +3685,9 @@ Section 2 maps every decision to its sections and tasks. The tests are those of 
 | V-K15 | `js_DeleteMsg` was not part of the capability check | T1 verifies it first (6.3.5); the fallback is harmless |
 | V-K16 | The event-inbox fix changes the code T18 edits | T18 starts after it merged and re-reads the package (section 7) |
 | V-K17 | The first notice after a start relies on the start-success step telling the agent about the first unread message. An instance that is *booting* and has already passed that step when the delivery arrives gets no typed line for it | The window is the few milliseconds between start-success on the hub and the status change on the bridge; the message stays unread in the conversation and is seen at the agent's next `chat read` |
+| V-K18 | **Head-of-line blocking on one bridge.** Measured (N10): a delivery waiting for a delayed retry holds a `MaxAckPending` slot | `MaxAckPending` is 256 and is not the in-flight limit; the hub counts frames in flight itself (16, 6.11.4), and waiting retries are not counted. Blocking needs 256 open deliveries on one bridge at once. Open deliveries are bounded by design: one per action (A1), one notice per instance, one per bot, one per lease. If a deployment gets near 256, raise the constant; nothing else changes |
+| V-K19 | A connection that the registry reports live while its writes fail uses up attempts | A failed send is not nak'd: it costs at most one attempt per minute (6.11.4 step 5), so the 8 attempts last at least 8 minutes, far longer than disconnect detection. A delivery that still runs out ends `failed`, `no_answer` and is not placed again, because the frame may have been sent in part |
+| V-K20 | Start-begin for a row that is already live returns `already_running`, and the bridge answers `started` although this delivery started nothing | Correct by design: the live generation's start-success step finds the stored message. If that process dies before start-success, the message stays unread and the next delivery or the user's next look finds it; the run is still `delivered` |
 
 Risks K6, K9, K13 and K17 of the v6 spec no longer exist: the lease start is not changed (K6), the bridge-side start is the normal path (K9), the prompt and the claim share a transaction (K13), and the bridge decides busy or idle at the moment it types (K17).
 
@@ -3644,7 +3695,7 @@ Risks K6, K9, K13 and K17 of the v6 spec no longer exist: the lease start is not
 
 | # | Assumption | Status | Evidence |
 |---|---|---|---|
-| 1 | cnats exposes work-queue retention, delayed nak and in-progress through the calls the wrapper would add | **Settled by execution** | A C program against the flake's toolchain (`nats.c` 3.13.0, `nats-server` 2.14.7), run with `nix develop -c sh run.sh`, 12 steps, 0 failures: facts N1 to N9 of 6.3.5, plus `natsMsg_NakWithDelay` (its argument order is message, delay, options). Sources kept at `s1-evidence/check.c` and `s1-evidence/run.sh` in the spec author's instance directory; T1 turns each step into a named scenario, so the proof is repeated in the repository |
+| 1 | cnats exposes work-queue retention, delayed nak and in-progress through the calls the wrapper would add | **Settled by execution** | A C program against the flake's toolchain (`nats.c` 3.13.0, `nats-server` 2.14.7), run with `nix develop -c sh run.sh`, 12 steps, 0 failures: facts N1 to N9 of 6.3.5, plus `natsMsg_NakWithDelay` (its argument order is message, delay, options). Sources and the full output are committed next to this document: `docs/plans/evidence/action-triggers-spec/check.c`, `run.sh` and `output.txt` (20 checks passed, 0 failed, including the delayed-nak measurement N10); T1 turns each step into a named scenario, so the proof is repeated in the repository |
 | 2 | Splitting `relaunch_instance_locked` before its send leaves the ACP epoch and the transport freeze correct when the bridge, not the hub, sends the launch | **Settled by reading; proven by T16 tests** | The epoch is minted and the transport frozen inside the part that moves (`src/hub/service/agent/agent_service.odin:1147`, `src/hub/service/agent/agent_service.odin:1148`). Every epoch check compares against the row only: status frames (`src/hub/service/agent/agent_service.odin:1190`), the instance token (`src/hub/service/agent/agent_service.odin:563`). No check depends on the hub having sent `launch_agent`: the `cmd_launch_` id is generated (`src/hub/service/agent/agent_service.odin:1160`) and never stored or matched. One step is **not** in the moved part: `validate_frozen_runtime_transport` runs inside `send_frozen_instance_launch` (`src/hub/service/agent/agent_service.odin:424`); start-begin therefore calls it itself (6.12.2 step 6). Tests: `test_start_begin_acp_epoch`, `test_relaunch_split_keeps_behaviour` |
 | 3 | The bridge's instance-status frame after a failed launch releases the reservation taken at start-begin | **Settled by reading, with a condition; proven by T16 tests** | A `failed` status frame is applied only when its epoch matches (`src/hub/service/agent/agent_service.odin:1190`) and its sequence advances (`src/hub/service/agent/agent_service.odin:1195`); then the registry drops the active count (`src/hub/service/project/runtime_registry.odin:659`). When the frame does not pass those checks, the reservation still cannot leak: it expires one minute after it was taken (`src/hub/service/project/runtime_registry.odin:673`, swept at `src/hub/service/project/runtime_registry.odin:622`) and is dropped on disconnect. Tests: `test_start_begin_failed_status_releases_reservation`, `test_start_begin_reservation_expires` |
 
@@ -3683,6 +3734,9 @@ The plan is the approved design. Reading the code at `f56f13e1` and running the 
 | D19 | T20: redelivery on reconnect is "deleted" | It is skipped for capable bridges and kept for the others | REQ-FLOW-4 keeps the old path |
 | D20 | Pointers checked at `e96c2138` | Every pointer was re-checked at `f56f13e1`; section 14 | Main moved |
 | D21 | Task branch state | The task branch equals local `main` (`503c1a1f`), which has diverged from `origin/main` (`f56f13e1`) by merges on both sides. The spec cites `origin/main` only | Implementers start from `origin/main`. This document is one new file and conflicts with nothing |
+| D22 | Per-bridge consumer with MaxAckPending 16 as the flow limit | `MaxAckPending` 256; the hub enforces 16 frames in flight per bridge from the delivery rows; new column `retry_at` | Measured (N10): delayed naks hold `MaxAckPending` slots, so 16 busy agents would block a bridge's other deliveries for up to 15 minutes |
+| D23 | Start-begin "opens the generation" for any row | It refuses a row that is already live (`already_running`), and clears the user stop only in the save that opens the generation | The live check of `start_instance` sits outside the code that is moved; a refused start must not erase the user's stop mark (v7-Q4 reads it) |
+| D24 | The hub turns the answer into ack/nak on the thread that received it | Answers are queued and sent by the bridge's forwarder; acks are not awaited; a failed send is not nak'd | The WebSocket reader must not block on NATS or use a connection the supervisor may replace |
 
 The deviations D1 to D20 of the v6 spec from plan v6 that concern reused parts still hold: purge rows instead of tombstones, the bots order, `target_missing` and `delivery_failed`, retiring a `once` trigger, reconcile by `data.rev`, relay poison handling, the three-state support value, `actions_001_reset.sql`, resume hints with C19 and C20, pruning on every path that ends a run, and `placement.bridge_status_online` for callers that do not decide a launch.
 
@@ -3753,6 +3807,7 @@ Every `path:line` reference of this document, with the text found at that line i
 | `src/bridge/bot_delivery.odin` | 339 | `bridge_bot_ready :: proc(snap: Bridge_Runtime_Instance) -> bool {` |
 | `src/bridge/bot_delivery.odin` | 349 | `return bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "bot", "", ""` |
 | `src/bridge/credential_state.odin` | 821 | `bridge_refresh_after_publish :: proc() {` |
+| `src/bridge/hub_command_dispatch.odin` | 121 | `BRIDGE_DISPATCH_LIFECYCLE_LIMIT :: 32` |
 | `src/bridge/hub_command_dispatch.odin` | 245 | `bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)` |
 | `src/bridge/hub_command_dispatch.odin` | 270 | `case "launch_agent", "launch_provider_test", "wake_agent":` |
 | `src/bridge/hub_command_dispatch.odin` | 276 | `case "bot_deliver":` |
@@ -3845,6 +3900,7 @@ Every `path:line` reference of this document, with the text found at that line i
 | `src/hub/service/agent/agent_service.odin` | 878 | `restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ` |
 | `src/hub/service/agent/agent_service.odin` | 888 | `clear_user_stop :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) ->` |
 | `src/hub/service/agent/agent_service.odin` | 901 | `start_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, in` |
+| `src/hub/service/agent/agent_service.odin` | 906 | `if !ok do return domain.Agent_Instance{}, false, err` |
 | `src/hub/service/agent/agent_service.odin` | 912 | `inst = clear_user_stop(service, inst)` |
 | `src/hub/service/agent/agent_service.odin` | 1126 | `relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_C` |
 | `src/hub/service/agent/agent_service.odin` | 1147 | `if err:=freeze_runtime_transport(service,&next);err.code!=.None do return {},fal` |
@@ -3857,6 +3913,7 @@ Every `path:line` reference of this document, with the text found at that line i
 | `src/hub/service/agent/agent_service.odin` | 1608 | `resolve_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Con` |
 | `src/hub/service/agent/agent_service.odin` | 1635 | `validate_provider_model_intersection :: proc(service: ^Agent_Service, bridge_id,` |
 | `src/hub/service/agent/agent_service.odin` | 1658 | `select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Co` |
+| `src/hub/service/agent/agent_service.odin` | 1758 | `runtime_expected_active :: proc(runtime_status: string) -> bool {` |
 | `src/hub/service/agent/agent_service.odin` | 1781 | `launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in` |
 | `src/hub/service/agent/agent_service.odin` | 1822 | `strings.write_string(&b, "\",\"run_count\":"); strings.write_string(&b, fmt.tpri` |
 | `src/hub/service/agent/agent_service.odin` | 1891 | `wake_agent_command_json :: proc(command_id, chain_id: string, run: []Wake_Agent_` |
