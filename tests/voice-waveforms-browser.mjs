@@ -68,12 +68,30 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `no horizontal overflow at ${width}px`);
     await page.screenshot({ path: path.join(out, `recording-${width}.png`), fullPage: true });
   }
+  async function checkIconActions() {
+    await page.keyboard.press("Tab");
+    for (const button of await page.locator('[data-debug-id*="-voice-"] button, [data-debug-id="fixture-playback-toggle"]').all()) {
+      assert.equal((await button.textContent()).trim(), '', 'voice action has no visible label');
+      const label = await button.getAttribute('aria-label');
+      assert.ok(label);
+      assert.equal(await button.getAttribute('title'), label);
+      const bounds = await button.boundingBox();
+      assert.ok(bounds.width >= 44 && bounds.height >= 44, '44px touch target');
+      await button.focus();
+      assert.equal(await button.evaluate((node) => document.activeElement === node), true);
+      assert.notEqual(await button.evaluate((node) => getComputedStyle(node).boxShadow), 'none', 'visible keyboard focus');
+    }
+  }
+  await checkIconActions();
   await q('conversation-voice-stop').click();
   await q('bot-chat-voice-stop').click();
   await q('conversation-voice-preview').locator('rect').first().waitFor();
   await q('bot-chat-voice-preview').locator('rect').first().waitFor();
+  await checkIconActions();
+  await page.screenshot({ path: path.join(out, 'preview-icons.png'), fullPage: true });
   await q('conversation-voice-preview-toggle').click();
   await page.waitForFunction(() => document.querySelector('[data-debug-id="conversation-voice-preview"]').dataset.playing === 'true');
+  await page.screenshot({ path: path.join(out, 'playing-icons.png'), fullPage: true });
   await q('conversation-voice-preview-toggle').click();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   for (const width of [320, 768, 1024]) {
@@ -90,7 +108,7 @@ try {
   assert.equal(stats.requests, 2, 'one stream per recording');
   assert.equal(stats.sends, 0, 'analysis never sends');
   assert.deepEqual(errors, []);
-  const result = { result: 'pass', quiet, loud, ...stats, screenshots: 7,
+  const result = { result: 'pass', quiet, loud, ...stats, screenshots: 9,
     limits: 'Isolated shared components; synthetic stream; Chromium only, no physical microphone/Safari/VoiceOver or authenticated full-page composer.' };
   await fs.writeFile(path.join(out, 'results.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result));

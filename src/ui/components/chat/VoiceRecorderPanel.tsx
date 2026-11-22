@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Icon } from '@ui';
+import { Icon, IconButton } from '@ui';
 import { formatAudioTime } from '../../utils/audioArtifact';
 import { AudioWaveform } from './AudioWaveform';
 import { AudioPlayer } from './AudioPlayer';
@@ -20,8 +20,6 @@ export function VoiceRecorderPanel({ recorder, debugPrefix: p, sendDisabled = fa
 }) {
   const { phase, error } = recorder;
   if (phase === 'idle' && !error) return null;
-  const btn = `inline-flex min-h-11 px-3 items-center gap-1.5 rounded-[var(--radius-md)] text-sm`;
-  const secondary = `${btn} border border-subtle text-primary hover:bg-neutral-soft disabled:opacity-45`;
   return (
     <div data-debug-id={`${p}-voice-recorder`} data-phase={phase}
       className="mb-2 rounded-2xl border border-subtle bg-surface-raised p-2 text-sm text-primary">
@@ -29,13 +27,13 @@ export function VoiceRecorderPanel({ recorder, debugPrefix: p, sendDisabled = fa
         <div className="flex min-w-0 items-center gap-2">
           <Icon name="alert" size="md" className="shrink-0 text-danger" />
           <span role="alert" data-debug-id={`${p}-voice-error`} className="min-w-0 flex-1 text-danger">{error}</span>
-          <button type="button" data-debug-id={`${p}-voice-error-dismiss`} onClick={recorder.dismissError} className={secondary}>Dismiss</button>
+          <IconButton className="shrink-0" icon="close" label="Dismiss recording error" data-debug-id={`${p}-voice-error-dismiss`} onClick={recorder.dismissError} />
         </div>
       ) : phase === 'requesting' ? (
         <div className="flex min-w-0 items-center gap-2">
           <Icon name="mic" size="md" className="shrink-0 text-muted" />
           <span data-debug-id={`${p}-voice-requesting`} role="status" className="min-w-0 flex-1 text-muted">Waiting for microphone access…</span>
-          <button type="button" data-debug-id={`${p}-voice-cancel`} onClick={recorder.cancel} className={secondary}>Cancel</button>
+          <IconButton className="shrink-0" icon="close" label="Cancel microphone access" data-debug-id={`${p}-voice-cancel`} onClick={recorder.cancel} />
         </div>
       ) : phase === 'recording' ? (
 
@@ -49,10 +47,8 @@ export function VoiceRecorderPanel({ recorder, debugPrefix: p, sendDisabled = fa
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <button type="button" data-debug-id={`${p}-voice-cancel`} onClick={recorder.cancel} className={secondary}><Icon name="trash" size="sm" />Cancel</button>
-            <button type="button" data-debug-id={`${p}-voice-stop`} onClick={recorder.stop} aria-label="Stop recording" className={secondary}>
-              <Icon name="stop" size="sm" />Stop
-            </button>
+            <IconButton className="shrink-0" icon="trash" label="Cancel recording" data-debug-id={`${p}-voice-cancel`} onClick={recorder.cancel} />
+            <IconButton className="shrink-0" icon="stop" label="Stop recording" data-debug-id={`${p}-voice-stop`} onClick={recorder.stop} />
           </div>
         </div>
       ) : recorder.recording ? (
@@ -61,13 +57,8 @@ export function VoiceRecorderPanel({ recorder, debugPrefix: p, sendDisabled = fa
             debugId={`${p}-voice-preview`} label="Recording" />
           <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
             {recorder.limitReached ? <span data-debug-id={`${p}-voice-limit`} className="mr-auto min-w-0 text-caption text-muted">Stopped at the length limit.</span> : null}
-            <button type="button" data-debug-id={`${p}-voice-discard`} onClick={recorder.discard} className={secondary}>
-              <Icon name="trash" size="sm" />Discard
-            </button>
-            <button type="button" data-debug-id={`${p}-voice-send`} disabled={sendDisabled} onClick={onSend}
-              className={`${btn} bg-accent font-semibold text-accent-fg disabled:opacity-45`}>
-              <Icon name="arrow-up" size="sm" />Send
-            </button>
+            <IconButton className="shrink-0" icon="trash" label="Discard recording" data-debug-id={`${p}-voice-discard`} onClick={recorder.discard} />
+            <IconButton className="shrink-0" icon="arrow-up" label="Send recording" variant="primary" data-debug-id={`${p}-voice-send`} disabled={sendDisabled} onClick={onSend} />
           </div>
         </div>
       ) : null}
