@@ -24,7 +24,9 @@ test_codex_catalog_upgrade_preserves_pty_profiles_and_snapshot :: proc(t: ^testi
  testing.expect(t,exec(&conn,"INSERT INTO bridge_provider_profiles(bridge_id,profile_id,provider,state,enabled) VALUES('codex_upgrade','work','codex','ok',1);"))
  testing.expect(t,exec(&conn,"INSERT INTO bridge_provider_settings(bridge_id,profile_id,provider,enabled,updated_at,transport) VALUES('codex_upgrade','codex','codex',1,'','pty'),('codex_upgrade','work','codex',0,'',NULL);"))
  testing.expect(t,exec(&conn,"INSERT INTO agent_instances(agent_instance_id,owner_user_id,agent_id,bridge_id,provider,runtime_status,runtime_transport,created_at,updated_at) VALUES('codex_existing','owner','agent','codex_upgrade','codex','running','pty','','');"))
- migrated,err=run_migrations(&conn)
+ // Stop right after 234: later release migrations bump extension.min_version
+ // (235 moved codex to 0.5.72), so only this window isolates what 234 changed.
+ migrated,err=run_migrations(&conn,stop_before="235_extension_version_sync_0_5_72.sql")
  if !testing.expect(t,migrated,err.message) do return
  entry, exists, entry_err := iface.provider_catalog_get(&repo,"codex")
  testing.expect(t,exists && entry_err.code==.None)
@@ -47,11 +49,6 @@ test_codex_catalog_upgrade_preserves_pty_profiles_and_snapshot :: proc(t: ^testi
   testing.expect_value(t,setting.transport,"pty" if setting.profile_id=="codex" else "")
   testing.expect_value(t,setting.enabled,setting.profile_id=="codex")
  }
- agent_impl:Agent_Repo_SQLite
- agents:=new_agent_repository(&agent_impl,&conn)
- inst,inst_found,inst_err:=iface.agent_get_instance(&agents,"codex_existing")
- defer domain.agent_instance_destroy(&inst)
- testing.expect(t,inst_found && inst_err.code==.None && inst.runtime_transport=="pty")
  stored,stored_err:=iface.provider_catalog_etag(&repo);defer delete(stored)
  service:=provider.Provider_Service{repo=&repo}
  derived,derived_err:=provider.catalog_etag(&service);defer delete(derived)
@@ -60,6 +57,23 @@ test_codex_catalog_upgrade_preserves_pty_profiles_and_snapshot :: proc(t: ^testi
  embedded:=migration_sql("234_codex_acp_transport.sql","");defer delete(embedded)
  disk:=migration_sql("234_codex_acp_transport.sql","src/hub/repository/sqlite/migrations");defer delete(disk)
  testing.expect_value(t,embedded,disk)
+ // Later release migrations change extension versions and therefore the hash;
+ // the stored/runtime-derived equality must still hold on the current head.
+ migrated,err=run_migrations(&conn)
+ if !testing.expect(t,migrated,err.message) do return
+ head_stored,head_stored_err:=iface.provider_catalog_etag(&repo);defer delete(head_stored)
+ head_derived,head_derived_err:=provider.catalog_etag(&service);defer delete(head_derived)
+ testing.expect(t,head_stored_err.code==.None && head_derived_err.code==.None && head_stored==head_derived)
+ head,head_found,_:=iface.provider_catalog_get(&repo,"codex");defer domain.provider_catalog_entry_destroy(head)
+ testing.expect(t,head_found && head.transports_json==`["pty","acp"]` && head.default_transport=="pty")
+ // The agent repository reads columns added after 234, so check the running
+ // instance kept its transport on the fully migrated schema.
+ agent_impl:Agent_Repo_SQLite
+ agents:=new_agent_repository(&agent_impl,&conn)
+ inst,inst_found,inst_err:=iface.agent_get_instance(&agents,"codex_existing")
+ defer domain.agent_instance_destroy(&inst)
+ testing.expect(t,inst_found && inst_err.code==.None && inst.runtime_transport=="pty")
+ // Replaying the migration ledger is idempotent.
  migrated,err=run_migrations(&conn)
  testing.expect(t,migrated,err.message)
 }
