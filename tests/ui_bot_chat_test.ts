@@ -101,6 +101,11 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
     if (!state.enabled && path.startsWith('/bots/')) return Response.json({ error: { code: 'forbidden', message: 'Experiment off' } }, { status: 403 });
     if (path === '/bots/me') return state.bot ? Response.json({ data: state.bot }) : Response.json({ error: { code: 'not_found', message: 'No bot' } }, { status: 404 });
     if (path === '/bots/me/messages') {
+      const ids = url.searchParams.get('message_ids');
+      if (ids) {
+        const requested = new Set<string>(JSON.parse(ids));
+        return Response.json({ data: { messages: state.messages.filter(message => requested.has(message.message_id)), next_cursor: '' } });
+      }
       const page = state.page(Number(url.searchParams.get('limit') || 50), url.searchParams.get('cursor') || '');
       return page ? Response.json({ data: page }) : Response.json({ error: { code: 'bad_request', message: 'Bad cursor' } }, { status: 400 });
     }
@@ -161,6 +166,8 @@ test('model: merge keeps rows a refreshed head pushed out and orders oldest firs
   const refreshed = model.mergeBotMessages(first, [msg(4), msg(3, { read_at: 'later' })] as any);
   assert.deepEqual(model.botTimeline(refreshed).map((m) => m.message_id), ['bmsg_0002', 'bmsg_0003', 'bmsg_0004']);
   assert.equal(refreshed.get('bmsg_0003')!.read_at, 'later');
+  assert.equal(model.mergeBotMessages(refreshed, [msg(3, { read_at: '' })] as any), refreshed,
+    'a delayed unread snapshot preserves the read timestamp and row identity');
   const tie = model.botTimeline(model.mergeBotMessages(empty, [msg(1, { message_id: 'b' }), msg(1, { message_id: 'a' })] as any));
   assert.deepEqual(tie.map((m) => m.message_id), ['a', 'b'], 'equal timestamps order by message id like the hub');
 });
@@ -249,7 +256,9 @@ test('chat: missing bot explains how to create one', async () => {
 });
 
 test('chat: unified history renders channel labels oldest-first and pages older messages', async () => {
-  const state = hub(Array.from({ length: 120 }, (_, i) => msg(i + 1, { provider: (['telegram', 'whatsapp', 'web'] as const)[i % 3] })));
+  const state = hub(Array.from({ length: 120 }, (_, i) => msg(i + 1, { provider: (['telegram', 'whatsapp', 'web'] as const)[i % 3], ...(i === 1 || i === 21 ? { read_at: '', replied_at: '' } : {}) })));
+  const displaced = state.messages[70];
+  Object.assign(displaced, { direction: 'inbound', read_at: '', replied_at: '' });
   state.messages.push(msg(200, { message_id: 'bmsg_purged', body_purged: true, body: '', created_at: '2026-11-20T07:00:00Z' }));
   await fixture(state, 'chat', async (h) => {
     assert.equal(h.get('bot-chat-title')!.textContent, 'Ninjy bot');
@@ -280,6 +289,33 @@ test('chat: unified history renders channel labels oldest-first and pages older 
     assert.equal(rows[0].id, 'bot-chat-message-bmsg_purged');
     assert.match(rows[0].text!, /removed by retention/);
     assert.equal(h.get('bot-chat-load-older'), null, 'end of history');
+
+    const status = (n: string) => h.rows().find((row: any) => row.id === 'bot-chat-message-bmsg_' + n)?.state;
+    assert.equal(status('0002'), '✓ Queued');
+    assert.equal(status('0022'), '✓ Queued');
+    for (const message of state.messages) {
+      if (message.message_id === 'bmsg_0002' || message.message_id === 'bmsg_0022') {
+        message.read_at = '2026-11-20T09:00:00Z';
+      }
+    }
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0002'), '✓✓ Read');
+    assert.equal(status('0022'), '✓✓ Read');
+    assert.equal(h.requests.filter((r: any) => r.path === '/bots/me/messages' && r.search.includes('cursor=')).length, 4);
+
+    state.messages.push(msg(122, { read_at: '', replied_at: '' }));
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0122'), '✓ Queued');
+    assert.equal(status('0071'), '✓ Queued', 'the displaced row stays visible');
+    assert.ok(h.requests.some((r: any) => new URLSearchParams(r.search).get('message_ids') === '["bmsg_0071"]'));
+
+    displaced.read_at = '2026-11-20T09:01:00Z';
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0071'), '✓✓ Read', 'a retained row between page ranges still receives its receipt');
+    assert.equal(status('0122'), '✓ Queued');
   });
 });
 
@@ -317,9 +353,16 @@ test('chat: send shows the message immediately, the reply arrives live via bot_c
     assert.equal(h.get('bot-chat-scroll')!.querySelector('[data-chat-pin-row="true"] [data-chat-body]')!.textContent, 'Book a table',
       'the stored row keeps the send key, so the pin survives the ack');
 
-    // The bot replies; the hub publishes bot_changed and the view refreshes live.
     const inbound = state.messages[state.messages.length - 1];
-    inbound.read_at = inbound.replied_at = '2026-11-20T09:30:05Z';
+    inbound.read_at = '2026-11-20T09:30:05Z';
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    rows = h.rows();
+    assert.equal(rows[rows.length - 1].state, '✓✓ Read');
+    assert.equal(rows[rows.length - 1].text, 'Book a table');
+    assert.equal(inbound.replied_at, '');
+
+    inbound.replied_at = '2026-11-20T09:30:06Z';
     state.messages.push(msg(9001, { message_id: 'bmsg_reply', provider: 'web', direction: 'outbound', body: 'Done — **7pm**', created_at: '2026-11-20T09:30:06Z' }));
     state.bot = bot({ status: 'ready' });
     await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
