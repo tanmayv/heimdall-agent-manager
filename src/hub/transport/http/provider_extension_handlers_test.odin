@@ -134,7 +134,8 @@ t4_acp_install_endpoint_rejects_untrusted_recipe_and_offline :: proc(t: ^testing
         response := bridge_provider_acp_adapter_handler(rawptr(&f.ph), extension_test_request(f, path, body))
         testing.expect_value(t, response.status, 400)
     }
-    unsupported := fmt.tprintf("/api/v1/bridges/%s/providers/codex/acp-adapter", f.bridge_id)
+    // pi has no ACP transport (codex gained one in migration 234).
+    unsupported := fmt.tprintf("/api/v1/bridges/%s/providers/pi/acp-adapter", f.bridge_id)
     testing.expect_value(t, bridge_provider_acp_adapter_handler(rawptr(&f.ph), extension_test_request(f, unsupported, `{"action":"install"}`)).status, 422)
     req := extension_test_request(f, path, `{"action":"install"}`); req.headers = nil; req.remote_addr = "192.0.2.1:12"
     testing.expect_value(t, bridge_provider_acp_adapter_handler(rawptr(&f.ph), req).status, 401)
