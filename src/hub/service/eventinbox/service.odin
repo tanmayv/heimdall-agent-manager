@@ -163,7 +163,7 @@ watch :: proc(s: ^Service, owner, instance, chain: string, remove: bool) -> doma
 				filter_subjects = string(encoded),
 				wake_policy = "catalog",
 				consumer_name = id,
-				created_at = platform.format_rfc3339_utc(time.now()),
+				created_at = subscription_created_at(time.now()),
 			},
 		)
 	}
@@ -171,6 +171,26 @@ watch :: proc(s: ^Service, owner, instance, chain: string, remove: bool) -> doma
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed do return commit_err
 	return {}
+}
+// Millisecond precision, so the consumer's start excludes events from the same
+// second that were stored before the subscription existed.
+subscription_created_at :: proc(t: time.Time) -> string {
+	year, month, day := time.date(t)
+	hour, minute, second := time.clock(t)
+	ms := (time.to_unix_nanoseconds(t) / 1_000_000) % 1000
+	return fmt.tprintf("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", year, int(month), day, hour, minute, second, ms)
+}
+// subscription_start_ns is where a subscription's consumer starts reading: the
+// moment the subscription was created. A new subscription (a new role holder,
+// a restart after a user stop, a reassignment, a transfer or a new watch)
+// therefore never replays events from before it existed, although the stream
+// keeps 14 days (E3: a new instance starts fresh). Every hub-written created_at
+// parses; an unparseable value (only hand-built test rows) reads the whole
+// retained stream, as consumers did before EV2.
+subscription_start_ns :: proc(row: domain.Event_Subscription) -> i64 {
+	created, ok := platform.parse_rfc3339_utc(row.created_at)
+	if !ok do return 0
+	return max(i64(0), time.to_unix_nanoseconds(created))
 }
 ensure_consumer :: proc(s: ^Service, conn: ^nats.Connection, row: domain.Event_Subscription) -> bool {
 	subjects: []string
@@ -188,6 +208,7 @@ ensure_consumer :: proc(s: ^Service, conn: ^nats.Connection, row: domain.Event_S
 			filter_subjects = subjects,
 			ack_wait_ns = i64(ack_wait),
 			max_deliver = max_deliver,
+			start_time_ns = subscription_start_ns(row),
 		},
 	)
 	return err.status == 0

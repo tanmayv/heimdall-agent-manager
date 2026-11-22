@@ -233,7 +233,9 @@ notification_scenario :: proc(t: ^testing.T) {
 	)
 	testing.expect(
 		t,
-		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed' WHERE agent_instance_id='inst_coord';"),
+		// A typed (fatal) failure is held, not Dead, so the instance keeps its
+		// subscriptions (an untyped one is Dead and ends them, EV2).
+		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed',last_error_json='{\"class\":\"fatal\"}' WHERE agent_instance_id='inst_coord';"),
 	)
 	attempts := recorder.attempts
 	testing.expect(t, notify_pending(&runtime, rows, later))

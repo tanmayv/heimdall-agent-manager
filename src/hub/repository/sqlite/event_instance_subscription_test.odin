@@ -182,6 +182,73 @@ instance_ownership_scenario :: proc(t: ^testing.T) {
 	testing.expect(t, exec(&conn, "UPDATE agent_instances SET stopped_by='user' WHERE agent_instance_id='inst_w2';"))
 	n, _, _ = instance_sub_list(t, repo, "inst_w2")
 	testing.expect_value(t, n, 0)
+
+	// Dead instances (agent.failed_instance_disposition == .Dead) are replaced
+	// by the matcher, so they end their subscriptions like a user stop.
+	testing.expect_value(
+		t,
+		repo.put(repo.ctx, {subscription_id = "watch_c", owner_user_id = "alice", subscriber_instance_id = "inst_c", chain_id = "chain_b", source = "explicit", filter_subjects = "[]", wake_policy = "catalog", consumer_name = "watch_c", created_at = "now"}).code,
+		domain.Error_Code.None,
+	)
+	// A failure with a typed error may be retried on the same instance: kept.
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='failed',last_error_json='{\"class\":\"retriable\"}' WHERE agent_instance_id='inst_c';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	testing.expect_value(t, n, 2)
+	// An untyped failure (a crash) is Dead: explicit watch and role default end.
+	testing.expect(t, exec(&conn, "DELETE FROM event_consumer_deletions;"))
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET last_error_json='' WHERE agent_instance_id='inst_c';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	testing.expect_value(t, n, 0)
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions;"), i64(2))
+	// A relaunch out of the failed state gets fresh role defaults only.
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='running' WHERE agent_instance_id='inst_c';"))
+	n, chain, _ = instance_sub_list(t, repo, "inst_c")
+	testing.expect_value(t, n, 1); testing.expect_value(t, chain, "chain_a")
+	// terminated is Dead too.
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='terminated' WHERE agent_instance_id='inst_c';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	testing.expect_value(t, n, 0)
+	// A Dead instance is not given a default when a role is (re)assigned to it.
+	testing.expect(t, exec(&conn, "UPDATE task_chain_members SET created_at='again' WHERE chain_id='chain_a';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	testing.expect_value(t, n, 0)
+}
+
+// REQ-EVP-3 (rolling restart / rollback): a row an older build writes without
+// an instance is deleted by the next sweep, and its consumer is queued.
+@(test)
+test_event_subscription_prune_deletes_rows_without_instance :: proc(t: ^testing.T) {
+	conn, opened, _ := open(":memory:")
+	if !testing.expect(t, opened) do return
+	defer close(&conn)
+	migrated, _ := run_migrations(&conn)
+	if !testing.expect(t, migrated) do return
+	impl: Event_Subscription_Repo_SQLite
+	repo := new_event_subscription_repository(&impl, &conn)
+	repos := iface.Repositories {
+		event_subscriptions = repo,
+	}
+	factory_impl: SQLite_Unit_Of_Work_Factory
+	factory := new_unit_of_work_factory(&factory_impl, &conn, &repos)
+	// The previous build's INSERT does not name subscriber_instance_id.
+	testing.expect(
+		t,
+		exec(
+			&conn,
+			"INSERT INTO event_subscriptions(subscription_id,owner_user_id,subscriber_agent_id,chain_id,source,filter_subjects,wake_policy,consumer_name,created_at) VALUES('old_build','alice','agt','chain','explicit','[]','catalog','old_build','now');",
+		),
+	)
+	testing.expect(t, exec(&conn, "INSERT INTO event_deliveries(subscription_id,event_id,ack_reply,stream_sequence) VALUES('old_build','ev','r',1);"))
+	uow, began, _ := iface.unit_of_work_begin(&factory)
+	if !testing.expect(t, began) do return
+	testing.expect_value(t, repo.put(repo.ctx, {subscription_id = "kept", owner_user_id = "alice", subscriber_instance_id = "inst", chain_id = "chain", source = "explicit", filter_subjects = "[]", wake_policy = "catalog", consumer_name = "kept", created_at = "now"}).code, domain.Error_Code.None)
+	testing.expect_value(t, repo.prune(repo.ctx, "2000-01-01T00:00:00Z").code, domain.Error_Code.None)
+	committed, _ := iface.unit_of_work_commit(&uow)
+	testing.expect(t, committed)
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions;"), i64(1))
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions WHERE subscription_id='kept';"), i64(1))
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_deliveries;"), i64(0))
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions WHERE consumer_name='old_build';"), i64(1))
 }
 
 subscription_rows_free :: proc(rows: []domain.Event_Subscription) {
@@ -246,16 +313,25 @@ test_event_subscription_instance_migration_cleans_legacy_rows :: proc(t: ^testin
 	testing.expect(t, ok, "migration is idempotent")
 
 	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions WHERE subscriber_instance_id='';"), i64(0))
-	// legacy role default, legacy_watch and gone_watch are deleted and queued.
-	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions;"), i64(3))
-	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions WHERE consumer_name IN ('legacy_watch','gone_watch');"), i64(2))
+	// The legacy role default, legacy_watch and gone_watch are deleted; the
+	// moved bot watch's old consumer (which read from the start of the stream)
+	// is released too. All four consumers are queued for deletion.
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions;"), i64(4))
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions WHERE consumer_name IN ('legacy_watch','gone_watch','bot_watch');"), i64(3))
 	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_deliveries WHERE subscription_id='legacy_watch';"), i64(0))
+	// The bot keeps its watch on its instance, with a new consumer that starts
+	// at the migration (millisecond created_at), and no old deliveries.
 	testing.expect_value(
 		t,
-		instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions WHERE subscription_id='bot_watch' AND subscriber_instance_id='inst_bot';"),
+		instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions WHERE subscription_id='bot_watch' AND subscriber_instance_id='inst_bot' AND consumer_name LIKE 'inbox_%' AND created_at LIKE '____-__-__T__:__:__.___Z';"),
 		i64(1),
 	)
-	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_deliveries WHERE subscription_id='bot_watch';"), i64(1))
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_deliveries WHERE subscription_id='bot_watch';"), i64(0))
+	testing.expect_value(
+		t,
+		instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions WHERE source='role_default' AND created_at LIKE '____-__-__T__:__:__.___Z';"),
+		i64(1),
+	)
 	testing.expect_value(
 		t,
 		instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions WHERE source='role_default' AND subscriber_instance_id='inst_coord' AND chain_id='chain';"),

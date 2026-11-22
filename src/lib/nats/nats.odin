@@ -45,6 +45,11 @@ Consumer_Config :: struct {
 	stream, durable:          string,
 	filter_subjects:          []string,
 	ack_wait_ns, max_deliver: i64,
+	// start_time_ns, when > 0, is a UTC time in Unix nanoseconds: the consumer
+	// delivers only messages stored at or after it (DeliverByStartTime). 0
+	// delivers the whole retained stream (DeliverAll). A durable's start cannot
+	// change after creation, so callers must pass the same value every time.
+	start_time_ns:            i64,
 }
 @(private)
 INVALID :: i32(16) // NATS_INVALID_ARG (natsStatus)
@@ -195,7 +200,8 @@ consumer_add :: proc(conn: ^Connection, cfg: Consumer_Config) -> (err: Error) {
 	   !valid_name(cfg.durable) ||
 	   !valid_strings(cfg.filter_subjects) ||
 	   cfg.ack_wait_ns <= 0 ||
-	   cfg.max_deliver <= 0 {
+	   cfg.max_deliver <= 0 ||
+	   cfg.start_time_ns < 0 {
 		return Error{status = INVALID}
 	}
 	stream := strings.clone_to_cstring(cfg.stream)
@@ -212,6 +218,7 @@ consumer_add :: proc(conn: ^Connection, cfg: Consumer_Config) -> (err: Error) {
 		c.int(len(filters)),
 		cfg.ack_wait_ns,
 		cfg.max_deliver,
+		cfg.start_time_ns,
 		&err.jetstream,
 	)
 	return

@@ -259,6 +259,15 @@ subscription_queue_delete :: proc(ctx: rawptr, consumer: string) -> domain.Domai
 	return {}
 }
 subscription_prune :: proc(ctx: rawptr, before: string) -> domain.Domain_Error {
+	// A row without an owning instance can only come from a hub build older
+	// than EV2 writing against the migrated schema (a rolling restart or a
+	// rollback). No instance can read it, so it is deleted on every sweep; the
+	// delete trigger releases its deliveries and queues its consumer.
+	orphans, orphan_err := subscription_prepare(ctx, "DELETE FROM event_subscriptions WHERE subscriber_instance_id='';")
+	if orphan_err.code != .None do return orphan_err
+	orphan_rc := sqlite3_step(orphans)
+	sqlite3_finalize(orphans)
+	if orphan_rc != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to delete event subscriptions without an instance")
 	stmt, err := subscription_prepare(
 		ctx,
 		"DELETE FROM event_deliveries WHERE recorded_at<? OR rowid IN(SELECT delivery_row FROM(SELECT rowid AS delivery_row,ROW_NUMBER() OVER(PARTITION BY subscription_id ORDER BY stream_sequence DESC) AS receipt_rank FROM event_deliveries WHERE acknowledged=1 AND (topic_key='' OR resolved_sent=1)) WHERE receipt_rank>256);",
