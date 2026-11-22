@@ -1094,7 +1094,7 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
    next.display_name = input.display_name
    _, saved, save_err := iface.agent_save_instance_guarded(service.agents, next, next.run_count, next.launch_epoch, next.configuration_revision)
    if !saved {
-    start_cancel(service, &ticket)
+    start_settle(service, &ticket, false)
     if save_err.code == .None do return {}, false, domain.domain_error(.Conflict, "instance changed before runtime action")
     return {}, false, save_err
    }

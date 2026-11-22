@@ -144,7 +144,7 @@ mcp_runtime_call :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,tool:string,
 		}
 	}
 	if guard.code!="" {state.result.status="failed";state.result.phase="not_dispatched";state.result.error_code=guard.code}
-	if !mcp_runtime_store(g,view,state) {state.result.status="repair_required";state.result.phase="progress_unconfirmed"}
+	if !mcp_runtime_store(g,view,state,prepared && state.result.phase=="not_dispatched") {state.result.status="repair_required";state.result.phase="progress_unconfirmed"}
 	if guard.code=="invalid_token" do return "","invalid_token"
 	if code:=mcp_runtime_authorized(g,raw,view,tool);code!="" do return "",code
 	return mcp_runtime_poll(g,view,state),""

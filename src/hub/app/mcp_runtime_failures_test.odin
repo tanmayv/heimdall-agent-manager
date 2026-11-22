@@ -22,6 +22,7 @@ mcp_runtime_race :: proc(job:^MCP_Runtime_Race) {
 	job.code=code;job.ok=code=="" && strings.contains(text,"agent_instance_id")
 }
 mcp_runtime_cancel_after_prepare :: proc(ctx:rawptr)->bool {calls:=(^int)(ctx);calls^+=1;return calls^>=2}
+mcp_runtime_cancel_under_start :: proc(ctx:rawptr)->bool {calls:=(^int)(ctx);calls^+=1;return calls^>=3}
 mcp_runtime_timeout_now :: proc(ctx:rawptr)->string {return "2026-10-31T07:03:01Z"}
 
 mcp_runtime_failures_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View,raw:string,sink:^MCP_Runtime_Test_Sink,sample:json.Object) {
@@ -59,6 +60,25 @@ mcp_runtime_failures_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_
 	i,_,_:=iface.agent_get_instance(&g.repos.agents,state.result.agent_instance_id)
 	testing.expect(t,state.result.phase=="not_dispatched" && i.runtime_status=="stopped" && i.stopped_by==agent.STOPPED_BY_USER)
 	result=mcp_task_test_output(t,mcp_runtime_heap_call(h,headers,"instances.create",a));if result==nil do return;testing.expect(t,result["status"].(json.String)=="failed" && len(sink.commands)==count+1)
+	// Entry cancellation check and the pre-dispatch guard pass; only the
+	// second guard call, under reconfiguration_mutex inside start, refuses.
+	a["request_id"]=json.String("runtime_cancel_under_start")
+	parsed,valid=http.mcp_arguments("instances.create",a);if !testing.expect(t,valid) do return
+	calls=0
+	text,inner_code:=mcp_runtime_call(g,raw,view,"instances.create",parsed.runtime,&calls,mcp_runtime_cancel_under_start)
+	testing.expect_value(t,inner_code,"")
+	testing.expect_value(t,calls,3)
+	testing.expect(t,strings.contains(text,"not_dispatched"))
+	testing.expect_value(t,len(sink.commands),count+1)
+	stored,exists=sqlite.mcp_receipt_result(&g.db,view.owner,view.grant,"instances.create",parsed.runtime.request_id)
+	if !testing.expect(t,exists && json.unmarshal_string(stored,&state,.JSON,context.temp_allocator)==nil) do return
+	i,_,_=iface.agent_get_instance(&g.repos.agents,state.result.agent_instance_id)
+	testing.expect_value(t,state.result.phase,"not_dispatched")
+	testing.expect_value(t,i.runtime_status,"stopped")
+	testing.expect_value(t,i.run_count,0)
+	testing.expect_value(t,i.stopped_by,agent.STOPPED_BY_USER)
+	result=mcp_task_test_output(t,mcp_runtime_heap_call(h,headers,"instances.create",a));if result==nil do return
+	testing.expect(t,result["status"].(json.String)=="failed" && len(sink.commands)==count+1)
 	// A send followed by failure to save progress must not look completed or
 	// become retryable. The original prepared intent remains fail-closed.
 	testing.expect(t,sqlite.exec(&g.db,"CREATE TRIGGER runtime_fail_progress BEFORE UPDATE ON mcp_mutation_receipts WHEN NEW.request_id='runtime_progress_failure' BEGIN SELECT RAISE(ABORT,'synthetic progress failure'); END;"))

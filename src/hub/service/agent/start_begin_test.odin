@@ -7,6 +7,7 @@ import virtual "core:mem/virtual"
 import "core:strings"
 import "core:testing"
 import "core:thread"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -441,12 +442,17 @@ start_status_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_ticket_destroy(&ticket)
 }
 start_expiry_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	reserved_at:=time.now()._nsec
 	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="expiry"})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	generation:=project_service.bridge_runtime_registry_generation(&h.registry,"brg")
 	state,found:=project_service.bridge_runtime_instance_get(&h.registry,"brg",generation,"inst")
 	testing.expect(t,found && state.reserved)
-	testing.expect_value(t,project_service.bridge_runtime_registry_sweep(&h.registry,state.expires_ns+1),1)
+	testing.expect(t,state.expires_ns-reserved_at >= i64(time.Minute))
+	testing.expect(t,state.expires_ns-reserved_at <= i64(61*time.Second))
+	testing.expect_value(t,project_service.bridge_runtime_registry_sweep(&h.registry,reserved_at+i64(59*time.Second)),0)
+	testing.expect_value(t,h.registry.active_instances,1)
+	testing.expect_value(t,project_service.bridge_runtime_registry_sweep(&h.registry,reserved_at+i64(61*time.Second)),1)
 	testing.expect_value(t,h.registry.active_instances,0)
 	testing.expect_value(t,start_test_row(t,h).runtime_status,"launching")
 	start_ticket_destroy(&ticket)
@@ -612,3 +618,29 @@ start_projection_scenario :: proc(t:^testing.T,h:^Start_Test) {
 }
 @(test)
 test_start_ref_survives_repository_projections :: proc(t:^testing.T) {start_test_run(t,start_projection_scenario)}
+
+start_test_fail_display_save :: proc(ctx:rawptr, next:domain.Agent_Instance, count:int, epoch:string, revision:int)->(domain.Agent_Instance,bool,domain.Domain_Error) {
+	if next.runtime_status=="launching" && next.run_count==count {
+		if next.display_name=="fail_busy" do return {},false,domain.domain_error(.Bridge_Busy,"injected display save failure")
+		if next.display_name=="fail_conflict" do return {},false,{}
+	}
+	return sqlite.agent_save_instance_guarded_sqlite(ctx,next,count,epoch,revision)
+}
+start_reconfigure_settle_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	h.ar.save_instance_guarded=start_test_fail_display_save
+	for name in ([]string{"fail_busy","fail_conflict"}) {
+		start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='running';")
+		before:=start_test_row(t,h)
+		_,ok,err:=reconfigure_instance(&h.service,start_test_auth(),"inst",{has_display_name=true,display_name=name})
+		testing.expect(t,!ok)
+		testing.expect_value(t,err.code,domain.Error_Code.Bridge_Busy if name=="fail_busy" else domain.Error_Code.Conflict)
+		after:=start_test_row(t,h)
+		testing.expect_value(t,after.runtime_status,"failed")
+		testing.expect_value(t,after.startup_status,"failed")
+		testing.expect_value(t,after.run_count,before.run_count+1)
+		testing.expect_value(t,h.registry.active_instances,0)
+		testing.expect_value(t,len(h.commands),0)
+	}
+}
+@(test)
+test_reconfigure_display_save_failure_settles_committed_start :: proc(t:^testing.T) {start_test_run(t,start_reconfigure_settle_scenario)}

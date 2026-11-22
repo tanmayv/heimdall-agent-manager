@@ -4,7 +4,6 @@ import "core:fmt"
 import "core:mem"
 import virtual "core:mem/virtual"
 import "core:strings"
-import "core:sync"
 import "core:testing"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -51,6 +50,13 @@ start_route_scenario :: proc(t:^testing.T,c:^Coordinator_Wake_Fixture) {
 	req.body=`{}`
 	resp=bridge_instance_start_begin_handler(&h,req)
 	testing.expect_value(t,resp.status,400)
+	long_ref:[129]u8
+	for &ch in long_ref do ch='x'
+	req.body=fmt.aprintf("%s%s%s",`{"ref":"`,string(long_ref[:]),`"}`)
+	resp=bridge_instance_start_begin_handler(&h,req)
+	testing.expect_value(t,resp.status,400)
+	unchanged,_,_:=iface.agent_get_instance(&f.ag_repo,"inst_wake")
+	testing.expect_value(t,unchanged.run_count,0)
 	req.body=`{"ref":"route"}`
 	resp=bridge_instance_start_begin_handler(&h,req)
 	testing.expectf(t,resp.status==200,"%d %s",resp.status,resp.body)
@@ -84,29 +90,26 @@ test_bridge_ready_carries_start_begin :: proc(t:^testing.T) {
 	testing.expect_value(t,len(track.allocation_map),0)
 }
 
-Start_Guard_Probe :: struct {guard:Coordinator_Start_Guard,saw_locked:bool}
-start_guard_probe :: proc(ctx:rawptr)->domain.Domain_Error {
-	p:=(^Start_Guard_Probe)(ctx)
-	p.saw_locked=!sync.mutex_try_lock(&p.guard.agents.reconfiguration_mutex)
-	if !p.saw_locked do sync.mutex_unlock(&p.guard.agents.reconfiguration_mutex)
-	return coordinator_start_guard(&p.guard)
+// The conversation lookup happens after coordinator_wake_stopped_instance's
+// first stop check, and before it calls start. Inject the user stop there.
+start_coordinator_stop_on_conversation :: proc(ctx:rawptr,id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error) {
+	impl:=(^sqlite.Content_Repo_SQLite)(ctx)
+	if !sqlite.exec(impl.conn,"UPDATE agent_instances SET stopped_by='user' WHERE agent_instance_id='inst_wake';") do return {},false,domain.domain_error(.Internal_Error,"injected stop failed")
+	return sqlite.content_get_conversation_sqlite(ctx,id)
 }
 start_coordinator_guard_scenario :: proc(t:^testing.T,c:^Coordinator_Wake_Fixture) {
 	f:=c.f
 	auth:=contracts.Auth_Context{kind=.Session,user_id=string(f.owner)}
 	first,found,_:=agent_service.get_instance(&f.ag_svc,auth,"inst_wake")
 	testing.expect(t,found && first.stopped_by=="")
-	// The stop lands after the wake's first policy check, before it acquires
-	// reconfiguration_mutex. The guard must repeat the policy under that mutex.
-	testing.expect(t,sqlite.exec(&f.conn,"UPDATE agent_instances SET stopped_by='user' WHERE agent_instance_id='inst_wake';"))
-	probe:=Start_Guard_Probe{guard={agents=&f.ag_svc,auth=auth,instance_id="inst_wake"}}
-	h:=Content_Handlers{agents=&f.ag_svc,content=&c.content}
-	ok,err:=restart_stopped_conversation_instance(&h,auth,"chat_wake",&probe,start_guard_probe)
-	testing.expect(t,!ok)
-	testing.expect_value(t,err.code,domain.Error_Code.Conflict)
-	testing.expect(t,probe.saw_locked && probe.guard.user_stopped)
+	c.content_repo.get_conversation=start_coordinator_stop_on_conversation
+	detail:Coordinator_Wake_Detail
+	outcome:=coordinator_wake_stopped_instance(&f.ah,auth,"inst_wake","chat_wake","sender","test_stop_after_check",.Active_Only,100_000,&detail)
+	testing.expect_value(t,outcome,Coordinator_Wake_Outcome.User_Stopped)
+	testing.expect(t,detail.guard_taken)
 	after,_,_:=agent_service.get_instance(&f.ag_svc,auth,"inst_wake")
 	testing.expect_value(t,after.stopped_by,"user")
+	testing.expect_value(t,after.runtime_status,"stopped")
 	testing.expect_value(t,after.run_count,first.run_count)
 	testing.expect_value(t,len(c.commands),0)
 }

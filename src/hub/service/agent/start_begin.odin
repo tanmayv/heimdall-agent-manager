@@ -11,6 +11,8 @@ import placement "odin_test:hub/service/placement"
 import project_service "odin_test:hub/service/project"
 import dbt "odin_test:hub/platform/dbtelemetry"
 
+START_REF_MAX_BYTES :: 128
+
 Start_If_Live :: enum { Refuse, Relaunch, Keep }
 
 Start_Request :: struct {
@@ -228,6 +230,7 @@ start :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id
 
 start_begin_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id, ref: string) -> (launch_json: string, run_count: int, reused: bool, ok: bool, err: domain.Domain_Error) {
 	if strings.trim_space(ref) == "" do return "", 0, false, false, domain.domain_error(.Validation_Failed, "ref is required")
+	if len(ref) > START_REF_MAX_BYTES do return "", 0, false, false, domain.domain_error(.Validation_Failed, "ref exceeds 128 bytes")
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	inst, found, read_err := iface.agent_get_instance(service.agents, instance_id)
