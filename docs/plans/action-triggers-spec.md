@@ -1,9 +1,10 @@
 # Action triggers: implementation spec (v7)
 
-**Status:** spec for implementation. Nothing in it is implemented yet.
+**Status:** spec for implementation, with amendment S2 (2026-11-22). Nothing in it is implemented yet.
 **Base commit checked:** `origin/main` `f56f13e1`. Every `path:line` reference below was checked in that checkout. Paths are relative to the repository root. Section 14 lists each reference with the source text found at that line, so a reviewer can re-check it mechanically. `origin/main` moves fast: before you start a task, run `git fetch origin` and re-locate each symbol you touch by name. The symbol name is authoritative; the line number is a hint.
 **Sources:** plan v7 rev 2 (`cmt_18ea482d685e121d`), the user decisions B1 to B5 and "no user-stop check" (2026-11-22), the earlier decisions R1 to R6, Q1 to Q7, A1, A2, A5, v5-Q1, v5-Q2, "prompt delivery only" and K12, the v6 spec (commit `81e1fd31`), and the scheduling spike (`art_18ea18d6373f5898`). **This document replaces all of them for implementers.** An implementer needs nothing else.
 **Supersedes:** the v6 spec. Where this document and `81e1fd31` differ, this document is right.
+**Amendment S2 (2026-11-22):** user decisions S-A to S-D (one start path for every agent start, one start command), a list of every case in which an agent cannot be launched (6.12.8), recommendations 1 to 5 of the scaling report (`art_18ea55db8c7ee510`), and a table of every lookup on the event paths (6.16). Section 12.1 lists what S2 changed in the text that was approved as S1. Every `path:line` that S2 added or touched was checked at `origin/main` `99879b7b`; section 14.1 lists them with their source text. Where a reference of section 14 and one of 14.1 name the same line, both hold: the files S2 cites did not move between the two commits, except where 14.1 says so.
 
 ## 0. How to read this spec
 
@@ -29,18 +30,20 @@ An *action* is a stored prompt with a target and a list of triggers. When a trig
 5. **The bridge acts.** The bridge looks at its own process table. It types the notice if the agent runs, or starts the agent if it does not, with no user-stop check. Before a start it asks the hub to open a new run generation (start-begin). It answers with the reply frame it already uses for every command.
 6. **Four flows, one pipeline.** Action prompts (phase 1), `[events]` notices (phase 2), bot deliveries and task lease wakes (phase 3).
 7. **Cleanup.** The bridge-side action scheduler, the hub routes that served it, and the run-now feature are deleted.
+8. **One start path (amendment S2).** Every agent start, whoever asks for it, opens its run generation in one hub procedure (`start_begin`) and is launched by one bridge function from the launch command the hub wrote. The task engine's own start code and the bridge's launch from a manifest are deleted. One wire command, `start_agent`, replaces `launch_agent` and `wake_agent` (6.12).
 
 ### 1.2 Phases
 
 | Phase | Tasks | Result |
 |---|---|---|
-| 1 | T1, T2, T3, T8, T9, T16, T17, T10, T12, T13, then T14 | Actions with schedule and event triggers, targets `agent` and `instance`, on the placement module and the delivery pipeline. T14 is the phase-1 integration and E2E. The actions feature ships (K12) |
+| 1 | T1, T2, T3, T8, T9, T16, **T22**, T17, T10, T12, T13, then T14 | Actions with schedule and event triggers, targets `agent` and `instance`, on the placement module and the delivery pipeline. T22 is the one hub start procedure; the manual starts already run on it. T14 is the phase-1 integration and E2E. The actions feature ships (K12) |
+| S | T23, T24, T25, then T26 | Start convergence (amendment S2): the one start command, the notice fallback and bots on start-begin, task lease dispatch on start-begin. It needs only T22 and T17, runs beside the rest of phase 1 and beside phase 2, and has its own integration and E2E (T26). It is released with phase 1 if it is ready then, otherwise next |
 | 2 | T18 | `[events]` notices are chat messages (v5-Q1) on the pipeline. They reach stopped agents, user-stopped ones included, and wait for a busy agent |
 | 3 | T4, T19, T20, then T21 | Placement adoption by task leases, taskchain, MCP and UI defaults (T4). Bot deliveries and the `bot` action target (T19). Task lease wakes (T20). T21 is the phase-3 integration and E2E |
 
-No task of a phase depends on a later phase. The server reports the allowed target kinds in `GET /api/v1/actions/trigger-types` (`target_kinds`): phase 1 reports `["agent","instance"]` and rejects `bot`; T19 adds `"bot"`. The UI and CLI read the list, so they need no change in phase 3.
+No task of phases 1 to 3 depends on a later phase. Phase S sits between them: nothing in phases 1 and 2 depends on it; in phase 3, T19 depends on T24 and T20 depends on T23 and T25. The server reports the allowed target kinds in `GET /api/v1/actions/trigger-types` (`target_kinds`): phase 1 reports `["agent","instance"]` and rejects `bot`; T19 adds `"bot"`. The UI and CLI read the list, so they need no change in phase 3.
 
-**Task numbers.** Numbers are those of plan v7. T5, T6, T7, T11 and T15 of v6 do not exist in v7; the numbers are not reused.
+**Task numbers.** Numbers are those of plan v7. T5, T6, T7, T11 and T15 of v6 do not exist in v7; the numbers are not reused. T22 to T26 were added by amendment S2.
 
 ### 1.3 Non-goals (MUST NOT be built in this chain)
 
@@ -49,16 +52,18 @@ No task of a phase depends on a later phase. The server reports the allowed targ
 - A hub timer, tick or polling loop for schedules, deferred runs, delivery retries or delivery expiry (v5-Q2, REQ-PIPE-2).
 - A data migration of existing actions. Existing rows are discarded (R1).
 - Event types in the trigger picker other than `chain.state` and `chain.work_finished` (Q7).
-- A NATS client on the bridge, or a new bridge → hub frame type (REQ-BRG-5). The only new bridge → hub request is start-begin (6.12).
+- A NATS client on the bridge, or a new bridge → hub frame type (REQ-BRG-5). The only new bridge → hub request is start-begin (6.12); it replaces the manifest GET of every bridge-side start, one request for one request.
 - A hub-side fallback that delivers an action to a bridge without the feature `event_pipeline_v1` (v7 question 1).
-- A hub start procedure (`agent.start_begin` / `start_send` of v6), package `wake`, and `content.send_to_instance`. They are not built.
-- Converging task lease dispatch, MCP `instances.start`, solo recovery and fleet relaunch onto one start path. They keep working as today.
+- Package `wake` and `content.send_to_instance` of the v6 spec. They are not built. (A hub start procedure **is** built: `start_begin`, 6.12, amendment S2.)
+- Removing the old command names `launch_agent` and `wake_agent`, or their adapters on the bridge, while a bridge without `start_agent_v1` can still connect (6.12.6).
 - Moving a user's own chat messages onto the pipeline (v7 question 5).
 - Any change to which instance the task engine leases work to. Its user-stop avoidance (`src/hub/service/taskv2/matcher.odin:338`) stays (v7 question 4).
 - Removing the old code path of notices, bots or leases for bridges without the feature (REQ-FLOW-4).
 - The "start an agent, the hub chooses the machine" API. Section 6.10.8 sketches it so the module fits it. It is not built.
 - Any selector other than `first` (6.10.6).
-- Merging the `launch_agent` and `wake_agent` wire commands.
+- Moving the state write of a move to another bridge (`reconfiguration_launch_destination`) or of a provider test onto `start_begin` (6.12.7).
+- Any change to the event inbox's notification loop, to `events next` or to `events ack` (recommendations 6 to 14 of the scaling report). They are separate work.
+- A byte limit on `HEIM_EVENTS` or `HEIM_DELIVER` (section 11).
 - A waiting queue for runs that find no placement. Such a run fails and the next trigger tries again.
 
 ## 2. User decisions
@@ -94,6 +99,12 @@ Every decision the user made is listed here with the section that applies it. An
 | **B4** | The bridge answers with ack or nak on the existing `command_result` frame | 6.11.5, T16, T17 |
 | **B5** | One pipeline for four flows: action prompts, `[events]` notices, bot deliveries, task lease wakes | 6.11, T10, T18, T19, T20 |
 | **No stop check** | Actions and events wake a user-stopped agent. `stopped_by` is still written by a user stop and still shown | 6.12, T16, T18 |
+| **S-A** | One start path for everything. The hub's start-begin (state write, plan check, quota, `run_count`, launch epoch) is used by every start; the bridge's `bridge_runtime_launch_agent` is the only launcher. The task engine's own state write (path B) is deleted and the F14 gaps close | 6.12, T22, T24, T25 |
+| **S-B** | `launch_agent` and `wake_agent` merge into one start command. Old bridges keep the old names during rollout, gated by a feature flag | 6.12.6, T23 |
+| **S-C** | The bridge fallback (lost shell, title or task-status notice) and bots replace their manifest GET with the same start-begin call: the same number of requests, no new kind of traffic. This supersedes K9 for these callers | 6.12.3, T24 |
+| **S-D** | The convergence is done now, as amendment S2, before phase 1 is published | 1.2, 7 |
+| **Scale 1 to 5** | Recommendations 1 to 5 of the scaling report are part of this chain: ledger entries live until the delivery expires plus a margin; the relay is woken on commit and publishes in batches; deliveries are pruned on a running hub; schedule fires get a short life; a schedule fire is looked up by its trigger | 6.11.6 (T17), 6.3.4 (T1), 6.11.10 (T16), 6.2.2 (T1, T9), 6.7 (T9, T10) |
+| **Lookups** | Every lookup on the event paths is keyed and indexed; no step reads a whole table per event | 6.16, T3, T9, T10, T16 |
 
 **The eight questions of plan v7.** Each default was accepted with the plan. They are decisions, not open questions.
 
@@ -113,8 +124,8 @@ Every decision the user made is listed here with the section that applies it. An
 | Decision | In v6 | In v7 |
 |---|---|---|
 | **A4** one wake path | The user-message path on the hub for agents; `Bot_Delivery` for bots | The single wake path is the pipeline: hub route → `HEIM_DELIVER` → bridge executor. A user's own chat message keeps today's direct path |
-| **v5-Q3** one hub start procedure | `agent.start_begin` / `start_send` for every start | Reduced to one seam: the database half of `relaunch_instance_locked`, which the bridge triggers with start-begin (6.12). The process is started by the bridge's `bridge_runtime_launch_agent` |
-| **K9** no new bridge → hub messages | Left as it was | The bridge-side start is the normal path. For the pipeline only: the answer rides on `command_result` with added fields, and start-begin replaces the descriptor GET |
+| **v5-Q3** one hub start procedure | `agent.start_begin` / `start_send` for every start | **Restored by amendment S2 (S-A):** `start_begin` is the one place that opens a run generation, for hub-initiated and bridge-initiated starts alike (6.12). S1 had reduced it to one seam used by the pipeline only |
+| **K9** no new bridge → hub messages | Left as it was | The bridge-side start is the normal path. The answer rides on `command_result` with added fields, and start-begin replaces the manifest GET. **Amendment S2 (S-C):** this now holds for every bridge-side start, the notice fallback and bots included; S1 had kept the manifest GET for those callers. No frame type and no other request is added |
 | **User-stop gate** (`wake.allowed`) | Every non-manual start refused a user-stopped instance | Removed. Package `wake` is not created. Start-begin clears `stopped_by` |
 | **A1** open runs | Open = `queued`, `deferred` | Open = `queued`, `deferred`, `routed` (6.8) |
 | **U3** bot busy with a delivery | Prompt skipped | Phase 3: the prompt waits for the bot's open delivery; nothing is skipped (T19) |
@@ -175,7 +186,7 @@ Section 9 maps each one to tasks and named tests.
 | REQ-PIPE-2 | One durable consumer per capable bridge; one forwarder per such bridge; no timer or polling loop |
 | REQ-PIPE-3 | Forward gate on the delivery row (state, expiry, flow validity) before every forward |
 | REQ-PIPE-4 | `command_result` → ack, in-progress, delayed nak or term, as in 6.11.5. Result handling is idempotent |
-| REQ-PIPE-5 | Start-begin (6.12): one procedure that clears `stopped_by`, sets `launching`, the epoch and `run_count + 1`, reserves quota and returns the launch command; idempotent per `delivery_id`; shared with `relaunch_instance_locked`. No hub code in the pipeline reads `stopped_by`; a source scan test enforces it |
+| REQ-PIPE-5 | Start-begin (6.12): one procedure that clears `stopped_by`, sets `launching`, the epoch and `run_count + 1`, reserves quota and returns the launch command; idempotent per start reference; it is the procedure of REQ-ONE-1. No hub code in the pipeline reads `stopped_by`; a source scan test enforces it |
 | REQ-PIPE-6 | Offline rules OFF-1 to OFF-5 and OFF-2b (6.11.7), each with a test |
 | REQ-PIPE-7 | Exhausted deliveries are closed from the max-deliveries advisory |
 | REQ-PIPE-8 | Feature `event_pipeline_v1`: a placement requirement for actions; a per-flow switch for notices, bots and leases |
@@ -187,10 +198,10 @@ Section 9 maps each one to tasks and named tests.
 | ID | Requirement |
 |---|---|
 | REQ-BRG-1 | `event_deliver` handler with the decision table of 6.11.6; no stop check |
-| REQ-BRG-2 | Persistent dedupe ledger: 48 h by age only, survives a restart; `in_progress` before the effect, `done` before the reply; an `in_progress` entry without a live worker is decided again from the process table; a full ledger answers `retry` |
-| REQ-BRG-3 | Starts go through the existing wake gate, the start-begin call and `bridge_runtime_launch_agent`; no second launch path; never generation 0 |
+| REQ-BRG-2 | Persistent dedupe ledger: an entry lives until its delivery's `expires_at` plus a margin of 10 minutes (REQ-SCALE-1), and survives a restart; `in_progress` before the effect, `done` before the reply; an `in_progress` entry without a live worker is decided again from the process table; a full ledger answers `retry` |
+| REQ-BRG-3 | Starts go through the existing wake gate, the start-begin call and `bridge_runtime_launch_agent`; no second launch path; never generation 0. Amendment S2 extends this from pipeline starts to every bridge-side start (REQ-ONE-4) |
 | REQ-BRG-4 | Answers use `command_result` with `outcome`, `class`, `retry_after_ms`; a `final` attempt always ends with a terminal answer, never with `retry` |
-| REQ-BRG-5 | No NATS client and no new frame type on the bridge. The only new request is start-begin, in place of the descriptor GET |
+| REQ-BRG-5 | No NATS client and no new frame type on the bridge for the pipeline. The only new request is start-begin, in place of the manifest GET. (The start command of REQ-ONE-6 replaces two existing command types; it is not pipeline traffic) |
 
 **Flows**
 
@@ -198,8 +209,31 @@ Section 9 maps each one to tasks and named tests.
 |---|---|
 | REQ-FLOW-1 | (phase 2) `[events]` notices are `event_notice` chat messages routed as `kind = notice`; inbox timing unchanged (30 s cooldown, 5 s back-off); the five `stopped_by` reads are deleted |
 | REQ-FLOW-2 | (phase 3) Bot deliveries and the `bot` action target use `kind = bot`; the bot supervisor still decides rounds and moves; the resend-on-reconnect code is skipped for capable bridges |
-| REQ-FLOW-3 | (phase 3) Task lease wakes use `kind = lease`, appended in the grant transaction; redelivery on reconnect is skipped for capable bridges; nudge, confirmation and `run_count` behave as today |
+| REQ-FLOW-3 | (phase 3) Task lease wakes use `kind = lease`, appended in the grant transaction; redelivery on reconnect is skipped for capable bridges; nudge and confirmation behave as today; the generation is opened by `start_begin` in the grant (REQ-ONE-3) |
 | REQ-FLOW-4 | Bridges without the feature keep today's path for each flow |
+
+**One start path (amendment S2)**
+
+| ID | Requirement |
+|---|---|
+| REQ-ONE-1 | One hub procedure, `start_begin`, opens every run generation: it alone writes `launching` for a start, bumps `run_count` and mints the launch epoch, after the plan, live-connection, provider and quota checks. A source scan test with a named allow-list enforces it (6.12.7) |
+| REQ-ONE-2 | Every hub-initiated start outside the task engine (manual Start and Restart, new instance, chat message, coordinator wake, MCP, solo recovery, fleet change, reconfigure, the event inbox start) is a thin caller of it. Command bytes, error codes and HTTP statuses do not change |
+| REQ-ONE-3 | Task lease dispatch calls `start_begin` inside the grant's unit of work; its own state write is deleted; a just-created instance starts with generation 1; the three gaps of finding F14 are closed, each with a test |
+| REQ-ONE-4 | Every bridge-initiated start (pipeline delivery, notice fallback, bot delivery) calls start-begin before it launches. Against a hub that announces start-begin (`bridge_ready`), no launch from a manifest and no launch with generation 0 is left; against an older hub the bridge keeps today's manifest path, so no deploy order is required |
+| REQ-ONE-5 | `bridge_runtime_launch_agent` is the only function that starts an agent process and has exactly two callers (6.12.3). It receives the launch command the hub wrote, unchanged |
+| REQ-ONE-6 | One start command, `start_agent`, behind the feature `start_agent_v1`. A bridge without the feature receives `launch_agent` and `wake_agent` with unchanged bytes; a bridge with it still accepts both from an older hub |
+| REQ-ONE-7 | Every case in which an agent cannot be launched (6.12.8, L1 to L23) has one defined result and a named test or E2E row |
+
+**Scale and lookups (amendment S2)**
+
+| ID | Requirement |
+|---|---|
+| REQ-SCALE-1 | A bridge ledger entry is kept until its delivery's `expires_at` plus `BRIDGE_LEDGER_MARGIN_MS` (10 minutes), not for a flat 48 hours. A redelivery inside that time has no second effect, also when the bridge's clock is ahead of the hub's by less than the margin |
+| REQ-SCALE-2 | The relay is woken when a transaction that appended an outbox row commits, and publishes up to 64 rows per pass in `outbox_seq` order. The 1 s idle wait stays only as a fallback |
+| REQ-SCALE-3 | `delivery.prune` also runs on a hub that stays up: when a delivery becomes final, at most once per hour. Its rule is unchanged (closed rows older than 30 days) and it reads an index |
+| REQ-SCALE-4 | Schedule fires and deferral fires live at most 24 hours in `HEIM_EVENTS`, instead of 14 days |
+| REQ-SCALE-5 | The matcher finds the trigger of a schedule fire through an index on the fire's subject; it does not load the user's other schedule triggers |
+| REQ-LOOKUP-1 | Every lookup on the event paths is by primary key, by a named index or by a subject filter (6.16). A query-plan test enforces it |
 
 **Rollout**
 
@@ -207,7 +241,7 @@ Section 9 maps each one to tasks and named tests.
 |---|---|
 | REQ-DEPLOY-1 | Sync with `origin/main`. Hub first, then bridges. Mundus is deployed through a change request to `inst_18e8ba2e9e2c4e69`, stated as forward-only. E2E runs there. Brolabs is deployed only with the user's explicit OK |
 
-**Removed from v6:** REQ-START-1 to 5 and REQ-WAKE-1 to 9. Do not implement them.
+**Removed from v6:** REQ-START-1 to 5 and REQ-WAKE-1 to 9. Do not implement them. REQ-ONE-1 to 7 take the place of REQ-START-1 to 5; the user-stop gate of REQ-WAKE stays removed.
 
 ## 4. What the code does today
 
@@ -227,10 +261,10 @@ These findings shape the design. F1 to F22 come from the v6 spec and were re-loc
 | F10 | The NATS wrapper hard-codes `js_DeliverAll` (`src/lib/nats/adapter.c:109`). `Consumer_Config` (`src/lib/nats/nats.odin:44`) has no deliver policy | The matcher's consumer must start at "new". T1 adds the option |
 | F11 | Placement rules and wildcards exist only for bots (`src/hub/service/bots/placement.odin:18`). Every other caller is handed one fixed bridge, provider and model. The hub has two more choosers: the task bridge fallback (`resolve_placement`, `src/hub/service/taskv2/matcher.odin:160`) and the default provider and model (`resolve_launch_model`, `src/hub/service/taskv2/placement.odin:26`). The UI picks defaults by itself (`src/ui/components/chat/NewConversationPage.tsx:235`) | One module (6.10) |
 | F12 | About six eligibility checks have drifted apart (table in 6.10.2). Examples: task leases do not check for a live connection (`bridge_online`, `src/hub/service/taskv2/lease.odin:1104`); bots do not check that the catalog provider is active; only bots accept a model alias. `validate_launchable` (`src/hub/service/provider/provider_service.odin:217`) duplicates `validate_provider_model_intersection` (`src/hub/service/agent/agent_service.odin:1635`). `select_bridge_for_agent` (`src/hub/service/agent/agent_service.odin:1658`) and `require_enabled_support` (`src/hub/service/agent/agent_service.odin:1529`) have no callers | One predicate (6.10.2) |
-| F13 | The hub has several start implementations. `restart_instance` (`src/hub/service/agent/agent_service.odin:878`) and `start_instance` (`src/hub/service/agent/agent_service.odin:901`) share `relaunch_instance_locked` (`src/hub/service/agent/agent_service.odin:1126`). Task lease dispatch does not: `grant_attempt_in_uow` (`src/hub/service/taskv2/lease.odin:77`) sets `launching` and bumps `run_count` itself (`src/hub/service/taskv2/lease.odin:231`) and sends `wake_agent` after the commit (`flush_wakes`, `src/hub/service/taskv2/wake.odin:146`). Bots and bridge-local wakes launch on the bridge | Not converged in v7 (section 2.1). Start-begin shares the database half of `relaunch_instance_locked` |
-| F14 | Three gaps (**Assumption**: code readings, not reproduced). (a) An explicit lease claim can launch a user-stopped instance without clearing the stop: `lease_claim_in_uow` (`src/hub/service/taskv2/explicit_claims.odin:32`) and `lease_transfer_in_uow` (`src/hub/service/taskv2/explicit_claims.odin:120`) have no `stopped_by` check. (b) The coordinator wake checks `stopped_by` (`src/hub/transport/http/coordinator_wake.odin:288`) and then calls a restart that clears it (`src/hub/transport/http/coordinator_wake.odin:299`), with no guard in between. (c) An instance created for a task lease has `run_count` bumped twice | **Not closed by this chain.** T21 files them as issues |
+| F13 | The hub has several start implementations. `restart_instance` (`src/hub/service/agent/agent_service.odin:878`) and `start_instance` (`src/hub/service/agent/agent_service.odin:901`) share `relaunch_instance_locked` (`src/hub/service/agent/agent_service.odin:1126`). Task lease dispatch does not: `grant_attempt_in_uow` (`src/hub/service/taskv2/lease.odin:77`) sets `launching` and bumps `run_count` itself (`src/hub/service/taskv2/lease.odin:231`) and sends `wake_agent` after the commit (`flush_wakes`, `src/hub/service/taskv2/wake.odin:146`). Bots and bridge-local wakes launch on the bridge | **Converged by amendment S2** (6.12): `start_begin` is that database half, and every start uses it |
+| F14 | Three gaps (**Assumption**: code readings, not reproduced). (a) An explicit lease claim can launch a user-stopped instance without clearing the stop: `lease_claim_in_uow` (`src/hub/service/taskv2/explicit_claims.odin:32`) and `lease_transfer_in_uow` (`src/hub/service/taskv2/explicit_claims.odin:120`) have no `stopped_by` check. (b) The coordinator wake checks `stopped_by` (`src/hub/transport/http/coordinator_wake.odin:288`) and then calls a restart that clears it (`src/hub/transport/http/coordinator_wake.odin:299`), with no guard in between. (c) An instance created for a task lease has `run_count` bumped twice | **Closed by amendment S2**: (a) and (c) by T25, (b) by T22 (6.12.7) |
 | F15 | The NATS wrapper exposes no message timestamp. `Metadata` (`src/lib/nats/nats.odin:23`) has sequences only, and `ham_nats_metadata` (`src/lib/nats/adapter.c:173`) does not copy the time | The matcher needs the stream time (6.7 step 5, 6.6.2). T1 adds it |
-| F16 | `upgrade_scheduled_prompts_schema` (`src/hub/repository/sqlite/migrations.odin:2006`) and `upgrade_actions_schema` (`src/hub/repository/sqlite/migrations.odin:2027`) run on every hub start (`src/hub/repository/sqlite/migrations.odin:1483`). They re-create `scheduled_prompts` and create indexes on old `actions` columns | They would break the new schema. T9 MUST delete both procedures and both calls |
+| F16 | `upgrade_scheduled_prompts_schema` (`src/hub/repository/sqlite/migrations.odin:2010`) and `upgrade_actions_schema` (`src/hub/repository/sqlite/migrations.odin:2031`) run on every hub start (`src/hub/repository/sqlite/migrations.odin:1486`). They re-create `scheduled_prompts` and create indexes on old `actions` columns | They would break the new schema. T9 MUST delete both procedures and both calls |
 | F17 | The bots order across bridges is: best rule rank first, and bridge age only as the tie-break (`bots_select_bridge`, `src/hub/service/bots/placement.odin:114`; `bots_rank_before`, `src/hub/service/bots/placement.odin:55`) | The spec uses the order the code has, so bot results do not change (6.10.3) |
 | F18 | `restart_instance` clears the user stop and saves before it takes any lock (`clear_user_stop`, `src/hub/service/agent/agent_service.odin:888`). `start_instance` clears it under `reconfiguration_mutex` (`src/hub/service/agent/agent_service.odin:912`). `relaunch_instance_locked` sends the launch while holding that mutex, with no transaction open | Start-begin follows `start_instance`: clear under the mutex, then the database half (6.12) |
 | F19 | The message type `action` already exists, with a UI card (`src/ui/components/workbench/AgentChatPane.tsx:2137`). It is sent today by `run_action_handler` (`src/hub/transport/http/action_handlers.odin:512`) and `bridge_execute_action_handler` (`src/hub/transport/http/action_handlers.odin:650`). `chat_messages.message_type` has no CHECK constraint | Action prompts keep `message_type = "action"`. The new type `event_notice` needs no schema change |
@@ -254,6 +288,12 @@ These findings shape the design. F1 to F22 come from the v6 spec and were re-loc
 | V15 | `bridge_task_wake_if_needed` returns one bool. Already running, coalesced, backing off, parked and failed all return false | T17 splits out a variant that returns the decision and the error class |
 | V16 | The bootstrap manifest carries no `run_count` (`src/hub/service/agent/agent_service.odin:2244`). Only the launch command does (`src/hub/service/agent/agent_service.odin:1822`). The wake path therefore launches with generation 0 (`src/bridge/hub_runtime_client.odin:2690`) | Start-begin returns the launch command of `launch_command_json_full` (`src/hub/service/agent/agent_service.odin:1781`), not the manifest |
 | V17 | A launch reservation is an in-memory entry of the bridge's live connection. It expires after one minute (`src/hub/service/project/runtime_registry.odin:673`, `src/hub/service/project/runtime_registry.odin:622`), is dropped on disconnect, and is consumed or released by the first status frame that passes the epoch and sequence checks (`src/hub/service/agent/agent_service.odin:1190`, `src/hub/service/project/runtime_registry.odin:659`). No instance row can be created stopped: `prepare_instance` always writes `launching` (`src/hub/service/agent/agent_service.odin:386`) | A reservation taken at start-begin cannot leak (10.2). T16 adds `create_instance_stopped` (6.12.5) |
+| S1 | (amendment S2, read at `99879b7b`) On the bridge, `bridge_runtime_launch_agent` already starts every agent process. It has five call sites: the `launch_agent` handler (`src/bridge/hub_runtime_client.odin:1145`), two in the `wake_agent` handler (`src/bridge/hub_runtime_client.odin:2576`, `src/bridge/hub_runtime_client.odin:2594`), the notice fallback (`src/bridge/agent_wake.odin:250`) and the bot launch (`src/bridge/bot_delivery.odin:87`). Three of them build the launch command on the bridge | "One launcher" needs no new launch code. What changes is where the launch command comes from (6.12.3) |
+| S2 | `agent.stop_instance` holds `reconfiguration_mutex` while it calls into `taskv2` (`src/hub/service/taskv2/coordinator_wake.odin:15`). The grant runs inside the task engine's unit of work | The grant cannot take that mutex without inverting the lock order. `start_begin` takes no lock itself (6.12.2) |
+| S3 | The task engine already calls into the agent service inside a grant, without the mutex: `jit_prepare` calls `prepare_instance` (`src/hub/service/taskv2/matcher.odin:449`) and keeps the reservation in its effects list for a rollback | The pattern T25 uses for `start_begin` exists and is in production |
+| S4 | Path B checks neither the bridge's plan, nor its live connection (`bridge_online` reads the row's status only, `src/hub/service/taskv2/lease.odin:119`), nor the launch quota for an existing instance. Path C asks the hub nothing | Cases L6 to L8 of 6.12.8: a lease or a fallback can start an agent that a manual Start would refuse |
+| S5 | The relay sleeps up to 1 s when its last pass published nothing, and publishes one row per pass (`src/hub/service/eventrelay/relay.odin:72`). An action passes the relay twice (the event, then the delivery) | Up to 2 s of added delay per action. REQ-SCALE-2 |
+| S6 | `triggers_match(owner, "schedule.fired")` returns every enabled schedule trigger of the user; the subject filter is applied in memory (6.7 step 5) | A fire costs O(schedule triggers of the user). REQ-SCALE-5 |
 
 ## 5. Architecture
 
@@ -296,10 +336,10 @@ RESULT (hub)  accepted  → JetStream in-progress
 | Overlap and rate rules (A1, v5-Q2) | all of it | nothing |
 | Which bridge, provider and model (A2, A5, B2) | `service/placement`, at route time | a local check that the provider binary really runs (`bridge_provider_runnable`, `src/bridge/agent_wake.odin:146`, kept) |
 | Instance rows, conversations, the prompt as a chat message | all of it | nothing |
-| Plan and quota checks | placement at route time; again at start-begin | nothing |
+| Plan and quota checks | placement at route time; again in `start_begin`, for **every** start (S2) | nothing |
 | Is the agent running, idle or busy right now | not consulted | decides from its process table |
 | Run generation (`run_count`), launch epoch, `launching` status | allocated at start-begin, before the launch | uses what the hub returned |
-| Starting the process | nothing | `bridge_runtime_launch_agent`, the single launch function |
+| Starting the process | nothing | `bridge_runtime_launch_agent`, the single launch function, always from a launch command the hub wrote in `start_begin` (S2) |
 | Typing the notice | nothing | as today |
 | Retry timing | JetStream (AckWait, delayed nak, MaxDeliver) | may ask for a longer delay |
 
@@ -313,10 +353,11 @@ RESULT (hub)  accepted  → JetStream in-progress
 | `src/hub/service/eventrelay` | changed | stream configs for both streams, purge rows, poison handling | T1 |
 | `src/hub/service/delivery` | new | `route`, forwarders, result handling, offline rules, advisory handling, `Sink` registry | T16 |
 | `src/contracts/delivery_wire.odin` | new | frame, delivery body, result fields, feature constant | T16 |
-| `src/hub/service/agent` | changed | `start_begin.odin`: `relaunch_prepare_locked`, `start_begin_for_delivery`, `create_instance_stopped` | T16 |
+| `src/hub/service/agent` | changed | `start_begin.odin`: `start_begin`, `start`, `start_send`, `start_settle`, `start_cancel`, `start_begin_for_bridge`, `create_instance_stopped` (T22); `start_command.odin`: the one start command (T23) | T22, T23 |
+| `src/contracts/start_wire.odin` | new | the `start_agent` frame name, the feature constant, the `deliver` values | T23 |
 | `src/hub/service/actions` | new | `triggers.odin`, `schedule_sync.odin`, `template.odin` (T9); `matcher.odin`, `router.odin`, `runtime.odin` (T10) | T9, T10 |
-| `src/bridge` | changed | `event_executor.odin`, `event_ledger.odin` (T17); the scheduler is deleted (T8) | T8, T17 |
-| `src/hub/service/eventinbox`, `bots`, `taskv2` | changed | each routes its flow through `delivery` for capable bridges | T18, T19, T20 |
+| `src/bridge` | changed | `event_executor.odin`, `event_ledger.odin` (T17); `start_agent.odin` (T23); the manifest launch is deleted (T24); the scheduler is deleted (T8) | T8, T17, T23, T24 |
+| `src/hub/service/eventinbox`, `bots`, `taskv2` | changed | each routes its flow through `delivery` for capable bridges; `taskv2` and `bots` start instances through `start_begin` (T25, T24) | T18, T19, T20, T24, T25 |
 
 ### 5.3 Import rules (MUST hold after every task)
 
@@ -401,6 +442,7 @@ Headers:
 | `Nats-Schedule-Target` | `ev.<owner>.sched.<trigger_id>` | always |
 | `Nats-Schedule-Time-Zone` | the IANA zone name | mode `cron` only, and only when the zone is not `UTC` and not empty. nats-server rejects this header with `@every` and `@at`, and rejects an empty value |
 | `Nats-TTL` | `never` | always. Without it the definition ages out of the stream after 14 days and the schedule silently stops |
+| `Nats-Schedule-TTL` | `24h` (`SCHEDULE_FIRE_TTL`) | always (amendment S2, REQ-SCALE-4). nats-server puts this value on each fire as its `Nats-TTL`, so a fire leaves the stream after 24 hours instead of 14 days. Only the matcher reads fires, once. A hub that is down for more than 24 hours does not see the fires of the time before that (risk S-K8). **Assumption:** nats-server 2.14.7 honours this header on scheduled messages. T1 verifies it first (`scenario_schedule_fire_ttl`); the fallback is in 6.3.4 |
 | `Heim-Trigger-Rev` | the trigger's `rev` as a decimal string | always |
 
 nats-server copies the body and every non-reserved header (here `Heim-Trigger-Rev`) onto each fire, and adds `Nats-Schedule-Next` (the next fire time, or the literal `purge` for a one-shot) and `Nats-Scheduler` (the definition subject). It strips `Nats-Msg-Id`, so a fire has no server-side dedup; the matcher's `occurrence_key` does that job (6.7).
@@ -411,7 +453,7 @@ Republishing a definition on the same subject replaces it. Republishing an **unc
 
 **Purge row** (stop a schedule): an outbox row with `subject = sched.def.<trigger_id>`, `headers_json = {"Heim-Op":"purge"}` and `envelope_json = {"event_id":"<event_id>","type":"schedule.purge","class":"occurrence","owner_user_id":"<owner>","trigger_id":"<trigger_id>","data":{}}`. The relay does not publish it. It purges the subject instead (6.3.4).
 
-**Deferral row** (wake the hub once, 6.8.3): `subject = sched.def.defer.<action_id>`, headers `{"Nats-Schedule":"@at <not_before, RFC3339 UTC>","Nats-Schedule-Target":"ev.<owner>.action.<action_id>.resume"}`, and `envelope_json = {"event_id":"<event_id>","type":"action.resume","class":"occurrence","owner_user_id":"<owner>","action_id":"<action_id>","data":{"run_id":"<run_id>"}}`. It has no `Nats-TTL` and no rev header. nats-server removes a one-shot definition after it fires. A later deferral for the same action replaces an earlier one.
+**Deferral row** (wake the hub once, 6.8.3): `subject = sched.def.defer.<action_id>`, headers `{"Nats-Schedule":"@at <not_before, RFC3339 UTC>","Nats-Schedule-Target":"ev.<owner>.action.<action_id>.resume","Nats-Schedule-TTL":"24h"}`, and `envelope_json = {"event_id":"<event_id>","type":"action.resume","class":"occurrence","owner_user_id":"<owner>","action_id":"<action_id>","data":{"run_id":"<run_id>"}}`. It has no `Nats-TTL` and no rev header; `Nats-Schedule-TTL` gives its fire the same 24-hour life as a schedule fire. nats-server removes a one-shot definition after it fires. A later deferral for the same action replaces an earlier one.
 
 #### 6.2.4 Cron text and daylight saving
 
@@ -555,6 +597,20 @@ When the state is `Unknown`, all three behave as for `Supported`.
 
 Rows are still handled strictly in `outbox_seq` order. A purge followed by a new definition for the same subject therefore always ends with the definition in place.
 
+**Wake on commit and batches (amendment S2, REQ-SCALE-2).** Today the relay publishes one row per pass and sleeps up to 1 s after a pass that published nothing (finding S5).
+
+```odin
+// src/hub/service/eventrelay/relay.odin
+RELAY_BATCH :: 64
+// Signals the relay's semaphore. Never blocks, never fails; safe from any thread and before start.
+wake :: proc(s: ^Service)
+```
+
+- **Who calls `wake`.** Exactly one place: the commit of a SQLite transaction that appended at least one `event_outbox` row. The outbox repository's `append` marks the open transaction; the commit procedure, after a successful commit, calls the hook that wiring set to `eventrelay.wake`. No producer calls `wake` itself, and a rolled-back transaction does not signal. **Assumption:** every transaction of the hub commits through one procedure of `src/hub/repository/sqlite`. T1 locates it first; if there are several commit paths, each gets the hook, and the hand-off lists them.
+- **The wait.** The idle wait of `entry` becomes `sync.sema_wait_with_timeout(&s.wake_sema, 1 s)` in place of the 50 ms sleep chunks. A signal ends it at once; the 1 s bound stays as a fallback for a lost signal and for rows written by another process. The back-off wait after a failed pass is unchanged.
+- **Batches.** One pass publishes up to `RELAY_BATCH` rows, strictly in `outbox_seq` order, each marked published in its own statement after its publish succeeded, as today. The pass stops at the first row that fails, so order and the poison rules above are unchanged. `progress` is true when at least one row was handled.
+- **Fire TTL fallback.** If `scenario_schedule_fire_ttl` shows that the server ignores `Nats-Schedule-TTL`, the header is still sent (it is harmless), and the matcher deletes each schedule fire and deferral fire after its commit with `nats.stream_delete_message` (6.3.5) by the message's stream sequence. T1 reports which of the two holds; T10 implements the delete only in that case.
+
 #### 6.3.5 Wrapper additions for the delivery pipeline (`src/lib/nats`)
 
 ```odin
@@ -638,7 +694,7 @@ Per-bridge consumers on this stream are created by package `delivery` (6.11.3), 
 "No migration" (R1) means no data migration. One forward-only schema file drops the old objects and creates the new ones.
 
 - File: `src/hub/repository/sqlite/migrations/actions_001_reset.sql`. The feature-prefix name follows `events_001_outbox.sql` and `bots_web_001_channel.sql`.
-- Registration takes three edits in `src/hub/repository/sqlite/migrations.odin`: a `#load` constant next to `MIGRATION_233_EXTENSION_VERSION_SYNC` (`src/hub/repository/sqlite/migrations.odin:722`); a new **last** entry in `migration_order` (`src/hub/repository/sqlite/migrations.odin:726`; the last entry at the base commit is `233_extension_version_sync_0_5_71.sql` at `src/hub/repository/sqlite/migrations.odin:973`); and a branch in `migration_sql` (`src/hub/repository/sqlite/migrations.odin:1506`). If `origin/main` has added migrations since, yours still goes last.
+- Registration takes three edits in `src/hub/repository/sqlite/migrations.odin`: a `#load` constant next to `MIGRATION_235_EXTENSION_VERSION_SYNC` (`src/hub/repository/sqlite/migrations.odin:726`); a new **last** entry in `migration_order` (`src/hub/repository/sqlite/migrations.odin:728`; the last entry at `origin/main` `99879b7b` is `235_extension_version_sync_0_5_72.sql` at `src/hub/repository/sqlite/migrations.odin:977`); and a branch in `migration_sql` (`src/hub/repository/sqlite/migrations.odin:1509`). If `origin/main` has added migrations since, yours still goes last.
 - Delete `upgrade_scheduled_prompts_schema` and `upgrade_actions_schema` and their two calls (F16).
 
 ```sql
@@ -694,13 +750,14 @@ CREATE TABLE action_triggers (
   config TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(config)),
   event_type TEXT NOT NULL,                  -- derived by Trigger_Kind.compile
   subject_filter TEXT NOT NULL,              -- derived by Trigger_Kind.compile
+  match_key TEXT NOT NULL DEFAULT '',        -- S2: subject_filter when it has no '*' token, else '' (6.6.1)
   data_filter TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(data_filter)),
   enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
   rev INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE INDEX action_triggers_match  ON action_triggers(owner_user_id, event_type) WHERE enabled = 1;
+CREATE INDEX action_triggers_match  ON action_triggers(owner_user_id, event_type, match_key) WHERE enabled = 1;
 CREATE INDEX action_triggers_action ON action_triggers(action_id);
 
 -- One row per matched occurrence.
@@ -729,6 +786,7 @@ CREATE TABLE action_runs (
 CREATE UNIQUE INDEX action_runs_one_open ON action_runs(action_id) WHERE state IN ('queued','deferred','routed');
 CREATE INDEX action_runs_action ON action_runs(action_id, created_at);
 CREATE INDEX action_runs_joined ON action_runs(joined_run_id) WHERE state = 'joined';
+CREATE INDEX action_runs_due    ON action_runs(state, not_before) WHERE state IN ('queued','deferred'); -- S2: runs_due, runs_deferred (6.16)
 ```
 
 Rules that the DDL does not express:
@@ -741,7 +799,7 @@ Rules that the DDL does not express:
 
 #### 6.4.1 Pipeline schema (T16)
 
-The pipeline owns one table and one column. They are created by T16, not by T9, in their own file: `src/hub/repository/sqlite/migrations/pipeline_001_deliveries.sql`, registered **last** in `migration_order` the same way as `actions_001_reset.sql`. T9 and T16 run in the same wave; whichever merges second places its file after the other's. The two files do not depend on each other.
+The pipeline owns one table. It is created by T16, not by T9, in their own file: `src/hub/repository/sqlite/migrations/pipeline_001_deliveries.sql`, registered **last** in `migration_order` the same way as `actions_001_reset.sql`. T9 and T16 run in the same wave; whichever merges second places its file after the other's. The two files do not depend on each other.
 
 ```sql
 -- pipeline_001_deliveries.sql
@@ -770,11 +828,13 @@ CREATE TABLE pipeline_deliveries (
 );
 CREATE INDEX pipeline_deliveries_open ON pipeline_deliveries(bridge_id) WHERE state IN ('routed','forwarded');
 CREATE INDEX pipeline_deliveries_ref  ON pipeline_deliveries(ref);
+CREATE INDEX pipeline_deliveries_expiry ON pipeline_deliveries(expires_at) WHERE state IN ('routed','forwarded');       -- S2: expired (6.16)
+CREATE INDEX pipeline_deliveries_closed ON pipeline_deliveries(updated_at) WHERE state IN ('done','failed','replaced'); -- S2: prune (6.11.10)
 CREATE TRIGGER pipeline_deliveries_owner_immutable BEFORE UPDATE OF owner_user_id ON pipeline_deliveries
   BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 
--- Start-begin idempotency (6.12): the delivery that opened the current generation.
-ALTER TABLE agent_instances ADD COLUMN start_delivery_id TEXT NOT NULL DEFAULT '';
+-- S2: the column agent_instances.start_ref (start-begin idempotency, 6.12.2) is created by T22 in its own file,
+-- agents_001_start_ref.sql, because T22 no longer waits for T16.
 ```
 
 Rules that the DDL does not express:
@@ -782,7 +842,7 @@ Rules that the DDL does not express:
 - Id prefix: `dlv_`, from `platform.generate_id`.
 - A row is never deleted by the pipeline while it is open. Closed rows (`done`, `failed`, `replaced`) older than 30 days are deleted by `delivery.prune` (6.11.10), which runs on events only.
 - `ack_reply`, `attempt` and `stream_sequence` are written in the same statement that sets `forwarded` (REQ-PIPE-10).
-- `domain.Agent_Instance` gains the field `start_delivery_id: string`, and the agent repository reads and writes it. **Assumption:** `agent_instances` is read and written through one SELECT column list and one upsert in `src/hub/repository/sqlite`; T16 locates every statement that names the table's columns and adds the new one.
+- `domain.Agent_Instance` gains the field `start_ref: string`, and the agent repository reads and writes it. **Assumption:** `agent_instances` is read and written through one SELECT column list and one upsert in `src/hub/repository/sqlite`; T22 locates every statement that names the table's columns and adds the new one.
 
 ### 6.5 Domain types and repository (T9)
 
@@ -878,8 +938,9 @@ Action_Repository :: struct {
 	trigger_get:    proc(ctx: rawptr, trigger_id: string) -> (domain.Action_Trigger, bool, domain.Domain_Error),
 	trigger_delete: proc(ctx: rawptr, trigger_id: string) -> domain.Domain_Error,
 	triggers_list:  proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Action_Trigger, domain.Domain_Error), // ordered by created_at, trigger_id
-	// Enabled triggers of enabled actions for one owner and event type, ordered by created_at, trigger_id.
-	triggers_match: proc(ctx: rawptr, owner, event_type: string) -> ([]domain.Action_Trigger, domain.Domain_Error),
+	// Enabled triggers of enabled actions for one owner and event type whose match_key is `subject` or '',
+	// ordered by created_at, trigger_id. Two index reads on action_triggers_match (6.16, Q3). S2.
+	triggers_match: proc(ctx: rawptr, owner, event_type, subject: string) -> ([]domain.Action_Trigger, domain.Domain_Error),
 	// Enabled triggers of one kind whose action is enabled, across all owners (reconcile).
 	triggers_effective: proc(ctx: rawptr, kind: string) -> ([]domain.Action_Trigger, domain.Domain_Error),
 	// runs
@@ -995,6 +1056,8 @@ trigger_kind_find :: proc(kind: string) -> (^Trigger_Kind, bool)
 
 Tests may append a kind to a package-level `extra_trigger_kinds: [dynamic]Trigger_Kind` that `trigger_kind_find` also searches. That is the seam the fake-kind test uses.
 
+**The `match_key` rule (amendment S2).** When the service saves a trigger it sets the column `match_key` from the `subject_filter` that `compile` returned: the filter itself when none of its tokens is `*`, otherwise the empty string. No kind computes it and the matcher names no kind. A schedule trigger's filter is its own fire subject, so its `match_key` is that subject; an event trigger for one chain gets that chain's subject; an event trigger for any chain gets `''`. The matcher's token-by-token filter (6.7 step 5) still runs on every returned row, so `match_key` only narrows what is read.
+
 **The `rev` rule.** A trigger's `rev` is 1 when it is created. It increases by 1 whenever its `config` or its `enabled` flag changes, and whenever its action's `enabled` flag changes. The service does this before it calls `on_change`. `rev` is only a filter for stale fires. It is never part of a publish id.
 
 #### 6.6.2 Kind `schedule`
@@ -1073,7 +1136,7 @@ For each message in a fetched batch, in order:
 1. **Parse.** Build an `Event_View`. Split the subject: it must start with `ev.` and have an owner token. Ignore `ev.dlq.>` (ack, no rows). Parse the body as a JSON object; `event_type` is its `type`, `event_id` its `event_id`. A body that is not a JSON object is terminated with `nats.term` (`src/lib/nats/nats.odin:299`) and counted. Read `stream_sequence` and `timestamp_ns` from `nats.message_metadata`.
 2. **Owner check.** If the envelope has `owner_user_id` and it differs from the subject's owner token, ack and count the message. No rows.
 3. **Begin a unit of work.**
-4. **Lookup.** `triggers_match(owner, event_type)`.
+4. **Lookup.** `triggers_match(owner, event_type, subject)` with the event's full subject (S2, REQ-SCALE-5). A schedule fire returns its own trigger only.
 5. **Filter.** Keep a trigger when all of these hold:
    - its `owner_user_id` equals the subject owner;
    - its `subject_filter` matches the subject token by token, where a filter token `*` matches any one token and the token counts are equal;
@@ -1524,7 +1587,7 @@ Delivery_Wire :: struct {
 	conversation_id:   string `json:"conversation_id"`,
 	message_id:        string `json:"message_id"`,
 	notice:            Delivery_Notice_Wire `json:"notice"`,
-	expires_at:        string `json:"expires_at"`,      // RFC3339 UTC; informational on the bridge
+	expires_at:        string `json:"expires_at"`,      // RFC3339 UTC; the bridge keeps its ledger entry until this time plus a margin (6.11.6, S2)
 	payload:           string `json:"payload,omitempty"`, // kinds bot and lease: the complete legacy frame text
 }
 Event_Deliver_Wire :: struct {
@@ -1539,7 +1602,7 @@ Event_Deliver_Wire :: struct {
 
 - The JetStream message body (the outbox `envelope_json`) is one `Delivery_Wire` object.
 - `kind = prompt` and `kind = notice` carry ids and enums only. The prompt text never leaves SQLite.
-- `kind = lease` carries in `payload` the exact text of a one-entry `wake_agent` command (`wake_agent_command_json`, `src/hub/service/agent/agent_service.odin:1891`). `kind = bot` carries the exact text of a `Bot_Deliver_Wire` frame (`src/contracts/bot_wire.odin:31`). `payload` is a JSON string, so the bytes inside are kept as they were written. These are commands, not events: the "ids and enums only" rule of the event envelopes (`docs/plans/events-jetstream-spec.md:26`) does not bind them. They sit in a private stream and are removed when acked (v7-Q6).
+- `kind = lease` carries in `payload` the exact text of a one-entry `start_agent` command (`start_command_json`, 6.12.6). `kind = bot` carries the exact text of a `Bot_Deliver_Wire` frame (`src/contracts/bot_wire.odin:31`). `payload` is a JSON string, so the bytes inside are kept as they were written. These are commands, not events: the "ids and enums only" rule of the event envelopes (`docs/plans/events-jetstream-spec.md:26`) does not bind them. They sit in a private stream and are removed when acked (v7-Q6).
 - The message carries no run generation. The hub hands it out at start-begin (6.12).
 - `command_id` differs per attempt (V13). The delivery id is the text before the last `:`.
 
@@ -1729,21 +1792,23 @@ The bridge handles the command type `event_deliver`. The handler runs on a dispa
 ```odin
 Bridge_Ledger_State  :: enum { In_Progress = 1, Done = 2 }
 Bridge_Ledger_Effect :: enum { Type = 1, Start = 2, Flow = 3 } // what the in-progress attempt set out to do
-Bridge_Ledger_Entry  :: struct { id: string, state: Bridge_Ledger_State, effect: Bridge_Ledger_Effect, outcome: string, at_ms: i64 }
+Bridge_Ledger_Entry  :: struct { id: string, state: Bridge_Ledger_State, effect: Bridge_Ledger_Effect, outcome: string, at_ms: i64, expires_ms: i64 }
 BRIDGE_LEDGER_MAX_ENTRIES :: 4096
-BRIDGE_LEDGER_MAX_AGE_MS  :: i64(48 * 60 * 60 * 1000) // twice the stream's max age
+BRIDGE_LEDGER_MARGIN_MS   :: i64(10 * 60 * 1000)      // kept this long after the delivery's expires_at (S2, REQ-SCALE-1)
+BRIDGE_LEDGER_FALLBACK_MS :: i64(48 * 60 * 60 * 1000) // life of an entry whose expires_at is missing or does not parse
 
 bridge_event_ledger_load  :: proc()                                         // once, before bridge_hub_runtime_start
 bridge_event_ledger_get   :: proc(id: string) -> (Bridge_Ledger_Entry, bool) // the returned strings are temp-allocated copies
 // Writes In_Progress. ok = false when the ledger holds BRIDGE_LEDGER_MAX_ENTRIES live entries or the file cannot be written.
-bridge_event_ledger_begin :: proc(id: string, effect: Bridge_Ledger_Effect, now_ms: i64) -> (ok: bool)
+// expires_ms is the delivery's expires_at in Unix ms, or 0 when it is missing or does not parse.
+bridge_event_ledger_begin :: proc(id: string, effect: Bridge_Ledger_Effect, now_ms, expires_ms: i64) -> (ok: bool)
 bridge_event_ledger_done  :: proc(id, outcome: string, now_ms: i64) -> (ok: bool)
 bridge_event_ledger_forget :: proc(id: string)                               // removes an In_Progress entry after a retry or fatal answer
 ```
 
 - File: `event-ledger-v1.json` in the directory of `bridge_agent_token_store_path()` (`src/bridge/agent_token_store.odin:155`), beside `retry-journal-v1.json` (`src/bridge/retry_journal.odin:31`). Written with `bridge_retry_atomic_write` (`src/bridge/retry_journal.odin:114`).
-- Disk shape: `{"version":1,"entries":[{"id":"dlv_…","state":2,"effect":1,"outcome":"notified","at_ms":1795000000000}]}`. Enums are stored as integers, as the retry journal does.
-- **Age is the only eviction rule.** An entry is dropped when `now - at_ms > BRIDGE_LEDGER_MAX_AGE_MS`, at load and before every write. A full ledger never drops an entry: `begin` returns false and the executor answers `retry`.
+- Disk shape: `{"version":1,"entries":[{"id":"dlv_…","state":2,"effect":1,"outcome":"notified","at_ms":1795000000000,"expires_ms":1795003600000}]}`. Enums are stored as integers, as the retry journal does.
+- **Expiry is the only eviction rule (amendment S2, REQ-SCALE-1).** An entry is dropped when `now > expires_ms + BRIDGE_LEDGER_MARGIN_MS`, or, when `expires_ms` is 0, when `now - at_ms > BRIDGE_LEDGER_FALLBACK_MS`; at load and before every write. A full ledger never drops a live entry: `begin` returns false and the executor answers `retry`. Why this is safe: the hub never forwards a delivery after its `expires_at` (the forward gate closes it, 6.11.4), so the last frame of a delivery leaves the hub before `expires_at` by the hub's clock. The margin covers that frame's travel and handling (at most the handler budget, 30 s) and a bridge clock that runs ahead of the hub's by less than the rest of the margin. A bridge whose clock is wrong by more than about 9 minutes can act twice on a redelivery; that is risk S-K9. Why it matters: with a flat 48 hours the cap of 4096 entries allowed about 85 deliveries per bridge per hour; with this rule the ledger holds rate × (lifetime + margin), about 100 entries for 85 prompts per hour. Kinds `bot` and `lease` (lifetime 24 hours) gain a factor of two only.
 - A missing file is an empty ledger. A file that does not parse, has another version or holds more than the cap is logged, renamed to `event-ledger-v1.json.corrupt` and replaced by an empty ledger. (This is the lenient rule of the task notice queue, not the fail-closed rule of the retry journal: a lost ledger costs at most one extra notice line.)
 - One mutex guards the map and the file. Heap-allocated; the load runs next to `bridge_agent_wake_init` (`src/bridge/main.odin:265`), before `bridge_hub_runtime_start` (`src/bridge/main.odin:278`).
 - **Write order.** `In_Progress` is written before any effect. `Done` with the outcome is written after the notice was typed or the launch call returned, and before the answer is sent. After an answer of `retry` or `fatal` the entry is forgotten, so the next attempt starts clean.
@@ -1796,7 +1861,7 @@ A `final` attempt always ends with `succeeded` or with `failed` and class `fatal
 5. Record the result with `bridge_task_wake_record_result` (`src/bridge/agent_wake.odin:263`), as today, so back-off and parking stay shared with the other wake callers.
 6. A launch failure is classified by `err.class`: `.retriable` → retriable with `err.retry_after_ms`; `.recoverable` and `.fatal` → fatal, reason `launch_failed`. After a failed launch the bridge reports the failed status as the wake path does (`bridge_wake_report_failed_status`, `src/bridge/hub_runtime_client.odin:2676`), which lets the hub release the reservation (10.2).
 
-`Already_Active` is answered `succeeded`, `started`. So is a start-begin that the hub refuses with `already_running` (6.12.4): the bridge's local snapshot can miss a start that the hub has opened but whose launch has not reached the bridge yet, and the hub's row is the authority.
+`Already_Active` is answered `succeeded`, `started`. A start-begin that the hub refuses with `already_running` is answered `started` **only** when the bridge's own snapshot shows a process for the instance; with no snapshot it is `failed` / `retry` after 30 s, and `failed` / `fatal` with reason `hub_row_live` on the final attempt (6.12.4, "A live row on the hub"). A delivery is therefore never closed as delivered when nothing on this bridge will act on it.
 
 **Kinds `lease` and `bot`.** Row 0, row 1 and the ledger rules apply. The effect is `Flow`; the handlers are specified in T20 and T19. Before those tasks, the executor answers `failed`, `fatal`, reason `unknown_kind` for them.
 
@@ -1839,6 +1904,7 @@ The advisory is emitted only while the forwarder has a pull waiting (N7). For a 
 | `target_missing` | hub, bridge | the bridge was deleted; or start-begin answered 404 |
 | `superseded` | hub | the flow's `still_valid` returned false |
 | `start_refused` | bridge | start-begin answered another 4xx (plan, quota, provider or model) |
+| `hub_row_live` | bridge | start-begin answered `already_running` on the final attempt and this bridge has no process for the instance (6.12.4) |
 | `start_parked` | bridge | the wake state is parked: the provider cannot run on this machine |
 | `launch_failed` | bridge | `bridge_runtime_launch_agent` failed with a non-retriable error |
 | `start_failed` | hub | a fatal answer without a reason |
@@ -1847,7 +1913,7 @@ The advisory is emitted only while the forwarder has a pull waiting (N7). For a 
 
 #### 6.11.10 Housekeeping without a timer
 
-`delivery.prune` deletes closed rows older than 30 days. It is called at the end of `expire_due` (hub start and NATS reconnect) and nowhere else.
+`delivery.prune` deletes closed rows older than 30 days, through the index `pipeline_deliveries_closed` (6.4.1). It is called at the end of `expire_due` (hub start and NATS reconnect) and, since amendment S2 (REQ-SCALE-3), also when a delivery becomes final, at most once per hour: `Service.last_prune_ms` is an atomic `i64`; the code that just committed a `done` or `failed` transition compares it with the clock, and when an hour has passed it swaps the value (compare-and-swap, so one thread wins) and runs `prune` in a unit of work of its own, after its commit. A hub that stays up therefore prunes while deliveries flow, and a hub with no deliveries has nothing to prune. This is not a timer: nothing runs when nothing happens. Rows are **not** deleted when they become final: the run history and re-placement (`ref`, `excluded_bridges`) read them.
 
 #### 6.11.11 Feature gating
 
@@ -1860,112 +1926,421 @@ The advisory is emitted only while the forwarder has a pull waiting (N7). For a 
 | Bridge built before T8 with a new hub | Its own scheduler gets 404 from the removed routes and fires nothing (risk K15) |
 | Rollout order | Hub first, then bridges (T14) |
 
-### 6.12 Start-begin: the hub opens the generation, the bridge launches (T16, T17)
+### 6.12 One start path: start-begin on the hub, one launcher and one start command on the bridge (T22 to T25, T17)
 
-This section replaces section 6.12 of the v6 spec ("Start"). Nothing of the v6 text applies.
+**Rewritten by amendment S2** (user decisions S-A to S-D, section 2). This section replaces section 6.12 of the v6 spec and section 6.12 of this spec as approved in S1. It is the only definition of how an agent process is started. Every other section refers to it.
 
-#### 6.12.1 Why
+#### 6.12.1 Why, and the rule
 
-Today the bridge's own start fetches a manifest with `GET /api/v1/bridge/agent-instances/<id>/bootstrap` (`src/bridge/agent_wake.odin:299`; handler `bridge_instance_bootstrap_handler`, `src/hub/transport/http/bridge_handlers.odin:2878`) and launches with generation 0 (V16). The hub then refuses the fresh agent's `start-success` (V11). So the hub must set `launching` and the new generation **before** the process exists. Start-begin is the one call that does it.
+Today the code starts an agent in three ways (F13, V3, V6):
 
-#### 6.12.2 Hub side
+| Path | Hub state before the launch | Launch |
+|---|---|---|
+| **A** `relaunch_instance_locked` (`src/hub/service/agent/agent_service.odin:1126`): manual Start and Restart, chat message, MCP, event inbox, solo recovery, fleet change | plan, live connection, provider and quota checked; `launching`; `run_count + 1`; one save | the hub sends `launch_agent` |
+| **B** task lease dispatch: `grant_attempt_in_uow` (`src/hub/service/taskv2/lease.odin:77`) | its own write of `launching` and `run_count + 1` (`src/hub/service/taskv2/lease.odin:231`); **no** plan, quota or live-connection check | the hub sends `wake_agent` after the commit (`flush_wakes`, `src/hub/service/taskv2/wake.odin:146`) |
+| **C** bridge-local: the notice fallback (`bridge_task_wake_if_needed`, `src/bridge/agent_wake.odin:205`) and bots (`bridge_bot_launch_via_descriptor`, `src/bridge/bot_delivery.odin:77`) | **none**: the bridge fetches a manifest with `GET …/bootstrap` (`src/bridge/agent_wake.odin:299`) | the bridge launches with generation 0 (V16); the hub then refuses the fresh agent's `start-success` once the row's count is above 1 (V11) |
 
-**Split of `relaunch_instance_locked`.** The procedure (`src/hub/service/agent/agent_service.odin:1126`) is split in front of its send (`src/hub/service/agent/agent_service.odin:1161`). The statements are moved, not rewritten.
+**The rule (S-A).** After this chain there is one way:
+
+1. **The hub opens every run generation in one procedure, `start_begin`** (6.12.2). It is the database half of path A. No other code writes `launching`, bumps `run_count` or mints a launch epoch for a start.
+2. **The bridge starts every process in one function, `bridge_runtime_launch_agent`** (`src/bridge/hub_runtime_client.odin:2749`). It is already the only function that spawns an agent (V3); what changes is that it is always handed a launch command that the hub wrote in `start_begin`. The bridge no longer builds a launch command from a manifest or from a run entry.
+3. **One wire command, `start_agent`**, carries hub-initiated starts (S-B, 6.12.6).
+
+A start is **hub-initiated** (the hub decides to start: manual Start and Restart, chat message, MCP, solo recovery, fleet change, task lease) or **bridge-initiated** (the bridge finds that a process is missing: a pipeline delivery, the notice fallback, a bot delivery). Both use `start_begin`; they differ only in who carries the launch command to the launcher:
+
+```
+hub-initiated      caller ─► start_begin ─► start_agent command ───────────────► bridge_runtime_launch_agent
+bridge-initiated   bridge ─► POST …/start-begin ─► start_begin ─► HTTP reply ──► bridge_runtime_launch_agent
+```
+
+#### 6.12.2 Hub side: `start_begin` and its three callers
 
 ```odin
-// src/hub/service/agent/start_begin.odin  (new file, package agent)
+// src/hub/service/agent/start_begin.odin  (new file, package agent; T22)
 
-// The database half of a relaunch: everything relaunch_instance_locked does up to and including the save
-// (idle check, re-read and revision check, provider/model validation, bridge checks, the status writes,
-// freeze_runtime_transport, runtime_launch_epoch, run_count + 1, reserve_runtime_launch, agent_save_instance).
-// The caller holds reconfiguration_mutex. On success the launch reservation of `generation` is held:
-// the caller either sends a launch or calls bridge_runtime_instance_cancel_reservation.
-relaunch_prepare_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance,
-	provider, model: string) -> (saved: domain.Agent_Instance, generation: int, ok: bool, err: domain.Domain_Error)
+Start_If_Live :: enum {
+	Refuse,   // a live row is an error: .Conflict with details code "already_running". Start button, every bridge-initiated start
+	Relaunch, // open a new generation even when the row is live: Restart button, fleet model change, a lease that needs a new child
+	Keep,     // leave a live row alone and report kept_live: chat message, coordinator wake, a lease for a live child (nudge)
+}
 
-// Opens a run generation for a pipeline start. Takes reconfiguration_mutex itself. launch_json is the text of
-// launch_command_json_full for the saved row; it is allocated in context.allocator and the caller frees it.
-// reused = true when the same delivery already opened the current generation.
-start_begin_for_delivery :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id, delivery_id: string)
+Start_Request :: struct {
+	if_live:   Start_If_Live,
+	ref:       string,                                   // idempotency key, "" = none. See "Start references" below
+	provider, model, profile: string,                    // optional override (fleet change, reconfigure); "" = the row's values
+	expected:  ^domain.Agent_Instance,                   // optional: the row the caller decided on (step 5)
+	guard:     proc(ctx: rawptr) -> domain.Domain_Error, // optional; runs first (step 1)
+	guard_ctx: rawptr,
+}
+
+Start_Ticket :: struct {
+	instance:    domain.Agent_Instance, // the saved row; owned by the ticket
+	command_id:  string,                // owned by the ticket; "sb_<ref>" when ref != "", else "cmd_launch_<id>_<instance>"
+	reservation: int,                   // generation of the in-memory launch reservation
+	reserved:    bool,                  // false for kept_live and reused
+	kept_live:   bool,                  // nothing was written; nothing must be launched
+	reused:      bool,                  // the same ref already opened the current generation; nothing was written
+}
+start_ticket_destroy :: proc(t: ^Start_Ticket)
+
+// The one place that opens a run generation. Reads and writes rows and reserves launch quota in the in-memory
+// registry. No network I/O. Takes no lock itself. Joins the unit of work that is open on the calling thread, if any.
+start_begin :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, req: Start_Request,
+	allocator := context.allocator) -> (t: Start_Ticket, err: domain.Domain_Error)
+
+// The complete launch object for a ticket: launch_command_json_full for t.instance with t.command_id, plus the lease
+// keys when lease != nil (6.12.6). Caller-owned. This text is what bridge_runtime_launch_agent receives, unchanged.
+start_launch_json :: proc(service: ^Agent_Service, t: Start_Ticket, lease: ^Start_Lease = nil, allocator := context.allocator) -> string
+
+// Hub-initiated, one instance: builds the start command from the ticket and sends it (6.12.6). On a send failure it
+// marks the row failed, exactly as the send-failure branch of relaunch_instance_locked does today, and cancels the
+// reservation. A kept_live or reused ticket sends nothing. Does network I/O.
+start_send :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_Error
+
+// Hub-initiated, for a caller that sent the command itself in a batch (task leases). sent = true: nothing more.
+// sent = false: the row is marked failed and the reservation cancelled, as start_send does.
+start_settle :: proc(service: ^Agent_Service, t: ^Start_Ticket, sent: bool)
+
+// The caller's transaction rolled back. Cancels the reservation only; the row change was rolled back with it.
+start_cancel :: proc(service: ^Agent_Service, t: ^Start_Ticket)
+
+// Hub-initiated, outside a transaction: takes reconfiguration_mutex, runs start_begin and start_send, releases it.
+// The send happens under the mutex, as it does today. MUST NOT be called inside a unit of work.
+start :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, req: Start_Request)
+	-> (inst: domain.Agent_Instance, kept_live: bool, ok: bool, err: domain.Domain_Error)
+
+// Bridge-initiated: takes reconfiguration_mutex, checks that the row belongs to owner and bridge_id (else Not_Found),
+// runs start_begin with if_live = .Refuse and the given ref, and returns start_launch_json. ref MUST NOT be empty.
+// The reservation is kept (see "Reservation" below). launch_json is allocated in context.allocator; the caller frees it.
+start_begin_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id, ref: string)
 	-> (launch_json: string, run_count: int, reused: bool, ok: bool, err: domain.Domain_Error)
 ```
 
-`relaunch_instance_locked` becomes: `relaunch_prepare_locked`, then its unchanged send part (the command id, `send_frozen_instance_launch`, the failure branch that marks the row `failed`, the `defer` that cancels the reservation when no launch was sent). Its behaviour and its callers (`start_instance`, `restart_instance` through `relaunch_instance`, `reconfigure_instance`) MUST NOT change; the existing agent-service tests MUST pass unchanged.
+Every ticket ends in exactly one of `start_send`, `start_settle`, `start_cancel` or (bridge-initiated) the HTTP reply, and then `start_ticket_destroy`.
 
-**`start_begin_for_delivery`, in this order**, under `reconfiguration_mutex` (`src/hub/service/agent/agent_service.odin:24`):
+**`start_begin`, in this order.** It is `relaunch_instance_locked` cut in front of its send (`src/hub/service/agent/agent_service.odin:1161`), plus the checks its callers make today. The statements are moved, not rewritten.
 
-1. `delivery_id` is empty → `Validation_Failed`.
-2. Load the instance with `iface.agent_get_instance`. Not found, another owner or another bridge → `Not_Found` (the same check as the manifest, `src/hub/service/agent/agent_service.odin:2247`).
-3. **Idempotency.** If `inst.start_delivery_id == delivery_id` and `inst.runtime_status == "launching"`: return `launch_command_json_full(service, command_id, inst)` with `reused = true`. Nothing is written and nothing is reserved.
-4. **Live-row guard.** If `runtime_expected_active(inst.runtime_status)` (`src/hub/service/agent/agent_service.odin:1758`): return `Conflict` with the same message and the same details as `start_instance` (`src/hub/service/agent/agent_service.odin:906`): `details_json = {"code":"already_running","runtime_status":"<status>"}`. Nothing is written, nothing is reserved, `run_count` and `launch_epoch` are unchanged. `start_instance` has this check outside `relaunch_instance_locked`, so the moved code does not contain it; without it a start-begin for a second delivery, or one that races a manual start, a restart or a lease wake, would open a new generation on a live row, and the hub would then refuse the live process's status frames and its start-success as superseded.
-5. **User stop.** Set `inst.stopped_by = ""` on the in-memory copy only. Do **not** call `clear_user_stop` (`src/hub/service/agent/agent_service.odin:888`): it saves at once, and a start that is refused in step 6 or 7 would then have erased the user's stop although nothing started; task leasing reads that mark (v7-Q4). `relaunch_prepare_locked` copies `inst` into the row it saves, so the mark is cleared in the same save that opens the generation, and only then. This is a write, not a read: `start_begin.odin` MUST NOT contain a comparison on `stopped_by`.
-6. `relaunch_prepare_locked(service, {kind = .Internal_User, user_id = owner}, inst, inst.provider, inst.model)`. An error is returned unchanged; the stored row is untouched.
-7. `validate_frozen_runtime_transport(service, saved)` (`src/hub/service/agent/agent_service.odin:2722`), which `send_frozen_instance_launch` runs before a hub-sent launch (`src/hub/service/agent/agent_service.odin:424`). On an error: mark the row `failed` exactly as the send-failure branch of `relaunch_instance_locked` does, cancel the reservation, return the error. (The generation was opened, so the stop mark stays cleared in this one case, as it does when a manual start fails at its send.)
-8. Set `saved.start_delivery_id = delivery_id` and save.
-9. Return `launch_command_json_full(service, command_id, saved)` (`src/hub/service/agent/agent_service.odin:1781`), `saved.run_count`, `reused = false`.
+| # | Step | Today |
+|---|---|---|
+| 1 | Run `req.guard`, if set. An error is returned unchanged | `start_instance` (`src/hub/service/agent/agent_service.odin:901`) |
+| 2 | Load the row with `get_instance` (owner check through `auth`). Not found → `Not_Found` | every caller |
+| 3 | **Idempotency: a reference never opens a second generation.** If `req.ref != ""`, `inst.start_ref == req.ref` and the row is live (`runtime_expected_active(inst.runtime_status)`, `src/hub/service/agent/agent_service.odin:1758`): return a ticket with `reused = true` for the stored row, **whatever the live status** (`launching`, `starting`, `running`, `idle`, `busy`). Nothing is written and nothing is reserved. `start_ref` is overwritten by every later `start_begin`, so an equal `start_ref` on a live row means that the generation this reference opened is still the current one. `req.if_live` is not looked at in this case: a repeated request with `Relaunch` does **not** relaunch (review finding 3). A row that is no longer live (`stopped`, `failed`, `unreachable`) does not match, and the request continues with step 4 as a new start; callers that must never open a generation on a repeat use `start_reuse` instead (below) | new (S1; widened in S2 rework) |
+| 4 | **Live-row rule.** If `runtime_expected_active(inst.runtime_status)` (`src/hub/service/agent/agent_service.odin:1758`): `Refuse` → `Conflict` with the message and details of `start_instance` today, `details_json = {"code":"already_running","runtime_status":"<status>"}`; `Keep` → a ticket with `kept_live = true`; `Relaunch` → continue. Nothing is written in the first two cases | `start_instance`; missing in path B |
+| 5 | `reconfiguration_require_idle` (`src/hub/service/agent/instance_reconfiguration.odin:79`). If `req.expected` is set: a changed `configuration_revision`, `launch_epoch` or `bridge_id` → `Conflict` | `relaunch_instance_locked` |
+| 6 | Apply the provider, model and profile override; `validate_pinned_provider_model` (`src/hub/service/agent/agent_service.odin:1620`) | `relaunch_instance_locked` |
+| 7 | The bridge checks: the bridge row exists and has the same owner; the plan allows a launch (`require_launch_bridge_enabled`, `src/hub/service/agent/agent_service.odin:2678`); the bridge is `Online` and has a live connection. After T3 these are `placement.bridge_eligible`; T22 keeps whichever form is on its base | `relaunch_instance_locked`; **missing in path B and C** |
+| 8 | On the in-memory row only: `stopped_by = ""`; `runtime_status = "launching"`, `startup_status = "starting"`, `activity_status = "unknown"`; `freeze_runtime_transport` (`src/hub/service/agent/agent_service.odin:2697`); `validate_frozen_runtime_transport` (`src/hub/service/agent/agent_service.odin:2722`) on that row; `runtime_launch_epoch` (`src/hub/service/agent/agent_service.odin:2706`); `run_count += 1`; the timestamps; `start_ref = req.ref` | `relaunch_instance_locked`; `clear_user_stop` (`src/hub/service/agent/agent_service.odin:888`), which today saves separately |
+| 9 | `reserve_runtime_launch` (`src/hub/service/agent/agent_service.odin:324`): the launch quota. Not admitted → the quota error; nothing was written | `relaunch_instance_locked`; **missing in path B and C** |
+| 10 | Save the row **once, conditionally** (`iface.agent_save_instance_guarded`, new): the UPDATE carries `WHERE agent_instance_id = ? AND run_count = ? AND launch_epoch = ? AND configuration_revision = ?` with the three values read in step 2. No row updated → another start or a reconfiguration changed the row since step 2: cancel the reservation and return `Conflict` with details code `start_raced`; nothing was written. Any other save error: cancel the reservation and return it. This, not a lock, is what makes "one bump per generation" hold between a caller that holds `reconfiguration_mutex` and the lease grant, which cannot (see "Locks" below) | `relaunch_instance_locked` (unconditional today) |
+| 11 | Fill the ticket: a clone of the saved row and the command id, both in `allocator` | — |
 
-`command_id` is `"sb_" + delivery_id` in both the fresh and the reused case, so a repeated call returns identical bytes.
+Rules that follow from the order:
 
-The reservation taken in step 6 is **kept**. It is consumed by the bridge's first status frame for the instance, released by a failed or stopped status frame, and otherwise expires after one minute (V17, 10.2). The row is not marked `failed` when the bridge never launches: the bridge's status frame, the reservation expiry and the stale-instance reaper (`src/hub/app/reaper.odin:255`) recover it, and the delivery is retried.
+- **One bump.** `run_count` is bumped in step 8 and stored in the one save of step 10, once per start, for every caller.
+- **A refused start writes nothing.** Steps 1 to 9 change no row. In particular the user's stop mark is cleared only in the save that opens the generation (S1 finding 2): `start_begin.odin` MUST NOT call `clear_user_stop` and MUST NOT contain a comparison on `stopped_by`. The assignment in step 8 is a write, not a read (B3).
+- **Transport validation before the write.** S1 ran `validate_frozen_runtime_transport` after the save and marked the row `failed` on an error. S2 runs it in step 8 on the in-memory row, so an instance whose ACP support was withdrawn is refused with nothing written. **Assumption:** the procedure reads only the row it is given. T22 verifies this first; if it reads the stored row, T22 keeps S1's order (validate after the save; on an error mark the row `failed` and cancel the reservation) and reports it.
+
+**Repeats that must not start anything: `start_reuse`.**
+
+```odin
+// Read-only. ok = true and a reused ticket when the row is live and inst.start_ref == ref (step 3). Otherwise ok = false,
+// and `ended` says whether the generation that `ref` opened is over (the row is not live, or another start replaced it).
+// Never writes, never reserves, never opens a generation.
+start_reuse :: proc(service: ^Agent_Service, instance_id, ref: string, allocator := context.allocator)
+	-> (t: Start_Ticket, ok: bool, ended: bool, err: domain.Domain_Error)
+```
+
+The redelivery of an unconfirmed lease wake uses it (T25 step 6). `start_begin_for_bridge` does not: a bridge that repeats a reference for a row that is no longer live is asking for a new start, and gets one.
+
+**The guarded save and the race it closes.** `start` runs under `reconfiguration_mutex` but outside any unit of work; the lease grant runs inside a unit of work but cannot take the mutex. Without a guard, a `start` that read the row before the grant committed and saved after it would write the same `run_count` a second time (two launches of one generation, one without lease keys) and overwrite `start_ref`. With the guard exactly one of the two saves updates the row; the loser gets `start_raced`, cancels its reservation and reports it: `start` returns the `Conflict` to its caller (the Start button shows the instance as already starting on reload), a grant fails for that instance and the matcher's next run sees the live row. `iface.agent_save_instance_guarded(repo, inst, expect_run_count, expect_launch_epoch, expect_configuration_revision) -> (saved, updated: bool, err)` is added to the agent repository interface and its SQLite implementation by T22; inside an open unit of work it runs on that unit's connection like every other statement. Tests: `test_start_begin_guarded_save`, `test_grant_race_with_manual_start`.
+
+**Start references** (`req.ref`, column `agent_instances.start_ref`, 6.4.1). A reference names the cause of one start, so a repeated request does not open a second generation.
+
+| Caller | `ref` |
+|---|---|
+| Pipeline delivery (T17) | the delivery id, `dlv_…` |
+| Notice fallback (T24) | `fb_<agent_instance_id>_<n>`, `n` = the bridge's wake-state generation of that instance (`Bridge_Wake_State.generation`, `src/bridge/agent_wake.odin:74`): it stays the same across the retries of one wake and changes after a successful launch |
+| Bot delivery (T24) | `bot_<attempt_id>` |
+| Task lease (T25) | the lease id, `lease_…` |
+| Manual Start, Restart, chat message, MCP, solo recovery, fleet change | `""` (no idempotency, as today) |
+
+The command id is `"sb_" + ref` in both the fresh and the reused case, so a repeated call returns identical bytes.
+
+**Locks and transactions.**
+
+| Caller | Lock | Transaction |
+|---|---|---|
+| `start` (hub-initiated, outside a transaction) | `reconfiguration_mutex` (`src/hub/service/agent/agent_service.odin:24`), held across `start_begin` and the send, as `start_instance` holds it today | none; each row write is its own statement, as today |
+| `start_begin_for_bridge` (the route) | `reconfiguration_mutex`, held across `start_begin` only | none |
+| Task lease grant (T25) | **none**: the grant already holds its unit of work, and `stop_instance` holds `reconfiguration_mutex` while it calls into `taskv2` (`src/hub/service/taskv2/coordinator_wake.odin:15`), so taking the mutex inside the grant would invert the lock order. This matches path B today, which writes the row inside the grant without the mutex and is guarded by `agent_runtime_busy` and the pending-stop check at the top of `grant_attempt_in_uow` | the grant's unit of work. The ticket rides in the effects list; a rollback calls `start_cancel`; after the commit the sender calls `start_settle` |
+
+`start_begin` itself never sends anything, so it is safe inside a unit of work. That is the two-phase split that the earlier dead end asked for ("calling `start_instance` from task lease dispatch does network I/O under a mutex inside a SQLite transaction").
+
+**Reservation.** For a hub-initiated start the reservation is consumed by the bridge's first status frame, or cancelled by `start_send` / `start_settle` when the command could not be sent. For a bridge-initiated start it is **kept** after the reply: it is consumed by the bridge's first status frame for the instance, released by a failed or stopped status frame, and otherwise expires after one minute (V17, 10.2). The row is not marked `failed` when the bridge never launches: the bridge's status frame, the reservation expiry and the stale-instance reaper (`src/hub/app/reaper.odin:108`) recover it, and the caller's retry sends the same `ref` and gets the same generation back (step 3).
 
 The run generation does not depend on the order of later messages: `start-success` is accepted whether it arrives before or after the `command_result`, and also when the `command_result` is lost, because the generation was committed before the process existed.
 
-**Route.** `POST /api/v1/bridge/agent-instances/*/start-begin`, registered next to the bootstrap route (`src/hub/app/wiring.odin:1135`). Handler `bridge_instance_start_begin_handler` in `src/hub/transport/http/bridge_handlers.odin`, placed after `bridge_instance_bootstrap_handler` and authenticated exactly like it (bearer bridge access token; no token in query or body; instance id = `path_part(req.path, 5)`).
+**Route.** `POST /api/v1/bridge/agent-instances/*/start-begin`, registered next to the bootstrap route (`src/hub/app/wiring.odin:1135`). Handler `bridge_instance_start_begin_handler` in `src/hub/transport/http/bridge_handlers.odin`, placed after `bridge_instance_bootstrap_handler` (`src/hub/transport/http/bridge_handlers.odin:2878`) and authenticated exactly like it (bearer bridge access token; no token in query or body; instance id = `path_part(req.path, 5)`). It calls `start_begin_for_bridge`.
 
-Request body: `{"delivery_id":"dlv_…"}`.
+Request body: `{"ref":"dlv_…"}`. An empty or missing `ref` → `Validation_Failed`.
 
 Response 200:
 
 ```json
-{"data":{"launch":{ "type":"launch_agent", "command_id":"sb_dlv_…", "…":"the object launch_command_json_full writes" },
+{"data":{"launch":{ "…":"the object start_launch_json writes", "command_id":"sb_dlv_…" },
          "run_count":7,"reused":false}}
 ```
 
 Errors use `respond_error` with the service's `Domain_Error`, so each code keeps the HTTP status it has everywhere else. The handler adds nothing to them.
 
-#### 6.12.3 Bridge side
+#### 6.12.3 Bridge side: one launcher, and the start-begin call
+
+`bridge_runtime_launch_agent(command_id, command_json, deadline_ns)` (`src/bridge/hub_runtime_client.odin:2749`) is the only function that starts an agent process. After this chain it has exactly two callers:
+
+| Caller | Gets the launch command from |
+|---|---|
+| `bridge_start_agent_apply` (T23): the handler of `start_agent`, and of the old `launch_agent` and `wake_agent` names through their adapters (6.12.6) | the hub's command |
+| `bridge_wake_attempt` (T17, T24): pipeline deliveries, the notice fallback, bot deliveries | `bridge_wake_start_begin` |
 
 ```odin
-// src/bridge/agent_wake.odin
-// POSTs start-begin and returns the launch command (caller-owned) and its command id (a view into it is NOT returned;
-// command_id is cloned). Uses bridge_credential_snapshot, bridge_hub_url and the same transport choice as
-// bridge_wake_fetch_enriched_launch_json: with a deadline, one attempt with timeout min(10_000, time left).
-bridge_wake_start_begin :: proc(instance_id, delivery_id: string, deadline_ns: i64 = 0)
+// src/bridge/agent_wake.odin  (T17)
+// POSTs start-begin and returns the launch command (caller-owned) and its command id (cloned).
+// Uses bridge_credential_snapshot, bridge_hub_url and the same transport choice as the manifest fetch it replaces:
+// with a deadline, one attempt with timeout min(10_000, time left); without one, bridge_http_request_retry.
+bridge_wake_start_begin :: proc(instance_id, ref: string, deadline_ns: i64 = 0)
 	-> (launch_json, command_id: string, err: Bridge_Error, ok: bool)
 ```
 
-The request is built like the existing bot switch call (`src/bridge/bot_delivery.odin:69`): method POST, path `{"api","v1","bridge","agent-instances",instance_id,"start-begin"}`, a JSON body, the bearer header. `launch_json` is the text of `data.launch`, passed to `bridge_runtime_launch_agent` **unchanged**. The bridge does not rebuild it with `bridge_wake_launch_command_json`, so a pipeline launch uses the same launch command as a hub-sent `launch_agent` for the same row.
+The request is built like the existing bot switch call (`src/bridge/bot_delivery.odin:69`): method POST, path `{"api","v1","bridge","agent-instances",instance_id,"start-begin"}`, a JSON body, the bearer header. `launch_json` is the text of `data.launch`, passed to `bridge_runtime_launch_agent` **unchanged**. A bridge-initiated launch therefore uses the same launch command as a hub-initiated start of the same row.
 
-`bridge_wake_fetch_enriched_launch_json` and its three notice callers are unchanged: they keep the manifest GET (section 2.1, K9).
+**The fallback and bots (S-C).** `bridge_task_wake_if_needed` and its three notice callers (`src/bridge/hub_runtime_client.odin:1314`, `src/bridge/hub_runtime_client.odin:1351`, `src/bridge/hub_runtime_client.odin:1452`, through `bridge_task_status_notify_wake_local`, `src/bridge/agent_wake.odin:60`) and the bot launch (`src/bridge/bot_delivery.odin:84`) replace their manifest GET with this call (T24), **when the hub offers it** (below). It is one request in place of one request, to the same host with the same credential: no new kind of traffic. `bridge_wake_fetch_enriched_launch_json` (`src/bridge/agent_wake.odin:299`) keeps exactly one caller, the legacy branch below; it and `bridge_wake_launch_command_json` (`src/bridge/hub_runtime_client.odin:2690`) are deleted when the old command names are removed (6.12.6).
+
+**The hub says that it has start-begin (review finding 5).** A bridge must not find out from a 404 that its hub is older: a 404 for a missing route looks like a 404 for a missing instance, and the second one parks the wake. The hub's `bridge_ready` frame already carries per-connection capability flags that the bridge honours only for the connection that carried them (`src/bridge/hub_runtime_client.odin:643`, written at `src/hub/transport/http/bridge_handlers.odin:3367`). T22 adds one:
+
+```odin
+// src/contracts/bridge.odin, next to BRIDGE_READY_FEATURES_UPDATE (src/contracts/bridge.odin:154)
+BRIDGE_READY_START_BEGIN :: "start_begin" // true: this hub serves POST …/start-begin
+```
+
+The bridge keeps it in `bridge_hub_start_begin_supported` (an atomic bool, reset before every hello, as the other flags are at `src/bridge/hub_runtime_client.odin:671`).
+
+| Hub flag | Notice fallback and bot launch (T24) | Pipeline start (T17) |
+|---|---|---|
+| true | start-begin | start-begin |
+| absent or false (an older or rolled-back hub) | **the manifest GET, exactly as today** (generation 0, the legacy branch of `bridge_wake_attempt`) | cannot happen: only a hub with T22 sends `event_deliver` frames. If it does, the executor answers `failed`, `fatal`, reason `start_refused` |
+
+So T24 needs no deploy order: a new bridge on an old hub behaves as an old bridge. As a second line of defence, a 404 **without** a JSON error body (a route the hub does not have) is classified retriable, not fatal (6.12.4).
 
 #### 6.12.4 Failure classes on the bridge
 
 | Start-begin result | Class | Reason |
 |---|---|---|
 | No URL or credential; transport error; HTTP status 0, 429 or 5xx | retriable | — |
-| 409 whose error details carry `"code":"already_running"` (step 4 of 6.12.2) | **not a failure** | The hub already has a live generation for this instance: a start from another cause is under way or done. The bridge sends no launch, releases its wake gate without recording a failure, and answers `succeeded` with outcome `started`, exactly as for `Already_Active`. The stored message is found by the start-success step of that generation (as in row 6 of 6.11.6) |
+| 409 whose error details carry `"code":"already_running"` (step 4 of 6.12.2) | **depends on the bridge's own snapshot**, see "A live row on the hub" below | — |
 | any other 409, or 423 (the configuration changed or a reconfiguration is running) | retriable | — |
 | 401 or 403 | retriable (the credential is being refreshed) | — |
 | 404 | fatal | `target_missing` |
+| 404 whose body is not the hub's JSON error object (the route does not exist: the capability flag was wrong or the hub was rolled back mid-connection) | retriable | `hub_unavailable`. The wake backs off; it is never parked for this |
 | any other 4xx | fatal | `start_refused` |
 | 200 without `data.launch` | fatal | `start_refused` |
 
-The bridge finds the code by searching the response body for the string field `code` with `extract_json_string`-style parsing at any depth (the hub writes `details_json` into the error body as it does for `start_instance`; `ham-ctl` reads the same field). **Assumption:** `respond_error` includes `details_json` in the body of a 409. T16 verifies it in `test_start_begin_route` and, if it does not, adds the details to this one handler's response.
+The bridge finds the code by searching the response body for the string field `code` with `extract_json_string`-style parsing at any depth (the hub writes `details_json` into the error body as it does for `start_instance`; `ham-ctl` reads the same field). **Assumption:** `respond_error` includes `details_json` in the body of a 409. T22 verifies it in `test_start_begin_route` and, if it does not, adds the details to this one handler's response.
+
+The same table serves all three bridge-initiated callers. What each does with a class is its own rule: the pipeline executor answers `retry` or `fatal` (6.11.6); the fallback records the result in the wake state, so a retriable class backs off and a fatal class parks (`bridge_task_wake_record_result`, `src/bridge/agent_wake.odin:263`); a bot worker reports the attempt as it reports a failed descriptor fetch today.
+
+**A live row on the hub (`already_running`).** The hub refuses because its row is live. The bridge cannot tell from one answer which of two things is true: (a) a start from another cause is under way and its launch has not reached this bridge yet, or (b) the row is **stale**: the bridge restarted or the process died unseen, and nothing will ever run that generation's start-success step. In case (b) nothing the bridge can send corrects the row: `bridge_instance_status_json` returns `{}` for an instance without a snapshot (`src/bridge/hub_runtime_client.odin:3644`), and a non-active report whose sequence did not advance is dropped by the hub (`src/hub/service/agent/agent_service.odin:1219`). What corrects it is the hub's reaper: a live row that has not been heard from for `REAPER_STALE_MS` (`src/hub/app/reaper.odin:27`) on a sweep every 20 s (`src/hub/app/reaper.odin:30`) becomes `unreachable`, which is not a live status, so the next start-begin is accepted. That takes at most about 110 s.
+
+The rule, for every bridge-initiated start:
+
+| The bridge's own snapshot of the instance | Meaning | Pipeline delivery (T17) | Notice fallback, bot launch (T24) |
+|---|---|---|---|
+| a process exists (booting or running) | case (a), and the launch has arrived | `succeeded`, `started`: the start-success step of that generation finds the stored message (row 6 of 6.11.6) | nothing to do; the gate is released without a failure |
+| none | (a) or (b), unknown | **not final:** `failed`, class `retry`, `retry_after_ms = BRIDGE_LIVE_ROW_RETRY_MS` (30 s), reason `hub_row_live`. The next attempt starts again at the decision table, so case (a) resolves as `Already_Active` or a typed prompt, and case (b) resolves when the reaper has run and start-begin is accepted. **Final:** `failed`, class `fatal`, reason `hub_row_live`; the run is `failed`, not `delivered` | a **stale-row retry**: the same wake, with the same reference, is tried again after `BRIDGE_LIVE_ROW_RETRY_MS`, up to `BRIDGE_LIVE_ROW_RETRIES` (5) times, 150 s in all, which outlasts the reaper. These retries are not failures: they do not count toward back-off or parking. After the fifth the wake records an ordinary retriable failure |
+
+```odin
+// src/bridge/agent_wake.odin
+BRIDGE_LIVE_ROW_RETRY_MS :: i64(30_000)
+BRIDGE_LIVE_ROW_RETRIES  :: 5 // 150 s, more than REAPER_STALE_MS (90 s) plus one sweep (20 s)
+```
+
+The pipeline needs no timer for this: the delivery's own delayed retries (8 attempts, about 15 minutes, 6.11.4) carry it. The fallback has no delivery behind it, so the bridge keeps one pending retry per instance in `Bridge_Wake_State` (`live_row_retry_at_ms`, `live_row_retries`) and runs it from the bridge's existing periodic loop (the loop that sends heartbeats); T24 names the call site. **Implementer choice** inside these constraints: at most one pending retry per instance; no thread per retry and no sleep; a retry that finds the instance active, a newer wake for it, or bridge shutdown drops the pending retry; the reference is unchanged across the retries.
+
+Why not let the bridge's "I have no process" overrule the hub's row at once: that would change the live-row rule approved in S1 (D23) and would let a bridge kill a generation whose launch is still on its way to it.
+
 
 #### 6.12.5 Creating an instance without starting it
 
-The router needs an instance row before the bridge starts it. `prepare_instance` (`src/hub/service/agent/agent_service.odin:346`) always writes a `launching` row and reserves quota (V17). T16 adds, in `start_begin.odin`:
+Two callers need an instance row before anything starts it: the action router (6.13) and the task engine's just-in-time instance (`jit_prepare`, `src/hub/service/taskv2/matcher.odin:435`). Bots need the same (`src/hub/service/bots/supervisor.odin:104`). `prepare_instance` (`src/hub/service/agent/agent_service.odin:346`) always writes a `launching` row with `run_count` 1 and reserves quota (V17), which is a second place that opens a generation. T22 adds, in `start_begin.odin`:
 
 ```odin
 // Creates an instance row and its conversation exactly as prepare_instance does, cancels the launch reservation
-// (as bots do, src/hub/service/bots/supervisor.odin:109), and saves the row with runtime_status = "stopped",
-// startup_status = "stopped", activity_status = "unknown", stopped_by = "". run_count stays as prepare_instance wrote it.
-// The bridge starts it later through start-begin.
+// (as bots do today, src/hub/service/bots/supervisor.odin:109), and saves the row with runtime_status = "stopped",
+// startup_status = "stopped", activity_status = "unknown", stopped_by = "" and run_count = 0.
+// It is started later through start_begin, which makes the first and only bump: the first generation is 1.
 create_instance_stopped :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input)
 	-> (inst: domain.Agent_Instance, ok: bool, err: domain.Domain_Error)
 ```
 
-**Assumption:** `prepare_instance` creates the instance's conversation, so `content.get_conversation_by_instance` (`src/hub/service/content/content_service.odin:237`) finds it right after. T16 verifies this in `test_create_instance_stopped`. If the conversation is created elsewhere (for example in `create_instance` after `prepare_instance`), `create_instance_stopped` MUST perform that step too.
+`create_instance` (`src/hub/service/agent/agent_service.odin:330`) becomes `create_instance_stopped` followed by `start` with `if_live = .Refuse` (T22). The first launch of a new instance then carries `run_count` 1, as today.
+
+**Assumption:** `prepare_instance` creates the instance's conversation, so `content.get_conversation_by_instance` (`src/hub/service/content/content_service.odin:237`) finds it right after. T22 verifies this in `test_create_instance_stopped`. If the conversation is created elsewhere (for example in `create_instance` after `prepare_instance`), `create_instance_stopped` MUST perform that step too.
+
+#### 6.12.6 The one start command: `start_agent` (T23)
+
+Today a plain start is `launch_agent` (one instance; the body is the launch object of `launch_command_json_full`, `src/hub/service/agent/agent_service.odin:1781`) and a task lease start is `wake_agent` (`wake_agent_command_json`, `src/hub/service/agent/agent_service.odin:1891`: a batch of run entries per bridge and chain, each either "launch" or "nudge the live child", plus a stop list). On the bridge the `wake_agent` handler rebuilds a launch command from each entry (`src/bridge/hub_runtime_client.odin:2576`, `src/bridge/hub_runtime_client.odin:2594`). S-B merges them.
+
+```json
+{"type":"start_agent","protocol_version":1,"command_id":"<id>","chain_id":"<chain id or empty>",
+ "agent_instance_id":"<only when run has exactly one entry and stop is empty>",
+ "payload":{
+   "run":[ {"deliver":"launch","launch":{ …the object start_launch_json writes… }},
+           {"deliver":"nudge", "launch":{ … }} ],
+   "stop":["<agent_instance_id>", "…"]}}
+```
+
+```odin
+// src/contracts/start_wire.odin  (new)
+BRIDGE_FEATURE_START_AGENT_V1 :: "start_agent_v1"
+START_AGENT_FRAME    :: "start_agent"
+START_DELIVER_LAUNCH :: "launch" // start a new process from entry.launch
+START_DELIVER_NUDGE  :: "nudge"  // the instance has a live child of this generation: keep it, refresh TASK.md, type the lease line
+
+// src/hub/service/agent/start_command.odin  (new)
+Start_Lease :: struct { task_id, role, lease_id, pack_json, permission_mode: string } // the lease keys of a launch object
+Start_Run_Entry :: struct { bridge_id, deliver, launch_json: string, lease_id: string }
+// The start_agent text. launch_json values are embedded as written. The top-level agent_instance_id is added by this
+// procedure when len(run) == 1 and len(stop) == 0.
+start_command_json :: proc(command_id, chain_id: string, run: []Start_Run_Entry, stop: []string) -> string
+// The one sender of hub-initiated starts and stops. Picks the wire form by the bridge's features (below) and sends.
+start_command_send :: proc(service: ^Agent_Service, bridge_id, command_id, chain_id: string,
+	run: []Start_Run_Entry, stop: []string) -> (sent: bool, err: domain.Domain_Error)
+```
+
+- **`launch`** is the complete launch object: every key `launch_command_json_full` writes, with `run_count`, `launch_epoch` and the entry's own `command_id` from the ticket. For a task lease it also carries the lease keys that the bridge's `bridge_wake_launch_command_json` writes into its synthetic launch today (`task_id`, `role`, `lease_id`, `pack`, `permission_mode`; `src/bridge/hub_runtime_client.odin:2690`), in the same places. T23 reads that function for the exact key names and positions; they are fixed by it.
+- The bridge passes `entry.launch` to `bridge_runtime_launch_agent` unchanged. It reads `agent_instance_id`, `task_id`, `role`, `lease_id`, `run_count` and `pack` from the same object for a nudge.
+- `stop` is the stop list of `wake_agent`, unchanged in meaning: instances of that chain that should no longer run. An instance in `run` is never in `stop`. A command with an empty `run` is a pure stop.
+- **A nudge is not a start**: its ticket is `kept_live`, the row is not changed, and the entry's `launch` is built from the stored row.
+
+**Bridge handling.** One procedure applies the command; three thin handlers call it.
+
+```odin
+// src/bridge/start_agent.odin  (new)
+// Applies every run entry and the stop list. For each run entry: deliver = nudge and a live child of that generation
+// exists → nudge (bridge_wake_nudge_live_child, src/bridge/hub_runtime_client.odin:2632); otherwise
+// bridge_runtime_launch_agent(entry command id, entry.launch, deadline). After a failed launch it sends the instance's
+// status frame, as the wake_agent handler does today. ok = false when any launch failed; err is the first failure.
+bridge_start_agent_apply :: proc(conn: ^ws.Connection, text: string, deadline_ns: i64) -> (ok: bool, err: Bridge_Error)
+```
+
+| Frame | Handler after T23 |
+|---|---|
+| `start_agent` | `bridge_start_agent_apply`; answers `succeeded` when `ok`, otherwise `failed` with the typed error of the first failed entry. Per-instance truth keeps coming from the `agent_instance_status` frames |
+| `launch_agent` (from an older hub) | wraps the frame as one run entry with `deliver = launch` and `launch` = the frame itself, then `bridge_start_agent_apply`; answers as `launch_agent` answers today (`src/bridge/hub_runtime_client.odin:1136`) |
+| `wake_agent` (from an older hub) | converts each run entry with `bridge_wake_launch_command_json` (kept for this adapter only), then `bridge_start_agent_apply`; answers `succeeded` always, as today (`src/bridge/hub_runtime_client.odin:2496`) |
+
+Dispatcher registration: `start_agent` copies the `launch_agent` row of `bridge_command_spec` (`src/bridge/hub_command_dispatch.odin:270`). Its ordering key is `agent:<agent_instance_id>` when the top-level field is present (the `launch_agent` rule, `src/bridge/hub_command_dispatch.odin:408`) and the `wake_agent` rule otherwise (`src/bridge/hub_command_dispatch.odin:412`). A `start_agent` without `command_id` is rejected; the id synthesis for id-less `wake_agent` frames (`src/bridge/hub_command_dispatch.odin:519`) stays for the old name only.
+
+**Rollout gating.** The bridge lists `start_agent_v1` in its hello features (`BRIDGE_RUNTIME_FEATURES`, `src/bridge/hub_runtime_client.odin:4616`); the hub reads it with `bridge_feature_supported` (`src/hub/service/agent/instance_reconfiguration.odin:56`). `start_command_send` is the only place that chooses:
+
+| Hub | Bridge | Wire |
+|---|---|---|
+| new | reports `start_agent_v1` | `start_agent` |
+| new | does not report it | the old names, built from the same tickets: one launch entry without lease keys and an empty stop list → `launch_agent` whose body is `entry.launch_json`; anything else → `wake_agent` from `wake_agent_command_json`. The bytes are those of `origin/main` for the same rows |
+| old | new | the old names arrive; the adapters above handle them |
+| old | old | unchanged |
+
+Rollout order is free for this command: neither side needs the other to be updated first. The old names, the two adapters, `wake_agent_command_json` and `bridge_wake_launch_command_json` are removed by a later, separate change once no bridge without the feature is left (non-goal here, as for the other old paths).
+
+`kind = lease` of the pipeline (6.11.2, T20) carries a one-entry `start_agent` text in `payload`. A lease therefore goes through the pipeline only to a bridge that reports **both** `event_pipeline_v1` and `start_agent_v1`; T20's capability check tests both.
+
+#### 6.12.7 Every start path, today and after
+
+| Start | Today | After | Task |
+|---|---|---|---|
+| Manual Start | `start_instance` (`src/hub/service/agent/agent_service.odin:901`) from `src/hub/transport/http/agent_handlers.odin:357` | thin caller: `start(…, {if_live = .Refuse, guard, guard_ctx})` | T22 |
+| Manual Restart | `restart_instance` (`src/hub/service/agent/agent_service.odin:878`) from `src/hub/transport/http/agent_handlers.odin:344` | thin caller: `start(…, {if_live = .Relaunch})` | T22 |
+| Fleet model change | `relaunch_instance` (`src/hub/service/agent/agent_service.odin:1118`) from `src/hub/transport/http/taskchain_handlers.odin:2347` | thin caller: `start(…, {if_live = .Relaunch, provider, model, profile, expected = &inst})` | T22 |
+| Reconfigure (provider or model change of one instance) | `reconfigure_instance` (`src/hub/service/agent/agent_service.odin:1097`) | `start_begin` + `start_send` with the override, under the mutex it already holds | T22 |
+| `relaunch_instance_locked` | `src/hub/service/agent/agent_service.odin:1126` | **deleted**; its body is `start_begin` + `start_send` | T22 |
+| New instance | `create_instance` (`src/hub/service/agent/agent_service.odin:330`): `prepare_instance` + `send_instance_launch` | `create_instance_stopped` + `start` (6.12.5) | T22 |
+| New instance through MCP (`instances.create`, chain create) | `prepare_instance` + `send_instance_launch` (`src/hub/app/mcp_runtime.odin:102`, `src/hub/app/mcp_chain_create.odin:45`) | `create_instance_stopped` + `start` | T22 |
+| Chat message to a stopped agent, question answer | `restart_stopped_conversation_instance` (`src/hub/transport/http/content_handlers.odin:371`) | the same procedure calls `start(…, {if_live = .Keep})`; it gains an optional guard that it passes on | T22 |
+| Coordinator wake | checks `stopped_by` (`src/hub/transport/http/coordinator_wake.odin:288`), then restarts through the line above (`src/hub/transport/http/coordinator_wake.odin:299`) | passes a guard that repeats its `stopped_by` check under the mutex; closes F14 (b). The coordinator wake is not part of the pipeline, so its rule "do not wake a user-stopped coordinator" stays | T22 |
+| MCP `instances.start` | `src/hub/app/mcp_runtime.odin:128` | unchanged call to the thin `start_instance`, with its guard | T22 |
+| Solo-agent recovery | `start_solo_task_agent` (`src/hub/service/taskv2/dispatch.odin:191`): `restart_instance` or `start_instance` | unchanged calls to the thin callers | T22 |
+| Event inbox start (until T18) | `event_inbox_notice` (`src/hub/app/wiring.odin:1357`) with its guard (`src/hub/app/wiring.odin:1406`) | unchanged call to the thin `start_instance`; T18 moves capable bridges onto the pipeline | T22, T18 |
+| **Task lease dispatch (path B)** | the state write in `grant_attempt_in_uow` (`src/hub/service/taskv2/lease.odin:231`); `effect_wake_lease` (`src/hub/service/taskv2/wake.odin:27`); `flush_wakes` (`src/hub/service/taskv2/wake.odin:146`) | `start_begin` inside the grant's unit of work with `ref = lease_id`; the ticket rides in the effects list; `flush_wakes` sends through `start_command_send` and settles; a rollback cancels. **The own state write is deleted** | T25 |
+| New instance for a lease | `jit_prepare` (`src/hub/service/taskv2/matcher.odin:435`) writes `launching`, `run_count` 1; the grant bumps again (F14 c) | `create_instance_stopped`; `start_begin` makes the single bump | T25 |
+| Explicit lease claim and transfer | `src/hub/service/taskv2/explicit_claims.odin:32`, `src/hub/service/taskv2/explicit_claims.odin:120` (F14 a) | go through the grant, so `start_begin` applies: the stop mark is cleared in the save that opens the generation | T25 |
+| **Pipeline delivery** (action prompt, `[events]` notice) | does not exist | bridge-initiated: `bridge_wake_attempt` → `bridge_wake_start_begin` | T17 |
+| **Notice fallback (path C)** | `bridge_task_wake_if_needed` (`src/bridge/agent_wake.odin:205`): manifest GET (`src/bridge/agent_wake.odin:246`), generation 0 | bridge-initiated: the same `bridge_wake_attempt`, always with a `ref`; the manifest branch is deleted | T24 |
+| **Bot delivery (path C)** | the hub prepares the row and cancels the reservation (`src/hub/service/bots/supervisor.odin:104`); the bridge launches from the manifest (`src/bridge/bot_delivery.odin:84`), generation 0 | the hub creates the row with `create_instance_stopped`; the bridge calls start-begin with `ref = bot_<attempt_id>` | T24 |
+| Old action scheduler (path C) | `src/bridge/action_scheduler.odin:952`, `src/bridge/action_scheduler.odin:1066` | deleted with the file | T8 |
+
+**Not a start of an agent, and left as they are** (the allow-list of `test_start_has_one_implementation`, each with this reason):
+
+| Code | Why it stays |
+|---|---|
+| `create_provider_test_instance` (`src/hub/service/agent/agent_service.odin:431`) | Launches a provider test (`launch_provider_test`), not an agent run. It has no conversation, no lease and no generation that an agent confirms |
+| `reconfiguration_launch_destination` (`src/hub/service/agent/instance_reconfiguration.odin:241`) | The second half of a move to another bridge: a stop-then-launch state machine with its own recovery. It already reserves and sends through the shared helpers. After T23 its send goes through `start_command_send`, so it uses the one command; its state write is not moved in this chain. **Named in section 11 for the user** |
+| the in-memory registry status in `reserve_runtime_launch` | Not a row |
+
+**The scan test** `test_start_has_one_implementation` (created in T22, `src/hub/service/agent/boundary_test.odin`) scans the non-test files of `src/hub` for an assignment of `"launching"` to `runtime_status`, for `run_count += 1` and for `run_count = 1`. Its allow-list at T22 is: `src/hub/service/agent/start_begin.odin`; `prepare_instance` (still called by `jit_prepare` and bots); `src/hub/service/taskv2/lease.odin`; the two rows above. T25 removes `lease.odin`. T24 and T25 remove the last callers of `prepare_instance`'s `launching` write, and T26 deletes that write.
+
+#### 6.12.8 Cases where an agent cannot be launched
+
+Every case in which a start is refused or fails. "Today" is `origin/main`; path letters are those of 6.12.1. "After S2" applies to every start, because every start runs `start_begin` and `bridge_runtime_launch_agent`. The last column says who retries; it depends on the caller, not on the case, and the caller rules are listed after the table.
+
+**Refused by the hub, before any process exists** (`start_begin`, 6.12.2; nothing is written)
+
+| # | Cause | Today: where decided and what happens | After S2: result | Retried by |
+|---|---|---|---|---|
+| L1 | The instance does not exist, or belongs to another owner or bridge | A: `Not_Found`. B: the grant fails. C: the manifest GET answers 404 | `Not_Found` (step 2); 404 on the route | nobody: the cause is permanent. Pipeline: `target_missing` |
+| L2 | The instance is already live and the caller did not ask for a restart | A: `Conflict` `already_running` (Start); Restart replaces it. B: keeps a live child and nudges it. C: the bridge's own process table decides; the hub is not asked | `Refuse` → 409 `already_running`; `Keep` → `kept_live`, nothing launched; `Relaunch` → a new generation (step 4) | not a failure for `Keep` and for bridge-initiated starts (6.12.4) |
+| L3 | A reconfiguration, move or stop of that instance is running | A: `Conflict` from `reconfiguration_require_idle`. B: the grant is refused ("pending runtime action", "previous process stop is pending"). C: **not checked**; the bridge launches into the move | `Conflict` (step 5); 409 on the route | the caller's rule; the bridge treats this 409 as retriable |
+| L4 | The row changed since the caller read it (`configuration_revision`, `launch_epoch`, bridge) | A: `Conflict`. B, C: not checked | `Conflict` when the caller passes `expected` (step 5) | the user repeats the action |
+| L5 | The provider or model is not allowed for this owner, agent or bridge | A: the error of `validate_pinned_provider_model`. B: only the placement check at match time. C: **not checked** | the same error (step 6); 4xx on the route | nobody until the configuration changes. Pipeline: `start_refused`, then another machine if the rules allow |
+| L6 | The bridge's plan does not allow launches (`plan_disabled`) | A: the plan error. B, C: **not checked: the agent starts** | the plan error (step 7) | nobody until the plan changes |
+| L7 | The bridge is offline or has no live connection | A: `Bridge_Offline`. B: only the bridge row's status is read, not the connection (F12); a grant to a bridge that just dropped is written and its command fails to send. C: cannot occur (the bridge is the caller) | `Bridge_Offline` (step 7) | lease: the task waits with `bridge_offline` and is granted when the bridge returns. Pipeline: OFF-2, OFF-3 |
+| L8 | The launch quota is used up (active instances: 2048 per owner, 16384 in total; `src/hub/service/project/runtime_registry.odin:26`) | A: the quota error. B: checked only for a just-created instance; an existing instance **starts over the limit**. C: **not checked** | the quota error (step 9) | lease: the task waits and is tried again on the next matcher run. Pipeline: `start_refused` |
+| L9 | The instance uses ACP and the bridge no longer supports it | A: refused inside the send; the row is marked `failed`. B: checked after the commit; the dispatch fails | refused in step 8 with nothing written (see the Assumption there) | nobody until the bridge supports it again |
+| L10 | The caller's own guard says no: the event inbox (the instance is no longer the subscriber's, or was stopped by the user), MCP, the coordinator wake (user-stopped coordinator, rate limit) | A: the guard's error, under the mutex; the coordinator wake checks outside the mutex (F14 b) | the guard's error (step 1), always under the mutex | per caller |
+| L11 | The agent is archived, or not enabled on the bridge (a **new** instance only) | `prepare_instance` refuses | `create_instance_stopped` refuses the same way; no row is created | nobody |
+| L12 | The task engine does not pick the instance: it was stopped by the user, the task is held, the attempt budget is used up, the directory already has a work lease | B: the matcher and the grant (v7-Q4) | unchanged; this is not a start decision, and `start_begin` is not reached | the task engine's own rules |
+
+**Refused or failed on the way to the bridge**
+
+| # | Cause | Today | After S2 | Retried by |
+|---|---|---|---|---|
+| L13 | The start command cannot be sent (the socket dropped after step 7) | A: the row is marked `failed`, the reservation is cancelled, the error is returned. B: `on_dispatch_failed` (`src/hub/service/taskv2/dispatch.odin:178`) parks the task; the row stays `launching` | one behaviour: `start_send` / `start_settle` marks the row `failed` and cancels the reservation; the lease additionally follows `on_dispatch_failed` | the user (manual); the task engine (lease) |
+| L14 | The bridge is too old for the pipeline (`event_pipeline_v1` missing) | does not exist | actions: `bridge_too_old`, the run fails or goes to another machine. Notices, bots, leases: the old path (REQ-FLOW-4) | — |
+| L15 | The bridge does not know `start_agent` | does not exist | **not a failure**: the hub sends the old names (6.12.6) | — |
+| L16 | The bridge cannot reach start-begin: no URL or credential, transport error, 429, 5xx, 401, 403 | C: the manifest GET fails; the wake backs off | retriable (6.12.4) | pipeline: delayed retries, 8 attempts in about 15 minutes. Fallback: the wake back-off. Bot: the supervisor's next attempt |
+
+**Refused or failed on the bridge** (`bridge_wake_attempt` and `bridge_runtime_launch_agent`; the hub row is already `launching`)
+
+| # | Cause | Today | After S2 | Retried by |
+|---|---|---|---|---|
+| L17 | The bridge is draining, updating itself or its vault is locked | the launch returns a retriable error (`retry_after_ms` 30 s for an update, `src/bridge/hub_runtime_client.odin:2750`); bots answer busy | unchanged in the launcher. The pipeline checks before start-begin (row 4 of 6.11.6), so no generation is opened | every caller's retry; a final pipeline attempt ends `draining` or `vault_locked` |
+| L18 | The bridge's wake gate says no: a start of this instance was tried less than 30 s ago (coalesced), is backing off after failures, or is parked because the provider binary or model is missing on this machine | C only: the fallback returns false | the same gate, now for every bridge-initiated start, **before** start-begin, so no generation is opened. Hub-initiated starts do not pass the gate, as today | coalesced and backing off: retry. Parked: `start_parked`, fatal, until the provider catalog changes or a launch by another path succeeds |
+| L19 | The launch itself fails: provider binary missing, bootstrap cannot be materialised, the pty host is unreachable, the spawn fails | A: `command_result` `failed`; the row is set `failed` from the status frame. B: only a status frame; the task is parked by the grant-unconfirmed timer. C: the wake state records the class | one behaviour: the bridge sends the failed status frame, which sets the row `failed` and releases the reservation (10.2); the caller gets the typed error with its class (`retriable`, `recoverable`, `fatal`) | by class: retriable → retry; otherwise fatal for that caller |
+| L20 | The hub's row is live but the bridge has no process (the bridge restarted, or the process died unseen) | A (Start): refused `already_running` until the reaper marks the row `unreachable` (`REAPER_STALE_MS` (`src/hub/app/reaper.odin:27`) on a sweep every 20 s (`src/hub/app/reaper.odin:30`); about 110 s at most). B: the nudge falls through to a launch. C: **launches anyway** with generation 0 | bridge-initiated: 409 `already_running`. No frame from the bridge corrects the row; the reaper does. The bridge retries past that window (6.12.4): the pipeline with `retry` every 30 s inside its attempt budget, the fallback and bots with up to 5 retries of 30 s. Hub-initiated starts are unchanged: Start is refused until the reaper ran, Restart and a lease (`Relaunch`) start at once | automatic, within about 150 s; a pipeline delivery that is still refused on its final attempt ends `failed`, `hub_row_live` |
+| L21 | The launch command is older than the bridge's generation (a late duplicate) | the launcher refuses "superseded startup generation" | unchanged; cannot happen for a `reused` ticket, which carries the current generation | nobody: the newer generation wins |
+| L22 | The bridge dies between start-begin and the launch | does not exist (C has no hub state) | the row stays `launching`; the reservation expires after one minute; the retry with the same `ref` gets the same generation back (step 3); without a retry the stale-instance reaper closes the row (V-K13) | the caller's retry |
+| L23 | The process starts but never reports `start-success` | the row stays `launching` until the reaper; a lease is failed by the grant-unconfirmed timer | unchanged | the task engine (lease); the user otherwise |
+
+**What each caller does with a refusal**
+
+| Caller | A refusal or failure becomes |
+|---|---|
+| Manual Start, Restart, MCP, fleet change | the error and its HTTP status; no automatic retry |
+| Chat message to a stopped agent | the message is stored; the start error is returned to the sender; the next message tries again |
+| Task lease | refused in the grant → the grant fails with the existing placement failure for that instance, and the matcher tries again on its next run; failed after the commit → `on_dispatch_failed`, as today |
+| Pipeline delivery | `retry` → delayed redelivery, 8 attempts; `fatal` → another machine where the kind allows, else the delivery and its run are `failed` with the reason of 6.11.9 |
+| Notice fallback | the wake state: back-off for a retriable class, parked for the others; the next notice asks again |
+| Bot delivery | the attempt is reported failed; the bot supervisor's rounds decide, as today |
+
+**Behaviour that changes for task leases**, because path B skipped these checks: L6, L7 (live connection), L8 and L9 now refuse a grant that used to start an agent. Each has a test in T25, and the hand-off of T25 lists them (risk S-K2).
 
 ### 6.13 Router and target resolution (T10)
 
@@ -2248,6 +2623,64 @@ actions_gate_on :: proc(repo: ^iface.Experiment_Repository, owner_user_id, key: 
 - A bot target also needs `domain.BOTS_EXPERIMENT_KEY` (`src/hub/domain/experiment.odin:13`), at create time and per run.
 - The UI gate (`ActionsRouteGate`) is unchanged. `tests/ui_experimental_flags_test.ts` MUST keep passing.
 
+### 6.16 Lookups on the event paths (amendment S2)
+
+**The rule (REQ-LOOKUP-1).** No step that runs per event, per run, per delivery or per start may read a whole table or a whole user's rows. Every such lookup is by a primary key, by a named index, or by a JetStream subject filter. The table lists each one. A task that adds a lookup to one of these paths MUST add its row here and to the test.
+
+`n` is the number of rows in the table. "Probe" means one B-tree descent, O(log n).
+
+**One event: producer → matcher → router**
+
+| # | Step | Lookup | Key | Index or subject | Cost |
+|---|---|---|---|---|---|
+| Q1 | Relay picks the next rows (6.3.4) | `event_outbox` rows not yet published, oldest first, up to 64 | `outbox_seq` | `event_outbox_pending(outbox_seq) WHERE published_at IS NULL` (`src/hub/repository/sqlite/migrations/events_001_outbox.sql:12`) | probe + rows read |
+| Q2 | Matcher receives the event (6.7) | one durable consumer | subject | filter `ev.>` | one fetch per batch of up to 64 |
+| Q3 | Matcher finds the triggers (6.7 step 4) | `triggers_match(owner, event_type, subject)` | `(owner_user_id, event_type, match_key)` | `action_triggers_match` (6.4), read twice: `match_key = <subject>` and `match_key = ''` | 2 probes + matching rows. **Changed by S2:** a schedule fire reads exactly its own trigger, not every schedule trigger of the user |
+| Q4 | The action of a matching trigger | `action_get` | `action_id` | primary key | probe |
+| Q5 | Open run of the action (6.7 step 7, 6.8.4) | `run_open(action_id)` | `action_id` | `action_runs_one_open(action_id) WHERE state IN (…)` | probe, at most one row |
+| Q6 | Insert the run | `run_insert` | `occurrence_key` | the `UNIQUE` constraint on `occurrence_key` | probe |
+| Q7 | Prune the action's history | `runs_prune(action_id, 200, cutoff)` | `action_id` | `action_runs_action(action_id, created_at)` | at most 200 rows of one action |
+| Q8 | Runs due for routing (6.13.1), once per batch | `runs_due(now, limit)`, `runs_deferred(limit)` | `(state, not_before)` | `action_runs_due(state, not_before) WHERE state IN ('queued','deferred')` (**new in S2**, 6.4) | probe + due rows |
+| Q9 | The rate rule | `run_last_started_at(action_id)` | `action_id` | `action_runs_action` | newest rows of one action, at most 200 |
+| Q10 | Target rules | `rules_list(action_id)` | `action_id` | primary key `(action_id, position)` | at most 16 rows |
+| Q11 | Placement (6.10) | the owner's bridges and their provider state | `owner_user_id` | the existing bridge and provider queries. T3 puts each statement it calls under the test below and adds an index where the plan shows a scan | rows of one owner |
+| Q12 | Instance to reuse (6.13.3) | the instance of an agent on a bridge | ids | T10 puts its statement under the test below and adds an index where the plan shows a scan | rows of one agent |
+| Q13 | Route transaction | insert chat message, insert `pipeline_deliveries`, append outbox | primary keys | — | 3 inserts |
+
+**One delivery: forwarder → bridge → answer**
+
+| # | Step | Lookup | Key | Index or subject | Cost |
+|---|---|---|---|---|---|
+| Q14 | Forwarder fetch (6.11.4) | one durable consumer per bridge | subject | filter `dlv.*.<bridge_id>.>` | one fetch |
+| Q15 | In-flight count, once per pass | `in_flight(bridge_id, since)` | `bridge_id` | `pipeline_deliveries_open(bridge_id) WHERE state IN ('routed','forwarded')` | the open rows of one bridge, at most 256 |
+| Q16 | Forward gate, answer, expiry of one delivery | `get`, `transition` | `delivery_id` | primary key | probe |
+| Q17 | One open delivery per reference (notice, lease, bot; `replace`) | `open_by_ref(ref)` | `ref` | `pipeline_deliveries_ref(ref)` | probe |
+| Q18 | Bridge online, offline, downgrade (6.11.7) | `open_for_bridge(bridge_id, …)` | `bridge_id` | `pipeline_deliveries_open` | the open rows of one bridge |
+| Q19 | `expire_due` at hub start and reconnect | `expired(now, limit)` | `expires_at` | `pipeline_deliveries_expiry(expires_at) WHERE state IN ('routed','forwarded')` (**new in S2**, 6.4.1) | probe + expired rows |
+| Q20 | Prune (6.11.10) | `prune(cutoff)` | `updated_at` | `pipeline_deliveries_closed(updated_at) WHERE state IN ('done','failed','replaced')` (**new in S2**) | probe + deleted rows |
+| Q21 | Bridge ledger (6.11.6) | entry by delivery id | `delivery_id` | in-memory map | O(1); each write rewrites the file, whose size follows open lifetimes (S2: `expires_at` + margin), not 48 hours |
+| Q22 | Bridge process table | snapshot by instance | `agent_instance_id` | in-memory map | O(1) |
+
+**One start**
+
+| # | Step | Lookup | Key | Index | Cost |
+|---|---|---|---|---|---|
+| Q23 | `start_begin` (6.12.2) | instance, bridge | ids | primary keys | 2 probes + 1 write |
+| Q24 | Launch quota | the registry's counters | owner | in-memory | O(1) |
+| Q25 | Lease grant (T25) | as today, plus Q23 | — | — | — |
+
+**Not per event, and allowed to read more**
+
+| Step | Reads | When |
+|---|---|---|
+| Schedule reconcile (6.2.6) | `triggers_effective("schedule")`, all owners | hub start and NATS reconnect |
+| Runs history route | `runs_list(action_id, …)` on `action_runs_action` | a user request |
+| Advisory drain (6.11.8) | one `stream_get` by sequence | per exhausted delivery |
+
+**Outside this chain.** The event inbox's notification loop reads every subscription once per second (scaling report, recommendations 6, 8 and 9). It is not on the path of an action and is not changed here; T18 does not add a lookup to it.
+
+**The test.** `test_event_path_queries_use_indexes` (`src/hub/repository/sqlite`, created by T9, extended by T3, T10 and T16 for their rows): for each statement behind Q1, Q3 to Q12 and Q15 to Q20 it runs `EXPLAIN QUERY PLAN` on a migrated database and fails when a plan line contains `SCAN` without `USING INDEX` or `USING COVERING INDEX` for the tables `action_triggers`, `action_runs`, `pipeline_deliveries` or `event_outbox`. The statements are exported from the repository files as constants so the test runs the text that production runs.
+
 ## 7. Dependency graph and waves
 
 ```
@@ -2255,21 +2688,29 @@ Phase 1
   T1 ─┬──────────► T9 ──┬─► T10 ─┬─► T12 (runs verb)
   T2 ─┤                 │        ├─► T13 (runs view)
   T3 ─┼─► T9            │        │
-      └─► T16 ──────────┘        │
+      ├─► T16 ──────────┤        │
+      └─► T22 ──────────┘        │      T10 needs create_instance_stopped
   T1 ───► T16 ─► T17             │
-  T8 ──────────► T17             │
+  T8, T22 ─────► T17             │      T17 needs the start-begin route
   T9 ─► T12, T13                 │
   all of the above ──────────────┴─► T14
+
+Phase S (start convergence, amendment S2; beside phases 1 and 2)
+  T22, T17 ─► T23 ─► T25
+  T22, T17 ─► T24
+  T23, T24, T25 ─► T26
 
 Phase 2
   T16, T17 ─► T18
 
 Phase 3
   T3 ─► T4
-  T10, T16, T17 ─► T19
-  T16, T17 ─► T20
+  T10, T16, T17, T24 ─► T19
+  T16, T17, T23, T25 ─► T20
   T4, T19, T20 ─► T21
 ```
+
+**What amendment S2 does to phase 1.** Phase 1 gains one task, T22, and no other. It takes the start-begin work that S1 had inside T16 (the split of `relaunch_instance_locked`, the route, `create_instance_stopped`) and widens it to the one start procedure. T22 depends only on T3 and runs in wave 1b beside T9 and T16, so the number of waves does not grow. **Where phase 1 is not unblocked:** T17 and T10 now wait for T22 as well as for T16, and T22 changes every manual start, so its risk sits on phase 1's critical path (risk S-K1). T16 gets smaller in exchange. Everything else of the convergence (T23 to T26) is outside phase 1: no phase-1 task depends on it, and T14 does not wait for it.
 
 | Task | Depends on | Wave |
 |---|---|---|
@@ -2279,15 +2720,20 @@ Phase 3
 | T8 Delete the bridge scheduler | — | 1a |
 | T9 Actions core | T1, T2, T3 | 1b |
 | T16 Delivery pipeline, hub side | T1, T3 | 1b |
-| T10 Matcher, router, runtime, run history | T9, T16 | 1c |
-| T17 Bridge executor | T8, T16 | 1c |
+| T22 One hub start procedure (S2) | T3 | 1b |
+| T10 Matcher, router, runtime, run history | T9, T16, T22 | 1c |
+| T17 Bridge executor | T8, T16, T22 | 1c |
 | T12 CLI v2 | T9 (the `runs` verb: T10) | 1c |
 | T13 UI | T3, T9 (the runs view: T10) | 1c |
 | T14 Phase-1 integration, docs, E2E | all of phase 1 | 1d |
+| T23 One start command `start_agent` (S2) | T22, T17 | Sa |
+| T24 Notice fallback and bots on start-begin (S2) | T22, T17 | Sa |
+| T25 Task lease dispatch on start-begin (S2) | T22, T23 | Sb |
+| T26 Phase-S integration and E2E (S2) | T23, T24, T25 | Sc |
 | T18 `[events]` notices on the pipeline | T16, T17; the event-inbox fix (below) | 2 |
 | T4 Placement adoption | T3 | 3a |
-| T19 Bots and the `bot` action target | T10, T16, T17 | 3a |
-| T20 Task lease wakes | T16, T17 | 3a |
+| T19 Bots and the `bot` action target | T10, T16, T17, T24 | 3a |
+| T20 Task lease wakes | T16, T17, T23, T25 | 3a |
 | T21 Phase-3 integration and E2E | T4, T19, T20 | 3b |
 
 Tasks of one wave can run in parallel. Each works in its own task branch.
@@ -2296,12 +2742,14 @@ Tasks of one wave can run in parallel. Each works in its own task branch.
 
 | File | Tasks | Rule |
 |---|---|---|
-| `src/hub/repository/sqlite/migrations.odin` | T9, T16 | each adds its file last (6.4.1) |
+| `src/hub/repository/sqlite/migrations.odin` | T9, T16, T22 | each adds its file last (6.4.1) |
 | `src/hub/app/wiring.odin` | T9, T16, then T10 | additive blocks |
-| `src/hub/transport/http/bridge_handlers.odin` | T9 (removes scheduler handlers), T16 (adds hooks and start-begin) | different procedures |
-| `src/bridge/hub_runtime_client.odin` | T8, then T17 | T17 depends on T8 |
-| `src/bridge/agent_wake.odin` | T8 keeps it unchanged; T17 changes it | T17 depends on T8 |
-| `src/hub/service/eventrelay/relay.odin` | T1 only | — |
+| `src/hub/transport/http/bridge_handlers.odin` | T9 (removes scheduler handlers), T16 (adds hooks), T22 (adds the start-begin handler) | different procedures |
+| `src/bridge/hub_runtime_client.odin` | T8, then T17, then T23 | each depends on the one before |
+| `src/hub/service/agent/agent_service.odin` | T3, then T22, then T23 | each depends on the one before |
+| `src/hub/service/taskv2/lease.odin` | T25 (phase S), T4 (phase 3) | different statements of `grant_attempt_in_uow`. The refusal of a wake grant to a bridge without a live connection arrives with whichever merges first: `test_grant_refused_no_live_connection` (T25) and `test_lease_requires_live_connection` (T4) both stay |
+| `src/bridge/agent_wake.odin` | T8 keeps it unchanged; T17 changes it; T24 deletes the manifest branch | each depends on the one before |
+| `src/hub/service/eventrelay/relay.odin` | T1 only (the wake on commit of S2 included) | — |
 
 **Dependency on the event-inbox fix (`task_18ea483f167575d2`).** A separate change, outside this chain, is reworking event subscriptions (EV1: a quick fix; EV2: subscriptions owned by an instance, `subscriber_instance_id`, deleted with the instance, notice target = the owning instance only, counts and rate limits per instance). T18 MUST be started only after that work has merged to `origin/main`, and MUST be written against whatever subscription model is on `origin/main` then. Nothing in this spec assumes that a subscription belongs to a durable agent identity, nor that it belongs to an instance: T18 uses the instance id and bridge id that the inbox hands to its notice callback (`domain.Event_Notice_Target`) and changes nothing about how that target is chosen. No other task touches `src/hub/service/eventinbox`, except T1's one-line change in `filters.odin`.
 
@@ -2410,6 +2858,25 @@ Further tests in `src/hub/service/eventrelay/relay_test.odin`:
 | `test_relay_delivery_row_does_not_block_events` | A `dlv.` row followed by an `ev.` row: both end published |
 
 **Async ack (v7 rework).** T1 also adds `ack_reply_async :: proc(conn: ^Connection, reply: string) -> Error`: a plain publish of `+ACK` to the reply subject, with no request and no wait (the existing `ack_reply` stays for the event inbox). It is specified with the other reply calls in 6.3.5.
+
+**Added by amendment S2 (REQ-SCALE-2, REQ-SCALE-4).**
+
+| File | Change |
+|---|---|
+| `src/hub/service/eventrelay/relay.odin` | `wake`, `RELAY_BATCH`, the semaphore wait and the batch pass of 6.3.4 |
+| `src/hub/repository/sqlite` (the commit procedure and `event_outbox_repo.odin`) | The "appended an outbox row" mark and the after-commit hook |
+| `src/hub/app/wiring.odin` | Sets the hook to `eventrelay.wake` |
+| `src/lib/nats/natstest` scenarios | `scenario_schedule_fire_ttl` |
+
+Steps, after the task's own: (1) locate every commit path (the Assumption of 6.3.4) and report them; (2) the mark, the hook and `wake`; (3) the semaphore wait; (4) the batch pass; (5) `scenario_schedule_fire_ttl`, and report whether the server honours `Nats-Schedule-TTL`.
+
+| Name | Expected |
+|---|---|
+| `test_relay_wakes_on_commit` (`eventrelay`) | the relay is idle; a transaction that appends one row commits: the row is published within 200 ms, measured against a relay whose idle wait is set to 10 s in the test |
+| `test_relay_rollback_does_not_wake` (`eventrelay`) | a rolled-back transaction that appended a row signals nothing and publishes nothing |
+| `test_relay_publishes_batch_in_order` (`eventrelay`) | 200 pending rows: published in `outbox_seq` order in at most 4 passes; with row 70 made to fail, rows 1 to 69 are published and row 70 is retried first |
+| `test_relay_idle_fallback_wait` (`eventrelay`) | a row inserted without the hook (directly in the database) is still published after the fallback wait |
+| `scenario_schedule_fire_ttl` (`natstest`) | a definition with `Nats-Schedule-TTL: 2s` on a stream with `max_age` 1 hour: its fire is in the stream after 1 s and gone after 4 s; the definition itself (`Nats-TTL: never`) is still there |
 
 ### T2. `src/lib/schedule`
 
@@ -2745,15 +3212,24 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 - `action_runs.state` includes `routed`; the column `delivery_id` exists; the index `action_runs_one_open` covers `queued`, `deferred` and `routed`.
 - `domain.ACTION_RUN_ROUTED`, `domain.action_run_open`, `Action_Run.delivery_id`.
 - `run_open` returns the `queued`, `deferred` or `routed` run. `runs_due` never returns a `routed` run. `run_last_started_at` replaces `run_last_delivered_at`. `runs_prune` never deletes a `routed` run.
-- T9 does **not** create `pipeline_deliveries` or `agent_instances.start_delivery_id` (T16, 6.4.1).
+- T9 does **not** create `pipeline_deliveries` or `agent_instances.start_ref` (T16 and T22, 6.4.1).
 - `test_action_repo_round_trip` and `test_runs_prune` cover the `routed` state: a `routed` run is returned by `run_open`, blocks a second open run through the index, is not returned by `runs_due`, and is not pruned.
 - No code written by T9 names the reasons `user_stopped`, `needs_recovery` or `target_busy`.
 
+**Added by amendment S2 (REQ-SCALE-4, REQ-SCALE-5, REQ-LOOKUP-1).** The schema of 6.4 has the column `action_triggers.match_key`, the three-column index `action_triggers_match` and the index `action_runs_due`. The service sets `match_key` on every trigger save (6.6.1). `triggers_match` takes the subject (6.5). Definition and deferral rows carry `Nats-Schedule-TTL` (6.2.2, 6.2.3). T9 creates `test_event_path_queries_use_indexes` with the statements it owns (Q3 to Q10 of 6.16) exported as constants.
+
+| Name | Expected |
+|---|---|
+| `test_match_key_derivation` (`actions`) | a schedule trigger: `match_key` = `ev.<owner>.sched.<trigger_id>`; an event trigger with a chain: that chain's subject; an event trigger for any chain: `''`; changing the chain filter rewrites it |
+| `test_triggers_match_reads_only_matching_keys` (`repository/sqlite`) | one owner with 1000 enabled schedule triggers and one wildcard event trigger of another type: `triggers_match(owner, "schedule.fired", <subject of trigger 500>)` returns exactly that trigger |
+| `test_schedule_rows_carry_fire_ttl` (`actions`) | a definition row and a deferral row both have `Nats-Schedule-TTL` = `24h` |
+| `test_event_path_queries_use_indexes` (`repository/sqlite`) | no table scan in the plans of Q3 to Q10 |
+
 ### T16. Delivery pipeline, hub side
 
-**Goal.** A durable, at-least-once hop from "the hub decided to deliver something to an instance on bridge B" to "bridge B answered", plus the start-begin call.
-**Requirements.** REQ-PIPE-1 to REQ-PIPE-10.
-**Contracts.** 6.11.1 to 6.11.5, 6.11.7 to 6.11.11, 6.12.2, 6.12.5, 6.4.1, 6.5.1. The bridge side (6.11.6, 6.12.3) is T17.
+**Goal.** A durable, at-least-once hop from "the hub decided to deliver something to an instance on bridge B" to "bridge B answered". (Amendment S2: the start-begin call moved to T22.)
+**Requirements.** REQ-PIPE-1 to REQ-PIPE-4, REQ-PIPE-6 to REQ-PIPE-10, REQ-SCALE-3, REQ-LOOKUP-1 (rows Q15 to Q20).
+**Contracts.** 6.11.1 to 6.11.5, 6.11.7 to 6.11.11, 6.4.1, 6.5.1, 6.16. The bridge side (6.11.6) is T17; start-begin (6.12) is T22.
 **Depends on.** T1 (wrapper additions, `HEIM_DELIVER`), T3 (nothing is imported from `placement`, but `Requirements.features` is how callers apply the feature).
 
 **Files**
@@ -2765,25 +3241,20 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 | `src/hub/repository/iface/pipeline_delivery_repo.odin`, `src/hub/repository/iface/repos.odin` | New repository interface; field `pipeline_deliveries` |
 | `src/hub/repository/sqlite/pipeline_delivery_repo_sqlite.odin` | New |
 | `src/hub/repository/sqlite/migrations/pipeline_001_deliveries.sql`, `src/hub/repository/sqlite/migrations.odin` | New migration, registered last (6.4.1) |
-| `src/hub/domain` (the file that defines `Agent_Instance`), the agent repository in `src/hub/repository/sqlite` | Field and column `start_delivery_id` |
 | `src/hub/service/delivery/delivery.odin` | New: types, `new_service`, `register_sink`, `start`, `stop`, `bridge_capable`, `route`, `expire`, `expire_due`, `prune`, `retry_delay_ms` |
 | `src/hub/service/delivery/forwarder.odin` | New: the forwarder thread and the forward gate (6.11.4) |
 | `src/hub/service/delivery/result.odin` | New: `on_command_result` (6.11.5) |
 | `src/hub/service/delivery/offline.odin` | New: `on_bridge_online`, `on_bridge_offline`, `on_bridge_deleted` (6.11.7) |
 | `src/hub/service/delivery/advisory.odin` | New: the supervisor thread and the advisory drain (6.11.8) |
 | `src/hub/service/delivery/*_test.odin`, `boundary_test.odin` | New |
-| `src/hub/service/agent/start_begin.odin` | New: `relaunch_prepare_locked`, `start_begin_for_delivery`, `create_instance_stopped` (6.12.2, 6.12.5) |
-| `src/hub/service/agent/agent_service.odin` | `relaunch_instance_locked` calls `relaunch_prepare_locked`; nothing else changes |
-| `src/hub/transport/http/bridge_handlers.odin` | `bridge_instance_start_begin_handler`; field `delivery`; the three hooks of 6.11.3 |
+| `src/hub/transport/http/bridge_handlers.odin` | Field `delivery`; the three hooks of 6.11.3 |
 | The HTTP handler that calls `revoke_bridge` | The `on_bridge_deleted` hook |
-| `src/hub/app/wiring.odin` | Build, start and stop the service; the start-begin route; the handler field |
+| `src/hub/app/wiring.odin` | Build, start and stop the service; the handler field |
 | `flake.nix` | A check `delivery-pipeline` that runs `src/hub/service/delivery` under valgrind, modelled on `events-relay` (`flake.nix:429`) |
 
 **Steps**
 
 1. Contracts file, domain type, repository, migration. Run the repository round-trip test.
-2. Split `relaunch_instance_locked`. Run the existing tests of `src/hub/service/agent` and confirm the same pass count as before the split.
-3. `start_begin_for_delivery`, `create_instance_stopped`, the handler and the route.
 4. `route`, `bridge_capable`, `retry_delay_ms`, `expire`.
 5. The forwarder and the gate.
 6. `on_command_result`.
@@ -2796,21 +3267,21 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 
 **Test double.** The tests need a bridge. Build a fake in the test package: a `project.Bridge_Command_Sink` whose `send_runtime_command` records each frame and returns what the test set (sent or offline), and a registry stub that reports the bridge live or not. The test then calls `on_command_result` with the answer it wants. NATS is a real server through `natstest`.
 
-**Non-goals.** No bridge code (T17). No sink of any flow (T10, T18, T19, T20 register theirs). No change to `start_instance`, `restart_instance`, `reconfigure_instance`, task lease dispatch or bots. No change to the event inbox's advisory handling. No timer, tick or sleep. No read of `stopped_by`.
+**Non-goals.** No bridge code (T17). No sink of any flow (T10, T18, T19, T20 register theirs). No start-begin and no change to any start procedure (T22). No change to task lease dispatch or bots. No change to the event inbox's advisory handling. No timer, tick or sleep. No read of `stopped_by`.
 
 **Acceptance**
 
 - The tests below pass against the flake's `nats-server`; the tracking allocator is clean; the flake check passes.
 - The existing tests of `src/hub/service/agent`, `src/hub/transport/http` and `src/hub/service/eventrelay` pass with unchanged counts, apart from the new tests.
 - `grep -n "time.sleep\|thread.sleep" src/hub/service/delivery/*.odin` prints nothing outside `_test.odin` files.
-- `grep -rn "stopped_by" src/hub/service/delivery src/hub/service/agent/start_begin.odin` prints only the write inside `create_instance_stopped` and no comparison.
+- `grep -rn "stopped_by" src/hub/service/delivery` prints nothing.
 
 **Tests** (package `delivery` unless stated; all NATS tests use `natstest`)
 
 | Name | Expected |
 |---|---|
 | `test_pipeline_delivery_repo_round_trip` (`repository/sqlite`) | insert, get, `transition` compare-and-set (a wrong `from_state` changes nothing), `open_for_bridge`, `open_by_ref`, `expired`, `prune` |
-| `test_migration_pipeline_001` (`repository/sqlite`) | the table, both indexes and the column `agent_instances.start_delivery_id` exist after `run_migrations`; the existing `event_deliveries` table is untouched |
+| `test_migration_pipeline_001` (`repository/sqlite`) | the table and its four indexes exist after `run_migrations`; the existing `event_deliveries` table is untouched |
 | `test_route_writes_row_and_outbox` | one `pipeline_deliveries` row in state `routed` and one `event_outbox` row with subject `dlv.<owner>.<bridge>.prompt`, `event_id` = the delivery id and a body that parses as `Delivery_Wire`; a rollback of the unit of work leaves neither |
 | `test_route_refuses_incapable_bridge` | a bridge without the feature → `Conflict`, message `bridge_too_old`; no rows |
 | `test_route_validation` | an owner or bridge id with a `.`; an unknown kind; `lifetime` 0; `round` 3 → `Validation_Failed` |
@@ -2850,30 +3321,17 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 | `test_redelivery_after_hub_restart` | forward; `stop` the service without an answer; `start` a new service on the same database and server; the message is forwarded again with `attempt` 2 and the answer closes it |
 | `test_start_stop_clean` | start, one delivery end to end, stop: nothing left allocated; every thread joined |
 | `test_delivery_imports` (`boundary_test.odin`) | no file of the package imports `actions`, `eventinbox`, `bots`, `taskv2`, `taskchain`, `agent` or `content` |
-| `test_pipeline_never_reads_stopped_by` (`boundary_test.odin`) | no non-test file under `src/hub/service/delivery`, and not `src/hub/service/agent/start_begin.odin`, contains `stopped_by ==`, `stopped_by !=` or `STOPPED_BY_USER`. T10 and T18 extend the scanned set to `src/hub/service/actions` and `src/hub/service/eventinbox` |
-| `test_relaunch_split_keeps_behaviour` (`service/agent`) | `start_instance` on a stopped row: the same row fields, the same `launch_agent` command bytes (apart from generated ids) and the same reservation as before the split. Record the expected bytes from `origin/main` before the change |
-| `test_start_begin_opens_generation` (`service/agent`) | a stopped row with `run_count` 3: after the call the row is `launching`, `startup_status` `starting`, `run_count` 4, `start_delivery_id` set, a reservation exists; the returned text equals `launch_command_json_full` for the saved row with command id `sb_<delivery_id>` |
-| `test_start_begin_is_idempotent_per_delivery` (`service/agent`) | the same delivery id twice: `run_count` bumped once, `reused` true, identical bytes. A different delivery id afterwards bumps again |
-| `test_start_begin_clears_user_stop` (`service/agent`) | a row with `stopped_by = "user"`: after a successful call `stopped_by` is empty and the row is `launching`. Refused cases, each with `stopped_by = "user"` before: the bridge is offline; the quota reservation fails; the provider is not allowed → the error is returned and the stored row still has `stopped_by = "user"`, the old `run_count` and the old `launch_epoch` |
-| `test_start_begin_refuses_live_row` (`service/agent`) | for a row that is `launching` from another delivery, `launching` from a hub-sent start (empty `start_delivery_id`), `running`, and `idle`: `Conflict` with details code `already_running`; `run_count`, `launch_epoch`, `start_delivery_id` and `stopped_by` unchanged; no reservation was taken |
-| `test_start_begin_route` (`transport/http`) | the route needs the bridge token; 200 returns `data.launch`, `run_count`, `reused`; a live row returns 409 whose body contains `"code":"already_running"`; another bridge's instance returns 404 |
-| `test_start_begin_race_with_manual_start` (`service/agent`) | `start_instance` and `start_begin_for_delivery` for the same stopped row from two threads, 100 rounds: exactly one opens a generation each round; the other gets `already_running`; `run_count` grows by 1 per round |
-| `test_start_begin_wrong_bridge_or_owner` (`service/agent`) | `Not_Found`; nothing written |
-| `test_start_begin_offline_bridge` (`service/agent`) | the bridge has no live connection → `Bridge_Offline`; `run_count` unchanged |
-| `test_start_begin_acp_epoch` (`service/agent`) | an ACP instance: a new `launch_epoch` is minted; a status frame carrying that epoch is applied (`apply_bridge_status_report`); one carrying the old epoch is refused as superseded |
-| `test_start_begin_failed_status_releases_reservation` (`service/agent` or `transport/http`) | after start-begin, a `failed` status frame with the new epoch and a higher sequence: the registry entry is no longer reserved and the owner's active count is back to its value before the call |
-| `test_start_begin_reservation_expires` (`service/project`) | a reservation with no status frame is gone after the registry sweep at now + 61 s (drive the sweep with an injected time, as the existing registry tests do) |
-| `test_start_success_before_command_result` (`transport/http`) | start-begin; the agent's `start-success` with the new `run_count` is accepted **before** any `command_result`; then `succeeded` arrives → delivery `done` |
-| `test_start_success_when_command_result_is_lost` (`transport/http`) | start-begin; `start-success` accepted; no `command_result` ever: the instance is `running`; the delivery is redelivered and closed by the next answer |
-| `test_start_begin_handler_auth` (`transport/http`) | no token, a token in the query, another bridge's token → refused as `bridge_instance_bootstrap_handler` refuses them |
-| `test_create_instance_stopped` (`service/agent`) | the row is `stopped` with `stopped_by` empty; no reservation is left; its conversation exists |
+| `test_prune_runs_when_a_delivery_becomes_final` | (S2) a closed row older than 30 days and a hub that was started long ago: the next delivery that becomes `done` deletes it; a row younger than 30 days stays; an open row of any age stays |
+| `test_prune_at_most_once_per_hour` | (S2) 100 deliveries become final within one hour of injected time: `prune` ran once; after the clock passes the hour, the next final delivery runs it again |
+| `test_event_path_queries_use_indexes` (`repository/sqlite`) | (S2) the statements behind Q15 to Q20 of 6.16 have no table scan in their query plan |
+| `test_pipeline_never_reads_stopped_by` (`boundary_test.odin`) | no non-test file under `src/hub/service/delivery`, and not `src/hub/service/agent/start_begin.odin` (once T22 has created it), contains `stopped_by ==`, `stopped_by !=` or `STOPPED_BY_USER`. T10 and T18 extend the scanned set to `src/hub/service/actions` and `src/hub/service/eventinbox` |
 
 ### T17. Bridge executor
 
 **Goal.** The bridge acts on an `event_deliver` frame and answers.
-**Requirements.** REQ-BRG-1 to REQ-BRG-5.
+**Requirements.** REQ-BRG-1 to REQ-BRG-5, REQ-SCALE-1.
 **Contracts.** 6.11.2, 6.11.6, 6.12.3, 6.12.4.
-**Depends on.** T8 (the scheduler is gone from the files this task edits), T16 (the contracts file and the start-begin route).
+**Depends on.** T8 (the scheduler is gone from the files this task edits), T16 (the contracts file), T22 (the start-begin route; amendment S2).
 
 **Files**
 
@@ -2894,8 +3352,8 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 Bridge_Wake_Outcome :: enum { Launched, Already_Active, Coalesced, Backing_Off, Parked, Failed }
 Bridge_Wake_Result  :: struct { outcome: Bridge_Wake_Outcome, err: Bridge_Error, retry_after_ms: i64 }
 // The body of today's bridge_task_wake_if_needed, returning what happened.
-// delivery_id == "": fetch the manifest with bridge_wake_fetch_enriched_launch_json (today's behaviour).
-// delivery_id != "": call bridge_wake_start_begin and launch with the command it returns.
+// delivery_id == "": fetch the manifest with bridge_wake_fetch_enriched_launch_json (today's behaviour; T24 deletes this branch).
+// delivery_id != "": call bridge_wake_start_begin with ref = delivery_id and launch with the command it returns.
 bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0, delivery_id: string = "") -> Bridge_Wake_Result
 // Unchanged signature and behaviour: returns bridge_wake_attempt(instance_id, now, deadline_ns).outcome == .Launched
 bridge_task_wake_if_needed :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0) -> bool
@@ -2934,7 +3392,7 @@ The three new fields of `Bridge_Command_Runtime_Status` are `outcome: string`, `
 - Snapshot strings alias registry storage; copy what is kept.
 - The deadline for the start comes from `bridge_command_worker_deadline_ns` (`src/bridge/hub_command_dispatch.odin:774`).
 
-**Non-goals.** No NATS client. No new frame type. No change to `launch_agent`, `wake_agent`, `bot_deliver` or the three notice callers of the wake path. No user-stop state on the bridge. No handling of kinds `lease` and `bot` beyond the `unknown_kind` answer (T20, T19). No change to the manifest GET.
+**Non-goals.** No NATS client. No new frame type. No change to `launch_agent`, `wake_agent`, `bot_deliver` or the three notice callers of the wake path. No user-stop state on the bridge. No handling of kinds `lease` and `bot` beyond the `unknown_kind` answer (T20, T19). No change to the manifest GET. (T23 and T24 change the commands, the notice callers and the manifest GET.)
 
 **Acceptance**
 
@@ -2959,6 +3417,10 @@ The three new fields of `Bridge_Command_Runtime_Status` are `outcome: string`, `
 | `test_event_start_same_command_as_launch_agent` | for one descriptor, the bytes passed to the launch function equal the hub's `launch_agent` body apart from `command_id` |
 | `test_event_start_user_stopped_instance` | an instance with an active 15 s stop-intent mark: the start proceeds and the mark is cleared by the launch |
 | `test_event_start_begin_failure_classes` | each row of 6.12.4 → the stated class and reason |
+| `test_event_already_running_with_local_process_is_started` | (S2 rework) start-begin answers 409 `already_running` and the bridge's snapshot shows a booting process: `succeeded`, `started` |
+| `test_event_already_running_without_snapshot_retries` | (S2 rework) the same answer and no snapshot, not final: `failed`, `retry`, `retry_after_ms` 30000, reason `hub_row_live`; nothing launched; the ledger entry is cleared so the next attempt decides again |
+| `test_event_already_running_without_snapshot_final_is_fatal` | (S2 rework) the same on a `final` frame: `failed`, `fatal`, reason `hub_row_live`; never `succeeded` |
+| `test_event_stale_row_recovers_after_reaper` | (S2 rework, with a fake hub) attempts 1 to 3 get 409, attempt 4 gets 200: attempt 4 launches with the new generation and answers `started` |
 | `test_event_start_gate_coalesced_backoff_parked` | `Coalesced` and `Backing_Off` → `retry` with the remaining time; `Parked` → `fatal`, `start_parked` |
 | `test_event_start_retriable_on_final_is_fatal` | a retriable start failure with `final` → `failed`, `fatal` |
 | `test_event_final_never_retry` | for every local state and every failure, a `final` frame is answered `succeeded` or `failed`/`fatal` |
@@ -2968,7 +3430,10 @@ The three new fields of `Bridge_Command_Runtime_Status` are `outcome: string`, `
 | `test_event_unknown_kind_and_invalid_frame` | `fatal`, `unknown_kind` / `invalid_frame` |
 | `test_event_answer_is_last_frame` | the handler's final captured frame is the `command_result` |
 | `test_ledger_survives_restart` | write, reload from the file: the same entries |
-| `test_ledger_evicts_by_age_only` | an entry older than 48 h is gone after a write; an entry of 47 h stays even when the ledger is full |
+| `test_ledger_evicts_by_expiry_plus_margin` | (S2) an entry whose `expires_ms` + 10 minutes has passed is gone after a write; one inside the margin stays, also when the ledger is full; an entry with `expires_ms` 0 lives 48 hours |
+| `test_ledger_redelivery_inside_margin_has_no_second_effect` | (S2) a delivery typed at `expires_at` − 1 s and redelivered at `expires_at` + 61 s: answered from the ledger with the stored outcome; nothing typed, nothing launched |
+| `test_ledger_bridge_clock_ahead` | (S2) the bridge clock is 8 minutes ahead of the frame's `expires_at` base: a redelivery of a `Done` delivery before `expires_at` (hub time) is still answered from the ledger |
+| `test_ledger_holds_rate_times_lifetime` | (S2) 1000 prompt deliveries (lifetime 1 hour) spread over 10 hours of injected time: the ledger never holds more than 120 entries and `begin` never returns false |
 | `test_ledger_full_answers_retry` | with 4096 live entries `begin` returns false and the executor answers `retry` (`fatal`, `ledger_full` when final) |
 | `test_ledger_corrupt_file_starts_empty` | invalid JSON, version 2, 5000 entries: an empty ledger, and the bad file is renamed |
 | `test_ledger_file_is_private` | mode 0600; directory 0700 (the properties of `bridge_retry_atomic_write`) |
@@ -3096,6 +3561,13 @@ The runtime is started in `src/hub/app/wiring.odin` directly after `delivery.sta
 | `test_runtime_start_stop_clean` (natstest) | start, one event routed end to end through fake ports, stop; nothing left allocated |
 | `test_runtime_reconciles_on_connect` (natstest) | a schedule trigger saved while NATS was down has its definition in the stream after connect |
 | `test_matcher_and_router_name_no_kind` (`boundary_test.odin`) | `matcher.odin` and `router.odin` do not contain the strings `"schedule"` or `"event"` as kind names, except `"schedule.fired"`, `"schedule"` and `"event"` in the cause mapping |
+
+**Added by amendment S2.** T10 also depends on T22: the router creates instances with `agent.create_instance_stopped` through `Agent_Port` (6.12.5). The matcher passes the event's subject to `triggers_match` (6.7 step 4). `runs_due` and `runs_deferred` are written with `state IN ('queued','deferred')` so they use `action_runs_due`. If T1 reported that the server ignores `Nats-Schedule-TTL`, the matcher deletes each schedule fire and deferral fire by its stream sequence after its commit (6.3.4); otherwise it does not. T10 adds its statements (Q8, Q9, Q12 of 6.16) to `test_event_path_queries_use_indexes`.
+
+| Name | Expected |
+|---|---|
+| `test_schedule_fire_reads_one_trigger` (`actions`) | an owner with 500 schedule triggers; one fire: the repository returned one trigger row for it (counted by a wrapping repository), and one run exists |
+| `test_exact_and_wildcard_triggers_both_match` (`actions`) | an event trigger for one chain and one for any chain, same owner and type: an event of that chain creates a run for each; an event of another chain only for the wildcard one |
 
 ### T12. CLI v2
 
@@ -3321,7 +3793,8 @@ Run the UI tests and the type check with the commands in `AGENTS.md`, and report
 **Goal.** The `bot_deliver` frame travels through the pipeline for capable bridges, and an action can target a bot.
 **Requirements.** REQ-FLOW-2, REQ-FLOW-4, REQ-ACT-8 (bot part).
 **Contracts.** 6.11.2 (`payload`), 6.11.3, 6.11.6 (kind `bot`).
-**Depends on.** T10, T16, T17.
+**Depends on.** T10, T16, T17, T24.
+**Amendment S2.** T24 runs first: the bot launch on the bridge already calls start-begin (`ref = bot_<attempt_id>`), and the hub already creates a bot's instance stopped. T19 changes the transport of the frame and nothing about how the process starts.
 
 **What exists.** The bot supervisor creates one open delivery per bot, picks a bridge, and sends `bot_deliver` with `command_id = "cmd_bot_<attempt_id>"` (`bots_send_attempt_locked`, `src/hub/service/bots/delivery.odin:108`). The bridge starts a worker thread per attempt, is idempotent per `attempt_id` (`src/bridge/bot_delivery.odin:113`), and reports through `bot_delivery_report` frames. On reconnect the hub resends open attempts (`src/hub/service/bots/delivery.odin:177`). The `command_result` moves the attempt to Accepted or Exhausted (`bots_on_command_result`, `src/hub/service/bots/delivery.odin:56`).
 
@@ -3410,8 +3883,9 @@ Prompt_Done :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, ref: string, ok: bool
 
 **Goal.** A lease wake is appended in the grant transaction and delivered by the pipeline, for capable bridges.
 **Requirements.** REQ-FLOW-3, REQ-FLOW-4.
-**Contracts.** 6.11.2 (`payload`), 6.11.3, 6.11.6 (kind `lease`).
-**Depends on.** T16, T17.
+**Contracts.** 6.11.2 (`payload`), 6.11.3, 6.11.6 (kind `lease`), 6.12.6.
+**Depends on.** T16, T17, T23, T25.
+**Amendment S2.** T25 and T23 run first: the grant opens the generation through `start_begin`, and the direct path sends `start_agent`. T20 carries that same one-entry `start_agent` text through the pipeline. `capable(bridge_id)` is true only for a bridge that reports **both** `event_pipeline_v1` and `start_agent_v1`; every other bridge keeps the direct path (`start_agent`, or `wake_agent` for a bridge without that feature). The "What exists" paragraph below describes `origin/main`; read it together with T25.
 
 **What exists.** `grant_attempt_in_uow` (`src/hub/service/taskv2/lease.odin:77`) writes the lease and the instance row (`launching`, `run_count + 1`) and calls `effect_wake_lease` (`src/hub/service/taskv2/wake.odin:27`), which keeps the wake in memory. After the commit `flush_wakes` (`src/hub/service/taskv2/wake.odin:146`) sends one `wake_agent` command per bridge and chain; a failed send parks the task (`on_dispatch_failed`, `src/hub/service/taskv2/dispatch.odin:178`). Unconfirmed wakes are sent again on bridge hello (`src/hub/service/taskv2/lease.odin:680`), at hub start (`src/hub/service/taskv2/lease.odin:888`) and by the grant-unconfirmed timer (`fire_grant_unconfirmed`, `src/hub/service/taskv2/timers.odin:404`).
 
@@ -3424,7 +3898,7 @@ Prompt_Done :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, ref: string, ok: bool
 | `src/hub/service/taskv2/timers.odin` | `fire_grant_unconfirmed`: no resend for a capable bridge |
 | `src/hub/service/taskv2/pipeline.odin` | New: the `lease` sink |
 | `src/hub/service/taskv2/service.odin`, `src/hub/app/wiring.odin` | `Service` gains a `Delivery_Port` (`route`, `capable`); the sink is registered |
-| `src/bridge/hub_runtime_client.odin` | Split `bridge_hub_handle_wake_agent` (`src/bridge/hub_runtime_client.odin:2496`) into `bridge_wake_agent_apply` plus a thin handler |
+| `src/bridge/start_agent.odin` | Nothing new: the executor calls `bridge_start_agent_apply` (T23) |
 | `src/bridge/event_executor.odin` | Kind `lease` |
 
 Package `taskv2` does not import `delivery`. It reaches the pipeline through a port that wiring fills with `delivery.bridge_capable` and `delivery.route`:
@@ -3441,20 +3915,20 @@ Delivery_Port :: struct {
 
 **Behaviour**
 
-1. **Grant.** In `effect_wake_lease`, when `capable(bridge_id)`: build the run entry exactly as today and the command text `agent.wake_agent_command_json(command_id, chain_id, {entry}, nil)` with `command_id = "cmd_lease_" + lease_id`; call `route` with that text as `payload`, `ref = "lease:<lease_id>"`, `cause = "lease"`, `lifetime = LIFETIME_FLOW`, in the grant's unit of work. Nothing is added to the in-memory wake effects for this lease. The instance stop list (`stop`) keeps using the direct `wake_agent` command, with an empty run list.
+1. **Grant.** In `effect_wake_lease`, when `capable(bridge_id)`: build the ticket's run entry as T25 does and the command text `agent.start_command_json(command_id, chain_id, {entry}, nil)` with `command_id = "cmd_lease_" + lease_id`; call `route` with that text as `payload`, `ref = "lease:<lease_id>"`, `cause = "lease"`, `lifetime = LIFETIME_FLOW`, in the grant's unit of work. Nothing is added to the in-memory wake effects for this lease. The instance stop list (`stop`) keeps using the direct command, with an empty run list.
    - If an open delivery already exists for this ref (`open_by_ref`), do nothing: the pipeline is still delivering it.
    - The unit of work type of `taskv2` (`Uow`) wraps an `iface.Unit_Of_Work`; pass that inner value.
 2. **Sink for kind `lease`.** `still_valid`: the lease exists, is held by the delivery's instance, is not in phase `waiting` and has no `confirmed_at`. `on_final`: `done` → nothing (confirmation still comes from start-success or the first lease verb); `failed` → `dispatch_failed_in_uow` for that lease with the reason as detail, the same call `on_dispatch_failed` makes. `replace`: nil; the task engine re-grants by its own rules.
 3. **No second sender.** For a capable bridge: `on_bridge_hello` and `boot` do not call `effect_wake_lease` for unconfirmed leases; `fire_grant_unconfirmed` does not resend on its first fire (it still re-arms, and its second fire still fails the dispatch). The nudge to confirmed live holders and the orphan stop in `on_bridge_hello` are unchanged.
-4. **Bridge, kind `lease`.** `bridge_wake_agent_apply(text: string, deadline_ns: i64) -> (ok: bool, err: Bridge_Error)` is the body of `bridge_hub_handle_wake_agent` without the final `command_result`; `ok` is false when a launch of a run entry failed. The old handler calls it and still answers `succeeded` (unchanged behaviour for `wake_agent` frames). The executor, for kind `lease`:
+4. **Bridge, kind `lease`.** The executor applies the payload with `bridge_start_agent_apply(nil, payload, deadline)` (T23, 6.12.6): the same procedure that handles a direct `start_agent` frame, without the final `command_result`; `ok` is false when a launch of an entry failed. The executor, for kind `lease`:
    1. Ledger `Done` → `succeeded`, the stored outcome.
-   2. Ledger `In_Progress` (restart): read `agent_instance_id` and `run_count` of the entry from `payload`; if a live child of exactly that generation exists (`bridge_startup_confirm_spawned`, `src/bridge/startup_readiness.odin:377`) → `Done`, `succeeded`, `started`. Otherwise continue.
-   3. `begin(Flow)`; `bridge_wake_agent_apply(payload, deadline)`.
+   2. Ledger `In_Progress` (restart): read `agent_instance_id` and `run_count` of the entry's launch object in `payload`; if a live child of exactly that generation exists (`bridge_startup_confirm_spawned`, `src/bridge/startup_readiness.odin:377`) → `Done`, `succeeded`, `started`. Otherwise continue.
+   3. `begin(Flow)`; `bridge_start_agent_apply(nil, payload, deadline)`.
    4. `ok` → `Done`; `succeeded` with outcome `started`. Not ok → forget the entry; `err.class == .retriable` and not final → `failed`, `retry` with `err.retry_after_ms`; otherwise `failed`, `fatal`, reason `launch_failed`.
-   There is no start-begin call for a lease: the grant already opened the generation on the hub, and the run entry carries `run_count`.
-5. **Bytes.** The text in `payload` is byte-identical to the `wake_agent` command the old path would send for a single run entry, apart from the command id.
+   There is no start-begin **request** for a lease: the grant already opened the generation on the hub through `start_begin` (T25), and the entry's launch object carries `run_count`.
+5. **Bytes.** The text in `payload` is byte-identical to the `start_agent` command the direct path sends for a single run entry, apart from the command id.
 
-**Non-goals.** No change to which instance is leased (v7-Q4), to grant, confirmation, nudge or `run_count` logic, to the `wake_agent` frame, or to the old path. No start-begin for leases.
+**Non-goals.** No change to which instance is leased (v7-Q4), to grant, confirmation, nudge or `run_count` logic, to the `wake_agent` frame, or to the old path. No second start-begin for leases: T25's call in the grant is the only one.
 
 **Acceptance and tests**
 
@@ -3462,7 +3936,7 @@ Delivery_Port :: struct {
 |---|---|
 | The existing lease, nudge, redelivery and confirmation tests of `src/hub/service/taskv2` | pass on both transports: once with a capable and once with an incapable bridge |
 | `test_grant_appends_lease_delivery` | a grant to a capable bridge: one `lease` delivery and one outbox row in the grant's transaction; a rolled-back grant leaves neither; no `wake_agent` command is sent directly |
-| `test_lease_payload_bytes_unchanged` | `payload` equals the old `wake_agent` text for one entry, apart from the command id |
+| `test_lease_payload_bytes_unchanged` | `payload` equals the `start_agent` text the direct path sends for one entry, apart from the command id |
 | `test_lease_delivered_after_reconnect_without_hello_resend` | the bridge drops before the forward; on reconnect the pipeline forwards the delivery; `on_bridge_hello` queued no wake |
 | `test_lease_sink_failed_parks_task` | a `failed` delivery → the task is parked exactly as a failed send parks it today |
 | `test_lease_sink_still_valid` | a confirmed, released or re-granted lease's delivery is closed `superseded` at the gate |
@@ -3470,7 +3944,7 @@ Delivery_Port :: struct {
 | `test_bridge_lease_kind_nudges_live_child` | `deliver = "nudge"` and a live child: the line is typed once; a redelivered frame types nothing |
 | `test_bridge_lease_kind_launch_once` | a launch entry delivered twice: one launch |
 | `test_bridge_lease_restart_in_progress` | a persisted `In_Progress` entry with a live child of that generation → `succeeded`; without one → the entry is applied again |
-| `test_wake_agent_handler_unchanged` | a direct `wake_agent` frame behaves and answers as on `origin/main` |
+| `test_lease_pipeline_needs_both_features` | a bridge with `event_pipeline_v1` but without `start_agent_v1`: no `lease` delivery; the direct `wake_agent` path is used |
 
 ### T4. Placement adoption: task leases, taskchain, MCP, UI defaults (phase 3)
 
@@ -3556,7 +4030,7 @@ Delivery_Port :: struct {
 
 1. Merge `origin/main`; re-run the boundary tests and the full suites; report counts per package.
 2. Docs: the bots and task-engine sections that describe delivery; `docs/plans/events-jetstream-spec.md` (kinds `bot` and `lease`).
-3. File the three gaps of finding F14 as issues (`ham-ctl issue create`), one each, with the file and line of the finding. They are not fixed in this chain.
+3. (Changed by amendment S2.) Finding F14 is closed by T22 and T25, and T26 records it. Nothing is filed here.
 4. Deploy to Mundus through a change request (hub first, then bridges). Run the E2E list. Brolabs only after the user's explicit OK.
 
 **E2E list (Mundus)**
@@ -3574,6 +4048,286 @@ Delivery_Port :: struct {
 **Non-goals.** No removal of old paths. No Brolabs deploy without the user's explicit OK.
 
 **Acceptance.** Steps 1 to 4 done with evidence in task comments; every E2E row passes or is reported with its failure.
+
+### T22. One hub start procedure (phase 1; amendment S2)
+
+**Goal.** Every start that the hub or a bridge asks for opens its run generation in `start_begin`. Path A is rebuilt on it; the start-begin route exists for the bridge.
+**Requirements.** REQ-ONE-1, REQ-ONE-2, REQ-ONE-7 (cases L1 to L13), REQ-PIPE-5.
+**Contracts.** 6.12.2, 6.12.5, 6.12.7, 6.12.8.
+**Depends on.** T3 (both edit the bridge checks of `src/hub/service/agent/agent_service.odin`; T22 keeps the form T3 left).
+
+**Files**
+
+| File | Change |
+|---|---|
+| `src/hub/service/agent/start_begin.odin` | New: the types and procedures of 6.12.2 and `create_instance_stopped` (6.12.5) |
+| `src/hub/service/agent/agent_service.odin` | `relaunch_instance_locked` is deleted. `start_instance`, `restart_instance`, `relaunch_instance`, `reconfigure_instance` and `create_instance` become the thin callers of 6.12.7 |
+| `src/hub/domain` (the file that defines `Agent_Instance`), the agent repository in `src/hub/repository/sqlite` | Field and column `start_ref` |
+| `src/hub/repository/sqlite/migrations/agents_001_start_ref.sql`, `src/hub/repository/sqlite/migrations.odin` | New migration, registered last (6.4.1): `ALTER TABLE agent_instances ADD COLUMN start_ref TEXT NOT NULL DEFAULT '';` |
+| `src/hub/transport/http/bridge_handlers.odin`, `src/hub/app/wiring.odin` | `bridge_instance_start_begin_handler` and its route (6.12.2); `"start_begin":true` in the `bridge_ready` frame (6.12.3) |
+| `src/contracts/bridge.odin` | `BRIDGE_READY_START_BEGIN` |
+| `src/hub/repository/iface/agent_repo.odin`, the agent repository in `src/hub/repository/sqlite` | `agent_save_instance_guarded` (6.12.2 step 10) |
+| `src/hub/transport/http/content_handlers.odin` | `restart_stopped_conversation_instance` calls `start` with `.Keep` and passes an optional guard on |
+| `src/hub/transport/http/coordinator_wake.odin` | Passes a guard that repeats the `stopped_by` check (F14 b) |
+| `src/hub/app/mcp_chain_create.odin`, `src/hub/app/mcp_runtime.odin` | The two `prepare_instance` + `send_instance_launch` pairs (`src/hub/app/mcp_chain_create.odin:45`, `src/hub/app/mcp_runtime.odin:102`) become `create_instance_stopped` + `start` |
+| `src/hub/service/agent/boundary_test.odin`, `src/hub/service/agent/start_begin_test.odin` | New |
+
+**Steps**
+
+1. Record, from `origin/main` before any change, the `launch_agent` bytes that `start_instance`, `restart_instance` and `create_instance` send for one fixed row (ids and times fixed). They are the expected values of `test_start_keeps_launch_bytes`.
+2. Verify the two Assumptions of 6.12.2 and 6.12.5 (`validate_frozen_runtime_transport` reads only its argument; `prepare_instance` creates the conversation). Report the result.
+3. The `start_ref` column, field and migration.
+4. `start_begin` with the eleven steps of 6.12.2; `start_reuse`, the guarded save, `start_ticket_destroy`, `start_launch_json`, `start_send`, `start_settle`, `start_cancel`, `start`. Until T23 merges, `start_send` sends what `send_frozen_instance_launch` (`src/hub/service/agent/agent_service.odin:423`) sends today.
+5. Replace `relaunch_instance_locked` and switch the thin callers. Run the existing tests of `src/hub/service/agent`, `src/hub/transport/http`, `src/hub/service/taskv2` and `src/hub/app`.
+6. `create_instance_stopped`; switch `create_instance` and the two MCP call sites.
+7. `start_begin_for_bridge`, the handler, the route and the `bridge_ready` flag.
+8. The coordinator-wake guard.
+9. `test_start_has_one_implementation` with the allow-list of 6.12.7.
+
+**Behaviour that MUST NOT change:** the command bytes of a manual Start, Restart and create (step 1); every error code and HTTP status of the existing start routes; the send under `reconfiguration_mutex`; the `already_running` details; what `reconfigure_instance` and the fleet change relaunch.
+
+**Behaviour that changes, and is intended:** a Start or Restart that is refused no longer erases the user's stop mark (today `restart_instance` clears it before it takes the lock, F18); an ACP refusal writes nothing (case L9); the coordinator wake's stop check runs under the mutex; a new instance whose first start is refused is left `stopped` with `run_count` 0 instead of `launching`.
+
+**Non-goals.** No change to task lease dispatch (T25), to bots or the bridge (T24), or to the wire command (T23). No change to `create_provider_test_instance` or `reconfiguration_launch_destination`. No read of `stopped_by` in `start_begin.odin`.
+
+**Acceptance**
+
+- The tests below pass; the existing tests of the four packages of step 5 pass, with each changed expectation listed in the hand-off.
+- `grep -n "relaunch_instance_locked" -r src` prints nothing.
+- `grep -rn "stopped_by" src/hub/service/agent/start_begin.odin` prints only assignments.
+
+**Tests** (package `service/agent` unless stated)
+
+| Name | Expected |
+|---|---|
+| `test_start_keeps_launch_bytes` | for the fixed row of step 1: the same row fields, the same command bytes (apart from generated ids) and the same reservation as `origin/main`, for Start, Restart and create |
+| `test_start_if_live_table` | a `running` row: `Refuse` → `Conflict` with details code `already_running`, nothing written; `Keep` → `kept_live`, nothing written, nothing sent; `Relaunch` → `run_count + 1` and a command |
+| `test_start_refusals_write_nothing` | one case per row L1 and L3 to L9 of 6.12.8, each on a row with `stopped_by = "user"`: the stated error; the stored row is byte-equal to before (same `run_count`, `launch_epoch`, `stopped_by`, `start_ref`); no reservation is left |
+| `test_start_restart_refused_keeps_user_stop` | `restart_instance` on a user-stopped row whose bridge is offline: `Bridge_Offline`; `stopped_by` is still `"user"` |
+| `test_start_send_failure_marks_failed` | the command cannot be sent: the row is `failed`, the reservation is cancelled, the generation stays consumed (case L13) |
+| `test_start_begin_in_open_unit_of_work` | `start_begin` called inside an open unit of work: the row change is visible inside it; a rollback restores the row; `start_cancel` leaves no reservation |
+| `test_start_begin_opens_generation` | a stopped row with `run_count` 3: after `start_begin_for_bridge` the row is `launching`, `startup_status` `starting`, `run_count` 4, `start_ref` set, a reservation exists; the returned text equals `start_launch_json` for the saved row with command id `sb_<ref>` |
+| `test_start_begin_is_idempotent_per_ref` | the same ref twice: `run_count` bumped once, `reused` true, identical bytes. A different ref afterwards on a stopped row bumps again |
+| `test_start_begin_reuses_ref_in_any_live_status` | (S2 rework) a row opened by ref R that has since moved to `starting`, then `running`, then `idle`: `start_begin` with ref R and `if_live = .Relaunch` returns `reused` each time; `run_count`, `launch_epoch` and `start_ref` are unchanged; no reservation. With the row `failed` or `unreachable`, the same call opens a new generation |
+| `test_start_reuse_never_writes` | (S2 rework) `start_reuse` for a live row with the same ref: `ok`; for a `failed`, `stopped` or `unreachable` row, or a live row with another `start_ref`: `ok` false, `ended` true; the stored row is byte-equal in every case |
+| `test_start_begin_guarded_save` | (S2 rework) between step 2 and step 10 another writer bumps `run_count` (injected through a repository wrapper): `Conflict` with details code `start_raced`; the other writer's row is intact; no reservation is left |
+| `test_bridge_ready_carries_start_begin` (`transport/http`) | (S2 rework) the `bridge_ready` frame contains `"start_begin":true` |
+| `test_reaped_row_accepts_start_begin` (`service/agent`) | (S2 rework) a `running` row whose `last_seen_at` is older than 90 s: `start_begin_for_bridge` is refused `already_running`; after `reap_stale_instances` the row is `unreachable` and the same call opens a generation |
+| `test_start_begin_clears_user_stop` | a row with `stopped_by = "user"`: after a successful call `stopped_by` is empty and the row is `launching` |
+| `test_start_begin_refuses_live_row` | through `start_begin_for_bridge`, for a row that is `launching` from another ref, `launching` from a hub-initiated start (empty `start_ref`), `running`, and `idle`: `Conflict` with details code `already_running`; `run_count`, `launch_epoch`, `start_ref` and `stopped_by` unchanged; no reservation was taken |
+| `test_start_begin_route` (`transport/http`) | the route needs the bridge token; 200 returns `data.launch`, `run_count`, `reused`; a live row returns 409 whose body contains `"code":"already_running"`; another bridge's instance returns 404; an empty `ref` returns the validation error |
+| `test_start_begin_handler_auth` (`transport/http`) | no token, a token in the query, another bridge's token → refused as `bridge_instance_bootstrap_handler` refuses them |
+| `test_start_begin_race_with_manual_start` | `start_instance` and `start_begin_for_bridge` for the same stopped row from two threads, 100 rounds: exactly one opens a generation each round; the other gets `already_running`; `run_count` grows by 1 per round |
+| `test_start_begin_wrong_bridge_or_owner` | `Not_Found`; nothing written |
+| `test_start_begin_acp_epoch` | an ACP instance: a new `launch_epoch` is minted; a status frame carrying that epoch is applied (`apply_bridge_status_report`); one carrying the old epoch is refused as superseded |
+| `test_start_begin_failed_status_releases_reservation` (`service/agent` or `transport/http`) | after `start_begin_for_bridge`, a `failed` status frame with the new epoch and a higher sequence: the registry entry is no longer reserved and the owner's active count is back to its value before the call |
+| `test_start_begin_reservation_expires` (`service/project`) | a reservation with no status frame is gone after the registry sweep at now + 61 s (drive the sweep with an injected time, as the existing registry tests do) |
+| `test_start_success_before_command_result` (`transport/http`) | start-begin; the agent's `start-success` with the new `run_count` is accepted before any `command_result` |
+| `test_start_success_when_command_result_is_lost` (`transport/http`) | start-begin; `start-success` accepted; no `command_result` ever: the instance is `running` |
+| `test_create_instance_stopped` | the row is `stopped` with `stopped_by` empty and `run_count` 0; no reservation is left; its conversation exists |
+| `test_create_instance_first_generation_is_one` | `create_instance`: the command carries `run_count` 1, as on `origin/main` |
+| `test_coordinator_wake_guard_under_mutex` (`transport/http`) | F14 (b): a user stop that lands between the wake's first check and its start is honoured; the coordinator is not started and `stopped_by` stays `"user"` |
+| `test_start_has_one_implementation` (`boundary_test.odin`) | the scan of 6.12.7 finds nothing outside its allow-list |
+
+### T23. One start command: `start_agent` (phase S; amendment S2)
+
+**Goal.** Hub-initiated starts travel in one command. Old bridges keep `launch_agent` and `wake_agent`; a new bridge still accepts both from an older hub.
+**Requirements.** REQ-ONE-5, REQ-ONE-6.
+**Contracts.** 6.12.6, 6.12.3.
+**Depends on.** T22 (tickets), T17 (it edits the same bridge files; T23 rebases on it).
+
+**Files**
+
+| File | Change |
+|---|---|
+| `src/contracts/start_wire.odin` | New: the constants of 6.12.6 |
+| `src/hub/service/agent/start_command.odin` | New: `Start_Lease`, `Start_Run_Entry`, `start_command_json`, `start_command_send` |
+| `src/hub/service/agent/start_begin.odin` | `start_send` sends through `start_command_send` |
+| `src/hub/service/agent/agent_service.odin`, `src/hub/service/agent/instance_reconfiguration.odin` | `send_frozen_instance_launch` sends through `start_command_send` (this covers the move to another bridge) |
+| `src/bridge/start_agent.odin` | New: `bridge_start_agent_apply` |
+| `src/bridge/hub_runtime_client.odin` | The `start_agent` branch; the `launch_agent` branch (`src/bridge/hub_runtime_client.odin:1136`) and `bridge_hub_handle_wake_agent` (`src/bridge/hub_runtime_client.odin:2496`) become adapters; the feature in `BRIDGE_RUNTIME_FEATURES` |
+| `src/bridge/hub_command_dispatch.odin` | `start_agent` in `bridge_command_spec` and in the ordering-key switch |
+| Tests next to each | New |
+
+**Steps**
+
+1. Record from `origin/main` the bytes of one `launch_agent` and of one `wake_agent` with a launch entry, a nudge entry and a stop entry. They are the expected values of the two old-bridge tests and the two adapter tests.
+2. The contracts file and `start_command_json`.
+3. `start_command_send` with the feature choice; switch `start_send` and `send_frozen_instance_launch`.
+4. Bridge: move the body of `bridge_hub_handle_wake_agent` into `bridge_start_agent_apply`, reading each entry's `launch` object instead of building one. Then the three handlers.
+5. Dispatcher registration. Add the feature **last**.
+
+**Non-goals.** No change to task lease dispatch: until T25, `flush_wakes` keeps building `wake_agent` itself. No removal of the old names, the adapters, `wake_agent_command_json` or `bridge_wake_launch_command_json`. No change to `stop_agent`, `launch_provider_test` or `bot_deliver`.
+
+**Acceptance**
+
+- The tests below pass; the existing tests of `src/bridge` and `src/hub/service/agent` pass unchanged.
+- The hand-off shows one manual Start on a bridge with the feature (the frame is `start_agent`) and one without (the frame is `launch_agent`).
+
+**Tests**
+
+| Name (package) | Expected |
+|---|---|
+| `test_start_command_json_shape` (`service/agent`) | one launch entry: `type` `start_agent`, the top-level `agent_instance_id`, `payload.run[0].launch` byte-equal to `start_launch_json`; two entries or a stop list: no top-level `agent_instance_id` |
+| `test_start_command_send_new_bridge` (`service/agent`) | a bridge that reports `start_agent_v1` receives `start_agent` |
+| `test_start_command_old_bridge_launch_agent_bytes` (`service/agent`) | a bridge without the feature receives `launch_agent` with the bytes of step 1 |
+| `test_start_command_old_bridge_wake_agent_bytes` (`service/agent`) | the same for entries with lease keys, a nudge and a stop list: `wake_agent` with the bytes of step 1 |
+| `test_start_agent_launch_entry_passes_launch_unchanged` (`bridge`) | the text handed to `bridge_runtime_launch_agent` is byte-equal to `entry.launch` |
+| `test_start_agent_nudge_live_child` (`bridge`) | `deliver = nudge` and a live child of that generation: one typed line, no launch. No live child: a launch |
+| `test_start_agent_stop_list` (`bridge`) | the stop list stops what the `wake_agent` stop list stops today; a coordinator is never stopped |
+| `test_start_agent_failed_entry_reports_status` (`bridge`) | a failed launch: the instance's status frame is sent, the answer is `failed` with the typed error, the other entries are still applied |
+| `test_launch_agent_adapter_unchanged` (`bridge`) | a `launch_agent` frame of step 1 produces the same launch call and the same frames as on `origin/main` |
+| `test_wake_agent_adapter_unchanged` (`bridge`) | the same for the `wake_agent` frame of step 1, the `succeeded` answer included |
+| `test_start_agent_spec_and_key` (`bridge`) | queued, class `.Lifecycle`; the key is `agent:<id>` with the top-level field and the `wake_agent` key without it; a frame without `command_id` is rejected |
+| `test_features_list_has_start_agent` (`bridge`) | `bridge_runtime_features()` contains `start_agent_v1` |
+
+### T24. Bridge-initiated starts on start-begin: the notice fallback and bots (phase S; amendment S2)
+
+**Goal.** Path C is gone: the fallback and the bot launch ask the hub to open the generation, like a pipeline delivery. No launch with generation 0 is left.
+**Requirements.** REQ-ONE-4, REQ-ONE-7 (cases L16 to L22).
+**Contracts.** 6.12.3, 6.12.4, 6.12.5, 6.12.8.
+**Depends on.** T17 (`bridge_wake_attempt`, `bridge_wake_start_begin`), T22 (the route, `create_instance_stopped`).
+
+**Files**
+
+| File | Change |
+|---|---|
+| `src/bridge/agent_wake.odin` | `bridge_wake_attempt`: with the hub flag (6.12.3) it calls start-begin with a mandatory `ref`; without the flag it keeps the manifest branch unchanged; the stale-row retry of 6.12.4; `bridge_task_wake_if_needed` passes `fb_<instance>_<n>`; `bridge_wake_fetch_enriched_launch_json` stays for the legacy branch only |
+| `src/bridge/bot_delivery.odin` | `bridge_bot_launch_via_descriptor` becomes `bridge_bot_launch_via_start_begin(instance_id, attempt_id)`: `bridge_wake_start_begin` with `ref = bot_<attempt_id>`, then the launcher |
+| `src/bridge/hub_runtime_client.odin` | Reads `start_begin` from `bridge_ready` into `bridge_hub_start_begin_supported` and resets it before every hello; the periodic loop calls the pending stale-row retries |
+| `src/hub/service/bots/supervisor.odin` | The prepare-then-cancel pair (`src/hub/service/bots/supervisor.odin:104`) becomes `create_instance_stopped` |
+| Tests next to each | New and changed |
+
+**Steps**
+
+1. **First, confirm the recovery path of case L20** by running `test_reaped_row_accepts_start_begin` (T22) and reading `reap_stale_instances` (`src/hub/service/agent/agent_service.odin:1461`): a live row without heartbeats becomes `unreachable` within the reaper window, and `unreachable` is accepted by `start_begin`. Report the measured window.
+2. The fallback: the reference, the deleted branch. The gate, coalescing, back-off and parking are unchanged; the failure class of 6.12.4 feeds `bridge_task_wake_record_result` exactly as the manifest error does today.
+3. On `already_running`: apply the table of 6.12.4. With a local process: release the gate, nothing else. Without one: schedule the stale-row retry (30 s, at most 5, same reference); no status frame is sent, because none can correct the row.
+4. Bots: the bridge call and the hub's `create_instance_stopped`.
+5. The hub flag: read it, reset it, and branch on it in `bridge_wake_attempt` and in the bot launch. The manifest branch and `bridge_wake_fetch_enriched_launch_json` stay, reachable only when the flag is absent. The hub's bootstrap route stays.
+
+**Rollout.** No order is needed (review finding 5): against a hub without the `start_begin` flag the bridge behaves exactly as before this task. "Hub first" is still the recommended order, because the fallback only stops launching with generation 0 once both sides are updated.
+
+**Non-goals.** No change to the wake gate, to bot rounds, relocation or reports, to the three notice frames, or to the pipeline executor. No new frame type. No removal of the hub's bootstrap route.
+
+**Acceptance**
+
+- The tests below pass; the existing wake and bot tests of `src/bridge` and `src/hub/service/bots` pass, with each changed expectation listed in the hand-off.
+- `grep -rn "bridge_wake_fetch_enriched_launch_json(" src/bridge --include=*.odin` shows its definition and one call, inside the branch taken when `bridge_hub_start_begin_supported` is false.
+
+**Tests** (package `main` of `src/bridge` unless stated)
+
+| Name | Expected |
+|---|---|
+| `test_fallback_stale_row_recovers_after_reaper` (with a fake hub) | (S2 rework) the hub answers 409 `already_running` three times, then 200; the bridge has no process: retries at 30 s, 60 s and 90 s of injected time with the same ref, the fourth call launches; no failure was recorded and the wake was never parked |
+| `test_fallback_calls_start_begin_with_ref` | a notice for an absent instance: one POST with `ref = fb_<instance>_<n>`; the launcher receives `data.launch` unchanged |
+| `test_fallback_never_generation_zero` | with the hub flag set, the launch command of every fallback start has `run_count` > 0 |
+| `test_fallback_ref_stable_across_retries` | two attempts of one wake send the same ref; after a successful launch the next wake sends another |
+| `test_fallback_failure_classes` | each row of 6.12.4: retriable → back-off; 404 and other 4xx → parked |
+| `test_fallback_already_running_with_local_process` | a 409 `already_running` while the bridge's snapshot shows a process: no launch, no retry, no recorded failure |
+| `test_fallback_stale_row_retry_is_bounded` | 409 on every call: exactly 5 retries, then one ordinary retriable failure (back-off); a newer wake for the instance or an active instance drops the pending retry |
+| `test_fallback_legacy_hub_uses_manifest` | (mixed versions) `bridge_ready` without `start_begin`: the fallback sends the manifest GET and no start-begin POST, and launches as on `origin/main` |
+| `test_bot_launch_legacy_hub_uses_manifest` | the same for a bot attempt |
+| `test_start_begin_flag_reset_on_reconnect` | a connection with the flag, then a reconnect to a hub without it: the next wake uses the manifest GET |
+| `test_start_begin_404_without_error_body_is_retriable` | a 404 with an HTML or empty body: retriable `hub_unavailable`, back-off, not parked; a 404 with the hub's JSON error: fatal `target_missing` |
+| `test_fallback_start_success_is_accepted` (`transport/http`) | an instance with `run_count` 5 started by the fallback: its `start-success` is accepted (on `origin/main` it is refused, V11) |
+| `test_bot_launch_calls_start_begin` | a bot attempt for an absent instance: one POST with `ref = bot_<attempt_id>`; no manifest GET |
+| `test_bot_instance_created_stopped` (`service/bots`) | a bot without an instance: the row is created `stopped` with `run_count` 0 and no reservation is left |
+| `test_bot_first_generation_is_one` (`service/bots` with a fake bridge) | the first launch of a new bot carries `run_count` 1 |
+| `test_bot_launch_refused_reports_attempt` | start-begin answers a 4xx: the attempt is reported failed with the reason; the supervisor's rounds continue as today |
+
+### T25. Task lease dispatch on start-begin; path B deleted (phase S; amendment S2)
+
+**Goal.** A task lease starts an instance through `start_begin` inside the grant. The grant's own state write is deleted. This is the highest-risk task of the amendment (risk S-K2).
+**Requirements.** REQ-ONE-3, REQ-ONE-7 (cases L6 to L9, L13).
+**Contracts.** 6.12.2 (locks and transactions), 6.12.5, 6.12.6, 6.12.7.
+**Depends on.** T22, T23.
+
+**Files**
+
+| File | Change |
+|---|---|
+| `src/hub/service/taskv2/lease.odin` | `grant_attempt_in_uow` (`src/hub/service/taskv2/lease.odin:77`) calls `start_begin`; its own state write (`src/hub/service/taskv2/lease.odin:231`) is deleted |
+| `src/hub/service/taskv2/service.odin` | The effects list (`Effects`, `src/hub/service/taskv2/service.odin:164`) carries tickets; a rollback cancels them where reservations are cancelled today (`cancel_reservations`, `src/hub/service/taskv2/service.odin:407`) |
+| `src/hub/service/taskv2/wake.odin` | `effect_wake_lease` builds a `Start_Run_Entry` from the ticket; `flush_wakes` sends through `agent.start_command_send` and settles |
+| `src/hub/service/taskv2/matcher.odin` | `jit_prepare` (`src/hub/service/taskv2/matcher.odin:435`) calls `create_instance_stopped`; it adds no reservation to the effects |
+| `src/hub/service/agent/boundary_test.odin` | `lease.odin` leaves the allow-list |
+
+**Steps**
+
+1. **First, verify the Assumptions of F14 (a) and (c)** by writing `test_explicit_claim_clears_user_stop` and `test_jit_instance_run_count_is_one` against the unchanged code and seeing them fail. If either passes on unchanged code, report it; the gap does not exist and its test is kept as a regression test only.
+2. In `grant_attempt_in_uow`, where the instance row is set to `launching` today, call `agent.start_begin(svc.agent_service, auth, instance_id, {ref = lease_id, if_live = policy})` on the same thread, inside the grant's unit of work. `policy` is `.Keep` where `wake_reuses_live_child` (`src/hub/service/taskv2/lease.odin:306`) is true today and `.Relaunch` otherwise. Do **not** take `reconfiguration_mutex` (6.12.2). The grant's earlier save of a changed provider or model stays.
+3. An error from `start_begin` fails the grant for that instance. The matcher records its existing placement failure for the instance with the error's message as detail and tries again on its next run. No lease row is written.
+4. Put the ticket into the effects list next to the wake entry. On commit the tickets flow to `flush_effects`; on rollback call `start_cancel` and `start_ticket_destroy` for each.
+5. `flush_wakes` (`src/hub/service/taskv2/wake.odin:146`): one `Start_Run_Entry` per ticket (`deliver = nudge` for `kept_live`, `launch` otherwise; `launch_json = start_launch_json(ticket, &lease)`), one `start_command_send` per bridge and chain, then `start_settle(t, sent)` and `start_ticket_destroy` per ticket. A failed send also calls `on_dispatch_failed`, as today. Its own ACP check moves into `start_begin` step 8.
+6. **Redelivery never opens a generation** (bridge hello, hub start, the grant-unconfirmed timer; review finding 3). `effect_wake_lease` outside a grant calls `agent.start_reuse(instance_id, lease_id)`, not `start_begin`. By then the bridge's status frames may have moved the row from `launching` to `starting` or `running` before the lease is confirmed; the reference still matches, so:
+   - `ok` (the row is live and its `start_ref` is this lease): send the entry again with the **same generation and the same bytes** as the grant sent (`start_launch_json` of the reused ticket). Nothing is written. This is today's behaviour.
+   - `ended` (the row is `failed`, `stopped` or `unreachable`, or another start replaced the generation): send nothing. The child this lease started is gone; relaunching the same generation, as a blind resend does today, would be refused at start-success. The lease takes the existing unconfirmed-dispatch path, `on_dispatch_failed` (`src/hub/service/taskv2/dispatch.odin:178`), and the next grant opens a new generation through `start_begin`. **This is an intended behaviour change**, listed below.
+7. `jit_prepare`: `create_instance_stopped`.
+8. Remove the allow-list entry.
+
+**Behaviour that MUST NOT change:** which instance is leased (v7-Q4; `src/hub/service/taskv2/matcher.odin` changes only in `jit_prepare`); batching per bridge and chain; the nudge of a live child; redelivery of an unconfirmed wake; lease confirmation by `run_count`; the `wake_agent` bytes an old bridge receives for a grant to an existing stopped instance.
+
+**Behaviour that changes, and is intended:** a just-created instance is launched with `run_count` 1, not 2 (F14 c); an explicit claim or transfer of a user-stopped instance clears the stop mark in the save that opens the generation (F14 a); a lease start now checks the plan, the live connection, the launch quota and ACP support, and a grant that fails them is refused instead of starting an agent (cases L6 to L9); a failed send marks the instance row `failed` (case L13); a redelivery for a lease whose child already failed or stopped no longer resends the old launch but fails the dispatch, so the next grant starts a new generation; a grant that loses the guarded save to a concurrent manual start fails with `start_raced` and is retried by the matcher.
+
+**Non-goals.** No change to `pick_instance`, the lease state machine, the timers or the placement rules (T4). No pipeline transport (T20). No change to the stop list.
+
+**Acceptance and tests** (package `taskv2` unless stated)
+
+- The existing lease, dispatch, redelivery, confirmation and startup-wake tests pass. A test whose expected `run_count` for a just-created instance was 2 is changed to 1, and the hand-off lists each such test and each of the changed behaviours above.
+- `grep -n "run_count += 1\|\"launching\"" src/hub/service/taskv2/lease.odin` prints nothing.
+
+| Name | Expected |
+|---|---|
+| `test_explicit_claim_clears_user_stop` | F14 (a): the claim and the transfer of a user-stopped instance start it; `stopped_by` is empty in the row that is `launching` |
+| `test_jit_instance_run_count_is_one` | F14 (c): after grant and flush the new instance has `run_count` 1 and the launch object carries 1 |
+| `test_grant_rollback_cancels_ticket` | a grant whose unit of work rolls back leaves the instance row unchanged and no reservation |
+| `test_grant_send_failure_marks_failed` | the command cannot be sent: the row is `failed`, the reservation is cancelled, and the lease follows `on_dispatch_failed` |
+| `test_grant_live_instance_is_nudged` | `kept_live`: no row change, a nudge entry is sent |
+| `test_grant_refused_plan_disabled` | case L6: no lease, no row change; the placement failure carries the plan reason |
+| `test_grant_refused_no_live_connection` | case L7: a bridge whose row is `Online` but which has no live connection gets no lease |
+| `test_grant_refused_quota` | case L8: at the owner's limit the grant to an existing stopped instance fails with the quota error; one below the limit it consumes one reservation |
+| `test_grant_refused_acp_withdrawn` | case L9: no lease, no row change |
+| `test_grant_redelivery_reuses_generation` | hello, hub start and the timer each resend the same launch bytes; `run_count`, `launch_epoch` and `start_ref` are unchanged. Repeated with the row moved to `starting` and to `running` by status frames before the redelivery: the same result, and no new generation |
+| `test_grant_redelivery_after_child_failed` | the row is `failed` (and, in a second case, `unreachable`) when the redelivery runs: nothing is sent, the row is not written, `on_dispatch_failed` ran for the lease; the next grant carries `run_count + 1` |
+| `test_grant_race_with_manual_start` | `start_instance` and a grant for the same stopped instance from two threads, 100 rounds: exactly one generation is opened per round (`run_count` grows by 1), exactly one launch command is sent, the loser gets `start_raced` (or `already_running` when it read the row after the winner's commit), and no reservation is left over |
+| `test_lease_start_agent_entry` | a bridge with `start_agent_v1`: one `start_agent` per bridge and chain; the entry's `launch` carries the lease keys and the pack |
+| `test_wake_agent_bytes_unchanged` | a bridge without the feature: the command equals a golden value recorded from `origin/main` for a grant to a stopped existing instance |
+| `test_start_has_one_implementation` (`service/agent`) | passes with `lease.odin` removed from the allow-list |
+
+### T26. Phase-S integration and E2E (amendment S2)
+
+**Goal.** One releasable phase S: every agent start runs through `start_begin` and `bridge_runtime_launch_agent`.
+**Requirements.** REQ-ONE-1 (final allow-list), REQ-ONE-5, REQ-DEPLOY-1.
+**Depends on.** T23, T24, T25.
+
+**Steps**
+
+1. Merge `origin/main`; re-run the boundary tests and the full suites; report counts per package.
+2. `prepare_instance` has no caller left that needs a `launching` row. Delete its `launching` write and its reservation; `create_instance_stopped` becomes its only caller. Remove it from the allow-list of `test_start_has_one_implementation`.
+3. Add `test_one_launcher_two_callers` (`src/bridge`, a source scan in the style of `src/hub/app/thread_spawn_guard_test.odin:22`): `bridge_runtime_launch_agent(` is called only from `src/bridge/start_agent.odin` and `src/bridge/agent_wake.odin`.
+4. Docs: the bridge protocol text (`start_agent`, the feature, the old names); `SELF_HOSTING.md` (hub first, then bridges, also for phase S); the task-engine section on why a lease can be refused (cases L6 to L9).
+5. Close finding F14: comment on any issue that tracks gap (a), (b) or (c) with the test that proves it closed.
+6. Deploy to Mundus through a change request (hub first, then bridges). Run the E2E list. Brolabs only after the user's explicit OK.
+
+**E2E list (Mundus)**
+
+| # | Scenario | Pass when |
+|---|---|---|
+| S1 | Manual Start and Restart of an agent on an updated bridge | the bridge log shows `start_agent`; `run_count` grows by 1 per start |
+| S2 | The same on a bridge that was not updated | the bridge receives `launch_agent`; the agent starts |
+| S3 | A task chain with a worker and a reviewer on an updated bridge | leases launch, nudge and confirm; a new instance's first `run_count` is 1; each further launch adds 1 |
+| S4 | The same on a bridge that was not updated | works through `wake_agent` |
+| S5 | A lease for an owner at the launch limit | the task waits with the quota reason and is granted after another agent stops |
+| S6 | Kill an agent's process, then cause a task-status notice for it | the fallback restarts it with `run_count + 1`; its `start-success` is accepted |
+| S7 | A web channel message to a bot whose instance is stopped | the bot starts with a generation above 0 and answers |
+| S8 | An explicit lease claim for an instance the user stopped | it starts; `stopped_by` is empty afterwards |
+| S9 | Restart the bridge while an agent's row is `running`, then cause a notice for it | the bridge retries; within about 150 s the reaper has marked the row `unreachable` and the agent starts with `run_count + 1`, without a second notice |
+| S10 | Stop the bridge right after a grant, restart it 2 minutes later | the worker starts after the reconnect with the generation of the grant, without a second grant |
+
+**Non-goals.** No removal of the old command names. No Brolabs deploy without the user's explicit OK.
+
+**Acceptance.** Steps 1 to 6 done with evidence in task comments; every E2E row passes or is reported with its failure.
 
 ## 9. Traceability
 
@@ -3611,7 +4365,7 @@ Delivery_Port :: struct {
 | REQ-PIPE-2 | T16 | `test_forward_and_ack`, `test_incapable_bridge_gets_no_consumer`, `test_start_stop_clean`, `test_in_flight_limit`, `test_waiting_retries_do_not_block_other_deliveries`, `test_in_flight_ignores_stale_rows`, `test_reconnect_while_answers_arrive`, `test_answers_are_queued_not_sent_on_caller_thread`, the sleep grep of T16 |
 | REQ-PIPE-3 | T16 | `test_gate_drops_closed_rows`, `test_gate_expires`, `test_gate_still_valid_false`, `test_gate_unknown_delivery_is_terminated` |
 | REQ-PIPE-4 | T1, T16 | `scenario_nak_reply_delay`, `scenario_in_progress_reply`, `scenario_term_reply`, `test_accepted_keeps_message`, `test_retry_redelivers_after_delay`, `test_fatal_terminates`, `test_retry_delay_table`, `test_result_is_idempotent`, `test_transition_lost_cas_is_a_no_op`, `scenario_delayed_nak_counts_toward_max_ack_pending`, `scenario_ack_reply_async`, `test_succeeded_from_older_attempt_counts` |
-| REQ-PIPE-5 | T16 | `test_relaunch_split_keeps_behaviour`, `test_start_begin_opens_generation`, `test_start_begin_is_idempotent_per_delivery`, `test_start_begin_clears_user_stop`, `test_start_begin_refuses_live_row`, `test_start_begin_race_with_manual_start`, `test_start_begin_acp_epoch`, `test_start_begin_failed_status_releases_reservation`, `test_start_success_before_command_result`, `test_start_success_when_command_result_is_lost`, `test_pipeline_never_reads_stopped_by`; E2E E5 |
+| REQ-PIPE-5 | T22 | `test_start_keeps_launch_bytes`, `test_start_begin_opens_generation`, `test_start_begin_is_idempotent_per_ref`, `test_start_begin_clears_user_stop`, `test_start_begin_refuses_live_row`, `test_start_begin_race_with_manual_start`, `test_start_begin_acp_epoch`, `test_start_begin_failed_status_releases_reservation`, `test_start_success_before_command_result`, `test_start_success_when_command_result_is_lost`, `test_pipeline_never_reads_stopped_by`; E2E E5 |
 | REQ-PIPE-6 | T16 | `test_off1_route_does_not_check_liveness`, `test_off2_routed_delivery_is_replaced_on_disconnect`, `test_off2b_forwarded_delivery_is_not_replaced`, `test_off2_max_three_rounds`, `test_off3_waits_for_reconnect`, `test_off3_expired_on_reconnect`, `test_off4_exhausted_from_advisory`, `test_off5_expire_due_at_start`, `test_forward_launch_drop_reconnect_single_effect`; E2E E14 to E16 |
 | REQ-PIPE-7 | T1, T16 | `scenario_max_deliver_advisory`, `scenario_delete_message`, `test_off4_exhausted_from_advisory`, `test_retry_on_final_attempt_is_fatal` |
 | REQ-PIPE-8 | T16, T10, T14, T18, T19, T20 | `test_route_refuses_incapable_bridge`, `test_incapable_bridge_gets_no_consumer`, `test_downgraded_bridge_closes_deliveries`, `test_place_requires_pipeline_feature`, `test_old_bridge_is_not_a_candidate`; E2E E18 |
@@ -3625,8 +4379,21 @@ Delivery_Port :: struct {
 | REQ-FLOW-1 | T18 | the `test_notice_*` tests, `tests/ui_event_notice_test.ts`, the `stopped_by` grep of T18 |
 | REQ-FLOW-2 | T19 | `test_bot_attempt_routed_through_pipeline`, `test_bot_sink_done_and_failed`, `test_bot_hello_does_not_resend_on_pipeline`, `test_action_bot_target_types_prompt`, `test_action_bot_target_joins_open_delivery`; E2E P4 to P6 |
 | REQ-FLOW-3 | T20 | `test_grant_appends_lease_delivery`, `test_lease_payload_bytes_unchanged`, `test_lease_delivered_after_reconnect_without_hello_resend`, `test_lease_sink_failed_parks_task`, `test_grant_unconfirmed_timer_on_pipeline`, the `test_bridge_lease_*` tests; E2E P1, P3 |
-| REQ-FLOW-4 | T18, T19, T20 | `test_notice_old_bridge_uses_old_path`, the existing bots and lease tests run on the old transport, `test_wake_agent_handler_unchanged`, `test_bot_wire_fields_are_additive`; E2E P2 |
-| REQ-DEPLOY-1 | T14, T21 | the E2E lists and the change requests |
+| REQ-FLOW-4 | T18, T19, T20 | `test_notice_old_bridge_uses_old_path`, the existing bots and lease tests run on the old transport, `test_wake_agent_adapter_unchanged`, `test_lease_pipeline_needs_both_features`, `test_bot_wire_fields_are_additive`; E2E P2 |
+| REQ-ONE-1 | T22, T25, T26 | `test_start_has_one_implementation` (allow-list shrinks in T25 and T26), `test_start_begin_in_open_unit_of_work`, `test_start_refusals_write_nothing`, `test_start_begin_guarded_save`, `test_grant_race_with_manual_start`, `test_start_begin_reuses_ref_in_any_live_status`, `test_start_reuse_never_writes` |
+| REQ-ONE-2 | T22 | `test_start_keeps_launch_bytes`, `test_start_if_live_table`, `test_start_restart_refused_keeps_user_stop`, `test_start_send_failure_marks_failed`, `test_create_instance_stopped`, `test_create_instance_first_generation_is_one`, `test_coordinator_wake_guard_under_mutex`; E2E S1, S2 |
+| REQ-ONE-3 | T25 | `test_explicit_claim_clears_user_stop`, `test_jit_instance_run_count_is_one`, `test_grant_rollback_cancels_ticket`, `test_grant_send_failure_marks_failed`, `test_grant_live_instance_is_nudged`, `test_grant_redelivery_reuses_generation`, `test_grant_redelivery_after_child_failed`, the lease grep of T25; E2E S3, S8, S10 |
+| REQ-ONE-4 | T17, T24 | `test_event_start_never_generation_zero`, `test_fallback_calls_start_begin_with_ref`, `test_fallback_never_generation_zero`, `test_fallback_ref_stable_across_retries`, `test_fallback_start_success_is_accepted`, `test_bot_launch_calls_start_begin`, `test_bot_instance_created_stopped`, `test_bot_first_generation_is_one`, `test_bridge_ready_carries_start_begin`, `test_fallback_legacy_hub_uses_manifest`, `test_bot_launch_legacy_hub_uses_manifest`, `test_start_begin_flag_reset_on_reconnect`, `test_start_begin_404_without_error_body_is_retriable`, the grep of T24; E2E S6, S7 |
+| REQ-ONE-5 | T23, T26 | `test_start_agent_launch_entry_passes_launch_unchanged`, `test_one_launcher_two_callers` |
+| REQ-ONE-6 | T23, T25 | `test_start_command_json_shape`, `test_start_command_send_new_bridge`, `test_start_command_old_bridge_launch_agent_bytes`, `test_start_command_old_bridge_wake_agent_bytes`, `test_launch_agent_adapter_unchanged`, `test_wake_agent_adapter_unchanged`, `test_start_agent_nudge_live_child`, `test_start_agent_stop_list`, `test_start_agent_failed_entry_reports_status`, `test_start_agent_spec_and_key`, `test_features_list_has_start_agent`, `test_lease_start_agent_entry`, `test_wake_agent_bytes_unchanged`; E2E S1 to S4 |
+| REQ-ONE-7 | T17, T22, T24, T25 | L1, L3 to L9: `test_start_refusals_write_nothing`; L2: `test_start_if_live_table`, `test_start_begin_refuses_live_row`; L6 to L9 for leases: `test_grant_refused_plan_disabled`, `test_grant_refused_no_live_connection`, `test_grant_refused_quota`, `test_grant_refused_acp_withdrawn`; L10: `test_coordinator_wake_guard_under_mutex`; L11: `test_create_instance_stopped`; L13: `test_start_send_failure_marks_failed`, `test_grant_send_failure_marks_failed`; L14: `test_old_bridge_is_not_a_candidate`; L15: `test_start_command_old_bridge_launch_agent_bytes`; L16: `test_event_start_begin_failure_classes`, `test_fallback_failure_classes`, `test_bot_launch_refused_reports_attempt`; L17: `test_event_row4_draining_and_vault_locked`; L18: `test_event_start_gate_coalesced_backoff_parked`; L19: `test_start_agent_failed_entry_reports_status`, `test_start_begin_failed_status_releases_reservation`; L20: `test_reaped_row_accepts_start_begin`, `test_event_already_running_without_snapshot_retries`, `test_event_already_running_without_snapshot_final_is_fatal`, `test_event_already_running_with_local_process_is_started`, `test_event_stale_row_recovers_after_reaper`, `test_fallback_stale_row_recovers_after_reaper`, `test_fallback_already_running_with_local_process`, `test_fallback_stale_row_retry_is_bounded`; L21: `test_grant_redelivery_reuses_generation`, `test_grant_redelivery_after_child_failed`; L22: `test_start_begin_is_idempotent_per_ref`, `test_start_begin_reservation_expires`; L12 and L23 are unchanged behaviour covered by the existing task-engine tests; E2E S5, S9 |
+| REQ-SCALE-1 | T17 | `test_ledger_evicts_by_expiry_plus_margin`, `test_ledger_redelivery_inside_margin_has_no_second_effect`, `test_ledger_bridge_clock_ahead`, `test_ledger_holds_rate_times_lifetime` |
+| REQ-SCALE-2 | T1 | `test_relay_wakes_on_commit`, `test_relay_rollback_does_not_wake`, `test_relay_publishes_batch_in_order`, `test_relay_idle_fallback_wait` |
+| REQ-SCALE-3 | T16 | `test_prune_runs_when_a_delivery_becomes_final`, `test_prune_at_most_once_per_hour` |
+| REQ-SCALE-4 | T1, T9 | `scenario_schedule_fire_ttl`, `test_schedule_rows_carry_fire_ttl` |
+| REQ-SCALE-5 | T9, T10 | `test_match_key_derivation`, `test_triggers_match_reads_only_matching_keys`, `test_schedule_fire_reads_one_trigger`, `test_exact_and_wildcard_triggers_both_match` |
+| REQ-LOOKUP-1 | T3, T9, T10, T16 | `test_event_path_queries_use_indexes` |
+| REQ-DEPLOY-1 | T14, T21, T26 | the E2E lists and the change requests |
 
 ### 9.2 User decision → where it is built
 
@@ -3636,12 +4403,12 @@ Section 2 maps every decision to its sections and tasks. The tests are those of 
 |---|---|---|---|
 | B1 hub consumer per bridge, forward over the link | PIPE-1, 2; BRG-5 | T1, T16, T17 | `test_forward_and_ack`, `scenario_work_queue_disjoint_consumers`, the `nats` grep of T17 |
 | B2 hub picks the bridge at route time | ACT-6, PLACE-1..5 | T3, T10 | the `test_place_*` tests |
-| B3 bridge starts; no stop check | BRG-1, 3; PIPE-5, 10 | T16, T17 | `test_start_begin_clears_user_stop`, `test_event_start_user_stopped_instance`, `test_reuse_user_stopped_instance_is_used`, `test_pipeline_never_reads_stopped_by`; E2E E5 |
+| B3 bridge starts; no stop check | BRG-1, 3; PIPE-5, 10 | T16, T22, T17 | `test_start_begin_clears_user_stop`, `test_event_start_user_stopped_instance`, `test_reuse_user_stopped_instance_is_used`, `test_pipeline_never_reads_stopped_by`; E2E E5 |
 | B4 ack or nak from the bridge | PIPE-4, BRG-4 | T16, T17 | `test_retry_redelivers_after_delay`, `test_event_result_json_fields` |
 | B5 one pipeline, four flows | PIPE-9, FLOW-1..3 | T10, T18, T19, T20 | `test_delivery_imports`; one routed-delivery test per kind |
 | No stop check | PIPE-5, FLOW-1 | T16, T18 | `test_notice_user_stopped_agent_is_routed`, the greps of T16 and T18 |
 | v7-Q1 old bridges cannot run actions | PIPE-8 | T10, T14 | `test_place_requires_pipeline_feature`, `test_old_bridge_is_not_a_candidate`; E2E E18 |
-| v7-Q2 start-begin | PIPE-5, BRG-3 | T16, T17 | the `test_start_begin_*` tests, `test_event_row9_absent_starts` |
+| v7-Q2 start-begin | PIPE-5, BRG-3 | T22, T17 | the `test_start_begin_*` tests, `test_event_row9_absent_starts` |
 | v7-Q3 busy agent: retry about 15 minutes, then deliver | PIPE-4, BRG-1 | T16, T17 | `test_retry_delay_table`, `test_event_row8_busy_asks_retry`, `test_event_row8b_busy_final_types_anyway`, `test_retried_busy_target_ends_delivered`; E2E E13 |
 | v7-Q4 lease stop avoidance unchanged | FLOW-3 | T20 | review item: `src/hub/service/taskv2/matcher.odin` is not in the diff of T20 |
 | v7-Q5 user chat messages stay off the pipeline | — | — | review item on T16 and T10: `deliver_user_message` and `send_chat_message_handler` are not in any diff |
@@ -3650,6 +4417,11 @@ Section 2 maps every decision to its sections and tasks. The tests are those of 
 | A1 with `routed` open | ACT-13 | T10 | `test_c21_…`, `test_c22_…`, `test_matcher_joins_routed_run` |
 | Q6 / A3 no run-now | ACT-9, 11 | T9, T12, T13 | `test_actions_routes`, `test_ctl_actions_no_run_verb`, `tests/ui_actions_no_run_button_test.ts` |
 | v5-Q2 no hub tick | ACT-13, PIPE-2 | T10, T16 | the sleep greps of T10 and T16; `test_deferral_fire_real_server`; `test_c14_lost_deferral_fire` |
+| S-A one start path | ONE-1 to 5, 7 | T22, T24, T25, T26 | `test_start_has_one_implementation`, `test_one_launcher_two_callers`, `test_fallback_never_generation_zero`, `test_jit_instance_run_count_is_one`; E2E S3, S6, S7 |
+| S-B one start command | ONE-6 | T23, T25 | `test_start_command_json_shape`, the two old-bridge byte tests, the two adapter tests; E2E S1 to S4 |
+| S-C fallback and bots on start-begin | ONE-4 | T24 | `test_fallback_calls_start_begin_with_ref`, `test_bot_launch_calls_start_begin`, the grep of T24 |
+| S-D now, before phase 1 | — | T22 in phase 1; T23 to T26 in phase S | section 7 |
+| Scale 1 to 5, Lookups | SCALE-1 to 5, LOOKUP-1 | T1, T9, T10, T16, T17 | the tests of those requirements |
 
 ## 10. Risks, and assumptions settled
 
@@ -3669,7 +4441,7 @@ Section 2 maps every decision to its sections and tasks. The tests are those of 
 | K14 | Between T9 and T12/T13 the old CLI and UI call routes that are gone | Inside phase 1 only, behind the experiment; T14 releases them together |
 | K15 | A bridge built before T8 keeps running its scheduler against a hub without the bridge routes | Its requests get 404 and it fires nothing. Verified in T14 step 5 |
 | K16 | The IANA zone database is missing on a hub host | Verified in T2 |
-| V-K1 | **Start-begin splits `relaunch_instance_locked`**, the procedure behind every manual start | The statements are moved, not rewritten; `test_relaunch_split_keeps_behaviour` compares bytes with `origin/main`; the existing agent-service tests must pass unchanged |
+| V-K1 | **Start-begin replaces `relaunch_instance_locked`**, the procedure behind every manual start | See S-K1 |
 | V-K2 | A machine that drops in the seconds between forward and answer holds its prompt until it returns or the prompt expires (OFF-2b) | Accepted in exchange for never running an action twice; the run history shows `routed` |
 | V-K3 | One forwarder thread per capable bridge. Fine for tens of bridges; not measured for hundreds | A cap of 256 with a counter (6.11.4). If a deployment nears it, the follow-up is a small pool that multiplexes bridges; the `delivery` API does not change |
 | V-K4 | Waking user-stopped agents surprises a user who stopped an agent on purpose | The user's decision (B3). The run history and the chat card show what woke it; disabling the action or the watch is the off switch; stated in the user docs (T14) |
@@ -3687,25 +4459,47 @@ Section 2 maps every decision to its sections and tasks. The tests are those of 
 | V-K17 | The first notice after a start relies on the start-success step telling the agent about the first unread message. An instance that is *booting* and has already passed that step when the delivery arrives gets no typed line for it | The window is the few milliseconds between start-success on the hub and the status change on the bridge; the message stays unread in the conversation and is seen at the agent's next `chat read` |
 | V-K18 | **Head-of-line blocking on one bridge.** Measured (N10): a delivery waiting for a delayed retry holds a `MaxAckPending` slot | `MaxAckPending` is 256 and is not the in-flight limit; the hub counts frames in flight itself (16, 6.11.4), and waiting retries are not counted. Blocking needs 256 open deliveries on one bridge at once. Open deliveries are bounded by design: one per action (A1), one notice per instance, one per bot, one per lease. If a deployment gets near 256, raise the constant; nothing else changes |
 | V-K19 | A connection that the registry reports live while its writes fail uses up attempts | A failed send is not nak'd: it costs at most one attempt per minute (6.11.4 step 5), so the 8 attempts last at least 8 minutes, far longer than disconnect detection. A delivery that still runs out ends `failed`, `no_answer` and is not placed again, because the frame may have been sent in part |
-| V-K20 | Start-begin for a row that is already live returns `already_running`, and the bridge answers `started` although this delivery started nothing | Correct by design: the live generation's start-success step finds the stored message. If that process dies before start-success, the message stays unread and the next delivery or the user's next look finds it; the run is still `delivered` |
+| V-K20 | Start-begin for a row that is already live returns `already_running`, although this delivery started nothing | (Changed by the S2 rework.) The bridge answers `started` only when it has a process for the instance itself; then the live generation's start-success step finds the stored message. With no local process it answers `retry` until the hub's reaper has corrected a stale row or the other start has arrived, and `failed` (`hub_row_live`) on the final attempt. A delivery is not closed as delivered on the strength of a hub row alone |
+| S-K1 | **T22 rebuilds every manual start** (Start, Restart, create, chat message, MCP, fleet change) and is on phase 1's critical path | The statements are moved, not rewritten; `test_start_keeps_launch_bytes` compares command bytes with `origin/main` for Start, Restart and create; the existing tests of four packages must pass; the intended changes are listed in T22 and in its hand-off |
+| S-K2 | **Task lease dispatch changes behaviour.** A lease start now checks the plan, the live connection, the launch quota and ACP support (cases L6 to L9). A chain that started agents on a bridge with a disabled plan, or over the launch limit, stops doing so | This is what S-A asks for. Each refusal carries its reason in the placement failure and has a test (T25); E2E S5; the hand-off of T25 lists the four changes; the docs say why a lease can be refused (T26). T25 is in phase S, not phase 1, so the actions release does not carry this risk |
+| S-K3 | **Mixed versions** of hub and bridge during rollout of the start command | Four combinations, all defined (6.12.6). The hub picks the wire form per bridge from one feature flag in one procedure; the old bytes are tested against `origin/main` on the hub, and the two old frames are tested through their adapters on the bridge. No rollout order is needed for T23 |
+| S-K4 | **A bridge with T24 against a hub without T22** (self-hosted users and rollbacks do not follow a deploy order) | The hub announces start-begin in `bridge_ready`; without the flag the bridge keeps the manifest path, as on `origin/main`. A 404 without the hub's JSON error is retriable, never parked. Tests `test_fallback_legacy_hub_uses_manifest`, `test_bot_launch_legacy_hub_uses_manifest`, `test_start_begin_flag_reset_on_reconnect`, `test_start_begin_404_without_error_body_is_retriable` |
+| S-K5 | **The grant calls `start_begin` without `reconfiguration_mutex`** while `start` holds the mutex but runs outside a unit of work. Unguarded, the two could write the same `run_count` twice (two launches of one generation) and `start` would erase the lease's `start_ref` | The save of step 10 is conditional on the `run_count`, `launch_epoch` and `configuration_revision` read in step 2 (6.12.2): one writer wins, the other gets `start_raced` and cancels its reservation. `test_start_begin_guarded_save`, `test_grant_race_with_manual_start` (100 rounds, exactly one generation and one launch per round). The grant's `agent_runtime_busy` and pending-stop checks stay |
+| S-K6 | **A bridge-initiated start is refused while the hub's row is stale** (case L20): today the fallback launches regardless | Recovery is the hub's reaper (`REAPER_STALE_MS` (`src/hub/app/reaper.odin:27`) on a sweep every 20 s (`src/hub/app/reaper.odin:30`); about 110 s), not a frame from the bridge. The bridge retries past that window: 5 × 30 s for the fallback and bots, `retry` every 30 s for the pipeline. Cost: a restart after a bridge crash is up to about 2 minutes later than today. `test_reaped_row_accepts_start_begin`, `test_fallback_stale_row_recovers_after_reaper`, `test_event_stale_row_recovers_after_reaper`; E2E S9 |
+| S-K7 | The launch quota now counts for leases, bots and the fallback. An owner near 2048 active instances sees refusals that did not exist | Intended (S-A). The refusal names the quota |
+| S-K8 | A hub that is down for more than 24 hours loses the schedule fires older than that (before S2: 14 days) | A stale fire would run its action a day late. The definitions are untouched and fire again at their next time. Named in section 11 |
+| S-K9 | A bridge whose clock differs from the hub's by more than about 9 minutes can forget a ledger entry too early and act twice on a redelivery | Only for a delivery redelivered at the very end of its life; the result is one extra notice or an `already_running` answer from start-begin, never a second generation. NTP keeps hosts far inside the margin |
+| S-K10 | The relay's wake hook sits in the commit path of every transaction | It is one flag test per commit and a non-blocking signal. A missed signal costs at most the 1 s fallback wait |
+| S-K11 | A redelivery for a lease whose child already failed no longer relaunches it; the lease waits for `on_dispatch_failed` and a new grant | Intended: the old relaunch reused a dead generation. **Assumption:** `on_dispatch_failed` returns the task to a state from which the matcher grants again; T25 verifies it first with `test_grant_redelivery_after_child_failed` and stops and reports if it does not |
 
-Risks K6, K9, K13 and K17 of the v6 spec no longer exist: the lease start is not changed (K6), the bridge-side start is the normal path (K9), the prompt and the claim share a transaction (K13), and the bridge decides busy or idle at the moment it types (K17).
+Risks K13 and K17 of the v6 spec no longer exist: the prompt and the claim share a transaction (K13), and the bridge decides busy or idle at the moment it types (K17). With amendment S2, K6 (the lease start changes) is back as S-K2, and K9 (the fallback start is not converged) is closed by T24.
 
 ### 10.2 Assumptions of plan v7, section 10
 
 | # | Assumption | Status | Evidence |
 |---|---|---|---|
 | 1 | cnats exposes work-queue retention, delayed nak and in-progress through the calls the wrapper would add | **Settled by execution** | A C program against the flake's toolchain (`nats.c` 3.13.0, `nats-server` 2.14.7), run with `nix develop -c sh run.sh`, 12 steps, 0 failures: facts N1 to N9 of 6.3.5, plus `natsMsg_NakWithDelay` (its argument order is message, delay, options). Sources and the full output are committed next to this document: `docs/plans/evidence/action-triggers-spec/check.c`, `run.sh` and `output.txt` (20 checks passed, 0 failed, including the delayed-nak measurement N10); T1 turns each step into a named scenario, so the proof is repeated in the repository |
-| 2 | Splitting `relaunch_instance_locked` before its send leaves the ACP epoch and the transport freeze correct when the bridge, not the hub, sends the launch | **Settled by reading; proven by T16 tests** | The epoch is minted and the transport frozen inside the part that moves (`src/hub/service/agent/agent_service.odin:1147`, `src/hub/service/agent/agent_service.odin:1148`). Every epoch check compares against the row only: status frames (`src/hub/service/agent/agent_service.odin:1190`), the instance token (`src/hub/service/agent/agent_service.odin:563`). No check depends on the hub having sent `launch_agent`: the `cmd_launch_` id is generated (`src/hub/service/agent/agent_service.odin:1160`) and never stored or matched. One step is **not** in the moved part: `validate_frozen_runtime_transport` runs inside `send_frozen_instance_launch` (`src/hub/service/agent/agent_service.odin:424`); start-begin therefore calls it itself (6.12.2 step 6). Tests: `test_start_begin_acp_epoch`, `test_relaunch_split_keeps_behaviour` |
-| 3 | The bridge's instance-status frame after a failed launch releases the reservation taken at start-begin | **Settled by reading, with a condition; proven by T16 tests** | A `failed` status frame is applied only when its epoch matches (`src/hub/service/agent/agent_service.odin:1190`) and its sequence advances (`src/hub/service/agent/agent_service.odin:1195`); then the registry drops the active count (`src/hub/service/project/runtime_registry.odin:659`). When the frame does not pass those checks, the reservation still cannot leak: it expires one minute after it was taken (`src/hub/service/project/runtime_registry.odin:673`, swept at `src/hub/service/project/runtime_registry.odin:622`) and is dropped on disconnect. Tests: `test_start_begin_failed_status_releases_reservation`, `test_start_begin_reservation_expires` |
+| 2 | Splitting `relaunch_instance_locked` before its send leaves the ACP epoch and the transport freeze correct when the bridge, not the hub, sends the launch | **Settled by reading; proven by T22 tests** | The epoch is minted and the transport frozen inside the part that moves (`src/hub/service/agent/agent_service.odin:1147`, `src/hub/service/agent/agent_service.odin:1148`). Every epoch check compares against the row only: status frames (`src/hub/service/agent/agent_service.odin:1190`), the instance token (`src/hub/service/agent/agent_service.odin:563`). No check depends on the hub having sent `launch_agent`: the `cmd_launch_` id is generated (`src/hub/service/agent/agent_service.odin:1160`) and never stored or matched. One step is **not** in the moved part: `validate_frozen_runtime_transport` runs inside `send_frozen_instance_launch` (`src/hub/service/agent/agent_service.odin:424`); `start_begin` therefore calls it itself (6.12.2 step 8). Tests: `test_start_begin_acp_epoch`, `test_start_keeps_launch_bytes` |
+| 3 | The bridge's instance-status frame after a failed launch releases the reservation taken at start-begin | **Settled by reading, with a condition; proven by T22 tests** | A `failed` status frame is applied only when its epoch matches (`src/hub/service/agent/agent_service.odin:1190`) and its sequence advances (`src/hub/service/agent/agent_service.odin:1195`); then the registry drops the active count (`src/hub/service/project/runtime_registry.odin:659`). When the frame does not pass those checks, the reservation still cannot leak: it expires one minute after it was taken (`src/hub/service/project/runtime_registry.odin:673`, swept at `src/hub/service/project/runtime_registry.odin:622`) and is dropped on disconnect. Tests: `test_start_begin_failed_status_releases_reservation`, `test_start_begin_reservation_expires` |
 
-**Assumptions still open** (each names the task that verifies it first): `js_DeleteMsg` (6.3.5, T1); the conversation of a prepared instance (6.12.5, T16); the single column list of `agent_instances` (6.4.1, T16); finding F9 (T8); the old bridge's heartbeat handling (T14 step 5).
+**Assumptions still open** (each names the task that verifies it first): `js_DeleteMsg` (6.3.5, T1); the conversation of a prepared instance (6.12.5, T22); the single column list of `agent_instances` (6.4.1, T22); finding F9 (T8); the old bridge's heartbeat handling (T14 step 5). Added by amendment S2: `validate_frozen_runtime_transport` reads only its argument (6.12.2, T22); `start_begin` joins an open unit of work, so a rolled-back grant restores the row (6.12.2, T25, `test_grant_rollback_cancels_ticket`); `on_dispatch_failed` leads to a new grant (T25, S-K11); the bridge has a periodic loop that can carry the stale-row retry (6.12.4, T24); one commit path in the SQLite layer (6.3.4, T1); `Nats-Schedule-TTL` on 2.14.7 (6.2.2, T1); the key names of the lease part of a launch object (6.12.6, T23).
 
 ## 11. Open questions
 
 None. The eight questions of plan v7 are decided (section 2). U1, U2 and U4 of the v6 spec keep their defaults: a disabled action's open run is skipped when due; `fresh_per_run` stops the previous instance; the history keeps 200 runs and 30 days.
 
 One deviation needs the user's eye when approving this spec, because it reads plan v7 in one of two possible ways: **D8** (a target pinned to one machine is routed to it even when it is offline).
+
+**Amendment S2: points for the user's eye.** None blocks implementation; each states the choice the spec made.
+
+| # | Point | The spec's choice |
+|---|---|---|
+| P1 | "Every start" has two named exceptions: the launch on the destination of a move to another bridge, and a provider test (6.12.7) | Left as they are. The move is a stop-then-launch state machine with its own recovery; it uses the one start command after T23, but keeps its own state write. A provider test is not an agent run |
+| P2 | Phase S (T23 to T26) is outside phase 1 | Phase 1 carries only T22. The lease change (S-K2) is released on its own, after or with phase 1 |
+| P3 | Mixed versions for T24 (S-K4) | No deploy order needed: the bridge uses start-begin only when the hub announces it in `bridge_ready`, and otherwise behaves as today |
+| P4 | Fire life of 24 hours (S-K8) | The scaling report asked for "a short life"; 24 hours equals the life of a delivery |
+| P5 | The byte limit on both streams (second half of scaling recommendation 4) | **Not specified.** With "discard old" a full `HEIM_EVENTS` would drop schedule definitions and schedules would stop silently; with "discard new" a full stream blocks the relay for every user (F21). It needs a decision on size and on which failure is preferred |
+| P6 | A bridge-initiated start for an instance whose hub row is stale (case L20, S-K6) | The bridge retries for up to 150 s until the hub's reaper (about 110 s) has marked the row `unreachable`. A pipeline delivery in that state is answered `retry`, never `started`; on its final attempt it ends `failed` (`hub_row_live`) rather than `delivered`. The other reading (the bridge's "I have no process" overrides a live row at once) would change the live-row rule that S1 approved (D23) |
 
 ## 12. Deviations from plan v7
 
@@ -3740,6 +4534,29 @@ The plan is the approved design. Reading the code at `f56f13e1` and running the 
 
 The deviations D1 to D20 of the v6 spec from plan v6 that concern reused parts still hold: purge rows instead of tombstones, the bots order, `target_missing` and `delivery_failed`, retiring a `once` trigger, reconcile by `data.rev`, relay poison handling, the three-state support value, `actions_001_reset.sql`, resume hints with C19 and C20, pruning on every path that ends a run, and `placement.bridge_status_online` for callers that do not decide a launch.
 
+### 12.1 Changes made by amendment S2 to the text approved as S1
+
+| # | S1 | S2 | Why |
+|---|---|---|---|
+| A1 | Start-begin is one seam for pipeline starts; lease dispatch, the fallback, bots and the manual starts keep their own code (non-goals, section 2.1, 6.12.3) | Every start opens its generation in `start_begin`; `relaunch_instance_locked` and the lease's own write are deleted; the fallback and bots call start-begin (6.12) | S-A, S-C |
+| A2 | `relaunch_prepare_locked` and `start_begin_for_delivery(…, delivery_id)`; column `start_delivery_id`; request body `{"delivery_id"}` | `start_begin` with a `Start_Request` and a `Start_Ticket`; `start_begin_for_bridge(…, ref)`; column `start_ref`; request body `{"ref"}` | The procedure serves callers that have no delivery: a lease, a bot attempt, a fallback wake |
+| A3 | `validate_frozen_runtime_transport` after the save; on an error the row is marked `failed` | Before the save, on the in-memory row; a refusal writes nothing (with an Assumption and a fallback to S1's order) | "A refused start writes nothing" then holds for every case, also inside a lease grant, where a `failed` row would be rolled back anyway |
+| A4 | `create_instance_stopped` keeps the `run_count` that `prepare_instance` wrote (1) | It writes `run_count` 0; `start_begin` makes the first bump | One bump per start; the first launch still carries 1, and finding F14 (c) closes |
+| A5 | Two wire commands; merging them is a non-goal | One command `start_agent` behind `start_agent_v1`; the old names stay for old bridges | S-B |
+| A6 | T16 owns start-begin | T22 owns it; T16 keeps the pipeline. T17 and T10 depend on T22. New tasks T22 to T26, new phase S | S-D: phase 1 stays as parallel as before |
+| A7 | F14 gaps are filed as issues by T21 | Closed: (a), (c) by T25, (b) by T22 | S-A |
+| A8 | K9: the three notice callers keep the manifest GET | They call start-begin when the hub announces it in `bridge_ready` (T24); the manifest path stays only for an older hub | S-C |
+| A9 | Ledger: flat 48 hours, `expires_at` informational on the bridge | Entry life = `expires_at` + 10 minutes; `expires_at` is load-bearing | Scaling recommendation 1 |
+| A10 | Relay: one row per pass, 1 s idle sleep (unchanged from `origin/main`) | Woken on commit; up to 64 rows per pass | Scaling recommendation 2 |
+| A11 | `delivery.prune` only at hub start and NATS reconnect; no index for it | Also when a delivery becomes final, at most hourly; index `pipeline_deliveries_closed` | Scaling recommendation 3 |
+| A12 | Fires stay 14 days | `Nats-Schedule-TTL: 24h` on definitions and deferral rows, with a delete-after-commit fallback | Scaling recommendation 4 (first half; the byte limit is point P5 of section 11) |
+| A13 | `triggers_match(owner, event_type)`; index on two columns | `triggers_match(owner, event_type, subject)`; column `match_key`; index on three columns | Scaling recommendation 5, without naming a kind in the matcher |
+| A14 | No statement about lookups | Section 6.16, indexes `action_runs_due` and `pipeline_deliveries_expiry`, a query-plan test | The user's request of 2026-11-22 |
+| A15 | Pointers checked at `f56f13e1` | The pointers S2 added or touched were checked at `99879b7b`; section 14.1 | Main moved |
+| A16 | A bridge reports one new feature | Two features, independent: `event_pipeline_v1` (T17) and `start_agent_v1` (T23). A lease uses the pipeline only with both | The start command can roll out without the pipeline, and the reverse |
+| A17 | Start-begin's `already_running` is answered `succeeded`, `started` (V-K20, D23) | `started` only with a local process; otherwise `retry`, and `failed` (`hub_row_live`) on the final attempt | Review of S2: with a stale row nothing would ever act on the delivery, yet its run was closed as delivered |
+| A18 | Idempotency only while the row is `launching` | A reference is reused in any live status; `start_reuse` for repeats that must never start; the save of the opening write is conditional | Review of S2: a redelivery could open a second generation on a booting child, and a grant could race a manual start |
+
 ## 13. Glossary
 
 | Term | Meaning |
@@ -3767,7 +4584,11 @@ The deviations D1 to D20 of the v6 spec from plan v6 that concern reused parts s
 | Ledger | The bridge's persisted record of deliveries it handled |
 | Attempt | One JetStream delivery of a message, 1 to 8; the last one is `final` |
 | Outcome | What the bridge did: `started`, `notified` or `accepted` |
-| Start-begin | The bridge's request that makes the hub open a new run generation before a launch |
+| Start-begin | `start_begin` on the hub: the one procedure that opens a new run generation before a launch (6.12.2). Also the bridge's request that calls it (`POST …/start-begin`) |
+| Hub-initiated, bridge-initiated | Who asked for a start. Hub-initiated: the launch command travels in `start_agent`. Bridge-initiated: the bridge fetches it with the start-begin request |
+| Start reference | The key that makes a repeated start-begin return the same generation: a delivery id, a lease id, `bot_<attempt>` or `fb_<instance>_<n>` |
+| Start command | `start_agent`: the one hub → bridge command that starts, nudges and stops agents of one chain on one bridge (6.12.6) |
+| Ticket | What `start_begin` returns: the saved row, the command id and the launch reservation |
 | Generation | `run_count` of an instance: one number per launch |
 | Placement rule | `(bridge, provider, model)`, each a value or `*` |
 | Candidate | A launchable `(bridge, provider, model)` |
@@ -4066,3 +4887,70 @@ Every `path:line` reference of this document, with the text found at that line i
 | `src/ui/components/workbench/AgentChatPane.tsx` | 2089 | `className="my-2 flex w-full items-center gap-3"` |
 | `src/ui/components/workbench/AgentChatPane.tsx` | 2137 | `if (message.messageType === 'action') {` |
 | `src/ui/utils/bridgeLaunchOptions.ts` | 19 | `export function bridgeIsOnline(bridge: any): boolean {` |
+
+### 14.1 References added or re-checked by amendment S2
+
+The `path:line` references that amendment S2 added or moved, with the text found at that line in `origin/main` `99879b7b`. `src/hub/repository/sqlite/migrations.odin` grew by two migrations between the two commits, so its references in 4 and 6.4.1 were moved to the new lines; the rows of section 14 for its lines 726, 973, 1483, 1506, 2006 and 2027 are superseded by the rows here. All 331 references of this document resolve at `99879b7b`; for the 271 that section 14 lists, the text at that commit is identical to the text shown there.
+
+| Path | Line | Source text |
+|---|---|---|
+| `src/bridge/action_scheduler.odin` | 1066 | `bridge_task_wake_if_needed(target_instance_id, now_ms, (now_ms + BRIDGE_OPERATIO` |
+| `src/bridge/action_scheduler.odin` | 952 | `bridge_task_wake_if_needed(c.id, now_ms, (now_ms + BRIDGE_OPERATION_DEADLINE_MS)` |
+| `src/bridge/agent_wake.odin` | 246 | `command_json, enrich_err, enrich_ok := bridge_wake_fetch_enriched_launch_json(in` |
+| `src/bridge/agent_wake.odin` | 250 | `ok, detail, err = bridge_runtime_launch_agent(command_id, command_json, deadline` |
+| `src/bridge/agent_wake.odin` | 60 | `bridge_task_status_notify_wake_local :: proc(instance_id: string) -> bool {` |
+| `src/bridge/agent_wake.odin` | 74 | `Bridge_Wake_State :: struct {` |
+| `src/bridge/bot_delivery.odin` | 84 | `command_json, fetch_err, fetched := bridge_wake_fetch_enriched_launch_json(insta` |
+| `src/bridge/bot_delivery.odin` | 87 | `return bridge_runtime_launch_agent(command_id, command_json, deadline_ns)` |
+| `src/bridge/hub_command_dispatch.odin` | 412 | `case "wake_agent", "task_status_changed_notify":` |
+| `src/bridge/hub_command_dispatch.odin` | 519 | `if command_type == "wake_agent" {` |
+| `src/bridge/hub_runtime_client.odin` | 1136 | `if type == "launch_agent" {` |
+| `src/bridge/hub_runtime_client.odin` | 1145 | `ok, detail, launch_err := bridge_runtime_launch_agent(command_id, text, bridge_c` |
+| `src/bridge/hub_runtime_client.odin` | 1314 | `ok := bridge_task_status_notify_wake_local(instance_id)` |
+| `src/bridge/hub_runtime_client.odin` | 1351 | `ok := bridge_task_status_notify_wake_local(instance_id)` |
+| `src/bridge/hub_runtime_client.odin` | 1452 | `if bridge_task_status_notify_wake_local(inst) {` |
+| `src/bridge/hub_runtime_client.odin` | 2576 | `ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_js` |
+| `src/bridge/hub_runtime_client.odin` | 2594 | `ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_js` |
+| `src/bridge/hub_runtime_client.odin` | 2750 | `if !bridge_auto_update_launch_enter() do return false, "bridge is applying an au` |
+| `src/bridge/hub_runtime_client.odin` | 3644 | `if !ok do return strings.clone("{}")` |
+| `src/bridge/hub_runtime_client.odin` | 643 | `sync.atomic_store(&bridge_hub_features_update_supported, extract_json_bool(text,` |
+| `src/bridge/hub_runtime_client.odin` | 671 | `sync.atomic_store(&bridge_hub_features_update_supported, false)` |
+| `src/hub/app/mcp_chain_create.odin` | 45 | `inst,generation,prepared,perr:=agent.prepare_instance(&g.agents,principal,{` |
+| `src/hub/app/mcp_runtime.odin` | 102 | `row,gen,ok,err:=agent.prepare_instance(&g.agents,principal,{agent_id=a.agent_id,` |
+| `src/hub/app/mcp_runtime.odin` | 128 | `row,accepted,action_err:=agent.start_instance(&g.agents,principal,i.agent_instan` |
+| `src/hub/app/reaper.odin` | 108 | `reaper_loop :: proc(graph: ^App_Graph) {` |
+| `src/hub/app/reaper.odin` | 27 | `REAPER_STALE_MS :: 90_000` |
+| `src/hub/app/reaper.odin` | 30 | `DEFAULT_REAPER_INTERVAL_SECONDS :: 20` |
+| `src/hub/repository/sqlite/migrations.odin` | 1486 | `if !upgrade_scheduled_prompts_schema(conn) do return false, domain.domain_error(` |
+| `src/hub/repository/sqlite/migrations.odin` | 1509 | `migration_sql :: proc(name, migrations_dir: string) -> string {` |
+| `src/hub/repository/sqlite/migrations.odin` | 2010 | `upgrade_scheduled_prompts_schema :: proc(conn: ^Conn) -> bool {` |
+| `src/hub/repository/sqlite/migrations.odin` | 2031 | `upgrade_actions_schema :: proc(conn: ^Conn) -> bool {` |
+| `src/hub/repository/sqlite/migrations.odin` | 726 | `MIGRATION_235_EXTENSION_VERSION_SYNC :: #load("migrations/235_extension_version_` |
+| `src/hub/repository/sqlite/migrations.odin` | 728 | `migration_order :: [?]string {` |
+| `src/hub/repository/sqlite/migrations.odin` | 977 | `"235_extension_version_sync_0_5_72.sql",` |
+| `src/hub/repository/sqlite/migrations/events_001_outbox.sql` | 12 | `CREATE INDEX event_outbox_pending ON event_outbox(outbox_seq) WHERE published_at` |
+| `src/hub/service/agent/agent_service.odin` | 1097 | `reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte` |
+| `src/hub/service/agent/agent_service.odin` | 1118 | `relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,` |
+| `src/hub/service/agent/agent_service.odin` | 1219 | `} else {` |
+| `src/hub/service/agent/agent_service.odin` | 1461 | `reap_stale_instances :: proc(service: ^Agent_Service, stale_after_ms: i64) -> []` |
+| `src/hub/service/agent/agent_service.odin` | 1620 | `validate_pinned_provider_model :: proc(service: ^Agent_Service, auth: contracts.` |
+| `src/hub/service/agent/agent_service.odin` | 2697 | `freeze_runtime_transport :: proc(service: ^Agent_Service, inst: ^domain.Agent_In` |
+| `src/hub/service/agent/agent_service.odin` | 2706 | `runtime_launch_epoch :: proc(service: ^Agent_Service, transport: string, legacy_` |
+| `src/hub/service/agent/agent_service.odin` | 324 | `reserve_runtime_launch :: proc(service: ^Agent_Service, inst: domain.Agent_Insta` |
+| `src/hub/service/agent/agent_service.odin` | 330 | `create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i` |
+| `src/hub/service/agent/agent_service.odin` | 423 | `send_frozen_instance_launch :: proc(service: ^Agent_Service, command_id: string,` |
+| `src/hub/service/agent/instance_reconfiguration.odin` | 241 | `reconfiguration_launch_destination :: proc(service: ^Agent_Service, op: domain.I` |
+| `src/hub/service/agent/instance_reconfiguration.odin` | 79 | `reconfiguration_require_idle :: proc(service: ^Agent_Service, instance_id: strin` |
+| `src/hub/service/eventrelay/relay.odin` | 72 | `if !progress do wait = time.Second` |
+| `src/hub/service/project/runtime_registry.odin` | 26 | `if limits.active_instances <= 0 do limits.active_instances = 16384` |
+| `src/hub/service/taskv2/coordinator_wake.odin` | 15 | `// agent.stop_instance holds reconfiguration_mutex while it calls` |
+| `src/hub/service/taskv2/dispatch.odin` | 191 | `start_solo_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task:` |
+| `src/hub/service/taskv2/lease.odin` | 306 | `wake_reuses_live_child :: proc(inst: domain.Agent_Instance, needs_new_child: boo` |
+| `src/hub/service/taskv2/matcher.odin` | 435 | `jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.T` |
+| `src/hub/service/taskv2/matcher.odin` | 449 | `inst, generation, ok, err := agent.prepare_instance(svc.agent_service, auth, inp` |
+| `src/hub/service/taskv2/service.odin` | 164 | `Effects :: struct {` |
+| `src/hub/service/taskv2/service.odin` | 407 | `cancel_reservations :: proc(svc: ^Service, e: ^Effects) {` |
+| `src/hub/transport/http/agent_handlers.odin` | 344 | `inst, restarted, err := agent_service.restart_instance(h.agents, auth_ctx, path_` |
+| `src/hub/transport/http/agent_handlers.odin` | 357 | `inst, started, err := agent_service.start_instance(h.agents, auth_ctx, path_part` |
+| `src/hub/transport/http/bridge_handlers.odin` | 3367 | `strings.write_string(&b, ",\"" + contracts.BRIDGE_READY_FEATURES_UPDATE + "\":tr` |
+| `src/hub/transport/http/taskchain_handlers.odin` | 2347 | `if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(` |
