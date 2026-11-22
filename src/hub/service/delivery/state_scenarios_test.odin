@@ -212,6 +212,18 @@ prune_scenario :: proc(t: ^testing.T, f: ^Fixture, hourly: bool) {
 	testing.expect(t, changed && err.code == .None)
 	domain.pipeline_delivery_destroy(&d)
 	_, _ = iface.unit_of_work_commit(&uow)
+	young := fixture_route(t, f)
+	defer delete(young)
+	fixture_set(f, young, "done")
+	old_open := fixture_route(t, f)
+	defer delete(old_open)
+	uow, ok, _ = iface.unit_of_work_begin(&f.factory); assert(ok)
+	d, _, _ = r.get(r.ctx, old_open)
+	next = d; next.updated_at = "2026-01-01T00:00:00Z"
+	changed, err = r.transition(r.ctx, next, d.state)
+	testing.expect(t, changed && err.code == .None)
+	domain.pipeline_delivery_destroy(&d)
+	_, _ = iface.unit_of_work_commit(&uow)
 	for _ in 0 ..< (100 if hourly else 1) {
 		id := fixture_route(t, f)
 		fixture_set(f, id, "forwarded")
@@ -225,6 +237,11 @@ prune_scenario :: proc(t: ^testing.T, f: ^Fixture, hourly: bool) {
 	d, found, _ = r.get(r.ctx, old)
 	testing.expect(t, !found, "old closed row pruned")
 	domain.pipeline_delivery_destroy(&d)
+	for id in ([]string{young, old_open}) {
+		d, found, _ = r.get(r.ctx, id)
+		testing.expect(t, found, "recent closed and old open rows are retained")
+		domain.pipeline_delivery_destroy(&d)
+	}
 	iface.unit_of_work_rollback(&uow)
 	if hourly {
 		sync.atomic_store(&f.now_ms, base + i64(time.Hour / time.Millisecond))
