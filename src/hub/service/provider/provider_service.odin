@@ -214,26 +214,6 @@ provider_test_mark_instance_ready :: proc(service: ^Provider_Service, instance_i
 	}
 }
 
-validate_launchable :: proc(
-	service: ^Provider_Service,
-	bridge_id, provider, model: string,
-	profile_id: string = "",
-) -> domain.Domain_Error {
-	if e:=validate_profile(service.repo,bridge_id,provider,profile_id);e.code!=.None do return e
-	entry, found, err := iface.provider_catalog_get(service.repo, provider)
-	if err.code != .None do return err
-	if !found || entry.state != "active" do return domain.domain_error(.Unprocessable_Entity, "provider is unknown or deprecated")
-	defer domain.provider_catalog_entry_destroy(entry)
-	if model_err := apply_effective_models(service.repo, bridge_id, &entry,profile_id); model_err.code != .None do return model_err
-	model_ok := false
-	for candidate in entry.models {if candidate.model_id == model && candidate.state == "active" {model_ok = true; break}}
-	if !model_ok do return domain.domain_error(.Unprocessable_Entity, "model is unknown or deprecated for provider")
-	views, view_err := list_bridge_providers(service, bridge_id)
-	if view_err.code != .None do return view_err
-	defer bridge_provider_views_destroy(views)
-	for view in views {if view.catalog.provider == provider && view.profile_id==domain.profile_effective_id(provider,profile_id) && view.enabled && view.detection_state == "present" do return {}}
-	return domain.domain_error(.Conflict, "provider is not enabled and present on this bridge")
-}
 
 list_catalog :: proc(
 	service: ^Provider_Service,

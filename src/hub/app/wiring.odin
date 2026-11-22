@@ -24,6 +24,7 @@ import device_auth_service "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
+import placement "odin_test:hub/service/placement"
 import provider_service "odin_test:hub/service/provider"
 import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
@@ -38,6 +39,8 @@ import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
+ placement: placement.Service,
+ placement_handlers: http.Placement_Handlers,
 	event_relay: eventrelay.Service,
 	event_inbox: eventinbox.Service,
 	event_inbox_runtime: eventinbox.Runtime,
@@ -675,7 +678,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.providers.uow_factory = &graph.uow_factory
 	graph.providers.bridges = &graph.repos.bridges
 	graph.bot_command_sink = bridge_command_sink
-	graph.bots = bots_service.Bots_Service{ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.placement=placement.new_service(&graph.repos.bridges,&graph.repos.agents,&graph.providers,&graph.bridge_runtime_registry,billing_service.entitlement_lookup(&graph.billing))
+ graph.placement_handlers={auth=&graph.auth,placement=&graph.placement}
+	graph.bots = bots_service.Bots_Service{placement=&graph.placement,ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
 	if config.telegram_bot_token != "" {
 		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
@@ -736,6 +741,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	eventinbox.counters_destroy(&graph.event_inbox)
 	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
+	placement.service_destroy(&graph.placement)
 	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
 	channel.whatsapp_destroy(&graph.whatsapp)
@@ -906,6 +912,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
+	http.router_add(&graph.router,"GET","/api/v1/placement/candidates",rawptr(&graph.placement_handlers),http.placement_candidates_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement/options", rawptr(&graph.bot_handlers), http.bot_placement_options_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/deliveries", rawptr(&graph.bot_handlers), http.bot_deliveries_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/telegram/pairing", rawptr(&graph.bot_handlers), http.bot_pairing_handler)

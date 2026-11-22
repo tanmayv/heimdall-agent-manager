@@ -6,6 +6,7 @@ import "core:sync"
 import contracts "odin_test:contracts"
 import dbt "odin_test:hub/platform/dbtelemetry"
 import domain "odin_test:hub/domain"
+import placement "odin_test:hub/service/placement"
 import provider_service "odin_test:hub/service/provider"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
@@ -50,18 +51,8 @@ instance_id_from_assertion :: proc(token: string) -> string {
 	return value
 }
 
-// bridge_feature_supported reports whether the bridge's stored runtime features
-// (the latest hello/heartbeat `features`) include `feature`. Runtime features are
-// protocol support, distinct from provider discovery in `capabilities`.
-bridge_feature_supported :: proc(bridge: domain.Bridge, feature: string) -> bool {
-	features := jsonx.extract_string_array(bridge.capabilities_json, "features")
-	defer { for f in features do delete(f); delete(features) }
-	for f in features do if f == feature do return true
-	return false
-}
-
 reconfiguration_bridge_supported :: proc(bridge: domain.Bridge) -> bool {
-	return bridge_feature_supported(bridge, "instance_reconfiguration_v1")
+	return placement.bridge_has_feature(bridge, "instance_reconfiguration_v1")
 }
 
 configuration_snapshot :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> domain.Instance_Configuration {
@@ -111,9 +102,10 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	destination_bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, input.bridge_id)
 	if !bridge_ok do return {}, false, bridge_err
 	if destination_bridge.owner_user_id != inst.owner_user_id do return {}, false, domain.domain_error(.Not_Found, "destination bridge not found")
-	if plan_err := require_launch_bridge_enabled(service, destination_bridge); plan_err.code != .None do return {}, false, plan_err
-	if destination_bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, input.bridge_id) do return {}, false, domain.domain_error(.Bridge_Offline, "destination bridge must be online")
-	if !reconfiguration_bridge_supported(source_bridge) || !reconfiguration_bridge_supported(destination_bridge) do return {}, false, domain.domain_error(.Conflict, "update source and destination bridges before applying configuration changes")
+	ps:=agent_placement(service)
+ if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge must be online")
+ if !reconfiguration_bridge_supported(source_bridge) do return {},false,domain.domain_error(.Conflict,"update source and destination bridges before applying configuration changes")
+
 	next := inst
 	next.bridge_id = input.bridge_id; next.project_id = domain.Project_ID(input.project_id)
 	next.provider_profile=domain.profile_effective_id(input.provider,input.provider_profile); next.provider = input.provider; next.model = input.model; next.project_path = ""
@@ -169,7 +161,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 		return existing, true, {}
 	}
 	// Preflight can wait for a bridge reply; recheck connectivity before stopping source.
-	if !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, next.bridge_id) do return {}, false, domain.domain_error(.Bridge_Offline, "destination bridge disconnected during preflight; reconnect it before Apply")
+	if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge disconnected during preflight; reconnect it before Apply")
 	now := platform.clock_now(service.clock)
 	op := domain.Instance_Reconfiguration{operation_id = platform.generate_id(service.ids, "reconfig_"), owner_user_id = string(inst.owner_user_id), agent_instance_id = inst.agent_instance_id, conversation_id = inst.conversation_id, actor_user_id = auth.user_id, idempotency_key = input.idempotency_key, expected_revision = input.expected_revision, revision = 1, phase = .Prepared, source = configuration_snapshot(service, inst), destination = configuration_snapshot(service, next), stop_command_id = platform.generate_id(service.ids, "cmd_reconfig_stop_"), launch_command_id = platform.generate_id(service.ids, "cmd_reconfig_launch_"), launch_epoch = platform.generate_id(service.ids, "launch_"), created_at = now, updated_at = now}
 	stored, saved, save_err := iface.instance_reconfiguration_begin(service.agents, op)
@@ -453,7 +445,8 @@ validate_instance_message_configuration :: proc(service: ^Agent_Service, owner: 
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
 	if !bridge_ok do return false, bridge_err
 	defer domain.bridge_destroy(&bridge)
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return false, domain.domain_error(.Bridge_Offline, "conversation is read-only: reconnect the bridge or choose an online bridge")
+	ps:=agent_placement(service)
+ if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(owner)}); !eligible do return false,agent_placement_error(&ps,bridge,reason,"conversation is read-only: reconnect the bridge or choose an online bridge")
 	if inst.project_id != "" {
 		project, project_ok, project_err := iface.project_get(service.projects, inst.project_id)
 		if !project_ok do return false, project_err
@@ -469,9 +462,9 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 	if !found do return false, err
 	defer domain.bridge_destroy(&bridge)
 	if string(bridge.owner_user_id) != op.owner_user_id do return false, domain.domain_error(.Not_Found, "destination bridge not found")
-	if plan_err := require_launch_bridge_enabled(service, bridge); plan_err.code != .None do return false, plan_err
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do return false, domain.domain_error(.Bridge_Offline, "destination bridge is offline; reconnect it before Apply")
-	if !reconfiguration_bridge_supported(bridge) do return false, domain.domain_error(.Conflict, "destination bridge must be updated before Apply")
+	ps:=agent_placement(service)
+ if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=op.owner_user_id,features={"instance_reconfiguration_v1"}}); !eligible do return false,agent_placement_error(&ps,bridge,reason,"destination bridge is offline; reconnect it before Apply")
+
 	if op.destination.project_id != "" {
 		project, project_found, project_err := iface.project_get(service.projects, domain.Project_ID(op.destination.project_id))
 		if !project_found do return false, project_err
@@ -488,8 +481,11 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 		defer domain.provider_catalog_entry_destroy(entry)
 		if e:=provider_service.require_acp_ready(&ps,op.destination.bridge_id,entry);e.code!=.None do return false,e
 	}
-	_, valid, validation_err := validate_provider_model_intersection(service, op.destination.bridge_id, op.destination.provider, op.destination.model,op.destination.provider_profile)
-	return valid, validation_err
+	inst,inst_ok,inst_err:=iface.agent_get_instance(service.agents,op.agent_instance_id)
+ if !inst_ok do return false,inst_err
+ defer domain.agent_instance_destroy(&inst)
+ _,validation_err:=placement.launchable(&ps,inst.agent_id,op.destination.bridge_id,op.destination.provider,op.destination.model,op.destination.provider_profile)
+ return validation_err.code==.None,validation_err
 }
 
 // Called with the operation mutex held. A force stop targets the current routing

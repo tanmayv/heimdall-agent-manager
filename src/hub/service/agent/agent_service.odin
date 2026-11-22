@@ -12,6 +12,7 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 import bootcache "odin_test:hub/bootcache"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import placement "odin_test:hub/service/placement"
 import provider_service "odin_test:hub/service/provider"
 import ownership "odin_test:hub/service/ownership"
 import project_service "odin_test:hub/service/project"
@@ -357,8 +358,8 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
 	if !bridge_ok do return domain.Agent_Instance{}, 0, false, bridge_err
 	if bridge.owner_user_id != owner || bridge.owner_user_id != agent.owner_user_id do return domain.Agent_Instance{}, 0, false, domain.domain_error(.Not_Found, "bridge not found")
-	if plan_err := require_launch_bridge_enabled(service, bridge); plan_err.code != .None do return {}, 0, false, plan_err
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do return domain.Agent_Instance{}, 0, false, domain.domain_error(.Bridge_Offline, "bridge is offline")
+	ps:=agent_placement(service)
+ if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(owner)}); !eligible do return {},0,false,agent_placement_error(&ps,bridge,reason,"bridge is offline")
 	resolved, resolved_ok, resolved_err := resolve_provider_model(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, model = input.model,provider_profile=input.provider_profile})
 	if !resolved_ok do return domain.Agent_Instance{}, 0, false, resolved_err
 	transport, transport_err := resolve_launch_transport(service,bridge.bridge_id,resolved.provider)
@@ -435,13 +436,15 @@ create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.A
 	if !bridge_ok do return {}, false, bridge_err
 	defer domain.bridge_destroy(&bridge)
 	if bridge.owner_user_id != owner do return {}, false, domain.domain_error(.Not_Found, "bridge not found")
-	if plan_err := require_launch_bridge_enabled(service, bridge); plan_err.code != .None do return {}, false, plan_err
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge_id) do return {}, false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
+	ps:=agent_placement(service)
+ if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(bridge.owner_user_id)}); !eligible do return {},false,agent_placement_error(&ps,bridge,reason,"bridge is not connected")
+	resolved,model_err:=placement.launchable(&ps,"",bridge_id,provider,model,provider_profile)
+ if model_err.code!=.None do return {},false,model_err
 	now := platform.clock_now(service.clock)
 	instance_id := platform.generate_id(service.ids, "provider-test-")
 	transport,transport_err:=resolve_launch_transport(service,bridge_id,provider)
 	if transport_err.code!=.None do return {},false,transport_err
-	inst := domain.Agent_Instance{runtime_transport=transport,launch_epoch=runtime_launch_epoch(service,transport),agent_instance_id=instance_id,owner_user_id=owner,bridge_id=bridge_id,display_name="Provider test",provider=provider,provider_profile=domain.profile_effective_id(provider,provider_profile),model=model,kind="provider_test",runtime_status="launching",startup_status="starting",activity_status="unknown",run_count=1,created_at=now,updated_at=now,started_at=now,last_seen_at=now}
+	inst := domain.Agent_Instance{runtime_transport=transport,launch_epoch=runtime_launch_epoch(service,transport),agent_instance_id=instance_id,owner_user_id=owner,bridge_id=bridge_id,display_name="Provider test",provider=provider,provider_profile=domain.profile_effective_id(provider,provider_profile),model=resolved.model,kind="provider_test",runtime_status="launching",startup_status="starting",activity_status="unknown",run_count=1,created_at=now,updated_at=now,started_at=now,last_seen_at=now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
 	if !saved_ok do return {}, false, save_err
 	return saved, true, {}
@@ -535,14 +538,17 @@ active_instance_count_for_agent :: proc(service: ^Agent_Service, agent: domain.A
 }
 
 supported_bridge_count_for_agent :: proc(service: ^Agent_Service, agent: domain.Agent) -> int {
-	if service == nil || service.bridges == nil do return 0
-	bridges, err := iface.bridge_list_by_owner(service.bridges, agent.owner_user_id)
-	if err.code != .None do return 0
-	count := 0
-	for bridge in bridges {
-		if bridge.plan_disabled_at == "" && bridge.status == .Online && bridge.capabilities_json != "" do count += 1
-	}
-	return count
+ if service==nil || service.bridges==nil do return 0
+ ps:=agent_placement(service)
+ rows:=placement.candidates(&ps,{owner=string(agent.owner_user_id),agent_id=agent.agent_id},context.temp_allocator)
+ defer placement.candidates_destroy(rows,context.temp_allocator)
+ count:=0
+ for c,i in rows {
+  seen:=false
+  for prev in rows[:i] do if prev.bridge_id==c.bridge_id do seen=true
+  if !seen do count+=1
+ }
+ return count
 }
 
 get_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
@@ -1134,8 +1140,8 @@ relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_C
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
 	if !bridge_ok do return domain.Agent_Instance{}, false, bridge_err
 	if bridge.owner_user_id != inst.owner_user_id do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "bridge not found")
-	if plan_err := require_launch_bridge_enabled(service, bridge); plan_err.code != .None do return {}, false, plan_err
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "pinned bridge is offline")
+	ps:=agent_placement(service)
+ if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(bridge.owner_user_id)}); !eligible do return {},false,agent_placement_error(&ps,bridge,reason,"pinned bridge is offline")
 	now := platform.clock_now(service.clock)
 	next := inst
 	if next.provider!=provider do next.provider_profile=provider
@@ -1526,12 +1532,6 @@ days_from_civil :: proc(y_in, m, d: int) -> int {
 	return platform.days_from_civil(y_in, m, d)
 }
 
-require_enabled_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string) -> (bool, domain.Domain_Error) {
-	supports, err := list_support(service, auth, agent_id)
-	if err.code != .None do return false, err
-	for s in supports { if s.enabled do return true, domain.Domain_Error{} }
-	return false, domain.domain_error(.Provider_Unavailable, "agent has no enabled bridge support")
-}
 
 update_private_chain_coordinator :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) {
 	if service.taskchains == nil || inst.chain_id == "" do return
@@ -1608,83 +1608,35 @@ default_title_for_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, 
 resolve_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id, bridge_id: string, req: Run_Request) -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
 	agent, ok, err := get_agent(service, auth, agent_id)
 	if !ok do return domain.Resolved_Provider_Model{}, false, err
-	support := default_support_for_agent_bridge(agent, bridge_id)
-	if stored, stored_ok, _ := iface.agent_get_support(service.agents, agent_id, bridge_id); stored_ok {
-		if stored.owner_user_id != agent.owner_user_id do return domain.Resolved_Provider_Model{}, false, domain.domain_error(.Not_Found, "support not found")
-		support = stored
-	}
-	if !support.enabled do return {}, false, domain.domain_error(.Provider_Unavailable, "agent is disabled on bridge")
-	return validate_provider_model_intersection(service, bridge_id, req.provider, req.model,req.provider_profile)
+	ps:=agent_placement(service)
+ resolved,e:=placement.launchable(&ps,agent_id,bridge_id,req.provider,req.model,req.provider_profile)
+ return resolved,e.code==.None,e
 }
 
 validate_pinned_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string) -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
 	agent, ok, err := get_agent(service, auth, inst.agent_id)
 	if !ok do return domain.Resolved_Provider_Model{}, false, err
 	if agent.owner_user_id != inst.owner_user_id do return domain.Resolved_Provider_Model{}, false, domain.domain_error(.Not_Found, "agent not found")
-	support := default_support_for_agent_bridge(agent, inst.bridge_id)
-	if stored, stored_ok, _ := iface.agent_get_support(service.agents, inst.agent_id, inst.bridge_id); stored_ok {
-		if stored.owner_user_id != inst.owner_user_id do return domain.Resolved_Provider_Model{}, false, domain.domain_error(.Not_Found, "support not found")
-		support = stored
-	}
-	if !support.enabled do return {}, false, domain.domain_error(.Provider_Unavailable, "agent is disabled on bridge")
 	resolved_provider := provider if strings.trim_space(provider) != "" else inst.provider
 	resolved_model := model if strings.trim_space(model) != "" else inst.model
-	return validate_provider_model_intersection(service, inst.bridge_id, resolved_provider, resolved_model,inst.provider_profile if resolved_provider==inst.provider else "")
+	ps:=agent_placement(service)
+ resolved,e:=placement.launchable(&ps,inst.agent_id,inst.bridge_id,resolved_provider,resolved_model,inst.provider_profile if resolved_provider==inst.provider else "")
+ return resolved,e.code==.None,e
 }
 
-validate_provider_model_intersection :: proc(service: ^Agent_Service, bridge_id, provider, model: string,profile_id: string = "") -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
-	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, false, domain.domain_error(.Unprocessable_Entity, "provider and model are required")
-	if service.providers == nil do return {}, false, domain.domain_error(.Internal_Error, "provider repository is not configured")
-	if e:=provider_service.validate_profile(service.providers,bridge_id,provider,profile_id);e.code!=.None do return {},false,e
-	entry, found, entry_err := iface.provider_catalog_get(service.providers, provider)
-	if entry_err.code != .None do return {}, false, entry_err
-	if !found || entry.state != "active" do return {}, false, domain.domain_error(.Unprocessable_Entity, "provider is unknown or deprecated")
-	defer domain.provider_catalog_entry_destroy(entry)
-	if err := provider_service.apply_effective_models(service.providers, bridge_id, &entry,profile_id); err.code != .None do return {}, false, err
-	model_ok := false
-	for candidate in entry.models { if candidate.model_id == model && candidate.state == "active" { model_ok = true; break } }
-	if !model_ok do return {}, false, domain.domain_error(.Unprocessable_Entity, "model is unknown or deprecated for provider")
-	// Single source of truth with the provider list/profile views (profile enabled AND bridge setting, default-on when present).
-	view_service := provider_service.Provider_Service{repo = service.providers}
-	views, views_err := provider_service.list_bridge_providers(&view_service, bridge_id)
-	if views_err.code != .None do return {}, false, views_err
-	defer provider_service.bridge_provider_views_destroy(views)
-	launchable := false
-	for view in views { if view.catalog.provider == provider && view.profile_id == domain.profile_effective_id(provider, profile_id) && view.enabled && view.detection_state == "present" { launchable = true; break } }
-	if !launchable do return {}, false, domain.domain_error(.Provider_Unavailable, "provider is not enabled and present on bridge")
-	return domain.Resolved_Provider_Model{provider = provider, model = model}, true, domain.Domain_Error{}
+// Transitional wrapper: T4 redirects task consumers and deletes this.
+validate_provider_model_intersection :: proc(service: ^Agent_Service, bridge_id, provider, model: string, profile_id: string = "") -> (domain.Resolved_Provider_Model,bool,domain.Domain_Error) {
+ ps:=agent_placement(service)
+ resolved,err:=placement.launchable(&ps,"",bridge_id,provider,model,profile_id)
+ return resolved,err.code==.None,err
 }
 
-select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent: domain.Agent, req: Run_Request) -> (domain.Bridge, bool, domain.Domain_Error) {
-	supports, err := list_support(service, auth, agent.agent_id)
-	if err.code != .None do return domain.Bridge{}, false, err
-	best: domain.Bridge
-	best_priority := -2147483648
-	found := false
-	online_enabled_found := false
-	last_provider := ""
-	last_model := ""
-	if strings.trim_space(req.provider) == "" || strings.trim_space(req.model) == "" do return {}, false, domain.domain_error(.Unprocessable_Entity, "provider and model are required")
-	for support in supports {
-		if !support.enabled do continue
-		bridge, bridge_ok, _ := iface.bridge_get_bridge(service.bridges, support.bridge_id)
-		if !bridge_ok || bridge.plan_disabled_at != "" || bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do continue
-		online_enabled_found = true
-		provider := req.provider
-		model := req.model
-		last_provider = provider
-		last_model = model
-		if _, valid, _ := validate_provider_model_intersection(service, bridge.bridge_id, provider, model,req.provider_profile); !valid do continue
-		if !found || support.priority > best_priority {
-			best = bridge
-			best_priority = support.priority
-			found = true
-		}
-	}
-	if !found && online_enabled_found do return domain.Bridge{}, false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("no enabled online bridge supports provider/model %s/%s", last_provider, last_model))
-	if !found do return domain.Bridge{}, false, domain.domain_error(.Bridge_Offline, "no online supported bridge is available")
-	return best, true, domain.Domain_Error{}
+agent_placement :: proc(service: ^Agent_Service) -> placement.Service {
+ ps:=new(provider_service.Provider_Service,context.temp_allocator)
+ ps^={repo=service.providers,bridges=service.bridges}
+ return placement.Service{bridges=service.bridges,agents=service.agents,providers=ps,registry=service.bridge_runtime_registry,entitlements=service.entitlements}
 }
+
 
 // validate_launch_project applies the launch-time project rule (owned by the
 // caller, active, path resolvable for bridge_id) without creating anything, so
@@ -2670,24 +2622,6 @@ bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, ow
 }
 
 
-// A disabled bridge retains its running agents but accepts no new launches.
-// Callers may hold the main write UoW (taskv2 JIT launch), so the gate reads only
-// the current plan_disabled_at in that transaction. Startup, billing webhooks and
-// the reaper own the flag (app/bridge_plans.odin); billing is consulted only to
-// describe an existing suspension, and that lookup is read-only.
-require_launch_bridge_enabled :: proc(service: ^Agent_Service, bridge: domain.Bridge) -> domain.Domain_Error {
-	if service.entitlements.lookup == nil && bridge.plan_disabled_at == "" do return {} // isolated services have no plan policy
-	current, found, current_err := iface.bridge_get_bridge(service.bridges, bridge.bridge_id)
-	if !found do return current_err
-	defer domain.bridge_destroy(&current)
-	if current.plan_disabled_at == "" do return {}
-	entitlements, err := domain.lookup_entitlements(service.entitlements, string(bridge.owner_user_id))
-	if err.code != .None do return err
-	count, count_err := iface.bridge_count_active_by_owner(service.bridges, bridge.owner_user_id)
-	if count_err.code != .None do return count_err
-	return domain.entitlement_limit_error(service.entitlements, string(bridge.owner_user_id), "max_bridges", entitlements.max_bridges, count)
-}
-
 resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string) -> (string,domain.Domain_Error) {
  svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
  return provider_service.resolve_runtime_transport(&svc,bridge_id,provider)
@@ -2733,4 +2667,12 @@ validate_frozen_runtime_transport :: proc(service: ^Agent_Service, inst:domain.A
  if validation_err.code!=.None do return validation_err
  svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
  return provider_service.require_acp_ready(&svc,inst.bridge_id,entry)
+}
+
+
+// The predicate owns the decision and reason; callers retain contextual wording.
+agent_placement_error :: proc(ps:^placement.Service,b:domain.Bridge,reason,offline_message:string)->domain.Domain_Error {
+ e:=placement.eligibility_error(ps,b,reason)
+ if e.code==.Bridge_Offline do e.message=offline_message
+ return e
 }

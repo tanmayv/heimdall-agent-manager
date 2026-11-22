@@ -1422,7 +1422,7 @@ validate_rules :: proc(s: ^Service, owner: string, rules: []Rule, max: int) -> d
 1. A rule matches a candidate when `rule.bridge_id` is `ANY` or equals the candidate's bridge; `rule.provider` is `ANY` or equals its provider; and `rule.model` is `ANY`, or equals its `model`, or equals its `resolved_model`.
 2. For each candidate, the **first** rule in list order that matches decides `rule_position` and `tier`. A candidate that no rule matches is dropped.
 3. When the deciding rule has `model == ANY`, only the provider's first active model on that bridge (lowest `model_order`) is kept.
-4. An empty rule list means one rule `(ANY, ANY, ANY)` with `position` 0 and `tier = .Allowed`.
+4. An empty rule list keeps every candidate (all models), with `position` 0 and `tier = .Allowed`. Model collapse applies only to an explicit rule with `model == ANY`.
 5. Sort, stable, by: `tier` (`Preferred` first), `rule_position`, `provider_order`, `model_order`, `bridge_created_at`, `bridge_id`. Then drop later duplicates of the same (bridge, provider, model).
 
 This is the order bots use today (F17), so bot results do not change. Bridge age is the last tie-break. For a rule `(ANY, ANY, ANY)` the winner is the bridge that has the best-ranked provider, and the oldest such bridge when several have it.
@@ -1483,7 +1483,7 @@ If `req.prefer_bridge` is set and the matched list has a candidate on that bridg
 }}
 ```
 
-- `candidates` is `match(nil, candidates(req))` for the caller: every launchable triple with the model wildcard applied, in the one order. `rank` is the index. The first entry is the default a UI preselects.
+- `candidates` is `match(nil, candidates(req))` for the caller: every launchable triple without model collapse, in the one order. `rank` is the index. The first entry is the default a UI preselects.
 - `bridges` lists all of the owner's bridges, with `eligible` and `reason` from `bridge_eligible`. A rule may name a machine that is offline now.
 - `providers` lists the active catalog providers with their active models, for the rule editor.
 
@@ -3021,7 +3021,7 @@ Ownership: `format_rfc3339_utc` and `nats_cron` return strings the caller frees.
 | `test_prepare_instance_refuses_pending_bridge` (`src/hub/service/agent`) | a bridge with pending enrollment, and a revoked bridge, are refused |
 | `test_placement_candidates_endpoint` (`src/hub/transport/http`) | the response shape of 6.10.7; candidates in order; an offline bridge appears in `bridges` with `eligible = false` and its reason; another owner's bridge never appears |
 | `test_placement_imports` (`boundary_test.odin`) | no file of the package imports a package that 5.3 forbids |
-| `test_agent_and_bots_use_the_predicate` (`boundary_test.odin`) | non-test files under `src/hub/service/agent` and `src/hub/service/bots` contain no `bridge_runtime_registry_has_live(`, no `.plan_disabled_at` and no `status != .Online` or `status == .Online` |
+| `test_agent_and_bots_use_the_predicate` (`boundary_test.odin`) | non-test files under `src/hub/service/agent` and `src/hub/service/bots` contain no `bridge_runtime_registry_has_live(`, no `.plan_disabled_at` and no `status != .Online` or `status == .Online`, except non-launch connectivity/stop/fencing checks on a documented allow-list (file, procedure and reason) in the boundary test |
 
 **T3 addition in v7.** The `feature` query parameter of the candidates endpoint (6.10.10), with the test `test_placement_candidates_feature_filter` (`transport/http`): with `feature=x` a bridge whose hello lacks `x` is listed with `eligible = false`, `reason = "missing_feature"` and has no candidate; without the parameter it is eligible.
 

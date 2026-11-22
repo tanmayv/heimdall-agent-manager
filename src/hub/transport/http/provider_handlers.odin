@@ -1,5 +1,7 @@
 package http
 
+import placement "odin_test:hub/service/placement"
+
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
@@ -513,7 +515,11 @@ provider_test_start_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	provider := json_string(req.body, "provider"); defer delete(provider)
 	model := json_string(req.body, "model"); defer delete(model)
 	profile_id:=json_string(req.body,"profile_id");defer delete(profile_id)
-	if launch_err := provider_service.validate_launchable(h.providers, bridge.bridge_id, provider, model,profile_id); launch_err.code != .None do return respond_error(launch_err, req.request_id)
+	ps:=placement.Service{providers=h.providers}
+ if _,launch_err:=placement.launchable(&ps,"",bridge.bridge_id,provider,model,profile_id); launch_err.code!=.None {
+ if launch_err.code==.Provider_Unavailable do launch_err.code=.Conflict
+ return respond_error(launch_err,req.request_id)
+ }
 	if cleanup_err := provider_test_stop_superseded(h, auth_ctx, bridge.bridge_id); cleanup_err.code != .None do return respond_error(cleanup_err, req.request_id)
 	inst, launched, launch_err := agent_service.create_provider_test_instance(
 		h.agents,

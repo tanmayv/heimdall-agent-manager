@@ -1,5 +1,7 @@
 package agent
 
+import placement "odin_test:hub/service/placement"
+
 import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
@@ -568,7 +570,7 @@ TOOL_STREAM_DEMAND_FEATURE :: "tool_stream_demand_v2"
 // tool_stream_feature_supported is the one predicate for expiring-demand support:
 // live admission below and the bridge list's `tool_stream_supported` both use it.
 tool_stream_feature_supported :: proc(bridge: domain.Bridge) -> bool {
-    return bridge_feature_supported(bridge, TOOL_STREAM_DEMAND_FEATURE)
+    return placement.bridge_has_feature(bridge, TOOL_STREAM_DEMAND_FEATURE)
 }
 
 // Old bridges do not implement expiring demand controls. Fail closed rather than

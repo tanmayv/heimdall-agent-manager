@@ -1,5 +1,7 @@
 package bots
 
+import placement "odin_test:hub/service/placement"
+
 import "core:encoding/json"
 import "core:sync"
 import "core:strings"
@@ -14,6 +16,7 @@ import events "odin_test:hub/service/events"
 import channel "odin_test:hub/service/channel"
 
 Bots_Service :: struct {
+ placement: ^placement.Service,
 	ui_origin: string,
 	media_send_budget_ms, media_min_call_ms: i64,
 	repo: ^iface.Bot_Repository,
