@@ -37,13 +37,23 @@ Provisioned_Cache :: struct {
 	names: map[string]string, // consumer_name -> config fingerprint
 }
 // NEXT_OVERHEAD_BUDGET bounds the work next may do beyond the caller's wait:
-// setup and fetch work stops once wait + this budget has elapsed. With one
-// in-flight NATS request (Connect_Options.timeout_ms, 1 s in production) the
-// call returns within wait + 3 s (REQ-EVQ-1).
+// no NATS step starts once wait + this budget has elapsed (the deadline is
+// checked before every request). The longest step that can start just before
+// the deadline is provisioning (consumer_add plus the fence's consumer_delete),
+// so the call returns within wait + 2 s + 2 x Connect_Options.timeout_ms, i.e.
+// wait + 4 s in production (timeout_ms = 1 s) (REQ-EVQ-1). The bridge's stall
+// guard for this call (BRIDGE_EVENTS_LONG_POLL_STALL_MS, 45 s) covers 30 + 4 s.
 NEXT_OVERHEAD_BUDGET :: 2 * time.Second
-// NEXT_POLL_TICK is how often a long poll looks for new events on consumers
-// that were idle when it started (one stream_info request per tick).
+// NEXT_POLL_TICK is how often a long poll checks, with one direct get limited
+// to the caller's own subjects (ev.<owner>.>), whether an idle consumer may
+// have gained work.
 NEXT_POLL_TICK :: 250 * time.Millisecond
+// NEXT_RESCAN_INTERVAL caps how often a long poll re-checks its idle
+// consumers (one consumer-info request each), however busy the owner's
+// subjects are.
+NEXT_RESCAN_INTERVAL :: time.Second
+// NATS_NOT_FOUND is natsStatus NATS_NOT_FOUND: a direct get found no message.
+NATS_NOT_FOUND :: i32(13)
 // NATS_TIMEOUT is natsStatus NATS_TIMEOUT: a fetch found nothing in time.
 NATS_TIMEOUT :: i32(26)
 // JS_CONSUMER_NOT_FOUND is the JetStream error code for a missing consumer.
@@ -395,21 +405,27 @@ activate :: proc(
 	started: time.Tick,
 	deadline: time.Duration,
 ) -> domain.Domain_Error {
+	// The deadline is checked before every NATS step, not once per row, so a
+	// cache miss cannot chain several requests past the budget.
+	expired :: proc(started: time.Tick, deadline: time.Duration) -> bool {return time.tick_since(started) >= deadline}
 	for &bound in pulls {
 		if bound.pull != nil || bound.gone do continue
-		if time.tick_since(started) >= deadline do break
+		if expired(started, deadline) do break
 		live, err := ready_consumer(s, conn, bound.row)
 		if err.code != .None do return err
 		if !live {bound.gone = true; continue}
+		if expired(started, deadline) do break
 		state, serr := nats.consumer_state(conn, "HEIM_EVENTS", bound.row.consumer_name)
 		if serr.status != 0 {
 			if serr.jetstream != JS_CONSUMER_NOT_FOUND do return unavailable()
 			// The consumer vanished behind the cache (for example JetStream state
 			// was lost): provision it once more, under the usual fence.
 			forget_consumer(s, bound.row.consumer_name)
+			if expired(started, deadline) do break
 			live, err = ready_consumer(s, conn, bound.row)
 			if err.code != .None do return err
 			if !live {bound.gone = true; continue}
+			if expired(started, deadline) do break
 			state, serr = nats.consumer_state(conn, "HEIM_EVENTS", bound.row.consumer_name)
 			if serr.status != 0 do return unavailable()
 		}
@@ -422,6 +438,7 @@ activate :: proc(
 			if due_err.code != .None do return due_err
 			if !due do continue
 		}
+		if expired(started, deadline) do break
 		pull, bind_err := nats.pull_bind(conn, "HEIM_EVENTS", bound.row.consumer_name)
 		if bind_err.status != 0 do return unavailable()
 		bound.pull = pull
@@ -444,11 +461,15 @@ collect_resolutions :: proc(
 	owner, agent: string,
 	events: ^[dynamic]json.Value,
 	limit: int,
+	started: time.Tick,
+	deadline: time.Duration,
 ) -> domain.Domain_Error {
 	rows, err := resolved_snapshot(s, owner, agent, limit - len(events^))
 	if err.code != .None do return err
 	defer delivery_rows_destroy(rows)
 	for row in rows {
+		// The rest stay unsent and are returned by a later pull.
+		if time.tick_since(started) >= deadline do break
 		if !row.acknowledged {
 			if nats.ack_reply(conn, row.ack_reply, 1000).status != 0 do return unavailable()
 			if err = mark(s, owner, agent, row, false); err.code != .None do return err
@@ -530,7 +551,7 @@ next :: proc(
 	if nerr.status != 0 {delete(events); return nil, unavailable()}
 	defer nats.destroy(conn)
 	if !prepare_advisories(conn) {err = unavailable(); return}
-	if err = collect_resolutions(s, conn, owner, agent, &events, limit); err.code != .None do return
+	if err = collect_resolutions(s, conn, owner, agent, &events, limit, started, deadline); err.code != .None do return
 	if len(events) >= limit do return events[:], {}
 	rows, rerr := subscriptions(s, owner, agent)
 	if rerr.code != .None {err = rerr; return}
@@ -541,12 +562,14 @@ next :: proc(
 		offset := int(sync.atomic_add(&s.pull_cursor, 1) % u64(len(rows)))
 		for i in 0 ..< len(rows) do append(&pulls, Bound_Pull{row = rows[(offset + i) % len(rows)]})
 	}
-	// The stream's last sequence before the first scan: a later change means an
-	// idle consumer may have gained work and is worth one more look.
+	// The stream's last sequence before the first scan: a later message on the
+	// caller's own subjects means an idle consumer may have gained work.
 	stream, serr := nats.stream_info(conn, "HEIM_EVENTS")
 	if serr.status != 0 {err = unavailable(); return}
 	last_sequence := stream.last
+	owner_filter := fmt.tprintf("ev.%s.>", owner)
 	if err = activate(s, conn, pulls[:], started, deadline); err.code != .None do return
+	last_scan := time.tick_now()
 	pass := 0
 	for {
 		if err = pull_slots(s, pulls[:]); err.code != .None do return
@@ -594,7 +617,7 @@ next :: proc(
 			nats.batch_destroy(batch)
 			if len(events) >= limit do return events[:], {}
 		}
-		if err = collect_resolutions(s, conn, owner, agent, &events, limit); err.code != .None do return
+		if err = collect_resolutions(s, conn, owner, agent, &events, limit, started, deadline); err.code != .None do return
 		if len(events) > 0 || time.tick_since(started) >= wait do return events[:], {}
 		bound_count, idle := 0, 0
 		for bound in pulls {
@@ -609,11 +632,18 @@ next :: proc(
 		if ready == 0 {
 			time.sleep(max(0, min(NEXT_POLL_TICK, wait - time.tick_since(started))))
 		}
-		if idle > 0 {
-			stream, serr = nats.stream_info(conn, "HEIM_EVENTS")
-			if serr.status != 0 {err = unavailable(); return}
-			if stream.last != last_sequence {
+		if idle > 0 && subject_token(owner) && time.tick_since(last_scan) >= NEXT_RESCAN_INTERVAL {
+			// One direct get on ev.<owner>.> after the last seen sequence: other
+			// owners' traffic never triggers a rescan, and a rescan runs at most
+			// once per NEXT_RESCAN_INTERVAL.
+			msg, _, next_err := nats.stream_next(conn, "HEIM_EVENTS", owner_filter, last_sequence + 1)
+			nats.message_destroy(msg)
+			if next_err.status != 0 && next_err.status != NATS_NOT_FOUND {err = unavailable(); return}
+			if next_err.status == 0 {
+				stream, serr = nats.stream_info(conn, "HEIM_EVENTS")
+				if serr.status != 0 {err = unavailable(); return}
 				last_sequence = stream.last
+				last_scan = time.tick_now()
 				if err = activate(s, conn, pulls[:], started, deadline); err.code != .None do return
 			}
 		}

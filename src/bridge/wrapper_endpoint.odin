@@ -597,9 +597,9 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 
 // BRIDGE_EVENTS_LONG_POLL_STALL_MS is the stall guard for agent.events.next:
 // the hub may stay silent for the whole long poll (contracts: wait_ms <= 30 s)
-// plus its bounded setup overhead (eventinbox.NEXT_OVERHEAD_BUDGET, 2 s) and
-// one in-flight NATS request, so 30 s + 15 s margin. Every other relayed call
-// keeps the 20 s DEFAULT_STALL_TIMEOUT_MS.
+// plus its bounded overhead (eventinbox.NEXT_OVERHEAD_BUDGET, 2 s, plus at most
+// two NATS requests of 1 s already in flight: 34 s worst case), so 30 s + 15 s
+// margin. Every other relayed call keeps the 20 s DEFAULT_STALL_TIMEOUT_MS.
 BRIDGE_EVENTS_LONG_POLL_STALL_MS :: 30_000 + 15_000
 
 // bridge_agent_relay_stall_ms is the stall guard for one relayed agent method:
