@@ -307,16 +307,20 @@ limit_scenario :: proc(t: ^testing.T, f: ^Fixture, which: Real_Case) {
 
 reconnect_scenario :: proc(t: ^testing.T, f: ^Fixture) {
 	f.s.ack_wait_ms = 1000
+	ids := make([dynamic]string)
+	defer {for id in ids do delete(id); delete(ids)}
 	for _ in 0 ..< 200 {
 		id := fixture_route(t, f)
-		delete(id)
+		append(&ids, id)
 	}
 	fixture_publish(t, f)
 	testing.expect(t, start(f.s))
 	fixture_live(f)
 	if !fixture_wait_frames(t, f, 16) do return
+	caller_allocator := context.allocator
 	context.allocator = runtime.heap_allocator()
 	feeder := thread.create_and_start_with_data(f, answer_feeder, init_context = context)
+	context.allocator = caller_allocator
 	for _ in 0 ..< 2 {
 		natstest.stop(&f.server)
 		time.sleep(150 * time.Millisecond)
@@ -326,6 +330,11 @@ reconnect_scenario :: proc(t: ^testing.T, f: ^Fixture) {
 	thread.destroy(feeder)
 	fixture_wait_empty(t, f)
 	testing.expect_value(t, sync.atomic_load(&f.finals), i32(200))
+	for id in ids {
+		d := fixture_get(f, id)
+		testing.expect_value(t, d.state, "done")
+		domain.pipeline_delivery_destroy(&d)
+	}
 }
 
 answer_feeder :: proc(data: rawptr) {
