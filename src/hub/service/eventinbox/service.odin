@@ -2,7 +2,9 @@ package eventinbox
 
 import "core:encoding/json"
 import "core:fmt"
+import "base:runtime"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -19,6 +21,59 @@ Service :: struct {
 	ids:         ^platform.ID_Generator,
 	ack_wait:    time.Duration,
 	max_deliver: i64,
+	// provisioned is the process-wide record of JetStream consumers already
+	// created with their current config; the runtime and HTTP pulls share it so
+	// a pull never re-provisions a known consumer (REQ-EVQ-4).
+	provisioned: Provisioned_Cache,
+	// pull_cursor rotates where next starts scanning subscriptions, so a pull
+	// that stops at its budget or limit does not starve the later ones.
+	pull_cursor: u64,
+	// provision_calls counts consumer provisioning requests (consumer_add plus
+	// fence) made through this service; tests use it to prove pulls reuse the cache.
+	provision_calls: u64,
+}
+Provisioned_Cache :: struct {
+	mutex: sync.Mutex,
+	names: map[string]string, // consumer_name -> config fingerprint
+}
+// NEXT_OVERHEAD_BUDGET bounds the work next may do beyond the caller's wait:
+// setup and fetch work stops once wait + this budget has elapsed. With one
+// in-flight NATS request (Connect_Options.timeout_ms, 1 s in production) the
+// call returns within wait + 3 s (REQ-EVQ-1).
+NEXT_OVERHEAD_BUDGET :: 2 * time.Second
+// NEXT_POLL_TICK is how often a long poll looks for new events on consumers
+// that were idle when it started (one stream_info request per tick).
+NEXT_POLL_TICK :: 250 * time.Millisecond
+// NATS_TIMEOUT is natsStatus NATS_TIMEOUT: a fetch found nothing in time.
+NATS_TIMEOUT :: i32(26)
+// JS_CONSUMER_NOT_FOUND is the JetStream error code for a missing consumer.
+JS_CONSUMER_NOT_FOUND :: i32(10014)
+
+consumer_fingerprint :: proc(s: ^Service, row: domain.Event_Subscription) -> string {
+	return fmt.tprintf("%s/%d/%d", row.filter_subjects, s.ack_wait, s.max_deliver)
+}
+consumer_known :: proc(s: ^Service, name, fingerprint: string) -> bool {
+	sync.mutex_lock(&s.provisioned.mutex); defer sync.mutex_unlock(&s.provisioned.mutex)
+	known, found := s.provisioned.names[name]
+	return found && known == fingerprint
+}
+remember_consumer :: proc(s: ^Service, name, fingerprint: string) {
+	context.allocator = runtime.heap_allocator()
+	sync.mutex_lock(&s.provisioned.mutex); defer sync.mutex_unlock(&s.provisioned.mutex)
+	if s.provisioned.names == nil do s.provisioned.names = make(map[string]string)
+	if name in s.provisioned.names {key, value := delete_key(&s.provisioned.names, name); delete(key); delete(value)}
+	s.provisioned.names[strings.clone(name)] = strings.clone(fingerprint)
+}
+forget_consumer :: proc(s: ^Service, name: string) {
+	context.allocator = runtime.heap_allocator()
+	sync.mutex_lock(&s.provisioned.mutex); defer sync.mutex_unlock(&s.provisioned.mutex)
+	if name in s.provisioned.names {key, value := delete_key(&s.provisioned.names, name); delete(key); delete(value)}
+}
+provisioned_destroy :: proc(s: ^Service) {
+	context.allocator = runtime.heap_allocator()
+	sync.mutex_lock(&s.provisioned.mutex); defer sync.mutex_unlock(&s.provisioned.mutex)
+	for key, value in s.provisioned.names {delete(key); delete(value)}
+	delete(s.provisioned.names); s.provisioned.names = nil
 }
 subscription_rows_destroy :: proc(rows: []domain.Event_Subscription) {
 	for &row in rows do domain.event_subscription_destroy(&row)
@@ -244,8 +299,9 @@ fence_consumer :: proc(
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed do return false, commit_err
 	if live do return true, {}
+	forget_consumer(s, row.consumer_name)
 	nerr := nats.consumer_delete(conn, "HEIM_EVENTS", row.consumer_name)
-	if nerr.status != 0 && nerr.jetstream != 10014 do return false, unavailable()
+	if nerr.status != 0 && nerr.jetstream != JS_CONSUMER_NOT_FOUND do return false, unavailable()
 	return false, {}
 }
 provision_consumer :: proc(
@@ -256,19 +312,22 @@ provision_consumer :: proc(
 	bool,
 	domain.Domain_Error,
 ) {
+	sync.atomic_add(&s.provision_calls, 1)
 	if !ensure_consumer(s, conn, row) do return false, unavailable()
 	return fence_consumer(s, conn, row)
 }
 Bound_Pull :: struct {
 	row:   domain.Event_Subscription, // borrowed from request-owned subscriptions
-	pull:  ^nats.Pull,
+	pull:  ^nats.Pull, // nil until the consumer has work (idle consumers are never bound)
 	slots: int,
+	gone:  bool, // removed after the snapshot; skipped for the rest of the request
 }
 pull_slots :: proc(s: ^Service, pulls: []Bound_Pull) -> domain.Domain_Error {
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return begin_err
 	repo := uow.repos.event_subscriptions
 	for &bound in pulls {
+		if bound.pull == nil do continue
 		slots, err := repo.available(
 			repo.ctx,
 			bound.row.owner_user_id,
@@ -280,6 +339,93 @@ pull_slots :: proc(s: ^Service, pulls: []Bound_Pull) -> domain.Domain_Error {
 	}
 	committed, err := iface.unit_of_work_commit(&uow)
 	if !committed do return err
+	return {}
+}
+// ready_consumer makes sure the row's durable exists with its current config.
+// A consumer this process already provisioned (by the runtime or an earlier
+// pull) costs no JetStream request; only a cache miss provisions and fences.
+ready_consumer :: proc(
+	s: ^Service,
+	conn: ^nats.Connection,
+	row: domain.Event_Subscription,
+) -> (
+	live: bool,
+	err: domain.Domain_Error,
+) {
+	fingerprint := consumer_fingerprint(s, row)
+	if consumer_known(s, row.consumer_name, fingerprint) do return true, {}
+	live, err = provision_consumer(s, conn, row)
+	if err.code == .None && live do remember_consumer(s, row.consumer_name, fingerprint)
+	return
+}
+// redelivery_possible reports whether a consumer whose only messages await
+// acknowledgement may have one ready for redelivery: an unacked delivery
+// recorded at least ack_wait ago, or none recorded at all (a delivery this hub
+// never stored). recorded_at has second precision, so the cut-off is widened by
+// one second: it may fetch early, never late.
+redelivery_possible :: proc(s: ^Service, row: domain.Event_Subscription) -> (bool, domain.Domain_Error) {
+	wait := s.ack_wait
+	if wait <= 0 do wait = 5 * time.Minute
+	before := platform.format_rfc3339_utc(time.time_add(time.now(), time.Second - wait))
+	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
+	if !began do return false, begin_err
+	repo := uow.repos.event_subscriptions
+	due, err := repo.due_deliveries(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id, before)
+	possible := len(due) > 0
+	delivery_rows_destroy(due)
+	if err.code == .None && !possible {
+		unacked: []domain.Event_Delivery
+		unacked, err = repo.due_deliveries(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id, "9999")
+		possible = len(unacked) == 0
+		delivery_rows_destroy(unacked)
+	}
+	if err.code != .None {iface.unit_of_work_rollback(&uow); return false, err}
+	committed, commit_err := iface.unit_of_work_commit(&uow)
+	if !committed do return false, commit_err
+	return possible, {}
+}
+// activate binds the consumers that have work. An idle consumer (nothing
+// pending, nothing awaiting ack) costs one consumer-info request and is neither
+// bound nor fetched. Scanning stops at the request's deadline; later rows wait
+// for the next pull (the start offset rotates per call).
+activate :: proc(
+	s: ^Service,
+	conn: ^nats.Connection,
+	pulls: []Bound_Pull,
+	started: time.Tick,
+	deadline: time.Duration,
+) -> domain.Domain_Error {
+	for &bound in pulls {
+		if bound.pull != nil || bound.gone do continue
+		if time.tick_since(started) >= deadline do break
+		live, err := ready_consumer(s, conn, bound.row)
+		if err.code != .None do return err
+		if !live {bound.gone = true; continue}
+		state, serr := nats.consumer_state(conn, "HEIM_EVENTS", bound.row.consumer_name)
+		if serr.status != 0 {
+			if serr.jetstream != JS_CONSUMER_NOT_FOUND do return unavailable()
+			// The consumer vanished behind the cache (for example JetStream state
+			// was lost): provision it once more, under the usual fence.
+			forget_consumer(s, bound.row.consumer_name)
+			live, err = ready_consumer(s, conn, bound.row)
+			if err.code != .None do return err
+			if !live {bound.gone = true; continue}
+			state, serr = nats.consumer_state(conn, "HEIM_EVENTS", bound.row.consumer_name)
+			if serr.status != 0 do return unavailable()
+		}
+		if state.pending == 0 {
+			if state.ack_pending == 0 do continue
+			// Only unacked deliveries remain. JetStream holds a NoWait fetch on
+			// such a consumer for its full expiry (1 s), so fetch only when a
+			// redelivery can already be due.
+			due, due_err := redelivery_possible(s, bound.row)
+			if due_err.code != .None do return due_err
+			if !due do continue
+		}
+		pull, bind_err := nats.pull_bind(conn, "HEIM_EVENTS", bound.row.consumer_name)
+		if bind_err.status != 0 do return unavailable()
+		bound.pull = pull
+	}
 	return {}
 }
 append_unique :: proc(events: ^[dynamic]json.Value, value: json.Value) {
@@ -374,55 +520,64 @@ next :: proc(
 ) {
 	if owner == "" || agent == "" do return nil, domain.domain_error(.Forbidden, "agent identity required")
 	if wait < 0 || wait > 30 * time.Second || limit < 1 || limit > 100 do return nil, domain.domain_error(.Validation_Failed, "wait must be 0..30s and limit 1..100")
+	// Every stage below shares one budget: wait for events, plus a fixed
+	// overhead for setup and fetches (REQ-EVQ-1).
+	started := time.tick_now()
+	deadline := wait + NEXT_OVERHEAD_BUDGET
 	events := make([dynamic]json.Value)
 	defer if err.code != .None {values_destroy(events[:]); result = nil}
 	conn, nerr := nats.connect(s.options)
 	if nerr.status != 0 {delete(events); return nil, unavailable()}
 	defer nats.destroy(conn)
 	if !prepare_advisories(conn) {err = unavailable(); return}
-	started := time.tick_now()
 	if err = collect_resolutions(s, conn, owner, agent, &events, limit); err.code != .None do return
 	if len(events) >= limit do return events[:], {}
 	rows, rerr := subscriptions(s, owner, agent)
 	if rerr.code != .None {err = rerr; return}
 	defer subscription_rows_destroy(rows)
-	pulls := make([dynamic]Bound_Pull)
+	pulls := make([dynamic]Bound_Pull, 0, len(rows))
 	defer {for bound in pulls do nats.pull_destroy(bound.pull); delete(pulls)}
-	// Each durable is provisioned and bound once for this request, with a
-	// post-provision fence against lease/watch removal.
-	for row in rows {
-		live, perr := provision_consumer(s, conn, row)
-		if perr.code != .None {err = perr; return}
-		if !live do continue
-		pull, bind_err := nats.pull_bind(conn, "HEIM_EVENTS", row.consumer_name)
-		if bind_err.status != 0 {err = unavailable(); return}
-		append(&pulls, Bound_Pull{row = row, pull = pull})
+	if len(rows) > 0 {
+		offset := int(sync.atomic_add(&s.pull_cursor, 1) % u64(len(rows)))
+		for i in 0 ..< len(rows) do append(&pulls, Bound_Pull{row = rows[(offset + i) % len(rows)]})
 	}
+	// The stream's last sequence before the first scan: a later change means an
+	// idle consumer may have gained work and is worth one more look.
+	stream, serr := nats.stream_info(conn, "HEIM_EVENTS")
+	if serr.status != 0 {err = unavailable(); return}
+	last_sequence := stream.last
+	if err = activate(s, conn, pulls[:], started, deadline); err.code != .None do return
 	pass := 0
 	for {
 		if err = pull_slots(s, pulls[:]); err.code != .None do return
-		// First visit every consumer promptly. Then divide the remaining wait
-		// among unvisited consumers; idle requests use blocking fetches, not a
-		// 20 ms provision/bind/poll loop. Multiple scopes share one wait budget.
-		for &bound, i in pulls {
-			if bound.slots <= 0 do continue // backpressure; leave backlog in JetStream
+		ready := 0
+		for bound in pulls do if bound.pull != nil && bound.slots > 0 do ready += 1
+		// First visit every bound consumer promptly. Later passes block on each
+		// for a share of the remaining wait, at most one poll tick, so new work
+		// on idle consumers is noticed between passes.
+		visited := 0
+		for &bound in pulls {
+			if bound.pull == nil || bound.slots <= 0 do continue // idle, or backpressure: leave backlog in JetStream
+			if time.tick_since(started) >= deadline do return events[:], {}
+			blocking := pass > 0 && len(events) == 0
 			timeout_ms := i64(1)
-			if pass > 0 && len(events) == 0 {
+			if blocking {
 				remaining := wait - time.tick_since(started)
 				if remaining <= 0 do break
-				if remaining < 5 * time.Millisecond {time.sleep(remaining); break}
-				timeout_ms = max(1, i64(remaining / time.Duration(len(pulls) - i) / time.Millisecond))
+				share := min(remaining / time.Duration(ready - visited), NEXT_POLL_TICK)
+				timeout_ms = max(1, i64(share / time.Millisecond))
 			}
+			visited += 1
 			batch: ^nats.Batch
 			berr: nats.Error
-			if pass == 0 || len(events) > 0 || timeout_ms < 5 {
+			if !blocking || timeout_ms < 5 {
 				batch, berr = nats.fetch_available(bound.pull, min(limit - len(events), bound.slots))
 			} else {
 				batch, berr = nats.fetch(bound.pull, min(limit - len(events), bound.slots), timeout_ms)
 			}
 			if berr.status != 0 {
 				nats.batch_destroy(batch)
-				if berr.status != 26 {err = unavailable(); return}
+				if berr.status != NATS_TIMEOUT {err = unavailable(); return}
 				continue
 			}
 			for i in 0 ..< nats.batch_count(batch) {
@@ -441,16 +596,26 @@ next :: proc(
 		}
 		if err = collect_resolutions(s, conn, owner, agent, &events, limit); err.code != .None do return
 		if len(events) > 0 || time.tick_since(started) >= wait do return events[:], {}
-		if len(pulls) == 0 {
-			time.sleep(max(0, wait - time.tick_since(started)))
-			return events[:], {}
+		bound_count, idle := 0, 0
+		for bound in pulls {
+			if bound.gone do continue
+			if bound.pull == nil {idle += 1} else {bound_count += 1}
 		}
-		any_slots := false
-		for bound in pulls do if bound.slots > 0 do any_slots = true
-		if !any_slots {
+		if bound_count > 0 && ready == 0 && idle == 0 {
 			// No capacity: do not consume delivery attempts while the agent needs to
 			// acknowledge/resolve existing records.
 			return events[:], {}
+		}
+		if ready == 0 {
+			time.sleep(max(0, min(NEXT_POLL_TICK, wait - time.tick_since(started))))
+		}
+		if idle > 0 {
+			stream, serr = nats.stream_info(conn, "HEIM_EVENTS")
+			if serr.status != 0 {err = unavailable(); return}
+			if stream.last != last_sequence {
+				last_sequence = stream.last
+				if err = activate(s, conn, pulls[:], started, deadline); err.code != .None do return
+			}
 		}
 		pass += 1
 	}

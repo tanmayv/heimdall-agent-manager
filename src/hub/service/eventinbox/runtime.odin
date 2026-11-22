@@ -153,19 +153,27 @@ reconcile :: proc(r: ^Runtime) -> bool {
 	// No JetStream API request for an unchanged row on a healthy connection.
 	for row in rows {
 		active[row.consumer_name] = true
-		fingerprint := fmt.tprintf("%s/%d/%d", row.filter_subjects, s.ack_wait, s.max_deliver)
+		fingerprint := consumer_fingerprint(s, row)
 		if prior, found := r.provisioned[row.consumer_name]; found && prior.fingerprint == fingerprint do continue
 		live, provision_err := provision_consumer(s, r.connection, row)
 		if provision_err.code != .None do return false
-		if live do cache_provisioned(r, row.consumer_name, fingerprint)
+		if live {
+			cache_provisioned(r, row.consumer_name, fingerprint)
+			// Share it with HTTP pulls, which then never provision this consumer.
+			remember_consumer(s, row.consumer_name, fingerprint)
+		}
 	}
 	forgotten := make([dynamic]string)
 	defer delete(forgotten)
 	for name in r.provisioned do if !active[name] do append(&forgotten, name)
-	for name in forgotten do forget_provisioned(r, name)
+	for name in forgotten {
+		forget_consumer(s, name)
+		forget_provisioned(r, name)
+	}
 	for name in deleted {
 		nerr := nats.consumer_delete(r.connection, "HEIM_EVENTS", name)
-		if nerr.status != 0 && nerr.jetstream != 10014 do return false
+		if nerr.status != 0 && nerr.jetstream != JS_CONSUMER_NOT_FOUND do return false
+		forget_consumer(s, name)
 		forget_provisioned(r, name)
 		mark, began_mark, _ := iface.unit_of_work_begin(s.factory)
 		if !began_mark do return false

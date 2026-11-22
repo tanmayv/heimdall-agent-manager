@@ -53,6 +53,7 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 		ack_wait = 60 * time.Millisecond,
 		max_deliver = 2,
 	}
+	defer provisioned_destroy(&service)
 	runtime := Runtime {
 		service = &service,
 	}
