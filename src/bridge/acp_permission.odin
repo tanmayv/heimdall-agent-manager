@@ -15,7 +15,7 @@ ACP_PERMISSION_CANCELLED :: `{"outcome":{"outcome":"cancelled"}}`
 ACP_Permission_Worker :: struct {
     owner: ^ACP_Runtime,
     client: ^ACP_RPC_Client,
-    id, params, blocker: string,
+    id, method, params, blocker: string,
     timeout_ms: int,
     control: Bridge_Ext_Permission_Control,
     decision: string,
@@ -81,7 +81,7 @@ acp_permission_reap :: proc(r: ^ACP_Runtime, all := false) {
         w := r.permissions[i]
         if !all && !sync.atomic_load(&w.done) do continue
         thread.join(w.worker); thread.destroy(w.worker)
-        delete(w.id); delete(w.params); delete(w.blocker); free(w)
+        delete(w.id); delete(w.method); delete(w.params); delete(w.blocker); free(w)
         ordered_remove(&r.permissions, i)
     }
 }
@@ -90,21 +90,23 @@ acp_permission_start :: proc(r: ^ACP_Runtime, id, params: string) {
     c := r.client
     p := acp_permission_pending(c, id)
     if p == nil do return
+    encode := acp_runtime_driver(r).permission_result
+    cancelled := encode(p.method, params, "none")
     if !acp_runtime_current(r) || r.d.error != "" || r.d.replay_only || r.d.cancelling {
-        acp_rpc_reply(c, id, ACP_PERMISSION_CANCELLED); return
+        acp_rpc_reply(c, id, cancelled); return
     }
     if r.descriptor.permission_policy == .Once_Only {
         if !contracts.acp_descriptor_effective_mode_valid(r.descriptor, r.mode) {
-            acp_rpc_reply(c, id, ACP_PERMISSION_CANCELLED); return
+            acp_rpc_reply(c, id, cancelled); return
         }
         if r.mode == "yolo" {
             // The RPC reply checkpoints before writing; retries replay this
             // same receipt. Ambiguous/missing allow_once stays cancelled.
-            acp_rpc_reply(c, id, acp_permission_result(params, "allow")); return
+            acp_rpc_reply(c, id, encode(p.method, params, "allow")); return
         }
     }
-    if acp_permission_result(params, "allow") == ACP_PERMISSION_CANCELLED && acp_permission_result(params, "deny") == ACP_PERMISSION_CANCELLED {
-        acp_rpc_reply(c, id, ACP_PERMISSION_CANCELLED); return
+    if encode(p.method, params, "allow") == cancelled && encode(p.method, params, "deny") == cancelled {
+        acp_rpc_reply(c, id, cancelled); return
     }
     blocker := acp_permission_id(r.epoch, r.session, id); defer delete(blocker)
     if p.blocker_id != "" && p.blocker_id != blocker {
@@ -120,10 +122,10 @@ acp_permission_start :: proc(r: ^ACP_Runtime, id, params: string) {
     // or a frame whose final stdout sequence has not yet been acknowledged.
     if !acp_rpc_checkpoint(c) { acp_rpc_fail(c, "acp_state_write_failed"); return }
     acp_permission_reap(r)
-    if len(r.permissions) >= ACP_RPC_MAX_PENDING_INBOUND { acp_rpc_reply(c, id, ACP_PERMISSION_CANCELLED); return }
+    if len(r.permissions) >= ACP_RPC_MAX_PENDING_INBOUND { acp_rpc_reply(c, id, cancelled); return }
     w := new(ACP_Permission_Worker)
     w.owner = r; w.client = c
-    w.id = strings.clone(id); w.params = strings.clone(params); w.blocker = strings.clone(blocker)
+    w.id = strings.clone(id); w.method = strings.clone(p.method); w.params = strings.clone(params); w.blocker = strings.clone(blocker)
     w.timeout_ms = int(min(remaining, i64(PERMISSION_MAX_TIMEOUT_MS)))
     append(&r.permissions, w)
     // Publish on the dispatcher before starting the blocking relay. Its native
@@ -137,7 +139,7 @@ acp_permission_worker :: proc(data: rawptr) {
     arena: vm.Arena; _ = vm.arena_init_growing(&arena); defer vm.arena_destroy(&arena)
     context.temp_allocator = vm.arena_allocator(&arena)
     w := cast(^ACP_Permission_Worker)data
-    req := acp_permission_request(w.params, w.blocker, w.owner.provider, w.timeout_ms)
+    req := acp_runtime_driver(w.owner).permission_relay(w.method, w.params, w.blocker, w.owner.provider, w.timeout_ms)
     req.control = &w.control
     out := bridge_ext_permission_run(w.owner.rec, req)
     w.decision = out.decision
@@ -167,7 +169,7 @@ acp_permission_complete :: proc(data: rawptr, c: ^ACP_RPC_Client, _: string) -> 
     cancelled := w.control.cancelled
     sync.mutex_unlock(&w.control.mu)
     if cancelled || !acp_runtime_current(r) || r.d.error != "" || acp_rpc_now(c) >= p.deadline_unix_ms do decision = "none"
-    replied := acp_rpc_reply(c, w.id, acp_permission_result(w.params, decision))
+    replied := acp_rpc_reply(c, w.id, acp_runtime_driver(r).permission_result(w.method, w.params, decision))
     acp_permissions_activity(r)
     return replied
 }
@@ -188,14 +190,18 @@ acp_permission_timeout :: proc(data: rawptr, id: string) {
     for w in r.permissions {
         if w.id == id do bridge_ext_permission_cancel(&w.control, r.instance, w.blocker)
     }
-    acp_rpc_reply(r.client, id, ACP_PERMISSION_CANCELLED)
+    if p := acp_permission_pending(r.client, id); p != nil {
+        acp_rpc_reply(r.client, id, acp_runtime_driver(r).permission_result(p.method, p.params_json, "none"))
+    }
     acp_permissions_activity(r)
 }
 
 acp_permissions_cancel :: proc(r: ^ACP_Runtime) {
     for w in r.permissions do bridge_ext_permission_cancel(&w.control, r.instance, w.blocker)
     for p in r.client.state.pending_inbound {
-        if acp_runtime_driver(r).permission_request(p.method) && p.response_json == "" do acp_rpc_reply(r.client, p.id_json, ACP_PERMISSION_CANCELLED)
+        if acp_runtime_driver(r).permission_request(p.method) && p.response_json == "" {
+            acp_rpc_reply(r.client, p.id_json, acp_runtime_driver(r).permission_result(p.method, p.params_json, "none"))
+        }
     }
     acp_permissions_activity(r)
 }

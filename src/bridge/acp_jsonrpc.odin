@@ -32,7 +32,7 @@ ACP_RPC_UNKNOWN_ID_OVERFLOW :: `"<additional unknown response IDs suppressed>"`
 ACP_RPC_ID :: distinct string
 ACP_RPC_Role :: enum { Other, Initialize, New, Load, Config, Prompt, Steering }
 ACP_RPC_Error :: struct { code: int, message: string, data_json: string }
-ACP_RPC_Result :: struct { id: ACP_RPC_ID, result_json: string, error: ACP_RPC_Error, ok: bool }
+ACP_RPC_Result :: struct { id: ACP_RPC_ID, result_json: string, error: ACP_RPC_Error, ok: bool, method: string }
 ACP_RPC_Completion :: struct {
     callback: proc(data: rawptr, result: ACP_RPC_Result),
     data: rawptr,
@@ -590,6 +590,7 @@ acp_rpc_fail :: proc(c: ^ACP_RPC_Client, reason: string) {
     c.io.close(c.io.data)
 }
 acp_rpc_result_delete :: proc(r: ACP_RPC_Result) {
+    delete(r.method, runtime.heap_allocator())
     delete(string(r.id), runtime.heap_allocator()); delete(r.result_json, runtime.heap_allocator())
     delete(r.error.message, runtime.heap_allocator()); delete(r.error.data_json, runtime.heap_allocator())
 }
@@ -600,7 +601,7 @@ acp_rpc_deliver :: proc(c: ^ACP_RPC_Client, id: string, r: ACP_RPC_Result) {
 }
 acp_rpc_reject_all :: proc(c: ^ACP_RPC_Client, reason: string) {
     for p in c.state.pending_outbound {
-        acp_rpc_deliver(c, p.id, {id = ACP_RPC_ID(strings.clone(p.id)), error = {code = -32000, message = strings.clone(reason)}})
+        acp_rpc_deliver(c, p.id, {id = ACP_RPC_ID(strings.clone(p.id)), method = strings.clone(p.method), error = {code = -32000, message = strings.clone(reason)}})
     }
 }
 
@@ -662,7 +663,10 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
         if p, found := obj["params"]; found do params = acp_rpc_value_json(p)
         params_ok := acp_rpc_params_ok(params)
         if !has_id {
-            if !params_ok { acp_rpc_fail(c, "acp_protocol_error"); return }
+            if !params_ok {
+                if c.protocol != .Codex_App_Server do acp_rpc_fail(c, "acp_protocol_error")
+                return
+            }
             if c.callbacks.notification != nil do c.callbacks.notification(c.callbacks.data, strings.clone(method), strings.clone(params))
             return
         }
@@ -734,7 +738,7 @@ acp_rpc_message :: proc(c: ^ACP_RPC_Client, line: string) {
     ordered_remove(&c.state.pending_outbound, idx)
     delete_key(&c.outbound, outgoing_id)
     for p, i in c.state.pending_outbound do c.outbound[p.id] = i
-    r := ACP_RPC_Result{id = ACP_RPC_ID(strings.clone(pending.id)), ok = has_result}
+    r := ACP_RPC_Result{id = ACP_RPC_ID(strings.clone(pending.id)), method = strings.clone(pending.method), ok = has_result}
     if has_result do r.result_json = strings.clone(acp_rpc_value_json(result))
     if has_error do r.error = {rpc_error.code, strings.clone(rpc_error.message), strings.clone(rpc_error.data_json)}
     acp_rpc_deliver(c, pending.id, r)

@@ -83,7 +83,11 @@ acp_inbox_tick :: proc(data: rawptr) {
     r := cast(^ACP_Runtime)data
     // acp_rpc_open starts its thread before the owner assigns r.client and
     // restores the journal. A tick must never drain that pre-restore state.
-    if r.inbox_started && acp_runtime_current(r) do acp_runtime_drain(r)
+    if r.inbox_started && acp_runtime_current(r) {
+        driver := acp_runtime_driver(r)
+        if driver.tick != nil do driver.tick(r)
+        acp_runtime_drain(r)
+    }
 }
 
 acp_inbox_interrupt_pending :: proc(r: ^ACP_Runtime) {
@@ -107,6 +111,8 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
     }
     if r.d.phase == "prompt" {
         if steer < 0 || !r.d.steering_supported || r.d.queue[steer].kind == "append_next_turn" do return
+        driver := acp_runtime_driver(r)
+        if driver.can_steer != nil && !driver.can_steer(r) do return
         r.d.steering_input = r.d.queue[steer]; ordered_remove(&r.d.queue, steer)
         r.d.steering_pending = true
         if !acp_runtime_driver(r).steer(r) do acp_runtime_error(r, "acp_pipe_write_failed")

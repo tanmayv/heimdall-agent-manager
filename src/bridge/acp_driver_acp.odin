@@ -300,3 +300,10 @@ acp_driver_acp_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
 acp_driver_acp_permission_request :: proc(method: string) -> bool {
     return method == "session/request_permission"
 }
+
+acp_driver_acp_permission_result :: proc(method, params, decision: string) -> string {
+    return acp_permission_result(params, decision)
+}
+acp_driver_acp_permission_relay :: proc(method, params, blocker, provider: string, timeout_ms: int) -> Bridge_Ext_Permission_Request {
+    return acp_permission_request(params, blocker, provider, timeout_ms)
+}

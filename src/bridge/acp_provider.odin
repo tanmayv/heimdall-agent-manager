@@ -157,6 +157,14 @@ acp_provider_launch_argv :: proc(d: contracts.ACP_Provider_Descriptor, root, res
     case: return nil, false
     }
     append(&argv, ..d.args)
+    if d.protocol == .Codex_App_Server {
+        // Override only this child. Profile/global config files and other
+        // plugins remain intact; PTY launches retain their native hook setup.
+        append(&argv, "-c", "thread_unload_delay_secs=0", "-c", "features.hooks=false", "-c", "notify=[]",
+            "-c", "plugins.heimdall@heimdall-codex.enabled=false")
+        marketplace := bridge_codex_own_marketplace_name()
+        if marketplace != "" do append(&argv, "-c", strings.concatenate({"plugins.",BRIDGE_CODEX_PLUGIN_NAME,"@",marketplace,".enabled=false"},context.temp_allocator))
+    }
     return argv[:], true
 }
 

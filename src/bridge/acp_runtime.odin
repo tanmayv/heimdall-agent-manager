@@ -26,6 +26,7 @@ ACP_Runtime_Durable :: struct {
     steering_supported, steering_pending: bool,
     steering_input: ACP_Runtime_Input,
     batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
+    codex: ACP_Codex_Durable,
 }
 
 // T5 attaches telemetry/chat handling here. Hooks execute only on the instance
@@ -322,6 +323,7 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     delete(r.d.queue)
     acp_inbox_input_delete(r.d.steering_input)
     for id in r.d.completed_inputs do delete(id); delete(r.d.completed_inputs)
+    acp_codex_durable_delete(&r.d.codex)
     free(r)
 }
 

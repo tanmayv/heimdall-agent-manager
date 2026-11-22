@@ -170,6 +170,6 @@ acp_driver_runtime_dispatch_is_per_owner :: proc(t: ^testing.T) {
         owner := ACP_Runtime{descriptor = d}
         testing.expect(t, acp_runtime_driver(&owner) == &acp_protocol_acp_driver)
     }
-    testing.expect(t, acp_protocol_driver(.Codex_App_Server) == nil)
+    testing.expect(t, acp_protocol_driver(.Codex_App_Server) == &acp_protocol_codex_driver)
     testing.expect(t, acp_protocol_driver(contracts.ACP_Protocol(99)) == nil)
 }

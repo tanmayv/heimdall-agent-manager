@@ -22,6 +22,10 @@ ACP_Protocol_Driver :: struct {
     // Protocols can expose several approval methods and different reply shapes.
     permission_request: proc(method: string) -> bool,
     permissions_cancel: proc(r: ^ACP_Runtime),
+    permission_result: proc(method, params, decision: string) -> string,
+    permission_relay: proc(method, params, blocker, provider: string, timeout_ms: int) -> Bridge_Ext_Permission_Request,
+    tick: proc(r: ^ACP_Runtime),
+    can_steer: proc(r: ^ACP_Runtime) -> bool,
 }
 
 // RPC policy contains no runtime pointer and can also be used by install probes.
@@ -46,12 +50,14 @@ acp_protocol_acp_driver := ACP_Protocol_Driver{
     inbound_timeout = acp_permission_timeout, probe = acp_driver_acp_probe,
     rpc = ACP_RPC_POLICY_ACP, permission_request = acp_driver_acp_permission_request,
     permissions_cancel = acp_permissions_cancel,
+    permission_result = acp_driver_acp_permission_result,
+    permission_relay = acp_driver_acp_permission_relay,
 }
 
 acp_protocol_driver :: proc(protocol: contracts.ACP_Protocol) -> ^ACP_Protocol_Driver {
     switch protocol {
     case .ACP: return &acp_protocol_acp_driver
-    case .Codex_App_Server: return nil // Implemented by the next protocol task.
+    case .Codex_App_Server: return &acp_protocol_codex_driver
     }
     return nil
 }
