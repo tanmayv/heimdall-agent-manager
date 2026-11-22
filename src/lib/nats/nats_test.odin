@@ -2,6 +2,7 @@ package nats
 
 import server "../natstest"
 import "core:fmt"
+import "core:encoding/json"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -22,6 +23,28 @@ test_jetstream_real_server :: proc(t: ^testing.T) {
 	test_notification_snapshots(t)
 	test_errors_and_outage(t)
 	test_tls(t)
+	scenario_schedule_every(t)
+	scenario_schedule_cron_time_zone(t)
+	scenario_schedule_at_past(t)
+	scenario_ttl_never_outlives_max_age(t)
+	scenario_purge_subject(t)
+	scenario_purge_count(t)
+	scenario_stream_update_keeps_data(t)
+	scenario_deliver_new(t)
+	scenario_metadata_timestamp(t)
+	scenario_supports_schedules(t)
+	scenario_work_queue_ack_removes(t)
+	scenario_work_queue_disjoint_consumers(t)
+	scenario_max_ack_pending(t)
+	scenario_nak_reply_delay(t)
+	scenario_in_progress_reply(t)
+	scenario_term_reply(t)
+	scenario_ack_reply_work_queue(t)
+	scenario_max_deliver_advisory(t)
+	scenario_delayed_nak_counts_toward_max_ack_pending(t)
+	scenario_ack_reply_async(t)
+	scenario_delete_message(t)
+	scenario_schedule_fire_ttl(t)
 	err := shutdown(5000)
 	testing.expectf(t, err.status == 0, "shutdown: %s", error_text(err))
 	testing.expectf(t, len(track.allocation_map) == 0, "Odin live allocations: %d", len(track.allocation_map))
@@ -438,4 +461,299 @@ test_notification_snapshots :: proc(t: ^testing.T) {
 	missing, _, invalid = stream_next(nil, cfg.name, "ev.match", 1)
 	testing.expect_value(t, invalid.status, INVALID)
 	message_destroy(missing)
+}
+
+@(test)
+test_version_at_least :: proc(t: ^testing.T) {
+	for v in ([]string{"2.14.0", "2.14.7", "3.0.0", "2.14.0-RC.1"}) do testing.expect(t, version_at_least(v, 2, 14, 0), v)
+	for v in ([]string{"2.13.9", "2.12.3", "", "abc", "2.14", "2..14", "2.14.0.1", "2.14.x", "9999999999999999999999.0.0"}) do testing.expect(t, !version_at_least(v, 2, 14, 0), v)
+}
+@(test)
+test_subject_token :: proc(t: ^testing.T) {
+	testing.expect(t, subject_token("usr_1"))
+	for v in ([]string{"", "a.b", "a*", "a>", "a b", "a\tb", "a\x00", "a\x7f"}) do testing.expect(t, !subject_token(v), v)
+}
+Feature_Fixture :: struct {srv: server.Server, conn: ^Connection, pull: ^Pull}
+feature_start :: proc(t: ^testing.T, work_queue := false, max_age := time.Hour, max_pending: i64 = 0, ack_wait := 10 * time.Second, max_deliver: i64 = 10, deliver_new := false) -> (f: Feature_Fixture) {
+	ok: bool
+	f.srv, ok = server.start()
+	if !testing.expect(t, ok) do return
+	f.conn = test_connect(t, f.srv.url)
+	if f.conn == nil do return
+	cfg := Stream_Config{name = "FEATURE", subjects = []string{"ev.>", "sched.def.>", "dlv.>"},
+		max_age_ns = i64(max_age), replicas = 1, allow_direct = true,
+		allow_msg_schedules = !work_queue, allow_msg_ttl = !work_queue,
+		retention = .Work_Queue if work_queue else .Limits}
+	_, err := stream_add(f.conn, cfg)
+	if !testing.expectf(t, err.status == 0, "feature stream: %v", err) do return
+	err = consumer_add(f.conn, {stream = "FEATURE", durable = "read", filter_subjects = []string{"ev.>"},
+		ack_wait_ns = i64(ack_wait), max_deliver = max_deliver, max_ack_pending = max_pending, deliver_new = deliver_new})
+	if !testing.expectf(t, err.status == 0, "feature consumer: %v", err) do return
+	f.pull, err = pull_bind(f.conn, "FEATURE", "read")
+	testing.expect_value(t, err.status, i32(0))
+	return
+}
+feature_destroy :: proc(f: ^Feature_Fixture) {
+	pull_destroy(f.pull); destroy(f.conn); server.destroy(&f.srv)
+}
+feature_publish :: proc(t: ^testing.T, f: ^Feature_Fixture, subject: string, headers: []Header = nil) -> Pub_Ack {
+	a, err := publish(f.conn, subject, test_bytes("payload"), "", headers)
+	testing.expectf(t, err.status == 0, "feature publish %s: %v", subject, err)
+	return a
+}
+feature_schedule :: proc(t: ^testing.T, f: ^Feature_Fixture, pattern: string, extra: []Header = nil) {
+	h := make([dynamic]Header); defer delete(h)
+	append(&h, Header{"Nats-Schedule", pattern}, Header{"Nats-Schedule-Target", "ev.fire"},
+		Header{"Nats-TTL", "never"}, Header{"X-Custom", "kept"})
+	append(&h, ..extra)
+	feature_publish(t, f, "sched.def.test", h[:])
+}
+feature_count :: proc(t: ^testing.T, f: ^Feature_Fixture, subject: string, expected: u64) {
+	n, err := subject_count(f.conn, "FEATURE", subject)
+	testing.expectf(t, err.status == 0 && n == expected, "count %s expected %d got %d: %v", subject, expected, n, err)
+}
+feature_fetch :: proc(t: ^testing.T, f: ^Feature_Fixture, count: int, wait: i64 = 1000) -> ^Batch {
+	b, err := fetch(f.pull, count, wait)
+	testing.expectf(t, err.status == 0 || err.status == 26 || err.status == 29, "fetch: %v", err)
+	return b
+}
+scenario_schedule_every :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	feature_schedule(t, &f, "@every 1s")
+	started := time.tick_now()
+	fired := 0
+	for fired < 2 && time.tick_since(started) < 4 * time.Second {
+		b := feature_fetch(t, &f, 1); defer batch_destroy(b)
+		if batch_count(b) == 0 do continue
+		m := batch_message(b, 0)
+		next, err := message_header(m, "Nats-Schedule-Next")
+		testing.expect(t, err.status == 0 && next != "")
+		custom, _ := message_header(m, "X-Custom"); testing.expect_value(t, custom, "kept")
+		testing.expect_value(t, ack(m).status, i32(0))
+		fired += 1
+	}
+	testing.expect(t, fired >= 2 && time.tick_since(started) < 4 * time.Second)
+}
+scenario_schedule_cron_time_zone :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	feature_schedule(t, &f, "* * * * * *", []Header{{"Nats-Schedule-Time-Zone", "Asia/Kolkata"}})
+	b := feature_fetch(t, &f, 1, 2500); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return
+	v, err := message_header(batch_message(b, 0), "Nats-Schedule-Next")
+	testing.expectf(t, err.status == 0 && strings.has_suffix(v, "+05:30"), "next %s: %v", v, err)
+}
+scenario_schedule_at_past :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	feature_schedule(t, &f, "@at 2020-01-01T00:00:00Z")
+	b := feature_fetch(t, &f, 1, 2000); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return
+	v, err := message_header(batch_message(b, 0), "Nats-Schedule-Next")
+	testing.expect(t, err.status == 0 && v == "purge")
+	testing.expect_value(t, ack(batch_message(b, 0)).status, i32(0))
+	feature_count(t, &f, "sched.def.test", 0)
+	b2 := feature_fetch(t, &f, 1, 300); defer batch_destroy(b2)
+	testing.expect_value(t, batch_count(b2), 0)
+}
+scenario_ttl_never_outlives_max_age :: proc(t: ^testing.T) {
+	f := feature_start(t, max_age = 2 * time.Second); defer feature_destroy(&f)
+	feature_schedule(t, &f, "@every 1h")
+	feature_publish(t, &f, "ev.plain")
+	time.sleep(4 * time.Second)
+	feature_count(t, &f, "sched.def.test", 1); feature_count(t, &f, "ev.plain", 0)
+}
+scenario_purge_subject :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	feature_schedule(t, &f, "@every 1s")
+	n, err := stream_purge_subject(f.conn, "FEATURE", "sched.def.test")
+	testing.expect(t, err.status == 0 && n == 1)
+	b := feature_fetch(t, &f, 1, 3000); defer batch_destroy(b)
+	testing.expect_value(t, batch_count(b), 0)
+	n, err = stream_purge_subject(f.conn, "FEATURE", "sched.def.test")
+	testing.expect(t, err.status == 0 && n == 0)
+}
+scenario_purge_count :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	for _ in 0 ..< 7 do feature_publish(t, &f, "ev.purge")
+	feature_publish(t, &f, "ev.keep")
+	n, err := stream_purge_subject(f.conn, "FEATURE", "ev.purge")
+	testing.expectf(t, err.status == 0 && n == 7, "exact server count %d: %v", n, err)
+	feature_count(t, &f, "ev.keep", 1)
+	_, err = stream_purge_subject(f.conn, "FEATURE", "ev.*"); testing.expect_value(t, err.status, INVALID)
+	_, err = stream_purge_subject(f.conn, "MISSING", "ev.purge"); testing.expect(t, err.status != 0 && err.jetstream != 0)
+}
+scenario_stream_update_keeps_data :: proc(t: ^testing.T) {
+	srv, ok := server.start(); defer server.destroy(&srv)
+	if !testing.expect(t, ok) do return
+	conn := test_connect(t, srv.url); defer destroy(conn)
+	cfg := test_stream()
+	_, err := stream_add(conn, cfg); testing.expect_value(t, err.status, i32(0))
+	for i in 0 ..< 3 { _, e := publish(conn, "ev.old", test_bytes("old")); testing.expect_value(t, e.status, i32(0)) }
+	testing.expect_value(t, consumer_add(conn, {stream = cfg.name, durable = "old", filter_subjects = []string{"ev.>"}, ack_wait_ns = i64(time.Second), max_deliver = 3}).status, i32(0))
+	cfg.subjects = []string{"ev.>", "sched.def.>"}; cfg.allow_msg_schedules = true; cfg.allow_msg_ttl = true
+	state, e := stream_update(conn, cfg); testing.expect(t, e.status == 0 && state.messages == 3)
+	_, e = consumer_state(conn, cfg.name, "old"); testing.expect_value(t, e.status, i32(0))
+}
+scenario_deliver_new :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	for _ in 0 ..< 2 do feature_publish(t, &f, "ev.old")
+	e := consumer_add(f.conn, {stream = "FEATURE", durable = "new", filter_subjects = []string{"ev.>"}, ack_wait_ns = i64(time.Second), max_deliver = 3, deliver_new = true})
+	testing.expect_value(t, e.status, i32(0))
+	p, err := pull_bind(f.conn, "FEATURE", "new"); defer pull_destroy(p); testing.expect_value(t, err.status, i32(0))
+	b, _ := fetch_available(p, 10); testing.expect_value(t, batch_count(b), 0); batch_destroy(b)
+	a := feature_publish(t, &f, "ev.new")
+	b, err = fetch(p, 10, 500); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return
+	meta, me := message_metadata(batch_message(b, 0)); testing.expect(t, me.status == 0 && meta.stream_sequence == a.sequence)
+}
+scenario_metadata_timestamp :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	feature_publish(t, &f, "ev.timestamp")
+	b := feature_fetch(t, &f, 1); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return
+	meta, err := message_metadata(batch_message(b, 0))
+	delta := time.to_unix_nanoseconds(time.now()) - meta.timestamp_ns
+	testing.expectf(t, err.status == 0 && delta >= 0 && delta < i64(5 * time.Second), "metadata timestamp: %v %d", meta, delta)
+}
+scenario_supports_schedules :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+	ok, err := server_supports_schedules(f.conn, "FEATURE")
+	testing.expectf(t, ok && err.status == 0, "schedule support: %v %v", ok, err)
+	ok, err = server_supports_schedules(f.conn, "MISSING"); testing.expect(t, !ok && err.status != 0)
+}
+scenario_work_queue_ack_removes :: proc(t: ^testing.T) {
+	f := feature_start(t, true); defer feature_destroy(&f)
+	feature_publish(t, &f, "ev.work")
+	b := feature_fetch(t, &f, 1); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return
+	testing.expect_value(t, ack(batch_message(b, 0)).status, i32(0))
+	feature_count(t, &f, "ev.work", 0)
+}
+scenario_work_queue_disjoint_consumers :: proc(t: ^testing.T) {
+	f := feature_start(t, true); defer feature_destroy(&f)
+	for id in ([]string{"b1", "b2"}) {
+		err := consumer_add(f.conn, {stream = "FEATURE", durable = id, filter_subjects = []string{fmt.tprintf("dlv.*.%s.>", id)}, ack_wait_ns = i64(time.Second), max_deliver = 3})
+		testing.expect_value(t, err.status, i32(0))
+	}
+	e := consumer_add(f.conn, {stream = "FEATURE", durable = "overlap", filter_subjects = []string{"dlv.>"}, ack_wait_ns = i64(time.Second), max_deliver = 3})
+	testing.expect_value(t, e.jetstream, i32(10100))
+	feature_publish(t, &f, "dlv.u.b1.prompt")
+	for id in ([]string{"b1", "b2"}) {
+		p, pe := pull_bind(f.conn, "FEATURE", id); testing.expect_value(t, pe.status, i32(0))
+		b, _ := fetch(p, 1, 200)
+		testing.expect_value(t, batch_count(b), 1 if id == "b1" else 0)
+		batch_destroy(b); pull_destroy(p)
+	}
+}
+scenario_max_ack_pending :: proc(t: ^testing.T) {
+	f := feature_start(t, true, max_pending = 16); defer feature_destroy(&f)
+	for _ in 0 ..< 20 do feature_publish(t, &f, "ev.pending")
+	b := feature_fetch(t, &f, 20, 300); defer batch_destroy(b)
+	testing.expect_value(t, batch_count(b), 16)
+}
+feature_reply :: proc(t: ^testing.T, f: ^Feature_Fixture) -> string {
+	feature_publish(t, f, "ev.reply")
+	b := feature_fetch(t, f, 1); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return ""
+	return strings.clone(message_reply(batch_message(b, 0)))
+}
+scenario_nak_reply_delay :: proc(t: ^testing.T) {
+	f := feature_start(t, true); defer feature_destroy(&f)
+	reply := feature_reply(t, &f); defer delete(reply)
+	started := time.tick_now()
+	testing.expect_value(t, nak_reply_delay(f.conn, reply, 3000).status, i32(0)); flush(f.conn)
+	b := feature_fetch(t, &f, 1, 2000); testing.expect_value(t, batch_count(b), 0); batch_destroy(b)
+	b = feature_fetch(t, &f, 1, 2000); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return
+	meta, _ := message_metadata(batch_message(b, 0))
+	testing.expect(t, meta.num_delivered == 2 && time.tick_since(started) < 4 * time.Second)
+}
+scenario_in_progress_reply :: proc(t: ^testing.T) {
+	f := feature_start(t, true, ack_wait = 2 * time.Second); defer feature_destroy(&f)
+	reply := feature_reply(t, &f); defer delete(reply)
+	started := time.tick_now()
+	time.sleep(1500 * time.Millisecond)
+	testing.expect_value(t, in_progress_reply(f.conn, reply).status, i32(0)); flush(f.conn)
+	b := feature_fetch(t, &f, 1, 1500); testing.expect_value(t, batch_count(b), 0); batch_destroy(b)
+	b = feature_fetch(t, &f, 1, 1400); defer batch_destroy(b)
+	testing.expect(t, batch_count(b) == 1 && time.tick_since(started) < 4500 * time.Millisecond)
+}
+scenario_term_reply :: proc(t: ^testing.T) {
+	f := feature_start(t, true, ack_wait = time.Second); defer feature_destroy(&f)
+	reply := feature_reply(t, &f); defer delete(reply)
+	testing.expect_value(t, term_reply(f.conn, reply).status, i32(0)); flush(f.conn)
+	b := feature_fetch(t, &f, 1, 2000); defer batch_destroy(b)
+	testing.expect_value(t, batch_count(b), 0); feature_count(t, &f, "ev.reply", 0)
+}
+scenario_ack_reply_work_queue :: proc(t: ^testing.T) {
+	f := feature_start(t, true); defer feature_destroy(&f)
+	reply := feature_reply(t, &f); defer delete(reply)
+	testing.expect_value(t, ack_reply(f.conn, reply, 2000).status, i32(0))
+	feature_count(t, &f, "ev.reply", 0)
+}
+scenario_ack_reply_async :: proc(t: ^testing.T) {
+	f := feature_start(t, true); defer feature_destroy(&f)
+	reply := feature_reply(t, &f); defer delete(reply)
+	started := time.tick_now()
+	testing.expect_value(t, ack_reply_async(f.conn, reply).status, i32(0))
+	testing.expect(t, time.tick_since(started) < 100 * time.Millisecond)
+	testing.expect_value(t, flush(f.conn).status, i32(0)); feature_count(t, &f, "ev.reply", 0)
+}
+scenario_delete_message :: proc(t: ^testing.T) {
+	f := feature_start(t, true); defer feature_destroy(&f)
+	a := feature_publish(t, &f, "ev.delete")
+	deleted, err := stream_delete_message(f.conn, "FEATURE", a.sequence)
+	testing.expectf(t, deleted && err.status == 0, "delete existing: %v %v", deleted, err); feature_count(t, &f, "ev.delete", 0)
+	deleted, err = stream_delete_message(f.conn, "FEATURE", a.sequence)
+	testing.expectf(t, !deleted && err.status == 0, "delete absent: %v %v", deleted, err)
+}
+scenario_delayed_nak_counts_toward_max_ack_pending :: proc(t: ^testing.T) {
+	f := feature_start(t, true, max_pending = 2); defer feature_destroy(&f)
+	for _ in 0 ..< 3 do feature_publish(t, &f, "ev.delayed")
+	b := feature_fetch(t, &f, 2)
+	if !testing.expect_value(t, batch_count(b), 2) {batch_destroy(b); return}
+	for i in 0 ..< 2 do testing.expect_value(t, nak_reply_delay(f.conn, message_reply(batch_message(b, i)), 3000).status, i32(0))
+	batch_destroy(b); flush(f.conn)
+	b = feature_fetch(t, &f, 1, 2000); testing.expect_value(t, batch_count(b), 0); batch_destroy(b)
+	b = feature_fetch(t, &f, 2, 2000); defer batch_destroy(b)
+	testing.expect_value(t, batch_count(b), 2)
+	for i in 0 ..< batch_count(b) {m, e := message_metadata(batch_message(b, i)); testing.expect(t, e.status == 0 && m.num_delivered == 2)}
+}
+scenario_max_deliver_advisory :: proc(t: ^testing.T) {
+	f := feature_start(t, true, ack_wait = time.Second, max_deliver = 3); defer feature_destroy(&f)
+	_, e := stream_add(f.conn, {name = "ADV", subjects = []string{"$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.FEATURE.>"}, replicas = 1, allow_direct = true})
+	testing.expect_value(t, e.status, i32(0))
+	a := feature_publish(t, &f, "ev.exhausted")
+	for i in 0 ..< 3 {
+		b := feature_fetch(t, &f, 1, 1500)
+		if testing.expect_value(t, batch_count(b), 1) {m, _ := message_metadata(batch_message(b, 0)); testing.expect_value(t, m.num_delivered, u64(i+1))}
+		batch_destroy(b)
+	}
+	b := feature_fetch(t, &f, 1, 1500); testing.expect_value(t, batch_count(b), 0); batch_destroy(b)
+	state, err := stream_info(f.conn, "ADV"); testing.expect(t, err.status == 0 && state.messages == 1)
+	msg, me := stream_get(f.conn, "ADV", state.first); defer message_destroy(msg)
+	if !testing.expect_value(t, me.status, i32(0)) do return
+	body: struct {stream, consumer: string, stream_seq: u64}
+	decode := json.unmarshal(message_data(msg), &body)
+	defer delete(body.stream); defer delete(body.consumer)
+	testing.expect(t, decode == nil && body.stream == "FEATURE" && body.consumer == "read" && body.stream_seq == a.sequence)
+	feature_count(t, &f, "ev.exhausted", 1)
+}
+scenario_schedule_fire_ttl :: proc(t: ^testing.T) {
+	f := feature_start(t); defer feature_destroy(&f)
+
+	feature_schedule(t, &f, "@every 1s", []Header{{"Nats-Schedule-TTL", "2s"}})
+	b := feature_fetch(t, &f, 1, 3000); defer batch_destroy(b)
+	if !testing.expect_value(t, batch_count(b), 1) do return
+	meta, err := message_metadata(batch_message(b, 0))
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	time.sleep(time.Second)
+	msg, me := stream_get(f.conn, "FEATURE", meta.stream_sequence)
+	message_destroy(msg); testing.expect_value(t, me.status, i32(0))
+	time.sleep(3 * time.Second)
+	old, old_err := stream_get(f.conn, "FEATURE", meta.stream_sequence)
+	message_destroy(old)
+	fmt.printf("scenario_schedule_fire_ttl: server honours Nats-Schedule-TTL = %v\n", old_err.status == 13)
+	// The spec permits either result: T10 deletes fires if the server ignores TTL.
+	testing.expect(t, old_err.status == 13 || old_err.status == 0)
+	feature_count(t, &f, "sched.def.test", 1)
 }

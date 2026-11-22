@@ -3,11 +3,12 @@
 #include <nats/nats.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct { natsConnection *nc; jsCtx *js; } ham_nats;
 typedef struct { uint64_t messages, first, last; } ham_stream_state;
 typedef struct { uint64_t sequence; int duplicate; } ham_pub_ack;
-typedef struct { uint64_t stream_sequence, consumer_sequence, num_delivered, num_pending; } ham_metadata;
+typedef struct { uint64_t stream_sequence, consumer_sequence, num_delivered, num_pending; int64_t timestamp_ns; } ham_metadata;
 
 const char *ham_nats_version(void) { return nats_GetVersion(); }
 
@@ -71,6 +72,7 @@ int ham_nats_publish(ham_nats *h, const char *subject, const void *data, int len
 int ham_nats_stream(ham_nats *h, int operation, const char *name,
                     const char **subjects, int count, int64_t max_age_ns,
                     int64_t duplicate_ns, int64_t replicas, int rollup, int direct,
+                    int schedules, int ttl, int retention,
                     ham_stream_state *out, jsErrCode *err) {
     jsStreamInfo *info = NULL;
     jsStreamConfig cfg;
@@ -80,12 +82,14 @@ int ham_nats_stream(ham_nats *h, int operation, const char *name,
     cfg.Subjects = subjects;
     cfg.SubjectsLen = count;
     cfg.Storage = js_FileStorage;
-    cfg.Retention = js_LimitsPolicy;
+    cfg.Retention = retention == 1 ? js_WorkQueuePolicy : js_LimitsPolicy;
     cfg.MaxAge = max_age_ns;
     cfg.Duplicates = duplicate_ns;
     cfg.Replicas = replicas;
     cfg.AllowRollup = rollup != 0;
     cfg.AllowDirect = direct != 0;
+    cfg.AllowMsgSchedules = schedules != 0;
+    cfg.AllowMsgTTL = ttl != 0;
     if (operation == 0) s = js_AddStream(&info, h->js, &cfg, NULL, err);
     else if (operation == 1) s = js_UpdateStream(&info, h->js, &cfg, NULL, err);
     else s = js_GetStreamInfo(&info, h->js, name, NULL, err);
@@ -99,16 +103,17 @@ int ham_nats_stream(ham_nats *h, int operation, const char *name,
 }
 int ham_nats_consumer_add(ham_nats *h, const char *stream, const char *durable,
                           const char **filters, int count, int64_t ack_wait_ns,
-                          int64_t max_deliver, jsErrCode *err) {
+                          int64_t max_deliver, int deliver_new, int64_t max_ack_pending, jsErrCode *err) {
     jsConsumerInfo *info = NULL;
     jsConsumerConfig cfg;
     natsStatus s = jsConsumerConfig_Init(&cfg);
     if (s != NATS_OK) return s;
     cfg.Durable = durable;
     cfg.AckPolicy = js_AckExplicit;
-    cfg.DeliverPolicy = js_DeliverAll;
+    cfg.DeliverPolicy = deliver_new ? js_DeliverNew : js_DeliverAll;
     cfg.AckWait = ack_wait_ns;
     cfg.MaxDeliver = max_deliver;
+    if (max_ack_pending > 0) cfg.MaxAckPending = max_ack_pending;
     if (count == 1) cfg.FilterSubject = filters[0];
     else { cfg.FilterSubjects = filters; cfg.FilterSubjectsLen = count; }
     s = js_AddConsumer(&info, h->js, stream, &cfg, NULL, err);
@@ -178,6 +183,7 @@ int ham_nats_metadata(natsMsg *msg, ham_metadata *out) {
         out->consumer_sequence = meta->Sequence.Consumer;
         out->num_delivered = meta->NumDelivered;
         out->num_pending = meta->NumPending;
+        out->timestamp_ns = meta->Timestamp;
     }
     jsMsgMetaData_Destroy(meta);
     return s;
@@ -269,5 +275,40 @@ int ham_nats_stream_next(natsMsg **out, ham_nats *h, const char *stream,
         s = natsMsg_Create(out, subject, NULL, natsMsg_GetData(msg), natsMsg_GetDataLength(msg));
     natsMsg_Destroy(msg);
     if (s != NATS_OK) { natsMsg_Destroy(*out); *out = NULL; }
+    return s;
+}
+
+int ham_nats_server_version(ham_nats *h, const char *stream, char *out,
+                            int size, jsErrCode *err) {
+    jsStreamInfo *info = NULL;
+    out[0] = 0;
+    natsStatus s = js_GetStreamInfo(&info, h->js, stream, NULL, err);
+    if (s == NATS_OK && info->Config) {
+        natsMetadata *meta = &info->Config->Metadata;
+        for (int i = 0; i < meta->Count; i++) {
+            if (strcmp(meta->List[2*i], "_nats.ver") == 0) {
+                const char *v = meta->List[2*i+1];
+                if (strlen(v) >= (size_t)size) s = NATS_ERR;
+                else memcpy(out, v, strlen(v)+1);
+                break;
+            }
+        }
+    }
+    jsStreamInfo_Destroy(info);
+    return s;
+}
+int ham_nats_request(natsMsg **out, ham_nats *h, const char *subject, const void *data, int len) {
+    *out = NULL;
+    return natsConnection_Request(out, h->nc, subject, data, len, 2000);
+}
+int ham_nats_publish_reply(ham_nats *h, const char *reply, const void *data, int len) {
+    return natsConnection_Publish(h->nc, reply, data, len);
+}
+int ham_nats_flush(ham_nats *h) { return natsConnection_FlushTimeout(h->nc, 2000); }
+int ham_nats_delete_message(ham_nats *h, const char *stream, uint64_t seq, int *deleted, jsErrCode *err) {
+    *deleted = 0;
+    natsStatus s = js_DeleteMsg(h->js, stream, seq, NULL, err);
+    if (s == NATS_OK) *deleted = 1;
+    else if (s == NATS_NOT_FOUND || *err == 10037 || *err == 10057) { s = NATS_OK; *err = 0; }
     return s;
 }

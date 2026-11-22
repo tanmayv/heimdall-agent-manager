@@ -1,6 +1,7 @@
 package eventinbox
 
 import "core:fmt"
+import nats "odin_test:lib/nats"
 import "core:strings"
 
 // Subjects use the producer's suffix tokens (state, requirements_changed,
@@ -40,13 +41,7 @@ filters_destroy :: proc(values: []string) {
  delete(values)
 }
 
-subject_token :: proc(value: string) -> bool {
- if value == "" do return false
- for c in value {
-  if c <= ' ' || c == '.' || c == '*' || c == '>' || c == 127 do return false
- }
- return true
-}
+subject_token :: proc(value: string) -> bool {return nats.subject_token(value)}
 
 // This predicate is shared by pull, nudge and wake. Entity versions do not
 // determine resolvable freshness: generations are scoped to a stable topic.

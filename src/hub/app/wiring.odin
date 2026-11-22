@@ -388,6 +388,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		if ok, err := configure_mcp_delegation(graph); !ok do return false, err
 	}
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
+	graph.db.outbox_after_commit_ctx = &graph.event_relay
+	graph.db.outbox_after_commit = proc(ctx: rawptr) {eventrelay.wake((^eventrelay.Service)(ctx))}
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.users.on_agent_seeded = users_on_agent_seeded
 	graph.users.on_agent_seeded_ctx = rawptr(graph)

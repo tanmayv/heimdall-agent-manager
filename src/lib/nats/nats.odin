@@ -4,6 +4,8 @@
 package nats
 
 import "core:c"
+import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 
 Connection :: struct {}
@@ -22,6 +24,7 @@ Stream_State :: struct {
 }
 Metadata :: struct {
 	stream_sequence, consumer_sequence, num_delivered, num_pending: u64,
+	timestamp_ns: i64,
 }
 Header :: struct {
 	key, value: string,
@@ -32,6 +35,7 @@ Connect_Options :: struct {
 	ca_file:    string,
 	timeout_ms: i64,
 }
+Retention :: enum i32 { Limits = 0, Work_Queue = 1 }
 Stream_Config :: struct {
 	name:                string,
 	subjects:            []string,
@@ -40,11 +44,15 @@ Stream_Config :: struct {
 	replicas:            i64,
 	allow_rollup:        bool,
 	allow_direct:        bool,
+	allow_msg_schedules, allow_msg_ttl: bool,
+	retention: Retention,
 }
 Consumer_Config :: struct {
 	stream, durable:          string,
 	filter_subjects:          []string,
 	ack_wait_ns, max_deliver: i64,
+	deliver_new: bool,
+	max_ack_pending: i64,
 }
 @(private)
 INVALID :: i32(16) // NATS_INVALID_ARG (natsStatus)
@@ -181,7 +189,7 @@ stream_operation :: proc(conn: ^Connection, cfg: Stream_Config, op: c.int) -> (s
 		cfg.max_age_ns,
 		cfg.duplicate_window_ns,
 		cfg.replicas,
-		rollup, direct,
+		rollup, direct, c.int(cfg.allow_msg_schedules), c.int(cfg.allow_msg_ttl), c.int(cfg.retention),
 		&state,
 		&err.jetstream,
 	)
@@ -211,7 +219,7 @@ consumer_add :: proc(conn: ^Connection, cfg: Consumer_Config) -> (err: Error) {
 		raw_data(filters),
 		c.int(len(filters)),
 		cfg.ack_wait_ns,
-		cfg.max_deliver,
+		cfg.max_deliver, c.int(cfg.deliver_new), cfg.max_ack_pending,
 		&err.jetstream,
 	)
 	return
@@ -384,5 +392,109 @@ stream_next :: proc(conn: ^Connection, stream, filter: string, start: u64) -> (m
 	s := strings.clone_to_cstring(stream); defer delete(s)
 	f := strings.clone_to_cstring(filter); defer delete(f)
 	err.status = ham_nats_stream_next(&msg, conn, s, f, start, &sequence)
+	return
+}
+
+// A subject token is shared by tenant filters and schedule/delivery subjects.
+subject_token :: proc(value: string) -> bool {
+	if value == "" do return false
+	for c in value {
+		if c <= ' ' || c == '.' || c == '*' || c == '>' || c == 127 do return false
+	}
+	return true
+}
+
+version_at_least :: proc(version: string, major, minor, patch: int) -> bool {
+	core := version
+	if i := strings.index_byte(core, '-'); i >= 0 do core = core[:i]
+	values: [3]int
+	part := 0
+	digits := 0
+	for c in core {
+		if c == '.' {
+			if digits == 0 || part >= 2 do return false
+			part += 1
+			digits = 0
+		} else {
+			if c < '0' || c > '9' do return false
+			digit := int(c - '0')
+			if values[part] > (max(int) - digit) / 10 do return false
+			values[part] = values[part] * 10 + digit
+			digits += 1
+		}
+	}
+	if part != 2 || digits == 0 do return false
+	want := [3]int{major, minor, patch}
+	for v, i in values {
+		if v != want[i] do return v > want[i]
+	}
+	return true
+}
+
+// Reads _nats.ver while the C stream-info allocation is alive. No view escapes.
+server_supports_schedules :: proc(conn: ^Connection, stream: string) -> (supported: bool, err: Error) {
+	if conn == nil || !valid_name(stream) do return false, Error{status = INVALID}
+	name := strings.clone_to_cstring(stream); defer delete(name)
+	buffer: [128]u8
+	err.status = ham_nats_server_version(conn, name, raw_data(buffer[:]), c.int(len(buffer)), &err.jetstream)
+	if err.status != 0 do return false, err
+	return version_at_least(string(cstring(raw_data(buffer[:]))), 2, 14, 0), err
+}
+
+// The raw API is needed because js_PurgeStream discards the server's count.
+// Revision 2 requires the count from the same operation, never a preflight count.
+stream_purge_subject :: proc(conn: ^Connection, stream, subject: string) -> (purged: u64, err: Error) {
+	if conn == nil || !valid_name(stream) || subject == "" || !valid_string(subject) do return 0, Error{status = INVALID}
+	for c in subject {
+		if c <= ' ' || c == 127 || c == '*' || c == '>' do return 0, Error{status = INVALID}
+	}
+	payload, encode_err := json.marshal(struct {filter: string}{subject})
+	if encode_err != nil do return 0, Error{status = INVALID}
+	defer delete(payload)
+	api := strings.clone_to_cstring(fmt.tprintf("$JS.API.STREAM.PURGE.%s", stream)); defer delete(api)
+	msg: ^Message
+	err.status = ham_nats_request(&msg, conn, api, raw_data(payload), c.int(len(payload)))
+	if err.status != 0 do return
+	defer message_destroy(msg)
+	response: struct {
+		success: bool,
+		purged: u64,
+		error: struct {code, err_code: i32},
+	}
+	decode_err := json.unmarshal(message_data(msg), &response)
+	if decode_err != nil || !response.success || response.error.code != 0 {
+		err = {status = 1, jetstream = response.error.err_code}
+		return
+	}
+	return response.purged, err
+}
+
+// Plain protocol publishes do not wait for a reply and allocate nothing for callers.
+@(private)
+publish_reply :: proc(conn: ^Connection, reply, body: string) -> (err: Error) {
+	if conn == nil || reply == "" || !valid_string(reply) do return Error{status = INVALID}
+	r := strings.clone_to_cstring(reply); defer delete(r)
+	err.status = ham_nats_publish_reply(conn, r, raw_data(body), c.int(len(body)))
+	return
+}
+ack_reply_async :: proc(conn: ^Connection, reply: string) -> Error {return publish_reply(conn, reply, "+ACK")}
+in_progress_reply :: proc(conn: ^Connection, reply: string) -> Error {return publish_reply(conn, reply, "+WPI")}
+term_reply :: proc(conn: ^Connection, reply: string) -> Error {return publish_reply(conn, reply, "+TERM")}
+nak_reply_delay :: proc(conn: ^Connection, reply: string, delay_ms: i64) -> Error {
+	if delay_ms > max(i64) / 1_000_000 do return Error{status = INVALID}
+	return publish_reply(conn, reply, fmt.tprintf("%s%d%s", "-NAK {\"delay\": ", max(delay_ms, 0) * 1_000_000, "}"))
+}
+stream_delete_message :: proc(conn: ^Connection, stream: string, sequence: u64) -> (deleted: bool, err: Error) {
+	if conn == nil || !valid_name(stream) || sequence == 0 do return false, Error{status = INVALID}
+	name := strings.clone_to_cstring(stream); defer delete(name)
+	result: c.int
+	err.status = ham_nats_delete_message(conn, name, sequence, &result, &err.jetstream)
+	return result != 0, err
+}
+
+// A barrier for preceding asynchronous protocol publishes.
+flush :: proc(conn: ^Connection) -> (err: Error) {
+	if conn == nil do return Error{status = INVALID}
+	err.status = ham_nats_flush(conn)
 	return
 }

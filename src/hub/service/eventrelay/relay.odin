@@ -4,6 +4,7 @@ package eventrelay
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem/virtual"
 import "core:strings"
 import "core:sync"
@@ -14,7 +15,17 @@ import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
 import nats "odin_test:lib/nats"
 
+RELAY_BATCH :: 64
+DELIVERY_STREAM :: "HEIM_DELIVER"
+Schedule_Support :: enum i32 { Unknown, Supported, Unsupported }
 Service :: struct {
+	wake_sema: sync.Sema,
+	// Zero selects the production 1 s fallback; tests may lengthen it.
+	idle_wait: time.Duration,
+	support: i32,
+	schedule_rejects: i64,
+	unsupported_logged: bool,
+
 	factory: ^iface.Unit_Of_Work_Factory,
 	options: nats.Connect_Options,
 	worker: ^thread.Thread,
@@ -24,10 +35,24 @@ Service :: struct {
 	last_prune: time.Tick,
 }
 stream_config :: proc() -> nats.Stream_Config {
-	subjects := make([]string, 1, context.temp_allocator)
+	subjects := make([]string, 2, context.temp_allocator)
 	subjects[0] = "ev.>"
+	subjects[1] = "sched.def.>"
 	return {name = "HEIM_EVENTS", subjects = subjects, max_age_ns = i64(14 * 24 * time.Hour),
-	duplicate_window_ns = i64(2 * time.Minute), replicas = 1, allow_rollup = true, allow_direct = true}
+	duplicate_window_ns = i64(2 * time.Minute), replicas = 1, allow_rollup = true, allow_direct = true, allow_msg_schedules = true, allow_msg_ttl = true}
+}
+delivery_stream_config :: proc() -> nats.Stream_Config {
+	subjects := make([]string, 1, context.temp_allocator)
+	subjects[0] = "dlv.>"
+	return {name = DELIVERY_STREAM, subjects = subjects, retention = .Work_Queue,
+		max_age_ns = i64(24 * time.Hour), duplicate_window_ns = i64(2 * time.Minute),
+		replicas = 1, allow_direct = true}
+}
+wake :: proc(s: ^Service) {
+	if s != nil do sync.sema_post(&s.wake_sema)
+}
+schedule_support :: proc(s: ^Service) -> Schedule_Support {
+	return Schedule_Support(sync.atomic_load(&s.support))
 }
 start :: proc(s: ^Service, factory: ^iface.Unit_Of_Work_Factory, options: nats.Connect_Options) {
 	if s.worker != nil do return
@@ -44,6 +69,7 @@ start :: proc(s: ^Service, factory: ^iface.Unit_Of_Work_Factory, options: nats.C
 stop :: proc(s: ^Service) {
 	if s.worker == nil do return
 	sync.atomic_store(&s.stopping, 1)
+	wake(s)
 	thread.join(s.worker)
 	thread.destroy(s.worker)
 	s.worker = nil
@@ -69,7 +95,10 @@ entry :: proc(data: rawptr) {
 			delay = min(delay * 2, 5 * time.Second)
 		} else {
 			delay = 100 * time.Millisecond
-			if !progress do wait = time.Second
+			if !progress {
+				idle_wait := s.idle_wait if s.idle_wait > 0 else time.Second
+				_ = sync.sema_wait_with_timeout(&s.wake_sema, idle_wait)
+			}
 		}
 		free_all(context.allocator)
 		for wait > 0 && sync.atomic_load(&s.stopping) == 0 {
@@ -103,7 +132,36 @@ step_inner :: proc(s: ^Service) -> (bool, bool) {
 			_, err = nats.stream_update(conn, cfg)
 			if err.status != 0 do return false, false
 		}
+
+		delivery_cfg := delivery_stream_config()
+		_, err = nats.stream_add(conn, delivery_cfg)
+		if err.status != 0 {
+			_, err = nats.stream_update(conn, delivery_cfg)
+			if err.status != 0 do return false, false
+		}
+		supported, support_err := nats.server_supports_schedules(conn, cfg.name)
+		sync.atomic_store(&s.support, i32(Schedule_Support.Supported) if supported && support_err.status == 0 else i32(Schedule_Support.Unsupported))
 	}
+	progress := false
+	for _ in 0 ..< RELAY_BATCH {
+		ok, handled := relay_one(s)
+		progress = progress || handled
+		if !ok do return false, progress
+		if !handled do break
+	}
+	if s.last_prune._nsec == 0 || time.tick_since(s.last_prune) >= time.Minute {
+		prune, began, _ := iface.unit_of_work_begin(s.factory)
+		if !began do return false, progress
+		defer if prune.ctx != nil do iface.unit_of_work_rollback(&prune)
+		before := platform.format_rfc3339_utc(time.time_add(time.now(), -24 * time.Hour))
+		err := prune.repos.event_outbox.prune(prune.repos.event_outbox.ctx, before)
+		if err.code != .None do return false, progress
+		if committed, _ := iface.unit_of_work_commit(&prune); !committed do return false, progress
+		s.last_prune = time.tick_now()
+	}
+	return true, progress
+}
+relay_one :: proc(s: ^Service) -> (bool, bool) {
 	uow, began, _ := iface.unit_of_work_begin(s.factory)
 	if !began do return false, false
 	row, found, err := uow.repos.event_outbox.next(uow.repos.event_outbox.ctx)
@@ -119,16 +177,34 @@ step_inner :: proc(s: ^Service) -> (bool, bool) {
 		defer json.destroy_value(value)
 		object, is_object := value.(json.Object)
 		if !is_object do return false, false
+		purge := false
 		headers := make([dynamic]nats.Header)
 		defer delete(headers)
 		for k, v in object {
 			str, is_string := v.(json.String)
 			if !is_string do return false, false
+			if k == "Heim-Op" { purge = string(str) == "purge"; continue }
 			// event_id is authoritative even if a producer supplied this header.
 			if strings.to_lower(k, context.temp_allocator) == "nats-msg-id" do continue
 			append(&headers, nats.Header{k, string(str)})
 		}
-		_, pub_err := nats.publish(s.connection, row.subject, transmute([]byte)row.envelope_json, row.event_id, headers[:])
+		pub_err: nats.Error
+		if purge {
+			_, pub_err = nats.stream_purge_subject(s.connection, "HEIM_EVENTS", row.subject)
+		} else if strings.has_prefix(row.subject, "sched.def.") && schedule_support(s) == .Unsupported {
+			if !s.unsupported_logged {
+				fmt.eprintf("eventrelay: dropping schedule definitions: server does not support schedules\n")
+				s.unsupported_logged = true
+			}
+		} else {
+			_, pub_err = nats.publish(s.connection, row.subject, transmute([]byte)row.envelope_json, row.event_id, headers[:])
+			if strings.has_prefix(row.subject, "sched.def.") &&
+			   (pub_err.jetstream == 10189 || pub_err.jetstream == 10190 || pub_err.jetstream == 10223) {
+				fmt.eprintf("eventrelay: rejected schedule %s: %d\n", row.subject, pub_err.jetstream)
+				sync.atomic_add(&s.schedule_rejects, 1)
+				pub_err = {}
+			}
+		}
 		if pub_err.status != 0 do return false, false
 		mark, mark_began, _ := iface.unit_of_work_begin(s.factory)
 		if !mark_began do return false, false
@@ -139,15 +215,6 @@ step_inner :: proc(s: ^Service) -> (bool, bool) {
 		// Check connectivity even with no pending events so health detects outages.
 		_, info_err := nats.stream_info(s.connection, "HEIM_EVENTS")
 		if info_err.status != 0 do return false, false
-	}
-	if s.last_prune._nsec == 0 || time.tick_since(s.last_prune) >= time.Minute {
-		prune, prune_began, _ := iface.unit_of_work_begin(s.factory)
-		if !prune_began do return false, found
-		before := platform.format_rfc3339_utc(time.time_add(time.now(), -24 * time.Hour))
-		err = prune.repos.event_outbox.prune(prune.repos.event_outbox.ctx, before)
-		if err.code != .None { iface.unit_of_work_rollback(&prune); return false, found }
-		if pruned, _ := iface.unit_of_work_commit(&prune); !pruned do return false, found
-		s.last_prune = time.tick_now()
 	}
 	return true, found
 }
