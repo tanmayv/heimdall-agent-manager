@@ -120,6 +120,8 @@ startup_wake_duplicate_preserves_child_and_stale_or_stopped_is_denied :: proc(t:
 	bridge_runtime_mark_stop_intent(id)
 	ok, detail, _ = bridge_runtime_launch_agent("wake", command)
 	testing.expect(t, !ok && strings.contains(detail, "stopped"), "same generation cannot undo stop")
+	ok, detail, _ = bridge_runtime_launch_agent("wake", command, bot_delivery = true)
+	testing.expect(t, !ok && strings.contains(detail, "stopped"), "a delayed bot delivery cannot undo an operator stop")
 	sync.mutex_lock(&bridge_local_token_mutex)
 	bridge_local_token_records[0].invalidated_at_unix_ms = 1
 	sync.mutex_unlock(&bridge_local_token_mutex)
@@ -127,6 +129,14 @@ startup_wake_duplicate_preserves_child_and_stale_or_stopped_is_denied :: proc(t:
 	testing.expect_value(t, bridge_agent_instance_run_count(id), 4)
 	ok, detail, _ = bridge_runtime_launch_agent("wake", command)
 	testing.expect(t, !ok && strings.contains(detail, "revoked"), "persisted revocation fences retry after bridge restart")
+	idle := bridge_wake_launch_command_json("idle", id, "", "worker", "future", "model", "agent", "name", "", "", "", "", "", run_count = 4, bot_idle_restart = true)
+	defer delete(idle)
+	ok, detail, _ = bridge_runtime_launch_agent("idle", idle, bot_delivery = true)
+	testing.expect(t, !ok && strings.contains(detail, "revoked"), "even a previously authorized idle descriptor cannot undo operator revocation")
+	acp := bridge_wake_launch_command_json("idle-acp", id, "", "worker", "future", "model", "agent", "name", "", "", "", "", "", run_count = 4, effective_transport = "acp", launch_epoch = "epoch_4", bot_idle_restart = true)
+	defer delete(acp)
+	ok, detail, _ = bridge_runtime_launch_agent("idle-acp", acp, bot_delivery = true)
+	testing.expect(t, !ok && strings.contains(detail, "revoked"), "ACP recovery also observes operator revocation")
 }
 
 @(test)

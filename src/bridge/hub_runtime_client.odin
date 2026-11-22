@@ -1184,7 +1184,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
 		expected_run := extract_json_int(text, "expected_run_count", -1)
-		ok, restored, stale := bridge_runtime_stop_generation(instance_id, extract_json_bool(text, "force", false), expected_run)
+		bot_idle := extract_json_string(text, "reason", "", context.temp_allocator) == "bot_idle"
+		stop := bridge_runtime_stop_idle_bot_unlocked if bot_idle else bridge_runtime_stop_agent_unlocked
+		ok, restored, stale := bridge_runtime_stop_generation(instance_id, extract_json_bool(text, "force", false), expected_run, stop)
 		defer delete(restored)
 		if stale {
 			final := bridge_command_failed_json(command_id, bridge_cause_wire_error("stale_generation", "stop targets a different process generation"), "")
@@ -2684,7 +2686,7 @@ bridge_wake_report_failed_status :: proc(conn: ^ws.Connection, instance_id: stri
 // the agent-keyed template bootstrap path rather than the header-only fallback
 // (REQ-37). Free-text fields (agent_name, chain_title) are JSON-escaped. Fields are
 // emitted unconditionally (empty is harmless) so the descriptor is deterministic.
-bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string, coordinator_display_name: string = "", lease_id: string = "", pack_json: string = "", permission_mode: string = "", run_count := 0,provider_profile:string = "", effective_transport: string = "pty", catalog_etag: string = "", launch_epoch: string = "") -> string {
+bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string, coordinator_display_name: string = "", lease_id: string = "", pack_json: string = "", permission_mode: string = "", run_count := 0,provider_profile:string = "", effective_transport: string = "pty", catalog_etag: string = "", launch_epoch: string = "", bot_idle_restart := false) -> string {
 	b := strings.builder_make()
 	write_field :: proc(b: ^strings.Builder, first: ^bool, key, val: string) {
 		if !first^ do strings.write_byte(b, ',')
@@ -2724,6 +2726,7 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 	write_field(&b, &first, "project_id", project_id)
 	write_field(&b, &first, "project_path", project_path)
 	strings.write_string(&b, ",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", run_count))
+	if bot_idle_restart do strings.write_string(&b, ",\"bot_idle_restart\":true")
 	// Task System v2 lease delivery (empty on non-lease wakes).
 	if lease_id != "" {
 		write_field(&b, &first, "lease_id", lease_id)
@@ -2758,16 +2761,6 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(instance_token)
 	requested_transport := extract_json_string(command_json, "effective_transport", "pty")
 	defer delete(requested_transport)
-	if requested_transport == "acp" {
-		if run_count > 0 && run_count < bridge_agent_instance_run_count(instance_id) do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
-		retry_provider := extract_json_string(command_json, "provider", "")
-        retry_profile := extract_json_string(command_json, "provider_profile", "")
-        defer { delete(retry_provider); delete(retry_profile) }
-        if handled, retry_ok := acp_runtime_retry_launch(instance_id, launch_epoch, run_count, retry_provider, retry_profile); handled {
-			if retry_ok do return true, "", {}
-			return false, "acp_pipe_lost", bridge_error(.agent_launch_failed, .denied)
-		}
-	}
 	if instance_token == "" {
 		instance_token = bridge_agent_instance_last_assertion(instance_id)
 		if instance_token == "" do instance_token = strings.concatenate({"hit_", instance_id})
@@ -2775,28 +2768,39 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	// Task wakes carry a persisted generation even without a migration epoch.
 	// A duplicate wake must preserve an already-live child and its local token;
 	// delayed commands must never replace a newer launch or undo its stop.
-	if run_count > 0 && (launch_epoch == "" || bot_delivery) {
+	idle_restart := false
+	if run_count > 0 && ((launch_epoch == "" && requested_transport != "acp") || bot_delivery) {
 		current := bridge_agent_instance_run_count(instance_id)
 		if run_count < current do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
-		if run_count == current && launch_epoch == "" {
+		if run_count == current {
 			assertion := bridge_agent_instance_assertion(instance_id)
 			defer delete(assertion)
 			sync.mutex_lock(&bridge_runtime_mutex)
 			stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
 			sync.mutex_unlock(&bridge_runtime_mutex)
-			// An active bot delivery may cold-start an idle-stopped bot from a freshly
-			// fetched Hub descriptor. An ordinary delayed wake must respect that stop.
-			if !bot_delivery {
+			idle_restart = bot_delivery && extract_json_bool(command_json, "bot_idle_restart", false) &&
+				bridge_agent_token_idle_restart_allowed(instance_id, run_count)
+			if !idle_restart {
 				if assertion == "" do return false, "startup generation was revoked", bridge_error(.agent_launch_failed, .denied)
 				if stopped do return false, "startup generation was stopped", bridge_error(.agent_launch_failed, .denied)
 			}
-			if assertion != "" && !stopped {
+			if !idle_restart && launch_epoch == "" && requested_transport != "acp" {
 				socket, daemon_ok := bridge_pty_host_ensure_daemon()
 				if !daemon_ok do return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
 				confirmed, queried := bridge_startup_confirm_spawned(socket, instance_id, run_count)
 				if !queried do return false, "cannot confirm existing launch identity", bridge_error(.pty_host_unreachable)
 				if confirmed { bridge_task_wake_note_launched(instance_id); return true, "", {} }
 			}
+		}
+	}
+	if requested_transport == "acp" && !idle_restart {
+		if run_count > 0 && run_count < bridge_agent_instance_run_count(instance_id) do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
+		retry_provider := extract_json_string(command_json, "provider", "")
+        retry_profile := extract_json_string(command_json, "provider_profile", "")
+        defer { delete(retry_provider); delete(retry_profile) }
+        if handled, retry_ok := acp_runtime_retry_launch(instance_id, launch_epoch, run_count, retry_provider, retry_profile); handled {
+			if retry_ok do return true, "", {}
+			return false, "acp_pipe_lost", bridge_error(.agent_launch_failed, .denied)
 		}
 	}
 	if launch_epoch != "" {
@@ -3016,6 +3020,14 @@ bridge_runtime_stop_agent :: proc(instance_id: string, force: bool = false) -> b
 }
 
 bridge_runtime_stop_agent_unlocked :: proc(instance_id: string, force: bool = false) -> bool {
+	return bridge_runtime_stop_agent_process(instance_id, force)
+}
+
+bridge_runtime_stop_idle_bot_unlocked :: proc(instance_id: string, force: bool = false) -> bool {
+	return bridge_runtime_stop_agent_process(instance_id, force, bot_idle = true)
+}
+
+bridge_runtime_stop_agent_process :: proc(instance_id: string, force: bool, bot_idle := false) -> bool {
 	if strings.trim_space(instance_id) == "" do return false
 	// Record the operator's intent to stop, so a late/duplicate wrapper signal that
 	// races the ~1s self-reap window cannot resurrect the instance back to
@@ -3046,7 +3058,7 @@ bridge_runtime_stop_agent_unlocked :: proc(instance_id: string, force: bool = fa
 	if registered && !bridge_pty_host_close(socket, instance_id) do return false
 
 	// Invalidate every local token for this instance (persisted to disk).
-	invalidated := bridge_agent_token_invalidate_instance(instance_id)
+	invalidated := bridge_agent_token_invalidate_instance(instance_id, bot_idle)
 	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated)
 	// Drop any in-memory launch record so we don't hold stale pane/token data.
 	bridge_runtime_remove_launch(instance_id)

@@ -22,6 +22,7 @@ Bridge_Local_Agent_Token_Record :: struct {
 	issued_at_unix_ms: i64,
 	rotated_at_unix_ms: i64,
 	invalidated_at_unix_ms: i64,
+	bot_idle_stopped: bool,
 }
 
 Bridge_Local_Token_Issue_Result :: struct {
@@ -109,7 +110,7 @@ bridge_agent_token_invalidate :: proc(plaintext: string) -> bool {
 // This is transport/host independent (no tmux/PID reaping), so it works even
 // when the old process is orphaned, detached from its tmux window, or the
 // instance was restarted on a different bridge. Returns the count invalidated.
-bridge_agent_token_invalidate_instance :: proc(agent_instance_id: string) -> int {
+bridge_agent_token_invalidate_instance :: proc(agent_instance_id: string, bot_idle := false) -> int {
 	if bridge_local_token_records == nil do bridge_agent_token_store_init()
 	target := strings.trim_space(agent_instance_id)
 	if target == "" do return 0
@@ -117,14 +118,38 @@ bridge_agent_token_invalidate_instance :: proc(agent_instance_id: string) -> int
 	sync.mutex_lock(&bridge_local_token_mutex)
 	defer sync.mutex_unlock(&bridge_local_token_mutex)
 	count := 0
-	for i in 0..<len(bridge_local_token_records) {
-		if bridge_local_token_records[i].agent_instance_id == target && bridge_local_token_records[i].invalidated_at_unix_ms == 0 {
-			bridge_local_token_records[i].invalidated_at_unix_ms = now
+	changed, latest := false, true
+	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {
+		record := &bridge_local_token_records[i]
+		if record.agent_instance_id != target do continue
+		// Only a completed idle stop of a previously live generation permits
+		// restart. A later operator stop clears the permission even if the
+		// token was already revoked.
+		allow_idle := latest && bot_idle && record.invalidated_at_unix_ms == 0
+		latest = false
+		if record.bot_idle_stopped != allow_idle {
+			record.bot_idle_stopped = allow_idle
+			changed = true
+		}
+		if record.invalidated_at_unix_ms == 0 {
+			record.invalidated_at_unix_ms = now
 			count += 1
 		}
 	}
-	if count > 0 do bridge_agent_token_store_save_locked()
+	if changed || count > 0 do bridge_agent_token_store_save_locked()
 	return count
+}
+
+bridge_agent_token_idle_restart_allowed :: proc(instance_id: string, run_count: int) -> bool {
+	sync.mutex_lock(&bridge_local_token_mutex)
+	defer sync.mutex_unlock(&bridge_local_token_mutex)
+	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {
+		record := bridge_local_token_records[i]
+		if record.agent_instance_id == instance_id {
+			return record.run_count == run_count && record.invalidated_at_unix_ms != 0 && record.bot_idle_stopped
+		}
+	}
+	return false
 }
 
 // S1: the local-token store is namespaced PER BRIDGE so two bridges on one host
@@ -217,6 +242,7 @@ bridge_agent_token_store_load_file :: proc(path: string) {
 			issued_at_unix_ms = bridge_agent_token_json_i64(trimmed, "issued_at_unix_ms", 0),
 			rotated_at_unix_ms = bridge_agent_token_json_i64(trimmed, "rotated_at_unix_ms", 0),
 			invalidated_at_unix_ms = bridge_agent_token_json_i64(trimmed, "invalidated_at_unix_ms", 0),
+			bot_idle_stopped = extract_json_bool(trimmed, "bot_idle_stopped", false),
 		}
 		if strings.trim_space(rec.token_hash) == "" || strings.trim_space(rec.agent_instance_id) == "" do continue
 		already := false
@@ -240,6 +266,7 @@ bridge_agent_token_store_save_locked :: proc() {
 		strings.write_string(&b, ",\"rotated_at_unix_ms\":"); strings.write_string(&b, fmt.tprintf("%d", rec.rotated_at_unix_ms))
 		strings.write_string(&b, ",\"invalidated_at_unix_ms\":"); strings.write_string(&b, fmt.tprintf("%d", rec.invalidated_at_unix_ms))
 		strings.write_string(&b, ",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", rec.run_count))
+		if rec.bot_idle_stopped do strings.write_string(&b, ",\"bot_idle_stopped\":true")
 		strings.write_string(&b, "}\n")
 	}
 	// S2: atomic write — write to a temp file then rename over the target, so a

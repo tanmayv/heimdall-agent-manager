@@ -119,6 +119,15 @@ bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
 	bridge_agent_token_store_init()
 	reloaded, reload_ok := bridge_agent_token_verify(rotated.plaintext_token)
 	testing.expect(t, reload_ok && reloaded.run_count == 4, "generation survives token rotation and reload")
+	testing.expect_value(t, bridge_agent_token_invalidate_instance("inst_RT", bot_idle = true), 1)
+	bridge_agent_token_store_init()
+	testing.expect(t, bridge_agent_token_idle_restart_allowed("inst_RT", 4), "idle restart permission survives Bridge restart")
+	testing.expect(t, !bridge_agent_token_idle_restart_allowed("inst_RT", 3), "idle restart permission is generation scoped")
+	testing.expect_value(t, bridge_agent_token_invalidate_instance("inst_RT"), 0)
+	bridge_agent_token_store_init()
+	testing.expect(t, !bridge_agent_token_idle_restart_allowed("inst_RT", 4), "operator stop clears permission even when the token was already revoked")
+	testing.expect_value(t, bridge_agent_token_invalidate_instance("inst_RT", bot_idle = true), 0)
+	testing.expect(t, !bridge_agent_token_idle_restart_allowed("inst_RT", 4), "delayed idle stop cannot restore an operator-revoked permission")
 
 }
 

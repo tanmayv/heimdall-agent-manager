@@ -357,5 +357,5 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
 	defer delete(launch_epoch)
 	run_count := 0
 	if use_manifest_run_count do run_count, _ = bridge_provider_json_extract_int(inst_obj, "run_count")
-	return bridge_wake_launch_command_json(command_id, instance_id, "", role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, "", "", permission_mode,run_count=run_count,provider_profile=provider_profile,effective_transport=effective_transport,catalog_etag=catalog_etag,launch_epoch=launch_epoch), {}, true
+	return bridge_wake_launch_command_json(command_id, instance_id, "", role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, "", "", permission_mode,run_count=run_count,provider_profile=provider_profile,effective_transport=effective_transport,catalog_etag=catalog_etag,launch_epoch=launch_epoch, bot_idle_restart=use_manifest_run_count && extract_json_bool(inst_obj, "bot_idle_restart", false)), {}, true
 }
