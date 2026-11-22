@@ -11,6 +11,7 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
+	ham_nats_delete_error_absent :: proc(status, code: i32, description: cstring) -> c.int ---
 	ham_nats_server_version :: proc(conn: ^Connection, stream: cstring, out: ^u8, size: c.int, js_error: ^i32) -> i32 ---
 	ham_nats_request :: proc(out: ^^Message, conn: ^Connection, subject: cstring, data: rawptr, size: c.int) -> i32 ---
 	ham_nats_publish_reply :: proc(conn: ^Connection, reply: cstring, data: rawptr, size: c.int) -> i32 ---

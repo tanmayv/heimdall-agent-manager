@@ -25,6 +25,8 @@ Service :: struct {
 	support: i32,
 	schedule_rejects: i64,
 	unsupported_logged: bool,
+	// Optional fault-injection seam; nil uses the real server version lookup.
+	support_lookup: proc(conn: ^nats.Connection, stream: string) -> (bool, nats.Error),
 
 	factory: ^iface.Unit_Of_Work_Factory,
 	options: nats.Connect_Options,
@@ -139,8 +141,13 @@ step_inner :: proc(s: ^Service) -> (bool, bool) {
 			_, err = nats.stream_update(conn, delivery_cfg)
 			if err.status != 0 do return false, false
 		}
-		supported, support_err := nats.server_supports_schedules(conn, cfg.name)
-		sync.atomic_store(&s.support, i32(Schedule_Support.Supported) if supported && support_err.status == 0 else i32(Schedule_Support.Unsupported))
+		lookup := s.support_lookup
+		if lookup == nil do lookup = nats.server_supports_schedules
+		supported, support_err := lookup(conn, cfg.name)
+		// A failed lookup is a failed setup, not evidence of an old server.
+		// step closes the connection and retries without consuming outbox rows.
+		if support_err.status != 0 do return false, false
+		sync.atomic_store(&s.support, i32(Schedule_Support.Supported) if supported else i32(Schedule_Support.Unsupported))
 	}
 	progress := false
 	for _ in 0 ..< RELAY_BATCH {
@@ -156,7 +163,9 @@ step_inner :: proc(s: ^Service) -> (bool, bool) {
 		before := platform.format_rfc3339_utc(time.time_add(time.now(), -24 * time.Hour))
 		err := prune.repos.event_outbox.prune(prune.repos.event_outbox.ctx, before)
 		if err.code != .None do return false, progress
-		if committed, _ := iface.unit_of_work_commit(&prune); !committed do return false, progress
+		committed, _ := iface.unit_of_work_commit(&prune)
+		prune.ctx = nil // commit consumes the context even when it fails
+		if !committed do return false, progress
 		s.last_prune = time.tick_now()
 	}
 	return true, progress

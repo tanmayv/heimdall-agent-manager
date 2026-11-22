@@ -305,10 +305,25 @@ int ham_nats_publish_reply(ham_nats *h, const char *reply, const void *data, int
     return natsConnection_Publish(h->nc, reply, data, len);
 }
 int ham_nats_flush(ham_nats *h) { return natsConnection_FlushTimeout(h->nc, 2000); }
+// nats.c prefixes the server description with a source location. Generic
+// JSStreamMsgDeleteFailedF (10057) is absent only for "no message found".
+int ham_nats_delete_error_absent(int status, int code, const char *description) {
+    if (status == NATS_NOT_FOUND || code == 10037) return 1;
+    if (code != 10057 || description == NULL) return 0;
+    if (description[0] == '(') {
+        const char *prefix_end = strstr(description, "): ");
+        if (prefix_end == NULL) return 0;
+        description = prefix_end + 3;
+    }
+    return strcmp(description, "no message found") == 0;
+}
 int ham_nats_delete_message(ham_nats *h, const char *stream, uint64_t seq, int *deleted, jsErrCode *err) {
     *deleted = 0;
     natsStatus s = js_DeleteMsg(h->js, stream, seq, NULL, err);
     if (s == NATS_OK) *deleted = 1;
-    else if (s == NATS_NOT_FOUND || *err == 10037 || *err == 10057) { s = NATS_OK; *err = 0; }
+    else if (ham_nats_delete_error_absent(s, *err, nats_GetLastError(NULL))) {
+        s = NATS_OK;
+        *err = 0;
+    }
     return s;
 }

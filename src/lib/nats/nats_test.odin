@@ -757,3 +757,21 @@ scenario_schedule_fire_ttl :: proc(t: ^testing.T) {
 	testing.expect(t, old_err.status == 13 || old_err.status == 0)
 	feature_count(t, &f, "sched.def.test", 1)
 }
+
+@(test)
+test_delete_error_classification :: proc(t: ^testing.T) {
+	cases := []struct {status, code: i32, description: cstring, absent: bool}{
+		{13, 0, nil, true}, // NATS_NOT_FOUND
+		{1, 10037, nil, true},
+		{1, 10057, "no message found", true},
+		{1, 10057, "(jsm.c:1713): no message found", true},
+		{1, 10057, "storage failure", false},
+		{1, 10057, "(jsm.c:1713): storage failure", false},
+		{1, 10057, "no message found in damaged store", false},
+		{1, 10057, nil, false},
+		{1, 10059, "stream not found", false},
+	}
+	for c in cases {
+		testing.expect_value(t, ham_nats_delete_error_absent(c.status, c.code, c.description) != 0, c.absent)
+	}
+}

@@ -25,6 +25,7 @@ test_real_outbox_relay :: proc(t: ^testing.T) {
 	test_relay_poison_schedule_row(t)
 	test_relay_drops_definitions_when_unsupported(t)
 	test_relay_reports_schedule_support(t)
+	test_relay_support_lookup_failure_retains_definitions(t)
 	test_relay_creates_delivery_stream(t)
 	test_relay_publishes_delivery_row_once(t)
 	test_relay_delivery_row_does_not_block_events(t)
@@ -178,8 +179,9 @@ relay_append :: proc(t: ^testing.T, f: ^Relay_Fixture, id, subject: string, head
 	err := uow.repos.event_outbox.append(uow.repos.event_outbox.ctx, {event_id = id, owner_user_id = "alice",
 		subject = subject, envelope_json = "{}", headers_json = headers, created_at = "2026-11-22T00:00:00Z"})
 	if err.code != .None do return false
-	if rollback {iface.unit_of_work_rollback(&uow); return true}
+	if rollback {iface.unit_of_work_rollback(&uow); uow.ctx = nil; return true}
 	ok, _ := iface.unit_of_work_commit(&uow)
+	uow.ctx = nil
 	return testing.expect(t, ok)
 }
 relay_expect_count :: proc(t: ^testing.T, f: ^Relay_Fixture, stream, subject: string, expected: u64) {
@@ -327,4 +329,27 @@ test_relay_idle_fallback_wait :: proc(t: ^testing.T) {
 	// A raw database insertion bypasses the repository append mark and wake hook.
 	testing.expect(t, sqlite.exec(&f.conn, "INSERT INTO event_outbox(event_id,owner_user_id,subject,envelope_json,headers_json,created_at) VALUES('direct','alice','ev.alice.direct','{}','{}','2026-11-22T00:00:00Z');"))
 	testing.expect(t, wait_health(t, &f.svc, "ok", 0))
+}
+
+test_relay_support_lookup_failure_retains_definitions :: proc(t: ^testing.T) {
+	f: Relay_Fixture; defer relay_fixture_destroy(&f)
+	if !relay_fixture_init(t, &f) do return
+	testing.expect(t, relay_append(t, &f, "retry_definition", "sched.def.retry",
+		"{\"Nats-Schedule\":\"@every 1h\",\"Nats-Schedule-Target\":\"ev.fire\",\"Nats-TTL\":\"never\"}"))
+	// Force setup again, with a transient failure after both streams exist.
+	nats.destroy(f.svc.connection); f.svc.connection = nil
+	sync.atomic_store(&f.svc.support, i32(Schedule_Support.Unknown))
+	f.svc.support_lookup = proc(conn: ^nats.Connection, stream: string) -> (bool, nats.Error) {
+		return false, {status = 26}
+	}
+	ok, progress := step(&f.svc)
+	testing.expect(t, !ok && !progress && f.svc.connection == nil)
+	testing.expect_value(t, schedule_support(&f.svc), Schedule_Support.Unknown)
+	_, backlog := health(&f.svc); testing.expect_value(t, backlog, i64(1))
+	// A later successful lookup publishes the SAME pending definition.
+	f.svc.support_lookup = nil
+	ok, progress = step(&f.svc); testing.expect(t, ok && progress)
+	testing.expect_value(t, schedule_support(&f.svc), Schedule_Support.Supported)
+	relay_expect_empty(t, &f)
+	relay_expect_count(t, &f, "HEIM_EVENTS", "sched.def.retry", 1)
 }
