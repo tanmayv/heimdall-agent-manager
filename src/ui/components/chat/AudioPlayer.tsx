@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { AudioWaveform } from './AudioWaveform';
 import { decodeWaveform, onWaveformSlot, waveformAdmitted } from '../../utils/audioWaveform';
-import { Icon } from '@ui';
+import { IconButton } from '@ui';
 import { formatAudioTime, resolveAudioDuration } from '../../utils/audioArtifact';
 
 /** Far past any real duration: seeking here makes Chromium scan a duration-less WebM to the end. */
@@ -123,16 +123,14 @@ export function AudioPlayer({ src, debugId, label = 'Audio', durationHintMs = 0,
         onError={() => { if (src) setError('This audio could not be played.'); setPlaying(false); }}
         className="hidden"
       />
-      <button
-        type="button"
+      <IconButton
+        icon={playing ? 'pause' : 'play'}
+        label={playing ? `Pause ${label.toLowerCase()}` : `Play ${label.toLowerCase()}`}
         data-debug-id={`${debugId}-toggle`}
-        aria-label={playing ? `Pause ${label.toLowerCase()}` : `Play ${label.toLowerCase()}`}
+        className="shrink-0"
         disabled={!src}
         onClick={() => void toggle()}
-        className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-neutral-soft text-primary hover:bg-strong disabled:opacity-45"
-      >
-        <Icon name={playing ? 'pause' : 'play'} size="sm" />
-      </button>
+      />
       <div className="min-w-0 flex-1">
         <div className="relative min-w-0 rounded-md focus-within:ring-2 focus-within:ring-[var(--color-accent)]">
           {peaks ? <AudioWaveform peaks={peaks} progress={seekable ? current / duration : 0} /> : null}

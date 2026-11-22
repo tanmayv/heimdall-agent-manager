@@ -724,3 +724,49 @@ test('unsupported or failing microphone analysis leaves recording and preview us
   assert.equal(hookValue.phase, 'preview');
   assert.equal(fake.tracks[0].stopped, true);
 });
+
+
+test('voice controls: every recorder phase keeps icon-only named actions and disabled send', async () => {
+  for (const debugPrefix of ['conversation', 'bot-chat']) {
+    let calls = 0;
+    const action = () => { calls++; };
+    const recorder: any = { phase: 'requesting', error: '', amplitudes: [], elapsedMs: 1200,
+      cancel: action, stop: action, discard: action, dismissError: action };
+    const props = { recorder, isMobile: false, debugPrefix, onSend: action };
+    const view = await mount(h(VoiceRecorderPanel, props));
+    const check = (suffix: string, label: string) => {
+      const button = q(view.container, debugPrefix + '-voice-' + suffix)!;
+      assert.equal(button.textContent, '');
+      assert.equal(button.getAttribute('aria-label'), label);
+      assert.equal(button.getAttribute('title'), label);
+      assert.ok(button.querySelector('svg'));
+      assert.match(button.className, /focus-visible:shadow-focus/);
+      assert.match(button.className, /h-11 w-11/);
+      return button;
+    };
+    await click(check('cancel', 'Cancel microphone access'));
+    recorder.phase = 'recording';
+    await view.render(h(VoiceRecorderPanel, props));
+    await click(check('cancel', 'Cancel recording'));
+    await click(check('stop', 'Stop recording'));
+    assert.equal(q(view.container, debugPrefix + '-voice-timer')!.textContent, '0:01');
+    recorder.phase = 'preview';
+    recorder.recording = { url: 'blob:preview', durationMs: 1200 };
+    await view.render(h(VoiceRecorderPanel, { ...props, sendDisabled: true }));
+    await click(check('discard', 'Discard recording'));
+    const send = check('send', 'Send recording') as HTMLButtonElement;
+    assert.equal(send.disabled, true);
+    await click(send);
+    assert.equal(calls, 4);
+    await view.render(h(VoiceRecorderPanel, props));
+    await click(check('send', 'Send recording'));
+    assert.equal(calls, 5);
+    recorder.phase = 'idle';
+    recorder.error = 'Microphone access was denied';
+    await view.render(h(VoiceRecorderPanel, props));
+    await click(check('error-dismiss', 'Dismiss recording error'));
+    assert.equal(calls, 6);
+    assert.equal(q(view.container, debugPrefix + '-voice-error')!.textContent, recorder.error);
+    await view.unmount();
+  }
+});
