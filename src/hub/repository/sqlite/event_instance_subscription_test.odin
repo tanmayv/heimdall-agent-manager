@@ -183,34 +183,58 @@ instance_ownership_scenario :: proc(t: ^testing.T) {
 	n, _, _ = instance_sub_list(t, repo, "inst_w2")
 	testing.expect_value(t, n, 0)
 
-	// Dead instances (agent.failed_instance_disposition == .Dead) are replaced
-	// by the matcher, so they end their subscriptions like a user stop.
+	// A crash or termination alone ends nothing: coordinator wake and bot
+	// relaunch restart the SAME instance, which must still get the events
+	// published while it was down.
 	testing.expect_value(
 		t,
 		repo.put(repo.ctx, {subscription_id = "watch_c", owner_user_id = "alice", subscriber_instance_id = "inst_c", chain_id = "chain_b", source = "explicit", filter_subjects = "[]", wake_policy = "catalog", consumer_name = "watch_c", created_at = "now"}).code,
 		domain.Error_Code.None,
 	)
-	// A failure with a typed error may be retried on the same instance: kept.
+	testing.expect(t, exec(&conn, "DELETE FROM event_consumer_deletions;"))
 	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='failed',last_error_json='{\"class\":\"retriable\"}' WHERE agent_instance_id='inst_c';"))
 	n, _, _ = instance_sub_list(t, repo, "inst_c")
 	testing.expect_value(t, n, 2)
-	// An untyped failure (a crash) is Dead: explicit watch and role default end.
-	testing.expect(t, exec(&conn, "DELETE FROM event_consumer_deletions;"))
 	testing.expect(t, exec(&conn, "UPDATE agent_instances SET last_error_json='' WHERE agent_instance_id='inst_c';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	testing.expect_value(t, n, 2) // untyped failure (Dead) while still coordinator
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='running' WHERE agent_instance_id='inst_c';"))
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='terminated' WHERE agent_instance_id='inst_c';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	testing.expect_value(t, n, 2) // relaunched, then terminated: still the role holder
+	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions;"), i64(0))
+	// Superseded: the coordinator role moves off the Dead instance, so its
+	// explicit watch ends with its role default; consumers are queued.
+	testing.expect(t, exec(&conn, "UPDATE task_chain_members SET role='worker' WHERE chain_id='chain_a' AND agent_instance_id='inst_c';"))
 	n, _, _ = instance_sub_list(t, repo, "inst_c")
 	testing.expect_value(t, n, 0)
 	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_consumer_deletions;"), i64(2))
-	// A relaunch out of the failed state gets fresh role defaults only.
-	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='running' WHERE agent_instance_id='inst_c';"))
-	n, chain, _ = instance_sub_list(t, repo, "inst_c")
-	testing.expect_value(t, n, 1); testing.expect_value(t, chain, "chain_a")
-	// terminated is Dead too.
-	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='terminated' WHERE agent_instance_id='inst_c';"))
-	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	// A live instance that loses a role keeps its explicit watch.
+	testing.expect_value(
+		t,
+		repo.put(repo.ctx, {subscription_id = "watch_w1", owner_user_id = "alice", subscriber_instance_id = "inst_w1", chain_id = "chain_b", source = "explicit", filter_subjects = "[]", wake_policy = "catalog", consumer_name = "watch_w1", created_at = "now"}).code,
+		domain.Error_Code.None,
+	)
+	n, _, _ = instance_sub_list(t, repo, "inst_w1")
+	testing.expect_value(t, n, 1)
+	// Superseded the other way round: the instance dies after its roles moved
+	// (inst_w1's claim went to inst_w2 above).
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='terminated' WHERE agent_instance_id='inst_w1';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_w1")
 	testing.expect_value(t, n, 0)
-	// A Dead instance is not given a default when a role is (re)assigned to it.
-	testing.expect(t, exec(&conn, "UPDATE task_chain_members SET created_at='again' WHERE chain_id='chain_a';"))
-	n, _, _ = instance_sub_list(t, repo, "inst_c")
+	// A claim transfer away from a Dead holder ends its subscriptions too.
+	testing.expect(t, instance_sub_add_instance(&conn, "inst_w3", "agt_worker"))
+	testing.expect(t, exec(&conn, "INSERT INTO task_leases(lease_id,task_id,chain_id,owner_user_id,attempt_no,holder_instance_id,kind,granted_at,expires_at,hard_deadline_at,delivery) VALUES('lease3','task3','chain_b','alice',1,'inst_w3','work','now','','','wake');"))
+	testing.expect_value(
+		t,
+		repo.put(repo.ctx, {subscription_id = "watch_w3", owner_user_id = "alice", subscriber_instance_id = "inst_w3", chain_id = "chain_b", source = "explicit", filter_subjects = "[]", wake_policy = "catalog", consumer_name = "watch_w3", created_at = "now"}).code,
+		domain.Error_Code.None,
+	)
+	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_status='failed' WHERE agent_instance_id='inst_w3';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_w3")
+	testing.expect_value(t, n, 2) // crashed, still holds its claim
+	testing.expect(t, exec(&conn, "UPDATE task_leases SET holder_instance_id='inst_w1' WHERE lease_id='lease3';"))
+	n, _, _ = instance_sub_list(t, repo, "inst_w3")
 	testing.expect_value(t, n, 0)
 }
 

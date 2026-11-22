@@ -233,8 +233,9 @@ notification_scenario :: proc(t: ^testing.T) {
 	)
 	testing.expect(
 		t,
-		// A typed (fatal) failure is held, not Dead, so the instance keeps its
-		// subscriptions (an untyped one is Dead and ends them, EV2).
+		// A typed failure (held for recovery, not Dead). inst_coord holds no role
+		// in this fixture, so an untyped failure would count as superseded and
+		// end its subscriptions (EV2).
 		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed',last_error_json='{\"class\":\"fatal\"}' WHERE agent_instance_id='inst_coord';"),
 	)
 	attempts := recorder.attempts
