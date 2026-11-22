@@ -54,6 +54,7 @@ export function mergeBotMessages(
 
 function sameMessage(a: UnifiedBotMessage, b: UnifiedBotMessage): boolean {
   return a.body === b.body && a.body_purged === b.body_purged && a.send_state === b.send_state &&
+    JSON.stringify(a.metadata?.action_ids ?? []) === JSON.stringify(b.metadata?.action_ids ?? []) &&
     JSON.stringify(a.attachments ?? []) === JSON.stringify(b.attachments ?? []) && a.read_at === b.read_at && a.replied_at === b.replied_at && a.provider === b.provider && a.created_at === b.created_at;
 }
 
@@ -173,7 +174,10 @@ export function botChatMessages(
       sending: !mine && Boolean(sendState) && sendState !== 'sent' && !failed,
       authorLabel: '',
       messageType: 'text',
-      metadata: { bot: { provider: message.provider, sendState, purged: message.body_purged } satisfies BotChatMeta },
+      metadata: {
+        bot: { provider: message.provider, sendState, purged: message.body_purged } satisfies BotChatMeta,
+        action_ids: !mine && message.provider === 'web' && !message.body_purged ? message.metadata?.action_ids : undefined,
+      },
     };
   });
   for (const send of pending) {

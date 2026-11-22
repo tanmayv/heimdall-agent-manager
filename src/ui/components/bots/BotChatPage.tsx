@@ -16,6 +16,8 @@ import { apiErrorText, queryErrorStatus } from '../../api/cookieFetch';
 
 
 import ChatMessageList from '../chat/ChatMessageList';
+import LiveToolActivity from '../extension/LiveToolActivity';
+import { navigateTo, shellViewHref } from '../shells/shellModel';
 import {
   MessageComposerActions, MessageComposerInput, useComposerDockInset, useComposerExpanded,
 } from '../chat/MessageComposer';
@@ -75,6 +77,10 @@ function BotChatView({ bot }: { bot: BotView }) {
   const isMobile = useIsMobile();
   const head = useGetUnifiedBotMessagesQuery({ limit: BOT_HISTORY_PAGE_SIZE });
   const [send] = useSendBotWebMessageMutation();
+  const { conversation_id: runtimeConversation, agent_instance_id: runtimeInstance } = bot.advanced;
+  const sendActionFeedback = useCallback(async (body: string) => {
+    await send({ text: body, idempotency_key: newIdempotencyKey() }).unwrap();
+  }, [send]);
   const { attachments: uploads, setAttachments: setUploads, uploadAttachment: upload, handlePaste } = useComposerAttachments({
     metadata: { originKind: 'bot_chat', originRef: bot.bot_id },
     namePrefix: 'bot-attachment',
@@ -259,6 +265,7 @@ function BotChatView({ bot }: { bot: BotView }) {
         getDeliveryStatus={botDeliveryStatus}
         renderMessageMeta={renderMeta}
         renderMessageBody={renderBody}
+        onSendActionFeedback={sendActionFeedback}
         agentIsWorking={waiting && bot.status === 'working'}
         bottomInset={composerDockHeight}
         pinOnSend={isBotComposerSend}
@@ -266,7 +273,17 @@ function BotChatView({ bot }: { bot: BotView }) {
         emptyState={emptyState}
         wrapperClassName="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden"
         scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
-      />
+      >
+        {runtimeConversation && runtimeInstance ? (
+          <LiveToolActivity
+            key={JSON.stringify([runtimeConversation, runtimeInstance])}
+            conversationId={runtimeConversation}
+            instanceId={runtimeInstance}
+            members={[{ instanceId: runtimeInstance, displayName: bot.display_name }]}
+            onOpenShell={sessionId => navigateTo(shellViewHref(sessionId))}
+          />
+        ) : null}
+      </ChatMessageList>
       {/* The coordinator chat's floating composer dock (AgentChatPane, REQ-FROST-1/2). */}
       <FloatingComposerDock ref={composerDockRef} data-debug-id="bot-chat-composer-dock">
 
