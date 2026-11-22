@@ -20,6 +20,8 @@ STATIC_SKILLS := []Static_Skill{
 	{"heimdall-ctl-communication", #load("../../../prompts/skills/heimdall-ctl-communication/SKILL.md", string)},
 	{"heimdall-preview-setup", #load("../../../prompts/skills/heimdall-preview-setup/SKILL.md", string)},
 	{"memory-management-workflow", #load("../../../prompts/skills/memory-management-workflow/SKILL.md", string)},
+	{"ninjy-bot-operations", #load("../../../prompts/skills/ninjy-bot-operations/SKILL.md", string)},
+	{"ninjy-channel-communication", #load("../../../prompts/skills/ninjy-channel-communication/SKILL.md", string)},
 	{"search-command", #load("../../../prompts/skills/search-command/SKILL.md", string)},
 	{"worker-task-management", #load("../../../prompts/skills/worker-task-management/SKILL.md", string)},
 }

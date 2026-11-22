@@ -77,7 +77,7 @@ main :: proc() {
 // so BT-3 (bridge) can build to a pinned contract.
 bt2_template_and_variables_checks :: proc() {
 	// Template blob: hashed + cached, hash is deterministic sha256 of the body.
-	h1 := agent_service.bootstrap_template_hash()
+	h1 := agent_service.bootstrap_template_hash("")
 	h2 := agent_service.bootstrap_fragment_hash(agent_service.BOOTSTRAP_AGENTS_TEMPLATE)
 	assert_true("bt2_template_hash_stable", h1 == h2 && strings.has_prefix(h1, "sha256:"))
 	assert_true("bt2_template_nonempty", len(agent_service.BOOTSTRAP_AGENTS_TEMPLATE) > 0)
@@ -148,7 +148,7 @@ bt2a_identity_variables_checks :: proc() {
 	// JSON writer includes identity vars.
 	b := strings.builder_make()
 	defer strings.builder_destroy(&b)
-	h := agent_service.bootstrap_template_hash()
+	h := agent_service.bootstrap_template_hash("")
 	agent_service.bootstrap_write_template_and_variables_json(&b, h, vars[:])
 	json := strings.to_string(b)
 	assert_true("bt2a_json_has_persona",

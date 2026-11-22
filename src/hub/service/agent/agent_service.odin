@@ -1932,6 +1932,7 @@ bootstrap_fragment_hash :: proc(body: string) -> string {
 // content-addressed blob in the manifest (kind=AGENTS_TEMPLATE) so an unchanged
 // template skips re-transfer, exactly like every fragment blob.
 BOOTSTRAP_AGENTS_TEMPLATE :: #load("../../../prompts/bootstrap_agents.md", string)
+BOOTSTRAP_BOT_AGENTS_TEMPLATE :: #load("../../../prompts/bootstrap_agents_bot.md", string)
 
 // Bootstrap_Variable is one DB-derived value the hub serves individually so the
 // bridge can substitute it into the template. `value` is inlined in the manifest
@@ -2063,9 +2064,13 @@ bootstrap_append_static_skills :: proc(skills_list: ^[dynamic]Skill_Manifest_Ite
 
 // bootstrap_template_hash hashes the template body and caches it under that hash
 // so the existing /blobs/<hash> path serves it. Returns the hash.
-bootstrap_template_hash :: proc() -> string {
-	h := bootstrap_fragment_hash(BOOTSTRAP_AGENTS_TEMPLATE)
-	hub_fragment_cache_put(h, BOOTSTRAP_AGENTS_TEMPLATE)
+bootstrap_template_hash :: proc(template_id: string) -> string {
+	body := BOOTSTRAP_AGENTS_TEMPLATE
+	if template_id == domain.TEMPLATE_BOT_ID {
+		body = BOOTSTRAP_BOT_AGENTS_TEMPLATE
+	}
+	h := bootstrap_fragment_hash(body)
+	hub_fragment_cache_put(h, body)
 	return h
 }
 
@@ -2304,7 +2309,7 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	strings.write_string(&b, "\"}]")
 
 	// BT-2/BT-2a: single-template blob + all DB-derived variables (project_* + identity).
-	instance_template_hash := bootstrap_template_hash()
+	instance_template_hash := bootstrap_template_hash(agent.template_id)
 	instance_variables := bootstrap_build_project_variables(project_name, project_path, project_repo, project_vcs, project_desc)
 	defer delete(instance_variables)
 	bootstrap_append_identity_variables(&instance_variables, template_persona, template_instructions, agent.instructions)
@@ -2546,7 +2551,7 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	}
 
 	// BT-2/BT-2a: single-template blob + all DB-derived variables (project_* + identity).
-	template_hash := bootstrap_template_hash()
+	template_hash := bootstrap_template_hash(agent.template_id)
 	variables := bootstrap_build_project_variables(project_name, project_path, project_repo, project_vcs, project_desc)
 	defer delete(variables)
 	bootstrap_append_identity_variables(&variables, template_persona, template_instructions, agent.instructions)
