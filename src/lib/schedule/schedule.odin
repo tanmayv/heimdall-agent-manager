@@ -313,31 +313,53 @@ advance_interval_ms :: proc(target_run_at_ms: i64, interval_seconds: int, now_ms
 }
 
 
+// Only portable IANA zone names may reach the host's file-based loader.
+// In particular, Odin's special "local" alias is not a NATS timezone name.
+timezone_name_valid :: proc(name: string) -> bool {
+	if name == "" || name == "UTC" do return true
+	if name == "local" || name == "Local" || strings.contains(name, "..") do return false
+	for c in name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		     (c >= '0' && c <= '9') || c == '/' || c == '_' ||
+		     c == '-' || c == '+' || c == '.') {
+			return false
+		}
+	}
+	parts := strings.split(name, "/")
+	defer delete(parts)
+	for part in parts {
+		if part == "" || part == "." do return false
+	}
+	return true
+}
+
 // UTC and the empty name need no timezone allocation.
 timezone_valid :: proc(name: string) -> bool {
-    if name == "" || name == "UTC" do return true
-    reg, ok := timezone.region_load(name)
-    if ok do timezone.region_destroy(reg)
-    return ok
+	if !timezone_name_valid(name) do return false
+	if name == "" || name == "UTC" do return true
+	reg, ok := timezone.region_load(name)
+	if ok do timezone.region_destroy(reg)
+	return ok
 }
 
 local_date :: proc(ms: i64, tz_name: string) -> (year, month, day: int, ok: bool) {
-    reg: ^datetime.TZ_Region
-    if tz_name != "" && tz_name != "UTC" {
-        loaded: bool
-        reg, loaded = timezone.region_load(tz_name)
-        if !loaded do return 0, 0, 0, false
-    }
-    defer if reg != nil do timezone.region_destroy(reg)
-    year, month, day = local_date_region(ms, reg)
-    return year, month, day, true
+	if !timezone_name_valid(tz_name) do return 0, 0, 0, false
+	reg: ^datetime.TZ_Region
+	if tz_name != "" && tz_name != "UTC" {
+		loaded: bool
+		reg, loaded = timezone.region_load(tz_name)
+		if !loaded do return 0, 0, 0, false
+	}
+	defer if reg != nil do timezone.region_destroy(reg)
+	year, month, day = local_date_region(ms, reg)
+	return year, month, day, true
 }
 
 // reg is borrowed; nil denotes UTC.
 local_date_region :: proc(ms: i64, reg: ^datetime.TZ_Region) -> (year, month, day: int) {
-    secs := ms / 1000
-    if ms < 0 && ms % 1000 != 0 do secs -= 1
-    dt, _ := time.time_to_datetime(time.unix(secs, 0))
-    local, _ := timezone.datetime_to_tz(dt, reg)
-    return int(local.year), int(local.month), int(local.day)
+	secs := ms / 1000
+	if ms < 0 && ms % 1000 != 0 do secs -= 1
+	dt, _ := time.time_to_datetime(time.unix(secs, 0))
+	local, _ := timezone.datetime_to_tz(dt, reg)
+	return int(local.year), int(local.month), int(local.day)
 }

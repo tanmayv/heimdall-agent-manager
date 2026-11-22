@@ -8,24 +8,24 @@ import "core:time/timezone"
 NY_TZIF :: #load("testdata/America_New_York.tzif")
 
 tracked :: proc(t: ^testing.T, scenario: proc(t: ^testing.T)) {
-    track: mem.Tracking_Allocator
-    mem.tracking_allocator_init(&track, context.allocator)
-    defer mem.tracking_allocator_destroy(&track)
-    context.allocator = mem.tracking_allocator(&track)
-    scenario(t)
-    testing.expect_value(t, len(track.allocation_map), 0)
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	scenario(t)
+	testing.expect_value(t, len(track.allocation_map), 0)
 }
 
 test_format :: proc(t: ^testing.T, ms: i64) -> string {
-    out := format_rfc3339_utc(ms)
-    defer delete(out)
-    // Assertions below compare a temporary view; the owned result has been checked and freed.
-    return strings.clone(out, context.temp_allocator)
+	out := format_rfc3339_utc(ms)
+	defer delete(out)
+	// Assertions below compare a temporary view; the owned result has been checked and freed.
+	return strings.clone(out, context.temp_allocator)
 }
 
 @(test)
 test_parse_interval :: proc(t: ^testing.T) {
-    tracked(t, test_parse_interval_scenario)
+	tracked(t, test_parse_interval_scenario)
 }
 test_parse_interval_scenario :: proc(t: ^testing.T) {
 	testing.expect(t, parse_interval_seconds("60s") == 60, "60s should be 60")
@@ -41,7 +41,7 @@ test_parse_interval_scenario :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_rfc3339 :: proc(t: ^testing.T) {
-    tracked(t, test_parse_rfc3339_scenario)
+	tracked(t, test_parse_rfc3339_scenario)
 }
 test_parse_rfc3339_scenario :: proc(t: ^testing.T) {
 	ms, ok := parse_rfc3339_ms("1970-01-01T00:00:00Z")
@@ -71,7 +71,7 @@ test_parse_rfc3339_scenario :: proc(t: ^testing.T) {
 
 @(test)
 test_cron_evaluator :: proc(t: ^testing.T) {
-    tracked(t, test_cron_evaluator_scenario)
+	tracked(t, test_cron_evaluator_scenario)
 }
 test_cron_evaluator_scenario :: proc(t: ^testing.T) {
 	// 2026-12-24 is Thursday.
@@ -113,7 +113,7 @@ test_cron_evaluator_scenario :: proc(t: ^testing.T) {
 
 @(test)
 test_interval_advance :: proc(t: ^testing.T) {
-    tracked(t, test_interval_advance_scenario)
+	tracked(t, test_interval_advance_scenario)
 }
 test_interval_advance_scenario :: proc(t: ^testing.T) {
 	target := i64(1_000_000)
@@ -136,149 +136,172 @@ test_interval_advance_scenario :: proc(t: ^testing.T) {
 
 
 expect_cron :: proc(t: ^testing.T, expr, expected: string) {
-    out, ok := nats_cron(expr)
-    defer delete(out)
-    testing.expect(t, ok)
-    testing.expect_value(t, out, expected)
+	out, ok := nats_cron(expr)
+	defer delete(out)
+	testing.expect(t, ok)
+	testing.expect_value(t, out, expected)
 }
 
 @(test)
 test_nats_cron_steps_and_ranges :: proc(t: ^testing.T) {
-    tracked(t, test_nats_cron_steps_and_ranges_scenario)
+	tracked(t, test_nats_cron_steps_and_ranges_scenario)
 }
 test_nats_cron_steps_and_ranges_scenario :: proc(t: ^testing.T) {
-expect_cron(t, "*/15 9 * * 1-5", "0 0,15,30,45 9 * * 1,2,3,4,5")
+	expect_cron(t, "*/15 9 * * 1-5", "0 0,15,30,45 9 * * 1,2,3,4,5")
 }
 
 @(test)
 test_nats_cron_star_only_when_exact :: proc(t: ^testing.T) {
-    tracked(t, test_nats_cron_star_only_when_exact_scenario)
+	tracked(t, test_nats_cron_star_only_when_exact_scenario)
 }
 test_nats_cron_star_only_when_exact_scenario :: proc(t: ^testing.T) {
-expect_cron(t, "0 0 */1 * *", "0 0 0 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *")
-expect_cron(t, "0 0 * * */1", "0 0 0 * * 0,1,2,3,4,5,6")
-expect_cron(t, "* * * * *", "0 * * * * *")
+	expect_cron(t, "0 0 */1 * *", "0 0 0 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *")
+	expect_cron(t, "0 0 * * */1", "0 0 0 * * 0,1,2,3,4,5,6")
+	expect_cron(t, "* * * * *", "0 * * * * *")
 }
 
 @(test)
 test_nats_cron_dow_fold :: proc(t: ^testing.T) {
-    tracked(t, test_nats_cron_dow_fold_scenario)
+	tracked(t, test_nats_cron_dow_fold_scenario)
 }
 test_nats_cron_dow_fold_scenario :: proc(t: ^testing.T) {
-expect_cron(t, "0 0 * * 7", "0 0 0 * * 0")
-expect_cron(t, "0 0 * * 5-7", "0 0 0 * * 0,5,6")
-expect_cron(t, "0 0 * * 0-7", "0 0 0 * * 0,1,2,3,4,5,6")
-expect_cron(t, "0 0 * * 1,7", "0 0 0 * * 0,1")
+	expect_cron(t, "0 0 * * 7", "0 0 0 * * 0")
+	expect_cron(t, "0 0 * * 5-7", "0 0 0 * * 0,5,6")
+	expect_cron(t, "0 0 * * 0-7", "0 0 0 * * 0,1,2,3,4,5,6")
+	expect_cron(t, "0 0 * * 1,7", "0 0 0 * * 0,1")
 }
 
 @(test)
 test_nats_cron_rejects_invalid :: proc(t: ^testing.T) {
-    tracked(t, test_nats_cron_rejects_invalid_scenario)
+	tracked(t, test_nats_cron_rejects_invalid_scenario)
 }
 test_nats_cron_rejects_invalid_scenario :: proc(t: ^testing.T) {
-for expr in ([]string{"* * * *", "* * * * * *", "60 * * * *", "? * * * *", "*/0 * * * *", "* * * 13 *", "* * * * 8"}) {
-    out, ok := nats_cron(expr)
-    testing.expect(t, !ok)
-    testing.expect_value(t, out, "")
-}
+	for expr in ([]string{"* * * *", "* * * * * *", "60 * * * *", "? * * * *", "*/0 * * * *", "* * * 13 *", "* * * * 8"}) {
+		out, ok := nats_cron(expr)
+		testing.expect(t, !ok)
+		testing.expect_value(t, out, "")
+	}
 }
 
 @(test)
 test_local_date_new_york :: proc(t: ^testing.T) {
-    tracked(t, test_local_date_new_york_scenario)
+	tracked(t, test_local_date_new_york_scenario)
 }
 test_local_date_new_york_scenario :: proc(t: ^testing.T) {
-ny, ok := timezone.region_load_from_buffer(NY_TZIF, "America/New_York")
-if !testing.expect(t, ok) do return
-defer timezone.region_destroy(ny)
-ms, parsed := parse_rfc3339_ms("2026-11-21T03:30:00Z")
-testing.expect(t, parsed)
-y, m, d := local_date_region(ms, ny)
-testing.expect_value(t, y, 2026)
-testing.expect_value(t, m, 11)
-testing.expect_value(t, d, 20)
+	ny, ok := timezone.region_load_from_buffer(NY_TZIF, "America/New_York")
+	if !testing.expect(t, ok) do return
+	defer timezone.region_destroy(ny)
+	ms, parsed := parse_rfc3339_ms("2026-11-21T03:30:00Z")
+	testing.expect(t, parsed)
+	y, m, d := local_date_region(ms, ny)
+	testing.expect_value(t, y, 2026)
+	testing.expect_value(t, m, 11)
+	testing.expect_value(t, d, 20)
 }
 
 @(test)
 test_timezone_valid_and_local_date :: proc(t: ^testing.T) {
-    tracked(t, test_timezone_valid_and_local_date_scenario)
+	tracked(t, test_timezone_valid_and_local_date_scenario)
 }
 test_timezone_valid_and_local_date_scenario :: proc(t: ^testing.T) {
-testing.expect(t, timezone_valid("America/New_York"), "runtime IANA zone database must be available")
-for name in ([]string{"", "UTC", "America/New_York"}) {
-    testing.expect(t, timezone_valid(name))
-    ms, _ := parse_rfc3339_ms("2026-11-21T03:30:00Z")
-    y, m, d, ok := local_date(ms, name)
-    testing.expect(t, ok)
-    testing.expect_value(t, y, 2026)
-    testing.expect_value(t, m, 11)
-    testing.expect_value(t, d, 20 if name == "America/New_York" else 21)
-}
-testing.expect(t, !timezone_valid("Invalid/No_Such_Zone"))
-_, _, _, ok := local_date(0, "Invalid/No_Such_Zone")
-testing.expect(t, !ok)
+	testing.expect(t, timezone_valid("America/New_York"), "runtime IANA zone database must be available")
+	for name in ([]string{"", "UTC", "America/New_York"}) {
+		testing.expect(t, timezone_valid(name))
+		ms, _ := parse_rfc3339_ms("2026-11-21T03:30:00Z")
+		y, m, d, ok := local_date(ms, name)
+		testing.expect(t, ok)
+		testing.expect_value(t, y, 2026)
+		testing.expect_value(t, m, 11)
+		testing.expect_value(t, d, 20 if name == "America/New_York" else 21)
+	}
+	testing.expect(t, !timezone_valid("Invalid/No_Such_Zone"))
+	_, _, _, ok := local_date(0, "Invalid/No_Such_Zone")
+	testing.expect(t, !ok)
 }
 
 @(test)
 test_cron_dst_gap :: proc(t: ^testing.T) {
-    tracked(t, test_cron_dst_gap_scenario)
+	tracked(t, test_cron_dst_gap_scenario)
 }
 test_cron_dst_gap_scenario :: proc(t: ^testing.T) {
-ny, ok := timezone.region_load_from_buffer(NY_TZIF, "America/New_York")
-if !testing.expect(t, ok) do return
-defer timezone.region_destroy(ny)
-after, _ := parse_rfc3339_ms("2027-03-14T00:00:00Z")
-next, found := next_cron_slot_region("30 2 * * *", ny, "[]", 0, 0, after)
-testing.expect(t, found)
-testing.expect_value(t, test_format(t, next), "2027-03-14T07:30:00Z")
-// Characterize the copied evaluator: nats-server skips the nonexistent 02:30.
-
+	ny, ok := timezone.region_load_from_buffer(NY_TZIF, "America/New_York")
+	if !testing.expect(t, ok) do return
+	defer timezone.region_destroy(ny)
+	after, _ := parse_rfc3339_ms("2027-03-14T00:00:00Z")
+	next, found := next_cron_slot_region("30 2 * * *", ny, "[]", 0, 0, after)
+	testing.expect(t, found)
+	testing.expect_value(t, test_format(t, next), "2027-03-14T07:30:00Z")
+	// Characterize the copied evaluator: nats-server skips the nonexistent 02:30.
 }
 
 @(test)
 test_cron_dst_overlap :: proc(t: ^testing.T) {
-    tracked(t, test_cron_dst_overlap_scenario)
+	tracked(t, test_cron_dst_overlap_scenario)
 }
 test_cron_dst_overlap_scenario :: proc(t: ^testing.T) {
-ny, ok := timezone.region_load_from_buffer(NY_TZIF, "America/New_York")
-if !testing.expect(t, ok) do return
-defer timezone.region_destroy(ny)
-after, _ := parse_rfc3339_ms("2027-11-07T00:00:00Z")
-first, found := next_cron_slot_region("30 1 * * *", ny, "[]", 0, 0, after)
-testing.expect(t, found)
-testing.expect_value(t, test_format(t, first), "2027-11-07T05:30:00Z")
-second, found2 := next_cron_slot_region("30 1 * * *", ny, "[]", 0, 0, first)
-testing.expect(t, found2)
-testing.expect_value(t, test_format(t, second), "2027-11-08T06:30:00Z")
-// The copied evaluator selects one occurrence; nats-server fires both.
-
+	ny, ok := timezone.region_load_from_buffer(NY_TZIF, "America/New_York")
+	if !testing.expect(t, ok) do return
+	defer timezone.region_destroy(ny)
+	after, _ := parse_rfc3339_ms("2027-11-07T00:00:00Z")
+	first, found := next_cron_slot_region("30 1 * * *", ny, "[]", 0, 0, after)
+	testing.expect(t, found)
+	testing.expect_value(t, test_format(t, first), "2027-11-07T05:30:00Z")
+	second, found2 := next_cron_slot_region("30 1 * * *", ny, "[]", 0, 0, first)
+	testing.expect(t, found2)
+	testing.expect_value(t, test_format(t, second), "2027-11-08T06:30:00Z")
+	// The copied evaluator selects one occurrence; nats-server fires both.
 }
 
 
 @(test)
 test_nats_cron_explicit_allocator :: proc(t: ^testing.T) {
-    tracked(t, test_nats_cron_explicit_allocator_scenario)
+	tracked(t, test_nats_cron_explicit_allocator_scenario)
 }
 test_nats_cron_explicit_allocator_scenario :: proc(t: ^testing.T) {
-    output_track: mem.Tracking_Allocator
-    mem.tracking_allocator_init(&output_track, context.allocator)
-    defer mem.tracking_allocator_destroy(&output_track)
-    allocator := mem.tracking_allocator(&output_track)
-    out, ok := nats_cron("*/15 9 * * 1-5", allocator)
-    testing.expect(t, ok)
-    testing.expect(t, len(output_track.allocation_map) > 0)
-    delete(out, allocator)
-    testing.expect_value(t, len(output_track.allocation_map), 0)
+	output_track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&output_track, context.allocator)
+	defer mem.tracking_allocator_destroy(&output_track)
+	allocator := mem.tracking_allocator(&output_track)
+	out, ok := nats_cron("*/15 9 * * 1-5", allocator)
+	testing.expect(t, ok)
+	testing.expect(t, len(output_track.allocation_map) > 0)
+	delete(out, allocator)
+	testing.expect_value(t, len(output_track.allocation_map), 0)
 }
 
 @(test)
 test_local_date_before_epoch :: proc(t: ^testing.T) {
-    tracked(t, test_local_date_before_epoch_scenario)
+	tracked(t, test_local_date_before_epoch_scenario)
 }
 test_local_date_before_epoch_scenario :: proc(t: ^testing.T) {
-    y, m, d, ok := local_date(-1, "UTC")
-    testing.expect(t, ok)
-    testing.expect_value(t, y, 1969)
-    testing.expect_value(t, m, 12)
-    testing.expect_value(t, d, 31)
+	y, m, d, ok := local_date(-1, "UTC")
+	testing.expect(t, ok)
+	testing.expect_value(t, y, 1969)
+	testing.expect_value(t, m, 12)
+	testing.expect_value(t, d, 31)
+}
+
+@(test)
+test_timezone_rejects_non_iana_names :: proc(t: ^testing.T) {
+	tracked(t, test_timezone_rejects_non_iana_names_scenario)
+}
+test_timezone_rejects_non_iana_names_scenario :: proc(t: ^testing.T) {
+	for name in ([]string{
+		"local", "Local", "/America/New_York", "America/../America/New_York",
+		"../../../../usr/share/zoneinfo/Asia/Kolkata", "America//New_York",
+		"America/./New_York", "America/New_York/", ".", "..",
+		"America\\New_York", " America/New_York", "America/New_York ",
+		"America/ New_York", "America/\tNew_York", "America/\nNew_York",
+		"America/\x00New_York", "America/\x1fNew_York", "America/\x7fNew_York",
+		"America/\u00a0New_York", "America/\u2003New_York",
+	}) {
+		testing.expect(t, !timezone_valid(name), name)
+		_, _, _, ok := local_date(0, name)
+		testing.expect(t, !ok, name)
+	}
+	for name in ([]string{"", "UTC", "America/New_York", "Asia/Kolkata", "Etc/GMT+5"}) {
+		testing.expect(t, timezone_valid(name), name)
+		_, _, _, ok := local_date(0, name)
+		testing.expect(t, ok, name)
+	}
 }
