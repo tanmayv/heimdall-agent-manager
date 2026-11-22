@@ -206,3 +206,62 @@ test_discarded_legacy_validation_does_not_allocate_on_heap :: proc(t: ^testing.T
 	virtual.arena_destroy(&arena)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }
+
+running_agent_message_flags_scenario :: proc(t: ^testing.T) {
+	f: Review_Placement_Fixture
+	if !review_placement_setup(t, &f) do return
+	defer review_placement_close(&f)
+	testing.expect(t, project_service.bridge_runtime_registry_mark_live(&f.registry, "source", false, ""))
+	_, e := iface.bridge_provider_status_upsert(&f.providers, {bridge_id = "source", provider = "codex", state = "present"})
+	testing.expect_value(t, e.code, domain.Error_Code.None)
+	e = iface.bridge_provider_models_upsert(&f.providers, {
+		bridge_id = "source", provider = "codex", has_snapshot = true,
+		models_json = `[{"model_id":"m1","state":"active"}]`,
+	})
+	testing.expect_value(t, e.code, domain.Error_Code.None)
+	inst, found, instance_err := iface.agent_get_instance(&f.agents, "i")
+	if !testing.expect(t, found, instance_err.message) do return
+	inst.runtime_status = "running"
+	saved: bool
+	_, saved, e = iface.agent_save_instance(&f.agents, inst)
+	testing.expect(t, saved, e.message)
+	for flag in ([]string{"enabled", "plan-disabled", "revoked", "pending"}) {
+		bridge := domain.Bridge{bridge_id = "source", owner_user_id = "alice", status = .Online}
+		switch flag {
+		case "plan-disabled": bridge.plan_disabled_at = "now"
+		case "revoked": bridge.revoked_at = "now"
+		case "pending": bridge.enrollment_pending_until = "later"
+		}
+		_, saved, e = iface.bridge_save_bridge(&f.bridges, bridge)
+		testing.expect(t, saved, e.message)
+		// Ordinary bridge updates preserve the billing-owned plan flag.
+		testing.expect(t, sqlite.exec(&f.db, "UPDATE bridges SET plan_disabled_at = '' WHERE bridge_id = 'source'"))
+		if flag == "plan-disabled" do testing.expect(t, sqlite.exec(&f.db, "UPDATE bridges SET plan_disabled_at = 'now' WHERE bridge_id = 'source'"))
+		stored, exists, read_err := iface.bridge_get_bridge(&f.bridges, "source")
+		testing.expect(t, exists, read_err.message)
+		testing.expect_value(t, stored.plan_disabled_at, bridge.plan_disabled_at)
+		testing.expect_value(t, stored.revoked_at, bridge.revoked_at)
+		testing.expect_value(t, stored.enrollment_pending_until, bridge.enrollment_pending_until)
+		valid, err := validate_instance_message_configuration(&f.service, "alice", "i")
+		testing.expectf(t, valid && err.code == .None, "%s: %s", flag, err.message)
+	}
+	// The exception must still reject a disconnected conversation.
+	project_service.bridge_runtime_registry_destroy(&f.registry)
+	valid, err := validate_instance_message_configuration(&f.service, "alice", "i")
+	testing.expect(t, !valid)
+	testing.expect_value(t, err.code, domain.Error_Code.Bridge_Offline)
+}
+
+
+@(test)
+test_running_agent_messages_allow_launch_restricted_bridge_flags :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator); defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	arena: virtual.Arena
+	assert(virtual.arena_init_growing(&arena) == nil)
+	context.allocator = virtual.arena_allocator(&arena)
+	running_agent_message_flags_scenario(t)
+	virtual.arena_destroy(&arena)
+	testing.expect_value(t, len(track.allocation_map), 0)
+}

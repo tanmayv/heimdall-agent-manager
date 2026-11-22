@@ -445,8 +445,9 @@ validate_instance_message_configuration :: proc(service: ^Agent_Service, owner: 
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
 	if !bridge_ok do return false, bridge_err
 	defer domain.bridge_destroy(&bridge)
-	ps:=agent_placement(service)
- if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(owner)}); !eligible do return false,agent_placement_error(&ps,bridge,reason,"conversation is read-only: reconnect the bridge or choose an online bridge")
+	// Messaging an existing runtime is not a launch: disabled, revoked and
+	// pending enrollment flags do not make a connected conversation read-only.
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return false, domain.domain_error(.Bridge_Offline, "conversation is read-only: reconnect the bridge or choose an online bridge")
 	if inst.project_id != "" {
 		project, project_ok, project_err := iface.project_get(service.projects, inst.project_id)
 		if !project_ok do return false, project_err

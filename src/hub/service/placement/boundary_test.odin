@@ -13,6 +13,12 @@ Boundary_Exception :: struct {
 // must not interpret launch restrictions as evidence a process is disconnected.
 BOUNDARY_EXCEPTIONS :: []Boundary_Exception {
 	{
+		"agent/instance_reconfiguration.odin",
+		"validate_instance_message_configuration",
+		"Messages to existing runtimes retain connectivity checks, not launch restrictions (requirements revision 4).",
+		"if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id)",
+	},
+	{
 		"agent/agent_service.odin",
 		"cleanup_provider_test_instance",
 		"Stop a provider test only while its transport is connected.",
