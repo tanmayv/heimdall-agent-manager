@@ -1,0 +1,70 @@
+package main
+
+import contracts "odin_test:contracts"
+
+// Immutable protocol policy. Runtime callbacks run on the existing RPC
+// dispatcher; string/result ownership is documented at the wrappers.
+ACP_Protocol_Driver :: struct {
+    durable_valid: proc(d: ^ACP_Runtime_Durable) -> bool,
+    begin: proc(r: ^ACP_Runtime) -> bool,
+    result: proc(data: rawptr, result: ACP_RPC_Result),
+    // Notification/inbound arguments are borrowed; result callbacks own results.
+    notification: proc(r: ^ACP_Runtime, method, params: string),
+    inbound: proc(r: ^ACP_Runtime, id, method, params: string) -> bool,
+    prompt: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap: bool),
+    ready: proc(r: ^ACP_Runtime),
+    cancel: proc(r: ^ACP_Runtime) -> bool,
+    steer: proc(r: ^ACP_Runtime) -> bool,
+    steering_result: proc(data: rawptr, result: ACP_RPC_Result),
+    inbound_timeout: proc(data: rawptr, id: string),
+    probe: proc(c: ^ACP_RPC_Client, p: ^ACP_Adapter_Probe) -> bool,
+    rpc: ACP_RPC_Policy,
+    // Protocols can expose several approval methods and different reply shapes.
+    permission_request: proc(method: string) -> bool,
+    permissions_cancel: proc(r: ^ACP_Runtime),
+    permission_result: proc(method, params, decision: string) -> string,
+    permission_relay: proc(method, params, blocker, provider: string, timeout_ms: int) -> Bridge_Ext_Permission_Request,
+    tick: proc(r: ^ACP_Runtime),
+    can_steer: proc(r: ^ACP_Runtime) -> bool,
+}
+
+// RPC policy contains no runtime pointer and can also be used by install probes.
+ACP_RPC_Policy :: struct {
+    role: proc(method: string) -> ACP_RPC_Role,
+    timeout: proc(method: string) -> i64,
+    inbound_timeout: proc(method: string) -> i64,
+    cancel_timeout: proc(method: string) -> i64,
+}
+ACP_RPC_POLICY_ACP :: ACP_RPC_Policy{
+    acp_driver_acp_rpc_role, acp_driver_acp_rpc_timeout,
+    acp_driver_acp_inbound_timeout, acp_driver_acp_cancel_timeout,
+}
+
+acp_protocol_acp_driver := ACP_Protocol_Driver{
+    durable_valid = acp_driver_acp_durable_valid,
+    begin = acp_driver_acp_begin, result = acp_driver_acp_result,
+    notification = acp_driver_acp_notification, inbound = acp_driver_acp_inbound,
+    prompt = acp_driver_acp_prompt, ready = acp_driver_acp_ready,
+    cancel = acp_driver_acp_cancel, steer = acp_driver_acp_steer,
+    steering_result = acp_driver_acp_steering_result,
+    inbound_timeout = acp_permission_timeout, probe = acp_driver_acp_probe,
+    rpc = ACP_RPC_POLICY_ACP, permission_request = acp_driver_acp_permission_request,
+    permissions_cancel = acp_permissions_cancel,
+    permission_result = acp_driver_acp_permission_result,
+    permission_relay = acp_driver_acp_permission_relay,
+}
+
+acp_protocol_driver :: proc(protocol: contracts.ACP_Protocol) -> ^ACP_Protocol_Driver {
+    switch protocol {
+    case .ACP: return &acp_protocol_acp_driver
+    case .Codex_App_Server: return &acp_protocol_codex_driver
+    }
+    return nil
+}
+
+// Production owners freeze their driver at construction. The fallback supports
+// zero-initialized ACP test/embedded owners without selecting an unknown protocol.
+acp_runtime_driver :: proc(r: ^ACP_Runtime) -> ^ACP_Protocol_Driver {
+    if r.driver != nil do return r.driver
+    return acp_protocol_driver(r.descriptor.protocol)
+}

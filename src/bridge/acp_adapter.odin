@@ -11,7 +11,6 @@ import "core:time"
 import ws "odin_test:lib/ws"
 import contracts "odin_test:contracts"
 
-ACP_INITIALIZE_PARAMS :: `{"protocolVersion":1,"clientInfo":{"name":"heimdall","version":"`+contracts.APP_VERSION+`"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}`
 ACP_COPILOT_PACKAGE_JSON :: #load("acp_pins/copilot/package.json", string)
 ACP_COPILOT_LOCK_JSON :: #load("acp_pins/copilot/package-lock.json", string)
 acp_adapter_runner: Bridge_Extension_Install_Runner = bridge_process_run_capture_status
@@ -279,17 +278,6 @@ acp_adapter_probe_diagnostic :: proc(data: rawptr, bytes: string) {
 }
 
 acp_adapter_probe_checkpoint :: proc(_: rawptr, _: ^ACP_State) -> bool { return true }
-acp_adapter_probe_result :: proc(data: rawptr, result: ACP_RPC_Result) {
-    defer acp_rpc_result_delete(result)
-    p := cast(^ACP_Adapter_Probe)data
-    value, err := json.parse(result.result_json, parse_integers = true)
-    valid := false
-    if err == nil {
-        if obj, ok := value.(json.Object); ok { v, _ := obj["protocolVersion"].(json.Integer); valid = v == 1 }
-        json.destroy_value(value)
-    }
-    sync.mutex_lock(&p.mu); p.ok = result.ok && valid; p.done = true; sync.cond_broadcast(&p.cond); sync.mutex_unlock(&p.mu)
-}
 
 // Child stderr is untrusted and can contain credentials. Only fixed diagnostic
 // reasons leave the bridge; retain at most 1 KiB locally while classifying it.
@@ -451,10 +439,11 @@ acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) 
     p: ACP_Adapter_Probe
     pipe := cast(^ACP_Pipe_IO)io.data
     pipe.diagnostic = acp_adapter_probe_diagnostic; pipe.diagnostic_data = &p
-    c, client_ok := acp_rpc_open(io, {checkpoint = acp_adapter_probe_checkpoint})
+    driver := acp_protocol_driver(d.protocol)
+    if driver == nil { io.close(io.data); io.destroy(io.data); return false, "initialize_failed" }
+    c, client_ok := acp_rpc_open(io, {checkpoint = acp_adapter_probe_checkpoint}, d.protocol, driver.rpc)
     if !client_ok { io.close(io.data); io.destroy(io.data); return false, "pipe_unavailable" }
-    rpc_id, sent := acp_rpc_request(c, "initialize", ACP_INITIALIZE_PARAMS, 15000, {acp_adapter_probe_result, &p})
-    delete(string(rpc_id))
+    sent := driver.probe(c, &p)
     fallback := "initialize_failed"
     if sent {
         deadline := time.time_add(time.now(), 16*time.Second)

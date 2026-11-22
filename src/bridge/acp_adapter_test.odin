@@ -474,6 +474,59 @@ kiro_fake_profile_probe :: proc(pp: ^Provider_Profile, root, scratch: string) ->
     return pp.provider == "kiro" && root != scratch, ""
 }
 
+@(private = "file") codex_catalog_probe_calls: int
+@(private = "file") codex_catalog_probe_ok: bool
+codex_catalog_profile_probe :: proc(pp: ^Provider_Profile, root, scratch: string) -> (bool, string) {
+    codex_catalog_probe_calls += 1
+    d, known := contracts.acp_provider_descriptor(pp.provider)
+    return codex_catalog_probe_ok && known && d.protocol == .Codex_App_Server &&
+        acp_protocol_driver(d.protocol) == &acp_protocol_codex_driver && root != scratch, "initialize_failed"
+}
+
+@(test)
+acp_codex_detect_only_recheck_requires_successful_probe :: proc(t: ^testing.T) {
+    st := p1c_test_setup(t); defer p1c_test_teardown(st)
+    context.allocator = context.temp_allocator
+    old_runner, old_probe := acp_adapter_runner, acp_adapter_profile_probe_hook
+    defer { acp_adapter_runner = old_runner; acp_adapter_profile_probe_hook = old_probe }
+    acp_adapter_runner = kiro_fake_runner; acp_adapter_profile_probe_hook = codex_catalog_profile_probe
+    kiro_npm_called = false; codex_catalog_probe_calls = 0; codex_catalog_probe_ok = false
+    snapshot := bridge_provider_catalog_snapshot
+    snapshot.etag = "sha256:codex"
+    snapshot.providers[1] = {provider = "codex", binary = "codex", state = "active", transports = {"pty", "acp"}, default_transport = "pty",
+        acp_recipe = {command = "codex", args = {"app-server"}, protocol_version = 1,
+            adapter_package = "codex", adapter_version = "0.162.0", env = make(map[string]string)}}
+    defer delete(snapshot.providers[1].acp_recipe.env)
+    testing.expect(t, bridge_catalog_transport_valid(snapshot.providers[1]))
+    binary := profile_join(st.dir, "codex")
+    home := profile_join(st.dir, "codex-home")
+    pp := Provider_Profile{profile_id = "codex", provider = "codex", enabled = true, config = {binary_path = binary, home_path = home}}
+    raw, _ := json.marshal(Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION, profiles = {pp}})
+    p1c_put(t, g_profile_test_store_path, string(raw))
+    testing.expect_value(t, acp_adapter_status("codex").state, "missing")
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'codex-cli 0.161.9\\n'\n", true)
+    status := acp_adapter_status("codex")
+    testing.expect(t, status.state == "outdated" && status.version == "0.161.9")
+    ok, reason := acp_adapter_install("codex", snapshot.etag, "0.162.0")
+    testing.expect(t, !ok && reason == "acp_codex_outdated" && codex_catalog_probe_calls == 0)
+    // The version check receives the same selected CODEX_HOME as app-server.
+    p1c_put(t, binary, fmt.tprintf("#!/bin/sh\n[ \"$CODEX_HOME\" = %q ] || exit 42\nprintf 'codex-cli 0.162.0\\n'\n", home), true)
+    status = acp_adapter_status("codex")
+    testing.expect(t, status.installed && status.state == "error" && status.version == "0.162.0")
+    ok, reason = acp_adapter_install("codex", snapshot.etag, "0.162.0")
+    testing.expect(t, !ok && reason == "acp_adapter_probe_failed" && codex_catalog_probe_calls == 1)
+    testing.expect_value(t, acp_adapter_status("codex").state, "error")
+    codex_catalog_probe_ok = true
+    ok, reason = acp_adapter_install("codex", snapshot.etag, "0.162.0")
+    testing.expect(t, ok && reason == "" && codex_catalog_probe_calls == 2 && !kiro_npm_called)
+    testing.expect_value(t, acp_adapter_status("codex").state, "ready")
+    status_json := acp_adapter_status_json("codex")
+    testing.expect(t, strings.contains(status_json, `"runtime_kind":"system"`) && strings.contains(status_json, `"node_version":null`))
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'codex-cli 0.166.0\\n'\n", true)
+    status = acp_adapter_status("codex")
+    testing.expect(t, status.state == "error" && status.version == "0.166.0", "a changed executable version invalidates its probe receipt")
+}
+
 @(test)
 acp_kiro_system_status_recheck_and_launch :: proc(t: ^testing.T) {
     st := p1c_test_setup(t); defer p1c_test_teardown(st)

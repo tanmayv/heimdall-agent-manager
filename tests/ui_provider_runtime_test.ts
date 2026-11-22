@@ -354,3 +354,54 @@ test('detect-only system CLI status uses Re-check, never Node or install wording
     assert.match(text, /ACP system CLI: outdated/);
   } finally { await h.cleanup(); }
 });
+
+test('Codex app-server is an opt-in system runtime with PTY reset and Re-check', async () => {
+  const runtime = normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'pty', acp_adapter: {
+    ...adapter, provider: 'codex', profile: 'codex', runtime_kind: 'system', version: '0.162.0', node_version: null,
+    state: 'error', error: 'ACP initialize probe is required for the selected profile; use Re-check',
+  } });
+  assert.equal(runtime.effective_transport, 'pty');
+  assert.equal(acpAdapterSummary(runtime.acp_adapter), 'Codex app-server runtime: error · Version: 0.162.0');
+  const h = await browser();
+  const oldInstall = providerSetupApi.installAdapter;
+  const oldSet = providerSetupApi.setTransport;
+  const oldGet = providerSetupApi.get;
+  const calls: unknown[][] = [];
+  try {
+    let status = row({ provider: 'codex', profile_id: 'codex', display_name: 'Codex', ...runtime });
+    const data = setup({ providers: [status] });
+    providerSetupApi.installAdapter = async (_setup, provider) => {
+      calls.push(['check', provider]);
+      return { command_id: 'codex-check', state: 'installing' } as any;
+    };
+    providerSetupApi.get = async () => setup({ providers: [status], extension_commands: [
+      { command_id: 'codex-check', provider: 'codex', kind: 'install_acp_adapter', status: 'succeeded', message: '', progress_percent: 100 },
+    ] });
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: data, status, onChange() {} }));
+    const select = h.doc.querySelector('select')!;
+    assert.equal(select.value, 'pty');
+    assert.equal(select.querySelector('option[value="acp"]')?.textContent, 'ACP (Codex app-server)');
+    assert.equal((select.querySelector('option[value="acp"]') as HTMLOptionElement).disabled, true);
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-codex"]')?.textContent, 'Re-check');
+    assert.doesNotMatch(h.doc.body.textContent || '', /Node|Install adapter|Install runtime/);
+    await act(async () => { (h.doc.querySelector('[data-debug-id="providers-acp-install-codex"]') as HTMLElement).click(); await tick(); });
+    assert.deepEqual(calls, [['check', 'codex']]);
+    status = { ...status, acp_adapter: { ...status.acp_adapter, state: 'ready', error: null } };
+    providerSetupApi.setTransport = async (_setup, provider, transport) => {
+      calls.push(['transport', provider, transport]);
+      return setup({ providers: [{ ...status, transport, effective_transport: transport || 'pty' }] });
+    };
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
+    await act(async () => {
+      const ready = h.doc.querySelector('select')!;
+      ready.value = 'acp'; ready.dispatchEvent(new h.dom.window.Event('change', { bubbles: true })); await tick();
+    });
+    status = { ...status, transport: 'acp', effective_transport: 'acp' };
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
+    await act(async () => { (h.doc.querySelector('[data-debug-id="providers-runtime-reset-codex"]') as HTMLElement).click(); await tick(); });
+    assert.deepEqual(calls.slice(1), [['transport', 'codex', 'acp'], ['transport', 'codex', null]]);
+  } finally {
+    providerSetupApi.installAdapter = oldInstall; providerSetupApi.setTransport = oldSet; providerSetupApi.get = oldGet;
+    await h.cleanup();
+  }
+});
