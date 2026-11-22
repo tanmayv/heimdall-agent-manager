@@ -2,11 +2,14 @@ package http
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:net"
+import "core:time"
 import "core:testing"
 import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
+import events "odin_test:hub/service/events"
 
 @(test)
 test_web_http_auth_gate_validation_idempotency :: proc(t: ^testing.T) {
@@ -137,8 +140,58 @@ test_web_artifacts_validation_atomicity_history_and_agent_read :: proc(t: ^testi
 	m := wire.data.messages[0]
 	testing.expect(t,m.provider=="web" && m.body=="" && len(m.attachments)==2)
 	for a in m.attachments do testing.expect(t,a.state=="stored" && a.artifact_id!="" && a.name=="file" && a.size==6)
+	// Subscribe after intake so the only possible event is a read receipt.
+	bus := new(events.User_Event_Bus)
+	f.service.event_bus = bus
+	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
+	if !testing.expect(t, listen_err == nil) do return
+	defer net.close(listener)
+	bound, bound_err := net.bound_endpoint(listener)
+	if !testing.expect(t, bound_err == nil) do return
+	peer, dial_err := net.dial_tcp(net.Endpoint{address = net.IP4_Loopback, port = bound.port})
+	if !testing.expect(t, dial_err == nil) do return
+	defer net.close(peer)
+	socket, _, accept_err := net.accept_tcp(listener)
+	if !testing.expect(t, accept_err == nil) do return
+	defer net.close(socket)
+	_ = net.set_option(peer, .Receive_Timeout, time.Second)
+	owner_slot := events.user_ws_add(bus, string(f.wire.owner), socket)
+	defer events.user_ws_remove(bus, owner_slot)
+	other_slot := events.user_ws_add(bus, "foreign", socket)
+	defer events.user_ws_remove(bus, other_slot)
+
+	// The failed write transaction must leave the row unread and publish nothing.
+	testing.expect(t, sqlite.exec(&f.wire.conn, `CREATE TRIGGER reject_read BEFORE UPDATE OF read_at ON channel_messages BEGIN SELECT RAISE(ABORT,'injected'); END;`))
+	testing.expect(t, bot_channel_read(c).status >= 400)
+	testing.expect_value(t, bus.stream_seqs[owner_slot], u64(0))
+	testing.expect(t, sqlite.exec(&f.wire.conn, "DROP TRIGGER reject_read;"))
+
+	// The write commits even though the read handler later fails to load attachments.
+	attachments_for_messages := f.bot_repo.attachments_for_messages
+	f.bot_repo.attachments_for_messages = proc(_: rawptr, _: []string) -> ([]domain.Channel_Attachment, domain.Domain_Error) {
+		return nil, domain.domain_error(.Internal_Error, "injected attachment lookup failure")
+	}
+	testing.expect(t, bot_channel_read(c).status >= 500)
+	f.bot_repo.attachments_for_messages = attachments_for_messages
+	buffer: [2048]byte
+	n, recv_err := net.recv_tcp(peer, buffer[:])
+	testing.expect(t, recv_err == nil && n > 0 && strings.contains(string(buffer[:n]), "bot_changed"))
+	testing.expect_value(t, bus.stream_seqs[owner_slot], u64(1))
+	testing.expect_value(t, bus.stream_seqs[other_slot], u64(0))
+
+	history = bot_unified_messages_handler(&f.handlers, bot_http_request(f, "GET", "/api/v1/bots/me/messages", ""))
+	_ = json.unmarshal(transmute([]byte)history.body, &wire, allocator = context.temp_allocator)
+	if !testing.expect(t, history.status == 200 && len(wire.data.messages) == 1) do return
+	receipt := wire.data.messages[0].read_at
+	testing.expect(t, receipt != "" && wire.data.messages[0].replied_at == "")
+
 	read := bot_channel_read(c)
 	testing.expectf(t,read.status==200 && strings.contains(read.body,"art_first") && strings.contains(read.body,"art_second"),"%s",read.body)
+	testing.expect_value(t, bus.stream_seqs[owner_slot], u64(1))
+	history = bot_unified_messages_handler(&f.handlers, bot_http_request(f, "GET", "/api/v1/bots/me/messages", ""))
+	_ = json.unmarshal(transmute([]byte)history.body, &wire, allocator = context.temp_allocator)
+	if !testing.expect(t, history.status == 200 && len(wire.data.messages) == 1) do return
+	testing.expect_value(t, wire.data.messages[0].read_at, receipt)
 	agent_history := bot_agent_channel_history_handler(&c.h,bot_channel_req(c,"history",`{"params":{}}`))
 	testing.expect(t,agent_history.status==200 && strings.contains(agent_history.body,"art_first"))
 	// Normal agent artifact fetch can retrieve the attached bytes.
@@ -148,6 +201,8 @@ test_web_artifacts_validation_atomicity_history_and_agent_read :: proc(t: ^testi
 	testing.expect_value(t,iface.messages_purge_binding(&f.bot_repo,m.binding_id).code,domain.Error_Code.None)
 	purged := bot_unified_messages_handler(&f.handlers,bot_http_request(f,"GET","/api/v1/bots/me/messages",""))
 	testing.expect(t,purged.status==200 && !strings.contains(purged.body,"art_first"))
+	testing.expect_value(t, bot_channel_read(c).status, 200)
+	testing.expect_value(t, bus.stream_seqs[owner_slot], u64(1))
 }
 
 

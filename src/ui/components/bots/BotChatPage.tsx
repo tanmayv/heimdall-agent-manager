@@ -5,7 +5,7 @@ import { useComposerAttachments } from '../chat/useComposerAttachments';
 import { VoiceRecorderPanel, useVoiceMessage } from '../chat/VoiceRecorderPanel';
 import { Alert, Badge, Button, Spinner, Text } from '@ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useDispatch } from 'react-redux';
+import { shallowEqual, useDispatch, useSelector } from 'react-redux';
 import {
   botsApi, useGetBotQuery, useGetUnifiedBotMessagesQuery, useSendBotWebMessageMutation,
   type BotView, type UnifiedBotMessage,
@@ -91,6 +91,21 @@ function BotChatView({ bot }: { bot: BotView }) {
   const [older, setOlder] = useState<{ loading: boolean; error: string; pagesLoaded: number; endReached: boolean }>(
     { loading: false, error: '', pagesLoaded: 0, endReached: false });
   const loadingOlder = useRef(false);
+  const olderSubscriptions = useRef(new Set<() => void>());
+  const [olderCursors, setOlderCursors] = useState<string[]>([]);
+  const selectOlderPages = useMemo(() => {
+    const selectors = olderCursors.map(cursor => botsApi.endpoints.getUnifiedBotMessages.select(
+      { limit: BOT_HISTORY_PAGE_SIZE, cursor }));
+    return (state: Parameters<(typeof selectors)[number]>[0]) => selectors.map(select => select(state).data);
+  }, [olderCursors]);
+  const olderPages = useSelector(selectOlderPages, shallowEqual);
+  useEffect(() => {
+    const subscriptions = olderSubscriptions.current;
+    return () => {
+      for (const unsubscribe of subscriptions) unsubscribe();
+      subscriptions.clear();
+    };
+  }, []);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   // The same dock/transcript synchronisation as the coordinator chat (REQ-FROST-1).
@@ -107,6 +122,10 @@ function BotChatView({ bot }: { bot: BotView }) {
   // into the accumulated history rather than replacing it.
   useEffect(() => { setKnown((current) => mergeBotMessages(current, head.currentData?.messages)); }, [head.currentData]);
 
+  useEffect(() => {
+    setKnown(current => olderPages.reduce((known, page) => mergeBotMessages(known, page?.messages), current));
+  }, [olderPages]);
+
   const timeline = useMemo(() => botTimeline(known), [known]);
   const shownPending = useMemo(() => visiblePendingSends(pending, known), [pending, known]);
   const messages = useMemo(() => botChatMessages(timeline, shownPending, sentKeys), [timeline, shownPending, sentKeys]);
@@ -118,12 +137,19 @@ function BotChatView({ bot }: { bot: BotView }) {
     if (loadingOlder.current || !hasOlder || !cursor) return;
     loadingOlder.current = true;
     setOlder((o) => ({ ...o, loading: true, error: '' }));
+    // Subscribe from the start so invalidation also covers a page being loaded.
+    const query = dispatch(botsApi.endpoints.getUnifiedBotMessages.initiate(
+      { limit: BOT_HISTORY_PAGE_SIZE, cursor }, { forceRefetch: true }));
+    const unsubscribe = () => query.unsubscribe();
+    olderSubscriptions.current.add(unsubscribe);
     try {
-      const page = await dispatch(botsApi.endpoints.getUnifiedBotMessages.initiate(
-        { limit: BOT_HISTORY_PAGE_SIZE, cursor }, { subscribe: false, forceRefetch: true })).unwrap();
+      const page = await query.unwrap();
       setKnown((current) => mergeBotMessages(current, page.messages));
+      setOlderCursors(cursors => [...cursors, cursor]);
       setOlder((o) => ({ loading: false, error: '', pagesLoaded: o.pagesLoaded + 1, endReached: !page.next_cursor }));
     } catch (error) {
+      olderSubscriptions.current.delete(unsubscribe);
+      unsubscribe();
       setOlder((o) => ({ ...o, loading: false, error: botChatErrorText(queryErrorStatus(error), apiErrorText(error, 'Could not load older messages.')) }));
     } finally {
       loadingOlder.current = false;
