@@ -455,7 +455,7 @@ BRIDGE_FS_READ_PAGE_BYTES_SOCAT :: 131_072
 // reusing the scheduler's civil-date formatter (same package).
 bridge_fs_format_mtime :: proc(t: time.Time) -> string {
 	ms := time.to_unix_nanoseconds(t) / 1_000_000
-	return action_scheduler_format_rfc3339_utc(ms)
+	return bridge_format_rfc3339_utc_ms(ms)
 }
 
 // bridge_fs_entry_less orders entries dirs-first, then name ascending. Stable
@@ -1084,7 +1084,7 @@ bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: s
 		modified_at = bridge_fs_format_mtime(info.modification_time)
 		os.file_info_delete(info, context.allocator)
 	} else {
-		modified_at = action_scheduler_format_rfc3339_utc(time.to_unix_nanoseconds(time.now()) / 1_000_000)
+		modified_at = bridge_format_rfc3339_utc_ms(time.to_unix_nanoseconds(time.now()) / 1_000_000)
 	}
 
 	return Bridge_Fs_Write_File_Result{

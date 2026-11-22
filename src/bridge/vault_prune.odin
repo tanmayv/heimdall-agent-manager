@@ -109,9 +109,7 @@ bridge_vault_prune_command :: proc(args: []string) -> bool {
 	scope, _ := keystore_scope_name(bridge_id)
 	verdict := Prune_Verdict.No_Token
 	if strings.trim_space(cfg.bridge_token) != "" {
-		headers := [?]httpc.Header{httpc.bearer(cfg.bridge_token)}
-		resp, err := bridge_hub_http_send_alloc({method = .GET, url = bridge_hub_url(cfg.daemon_url), path = {"api", "v1", "bridge", "actions"}, headers = headers[:]}, context.temp_allocator)
-		verdict = bridge_prune_verdict(err == .None, resp.status)
+		verdict = bridge_prune_probe(cfg)
 	}
 	fmt.printfln("\n%s (hub %s, scope %s): %s", bridge_id, bridge_keystore_hub(), scope, prune_verdict_string(verdict))
 	if !has_flag(args, "--remove") do return true
@@ -120,4 +118,13 @@ bridge_vault_prune_command :: proc(args: []string) -> bool {
 		return true
 	}
 	return bridge_prune_remove(bridge_id)
+}
+
+
+// The prune decision must authenticate against a route available to every owner.
+bridge_prune_probe :: proc(cfg: Bridge_Config, send := bridge_hub_http_send_alloc) -> Prune_Verdict {
+    headers := [?]httpc.Header{httpc.bearer(cfg.bridge_token)}
+    resp, err := send({method = .GET, url = bridge_hub_url(cfg.daemon_url),
+        path = {"api", "v1", "bridge", "update-catalog"}, headers = headers[:]}, context.temp_allocator)
+    return bridge_prune_verdict(err == .None, resp.status)
 }

@@ -816,13 +816,9 @@ bridge_renewal_pause :: proc(env: ^Bridge_Renewal_Env, b: Bridge_Operation_Budge
 	return bridge_renewal_hold(env, pause)
 }
 
-// bridge_refresh_after_publish: renew the live session in-band and reopen a sync
-// budget parked on the old credential.
+// bridge_refresh_after_publish: renew the live session in-band.
 bridge_refresh_after_publish :: proc() {
-	key := bridge_action_scheduler_sync_key()
-	defer delete(key)
-	bridge_retry_credential_repaired(key)
-	bridge_credential_status_changed()
+    bridge_credential_status_changed()
 }
 
 // bridge_credential_recover_at_start finishes a pending rotated pair BEFORE the first

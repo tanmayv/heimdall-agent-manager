@@ -1462,9 +1462,9 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 				fmt.eprintln("bridge enroll FAILED: the enrollment request expired before it was approved. Run the command again.")
 				blog_error(.enroll_failed, blog_sym(.stage, .poll), blog_sym(.reason, .expired))
 				fmt.eprintfln("  this process started waiting at %s and was told the request would expire at %s",
-					action_scheduler_format_rfc3339_utc(authorized_at_ms), action_scheduler_format_rfc3339_utc(deadline_ms))
+					bridge_format_rfc3339_utc_ms(authorized_at_ms), bridge_format_rfc3339_utc_ms(deadline_ms))
 				fmt.eprintfln("  the Hub reported Expired at %s -- %ds after this process started waiting, against a %ds budget (waited=%ds)",
-					action_scheduler_format_rfc3339_utc(now_ms), (now_ms - authorized_at_ms) / 1000, expires_in, waited)
+					bridge_format_rfc3339_utc_ms(now_ms), (now_ms - authorized_at_ms) / 1000, expires_in, waited)
 				return false
 			case .Fatal:
 				return false
@@ -1486,8 +1486,8 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 		fmt.eprintln("bridge enroll FAILED: timed out waiting for approval. Nothing was written.")
 		blog_error(.enroll_failed, blog_sym(.stage, .poll), blog_sym(.reason, .timeout))
 		fmt.eprintfln("  this process started waiting at %s with a %ds budget (deadline %s) and gave up at %s (waited=%ds)",
-			action_scheduler_format_rfc3339_utc(authorized_at_ms), expires_in, action_scheduler_format_rfc3339_utc(deadline_ms),
-			action_scheduler_format_rfc3339_utc(timeout_now_ms), waited)
+			bridge_format_rfc3339_utc_ms(authorized_at_ms), expires_in, bridge_format_rfc3339_utc_ms(deadline_ms),
+			bridge_format_rfc3339_utc_ms(timeout_now_ms), waited)
 		return false
 	}
 }
