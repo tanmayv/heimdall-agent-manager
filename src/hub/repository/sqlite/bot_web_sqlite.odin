@@ -18,7 +18,7 @@ web_message_store_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, m
 	defer if !committed do exec(conn, "ROLLBACK;")
 	// external_message_id retains a payload hash after message body retention.
 	old, old_err := bot_repo_list_channel_message(conn,
-		"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE owner_user_id = ? AND bot_id = ? AND provider_update_key = ?;",
+		"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE owner_user_id = ? AND bot_id = ? AND provider_update_key = ?;",
 		{message.owner_user_id, message.bot_id, message.provider_update_key})
 	defer {for &m in old do domain.channel_message_destroy(&m); delete(old)}
 	if old_err.code != .None do return {}, false, old_err
@@ -53,7 +53,7 @@ web_message_store_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, m
 	committed = true
 	// Use the common row decoder to return a wholly owned snapshot.
 	stored, get_err := bot_repo_list_channel_message(conn,
-		"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE message_id = ?;",
+		"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE message_id = ?;",
 		{message.message_id})
 	defer delete(stored)
 	if get_err.code != .None do return {}, false, get_err
@@ -65,16 +65,16 @@ messages_page_sqlite :: proc(ctx: rawptr, owner, bot_id, before: string, limit: 
 	conn := bot_repo_conn(ctx)
 	if before != "" {
 		cursor, err := bot_repo_list_channel_message(conn,
-			"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE message_id = ? AND owner_user_id = ? AND bot_id = ?;",
+			"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE message_id = ? AND owner_user_id = ? AND bot_id = ?;",
 			{before, owner, bot_id})
 		defer {for &m in cursor do domain.channel_message_destroy(&m); delete(cursor)}
 		if err.code != .None do return nil, err
 		if len(cursor) != 1 do return nil, domain.domain_error(.Validation_Failed, "invalid history cursor")
 		return bot_repo_list_channel_message(conn,
-			"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE owner_user_id = ? AND bot_id = ? AND (created_at < ? OR (created_at = ? AND message_id < ?)) ORDER BY created_at DESC, message_id DESC LIMIT ?;",
+			"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE owner_user_id = ? AND bot_id = ? AND (created_at < ? OR (created_at = ? AND message_id < ?)) ORDER BY created_at DESC, message_id DESC LIMIT ?;",
 			{owner, bot_id, cursor[0].created_at, cursor[0].created_at, before, fmt.tprintf("%d", limit)})
 	}
 	return bot_repo_list_channel_message(conn,
-		"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at FROM channel_messages WHERE owner_user_id = ? AND bot_id = ? ORDER BY created_at DESC, message_id DESC LIMIT ?;",
+		"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE owner_user_id = ? AND bot_id = ? ORDER BY created_at DESC, message_id DESC LIMIT ?;",
 		{owner, bot_id, fmt.tprintf("%d", limit)})
 }

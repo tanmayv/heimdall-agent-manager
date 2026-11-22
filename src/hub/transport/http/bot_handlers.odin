@@ -17,6 +17,7 @@ Bot_Handlers :: struct {
 	bots: ^bots.Bots_Service,
 	experiments: ^iface.Experiment_Repository,
 	content: ^iface.Content_Repository,
+	cards: ^iface.Card_Repository,
 }
 
 bot_require_auth :: proc(h: ^Bot_Handlers, req: Request) -> (contracts.Auth_Context, bool, Response) {

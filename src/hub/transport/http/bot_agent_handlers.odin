@@ -1,6 +1,8 @@
 package http
 
+import "base:runtime"
 import "core:encoding/json"
+import "core:strings"
 import "core:encoding/base64"
 import contracts "odin_test:contracts"
 import content_service "odin_test:hub/service/content"
@@ -84,6 +86,7 @@ bot_agent_channel_send_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	obj, object_ok := value.(json.Object)
 	if parse_err == nil && object_ok {
 		if _, present := obj["artifact_id"]; present {
+			if _, actions_present := obj["action_ids"]; actions_present do return respond_error(bots.bots_detail_error(.Validation_Failed, "action_ids_require_text"), req.request_id)
 			if !utf8.valid_string(params) do return respond_error(bots.bots_detail_error(.Validation_Failed, "text_invalid"), req.request_id)
 			return bot_agent_channel_send_media(h, req, bot, auth, obj)
 		}
@@ -96,11 +99,52 @@ bot_agent_channel_send_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	defer domain.channel_binding_destroy(&binding)
 	if binding_err.code != .None do return respond_error(binding_err, req.request_id)
 	if !found do return respond_error(bots.bots_detail_error(.Conflict, "channel_not_paired"), req.request_id)
-	ids, held, err := bots.channel_send(h.bots, binding, text, true)
+	action_ids_json, actions_err := bot_web_action_refs(h, auth, binding.provider, obj)
+	if actions_err.code != .None do return respond_error(actions_err, req.request_id)
+	ids, held, err := bots.channel_send(h.bots, binding, text, true, action_ids_json)
 	defer {for id in ids do delete(id); delete(ids)}
 	if err.code != .None do return respond_error(err, req.request_id)
 	if e := bots.bots_channel_replied(h.bots, bot.bot_id, binding.binding_id); e.code != .None do return respond_error(e, req.request_id)
 	return respond_success_typed(struct {message_ids: []string, chunks: int, channel: string, held: bool}{ids, len(ids), binding.provider, held}, req.request_id, auth_ctx_server_time(req))
+}
+
+// Card details remain in the existing card API. Persist only validated IDs.
+bot_web_action_refs :: proc(h: ^Bot_Agent_Handlers, auth: contracts.Auth_Context, provider: string, params: json.Object) -> (string, domain.Domain_Error) {
+	raw, supplied := params["action_ids"]
+	if !supplied do return "", {}
+	if provider != domain.CHANNEL_PROVIDER_WEB do return "", bots.bots_detail_error(.Conflict, "action_ids_require_web")
+	items, array_ok := raw.(json.Array)
+	invalid := bots.bots_detail_error(.Validation_Failed, "action_ids_invalid")
+	if !array_ok || len(items) == 0 || len(items) > contracts.BOT_WEB_MAX_ACTION_IDS do return "", invalid
+	ids := make([]string, len(items), context.temp_allocator)
+	for item, i in items {
+		id, string_ok := item.(string)
+		if !string_ok || !strings.has_prefix(id, "crd_") || len(id) > 200 do return "", invalid
+		for prior in ids[:i] do if prior == id do return "", invalid
+		ids[i] = id
+	}
+	if h.agent_actions.cards == nil do return "", domain.domain_error(.Internal_Error, "card service is not configured")
+	visible, lookup_err := bot_visible_action_ids(h.agent_actions.cards.cards, domain.User_ID(auth.user_id), ids)
+	if lookup_err.code != .None do return "", lookup_err
+	if len(visible) != len(ids) do return "", bots.bots_detail_error(.Not_Found, "action_card_not_found")
+	data, err := json.marshal(ids, allocator = context.temp_allocator)
+	if err != nil do return "", invalid
+	return string(data), {}
+}
+
+// Match the card endpoint's owner check without materializing projected cards.
+bot_visible_action_ids :: proc(repo: ^iface.Card_Repository, owner: domain.User_ID, ids: []string) -> ([]string, domain.Domain_Error) {
+	visible := make([dynamic]string, context.temp_allocator)
+	for id in ids {
+		temp := runtime.default_temp_allocator_temp_begin()
+		context.allocator = context.temp_allocator
+		card, found, err := iface.card_get(repo, domain.Card_ID(id))
+		allowed := found && card.owner_user_id == owner
+		runtime.default_temp_allocator_temp_end(temp)
+		if err.code != .None && err.code != .Not_Found do return nil, domain.domain_error(err.code, "card lookup failed")
+		if allowed do append(&visible, id)
+	}
+	return visible[:], {}
 }
 
 bot_agent_channel_history_handler :: proc(ctx: rawptr, req: Request) -> Response {

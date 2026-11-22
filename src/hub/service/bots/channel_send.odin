@@ -33,7 +33,7 @@ channel_text_chunks :: proc(text: string, allocator := context.allocator) -> []s
 }
 
 // message_ids and each id belong to the caller, including on an error.
-channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: string, record: bool) -> (message_ids: []string, held: bool, err: domain.Domain_Error) {
+channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: string, record: bool, action_ids_json := "") -> (message_ids: []string, held: bool, err: domain.Domain_Error) {
 	a := bots_adapter(s, binding.provider)
 	if a == nil do return nil, false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", binding.provider), `{"code":"channel_not_configured"}`)
 	if !utf8.valid_string(text) do return nil, false, domain.domain_error(.Validation_Failed, "text is invalid", `{"code":"text_invalid"}`)
@@ -48,13 +48,14 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 	if record {
 		// Publish after all send-state updates, including partial failures.
 		defer bots_publish_changed(s, binding.owner_user_id, binding.bot_id)
-		for chunk in chunks {
+		for chunk, i in chunks {
 			id := strings.clone(platform.generate_id(s.ids, "chm_"))
 			insert_err := iface.message_insert_outbound(s.repo, {
 				message_id = id, binding_id = binding.binding_id,
 				owner_user_id = binding.owner_user_id, bot_id = binding.bot_id,
 				direction = .Outbound, body = chunk, send_state = state,
 				created_at = platform.clock_now(s.clock),
+				action_ids_json = action_ids_json if binding.provider == domain.CHANNEL_PROVIDER_WEB && i == len(chunks) - 1 else "",
 			})
 			if insert_err.code != .None {
 				delete(id)
