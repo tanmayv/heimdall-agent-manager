@@ -7,7 +7,7 @@ import "core:strings"
 import "core:testing"
 
 Boundary_Exception :: struct {
-	file, procedure, reason: string,
+	file, procedure, reason, pattern: string,
 }
 // These checks describe connectivity or stop/fence an existing runtime. They
 // must not interpret launch restrictions as evidence a process is disconnected.
@@ -16,29 +16,44 @@ BOUNDARY_EXCEPTIONS :: []Boundary_Exception {
 		"agent/agent_service.odin",
 		"cleanup_provider_test_instance",
 		"Stop a provider test only while its transport is connected.",
+		"project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id)",
 	},
-	{"agent/agent_service.odin", "stop_instance", "A plan-disabled bridge can still contain the process to stop."},
+	{
+		"agent/agent_service.odin",
+		"stop_instance",
+		"A plan-disabled bridge can still contain the process to stop.",
+		"project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id)",
+	},
 	{
 		"agent/instance_reconfiguration.odin",
 		"begin_instance_reconfiguration",
 		"Fence the source only when its connection is actually absent.",
+		"project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, stored.source.bridge_id)",
 	},
 	{
 		"agent/instance_reconfiguration.odin",
 		"reconfiguration_start_stop",
 		"Failed stop transport is not proof a connected source is stopped.",
+		"project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, op.source.bridge_id)",
 	},
 	{
 		"agent/instance_reconfiguration.odin",
 		"force_stop_instance_reconfiguration_locked",
 		"Force stop needs connectivity regardless of launch eligibility.",
+		"project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id)",
 	},
 	{
 		"bots/supervisor.odin",
 		"bots_resolve_blocking_locked",
 		"Existing runtime recovery follows connectivity, not launch restrictions.",
+		"project_service.bridge_runtime_registry_has_live(s.registry, inst.bridge_id)",
 	},
-	{"bots/delivery.odin", "bots_on_bridge_disconnect", "Do not mark a newer replacement connection disconnected."},
+	{
+		"bots/delivery.odin",
+		"bots_on_bridge_disconnect",
+		"Do not mark a newer replacement connection disconnected.",
+		"bridge_err.code != .None || !found || bridge.status == .Online",
+	},
 }
 boundary_scan :: proc(t: ^testing.T, dir: string, imports: bool) -> int {
 	entries, e := os.read_all_directory_by_path(dir, context.temp_allocator)
@@ -64,8 +79,7 @@ boundary_scan :: proc(t: ^testing.T, dir: string, imports: bool) -> int {
 			forbidden := false
 			for pattern in ([]string{"bridge_runtime_registry_has_live(", ".plan_disabled_at", "status != .Online", "status == .Online", "status!=.Online", "status==.Online"}) do if strings.contains(line, pattern) do forbidden = true
 			if !forbidden do continue
-			exception := false
-			for item in BOUNDARY_EXCEPTIONS do if strings.has_suffix(entry.fullpath, item.file) && procedure == item.procedure && item.reason != "" do exception = true
+			exception := boundary_exception_allowed(entry.fullpath, procedure, line)
 			testing.expectf(t, exception, "inline eligibility in %s:%s: %s", entry.fullpath, procedure, line)
 		}
 	}
@@ -87,5 +101,44 @@ test_agent_and_bots_use_the_predicate :: proc(t: ^testing.T) {
 	root := filepath.dir(strings.trim_right(#directory, "/"))
 	testing.expect(t, boundary_scan(t, strings.concatenate({root, "/agent"}, context.temp_allocator), false) > 0)
 	testing.expect(t, boundary_scan(t, strings.concatenate({root, "/bots"}, context.temp_allocator), false) > 0)
+	testing.expect_value(t, len(track.allocation_map), 0)
+}
+
+
+boundary_exception_allowed :: proc(file, procedure, line: string) -> bool {
+	for item in BOUNDARY_EXCEPTIONS {
+		if strings.has_suffix(file, item.file) && procedure == item.procedure && item.reason != "" && strings.contains(line, item.pattern) do return true
+	}
+	return false
+}
+@(test)
+test_boundary_exception_is_source_specific :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator); defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	testing.expect(
+		t,
+		boundary_exception_allowed(
+			"agent/instance_reconfiguration.odin",
+			"begin_instance_reconfiguration",
+			"if !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, stored.source.bridge_id) do return",
+		),
+	)
+	testing.expect(
+		t,
+		!boundary_exception_allowed(
+			"agent/instance_reconfiguration.odin",
+			"begin_instance_reconfiguration",
+			"if !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, next.bridge_id) do return",
+		),
+	)
+	testing.expect(
+		t,
+		!boundary_exception_allowed(
+			"agent/instance_reconfiguration.odin",
+			"begin_instance_reconfiguration",
+			"if destination_bridge.status != .Online do return",
+		),
+	)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }

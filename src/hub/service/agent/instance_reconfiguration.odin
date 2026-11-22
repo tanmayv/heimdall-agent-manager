@@ -103,7 +103,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	if !bridge_ok do return {}, false, bridge_err
 	if destination_bridge.owner_user_id != inst.owner_user_id do return {}, false, domain.domain_error(.Not_Found, "destination bridge not found")
 	ps:=agent_placement(service)
- if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge must be online")
+ if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge must be online","update source and destination bridges before applying configuration changes")
  if !reconfiguration_bridge_supported(source_bridge) do return {},false,domain.domain_error(.Conflict,"update source and destination bridges before applying configuration changes")
 
 	next := inst
@@ -161,7 +161,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 		return existing, true, {}
 	}
 	// Preflight can wait for a bridge reply; recheck connectivity before stopping source.
-	if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge disconnected during preflight; reconnect it before Apply")
+	if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge disconnected during preflight; reconnect it before Apply","update source and destination bridges before applying configuration changes")
 	now := platform.clock_now(service.clock)
 	op := domain.Instance_Reconfiguration{operation_id = platform.generate_id(service.ids, "reconfig_"), owner_user_id = string(inst.owner_user_id), agent_instance_id = inst.agent_instance_id, conversation_id = inst.conversation_id, actor_user_id = auth.user_id, idempotency_key = input.idempotency_key, expected_revision = input.expected_revision, revision = 1, phase = .Prepared, source = configuration_snapshot(service, inst), destination = configuration_snapshot(service, next), stop_command_id = platform.generate_id(service.ids, "cmd_reconfig_stop_"), launch_command_id = platform.generate_id(service.ids, "cmd_reconfig_launch_"), launch_epoch = platform.generate_id(service.ids, "launch_"), created_at = now, updated_at = now}
 	stored, saved, save_err := iface.instance_reconfiguration_begin(service.agents, op)
@@ -463,7 +463,7 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 	defer domain.bridge_destroy(&bridge)
 	if string(bridge.owner_user_id) != op.owner_user_id do return false, domain.domain_error(.Not_Found, "destination bridge not found")
 	ps:=agent_placement(service)
- if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=op.owner_user_id,features={"instance_reconfiguration_v1"}}); !eligible do return false,agent_placement_error(&ps,bridge,reason,"destination bridge is offline; reconnect it before Apply")
+ if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=op.owner_user_id,features={"instance_reconfiguration_v1"}}); !eligible do return false,agent_placement_error(&ps,bridge,reason,"destination bridge is offline; reconnect it before Apply","destination bridge must be updated before Apply")
 
 	if op.destination.project_id != "" {
 		project, project_found, project_err := iface.project_get(service.projects, domain.Project_ID(op.destination.project_id))
@@ -484,8 +484,8 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 	inst,inst_ok,inst_err:=iface.agent_get_instance(service.agents,op.agent_instance_id)
  if !inst_ok do return false,inst_err
  defer domain.agent_instance_destroy(&inst)
- _,validation_err:=placement.launchable(&ps,inst.agent_id,op.destination.bridge_id,op.destination.provider,op.destination.model,op.destination.provider_profile)
- return validation_err.code==.None,validation_err
+ _,valid,validation_err:=agent_launchable(&ps,inst.agent_id,op.destination.bridge_id,op.destination.provider,op.destination.model,op.destination.provider_profile)
+ return valid,validation_err
 }
 
 // Called with the operation mutex held. A force stop targets the current routing

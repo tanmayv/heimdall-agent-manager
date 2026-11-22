@@ -205,7 +205,11 @@ placement_test_support :: proc(ctx:rawptr,a,b:string)->(domain.Agent_Bridge_Supp
 test_bot_skips_inactive_catalog_provider :: proc(t:^testing.T) {
  context.allocator=context.temp_allocator
  f:=placement_fixture();defer placement_fixture_destroy(f)
- placement_select_bridges(f);f.inactive_provider=true
+ placement_select_bridges(f)
+ positive,positive_ok:=bots_select_bridge(&f.service,{owner_user_id="alice"}, {},1)
+ defer delete(positive)
+ testing.expect(t,positive_ok)
+ f.inactive_provider=true
  _,ok:=bots_select_bridge(&f.service,{owner_user_id="alice"}, {},1)
  testing.expect(t,!ok)
 }
@@ -213,7 +217,11 @@ test_bot_skips_inactive_catalog_provider :: proc(t:^testing.T) {
 test_bot_skips_bridge_with_agent_disabled :: proc(t:^testing.T) {
  context.allocator=context.temp_allocator
  f:=placement_fixture();defer placement_fixture_destroy(f)
- placement_select_bridges(f);f.disabled_support=true
+ placement_select_bridges(f)
+ positive,positive_ok:=bots_select_bridge(&f.service,{owner_user_id="alice",agent_id="agent"}, {},1)
+ defer delete(positive)
+ testing.expect(t,positive_ok)
+ f.disabled_support=true
  _,ok:=bots_select_bridge(&f.service,{owner_user_id="alice",agent_id="agent"}, {},1)
  testing.expect(t,!ok)
 }

@@ -30,9 +30,10 @@ bridge_eligible :: proc(s: ^Service, b: domain.Bridge, req: Requirements) -> (bo
 	if b.enrollment_pending_until != "" do return false, REASON_ENROLLMENT_PENDING
 	disabled := b.plan_disabled_at != ""
 	if s.entitlements.lookup != nil || disabled {
-		current, found, _ := iface.bridge_get_bridge(s.bridges, b.bridge_id)
+		current, found, read_err := iface.bridge_get_bridge(s.bridges, b.bridge_id)
 		defer domain.bridge_destroy(&current)
-		if found do disabled = current.plan_disabled_at != ""
+		if !found || read_err.code != .None do return false, REASON_PLAN_DISABLED
+		disabled = current.plan_disabled_at != ""
 	}
 	if disabled do return false, REASON_PLAN_DISABLED
 	if b.status != .Online do return false, REASON_OFFLINE
@@ -43,6 +44,11 @@ bridge_eligible :: proc(s: ^Service, b: domain.Bridge, req: Requirements) -> (bo
 eligibility_error :: proc(s: ^Service, b: domain.Bridge, reason: string) -> domain.Domain_Error {
 	if reason == "" do return {}
 	if reason == REASON_PLAN_DISABLED {
+		current, found, read_err := iface.bridge_get_bridge(s.bridges, b.bridge_id)
+		defer domain.bridge_destroy(&current)
+		if read_err.code != .None do return read_err
+		if !found do return domain.domain_error(.Not_Found, "bridge not found")
+
 		entitlements, e := domain.lookup_entitlements(s.entitlements, string(b.owner_user_id))
 		if e.code != .None do return e
 		count, ce := iface.bridge_count_active_by_owner(s.bridges, b.owner_user_id)

@@ -818,3 +818,31 @@ test_profiles_model_status_settings_isolate_accounts_and_custom_models :: proc(t
 	virtual.arena_destroy(&arena)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }
+
+
+plan_read_error :: proc(ctx: rawptr, id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+	return {}, false, domain.domain_error(.Internal_Error, "plan bridge reread failed")
+}
+@(test)
+test_plan_reread_failure_refuses_launch :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator); defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	{
+		f := placement_fixture()
+		b := f.bridges[0]; b.plan_disabled_at = "stale"
+		f.bridges = nil
+		eligible, reason := bridge_eligible(&f.service, b, {owner = "alice"})
+		testing.expect(t, !eligible)
+		testing.expect_value(t, reason, REASON_PLAN_DISABLED)
+		testing.expect_value(t, eligibility_error(&f.service, b, reason).code, domain.Error_Code.Not_Found)
+		f.bridge_repo.get_bridge = plan_read_error
+		eligible, reason = bridge_eligible(&f.service, b, {owner = "alice"})
+		testing.expect(t, !eligible)
+		e := eligibility_error(&f.service, b, reason)
+		testing.expect_value(t, e.code, domain.Error_Code.Internal_Error)
+		testing.expect_value(t, e.message, "plan bridge reread failed")
+		placement_fixture_destroy(f)
+	}
+	testing.expect_value(t, len(track.allocation_map), 0)
+}

@@ -516,7 +516,9 @@ provider_test_start_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	model := json_string(req.body, "model"); defer delete(model)
 	profile_id:=json_string(req.body,"profile_id");defer delete(profile_id)
 	ps:=placement.Service{providers=h.providers}
- if _,launch_err:=placement.launchable(&ps,"",bridge.bridge_id,provider,model,profile_id); launch_err.code!=.None {
+ resolved,validation_err:=placement.launchable(&ps,"",bridge.bridge_id,provider,model,profile_id)
+ defer {delete(resolved.provider);delete(resolved.model)}
+ if launch_err:=validation_err; launch_err.code!=.None {
  if launch_err.code==.Provider_Unavailable do launch_err.code=.Conflict
  return respond_error(launch_err,req.request_id)
  }

@@ -438,7 +438,7 @@ create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.A
 	if bridge.owner_user_id != owner do return {}, false, domain.domain_error(.Not_Found, "bridge not found")
 	ps:=agent_placement(service)
  if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(bridge.owner_user_id)}); !eligible do return {},false,agent_placement_error(&ps,bridge,reason,"bridge is not connected")
-	resolved,model_err:=placement.launchable(&ps,"",bridge_id,provider,model,provider_profile)
+	resolved,_,model_err:=agent_launchable(&ps,"",bridge_id,provider,model,provider_profile)
  if model_err.code!=.None do return {},false,model_err
 	now := platform.clock_now(service.clock)
 	instance_id := platform.generate_id(service.ids, "provider-test-")
@@ -1605,14 +1605,15 @@ default_title_for_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, 
 	return fmt.tprintf("%s #%d", name, n)
 }
 
+// Result strings borrow the inputs or context.temp_allocator; do not free them.
 resolve_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id, bridge_id: string, req: Run_Request) -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
 	agent, ok, err := get_agent(service, auth, agent_id)
 	if !ok do return domain.Resolved_Provider_Model{}, false, err
 	ps:=agent_placement(service)
- resolved,e:=placement.launchable(&ps,agent_id,bridge_id,req.provider,req.model,req.provider_profile)
- return resolved,e.code==.None,e
+ return agent_launchable(&ps,agent_id,bridge_id,req.provider,req.model,req.provider_profile)
 }
 
+// Result strings borrow the inputs or context.temp_allocator; do not free them.
 validate_pinned_provider_model :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string) -> (domain.Resolved_Provider_Model, bool, domain.Domain_Error) {
 	agent, ok, err := get_agent(service, auth, inst.agent_id)
 	if !ok do return domain.Resolved_Provider_Model{}, false, err
@@ -1620,15 +1621,14 @@ validate_pinned_provider_model :: proc(service: ^Agent_Service, auth: contracts.
 	resolved_provider := provider if strings.trim_space(provider) != "" else inst.provider
 	resolved_model := model if strings.trim_space(model) != "" else inst.model
 	ps:=agent_placement(service)
- resolved,e:=placement.launchable(&ps,inst.agent_id,inst.bridge_id,resolved_provider,resolved_model,inst.provider_profile if resolved_provider==inst.provider else "")
- return resolved,e.code==.None,e
+ return agent_launchable(&ps,inst.agent_id,inst.bridge_id,resolved_provider,resolved_model,inst.provider_profile if resolved_provider==inst.provider else "")
 }
 
 // Transitional wrapper: T4 redirects task consumers and deletes this.
+// Retains the old borrowed result contract, including for callers discarding it.
 validate_provider_model_intersection :: proc(service: ^Agent_Service, bridge_id, provider, model: string, profile_id: string = "") -> (domain.Resolved_Provider_Model,bool,domain.Domain_Error) {
  ps:=agent_placement(service)
- resolved,err:=placement.launchable(&ps,"",bridge_id,provider,model,profile_id)
- return resolved,err.code==.None,err
+ return agent_launchable(&ps,"",bridge_id,provider,model,profile_id)
 }
 
 agent_placement :: proc(service: ^Agent_Service) -> placement.Service {
@@ -2671,8 +2671,22 @@ validate_frozen_runtime_transport :: proc(service: ^Agent_Service, inst:domain.A
 
 
 // The predicate owns the decision and reason; callers retain contextual wording.
-agent_placement_error :: proc(ps:^placement.Service,b:domain.Bridge,reason,offline_message:string)->domain.Domain_Error {
+agent_placement_error :: proc(ps:^placement.Service,b:domain.Bridge,reason,offline_message:string,missing_feature_message:string="")->domain.Domain_Error {
  e:=placement.eligibility_error(ps,b,reason)
  if e.code==.Bridge_Offline do e.message=offline_message
+ if reason==placement.REASON_MISSING_FEATURE && missing_feature_message!="" do e.message=missing_feature_message
  return e
+}
+
+
+// Agent services historically return borrowed provider/model strings. Keep that
+// contract at the seam: shared placement results are owned and always released,
+// while a canonical model differing from the input is request-scoped scratch.
+agent_launchable :: proc(ps:^placement.Service,agent_id,bridge_id,provider,model,profile:string)->(domain.Resolved_Provider_Model,bool,domain.Domain_Error) {
+ resolved,e:=placement.launchable(ps,agent_id,bridge_id,provider,model,profile)
+ defer {delete(resolved.provider);delete(resolved.model)}
+ if e.code!=.None do return {},false,e
+ canonical:=model
+ if resolved.model!=model do canonical=strings.clone(resolved.model,context.temp_allocator)
+ return {provider=provider,model=canonical},true,{}
 }
