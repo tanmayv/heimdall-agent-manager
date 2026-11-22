@@ -17,6 +17,7 @@ import ws "odin_test:lib/ws"
 
 @(test)
 test_user_ws_catalog_replay_and_live_sequence :: proc(t: ^testing.T) {
+	http_nats_test_lock(); defer http_nats_test_unlock()
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track,context.allocator)
 	defer mem.tracking_allocator_destroy(&track)

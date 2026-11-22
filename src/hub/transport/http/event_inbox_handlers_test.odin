@@ -110,6 +110,7 @@ test_events_api_uses_authenticated_instance :: proc(t: ^testing.T) {
 
 @(test)
 test_event_metrics_endpoint_owner_scope_and_auth :: proc(t: ^testing.T) {
+	http_nats_test_lock(); defer http_nats_test_unlock()
 	context.allocator=context.temp_allocator
 	f:=wire_setup(t,"event_metrics");defer wire_teardown(f)
 	server,started:=natstest.start();defer natstest.destroy(&server)

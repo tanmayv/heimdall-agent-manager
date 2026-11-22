@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:mem"
 import virtual "core:mem/virtual"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -17,10 +18,19 @@ import taskv2 "odin_test:hub/service/taskv2"
 import nats "odin_test:lib/nats"
 import natstest "odin_test:lib/natstest"
 
+// nats.shutdown closes the NATS library process-wide, so a test that calls it
+// tears down the connections of NATS tests on other runner threads. Every test
+// in this package that touches NATS holds this lock for its whole run.
+@(private = "file")
+http_nats_test_mutex: sync.Mutex
+http_nats_test_lock :: proc() { sync.mutex_lock(&http_nats_test_mutex) }
+http_nats_test_unlock :: proc() { sync.mutex_unlock(&http_nats_test_mutex) }
+
 // Script a bot's authenticated create/message/pull/ack actions against the real
 // service and HTTP handlers, SQLite outbox relay and an isolated JetStream.
 @(test)
 test_bot_auto_watches_and_pulls_review_request :: proc(t: ^testing.T) {
+	http_nats_test_lock(); defer http_nats_test_unlock()
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)

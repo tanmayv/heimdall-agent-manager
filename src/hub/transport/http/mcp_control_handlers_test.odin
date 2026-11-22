@@ -386,6 +386,7 @@ test_mcp_tools_catalog_has_no_top_level_schema_combinators :: proc(t:^testing.T)
 
 @(test)
 test_mcp_events_wait_replays_disconnected_catalog :: proc(t: ^testing.T) {
+	http_nats_test_lock(); defer http_nats_test_unlock()
 	context.allocator=context.temp_allocator
 	f:=mcp_control_fixture(t);defer mcp_control_close(f)
 	server, started:=natstest.start();defer natstest.destroy(&server)
