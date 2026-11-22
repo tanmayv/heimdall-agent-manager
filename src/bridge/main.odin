@@ -160,7 +160,11 @@ main :: proc() {
 	// credential is read: a committed one must start with its new credential, a
 	// rolled-back one must not leave its staging behind.
     resume_sunset := len(os.args) > 2 && os.args[1] == "recovery" && os.args[2] == "resume-sunset"
-    recovery_command := resume_sunset || (len(os.args) > 2 && os.args[1] == "recovery" && (os.args[2] == "resume-sync" || os.args[2] == "resume-refresh"))
+    if len(os.args) > 2 && os.args[1] == "recovery" && os.args[2] == "resume-sync" {
+        _ = bridge_recovery_resume({}, "", false)
+        return
+    }
+    recovery_command := resume_sunset || (len(os.args) > 2 && os.args[1] == "recovery" && os.args[2] == "resume-refresh")
     bridge_hub_traffic_config_path = cfg_lib.config_path_from_args(os.args)
     if resume_sunset {
         cfg := bridge_config_from_args(os.args)
@@ -277,7 +281,6 @@ main :: proc() {
 	bridge_credential_refresh_start(bridge_config.credential_file)
 	bridge_hub_runtime_start()
 	bridge_task_chain_search_start()
-	bridge_action_scheduler_start()
 	bridge_auto_update_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	_ = run_bridge_server(bridge_config)

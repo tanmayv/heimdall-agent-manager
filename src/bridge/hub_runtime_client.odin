@@ -502,12 +502,10 @@ bridge_hub_runtime_worker :: proc() {
 			// REQ-REAP-SHELL-1: reconcile surviving shell sessions on pty-host
 			// against Hub's active shells list on reconnect to reap orphaned processes.
 			thread.run(bridge_shell_orphan_reconcile_now)
-			bridge_action_scheduler_connection_changed()
             sync.atomic_store(&bridge_hub_runtime_up, true)
 			acp_chat_hub_reconnected()
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(true)
 			bridge_hub_runtime_loop(&conn)
-			bridge_action_scheduler_connection_changed()
             sync.atomic_store(&bridge_hub_runtime_up, false)
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(false)
 			// NOT beside the PTY stream teardown, and not inside
@@ -602,14 +600,13 @@ bridge_hub_error_log_message :: proc(text: string) -> string {
 }
 
 // BRIDGE_HUB_HEARTBEAT_INTERVAL is the idle cadence of the bridge->hub
-// bridge_heartbeat digest. It is only a reconciliation/keepalive/schedules-version
+// bridge_heartbeat digest. It is only a reconciliation/keepalive
 // backstop: live instance status changes are pushed IMMEDIATELY as separate
 // agent_instance_status frames (see bridge_runtime_set_status callers), so the
 // hub and UI stay live regardless of this cadence. Kept comfortably below the
 // hub's 120s bridge-WS read deadline so a single delayed heartbeat never trips a
 // spurious disconnect, and below the 90s stale-reap window so reconciliation stays
-// timely. schedules_version rides the heartbeat ack, so this also bounds
-// scheduled-prompt pickup latency (~45s), which is fine for cron/interval work.
+// timely.
 //
 // That is the default; the hub's bridge_ready heartbeat_interval_seconds overrides
 // it (REQ-ERR-PROTO-B), clamped so a bad value can neither flood the hub nor let the
@@ -739,7 +736,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	reassemblies := make([dynamic]Hub_Command_Reassembly)
 	defer hub_command_reassemblies_free(&reassemblies)
 	// Send one heartbeat immediately on connect so the hub gets the initial
-	// instance digest + schedules_version handshake without waiting a full cycle.
+	// instance digest without waiting a full cycle.
 	last_heartbeat := bridge_hub_send_connect_heartbeat(conn)
 	// Plan T6: the connect-time diagnostics snapshot, collected off this thread and
 	// sent by bridge_diagnostics_tick once ready, then its own interval timer.
@@ -1035,11 +1032,6 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				bridge_runtime_remove_launch(id)
 			}
 		}
-		schedules_version := extract_json_int(text, "schedules_version", 0)
-		bridge_action_scheduler_notify_version(schedules_version)
-        schedules_epoch := extract_json_string(text, "schedules_epoch", "")
-        defer delete(schedules_epoch)
-        bridge_action_scheduler_notify_snapshot(schedules_epoch, i64(extract_json_int(text, "schedules_revision", -1)), bridge_runtime_now_ms())
 		return
 	}
 	if type == "bot_deliver" {
@@ -5045,7 +5037,7 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 			session_id    = session_id,
 			exit_code_set = false,
 			status        = status,
-			finished_at   = action_scheduler_format_rfc3339_utc(bridge_now_unix_ms()),
+			finished_at   = bridge_format_rfc3339_utc_ms(bridge_now_unix_ms()),
 			run_seq       = run_seq,
 		}
 		data, err := json.marshal(evt, allocator = context.allocator)
@@ -5058,7 +5050,7 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 		exit_code     = exit_code,
 		exit_code_set = exit_code_set,
 		status        = status,
-		finished_at   = action_scheduler_format_rfc3339_utc(bridge_now_unix_ms()),
+		finished_at   = bridge_format_rfc3339_utc_ms(bridge_now_unix_ms()),
 		run_seq       = run_seq,
 	}
 	data, err := json.marshal(evt, allocator = context.allocator)
@@ -5447,7 +5439,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	}
 
 	now_ms := bridge_now_unix_ms()
-	started_at := strings.clone(bridge_shell_authoritative_started_at(hub_started_at, action_scheduler_format_rfc3339_utc(now_ms)))
+	started_at := strings.clone(bridge_shell_authoritative_started_at(hub_started_at, bridge_format_rfc3339_utc_ms(now_ms)))
 	defer delete(started_at)
 
 	// THE MAP'S ALLOCATOR, explicitly: register below takes ownership of every string

@@ -11,6 +11,13 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
+	ham_nats_delete_error_absent :: proc(status, code: i32, description: cstring) -> c.int ---
+	ham_nats_server_version :: proc(conn: ^Connection, stream: cstring, out: ^u8, size: c.int, js_error: ^i32) -> i32 ---
+	ham_nats_request :: proc(out: ^^Message, conn: ^Connection, subject: cstring, data: rawptr, size: c.int) -> i32 ---
+	ham_nats_publish_reply :: proc(conn: ^Connection, reply: cstring, data: rawptr, size: c.int) -> i32 ---
+	ham_nats_delete_message :: proc(conn: ^Connection, stream: cstring, sequence: u64, deleted: ^c.int, js_error: ^i32) -> i32 ---
+	ham_nats_flush :: proc(conn: ^Connection) -> i32 ---
+
 	ham_nats_stream_next :: proc(out: ^^Message, conn: ^Connection, stream, filter: cstring, start: u64, sequence: ^u64) -> i32 ---
 	ham_nats_subject_count :: proc(conn: ^Connection, stream, filter: cstring, count: ^u64, js_error: ^i32) -> i32 ---
 	ham_nats_consumer_state :: proc(conn: ^Connection, stream, consumer: cstring, out: ^Consumer_State, js_error: ^i32) -> i32 ---
@@ -23,8 +30,8 @@ foreign client {
 	ham_nats_connect :: proc(out: ^^Connection, url, creds, ca: cstring, timeout_ms: i64) -> i32 ---
 	ham_nats_destroy :: proc(conn: ^Connection) ---
 	ham_nats_publish :: proc(conn: ^Connection, subject: cstring, data: rawptr, size: c.int, id: cstring, keys, values: [^]cstring, count: c.int, out: ^Pub_Ack, js_error: ^i32) -> i32 ---
-	ham_nats_stream :: proc(conn: ^Connection, operation: c.int, name: cstring, subjects: [^]cstring, count: c.int, age, duplicates, replicas: i64, rollup, direct: c.int, out: ^Stream_State, js_error: ^i32) -> i32 ---
-	ham_nats_consumer_add :: proc(conn: ^Connection, stream, durable: cstring, filters: [^]cstring, count: c.int, ack_wait, max_deliver, start_time_ns: i64, js_error: ^i32) -> i32 ---
+	ham_nats_stream :: proc(conn: ^Connection, operation: c.int, name: cstring, subjects: [^]cstring, count: c.int, age, duplicates, replicas: i64, rollup, direct, schedules, ttl, retention: c.int, out: ^Stream_State, js_error: ^i32) -> i32 ---
+	ham_nats_consumer_add :: proc(conn: ^Connection, stream, durable: cstring, filters: [^]cstring, count: c.int, ack_wait, max_deliver, start_time_ns: i64, deliver_new: c.int, max_ack_pending: i64, js_error: ^i32) -> i32 ---
 	ham_nats_consumer_delete :: proc(conn: ^Connection, stream, durable: cstring, js_error: ^i32) -> i32 ---
 	ham_nats_pull_bind :: proc(out: ^^Pull, conn: ^Connection, stream, durable: cstring, js_error: ^i32) -> i32 ---
 	ham_nats_pull_destroy :: proc(pull: ^Pull) ---

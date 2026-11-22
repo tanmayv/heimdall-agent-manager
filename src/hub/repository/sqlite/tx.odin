@@ -55,6 +55,9 @@ tx_owner_thread: int
 tx_depth: int
 @(private = "file")
 tx_outbox_conn: ^Conn
+// Shallowest savepoint with an outbox append; -1 means no surviving append.
+@(private = "file")
+tx_outbox_mark_depth: int = -1
 // tx_after_commit: hooks registered by nested units of work, run by the
 // outermost commit AFTER the mutex is released. Only the owner thread touches
 // it while the transaction is open. `depth` lets a nested rollback drop the
@@ -121,6 +124,7 @@ sqlite_uow_begin :: proc(ctx: rawptr) -> (iface.Unit_Of_Work, bool, domain.Domai
 		return iface.Unit_Of_Work{}, false, domain.domain_error(.Internal_Error, "failed to begin transaction")
 	}
 	sync.atomic_store(&tx_owner_thread, me)
+	tx_outbox_mark_depth = -1
 	tx_outbox_conn = factory.conn
 	sync.atomic_store(&tx_depth, 1)
 	uow_ctx := new(SQLite_Unit_Of_Work_Context)
@@ -144,6 +148,7 @@ sqlite_uow_after_commit :: proc(ctx: rawptr, hook: iface.After_Commit_Hook) -> b
 // rolled-back savepoint takes its hooks with it).
 @(private = "file")
 drop_after_commit_from :: proc(depth: int) {
+	if tx_outbox_mark_depth >= depth do tx_outbox_mark_depth = -1
 	for i := 0; i < len(tx_after_commit); i += 1 {
 		if tx_after_commit[i].depth >= depth {
 			hook:=tx_after_commit[i].hook
@@ -177,6 +182,7 @@ sqlite_uow_commit :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
 			exec(uow_ctx.conn, sp.rollback)
 			drop_after_commit_from(uow_ctx.depth)
 		}
+		if ok && tx_outbox_mark_depth >= uow_ctx.depth do tx_outbox_mark_depth = uow_ctx.depth - 1
 		sync.atomic_store(&tx_depth, uow_ctx.depth)
 		free(uow_ctx)
 		if !ok do return false, domain.domain_error(.Internal_Error, "failed to release nested savepoint")
@@ -190,6 +196,9 @@ sqlite_uow_commit :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
 		exec(uow_ctx.conn, "ROLLBACK;")
 		drop_after_commit_from(0)
 	}
+	wake_outbox := ok && tx_outbox_mark_depth >= 0
+	outbox_hook, outbox_ctx := uow_ctx_conn.outbox_after_commit, uow_ctx_conn.outbox_after_commit_ctx
+	tx_outbox_mark_depth = -1
 	free(uow_ctx)
 	// Take the deferred hooks out before releasing the mutex (the next owner
 	// may register its own), run them after.
@@ -198,6 +207,7 @@ sqlite_uow_commit :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
 	sync.atomic_store(&tx_depth, 0)
 	sync.atomic_store(&tx_owner_thread, 0)
 	tx_unlock(uow_ctx_conn, .Commit if ok else .Commit_Failed)
+	if wake_outbox && outbox_hook != nil do outbox_hook(outbox_ctx)
 	if ok {
 		for h in hooks do if h.hook.run != nil do h.hook.run(h.hook.ctx)
 	}
@@ -294,4 +304,11 @@ tx_repository_enter :: proc() -> Repository_Tx_Guard {
 
 tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
 	if guard.locked do dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
+}
+
+// Every append-capable transaction is a UoW (outbox_prepare enforces this).
+// Repository-owned COMMIT paths cannot append rows through this repository.
+outbox_mark_appended :: proc() {
+	depth := sync.atomic_load(&tx_depth) - 1
+	if tx_outbox_mark_depth < 0 || depth < tx_outbox_mark_depth do tx_outbox_mark_depth = depth
 }

@@ -270,7 +270,7 @@ hub_command_frame_is_chunk_discriminates :: proc(t: ^testing.T) {
 	f := _chunk_frame("cid", 0, 2, 4, "ab"); defer delete(f)
 	testing.expect(t, hub_command_frame_is_chunk(f), "a chunk frame must be recognised")
 	testing.expect(t, !hub_command_frame_is_chunk(`{"type":"launch_agent","command_id":"c1"}`), "a command must not be taken for a chunk")
-	testing.expect(t, !hub_command_frame_is_chunk(`{"type":"bridge_heartbeat_ack","schedules_version":3}`), "a heartbeat ack must pass straight through")
+	testing.expect(t, !hub_command_frame_is_chunk(`{"type":"bridge_heartbeat_ack"}`), "a heartbeat ack must pass straight through")
 	testing.expect(t, !hub_command_frame_is_chunk(""), "an empty frame is not a chunk")
 
 	// >>> COMMANDS THAT LEGITIMATELY CARRY A "kind" FIELD MUST STILL BE DISPATCHED. <<<

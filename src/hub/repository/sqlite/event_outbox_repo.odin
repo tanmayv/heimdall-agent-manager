@@ -45,6 +45,7 @@ outbox_append :: proc(ctx: rawptr, row: domain.Event_Outbox_Row) -> domain.Domai
 	bind_text(stmt, 4, row.envelope_json); bind_text(stmt, 5, row.headers_json if row.headers_json != "" else "{}")
 	bind_text(stmt, 6, row.created_at)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to append event outbox")
+	outbox_mark_appended()
 	return {}
 }
 outbox_next :: proc(ctx: rawptr) -> (row: domain.Event_Outbox_Row, found: bool, err: domain.Domain_Error) {

@@ -335,7 +335,7 @@ bridge_blocker_cap_input :: proc(input_json: string) -> string {
 bridge_blocker_write_time :: proc(b: ^strings.Builder, ms: i64) {
 	if ms <= 0 { strings.write_string(b, "\"\""); return }
 	strings.write_byte(b, '"')
-	strings.write_string(b, action_scheduler_format_rfc3339_utc(ms))
+	strings.write_string(b, bridge_format_rfc3339_utc_ms(ms))
 	strings.write_byte(b, '"')
 }
 
