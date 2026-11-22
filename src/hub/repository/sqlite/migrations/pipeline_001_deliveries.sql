@@ -28,4 +28,3 @@ CREATE INDEX pipeline_deliveries_expiry ON pipeline_deliveries(expires_at) WHERE
 CREATE INDEX pipeline_deliveries_closed ON pipeline_deliveries(updated_at) WHERE state IN ('done','failed','replaced'); -- S2: prune (6.11.10)
 CREATE TRIGGER pipeline_deliveries_owner_immutable BEFORE UPDATE OF owner_user_id ON pipeline_deliveries
   BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-
