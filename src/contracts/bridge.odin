@@ -162,3 +162,6 @@ BRIDGE_FEATURE_ACP_RUNTIME :: "acp_runtime_v1"
 // metadata authority).
 BRIDGE_FEATURES_UPDATE_FRAME_TYPE :: "bridge_features_update"
 BRIDGE_READY_FEATURES_UPDATE :: "features_update"
+
+// The connected Hub supports bridge-initiated run generation opening.
+BRIDGE_READY_START_BEGIN :: "start_begin"

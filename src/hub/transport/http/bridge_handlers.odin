@@ -2891,6 +2891,21 @@ bridge_instance_bootstrap_handler :: proc(ctx: rawptr, req: Request) -> Response
 	return respond_success(manifest, req.request_id, auth_ctx_server_time(req))
 }
 
+bridge_instance_start_begin_handler :: proc(ctx: rawptr, req: Request) -> Response {
+ h := (^Bridge_Handlers)(ctx)
+ if rejected, resp := reject_query_or_body_token(req); rejected do return resp
+ token, token_ok := bearer_token(req)
+ if !token_ok do return respond_error(domain.domain_error(.Unauthenticated, "bridge bearer token is required"), req.request_id)
+ bridge_auth, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, token)
+ if !bridge_ok do return respond_error(bridge_err, req.request_id)
+ launch, count, reused, ok, err := agent_service.start_begin_for_bridge(h.agents, domain.User_ID(bridge_auth.user_id), bridge_auth.bridge_id, path_part(req.path,5), json_string(req.body,"ref"))
+ if !ok do return respond_error(err, req.request_id)
+ defer delete(launch)
+ body := fmt.aprintf("%s%s%s%d%s%t%s", `{"launch":`, launch, `,"run_count":`, count, `,"reused":`, reused, "}")
+ defer delete(body)
+ return respond_success(body, req.request_id, auth_ctx_server_time(req))
+}
+
 // bridge_agent_manifest_handler serves the conditional, agent-keyed bootstrap
 // manifest (HUB-2). It is keyed by (agent_id, role, provider, project) — NO
 // per-instance data — and honors If-None-Match: an unchanged agent yields a 304
@@ -3365,6 +3380,7 @@ bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool,
 	strings.write_string(&b, ",\"credential_reauth\":true")
 	// This hub applies bridge_features_update (bridge_apply_features_update).
 	strings.write_string(&b, ",\"" + contracts.BRIDGE_READY_FEATURES_UPDATE + "\":true")
+	strings.write_string(&b, ",\"" + contracts.BRIDGE_READY_START_BEGIN + "\":true")
 	strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }

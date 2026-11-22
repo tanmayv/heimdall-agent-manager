@@ -5,7 +5,6 @@ import iface "odin_test:hub/repository/iface"
 import mcp "odin_test:hub/service/mcp"
 import agent "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
-import project "odin_test:hub/service/project"
 import tc "odin_test:hub/service/taskchain"
 import tv2 "odin_test:hub/service/taskv2"
 import http "odin_test:hub/transport/http"
@@ -42,14 +41,12 @@ mcp_create_chain :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,args:mcp.Con
 	// Native coordinator naming: prepare_instance mints "<agent name> #<n>" for the
 	// instance and conversation, like POST /task-chains. The chain keeps the caller
 	// title. A sealed agent name yields "<token> #<n>"; MCP readers open embedded tokens.
-	inst,generation,prepared,perr:=agent.prepare_instance(&g.agents,principal,{
+	inst,prepared,perr:=agent.create_instance_stopped(&g.agents,principal,{
 		agent_id=args.coordinator_agent_id,bridge_id=args.bridge_id,project_id=domain.Project_ID(args.project_id),chain_id=string(chain.chain_id),
 		provider=provider,provider_profile=args.provider_profile,model=model,
 		member_role="coordinator",
 	})
 	if !prepared || perr.code!=.None do return "","",mcp_task_error(perr)
-	committed:=false
-	defer if !committed do project.bridge_runtime_instance_cancel_reservation(g.agents.bridge_runtime_registry,inst.bridge_id,generation,inst.agent_instance_id)
 	// Native preparation currently treats membership writes as best effort. The
 	// MCP operation promises atomic binding, so verify them before committing.
 	saved,bound,rerr:=iface.taskchain_get_chain(&g.repos.taskchains,chain.chain_id)
@@ -62,17 +59,14 @@ mcp_create_chain :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,args:mcp.Con
 	ok,commit_err:=iface.unit_of_work_commit(&uow)
 	finished=true
 	if !ok || commit_err.code!=.None do return "","","request_failed"
-	committed=true
 	mcp_chain_create_publish(&g.event_bus,view.owner,inst,string(chain.chain_id))
 	// Never dispatch under the UOW or retry an ambiguous launch. Return durable
 	// identifiers even on dispatch failure, so the caller can inspect/recover it.
 	fresh,valid:=mcp.access_view(&g.mcp_delegation,&g.mcp_vault_view,raw)
 	if !valid || !mcp.access_same(view,fresh) {
-		project.bridge_runtime_instance_cancel_reservation(g.agents.bridge_runtime_registry,inst.bridge_id,generation,inst.agent_instance_id)
 		return string(chain.chain_id),inst.agent_instance_id,"coordinator_launch_not_dispatched"
 	}
-	if sent,_:=agent.send_instance_launch(&g.agents,inst);!sent {
-		project.bridge_runtime_instance_cancel_reservation(g.agents.bridge_runtime_registry,inst.bridge_id,generation,inst.agent_instance_id)
+	if _,_,sent,_:=agent.start(&g.agents,principal,inst.agent_instance_id,{if_live=.Refuse});!sent {
 		return string(chain.chain_id),inst.agent_instance_id,"coordinator_launch_unconfirmed"
 	}
 	return string(chain.chain_id),inst.agent_instance_id,""

@@ -44,6 +44,10 @@ Agent_Get_User_Activity_Proc :: proc(ctx: rawptr, instance_id: string) -> (at: s
 // reason). Instance saves never write it; a new run (higher run_count) clears it.
 Agent_Set_Stop_Reason_Proc :: proc(ctx: rawptr, instance_id, reason: string) -> (bool, domain.Domain_Error)
 
+// Saved rows borrow the input fields, matching agent_save_instance. updated=false
+// with no error means the expected generation no longer matches.
+Agent_Save_Instance_Guarded_Proc :: proc(ctx: rawptr, instance: domain.Agent_Instance, expect_run_count: int, expect_launch_epoch: string, expect_configuration_revision: int) -> (saved: domain.Agent_Instance, updated: bool, err: domain.Domain_Error)
+
 Agent_Repository :: struct {
 	update_token_usage: Agent_Update_Token_Usage_Proc,
 	add_token_totals: Agent_Add_Token_Totals_Proc,
@@ -63,6 +67,7 @@ Agent_Repository :: struct {
 	list_support: Agent_List_Support_Proc,
 	delete_support: Agent_Delete_Support_Proc,
 	save_instance: Agent_Save_Instance_Proc,
+	save_instance_guarded: Agent_Save_Instance_Guarded_Proc,
 	get_instance: Agent_Get_Instance_Proc,
 	delete_instance: Agent_Delete_Instance_Proc,
 	list_instances_by_owner: Agent_List_Instances_By_Owner_Proc,
@@ -175,4 +180,10 @@ agent_update_token_usage :: proc(repo: ^Agent_Repository, instance_id, bridge_id
 agent_add_token_totals :: proc(repo: ^Agent_Repository, instance_id, bridge_id: string, run_count: int, context_tokens, est_tool_tokens, output_tokens: i64) -> (bool, domain.Domain_Error) {
 	if repo == nil || repo.add_token_totals == nil do return false, {}
 	return repo.add_token_totals(repo.ctx, instance_id, bridge_id, run_count, context_tokens, est_tool_tokens, output_tokens)
+}
+
+
+agent_save_instance_guarded :: proc(repo: ^Agent_Repository, instance: domain.Agent_Instance, expect_run_count: int, expect_launch_epoch: string, expect_configuration_revision: int) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+ if repo == nil || repo.save_instance_guarded == nil do return {}, false, domain.domain_error(.Internal_Error, "guarded agent repository is not configured")
+ return repo.save_instance_guarded(repo.ctx, instance, expect_run_count, expect_launch_epoch, expect_configuration_revision)
 }
