@@ -21,11 +21,11 @@ start :: proc(s: ^Service) -> bool {
 	if s.worker == nil do return false
 	rows := forwarder_snapshot(s)
 	defer delete(rows)
-	sync.mutex_lock(&s.mutex)
 	for f in rows {
+		sync.mutex_lock(&f.lifecycle)
 		if f.worker == nil do f.worker = thread.create_and_start_with_data(f, forwarder_entry, init_context = context)
+		sync.mutex_unlock(&f.lifecycle)
 	}
-	sync.mutex_unlock(&s.mutex)
 	return true
 }
 

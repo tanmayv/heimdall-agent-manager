@@ -50,12 +50,14 @@ on_bridge_online :: proc(s: ^Service, bridge_id: string) {
 		f.answers = make([dynamic]Answer, runtime.heap_allocator())
 		append(&s.forwarders, f)
 	}
+	sync.mutex_unlock(&s.mutex)
+	sync.mutex_lock(&f.lifecycle)
+	sync.atomic_store(&f.disabled, 0)
 	if s.worker != nil && f.worker == nil {
 		context.allocator = runtime.heap_allocator()
 		f.worker = thread.create_and_start_with_data(f, forwarder_entry, init_context = context)
 	}
-	sync.atomic_store(&f.disabled, 0)
-	sync.mutex_unlock(&s.mutex)
+	sync.mutex_unlock(&f.lifecycle)
 	sync.sema_post(&f.wake)
 }
 
@@ -69,18 +71,29 @@ on_bridge_deleted :: proc(s: ^Service, bridge_id: string) {
 }
 
 disable_forwarder :: proc(s: ^Service, bridge_id: string) {
-	f := find_forwarder(s, bridge_id)
+	// Serialize retirement against hello/start without holding the map mutex:
+	// the supervisor may need the map while a retiring worker leaves conn_lock.
+	sync.mutex_lock(&s.mutex)
+	f: ^Forwarder
+	for v in s.forwarders do if v.bridge_id == bridge_id {f = v; break}
 	if f == nil {
-		sync.mutex_lock(&s.mutex)
 		append(&s.consumer_deletions, strings.clone(bridge_id, runtime.heap_allocator()))
 		sync.mutex_unlock(&s.mutex)
 		sync.sema_post(&s.wake)
 		return
 	}
+	sync.mutex_unlock(&s.mutex)
+	sync.mutex_lock(&f.lifecycle)
+	defer sync.mutex_unlock(&f.lifecycle)
 	sync.atomic_store(&f.disabled, 1)
 	sync.atomic_store(&f.delete_consumer, 1)
 	sync.sema_post(&f.wake)
 	sync.sema_post(&s.wake)
+	if f.worker != nil {
+		thread.join(f.worker)
+		thread.destroy(f.worker)
+		f.worker = nil
+	}
 }
 
 Bridge_Event :: enum {

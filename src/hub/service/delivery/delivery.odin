@@ -60,6 +60,7 @@ Forwarder :: struct {
 	bridge_id:                 string,
 	worker:                    ^thread.Thread,
 	wake:                      sync.Sema,
+	lifecycle:                 sync.Mutex, // start/join only; never taken by a NATS thread
 	mutex:                     sync.Mutex,
 	answers:                   [dynamic]Answer,
 	// conn_lock protects pull. Only supervisor clears it on reconnect.

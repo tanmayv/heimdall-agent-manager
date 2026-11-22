@@ -173,6 +173,7 @@ state_scenario :: proc(t: ^testing.T, which: State_Case) {
 	testing.expect_value(t, d.reason, reason)
 	domain.pipeline_delivery_destroy(&d)
 	if real_nats {
+		testing.expect(t, find_forwarder(f.s, "brg_one").worker == nil, "retired worker joined")
 		tick := time.tick_now()
 		deleted := false
 		for time.tick_since(tick) < 5 * time.Second {

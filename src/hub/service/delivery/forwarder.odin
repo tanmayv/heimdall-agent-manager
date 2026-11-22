@@ -66,11 +66,7 @@ forwarder_entry :: proc(data: rawptr) {
 	defer virtual.arena_destroy(&arena)
 	context.allocator = virtual.arena_allocator(&arena)
 	context.temp_allocator = context.allocator
-	for sync.atomic_load(&s.stopping) == 0 {
-		if sync.atomic_load(&f.disabled) != 0 {
-			sync.sema_wait(&f.wake)
-			continue
-		}
+	for sync.atomic_load(&s.stopping) == 0 && sync.atomic_load(&f.disabled) == 0 {
 		wait := forwarder_pass(f)
 		free_all(context.allocator)
 		if wait > 0 {_ = sync.sema_wait_with_timeout(&f.wake, wait)} else if wait < 0 {sync.sema_wait(&f.wake)}
