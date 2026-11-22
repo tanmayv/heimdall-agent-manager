@@ -1,10 +1,10 @@
 # Icon
 
-The app's own monochrome glyphs: `<Icon name="…" size="…" />`. 59 icons on a 24px grid, ~1.8px round strokes, drawn in `currentColor`. SVG copies are in `assets/brand/icons/`.
+The app's own monochrome glyphs: `<Icon name="…" size="…" />`. 61 icons on a 24px grid, ~1.8px round strokes, drawn in `currentColor`. SVG copies are in `assets/brand/icons/`.
 
 | Prop | Values | Notes |
 |---|---|---|
-| `name` | one of the 59 names | No emoji and no text glyphs (×, ›, …) anywhere in the UI. |
+| `name` | one of the 61 names | No emoji and no text glyphs (×, ›, …) anywhere in the UI. |
 | `size` | `sm` 14 · `md` 16 · `lg` 20 · `xl` 24 | md in buttons and rows, sm in sm controls and badges, lg in tiles and empty states, xl for hero moments. |
 | `title` | string | Gives a meaningful icon an accessible name; otherwise it is decorative. |
 

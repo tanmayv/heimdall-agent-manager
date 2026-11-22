@@ -3,6 +3,7 @@ import { PlainMessageBody } from '../chat/PlainMessageBody';
 import { formatMessageTimestamp } from '../chat/formatMessageTimestamp';
 import { ComposerAttachmentTray } from '../chat/ComposerAttachmentTray';
 import { useComposerAttachments } from '../chat/useComposerAttachments';
+import { VoiceRecorderPanel, useVoiceMessage } from '../chat/VoiceRecorderPanel';
 import { acceptAssistantSnapshot, hasPendingAcpResponse } from '../../api/acpChatStream';
 import React, {
   type FormEvent,
@@ -1090,15 +1091,21 @@ export function AgentChatPane({
     onUploadStart: () => setError(''),
     errorText: err => errMsg(err, 'Upload failed'),
   });
+  // REQ-VOICE-4: Send on a recording uploads it as an audio artifact, then submits the message.
+  const voice = useVoiceMessage({
+    attachments,
+    uploadAttachment,
+    onReadyToSend: () => { void submit({ preventDefault() {} } as FormEvent); },
+  });
   const updateFilePickerPending = useRef(false);
   // Mirrors updateFilePickerPending as render state: the native file chooser holds the
   // morphing composer open until it reports a choice or a cancel.
   const [filePickerOpen, setFilePickerOpen] = useState(false);
-  const updateBlockers = useRef({ attachments, trayDraft, quotes, trayModeItem });
-  updateBlockers.current = { attachments, trayDraft, quotes, trayModeItem };
+  const updateBlockers = useRef({ attachments, trayDraft, quotes, trayModeItem, voiceActive: voice.active });
+  updateBlockers.current = { attachments, trayDraft, quotes, trayModeItem, voiceActive: voice.active };
   useEffect(() => desktopUpdatePreparation.register({
     blocked: () => sendingRef.current || updateFilePickerPending.current || updateBlockers.current.attachments.length > 0
-      || updateBlockers.current.quotes.length > 0 || Boolean(updateBlockers.current.trayModeItem) || Boolean(updateBlockers.current.trayDraft.trim())
+      || updateBlockers.current.voiceActive || updateBlockers.current.quotes.length > 0 || Boolean(updateBlockers.current.trayModeItem) || Boolean(updateBlockers.current.trayDraft.trim())
       || [...quotedTrayDrafts.current.values()].some(value => Boolean(value.trim())),
     flush: () => {
       const latest = textareaRef.current?.value ?? updateDraftRef.current;
@@ -2323,7 +2330,7 @@ export function AgentChatPane({
     hasQuotes: !trayModeItem && quotes.length > 0,
     borrowed: Boolean(trayModeItem),
     menuOpen: statusMenuOpen || runtimeMenuOpen || mentionQuery !== null,
-    uploadActive: filePickerOpen || hasUploadingAttachments,
+    uploadActive: filePickerOpen || hasUploadingAttachments || voice.active,
     pendingActions: pendingReconfig,
     readOnly: conversationReadOnly,
   });
@@ -2564,6 +2571,11 @@ export function AgentChatPane({
       onSettings: () => setRuntimeMenuOpen(true),
       onUpload: openAttachmentPicker,
       uploadDisabled: normalSendBusy || (trayModeItem ? false : configurationInputBlocked),
+      onRecord: () => { if (!desktopUpdateFrozen()) void voice.recorder.start(); },
+      // Tray-mode replies need typed text (artifacts ride along as links), so a voice note
+      // alone could not be sent there: the mic is off while a tray item is borrowed.
+      recordDisabled: voice.recorder.phase !== 'idle' || normalSendBusy || Boolean(trayModeItem) || configurationInputBlocked,
+      recordActive: voice.recorder.phase !== 'idle',
       sendDisabled,
       paneExpanded: false,
       onPaneToggle: handleOpenPtyTab,
@@ -2648,6 +2660,8 @@ export function AgentChatPane({
           <ComposerAttachmentTray attachments={attachments} isMobile={isMobile} disabled={normalSendBusy}
             onRetry={a => void uploadAttachment(a.file, a.localId)}
             onRemove={localId => setAttachments(prev => prev.filter(item => item.localId !== localId))} />
+          <VoiceRecorderPanel recorder={voice.recorder} isMobile={isMobile} debugPrefix="conversation"
+            sendDisabled={normalSendBusy} onSend={voice.send} />
           <input
             ref={fileInputRef}
             data-debug-id="conversation-attach-input"

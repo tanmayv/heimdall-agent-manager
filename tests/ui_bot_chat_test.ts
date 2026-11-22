@@ -396,7 +396,7 @@ test('chat header: one compact row with only the bot name (status lives in the s
   });
 });
 
-test('composer: the shared morph composer with upload and send controls', async () => {
+test('composer: the shared morph composer with upload, voice and send controls', async () => {
   const state = hub([msg(1)]);
   await fixture(state, 'chat', async (h) => {
     const card = h.get('bot-chat-composer-card')!;
@@ -407,7 +407,8 @@ test('composer: the shared morph composer with upload and send controls', async 
       assert.equal(h.get(id), null, id + ' is not shown for the bot');
     }
     assert.ok(h.get('bot-chat-attach-btn'), 'upload control is shown');
-    assert.equal(card.querySelectorAll('button').length, 2, 'upload and send controls');
+    assert.ok(h.get('bot-chat-mic-btn'), 'voice recording control is shown (REQ-VOICE-4)');
+    assert.equal(card.querySelectorAll('button').length, 3, 'upload, mic and send controls');
     assert.ok(h.get('bot-chat-composer-send-btn')!.hasAttribute('data-composer-morph-send'));
     await h.type('draft');
     assert.equal(card.getAttribute('data-expanded'), 'true', 'a draft holds it open');

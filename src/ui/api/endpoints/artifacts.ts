@@ -5,6 +5,7 @@ import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { HTML_BUNDLE_KIND } from '../../utils/htmlBundle';
 import { openArtifactContentBlob, type ArtifactLockReason } from '../../utils/artifactContentVault';
+import { AUDIO_ARTIFACT_KIND, isAudioArtifact } from '../../utils/audioArtifact';
 import {
   isVaultArmored,
   encryptVaultText,
@@ -175,6 +176,7 @@ function inferKind(kind: string, mime: string, ext: string, name: string, render
   if (normalizedMime === 'image/jpeg' || ['.jpg', '.jpeg'].includes(normalizedExt) || normalizedName.endsWith('.jpg') || normalizedName.endsWith('.jpeg')) return 'jpeg';
   if (normalizedMime === 'text/csv' || normalizedExt === '.csv' || normalizedName.endsWith('.csv')) return 'csv';
   if (normalizedMime === 'text/html' || ['.html', '.htm'].includes(normalizedExt) || normalizedName.endsWith('.html') || normalizedName.endsWith('.htm')) return 'html';
+  if (isAudioArtifact({ mime: normalizedMime, ext: normalizedExt, name: normalizedName })) return AUDIO_ARTIFACT_KIND;
   return '';
 }
 

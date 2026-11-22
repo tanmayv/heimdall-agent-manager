@@ -2,6 +2,7 @@ import { FloatingComposerDock, FloatingComposerForm, FloatingComposerCard } from
 import { PlainMessageBody } from '../chat/PlainMessageBody';
 import { ComposerAttachmentTray } from '../chat/ComposerAttachmentTray';
 import { useComposerAttachments } from '../chat/useComposerAttachments';
+import { VoiceRecorderPanel, useVoiceMessage } from '../chat/VoiceRecorderPanel';
 import { Alert, Badge, Button, Spinner, Text } from '@ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useDispatch } from 'react-redux';
@@ -98,7 +99,9 @@ function BotChatView({ bot }: { bot: BotView }) {
     jumpDebugId: 'bot-chat-jump-latest-btn',
     resetKey: `${isMobile}:${bot.bot_id}`,
   });
-  const expansion = useComposerExpanded({ draft: text, hasAttachments: uploads.length > 0, uploadActive: uploads.some(u => u.status === 'uploading') });
+  // REQ-VOICE-4: Send on a recording uploads it as an audio artifact, then submits the message.
+  const voice = useVoiceMessage({ attachments: uploads, uploadAttachment: upload, onReadyToSend: () => submit() });
+  const expansion = useComposerExpanded({ draft: text, hasAttachments: uploads.length > 0, uploadActive: voice.active || uploads.some(u => u.status === 'uploading') });
 
   // Every head refresh (initial load, bot_changed invalidation, own send) is folded
   // into the accumulated history rather than replacing it.
@@ -230,9 +233,11 @@ function BotChatView({ bot }: { bot: BotView }) {
               debugIds={{ tray: 'bot-chat-attachments', retry: 'bot-chat-upload-retry', remove: 'bot-chat-upload-remove' }}
               onRetry={a => void upload(a.file, a.localId)}
               onRemove={localId => setUploads(rows => rows.filter(row => row.localId !== localId))} />
+            <VoiceRecorderPanel recorder={voice.recorder} isMobile={isMobile} debugPrefix="bot-chat" onSend={voice.send} />
             <FloatingComposerCard expansion={expansion} debugPrefix="bot-chat" debugId="bot-chat-composer-card"
               actions={<MessageComposerActions debugPrefix="bot-chat" mobile={isMobile} provider="" model=""
-                onUpload={() => fileInputRef.current?.click()} sendDisabled={uploadBusy || (!text.trim() && uploads.length === 0)} morph={expansion} />}>
+                onUpload={() => fileInputRef.current?.click()}
+                onRecord={() => void voice.recorder.start()} recordDisabled={voice.recorder.phase !== 'idle'} recordActive={voice.recorder.phase !== 'idle'} sendDisabled={uploadBusy || (!text.trim() && uploads.length === 0)} morph={expansion} />}>
               <MessageComposerInput mobile={isMobile} morph debugId="bot-chat-input" ref={textareaRef}
                 aria-label={`Message ${bot.display_name}`} value={text}
                 onChange={(event) => { setText(event.target.value); if (composerError) setComposerError(''); }}

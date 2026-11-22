@@ -5,6 +5,8 @@ import { Icon } from '@ui';
 import { selectIsVaultUnlocked } from '../store/vaultSlice';
 import { containsVaultArmored, getActiveVaultKey } from '../utils/vaultContent';
 import { openArtifactContentBlob, safeArtifactAltText, type ArtifactLockReason } from '../utils/artifactContentVault';
+import { isAudioArtifact } from '../utils/audioArtifact';
+import { ArtifactAudioPreview } from './ArtifactAudioPreview';
 
 export type ArtifactPreviewMeta = {
   artifact_id?: string;
@@ -229,6 +231,11 @@ export function ArtifactAttachmentPreview({
   const label = artifactName(preview.meta, id);
   const altText = useArtifactAltText(preview.meta?.name, 'Artifact image');
   const target = href || `#/library/artifacts/${encodeURIComponent(id)}`;
+
+  // REQ-VOICE-3: audio plays inline from vault-decrypted content (useArtifactContentState).
+  if (isAudioArtifact(preview.meta)) {
+    return <ArtifactAudioPreview artifactId={id} meta={preview.meta} session={session} debugId={debugId} href={target} label={label} />;
+  }
 
   if (preview.isImage) {
     return (

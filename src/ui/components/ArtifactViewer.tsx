@@ -12,6 +12,9 @@ import HtmlBundlePreview from './HtmlBundlePreview';
 import { HTML_BUNDLE_KIND } from '../utils/htmlBundle';
 import { VaultText } from './vault/VaultText';
 import { isVaultArmored } from '../utils/vaultContent';
+import { audioMimeForArtifact, isAudioArtifact } from '../utils/audioArtifact';
+import { AudioPlayer } from './chat/AudioPlayer';
+import { audioContentStatus, useAudioBlobUrl } from './ArtifactAudioPreview';
 
 type ArtifactViewerProps = {
   artifactId: string;
@@ -66,7 +69,7 @@ type ArtifactVersion = {
   created_unix_ms: number;
 };
 
-type PreviewKind = 'html-bundle' | 'markdown' | 'text' | 'json' | 'diff' | 'image' | 'unsupported';
+type PreviewKind = 'html-bundle' | 'markdown' | 'text' | 'json' | 'diff' | 'image' | 'audio' | 'unsupported';
 type CopyState = 'idle' | 'copied' | 'error';
 
 function formatBytes(value: number) {
@@ -82,7 +85,8 @@ function formatBytes(value: number) {
 }
 
 // UI-10: kind-aware rendering. text/markdown -> rendered markdown; json ->
-// pretty-printed; diff -> monospace diff; images (including PNG) -> ZoomableImage.
+// pretty-printed; diff -> monospace diff; images (including PNG) -> ZoomableImage;
+// audio/voice (REQ-VOICE-3) -> the inline AudioPlayer.
 function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
   if (!meta) return 'unsupported';
   const kind = String(meta.kind || '').toLowerCase();
@@ -114,6 +118,9 @@ function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
       || kind === 'webp' || mime === 'image/webp' || ext === '.webp'
       || mime.startsWith('image/')) {
     return 'image';
+  }
+  if (isAudioArtifact(meta)) {
+    return 'audio';
   }
   if (mime.startsWith('text/')) {
     return 'text';
@@ -322,7 +329,8 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const previewKind = useMemo(() => classifyPreview(selectedArtifactMeta), [selectedArtifactMeta]);
   const contentState = useArtifactContentState({ daemonUrl, clientToken, artifactId, versionNo: selectedVersionNo });
   const contentUrl = contentState.url;
-  const imagePreviewNeedsContent = previewKind === 'image' || previewKind === 'html-bundle';
+  const imagePreviewNeedsContent = previewKind === 'image' || previewKind === 'html-bundle' || previewKind === 'audio';
+  const audioUrl = useAudioBlobUrl(previewKind === 'audio' && !contentState.locked ? contentState.blob : null, audioMimeForArtifact(selectedArtifactMeta));
   const textQuery = useFetchArtifactTextContentQuery(
     { artifactId, versionNo: selectedVersionNo, ...artifactRequestAuth },
     { skip: !artifactId || !clientToken || previewKind !== 'markdown' },
@@ -491,6 +499,11 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   <HtmlBundlePreview blob={contentState.blob} locked={contentState.locked} lockReason={contentState.lockReason} />
                 ) : previewKind === 'image' ? (
                   <ZoomableImage contentUrl={contentUrl} alt={selectedArtifactMeta.name || artifactId} />
+                ) : previewKind === 'audio' ? (
+                  <div data-debug-id="artifact-viewer-audio" className="rounded-xl border border-subtle bg-surface-raised px-4 py-3">
+                    <AudioPlayer src={audioUrl} debugId="artifact-viewer-audio-player" label="Audio" />
+                    {!audioUrl ? <div data-debug-id="artifact-viewer-audio-status" className="mt-2 text-sm text-muted">{audioContentStatus(contentState)}</div> : null}
+                  </div>
                 ) : previewKind === 'markdown' ? (
                   loadingText ? (
                     <div className="text-sm text-muted">Loading preview…</div>
