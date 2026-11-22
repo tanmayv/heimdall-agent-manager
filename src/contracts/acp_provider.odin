@@ -86,11 +86,25 @@ ACP_KIRO_DESCRIPTOR :: ACP_Provider_Descriptor{
     permission_policy = .Once_Only, model_category = "model",
 }
 
+// Codex is detect-only. Its app-server uses its own NDJSON protocol rather
+// than ACP; the protocol driver presents the shared runtime to the bridge.
+// Verified with the generated schema and initialize on codex-cli 0.162.0.
+ACP_CODEX_DESCRIPTOR :: ACP_Provider_Descriptor{
+    protocol = .Codex_App_Server, provider = "codex", id = "codex-app-server", display_name = "Codex", revision = 1, launch = .System,
+    pkg = {"codex", "0.162.0", ""}, system_os = {"linux", "darwin", "windows"},
+    command = "codex", args = {"app-server"},
+    protocol_version = 1,
+    cli_command = "codex", cli_version_prefix = "codex-cli ",
+    bootstrap_filename = "AGENTS.md",
+    auth_guidance = "Run codex login on the bridge host using the selected provider profile and its CODEX_HOME, then restart this instance.",
+    permission_policy = .Once_Only, model_category = "model",
+}
+
 // Persistent backing storage is required: returning a descriptor copied from
 // a constant slice literal leaves its nested env/argv slices on the caller's
 // stack in Odin. Descriptors returned by lookup retain these immutable arrays.
 @(private)
-acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR, ACP_COPILOT_DESCRIPTOR, ACP_KIRO_DESCRIPTOR}
+acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR, ACP_COPILOT_DESCRIPTOR, ACP_KIRO_DESCRIPTOR, ACP_CODEX_DESCRIPTOR}
 
 acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, bool) {
     for d in acp_provider_descriptors do if d.provider == provider do return d, true

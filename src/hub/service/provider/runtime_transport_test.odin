@@ -147,6 +147,44 @@ test_runtime_descriptor_readiness_rejects_status_identity_substitution :: proc(t
 
 KIRO_TRANSPORT_TEST_RECIPE :: `{"command":"kiro-cli","args":["acp","--agent-engine","v3"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.5.0"}`
 
+CODEX_TRANSPORT_TEST_RECIPE :: `{"command":"codex","args":["app-server"],"env":{},"protocol_version":1,"adapter_package":"codex","adapter_version":"0.162.0"}`
+
+@(test)
+test_runtime_codex_opt_in_requires_system_probe_readiness :: proc(t: ^testing.T) {
+ ready :: `{"installed":true,"state":"ready","version":"0.162.0","checked_at":"2026-11-22T00:00:00Z","provider":"codex","profile":"codex","runtime_kind":"system"}`
+ store := Transport_Test_Store{provider="codex",features=`{"features":["acp_runtime_v1"]}`,transports=`["pty","acp"]`,default_transport="pty",recipe=CODEX_TRANSPORT_TEST_RECIPE}
+ repo := iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
+ bridges := iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
+ svc := Provider_Service{repo=&repo,bridges=&bridges}
+ selected, err := resolve_runtime_transport(&svc,"bridge","codex")
+ testing.expect(t,err.code==.None && selected=="pty");delete(selected)
+ store.override="acp"
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
+ store.adapter=ready
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ testing.expect(t,err.code==.None && selected=="acp");delete(selected)
+ testing.expect(t, acp_adapter_ready(transport_test_replace(ready, `"version":"0.162.0"`, `"version":"0.166.0"`), CODEX_TRANSPORT_TEST_RECIPE, "codex"))
+ for raw in ([]string{
+  transport_test_replace(ready, `"version":"0.162.0"`, `"version":"0.161.9"`),
+  transport_test_replace(ready, `"runtime_kind":"system"`, `"runtime_kind":"native"`),
+  transport_test_replace(ready, `,"runtime_kind":"system"`, ``),
+  transport_test_replace(ready, `"profile":"codex"`, `"profile":"work"`),
+  transport_test_replace(ready, `"provider":"codex"`, `"provider":"kiro"`),
+  transport_test_replace(ready, `"state":"ready"`, `"state":"error"`),
+ }) {
+  store.adapter=raw
+  selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+  testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
+ }
+ store.adapter=ready;store.features=""
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
+ store.override="pty"
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ testing.expect(t,err.code==.None && selected=="pty");delete(selected)
+}
+
 @(test)
 test_runtime_kiro_readiness_accepts_detected_versions_at_or_above_minimum :: proc(t: ^testing.T) {
  ready :: `{"installed":true,"state":"ready","version":"3.5.0","checked_at":"2026-11-21T00:00:00Z","provider":"kiro","profile":"kiro","runtime_kind":"system"}`

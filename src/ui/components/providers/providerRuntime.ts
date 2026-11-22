@@ -79,7 +79,10 @@ export function acpDisabledReason(supported: boolean | undefined, adapter: AcpAd
 }
 export function acpAdapterSummary(adapter: AcpAdapterStatus | null): string {
   const state = adapter?.state.replaceAll('_', ' ') || 'not checked';
-  if (acpSystemRuntime(adapter)) return `ACP system CLI: ${state} · Version: ${adapter?.version || 'unknown'}`;
+  if (acpSystemRuntime(adapter)) {
+    const runtime = adapter?.provider === 'codex' ? 'Codex app-server runtime' : 'ACP system CLI';
+    return `${runtime}: ${state} · Version: ${adapter?.version || 'unknown'}`;
+  }
   const runtime = adapter?.runtime_kind === 'native' ? 'native runtime' : 'adapter';
   return `ACP ${runtime}: ${state} · Version: ${adapter?.version || 'unknown'} · Node: ${adapter?.node_version || 'unknown'}`;
 }

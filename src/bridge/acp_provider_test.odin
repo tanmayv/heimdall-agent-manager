@@ -231,3 +231,25 @@ acp_kiro_profile_config_dir_moves_settings_and_credentials :: proc(t: ^testing.T
     plan := profile_env_plan(&copilot)
     testing.expect_value(t, len(plan.set), 0)
 }
+
+@(test)
+acp_codex_version_binding_and_registered_driver :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    d := contracts.ACP_CODEX_DESCRIPTOR
+    for output in ([]string{"codex-cli 0.162.0\n", "codex-cli 0.166.0\n"}) {
+        version, valid := acp_provider_parse_cli_version(d, output)
+        testing.expect(t, valid && contracts.acp_descriptor_cli_version_accepted(d, version))
+    }
+    for output in ([]string{"codex 0.162.0", "0.162.0", "codex-cli v0.162.0", "codex-cli 0.162.0-beta"}) {
+        _, valid := acp_provider_parse_cli_version(d, output)
+        testing.expect(t, !valid)
+    }
+    binding := acp_provider_binding(d, "work", "0.162.0", "AGENTS.md", 7)
+    testing.expect(t, acp_provider_binding_valid(binding))
+    binding.cli_version = "0.161.9"
+    testing.expect(t, !acp_provider_binding_valid(binding))
+    r := acp_runtime_new("inst_codex_descriptor", "epoch", "/unused", "codex", "work", "etag", "gpt-6.1-sol", "ask", {})
+    defer acp_runtime_destroy(r)
+    testing.expect(t, r.driver == &acp_protocol_codex_driver && r.descriptor.protocol == .Codex_App_Server && r.mode == "ask")
+    testing.expect_value(t, acp_adapter_runtime_kind(d), "system")
+}

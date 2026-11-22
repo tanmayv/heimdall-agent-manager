@@ -316,8 +316,7 @@ codex_driver_resume_retries_unarchive_and_never_creates_new_thread :: proc(t: ^t
 @(test)
 codex_driver_native_spawn_overrides_and_profile_shadow_home :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
-    d:=contracts.ACP_KIRO_DESCRIPTOR
-    d.protocol=.Codex_App_Server; d.args={"app-server"}
+    d:=contracts.ACP_CODEX_DESCRIPTOR
     args,built:=acp_provider_launch_argv(d,"","/profile/codex")
     testing.expect(t,built && args[0]=="/profile/codex" && args[1]=="app-server")
     joined:=strings.join(args," ",context.temp_allocator)
