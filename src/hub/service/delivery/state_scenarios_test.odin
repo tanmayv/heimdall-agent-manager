@@ -49,6 +49,7 @@ state_scenario :: proc(t: ^testing.T, which: State_Case) {
 	real_nats := which == .Deleted || which == .Downgrade || which == .Incapable_Online
 	f := fixture_new(t, real_nats || which == .Queued)
 	defer fixture_destroy(f)
+	if which == .Queued {queued_started_scenario(t, f); return}
 	if which == .Validation || which == .Incapable {
 		uow, ok, _ := iface.unit_of_work_begin(&f.factory); assert(ok)
 		defer iface.unit_of_work_rollback(&uow)

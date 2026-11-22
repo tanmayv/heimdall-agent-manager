@@ -37,14 +37,16 @@ Fixture :: struct {
 	frames:                                                                                  [dynamic]string,
 	finals, ids_next, offline_send, invalid_at_send, incapable, invalid_sink, replace_calls: i32,
 	replace_enabled:                                                                         bool,
+	last_replace_why:                                                                        Replace_Why,
+	fail_replace_after_route:                                                                bool,
 	now_ms:                                                                                  i64,
 }
 
 fixture_bridge :: proc(ctx: rawptr, id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	f := (^Fixture)(ctx)
-	if id != "brg_one" && id != "brg_two" do return {}, false, {}
+	if id != "brg_one" && id != "brg_two" && !strings.has_prefix(id, "brg_slot_") do return {}, false, {}
 	features := `{"features":["event_pipeline_v1"]}`
-	if sync.atomic_load(&f.incapable) != 0 do features = `{"features":[]}`
+	if sync.atomic_load(&f.incapable) != 0 && id == "brg_one" do features = `{"features":[]}`
 	return {
 		bridge_id = strings.clone(id),
 		owner_user_id = domain.User_ID(strings.clone("alice")),
@@ -69,10 +71,19 @@ fixture_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_
 fixture_valid :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> bool {
 	return sync.atomic_load(&((^Fixture)(ctx)).invalid_sink) == 0
 }
-fixture_replace :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: Replace_Why) -> bool {
+fixture_replace :: proc(
+	ctx: rawptr,
+	uow: ^iface.Unit_Of_Work,
+	d: domain.Pipeline_Delivery,
+	why: Replace_Why,
+) -> (
+	bool,
+	domain.Domain_Error,
+) {
 	f := (^Fixture)(ctx)
 	sync.atomic_add(&f.replace_calls, 1)
-	if !f.replace_enabled do return false
+	f.last_replace_why = why
+	if !f.replace_enabled do return false, {}
 	_, err := route(
 		f.s,
 		uow,
@@ -87,7 +98,10 @@ fixture_replace :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipelin
 			excluded_bridges = []string{d.bridge_id},
 		},
 	)
-	return err.code == .None
+	if err.code == .None && f.fail_replace_after_route {
+		return false, domain.domain_error(.Internal_Error, "injected replacement callback failure")
+	}
+	return err.code == .None, err
 }
 fixture_send :: proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) {
 	f := (^Fixture)(ctx)
@@ -162,7 +176,7 @@ fixture_destroy :: proc(f: ^Fixture) {
 	sqlite.close(&f.conn)
 	free(f)
 }
-fixture_route :: proc(t: ^testing.T, f: ^Fixture, round: int = 0) -> string {
+fixture_route :: proc(t: ^testing.T, f: ^Fixture, round: int = 0, ref: string = "run:one") -> string {
 	uow, ok, _ := iface.unit_of_work_begin(&f.factory)
 	assert(ok)
 	id, err := route(
@@ -173,7 +187,7 @@ fixture_route :: proc(t: ^testing.T, f: ^Fixture, round: int = 0) -> string {
 			owner_user_id = "alice",
 			bridge_id = "brg_one",
 			agent_instance_id = "inst_one",
-			ref = "run:one",
+			ref = ref,
 			lifetime = LIFETIME_PROMPT,
 			round = round,
 		},

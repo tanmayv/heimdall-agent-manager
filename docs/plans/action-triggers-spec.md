@@ -1648,8 +1648,9 @@ Sink :: struct {
 	// May d still be forwarded? nil = always. Example: the lease is still held and unconfirmed.
 	still_valid: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> bool,
 	// Try to place d on another machine. nil = this kind never moves. The flow calls delivery.route with
-	// round = d.round + 1 and excluded_bridges = d's list plus d.bridge_id. Returns true when it routed a replacement.
-	replace:     proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: Replace_Why) -> bool,
+	// round = d.round + 1 and excluded_bridges = d's list plus d.bridge_id. True + no error means it routed a replacement.
+	// False + no error means no placement. Any error (including delivery.route errors) aborts the whole UoW.
+	replace:     proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: Replace_Why) -> (bool, domain.Domain_Error),
 }
 
 Service :: struct { /* long-lived; heap; fields are an implementer choice */ }
@@ -1753,6 +1754,8 @@ The limit exists because the bridge's dispatcher queues at most 32 lifecycle com
 5. If the send reports failure: make **no** JetStream call. The message stays pending and is redelivered after AckWait (60 s). The row stays `forwarded`; it is never moved back to `routed`, because a failed socket write may have sent part of the frame. The forwarder ends this pass without handling the rest of the batch (those messages are redelivered too) and, before its next pass, waits on its semaphore for at most 5 s. A failed send therefore costs one of the 8 attempts per minute at most, not one every few seconds, so a connection that is reported live while its writes fail cannot use up a delivery before the disconnect is noticed (risk V-K19).
 
 **Every transition acts on `changed`.** Load and `transition` always happen in one unit of work (units of work are serialised, so this costs nothing). `on_final`, `replace` and the JetStream answer run only when the transition changed the row. This is what makes "`on_final` is called exactly once per delivery" true. It applies to the gate, to `on_command_result`, to `expire`, to the offline rules and to the advisory handler.
+
+**Repository failures (T16 review correction).** A repository or replacement callback error aborts the entire unit of work, including any replacement row and outbox writes. Do not fall through to finalization or queue a JetStream answer. Redelivery can retry the operation. If a replacement was written but the original row's compare-and-set changed nothing, abort that unit of work too. `Sink.replace` must propagate errors from `delivery.route`; it must not turn an error into `false` with no error. This bool/error contract correction was approved by the coordinator during T16 review.
 
 The forwarder does not ack, nak or terminate a forwarded message by itself in any other case. The message stays pending until the answer arrives (6.11.5) or AckWait passes.
 

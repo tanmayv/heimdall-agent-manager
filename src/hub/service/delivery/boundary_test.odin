@@ -22,6 +22,9 @@ test_delivery_imports :: proc(t: ^testing.T) {
 		count += 1
 		for line in strings.split_lines(string(data), context.temp_allocator) {
 			if !strings.has_prefix(strings.trim_space(line), "import ") do continue
+			if entry.name == "result.odin" || entry.name == "offline.odin" {
+				testing.expectf(t, !strings.contains(line, "lib/nats"), "callback imports NATS: %s", entry.name)
+			}
 			for forbidden in ([]string{"actions", "eventinbox", "bots", "taskv2", "taskchain", "agent", "content"}) {
 				pattern := strings.concatenate({"hub/service/", forbidden, "\""}, context.temp_allocator)
 				testing.expectf(t, !strings.contains(line, pattern), "forbidden import: %s", line)

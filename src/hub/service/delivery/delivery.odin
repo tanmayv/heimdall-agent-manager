@@ -42,7 +42,15 @@ Sink :: struct {
 	kind:        string,
 	on_final:    proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery),
 	still_valid: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> bool,
-	replace:     proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: Replace_Why) -> bool,
+	replace:     proc(
+		ctx: rawptr,
+		uow: ^iface.Unit_Of_Work,
+		d: domain.Pipeline_Delivery,
+		why: Replace_Why,
+	) -> (
+		bool,
+		domain.Domain_Error,
+	),
 }
 Answer_Op :: enum {
 	Ack,
@@ -230,20 +238,23 @@ close_delivery :: proc(
 	uow: ^iface.Unit_Of_Work,
 	d: domain.Pipeline_Delivery,
 	state, reason, outcome: string,
-) -> bool {
-	if !domain.pipeline_delivery_open(d.state) do return false
+) -> (
+	bool,
+	domain.Domain_Error,
+) {
+	if !domain.pipeline_delivery_open(d.state) do return false, {}
 	next := d
 	next.state = state; next.reason = reason; next.outcome = outcome; next.updated_at = platform.clock_now(s.clock)
 	repo := &uow.repos.pipeline_deliveries
 	changed, err := repo.transition(repo.ctx, next, d.state)
-	if err.code != .None || !changed do return false
+	if err.code != .None || !changed do return false, err
 	sink := find_sink(s, d.kind)
 	if sink.on_final != nil do sink.on_final(sink.ctx, uow, next)
 	_ = iface.unit_of_work_after_commit(uow, {
 		ctx = s,
 		run = proc(ctx: rawptr) {prune_after_final((^Service)(ctx))},
 	})
-	return true
+	return true, {}
 }
 
 expire :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, delivery_id: string) -> bool {
@@ -252,7 +263,8 @@ expire :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, delivery_id: string) -> bo
 	if err.code != .None || !found do return false
 	defer domain.pipeline_delivery_destroy(&d)
 	if d.expires_at > platform.clock_now(s.clock) do return false
-	return close_delivery(s, uow, d, domain.DELIVERY_FAILED, "bridge_offline", "")
+	closed, close_err := close_delivery(s, uow, d, domain.DELIVERY_FAILED, "bridge_offline", "")
+	return closed && close_err.code == .None
 }
 
 prune :: proc(s: ^Service) {
@@ -286,12 +298,16 @@ expire_due :: proc(s: ^Service) {
 		repo := &uow.repos.pipeline_deliveries
 		rows, err := repo.expired(repo.ctx, platform.clock_now(s.clock), 128)
 		if err.code != .None {iface.unit_of_work_rollback(&uow); return}
-		for d in rows do _ = close_delivery(s, &uow, d, domain.DELIVERY_FAILED, "bridge_offline", "")
+		for d in rows {
+			_, err = close_delivery(s, &uow, d, domain.DELIVERY_FAILED, "bridge_offline", "")
+			if err.code != .None do break
+		}
 		count := len(rows)
 		domain.pipeline_deliveries_destroy(rows)
+		if err.code != .None {iface.unit_of_work_rollback(&uow); return}
 		committed, _ := iface.unit_of_work_commit(&uow)
 		if !committed do return
 		if count < 128 do break
 	}
-	prune_after_final(s)
+	prune(s)
 }

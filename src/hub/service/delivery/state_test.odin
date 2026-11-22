@@ -167,6 +167,7 @@ test_downgraded_bridge_closes_deliveries :: proc(t: ^testing.T) {
 	defer mem.tracking_allocator_destroy(&track)
 	context.allocator = mem.tracking_allocator(&track)
 	state_scenario(t, .Downgrade)
+	downgrade_replace_scenario(t)
 	testing.expect_value(t, nats.shutdown(5000).status, i32(0))
 	testing.expect_value(t, len(track.allocation_map), 0)
 }

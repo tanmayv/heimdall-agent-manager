@@ -23,7 +23,7 @@ start :: proc(s: ^Service) -> bool {
 	defer delete(rows)
 	for f in rows {
 		sync.mutex_lock(&f.lifecycle)
-		if f.worker == nil do f.worker = thread.create_and_start_with_data(f, forwarder_entry, init_context = context)
+		if sync.atomic_load(&f.disabled) == 0 && f.worker == nil do f.worker = thread.create_and_start_with_data(f, forwarder_entry, init_context = context)
 		sync.mutex_unlock(&f.lifecycle)
 	}
 	return true
@@ -107,11 +107,7 @@ supervisor_entry :: proc(data: rawptr) {
 		sync.mutex_unlock(&s.mutex)
 		for id in deletions {
 			err := nats.consumer_delete(s.conn, STREAM, fmt.tprintf("brg_%s", id))
-			if err.status != 0 && err.jetstream != 10014 {
-				sync.mutex_lock(&s.mutex)
-				append(&s.consumer_deletions, strings.clone(id, runtime.heap_allocator()))
-				sync.mutex_unlock(&s.mutex)
-			}
+			if err.status != 0 && err.jetstream != 10014 do queue_consumer_deletion(s, id)
 			delete(id, runtime.heap_allocator())
 		}
 		delete(deletions)
@@ -196,8 +192,9 @@ drain_advisory :: proc(s: ^Service, msg: ^nats.Message) {
 		d, found, de := repo.get(repo.ctx, wire.delivery_id)
 		if de.code != .None {iface.unit_of_work_rollback(&uow); return}
 		changed := false
-		if found do changed = close_delivery(s, &uow, d, domain.DELIVERY_FAILED, "no_answer", "")
+		if found do changed, de = close_delivery(s, &uow, d, domain.DELIVERY_FAILED, "no_answer", "")
 		domain.pipeline_delivery_destroy(&d)
+		if de.code != .None {iface.unit_of_work_rollback(&uow); return}
 		committed, _ := iface.unit_of_work_commit(&uow)
 		if !committed do return
 		if changed do prune_after_final(s)

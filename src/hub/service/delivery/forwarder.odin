@@ -79,6 +79,8 @@ forwarder_pass :: proc(f: ^Forwarder) -> time.Duration {
 	if s.registry == nil || !project.bridge_runtime_registry_has_live(s.registry, f.bridge_id) do return -1
 	sync.rw_mutex_shared_lock(&s.conn_lock)
 	defer sync.rw_mutex_shared_unlock(&s.conn_lock)
+	// Retirement may have won while this pass waited for the shared lock.
+	if sync.atomic_load(&f.disabled) != 0 do return -1
 	if !s.connected || sync.atomic_load(&s.reconnect) != 0 do return -1
 	answers := take_answers(f)
 	failed := false
@@ -171,7 +173,8 @@ forward_gate :: proc(f: ^Forwarder, msg: ^nats.Message) -> bool {
 		if sink.still_valid != nil && !sink.still_valid(sink.ctx, &uow, d) do reason = "superseded"
 	}
 	if reason != "" {
-		changed := close_delivery(s, &uow, d, domain.DELIVERY_FAILED, reason, "")
+		changed, close_err := close_delivery(s, &uow, d, domain.DELIVERY_FAILED, reason, "")
+		if close_err.code != .None {iface.unit_of_work_rollback(&uow); return false}
 		committed, _ := iface.unit_of_work_commit(&uow)
 		if committed && changed {_ = nats.ack(msg); prune_after_final(s)}
 		return committed

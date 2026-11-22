@@ -40,7 +40,8 @@ on_command_result :: proc(s: ^Service, bridge_id, command_id, result_json: strin
 		defer delete(raw_outcome)
 		outcome := raw_outcome
 		if outcome == "" do outcome = contracts.DELIVERY_OUTCOME_NOTIFIED
-		changed = close_delivery(s, &uow, d, domain.DELIVERY_DONE, "", outcome)
+		changed, err = close_delivery(s, &uow, d, domain.DELIVERY_DONE, "", outcome)
+		if err.code != .None do return
 		finalized = changed
 	} else {
 		if attempt != d.attempt do return
@@ -67,9 +68,13 @@ on_command_result :: proc(s: ^Service, bridge_id, command_id, result_json: strin
 			op = .Term
 			if class ==
 			   contracts.DELIVERY_CLASS_RETRY {reason = "no_answer"} else if reason == "" {reason = "start_failed"}
-			if class != contracts.DELIVERY_CLASS_RETRY do changed = try_replace(s, &uow, d, .Fatal_Answer)
+			if class != contracts.DELIVERY_CLASS_RETRY {
+				changed, err = try_replace(s, &uow, d, .Fatal_Answer)
+				if err.code != .None do return
+			}
 			if !changed {
-				changed = close_delivery(s, &uow, d, domain.DELIVERY_FAILED, reason, "")
+				changed, err = close_delivery(s, &uow, d, domain.DELIVERY_FAILED, reason, "")
+				if err.code != .None do return
 				finalized = changed
 			}
 		}
