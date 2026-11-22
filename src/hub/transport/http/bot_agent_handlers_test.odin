@@ -13,6 +13,7 @@ import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import bots "odin_test:hub/service/bots"
 import channel "odin_test:hub/service/channel"
+import card_service "odin_test:hub/service/card"
 
 Bot_Channel_Fixture :: struct {
 	f: ^Bot_HTTP_Fixture,
@@ -576,4 +577,74 @@ test_channel_send_text_response_unchanged :: proc(t: ^testing.T) {
 	c:=bot_channel_fixture(t);defer bot_channel_destroy(c)
 	r:=bot_channel_send(c)
 	testing.expect(t,r.status==200 && !strings.contains(r.body,"sent_as") && !strings.contains(r.body,"unsent_chunks"))
+}
+
+
+@(test)
+test_channel_web_action_refs_route_and_persist :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t)
+	defer bot_channel_destroy(c)
+	card_impl: sqlite.Card_Repo_SQLite
+	card_repo := sqlite.new_card_repository(&card_impl, &c.f.wire.conn)
+	cards := card_service.Card_Service{cards = &card_repo}
+	c.f.wire.ah.cards = &cards
+	c.f.handlers.cards = &card_repo
+	for row in ([]domain.Card{
+		{card_id = "crd_own", owner_user_id = c.f.wire.owner, title = "Review", status = "pending"},
+		{card_id = "crd_foreign", owner_user_id = "other", title = "Private", status = "pending"},
+	}) {
+		_, saved, err := iface.card_create(&card_repo, row)
+		testing.expectf(t, saved && err.code == .None, "%v", err)
+	}
+	action_reply := `{"params":{"text":"answer","action_ids":["crd_own"]}}`
+	bot_channel_inbound(t, c, "chm_telegram")
+	testing.expect_value(t, bot_channel_read(c).status, 200)
+	// Telegram wins normal reply routing. No text or action data leaks into it.
+	testing.expect_value(t, bot_channel_send(c, action_reply).status, 409)
+	testing.expect_value(t, len(c.sent), 0)
+	testing.expect_value(t, bot_channel_send(c).status, 200)
+	testing.expect_value(t, len(c.sent), 1)
+
+	inbound, _, err := bots.bots_web_send(&c.f.service, string(c.f.wire.owner), "web question", "web-action-key")
+	defer domain.channel_message_destroy(&inbound)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect_value(t, bot_channel_read(c).status, 200)
+	for id in ([]string{"crd_foreign", "crd_missing"}) {
+		body := fmt.tprintf(`{{"params":{{"text":"answer","action_ids":["%s"]}}}}`, id)
+		testing.expect_value(t, bot_channel_send(c, body).status, 404)
+	}
+	testing.expect_value(t, bot_channel_send(c, `{"params":{"text":"answer","action_ids":["crd_own","crd_own"]}}`).status, 400)
+	sent := bot_channel_send(c, action_reply)
+	testing.expectf(t, sent.status == 200, "%s", sent.body)
+	testing.expect(t, strings.contains(sent.body, `"channel":"web"`))
+	testing.expect_value(t, len(c.sent), 1)
+
+	request := bot_http_request(c.f, "GET", "/api/v1/bots/me/messages", "")
+	page := bot_unified_messages_handler(&c.f.handlers, request)
+	testing.expectf(t, page.status == 200, "%s", page.body)
+	wire: struct {data: struct {messages: []Bot_History_Message}}
+	testing.expect_value(t, json.unmarshal(transmute([]u8)page.body, &wire), nil)
+	metadata_rows := 0
+	for row in wire.data.messages {
+		ids, has_ids := row.metadata["action_ids"].(json.Array)
+		if !has_ids do continue
+		metadata_rows += 1
+		testing.expect_value(t, row.provider, "web")
+		testing.expect_value(t, row.binding_id, inbound.binding_id)
+		testing.expect_value(t, row.direction, "outbound")
+		testing.expect_value(t, len(ids), 1)
+		if len(ids) == 1 do testing.expect_value(t, string(ids[0].(json.String)), "crd_own")
+	}
+	testing.expect_value(t, metadata_rows, 1)
+	_, deleted_err := iface.card_delete(&card_repo, "crd_own")
+	testing.expect_value(t, deleted_err.code, domain.Error_Code.None)
+	page = bot_unified_messages_handler(&c.f.handlers, request)
+	testing.expect_value(t, page.status, 200)
+	testing.expect(t, !strings.contains(page.body, `"metadata"`))
+	testing.expect_value(t, iface.messages_purge_binding(&c.f.bot_repo, inbound.binding_id).code, domain.Error_Code.None)
+	rows, list_err := iface.messages_page(&c.f.bot_repo, string(c.f.wire.owner), inbound.bot_id, "", 10)
+	defer {for &row in rows do domain.channel_message_destroy(&row); delete(rows)}
+	testing.expect_value(t, list_err.code, domain.Error_Code.None)
+	for row in rows do testing.expect_value(t, row.action_ids_json, "")
 }

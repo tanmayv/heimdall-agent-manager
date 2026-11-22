@@ -24,6 +24,7 @@ Placement_Fixture :: struct {
 	bridges: []domain.Bridge,
 	models: []domain.Bridge_Provider_Models,
 	provider_ids: []string,
+ disabled_support,inactive_provider:bool,
 }
 placement_clone :: proc(value: $T) -> T {
 	data, _ := json.marshal(value, allocator = context.temp_allocator)
@@ -42,7 +43,7 @@ placement_catalog_get :: proc(ctx: rawptr, id: string) -> (domain.Provider_Catal
 	known := false
 	for provider in placement_provider_ids(ctx) do if provider == id do known = true
 	if !known do return {}, false, {}
-	entry := domain.Provider_Catalog_Entry{provider = strings.clone(id), state = strings.clone("active"), models = make([dynamic]domain.Provider_Model)}
+	entry := domain.Provider_Catalog_Entry{provider = strings.clone(id), state = strings.clone("deprecated" if (^Placement_Fixture)(ctx).inactive_provider else "active"), models = make([dynamic]domain.Provider_Model)}
 	for model in ([]string{"old", "m1", "m2", "m3", "m4"}) do append(&entry.models, domain.Provider_Model{model_id = strings.clone(model), state = strings.clone("deprecated" if model == "old" else "active")})
 	return entry, true, {}
 }
@@ -77,9 +78,12 @@ placement_fixture :: proc() -> ^Placement_Fixture {
 	f.provider_repo = {ctx = f, list = placement_catalog_list, get = placement_catalog_get, list_status = placement_statuses, list_settings = placement_settings, list_models = placement_models, get_provider_transport = placement_transport}
 	f.providers.repo = &f.provider_repo
 	f.bridge_repo = {ctx = f, get_bridge = placement_bridge_get, list_by_owner = placement_bridge_list}
-	f.agent_repo = {ctx = f, get_instance = placement_instance}
+	f.agent_repo = {ctx = f, get_instance = placement_instance,get_support=placement_test_support}
 	f.agents = {agents = &f.agent_repo, bridges = &f.bridge_repo}
 	f.bot_repo = {ctx = f, placement_list = placement_policy, attempt_list_for_delivery = placement_attempts}
+	f.bridges=make([]domain.Bridge,1,context.temp_allocator)
+ f.bridges[0]={bridge_id="b",owner_user_id="alice",status=.Online,capabilities_json=`{"features":["bot_deliver_v1","instance_reconfiguration_v1"]}`}
+ assert(project_service.bridge_runtime_registry_mark_live(&f.registry,"b",false,""))
 	f.service = {providers = &f.providers, bridges = &f.bridge_repo, agents = &f.agents, repo = &f.bot_repo, registry = &f.registry, timers = default_bot_timer_config()}
 	return f
 }
@@ -107,7 +111,7 @@ test_placement_validation_errors :: proc(t: ^testing.T) {
 test_expand_candidates_empty_policy_allows_all :: proc(t: ^testing.T) {
 	f := placement_fixture(); defer placement_fixture_destroy(f)
 	f.service.timers.bot_max_local_candidates = 16
-	rows := bots_expand_candidates(&f.service, {}, nil, "b"); defer bots_candidates_destroy(rows)
+	rows := bots_expand_candidates(&f.service, {owner_user_id="alice"}, nil, "b"); defer bots_candidates_destroy(rows)
 	testing.expect_value(t, len(rows), 8)
 	if len(rows) == 8 {testing.expect_value(t, rows[0].provider, "alpha"); testing.expect_value(t, rows[4].provider, "beta"); testing.expect_value(t, rows[0].tier, "allowed"); testing.expect_value(t, rows[0].provider_profile, "alpha"); testing.expect_value(t, rows[3].model, "m4")}
 }
@@ -115,14 +119,14 @@ test_expand_candidates_empty_policy_allows_all :: proc(t: ^testing.T) {
 test_expand_candidates_ranks_preferred_first :: proc(t: ^testing.T) {
 	f := placement_fixture(); defer placement_fixture_destroy(f)
 	policy := []domain.Bot_Placement_Candidate{{bridge_id = "*", provider = "alpha", model = "m2", tier = .Allowed}, {position = 1, bridge_id = "*", provider = "beta", model = "m1", tier = .Preferred}, {position = 2, bridge_id = "*", provider = "*", model = "*", tier = .Preferred}}
-	rows := bots_expand_candidates(&f.service, {}, policy, "b"); defer bots_candidates_destroy(rows)
+	rows := bots_expand_candidates(&f.service, {owner_user_id="alice"}, policy, "b"); defer bots_candidates_destroy(rows)
 	testing.expect_value(t, len(rows), 3)
 	if len(rows) == 3 {testing.expect_value(t, rows[0].provider, "beta"); testing.expect_value(t, rows[1].provider, "alpha"); testing.expect_value(t, rows[2].model, "m2"); testing.expect_value(t, rows[2].tier, "allowed")}
 }
 @(test)
 test_expand_candidates_star_model_takes_first_active :: proc(t: ^testing.T) {
 	f := placement_fixture(); defer placement_fixture_destroy(f)
-	rows := bots_expand_candidates(&f.service, {}, {{bridge_id = "*", provider = "alpha", model = "*"}}, "b"); defer bots_candidates_destroy(rows)
+	rows := bots_expand_candidates(&f.service, {owner_user_id="alice"}, {{bridge_id = "*", provider = "alpha", model = "*"}}, "b"); defer bots_candidates_destroy(rows)
 	testing.expect_value(t, len(rows), 1)
 	if len(rows) == 1 do testing.expect_value(t, rows[0].model, "m1")
 }
@@ -130,7 +134,7 @@ test_expand_candidates_star_model_takes_first_active :: proc(t: ^testing.T) {
 test_expand_candidates_truncates_to_three :: proc(t: ^testing.T) {
 	f := placement_fixture(); defer placement_fixture_destroy(f)
 	policy := []domain.Bot_Placement_Candidate{{bridge_id = "*", provider = "alpha", model = "m1"}, {position = 1, bridge_id = "*", provider = "alpha", model = "m2"}, {position = 2, bridge_id = "*", provider = "alpha", model = "m3"}, {position = 3, bridge_id = "*", provider = "alpha", model = "m4"}}
-	rows := bots_expand_candidates(&f.service, {}, policy, "b"); defer bots_candidates_destroy(rows)
+	rows := bots_expand_candidates(&f.service, {owner_user_id="alice"}, policy, "b"); defer bots_candidates_destroy(rows)
 	testing.expect_value(t, len(rows), 3)
 	if len(rows) == 3 do testing.expect_value(t, rows[2].model, "m3")
 }
@@ -176,19 +180,48 @@ test_placement_snapshot_alias_matches_resolved_model :: proc(t: ^testing.T) {
 	f.models = {{bridge_id = "b2", provider = "claude", has_snapshot = true,
 	models_json = `[{"model_id":"opus","resolved_model":"claude-opus-5-5"},{"model_id":"sonnet","resolved_model":"other"}]`}}
 	f.policy = {{bridge_id = "*", provider = "claude", model = "claude-opus-5-5", tier = .Preferred}}
-	rows := bots_expand_candidates(&f.service, {}, f.policy, "b2"); defer bots_candidates_destroy(rows)
+	rows := bots_expand_candidates(&f.service, {owner_user_id="alice"}, f.policy, "b2"); defer bots_candidates_destroy(rows)
 	testing.expect_value(t, len(rows), 1)
 	if len(rows) == 1 {testing.expect_value(t, rows[0].model, "opus"); testing.expect_value(t, rows[0].tier, "preferred")}
 	selected, found := bots_select_bridge(&f.service, {owner_user_id = "alice"}, {}, 1); defer delete(selected)
 	testing.expect(t, found); testing.expect_value(t, selected, "b2")
 	// Catalog fallback still matches literal IDs and excludes unrelated models.
-	fallback := bots_expand_candidates(&f.service, {}, f.policy, "b1"); defer bots_candidates_destroy(fallback)
+	fallback := bots_expand_candidates(&f.service, {owner_user_id="alice"}, f.policy, "b1"); defer bots_candidates_destroy(fallback)
 	testing.expect_value(t, len(fallback), 0)
-	direct := bots_expand_candidates(&f.service, {}, {{bridge_id = "*", provider = "claude", model = "opus"}}, "b2"); defer bots_candidates_destroy(direct)
+	direct := bots_expand_candidates(&f.service, {owner_user_id="alice"}, {{bridge_id = "*", provider = "claude", model = "opus"}}, "b2"); defer bots_candidates_destroy(direct)
 	testing.expect_value(t, len(direct), 1)
 	// Ranking must retain the resolved-name policy position after expansion.
 	f.policy = {{bridge_id = "*", provider = "claude", model = "m1", tier = .Allowed},
 	{bridge_id = "*", provider = "claude", model = "claude-opus-5-5", tier = .Preferred, position = 1}}
 	preferred, preferred_found := bots_select_bridge(&f.service, {owner_user_id = "alice"}, {}, 1); defer delete(preferred)
 	testing.expect(t, preferred_found); testing.expect_value(t, preferred, "b2")
+}
+
+
+placement_test_support :: proc(ctx:rawptr,a,b:string)->(domain.Agent_Bridge_Support,bool,domain.Domain_Error) {
+ return {},(^Placement_Fixture)(ctx).disabled_support,{}
+}
+@(test)
+test_bot_skips_inactive_catalog_provider :: proc(t:^testing.T) {
+ context.allocator=context.temp_allocator
+ f:=placement_fixture();defer placement_fixture_destroy(f)
+ placement_select_bridges(f)
+ positive,positive_ok:=bots_select_bridge(&f.service,{owner_user_id="alice"}, {},1)
+ defer delete(positive)
+ testing.expect(t,positive_ok)
+ f.inactive_provider=true
+ _,ok:=bots_select_bridge(&f.service,{owner_user_id="alice"}, {},1)
+ testing.expect(t,!ok)
+}
+@(test)
+test_bot_skips_bridge_with_agent_disabled :: proc(t:^testing.T) {
+ context.allocator=context.temp_allocator
+ f:=placement_fixture();defer placement_fixture_destroy(f)
+ placement_select_bridges(f)
+ positive,positive_ok:=bots_select_bridge(&f.service,{owner_user_id="alice",agent_id="agent"}, {},1)
+ defer delete(positive)
+ testing.expect(t,positive_ok)
+ f.disabled_support=true
+ _,ok:=bots_select_bridge(&f.service,{owner_user_id="alice",agent_id="agent"}, {},1)
+ testing.expect(t,!ok)
 }

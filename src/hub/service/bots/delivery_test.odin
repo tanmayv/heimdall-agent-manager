@@ -73,7 +73,7 @@ delivery_fixture :: proc(t: ^testing.T) -> ^Delivery_Fixture {
 	f.placement.bridges = f.placement.bridges[:1]
 	f.ms = bots_stamp_ms("2026-11-17T12:00:00Z")
 	f.pair.clock = {ctx = f, now = delivery_clock}
-	f.repo = {ctx = f, get_instance = delivery_instance, save_instance = delivery_save, get = delivery_agent,
+	f.repo = {ctx = f, get_instance = delivery_instance, save_instance = delivery_save, get = delivery_agent,get_support=delivery_support,
 		reconfiguration_begin = delivery_op_begin, reconfiguration_list = delivery_ops, reconfiguration_get = delivery_op_get, reconfiguration_advance = delivery_op_advance}
 	f.instance = {agent_instance_id = "inst_a", agent_id = "agt_a", owner_user_id = "alice", bridge_id = "b1",
 		provider = "alpha", provider_profile = "alpha", model = "m1", runtime_status = "stopped", configuration_revision = 1}
@@ -746,3 +746,5 @@ test_switch_snapshot_candidate_keeps_alias_identity :: proc(t: ^testing.T) {
 	testing.expect_value(t, repeated.model, "opus")
 	testing.expect_value(t, repeated.configuration_revision, changed.configuration_revision)
 }
+
+delivery_support :: proc(ctx:rawptr,a,b:string)->(domain.Agent_Bridge_Support,bool,domain.Domain_Error) {return {},false,{}}

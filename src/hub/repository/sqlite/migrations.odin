@@ -694,6 +694,7 @@ MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions
 MIGRATION_EVENTS_002_TOPICS :: #load("migrations/events_002_topics.sql", string)
 
 MIGRATION_223_EXTENSION_VERSION_SYNC :: #load("migrations/223_extension_version_sync_0_5_63.sql", string)
+MIGRATION_BOTS_WEB_003_ACTION_REFS :: #load("migrations/bots_web_003_action_refs.sql", string)
 MIGRATION_BOTS_WEB_002_ATTACHMENTS :: #load("migrations/bots_web_002_attachments.sql", string)
 MIGRATION_BOTS_WEB_001_CHANNEL :: #load("migrations/bots_web_001_channel.sql", string)
 
@@ -725,6 +726,8 @@ MIGRATION_233_EXTENSION_VERSION_SYNC :: #load("migrations/233_extension_version_
 MIGRATION_234_CODEX_ACP_TRANSPORT :: #load("migrations/234_codex_acp_transport.sql", string)
 
 MIGRATION_235_EXTENSION_VERSION_SYNC :: #load("migrations/235_extension_version_sync_0_5_72.sql", string)
+
+MIGRATION_AGENTS_001_START_REF :: #load("migrations/agents_001_start_ref.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -965,6 +968,7 @@ migration_order :: [?]string {
 	"bots_web_001_channel.sql",
 	"226_extension_version_sync_0_5_65.sql",
 	"bots_web_002_attachments.sql",
+	"bots_web_003_action_refs.sql",
 	"coordinator_idle_001_user_activity.sql",
 	"coordinator_idle_002_stop_reason.sql",
 	"227_extension_version_sync_0_5_66.sql",
@@ -976,6 +980,7 @@ migration_order :: [?]string {
 	"233_extension_version_sync_0_5_71.sql",
 	"234_codex_acp_transport.sql",
 	"235_extension_version_sync_0_5_72.sql",
+	"agents_001_start_ref.sql",
 	"events_006_instance_subscriptions.sql",
 }
 
@@ -1027,6 +1032,10 @@ run_migrations :: proc(
 		if migration_applied(conn, name) do continue
 		// 215 commits atomically; repair a crash before its ledger insert.
 		if name == "215_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "bots_web_003_action_refs.sql" && table_column_exists(conn, "channel_messages", "action_ids_json") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -1515,6 +1524,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+ if name == "agents_001_start_ref.sql" do return strings.clone(MIGRATION_AGENTS_001_START_REF)
 	if migrations_dir != "" {
 		path := strings.concatenate({migrations_dir, "/", name}, context.temp_allocator)
 		data, err := os.read_entire_file(path, context.allocator)
@@ -1536,6 +1546,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "224_copilot_acp_transport.sql" do return strings.clone(MIGRATION_224_COPILOT_ACP_TRANSPORT)
 	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
 	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
+	if name == "bots_web_003_action_refs.sql" do return strings.clone(MIGRATION_BOTS_WEB_003_ACTION_REFS)
 	if name == "bots_web_002_attachments.sql" do return strings.clone(MIGRATION_BOTS_WEB_002_ATTACHMENTS)
 	if name == "bots_web_001_channel.sql" do return strings.clone(MIGRATION_BOTS_WEB_001_CHANNEL)
 	if name == "whatsapp_001_invite_only.sql" do return strings.clone(MIGRATION_WHATSAPP_001_INVITE_ONLY)

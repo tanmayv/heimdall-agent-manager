@@ -1,5 +1,7 @@
 package app
 
+import placement "odin_test:hub/service/placement"
+
 import natstest "odin_test:lib/natstest"
 
 import "core:fmt"
@@ -117,7 +119,9 @@ test_launch_gate_inside_write_uow_with_cold_entitlements_does_not_stall :: proc(
 		// Take the database write lock, as lease/submit and tasks/create have by then.
 		testing.expect(t, sqlite.exec(&graph.db, "UPDATE bridges SET label = label;"))
 		start := time.tick_now()
-		err := agent_service.require_launch_bridge_enabled(&graph.agents, bridge)
+		_,reason:=placement.bridge_eligible(&graph.placement,bridge,{owner=string(bridge.owner_user_id)})
+ err:=domain.Domain_Error{}
+ if reason==placement.REASON_PLAN_DISABLED do err=placement.eligibility_error(&graph.placement,bridge,reason)
 		return err, time.tick_since(start)
 	}
 

@@ -1,5 +1,7 @@
 package bots
 
+import placement "odin_test:hub/service/placement"
+
 import "core:encoding/json"
 import "core:sync"
 import "core:strings"
@@ -14,6 +16,7 @@ import events "odin_test:hub/service/events"
 import channel "odin_test:hub/service/channel"
 
 Bots_Service :: struct {
+ placement: ^placement.Service,
 	ui_origin: string,
 	media_send_budget_ms, media_min_call_ms: i64,
 	repo: ^iface.Bot_Repository,
@@ -97,6 +100,7 @@ bots_create :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Do
 }
 
 Bot_Advanced_View :: struct {
+	conversation_id: string `json:"conversation_id,omitempty"`,
 	agent_instance_id, bridge_id, bridge_label, provider, model, runtime_status: string,
 }
 Bot_Telegram_View :: struct {
@@ -185,8 +189,8 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 		found: bool
 		inst, found, err = iface.agent_get_instance(s.agents.agents, bot.agent_instance_id)
 		if err.code != .None do return "", err
-		if found {
-			view.advanced = {agent_instance_id = inst.agent_instance_id, bridge_id = inst.bridge_id, provider = inst.provider, model = inst.model, runtime_status = inst.runtime_status}
+		if found && string(inst.owner_user_id) == owner && inst.agent_id == bot.agent_id {
+			view.advanced = {conversation_id = inst.conversation_id, agent_instance_id = inst.agent_instance_id, bridge_id = inst.bridge_id, provider = inst.provider, model = inst.model, runtime_status = inst.runtime_status}
 			view.status = "sleeping"
 			switch inst.runtime_status {
 			case "launching", "starting": view.status = "starting"

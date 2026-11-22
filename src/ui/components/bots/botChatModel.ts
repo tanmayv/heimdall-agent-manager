@@ -41,9 +41,13 @@ export function mergeBotMessages(
   let next: Map<string, UnifiedBotMessage> | null = null;
   for (const message of incoming) {
     const previous = known.get(message.message_id);
-    if (previous && sameMessage(previous, message)) continue;
+    // A delayed history response can predate a read we already observed.
+    const merged = previous?.read_at && !message.read_at
+      ? { ...message, read_at: previous.read_at }
+      : message;
+    if (previous && sameMessage(previous, merged)) continue;
     next ??= new Map(known);
-    next.set(message.message_id, message);
+    next.set(message.message_id, merged);
   }
   return next ?? known;
 }

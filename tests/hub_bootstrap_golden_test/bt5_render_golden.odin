@@ -149,7 +149,7 @@ bt5_render_case :: proc(c: Bt5_Case) -> (string, bool) {
 	agent_service.bootstrap_append_identity_variables(
 		&vars, c.template_persona, c.template_instructions, c.agent_instructions)
 
-	tpl_hash := agent_service.bootstrap_template_hash()
+	tpl_hash := agent_service.bootstrap_template_hash("")
 	defer delete(tpl_hash)
 
 	b := strings.builder_make()

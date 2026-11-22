@@ -9,6 +9,7 @@ CHANNEL_HELP :: `ham-ctl channel read [--limit N]        Read your owner's unans
                                         Files they sent are saved as artifacts and listed in "attachments".
 ham-ctl channel send --text <text>      Answer on the channel of the messages you read.
 ham-ctl channel send --text-file <path> Same, text read from a UTF-8 file.
+                                        Add --action <card-id> or --actions <ids> to a web text reply.
 ham-ctl channel send --artifact <id> [--text <caption> | --text-file <path>]
                                         Send an artifact as a photo, document or voice note when the chat app takes it, otherwise as a link.
 ham-ctl channel history [--limit N]     Recent messages on all channels in both directions, newest first.
@@ -43,9 +44,16 @@ ctl_channel_params :: proc(verb: string, args: []string) -> (params, message: st
 		}
 		if has_flag(args, "--artifact") && option_value(args, "--artifact", "") == "" do return "", "--artifact requires an artifact id"
 		if text == "" && !has_flag(args, "--artifact") do return "", "channel send requires --text or --text-file"
+		context.allocator = context.temp_allocator
+		actions := collect_multi_values(args, "--actions", "--action")
+		defer delete(actions)
+		has_actions := has_flag(args, "--actions") || has_flag(args, "--action")
+		if has_actions && len(actions) == 0 do return "", "--action requires a card id"
+		if has_actions && has_flag(args, "--artifact") do return "", "--action requires a web text reply"
 		data, err := json.marshal(struct {
 				text: string,
-			}{text}, allocator = context.temp_allocator)
+				action_ids: []string `json:"action_ids,omitempty"`,
+			}{text, actions[:]}, allocator = context.temp_allocator)
 		if err != nil do return "", "cannot encode channel text"
 		return string(data), ""
 	}

@@ -53,6 +53,7 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 		}
 		if e := iface.messages_mark_read(s.repo, bot_id, ids[:], platform.clock_now(s.clock)); e.code != .None do return nil, 0, e
 	}
+	if len(newly_read) > 0 do bots_publish_changed(s, binding.owner_user_id, bot_id)
 	if len(newly_read) > 0 && bots_gate_on(s.experiments, binding.owner_user_id) {
 		a := bots_adapter(s, binding.provider)
 		started := time.tick_now()

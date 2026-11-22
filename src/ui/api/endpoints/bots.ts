@@ -10,7 +10,7 @@ export interface BotView {
   telegram: { configured: boolean; bot_username: string; binding: null | { state: string; display: string; connected_at: string } };
   whatsapp: BotWhatsApp;
   placement_revision: number;
-  advanced: { agent_instance_id: string; bridge_id: string; bridge_label: string; provider: string; model: string; runtime_status: string };
+  advanced: { conversation_id?: string; agent_instance_id: string; bridge_id: string; bridge_label: string; provider: string; model: string; runtime_status: string };
 }
 export interface BotPlacementCandidate { bridge_id: string; provider: string; model: string; tier: 'preferred' | 'allowed' }
 export interface BotPlacement { placement_revision: number; candidates: BotPlacementCandidate[] }
@@ -30,7 +30,7 @@ export interface BotWhatsApp {
 export interface WhatsAppPairing { pairing_url: string; pairing_text: string; phone_display: string; expires_at: string }
 export interface BotMessage { message_id: string; direction: string; body: string; body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string }
 export interface BotAttachment { attachment_id: string; artifact_id: string; name: string; mime: string; size: number; kind: string; state: string }
-export interface UnifiedBotMessage extends BotMessage { binding_id: string; provider: 'telegram' | 'whatsapp' | 'web'; attachments?: BotAttachment[] }
+export interface UnifiedBotMessage extends BotMessage { binding_id: string; provider: 'telegram' | 'whatsapp' | 'web'; attachments?: BotAttachment[]; metadata?: { action_ids: string[] } }
 export interface BotMessagePage { messages: UnifiedBotMessage[]; next_cursor: string }
 export interface BotDelivery { delivery_id: string; state: string; round: number; waiting_reason: string; finish_reason: string; created_at: string; finished_at: string; attempts: { attempt_id: string; bridge_id: string; state: string; report: Record<string, unknown> }[] }
 
@@ -67,6 +67,10 @@ export const botsApi = heimdallApi.injectEndpoints({
         const page = args || {};
         return request(root + '/messages?limit=' + (page.limit ?? 50) + (page.cursor ? '&cursor=' + encodeURIComponent(page.cursor) : ''));
       },
+      providesTags: ['Bot'],
+    }),
+    getUnifiedBotMessagesById: build.query<BotMessagePage, readonly string[]>({
+      queryFn: (ids) => request(root + '/messages?message_ids=' + encodeURIComponent(JSON.stringify(ids))),
       providesTags: ['Bot'],
     }),
     sendBotWebMessage: build.mutation<{ message_id: string; created: boolean }, { text: string; idempotency_key: string; artifact_ids?: string[] }>({
