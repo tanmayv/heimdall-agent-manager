@@ -77,6 +77,16 @@ start_test_close :: proc(h: ^Start_Test) {
 }
 start_test_auth :: proc() -> contracts.Auth_Context { return {kind=.Session,user_id="owner"} }
 
+START_ORIGIN_CATALOG_ETAG :: "sha256:7b106ddce0851ff5c63fcd79fc2399fc50c6451f92bf06d6cb903429b1945ace"
+// The golden bytes embed the catalog etag of the release they were captured on; every release
+// migration changes it, so compare against the etag of the migrated test database instead.
+start_test_expected :: proc(t: ^testing.T, h: ^Start_Test, i: int) -> string {
+	etag, err := iface.provider_catalog_etag(&h.pr)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	out, _ := strings.replace_all(START_ORIGIN_COMMANDS[i], START_ORIGIN_CATALOG_ETAG, etag, context.temp_allocator)
+	return out
+}
+
 // Captured by running origin/main 99879b7b, before production edits.
 START_ORIGIN_COMMANDS := [3]string {
 	`{"type":"launch_agent","protocol_version":1,"message_id":"msg_cmd_launch_fixed_inst","command_id":"cmd_launch_fixed_inst","payload":{"agent_instance_id":"inst","agent_id":"agt","agent_name":"Worker","display_name":"","role":"worker","coordinator_agent_instance_id":"","chain_title":"","project_id":"","project_path":"","chain_id":"","conversation_id":"chat","provider":"codex","provider_profile":"codex","effective_transport":"pty","catalog_etag":"sha256:7b106ddce0851ff5c63fcd79fc2399fc50c6451f92bf06d6cb903429b1945ace","model":"gpt-6.1-sol","launch_epoch":"","run_count":4,"permission_mode":"yolo","instance_token":"hit_inst","bootstrap_url":"/api/v1/bridge/agent-instances/inst/bootstrap"}}`,
@@ -117,7 +127,7 @@ start_bytes_scenario :: proc(t:^testing.T,h:^Start_Test) {
 		case 2: inst,ok,err=create_instance(&h.service,start_test_auth(),{agent_id="agt",bridge_id="brg",provider="codex",model="gpt-6.1-sol"})
 		}
 		testing.expect(t,ok,err.message)
-		if testing.expect_value(t,len(h.commands),mode+1) do testing.expect_value(t,h.commands[mode],START_ORIGIN_COMMANDS[mode])
+		if testing.expect_value(t,len(h.commands),mode+1) do testing.expect_value(t,h.commands[mode],start_test_expected(t,h,mode))
 		testing.expect_value(t,inst.runtime_status,"launching")
 		testing.expect_value(t,inst.startup_status,"starting")
 		testing.expect_value(t,inst.activity_status,"unknown")
@@ -585,7 +595,7 @@ start_create_first_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect(t,ok,err.message)
 	testing.expect_value(t,inst.run_count,1)
 	testing.expect_value(t,len(h.commands),1)
-	if len(h.commands)==1 do testing.expect_value(t,h.commands[0],START_ORIGIN_COMMANDS[2])
+	if len(h.commands)==1 do testing.expect_value(t,h.commands[0],start_test_expected(t,h,2))
 }
 
 @(test)
