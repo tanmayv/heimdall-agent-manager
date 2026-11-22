@@ -12,7 +12,12 @@ ham-ctl events ack <event_id...>
 ham-ctl events watch --chain <id>
 ham-ctl events unwatch --chain <id>
 ham-ctl events subscriptions
-Events belong to your durable agent identity. Acknowledge after handling.
+Events belong to this agent instance, not to your durable agent identity:
+another instance of the same agent has its own subscriptions and events.
+When the instance is stopped by the user, or replaced, its subscriptions and
+pending events end; a restart after a user stop starts fresh, with nothing
+from before. An idle stop, or a crash that is relaunched in place, keeps
+them. Acknowledge after handling.
 Unacknowledged events are redelivered after 5 minutes, up to 10 attempts.`
 print_help_events :: proc() {fmt.println(EVENTS_HELP)}
 ctl_events_params :: proc(verb: string, tokens, args: []string) -> (params, message: string) {

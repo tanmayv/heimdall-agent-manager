@@ -22,17 +22,17 @@ Notice_Recorder :: struct {
 }
 notification_record_dispatch :: proc(
 	ctx: rawptr,
-	owner, agent: string,
+	owner, instance: string,
 	target: domain.Event_Notice_Target,
 	count: int,
 	wake: bool,
 ) -> bool {
 	r := (^Notice_Recorder)(ctx)
 	testing.expect_value(r.t, owner, "alice")
-	testing.expect_value(r.t, agent, "agt_coord")
+	testing.expect_value(r.t, instance, "inst_coord")
 	testing.expect_value(r.t, target.instance_id, "inst_coord")
 	// Opens a real UoW here: notice delivery must be outside every transaction.
-	rows, err := subscriptions(r.service, owner, agent)
+	rows, err := subscriptions(r.service, owner, instance)
 	testing.expect_value(r.t, err.code, domain.Error_Code.None)
 	subscription_rows_destroy(rows)
 	r.attempts += 1
@@ -105,7 +105,7 @@ notification_scenario :: proc(t: ^testing.T) {
 			repos.event_subscriptions.put(repos.event_subscriptions.ctx, {
 				subscription_id     = id,
 				owner_user_id       = "alice",
-				subscriber_agent_id = "agt_coord",
+				subscriber_instance_id = "inst_coord",
 				chain_id            = "chain_1",
 				// Different sources avoid the scope uniqueness constraint.
 				source              = "role_default" if id == "sub_coord" else "explicit",
@@ -120,7 +120,7 @@ notification_scenario :: proc(t: ^testing.T) {
 	committed, _ := iface.unit_of_work_commit(&uow)
 	if !testing.expect(t, committed) do return
 	if !testing.expect(t, reconcile(&runtime)) do return
-	rows, err := subscriptions(&service, "alice", "agt_coord")
+	rows, err := subscriptions(&service, "alice", "inst_coord")
 	if !testing.expect_value(t, err.code, domain.Error_Code.None) do return
 	defer subscription_rows_destroy(rows)
 	for i in 0 ..< 20 do inbox_test_publish(t, conn, "ev.alice.chain.chain_1.task.task_1.review_verdict", fmt.tprintf("burst_%d", i), "task.review_verdict", "", 0, "", false)
@@ -146,7 +146,7 @@ notification_scenario :: proc(t: ^testing.T) {
 	testing.expect(t, observed.delivered == u64(0), "notification observation never advances consumer")
 	testing.expect_value(t, observed.pending, u64(20))
 	testing.expect_value(t, observed.ack_pending, u64(0))
-	events, next_err := next(&service, "alice", "agt_coord", 0, 100)
+	events, next_err := next(&service, "alice", "inst_coord", 0, 100)
 	testing.expect_value(t, next_err.code, domain.Error_Code.None)
 	testing.expect_value(t, len(events), 20)
 	values_destroy(events)
@@ -171,7 +171,7 @@ notification_scenario :: proc(t: ^testing.T) {
 	ids := make([dynamic]string)
 	defer {for id in ids do delete(id); delete(ids)}
 	for i in 0 ..< 20 do append(&ids, fmt.aprintf("burst_%d", i))
-	testing.expect_value(t, acknowledge(&service, "alice", "agt_coord", ids[:]).code, domain.Error_Code.None)
+	testing.expect_value(t, acknowledge(&service, "alice", "inst_coord", ids[:]).code, domain.Error_Code.None)
 	later._nsec += i64(31 * time.Second)
 	testing.expect(t, notify_pending(&runtime, rows, later))
 	testing.expect(t, recorder.nudges == 2, "acknowledged events never remind")
@@ -233,7 +233,10 @@ notification_scenario :: proc(t: ^testing.T) {
 	)
 	testing.expect(
 		t,
-		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed' WHERE agent_instance_id='inst_coord';"),
+		// A typed failure (held for recovery, not Dead). inst_coord holds no role
+		// in this fixture, so an untyped failure would count as superseded and
+		// end its subscriptions (EV2).
+		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed',last_error_json='{\"class\":\"fatal\"}' WHERE agent_instance_id='inst_coord';"),
 	)
 	attempts := recorder.attempts
 	testing.expect(t, notify_pending(&runtime, rows, later))

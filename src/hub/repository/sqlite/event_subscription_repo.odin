@@ -51,9 +51,12 @@ subscription_prepare :: proc(ctx: rawptr, query: cstring) -> (sqlite3_stmt, doma
 }
 
 subscription_put :: proc(ctx: rawptr, row: domain.Event_Subscription) -> domain.Domain_Error {
+	if row.subscriber_instance_id == "" do return domain.domain_error(.Forbidden, "subscriber instance required")
+	// The agent column is informational: the caller's value, else the
+	// instance's durable agent, else the instance id itself.
 	stmt, err := subscription_prepare(
 		ctx,
-		"INSERT INTO event_subscriptions(subscription_id,owner_user_id,subscriber_agent_id,chain_id,task_id,source,filter_subjects,wake_policy,consumer_name,created_at) VALUES(?,?,?,?,NULLIF(?,''),?,?,?,?,?) ON CONFLICT DO NOTHING;",
+		"INSERT INTO event_subscriptions(subscription_id,owner_user_id,subscriber_agent_id,chain_id,task_id,source,filter_subjects,wake_policy,consumer_name,created_at,subscriber_instance_id) VALUES(?1,?2,COALESCE(NULLIF(?3,''),(SELECT NULLIF(agent_id,'') FROM agent_instances WHERE agent_instance_id=?11 AND owner_user_id=?2),?11),?4,NULLIF(?5,''),?6,?7,?8,?9,?10,?11) ON CONFLICT DO NOTHING;",
 	)
 	if err.code != .None do return err
 	defer sqlite3_finalize(stmt)
@@ -62,25 +65,26 @@ subscription_put :: proc(ctx: rawptr, row: domain.Event_Subscription) -> domain.
 	bind_text(stmt, 5, row.task_id); bind_text(stmt, 6, row.source)
 	bind_text(stmt, 7, row.filter_subjects); bind_text(stmt, 8, row.wake_policy)
 	bind_text(stmt, 9, row.consumer_name); bind_text(stmt, 10, row.created_at)
+	bind_text(stmt, 11, row.subscriber_instance_id)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to store event subscription")
 	return {}
 }
 
-subscription_list :: proc(ctx: rawptr, owner, agent: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
-	if owner == "" || agent == "" do return nil, domain.domain_error(.Forbidden, "subscriber identity required")
-	return subscription_query(ctx, owner, agent)
+subscription_list :: proc(ctx: rawptr, owner, instance: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
+	if owner == "" || instance == "" do return nil, domain.domain_error(.Forbidden, "subscriber instance required")
+	return subscription_query(ctx, owner, instance)
 }
 subscription_all :: proc(ctx: rawptr) -> ([]domain.Event_Subscription, domain.Domain_Error) {
 	return subscription_query(ctx, "", "")
 }
-subscription_query :: proc(ctx: rawptr, owner, agent: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
+subscription_query :: proc(ctx: rawptr, owner, instance: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
 	stmt, err := subscription_prepare(
 		ctx,
-		"SELECT subscription_id,owner_user_id,subscriber_agent_id,chain_id,COALESCE(task_id,''),source,filter_subjects,wake_policy,consumer_name,created_at FROM event_subscriptions WHERE (?='' OR owner_user_id=?) AND (?='' OR subscriber_agent_id=?) ORDER BY subscription_id;",
+		"SELECT subscription_id,owner_user_id,subscriber_agent_id,chain_id,COALESCE(task_id,''),source,filter_subjects,wake_policy,consumer_name,created_at,subscriber_instance_id FROM event_subscriptions WHERE (?='' OR owner_user_id=?) AND (?='' OR subscriber_instance_id=?) ORDER BY subscription_id;",
 	)
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, owner); bind_text(stmt, 2, owner); bind_text(stmt, 3, agent); bind_text(stmt, 4, agent)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, owner); bind_text(stmt, 3, instance); bind_text(stmt, 4, instance)
 	rows := make([dynamic]domain.Event_Subscription)
 	for {
 		rc := sqlite3_step(stmt)
@@ -103,35 +107,36 @@ subscription_query :: proc(ctx: rawptr, owner, agent: string) -> ([]domain.Event
 				wake_policy = column_text(stmt, 7),
 				consumer_name = column_text(stmt, 8),
 				created_at = column_text(stmt, 9),
+				subscriber_instance_id = column_text(stmt, 10),
 			},
 		)
 	}
 }
 
-subscription_remove :: proc(ctx: rawptr, owner, agent, subscription_id: string) -> domain.Domain_Error {
+subscription_remove :: proc(ctx: rawptr, owner, instance, subscription_id: string) -> domain.Domain_Error {
 	stmt, err := subscription_prepare(
 		ctx,
-		"DELETE FROM event_subscriptions WHERE owner_user_id=? AND subscriber_agent_id=? AND subscription_id=?;",
+		"DELETE FROM event_subscriptions WHERE owner_user_id=? AND subscriber_instance_id=? AND subscription_id=?;",
 	)
 	if err.code != .None do return err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, owner); bind_text(stmt, 2, agent); bind_text(stmt, 3, subscription_id)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, instance); bind_text(stmt, 3, subscription_id)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to remove event subscription")
 	return {}
 }
 
 
-subscription_delivered :: proc(ctx: rawptr, owner, agent: string, row: domain.Event_Delivery) -> domain.Domain_Error {
+subscription_delivered :: proc(ctx: rawptr, owner, instance: string, row: domain.Event_Delivery) -> domain.Domain_Error {
 	stmt, err := subscription_prepare(
 		ctx,
-		"INSERT INTO event_deliveries(subscription_id,event_id,ack_reply,topic_key,topic_generation,stream_sequence,recorded_at) SELECT ?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE EXISTS(SELECT 1 FROM event_subscriptions WHERE subscription_id=? AND owner_user_id=? AND subscriber_agent_id=?) AND (EXISTS(SELECT 1 FROM event_deliveries WHERE subscription_id=? AND event_id=?) OR (SELECT COUNT(*) FROM event_deliveries WHERE subscription_id=?)<4096) ON CONFLICT(subscription_id,event_id) DO UPDATE SET acknowledged=CASE WHEN event_deliveries.ack_reply!=excluded.ack_reply THEN 0 ELSE event_deliveries.acknowledged END,ack_reply=excluded.ack_reply,recorded_at=excluded.recorded_at RETURNING event_id;",
+		"INSERT INTO event_deliveries(subscription_id,event_id,ack_reply,topic_key,topic_generation,stream_sequence,recorded_at) SELECT ?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE EXISTS(SELECT 1 FROM event_subscriptions WHERE subscription_id=? AND owner_user_id=? AND subscriber_instance_id=?) AND (EXISTS(SELECT 1 FROM event_deliveries WHERE subscription_id=? AND event_id=?) OR (SELECT COUNT(*) FROM event_deliveries WHERE subscription_id=?)<4096) ON CONFLICT(subscription_id,event_id) DO UPDATE SET acknowledged=CASE WHEN event_deliveries.ack_reply!=excluded.ack_reply THEN 0 ELSE event_deliveries.acknowledged END,ack_reply=excluded.ack_reply,recorded_at=excluded.recorded_at RETURNING event_id;",
 	)
 	if err.code != .None do return err
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, row.subscription_id); bind_text(stmt, 2, row.event_id)
 	bind_text(stmt, 3, row.ack_reply); bind_text(stmt, 4, row.topic_key)
 	sqlite3_bind_int64(stmt, 5, row.topic_generation); sqlite3_bind_int64(stmt, 6, row.stream_sequence)
-	bind_text(stmt, 7, row.subscription_id); bind_text(stmt, 8, owner); bind_text(stmt, 9, agent)
+	bind_text(stmt, 7, row.subscription_id); bind_text(stmt, 8, owner); bind_text(stmt, 9, instance)
 	bind_text(
 		stmt,
 		10,
@@ -140,7 +145,7 @@ subscription_delivered :: proc(ctx: rawptr, owner, agent: string, row: domain.Ev
 	rc := sqlite3_step(stmt)
 	if rc == SQLITE_ROW do return {}
 	if rc != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to record delivery")
-	exists, exists_err := subscription_exists(ctx, owner, agent, row.subscription_id)
+	exists, exists_err := subscription_exists(ctx, owner, instance, row.subscription_id)
 	if exists_err.code != .None do return exists_err
 	if !exists do return domain.domain_error(.Not_Found, "subscription ended")
 	return domain.domain_error(.Conflict, "event inbox delivery capacity reached; acknowledge outstanding events")
@@ -148,7 +153,7 @@ subscription_delivered :: proc(ctx: rawptr, owner, agent: string, row: domain.Ev
 DELIVERY_SELECT :: "SELECT d.subscription_id,d.event_id,d.ack_reply,d.topic_key,d.topic_generation,d.stream_sequence,d.acknowledged,d.resolved_sent "
 subscription_deliveries :: proc(
 	ctx: rawptr,
-	owner, agent: string,
+	owner, instance: string,
 	ids: []string,
 ) -> (
 	[]domain.Event_Delivery,
@@ -161,16 +166,16 @@ subscription_deliveries :: proc(
 	stmt, err := subscription_prepare(
 		ctx,
 		DELIVERY_SELECT +
-		"FROM json_each(?) requested CROSS JOIN event_deliveries d INDEXED BY event_deliveries_event ON d.event_id=requested.value CROSS JOIN event_subscriptions s ON s.subscription_id=d.subscription_id WHERE s.owner_user_id=? AND s.subscriber_agent_id=? ORDER BY d.stream_sequence,d.subscription_id;",
+		"FROM json_each(?) requested CROSS JOIN event_deliveries d INDEXED BY event_deliveries_event ON d.event_id=requested.value CROSS JOIN event_subscriptions s ON s.subscription_id=d.subscription_id WHERE s.owner_user_id=? AND s.subscriber_instance_id=? ORDER BY d.stream_sequence,d.subscription_id;",
 	)
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(encoded)); bind_text(stmt, 2, owner); bind_text(stmt, 3, agent)
+	bind_text(stmt, 1, string(encoded)); bind_text(stmt, 2, owner); bind_text(stmt, 3, instance)
 	return subscription_read_deliveries(stmt)
 }
 subscription_resolutions :: proc(
 	ctx: rawptr,
-	owner, agent: string,
+	owner, instance: string,
 	limit: int,
 ) -> (
 	[]domain.Event_Delivery,
@@ -179,11 +184,11 @@ subscription_resolutions :: proc(
 	stmt, err := subscription_prepare(
 		ctx,
 		DELIVERY_SELECT +
-		"FROM event_subscriptions s JOIN event_deliveries d ON d.subscription_id=s.subscription_id JOIN event_topics t ON t.owner_user_id=s.owner_user_id AND t.topic_key=d.topic_key WHERE s.owner_user_id=? AND s.subscriber_agent_id=? AND d.resolved_sent=0 AND (d.topic_generation<=t.resolved_generation OR d.topic_generation<t.generation) ORDER BY d.stream_sequence,d.subscription_id LIMIT ?;",
+		"FROM event_subscriptions s JOIN event_deliveries d ON d.subscription_id=s.subscription_id JOIN event_topics t ON t.owner_user_id=s.owner_user_id AND t.topic_key=d.topic_key WHERE s.owner_user_id=? AND s.subscriber_instance_id=? AND d.resolved_sent=0 AND (d.topic_generation<=t.resolved_generation OR d.topic_generation<t.generation) ORDER BY d.stream_sequence,d.subscription_id LIMIT ?;",
 	)
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, owner); bind_text(stmt, 2, agent)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, instance)
 	sqlite3_bind_int64(stmt, 3, i64(clamp(limit, 1, 100)))
 	return subscription_read_deliveries(stmt)
 }
@@ -212,23 +217,23 @@ subscription_read_deliveries :: proc(stmt: sqlite3_stmt) -> ([]domain.Event_Deli
 		)
 	}
 }
-subscription_exists :: proc(ctx: rawptr, owner, agent, subscription: string) -> (bool, domain.Domain_Error) {
+subscription_exists :: proc(ctx: rawptr, owner, instance, subscription: string) -> (bool, domain.Domain_Error) {
 	stmt, err := subscription_prepare(
 		ctx,
-		"SELECT 1 FROM event_subscriptions WHERE owner_user_id=? AND subscriber_agent_id=? AND subscription_id=?;",
+		"SELECT 1 FROM event_subscriptions WHERE owner_user_id=? AND subscriber_instance_id=? AND subscription_id=?;",
 	)
 	if err.code != .None do return false, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, owner); bind_text(stmt, 2, agent); bind_text(stmt, 3, subscription)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, instance); bind_text(stmt, 3, subscription)
 	rc := sqlite3_step(stmt)
 	if rc == SQLITE_ROW do return true, {}
 	if rc == SQLITE_DONE do return false, {}
 	return false, domain.domain_error(.Internal_Error, "failed to check subscription")
 }
-subscription_available :: proc(ctx: rawptr, owner, agent, subscription: string) -> (int, domain.Domain_Error) {
+subscription_available :: proc(ctx: rawptr, owner, instance, subscription: string) -> (int, domain.Domain_Error) {
 	stmt, err := subscription_prepare(
 		ctx,
-		"SELECT 4096-(SELECT COUNT(*) FROM event_deliveries WHERE subscription_id=?) FROM event_subscriptions WHERE owner_user_id=? AND subscriber_agent_id=? AND subscription_id=?;",
+		"SELECT 4096-(SELECT COUNT(*) FROM event_deliveries WHERE subscription_id=?) FROM event_subscriptions WHERE owner_user_id=? AND subscriber_instance_id=? AND subscription_id=?;",
 	)
 	if err.code != .None do return 0, err
 	defer sqlite3_finalize(stmt)
@@ -236,7 +241,7 @@ subscription_available :: proc(ctx: rawptr, owner, agent, subscription: string) 
 		stmt,
 		1,
 		subscription,
-	); bind_text(stmt, 2, owner); bind_text(stmt, 3, agent); bind_text(stmt, 4, subscription)
+	); bind_text(stmt, 2, owner); bind_text(stmt, 3, instance); bind_text(stmt, 4, subscription)
 	rc := sqlite3_step(stmt)
 	if rc == SQLITE_DONE do return 0, {}
 	if rc != SQLITE_ROW do return 0, domain.domain_error(.Internal_Error, "failed to check delivery capacity")
@@ -254,6 +259,15 @@ subscription_queue_delete :: proc(ctx: rawptr, consumer: string) -> domain.Domai
 	return {}
 }
 subscription_prune :: proc(ctx: rawptr, before: string) -> domain.Domain_Error {
+	// A row without an owning instance can only come from a hub build older
+	// than EV2 writing against the migrated schema (a rolling restart or a
+	// rollback). No instance can read it, so it is deleted on every sweep; the
+	// delete trigger releases its deliveries and queues its consumer.
+	orphans, orphan_err := subscription_prepare(ctx, "DELETE FROM event_subscriptions WHERE subscriber_instance_id='';")
+	if orphan_err.code != .None do return orphan_err
+	orphan_rc := sqlite3_step(orphans)
+	sqlite3_finalize(orphans)
+	if orphan_rc != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to delete event subscriptions without an instance")
 	stmt, err := subscription_prepare(
 		ctx,
 		"DELETE FROM event_deliveries WHERE recorded_at<? OR rowid IN(SELECT delivery_row FROM(SELECT rowid AS delivery_row,ROW_NUMBER() OVER(PARTITION BY subscription_id ORDER BY stream_sequence DESC) AS receipt_rank FROM event_deliveries WHERE acknowledged=1 AND (topic_key='' OR resolved_sent=1)) WHERE receipt_rank>256);",
@@ -277,15 +291,15 @@ subscription_trim_receipts :: proc(ctx: rawptr, subscription: string) -> domain.
 }
 subscription_mark_delivery :: proc(
 	ctx: rawptr,
-	owner, agent, subscription, event: string,
+	owner, instance, subscription, event: string,
 	resolved: bool,
 ) -> domain.Domain_Error {
-	query: cstring = "UPDATE event_deliveries SET acknowledged=1 WHERE subscription_id=? AND event_id=? AND EXISTS(SELECT 1 FROM event_subscriptions s WHERE s.subscription_id=event_deliveries.subscription_id AND s.owner_user_id=? AND s.subscriber_agent_id=?);"
-	if resolved do query = "UPDATE event_deliveries SET resolved_sent=1 WHERE subscription_id=? AND event_id=? AND EXISTS(SELECT 1 FROM event_subscriptions s WHERE s.subscription_id=event_deliveries.subscription_id AND s.owner_user_id=? AND s.subscriber_agent_id=?);"
+	query: cstring = "UPDATE event_deliveries SET acknowledged=1 WHERE subscription_id=? AND event_id=? AND EXISTS(SELECT 1 FROM event_subscriptions s WHERE s.subscription_id=event_deliveries.subscription_id AND s.owner_user_id=? AND s.subscriber_instance_id=?);"
+	if resolved do query = "UPDATE event_deliveries SET resolved_sent=1 WHERE subscription_id=? AND event_id=? AND EXISTS(SELECT 1 FROM event_subscriptions s WHERE s.subscription_id=event_deliveries.subscription_id AND s.owner_user_id=? AND s.subscriber_instance_id=?);"
 	stmt, err := subscription_prepare(ctx, query)
 	if err.code != .None do return err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, subscription); bind_text(stmt, 2, event); bind_text(stmt, 3, owner); bind_text(stmt, 4, agent)
+	bind_text(stmt, 1, subscription); bind_text(stmt, 2, event); bind_text(stmt, 3, owner); bind_text(stmt, 4, instance)
 	impl := (^Event_Subscription_Repo_SQLite)(ctx)
 	rc, changed := step_changes(impl.conn.db, stmt)
 	if rc != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to mark delivery")
@@ -347,9 +361,9 @@ subscription_owns_chain :: proc(ctx: rawptr, owner, chain: string) -> (bool, dom
 	return false, domain.domain_error(.Internal_Error, "failed to authorize chain watch")
 }
 
-// Target canonical bot binding, coordinator membership or task claim first.
-// An explicit watch belongs to a durable agent and falls back to its latest
-// instance. All lookups are tenant-scoped and require a live subscription.
+// The notice target is the instance that owns the subscription and nothing
+// else (REQ-EVP-4a): no fallback to another instance of the same agent, or to
+// another chain. Tenant-scoped; requires the subscription to still exist.
 subscription_notice_target :: proc(
 	ctx: rawptr,
 	row: domain.Event_Subscription,
@@ -360,21 +374,15 @@ subscription_notice_target :: proc(
 	stmt, err := subscription_prepare(
 		ctx,
 		`SELECT ai.agent_instance_id,ai.bridge_id,ai.runtime_status,ai.activity_status,ai.stopped_by,
- EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=ai.owner_user_id AND b.agent_id=ai.agent_id AND b.agent_instance_id=ai.agent_instance_id)
- FROM agent_instances ai
- WHERE ai.owner_user_id=? AND ai.agent_id=? AND ai.kind='agent'
- AND EXISTS(SELECT 1 FROM event_subscriptions s WHERE s.subscription_id=? AND s.owner_user_id=ai.owner_user_id AND s.subscriber_agent_id=ai.agent_id)
- ORDER BY
- EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=ai.owner_user_id AND b.agent_id=ai.agent_id AND b.agent_instance_id=ai.agent_instance_id) DESC,
- EXISTS(SELECT 1 FROM task_leases l WHERE l.owner_user_id=ai.owner_user_id AND l.holder_instance_id=ai.agent_instance_id AND l.task_id=? AND l.phase IN ('active','waiting')) DESC,
- EXISTS(SELECT 1 FROM task_chain_members m WHERE m.owner_user_id=ai.owner_user_id AND m.agent_instance_id=ai.agent_instance_id AND m.chain_id=? AND m.role='coordinator') DESC,
- (ai.chain_id=?) DESC, ai.created_at DESC, ai.agent_instance_id DESC LIMIT 1;`,
+ EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=ai.owner_user_id AND b.agent_instance_id=ai.agent_instance_id)
+ FROM event_subscriptions s JOIN agent_instances ai
+  ON ai.agent_instance_id=s.subscriber_instance_id AND ai.owner_user_id=s.owner_user_id
+ WHERE s.subscription_id=? AND s.owner_user_id=? AND s.subscriber_instance_id=? AND ai.kind='agent';`,
 	)
 	if err.code != .None do return {}, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, row.owner_user_id); bind_text(stmt, 2, row.subscriber_agent_id)
-	bind_text(stmt, 3, row.subscription_id); bind_text(stmt, 4, row.task_id)
-	bind_text(stmt, 5, row.chain_id); bind_text(stmt, 6, row.chain_id)
+	bind_text(stmt, 1, row.subscription_id); bind_text(stmt, 2, row.owner_user_id)
+	bind_text(stmt, 3, row.subscriber_instance_id)
 	step := sqlite3_step(stmt)
 	if step == SQLITE_DONE do return {}, {}
 	if step != SQLITE_ROW do return {}, domain.domain_error(.Internal_Error, "failed to read notice target")
@@ -390,7 +398,7 @@ subscription_notice_target :: proc(
 }
 subscription_due_deliveries :: proc(
 	ctx: rawptr,
-	owner, agent, subscription, before: string,
+	owner, instance, subscription, before: string,
 ) -> (
 	[]domain.Event_Delivery,
 	domain.Domain_Error,
@@ -398,11 +406,11 @@ subscription_due_deliveries :: proc(
 	stmt, err := subscription_prepare(
 		ctx,
 		DELIVERY_SELECT +
-		"FROM event_subscriptions s JOIN event_deliveries d ON d.subscription_id=s.subscription_id WHERE s.owner_user_id=? AND s.subscriber_agent_id=? AND s.subscription_id=? AND d.acknowledged=0 AND d.recorded_at<? ORDER BY d.stream_sequence LIMIT 4096;",
+		"FROM event_subscriptions s JOIN event_deliveries d ON d.subscription_id=s.subscription_id WHERE s.owner_user_id=? AND s.subscriber_instance_id=? AND s.subscription_id=? AND d.acknowledged=0 AND d.recorded_at<? ORDER BY d.stream_sequence LIMIT 4096;",
 	)
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, owner); bind_text(stmt, 2, agent); bind_text(stmt, 3, subscription); bind_text(stmt, 4, before)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, instance); bind_text(stmt, 3, subscription); bind_text(stmt, 4, before)
 	return subscription_read_deliveries(stmt)
 }
 

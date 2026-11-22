@@ -103,7 +103,8 @@ int ham_nats_stream(ham_nats *h, int operation, const char *name,
 }
 int ham_nats_consumer_add(ham_nats *h, const char *stream, const char *durable,
                           const char **filters, int count, int64_t ack_wait_ns,
-                          int64_t max_deliver, int deliver_new, int64_t max_ack_pending, jsErrCode *err) {
+                          int64_t max_deliver, int64_t start_time_ns, int deliver_new,
+                          int64_t max_ack_pending, jsErrCode *err) {
     jsConsumerInfo *info = NULL;
     jsConsumerConfig cfg;
     natsStatus s = jsConsumerConfig_Init(&cfg);
@@ -111,6 +112,10 @@ int ham_nats_consumer_add(ham_nats *h, const char *stream, const char *durable,
     cfg.Durable = durable;
     cfg.AckPolicy = js_AckExplicit;
     cfg.DeliverPolicy = deliver_new ? js_DeliverNew : js_DeliverAll;
+    if (start_time_ns > 0) {
+        cfg.DeliverPolicy = js_DeliverByStartTime;
+        cfg.OptStartTime = start_time_ns;
+    }
     cfg.AckWait = ack_wait_ns;
     cfg.MaxDeliver = max_deliver;
     if (max_ack_pending > 0) cfg.MaxAckPending = max_ack_pending;

@@ -77,7 +77,7 @@ catalog_scenario :: proc(t: ^testing.T) {
 	uow,began,_ := iface.unit_of_work_begin(&factory)
 	if !testing.expect(t,began) do return
 	for owner in ([]string{"alice","bob"}) {
-		testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=fmt.tprintf("sub_%s",owner),owner_user_id=owner,subscriber_agent_id="agt_1",chain_id="chain_1",source="explicit",consumer_name=fmt.tprintf("sub_%s",owner),filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
+		testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=fmt.tprintf("sub_%s",owner),owner_user_id=owner,subscriber_instance_id="agt_1",chain_id="chain_1",source="explicit",consumer_name=fmt.tprintf("sub_%s",owner),filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
 		testing.expect_value(t,repos.event_outbox.append(repos.event_outbox.ctx,{event_id=fmt.tprintf("pending_%s",owner),owner_user_id=owner,subject="ev.test",envelope_json="{}",headers_json="{}",created_at="now"}).code,domain.Error_Code.None)
 	}
 	committed,_ := iface.unit_of_work_commit(&uow)

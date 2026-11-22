@@ -16,7 +16,7 @@ Service :: struct {
 	counters: Counter_Registry,
 	notice_ctx: rawptr,
 	// Called outside a UoW. True means the existing notice/start path accepted it.
-	notice: proc(ctx: rawptr, owner, agent: string, target: domain.Event_Notice_Target, count: int, wake: bool) -> bool,
+	notice: proc(ctx: rawptr, owner, instance: string, target: domain.Event_Notice_Target, count: int, wake: bool) -> bool,
 	options:     nats.Connect_Options,
 	ids:         ^platform.ID_Generator,
 	ack_wait:    time.Duration,
@@ -102,21 +102,21 @@ unavailable :: proc() -> domain.Domain_Error {
 }
 subscriptions :: proc(
 	s: ^Service,
-	owner, agent: string,
+	owner, instance: string,
 ) -> (
 	rows: []domain.Event_Subscription,
 	err: domain.Domain_Error,
 ) {
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return nil, begin_err
-	rows, err = uow.repos.event_subscriptions.list(uow.repos.event_subscriptions.ctx, owner, agent)
+	rows, err = uow.repos.event_subscriptions.list(uow.repos.event_subscriptions.ctx, owner, instance)
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return}
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed {subscription_rows_destroy(rows); return nil, commit_err}
 	return
 }
-watch :: proc(s: ^Service, owner, agent, chain: string, remove: bool) -> domain.Domain_Error {
-	if owner == "" || agent == "" do return domain.domain_error(.Forbidden, "agent identity required")
+watch :: proc(s: ^Service, owner, instance, chain: string, remove: bool) -> domain.Domain_Error {
+	if owner == "" || instance == "" do return domain.domain_error(.Forbidden, "agent instance required")
 	subjects, valid := filters(owner, chain, "", "explicit")
 	if !valid do return domain.domain_error(.Validation_Failed, "invalid chain")
 	defer filters_destroy(subjects)
@@ -138,12 +138,12 @@ watch :: proc(s: ^Service, owner, agent, chain: string, remove: bool) -> domain.
 	}
 	err: domain.Domain_Error
 	if remove {
-		rows, list_err := repo.list(repo.ctx, owner, agent)
+		rows, list_err := repo.list(repo.ctx, owner, instance)
 		err = list_err
 		if err.code == .None {
 			for row in rows {
 				if row.chain_id == chain && row.source == "explicit" {
-					err = repo.remove(repo.ctx, owner, agent, row.subscription_id)
+					err = repo.remove(repo.ctx, owner, instance, row.subscription_id)
 					if err.code != .None do break
 				}
 			}
@@ -157,13 +157,13 @@ watch :: proc(s: ^Service, owner, agent, chain: string, remove: bool) -> domain.
 			domain.Event_Subscription {
 				subscription_id = id,
 				owner_user_id = owner,
-				subscriber_agent_id = agent,
+				subscriber_instance_id = instance,
 				chain_id = chain,
 				source = "explicit",
 				filter_subjects = string(encoded),
 				wake_policy = "catalog",
 				consumer_name = id,
-				created_at = platform.format_rfc3339_utc(time.now()),
+				created_at = subscription_created_at(time.now()),
 			},
 		)
 	}
@@ -171,6 +171,26 @@ watch :: proc(s: ^Service, owner, agent, chain: string, remove: bool) -> domain.
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed do return commit_err
 	return {}
+}
+// Millisecond precision, so the consumer's start excludes events from the same
+// second that were stored before the subscription existed.
+subscription_created_at :: proc(t: time.Time) -> string {
+	year, month, day := time.date(t)
+	hour, minute, second := time.clock(t)
+	ms := (time.to_unix_nanoseconds(t) / 1_000_000) % 1000
+	return fmt.tprintf("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", year, int(month), day, hour, minute, second, ms)
+}
+// subscription_start_ns is where a subscription's consumer starts reading: the
+// moment the subscription was created. A new subscription (a new role holder,
+// a restart after a user stop, a reassignment, a transfer or a new watch)
+// therefore never replays events from before it existed, although the stream
+// keeps 14 days (E3: a new instance starts fresh). Every hub-written created_at
+// parses; an unparseable value (only hand-built test rows) reads the whole
+// retained stream, as consumers did before EV2.
+subscription_start_ns :: proc(row: domain.Event_Subscription) -> i64 {
+	created, ok := platform.parse_rfc3339_utc(row.created_at)
+	if !ok do return 0
+	return max(i64(0), time.to_unix_nanoseconds(created))
 }
 ensure_consumer :: proc(s: ^Service, conn: ^nats.Connection, row: domain.Event_Subscription) -> bool {
 	subjects: []string
@@ -188,6 +208,7 @@ ensure_consumer :: proc(s: ^Service, conn: ^nats.Connection, row: domain.Event_S
 			filter_subjects = subjects,
 			ack_wait_ns = i64(ack_wait),
 			max_deliver = max_deliver,
+			start_time_ns = subscription_start_ns(row),
 		},
 	)
 	return err.status == 0
@@ -195,7 +216,7 @@ ensure_consumer :: proc(s: ^Service, conn: ^nats.Connection, row: domain.Event_S
 
 ack_snapshot :: proc(
 	s: ^Service,
-	owner, agent: string,
+	owner, instance: string,
 	ids: []string,
 ) -> (
 	rows: []domain.Event_Delivery,
@@ -204,7 +225,7 @@ ack_snapshot :: proc(
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return nil, begin_err
 	repo := uow.repos.event_subscriptions
-	rows, err = repo.deliveries(repo.ctx, owner, agent, ids)
+	rows, err = repo.deliveries(repo.ctx, owner, instance, ids)
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return}
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed {delivery_rows_destroy(rows); return nil, commit_err}
@@ -212,7 +233,7 @@ ack_snapshot :: proc(
 }
 resolved_snapshot :: proc(
 	s: ^Service,
-	owner, agent: string,
+	owner, instance: string,
 	limit: int,
 ) -> (
 	rows: []domain.Event_Delivery,
@@ -221,27 +242,27 @@ resolved_snapshot :: proc(
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return nil, begin_err
 	repo := uow.repos.event_subscriptions
-	rows, err = repo.resolutions(repo.ctx, owner, agent, limit)
+	rows, err = repo.resolutions(repo.ctx, owner, instance, limit)
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return}
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed {delivery_rows_destroy(rows); return nil, commit_err}
 	return
 }
 
-mark :: proc(s: ^Service, owner, agent: string, row: domain.Event_Delivery, resolved: bool) -> domain.Domain_Error {
+mark :: proc(s: ^Service, owner, instance: string, row: domain.Event_Delivery, resolved: bool) -> domain.Domain_Error {
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return begin_err
 	repo := uow.repos.event_subscriptions
-	err := repo.mark_delivery(repo.ctx, owner, agent, row.subscription_id, row.event_id, resolved)
+	err := repo.mark_delivery(repo.ctx, owner, instance, row.subscription_id, row.event_id, resolved)
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return err}
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	if !committed do return commit_err
 	return {}
 }
-acknowledge :: proc(s: ^Service, owner, agent: string, ids: []string) -> domain.Domain_Error {
-	if owner == "" || agent == "" do return domain.domain_error(.Forbidden, "agent identity required")
+acknowledge :: proc(s: ^Service, owner, instance: string, ids: []string) -> domain.Domain_Error {
+	if owner == "" || instance == "" do return domain.domain_error(.Forbidden, "agent instance required")
 	if len(ids) == 0 || len(ids) > 100 do return domain.domain_error(.Validation_Failed, "ack requires 1..100 event ids")
-	rows, err := ack_snapshot(s, owner, agent, ids)
+	rows, err := ack_snapshot(s, owner, instance, ids)
 	if err.code != .None do return err
 	defer delivery_rows_destroy(rows)
 	// Validate the whole request before making any acknowledgement.
@@ -258,7 +279,7 @@ acknowledge :: proc(s: ^Service, owner, agent: string, ids: []string) -> domain.
 		for id in ids do if id == row.event_id do wanted = true
 		if !wanted || row.acknowledged do continue
 		if nats.ack_reply(conn, row.ack_reply, 1000).status != 0 do return unavailable()
-		if err = mark(s, owner, agent, row, false); err.code != .None do return err
+		if err = mark(s, owner, instance, row, false); err.code != .None do return err
 	}
 	return {}
 }
@@ -275,14 +296,14 @@ is_stale :: proc(s: ^Service, owner, topic: string, generation: i64) -> (bool, d
 }
 // Freshness and recording share a transaction: a concurrent topic resolution
 // cannot slip between a successful freshness read and the delivery decision.
-record :: proc(s: ^Service, owner, agent: string, row: domain.Event_Delivery) -> (bool, domain.Domain_Error) {
+record :: proc(s: ^Service, owner, instance: string, row: domain.Event_Delivery) -> (bool, domain.Domain_Error) {
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return false, begin_err
 	repo := uow.repos.event_subscriptions
 	stale := false
 	err: domain.Domain_Error
 	if row.topic_key != "" do stale, err = repo.stale(repo.ctx, owner, row.topic_key, row.topic_generation)
-	if err.code == .None && !stale do err = repo.delivered(repo.ctx, owner, agent, row)
+	if err.code == .None && !stale do err = repo.delivered(repo.ctx, owner, instance, row)
 	if err.code == .Not_Found {iface.unit_of_work_rollback(&uow); return false, {}}
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return false, err}
 	committed, commit_err := iface.unit_of_work_commit(&uow)
@@ -303,7 +324,7 @@ fence_consumer :: proc(
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return false, begin_err
 	repo := uow.repos.event_subscriptions
-	live, err := repo.exists(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id)
+	live, err := repo.exists(repo.ctx, row.owner_user_id, row.subscriber_instance_id, row.subscription_id)
 	if err.code == .None && !live do err = repo.queue_delete(repo.ctx, row.consumer_name)
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return false, err}
 	committed, commit_err := iface.unit_of_work_commit(&uow)
@@ -341,7 +362,7 @@ pull_slots :: proc(s: ^Service, pulls: []Bound_Pull) -> domain.Domain_Error {
 		slots, err := repo.available(
 			repo.ctx,
 			bound.row.owner_user_id,
-			bound.row.subscriber_agent_id,
+			bound.row.subscriber_instance_id,
 			bound.row.subscription_id,
 		)
 		if err.code != .None {iface.unit_of_work_rollback(&uow); return err}
@@ -380,12 +401,12 @@ redelivery_possible :: proc(s: ^Service, row: domain.Event_Subscription) -> (boo
 	uow, began, begin_err := iface.unit_of_work_begin(s.factory)
 	if !began do return false, begin_err
 	repo := uow.repos.event_subscriptions
-	due, err := repo.due_deliveries(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id, before)
+	due, err := repo.due_deliveries(repo.ctx, row.owner_user_id, row.subscriber_instance_id, row.subscription_id, before)
 	possible := len(due) > 0
 	delivery_rows_destroy(due)
 	if err.code == .None && !possible {
 		unacked: []domain.Event_Delivery
-		unacked, err = repo.due_deliveries(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id, "9999")
+		unacked, err = repo.due_deliveries(repo.ctx, row.owner_user_id, row.subscriber_instance_id, row.subscription_id, "9999")
 		possible = len(unacked) == 0
 		delivery_rows_destroy(unacked)
 	}
@@ -458,13 +479,13 @@ append_unique :: proc(events: ^[dynamic]json.Value, value: json.Value) {
 collect_resolutions :: proc(
 	s: ^Service,
 	conn: ^nats.Connection,
-	owner, agent: string,
+	owner, instance: string,
 	events: ^[dynamic]json.Value,
 	limit: int,
 	started: time.Tick,
 	deadline: time.Duration,
 ) -> domain.Domain_Error {
-	rows, err := resolved_snapshot(s, owner, agent, limit - len(events^))
+	rows, err := resolved_snapshot(s, owner, instance, limit - len(events^))
 	if err.code != .None do return err
 	defer delivery_rows_destroy(rows)
 	for row in rows {
@@ -472,7 +493,7 @@ collect_resolutions :: proc(
 		if time.tick_since(started) >= deadline do break
 		if !row.acknowledged {
 			if nats.ack_reply(conn, row.ack_reply, 1000).status != 0 do return unavailable()
-			if err = mark(s, owner, agent, row, false); err.code != .None do return err
+			if err = mark(s, owner, instance, row, false); err.code != .None do return err
 		}
 		data, encode_err := json.marshal(struct {
 			type, event_id, resolved_event_id: string,
@@ -481,7 +502,7 @@ collect_resolutions :: proc(
 		notice, parse_err := json.parse(data)
 		delete(data)
 		if parse_err != nil do return unavailable()
-		if err = mark(s, owner, agent, row, true); err.code != .None {json.destroy_value(notice); return err}
+		if err = mark(s, owner, instance, row, true); err.code != .None {json.destroy_value(notice); return err}
 		append_unique(events, notice)
 		if len(events^) >= limit do break
 	}
@@ -491,7 +512,7 @@ collect_resolutions :: proc(
 // events are acknowledged and freed while no SQLite transaction is open.
 read_message :: proc(
 	s: ^Service,
-	owner, agent, subscription: string,
+	owner, instance, subscription: string,
 	msg: ^nats.Message,
 ) -> (
 	value: json.Value,
@@ -512,7 +533,7 @@ read_message :: proc(
 	accepted, err = record(
 		s,
 		owner,
-		agent,
+		instance,
 		domain.Event_Delivery {
 			subscription_id = subscription,
 			event_id = string(id),
@@ -532,14 +553,14 @@ read_message :: proc(
 }
 next :: proc(
 	s: ^Service,
-	owner, agent: string,
+	owner, instance: string,
 	wait: time.Duration,
 	limit: int,
 ) -> (
 	result: []json.Value,
 	err: domain.Domain_Error,
 ) {
-	if owner == "" || agent == "" do return nil, domain.domain_error(.Forbidden, "agent identity required")
+	if owner == "" || instance == "" do return nil, domain.domain_error(.Forbidden, "agent instance required")
 	if wait < 0 || wait > 30 * time.Second || limit < 1 || limit > 100 do return nil, domain.domain_error(.Validation_Failed, "wait must be 0..30s and limit 1..100")
 	// Every stage below shares one budget: wait for events, plus a fixed
 	// overhead for setup and fetches (REQ-EVQ-1).
@@ -551,9 +572,9 @@ next :: proc(
 	if nerr.status != 0 {delete(events); return nil, unavailable()}
 	defer nats.destroy(conn)
 	if !prepare_advisories(conn) {err = unavailable(); return}
-	if err = collect_resolutions(s, conn, owner, agent, &events, limit, started, deadline); err.code != .None do return
+	if err = collect_resolutions(s, conn, owner, instance, &events, limit, started, deadline); err.code != .None do return
 	if len(events) >= limit do return events[:], {}
-	rows, rerr := subscriptions(s, owner, agent)
+	rows, rerr := subscriptions(s, owner, instance)
 	if rerr.code != .None {err = rerr; return}
 	defer subscription_rows_destroy(rows)
 	pulls := make([dynamic]Bound_Pull, 0, len(rows))
@@ -607,7 +628,7 @@ next :: proc(
 				value, accepted, read_err := read_message(
 					s,
 					owner,
-					agent,
+					instance,
 					bound.row.subscription_id,
 					nats.batch_message(batch, i),
 				)
@@ -617,7 +638,7 @@ next :: proc(
 			nats.batch_destroy(batch)
 			if len(events) >= limit do return events[:], {}
 		}
-		if err = collect_resolutions(s, conn, owner, agent, &events, limit, started, deadline); err.code != .None do return
+		if err = collect_resolutions(s, conn, owner, instance, &events, limit, started, deadline); err.code != .None do return
 		if len(events) > 0 || time.tick_since(started) >= wait do return events[:], {}
 		bound_count, idle := 0, 0
 		for bound in pulls {

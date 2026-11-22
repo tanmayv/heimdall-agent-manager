@@ -25,9 +25,11 @@ event_inbox_handler :: proc(ctx: rawptr, req: Request, verb: string) -> Response
 	auth, inst, ok, refusal := require_instance_action_auth(h.agent_actions, req)
 	if !ok do return refusal
 	defer domain.agent_instance_destroy(&inst)
-	// Only authenticated, hub-resolved durable identity is authoritative.
-	owner, agent := auth.user_id, string(inst.agent_id)
-	if owner == "" || agent == "" || string(inst.owner_user_id) != owner do return respond_error(domain.domain_error(.Forbidden, "agent identity required"), req.request_id)
+	// Only the authenticated, hub-resolved instance is authoritative: every verb
+	// reads and changes the calling instance's subscriptions only, never those
+	// of another instance of the same durable agent (REQ-EVP-4c).
+	owner, instance := auth.user_id, inst.agent_instance_id
+	if owner == "" || instance == "" || string(inst.owner_user_id) != owner do return respond_error(domain.domain_error(.Forbidden, "agent instance required"), req.request_id)
 	params := json_object_raw(req.body, "params", context.temp_allocator)
 	if params == "" do params = "{}"
 	value, parse_err := json.parse(params, parse_integers = true, allocator = context.temp_allocator)
@@ -47,7 +49,7 @@ event_inbox_handler :: proc(ctx: rawptr, req: Request, verb: string) -> Response
 	}
 	switch verb {
 	case "subscriptions":
-		rows, err := eventinbox.subscriptions(h.inbox, owner, agent)
+		rows, err := eventinbox.subscriptions(h.inbox, owner, instance)
 		defer eventinbox.subscription_rows_destroy(rows)
 		if err.code != .None do return respond_error(err, req.request_id)
 		return respond_success_typed(struct {
@@ -67,7 +69,7 @@ event_inbox_handler :: proc(ctx: rawptr, req: Request, verb: string) -> Response
 		rows, err := eventinbox.next(
 			h.inbox,
 			owner,
-			agent,
+			instance,
 			time.Duration(input.wait_ms) * time.Millisecond,
 			input.limit,
 		)
@@ -86,7 +88,7 @@ event_inbox_handler :: proc(ctx: rawptr, req: Request, verb: string) -> Response
 		if !valid do return respond_error(domain.domain_error(.Validation_Failed, "event_ids must be an array of strings"), req.request_id)
 		input: contracts.Events_Ack_Input
 		if json.unmarshal(transmute([]byte)params, &input, allocator = context.temp_allocator) != nil do return respond_error(domain.domain_error(.Validation_Failed, "invalid event ids"), req.request_id)
-		if err := eventinbox.acknowledge(h.inbox, owner, agent, input.event_ids); err.code != .None do return respond_error(err, req.request_id)
+		if err := eventinbox.acknowledge(h.inbox, owner, instance, input.event_ids); err.code != .None do return respond_error(err, req.request_id)
 		return respond_success_typed(struct {
 				acknowledged: bool,
 			}{true}, req.request_id, auth_ctx_server_time(req))
@@ -94,7 +96,7 @@ event_inbox_handler :: proc(ctx: rawptr, req: Request, verb: string) -> Response
 		if _, string_ok := obj["chain_id"].(json.String); !string_ok do return respond_error(domain.domain_error(.Validation_Failed, "chain_id must be a string"), req.request_id)
 		input: contracts.Events_Watch_Input
 		if json.unmarshal(transmute([]byte)params, &input, allocator = context.temp_allocator) != nil do return respond_error(domain.domain_error(.Validation_Failed, "invalid chain"), req.request_id)
-		if err := eventinbox.watch(h.inbox, owner, agent, input.chain_id, verb == "unwatch"); err.code != .None do return respond_error(err, req.request_id)
+		if err := eventinbox.watch(h.inbox, owner, instance, input.chain_id, verb == "unwatch"); err.code != .None do return respond_error(err, req.request_id)
 		return respond_success_typed(struct {
 				watching: bool,
 			}{verb == "watch"}, req.request_id, auth_ctx_server_time(req))

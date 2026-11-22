@@ -89,7 +89,7 @@ notice_due_snapshot :: proc(
 	rows, read_err := repo.due_deliveries(
 		repo.ctx,
 		row.owner_user_id,
-		row.subscriber_agent_id,
+		row.subscriber_instance_id,
 		row.subscription_id,
 		before,
 	)
@@ -119,7 +119,7 @@ notice_candidate :: proc(
 	for prior in candidates^ {
 		prior_obj, _ := prior.value.(json.Object)
 		if prior.row.owner_user_id == row.owner_user_id &&
-		   prior.row.subscriber_agent_id == row.subscriber_agent_id &&
+		   prior.row.subscriber_instance_id == row.subscriber_instance_id &&
 		   notice_string(prior_obj, "event_id") == notice_string(obj, "event_id") {
 			json.destroy_value(value); return
 		}
@@ -136,12 +136,12 @@ notice_live :: proc(s: ^Service, candidate: Notice_Candidate) -> (bool, domain.D
 	uow, began, err := iface.unit_of_work_begin(s.factory)
 	if !began do return false, err
 	repo := uow.repos.event_subscriptions
-	live, read_err := repo.exists(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id)
+	live, read_err := repo.exists(repo.ctx, row.owner_user_id, row.subscriber_instance_id, row.subscription_id)
 	if live && read_err.code == .None {
 		receipts, receipt_err := repo.deliveries(
 			repo.ctx,
 			row.owner_user_id,
-			row.subscriber_agent_id,
+			row.subscriber_instance_id,
 			[]string{notice_string(obj, "event_id")},
 		)
 		read_err = receipt_err
@@ -174,7 +174,9 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 	active := make(map[string]bool)
 	defer delete(active)
 	for row in rows {
-		subscriber_key := fmt.tprintf("agent:%s/%s", row.owner_user_id, row.subscriber_agent_id)
+		// Counts, cooldown and rate limit are per owning instance, over that
+		// instance's subscriptions only (REQ-EVP-4b).
+		subscriber_key := fmt.tprintf("instance:%s/%s", row.owner_user_id, row.subscriber_instance_id)
 		active[subscriber_key] = true
 		prior := r.notifications[subscriber_key]
 		if prior.last_sent._nsec != 0 && now._nsec - prior.last_sent._nsec < i64(30 * time.Second) do continue
@@ -257,7 +259,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 	defer delete(handled)
 	for candidate in candidates {
 		row := candidate.row
-		key := fmt.tprintf("agent:%s/%s", row.owner_user_id, row.subscriber_agent_id)
+		key := fmt.tprintf("instance:%s/%s", row.owner_user_id, row.subscriber_instance_id)
 		if handled[key] do continue
 		handled[key] = true
 		target, err := notice_target_snapshot(s, row)
@@ -265,7 +267,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		count := 0
 		worthy := false
 		for other in candidates {
-			if other.row.owner_user_id != row.owner_user_id || other.row.subscriber_agent_id != row.subscriber_agent_id do continue
+			if other.row.owner_user_id != row.owner_user_id || other.row.subscriber_instance_id != row.subscriber_instance_id do continue
 			current, found := current_states[other.row.consumer_name]
 			if !found do continue
 			if !other.redelivery && other.sequence <= current.delivered do continue
@@ -280,7 +282,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		idle :=
 			(target.runtime_status == "running" || target.runtime_status == "idle") && target.activity_status == "idle"
 		if count > 0 && target.instance_id != "" && target.stopped_by == "" && (idle || stopped && worthy) {
-			if s.notice(s.notice_ctx, row.owner_user_id, row.subscriber_agent_id, target, count, stopped) {
+			if s.notice(s.notice_ctx, row.owner_user_id, row.subscriber_instance_id, target, count, stopped) {
 				save_notification_state(r, key, {last_sent = now})
 				record_notice(s, row.owner_user_id, stopped)
 			} else {

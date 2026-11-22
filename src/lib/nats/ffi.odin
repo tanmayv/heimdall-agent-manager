@@ -31,7 +31,7 @@ foreign client {
 	ham_nats_destroy :: proc(conn: ^Connection) ---
 	ham_nats_publish :: proc(conn: ^Connection, subject: cstring, data: rawptr, size: c.int, id: cstring, keys, values: [^]cstring, count: c.int, out: ^Pub_Ack, js_error: ^i32) -> i32 ---
 	ham_nats_stream :: proc(conn: ^Connection, operation: c.int, name: cstring, subjects: [^]cstring, count: c.int, age, duplicates, replicas: i64, rollup, direct, schedules, ttl, retention: c.int, out: ^Stream_State, js_error: ^i32) -> i32 ---
-	ham_nats_consumer_add :: proc(conn: ^Connection, stream, durable: cstring, filters: [^]cstring, count: c.int, ack_wait, max_deliver: i64, deliver_new: c.int, max_ack_pending: i64, js_error: ^i32) -> i32 ---
+	ham_nats_consumer_add :: proc(conn: ^Connection, stream, durable: cstring, filters: [^]cstring, count: c.int, ack_wait, max_deliver, start_time_ns: i64, deliver_new: c.int, max_ack_pending: i64, js_error: ^i32) -> i32 ---
 	ham_nats_consumer_delete :: proc(conn: ^Connection, stream, durable: cstring, js_error: ^i32) -> i32 ---
 	ham_nats_pull_bind :: proc(out: ^^Pull, conn: ^Connection, stream, durable: cstring, js_error: ^i32) -> i32 ---
 	ham_nats_pull_destroy :: proc(pull: ^Pull) ---

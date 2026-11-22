@@ -687,6 +687,7 @@ MIGRATION_222_EXTENSION_VERSION_SYNC :: #load("migrations/222_extension_version_
 MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
 
 MIGRATION_EVENTS_005_DELIVERY_RETENTION :: #load("migrations/events_005_delivery_retention.sql", string)
+MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS :: #load("migrations/events_006_instance_subscriptions.sql", string)
 MIGRATION_EVENTS_004_DELIVERY :: #load("migrations/events_004_delivery.sql", string)
 MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions.sql", string)
 
@@ -980,6 +981,7 @@ migration_order :: [?]string {
 	"234_codex_acp_transport.sql",
 	"235_extension_version_sync_0_5_72.sql",
 	"agents_001_start_ref.sql",
+	"events_006_instance_subscriptions.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1034,6 +1036,12 @@ run_migrations :: proc(
 			continue
 		}
 		if name == "bots_web_003_action_refs.sql" && table_column_exists(conn, "channel_messages", "action_ids_json") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// events_006 commits atomically; its lifecycle trigger proves a commit that
+		// crashed before its ledger insert.
+		if name == "events_006_instance_subscriptions.sql" && sqlite_object_exists(conn, "event_bot_instance_replaced") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -1473,7 +1481,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1546,6 +1554,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "coordinator_idle_002_stop_reason.sql" do return strings.clone(MIGRATION_COORDINATOR_IDLE_002_STOP_REASON)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
+	if name == "events_006_instance_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS)
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
 	if name == "events_003_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_003_SUBSCRIPTIONS)
 	if name == "events_002_topics.sql" do return strings.clone(MIGRATION_EVENTS_002_TOPICS)

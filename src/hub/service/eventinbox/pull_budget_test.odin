@@ -71,7 +71,7 @@ pull_fixture_start :: proc(t: ^testing.T, agent: string, count: int, ack_wait: t
 		id := fmt.tprintf("%s_%d", agent, i)
 		testing.expect_value(
 			t,
-			f.repos.event_subscriptions.put(f.repos.event_subscriptions.ctx, {subscription_id = id, owner_user_id = "alice", subscriber_agent_id = agent, chain_id = chain, source = "role_default", filter_subjects = string(encoded), wake_policy = "catalog", consumer_name = id, created_at = "now"}).code,
+			f.repos.event_subscriptions.put(f.repos.event_subscriptions.ctx, {subscription_id = id, owner_user_id = "alice", subscriber_instance_id = agent, chain_id = chain, source = "role_default", filter_subjects = string(encoded), wake_policy = "catalog", consumer_name = id, created_at = "now"}).code,
 			domain.Error_Code.None,
 		)
 	}
