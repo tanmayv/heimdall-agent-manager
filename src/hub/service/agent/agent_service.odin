@@ -329,13 +329,10 @@ reserve_runtime_launch :: proc(service: ^Agent_Service, inst: domain.Agent_Insta
 }
 
 create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	saved, generation, ok, err := prepare_instance(service, auth, input)
-	if !ok do return domain.Agent_Instance{}, false, err
-	if sent, send_err := send_instance_launch(service, saved); !sent {
-		project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, saved.bridge_id, generation, saved.agent_instance_id)
-		return domain.Agent_Instance{}, false, send_err
-	}
-	return saved, true, domain.Domain_Error{}
+ inst, created, err := create_instance_stopped(service, auth, input)
+ if !created do return {}, false, err
+ defer domain.agent_instance_destroy(&inst)
+ return start_instance(service, auth, inst.agent_instance_id)
 }
 
 // prepare_instance is create_instance WITHOUT the network send: it validates,
@@ -882,41 +879,13 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 }
 
 restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	if idle, err := reconfiguration_require_idle(service, instance_id); !idle do return {}, false, err
-	inst, ok, err := get_instance(service, auth, instance_id)
-	if !ok do return domain.Agent_Instance{}, false, err
-	inst = clear_user_stop(service, inst)
-	return relaunch_instance(service, auth, inst, inst.provider, inst.model)
+ inst, _, ok, err := start(service, auth, instance_id, {if_live=.Relaunch})
+ return inst, ok, err
 }
 
-// clear_user_stop: an explicit user start/restart makes the instance eligible
-// for task leases again (F4).
-clear_user_stop :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> domain.Agent_Instance {
-	if inst.stopped_by == "" do return inst
-	next := inst
-	next.stopped_by = ""
-	next.updated_at = platform.clock_now(service.clock)
-	if saved, sok, _ := iface.agent_save_instance(service.agents, next); sok do return saved
-	return inst
-}
-
-// start_instance starts a STOPPED instance. Unlike restart (absolute
-// stop-then-start), start refuses an instance that is already live so the agent
-// gets a clear "already_running" (409/Conflict) instead of silently re-spawning.
-// The machine-readable code rides in details_json so ham-ctl can branch on it.
 start_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
-	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
-	if guard!=nil {if err:=guard(guard_ctx);err.code!=.None do return {},false,err}
-	inst, ok, err := get_instance(service, auth, instance_id)
-	if !ok do return domain.Agent_Instance{}, false, err
-	if runtime_expected_active(inst.runtime_status) {
-		msg := strings.concatenate({"instance ", inst.agent_instance_id, " is already running (runtime_status=", inst.runtime_status, ")"})
-		details := strings.concatenate({"{\"code\":\"already_running\",\"runtime_status\":\"", inst.runtime_status, "\"}"})
-		return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, msg, details)
-	}
-	inst = clear_user_stop(service, inst)
-	return relaunch_instance_locked(service, auth, inst, inst.provider, inst.model)
+ inst, _, ok, err := start(service, auth, instance_id, {if_live=.Refuse, guard=guard, guard_ctx=guard_ctx})
+ return inst, ok, err
 }
 
 get_instance_pane :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, since_hash: string, width, line_limit: int) -> (string, bool, domain.Domain_Error) {
@@ -1116,68 +1085,35 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	inst.provider = resolved.provider
 	inst.model = resolved.model
 	if input.has_display_name do inst.display_name = input.display_name
-	if runtime_expected_active(inst.runtime_status) do return relaunch_instance_locked(service, auth, inst, resolved.provider, resolved.model)
+	if runtime_expected_active(inst.runtime_status) {
+  ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Relaunch, provider=resolved.provider, model=resolved.model, profile=inst.provider_profile, expected=&inst})
+  if begin_err.code != .None do return {}, false, begin_err
+  defer start_ticket_destroy(&ticket)
+  if input.has_display_name {
+   next := ticket.instance
+   next.display_name = input.display_name
+   _, saved, save_err := iface.agent_save_instance_guarded(service.agents, next, next.run_count, next.launch_epoch, next.configuration_revision)
+   if !saved {
+    start_settle(service, &ticket, false)
+    if save_err.code == .None do return {}, false, domain.domain_error(.Conflict, "instance changed before runtime action")
+    return {}, false, save_err
+   }
+   delete(ticket.instance.display_name)
+   ticket.instance.display_name = strings.clone(input.display_name)
+  }
+  if send_err := start_send(service, &ticket); send_err.code != .None do return {}, false, send_err
+  result := ticket.instance
+  ticket.instance = {}
+  return result, true, {}
+ }
 	inst.updated_at = platform.clock_now(service.clock)
 	return iface.agent_save_instance(service.agents, inst)
 }
 
-relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string,provider_profile:string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	inst:=inst
-	if provider_profile!="" {inst.provider=provider;inst.provider_profile=provider_profile}
-	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
-	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
-	return relaunch_instance_locked(service, auth, inst, provider, model)
-}
-
-relaunch_instance_locked :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	if idle, err := reconfiguration_require_idle(service, inst.agent_instance_id); !idle do return {}, false, err
-	current, found, read_err := iface.agent_get_instance(service.agents, inst.agent_instance_id)
-	if !found do return {}, false, read_err
-	defer domain.agent_instance_destroy(&current)
-	if current.configuration_revision != inst.configuration_revision || current.launch_epoch != inst.launch_epoch || current.bridge_id != inst.bridge_id do return {}, false, domain.domain_error(.Conflict, "instance configuration changed before runtime action")
-	_, auth_ok, auth_err := validate_pinned_provider_model(service, auth, inst, provider, model)
-	if !auth_ok do return domain.Agent_Instance{}, false, auth_err
-	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
-	if !bridge_ok do return domain.Agent_Instance{}, false, bridge_err
-	if bridge.owner_user_id != inst.owner_user_id do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "bridge not found")
-	ps:=agent_placement(service)
- if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(bridge.owner_user_id)}); !eligible do return {},false,agent_placement_error(&ps,bridge,reason,"pinned bridge is offline")
-	now := platform.clock_now(service.clock)
-	next := inst
-	if next.provider!=provider do next.provider_profile=provider
-	next.provider = provider
-	next.model = model
-	next.runtime_status = "launching"
-	next.startup_status = "starting"
-	next.activity_status = "unknown"
-	if err:=freeze_runtime_transport(service,&next);err.code!=.None do return {},false,err
-	next.launch_epoch=runtime_launch_epoch(service,next.runtime_transport,next.launch_epoch)
-	next.run_count += 1
-	next.started_at = now
-	next.stopped_at = ""
-	next.updated_at = now
-	next.last_seen_at = now
-	generation, admitted, quota_err := reserve_runtime_launch(service, next)
-	if !admitted do return {}, false, quota_err
-	launch_sent := false
-	defer if !launch_sent do project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, next.bridge_id, generation, next.agent_instance_id)
-	saved,saved_ok,save_err:=iface.agent_save_instance(service.agents,next)
-	if !saved_ok do return {},false,save_err
-	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", next.agent_instance_id})
-	if sent, send_err := send_frozen_instance_launch(service, command_id, saved); !sent {
-		// Keep the consumed generation: reverting run_count would admit stale
-		// reports. Make the unsent launch terminal so a later retry can proceed.
-		failed := saved
-		failed.runtime_status = "failed"
-		failed.startup_status = "failed"
-		failed.stopped_at = now
-		if _, failed_ok, failed_err := iface.agent_save_instance(service.agents, failed); !failed_ok {
-			return {}, false, failed_err
-		}
-		return {}, false, send_err
-	}
-	launch_sent = true
-	return saved,true,{}
+relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string, provider_profile:string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+ expected := inst
+ next, _, ok, err := start(service, auth, inst.agent_instance_id, {if_live=.Relaunch, provider=provider, model=model, profile=provider_profile, expected=&expected})
+ return next, ok, err
 }
 
 // error_json is the report's wire error object (REQ-ERR-PROTO-A), recorded as the

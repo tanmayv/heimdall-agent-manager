@@ -296,8 +296,24 @@ coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contr
 	if !coordinator_wake_guard_try(sender_key, target_instance_id, now_ms) do return outcome
 	d.guard_taken = true
 	ch := Content_Handlers{auth = h.auth, agents = h.agents, content = h.content, event_bus = h.event_bus}
-	restarted, restart_err := restart_stopped_conversation_instance(&ch, auth, cid)
-	if !restarted { outcome = .Failed; code = restart_err.code; return outcome }
+	guard := Coordinator_Start_Guard{agents=h.agents, auth=auth, instance_id=target_instance_id}
+	restarted, restart_err := restart_stopped_conversation_instance(&ch, auth, cid, &guard, coordinator_start_guard)
+	if !restarted { if guard.user_stopped { outcome = .User_Stopped; return outcome }; outcome = .Failed; code = restart_err.code; return outcome }
 	outcome = .Started
 	return outcome
+}
+
+
+// Recheck the policy inside reconfiguration_mutex, after any concurrent stop.
+Coordinator_Start_Guard :: struct { agents: ^agent_service.Agent_Service, auth: contracts.Auth_Context, instance_id: string, user_stopped: bool }
+coordinator_start_guard :: proc(ctx: rawptr) -> domain.Domain_Error {
+ g := (^Coordinator_Start_Guard)(ctx)
+ inst, ok, err := agent_service.get_instance(g.agents, g.auth, g.instance_id)
+ if !ok do return err
+ defer domain.agent_instance_destroy(&inst)
+ if inst.stopped_by == agent_service.STOPPED_BY_USER {
+  g.user_stopped = true
+  return domain.domain_error(.Conflict, "coordinator was stopped by user")
+ }
+ return {}
 }

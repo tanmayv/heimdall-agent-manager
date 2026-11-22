@@ -96,12 +96,12 @@ mcp_runtime_call :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,tool:string,
 		domain.instance_reconfiguration_destroy(&op)
 		if !valid do return "","revision_conflict"
 	}
-	generation:int;prepared:=false;committed:=false
-	defer if prepared && !committed do project.bridge_runtime_instance_cancel_reservation(g.agents.bridge_runtime_registry,i.bridge_id,generation,i.agent_instance_id)
+	prepared:=false
 	if tool=="instances.create" {
-		row,gen,ok,err:=agent.prepare_instance(&g.agents,principal,{agent_id=a.agent_id,bridge_id=a.bridge_id,project_id=domain.Project_ID(a.project_id),chain_id=a.chain_id,provider=a.provider,provider_profile=a.provider_profile,model=a.model,member_role="worker",display_name=create_title},create_title)
+		row,ok,err:=agent.create_instance_stopped(&g.agents,principal,{agent_id=a.agent_id,bridge_id=a.bridge_id,project_id=domain.Project_ID(a.project_id),chain_id=a.chain_id,provider=a.provider,provider_profile=a.provider_profile,model=a.model,member_role="worker",display_name=create_title},create_title)
 		if !ok || err.code!=.None do return "",mcp_task_error(err)
-		i=row;generation=gen;prepared=true;state.run_count=i.run_count;state.result.agent_instance_id=i.agent_instance_id;state.result.agent_id=i.agent_id
+		// Persist the intended first generation before dispatch, even though the row is stopped at zero.
+		i=row;prepared=true;state.run_count=i.run_count+1;state.result.agent_instance_id=i.agent_instance_id;state.result.agent_id=i.agent_id
 		// The prepared row does not carry the joined effective agent permission.
 		// Read it before hashing or comparing its actual launch configuration.
 		fresh,found,read_err:=agent.get_instance(&g.agents,principal,i.agent_instance_id)
@@ -114,15 +114,15 @@ mcp_runtime_call :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,tool:string,
 	if err:=sqlite.mcp_receipt_put(&g.db,view.owner,view.grant,tool,a.request_id,digest,state.result.agent_instance_id,string(state_json));err.code!=.None do return "","request_failed"
 	ok,err:=iface.unit_of_work_commit(&uow);finished=true
 	if !ok || err.code!=.None do return "","request_failed"
-	committed=true
 	// The authorization and task lease check run again after preparation and
 	// before entering any native network preflight or dispatch.
 	guard:=MCP_Runtime_Guard{g=g,raw=raw,view=view,tool=tool,instance=i,cancel_ctx=cancel_ctx,cancel=cancel}
-	if err:=mcp_runtime_native_guard(&guard);err.code!=.None {state.result.status="failed";state.result.phase="not_dispatched";state.result.error_code=guard.code;mcp_runtime_store(g,view,state,prepared);if prepared do project.bridge_runtime_instance_cancel_reservation(g.agents.bridge_runtime_registry,i.bridge_id,generation,i.agent_instance_id);return "",guard.code}
+	if err:=mcp_runtime_native_guard(&guard);err.code!=.None {state.result.status="failed";state.result.phase="not_dispatched";state.result.error_code=guard.code;mcp_runtime_store(g,view,state,prepared);return "",guard.code}
 	state.result.phase="awaiting_runtime"
 	switch tool {
 	case "instances.create":
-		sent,send_err:=agent.send_instance_launch(&g.agents,i)
+		row,_,sent,send_err:=agent.start(&g.agents,principal,i.agent_instance_id,{if_live=.Refuse,guard=mcp_runtime_native_guard,guard_ctx=&guard})
+		if sent { state.run_count=row.run_count; state.launch_hash=auth.sha256_hex(row.launch_epoch); state.result.revision=mcp.runtime_revision(row) }
 		if !sent {state.result.status="repair_required";state.result.phase="launch_unconfirmed";state.result.error_code=mcp_task_error(send_err)}
 	case "instances.start":
 		row,accepted,action_err:=agent.start_instance(&g.agents,principal,i.agent_instance_id,&guard,mcp_runtime_native_guard)
@@ -144,7 +144,7 @@ mcp_runtime_call :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,tool:string,
 		}
 	}
 	if guard.code!="" {state.result.status="failed";state.result.phase="not_dispatched";state.result.error_code=guard.code}
-	if !mcp_runtime_store(g,view,state) {state.result.status="repair_required";state.result.phase="progress_unconfirmed"}
+	if !mcp_runtime_store(g,view,state,prepared && state.result.phase=="not_dispatched") {state.result.status="repair_required";state.result.phase="progress_unconfirmed"}
 	if guard.code=="invalid_token" do return "","invalid_token"
 	if code:=mcp_runtime_authorized(g,raw,view,tool);code!="" do return "",code
 	return mcp_runtime_poll(g,view,state),""
@@ -177,7 +177,10 @@ mcp_runtime_store :: proc(g:^App_Graph,view:mcp.Access_View,state:MCP_Runtime_St
 		// A committed definition with a cancelled/revoked launch must not remain
 		// eligible for an unsolicited task wake after its intent guard is cleared.
 		i,found,e:=iface.agent_get_instance(&g.repos.agents,state.result.agent_instance_id)
-		if !found || e.code!=.None || i.run_count!=state.run_count || i.configuration_revision!=state.configuration_revision || auth.sha256_hex(i.launch_epoch)!=state.launch_hash {iface.unit_of_work_rollback(&uow);return false}
+		// A cancelled creation has not consumed its intended first generation.
+		expected_run:=state.run_count
+  if state.result.tool=="instances.create" && state.result.phase=="not_dispatched" && i.run_count==0 do expected_run=0
+  if !found || e.code!=.None || i.run_count!=expected_run || i.configuration_revision!=state.configuration_revision || auth.sha256_hex(i.launch_epoch)!=state.launch_hash {iface.unit_of_work_rollback(&uow);return false}
 		i.runtime_status="stopped";i.startup_status="stopped";i.stopped_by=agent.STOPPED_BY_USER
 		i.updated_at=platform.clock_now(&g.clock);i.stopped_at=i.updated_at
 		_,saved,save_err:=iface.agent_save_instance(&g.repos.agents,i)

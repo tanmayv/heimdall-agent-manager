@@ -726,6 +726,8 @@ MIGRATION_234_CODEX_ACP_TRANSPORT :: #load("migrations/234_codex_acp_transport.s
 
 MIGRATION_235_EXTENSION_VERSION_SYNC :: #load("migrations/235_extension_version_sync_0_5_72.sql", string)
 
+MIGRATION_AGENTS_001_START_REF :: #load("migrations/agents_001_start_ref.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -977,6 +979,7 @@ migration_order :: [?]string {
 	"233_extension_version_sync_0_5_71.sql",
 	"234_codex_acp_transport.sql",
 	"235_extension_version_sync_0_5_72.sql",
+	"agents_001_start_ref.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1513,6 +1516,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+ if name == "agents_001_start_ref.sql" do return strings.clone(MIGRATION_AGENTS_001_START_REF)
 	if migrations_dir != "" {
 		path := strings.concatenate({migrations_dir, "/", name}, context.temp_allocator)
 		data, err := os.read_entire_file(path, context.allocator)
