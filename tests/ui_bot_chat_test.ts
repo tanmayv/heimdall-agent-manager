@@ -101,6 +101,11 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
     if (!state.enabled && path.startsWith('/bots/')) return Response.json({ error: { code: 'forbidden', message: 'Experiment off' } }, { status: 403 });
     if (path === '/bots/me') return state.bot ? Response.json({ data: state.bot }) : Response.json({ error: { code: 'not_found', message: 'No bot' } }, { status: 404 });
     if (path === '/bots/me/messages') {
+      const ids = url.searchParams.get('message_ids');
+      if (ids) {
+        const requested = new Set<string>(JSON.parse(ids));
+        return Response.json({ data: { messages: state.messages.filter(message => requested.has(message.message_id)), next_cursor: '' } });
+      }
       const page = state.page(Number(url.searchParams.get('limit') || 50), url.searchParams.get('cursor') || '');
       return page ? Response.json({ data: page }) : Response.json({ error: { code: 'bad_request', message: 'Bad cursor' } }, { status: 400 });
     }
@@ -252,6 +257,8 @@ test('chat: missing bot explains how to create one', async () => {
 
 test('chat: unified history renders channel labels oldest-first and pages older messages', async () => {
   const state = hub(Array.from({ length: 120 }, (_, i) => msg(i + 1, { provider: (['telegram', 'whatsapp', 'web'] as const)[i % 3], ...(i === 1 || i === 21 ? { read_at: '', replied_at: '' } : {}) })));
+  const displaced = state.messages[70];
+  Object.assign(displaced, { direction: 'inbound', read_at: '', replied_at: '' });
   state.messages.push(msg(200, { message_id: 'bmsg_purged', body_purged: true, body: '', created_at: '2026-11-20T07:00:00Z' }));
   await fixture(state, 'chat', async (h) => {
     assert.equal(h.get('bot-chat-title')!.textContent, 'Ninjy bot');
@@ -296,6 +303,19 @@ test('chat: unified history renders channel labels oldest-first and pages older 
     assert.equal(status('0002'), '✓✓ Read');
     assert.equal(status('0022'), '✓✓ Read');
     assert.equal(h.requests.filter((r: any) => r.path === '/bots/me/messages' && r.search.includes('cursor=')).length, 4);
+
+    state.messages.push(msg(122, { read_at: '', replied_at: '' }));
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0122'), '✓ Queued');
+    assert.equal(status('0071'), '✓ Queued', 'the displaced row stays visible');
+    assert.ok(h.requests.some((r: any) => new URLSearchParams(r.search).get('message_ids') === '["bmsg_0071"]'));
+
+    displaced.read_at = '2026-11-20T09:01:00Z';
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0071'), '✓✓ Read', 'a retained row between page ranges still receives its receipt');
+    assert.equal(status('0122'), '✓ Queued');
   });
 });
 

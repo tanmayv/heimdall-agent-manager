@@ -18,6 +18,7 @@ new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Rep
 	return iface.Bot_Repository {
 		web_message_store = web_message_store_sqlite,
 		messages_page = messages_page_sqlite,
+		messages_by_ids = messages_by_ids_sqlite,
 		attachments_for_messages = attachments_for_messages_sqlite,
 		attachment_get = attachment_get_sqlite,
 		attachment_store_artifact = attachment_store_artifact_sqlite,

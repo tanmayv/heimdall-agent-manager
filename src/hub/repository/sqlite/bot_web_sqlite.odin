@@ -1,5 +1,6 @@
 package sqlite
 
+import "core:encoding/json"
 import "core:fmt"
 import domain "odin_test:hub/domain"
 
@@ -59,6 +60,14 @@ web_message_store_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, m
 	if get_err.code != .None do return {}, false, get_err
 	if len(stored) != 1 do return {}, false, domain.domain_error(.Internal_Error, "stored web message missing")
 	return stored[0], true, {}
+}
+
+messages_by_ids_sqlite :: proc(ctx: rawptr, owner, bot_id: string, ids: []string) -> ([]domain.Channel_Message, domain.Domain_Error) {
+	encoded, err := json.marshal(ids, allocator = context.temp_allocator)
+	if err != nil do return nil, domain.domain_error(.Validation_Failed, "invalid message IDs")
+	return bot_repo_list_channel_message(bot_repo_conn(ctx),
+		"SELECT message_id, binding_id, owner_user_id, bot_id, direction, provider_update_key, external_message_id, body, body_purged, send_state, send_error, created_at, read_at, replied_at, action_ids_json FROM channel_messages WHERE owner_user_id = ? AND bot_id = ? AND message_id IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC, message_id DESC;",
+		{owner, bot_id, string(encoded)})
 }
 
 messages_page_sqlite :: proc(ctx: rawptr, owner, bot_id, before: string, limit: int) -> ([]domain.Channel_Message, domain.Domain_Error) {

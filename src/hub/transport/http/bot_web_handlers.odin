@@ -51,6 +51,20 @@ Bot_History_Message :: struct {
 	attachments: []Bot_Channel_Attachment_Wire,
 	metadata: json.Object `json:"metadata,omitempty"`,
 }
+bot_history_message_ids :: proc(raw: string) -> ([]string, bool) {
+	if len(raw) > 6000 do return nil, false
+	value, err := json.parse(raw, allocator = context.temp_allocator)
+	array, ok := value.(json.Array)
+	if err != nil || !ok || len(array) == 0 || len(array) > 25 do return nil, false
+	ids := make([]string, len(array), context.temp_allocator)
+	for item, i in array {
+		id, valid := item.(json.String)
+		if !valid || len(id) == 0 || len(id) > 200 do return nil, false
+		ids[i] = string(id)
+	}
+	return ids, true
+}
+
 bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bot_Handlers)(ctx)
 	auth, ok, refusal := bot_require_auth(h, req)
@@ -66,7 +80,17 @@ bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 	cursor := query_value(req.query, "cursor")
 	if len(cursor) > 200 do return respond_error(domain.domain_error(.Validation_Failed, "invalid history cursor"), req.request_id)
-	messages, list_err := iface.messages_page(h.bots.repo, auth.user_id, bot.bot_id, cursor, limit + 1)
+	messages: []domain.Channel_Message
+	list_err: domain.Domain_Error
+	if has_query_key(req.query, "message_ids") {
+		ids, valid := bot_history_message_ids(query_value(req.query, "message_ids"))
+		if !valid || has_query_key(req.query, "cursor") || has_query_key(req.query, "limit") {
+			return respond_error(domain.domain_error(.Validation_Failed, "message_ids requires an array of 1..25 IDs without pagination"), req.request_id)
+		}
+		messages, list_err = iface.messages_by_ids(h.bots.repo, auth.user_id, bot.bot_id, ids)
+	} else {
+		messages, list_err = iface.messages_page(h.bots.repo, auth.user_id, bot.bot_id, cursor, limit + 1)
+	}
 	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
 	if list_err.code != .None do return respond_error(list_err, req.request_id)
 	ids := make([]string, min(limit, len(messages)), context.temp_allocator)

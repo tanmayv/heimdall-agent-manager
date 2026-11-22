@@ -69,6 +69,10 @@ export const botsApi = heimdallApi.injectEndpoints({
       },
       providesTags: ['Bot'],
     }),
+    getUnifiedBotMessagesById: build.query<BotMessagePage, readonly string[]>({
+      queryFn: (ids) => request(root + '/messages?message_ids=' + encodeURIComponent(JSON.stringify(ids))),
+      providesTags: ['Bot'],
+    }),
     sendBotWebMessage: build.mutation<{ message_id: string; created: boolean }, { text: string; idempotency_key: string; artifact_ids?: string[] }>({
       queryFn: (body) => request(root + '/channels/web/messages', 'POST', body), invalidatesTags: ['Bot'],
     }),

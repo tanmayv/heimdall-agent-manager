@@ -84,6 +84,20 @@ test_web_unified_history_mixed_providers_paging_and_owner_scope :: proc(t: ^test
 		req := bot_http_request(f, "GET", "/api/v1/bots/me/messages", ""); req.query = query
 		testing.expect_value(t, bot_unified_messages_handler(&f.handlers, req).status, 400)
 	}
+	// ID lookups share history ownership and never page into neighboring rows.
+	by_id := bot_http_request(f, "GET", "/api/v1/bots/me/messages", "")
+	by_id.query = "message_ids=%5B%22web-inbound%22%2C%22other-owner%22%2C%22missing%22%5D"
+	selected := bot_unified_messages_handler(&f.handlers, by_id)
+	targeted: struct {data: struct {messages: []Bot_History_Message, next_cursor: string}}
+	_ = json.unmarshal(transmute([]u8)selected.body, &targeted, allocator = context.temp_allocator)
+	testing.expect(t, selected.status == 200 && targeted.data.next_cursor == "")
+	if testing.expect_value(t, len(targeted.data.messages), 1) {
+		testing.expect_value(t, targeted.data.messages[0].message_id, "web-inbound")
+	}
+	for query in ([]string{"message_ids=", "message_ids=%5B1%5D", "message_ids=%5B%22web-inbound%22%5D&cursor=web-outbound"}) {
+		by_id.query = query
+		testing.expect_value(t, bot_unified_messages_handler(&f.handlers, by_id).status, 400)
+	}
 	// No messages is a normal terminal page.
 	testing.expect(t, sqlite.exec(&f.wire.conn, "DELETE FROM channel_messages;"))
 	empty := bot_unified_messages_handler(&f.handlers, bot_http_request(f, "GET", "/api/v1/bots/me/messages", ""))

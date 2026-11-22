@@ -126,6 +126,29 @@ function BotChatView({ bot }: { bot: BotView }) {
     setKnown(current => olderPages.reduce((known, page) => mergeBotMessages(known, page?.messages), current));
   }, [olderPages]);
 
+  const mergeReceiptPage = useCallback((messages: UnifiedBotMessage[]) => {
+    setKnown(current => {
+      const receipts = messages.flatMap(({ message_id, read_at }) => {
+        const previous = current.get(message_id);
+        return previous && !previous.read_at && read_at ? [{ ...previous, read_at }] : [];
+      });
+      return mergeBotMessages(current, receipts);
+    });
+  }, []);
+  const receiptBatches = useMemo(() => {
+    const covered = new Set(head.currentData?.messages.map(message => message.message_id));
+    for (const page of olderPages) {
+      for (const message of page?.messages ?? []) covered.add(message.message_id);
+    }
+    // A moving head can leave retained rows between two exclusive page ranges.
+    const ids = [...known.values()]
+      .filter(message => message.direction === 'inbound' && !message.read_at && !covered.has(message.message_id))
+      .map(message => message.message_id);
+    const batches: string[][] = [];
+    for (let start = 0; start < ids.length; start += 25) batches.push(ids.slice(start, start + 25));
+    return batches;
+  }, [head.currentData, known, olderPages]);
+
   const timeline = useMemo(() => botTimeline(known), [known]);
   const shownPending = useMemo(() => visiblePendingSends(pending, known), [pending, known]);
   const messages = useMemo(() => botChatMessages(timeline, shownPending, sentKeys), [timeline, shownPending, sentKeys]);
@@ -212,6 +235,9 @@ function BotChatView({ bot }: { bot: BotView }) {
     : <p data-debug-id="bot-chat-empty" className="py-10 text-center text-sm text-muted">No messages yet. Say hello to {bot.display_name}.</p>;
 
   return <>
+    {receiptBatches.map(ids => (
+      <BotReceiptRefresh key={JSON.stringify(ids)} ids={ids} onMessages={mergeReceiptPage} />
+    ))}
     {older.error ? (
       <div data-debug-id="bot-chat-older-error-row" className="flex min-w-0 shrink-0 items-center justify-center gap-2 px-4 py-2">
         <p role="alert" data-debug-id="bot-chat-older-error" className="min-w-0 text-xs text-muted">{older.error}</p>
@@ -278,6 +304,14 @@ function BotChatView({ bot }: { bot: BotView }) {
       </FloatingComposerDock>
     </div>
   </>;
+}
+
+function BotReceiptRefresh({ ids, onMessages }: { ids: string[]; onMessages: (messages: UnifiedBotMessage[]) => void }) {
+  const { currentData } = botsApi.endpoints.getUnifiedBotMessagesById.useQuery(ids);
+  useEffect(() => {
+    if (currentData) onMessages(currentData.messages);
+  }, [currentData, onMessages]);
+  return null;
 }
 
 function ChannelBadge({ provider }: { provider: UnifiedBotMessage['provider'] }) {
