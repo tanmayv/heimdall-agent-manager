@@ -2743,7 +2743,7 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 // bridge_runtime_launch_agent launches (or confirms) the instance named in a
 // launch_agent command. On failure `err` carries the typed code + class so callers
 // decide retry/park/fail from the class, never from the `detail` text.
-bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0) -> (ok: bool, detail: string, err: Bridge_Error) {
+bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0, bot_delivery := false) -> (ok: bool, detail: string, err: Bridge_Error) {
 	if !bridge_auto_update_launch_enter() do return false, "bridge is applying an automatic update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
 	defer bridge_auto_update_launch_leave()
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
@@ -2775,22 +2775,28 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	// Task wakes carry a persisted generation even without a migration epoch.
 	// A duplicate wake must preserve an already-live child and its local token;
 	// delayed commands must never replace a newer launch or undo its stop.
-	if run_count > 0 && launch_epoch == "" {
+	if run_count > 0 && (launch_epoch == "" || bot_delivery) {
 		current := bridge_agent_instance_run_count(instance_id)
 		if run_count < current do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
-		if run_count == current {
+		if run_count == current && launch_epoch == "" {
 			assertion := bridge_agent_instance_assertion(instance_id)
 			defer delete(assertion)
-			if assertion == "" do return false, "startup generation was revoked", bridge_error(.agent_launch_failed, .denied)
 			sync.mutex_lock(&bridge_runtime_mutex)
 			stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
 			sync.mutex_unlock(&bridge_runtime_mutex)
-			if stopped do return false, "startup generation was stopped", bridge_error(.agent_launch_failed, .denied)
-			socket, daemon_ok := bridge_pty_host_ensure_daemon()
-			if !daemon_ok do return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
-			confirmed, queried := bridge_startup_confirm_spawned(socket, instance_id, run_count)
-			if !queried do return false, "cannot confirm existing launch identity", bridge_error(.pty_host_unreachable)
-			if confirmed { bridge_task_wake_note_launched(instance_id); return true, "", {} }
+			// An active bot delivery may cold-start an idle-stopped bot from a freshly
+			// fetched Hub descriptor. An ordinary delayed wake must respect that stop.
+			if !bot_delivery {
+				if assertion == "" do return false, "startup generation was revoked", bridge_error(.agent_launch_failed, .denied)
+				if stopped do return false, "startup generation was stopped", bridge_error(.agent_launch_failed, .denied)
+			}
+			if assertion != "" && !stopped {
+				socket, daemon_ok := bridge_pty_host_ensure_daemon()
+				if !daemon_ok do return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
+				confirmed, queried := bridge_startup_confirm_spawned(socket, instance_id, run_count)
+				if !queried do return false, "cannot confirm existing launch identity", bridge_error(.pty_host_unreachable)
+				if confirmed { bridge_task_wake_note_launched(instance_id); return true, "", {} }
+			}
 		}
 	}
 	if launch_epoch != "" {

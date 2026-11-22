@@ -81,10 +81,10 @@ bridge_bot_launch_via_descriptor :: proc(instance_id, command_id: string) -> (ok
 		if left_ms <= 0 do return false, "launch deadline elapsed", bridge_error(.hub_connect_failed, .transport)
 		deadline_ns = time.to_unix_nanoseconds(time.now()) + left_ms * i64(time.Millisecond)
 	}
-	command_json, fetch_err, fetched := bridge_wake_fetch_enriched_launch_json(instance_id, command_id, deadline_ns)
+	command_json, fetch_err, fetched := bridge_wake_fetch_enriched_launch_json(instance_id, command_id, deadline_ns, use_manifest_run_count = true)
 	defer delete(command_json)
 	if !fetched do return false, "could not fetch enriched descriptor (agent_id)", fetch_err
-	return bridge_runtime_launch_agent(command_id, command_json, deadline_ns)
+	return bridge_runtime_launch_agent(command_id, command_json, deadline_ns, bot_delivery = true)
 }
 bridge_bot_busy_inputs :: proc() -> (traffic_stopped, update_reserved, vault_unlocked: bool) {
 	traffic_stopped = sync.atomic_load(&bridge_hub_traffic_stopped)

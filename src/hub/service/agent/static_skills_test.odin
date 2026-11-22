@@ -93,7 +93,7 @@ test_ninjy_bootstrap_selection_and_warm_manifest :: proc(t: ^testing.T) {
 			return {
 				agent_instance_id = id, agent_id = identity.agent_id,
 				owner_user_id = identity.owner_user_id, bridge_id = "brg_ninjy_fixture",
-				provider = "codex", runtime_status = "stopped",
+				provider = "codex", runtime_status = "stopped", run_count = 7,
 			}, true, {}
 		},
 	}
@@ -114,6 +114,7 @@ test_ninjy_bootstrap_selection_and_warm_manifest :: proc(t: ^testing.T) {
 	defer delete(instance_manifest)
 	testing.expect(t, instance_ok)
 	testing.expect(t, strings.contains(instance_manifest, bot_hash))
+	testing.expect(t, strings.contains(instance_manifest, `"run_count":7`))
 	testing.expect(t, strings.contains(instance_manifest, "Custom instruction fixture"))
 
 	fresh, fresh_ok, _ := bootstrap_manifest_conditional(

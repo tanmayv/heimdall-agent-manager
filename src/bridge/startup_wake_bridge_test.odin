@@ -115,6 +115,8 @@ startup_wake_duplicate_preserves_child_and_stale_or_stopped_is_denied :: proc(t:
 	defer delete(old)
 	ok, detail, _ := bridge_runtime_launch_agent("old", old)
 	testing.expect(t, !ok && strings.contains(detail, "superseded"), "delayed old wake cannot replace child")
+	ok, detail, _ = bridge_runtime_launch_agent("old", old, bot_delivery = true)
+	testing.expect(t, !ok && strings.contains(detail, "superseded"), "a stale bot descriptor cannot replace a newer child")
 	bridge_runtime_mark_stop_intent(id)
 	ok, detail, _ = bridge_runtime_launch_agent("wake", command)
 	testing.expect(t, !ok && strings.contains(detail, "stopped"), "same generation cannot undo stop")

@@ -296,7 +296,7 @@ bridge_task_wake_record_result :: proc(instance_id: string, generation: u64, ok:
 // agent_id (recoverable), so the caller fails the wake with that class rather than
 // materialize a degraded, header-only CLAUDE.md. Transient extracted strings
 // follow the same no-free convention as bridge_hub_handle_wake_agent.
-bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, deadline_ns: i64 = 0) -> (string, Bridge_Error, bool) {
+bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, deadline_ns: i64 = 0, use_manifest_run_count := false) -> (string, Bridge_Error, bool) {
 	credential_snapshot_298 := bridge_credential_snapshot()
 	defer delete(credential_snapshot_298)
 	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential_snapshot_298) == "" do return "", bridge_error(.hub_connect_failed, .config), false
@@ -355,5 +355,7 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
 	defer delete(effective_transport)
 	defer delete(catalog_etag)
 	defer delete(launch_epoch)
-	return bridge_wake_launch_command_json(command_id, instance_id, "", role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, "", "", permission_mode,provider_profile=provider_profile,effective_transport=effective_transport,catalog_etag=catalog_etag,launch_epoch=launch_epoch), {}, true
+	run_count := 0
+	if use_manifest_run_count do run_count, _ = bridge_provider_json_extract_int(inst_obj, "run_count")
+	return bridge_wake_launch_command_json(command_id, instance_id, "", role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, "", "", permission_mode,run_count=run_count,provider_profile=provider_profile,effective_transport=effective_transport,catalog_etag=catalog_etag,launch_epoch=launch_epoch), {}, true
 }
