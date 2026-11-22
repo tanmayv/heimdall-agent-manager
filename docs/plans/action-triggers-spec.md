@@ -2581,6 +2581,7 @@ The router returns the first registered route that matches (`route_matches`, `sr
 | `target.kind = "instance"` and the instance belongs to a bot (a row of `bots` names it as its instance) | `target_is_bot_instance`. A bot is targeted with kind `bot` (T19), so that its delivery goes through the bot path and the `bots` experiment is checked. This rule stays after T19 |
 | more than 16 triggers | `too_many_triggers` |
 | unknown trigger `kind` | `unknown_trigger_kind` |
+| changing `kind` on an existing trigger id through PATCH | `trigger_kind_immutable`; nothing is saved. To change kind, delete the old id and create a new trigger |
 | a config that `Trigger_Kind.compile` rejects | the kind's code, for example `invalid_cron`, `invalid_timezone`, `unknown_event_type`, `unknown_chain` |
 | a `schedule` trigger that would be effective while the support state is `Unsupported` | HTTP 409, `schedules_unsupported` |
 
@@ -3207,6 +3208,7 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 | `test_render_table` (`actions`) | every placeholder of 6.9; spaces inside braces; unknown placeholder left as written; a value that contains `{{…}}` is not expanded again |
 | `test_actions_api_crud` (`transport/http`) | create with two triggers and two rules; get returns the shape of 6.14; patch replaces triggers by id; enable and disable; delete; another owner gets 404 |
 | `test_actions_api_validation` (`transport/http`) | one case per row of the validation table in 6.14 |
+| `test_actions_patch_trigger_kind_immutable` (`transport/http`) | changing the kind of an existing trigger id returns 422 `trigger_kind_immutable`; no action, trigger or outbox changes are saved |
 | `test_actions_api_bot_target_refused_in_phase_1` (`transport/http`) | `target.kind = "bot"` → 422 `target_kind_unavailable` |
 | `test_actions_api_instance_target_of_bot_refused` (`transport/http`) | `target.kind = "instance"` with a bot's instance → 422 `target_is_bot_instance`; nothing is saved |
 | `test_actions_api_schedules_unsupported` (`transport/http`) | support `Unsupported`: a schedule trigger → 409 `schedules_unsupported`; an event trigger is accepted; `trigger-types` reports `schedules_supported: false` |

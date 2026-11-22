@@ -12,7 +12,6 @@ Repositories :: struct {
 	taskchains: Taskchain_Repository,
 	search: Search_Repository,
 	actions: Action_Repository,
-	scheduled_prompts: Scheduled_Prompt_Repository,
 	push_subscriptions: Push_Repository,
 	cards: Card_Repository,
 	issues: Issue_Repository,
