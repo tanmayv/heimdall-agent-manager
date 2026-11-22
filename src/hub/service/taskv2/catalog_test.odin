@@ -342,9 +342,11 @@ test_catalog_real_jetstream_rollup :: proc(t: ^testing.T) {
 		options = {url = server.url, timeout_ms = 1000},
 	}
 	defer nats.destroy(relay.connection)
-	for _ in 0 ..< 2 {
-		ok, published := eventrelay.step(&relay); testing.expect(t, ok && published, "relay publishes catalog row")
-	}
+	// One step drains the outbox in batches of RELAY_BATCH, so both rows go out
+	// together and a second step finds nothing left to publish.
+	ok, published := eventrelay.step(&relay); testing.expect(t, ok && published, "relay publishes catalog rows")
+	ok, published = eventrelay.step(&relay); testing.expect(t, ok && !published, "relay drained catalog rows in one step")
+	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM event_outbox WHERE published_at IS NULL;"), 0)
 	state, serr := nats.stream_info(relay.connection, "HEIM_EVENTS")
 	testing.expect_value(t, serr.status, i32(0))
 	testing.expect_value(t, state.messages, u64(1))
