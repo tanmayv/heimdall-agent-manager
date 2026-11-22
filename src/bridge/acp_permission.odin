@@ -176,7 +176,7 @@ acp_permissions_activity :: proc(r: ^ACP_Runtime) {
     if r.quiescing || r.d.stopped || r.client.failed do return
     waiting := false
     for pending in r.client.state.pending_inbound {
-        if pending.method == "session/request_permission" && pending.response_json == "" do waiting = true
+        if acp_runtime_driver(r).permission_request(pending.method) && pending.response_json == "" do waiting = true
     }
     // The extension relay keeps waiting_user after none for a native TUI.
     // ACP has no such fallback, and other pending requests still need attention.
@@ -195,7 +195,7 @@ acp_permission_timeout :: proc(data: rawptr, id: string) {
 acp_permissions_cancel :: proc(r: ^ACP_Runtime) {
     for w in r.permissions do bridge_ext_permission_cancel(&w.control, r.instance, w.blocker)
     for p in r.client.state.pending_inbound {
-        if p.method == "session/request_permission" && p.response_json == "" do acp_rpc_reply(r.client, p.id_json, ACP_PERMISSION_CANCELLED)
+        if acp_runtime_driver(r).permission_request(p.method) && p.response_json == "" do acp_rpc_reply(r.client, p.id_json, ACP_PERMISSION_CANCELLED)
     }
     acp_permissions_activity(r)
 }

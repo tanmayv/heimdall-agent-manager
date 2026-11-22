@@ -109,14 +109,7 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
         if steer < 0 || !r.d.steering_supported || r.d.queue[steer].kind == "append_next_turn" do return
         r.d.steering_input = r.d.queue[steer]; ordered_remove(&r.d.queue, steer)
         r.d.steering_pending = true
-        raw, _ := json.marshal(struct{
-            sessionId: string,
-            prompt: [1]struct{type, text: string},
-            _meta: struct{steering: struct{idleBehavior: string}},
-        }{sessionId = r.session, prompt = {{"text", r.d.steering_input.text}}, _meta = {steering = {idleBehavior = "promptRequired"}}}, allocator = context.temp_allocator)
-        id, sent := acp_rpc_request(r.client, "_session/steering", string(raw), 0, {acp_inbox_steering_result, r})
-        delete(string(id))
-        if !sent do acp_runtime_error(r, "acp_pipe_write_failed")
+        if !acp_runtime_driver(r).steer(r) do acp_runtime_error(r, "acp_pipe_write_failed")
         return
     }
     now := acp_rpc_now(r.client)
@@ -162,29 +155,5 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
 }
 
 acp_inbox_steering_result :: proc(data: rawptr, result: ACP_RPC_Result) {
-    defer acp_rpc_result_delete(result)
-    r := cast(^ACP_Runtime)data
-    if !acp_runtime_current(r) || r.d.error != "" do return
-    // A lost connection restores this pending RPC and its exact completion;
-    // it must not consume or resubmit an ambiguous steering input.
-    if !result.ok && (result.error.message == "acp_pipe_lost" || result.error.message == "acp_pipe_gap") do return
-    outcome := ""
-    if result.ok {
-        obj := acp_event_object(result.result_json)
-        outcome = acp_event_string(obj, "outcome")
-    }
-    if outcome != "injected" && outcome != "promptRequired" && (result.ok || result.error.code != -32601) {
-        acp_runtime_error(r, "acp_rpc_failed"); return
-    }
-    input := r.d.steering_input; r.d.steering_input = {}; r.d.steering_pending = false
-    if outcome == "injected" {
-        if input.id!="" && r.d.phase=="prompt" do acp_chat_boundary(r)
-        acp_inbox_remember(r, input.id); acp_inbox_input_delete(input)
-    } else {
-        if !result.ok do r.d.steering_supported = false
-        acp_runtime_replace(&input.kind, "append_next_turn")
-        append(&r.d.queue, input)
-    }
-    if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return }
-    acp_runtime_drain(r)
+    acp_runtime_driver(cast(^ACP_Runtime)data).steering_result(data, result)
 }

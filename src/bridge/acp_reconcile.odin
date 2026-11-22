@@ -188,25 +188,7 @@ acp_runtime_rewrite_shims :: proc(run_dir, endpoint, token, instance: string) ->
 }
 
 acp_runtime_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
-    switch d.phase {
-    case "initialize", "new", "load", "model", "mode", "ready", "prompt":
-    case: return false
-    }
-    switch d.error {
-    case "", "acp_auth_required", "acp_pipe_lost", "acp_pipe_write_failed", "acp_adapter_exited", "acp_rpc_timeout", "acp_rpc_failed", "acp_protocol_error", "acp_state_write_failed", "acp_bootstrap_unsupported", "acp_model_unavailable", "acp_permission_mode_unsupported", "acp_chat_publish_rejected":
-    case: return false
-    }
-    if len(d.config_json) > ACP_RPC_MAX_LINE || len(d.plan_json)>64*1024 || len(d.starter) > ACP_RPC_MAX_LINE || len(d.current_input) > 1024 || len(d.queue) > 128 || len(d.completed_inputs) > 256 || d.stream_retries < 0 || d.stream_retries > 4 do return false
-    bytes := len(d.steering_input.text)
-    for input in d.queue {
-        if !acp_inbox_input_valid(input) do return false
-        bytes += len(input.text)
-    }
-    if bytes > ACP_INBOX_MAX_BYTES || len(d.queue)+int(d.steering_pending) > 128 || d.steering_pending != (d.steering_input.id != "") ||
-       (d.steering_pending && !acp_inbox_input_valid(d.steering_input)) { return false }
-    if d.batch_first_ms < 0 || d.batch_last_ms < d.batch_first_ms || d.last_notice_turn_ms < 0 do return false
-    for id in d.completed_inputs do if id == "" || len(id) > 1024 do return false
-    return true
+    return acp_driver_acp_durable_valid(d)
 }
 
 acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Record) -> (^ACP_Runtime, bool) {
@@ -219,7 +201,7 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     if expected != s.run_dir do return nil, false
     r := acp_runtime_new(s.instance, s.launch_epoch, s.run_dir, s.provider, s.profile, s.catalog_etag, s.selected_model, s.selected_mode, rec)
     acp_provider_binding_delete(&r.binding); r.binding = acp_provider_binding_copy(s.binding)
-    if json.unmarshal_string(s.runtime_json, &r.d) != nil || !acp_runtime_durable_valid(&r.d) ||
+    if json.unmarshal_string(s.runtime_json, &r.d) != nil || r.driver == nil || !r.driver.durable_valid(&r.d) ||
        (r.d.ready && (!s.initialized || s.sessionId == "")) || (s.sessionId != "" && !s.initialized) {
         acp_runtime_destroy(r); return nil, false
     }

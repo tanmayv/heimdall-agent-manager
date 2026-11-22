@@ -6,6 +6,7 @@ import "core:strings"
 // shell recipe. Adding a provider requires an explicit reviewed registry entry.
 // System runtimes are user-installed CLIs detected on the bridge host (PATH or
 // the profile binary_path); Heimdall never installs or pins them.
+ACP_Protocol :: enum { ACP, Codex_App_Server }
 ACP_Launch_Kind :: enum { Adapter, Native, System }
 ACP_Permission_Policy :: enum { Session_Mode, Once_Only }
 ACP_Package_Pin :: struct {
@@ -19,6 +20,7 @@ ACP_Provider_Descriptor :: struct {
     provider, id, display_name: string,
     revision: int,
     launch: ACP_Launch_Kind,
+    protocol: ACP_Protocol,
     pkg: ACP_Package_Pin,
     platforms: []ACP_Platform_Pin,
     // System only: the operating systems the CLI ships for, and the label that
@@ -42,7 +44,7 @@ ACP_Provider_Descriptor :: struct {
 }
 
 ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
-    provider = "claude", id = "claude-acp", display_name = "Claude", revision = 1, launch = .Adapter,
+    protocol = .ACP, provider = "claude", id = "claude-acp", display_name = "Claude", revision = 1, launch = .Adapter,
     pkg = {"@agentclientprotocol/claude-agent-acp", "0.108.0", "sha512-Y0HI3CB0DfhpWItCn2RE3xgpen001V2U/bHm3G6ZVKXsElF5N4uYyjYlmgNzZBKcBtZK0JqiE96NMaeVXtgJjw=="},
     command = "claude-agent-acp", env = {{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"}},
     protocol_version = 1, node_min_major = 22,
@@ -54,7 +56,7 @@ ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
 }
 
 ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
-    provider = "copilot", id = "copilot-acp", display_name = "Copilot", revision = 1, launch = .Native,
+    protocol = .ACP, provider = "copilot", id = "copilot-acp", display_name = "Copilot", revision = 1, launch = .Native,
     pkg = {"@github/copilot", "1.0.114", "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="},
     platforms = {
         {"linux", "amd64", {"@github/copilot-linux-x64", "1.0.114", "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="}},
@@ -73,7 +75,7 @@ ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
 // --trust-all-tools): any of them silently switches `kiro-cli acp` to the v2
 // engine. Credentials live under XDG_DATA_HOME, settings under KIRO_HOME.
 ACP_KIRO_DESCRIPTOR :: ACP_Provider_Descriptor{
-    provider = "kiro", id = "kiro-acp", display_name = "Kiro", revision = 1, launch = .System,
+    protocol = .ACP, provider = "kiro", id = "kiro-acp", display_name = "Kiro", revision = 1, launch = .System,
     pkg = {"kiro-cli", "3.5.0", ""}, system_os = {"linux", "darwin"},
     command = "kiro-cli", args = {"acp", "--agent-engine", "v3"},
     protocol_version = 1,
@@ -105,6 +107,7 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
        d.pkg.name == "" || d.bootstrap_filename == "" ||
        strings.contains_any(d.bootstrap_filename, "/\\") || strings.contains(d.bootstrap_filename, "..") ||
        d.auth_guidance == "" || d.model_category == "" { return false }
+    if d.protocol != .ACP && d.protocol != .Codex_App_Server do return false
     switch d.launch {
     case .Adapter, .Native:
         if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||
