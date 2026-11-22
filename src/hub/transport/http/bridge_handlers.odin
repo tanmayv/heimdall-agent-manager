@@ -15,6 +15,7 @@ import "core:time"
 import "core:unicode/utf8"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import delivery "odin_test:hub/service/delivery"
 import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
@@ -39,6 +40,7 @@ import metrics "odin_test:lib/metrics"
 import bots "odin_test:hub/service/bots"
 
 Bridge_Handlers :: struct {
+	delivery: ^delivery.Service,
 	bots: ^bots.Bots_Service,
 	entitlements: domain.Entitlement_Lookup,
 	auth: ^auth_service.Auth_Service,
@@ -1887,6 +1889,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// crossed on_instance_terminal.
 	taskv2.on_bridge_hello(h.task_engine, bridge.bridge_id, hello_active)
 	if h.bots != nil do bots.bots_on_bridge_hello(h.bots, bridge.bridge_id)
+	if h.delivery != nil do delivery.on_bridge_online(h.delivery, bridge.bridge_id)
 	for s in hello_active do delete(s)
 	delete(hello_active)
 	// REQ-SHELL-3: deliver this bridge's OUTSTANDING KILL INTENTS. A kill accepted
@@ -1997,6 +2000,7 @@ bridge_ws_disconnect :: proc(
 	// status summaries after its connection has started.
 	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != 0 do return
 	taskv2.on_bridge_placement_changed(h.task_engine)
+	if h.delivery != nil do delivery.on_bridge_offline(h.delivery, bridge_id)
 	if changed {
 		summary := bridge_status_summary_json(domain.bridge_status_string(bridge.status))
 		events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", summary)
@@ -2552,6 +2556,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	case "session_projects_result", "auto_update_config_result", "provider_profile_op_result", "command_result", "project_path_validation_result", "provider_discovery_report", "provider_model_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_show_file_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "vcs_upload_result", "vcs_sync_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "task_chain_search_result", "taskv2_merge_worktree_result", "context_window_op_result":
 		if ext_err := bridge_extension_frame(h, bridge_id, type, text); ext_err.code != .None do fmt.eprintln("extension command result:", ext_err.message)
 		command_id := json_string(text, "command_id")
+		if h.delivery != nil && type == "command_result" && strings.has_prefix(command_id, contracts.DELIVERY_ID_PREFIX) do delivery.on_command_result(h.delivery, bridge_id, command_id, text)
 		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
 		if h.bots != nil && type == "command_result" && strings.has_prefix(command_id, "cmd_bot_") {
 			status := jsonx.extract_string(text, "status", top_level_only = false, allocator = context.temp_allocator)
@@ -3037,6 +3042,7 @@ bridge_self_revoke_handler :: proc(ctx: rawptr, req: Request) -> Response {
 bridge_revoke_respond :: proc(h: ^Bridge_Handlers, auth_ctx: contracts.Auth_Context, bridge_id: string, req: Request) -> Response {
 	bridge, revoke_ok, err := bridge_service.revoke_bridge(h.bridges, auth_ctx, bridge_id)
 	if !revoke_ok do return respond_error(err, req.request_id)
+	if h.delivery != nil do delivery.on_bridge_deleted(h.delivery, bridge_id)
 	publish_bridge_changed(h.event_bus, bridge, "revoked")
 	// Passwordless vault: the revoked machine's directory identity gets a retirement
 	// HINT (no version, no log op). An approved browser that verifies the identity in

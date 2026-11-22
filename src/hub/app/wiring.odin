@@ -3,6 +3,7 @@ package app
 import "core:fmt"
 import eventinbox "odin_test:hub/service/eventinbox"
 import eventrelay "odin_test:hub/service/eventrelay"
+import delivery "odin_test:hub/service/delivery"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -42,6 +43,9 @@ App_Graph :: struct {
  placement: placement.Service,
  placement_handlers: http.Placement_Handlers,
 	event_relay: eventrelay.Service,
+	delivery: ^delivery.Service,
+	delivery_commands: project_service.Bridge_Command_Sink,
+	sqlite_pipeline_deliveries: sqlite.Pipeline_Delivery_Repo_SQLite,
 	event_inbox: eventinbox.Service,
 	event_inbox_runtime: eventinbox.Runtime,
 	event_inbox_handlers: http.Event_Inbox_Handlers,
@@ -391,12 +395,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		if ok, err := configure_mcp_delegation(graph); !ok do return false, err
 	}
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
+	graph.repos.pipeline_deliveries = sqlite.new_pipeline_delivery_repository(&graph.sqlite_pipeline_deliveries, &graph.db)
 	graph.db.outbox_after_commit_ctx = &graph.event_relay
 	graph.db.outbox_after_commit = proc(ctx: rawptr) {eventrelay.wake((^eventrelay.Service)(ctx))}
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.users.on_agent_seeded = users_on_agent_seeded
 	graph.users.on_agent_seeded_ctx = rawptr(graph)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
+	graph.delivery_commands = bridge_command_sink
+	graph.delivery = delivery.new_service(&graph.uow_factory, &graph.repos.bridges, &graph.bridge_runtime_registry, &graph.delivery_commands, &graph.clock, &graph.ids, {url=config.nats_url, creds_file=config.nats_creds_file, ca_file=config.nats_ca_file, timeout_ms=1000})
 	graph.bridges = bridge_service.new_bridge_service_with_runtime(&graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
 	// REQ-IMPL-3 / audit F6: revocation must terminate the bridge's LIVE control
 	// WebSocket, not merely flip a DB row. The registry owns the socket; the bridge
@@ -587,6 +594,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		bridge_runtime_registry = &graph.bridge_runtime_registry,
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{
+		delivery = graph.delivery,
 		mcp_control = &graph.mcp_control_handlers,
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		auth = &graph.auth,
@@ -733,12 +741,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	eventinbox.start(&graph.event_inbox_runtime, &graph.event_inbox)
 	eventrelay.start(&graph.event_relay, &graph.uow_factory, {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000})
+	if !delivery.start(graph.delivery) do return false, "failed to start delivery pipeline"
 	return true, ""
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
 	eventinbox.stop(&graph.event_inbox_runtime)
 	eventinbox.counters_destroy(&graph.event_inbox)
+	delivery.stop(graph.delivery)
+	graph.delivery = nil
 	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
 	placement.service_destroy(&graph.placement)
