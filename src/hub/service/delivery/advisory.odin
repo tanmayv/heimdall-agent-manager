@@ -33,13 +33,14 @@ stop :: proc(s: ^Service) {
 	if s == nil do return
 	sync.atomic_store(&s.stopping, 1)
 	sync.sema_post(&s.wake)
-	// Supervisor exits before connection teardown; all forwarders are joined first.
+	// The supervisor closes its handles after active passes leave conn_lock.
+	// Join every worker before freeing the shared state.
 	if s.worker != nil {thread.join(s.worker); thread.destroy(s.worker)}
 	context.allocator = runtime.heap_allocator()
 	for f in s.forwarders do sync.sema_post(&f.wake)
 	for f in s.forwarders {
 		if f.worker != nil {thread.join(f.worker); thread.destroy(f.worker)}
-		nats_pull_cleanup_on_stop(f)
+		assert(f.pull == nil)
 		free_answers(f.answers)
 		delete(f.bridge_id); free(f)
 	}
@@ -53,11 +54,6 @@ stop :: proc(s: ^Service) {
 	delete(s.options.url); delete(s.options.creds_file); delete(s.options.ca_file)
 	free(s)
 }
-
-// Connection and pull destruction remains on the supervisor, including shutdown.
-// It has joined no forwarder itself; stopping is signalled first, then it waits
-// for every forwarder to leave conn_lock before exclusively closing the handles.
-nats_pull_cleanup_on_stop :: proc(f: ^Forwarder) {assert(f.pull == nil)}
 
 connection_failed :: proc(s: ^Service) {
 	sync.atomic_store(&s.reconnect, 1)
