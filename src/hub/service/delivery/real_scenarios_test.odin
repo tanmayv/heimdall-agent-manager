@@ -159,7 +159,11 @@ real_scenario :: proc(t: ^testing.T, which: Real_Case) {
 		domain.pipeline_delivery_destroy(&d)
 		if which == .Fatal_Replace do assert_replacement(t, f, id)
 	case .Accepted:
-		time.sleep(1500 * time.Millisecond)
+		// A fetch may take one second. Renew well before AckWait rather than
+		// racing a queued answer against a two-second deadline under Valgrind.
+		time.sleep(500 * time.Millisecond)
+		fixture_answer(f, 0, `{"status":"accepted"}`)
+		time.sleep(1000 * time.Millisecond)
 		fixture_answer(f, 0, `{"status":"accepted"}`)
 		time.sleep(1600 * time.Millisecond)
 		testing.expect_value(t, fixture_frames(f), 1)
