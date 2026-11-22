@@ -725,6 +725,8 @@ MIGRATION_234_CODEX_ACP_TRANSPORT :: #load("migrations/234_codex_acp_transport.s
 
 MIGRATION_235_EXTENSION_VERSION_SYNC :: #load("migrations/235_extension_version_sync_0_5_72.sql", string)
 
+MIGRATION_236_EXTENSION_VERSION_SYNC :: #load("migrations/236_extension_version_sync_0_5_73.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -975,6 +977,7 @@ migration_order :: [?]string {
 	"233_extension_version_sync_0_5_71.sql",
 	"234_codex_acp_transport.sql",
 	"235_extension_version_sync_0_5_72.sql",
+	"236_extension_version_sync_0_5_73.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1514,6 +1517,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "236_extension_version_sync_0_5_73.sql" do return strings.clone(MIGRATION_236_EXTENSION_VERSION_SYNC)
 	if name == "235_extension_version_sync_0_5_72.sql" do return strings.clone(MIGRATION_235_EXTENSION_VERSION_SYNC)
 	if name == "234_codex_acp_transport.sql" do return strings.clone(MIGRATION_234_CODEX_ACP_TRANSPORT)
 	if name == "233_extension_version_sync_0_5_71.sql" do return strings.clone(MIGRATION_233_EXTENSION_VERSION_SYNC)
