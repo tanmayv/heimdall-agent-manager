@@ -250,6 +250,10 @@ The bridge is a flat Odin package (`package main`, [src/bridge](../src/bridge));
   `agent_taskv2_vcs.odin`, `project_path_validation.odin`.
 - **Local proxy.** [local_proxy.odin](../src/bridge/local_proxy.odin) — `http://127.0.0.1:<port>/proxy/<session>/…`
   forwarded over the hub WebSocket to the bridge that owns the target shell session.
+  Request bodies stream with backpressure (the tunnel/proxy outgoing queue holds at most ~1 MiB and
+  each runtime-loop tick sends at most 64 KiB, so the loop keeps reading the hub); bodies over
+  `contracts.RELAY_MAX_REQUEST_BODY_BYTES` (64 MiB) get `413` from the bridge and, as a backstop, the hub
+  (`bridge_proxy_relay.odin`). Responses are not capped.
 - **Other.** `tray_*.odin` (desktop tray companion), `lsp_session.odin`, `tool_activity_live.odin`,
   `bridge_telemetry.odin`, `blog.odin` (bridge log push), `instance_lock_*.odin` (one bridge per profile).
 

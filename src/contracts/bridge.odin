@@ -137,6 +137,16 @@ BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES_SOCAT :: 45000
 BRIDGE_WS_HUB_TO_BRIDGE_CHUNK_PAYLOAD_BYTES :: 6000
 BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES :: 10 * 1024 * 1024
 
+// ---- relay request-body limit (REQ-VOICE-6) -------------------------------
+// Largest request body the bridge->hub proxy relay (/proxy/<session_id>/... on a
+// bridge's local endpoint) carries. Both ends enforce it: the originating bridge
+// answers 413 before anything reaches the hub when Content-Length exceeds it, and
+// the hub refuses (413) and closes a proxy stream whose forwarded body bytes pass
+// it, which covers bridges that predate the check. Responses are not capped; they
+// stream. Documented in docs/architecture.md (Local proxy) and the ham-ctl-reference
+// skill (src/prompts/skills and .agents/skills).
+RELAY_MAX_REQUEST_BODY_BYTES :: 64 * 1024 * 1024
+
 // Advertise only after detecting compatible daemon piped hosting. Old Bridges
 // cannot safely ignore explicit ACP launch payloads.
 BRIDGE_FEATURE_ACP_RUNTIME :: "acp_runtime_v1"
