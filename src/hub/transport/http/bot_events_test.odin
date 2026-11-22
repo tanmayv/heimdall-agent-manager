@@ -64,7 +64,7 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	}
 	// A normal worker (even one messaging a coordinator) gets no explicit watch.
 	coordinator_wake_expect(t, c, "started", 1)
-	rows, err := eventinbox.subscriptions(&inbox, string(f.owner), "agt_wire_tb2")
+	rows, err := eventinbox.subscriptions(&inbox, string(f.owner), string(f.instance_id))
 	testing.expect_value(t, err.code, domain.Error_Code.None)
 	for row in rows do testing.expect(t, row.source != "explicit")
 	eventinbox.subscription_rows_destroy(rows)
@@ -82,7 +82,7 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	// Creation installs the watch before any subsequent task can request review.
 	created, ok, cerr := taskchain.create_chain(&f.tc_svc, auth, {title = "Bot created"})
 	if !testing.expect(t, ok, cerr.message) do return
-	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), "agt_wire_tb2")
+	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), string(f.instance_id))
 	found := false
 	for row in rows {
 		if row.chain_id == string(created.chain_id) && row.source == "explicit" do found = true
@@ -108,7 +108,7 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	// messages is idempotent and never changes the existing consumer identity.
 	coordinator_wake_expect(t, c, "not_needed", 1)
 	coordinator_wake_expect(t, c, "not_needed", 1)
-	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), "agt_wire_tb2")
+	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), string(f.instance_id))
 	watched := 0
 	for row in rows {
 		if row.source != "explicit" do continue

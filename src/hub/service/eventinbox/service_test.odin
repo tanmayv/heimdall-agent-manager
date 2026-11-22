@@ -66,7 +66,7 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 	if !testing.expect(t, began) do return
 	testing.expect_value(
 		t,
-		repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = "sub_coord", owner_user_id = "alice", subscriber_agent_id = "agt_coord", chain_id = "chain_1", source = "role_default", filter_subjects = string(encoded), wake_policy = "catalog", consumer_name = "coord", created_at = "now"}).code,
+		repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = "sub_coord", owner_user_id = "alice", subscriber_instance_id = "agt_coord", chain_id = "chain_1", source = "role_default", filter_subjects = string(encoded), wake_policy = "catalog", consumer_name = "coord", created_at = "now"}).code,
 		domain.Error_Code.None,
 	)
 	committed, _ := iface.unit_of_work_commit(&uow)

@@ -34,7 +34,7 @@ event_retention_scenario :: proc(t: ^testing.T) {
 	defer iface.unit_of_work_rollback(&uow)
 	testing.expect_value(
 		t,
-		repo.put(repo.ctx, {subscription_id = "sub", owner_user_id = "alice", subscriber_agent_id = "agt", chain_id = "chain", source = "explicit", filter_subjects = "[]", consumer_name = "sub", created_at = "now"}).code,
+		repo.put(repo.ctx, {subscription_id = "sub", owner_user_id = "alice", subscriber_instance_id = "agt", chain_id = "chain", source = "explicit", filter_subjects = "[]", consumer_name = "sub", created_at = "now"}).code,
 		domain.Error_Code.None,
 	)
 	// 1,000 delivered occurrences: acknowledgement retains only a small recent
@@ -86,7 +86,7 @@ event_retention_scenario :: proc(t: ^testing.T) {
 	// a small runtime benchmark to hide a full history scan.
 	plan, plan_err := subscription_prepare(
 		repo.ctx,
-		"EXPLAIN QUERY PLAN SELECT d.event_id FROM json_each('[\"event_999\"]') requested CROSS JOIN event_deliveries d INDEXED BY event_deliveries_event ON d.event_id=requested.value CROSS JOIN event_subscriptions s ON s.subscription_id=d.subscription_id WHERE s.owner_user_id='alice' AND s.subscriber_agent_id='agt';",
+		"EXPLAIN QUERY PLAN SELECT d.event_id FROM json_each('[\"event_999\"]') requested CROSS JOIN event_deliveries d INDEXED BY event_deliveries_event ON d.event_id=requested.value CROSS JOIN event_subscriptions s ON s.subscription_id=d.subscription_id WHERE s.owner_user_id='alice' AND s.subscriber_instance_id='agt';",
 	)
 	if testing.expect_value(t, plan_err.code, domain.Error_Code.None) {
 		indexed := false

@@ -1356,21 +1356,22 @@ read_secret_file :: proc(path: string) -> (string, bool) {
 // notice and guarded agent start paths, always outside a SQLite transaction.
 event_inbox_notice :: proc(
 	ctx: rawptr,
-	owner, agent: string,
+	owner, instance: string,
 	target: domain.Event_Notice_Target,
 	count: int,
 	wake: bool,
 ) -> bool {
 	graph := (^App_Graph)(ctx)
+	// Only the subscription's own instance is ever notified (REQ-EVP-4a).
+	if target.instance_id != instance do return false
 	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, target.instance_id)
 	defer domain.agent_instance_destroy(&inst)
-	if !found || string(inst.owner_user_id) != owner || inst.agent_id != agent || inst.stopped_by != "" do return false
+	if !found || string(inst.owner_user_id) != owner || inst.stopped_by != "" do return false
 	if wake {
 		if inst.runtime_status != "stopped" do return false
 		guard := Event_Inbox_Wake_Guard {
 			graph       = graph,
 			owner       = owner,
-			agent       = agent,
 			instance_id = inst.agent_instance_id,
 		}
 		_, started, _ := agent_service.start_instance(
@@ -1400,15 +1401,15 @@ event_inbox_notice :: proc(
 // mutex as stop_instance. An automatic event wake must never clear a user stop
 // that arrived after the inbox's earlier snapshot.
 Event_Inbox_Wake_Guard :: struct {
-	graph:                     ^App_Graph,
-	owner, agent, instance_id: string,
+	graph:              ^App_Graph,
+	owner, instance_id: string,
 }
 event_inbox_wake_guard :: proc(ctx: rawptr) -> domain.Domain_Error {
 	guard := (^Event_Inbox_Wake_Guard)(ctx)
 	inst, found, err := iface.agent_get_instance(&guard.graph.repos.agents, guard.instance_id)
 	defer domain.agent_instance_destroy(&inst)
 	if err.code != .None do return err
-	if !found || string(inst.owner_user_id) != guard.owner || inst.agent_id != guard.agent do return domain.domain_error(.Not_Found, "event wake instance no longer belongs to subscriber")
+	if !found || string(inst.owner_user_id) != guard.owner do return domain.domain_error(.Not_Found, "event wake instance no longer belongs to subscriber")
 	if inst.stopped_by != "" || inst.runtime_status != "stopped" do return domain.domain_error(.Conflict, "event wake requires a stopped instance without an explicit stop")
 	return {}
 }

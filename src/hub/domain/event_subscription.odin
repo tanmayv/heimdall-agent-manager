@@ -4,16 +4,20 @@ package domain
 EVENT_DELIVERY_LIMIT :: 4096
 EVENT_ACK_RECEIPT_LIMIT :: 256
 
-// Repository reads own these strings; the API never accepts a subscriber id
-// from its caller, but derives it from the authenticated durable identity.
+// Repository reads own these strings. A subscription belongs to one agent
+// instance (subscriber_instance_id, REQ-EVP-1); the API never accepts a
+// subscriber id from its caller but uses the authenticated instance.
+// subscriber_agent_id records that instance's durable agent for display only;
+// nothing is keyed on it.
 Event_Subscription :: struct {
-	subscription_id, owner_user_id, subscriber_agent_id, chain_id, task_id: string,
-	source, filter_subjects, wake_policy, consumer_name, created_at:        string,
+	subscription_id, owner_user_id, subscriber_instance_id, subscriber_agent_id: string,
+	chain_id, task_id, source, filter_subjects, wake_policy:                     string,
+	consumer_name, created_at:                                                   string,
 }
 
 event_subscription_destroy :: proc(row: ^Event_Subscription) {
 	delete(row.subscription_id); delete(row.owner_user_id)
-	delete(row.subscriber_agent_id); delete(row.chain_id); delete(row.task_id)
+	delete(row.subscriber_instance_id); delete(row.subscriber_agent_id); delete(row.chain_id); delete(row.task_id)
 	delete(row.source); delete(row.filter_subjects); delete(row.wake_policy)
 	delete(row.consumer_name); delete(row.created_at)
 	row^ = {}

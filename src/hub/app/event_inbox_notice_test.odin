@@ -81,19 +81,20 @@ test_event_inbox_notice_uses_existing_command_and_rechecks_idle :: proc(t: ^test
 	target := domain.Event_Notice_Target {
 		instance_id = "inst_coord",
 	}
-	testing.expect(t, event_inbox_notice(&graph, "alice", "agt_coord", target, 20, false))
+	testing.expect(t, event_inbox_notice(&graph, "alice", "inst_coord", target, 20, false))
 	testing.expect_value(t, f.sent, 1)
 	f.activity = "busy"
-	testing.expect(t, !event_inbox_notice(&graph, "alice", "agt_coord", target, 20, false))
+	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_coord", target, 20, false))
 	f.activity = "idle"
 	f.stopped_by = "user"
-	testing.expect(t, !event_inbox_notice(&graph, "alice", "agt_coord", target, 20, false))
+	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_coord", target, 20, false))
 	f.stopped_by = ""
-	testing.expect(t, !event_inbox_notice(&graph, "bob", "agt_coord", target, 20, false))
-	testing.expect(t, !event_inbox_notice(&graph, "alice", "agt_other", target, 20, false))
+	testing.expect(t, !event_inbox_notice(&graph, "bob", "inst_coord", target, 20, false))
+	// A target that is not the subscription's own instance is never notified (REQ-EVP-4a).
+	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_sibling", target, 20, false))
 	testing.expect(
 		t,
-		!event_inbox_notice(&graph, "alice", "agt_coord", target, 20, true),
+		!event_inbox_notice(&graph, "alice", "inst_coord", target, 20, true),
 		"never restart a live instance",
 	)
 	testing.expect_value(t, f.sent, 1)
@@ -121,7 +122,7 @@ test_event_inbox_wake_guard_preserves_stop_after_snapshot :: proc(t: ^testing.T)
 	target := domain.Event_Notice_Target {
 		instance_id = "inst_coord",
 	}
-	testing.expect(t, !event_inbox_notice(&graph, "alice", "agt_coord", target, 20, true))
+	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_coord", target, 20, true))
 	testing.expect_value(t, f.reads, 2)
 	testing.expect(t, f.guard_locked, "start guard executes under the same mutex as stop")
 	testing.expect_value(t, f.stopped_by, "user")
@@ -132,14 +133,14 @@ test_event_inbox_wake_guard_preserves_stop_after_snapshot :: proc(t: ^testing.T)
 	f.guard_locked = false
 	f.stop_after_snapshot = false
 	f.fail_after_snapshot = true
-	testing.expect(t, !event_inbox_notice(&graph, "alice", "agt_coord", target, 20, true))
+	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_coord", target, 20, true))
 	testing.expect_value(t, f.reads, 2)
 	testing.expect(t, f.guard_locked)
 	testing.expect_value(t, f.runtime, "failed")
 
 	// Already-failed instances are rejected before even entering start_instance.
 	f.reads = 0
-	testing.expect(t, !event_inbox_notice(&graph, "alice", "agt_coord", target, 20, true))
+	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_coord", target, 20, true))
 	testing.expect_value(t, f.reads, 1)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }

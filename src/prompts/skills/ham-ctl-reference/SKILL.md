@@ -739,12 +739,12 @@ ham-ctl task cancel <task-id>
   acknowledges requirements; it does not renew ownership.
 
 ## events — durable task-chain inbox
-- `events next [--wait 30s] [--limit 20]` — pull live events belonging to your durable agent identity. Default wait is `0s`; maximum `30s`. The limit is `1..100`. Wait accepts seconds or milliseconds.
+- `events next [--wait 30s] [--limit 20]` — pull live events belonging to this agent instance (not your durable agent identity: another instance of the same agent has its own subscriptions). Default wait is `0s`; maximum `30s`. The limit is `1..100`. Wait accepts seconds or milliseconds.
 - `events ack <event_id...>` — acknowledge `1..100` delivered events after handling them.
 - `events watch --chain <id>` / `events unwatch --chain <id>` — add/remove an explicit watch on a chain owned by your user.
-- `events subscriptions` — list your subscriptions, including automatic role defaults.
+- `events subscriptions` — list this instance's subscriptions, including automatic role defaults.
 
-Coordinator defaults follow chain membership. Work-claim defaults receive only that task's requirements changes and remain while the claim is waiting; they end when ownership ends. Explicit watches receive chain state, human review requests, human blocks, and work-finished events. Watches survive instance restarts.
+Subscriptions belong to an agent instance. Coordinator defaults belong to the chain's coordinator instance and follow chain membership. Work-claim defaults belong to the claim holder, receive only that task's requirements changes and remain while the claim is waiting; they end when ownership ends or moves. Explicit watches belong to the instance that ran `events watch` and receive chain state, human review requests, human blocks, and work-finished events. `[events]` notices go only to the owning instance, never to another instance or chain, and are counted and rate-limited per instance. An idle-stopped instance keeps its subscriptions (a wake-worthy event can start it); a user stop or replacement deletes all of the instance's subscriptions and pending events, and a later restart starts fresh.
 
 Delivery is at least once. Deduplicate by `event_id`, acknowledge after handling, and expect unacknowledged events again after five minutes. After ten attempts the hub republishes to `ev.dlq.<owner>…`. State events roll up to the latest state. Stale resolvable events are skipped; a previously delivered event later resolved or superseded produces a `resolved` notice with `resolved_event_id`. Notices need no acknowledgement. Events contain metadata, so fetch the current task when details are needed.
 

@@ -88,7 +88,7 @@ idle_rate_scenario :: proc(t: ^testing.T) {
 		filter_json := `["ev.alice.chain.idle.state"]`
 		testing.expect_value(
 			t,
-			repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = job.agent, owner_user_id = "alice", subscriber_agent_id = job.agent, chain_id = "idle", source = "explicit", filter_subjects = filter_json, consumer_name = job.agent, created_at = "now"}).code,
+			repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = job.agent, owner_user_id = "alice", subscriber_instance_id = job.agent, chain_id = "idle", source = "explicit", filter_subjects = filter_json, consumer_name = job.agent, created_at = "now"}).code,
 			domain.Error_Code.None,
 		)
 	}
