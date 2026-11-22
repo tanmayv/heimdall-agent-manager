@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Icon } from '@ui';
 import type { AttentionTaskItem } from '../../api/endpoints/attention';
 import { useFetchTaskFacetQuery } from '../../api/endpoints/tasks';
-import { useArtifactPreview } from '../ArtifactAttachmentPreview';
+import { artifactPreviewStatusText, useArtifactAltText, useArtifactPreview } from '../ArtifactAttachmentPreview';
 import { taskChangedFiles } from '../tasks/taskV2Types';
 import { DecryptedMarkdown, VaultText } from '../vault';
 import { formatAge } from './attentionModel';
@@ -173,6 +173,7 @@ function ReviewResult({ item, mobile, active }: { item: AttentionTaskItem; mobil
 function ShotThumb({ artifactId, index, onOpen }: { artifactId: string; index: number; onOpen: () => void }) {
   const preview = useArtifactPreview({ artifactId, session: ARTIFACT_SESSION });
   const name = String(preview.meta?.name || artifactId);
+  const alt = useArtifactAltText(preview.meta?.name, `Screenshot ${index + 1}`);
   // Not an image (a log, a JSON file): no thumbnail, the task page lists it.
   if (preview.meta && !preview.isImage) return null;
   return (
@@ -185,9 +186,9 @@ function ShotThumb({ artifactId, index, onOpen }: { artifactId: string; index: n
       className="group shrink-0 overflow-hidden rounded-[var(--radius-md)] border border-subtle bg-canvas text-left"
     >
       {preview.contentUrl ? (
-        <img src={preview.contentUrl} alt={name} className="h-32 w-auto max-w-[260px] object-cover object-top group-hover:opacity-90 sm:h-40" />
+        <img src={preview.contentUrl} alt={alt} className="h-32 w-auto max-w-[260px] object-cover object-top group-hover:opacity-90 sm:h-40" />
       ) : (
-        <span className="grid h-32 w-40 place-items-center text-[12px] text-faint sm:h-40">{preview.error ? 'Unavailable' : 'Loading…'}</span>
+        <span className="grid h-32 w-40 place-items-center text-[12px] text-faint sm:h-40">{preview.locked ? artifactPreviewStatusText(preview) : preview.error ? 'Unavailable' : 'Loading…'}</span>
       )}
       <span className="block max-w-[220px] truncate px-2 py-1 text-[12px] text-muted"><VaultText value={name} fallback={artifactId} /></span>
     </button>
@@ -203,6 +204,7 @@ function ShotLightbox({ artifactId, onClose }: { artifactId: string; onClose: ()
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
   const name = String(preview.meta?.name || artifactId);
+  const alt = useArtifactAltText(preview.meta?.name, 'Screenshot');
   // Portaled: the tray's frost card (backdrop-filter) would otherwise be the
   // containing block of this fixed overlay.
   return createPortal(
@@ -224,9 +226,9 @@ function ShotLightbox({ artifactId, onClose }: { artifactId: string; onClose: ()
         <Icon name="close" size={20} />
       </button>
       {preview.contentUrl ? (
-        <img src={preview.contentUrl} alt={name} onClick={(e) => e.stopPropagation()} className="max-h-[85svh] max-w-full rounded-[var(--radius-md)] object-contain" />
+        <img src={preview.contentUrl} alt={alt} onClick={(e) => e.stopPropagation()} className="max-h-[85svh] max-w-full rounded-[var(--radius-md)] object-contain" />
       ) : (
-        <p className="text-[13px] text-white/80">Loading…</p>
+        <p className="text-[13px] text-white/80">{preview.locked ? artifactPreviewStatusText(preview) : preview.error ? 'Unavailable' : 'Loading…'}</p>
       )}
       <p className="max-w-full truncate text-[13px] text-white/80"><VaultText value={name} fallback={artifactId} /></p>
     </div>,

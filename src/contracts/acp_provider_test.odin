@@ -153,3 +153,31 @@ acp_bootstrap_link_and_default_model_are_system_only :: proc(t: ^testing.T) {
         testing.expect(t, !acp_descriptor_shape_valid(d))
     }
 }
+
+@(test)
+acp_descriptor_protocol_registry_is_explicit :: proc(t: ^testing.T) {
+    for provider in ([]string{"claude", "copilot", "kiro"}) {
+        d, known := acp_provider_descriptor(provider)
+        testing.expect(t, known && d.protocol == .ACP)
+    }
+    d := ACP_CLAUDE_DESCRIPTOR
+    d.protocol = ACP_Protocol(99)
+    testing.expect(t, !acp_descriptor_shape_valid(d))
+}
+
+@(test)
+acp_codex_system_descriptor_recipe_and_version_floor :: proc(t: ^testing.T) {
+    d, known := acp_provider_descriptor("codex")
+    testing.expect(t, known && acp_descriptor_shape_valid(d) && d.launch == .System && d.protocol == .Codex_App_Server)
+    testing.expect(t, d.permission_policy == .Once_Only && d.pkg.integrity == "" && d.node_min_major == 0 && len(d.platforms) == 0)
+    testing.expect(t, d.bootstrap_filename == "AGENTS.md" && len(d.args) == 1 && d.args[0] == "app-server")
+    for version in ([]string{"0.162.0", "0.166.0", "1.0.0"}) do testing.expect(t, acp_descriptor_cli_version_accepted(d, version))
+    for version in ([]string{"0.161.9", "0.99.0", "0.162", "0.162.0-beta", "v0.162.0", ""}) do testing.expect(t, !acp_descriptor_cli_version_accepted(d, version))
+    for name in ([]string{"linux", "darwin", "windows"}) do testing.expect(t, acp_descriptor_system_os_supported(d, name))
+    testing.expect(t, !acp_descriptor_system_os_supported(d, "freebsd"))
+    raw :: `{"command":"codex","args":["app-server"],"env":{},"protocol_version":1,"adapter_package":"codex","adapter_version":"0.162.0"}`
+    testing.expect(t, acp_provider_recipe_valid("codex", raw))
+    for provider in ([]string{"claude", "copilot", "kiro"}) do testing.expect(t, !acp_provider_recipe_valid(provider, raw))
+    testing.expect(t, !acp_recipe_valid(`{"command":"codex","args":["exec"],"env":{},"protocol_version":1,"adapter_package":"codex","adapter_version":"0.162.0"}`))
+    testing.expect(t, !acp_recipe_valid(`{"command":"codex","args":["app-server"],"env":{},"protocol_version":1,"adapter_package":"codex","adapter_version":"0.161.0"}`))
+}

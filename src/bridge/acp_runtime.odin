@@ -3,7 +3,6 @@ package main
 import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
-import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -27,6 +26,7 @@ ACP_Runtime_Durable :: struct {
     steering_supported, steering_pending: bool,
     steering_input: ACP_Runtime_Input,
     batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
+    codex: ACP_Codex_Durable,
 }
 
 // T5 attaches telemetry/chat handling here. Hooks execute only on the instance
@@ -40,6 +40,7 @@ acp_runtime_events := ACP_Runtime_Events{acp_events_notification, acp_events_pro
 
 ACP_Runtime :: struct {
     descriptor: contracts.ACP_Provider_Descriptor,
+    driver: ^ACP_Protocol_Driver,
     binding: ACP_Runtime_Binding,
     client: ^ACP_RPC_Client,
     chat: ^ACP_Chat,
@@ -184,17 +185,13 @@ acp_runtime_notification :: proc(data: rawptr, method, params: string) {
     defer { delete(method); delete(params) }
     r := cast(^ACP_Runtime)data
     if !acp_runtime_current(r) || r.d.error != "" do return
-    if acp_runtime_events.notification != nil do acp_runtime_events.notification(r, method, params)
+    acp_runtime_driver(r).notification(r, method, params)
 }
 
 acp_runtime_inbound :: proc(data: rawptr, id, method, params: string) -> bool {
     defer { delete(id); delete(method); delete(params) }
     r := cast(^ACP_Runtime)data
-    if method != "session/request_permission" do return false
-    obj := acp_event_object(params)
-    if r.session == "" || acp_event_string(obj, "sessionId") != r.session { acp_rpc_reply_error(r.client,id,{code=-32602,message="wrong ACP session"}); return true }
-    acp_permission_start(r, id, params)
-    return true
+    return acp_runtime_driver(r).inbound(r, id, method, params)
 }
 
 acp_runtime_request :: proc(r: ^ACP_Runtime, method, params: string) -> bool {
@@ -203,173 +200,6 @@ acp_runtime_request :: proc(r: ^ACP_Runtime, method, params: string) -> bool {
     delete(string(id), runtime.heap_allocator())
     if !sent do acp_runtime_error(r, "acp_pipe_write_failed")
     return sent
-}
-
-acp_runtime_session_params :: proc(r: ^ACP_Runtime) -> string {
-    raw, _ := json.marshal(struct{cwd: string, mcpServers: []string}{r.run_dir, {}} , allocator = context.temp_allocator)
-    return string(raw)
-}
-
-acp_runtime_configure :: proc(r: ^ACP_Runtime, category, value, failure: string) {
-    if category == "mode" && r.descriptor.permission_policy == .Once_Only {
-        if !contracts.acp_descriptor_effective_mode_valid(r.descriptor, value) {
-            acp_runtime_error(r, failure); return
-        }
-        // Once-only policy is enforced by the bridge for each inbound request.
-        // Provider session/reasoning modes are unrelated to tool approval.
-        acp_runtime_ready(r)
-        return
-    }
-    bound := r.descriptor.model_category if category == "model" else r.descriptor.permission_category
-    id, ok := acp_config_selection(r.d.config_json, bound, value)
-    defer delete(id)
-    if !ok { acp_runtime_error(r, failure); return }
-    acp_runtime_replace(&r.d.phase, category)
-    raw, _ := json.marshal(struct{sessionId, configId, value: string}{r.session, id, value}, allocator = context.temp_allocator)
-    acp_runtime_request(r, "session/set_config_option", string(raw))
-}
-
-// Embedded resources are optional in ACP; resource_link is baseline. Only a
-// descriptor that opts in may fall back to linking the bootstrap file.
-acp_runtime_bootstrap_supported :: proc(r: ^ACP_Runtime) -> bool {
-    return r.d.embedded_context || r.descriptor.bootstrap_resource_link
-}
-
-// The descriptor's agent-default model keeps the agent's own model choice.
-acp_runtime_model_selected :: proc(r: ^ACP_Runtime) -> bool {
-    return r.model != "" && (r.descriptor.agent_default_model == "" || r.model != r.descriptor.agent_default_model)
-}
-
-acp_runtime_ready :: proc(r: ^ACP_Runtime) {
-    if !r.d.starter_sent && !acp_runtime_bootstrap_supported(r) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-    r.d.ready = true
-    acp_events_ready(r)
-    acp_runtime_replace(&r.d.phase, "ready")
-    if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return }
-    if !acp_runtime_current(r) do return
-    sync.mutex_lock(&bridge_runtime_mutex)
-    for &inst in bridge_runtime_instances do if inst.agent_instance_id == r.instance do inst.acp_session_ready = true
-    sync.mutex_unlock(&bridge_runtime_mutex)
-    bridge_startup_accept(r.rec, bridge_runtime_now_ms())
-    bridge_runtime_mark_start_success(r.instance)
-    if !r.d.starter_sent {
-        r.d.starter_sent = true
-        acp_runtime_prompt(r, {id = "starter", text = r.d.starter}, bootstrap = true)
-    } else {
-        acp_runtime_drain(r)
-    }
-}
-
-acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap := false) {
-    r.d.cancelling = false
-    acp_runtime_replace(&r.d.phase, "prompt")
-    acp_runtime_replace(&r.d.current_input, input.id)
-    blocks := make([dynamic]json.Value, allocator = context.temp_allocator)
-    text := make(json.Object, allocator = context.temp_allocator)
-    text["type"] = json.String("text"); text["text"] = json.String(input.text); append(&blocks, text)
-    if bootstrap {
-        if !acp_runtime_bootstrap_supported(r) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-        path := strings.concatenate({r.run_dir, "/", r.binding.bootstrap_filename}, context.temp_allocator)
-        uri := strings.concatenate({"file://", path}, context.temp_allocator)
-        block := make(json.Object, allocator = context.temp_allocator)
-        if r.d.embedded_context {
-            content, err := os.read_entire_file(path, context.temp_allocator)
-            if err != nil { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-            resource := make(json.Object, allocator = context.temp_allocator)
-            resource["uri"] = json.String(uri)
-            resource["mimeType"] = json.String("text/markdown"); resource["text"] = json.String(string(content))
-            block["type"] = json.String("resource"); block["resource"] = resource
-        } else {
-            if !os.exists(path) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-            block["type"] = json.String("resource_link"); block["uri"] = json.String(uri)
-            block["name"] = json.String(r.binding.bootstrap_filename); block["mimeType"] = json.String("text/markdown")
-        }
-        append(&blocks, block)
-    }
-    raw, _ := json.marshal(struct{sessionId: string, prompt: []json.Value}{r.session, blocks[:]}, allocator = context.temp_allocator)
-    if acp_runtime_events.prompt_started != nil do acp_runtime_events.prompt_started(r, input.id)
-    if acp_runtime_request(r, "session/prompt", string(raw)) {
-        bridge_runtime_note_agent_activity(r.instance, "active", "acp")
-    }
-}
-
-acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
-    defer acp_rpc_result_delete(result)
-    r := cast(^ACP_Runtime)data
-    if !acp_runtime_current(r) || r.d.error != "" do return
-    if !result.ok {
-        // A failed attachment does not prove process death. The owner replaces
-        // the RPC connection from its last checkpoint after this callback exits.
-        if result.error.message == "acp_pipe_lost" || result.error.message == "acp_pipe_gap" do return
-        // Local RPC shutdown/timeouts use -32000 too; they are never auth.
-        local := strings.has_prefix(result.error.message, "acp_")
-        safe_reason := "acp_rpc_failed"
-        switch result.error.message {
-        case "acp_pipe_lost", "acp_pipe_write_failed", "acp_adapter_exited", "acp_rpc_timeout", "acp_protocol_error", "acp_state_write_failed": safe_reason = result.error.message
-        }
-        acp_runtime_error(r, "acp_auth_required" if result.error.code == -32000 && !local else safe_reason, auth = result.error.code == -32000 && !local)
-        return
-    }
-    root, err := json.parse(result.result_json, parse_integers = true)
-    if err != nil { acp_runtime_error(r, "acp_protocol_error"); return }
-    defer json.destroy_value(root)
-    obj, valid := root.(json.Object)
-    if !valid { acp_runtime_error(r, "acp_protocol_error"); return }
-    switch r.d.phase {
-    case "initialize":
-        version, _ := obj["protocolVersion"].(json.Integer)
-        if version != 1 { acp_runtime_error(r, "acp_protocol_error"); return }
-        r.initialized = true
-        caps, _ := obj["agentCapabilities"].(json.Object)
-        load, _ := caps["loadSession"].(json.Boolean); r.load_session = bool(load)
-        prompts, _ := caps["promptCapabilities"].(json.Object)
-        embedded, _ := prompts["embeddedContext"].(json.Boolean); r.d.embedded_context = bool(embedded)
-        meta, _ := obj["_meta"].(json.Object)
-        steering, _ := meta["steering"].(json.Object)
-        supported, _ := steering["supported"].(json.Boolean); r.d.steering_supported = bool(supported)
-        if r.recovering {
-            if !r.load_session { acp_runtime_error(r, "acp_pipe_lost"); return }
-            r.d.replay_only = true; acp_runtime_replace(&r.d.phase, "load")
-            raw, _ := json.marshal(struct{sessionId, cwd: string, mcpServers: []string}{r.session, r.run_dir, {}}, allocator = context.temp_allocator)
-            acp_runtime_request(r, "session/load", string(raw))
-        } else {
-            if !acp_runtime_bootstrap_supported(r) { acp_runtime_error(r, "acp_bootstrap_unsupported"); return }
-            acp_runtime_replace(&r.d.phase, "new")
-            acp_runtime_request(r, "session/new", acp_runtime_session_params(r))
-        }
-    case "new", "load":
-        if r.d.phase == "new" {
-            session, _ := obj["sessionId"].(json.String)
-            if session == "" { acp_runtime_error(r, "acp_protocol_error"); return }
-            acp_runtime_replace(&r.session, string(session))
-        }
-        r.d.replay_only = false
-        acp_runtime_replace(&r.d.config_json, result.result_json)
-        if acp_runtime_model_selected(r) { acp_runtime_configure(r, "model", r.model, "acp_model_unavailable") }
-        else { acp_runtime_configure(r, "mode", r.mode, "acp_permission_mode_unsupported") }
-    case "model", "mode":
-        category := r.d.phase
-        value := r.model if category == "model" else r.mode
-        bound := r.descriptor.model_category if category == "model" else r.descriptor.permission_category
-        id, selected := acp_config_selection(result.result_json, bound, value, selected = true); delete(id)
-        if !selected { acp_runtime_error(r, "acp_model_unavailable" if category == "model" else "acp_permission_mode_unsupported"); return }
-        acp_runtime_replace(&r.d.config_json, result.result_json)
-        if category == "model" { acp_runtime_configure(r, "mode", r.mode, "acp_permission_mode_unsupported") }
-        else { acp_runtime_ready(r) }
-    case "prompt":
-        reason, _ := obj["stopReason"].(json.String)
-        switch string(reason) {
-        case "end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled":
-        case: acp_runtime_error(r, "acp_protocol_error"); return
-        }
-        acp_permissions_cancel(r)
-        if acp_runtime_events.prompt_finished != nil do acp_runtime_events.prompt_finished(r, r.d.current_input, result.result_json, "")
-        append(&r.d.completed_inputs, strings.clone(r.d.current_input))
-        if len(r.d.completed_inputs) > 256 { delete(r.d.completed_inputs[0]); ordered_remove(&r.d.completed_inputs, 0) }
-        acp_runtime_replace(&r.d.current_input, ""); acp_runtime_replace(&r.d.phase, "ready")
-        bridge_runtime_note_agent_activity(r.instance, "idle", "acp")
-        acp_runtime_drain(r)
-    }
 }
 
 acp_runtime_restore_completion :: proc(data: rawptr, role: ACP_RPC_Role, id: ACP_RPC_ID) -> ACP_RPC_Completion {
@@ -404,9 +234,8 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         if r.d.phase == "prompt" {
             if input.interrupt && !r.d.cancelling {
                 r.d.cancelling = true
-                acp_permissions_cancel(r)
-                raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
-                _ = acp_rpc_notify(c, "session/cancel", string(raw))
+                acp_runtime_driver(r).permissions_cancel(r)
+                _ = acp_runtime_driver(r).cancel(r)
             }
             return false
         }
@@ -422,7 +251,7 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         c.state.next_delivery_id = max(c.state.next_delivery_id, r.next_delivery_id)
         acp_runtime_replace(&c.state.tool_map_json, r.saved_tools)
         acp_runtime_replace(&c.state.chat_outbox_json, r.saved_outbox)
-        return acp_runtime_request(r, "initialize", ACP_INITIALIZE_PARAMS)
+        return acp_runtime_driver(r).begin(r)
     case "resume":
         if !acp_runtime_current(r) || r.d.error != "" do return false
         r.inbox_started = true
@@ -446,17 +275,15 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
     case "stop":
         if r.d.current_input!="" && acp_runtime_events.prompt_finished!=nil do acp_runtime_events.prompt_finished(r,r.d.current_input,`{"stopReason":"cancelled"}`,"")
         r.d.stopped = true
-        acp_permissions_cancel(r)
+        acp_runtime_driver(r).permissions_cancel(r)
         // Cancel is a notification and the original prompt owns the response.
-        raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
-        acp_rpc_notify(c, "session/cancel", string(raw))
+        acp_runtime_driver(r).cancel(r)
         return acp_rpc_checkpoint(c)
     case "interrupt":
         if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" do return false
         r.d.cancelling = true
-        acp_permissions_cancel(r)
-        raw, _ := json.marshal(struct{sessionId: string}{r.session}, allocator = context.temp_allocator)
-        return acp_rpc_notify(c, "session/cancel", string(raw))
+        acp_runtime_driver(r).permissions_cancel(r)
+        return acp_runtime_driver(r).cancel(r)
     }
     return acp_inbox_accept(r, c, argument)
 }
@@ -496,6 +323,7 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     delete(r.d.queue)
     acp_inbox_input_delete(r.d.steering_input)
     for id in r.d.completed_inputs do delete(id); delete(r.d.completed_inputs)
+    acp_codex_durable_delete(&r.d.codex)
     free(r)
 }
 
@@ -511,6 +339,7 @@ acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model
     context.allocator = runtime.heap_allocator()
     r := new(ACP_Runtime)
     r.descriptor, _ = contracts.acp_provider_descriptor(provider)
+    r.driver = acp_protocol_driver(r.descriptor.protocol)
     r.binding = acp_provider_binding_copy(acp_provider_binding(r.descriptor, profile, "", bridge_bootstrap_agents_md_name(provider)))
     r.notice_interval_ms = acp_inbox_interval()
     r.instance = strings.clone(instance); r.epoch = strings.clone(epoch); r.run_dir = strings.clone(run_dir)
@@ -522,12 +351,13 @@ acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model
 }
 
 acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, checkpoint: string = "") -> bool {
+    if acp_runtime_driver(r) == nil do return false
     if !acp_tools_prepare(r,r.saved_tools) { acp_runtime_error(r,"acp_protocol_error");return false }
     if !acp_chat_prepare(r) do return false
     io, ok := acp_pipe_io_open(socket, r.instance, r.generation, r.epoch, r.state_path, after_seq)
     if !ok do return false
     r.client, ok = acp_rpc_open(io, {data = r, checkpoint = acp_runtime_checkpoint, notification = acp_runtime_notification,
-        inbound_request = acp_runtime_inbound, inbound_timeout = acp_permission_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process, tick = acp_inbox_tick})
+        inbound_request = acp_runtime_inbound, inbound_timeout = acp_runtime_inbound_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process, tick = acp_inbox_tick}, r.descriptor.protocol, acp_runtime_driver(r).rpc)
     if !ok { io.close(io.data); io.destroy(io.data); return false }
     if checkpoint != "" {
         if !acp_rpc_restore(r.client, checkpoint) do return false
@@ -642,4 +472,18 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     bridge_pty_host_events_ensure()
     bridge_task_wake_note_launched(instance)
     return true, "", {}
+}
+
+// Result/steering callbacks transfer their heap-owned result to the driver.
+acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
+    acp_runtime_driver(cast(^ACP_Runtime)data).result(data, result)
+}
+acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap := false) {
+    acp_runtime_driver(r).prompt(r, input, bootstrap)
+}
+acp_runtime_ready :: proc(r: ^ACP_Runtime) {
+    acp_runtime_driver(r).ready(r)
+}
+acp_runtime_inbound_timeout :: proc(data: rawptr, id: string) {
+    acp_runtime_driver(cast(^ACP_Runtime)data).inbound_timeout(data, id)
 }

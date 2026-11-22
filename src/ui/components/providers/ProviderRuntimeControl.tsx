@@ -111,7 +111,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
             onChange={(e) => void change(e.target.value as RuntimeTransport)}
             className="min-h-10 rounded-md border border-subtle bg-surface px-3 text-sm text-primary disabled:opacity-50">
             {status.transports.map((transport) => <option key={transport} value={transport}
-              disabled={transport === 'acp' && Boolean(acpReason)} title={transport === 'acp' ? acpReason : undefined}>{transport.toUpperCase()}</option>)}
+              disabled={transport === 'acp' && Boolean(acpReason)} title={transport === 'acp' ? acpReason : undefined}>{transport === 'acp' && provider === 'codex' ? 'ACP (Codex app-server)' : transport.toUpperCase()}</option>)}
           </select>
         </label>
         <Button size="sm" variant="secondary" data-debug-id={`providers-runtime-reset-${provider}`}

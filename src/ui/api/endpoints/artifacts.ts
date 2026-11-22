@@ -4,14 +4,13 @@ import * as daemonApi from '../daemonApi';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { HTML_BUNDLE_KIND } from '../../utils/htmlBundle';
+import { openArtifactContentBlob, type ArtifactLockReason } from '../../utils/artifactContentVault';
 import { AUDIO_ARTIFACT_KIND, isAudioArtifact } from '../../utils/audioArtifact';
 import {
-  VAULT_ARMOR_PREFIX,
   isVaultArmored,
   encryptVaultText,
   encryptVaultBytes,
   decryptVaultText,
-  decryptVaultBytes,
   getActiveVaultKey,
   base64ToBytes,
   bytesToBase64,
@@ -698,7 +697,7 @@ export type ArtifactContentState = {
   /** The payload is vault-armored and could not be opened (vault locked or another vault). */
   locked: boolean;
   /** Why `locked` is set: the vault is locked (or lacks the epoch key), or the payload was sealed by a previous vault. */
-  lockReason: '' | 'locked' | 'other_vault';
+  lockReason: ArtifactLockReason;
 };
 
 const EMPTY_CONTENT_STATE: ArtifactContentState = { url: '', blob: null, loading: false, error: '', locked: false, lockReason: '' };
@@ -726,34 +725,10 @@ export function useArtifactContentState({ daemonUrl, clientToken, artifactId, ve
         return response.blob();
       })
       .then(async (blob) => {
-        let finalBlob = blob;
-        let locked = false;
-        let lockReason: ArtifactContentState['lockReason'] = '';
         // Resolved here rather than in render: the active CryptoKey is a module-level
         // ref, not reactive state, so it must be read when the blob is decrypted.
         // `isUnlocked` is the reactive trigger that re-runs this effect on unlock/lock.
-        // Only an armored payload is read as text; unencrypted binaries stay untouched.
-        const rawText = (await blob.slice(0, VAULT_ARMOR_PREFIX.length).text()) === VAULT_ARMOR_PREFIX ? await blob.text() : '';
-        if (rawText && isVaultArmored(rawText)) {
-          locked = true;
-          lockReason = 'locked';
-          const activeKey = getActiveVaultKey();
-          if (isUnlocked && activeKey) {
-            try {
-              // Bytes, not text: TextDecoder would corrupt binary payloads (ZIP bundles,
-              // images) by replacing invalid UTF-8 with U+FFFD (REQ-BUNDLE-4).
-              const opened = await decryptVaultBytes(rawText, activeKey);
-              if (opened.status === 'ok') {
-                finalBlob = new Blob([opened.bytes as unknown as BlobPart], { type: blob.type || 'application/octet-stream' });
-                opened.bytes.fill(0);
-                locked = false;
-                lockReason = '';
-              } else if (opened.status === 'other_vault') {
-                lockReason = 'other_vault';
-              }
-            } catch {}
-          }
-        }
+        const { blob: finalBlob, locked, lockReason } = await openArtifactContentBlob(blob, isUnlocked ? getActiveVaultKey() : null);
         nextUrl = URL.createObjectURL(finalBlob);
         if (cancelled) URL.revokeObjectURL(nextUrl);
         else setState({ url: nextUrl, blob: finalBlob, loading: false, error: '', locked, lockReason });

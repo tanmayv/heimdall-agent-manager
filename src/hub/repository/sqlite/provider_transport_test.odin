@@ -9,6 +9,62 @@ import iface "odin_test:hub/repository/iface"
 import provider "odin_test:hub/service/provider"
 
 @(test)
+test_codex_catalog_upgrade_preserves_pty_profiles_and_snapshot :: proc(t: ^testing.T) {
+ conn, opened, _ := open(":memory:")
+ if !testing.expect(t, opened) do return
+ defer close(&conn)
+ migrated, err := run_migrations(&conn, stop_before="234_codex_acp_transport.sql")
+ if !testing.expect(t, migrated, err.message) do return
+ impl: Provider_Repo_SQLite
+ repo := new_provider_repository(&impl, &conn)
+ before, found, before_err := iface.provider_catalog_get(&repo,"codex")
+ testing.expect(t,found && before_err.code==.None && before.transports_json==`["pty"]`)
+ defer domain.provider_catalog_entry_destroy(before)
+ testing.expect(t,exec(&conn,"INSERT INTO bridges(bridge_id,owner_user_id,created_at,updated_at) VALUES('codex_upgrade','owner','','');"))
+ testing.expect(t,exec(&conn,"INSERT INTO bridge_provider_profiles(bridge_id,profile_id,provider,state,enabled) VALUES('codex_upgrade','work','codex','ok',1);"))
+ testing.expect(t,exec(&conn,"INSERT INTO bridge_provider_settings(bridge_id,profile_id,provider,enabled,updated_at,transport) VALUES('codex_upgrade','codex','codex',1,'','pty'),('codex_upgrade','work','codex',0,'',NULL);"))
+ testing.expect(t,exec(&conn,"INSERT INTO agent_instances(agent_instance_id,owner_user_id,agent_id,bridge_id,provider,runtime_status,runtime_transport,created_at,updated_at) VALUES('codex_existing','owner','agent','codex_upgrade','codex','running','pty','','');"))
+ migrated,err=run_migrations(&conn)
+ if !testing.expect(t,migrated,err.message) do return
+ entry, exists, entry_err := iface.provider_catalog_get(&repo,"codex")
+ testing.expect(t,exists && entry_err.code==.None)
+ defer domain.provider_catalog_entry_destroy(entry)
+ testing.expect(t,entry.transports_json==`["pty","acp"]` && entry.default_transport=="pty")
+ testing.expect(t,contracts.acp_provider_recipe_valid("codex",entry.acp_recipe_json))
+ // Compare every catalog field/model through the canonical serializer after
+ // restoring just the three intentionally changed transport fields.
+ same := entry
+ same.transports_json=before.transports_json;same.default_transport=before.default_transport;same.acp_recipe_json=before.acp_recipe_json
+ old_entries:=make([dynamic]domain.Provider_Catalog_Entry,context.temp_allocator);append(&old_entries,before)
+ new_entries:=make([dynamic]domain.Provider_Catalog_Entry,context.temp_allocator);append(&new_entries,same)
+ old_body:=provider.catalog_body_json(old_entries);defer delete(old_body)
+ new_body:=provider.catalog_body_json(new_entries);defer delete(new_body)
+ testing.expect_value(t,new_body,old_body)
+ settings,settings_err:=iface.bridge_provider_setting_list(&repo,"codex_upgrade")
+ defer domain.bridge_provider_settings_destroy(settings)
+ testing.expect(t,settings_err.code==.None && len(settings)==2)
+ for setting in settings {
+  testing.expect_value(t,setting.transport,"pty" if setting.profile_id=="codex" else "")
+  testing.expect_value(t,setting.enabled,setting.profile_id=="codex")
+ }
+ agent_impl:Agent_Repo_SQLite
+ agents:=new_agent_repository(&agent_impl,&conn)
+ inst,inst_found,inst_err:=iface.agent_get_instance(&agents,"codex_existing")
+ defer domain.agent_instance_destroy(&inst)
+ testing.expect(t,inst_found && inst_err.code==.None && inst.runtime_transport=="pty")
+ stored,stored_err:=iface.provider_catalog_etag(&repo);defer delete(stored)
+ service:=provider.Provider_Service{repo=&repo}
+ derived,derived_err:=provider.catalog_etag(&service);defer delete(derived)
+ testing.expect(t,stored_err.code==.None && derived_err.code==.None && stored==derived)
+ // Both on-disk and embedded migrations carry the same reviewed bytes.
+ embedded:=migration_sql("234_codex_acp_transport.sql","");defer delete(embedded)
+ disk:=migration_sql("234_codex_acp_transport.sql","src/hub/repository/sqlite/migrations");defer delete(disk)
+ testing.expect_value(t,embedded,disk)
+ migrated,err=run_migrations(&conn)
+ testing.expect(t,migrated,err.message)
+}
+
+@(test)
 c2_copilot_catalog_upgrade_preserves_profiles_defaults_and_hash :: proc(t: ^testing.T) {
  conn, opened, _ := open(":memory:")
  if !testing.expect(t, opened) do return
@@ -117,7 +173,7 @@ test_transport_catalog_constraints_and_pin :: proc(t:^testing.T) {
   "UPDATE provider_catalog SET transports='[\"pty\",\"pty\"]' WHERE provider='claude';",
   "UPDATE provider_catalog SET transports='[\"pty\",1]' WHERE provider='claude';",
   "UPDATE provider_catalog SET transports='[\"other\"]' WHERE provider='claude';",
-  "UPDATE provider_catalog SET default_transport='acp' WHERE provider='codex';",
+  "UPDATE provider_catalog SET default_transport='acp' WHERE provider='pi';",
   "UPDATE provider_catalog SET acp_recipe=NULL WHERE provider='claude';",
   "UPDATE provider_catalog SET acp_recipe='[]' WHERE provider='claude';",
   "UPDATE provider_catalog SET transports='bad' WHERE provider='claude';",

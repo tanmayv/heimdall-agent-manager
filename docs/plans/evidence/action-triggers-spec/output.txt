@@ -1,0 +1,33 @@
+nats-server: v2.14.7
+client 3.13.0
+PASS  1  stream with js_WorkQueuePolicy created (status 0 js 0)
+PASS  2  two consumers with disjoint filters coexist on the work-queue stream
+      add_consumer brg_overlap: status 1 js 10100
+PASS  2b an overlapping filter is refused (expected error above)
+PASS  2c MaxAckPending read back as 16
+PASS  3a consumer b2 does not receive a b1 message
+PASS  3b consumer b1 receives it, NumDelivered 1
+PASS  3c after ack the stream holds 0 messages
+PASS  4a natsMsg_NakWithDelay(3000 ms): nothing redelivered in the first 2 s
+PASS  4b redelivered after 3000 ms with NumDelivered 2
+      reply subject: $JS.ACK.HEIM_DELIVER.brg_b1.2.2.3.1795329273791175160.0
+PASS  5a '-NAK {"delay": ns}' to the reply subject: nothing in the first 2 s
+PASS  5b redelivered after 3001 ms with NumDelivered 3 (= MaxDeliver)
+PASS  6  '+WPI' at 1.5 s: no max-deliveries advisory at 3.0 s (AckWait was extended)
+INFO  7a advisory with NO pull request waiting, 4 s after the final AckWait: not received
+PASS  7b the exhausted message is not delivered again
+PASS  7d max-deliveries advisory received once a pull request was waiting
+      advisory: {"type":"io.nats.jetstream.advisory.v1.max_deliver","id":"RznsakxLt7bmOQZl5duJDt","timestamp":"2026-11-22T06:34:46.895186564Z","stream":"HEIM_DELIVER","consumer":"brg_b1","stream_seq":2,"deliveries":3}
+INFO  7c after MaxDeliver exhaustion the work-queue stream still holds 1 message(s)
+PASS  8a '+TERM' to the reply subject: not redelivered within 3 s (AckWait 2 s)
+INFO  8b stream messages before term 2, after term 1
+INFO  8c MSG_TERMINATED advisory received
+PASS  9  '+ACK' request to the reply subject removes the message (2 -> 1)
+PASS  10 fetch of 20 with MaxAckPending 16 returned 16
+PASS  11 repeated Nats-Msg-Id inside the window is reported duplicate
+PASS  12 consumer deleted and its subjects purged (purge status 0 js 0)
+PASS  13a two messages fetched (MaxAckPending 2)
+INFO  13b after two delayed naks (8 s): NumAckPending 2, NumRedelivered 0, NumPending 1
+INFO  13c third message while both naks are still delayed: HELD BACK
+failures: 0
+
