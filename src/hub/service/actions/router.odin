@@ -378,7 +378,7 @@ run_views_destroy :: proc(rows:[]Run_View) {
  for &row in rows {domain.action_run_destroy(&row.run); delete(row.delivery_expires_at)}
  delete(rows)
 }
-list_runs :: proc(r:^Router,owner,action_id:string,limit:int,before:string)->([]Run_View,domain.Domain_Error) {
+list_runs :: proc(r:^Router,owner,action_id:string,limit:int,before:string,before_id:string="")->([]Run_View,domain.Domain_Error) {
  uow,ok,err:=iface.unit_of_work_begin(r.factory)
  if !ok do return nil,err
  defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
@@ -388,7 +388,7 @@ list_runs :: proc(r:^Router,owner,action_id:string,limit:int,before:string)->([]
  if e.code!=.None do return nil,e
  if !found || string(action.owner_user_id)!=owner do return nil,domain.domain_error(.Not_Found,"action not found")
  if _,expiry_err:=expire_open_run(r,&uow,action.id);expiry_err.code!=.None do return nil,expiry_err
- runs,re:=repo.runs_list(repo.ctx,action.id,limit,before)
+ runs,re:=repo.runs_list(repo.ctx,action.id,limit,before,before_id)
  if re.code!=.None do return nil,re
  rows:=make([]Run_View,len(runs))
  success:=false

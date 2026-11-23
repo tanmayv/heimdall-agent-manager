@@ -35,7 +35,7 @@ export default function RunHistory({ actionId, catalog }: { actionId: string; ca
   async function loadMore() {
     const current = generation.current;
     try {
-      const page = await fetchRuns({ id: actionId, limit: 50, before: rows[rows.length - 1]?.created_at }).unwrap();
+      const page = await fetchRuns({ id: actionId, limit: 50, before: rows[rows.length - 1]?.created_at, before_id: rows[rows.length - 1]?.id }).unwrap();
       if (current !== generation.current) return;
       setRows(prev => [...prev, ...page.filter(row => !prev.some(p => p.id === row.id))]); setMore(page.length === 50);
     } catch { /* query renders the error */ }

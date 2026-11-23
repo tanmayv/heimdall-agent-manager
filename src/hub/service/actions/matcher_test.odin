@@ -143,7 +143,7 @@ action_test_match :: proc(t:^testing.T,f:^Action_Test,id:string) {
   stream_time_ms=f.now_ms,stream_sequence=u64(f.serial+1),envelope=test_config(`{"type":"chain.state","data":{"state":"completed"}}`)}))
 }
 action_test_rows :: proc(t:^testing.T,f:^Action_Test)->[]domain.Action_Run {
- rows,err:=f.repos.actions.runs_list(f.repos.actions.ctx,"action",1000,"")
+ rows,err:=f.repos.actions.runs_list(f.repos.actions.ctx,"action",1000,"","")
  testing.expect_value(t,err.code,domain.Error_Code.None)
  return rows
 }
@@ -181,7 +181,7 @@ tenant_scenario :: proc(t:^testing.T,f:^Action_Test) {
  action_test_seed(t,f,"other_action","other_trigger","other")
  action_test_match(t,f,"one")
  action_test_expect(t,f,domain.ACTION_RUN_QUEUED,1)
- rows,err:=f.repos.actions.runs_list(f.repos.actions.ctx,"other_action",20,"")
+ rows,err:=f.repos.actions.runs_list(f.repos.actions.ctx,"other_action",20,"","")
  testing.expect(t,err.code==.None && len(rows)==0)
  testing.expect(t,handle_message(&f.runtime,{subject="ev.owner.chain.chain1.state",event_type="chain.state",event_id="two",stream_time_ms=f.now_ms,
   envelope=test_config(`{"owner_user_id":"other","data":{}}`)}))

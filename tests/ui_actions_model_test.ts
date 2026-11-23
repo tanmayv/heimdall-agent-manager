@@ -45,7 +45,8 @@ test('real endpoints send nested JSON, partial PATCH, feature, enable/disable an
     await store.dispatch(actionsApi.endpoints.actionPlacementCandidates.initiate({ agent_id: 'agt_1' })).unwrap();
     assert.match(capture.requests.at(-1)!.url, /feature=event_pipeline_v1/);
     capture.setNextResponse({ data: [] });
-    await store.dispatch(actionsApi.endpoints.actionRuns.initiate({ id: 'act_1', before: '2026-01-01T00:00:00Z' })).unwrap();
+    await store.dispatch(actionsApi.endpoints.actionRuns.initiate({ id: 'act_1', before: '2026-01-01T00:00:00Z', before_id: 'run_2' })).unwrap();
     assert.equal(new URL(capture.requests.at(-1)!.url, 'http://hub').searchParams.get('before'), '2026-01-01T00:00:00Z');
+    assert.equal(new URL(capture.requests.at(-1)!.url, 'http://hub').searchParams.get('before_id'), 'run_2');
   } finally { store.dispatch(actionsApi.util.resetApiState()); }
 });

@@ -1,6 +1,7 @@
 package http
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
 import "core:strings"
@@ -318,6 +319,34 @@ action_runs_scenario :: proc(t:^testing.T,f:^Action_API_Fixture) {
  array=action_runs_data(t,list_action_runs_handler(&f.handlers,request));testing.expect_value(t,len(array),1)
  request.query=strings.concatenate({"before=",at3},context.temp_allocator)
  array=action_runs_data(t,list_action_runs_handler(&f.handlers,request));testing.expect_value(t,len(array),2)
+
+ // Four rows share at3; every row must survive page boundaries exactly once.
+ for i in 4..<7 {
+  run:=domain.Action_Run{run_id=fmt.tprintf("run%d",i),action_id=domain.Action_ID(id),owner_user_id=f.wire.owner,
+   occurrence_key=fmt.tprintf("occ%d",i),state="delivered",event_params_json="{}",created_at=at3,finished_at=at3}
+  inserted,err:=repo.run_insert(repo.ctx,run);testing.expect(t,inserted && err.code==.None)
+ }
+ before,before_id:="",""
+ expected:=[]string{"run6","run5","run4","run3","run2","run1"}
+ for page in 0..<3 {
+  request.query=fmt.tprintf("limit=2&before=%s&before_id=%s",before,before_id)
+  array=action_runs_data(t,list_action_runs_handler(&f.handlers,request))
+  if !testing.expect_value(t,len(array),2) do return
+  for value,i in array {
+   row:=value.(json.Object)
+   testing.expect_value(t,row["id"].(string),expected[page*2+i])
+   before=row["created_at"].(string);before_id=row["id"].(string)
+  }
+ }
+ request.query=fmt.tprintf("limit=2&before=%s&before_id=%s",before,before_id)
+ array=action_runs_data(t,list_action_runs_handler(&f.handlers,request));testing.expect_value(t,len(array),0)
+ // Legacy timestamp-only requests still exclude all rows at the cursor timestamp.
+ request.query=fmt.tprintf("before=%s",at3)
+ array=action_runs_data(t,list_action_runs_handler(&f.handlers,request));testing.expect_value(t,len(array),2)
+ // An ID without a timestamp does not restrict the first page.
+ request.query="limit=1&before_id=run1"
+ array=action_runs_data(t,list_action_runs_handler(&f.handlers,request))
+ if testing.expect_value(t,len(array),1) do testing.expect_value(t,array[0].(json.Object)["id"].(string),"run6")
  request.query="limit=0";testing.expect_value(t,list_action_runs_handler(&f.handlers,request).status,422)
  uow,ok,_=iface.unit_of_work_begin(f.service.factory);assert(ok)
  d,_,_:=uow.repos.pipeline_deliveries.get(uow.repos.pipeline_deliveries.ctx,"dlv_history")

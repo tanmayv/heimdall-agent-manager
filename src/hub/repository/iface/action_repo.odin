@@ -36,8 +36,8 @@ Action_Repository :: struct {
 	// started_at of the newest run whose started_at is set (routed, delivered, or failed after routing), or "".
 	run_last_started_at: proc(ctx: rawptr, id: domain.Action_ID) -> (string, domain.Domain_Error),
 	run_joined_count: proc(ctx: rawptr, run_id: string) -> (int, domain.Domain_Error),
-	// Newest first. before_created_at = "" starts at the newest row.
-	runs_list:  proc(ctx: rawptr, id: domain.Action_ID, limit: int, before_created_at: string) -> ([]domain.Action_Run, domain.Domain_Error),
+	// Newest first. Empty before_created_at starts at the newest row; before_id breaks timestamp ties when supplied.
+	runs_list:  proc(ctx: rawptr, id: domain.Action_ID, limit: int, before_created_at: string, before_id: string) -> ([]domain.Action_Run, domain.Domain_Error),
 	// Deletes rows of this action that are not open and are either older than cutoff or beyond the newest keep rows.
 	runs_prune: proc(ctx: rawptr, id: domain.Action_ID, keep: int, cutoff: string) -> domain.Domain_Error,
 }

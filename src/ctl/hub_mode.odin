@@ -523,7 +523,7 @@ CTL_ACTIONS_HELP :: `ham-ctl hub actions <list|show|create|update|enable|disable
   enable <action-id>
   disable <action-id>
   delete <action-id>
-  runs <action-id> [--limit <n>] [--before <created_at>]
+  runs <action-id> [--limit <n>] [--before <created_at>] [--before-id <run_id>]
 Targets:
   --agent-id <id> [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]...
   --instance <id>
@@ -616,7 +616,7 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 			return {method = .POST, path = ctl_api("actions", id, action), body = ctl_empty_object_body()}, true
 		case "runs":
 			query := ctl_query_make()
-			for flag in ([]string{"--limit", "--before"}) {
+			for flag in ([]string{"--limit", "--before", "--before-id"}) {
 				if has_flag(args, flag) {
 					value := option_value(args, flag, "")
 					if value == "" || strings.has_prefix(value, "--") do return {}, false
@@ -625,7 +625,9 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 						if !ok || n < 1 || n > 200 do return {}, false
 						ctl_query_add(&query, "limit", value)
 					} else {
-						ctl_query_add(&query, "before", value)
+						key := "before"
+						if flag == "--before-id" do key = "before_id"
+						ctl_query_add(&query, key, value)
 					}
 				}
 			}

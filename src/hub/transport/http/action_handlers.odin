@@ -186,7 +186,7 @@ list_action_runs_handler :: proc(ctx:rawptr,req:Request)->Response {
   limit=n
  }
  if h.router==nil do return action_error(domain.domain_error(.Internal_Error,"actions router unavailable"),req.request_id)
- rows,err:=actions.list_runs(h.router,owner,path_part(req.path,4),limit,query_value(req.query,"before"))
+ rows,err:=actions.list_runs(h.router,owner,path_part(req.path,4),limit,query_value(req.query,"before"),query_value(req.query,"before_id"))
  defer actions.run_views_destroy(rows)
  if err.code!=.None do return action_error(err,req.request_id)
  values:=make(json.Array,len(rows),context.temp_allocator)

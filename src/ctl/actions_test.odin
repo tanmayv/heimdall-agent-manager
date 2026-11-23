@@ -162,9 +162,9 @@ test_ctl_actions_enable_disable_runs_delete :: proc(t: ^testing.T) {
 			testing.expect_value(t, ctl_test_target(t, req), c.target)
 			if c.method == .POST do ctl_actions_test_json(t, req, "{}")
 		}
-		req, ok := ctl_actions_request({"runs", "act_1"}, {"--limit", "17", "--before", "2026-12-01T09:00:00+05:30"})
+		req, ok := ctl_actions_request({"runs", "act_1"}, {"--limit", "17", "--before", "2026-12-01T09:00:00+05:30", "--before-id", "run_2"})
 		testing.expect(t, ok)
-		testing.expect_value(t, ctl_test_target(t, req), "/api/v1/actions/act_1/runs?limit=17&before=2026-12-01T09%3A00%3A00%2B05%3A30")
+		testing.expect_value(t, ctl_test_target(t, req), "/api/v1/actions/act_1/runs?limit=17&before=2026-12-01T09%3A00%3A00%2B05%3A30&before_id=run_2")
 		// Capture a real request against the existing loopback fixture, and capture
 		// the exact response the command prints, without a running hub.
 		reply := `{"data":[{"id":"arun_1","state":"routed","reason":"future_server_reason","delivery_expires_at":"2026-12-02T09:00:00Z"}]}`

@@ -55,8 +55,8 @@ export const actionsApi = heimdallApi.injectEndpoints({
     actionPlacementCandidates: build.query<PlacementCandidates, { agent_id: string }>({
       queryFn: ({ agent_id }) => request('/placement/candidates?' + new URLSearchParams({ agent_id, feature: 'event_pipeline_v1' })),
     }),
-    actionRuns: build.query<ActionRun[], { id: string; before?: string; limit?: number }>({
-      queryFn: ({ id, before, limit = 50 }) => { const params = new URLSearchParams({ limit: String(limit) }); if (before) params.set('before', before); return request(path(id) + '/runs?' + params); },
+    actionRuns: build.query<ActionRun[], { id: string; before?: string; before_id?: string; limit?: number }>({
+      queryFn: ({ id, before, before_id, limit = 50 }) => { const params = new URLSearchParams({ limit: String(limit) }); if (before) params.set('before', before); if (before_id) params.set('before_id', before_id); return request(path(id) + '/runs?' + params); },
       providesTags: (_r, _e, { id }) => [{ type: 'Action', id }],
     }),
     setActionEnabled: build.mutation<{ action: Action }, { id: string; enabled: boolean }>({

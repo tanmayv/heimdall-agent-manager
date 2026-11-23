@@ -337,12 +337,12 @@ actions_runs_deferred :: proc(ctx: rawptr, limit: int) -> ([]domain.Action_Run, 
 	return actions_run_query(ctx,ACTIONS_SQL_RUNS_DEFERRED,{fmt.tprintf("%d",limit)})
 }
 
-ACTIONS_SQL_RUNS_LIST :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2) ORDER BY created_at DESC,run_id DESC LIMIT ?3;"
+ACTIONS_SQL_RUNS_LIST :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3;"
 
-actions_runs_list :: proc(ctx: rawptr, id: domain.Action_ID, limit: int, before_created_at: string) -> ([]domain.Action_Run, domain.Domain_Error) {
+actions_runs_list :: proc(ctx: rawptr, id: domain.Action_ID, limit: int, before_created_at: string, before_id: string) -> ([]domain.Action_Run, domain.Domain_Error) {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
-	return actions_run_query(ctx,ACTIONS_SQL_RUNS_LIST,{string(id),before_created_at,fmt.tprintf("%d",limit)})
+	return actions_run_query(ctx,ACTIONS_SQL_RUNS_LIST,{string(id),before_created_at,fmt.tprintf("%d",limit),before_id})
 }
 
 actions_set_last_spawned :: proc(ctx: rawptr, id: domain.Action_ID, instance_id, updated_at: string) -> domain.Domain_Error {

@@ -2545,7 +2545,7 @@ All routes need user auth and the `actions` experiment (6.15). Responses use the
 | `PATCH /api/v1/actions/{id}` | partial update | `{"data":Action}` |
 | `DELETE /api/v1/actions/{id}` | delete the action, its rules, triggers and runs; appends purge rows for its schedule triggers | `{"deleted":true}` |
 | `POST /api/v1/actions/{id}/enable`, `POST /api/v1/actions/{id}/disable` | set `enabled` | `{"data":Action}` |
-| `GET /api/v1/actions/{id}/runs?limit=<1..200, default 50>&before=<created_at>` | run history, newest first (T10) | `{"data":[Run]}` |
+| `GET /api/v1/actions/{id}/runs?limit=<1..200, default 50>&before=<created_at>&before_id=<run_id>` | run history, newest first; optional before_id breaks created_at ties, before alone excludes the entire timestamp (T10) | `{"data":[Run]}` |
 
 The router returns the first registered route that matches (`route_matches`, `src/hub/transport/http/router.odin:75`). Register `GET /api/v1/actions/trigger-types` **before** `GET /api/v1/actions/*`. There is no `/run` route and no `/api/v1/scheduled-prompts*` or `/api/v1/bridge/actions*` route.
 
