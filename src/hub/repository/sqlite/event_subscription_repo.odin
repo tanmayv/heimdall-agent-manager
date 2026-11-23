@@ -27,6 +27,7 @@ new_event_subscription_repository :: proc(
 		prune = subscription_prune,
 		delivered = subscription_delivered,
 		notice_target = subscription_notice_target,
+	notice_snapshot = subscription_notice_snapshot,
 		due_deliveries = subscription_due_deliveries,
 		mark_delivery = subscription_mark_delivery,
 		stale = subscription_stale,
@@ -432,4 +433,39 @@ subscription_bot_agent :: proc(ctx: rawptr, owner, instance: string) -> (string,
 subscription_by_owner :: proc(ctx: rawptr, owner: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
 	if owner == "" do return nil, domain.domain_error(.Forbidden, "owner identity required")
 	return subscription_query(ctx, owner, "")
+}
+
+
+// Batch the preliminary target and redelivery clock reads. The final
+// subscription/receipt/topic and target authorization fences remain separate.
+subscription_notice_snapshot :: proc(ctx: rawptr) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error) {
+	stmt, err := subscription_prepare(ctx, `WITH outstanding AS (
+ SELECT subscription_id,MIN(recorded_at) oldest,COUNT(*) total
+ FROM event_deliveries WHERE acknowledged=0 GROUP BY subscription_id)
+ SELECT s.subscription_id,COALESCE(ai.agent_instance_id,''),COALESCE(ai.bridge_id,''),
+ COALESCE(ai.runtime_status,''),COALESCE(ai.activity_status,''),COALESCE(ai.stopped_by,''),
+ EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=s.owner_user_id AND b.agent_instance_id=ai.agent_instance_id),
+ COALESCE(d.oldest,''),COALESCE(d.total,0)
+ FROM event_subscriptions s LEFT JOIN agent_instances ai
+ ON ai.agent_instance_id=s.subscriber_instance_id AND ai.owner_user_id=s.owner_user_id AND ai.kind='agent'
+ LEFT JOIN outstanding d ON d.subscription_id=s.subscription_id ORDER BY s.subscription_id;`)
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	rows := make([dynamic]domain.Event_Notice_Snapshot)
+	for {
+		step := sqlite3_step(stmt)
+		if step == SQLITE_DONE do return rows[:], {}
+		if step != SQLITE_ROW {
+			for &row in rows do domain.event_notice_snapshot_destroy(&row)
+			delete(rows)
+			return nil, domain.domain_error(.Internal_Error, "failed to snapshot notice targets")
+		}
+		append(&rows, domain.Event_Notice_Snapshot{
+			subscription_id=column_text(stmt,0),
+			target={instance_id=column_text(stmt,1),bridge_id=column_text(stmt,2),
+				runtime_status=column_text(stmt,3),activity_status=column_text(stmt,4),
+				stopped_by=column_text(stmt,5),is_bot=sqlite3_column_int64(stmt,6)!=0},
+			oldest_delivery=column_text(stmt,7), outstanding=sqlite3_column_int64(stmt,8),
+		})
+	}
 }

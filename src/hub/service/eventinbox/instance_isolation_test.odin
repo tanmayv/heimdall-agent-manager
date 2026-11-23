@@ -21,6 +21,7 @@ Isolation_Notice :: struct {
 Isolation_Recorder :: struct {
 	t:       ^testing.T,
 	notices: [dynamic]Isolation_Notice,
+	reject: bool,
 }
 isolation_record :: proc(
 	ctx: rawptr,
@@ -33,6 +34,7 @@ isolation_record :: proc(
 	testing.expect_value(r.t, owner, "alice")
 	testing.expect_value(r.t, target.instance_id, instance)
 	testing.expect(r.t, !wake)
+	if r.reject do return false
 	append(&r.notices, Isolation_Notice{instance, count})
 	return true
 }
@@ -146,7 +148,7 @@ isolation_scenario :: proc(t: ^testing.T) {
 	defer subscription_rows_destroy(all)
 	now := time.tick_now()
 	// REQ-EVP-4a/b: only inst_b is notified, counting only chain_b's events.
-	testing.expect(t, notify_pending(&runtime, all, now))
+	testing.expect(t, notify_pending_full(&runtime, all, now))
 	testing.expect_value(t, len(recorder.notices), 1)
 	if len(recorder.notices) == 1 {
 		testing.expect_value(t, recorder.notices[0].instance, "inst_b")
@@ -155,7 +157,7 @@ isolation_scenario :: proc(t: ^testing.T) {
 	// The 30 s rate limit is per instance: inst_b's notice does not hold back
 	// inst_a once it is idle, and inst_b is not notified again.
 	testing.expect(t, sqlite.exec(&db, "UPDATE agent_instances SET activity_status='idle' WHERE agent_instance_id='inst_a';"))
-	testing.expect(t, notify_pending(&runtime, all, now))
+	testing.expect(t, notify_pending_full(&runtime, all, now))
 	testing.expect_value(t, len(recorder.notices), 2)
 	if len(recorder.notices) == 2 {
 		testing.expect_value(t, recorder.notices[1].instance, "inst_a")
@@ -309,7 +311,7 @@ no_replay_scenario :: proc(t: ^testing.T) {
 	rows := isolation_all_rows(t, &factory)
 	testing.expect_value(t, len(rows), 2)
 	now := time.tick_now()
-	testing.expect(t, notify_pending(&runtime, rows, now))
+	testing.expect(t, notify_pending_full(&runtime, rows, now))
 	subscription_rows_destroy(rows)
 	testing.expect_value(t, len(recorder.notices), 0)
 	testing.expect_value(t, isolation_next_count(t, &service, "inst_a"), 0)
@@ -320,7 +322,7 @@ no_replay_scenario :: proc(t: ^testing.T) {
 	isolation_publish_subject(t, conn, review, "task.review_verdict", "new_review")
 	isolation_publish_subject(t, conn, requirements, "task.requirements_changed", "new_requirements")
 	rows = isolation_all_rows(t, &factory)
-	testing.expect(t, notify_pending(&runtime, rows, now))
+	testing.expect(t, notify_pending_full(&runtime, rows, now))
 	subscription_rows_destroy(rows)
 	testing.expect_value(t, len(recorder.notices), 2)
 	for notice in recorder.notices do testing.expect_value(t, notice.count, 1)
@@ -339,7 +341,7 @@ no_replay_scenario :: proc(t: ^testing.T) {
 	later._nsec += i64(31 * time.Second)
 	clear(&recorder.notices)
 	rows = isolation_all_rows(t, &factory)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	subscription_rows_destroy(rows)
 	for notice in recorder.notices do testing.expect(t, notice.instance != "inst_a", "restarted instance gets no notice for old events")
 	testing.expect_value(t, isolation_next_count(t, &service, "inst_a"), 0)
@@ -352,7 +354,7 @@ no_replay_scenario :: proc(t: ^testing.T) {
 	clear(&recorder.notices)
 	later._nsec += i64(31 * time.Second)
 	rows = isolation_all_rows(t, &factory)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	subscription_rows_destroy(rows)
 	testing.expect_value(t, len(recorder.notices), 0)
 	testing.expect_value(t, isolation_next_count(t, &service, "inst_w2"), 0)

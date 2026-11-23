@@ -28,6 +28,9 @@ Service :: struct {
 	// Optional fault-injection seam; nil uses the real server version lookup.
 	support_lookup: proc(conn: ^nats.Connection, stream: string) -> (bool, nats.Error),
 
+	// Optional post-publish signal; never called while holding a SQL UoW.
+	published_ctx: rawptr,
+	published: proc(ctx: rawptr, subject: string),
 	factory: ^iface.Unit_Of_Work_Factory,
 	options: nats.Connect_Options,
 	worker: ^thread.Thread,
@@ -215,6 +218,7 @@ relay_one :: proc(s: ^Service) -> (bool, bool) {
 			}
 		}
 		if pub_err.status != 0 do return false, false
+		if s.published != nil do s.published(s.published_ctx, row.subject)
 		mark, mark_began, _ := iface.unit_of_work_begin(s.factory)
 		if !mark_began do return false, false
 		err = mark.repos.event_outbox.mark_published(mark.repos.event_outbox.ctx, row.outbox_seq, platform.format_rfc3339_utc(time.now()))

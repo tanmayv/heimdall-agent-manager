@@ -13,6 +13,7 @@ import nats "odin_test:lib/nats"
 
 Service :: struct {
 	factory:     ^iface.Unit_Of_Work_Factory,
+	notice_dirty: Notice_Dirty,
 	counters: Counter_Registry,
 	notice_ctx: rawptr,
 	// Called outside a UoW. True means the existing notice/start path accepted it.

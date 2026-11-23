@@ -71,5 +71,5 @@ notification_idle_management_cost :: proc(t: ^testing.T) {
     testing.expect_value(t, ae.status, i32(0))
     fmt.printf("notification idle cost: consumers=%d passes=%d elapsed_ms=%d management_requests=%d baseline_consumer_info=%d\n", count, passes, i64(time.tick_since(started_at)/time.Millisecond), after-before, count*passes)
     // Permit the planned reduction while guarding against extra repeated scans.
-    testing.expect(t, after-before <= u64(count*passes*2+1), "empty-stream management cost exceeds the audited baseline budget")
+    testing.expect(t, after-before <= u64(1), "idle cost must be independent of pass count between full reconciliations")
 }
