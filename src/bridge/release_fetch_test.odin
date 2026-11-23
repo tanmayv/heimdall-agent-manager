@@ -84,8 +84,46 @@ release_test_get :: proc(url: string) -> (string, bool, string) {
 	if strings.has_suffix(url, "/SHA256SUMS") {
 		return fmt.tprintf("%s  heimdall-local-linux-amd64-v0.7.0.tar.gz\n", strings.repeat("0", 64, context.temp_allocator)), true, ""
 	}
-	if strings.contains(url, "/releases?") do return RELEASE_TEST_LIST, true, ""
+	if url == BRIDGE_RELEASE_LATEST_URL do return RELEASE_TEST_LIST_LATEST, true, ""
 	return "", false, "HTTP 404"
+}
+
+// What GitHub's /releases/latest returns for RELEASE_TEST_LIST: one object.
+RELEASE_TEST_LIST_LATEST :: `{"tag_name":"v0.7.0","draft":false,"prerelease":false,"assets":[{"name":"SHA256SUMS"},{"name":"heimdall-local-linux-amd64-v0.7.0.tar.gz"},{"name":"heimdall-local-windows-amd64-v0.7.0.zip"}]}`
+
+// release_test_many_get serves a 150-release repository: 130 prereleases above
+// the promoted v0.5.0. A reader that pages the list from the top (the F9 bug)
+// sees only prereleases on the first 100; only /releases/latest names v0.5.0.
+release_test_many_get :: proc(url: string) -> (string, bool, string) {
+	if strings.has_suffix(url, "/SHA256SUMS") {
+		return fmt.tprintf("%s  heimdall-local-linux-amd64-v0.5.0.tar.gz\n", strings.repeat("0", 64, context.temp_allocator)), true, ""
+	}
+	release :: proc(tag: string, pre: bool) -> string {
+		// Not fmt: braces are fmt directives.
+		return strings.concatenate({`{"tag_name":"`, tag, `","draft":false,"prerelease":`, "true" if pre else "false",
+			`,"assets":[{"name":"SHA256SUMS"},{"name":"heimdall-local-linux-amd64-`, tag, `.tar.gz"}]}`}, context.temp_allocator)
+	}
+	if url == BRIDGE_RELEASE_LATEST_URL do return release("v0.5.0", false), true, ""
+	if strings.contains(url, "/releases?") {
+		items := make([dynamic]string, context.temp_allocator)
+		for i := 129; i >= 30; i -= 1 do append(&items, release(fmt.tprintf("v0.6.%d", i), true))
+		return fmt.tprintf("[%s]", strings.join(items[:], ",", context.temp_allocator)), true, ""
+	}
+	return "", false, "HTTP 404"
+}
+
+@(test)
+test_release_fetch_latest_beyond_one_hundred_releases :: proc(t: ^testing.T) {
+	dir := fmt.tprintf("%s/ham-release-many-%d", "/tmp", os.get_pid())
+	_ = bridge_make_directory_all(dir)
+	defer os.remove_all(dir)
+	_, tag, err := bridge_release_fetch("latest", "linux-amd64", dir, release_test_many_get, release_test_download)
+	testing.expect_value(t, tag, "v0.5.0")
+	testing.expect(t, strings.contains(err, "SHA-256 mismatch"), err) // the fake bundle is "tampered"
+	// The latest object alone qualifies; a prerelease object never does.
+	tag, err = bridge_release_select(`{"tag_name":"v0.6.1","draft":false,"prerelease":true,"assets":[{"name":"SHA256SUMS"},{"name":"heimdall-local-linux-amd64-v0.6.1.tar.gz"}]}`, "linux-amd64", "latest")
+	testing.expect_value(t, tag, "")
+	testing.expect(t, strings.contains(err, "no promoted release"), err)
 }
 
 release_test_download :: proc(req: httpc.Request, dest: string) -> (int, httpc.Error) {

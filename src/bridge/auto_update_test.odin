@@ -165,9 +165,11 @@ test_auto_update_resolve_github_fallback :: proc(t: ^testing.T) {
 	version := bridge_auto_update_resolve(proc(req: httpc.Request) -> (httpc.Response, httpc.Error) {
 		return hub_test_response(503, "unavailable"), .None
 	}, proc(url: string) -> (string, bool, string) {
+		// Only /releases/latest is read: a page of the list could hold only prereleases (F9).
+		if url != BRIDGE_RELEASE_LATEST_URL do return "", false, "HTTP 404"
 		target, _ := bridge_release_target()
 		bundle := bridge_release_bundle_name(target, "v999.0.0")
-		doc := strings.concatenate({`[{"tag_name":"v999.0.0","draft":false,"prerelease":false,"assets":[{"name":"SHA256SUMS"},{"name":"`, bundle, `"}]}]`}, context.temp_allocator)
+		doc := strings.concatenate({`{"tag_name":"v999.0.0","draft":false,"prerelease":false,"assets":[{"name":"SHA256SUMS"},{"name":"`, bundle, `"}]}`}, context.temp_allocator)
 		return doc, true, ""
 	})
 	defer delete(version)

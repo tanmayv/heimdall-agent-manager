@@ -67,7 +67,9 @@ Without -Version, installs the newest promoted (non-prerelease) release.
       $headers = @{ 'User-Agent' = 'heimdall-install.ps1'; 'Accept' = 'application/vnd.github+json' }
       if (-not $Version -or $Version -eq 'latest') {
         # Releases start as prereleases (canary candidates); only promoted ones are picked.
-        $releases = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$HeimdallRepo/releases?per_page=30"
+        # releases/latest is the newest promoted release as one object; a page of the
+        # release list can hold only prereleases (report F9).
+        $releases = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$HeimdallRepo/releases/latest"
         $Version = $null
         foreach ($r in @($releases)) {
           $assets = @($r.assets | ForEach-Object { $_.name })
