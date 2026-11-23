@@ -19,7 +19,6 @@ import project "odin_test:hub/service/project"
 import vd "odin_test:hub/service/vault_directory"
 import http "odin_test:hub/transport/http"
 import contracts "odin_test:contracts"
-import project "odin_test:hub/service/project"
 
 MCP_Task_Test_Vector :: struct {
 	now_ms:i64,
