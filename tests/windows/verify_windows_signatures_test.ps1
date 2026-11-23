@@ -16,6 +16,9 @@ New-Item -ItemType Directory -Path $tmp | Out-Null
 $failures = 0
 
 function Invoke-Verify([string[]]$ArgList) {
+  # The verifier reports failures on stderr; under 'Stop', Windows PowerShell
+  # 5.1 turns a native command's redirected stderr into a terminating error.
+  $ErrorActionPreference = 'Continue'
   $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier @ArgList 2>&1 | Out-String
   return @{ Code = $LASTEXITCODE; Out = $out }
 }
