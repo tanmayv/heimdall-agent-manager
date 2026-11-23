@@ -16,6 +16,7 @@ Scenario :: enum {
 	Bad_Crash, // candidate crashes in probation
 	Both_Bad, // candidate and previous both fail (rollback_failed)
 	One_Way_Bad, // one-way state migration; candidate fails -> snapshot restored
+	Timer_Forced, // timer op, agents stay busy: waits (agent gate §12), forced, commits
 }
 
 @(private = "file")
@@ -31,12 +32,16 @@ setup :: proc(w: ^World, s: Scenario) -> (from, to: Ref) {
 	}
 	w.fake.behaviour[from.tree] = .Good
 	switch s {
-	case .Good:
+	case .Good, .Timer_Forced:
 		w.fake.behaviour[to.tree] = .Good
 	case .Bad_Never_Ready, .Both_Bad:
 		w.fake.behaviour[to.tree] = .Never_Ready
 	case .Bad_Crash, .One_Way_Bad:
 		w.fake.behaviour[to.tree] = .Crash
+	}
+	if s == .Timer_Forced {
+		w.gate_wait_s = 60
+		w.fake.agents = Busy{pty_sessions = 2, helpers = 1}
 	}
 	install(w, from)
 	return
@@ -66,7 +71,7 @@ check_final :: proc(w: ^World, s: Scenario, from, to: Ref, out: Outcome, label: 
 	testing.expectf(t, w.fake.violations == 0, "%s: two runtimes ran at once (%d)", label, w.fake.violations)
 	switch out.state {
 	case "committed":
-		testing.expectf(t, s == .Good, "%s: a bad candidate committed", label)
+		testing.expectf(t, s == .Good || s == .Timer_Forced, "%s: a bad candidate committed", label)
 		testing.expectf(t, rec.current == to.tree && rec.known_good == to.tree, "%s: committed but current=%s known_good=%s", label, rec.current, rec.known_good)
 		testing.expectf(t, w.fake.running == to.tree, "%s: committed but runtime is %s", label, w.fake.running)
 	case "rolled_back":
@@ -112,7 +117,7 @@ run_with :: proc(t: ^testing.T, s: Scenario, flavour: Crash_Flavour, inj: Inject
 		handle(&w, x, err)
 		w.fake.behaviour[from.tree] = .Never_Ready
 	}
-	out = drive(&w, "op_01testactivation000000000", to)
+	out = drive(&w, "op_01testactivation000000000", to, actor = "timer" if s == .Timer_Forced else "app:usr_test")
 	label := fmt.tprintf("%v/%v/%v@%d", s, flavour, mode, crash_at)
 	if inj.fail_at != 0 do label = fmt.tprintf("%v/fail-%v@%d (%s)", s, inj.fail_kind, inj.fail_at, w.inj.failed_what)
 	if delivered != nil do delivered^ = w.inj.failed
@@ -129,6 +134,7 @@ test_baseline_outcomes :: proc(t: ^testing.T) {
 		.Bad_Crash       = "rolled_back",
 		.Both_Bad        = "rollback_failed",
 		.One_Way_Bad     = "rolled_back",
+		.Timer_Forced    = "committed",
 	}
 	for s in Scenario {
 		out, _ := run_scenario(t, s, .Supervisor, .Drop, 0)
@@ -176,7 +182,7 @@ test_non_crash_failure_at_every_durable_step :: proc(t: ^testing.T) {
 				if !delivered do break // k is past the last durable step of this scenario
 				total_runs += 1
 				dist[fmt.tprintf("%v %s %s", s, out.state, out.error)] += 1
-				if s == .Good {
+				if s == .Good || s == .Timer_Forced {
 					testing.expectf(t, out.state == "committed" || out.state == "failed" || out.state == "rolled_back", "Good/fail-%v@%d (%s): %s", kind, k, what, out.state)
 				}
 			}

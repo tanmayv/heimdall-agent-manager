@@ -89,6 +89,16 @@ Fake :: struct {
 	// One-way state: a tree listed here writes "schema-<n>" into config.toml at start; a tree
 	// whose schema is lower crashes when it finds a newer one (it cannot read it).
 	writes_schema:  map[string]int,
+	// Agent gate (§12). `agents` is what the running runtime reports; with no runtime the
+	// count is unavailable (counted = false). `silent` = the runtime never answers.
+	agents:         Busy,
+	silent:         bool,
+	admission_open: bool,
+	closes:         int, // close_admission calls
+	opens:          int, // open_admission calls
+	// A launch races the close: the count taken right after the next close is one higher.
+	race_on_close:  bool,
+	stops:          [dynamic]string, // stop_children calls (tree)
 }
 
 fake_new :: proc() -> ^Fake {
@@ -99,6 +109,7 @@ fake_new :: proc() -> ^Fake {
 	f.behaviour = make(map[string]Behaviour)
 	f.writes_schema = make(map[string]int)
 	f.starts = make([dynamic]string)
+	f.stops = make([dynamic]string)
 	return f
 }
 
@@ -106,6 +117,7 @@ fake_free :: proc(f: ^Fake) {
 	delete(f.behaviour)
 	delete(f.writes_schema)
 	delete(f.starts)
+	delete(f.stops)
 	free(f)
 }
 
@@ -125,6 +137,7 @@ fake_host :: proc(f: ^Fake) -> Host {
 			if f.running != "" do f.violations += 1
 			f.running = strings.clone(tree, context.temp_allocator)
 			f.started_at = f.clock
+			f.admission_open = true // a fresh runtime starts with admission open
 			append(&f.starts, strings.clone(tree, context.temp_allocator))
 			if n, ok := f.writes_schema[tree]; ok && f.state_root != "" {
 				write_text(join(f.state_root, "config.toml"), fmt.tprintf("schema-%d", n))
@@ -133,6 +146,7 @@ fake_host :: proc(f: ^Fake) -> Host {
 		},
 		stop_children = proc(u: rawptr, tree: string) -> bool {
 			f := (^Fake)(u)
+			append(&f.stops, strings.clone(tree, context.temp_allocator))
 			if !f.stop_ok do return false
 			if f.stop_fail_once != "" && f.stop_fail_once == tree {
 				f.stop_fail_once = ""
@@ -167,6 +181,29 @@ fake_host :: proc(f: ^Fake) -> Host {
 		hub_connected = proc(u: rawptr) -> bool {return (^Fake)(u).hub_up},
 		hub_recently_connected = proc(u: rawptr) -> bool {return (^Fake)(u).hub_recent},
 		stop_requested = proc(u: rawptr) -> bool {return (^Fake)(u).stop_flag},
+		gate_count = proc(u: rawptr) -> Busy {
+			f := (^Fake)(u)
+			if f.running == "" || f.silent do return Busy{}
+			b := f.agents
+			b.counted = true
+			return b
+		},
+		close_admission = proc(u: rawptr) -> bool {
+			f := (^Fake)(u)
+			f.closes += 1
+			if f.running == "" || f.silent do return false
+			if f.race_on_close {
+				f.race_on_close = false
+				f.agents.launches += 1
+			}
+			f.admission_open = false
+			return true
+		},
+		open_admission = proc(u: rawptr) {
+			f := (^Fake)(u)
+			f.opens += 1
+			if f.running != "" do f.admission_open = true
+		},
 	}
 }
 
@@ -194,6 +231,7 @@ World :: struct {
 	exits:         int, // supervisor exit 1 after a fatal engine error (Error contract)
 	handovers:     int,
 	refusals:      int,
+	gate_wait_s:   i64, // 0 = default (2 h)
 }
 
 world_init :: proc(w: ^World, t: ^testing.T, prefix: string) {
@@ -218,6 +256,7 @@ world_config :: proc(w: ^World) -> Config {
 	cfg := default_config(w.root, w.state)
 	cfg.retry.sleep = proc(ms: int) {}
 	cfg.state_stores = TEST_STORES
+	if w.gate_wait_s != 0 do cfg.gate_wait_s = w.gate_wait_s
 	return cfg
 }
 
@@ -340,7 +379,7 @@ Outcome :: struct {
 // drive: from an installed instance, run one activation of `to` through the engine,
 // restarting supervisors exactly like the launcher would, until the op is terminal and
 // the instance is idle (or rollback_failed). Returns the op's terminal line.
-drive :: proc(w: ^World, op_id: string, to: Ref, max_iters := 400) -> (out: Outcome) {
+drive :: proc(w: ^World, op_id: string, to: Ref, max_iters := 400, actor := "app:usr_test") -> (out: Outcome) {
 	begun := false
 	for iter := 0; iter < max_iters; iter += 1 {
 		if !w.open {
@@ -352,7 +391,7 @@ drive :: proc(w: ^World, op_id: string, to: Ref, max_iters := 400) -> (out: Outc
 		switch {
 		case !begun && !has:
 			begun = true
-			err := begin_verified(e, Activation{op_id = op_id, action = "update_now", actor = "app:usr_test", to = to})
+			err := begin_verified(e, Activation{op_id = op_id, action = "update_now", actor = actor, to = to})
 			if !handle(w, .Run, err) do continue
 			x, aerr := activate(e)
 			handle(w, x, aerr)

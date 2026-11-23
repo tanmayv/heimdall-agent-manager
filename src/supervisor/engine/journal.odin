@@ -6,7 +6,9 @@ package engine
 //
 //   {"js":1,"seq":N,"ts":N,"op_id":"…","action":"…","actor":"…","state":"…","sub":"…"|null,
 //    "from":{"version":"…","sha256":"…","tree":"…"}|null,"to":{…}|null,"force_at":N|null,
-//    "probation_attempt":N,"hub":true|false,"error":"…"|null,"note":"…"|null,"crc32":"xxxxxxxx"}
+//    "probation_attempt":N,"hub":true|false,"error":"…"|null,"note":"…"|null,
+//    "forced":true|false,"busy":{"pty_sessions":N,"launches":N,"helpers":N}|null,
+//    "interrupted_by":"…"|null,"cancelled_by":"…"|null,"crc32":"xxxxxxxx"}
 //
 // crc32 = IEEE CRC-32 (8 lowercase hex) of the line's bytes before `,"crc32":"`. Members
 // are always written in this order; readers ignore unknown members (a newer journal
@@ -41,6 +43,19 @@ ref_empty :: proc(r: Ref) -> bool {
 	return r.tree == "" && r.version == "" && r.sha256 == ""
 }
 
+// Busy: what the agent gate counted (spec §12), as reported by the runtime. `counted` =
+// false is journaled as null (no count was taken, or the runtime did not answer).
+Busy :: struct {
+	counted:      bool,
+	pty_sessions: int, // live PTY sessions (agents)
+	launches:     int, // in-flight launches not yet a session
+	helpers:      int, // helper processes in this instance's job / process groups
+}
+
+busy_total :: proc(b: Busy) -> int {
+	return b.pty_sessions + b.launches + b.helpers
+}
+
 Line :: struct {
 	js:                int,
 	seq:               i64,
@@ -57,6 +72,11 @@ Line :: struct {
 	hub:               bool, // hub connection required in probation (§14)
 	error:             string, // "" = null
 	note:              string, // "" = null (pin_skipped, probation_offline, from_mismatch, …)
+	// Agent gate (§12, T14).
+	forced:            bool, // gate_closed after the 2 h wait ran out with agents still busy
+	busy:              Busy, // count at gate_closed / waiting_for_idle
+	interrupted_by:    string, // J30: op_id of the update_now that ended the wait
+	cancelled_by:      string, // J35: op_id of the cancel intent
 }
 
 TERMINAL_STATES :: []string{"committed", "noop", "applied", "failed", "cancelled", "expired", "rejected", "rolled_back", "rollback_failed"}
@@ -139,6 +159,16 @@ encode_line :: proc(l: Line, allocator := context.temp_allocator) -> string {
 	write_opt_string(&b, l.error)
 	strings.write_string(&b, `,"note":`)
 	write_opt_string(&b, l.note)
+	fmt.sbprintf(&b, `,"forced":%v,"busy":`, l.forced)
+	if l.busy.counted {
+		fmt.sbprintf(&b, `{{"pty_sessions":%d,"launches":%d,"helpers":%d}}`, l.busy.pty_sessions, l.busy.launches, l.busy.helpers)
+	} else {
+		strings.write_string(&b, "null")
+	}
+	strings.write_string(&b, `,"interrupted_by":`)
+	write_opt_string(&b, l.interrupted_by)
+	strings.write_string(&b, `,"cancelled_by":`)
+	write_opt_string(&b, l.cancelled_by)
 	prefix := strings.to_string(b)
 	crc := hash.crc32(transmute([]byte)prefix)
 	fmt.sbprintf(&b, `%s%08x"}}`, CRC_MARK, crc)
@@ -233,6 +263,20 @@ decode_line :: proc(text: string, allocator := context.allocator) -> (l: Line, o
 	if hv, present := obj["hub"]; present {
 		if bv, is_bool := hv.(json.Boolean); is_bool do l.hub = bool(bv)
 	}
+	if fv, present := obj["forced"]; present {
+		if bv, is_bool := fv.(json.Boolean); is_bool do l.forced = bool(bv)
+	}
+	if bo, is_obj2 := obj["busy"].(json.Object); is_obj2 {
+		ps, ok1 := obj_int(bo, "pty_sessions")
+		ln, ok2 := obj_int(bo, "launches")
+		hp, ok3 := obj_int(bo, "helpers")
+		if !ok1 || !ok2 || !ok3 do return
+		l.busy = Busy{true, int(ps), int(ln), int(hp)}
+	}
+	interrupted_by, _ := obj_string(obj, "interrupted_by")
+	cancelled_by, _ := obj_string(obj, "cancelled_by")
+	l.interrupted_by = strings.clone(interrupted_by, allocator)
+	l.cancelled_by = strings.clone(cancelled_by, allocator)
 	l.op_id = strings.clone(op_id, allocator)
 	l.action = strings.clone(action, allocator)
 	l.actor = strings.clone(actor, allocator)
