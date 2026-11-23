@@ -68,7 +68,8 @@ The hub creates or updates the stream idempotently at boot. Schedule support nee
 nats-server 2.14 or newer. `sched.def.<trigger_id>` definitions target
 `ev.<owner>.sched.<trigger_id>`; one-shot deferrals use
 `sched.def.defer.<action_id>` and target `ev.<owner>.action.<action_id>.resume`.
-Schedule definitions use `Nats-TTL: never`; fires use `Nats-Schedule-TTL: 24h`.
+Trigger definitions use `Nats-TTL: never` and set `Nats-Schedule-TTL: 24h`
+to give each fire a `Nats-TTL: 24h` lifetime.
 The durable pull consumer `hub_action_matcher` handles schedules and event triggers.
 Reconcile runs on connect and preserves unchanged definitions, including their
 stream sequence and interval phase. An older hub cannot bring its relay up after
@@ -90,8 +91,7 @@ Package `delivery` owns the separate `HEIM_DELIVER_ADVISORIES` stream on
 `hub_delivery_dlq`. It must not share the event inbox advisory consumer.
 
 Deliveries are **commands**, not event envelopes: D6 applies to `HEIM_EVENTS`
-events, not to deliveries. A delivery may carry encrypted prompt content through
-the established content path; event envelopes still contain only ids, enums and
+events, not to deliveries. Event envelopes still contain only ids, enums and
 versions. See [the action contracts](action-triggers-spec.md#611-the-delivery-pipeline-t16-t17).
 
 
