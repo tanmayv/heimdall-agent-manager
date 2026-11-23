@@ -39,6 +39,12 @@ test('new triggers retain their blackout input after removing an earlier trigger
     };
     await click(doc.querySelector('[data-debug-id="action-trigger-add-schedule"]'));
     await click(doc.querySelector('[data-debug-id="action-trigger-add-schedule"]'));
+    assert.equal(current[0].config.mode, 'interval');
+    assert.equal(current[0].config.interval_s, 3600);
+    assert.equal((doc.querySelector('[aria-label="Interval"]') as HTMLInputElement).value, '1');
+    await click(doc.querySelector('[aria-label="Schedule mode"]'));
+    assert.deepEqual(Array.from(doc.querySelectorAll('[role="option"]')).map(node => node.textContent), ['interval', 'once', 'cron']);
+    await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === 'interval')!);
     const keys = current.map(t => t.clientKey);
     assert.equal(new Set(keys).size, 2);
     let fields = doc.querySelectorAll('fieldset');
@@ -146,6 +152,50 @@ test('new triggers retain their blackout input after removing an earlier trigger
     assert.equal(doc.querySelector('form')!.checkValidity(), false);
     await type(doc.querySelector('[aria-label="Active from"]')!, '');
     assert.equal(doc.querySelector('form')!.checkValidity(), true);
+    // REQ-INTV-3/5: exact serialization, including fractional minutes.
+    const chooseUnit = async (unit: string) => {
+      await click(doc.querySelector('[aria-label="Interval unit"]'));
+      await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === unit)!);
+    };
+    for (const [seconds, amount, unit] of [[60, '1', 'minutes'], [120, '2', 'minutes'], [3600, '1', 'hours'], [7200, '2', 'hours'], [86400, '1', 'days'], [90, '1.5', 'minutes'], [61, String(61 / 60), 'minutes']] as const) {
+      await React.act(async () => root.render(React.createElement(Reopened, { key: 'interval-' + seconds, initial: { mode: 'interval', interval_s: seconds, timezone: 'UTC' } })));
+      const interval = doc.querySelector('[aria-label="Interval"]') as HTMLInputElement;
+      assert.equal(interval.value, amount);
+      assert.equal(doc.querySelector('[aria-label="Interval unit"]')?.textContent?.includes(unit), true);
+      await type(doc.querySelector('[aria-label="Time zone"]')!, 'Asia/Kolkata');
+      await type(interval, amount);
+      const form = emptyActionForm();
+      form.triggers = [{ kind: 'schedule', config: reopened }] as any;
+      assert.equal(actionFormBody(form).triggers![0].config.interval_s, seconds);
+      for (const nextUnit of ['days', 'hours', 'minutes']) {
+        await chooseUnit(nextUnit);
+        assert.equal(reopened.interval_s, seconds);
+        assert.equal(doc.querySelector('form')!.checkValidity(), true);
+      }
+    }
+    // Conversion and bounds are expressed in the selected unit.
+    for (const [unit, factor] of [['minutes', 60], ['hours', 3600], ['days', 86400]] as const) {
+      await chooseUnit(unit);
+      const interval = doc.querySelector('[aria-label="Interval"]') as HTMLInputElement;
+      await type(interval, '2');
+      assert.equal(reopened.interval_s, 2 * factor);
+      assert.equal(doc.querySelector('form')!.checkValidity(), true);
+      for (const invalid of ['', '0', String(31536000 / factor + 1), String(1.1 / factor)]) {
+        await type(interval, invalid);
+        assert.equal(doc.querySelector('form')!.checkValidity(), false);
+        assert.ok(doc.body.textContent?.includes('Enter an interval'));
+        assert.equal(reopened.interval_s, 2 * factor);
+      }
+      for (const boundary of [60, 31536000]) {
+        await type(interval, String(boundary / factor));
+        assert.equal(reopened.interval_s, boundary);
+        assert.equal(doc.querySelector('form')!.checkValidity(), true);
+      }
+    }
+    await chooseUnit('minutes');
+    await type(doc.querySelector('[aria-label="Interval"]')!, '1.001');
+    assert.equal(doc.querySelector('form')!.checkValidity(), false);
+    assert.ok(doc.body.textContent?.includes('whole number of seconds'));
     // REQ-ONCEUI-2: compare instants for windows, and calendar dates in the
     // schedule zone for blackouts (this UTC instant is December 2 in Kolkata).
     const cases = [
