@@ -34,6 +34,10 @@ TARGET :: "linux-amd64" when ODIN_OS == .Linux && ODIN_ARCH == .amd64 else
 
 SUPERVISOR_EXE :: "ham-supervisor.exe" when ODIN_OS == .Windows else "ham-supervisor"
 
+// TREE_BIN_DIR is where a release tree keeps its executables: the tree is the
+// bundle extracted verbatim (spec §3), so they live in releases/<T>/bin/.
+TREE_BIN_DIR :: "bin"
+
 Owner :: struct {
 	uid: i64, // POSIX; -1 when absent
 	sid: string, // Windows; "" when absent

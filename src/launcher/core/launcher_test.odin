@@ -5,7 +5,7 @@ package launcher_core
 // instance root: the test binary re-executes itself in two roles, selected in
 // @(init) before the test runner starts:
 //   - launcher role (env HAM_LAUNCHER_TEST_ROLE=launcher): run() with short timeouts;
-//   - fake supervisor (the binary copied to releases/<T>/ham-supervisor[.exe]):
+//   - fake supervisor (the binary copied to releases/<T>/bin/ham-supervisor[.exe]):
 //     follows the script in releases/<T>/fake.txt and logs to <data>/fake.log.
 
 import "base:intrinsics"
@@ -223,8 +223,10 @@ add_tree :: proc(t: ^testing.T, f: ^Fixture, version: string, script: ..string) 
 	testing.expect(t, mkdir_all(dir))
 	release := fmt.tprintf(`{{"kind":"heimdall-release-manifest","schema":1,"tag":"v%s","version":"%s","targets":{{"%s":{{"asset":"x","size":1,"sha256":"%s"}}}}}}`, version, version, TARGET, digest)
 	testing.expect(t, os.write_entire_file(join_alloc(dir, "release.json"), release) == nil)
-	testing.expect(t, os.copy_file(join_alloc(dir, SUPERVISOR_EXE), os.args[0]) == nil, "copy test binary")
-	when ODIN_OS != .Windows do os.change_mode(join_alloc(dir, SUPERVISOR_EXE), os.perm_number(0o755))
+	testing.expect(t, mkdir_all(join_alloc(dir, TREE_BIN_DIR)))
+	exe := join_alloc(dir, TREE_BIN_DIR, SUPERVISOR_EXE)
+	testing.expect(t, os.copy_file(exe, os.args[0]) == nil, "copy test binary")
+	when ODIN_OS != .Windows do os.change_mode(exe, os.perm_number(0o755))
 	testing.expect(t, os.write_entire_file(join_alloc(dir, "fake.txt"), strings.join(script, "\n", context.temp_allocator)) == nil)
 	testing.expect(t, os.write_entire_file(join_alloc(dir, ".complete"), "") == nil)
 	return tree
@@ -457,7 +459,12 @@ test_supervisor_executable_missing_falls_back :: proc(t: ^testing.T) {
 	defer dump_on_failure(t, &f)
 	A := add_tree(t, &f, "0.5.74", "ready")
 	B := add_tree(t, &f, "0.5.75", "ready")
-	testing.expect(t, os.remove(join_alloc(f.data, "releases", B, SUPERVISOR_EXE)) == nil)
+	testing.expect(t, os.remove(join_alloc(f.data, "releases", B, TREE_BIN_DIR, SUPERVISOR_EXE)) == nil)
+	// A root-level supervisor (the pre-T10b flat layout) must not be started:
+	// only releases/<T>/bin/ is a supervisor path (spec §3, §7.1).
+	root_exe := join_alloc(f.data, "releases", B, SUPERVISOR_EXE)
+	testing.expect(t, os.copy_file(root_exe, os.args[0]) == nil, "copy root-level binary")
+	when ODIN_OS != .Windows do os.change_mode(root_exe, os.perm_number(0o755))
 	set_pointer(t, &f, POINTER_CURRENT, B)
 	set_pointer(t, &f, POINTER_PREVIOUS, A)
 	set_known_good(t, &f, A)
@@ -465,6 +472,7 @@ test_supervisor_executable_missing_falls_back :: proc(t: ^testing.T) {
 	testing.expect(t, wait_lines(&f, cat("start ", A, " fallback"), 1, 20 * time.Second))
 	request_stop_file(t, &f)
 	testing.expect_value(t, finish(t, &f, &l, 20 * time.Second), 0)
+	testing.expect_value(t, count_lines(fake_log(&f), cat("start ", B)), 0)
 }
 
 @(test)

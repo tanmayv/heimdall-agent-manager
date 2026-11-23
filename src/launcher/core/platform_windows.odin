@@ -343,7 +343,7 @@ inheritable_dup :: proc(h: win.HANDLE) -> (out: win.HANDLE, ok: bool) {
 }
 
 spawn_supervisor :: proc(l: ^Launcher, tree: string, mode: Launch_Mode) -> (child: Child, err: string) {
-	exe := join(l.cfg.instance_root, "releases", tree, SUPERVISOR_EXE)
+	exe := supervisor_exe(l, tree)
 	if !os.is_file(exe) do return child, "supervisor executable missing"
 
 	read_end, write_end: win.HANDLE

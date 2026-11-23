@@ -37,7 +37,10 @@ Safe to re-run: a healthy enrolled bridge is left untouched.
   --version TAG      Release to bootstrap from (env HEIMDALL_VERSION). Default
                      latest = GitHub's latest (promoted, stable) release; then an
                      installed bridge keeps its version (--keep-version). With
-                     a TAG an installed bridge is moved to it.
+                     a TAG (passed on as setup --version) an installed bridge is
+                     moved to it; an older TAG is refused (exit 5) unless
+                     --allow-downgrade is given (releases after v0.5.75; up to
+                     v0.5.75 setup ignores --version and installs the TAG).
   --bundle FILE --checksum-file FILE
                      Use an already-downloaded bundle (verified first); an
                      installed bridge is moved to the bundle's version.
@@ -180,10 +183,16 @@ main() {
   # Only when the script resolves the release itself (no --version /
   # HEIMDALL_VERSION, no --bundle) must a re-run never change an installed
   # bridge's version (spec §7, S8a): ham-bridge setup keeps it. An explicit
-  # release or bundle means "install this one" (S8b), e.g. the macOS .pkg
-  # postinstall. Releases before --keep-version ignore the flag.
+  # release or bundle means "install this one" (S8b; an older explicit release
+  # is refused, S8c), e.g. the macOS .pkg postinstall. Releases before
+  # --keep-version ignore the flag.
   local keep=''
   [ -n "$version" ] || [ -n "$bundle" ] || keep=--keep-version
+  # A concrete TAG the user asked for (not latest, not a release this script
+  # resolved) reaches setup as --version, so an installed newer bridge is not
+  # downgraded without --allow-downgrade (S8c, exit 5). With --bundle, setup
+  # checks the TAG names that bundle (exit 2 otherwise).
+  local requested="$version"
   if [ -n "$version" ]; then
     [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || fail 2 "Invalid release tag: $version"
   fi
@@ -229,6 +238,7 @@ main() {
   [ -z "$hub" ] || argv+=(--hub "$hub")
   [ -z "$profile" ] || argv+=(--profile "$profile")
   [ "$verb" = uninstall ] || [ -z "$keep" ] || argv+=("$keep")
+  [ "$verb" = uninstall ] || [ -z "$requested" ] || argv+=(--version "$requested")
   # ham-bridge copies what it needs out of the bundle, so the temporary copy is
   # removed afterwards. stdin is not the script's: `curl | bash` already read it.
   # ham-bridge's exit code is returned unchanged.

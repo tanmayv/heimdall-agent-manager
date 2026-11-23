@@ -51,9 +51,9 @@ are not the service entry point. In Phase 1 the engine runs only against test ro
 ```
 OS service (systemd --user unit | LaunchAgent | Scheduled Task)   written once per instance
  └─ ham-launcher            <data>/launcher/        frozen; reads pointers; no network
-     └─ ham-supervisor      <data>/releases/<C>/    the engine; holds the instance lock
-         ├─ ham-bridge      <data>/releases/<C>/    runtime (hub connection, agents)
-         └─ ham-pty-host    <data>/releases/<C>/    PTY host + agent process trees
+     └─ ham-supervisor      <data>/releases/<C>/bin/ the engine; holds the instance lock
+         ├─ ham-bridge      <data>/releases/<C>/bin/ runtime (hub connection, agents)
+         └─ ham-pty-host    <data>/releases/<C>/bin/ PTY host + agent process trees
 ```
 
 - Runtime and PTY host are **always** started from the same tree as the supervisor that
@@ -118,8 +118,9 @@ Roots are today's (`src/lib/bridgesvc/bridgesvc.odin:216-228`): `<data>` =
   releases/
     <ver>-<d12>/               IMMUTABLE release tree, <d12> = first 12 hex of bundle SHA-256
     <ver>-<d12>-r<n>/          re-install of the same bundle by `repair` (n = 1, 2, …), §4
-      ham-supervisor[.exe] ham-bridge[.exe] ham-pty-host[.exe] ham-ctl[.exe] ham-launcher[.exe] …
-      extensions/              bundled provider extensions
+      bin/                     ham-supervisor[.exe] ham-bridge[.exe] ham-pty-host[.exe] ham-ctl[.exe] ham-launcher[.exe] …
+      share/heimdall/extensions/   bundled provider extensions
+      README.md LICENSE METADATA.json …   rest of the bundle
       release.json             the verified manifest, byte-for-byte as signed
       release.json.minisig     its signature
       tree.json                {"files":[{"path","size","sha256"}…]} written by the engine at unpack
@@ -160,6 +161,16 @@ stable across re-enrollment (the bridge id may change on S4 re-enroll, T1 §3) a
 `instance_id` in every intent. A supervisor whose effective uid/SID or root path differs
 from the record refuses to run (`ownership_mismatch`); this is how a bridge never manages
 another OS user's bridge **[T0 Q8]**.
+
+**Release tree = the bundle extracted verbatim** (user decision 2026-11-23): the archive's own
+paths (`bin/…`, `share/heimdall/…`, top-level docs), with no flattening or renaming, plus the
+four engine files at the root (`release.json`, `release.json.minisig`, `tree.json`,
+`.complete`; a bundle that contains any of these names is refused, §14 step 7). Executables
+are therefore at `releases/<T>/bin/`. Bundles hold regular files and directories only: the
+POSIX packaging dereferences symlinks (`scripts/release/package-local-binary-tarball.sh`,
+`cp -L`) and the Windows zip ships plain files. The launcher starts
+`releases/<T>/bin/ham-supervisor[.exe]` (§7.1); bundled extensions are at
+`releases/<T>/share/heimdall/extensions/`.
 
 Permissions: `<data>/supervisor/`, `<state>/` and every snapshot are `0700` / owner-only
 (Windows: inherited per-user profile ACL, no explicit grant to others). Release trees are
@@ -430,7 +441,7 @@ and a `data_root` (and `state_root`, if present) equal to the launcher's argumen
 Otherwise the launcher starts nothing, records `refused` with the reason, sleeps 60 s and
 exits 78.
 
-Supervisor start: `releases/<T>/ham-supervisor run --instance-root … --state-root …
+Supervisor start: `releases/<T>/bin/ham-supervisor[.exe] run --instance-root … --state-root …
 --launched-tree <T> --launch-mode normal|fallback`, with an inherited pipe (POSIX fd 3 /
 Windows inherited handle, number passed as `--ready-fd`). The supervisor must write
 `READY <T> <engine_version> <journal_schema>\n` (as the **first** line on the pipe; `<T>`
@@ -840,33 +851,54 @@ manifest with `min_engine ≥ 1` that lacks any of them (`manifest_incomplete`).
 
 Verification, each step fail-closed (installed version keeps running, op `failed <code>`):
 
-1. Download `heimdall-release-manifest.json` and `.minisig` (size cap 1 MiB each).
+Implemented by `src/supervisor/fetch` (T12, `prepare_release`); the failure code of each step
+is in parentheses.
+
+1. Download `heimdall-release-manifest.json` and `.minisig` (size cap 1 MiB each;
+   `download_failed`).
 2. Signature key id is one of the keys pinned **in the running supervisor**; else
    `key_unpinned`. For `fast`, and for `stable` only in this case, the resolver may instead
    pick the highest eligible release whose manifest verifies with a pinned key (a "bridging"
    release, `docs/release-signing.md` rotation section on the T5 branch); if none →
    `key_unpinned`.
-3. minisign verify (Ed25519, prehashed) of manifest + trusted comment.
-4. Manifest is canonical, its `key_id` and tag match the trusted comment; `expires` not
+3. minisign verify (Ed25519, prehashed `ED` only; the legacy `Ed` form is refused) of manifest
+   + trusted comment (`signature_invalid`).
+4. Manifest is canonical (and so is the trusted comment, as `release-manifest.py` writes it),
+   schema 1, its `key_id` and tag match the trusted comment (`manifest_invalid`); it names the
+   release's tag and this target's asset (`manifest_mismatch`, §13.1); engine fields present
+   when `min_engine ≥ 1` (`manifest_incomplete`, §13.4); `expires` not
    passed **for a new candidate** (`manifest_expired`). Trees already installed are not
    re-checked for expiry (rollback must work offline and late).
 5. Eligibility §13.2 (uses manifest fields).
 6. Download the bundle (`.part`, size cap = manifest size; abort as soon as exceeded).
-   Size equal, SHA-256 equal → rename (W9).
+   Size equal, SHA-256 equal → rename (W9); otherwise `bundle_mismatch` (transport errors
+   `download_failed`). If `releases/<ver>-<d12>/` is already valid and undamaged, it is reused
+   and nothing is downloaded (J5).
 7. Safe extraction into `.staging-<op_id>`: regular files and directories only; reject
-   absolute paths, `..`, symlinks, hard links, device files; total uncompressed ≤ 512 MiB,
-   ≤ 10 000 entries (`archive_unsafe`).
+   absolute paths, `..`, symlinks, hard links, device files (bundles are packaged without
+   links, §3, so no exception is needed); total uncompressed ≤ 512 MiB,
+   ≤ 10 000 entries (`archive_unsafe`). The limits are enforced while decompressing (own
+   streaming inflater; a compression bomb stops at the cap). Also refused: Windows-unsafe
+   names (`\`, `:`, `<>"|?*`, device names, trailing `.`/space), non-ASCII names, names
+   equal under case folding, a file below a file, and the engine's own root names
+   (`tree.json`, `.complete`, `release.json[.minisig]`).
 8. OS signature where available: Windows Authenticode publisher on every `.exe` (T8);
    macOS `codesign --verify --strict` + Developer ID Team ID on every Mach-O (T8). Unsigned
-   while T8 is pending → policy flag `require_os_signature` (default **off** until T8 ships,
-   then on). macOS: whether self-downloaded files get `com.apple.quarantine` is a
-   HYPOTHESIS to verify in T12; if they do, the attribute is removed only after step 8 passes.
+   while T8 is pending → policy flag `require_os_signature` (T12 defaults: **on** for macOS,
+   where T8 notarizes the bare binaries; **off** for Windows, Authenticode deferred). A
+   signature that is present but does not verify fails even when not required
+   (`os_signature_invalid`). The expected Team ID / publisher are build-time constants
+   (`-define:HEIMDALL_MACOS_TEAM_ID=…`, `HEIMDALL_WINDOWS_PUBLISHER`); empty means one shared
+   Team ID / any trusted signer. macOS quarantine: **verified in T12 CI (macos-15)** that
+   files the engine writes get no `com.apple.quarantine`; the attribute is still removed,
+   only after step 8 passes, in case some environment adds it.
 9. Write `tree.json`, fsync every file and directory of the staging tree, then rename
    `.staging-<op_id>` → the tree name chosen by §4 (`<ver>-<d12>` or `-r<n>`) (W2, W3). Nothing has executed from it yet, and the
    tree is not valid (no `.complete`), so no pointer can name it.
-10. `--version` preflight of the tree's `ham-supervisor` and `ham-bridge`, run from the final
+10. `--version` preflight of the tree's `bin/ham-supervisor` and `bin/ham-bridge`, run from the final
     tree (must print the manifest version, 10 s timeout); wait until both processes have
-    exited (Windows: process handles signalled).
+    exited (Windows: process handles signalled). Failure (`preflight_failed`) deletes the
+    tree again (W5); it never had `.complete`.
 11. Write `.complete`, fsync it and the directory. The tree is now valid (§4).
 
 Health (probation, after handover):

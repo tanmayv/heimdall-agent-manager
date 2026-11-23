@@ -109,7 +109,10 @@ Safe to re-run: a healthy enrolled bridge is left untouched.
   -Version TAG    Release to bootstrap from (--version; env HEIMDALL_VERSION). Default
                   latest = GitHub's latest (promoted, stable) release; then an
                   installed bridge keeps its version (--keep-version). With a TAG
-                  an installed bridge is moved to it.
+                  (passed on as setup --version) an installed bridge is moved to
+                  it; an older TAG is refused (exit 5) unless -AllowDowngrade
+                  (releases after v0.5.75; up to v0.5.75 setup ignores --version
+                  and installs the TAG).
   -Bundle ZIP -ChecksumFile FILE
                   Use an already-downloaded bundle (verified first); an
                   installed bridge is moved to the bundle's version.
@@ -138,6 +141,11 @@ Exit codes: 0 done, 1 setup failed (previous state restored), 2 usage error,
     # explicit release or bundle means "install this one" (S8b). Releases before
     # --keep-version ignore the flag.
     $keepVersion = -not $tag -and -not $useLocalBundle
+    # A concrete TAG the user asked for (not latest, not a release this script
+    # resolves below) reaches setup as --version, so an installed newer bridge is
+    # not downgraded without -AllowDowngrade (S8c, exit 5). With -Bundle, setup
+    # checks the TAG names that bundle (exit 2 otherwise).
+    $requestedTag = $tag
     if ($useLocalBundle -and (-not $bundlePath -or -not $sumsPath -or -not (Test-Path -PathType Leaf -LiteralPath $bundlePath) -or -not (Test-Path -PathType Leaf -LiteralPath $sumsPath))) {
       Stop-HeimdallBootstrap 2 '-Bundle and -ChecksumFile must both name regular files.'
     }
@@ -206,6 +214,7 @@ Exit codes: 0 done, 1 setup failed (previous state restored), 2 usage error,
     if ($profileName) { $argv += @('--profile', $profileName) }
     if (-not $isUninstall) {
       if ($keepVersion) { $argv += '--keep-version' }
+      if ($requestedTag) { $argv += @('--version', $requestedTag) }
       if ($NewBridge) { $argv += '--new-bridge' }
       if ($ReuseBridge) { $argv += @('--reuse-bridge', $ReuseBridge) }
       if ($Reenroll) { $argv += '--reenroll' }
