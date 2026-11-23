@@ -267,9 +267,13 @@ update_setup_argv :: proc(new_exe, hub, profile: string, json_progress: bool) ->
 	a := make([dynamic]string, context.temp_allocator)
 	append(&a, new_exe, "setup", "--hub", hub)
 	if profile != "" do append(&a, "--profile", profile)
-	// An update never enrolls: an enrolled profile skips the step, an unenrolled one
-	// must not block on a browser approval nobody is watching.
+	// An update never re-enrolls an enrolled profile, not even one with a
+	// needs-reenrollment.json (--reinstall makes classify_install ignore the marker);
+	// --headless keeps an unenrolled one from opening a browser nobody watches.
 	append(&a, "--headless")
+	// The whole transaction even for an identical bundle (a forced same-version
+	// update); without it setup would find the healthy instance unchanged (S2).
+	append(&a, REINSTALL_FLAG)
 	if json_progress do append(&a, "--json-progress")
 	return a[:]
 }

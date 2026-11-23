@@ -175,10 +175,10 @@ test_update_runs_the_new_binarys_setup :: proc(t: ^testing.T) {
 	testing.expect_value(t, exe, "D:/bundle/bin/ham-bridge.exe")
 	testing.expect_value(t, update_bundle_exe(Host{os = .Linux}, "D:/bundle", exists), "")
 	argv := update_setup_argv(exe, "https://hub.example.com", "work", true)
-	want := []string{exe, "setup", "--hub", "https://hub.example.com", "--profile", "work", "--headless", "--json-progress"}
+	want := []string{exe, "setup", "--hub", "https://hub.example.com", "--profile", "work", "--headless", REINSTALL_FLAG, "--json-progress"}
 	testing.expect(t, slice.equal(argv, want), fmt.tprintf("argv %v", argv))
 	argv = update_setup_argv(exe, "https://hub.example.com", "", false)
-	testing.expect_value(t, len(argv), 5)
+	testing.expect_value(t, len(argv), 6)
 }
 
 @(test)

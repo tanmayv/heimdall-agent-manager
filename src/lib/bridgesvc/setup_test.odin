@@ -397,3 +397,58 @@ test_render_ctl_bin_and_wrapper :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(cmd, "if not defined HEIMDALL_BRIDGE_ENDPOINT set \"HEIMDALL_BRIDGE_ENDPOINT=tcp:127.0.0.1:49326\"\r\n"))
 	testing.expect(t, strings.contains(cmd, "/bin/ham-ctl.exe\" --config \"C:/R/heimdall/bridges/heimdall-bridge-hub-example-com_work/config.toml\" %*\r\n"))
 }
+
+// S1a: an enrollment that is not approved halts the run without rollback: what was
+// installed stays, later steps are reported skipped, finish commits, done is last.
+@(test)
+test_setup_halt_keeps_completed_steps_and_skips_the_rest :: proc(t: ^testing.T) {
+	Halt :: struct {
+		ran:      [dynamic]Step,
+		undone:   int,
+		events:   [dynamic]Event,
+		finished: bool,
+		ok:       bool,
+	}
+	h := Halt{ran = make([dynamic]Step, context.temp_allocator), events = make([dynamic]Event, context.temp_allocator)}
+	ops := Setup_Ops {
+		data = &h,
+		run = proc(data: rawptr, step: Step) -> Step_Result {
+			h := (^Halt)(data)
+			append(&h.ran, step)
+			if step == .Enroll do return {halt = true, message = "not enrolled: denied"}
+			return {ok = true}
+		},
+		remediate = proc(data: rawptr, step: Step, failure: Failure) -> (bool, string) {return false, ""},
+		undo = proc(data: rawptr, step: Step) {(^Halt)(data).undone += 1},
+		emit = proc(data: rawptr, ev: Event) {append(&(^Halt)(data).events, ev)},
+		finish = proc(data: rawptr, ok: bool) {h := (^Halt)(data); h.finished, h.ok = true, ok},
+		summary = proc(data: rawptr) -> string {return "Installed but not enrolled"},
+	}
+	ok, at := run_setup(ops)
+	testing.expect(t, ok)
+	testing.expect_value(t, at, Step.Enroll)
+	testing.expect_value(t, h.undone, 0)
+	testing.expect(t, h.finished && h.ok, "finish commits what ran")
+	testing.expect_value(t, h.ran[len(h.ran) - 1], Step.Enroll)
+	last := h.events[len(h.events) - 1]
+	testing.expect_value(t, last.state, "done")
+	testing.expect_value(t, last.message, "Installed but not enrolled")
+	skipped := 0
+	warned := false
+	for ev in h.events {
+		if ev.state == "skipped" do skipped += 1
+		if ev.state == "warning" && ev.step == "enroll" do warned = true
+	}
+	testing.expect_value(t, skipped, 3) // extensions, start, verify
+	testing.expect(t, warned)
+}
+
+@(test)
+test_setup_summary_names_the_done_line :: proc(t: ^testing.T) {
+	f := fake_make()
+	ops := fake_ops(&f)
+	ops.summary = proc(data: rawptr) -> string {return "Repaired x"}
+	ok, _ := run_setup(ops)
+	testing.expect(t, ok)
+	testing.expect_value(t, f.events[len(f.events) - 1].message, "Repaired x")
+}
