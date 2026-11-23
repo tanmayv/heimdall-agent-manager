@@ -193,7 +193,8 @@ export function actionErrorText(err: unknown, fallback = 'Something went wrong.'
  * ------------------------------------------------------------------ */
 
 
-export type ActionForm = { name: string; prompt_text: string; enabled: boolean; min_interval_s: number; target: ActionTarget; triggers: ActionTrigger[] };
+export type FormTrigger = ActionTrigger & { clientKey?: string };
+export type ActionForm = { name: string; prompt_text: string; enabled: boolean; min_interval_s: number; target: ActionTarget; triggers: FormTrigger[] };
 export function emptyActionForm(defaultInterval = 30): ActionForm {
   return { name: '', prompt_text: '', enabled: true, min_interval_s: defaultInterval, target: { kind: 'agent', agent_id: '', project_id: '', instance_strategy: 'reuse', selector: 'first', rules: [] }, triggers: [] };
 }

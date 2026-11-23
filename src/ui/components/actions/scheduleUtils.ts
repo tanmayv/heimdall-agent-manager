@@ -458,6 +458,9 @@ export function triggerSummary(trigger: import('../../api/endpoints/actions').Ac
     const n = c.interval_s || 0;
     return 'every ' + (n % 3600 === 0 ? n / 3600 + ' h' : n % 60 === 0 ? n / 60 + ' min' : n + ' s');
   }
-  if (c.mode === 'once') return 'once ' + (c.run_at || '');
+  if (c.mode === 'once') {
+    const date = new Date(c.run_at || '');
+    return 'once ' + (Number.isFinite(date.getTime()) ? formatInTimeZone(date, 'UTC') + ' UTC' : c.run_at || '');
+  }
   return (c.cron_expr || '') + ' · ' + (c.timezone || 'UTC').split('/').pop()!.replaceAll('_', ' ');
 }
