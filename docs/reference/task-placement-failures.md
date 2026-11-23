@@ -166,3 +166,23 @@ The baseline full-suite command, run from the detached baseline checkout, was:
 ```bash
 nix develop --command odin test src/hub/service/taskv2 -collection:odin_test=src -out:$HOME/.cache/heimdall-tests/placement-baseline-$$ -define:ODIN_TEST_THREADS=4
 ```
+
+
+## Lease launch refusals (Phase S)
+
+Every lease launch uses the same start-begin checks as manual starts. Passing
+placement selection does not guarantee a grant: the launch checks run again
+inside the grant transaction, before a generation is written.
+
+| Case | Why a lease waits | Recovery |
+| --- | --- | --- |
+| L6 | The bridge plan disallows launches (`plan_disabled`) | Re-enable the bridge's launch entitlement |
+| L7 | The bridge row is offline, or no live connection exists (`bridge_offline`) | Reconnect the bridge; the matcher tries again |
+| L8 | The owner or global active-instance quota is exhausted | Stop another active instance or wait for capacity; the next matcher pass retries |
+| L9 | A pinned ACP transport is no longer supported by the bridge | Restore ACP support or explicitly repair the runtime configuration |
+
+Refusals leave the instance row and its user-stop marker unchanged, open no
+generation and retain no launch reservation. Grant-time refusal diagnostics are
+preserved across unrelated placement updates; a matching pass recomputes them.
+If the socket drops after admission, send failure instead marks that generation
+`failed`, cancels its reservation and follows the task dispatch-failure path.

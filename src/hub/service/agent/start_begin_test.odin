@@ -337,12 +337,17 @@ start_reaper_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect_value(t,count,4)
 }
 start_create_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	// Creating a stopped row needs no launch capacity and mints no epoch.
+	h.registry.limits.active_instances = 1
+	h.registry.active_instances = 1
 	inst,ok,err:=create_instance_stopped(&h.service,start_test_auth(),{agent_id="agt",bridge_id="brg",provider="codex",model="gpt-6.1-sol"})
 	testing.expect(t,ok,err.message)
 	testing.expect_value(t,inst.run_count,0)
 	testing.expect_value(t,inst.runtime_status,"stopped")
 	testing.expect_value(t,inst.startup_status,"stopped")
-	testing.expect_value(t,h.registry.active_instances,0)
+	testing.expect_value(t,inst.launch_epoch,"")
+	testing.expect_value(t,h.registry.active_instances,1)
+	h.registry.active_instances = 0
 	_,found,cerr:=iface.content_get_conversation(&h.cr,inst.conversation_id)
 	testing.expect(t,found,cerr.message)
 	first,started,serr:=start_instance(&h.service,start_test_auth(),inst.agent_instance_id)

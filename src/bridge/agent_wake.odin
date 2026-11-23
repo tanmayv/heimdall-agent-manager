@@ -671,3 +671,8 @@ bridge_wake_retry_stop :: proc(worker: ^thread.Thread) {
     for _, &st in bridge_agent_wake do st.live_row_retry_at_ms = 0
     sync.mutex_unlock(&bridge_wake_mutex)
 }
+
+// Bot starts share the bridge-initiated launcher boundary and retain bot admission.
+bridge_bot_runtime_launch :: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) {
+    return bridge_runtime_launch_agent(command_id, command_json, deadline_ns, bot_delivery = true)
+}

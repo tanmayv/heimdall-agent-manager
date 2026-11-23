@@ -5,6 +5,8 @@
 package http
 
 import "core:mem/virtual"
+import "core:mem"
+import "core:encoding/json"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -360,4 +362,45 @@ test_heartbeat_inventory_superseded_ids_and_schedule_ack :: proc(t: ^testing.T) 
 	testing.expect_value(t, rejected_state, Bridge_Heartbeat_Inventory_State.Absent)
 	testing.expect_value(t, len(rejected_superseded), 0)
 	rejected_ack := bridge_heartbeat_ack_payload(rejected_reconciled, rejected_superseded)
+}
+
+// The pre-T8 decoder uses zero/default values for missing schedule fields.
+// Exercise the current heartbeat inventory/ack path with its legacy frame.
+old_bridge_heartbeat_scenario :: proc(t: ^testing.T) {
+	f := inv_open(t)
+	defer inv_close(f)
+	reconciled, superseded, state := bridge_reconcile_heartbeat_inventory(
+		&f.bh, f.bridge_id, f.generation,
+		`{"type":"bridge_heartbeat","protocol_version":1,"active_instance_ids":[]}`,
+	)
+	testing.expect_value(t, state, Bridge_Heartbeat_Inventory_State.Complete)
+	ack := bridge_heartbeat_ack_payload(reconciled, superseded)
+	decoded: struct {
+		type: string,
+		schedules_version: int,
+		schedules_epoch: string,
+		schedules_revision: int,
+	}
+	testing.expect(t, json.unmarshal(transmute([]u8)ack, &decoded, allocator = context.temp_allocator) == nil)
+	testing.expect_value(t, decoded.type, "bridge_heartbeat_ack")
+	testing.expect_value(t, decoded.schedules_version, 0)
+	testing.expect_value(t, decoded.schedules_epoch, "")
+	for key in ([]string{"schedules_version", "schedules_epoch", "schedules_revision"}) {
+		testing.expect(t, !strings.contains(ack, key), ack)
+	}
+}
+
+@(test)
+test_old_bridge_heartbeat_ok :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	arena: virtual.Arena
+	assert(virtual.arena_init_growing(&arena) == nil)
+	context.allocator = virtual.arena_allocator(&arena)
+	context.temp_allocator = context.allocator
+	old_bridge_heartbeat_scenario(t)
+	virtual.arena_destroy(&arena)
+	testing.expect_value(t, len(track.allocation_map), 0)
 }

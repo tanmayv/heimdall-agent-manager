@@ -2758,7 +2758,8 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id", bridge_error(.agent_launch_failed, .unsupported)
 	lifecycle := bridge_agent_lifecycle_enter(instance_id)
 	defer bridge_agent_lifecycle_leave(lifecycle)
-	defer if !ok do bridge_runtime_record_failure(instance_id, err)
+	launch_started := false
+	defer if !ok do bridge_runtime_record_failure(instance_id, err, launch_started)
 	launch_epoch := extract_json_string(command_json, "launch_epoch", "")
 	run_count, _ := bridge_provider_json_extract_int(command_json, "run_count")
 	defer delete(launch_epoch)
@@ -2849,6 +2850,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable", bridge_error(.agent_launch_failed, .socket_dir)
 	bridge_runtime_set_status(instance_id, "starting", "active")
+	launch_started = true
 	// H7 restart-reap: invalidate ANY prior local tokens for this instance BEFORE
 	// issuing fresh ones. A superseded old runtime then fails its next liveness
 	// ping (its token is no longer valid). The freshly issued agent token below is
@@ -2911,7 +2913,8 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	pp,profile_error := profile_lookup(provider,provider_profile)
 	if profile_error != .None do return false,profile_error_code(profile_error),bridge_error(.agent_launch_failed,.unsupported)
 	if strings.trim_space(instance_id) == "" || !profile_has_model(&pp,provider,model) do return false,"invalid provider test request",bridge_error(.agent_launch_failed,.unsupported)
-	defer if !ok do bridge_runtime_record_failure(instance_id, err)
+	launch_started := false
+	defer if !ok do bridge_runtime_record_failure(instance_id, err, launch_started)
 	bridge_runtime_clear_stop_intent(instance_id)
 	run_dir := bridge_runtime_default_run_dir(instance_id)
 	defer delete(run_dir)
@@ -2919,6 +2922,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable", bridge_error(.agent_launch_failed, .socket_dir)
 	bridge_runtime_set_status(instance_id, "starting", "active")
+	launch_started = true
 	_ = bridge_agent_token_invalidate_instance(instance_id)
 	instance_token := strings.concatenate({"hit_", instance_id})
 	defer delete(instance_token)
@@ -3240,13 +3244,17 @@ bridge_runtime_now_ms :: proc() -> i64 {
 	return bridge_now_unix_ms()
 }
 
-// bridge_runtime_record_failure attaches err to a "failed" instance so the next
-// agent_instance_status carries it. A no-op unless the instance is failed.
-bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error) {
+// A rejected new launch must not leave a booting snapshot after a pre-spawn
+// failure. Earlier stale/duplicate-command refusals did not begin a new launch
+// and must preserve the existing child (including one still starting).
+bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, launch_started := false) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for &inst in bridge_runtime_instances {
 		if inst.agent_instance_id != instance_id do continue
+		if launch_started && inst.runtime_status == "starting" {
+			bridge_runtime_set_status_locked(instance_id, "failed", "idle", bridge_runtime_now_ms(), true)
+		}
 		if inst.runtime_status == "failed" {
 			inst.last_error = err
 			inst.has_last_error = true

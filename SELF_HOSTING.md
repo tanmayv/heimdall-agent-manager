@@ -7,6 +7,28 @@ HTTPS, so they can live on different machines, networks, and operating systems.
 
 ---
 
+## Upgrade order: hub, then bridges
+
+For the action pipeline and Phase S start convergence, upgrade the hub first,
+verify its health and the bridge start-begin endpoint, then upgrade bridges.
+Bridge-initiated notice and bot wakes need that endpoint to obtain a valid
+generation; an older hub cannot supply it. Keep the previous bridge binary
+available until staging checks pass.
+
+The hub negotiates `start_agent_v1` from each bridge's hello: updated bridges
+receive `start_agent`, while older bridges continue to receive `launch_agent`
+and `wake_agent`. The legacy adapters remain supported, so a mixed bridge
+fleet is expected during rollout. The command negotiation alone does not remove
+the hub-first requirement for bridge-initiated starts.
+
+Validate manual Start/Restart, task worker/reviewer launch and confirmation,
+quota refusal/recovery, notice fallback after a lost process, and a stopped bot
+receiving a web message. Also exercise reconnect with a stale live row and an
+unconfirmed task grant. The Phase S checklist is
+[the T26 E2E list](docs/plans/action-triggers-spec.md#t26-phase-s-integration-and-e2e-amendment-s2).
+Deploy to Mundus through the release change request; Brolabs requires the user's
+explicit approval after staging evidence.
+
 ## Part 1 — Hub and UI (one device, internet/VPN-accessible)
 
 The hub is the central control plane. It exposes a REST/WebSocket API that bridges,
@@ -270,7 +292,28 @@ In `nix-homelab-config` or any NixOS flake:
 
 ### NATS JetStream (required)
 
-Every hub requires NATS with JetStream enabled; there is no SQLite queue fallback.
+#### Actions rollout and rollback
+
+Upgrade the **hub first, then bridges**. Actions require a bridge that reports
+`event_pipeline_v1`; until a bridge is updated it cannot run actions. Old bridges
+can keep their existing connection and ordinary task/message paths.
+
+This release is **forward-only** (C2): the hub adds `sched.def.>` and enables
+`allow_msg_schedules` and `allow_msg_ttl` on `HEIM_EVENTS`. Those flags cannot be
+removed. An older hub cannot bring its event relay up against the upgraded stream;
+an older NATS server loses schedule support. Do not downgrade either in place.
+Before upgrading, back up SQLite and snapshot the JetStream store consistently.
+Rollback requires restoring both snapshots with the matching previous binaries.
+The action schema reset discards existing actions and run history (R1); recreate
+wanted actions after the upgrade. There is no data backfill.
+
+An action starts its target even when you stopped that agent yourself. **Disable
+the action to stop future action wakes.** Stopping the agent alone is not an off
+switch. Schedule and event triggers, placement rules and run history are available
+behind the owner's `actions` experiment.
+
+
+Every hub requires **nats-server 2.14 or newer** with JetStream enabled; there is no SQLite queue fallback.
 Only the hub connects to NATS. Bridges and agents use the hub API and do not need
 NATS access or credentials. Keep the broker on loopback for a single-host deployment.
 
@@ -375,7 +418,7 @@ docker run -d --name heimdall-nats --restart unless-stopped \
   -v heimdall-nats:/data \
   -v /etc/heimdall/nats-server.conf:/etc/nats/server.conf:ro \
   -v /etc/heimdall/nats-auth.conf:/etc/nats/auth.conf:ro \
-  nats:2.11 --config /etc/nats/server.conf
+  nats:2.14.7 --config /etc/nats/server.conf
 ```
 
 Ensure the volume and mounted auth fragment are accessible to the image's NATS

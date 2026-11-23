@@ -122,6 +122,31 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
         bridge_event_deliver_handle(nil, bridge_event_test_frame())
         bridge_event_test_expect(t, "failed", "", "retry", "ledger_unavailable", 60_000)
         testing.expect(t, bridge_event_test_notices == 0 && bridge_event_test_starts == 0)
+    case "rejected_start":
+        // Use the real local registry and ACP pre-spawn rejection. A later fire
+        // must not mistake the rejected startup for a booting child.
+        bridge_event_snapshot_proc = bridge_runtime_instance_snapshot
+        bridge_event_start_proc = bridge_event_test_rejected_start
+        bridge_runtime_set_status("inst_t17", "stopped", "idle")
+        defer bridge_runtime_set_status("inst_t17", "stopped", "idle")
+        bridge_event_deliver_handle(nil, bridge_event_test_frame())
+        bridge_event_test_expect(t, "failed", "", "fatal", "launch_failed")
+        local := bridge_event_local("inst_t17")
+        testing.expect_value(t, local, Bridge_Event_Local.Absent)
+        rejected, found := bridge_runtime_instance_snapshot("inst_t17")
+        testing.expect(t, found && rejected.runtime_status == "failed" && rejected.activity_status == "idle")
+        testing.expect(t, rejected.start_deadline_unix_ms == 0 && rejected.has_last_error)
+        testing.expect(t, rejected.last_error.reason == .unsupported)
+        next, _ := strings.replace_all(bridge_event_test_frame(), "dlv_t17", "dlv_t17_next")
+        defer delete(next)
+        bridge_event_deliver_handle(nil, next)
+        bridge_event_test_expect(t, "failed", "", "fatal", "start_parked")
+        testing.expect_value(t, bridge_event_test_starts, 2)
+        testing.expect_value(t, bridge_event_test_notices, 0)
+        _, stored := bridge_event_ledger_get("dlv_t17")
+        testing.expect(t, !stored, "rejected startup must not leave a successful delivery receipt")
+        _, stored = bridge_event_ledger_get("dlv_t17_next")
+        testing.expect(t, !stored, "next fire must not leave a false delivered receipt")
     case "io_failure":
         _ = bridge_make_directory_all(bridge_ledger_test_dir)
         blocked := strings.concatenate({bridge_ledger_test_dir, "/blocked"}, context.temp_allocator)
@@ -318,6 +343,27 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
         }
     }
 }
+
+bridge_event_test_rejected_start :: proc(id, delivery_id: string, deadline: i64) -> Bridge_Wake_Result {
+    bridge_event_test_starts += 1
+    if bridge_event_test_starts > 1 do return {.Parked, bridge_error(.agent_launch_failed, .unsupported), 0}
+    bridge_runtime_set_status(id, "starting", "active")
+    snapshot, loaded := bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded
+    defer { bridge_provider_catalog_snapshot = snapshot; bridge_provider_catalog_loaded = loaded }
+    env := make(map[string]string, context.temp_allocator)
+    env["CLAUDE_AGENT_ACP_PROTOCOL"] = "v1"
+    catalog := Bridge_Provider_Catalog_Snapshot{etag = "sha256:rejected", providers = {Bridge_Catalog_Provider{provider = "claude", state = "active", acp_recipe = {command = "claude-agent-acp", protocol_version = 1, adapter_package = ACP_CLAUDE_PACKAGE, adapter_version = ACP_CLAUDE_VERSION, env = env}}}}
+    bridge_provider_catalog_snapshot = &catalog; bridge_provider_catalog_loaded = true
+    etag := bridge_provider_catalog_current_etag()
+    defer delete(etag)
+    ok, detail, err := acp_runtime_launch("rejected", id, "epoch_rejected", etag, "", "", "claude", "", "", "invalid_mode", "")
+    testing.expect(bridge_event_test_t, !ok && detail == "invalid_acp_configuration")
+    // This is the launch entry point's deferred failure cleanup.
+    bridge_runtime_record_failure(id, err, true)
+    return {.Failed, err, 0}
+}
+@(test)
+test_event_rejected_start_next_fire_never_delivered :: proc(t: ^testing.T) { bridge_event_test_run(t, "rejected_start") }
 
 @(test)
 test_event_row1_done_answers_stored_outcome :: proc(t: ^testing.T) { bridge_event_test_run(t, "done") }

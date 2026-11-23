@@ -113,9 +113,6 @@ bridge_bot_launch_via_start_begin :: proc(instance_id, attempt_id: string) -> (o
 }
 // Preserve bot launch admission for the legacy launcher as well.
 bridge_bot_runtime_launch_proc: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) = bridge_bot_runtime_launch
-bridge_bot_runtime_launch :: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) {
-    return bridge_runtime_launch_agent(command_id, command_json, deadline_ns, bot_delivery = true)
-}
 bridge_bot_busy_inputs :: proc() -> (traffic_stopped, update_reserved, vault_unlocked: bool) {
 	traffic_stopped = sync.atomic_load(&bridge_hub_traffic_stopped)
 	entered := bridge_auto_update_launch_enter()
