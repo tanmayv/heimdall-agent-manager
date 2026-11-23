@@ -44,10 +44,6 @@ test_agent_not_running_offline_start_failure_retry_and_dead_holder :: proc(t: ^t
 	fx.svc.bridge_command_sink = log.service.bridge_command_sink
 	started, err = start_task_agent(&fx.svc, contracts.Auth_Context{kind = .Instance_Token, user_id = "u1"}, task.task_id)
 	testing.expect(t, !started && err.code == .Forbidden, "agents cannot start task agents")
-	repaired, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
- repaired.runtime_status = "stopped"
- repaired.last_error_json = ""
- _, _, _ = iface.agent_save_instance(&fx.agents, repaired)
  // The native app authenticates with an OIDC bearer, not a browser session.
 	started, err = start_task_agent(&fx.svc, contracts.Auth_Context{kind = .OIDC, user_id = "u1"}, task.task_id)
 	testing.expect(t, started && err.code == .None, "browser-session retry succeeds")
@@ -396,4 +392,51 @@ test_agent_not_running_solo_hello_recovers_offline_coordinator :: proc(t: ^testi
 	testing.expect(t, !wake_log_has_run(log, "inst_coord") && !wake_log_has_stop(log, "inst_coord"), "solo remains pull-only")
 	res, pulled, _ := lease_next(&fx.svc, inst_auth("inst_coord"), Lease_Next_Input{})
 	testing.expect(t, pulled && res.status == "granted", "reconnected coordinator pulls without Start")
+}
+
+// Explicit recovery is scoped to retained responsibility, not every stopped
+// instance of the same agent on the machine.
+@(test)
+test_start_recovery_resets_only_own_waiting_holder :: proc(t: ^testing.T) {
+ fx, log, ok := lease_fixture(t, "anr_scoped_recovery")
+ defer lease_fixture_close(fx, log)
+ if !ok do return
+ chain := seed_live_chain(t, fx, "chain_scoped_recovery")
+ seed_bridge(fx, "br_1")
+ seed_agent(fx, "agt_w")
+ for pair in ([]struct {instance, task, phase:string}{
+  {"own", "task_own", "waiting"},
+  {"other_waiting", "task_other_waiting", "waiting"},
+  {"other_active", "task_other_active", "active"},
+  {"warm", "", ""},
+ }) {
+  inst := seed_instance(fx, chain, pair.instance, "agt_w", "br_1", "failed")
+  inst.stopped_by="user"; inst.last_error_json=`{"message":"launch failed"}`; inst.run_count=7; inst.start_ref="previous"
+  _, saved, err := iface.agent_save_instance(&fx.agents, inst)
+  testing.expect(t, saved && err.code==.None)
+  if pair.task=="" do continue
+  _, saved, err = iface.taskchain_save_task(&fx.repo, {task_id=domain.Task_ID(pair.task), chain_id=chain.chain_id, owner_user_id="u1", title=pair.task, state=.Backlog, publish_state=.Published})
+  testing.expect(t, saved && err.code==.None)
+  _, saved, err = iface.taskchain_save_lease(&fx.repo, {lease_id=pair.instance, task_id=domain.Task_ID(pair.task), chain_id=chain.chain_id, owner_user_id="u1", holder_instance_id=pair.instance, kind=domain.LEASE_KIND_WORK, phase=pair.phase, bridge_id="br_1"})
+  testing.expect(t, saved && err.code==.None)
+ }
+ // Automatic fleet repair must preserve every held instance.
+ reset, err := reset_idle_agent_instances(&fx.svc, "u1", chain.chain_id, "agt_w", "br_1")
+ testing.expect(t, reset && err.code==.None)
+ own, _, _ := iface.agent_get_instance(&fx.agents, "own")
+ testing.expect(t, own.runtime_status=="failed" && own.stopped_by=="user")
+ reset, err = reset_idle_agent_instances(&fx.svc, "u1", chain.chain_id, "agt_w", "br_1", true, "task_own")
+ testing.expect(t, reset && err.code==.None)
+ for id in ([]string{"own","other_waiting","other_active","warm"}) {
+  inst, found, err := iface.agent_get_instance(&fx.agents, id)
+  testing.expect(t, found && err.code==.None)
+  if id=="own" {
+   testing.expect(t, inst.runtime_status=="stopped" && inst.stopped_by=="" && inst.last_error_json=="")
+  } else {
+   testing.expectf(t, inst.runtime_status=="failed" && inst.stopped_by=="user" && inst.last_error_json==`{"message":"launch failed"}`, "unrelated instance %s unchanged", id)
+  }
+  testing.expect(t, inst.run_count==7 && inst.start_ref=="previous")
+ }
+ claim, found, _ := iface.taskchain_get_lease_by_holder(&fx.repo, "own")
+ testing.expect(t, found && claim.task_id=="task_own" && claim.phase==domain.LEASE_PHASE_WAITING)
 }
