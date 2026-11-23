@@ -111,7 +111,8 @@ Safe to re-run: a healthy enrolled bridge is left untouched.
                   installed bridge keeps its version (--keep-version). With a TAG
                   an installed bridge is moved to it.
   -Bundle ZIP -ChecksumFile FILE
-                  Use an already-downloaded bundle (verified first).
+                  Use an already-downloaded bundle (verified first); an
+                  installed bridge is moved to the bundle's version.
   -Interactive    Open the approval page in a browser (no --headless).
   -Uninstall      Run ham-bridge uninstall instead.
 Parameters win over environment variables. Every --flag form is accepted too.
@@ -129,12 +130,14 @@ Exit codes: 0 done, 1 setup failed (previous state restored), 2 usage error,
     if (-not $isUninstall -and -not $hubUrl) { Stop-HeimdallBootstrap 2 'No hub given: pass -Hub URL or set HEIMDALL_HUB (see -Help).' }
     if ($profileName -and $profileName -cnotmatch '^[a-z0-9][a-z0-9-]{0,30}$') { Stop-HeimdallBootstrap 2 "Invalid profile `"$profileName`": use [a-z0-9][a-z0-9-]{0,30}." }
     if ($tag -eq 'latest') { $tag = '' }
-    # Without an explicit release (-Version / HEIMDALL_VERSION) a re-run must never
-    # change an installed bridge's version (spec section 3 S8a): ham-bridge setup
-    # keeps it. Releases before --keep-version ignore the flag.
-    $keepVersion = -not $tag
     if ($tag -and $tag -cnotmatch '^[A-Za-z0-9._-]+$') { Stop-HeimdallBootstrap 2 "Invalid release tag: $tag" }
     $useLocalBundle = [bool]($bundlePath -or $sumsPath)
+    # Only when the script resolves the release itself (no -Version /
+    # HEIMDALL_VERSION, no -Bundle) must a re-run never change an installed
+    # bridge's version (spec section 7, S8a): ham-bridge setup keeps it. An
+    # explicit release or bundle means "install this one" (S8b). Releases before
+    # --keep-version ignore the flag.
+    $keepVersion = -not $tag -and -not $useLocalBundle
     if ($useLocalBundle -and (-not $bundlePath -or -not $sumsPath -or -not (Test-Path -PathType Leaf -LiteralPath $bundlePath) -or -not (Test-Path -PathType Leaf -LiteralPath $sumsPath))) {
       Stop-HeimdallBootstrap 2 '-Bundle and -ChecksumFile must both name regular files.'
     }

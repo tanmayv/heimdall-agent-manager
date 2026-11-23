@@ -39,7 +39,8 @@ Safe to re-run: a healthy enrolled bridge is left untouched.
                      installed bridge keeps its version (--keep-version). With
                      a TAG an installed bridge is moved to it.
   --bundle FILE --checksum-file FILE
-                     Use an already-downloaded bundle (verified first).
+                     Use an already-downloaded bundle (verified first); an
+                     installed bridge is moved to the bundle's version.
   --interactive      Open the approval page in a browser (no --headless).
   --uninstall        Run ham-bridge uninstall instead (e.g. --purge --yes).
 Flags win over environment variables. Everything else goes to ham-bridge.
@@ -176,11 +177,13 @@ main() {
     [[ "$profile" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || fail 2 "Invalid profile \"$profile\": use [a-z0-9][a-z0-9-]{0,30}."
   fi
   [ "$version" != latest ] || version=''
-  # Without an explicit release (--version / HEIMDALL_VERSION) a re-run must
-  # never change an installed bridge's version (spec §3 S8a): ham-bridge setup
-  # keeps it. Releases before --keep-version ignore the flag.
+  # Only when the script resolves the release itself (no --version /
+  # HEIMDALL_VERSION, no --bundle) must a re-run never change an installed
+  # bridge's version (spec §7, S8a): ham-bridge setup keeps it. An explicit
+  # release or bundle means "install this one" (S8b), e.g. the macOS .pkg
+  # postinstall. Releases before --keep-version ignore the flag.
   local keep=''
-  [ -n "$version" ] || keep=--keep-version
+  [ -n "$version" ] || [ -n "$bundle" ] || keep=--keep-version
   if [ -n "$version" ]; then
     [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || fail 2 "Invalid release tag: $version"
   fi

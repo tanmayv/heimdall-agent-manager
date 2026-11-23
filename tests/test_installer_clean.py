@@ -236,6 +236,8 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--bundle', str(bundle), '--checksum-file', str(sums), '--hub', 'https://h')
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertFalse((self.root / 'curl.log').exists(), 'a local bundle needs no download')
+        # An explicit bundle means "install this bundle" (S8b): no --keep-version.
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://h'])
         other = self.root / 'heimdall-local-plan9-amd64-v1.0.0.tar.gz'
         other.write_bytes(bundle.read_bytes())
         res = self.run_installer('--bundle', str(other), '--checksum-file', str(sums), '--hub', 'https://h')
@@ -253,10 +255,57 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--bundle', str(staged), '--checksum-file', str(staged_sums),
                                  '--hub', 'https://h', '--interactive')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --hub https://h --keep-version'])
+        self.assertEqual(self.bridge_calls(), ['setup --hub https://h'])
         res = self.run_installer('--bundle', str(staged), '--checksum-file', str(staged_sums), '--hub', 'https://h')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h --keep-version')
+        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h')
+
+    def test_macos_pkg_postinstall_upgrades_an_installed_bridge(self):
+        """The .pkg postinstall (scripts/release/macos-pkg-bridge-postinstall.sh)
+        runs install.sh --bundle --checksum-file --hub --interactive and no
+        --version. setup must get no --keep-version, so its default (S8: install
+        the bundle when it differs from bin/) upgrades an older healthy bridge."""
+        postinstall = (ROOT / 'scripts/release/macos-pkg-bridge-postinstall.sh').read_text()
+        call = postinstall[postinstall.index('"$work/install.sh"'):]
+        call = call[:call.index('|| bridge_failed')]
+        self.assertIn('--bundle', call)
+        self.assertNotIn('--version', call)
+        self.assertNotIn('--keep-version', call)
+        bundle, sums = self.publish('v1.0.0')
+        staged = self.root / f'heimdall-local-{self.target}.tar.gz'
+        staged.write_bytes(bundle.read_bytes())
+        staged_sums = self.root / 'STAGED_SHA256SUMS'
+        staged_sums.write_text(sums.read_text().replace(bundle.name, staged.name))
+        # HEIMDALL_VERSION=latest in the user's environment counts as no release;
+        # the bundle alone still decides.
+        res = self.run_installer('--bundle', str(staged), '--checksum-file', str(staged_sums),
+                                 '--hub', 'https://h', '--interactive', extra_env={'HEIMDALL_VERSION': 'latest'})
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls(), ['setup --hub https://h'])
+        self.assertFalse((self.root / 'curl.log').exists(), 'the .pkg bundle needs no download')
+
+    def test_keep_version_only_when_the_script_resolves_the_release(self):
+        """Spec §7: --keep-version iff neither --bundle nor --version is given
+        (`latest` counts as none, from the flag or HEIMDALL_VERSION)."""
+        bundle, sums = self.publish('v1.0.0')
+        self.publish('v1.1.0-rc1', prerelease=True)
+        b = ('--bundle', str(bundle), '--checksum-file', str(sums))
+        cases = [
+            ((), {}, True),
+            (('--version', 'latest'), {}, True),
+            ((), {'HEIMDALL_VERSION': 'latest'}, True),
+            (('--version', 'v1.1.0-rc1'), {}, False),
+            ((), {'HEIMDALL_VERSION': 'v1.1.0-rc1'}, False),
+            (b, {}, False),
+            (b + ('--version', 'v1.0.0'), {}, False),
+            (b + ('--version', 'latest'), {}, False),
+        ]
+        for args, env, keep in cases:
+            with self.subTest(args=args, env=env):
+                res = self.run_installer('--hub', 'https://h', *args, extra_env=env)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                want = 'setup --headless --hub https://h' + (' --keep-version' if keep else '')
+                self.assertEqual(self.bridge_calls()[-1], want)
 
     def test_ham_bridge_exit_code_is_returned_unchanged(self):
         self.publish('v1.0.0')

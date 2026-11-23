@@ -111,17 +111,20 @@ class Stub { static int Main(string[] a) {
   # the environment, and reach ham-bridge exactly once.
   $envVars = @{ HEIMDALL_HUB = 'https://env.example'; HEIMDALL_BRIDGE_NAME = 'envprof' }
   $r = Invoke-Bootstrap @('--bundle', $good.Zip, '--checksum-file', $good.Sums, '--hub', 'https://flag.example', '--name', 'flagprof', '--reenroll') $envVars
-  Check '--flag forms win over env and pass once' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://flag.example --profile flagprof --keep-version --reenroll') ($r.Out + ((Get-StubCalls) -join "`n"))
+  Check '--flag forms win over env and pass once' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://flag.example --profile flagprof --reenroll') ($r.Out + ((Get-StubCalls) -join "`n"))
 
   $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums, '-HubUrl', 'https://param.example', '-Profile', 'pprof', '-AllowDowngrade', '-SeparateAccount', '-JsonProgress') $envVars
-  Check 'parameters win over env; new switches map to ham-bridge flags' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://param.example --profile pprof --keep-version --allow-downgrade --separate-account --json-progress') ($r.Out + ((Get-StubCalls) -join "`n"))
+  Check 'parameters win over env; new switches map to ham-bridge flags' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://param.example --profile pprof --allow-downgrade --separate-account --json-progress') ($r.Out + ((Get-StubCalls) -join "`n"))
 
   $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums) $envVars
-  Check 'environment configures an argument-less run' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://env.example --profile envprof --keep-version') ($r.Out + ((Get-StubCalls) -join "`n"))
+  Check 'environment configures an argument-less run' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://env.example --profile envprof') ($r.Out + ((Get-StubCalls) -join "`n"))
 
-  # An explicit release (parameter or HEIMDALL_VERSION) may move an installed bridge: no --keep-version.
-  $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums) ($envVars + @{ HEIMDALL_VERSION = 'v1.0.0' })
-  Check 'explicit version drops --keep-version' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://env.example --profile envprof') ($r.Out + ((Get-StubCalls) -join "`n"))
+  # An explicit bundle means "install this bundle" (S8b, e.g. the desktop
+  # installer): no --keep-version, with or without a release or HEIMDALL_VERSION=latest.
+  foreach ($v in @('v1.0.0', 'latest')) {
+    $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums) ($envVars + @{ HEIMDALL_VERSION = $v })
+    Check "-Bundle with HEIMDALL_VERSION=$v omits --keep-version" ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://env.example --profile envprof') ($r.Out + ((Get-StubCalls) -join "`n"))
+  }
 
   $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums, '-Uninstall', '--service', 'heimdall-bridge-h', '--yes')
   Check 'uninstall needs no hub' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'uninstall --service heimdall-bridge-h --yes') ($r.Out + ((Get-StubCalls) -join "`n"))
@@ -136,7 +139,7 @@ class Stub { static int Main(string[] a) {
   # install.ps1 has its own $sums/$archive; PowerShell scoping is dynamic, so the
   # mocks read the fixtures through distinct script-scoped names.
   $script:fetched = @()
-  $script:fixtureSums, $script:fixtureZip = $sums, $zip
+  $script:fixtureSums, $script:fixtureZip = $good.Sums, $good.Zip
   $script:latest = $null
   function Invoke-RestMethod { param($Headers, $Uri)
     $script:fetched += $Uri
@@ -155,9 +158,13 @@ class Stub { static int Main(string[] a) {
     throw "404 $Uri"
   }
   # -Width: Out-String would otherwise wrap long [ERROR] lines at the host width.
-  function Invoke-InProcess {
+  # Parameters go in a hashtable: splatting an array would pass '-Version' as a
+  # positional string.
+  function Invoke-InProcess([hashtable]$Params = @{}, [hashtable]$Env = @{}) {
     $script:fetched = @()
-    $o = & ([scriptblock]::Create((Get-Content -Raw $script))) -Hub 'https://h.example' 6>&1 2>&1 | Out-String -Width 4096
+    foreach ($k in $Env.Keys) { Set-Item "Env:\$k" $Env[$k] }
+    try { $o = & ([scriptblock]::Create((Get-Content -Raw $script))) -Hub 'https://h.example' @Params 6>&1 2>&1 | Out-String -Width 4096 }
+    finally { foreach ($k in $Env.Keys) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue } }
     return @{ Code = $global:LASTEXITCODE; Out = $o }
   }
   function New-Release([string[]]$Assets) {
@@ -168,6 +175,18 @@ class Stub { static int Main(string[] a) {
   $r = Invoke-InProcess
   Check 'latest resolves from /releases/latest beyond 100 releases' ($r.Out -match 'Release v1\.0\.0 \(windows-amd64\)' -and $r.Out -match 'SHA-256 verified' -and
     -not ($script:fetched | Where-Object { $_.Contains('/releases?') })) ($r.Out + ($script:fetched -join "`n"))
+  Check 'a resolved release passes --keep-version' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://h.example --keep-version') ($r.Out + ((Get-StubCalls) -join "`n"))
+
+  # Spec section 7: --keep-version only when the script resolves the release
+  # itself; 'latest' counts as no release.
+  $r = Invoke-InProcess @{ Version = 'latest' }
+  Check '-Version latest passes --keep-version' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://h.example --keep-version') ($r.Out + ((Get-StubCalls) -join "`n"))
+  $r = Invoke-InProcess @{} @{ HEIMDALL_VERSION = 'latest' }
+  Check 'HEIMDALL_VERSION=latest passes --keep-version' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://h.example --keep-version') ($r.Out + ((Get-StubCalls) -join "`n"))
+  $r = Invoke-InProcess @{ Version = 'v1.0.0' }
+  Check '-Version TAG omits --keep-version' ($r.Code -eq 0 -and $r.Out -match 'Release v1\.0\.0 \(windows-amd64\)' -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://h.example') ($r.Out + ((Get-StubCalls) -join "`n"))
+  $r = Invoke-InProcess @{} @{ HEIMDALL_VERSION = 'v1.0.0' }
+  Check 'HEIMDALL_VERSION=TAG omits --keep-version' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://h.example') ($r.Out + ((Get-StubCalls) -join "`n"))
 
   $script:latest = New-Release @('heimdall-local-windows-amd64-v1.0.0.zip')
   $r = Invoke-InProcess
