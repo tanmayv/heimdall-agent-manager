@@ -833,15 +833,27 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
-          MINISIGN_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_SECRET_KEY }}
-          MINISIGN_PASSWORD: ${{ secrets.RELEASE_MINISIGN_PASSWORD }}
+          # Two key slots, because secrets are write-only: rotation flips this
+          # environment variable instead of copying key material between them.
+          SIGNING_SLOT: ${{ vars.RELEASE_MINISIGN_SIGNING_SLOT || 'current' }}
+          CURRENT_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_SECRET_KEY }}
+          CURRENT_PASSWORD: ${{ secrets.RELEASE_MINISIGN_PASSWORD }}
+          NEXT_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_NEXT_SECRET_KEY }}
+          NEXT_PASSWORD: ${{ secrets.RELEASE_MINISIGN_NEXT_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
+          case "$SIGNING_SLOT" in
+            current) MINISIGN_SECRET_KEY="$CURRENT_SECRET_KEY"; MINISIGN_PASSWORD="$CURRENT_PASSWORD"; secret=RELEASE_MINISIGN_SECRET_KEY ;;
+            next) MINISIGN_SECRET_KEY="$NEXT_SECRET_KEY"; MINISIGN_PASSWORD="$NEXT_PASSWORD"; secret=RELEASE_MINISIGN_NEXT_SECRET_KEY ;;
+            *) echo "::error::RELEASE_MINISIGN_SIGNING_SLOT must be 'current' or 'next', not '$SIGNING_SLOT'"; exit 1 ;;
+          esac
+          unset CURRENT_SECRET_KEY CURRENT_PASSWORD NEXT_SECRET_KEY NEXT_PASSWORD
           if [ -z "$MINISIGN_SECRET_KEY" ]; then
-            echo "::error::RELEASE_MINISIGN_SECRET_KEY is not set in the 'release' environment; see docs/release-signing.md"
+            echo "::error::$secret is not set in the 'release' environment; see docs/release-signing.md"
             exit 1
           fi
+          echo "signing with the '$SIGNING_SLOT' key slot ($secret)"
           manifest_tool=(python3 -I scripts/release/release-manifest.py)
           staged=staged; out=manifest
           mkdir -p "$staged" "$out"

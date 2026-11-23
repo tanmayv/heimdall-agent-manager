@@ -61,77 +61,100 @@ names the same key id and the tag in the trusted comment; it has not expired;
 and each checked bundle has exactly the listed size and SHA-256. Installers and
 the update engine must apply the same rules (T3b, T12).
 
-## Where the key lives (user decision Q6)
+## Where the keys live (user decision Q6)
 
-- The **secret key** is the GitHub Actions secret
-  `RELEASE_MINISIGN_SECRET_KEY` (the full two-line `.key` file) in the
-  **`release` environment**, with its password in `RELEASE_MINISIGN_PASSWORD`
-  in the same environment. It is never a repository or organisation secret.
+Two key pairs exist; both secret keys live **only** in GitHub, as secrets of
+the **`release` environment** (never repository or organisation secrets).
+They were generated on 2026-11-23 with random passwords, set with `gh`, and
+the local copies were shredded: no offline copy exists, and GitHub secrets
+cannot be read back.
+
+| Slot | Pinned public key | Key id | Environment secrets |
+|---|---|---|---|
+| `current` | `scripts/release/minisign/heimdall-release-1.pub` | `F0C12EB5F62E8C66` | `RELEASE_MINISIGN_SECRET_KEY`, `RELEASE_MINISIGN_PASSWORD` |
+| `next` | `scripts/release/minisign/heimdall-release-2.pub` | `7D1CD02AE0E7D223` | `RELEASE_MINISIGN_NEXT_SECRET_KEY`, `RELEASE_MINISIGN_NEXT_PASSWORD` |
+
+The `release` environment **variable** `RELEASE_MINISIGN_SIGNING_SLOT`
+(`current`, the default, or `next`) picks the slot that signs. Because
+secrets are write-only, rotation flips this variable rather than moving key
+material between secrets.
+
 - Only the `manifest` job references `environment: release`. It has
-  `contents: read`, writes the key to `$RUNNER_TEMP` with mode 0600, deletes
-  it as soon as the manifest is signed, and verifies with the pinned keys.
-- **Pull-request builds cannot read it**: environment secrets are only given
-  to jobs that name the environment, the environment's deployment rule admits
-  only `main` and `v*` tags (a PR runs on `refs/pull/<n>/merge`, so a job that
-  names the environment from a PR is refused), and fork PRs never receive
-  secrets at all. No `pull_request_target` workflow may name the `release`
-  environment.
-- The job fails the release when the secret is missing, the password is wrong,
-  or the key is not pinned. Releases cannot ship without a manifest.
+  `contents: read`, receives both slots but unsets the unused one, writes the
+  chosen key to `$RUNNER_TEMP` with mode 0600, deletes it as soon as the
+  manifest is signed, checks that its key id is pinned, and verifies.
+- **Pull-request builds cannot read the keys**: environment secrets go only
+  to jobs that name the environment, and the environment's deployment rules
+  admit only the branch `main` and tags `v*` (a PR runs on
+  `refs/pull/<n>/merge`, so a PR job naming the environment is refused). Fork
+  PRs never receive secrets at all. No `pull_request_target` workflow may
+  name the `release` environment.
+- The job fails the release when the chosen slot's secret is missing, the
+  password is wrong, or the key is not pinned. No release ships without a
+  manifest.
 
-### One-time setup (repository admin)
+### Recreating the environment (repository admin)
 
-1. Generate two key pairs on a trusted machine (`minisign` ≥ 0.10):
-   ```bash
-   minisign -G -p heimdall-release-1.pub -s heimdall-release-1.key
-   minisign -G -p heimdall-release-2.pub -s heimdall-release-2.key
-   ```
-   Use a strong, different password for each. Key 1 signs now; key 2 is the
-   next key. Store both `.key` files and passwords offline (password manager
-   plus an offline backup). Never commit a `.key` file.
-2. Commit both `.pub` files to `scripts/release/minisign/` (exactly two pinned
-   keys; `test_release_manifest.py` enforces this).
-3. Create the environment: *Settings → Environments → New environment*
-   `release`. Under *Deployment branches and tags* choose *Selected branches
-   and tags* and add the branch `main` and the tag pattern `v*`. Optionally add
-   required reviewers (every release run, including dry runs, then waits for
-   approval).
-4. Add environment secrets `RELEASE_MINISIGN_SECRET_KEY` (contents of
-   `heimdall-release-1.key`) and `RELEASE_MINISIGN_PASSWORD`. With the GitHub
-   CLI: `gh secret set RELEASE_MINISIGN_SECRET_KEY --env release < heimdall-release-1.key`
-   and `gh secret set RELEASE_MINISIGN_PASSWORD --env release`.
-5. Dry run: dispatch **Release local binaries** with `publish_release` off.
-   The `manifest` job must log `verified …` and `tampered bundle rejected as
-   expected`, and its step summary shows the manifest.
+```bash
+R=tanmayv/heimdall-agent-manager
+gh api -X PUT repos/$R/environments/release \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/$R/environments/release/deployment-branch-policies -f name=main -f type=branch
+gh api -X POST repos/$R/environments/release/deployment-branch-policies -f name='v*' -f type=tag
+gh variable set RELEASE_MINISIGN_SIGNING_SLOT --env release -R $R --body current
+```
+
+Generate a key in a private directory (`umask 077`, outside the repo) with
+`minisign -G -p heimdall-release-N.pub -s heimdall-release-N.key` and a
+random password, then load it into a slot without printing it:
+
+```bash
+gh secret set RELEASE_MINISIGN_SECRET_KEY --env release -R $R < heimdall-release-N.key
+tr -d '\n' < password-file | gh secret set RELEASE_MINISIGN_PASSWORD --env release -R $R
+shred -u heimdall-release-N.key password-file
+```
+
+(Use `RELEASE_MINISIGN_NEXT_SECRET_KEY` / `RELEASE_MINISIGN_NEXT_PASSWORD`
+for the `next` slot.) Commit only the `.pub` file. A dry run (**Release local
+binaries** dispatched with `publish_release` off from a branch the
+environment admits) must log `verified …` and `tampered bundle rejected as
+expected`; the step summary shows the manifest.
 
 ## Rotation (ship the next key one release ahead)
 
-Verifiers only trust keys pinned in the code they are running, so a new key
-must be pinned in a release **before** any release is signed with it.
+Verifiers only trust keys pinned in the code they run, so a key must be
+pinned in a release **before** any release is signed with it. The pinned set
+is always two keys: the signing slot's key and the other slot's key.
 
-Pinned set: always two keys, *current* (signs releases) and *next*. The first
-releases pin {1, 2} and are signed with key 1, so key 2 is trusted before it
-is ever used. To rotate from key 1 to key 2:
+Today releases pin {1, 2} and sign with slot `current` (key 1). To rotate to
+key 2, only after the first release that pinned key 2 has rolled out widely
+(promoted to stable and taken by the update engine):
 
-1. Generate key 3 offline (as above).
-2. Release M: set `RELEASE_MINISIGN_SECRET_KEY` / `RELEASE_MINISIGN_PASSWORD`
-   to key 2, and replace `heimdall-release-1.pub` with `heimdall-release-3.pub`
-   in `scripts/release/minisign/` (pins {2, 3}). Every install that pinned
-   {1, 2} trusts release M; key 3 is again pinned one release ahead.
-3. Archive key 1 offline (or destroy it) once release M is out.
+1. Generate key 3 and load it into the **retiring** slot (`current`,
+   overwriting key 1's secrets).
+2. Set `RELEASE_MINISIGN_SIGNING_SLOT=next` (key 2 signs from now on).
+3. In the same release, replace `heimdall-release-1.pub` with
+   `heimdall-release-3.pub` (pins {2, 3}). That release is signed with key 2,
+   which every install pinning {1, 2} trusts; key 3 is pinned one release
+   ahead.
 
-Rotate only after the release that first pinned the next key has rolled out
-widely (promoted to stable and taken by the update engine).
+The following rotation mirrors it: key 4 goes into the `next` slot, the
+variable goes back to `current`, and the pins become {3, 4}. Update the slot
+table above each time.
 
-A bridge whose pins predate the next key cannot verify release M directly;
-it must first update to a release that pins it (the engine resolves the newest release it can verify).
+A bridge whose pins predate the new signing key cannot verify the rotated
+release directly; it must first update to a release that pins it (the engine
+resolves the newest release it can verify).
 
 ## Revocation (key compromise)
 
-1. Remove the compromised key's secret from the `release` environment at once.
-2. If the **next** key is intact: sign the next release with it and pin
-   {next, new next}, dropping the compromised key (an emergency rotation in
-   one step; installs from release N onwards already trust *next*).
+1. Delete the compromised slot's secrets from the `release` environment at
+   once (`gh secret delete … --env release`).
+2. If the other slot's key is intact: switch `RELEASE_MINISIGN_SIGNING_SLOT`
+   to it, load a fresh key into the compromised slot, and ship a release
+   pinning {intact, fresh} (an emergency rotation in one step; installs
+   already trust the intact key).
 3. If **both** keys are compromised, no signed path remains: ship a release
    with new pins and reinstall bridges with the install script (the release
    manifest is the root of trust; there is no higher key).
