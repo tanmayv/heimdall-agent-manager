@@ -2,6 +2,7 @@ package agent
 
 import "base:runtime"
 import "core:fmt"
+import "core:encoding/json"
 import base64 "core:encoding/base64"
 import "core:strings"
 import "core:sync"
@@ -576,34 +577,20 @@ mark_instance_start_success_locked :: proc(service: ^Agent_Service, auth: contra
 	return saved, saved_ok, save_err
 }
 
+// Keep sealed fields separate: plaintext substitution into hub-generated YAML
+// can invalidate its syntax. The bridge owns decryption and serialization.
 bootstrap_skill_file_content :: proc(m: domain.Memory, name: string) -> string {
-	body := m.body
-	if strings.index(body, "\\n") >= 0 {
-		replaced, _ := strings.replace_all(body, "\\n", "\n")
-		body = replaced
+	payload := contracts.Dynamic_Skill_Blob{
+		format = contracts.DYNAMIC_SKILL_FORMAT, memory_id = m.memory_id,
+		name = name, title = m.title, description = m.description, body = m.body,
 	}
-	trimmed := strings.trim_space(body)
-	if strings.has_prefix(trimmed, "---\n") || strings.has_prefix(trimmed, "---\r\n") do return trimmed
-	content := strings.builder_make()
-	strings.write_string(&content, "---\nname: "); strings.write_string(&content, name)
-	strings.write_string(&content, "\ndescription: ")
-	if strings.trim_space(m.description) != "" {
-		strings.write_string(&content, m.description)
-	} else if strings.trim_space(m.title) != "" {
-		strings.write_string(&content, m.title)
-	} else {
-		strings.write_string(&content, name)
-	}
-	strings.write_string(&content, "\nheimdall_managed: true\n---\n\n# ")
-	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
-	strings.write_string(&content, "\n\n")
-	strings.write_string(&content, body)
-	return strings.to_string(content)
+	encoded, _ := json.marshal(payload)
+	return string(encoded)
 }
 
 bootstrap_skill_name :: proc(m: domain.Memory) -> string {
-	if name := bootstrap_skill_frontmatter_value(m.body, "name"); name != "" do return bootstrap_safe_slug(name)
-	if slug := bootstrap_safe_slug(m.title); slug != "" do return slug
+	// memory_id is a unique, short public identity, independent of ciphertext,
+	// title edits, vault key rotation, and identical-title memories.
 	return bootstrap_safe_slug(m.memory_id)
 }
 
