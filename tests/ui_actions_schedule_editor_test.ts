@@ -43,6 +43,8 @@ test('new triggers retain their blackout input after removing an earlier trigger
     assert.equal(new Set(keys).size, 2);
     let fields = doc.querySelectorAll('fieldset');
     await type(fields[0].querySelector('input[aria-label="Blackout dates"]')!, '2026-12-25');
+    assert.deepEqual(current[0].config.blackout_dates, []);
+    await click(fields[0].querySelector('[aria-label="Add blackout date"]'));
     assert.deepEqual(current[0].config.blackout_dates, ['2026-12-25']);
     await click(fields[0].querySelector('[data-debug-id^="action-trigger-remove-"]'));
     fields = doc.querySelectorAll('fieldset');
@@ -52,6 +54,8 @@ test('new triggers retain their blackout input after removing an earlier trigger
     assert.equal(current[0].clientKey, keys[1]);
     // Verify the surviving component still edits its own config, using the native date picker.
     await type(fields[0].querySelector('input[aria-label="Blackout dates"]')!, '2026-12-31');
+    assert.equal((fields[0].querySelector('input[aria-label="Blackout dates"]') as HTMLInputElement).value, '2026-12-31');
+    await click(fields[0].querySelector('[aria-label="Add blackout date"]'));
     assert.equal((fields[0].querySelector('input[aria-label="Blackout dates"]') as HTMLInputElement).value, '');
     const form = emptyActionForm();
     form.triggers = current;
@@ -72,6 +76,7 @@ test('new triggers retain their blackout input after removing an earlier trigger
     await type(doc.querySelector('input[aria-label="Time zone"]')!, 'Asia/Kolkata');
     await type(doc.querySelector('input[aria-label="Once at"]')!, '2026-12-01T09:00');
     assert.equal(current[0].config.run_at, '2026-12-01T09:00:00+05:30');
+    assert.equal((doc.querySelector('[aria-label="Once at"]') as HTMLInputElement).value, '2026-12-01T09:00');
     assert.ok(doc.body.textContent?.includes('2026-12-01T03:30:00.000Z'));
     for (const label of ['Active from', 'Active until']) {
       const input = doc.querySelector('input[aria-label="' + label + '"]') as HTMLInputElement;
@@ -85,8 +90,17 @@ test('new triggers retain their blackout input after removing an earlier trigger
     assert.deepEqual(current[0].config.blackout_dates, []);
     const blackout = doc.querySelector('input[aria-label="Blackout dates"]') as HTMLInputElement;
     assert.equal(blackout.type, 'date');
+    await type(blackout, '0002-12-25');
+    assert.deepEqual(current[0].config.blackout_dates, []);
+    assert.equal((doc.querySelector('[aria-label="Add blackout date"]') as HTMLButtonElement).disabled, true);
+    await click(doc.querySelector('[aria-label="Add blackout date"]'));
+    assert.deepEqual(current[0].config.blackout_dates, []);
     await type(blackout, '2026-12-25');
+    assert.equal(blackout.value, '2026-12-25');
+    assert.deepEqual(current[0].config.blackout_dates, []);
+    await click(doc.querySelector('[aria-label="Add blackout date"]'));
     await type(blackout, '2026-12-25');
+    await React.act(async () => blackout.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     assert.deepEqual(current[0].config.blackout_dates, ['2026-12-25']);
     // Reopen stored offset and fractional-second values, then edit an unrelated
     // field and serialize through the actual action model.
@@ -102,6 +116,7 @@ test('new triggers retain their blackout input after removing an earlier trigger
     assert.equal(reopened, stored);
     assert.equal((doc.querySelector('[aria-label="Once at"]') as HTMLInputElement).value, '2026-12-01T09:00:12.123');
     await type(doc.querySelector('[aria-label="Blackout dates"]')!, '2026-12-25');
+    await click(doc.querySelector('[aria-label="Add blackout date"]'));
     const reopenedForm = emptyActionForm();
     reopenedForm.triggers = [{ kind: 'schedule', config: reopened }] as any;
     const config = actionFormBody(reopenedForm).triggers![0].config;

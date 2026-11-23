@@ -7,6 +7,18 @@ import { instantToScheduleLocal, scheduleLocalToInstant } from './scheduleDateTi
 
 export type ScheduleEditorValue = ScheduleConfig;
 export default function ScheduleEditor({ value, onChange, debugId = 'action-schedule' }: { value: ScheduleConfig; onChange: (value: ScheduleConfig) => void; debugId?: string }) {
+  const [blackoutDraft, setBlackoutDraft] = React.useState('');
+  const blackoutValid = /^\d{4}-\d{2}-\d{2}$/.test(blackoutDraft)
+    && Number(blackoutDraft.slice(0, 4)) >= 2000
+    && Number.isFinite(Date.parse(blackoutDraft + 'T00:00:00Z'))
+    && new Date(blackoutDraft + 'T00:00:00Z').toISOString().slice(0, 10) === blackoutDraft;
+  const addBlackout = () => {
+    if (!blackoutValid) return;
+    if (!(value.blackout_dates || []).includes(blackoutDraft)) {
+      update({ blackout_dates: [...(value.blackout_dates || []), blackoutDraft] });
+    }
+    setBlackoutDraft('');
+  };
   const timezone = value.timezone || 'UTC';
   const update = (patch: Partial<ScheduleConfig>) => onChange({ ...value, ...patch });
   const cron = value.mode === 'cron' ? validateCronExpression(value.cron_expr || '') : null;
@@ -21,7 +33,14 @@ export default function ScheduleEditor({ value, onChange, debugId = 'action-sche
       {previews.length ? <p>Preview: {previews.map(d => d.toISOString()).join(', ')}</p> : null}
     </> : value.mode === 'interval' ? <FormField label="Interval (seconds)"><Input type="number" min={60} max={31536000} data-debug-id={debugId + '-interval'} aria-label="Interval seconds" value={String(value.interval_s || '')} onChange={v => update({ interval_s: Number(v) })} /></FormField>
       : <ScheduleDateTime key={'once-' + timezone} label="Once at" debugId={debugId + '-once'} value={value.run_at || ''} timezone={timezone} onChange={run_at => update({ run_at })} pastHint />}
-    <FormField label="Blackout dates" hint="Choose dates when this action should not run in the schedule time zone."><Input type="date" data-debug-id={debugId + '-blackouts'} aria-label="Blackout dates" value="" onChange={date => { if (date && !(value.blackout_dates || []).includes(date)) update({ blackout_dates: [...(value.blackout_dates || []), date] }); }} /></FormField>
+    <FormField label="Blackout dates" hint="Choose a date from year 2000 onward, then add it. Dates use the schedule time zone.">
+      <div className="flex items-center gap-2">
+        <Input type="date" min="2000-01-01" max="9999-12-31" data-debug-id={debugId + '-blackouts'} aria-label="Blackout dates" value={blackoutDraft} onChange={setBlackoutDraft} onKeyDown={event => {
+          if (event.key === 'Enter') { event.preventDefault(); addBlackout(); }
+        }} />
+        <Button type="button" data-debug-id={debugId + '-blackout-add'} aria-label="Add blackout date" disabled={!blackoutValid} onClick={addBlackout}>Add</Button>
+      </div>
+    </FormField>
     <ul className="flex flex-wrap gap-2" aria-label="Selected blackout dates">{(value.blackout_dates || []).map(date => <li key={date} className="inline-flex items-center gap-1 rounded border border-subtle px-2 py-1 text-sm">
       <span>{date}</span><Button type="button" variant="ghost" size="sm" data-debug-id={debugId + '-blackout-remove-' + date} aria-label={'Remove blackout date ' + date} onClick={() => update({ blackout_dates: (value.blackout_dates || []).filter(d => d !== date) })}>×</Button>
     </li>)}</ul>
@@ -36,20 +55,26 @@ function ScheduleDateTime({ label, debugId, value, timezone, onChange, pastHint 
   const [draft, setDraft] = React.useState<string | null>(null);
   const [editError, setEditError] = React.useState('');
   const input = React.useRef<HTMLInputElement>(null);
+  const lastEmitted = React.useRef<string | null>(null);
   let local = '', conversionError = '';
   try { local = instantToScheduleLocal(value, timezone); }
   catch { conversionError = 'Choose a valid time zone and date/time.'; }
   const error = editError || conversionError;
   React.useEffect(() => { input.current?.setCustomValidity(error); }, [error]);
   // Rendering alone never rewrites the RFC3339 string.
-  React.useEffect(() => { setDraft(null); setEditError(''); }, [value]);
+  React.useEffect(() => {
+    // Keep the exact native input string during our own edits (including omitted
+    // seconds), so React does not interrupt keyboard segment entry.
+    if (value !== lastEmitted.current) { setDraft(null); setEditError(''); }
+    lastEmitted.current = null;
+  }, [value]);
   const hint = value && !error
     ? local.replace('T', ' ') + ' ' + timezone + ' · ' + new Date(value).toISOString() + ' UTC' + (pastHint && Date.parse(value) < Date.now() ? ' · This time has passed; the action runs as soon as you save' : '')
     : 'Choose a time in ' + timezone + '. If a time occurs twice, the earlier occurrence is used.';
   return <FormField label={label} error={error || undefined} hint={hint}>
     <Input ref={input} type="datetime-local" step="any" data-debug-id={debugId} aria-label={label} value={draft ?? local} onChange={next => {
       setDraft(next);
-      try { const instant = scheduleLocalToInstant(next, timezone); setEditError(''); onChange(instant); }
+      try { const instant = scheduleLocalToInstant(next, timezone); setEditError(''); lastEmitted.current = instant; onChange(instant); }
       catch (e) { setEditError((e as Error).message); }
     }} />
   </FormField>;
