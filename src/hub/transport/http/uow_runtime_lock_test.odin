@@ -1,6 +1,7 @@
 package http
 
 import "core:mem/virtual"
+import "core:mem"
 import "core:sync"
 import "core:testing"
 import "core:thread"
@@ -12,6 +13,8 @@ import sqlite "odin_test:hub/repository/sqlite"
 import lockorder "odin_test:lib/lockorder"
 
 Runtime_Persist_Test :: struct {
+	arena: virtual.Arena,
+	allocator: mem.Allocator,
 	t: ^testing.T,
 	violations_before: int,
 	fixture: ^wire_fixture,
@@ -24,6 +27,12 @@ Runtime_Persist_Test :: struct {
 
 runtime_persist_test_open :: proc(t: ^testing.T) -> ^Runtime_Persist_Test {
 	f := new(Runtime_Persist_Test)
+	f.allocator = context.allocator
+	_ = virtual.arena_init_growing(&f.arena)
+	// wire_setup returns only part of its login/seed results. Own the entire
+	// fixture request lifetime, including user rows and envelope buffers.
+	context.allocator = virtual.arena_allocator(&f.arena)
+	context.temp_allocator = context.allocator
 	f.t = t
 	f.violations_before = sync.atomic_load(&lockorder.violations)
 	f.fixture = wire_setup(t, "runtime_persist")
@@ -40,10 +49,14 @@ runtime_persist_test_open :: proc(t: ^testing.T) -> ^Runtime_Persist_Test {
 }
 
 runtime_persist_test_close :: proc(f: ^Runtime_Persist_Test) {
+	context.allocator = virtual.arena_allocator(&f.arena)
+	context.temp_allocator = context.allocator
 	project.bridge_runtime_registry_destroy(&f.registry)
 	wire_teardown(f.fixture)
 	testing.expect(f.t, sync.atomic_load(&lockorder.violations) == f.violations_before, "runtime persistence preserves lock order")
-	free(f)
+	allocator := f.allocator
+	virtual.arena_destroy(&f.arena)
+	free(f, allocator)
 }
 
 Runtime_Persist_Job :: struct {
@@ -67,6 +80,11 @@ runtime_persist_job_start :: proc(job: ^Runtime_Persist_Job) -> ^thread.Thread {
 }
 
 runtime_persist_test_disconnect :: proc(f: ^Runtime_Persist_Test) -> bool {
+	arena: virtual.Arena
+	_ = virtual.arena_init_growing(&arena)
+	defer virtual.arena_destroy(&arena)
+	context.allocator = virtual.arena_allocator(&arena)
+	context.temp_allocator = context.allocator
 	c := project.bridge_runtime_connection_acquire(&f.registry, f.fixture.bridge_pin, f.generation)
 	defer project.bridge_runtime_connection_release(&f.registry, c)
 	row, _, instances, current := bridge_disconnect_persist(&f.handlers, c)
@@ -76,6 +94,11 @@ runtime_persist_test_disconnect :: proc(f: ^Runtime_Persist_Test) -> bool {
 }
 
 runtime_persist_test_reconnect :: proc(f: ^Runtime_Persist_Test) -> bool {
+	arena: virtual.Arena
+	_ = virtual.arena_init_growing(&arena)
+	defer virtual.arena_destroy(&arena)
+	context.allocator = virtual.arena_allocator(&arena)
+	context.temp_allocator = context.allocator
 	row, found, _ := iface.bridge_get_bridge(&f.fixture.br_repo, f.fixture.bridge_pin)
 	if !found do return false
 	defer domain.bridge_destroy(&row)

@@ -18,7 +18,7 @@ attention_placement_card_id :: proc(task: domain.Task) -> domain.Card_ID {
 
 // Called under projector_mutex with the same freshly read task as the ordinary
 // attention projection. The separate ID preserves review/question/Start cards.
-project_placement_card :: proc(s: ^Card_Service, owner: domain.User_ID, task_id: domain.Task_ID, task: domain.Task, found: bool) -> (bool, domain.Domain_Error) {
+project_placement_card :: proc(s: ^Card_Service, owner: domain.User_ID, task_id: domain.Task_ID, task: domain.Task, found: bool, uow: ^iface.Unit_Of_Work = nil) -> (bool, domain.Domain_Error) {
 	if s.taskchains.engine == nil do return true, {}
 	failures: []taskv2.Placement_Failure
 	if found && task.owner_user_id == owner && !domain.task_state_is_terminal(task.state) {
@@ -34,13 +34,13 @@ project_placement_card :: proc(s: ^Card_Service, owner: domain.User_ID, task_id:
 	for c in live {
 		if attention_json_field(c.action_refs_json, "task_id") != string(task_id) do continue
 		if !found || c.card_id != id || len(failures) == 0 {
-			if ok, err := apply_attention_projection(s, owner, c.card_id, {}, false); !ok do return false, err
+			if ok, err := apply_attention_projection(s, owner, c.card_id, {}, false, uow); !ok do return false, err
 		}
 	}
 	if len(failures) == 0 do return true, {}
 	desired, derr := build_placement_card(s, task, failures)
 	if derr.code != .None do return false, derr
-	return apply_attention_projection(s, owner, id, desired, true)
+	return apply_attention_projection(s, owner, id, desired, true, uow)
 }
 
 build_placement_card :: proc(s: ^Card_Service, task: domain.Task, failures: []taskv2.Placement_Failure) -> (domain.Card, domain.Domain_Error) {

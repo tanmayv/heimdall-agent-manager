@@ -35,8 +35,8 @@ import jsonx "odin_test:lib/jsonx"
 // source_marker) it read, retried after a re-read when the row moved. A late or
 // out-of-order notification therefore always writes current state, and a card
 // write that lands concurrently from outside the projector (accept, reject,
-// snooze) is never silently overwritten. (A database transaction would not do
-// this: the hub shares one SQLite connection across request threads.)
+// snooze) is never silently overwritten. A projector UoW takes the shared
+// transaction gate BEFORE projector_mutex; notifications run after outer commit.
 //
 // PRECEDENCE, for a source that still qualifies:
 //   - the user's own decision (accepted / rejected / discarded) stands while the
@@ -102,6 +102,73 @@ attention_message_card_id :: proc(agent_instance_id: string) -> domain.Card_ID {
 	return domain.Card_ID(fmt.tprintf("%s%s", ATTENTION_MESSAGE_CARD_PREFIX, agent_instance_id))
 }
 
+// The factory is wired in production. Nil supports isolated legacy repository
+// doubles, as elsewhere in Card_Service; real concurrent fixtures wire it too.
+// Beginning before projector_mutex is essential: taskchain/content verbs can
+// enter a projector while already owning tx_mutex, while reaper projection does
+// not. All paths must therefore be tx_mutex -> projector_mutex -> repository.
+Attention_Projection_Kind :: enum {Task, Message, Memory}
+
+project_attention_in_uow :: proc(s: ^Card_Service, owner: domain.User_ID, id: string, kind: Attention_Projection_Kind) -> (bool, domain.Domain_Error) {
+	uow: iface.Unit_Of_Work
+	opened := false
+	if s.uow_factory != nil {
+		var_uow, ok, err := iface.unit_of_work_begin(s.uow_factory)
+		if !ok do return false, err
+		uow = var_uow
+		opened = true
+	}
+	defer if opened do iface.unit_of_work_rollback(&uow)
+	ok: bool
+	err: domain.Domain_Error
+	{
+		lock_tok := dbt.timed_lock(&s.projector_mutex, .Projector)
+		defer dbt.timed_unlock(&s.projector_mutex, .Projector, lock_tok)
+		switch kind {
+		case .Task: ok, err = project_task_card_locked(s, owner, domain.Task_ID(id), &uow)
+		case .Message: ok, err = project_message_card_locked(s, owner, id, &uow)
+		case .Memory: ok, err = project_memory_card_locked(s, owner, id, &uow)
+		}
+	}
+	if !ok do return false, err
+	if opened {
+		opened = false // COMMIT consumes the UoW even on failure.
+		if committed, commit_err := iface.unit_of_work_commit(&uow); !committed do return false, commit_err
+	}
+	return true, {}
+}
+
+Projection_Changed_Effect :: struct {
+	s: ^Card_Service,
+	owner: string,
+	kind: string,
+}
+
+projection_changed_discard :: proc(ctx: rawptr) {
+	e := (^Projection_Changed_Effect)(ctx)
+	heap := runtime.default_allocator()
+	delete(e.owner, heap)
+	delete(e.kind, heap)
+	free(e, heap)
+}
+
+projection_changed_run :: proc(ctx: rawptr) {
+	e := (^Projection_Changed_Effect)(ctx)
+	defer projection_changed_discard(ctx)
+	notify_card_changed(e.s, domain.User_ID(e.owner), e.kind)
+}
+
+notify_projection_changed :: proc(s: ^Card_Service, uow: ^iface.Unit_Of_Work, owner: domain.User_ID, kind: string) {
+	if s.card_changed.changed == nil do return
+	heap := runtime.default_allocator()
+	e := new(Projection_Changed_Effect, heap)
+	e^ = {s=s, owner=strings.clone(string(owner), heap), kind=strings.clone(kind, heap)}
+	// Nested projections notify only after the caller outer UoW commits; a
+	// rollback discards the heap-owned effect without publishing stale cards.
+	if iface.unit_of_work_after_commit(uow, {ctx=e, run=projection_changed_run, discard=projection_changed_discard}) do return
+	projection_changed_run(e) // nil-UoW repository doubles only
+}
+
 // ---------------------------------------------------------------------------
 // task_validation
 
@@ -113,9 +180,10 @@ task_user_attention :: proc(s: ^Card_Service, task: domain.Task) -> (taskv2.User
 project_task_card :: proc(s: ^Card_Service, owner: domain.User_ID, task_id: domain.Task_ID) -> (bool, domain.Domain_Error) {
 	if s == nil || s.attention_repo == nil || s.cards == nil do return true, domain.Domain_Error{}
 	if s.taskchains == nil || s.taskchains.repo == nil do return false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
-	lock_tok := dbt.timed_lock(&s.projector_mutex, .Projector)
-	defer dbt.timed_unlock(&s.projector_mutex, .Projector, lock_tok)
+	return project_attention_in_uow(s, owner, string(task_id), .Task)
+}
 
+project_task_card_locked :: proc(s: ^Card_Service, owner: domain.User_ID, task_id: domain.Task_ID, uow: ^iface.Unit_Of_Work) -> (bool, domain.Domain_Error) {
 	task, found, get_err := iface.taskchain_get_task(s.taskchains.repo, task_id)
 	// Only a definite "no such task" may retire a card; any other read failure
 	// leaves the card untouched (reconciliation retries it).
@@ -126,8 +194,8 @@ project_task_card :: proc(s: ^Card_Service, owner: domain.User_ID, task_id: doma
 	qualifies := kind != .None
 	desired: domain.Card
 	if qualifies do desired = build_task_card(s, task, kind, badge)
-	if ok, err := apply_attention_projection(s, owner, attention_task_card_id(task_id), desired, qualifies); !ok do return false, err
-	return project_placement_card(s, owner, task_id, task, found)
+	if ok, err := apply_attention_projection(s, owner, attention_task_card_id(task_id), desired, qualifies, uow); !ok do return false, err
+	return project_placement_card(s, owner, task_id, task, found, uow)
 }
 
 // build_task_card renders one task's attention card. A review card advertises
@@ -364,14 +432,15 @@ attention_instance_name :: proc(s: ^Card_Service, agent_instance_id: string) -> 
 project_message_card :: proc(s: ^Card_Service, owner: domain.User_ID, agent_instance_id: string) -> (bool, domain.Domain_Error) {
 	if s == nil || s.attention_repo == nil || s.cards == nil do return true, domain.Domain_Error{}
 	if agent_instance_id == "" do return true, domain.Domain_Error{}
-	lock_tok := dbt.timed_lock(&s.projector_mutex, .Projector)
-	defer dbt.timed_unlock(&s.projector_mutex, .Projector, lock_tok)
+	return project_attention_in_uow(s, owner, string(agent_instance_id), .Message)
+}
 
+project_message_card_locked :: proc(s: ^Card_Service, owner: domain.User_ID, agent_instance_id: string, uow: ^iface.Unit_Of_Work) -> (bool, domain.Domain_Error) {
 	msg, found, other_unread, err := iface.attention_latest_actionable_message(s.attention_repo, owner, agent_instance_id)
 	if err.code != .None do return false, err
 	desired: domain.Card
 	if found do desired = build_message_card(s, msg, other_unread)
-	return apply_attention_projection(s, owner, attention_message_card_id(agent_instance_id), desired, found)
+	return apply_attention_projection(s, owner, attention_message_card_id(agent_instance_id), desired, found, uow)
 }
 
 build_message_card :: proc(s: ^Card_Service, msg: domain.Chat_Message, other_unread: int) -> domain.Card {
@@ -455,16 +524,17 @@ project_memory_card :: proc(s: ^Card_Service, owner: domain.User_ID, memory_id: 
 	if s == nil || s.attention_repo == nil || s.cards == nil do return true, domain.Domain_Error{}
 	if memory_id == "" do return true, domain.Domain_Error{}
 	if s.content == nil || s.content.content == nil do return false, domain.domain_error(.Internal_Error, "content repository is not configured")
-	lock_tok := dbt.timed_lock(&s.projector_mutex, .Projector)
-	defer dbt.timed_unlock(&s.projector_mutex, .Projector, lock_tok)
+	return project_attention_in_uow(s, owner, string(memory_id), .Memory)
+}
 
+project_memory_card_locked :: proc(s: ^Card_Service, owner: domain.User_ID, memory_id: string, uow: ^iface.Unit_Of_Work) -> (bool, domain.Domain_Error) {
 	m, found, get_err := iface.content_get_memory(s.content.content, memory_id)
 	// As for tasks: only a definite "no such memory" may retire a card.
 	if !found && get_err.code != .Not_Found do return false, get_err
 	qualifies := found && m.owner_user_id == owner && memory_awaits_user(m, platform.clock_now(s.clock))
 	desired: domain.Card
 	if qualifies do desired = build_memory_card(s, m)
-	return apply_attention_projection(s, owner, attention_memory_card_id(memory_id), desired, qualifies)
+	return apply_attention_projection(s, owner, attention_memory_card_id(memory_id), desired, qualifies, uow)
 }
 
 build_memory_card :: proc(s: ^Card_Service, m: domain.Memory) -> domain.Card {
@@ -560,7 +630,7 @@ write_json_string_list :: proc(b: ^strings.Builder, values: []string) {
 // apply_attention_projection reconciles the stored card cid with the source:
 // desired is the card the current source implies (ignored when !qualifies).
 // The caller holds projector_mutex.
-apply_attention_projection :: proc(s: ^Card_Service, owner: domain.User_ID, cid: domain.Card_ID, desired: domain.Card, qualifies: bool) -> (bool, domain.Domain_Error) {
+apply_attention_projection :: proc(s: ^Card_Service, owner: domain.User_ID, cid: domain.Card_ID, desired: domain.Card, qualifies: bool, uow: ^iface.Unit_Of_Work = nil) -> (bool, domain.Domain_Error) {
 	for _ in 0 ..< ATTENTION_CAS_ATTEMPTS {
 		now := platform.clock_now(s.clock)
 		existing, exists, get_err := iface.card_get(s.cards, cid)
@@ -579,7 +649,7 @@ apply_attention_projection :: proc(s: ^Card_Service, owner: domain.User_ID, cid:
 			inserted, err := iface.attention_card_insert_if_absent(s.attention_repo, card)
 			if err.code != .None do return false, err
 			if inserted {
-				notify_card_changed(s, owner, card.kind)
+				notify_projection_changed(s, uow, owner, card.kind)
 				return true, domain.Domain_Error{}
 			}
 			continue // someone inserted it first: re-read and reconcile
@@ -589,7 +659,7 @@ apply_attention_projection :: proc(s: ^Card_Service, owner: domain.User_ID, cid:
 		changed, err := iface.attention_card_compare_and_set(s.attention_repo, next, existing.status, existing.source_marker)
 		if err.code != .None do return false, err
 		if changed {
-			notify_card_changed(s, owner, next.kind)
+			notify_projection_changed(s, uow, owner, next.kind)
 			return true, domain.Domain_Error{}
 		}
 	}
