@@ -412,10 +412,15 @@ wait_child :: proc(c: ^Child, d: time.Duration) -> bool {
 	}
 }
 
+// supervisor_exe is releases/<tree>/bin/ham-supervisor[.exe] (spec §3, §7.1).
+supervisor_exe :: proc(l: ^Launcher, tree: string) -> string {
+	return join(l.cfg.instance_root, "releases", tree, TREE_BIN_DIR, SUPERVISOR_EXE)
+}
+
 // supervisor_args is the command line of spec §7.1.
 supervisor_args :: proc(l: ^Launcher, tree: string, mode: Launch_Mode, ready_fd: string) -> []string {
 	args := make([dynamic]string, context.temp_allocator)
-	append(&args, join(l.cfg.instance_root, "releases", tree, SUPERVISOR_EXE))
+	append(&args, supervisor_exe(l, tree))
 	append(&args, "run", "--instance-root", l.cfg.instance_root, "--state-root", l.cfg.state_root)
 	append(&args, "--launched-tree", tree, "--launch-mode", "fallback" if mode == .Fallback else "normal")
 	append(&args, "--ready-fd", ready_fd)

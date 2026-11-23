@@ -34,7 +34,7 @@ RELEASE_SIG :: "release.json.minisig"
 // Windows .exe suffix, added here). The tree is the bundle exactly as
 // archived (bin/, share/heimdall/extensions/, ...), so the binaries are in
 // bin/ (user decision 2026-11-23, spec §3: verbatim, no flattening; the
-// launcher's path follows in T10b).
+// launcher starts bin/ham-supervisor, src/launcher/core TREE_BIN_DIR).
 BIN_DIR :: "bin"
 DEFAULT_PREFLIGHT :: []string{BIN_DIR + "/ham-supervisor", BIN_DIR + "/ham-bridge"}
 

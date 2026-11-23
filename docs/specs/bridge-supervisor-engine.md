@@ -168,8 +168,9 @@ four engine files at the root (`release.json`, `release.json.minisig`, `tree.jso
 `.complete`; a bundle that contains any of these names is refused, §14 step 7). Executables
 are therefore at `releases/<T>/bin/`. Bundles hold regular files and directories only: the
 POSIX packaging dereferences symlinks (`scripts/release/package-local-binary-tarball.sh`,
-`cp -L`) and the Windows zip ships plain files. The launcher's path to `bin/ham-supervisor`
-is follow-up T10b.
+`cp -L`) and the Windows zip ships plain files. The launcher starts
+`releases/<T>/bin/ham-supervisor[.exe]` (§7.1); bundled extensions are at
+`releases/<T>/share/heimdall/extensions/`.
 
 Permissions: `<data>/supervisor/`, `<state>/` and every snapshot are `0700` / owner-only
 (Windows: inherited per-user profile ACL, no explicit grant to others). Release trees are
