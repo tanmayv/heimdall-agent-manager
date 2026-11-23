@@ -16,8 +16,8 @@
 //      the session ends; the update activates, hands over (exit 75), and commits;
 //   3. v0.6.2 crashes in probation: an update_now intent installs it, the probation fails,
 //      it is rolled back (current = v0.6.1) and pinned;
-//   4. the launcher is killed hard; a new launcher's supervisor reaps the orphaned runtime
-//      (J0) before it starts its own;
+//   4. the supervisor is killed hard; the launcher restarts it and it reaps the orphaned
+//      runtime (J0) before it starts its own;
 //   5. graceful stop (stop-request file): launcher exits 0, no runtime survives.
 package e2e
 
@@ -178,6 +178,18 @@ runtime_pids :: proc(e: ^Env) -> []int {
 	return out[:]
 }
 
+// last_runtime: pid of the latest runtime start and of its parent (the supervisor).
+last_runtime :: proc(e: ^Env) -> (pid, parent: int) {
+	data, _ := os.read_entire_file(pj(e.data, "fake-starts.log"), context.temp_allocator)
+	for line in strings.split_lines(string(data), context.temp_allocator) {
+		f := strings.fields(line, context.temp_allocator)
+		if len(f) < 4 do continue
+		pid, _ = strconv.parse_int(f[0])
+		parent, _ = strconv.parse_int(f[3])
+	}
+	return
+}
+
 live_runtimes :: proc(e: ^Env) -> int {
 	n := 0
 	for pid in runtime_pids(e) do if _, ok := procs.identify(pid); ok do n += 1
@@ -299,20 +311,25 @@ test_supervisor_end_to_end :: proc(t: ^testing.T) {
 	pins, _ := os.read_entire_file(pj(e.data, "supervisor", "pins.json"), context.temp_allocator)
 	testing.expectf(t, strings.contains(string(pins), "0.6.2"), "v0.6.2 pinned: %s", string(pins))
 
-	// 4. Hard kill: the next supervisor reaps the orphaned runtime before starting its own.
+	// 4. Supervisor crash (§2.1): kill the supervisor hard; the launcher restarts it and its
+	//    J0 reap clears the runtime the dead supervisor left (Linux: parent-death signal
+	//    first; Windows: the job died with it; macOS: only the reap), before it starts its own.
 	time.sleep(3 * time.Second)
-	old := runtime_pids(&e)
-	last_old := old[len(old) - 1] if len(old) > 0 else 0
-	kill_launcher(&e)
-	start_launcher(&e)
 	@(static) old_pid: int
-	old_pid = last_old
+	sup_pid: int
+	old_pid, sup_pid = last_runtime(&e)
+	testing.expect(t, old_pid > 0 && sup_pid > 0, "runtime and supervisor pids")
+	sp, operr := os.process_open(sup_pid)
+	testing.expectf(t, operr == nil, "open supervisor %d: %v", sup_pid, operr)
+	_ = os.process_kill(sp)
+	_, _ = os.process_wait(sp, 5 * time.Second) // frees the handle (not our child: may error)
 	reaped :: proc(e: ^Env) -> bool {
 		_, alive := procs.identify(old_pid)
-		pids := runtime_pids(e)
-		return !alive && len(pids) > 0 && pids[len(pids) - 1] != old_pid && live_runtimes(e) == 1
+		pid, _ := last_runtime(e)
+		return !alive && pid != old_pid && live_runtimes(e) == 1
 	}
 	if !wait_for(&e, "orphaned runtime gone and a new one running", 60 * time.Second, reaped) do return
+	testing.expect_value(t, current(&e), t1)
 
 	// 5. Graceful stop: exit 0 and nothing of the instance survives.
 	testing.expect_value(t, stop_launcher(&e), 0)
