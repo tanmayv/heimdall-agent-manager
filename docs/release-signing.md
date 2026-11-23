@@ -92,6 +92,13 @@ material between secrets.
 - The job fails the release when the chosen slot's secret is missing, the
   password is wrong, or the key is not pinned. No release ships without a
   manifest.
+- **Trust boundary: write access equals signing access.** The environment
+  has no required reviewer and no tag ruleset limits who creates `v*` tags,
+  so anyone who can push to `main` or push a `v*` tag can get a validly
+  signed manifest for any commit. That is acceptable for this
+  single-maintainer repository; to narrow it, add a tag ruleset restricting
+  `v*` creation and/or a required reviewer on the `release` environment
+  (every release run, dry runs included, then waits for approval).
 
 ### Recreating the environment (repository admin)
 
@@ -116,10 +123,45 @@ shred -u heimdall-release-N.key password-file
 ```
 
 (Use `RELEASE_MINISIGN_NEXT_SECRET_KEY` / `RELEASE_MINISIGN_NEXT_PASSWORD`
-for the `next` slot.) Commit only the `.pub` file. A dry run (**Release local
-binaries** dispatched with `publish_release` off from a branch the
-environment admits) must log `verified …` and `tampered bundle rejected as
-expected`; the step summary shows the manifest.
+for the `next` slot.) Commit only the `.pub` file, then do a dry run.
+
+### Dry run (never from `main`)
+
+**Never dispatch a dry run from `main`.** Even with `publish_release` off,
+the `prepare` job commits a version bump (`flake.nix`, `protocol.odin`,
+plugin manifests, migrations) and pushes it to the dispatched branch
+(`git push origin "HEAD:$GITHUB_REF_NAME"` in
+`release-local-binaries.yml`), so a dry run from `main` puts
+`chore: release v0.5.999` on `main`. Dispatches from any branch other than
+`main` fail at **Sign release manifest**, because the `release` environment
+refuses them, until that branch is temporarily admitted:
+
+```bash
+R=tanmayv/heimdall-agent-manager
+B=ci/manifest-dryrun
+# 1. A throwaway branch at the commit under test.
+git push origin HEAD:refs/heads/$B
+# 2. Temporarily admit it to the release environment.
+P=$(gh api -X POST repos/$R/environments/release/deployment-branch-policies \
+      -f name=$B -f type=branch --jq .id)
+# 3. Dispatch with a NUMERIC throwaway version (signed desktop builds reject
+#    suffixes such as -dryrun.1) and publishing off.
+gh workflow run release-local-binaries.yml -R $R --ref $B \
+  -f version=0.5.999 -f publish_release=false -f draft=false -f prerelease=true
+#    Wait for the run; Sign release manifest must log `verified v0.5.999 …`
+#    and `tampered bundle rejected as expected`; Publish GitHub Release is
+#    skipped. The step summary shows the manifest.
+# 4. Clean up: delete the branch, REMOVE the temporary policy, and confirm
+#    the policies are back to main + v* only and nothing was tagged.
+git push origin --delete $B
+gh api -X DELETE repos/$R/environments/release/deployment-branch-policies/$P
+gh api repos/$R/environments/release/deployment-branch-policies \
+  --jq '.branch_policies[] | "\(.name) \(.type)"'   # expect: main branch, v* tag
+git ls-remote origin refs/tags/v0.5.999                 # expect: nothing
+```
+
+The reference dry run is
+<https://github.com/tanmayv/heimdall-agent-manager/actions/runs/45146874949>.
 
 ## Rotation (ship the next key one release ahead)
 
@@ -155,6 +197,12 @@ resolves the newest release it can verify).
    to it, load a fresh key into the compromised slot, and ship a release
    pinning {intact, fresh} (an emergency rotation in one step; installs
    already trust the intact key).
+   **Exposure window:** revocation only takes effect for installs that
+   update to a release with the new pin set. Until then a bridge still
+   accepts any manifest signed by the compromised key, and that key can
+   choose any `version`, `seq` and `expires`. Deleting secrets or releases
+   does not close this. The update engine (T9/T12) must treat it as a known
+   gap; a revocation list or minimum-`seq` floor is out of scope here.
 3. If **both** keys are compromised, no signed path remains: ship a release
    with new pins and reinstall bridges with the install script (the release
    manifest is the root of trust; there is no higher key).

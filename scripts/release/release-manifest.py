@@ -17,7 +17,8 @@ scripts/release/minisign/ (two keys, for rotation; docs/release-signing.md).
 minisign accepts the signature and the trusted comment with that pinned key;
 the trusted comment and the manifest agree (version, key id); the manifest is
 not expired; and, with --dist, every listed (or every --target) bundle exists
-with the exact size and SHA-256. Exit 0 = verified, 1 = rejected, 2 = usage.
+with the exact size and SHA-256. Exit 0 = verified, 1 = rejected, 2 = usage,
+3 = internal error (I/O, missing minisign, crash): never a verdict.
 
 Signature checking is delegated to the `minisign` binary (Ed25519 is not in
 the Python standard library); everything else is stdlib only.
@@ -315,6 +316,11 @@ def main(argv=None):
     except Rejected as exc:
         print(f"release manifest REJECTED: {exc}", file=sys.stderr)
         return 1
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except Exception as exc:  # noqa: BLE001 - a crash must not read as "rejected"
+        print(f"release manifest ERROR (internal, not a verdict): {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 3
     return 0
 
 

@@ -182,6 +182,12 @@ class ReleaseManifestTest(unittest.TestCase):
         self.assertIn("REJECTED", failed.stderr)
         key_id = subprocess.run(["python3", "-I", script, "key-id", str(sig)], capture_output=True, text=True)
         self.assertEqual(key_id.stdout.strip(), RM.public_key_id(self.pub1))
+        # An internal failure (here: no minisign binary) is exit 3, never the
+        # "rejected" verdict a tamper test could mistake for success.
+        broken = base[:base.index("--minisign") + 1] + [str(self.tmp / "no-such-minisign")] + base[base.index("--minisign") + 2:]
+        crashed = subprocess.run(broken, capture_output=True, text=True)
+        self.assertEqual(crashed.returncode, 3, crashed.stderr)
+        self.assertIn("not a verdict", crashed.stderr)
 
     def test_shipped_policy_and_pinned_keys_are_well_formed(self):
         self.assertGreaterEqual(self.policy["expires_after_days"], 1)

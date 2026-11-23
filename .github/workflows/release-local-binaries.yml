@@ -910,10 +910,14 @@ jobs:
           cp "$staged"/* "$tampered/"
           victim="$tampered/heimdall-local-linux-amd64-$VERSION.tar.gz"
           python3 -I -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[len(b)//2]^=1; open(p,"wb").write(b)' "$victim"
+          # Exit 1 alone is not enough: require the digest check as the reason,
+          # so a crash or an unrelated rejection cannot pass this test.
           rc=0
-          "${manifest_tool[@]}" verify --manifest "$manifest" --signature "$manifest.minisig" --dist "$tampered" || rc=$?
-          if [ "$rc" -ne 1 ]; then
-            echo "::error::tampered bundle was not rejected (exit $rc)"; exit 1
+          "${manifest_tool[@]}" verify --manifest "$manifest" --signature "$manifest.minisig" --dist "$tampered" \
+            2> "$RUNNER_TEMP/tampered.err" || rc=$?
+          cat "$RUNNER_TEMP/tampered.err" >&2
+          if [ "$rc" -ne 1 ] || ! grep -q 'linux-amd64: sha256 mismatch' "$RUNNER_TEMP/tampered.err"; then
+            echo "::error::tampered bundle was not rejected for its digest (exit $rc)"; exit 1
           fi
           echo "tampered bundle rejected as expected"
           {
