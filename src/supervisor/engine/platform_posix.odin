@@ -53,11 +53,15 @@ write_pointer_platform :: proc(e: ^Engine, name, tree, op_id: string) -> Error {
 	what := fmt.tprintf("pointer %s := %s", name, tree)
 	action := inject_step(e.inj, what)
 	if action == .Dead || action == .Drop do return crash_error(what)
+	if action == .Fail_Io do return Failure{code = "pointer_write", detail = error_detail(injected_failure(action, what))}
+	if action == .Fail_Busy do e.inj.busy_count = BUSY_FOREVER // the real W3 loop runs out of budget
 	if is_symlink(tmp) || os.exists(tmp) do os.remove(tmp)
 	target := fmt.tprintf("releases/%s", tree)
 	if se := os.symlink(target, tmp); se != nil do return fail("pointer_write", "symlink %s: %v", tmp, se)
 	if action == .Torn do return crash_error(what) // tmp link left behind, rename never ran
-	if re := with_retry(e.inj, e.cfg.retry, what, platform_replace, tmp, path); re != nil {
+	re := with_retry(e.inj, e.cfg.retry, what, platform_replace, tmp, path)
+	if e.inj != nil && e.inj.busy_count >= BUSY_FOREVER / 2 do e.inj.busy_count = 0
+	if re != nil {
 		os.remove(tmp)
 		return Failure{code = "pointer_write", detail = error_detail(re)}
 	}

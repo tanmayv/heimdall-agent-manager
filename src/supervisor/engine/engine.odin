@@ -19,6 +19,21 @@
 //   activate(&e, …)                         verified op -> … -> exit 75 (handover)
 //   stop(&e)                                §7.5, exit 0
 //   close(&e)
+//
+// Error contract. `start`, `tick`, `activate`, `rollback_to_previous`, `stop`,
+// `begin_verified` and `mark_verified` return (Exit, Error). When `fatal(err)` is true the
+// supervisor must exit with EXIT_ENGINE_FAILURE (1) at once, never 0, 75 or 78, and must not
+// call the engine again: the engine is poisoned and every later call returns the same error.
+// A non-fatal error (`busy`, `no_op`, `bad_state`, `not_verified`) is a refused request that
+// wrote nothing; the engine keeps running. Exit 1 is how a durable step that failed without
+// a crash (fs_busy after the W3 budget, fs_error, journal_torn, stop_timeout) is recovered:
+// the journal line of every sub-step is written before its effect and every sub-step is
+// idempotent, so the next supervisor start (J0 reap, then §6.3/§7.6) resumes the op exactly
+// as after a crash — the launcher restarts on exit 1 and applies the §7.2 fallback rule
+// while `current` != `known-good`. Two writes are retried in place instead, because the
+// runtime is healthy and an exit would cost a good candidate its probation: the
+// `known-good` record and terminal line of `committed` / `rolled_back` (retried on the next
+// tick while probation holds; the launcher's T_commit deadline bounds it).
 package engine
 
 import "core:fmt"
@@ -68,6 +83,37 @@ Exit :: enum {
 	Stop, // exit 0
 	Handover, // exit 75
 	Refuse, // exit 78
+}
+
+// EXIT_ENGINE_FAILURE: the supervisor's exit code for a fatal engine error (see the Error
+// contract above). The launcher treats it as a crash (§7.2).
+EXIT_ENGINE_FAILURE :: 1
+
+// USAGE_ERRORS: refusals that wrote nothing and leave the engine usable.
+USAGE_ERRORS :: []string{"busy", "no_op", "bad_state", "not_verified"}
+
+// fatal: a non-nil error the supervisor must exit 1 on (Error contract).
+fatal :: proc(err: Error) -> bool {
+	f, ok := err.?
+	if !ok do return false
+	for c in USAGE_ERRORS do if f.code == c do return false
+	return true
+}
+
+// retryable_write: a write that failed without a crash and left nothing half done.
+@(private)
+retryable_write :: proc(err: Error) -> bool {
+	c := error_code(err)
+	return c == "fs_error" || c == "fs_busy"
+}
+
+// poison records a fatal error; every later engine call returns it (Error contract).
+@(private)
+poison :: proc(e: ^Engine, err: Error) {
+	if e.failed != nil || !fatal(err) do return
+	f := err.?
+	e.failed = Failure{strings.clone(f.code, e.alloc), strings.clone(f.detail, e.alloc)}
+	e.phase = .Offline
 }
 
 exit_code :: proc(x: Exit) -> int {
@@ -132,6 +178,12 @@ Engine :: struct {
 	ready_at:       i64,
 	hub_seen:       bool,
 	refuse_reason:  string,
+	// Last terminal line in the journal (sticky rollback_failed, adopt without a target).
+	last_terminal:  Maybe(Line),
+	// committed / rolled_back failed with a retryable write; retried on the next tick.
+	finish_pending: bool,
+	// First fatal error (Error contract); non-nil = poisoned.
+	failed:         Error,
 }
 
 now :: proc(e: ^Engine) -> i64 {
@@ -176,6 +228,7 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 	e.last_seq = line.seq
 	if is_terminal(line.state) {
 		e.active = nil
+		e.last_terminal = clone_line(e, line)
 		// The index is reconciled from the journal at every start (§6.1), so only a crash
 		// stops here; a failed index write (e.g. fs_busy) does not undo a durable result.
 		if err := index_add(e, line.op_id, line.state, line.ts); err != nil && is_crash(err) do return err
@@ -318,6 +371,13 @@ load_journal :: proc(e: ^Engine) -> Error {
 	}
 	for l in r.lines do e.last_seq = max(e.last_seq, l.seq)
 	if op, ok := active_op(r.lines[:]); ok do e.active = clone_line(e, op.last)
+	last_t: i64 = -1
+	for l in r.lines {
+		if is_terminal(l.state) && l.seq > last_t {
+			last_t = l.seq
+			e.last_terminal = clone_line(e, l)
+		}
+	}
 	if err := reconcile_index(e, r.lines[:]); err != nil do return err
 	return maybe_rotate(e, r.lines[:], r.valid_bytes)
 }
@@ -408,6 +468,8 @@ POST_SWITCH_SUBS :: []string{"pointers_done", "handover"}
 // result is to run. Returns .Run (send READY, then tick), .Handover (exit 75 without
 // READY) or .Refuse.
 start :: proc(e: ^Engine, launched: string, mode: Mode) -> (x: Exit, err: Error) {
+	if e.failed != nil do return .Run, e.failed
+	defer poison(e, err)
 	e.launched = strings.clone(launched, e.alloc)
 	e.mode = mode
 	L := launched
@@ -475,11 +537,27 @@ start :: proc(e: ^Engine, launched: string, mode: Mode) -> (x: Exit, err: Error)
 	// From here L == C.
 	op, has_op := e.active.?
 	if !has_op {
+		lt, has_lt := e.last_terminal.?
+		if has_lt && lt.state == "rollback_failed" && (lt.from.tree == C || lt.to.tree == C) {
+			// J25 is sticky: the last op that names `current` ended rollback_failed and no op
+			// came after it, so runtime restarts stay stopped across supervisor restarts and
+			// reboots until a repair-type intent starts a new op.
+			e.phase = .Rollback_Failed
+			write_status(e, lt)
+			return .Run, nil
+		}
 		if K != C {
+			if has_lt && lt.action == "adopt" && lt.state == "failed" && lt.to.tree == C && strings.contains(lt.note, "no_rollback_target") {
+				// This tree already failed an adopt probation with nothing to roll back to:
+				// run it (it is the only installed release) without probing it again.
+				return run_idle(e)
+			}
 			// No journal entry explains an unproven `current` (journal lost, or a fresh
 			// install that wrote no op): prove it like a candidate; rollback target is
-			// `previous` (or K).
+			// `previous` (or K). With no valid target other than C the probation only decides
+			// whether C becomes known-good; a failure never stops or pins it (run_rollback).
 			from_tree := K if K != "" else previous_valid(e)
+			if from_tree == C do from_tree = ""
 			from_ref, _ := ref_of_tree(e, from_tree)
 			to_ref, _ := ref_of_tree(e, C)
 			adopt := Line {
@@ -625,12 +703,14 @@ Activation :: struct {
 // begin_verified journals `requested` and `verified` for an op whose tree is already
 // prepared (the resolve/download/verify part of the diagram is T11/T12's code, driven by
 // the caller). Used by tests and by rollback_to_previous.
-begin_verified :: proc(e: ^Engine, a: Activation) -> Error {
+begin_verified :: proc(e: ^Engine, a: Activation) -> (err: Error) {
+	if e.failed != nil do return e.failed
+	defer poison(e, err)
 	if _, busy := e.active.?; busy do return fail("busy", "an operation is active")
 	base := Line{op_id = a.op_id, action = a.action, actor = a.actor}
 	l := base
 	l.state = "requested"
-	if err := journal(e, l); err != nil do return err
+	if err = journal(e, l); err != nil do return
 	l.state = "verified"
 	l.to = a.to
 	return journal(e, l)
@@ -638,7 +718,9 @@ begin_verified :: proc(e: ^Engine, a: Activation) -> Error {
 
 // mark_verified journals `verified` for the active op once its tree is prepared (the
 // orchestrator resumes an op left in requested … verifying after a restart this way).
-mark_verified :: proc(e: ^Engine, to: Ref) -> Error {
+mark_verified :: proc(e: ^Engine, to: Ref) -> (err: Error) {
+	if e.failed != nil do return e.failed
+	defer poison(e, err)
 	op, ok := e.active.?
 	if !ok do return fail("no_op", "no active operation")
 	if is_terminal(op.state) || op.state == "activating" || op.state == "probation" || op.state == "rolling_back" {
@@ -654,6 +736,8 @@ mark_verified :: proc(e: ^Engine, to: Ref) -> Error {
 // rollback_to_previous (J28): requested -> verifying -> verified (read-only local check of
 // `previous`), then the normal activation with to = previous.
 rollback_to_previous :: proc(e: ^Engine, op_id, actor: string) -> (x: Exit, err: Error) {
+	if e.failed != nil do return .Run, e.failed
+	defer poison(e, err)
 	if _, busy := e.active.?; busy do return .Run, fail("busy", "an operation is active")
 	base := Line{op_id = op_id, action = "rollback_to_previous", actor = actor}
 	l := base
@@ -682,6 +766,8 @@ rollback_to_previous :: proc(e: ^Engine, op_id, actor: string) -> (x: Exit, err:
 // the handover (exit 75). Errors before the `current` switch end the op `failed <code>` with
 // the installed version restarted; an error after it starts the rollback.
 activate :: proc(e: ^Engine) -> (x: Exit, err: Error) {
+	if e.failed != nil do return .Run, e.failed
+	defer poison(e, err)
 	op, ok := e.active.?
 	if !ok || (op.state != "verified" && op.state != "waiting_for_idle") {
 		return .Run, fail("not_verified", "no verified operation to activate")
@@ -791,9 +877,20 @@ tree_sizes_match :: proc(e: ^Engine, tree: string) -> bool {
 
 // tick advances probation. Call about once a second while running.
 tick :: proc(e: ^Engine) -> (x: Exit, err: Error) {
+	if e.failed != nil do return .Run, e.failed
+	defer poison(e, err)
 	if e.phase != .Probation && e.phase != .Rollback_Probation do return .Run, nil
 	op, ok := e.active.?
 	if !ok do return .Run, nil
+	if e.finish_pending {
+		// The previous tick decided the result but a write failed: `known-good` may already
+		// name the new tree, so finish that decision before judging health again (J17).
+		target := op.to.tree if e.phase == .Probation else op.from.tree
+		if known_good_valid(e) == target {
+			if e.phase == .Probation do return commit(e, op)
+			return rolled_back(e, op)
+		}
+	}
 	h := e.host.health(e.host.user)
 	t := now(e)
 	reason := ""
@@ -821,11 +918,24 @@ tick :: proc(e: ^Engine) -> (x: Exit, err: Error) {
 	return rollback_failed(e, op, reason)
 }
 
+// finish_failed: committed / rolled_back could not be written. During probation a
+// retryable write failure is retried on the next tick (Error contract); anything else is
+// fatal.
+@(private)
+finish_failed :: proc(e: ^Engine, err: Error) -> (Exit, Error) {
+	if (e.phase == .Probation || e.phase == .Rollback_Probation) && retryable_write(err) {
+		e.finish_pending = true
+		return .Run, nil
+	}
+	return .Run, err
+}
+
 @(private)
 commit :: proc(e: ^Engine, op: Line) -> (Exit, Error) {
-	if err := write_known_good(e, op.to.tree, op.op_id); err != nil do return .Run, err
+	if err := write_known_good(e, op.to.tree, op.op_id); err != nil do return finish_failed(e, err)
 	note := "" if op.hub else "probation_offline"
-	if err := journal(e, terminal_of(op, "committed", "", note)); err != nil do return .Run, err
+	if err := journal(e, terminal_of(op, "committed", "", note)); err != nil do return finish_failed(e, err)
+	e.finish_pending = false
 	if e.phase != .Probation {
 		// Committed at start (J17 replay): the runtime of `to` still has to run.
 		return run_idle(e)
@@ -836,15 +946,23 @@ commit :: proc(e: ^Engine, op: Line) -> (Exit, Error) {
 
 @(private)
 rolled_back :: proc(e: ^Engine, op: Line) -> (Exit, Error) {
-	if err := write_known_good(e, op.from.tree, op.op_id); err != nil do return .Run, err
-	if err := journal(e, terminal_of(op, "rolled_back", op.error, op.note)); err != nil do return .Run, err
+	if err := write_known_good(e, op.from.tree, op.op_id); err != nil do return finish_failed(e, err)
+	if err := journal(e, terminal_of(op, "rolled_back", op.error, op.note)); err != nil do return finish_failed(e, err)
+	e.finish_pending = false
 	e.phase = .Idle
 	return .Run, nil
 }
 
 @(private)
 rollback_failed :: proc(e: ^Engine, op: Line, why: string) -> (Exit, Error) {
-	if !crashed(e.inj) do e.host.stop_children(e.host.user, e.launched)
+	if !crashed(e.inj) {
+		// Stop before the terminal line: a runtime that outlives rollback_failed would run
+		// unmonitored. On stop_timeout the op stays rolling_back and the next start reaps.
+		if !e.host.stop_children(e.host.user, e.launched) {
+			return .Run, fail("stop_timeout", "children of %s did not stop before rollback_failed", e.launched)
+		}
+		e.runtime_tree = ""
+	}
 	note := why
 	if op.note != "" do note = fmt.tprintf("%s; %s", op.note, why)
 	if err := journal(e, terminal_of(op, "rollback_failed", op.error, note)); err != nil do return .Run, err
@@ -857,6 +975,12 @@ rollback_failed :: proc(e: ^Engine, op: Line, why: string) -> (Exit, Error) {
 // ---------------------------------------------------------------------------------------
 
 ROLLBACK_SUBS :: []string{"stopping", "stopped", "pin", "pointers", "restore", "handover", "probation", "probation_suspended"}
+
+// rollback_target_ok: `from` names a valid tree other than `to`.
+@(private)
+rollback_target_ok :: proc(e: ^Engine, op: Line) -> bool {
+	return op.from.tree != "" && op.from.tree != op.to.tree && tree_is_valid(e, op.from.tree)
+}
 
 @(private)
 sub_index :: proc(sub: string) -> int {
@@ -876,6 +1000,21 @@ run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref
 	if note != "" do op.note = note
 	op.error = reason if reason != "" else op.error
 	if op.error == "" do op.error = "rollback"
+	if op.action == "adopt" && op_in.state != "rolling_back" && !rollback_target_ok(e, op) {
+		// Adopt with nothing to roll back to (fresh install / lost journal and no other valid
+		// tree): stopping or pinning the only release would leave the instance offline for
+		// good. The op ends failed, the tree keeps running, and later starts do not re-probe
+		// it (start). A repair intent replaces it.
+		if !crashed(e.inj) && e.runtime_tree != "" {
+			if !e.host.stop_children(e.host.user, e.runtime_tree) {
+				return .Run, fail("stop_timeout", "children of %s did not stop", e.runtime_tree)
+			}
+			e.runtime_tree = ""
+		}
+		e.phase = .Offline
+		if err = journal(e, terminal_of(op, "failed", op.error, "no_rollback_target")); err != nil do return
+		return run_idle(e)
+	}
 	resume := 0
 	if op_in.state == "rolling_back" && !synthetic do resume = sub_index(op_in.sub)
 	op.state = "rolling_back"
@@ -885,11 +1024,17 @@ run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref
 		op.sub = "stopping"
 		if err = journal(e, op); err != nil do return
 		e.phase = .Offline
-		if !crashed(e.inj) && e.runtime_tree != "" {
-			e.host.stop_children(e.host.user, e.runtime_tree)
+		// `stopped` is journaled only once every child has exited. On stop_timeout the op
+		// stays at `stopping` and the error is fatal: the next start reaps the survivors (J0)
+		// before `current := from` can take effect, so two runtimes never run.
+		stop_tree := ""
+		if e.runtime_tree != "" do stop_tree = e.runtime_tree
+		else if op.to.tree != "" && e.launched == op.to.tree do stop_tree = op.to.tree
+		if !crashed(e.inj) && stop_tree != "" {
+			if !e.host.stop_children(e.host.user, stop_tree) {
+				return .Run, fail("stop_timeout", "children of %s did not stop", stop_tree)
+			}
 			e.runtime_tree = ""
-		} else if !crashed(e.inj) && op.to.tree != "" && e.launched == op.to.tree {
-			e.host.stop_children(e.host.user, op.to.tree)
 		}
 		op.sub = "stopped"
 		if err = journal(e, op); err != nil do return
@@ -897,6 +1042,9 @@ run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref
 	if resume <= sub_index("pin") {
 		op.sub = "pin"
 		if err = journal(e, op); err != nil do return
+		// The target is checked before the pin: with nothing to roll back to, pinning `to`
+		// would only block the release that is still installed (and maybe the only one).
+		if !rollback_target_ok(e, op) do return rollback_failed(e, op, "no_rollback_target")
 		if op.to.sha256 != "" && op.to.sha256 == op.from.sha256 {
 			// T9 carry-over (b): a repair (same release, new -r<n> dir) that fails probation
 			// would pin the running release; skip it explicitly.
@@ -920,7 +1068,9 @@ run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref
 		if err = journal(e, op); err != nil do return
 		if snapshot_required(e, op.op_id) {
 			if rerr := restore_snapshot(e, op.op_id); rerr != nil {
-				if is_crash(rerr) do return .Run, rerr
+				// A damaged or missing snapshot is terminal; a write that failed (fs_busy,
+				// fs_error) is fatal and the restore is redone from `restore` at the next start.
+				if error_code(rerr) != "restore_failed" do return .Run, rerr
 				return rollback_failed(e, op, error_code(rerr))
 			}
 			op.note = "state_restored" if op.note == "" else fmt.tprintf("%s; state_restored", op.note)
@@ -959,13 +1109,18 @@ run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref
 // stop handles a service stop between ticks: probation (either kind) is suspended with the
 // attempt unchanged (J16a); children are stopped; exit 0.
 stop :: proc(e: ^Engine) -> (x: Exit, err: Error) {
+	if e.failed != nil do return .Stop, e.failed
+	defer poison(e, err)
 	if op, ok := e.active.?; ok && (e.phase == .Probation || e.phase == .Rollback_Probation) {
 		s := op
 		s.sub = "probation_suspended"
 		if err = journal(e, s); err != nil do return
 	}
 	if e.runtime_tree != "" && !crashed(e.inj) {
-		e.host.stop_children(e.host.user, e.runtime_tree)
+		if !e.host.stop_children(e.host.user, e.runtime_tree) {
+			// Exit 1, not 0: the next start reaps the survivors (J0).
+			return .Stop, fail("stop_timeout", "children of %s did not stop", e.runtime_tree)
+		}
 		e.runtime_tree = ""
 	}
 	e.phase = .Offline

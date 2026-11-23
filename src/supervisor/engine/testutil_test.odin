@@ -83,6 +83,8 @@ Fake :: struct {
 	hub_recent:     bool,
 	hub_up:         bool,
 	stop_flag:      bool,
+	// stop_children of this tree fails once (stop_timeout) and leaves the runtime running.
+	stop_fail_once: string,
 	state_root:     string,
 	// One-way state: a tree listed here writes "schema-<n>" into config.toml at start; a tree
 	// whose schema is lower crashes when it finds a newer one (it cannot read it).
@@ -111,7 +113,13 @@ fake_host :: proc(f: ^Fake) -> Host {
 	return Host {
 		user = f,
 		now = proc(u: rawptr) -> i64 {return (^Fake)(u).clock},
-		reap = proc(u: rawptr) -> bool {return (^Fake)(u).reap_ok},
+		reap = proc(u: rawptr) -> bool {
+			// J0 layer 3: survivors of an earlier supervisor (e.g. after exit 1 on a
+			// stop_timeout) are terminated here.
+			f := (^Fake)(u)
+			if f.reap_ok do f.running = ""
+			return f.reap_ok
+		},
 		start_runtime = proc(u: rawptr, tree: string) -> bool {
 			f := (^Fake)(u)
 			if f.running != "" do f.violations += 1
@@ -126,6 +134,10 @@ fake_host :: proc(f: ^Fake) -> Host {
 		stop_children = proc(u: rawptr, tree: string) -> bool {
 			f := (^Fake)(u)
 			if !f.stop_ok do return false
+			if f.stop_fail_once != "" && f.stop_fail_once == tree {
+				f.stop_fail_once = ""
+				return false
+			}
 			f.running = ""
 			return true
 		},
@@ -179,6 +191,7 @@ World :: struct {
 	unproven:      bool, // launched C while C != K
 	fallback_flag: bool,
 	crashes:       int,
+	exits:         int, // supervisor exit 1 after a fatal engine error (Error contract)
 	handovers:     int,
 	refusals:      int,
 }
@@ -263,6 +276,17 @@ crash :: proc(w: ^World) {
 	w.inj.crashed = false
 }
 
+// exit_failure: the supervisor exits 1 on a fatal engine error (Error contract). Unlike a
+// crash its children are not assumed dead: the next start's J0 reap must deal with them.
+// The launcher treats exit 1 like a crash (§7.2).
+exit_failure :: proc(w: ^World) {
+	w.exits += 1
+	if w.open do close(&w.e)
+	w.open = false
+	P := lc.read_records(w.root).previous
+	w.fallback_flag = w.unproven && P != "" && P != w.launched
+}
+
 handover :: proc(w: ^World) {
 	w.handovers += 1
 	testing.expectf(w.t, w.fake.running == "", "handover with a runtime still running from %s", w.fake.running)
@@ -279,8 +303,17 @@ handle :: proc(w: ^World, x: Exit, err: Error) -> bool {
 			crash(w)
 			return false
 		}
-		testing.expectf(w.t, false, "engine error %v", err)
-		crash(w)
+		if fatal(err) {
+			// The poisoned engine refuses further calls (Error contract).
+			if w.open {
+				_, again := tick(&w.e)
+				testing.expectf(w.t, error_code(again) == error_code(err), "poisoned engine answered %v after %v", again, err)
+			}
+			exit_failure(w)
+			return false
+		}
+		testing.expectf(w.t, false, "engine usage error %v", err)
+		exit_failure(w)
 		return false
 	}
 	#partial switch x {

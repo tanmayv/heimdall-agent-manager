@@ -44,6 +44,22 @@ setup :: proc(w: ^World, s: Scenario) -> (from, to: Ref) {
 
 @(private = "file")
 check_final :: proc(w: ^World, s: Scenario, from, to: Ref, out: Outcome, label: string) {
+	defer if w.open {
+		// Whatever the history, a supervisor restart now must not resurrect the op or start
+		// a second runtime (rollback_failed stays terminal, J25).
+		close(&w.e)
+		w.open = false
+		running_before := w.fake.running
+		w.fake.running = "" // the supervisor and its children stopped cleanly
+		x, err := launch(w)
+		testing.expectf(w.t, err == nil && x == .Run, "%s: restart after the end: %v %v", label, x, err)
+		testing.expectf(w.t, w.e.active == nil, "%s: restart re-opened an op", label)
+		if out.state == "rollback_failed" {
+			testing.expectf(w.t, w.e.phase == .Rollback_Failed && w.fake.running == "", "%s: rollback_failed not sticky across a restart (phase %v, runtime %s)", label, w.e.phase, w.fake.running)
+		} else {
+			testing.expectf(w.t, w.fake.running == running_before, "%s: restart runs %s, before %s", label, w.fake.running, running_before)
+		}
+	}
 	t := w.t
 	rec := lc.read_records(w.root)
 	testing.expectf(t, out.state != "", "%s: no terminal state", label)
@@ -76,12 +92,19 @@ check_final :: proc(w: ^World, s: Scenario, from, to: Ref, out: Outcome, label: 
 
 @(private = "file")
 run_scenario :: proc(t: ^testing.T, s: Scenario, flavour: Crash_Flavour, mode: Crash_Mode, crash_at: int) -> (out: Outcome, crashes: int) {
+	return run_with(t, s, flavour, Injector{crash_at = crash_at, mode = mode})
+}
+
+@(private = "file")
+run_with :: proc(t: ^testing.T, s: Scenario, flavour: Crash_Flavour, inj: Injector, delivered: ^bool = nil, what: ^string = nil) -> (out: Outcome, crashes: int) {
 	w: World
 	world_init(&w, t, "t13-inj")
 	defer world_destroy(&w)
 	from, to := setup(&w, s)
 	w.flavour = flavour
-	w.inj = Injector{crash_at = crash_at, mode = mode}
+	w.inj = inj
+	crash_at := inj.crash_at if inj.fail_at == 0 else inj.fail_at
+	mode := inj.mode
 	if s == .Both_Bad {
 		// The previous tree breaks too once the activation starts (e.g. a shared dependency).
 		// It must still start once as installed, so launch on the good tree first.
@@ -91,6 +114,9 @@ run_scenario :: proc(t: ^testing.T, s: Scenario, flavour: Crash_Flavour, mode: C
 	}
 	out = drive(&w, "op_01testactivation000000000", to)
 	label := fmt.tprintf("%v/%v/%v@%d", s, flavour, mode, crash_at)
+	if inj.fail_at != 0 do label = fmt.tprintf("%v/fail-%v@%d (%s)", s, inj.fail_kind, inj.fail_at, w.inj.failed_what)
+	if delivered != nil do delivered^ = w.inj.failed
+	if what != nil do what^ = w.inj.failed_what
 	check_final(&w, s, from, to, out, label)
 	return out, w.crashes
 }
@@ -129,5 +155,34 @@ test_crash_at_every_durable_step :: proc(t: ^testing.T) {
 	}
 	testing.expectf(t, total_runs > 200, "suspiciously few injection runs: %d", total_runs)
 	fmt.printfln("t13 failure injection: %d runs", total_runs)
+	for k, v in dist do fmt.printfln("  %4d  %s", v, k)
+}
+
+// Every durable step fails once *without* a crash, the way a real disk does: busy beyond the
+// W3 budget (fs_busy) or an I/O error (fs_error; a journal append writes half its line
+// first). The engine reports it under the Error contract (supervisor exits 1, or retries a
+// commit / rolled_back write in place), the launcher restarts it, and the instance must end
+// on a working version or in a clearly reported terminal state.
+@(test)
+test_non_crash_failure_at_every_durable_step :: proc(t: ^testing.T) {
+	total_runs := 0
+	dist := make(map[string]int, context.temp_allocator)
+	for s in Scenario {
+		for kind in Fail_Kind {
+			for k := 1; k < 400; k += 1 {
+				delivered := false
+				what := ""
+				out, _ := run_with(t, s, .Supervisor, Injector{fail_at = k, fail_kind = kind}, &delivered, &what)
+				if !delivered do break // k is past the last durable step of this scenario
+				total_runs += 1
+				dist[fmt.tprintf("%v %s %s", s, out.state, out.error)] += 1
+				if s == .Good {
+					testing.expectf(t, out.state == "committed" || out.state == "failed" || out.state == "rolled_back", "Good/fail-%v@%d (%s): %s", kind, k, what, out.state)
+				}
+			}
+		}
+	}
+	testing.expectf(t, total_runs > 100, "suspiciously few failure runs: %d", total_runs)
+	fmt.printfln("t13 non-crash failure injection: %d runs", total_runs)
 	for k, v in dist do fmt.printfln("  %4d  %s", v, k)
 }

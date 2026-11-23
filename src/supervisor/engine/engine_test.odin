@@ -611,3 +611,236 @@ when ODIN_OS == .Windows {
 		testing.expect(t, os.exists(join(w.root, "previous.json")))
 	}
 }
+
+// ---- Error contract: non-crash failures (store.odin append_durable, engine.odin header) ----
+
+@(test)
+test_append_failure_cuts_the_journal_back :: proc(t: ^testing.T) {
+	dir := make_test_dir(t, "t13-append")
+	defer os.remove_all(dir)
+	path := join(dir, "ops.jsonl")
+	l1 := encode_line(Line{js = 1, seq = 1, ts = 1, op_id = "op_a", action = "update_now", actor = "cli", state = "requested"})
+	l2 := encode_line(Line{js = 1, seq = 2, ts = 2, op_id = "op_a", action = "update_now", actor = "cli", state = "verifying"})
+	l3 := encode_line(Line{js = 1, seq = 3, ts = 3, op_id = "op_a", action = "update_now", actor = "cli", state = "failed", error = "x"})
+	testing.expect(t, append_durable(nil, path, l1) == nil)
+	// Short write (half of l2 reaches the file), then the error: the file is cut back.
+	inj := Injector{fail_at = 1, fail_kind = .Io}
+	err := append_durable(&inj, path, l2)
+	testing.expect(t, inj.failed, "failure delivered")
+	testing.expect_value(t, error_code(err), "fs_error")
+	testing.expect_value(t, read_text(path), l1)
+	// The next append is a whole line of its own, and the journal reads clean.
+	testing.expect(t, append_durable(nil, path, l3) == nil)
+	r := read_journal_file(path, context.temp_allocator)
+	testing.expect_value(t, r.status, Journal_Read_Status.Ok)
+	testing.expect_value(t, len(r.lines), 2)
+}
+
+@(test)
+test_commit_write_failure_is_retried_in_place :: proc(t: ^testing.T) {
+	for kind in Fail_Kind {
+		for offset in 1 ..= 2 { // 1 = known-good.json, 2 = the committed line
+			w: World
+			world_init(&w, t, "t13-commitretry")
+			_, to := two_trees(&w)
+			to_probation(&w, to)
+			w.inj.fail_at = w.inj.steps + offset
+			w.inj.fail_kind = kind
+			testing.expect(t, tick_until(&w, settled))
+			testing.expectf(t, w.inj.failed, "%v@%d: failure not delivered", kind, offset)
+			want := "known-good" if offset == 1 else "ops.jsonl"
+			testing.expectf(t, strings.contains(w.inj.failed_what, want), "%v@%d: failed %s, want %s", kind, offset, w.inj.failed_what, want)
+			l := last_line(&w)
+			testing.expectf(t, l.state == "committed", "%v@%d: %s %s", kind, offset, l.state, l.error)
+			testing.expectf(t, w.exits == 0 && w.crashes == 0, "%v@%d: a healthy candidate's supervisor exited (%d exits)", kind, offset, w.exits)
+			testing.expect_value(t, lc.read_known_good(w.root) or_else "", to.tree)
+			testing.expect_value(t, w.fake.running, to.tree)
+			testing.expect_value(t, read_journal_file(join(w.root, "supervisor", "journal", "ops.jsonl"), context.temp_allocator).status, Journal_Read_Status.Ok)
+			world_destroy(&w)
+		}
+	}
+}
+
+@(test)
+test_fatal_error_poisons_the_engine :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13-poison")
+	defer world_destroy(&w)
+	_, to := two_trees(&w)
+	x, err := launch(&w)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect(t, begin_verified(&w.e, Activation{"op_x", "update_now", "cli", to}) == nil)
+	w.inj.fail_at = w.inj.steps + 1 // the gate_closed line
+	w.inj.fail_kind = .Io
+	x, err = activate(&w.e)
+	testing.expect_value(t, error_code(err), "fs_error")
+	testing.expect(t, fatal(err))
+	testing.expect_value(t, EXIT_ENGINE_FAILURE, 1)
+	_, again := tick(&w.e)
+	testing.expect_value(t, error_code(again), "fs_error")
+	_, again = stop(&w.e)
+	testing.expect_value(t, error_code(again), "fs_error")
+	testing.expect(t, !fatal(fail("busy", "x")) && !fatal(nil), "usage errors are not fatal")
+}
+
+@(test)
+test_rollback_stop_timeout_exits_and_reaps :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13-rbstop")
+	defer world_destroy(&w)
+	from, to := two_trees(&w)
+	w.fake.behaviour[to.tree] = .Never_Ready
+	w.fake.stop_fail_once = to.tree // the rollback's stop of the candidate times out once
+	out := drive(&w, "op_rs", to)
+	testing.expect_value(t, out.state, "rolled_back")
+	testing.expect_value(t, w.exits, 1)
+	testing.expect_value(t, w.fake.violations, 0)
+	testing.expect_value(t, w.fake.running, from.tree)
+	stopping, stopped := 0, 0
+	for l in journal_lines(&w) {
+		if l.state != "rolling_back" do continue
+		if l.sub == "stopping" do stopping += 1
+		if l.sub == "stopped" do stopped += 1
+	}
+	testing.expect_value(t, stopping, 2) // first attempt + resume after the restart
+	testing.expect_value(t, stopped, 1) // never journaled while the candidate still ran
+}
+
+// ---- J25 is sticky across restarts ----
+
+@(test)
+test_rollback_failed_survives_restart :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13-sticky")
+	defer world_destroy(&w)
+	from, to := two_trees(&w)
+	w.fake.behaviour[to.tree] = .Never_Ready
+	x, err := launch(&w)
+	handle(&w, x, err)
+	w.fake.behaviour[from.tree] = .Never_Ready
+	out := drive(&w, "op_bb", to)
+	testing.expect_value(t, out.state, "rollback_failed")
+	testing.expect_value(t, w.fake.running, "")
+	n := len(journal_lines(&w))
+	for flavour in Crash_Flavour {
+		w.flavour = flavour
+		crash(&w)
+		x, err = launch(&w)
+		testing.expect(t, err == nil && x == .Run)
+		testing.expect_value(t, w.e.phase, Phase.Rollback_Failed)
+		testing.expect_value(t, w.fake.running, "")
+		testing.expect(t, strings.contains(read_text(join(w.state, "supervisor-status.json")), `"phase":"Rollback_Failed"`), "status file says rollback_failed")
+		testing.expect_value(t, len(journal_lines(&w)), n) // no new op, nothing journaled
+	}
+	// A repair-type intent (new op) leaves the terminal state.
+	fixed := make_tree(w.root, Tree_Spec{version = "0.6.2", digit = 'c'})
+	w.fake.behaviour[fixed.tree] = .Good
+	out = drive(&w, "op_fix", fixed)
+	testing.expect_value(t, out.state, "committed")
+	testing.expect_value(t, w.fake.running, fixed.tree)
+}
+
+// ---- adopt (§6.4: current unproven, no op explains it) ----
+
+@(private = "file")
+adopt_world :: proc(w: ^World, with_previous: bool, cand: Behaviour) -> (from, to: Ref) {
+	from = make_tree(w.root, Tree_Spec{version = "0.6.0", digit = 'a'})
+	to = make_tree(w.root, Tree_Spec{version = "0.6.1", digit = 'b'})
+	w.fake.behaviour[from.tree] = .Good
+	w.fake.behaviour[to.tree] = cand
+	e: Engine
+	open(&e, world_config(w), fake_host(w.fake))
+	if with_previous do write_pointer(&e, POINTER_PREVIOUS, from.tree, "op_lost")
+	write_pointer(&e, POINTER_CURRENT, to.tree, "op_lost") // no known-good, no journal
+	close(&e)
+	return
+}
+
+@(test)
+test_adopt_success_commits :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13-adopt-ok")
+	defer world_destroy(&w)
+	_, to := adopt_world(&w, false, .Good)
+	x, err := launch(&w)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect_value(t, w.e.phase, Phase.Probation)
+	testing.expect(t, tick_until(&w, settled))
+	l := last_line(&w)
+	testing.expect_value(t, l.action, "adopt")
+	testing.expect_value(t, l.state, "committed")
+	testing.expect_value(t, lc.read_known_good(w.root) or_else "", to.tree)
+}
+
+@(test)
+test_adopt_failure_rolls_back_to_previous :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13-adopt-rb")
+	defer world_destroy(&w)
+	from, to := adopt_world(&w, true, .Never_Ready)
+	testing.expect(t, tick_until(&w, settled))
+	l := last_line(&w)
+	testing.expect_value(t, l.action, "adopt")
+	testing.expect_value(t, l.state, "rolled_back")
+	rec := lc.read_records(w.root)
+	testing.expect_value(t, rec.current, from.tree)
+	testing.expect_value(t, rec.known_good, from.tree)
+	testing.expect(t, is_pinned(&w.e, to.version, to.sha256), "the failed candidate is pinned")
+	testing.expect_value(t, w.fake.running, from.tree)
+	testing.expect_value(t, w.fake.violations, 0)
+}
+
+@(test)
+test_adopt_failure_without_target_keeps_the_only_release :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13-adopt-none")
+	defer world_destroy(&w)
+	_, to := adopt_world(&w, false, .Never_Ready)
+	testing.expect(t, tick_until(&w, settled))
+	l := last_line(&w)
+	testing.expect_value(t, l.action, "adopt")
+	testing.expect_value(t, l.state, "failed")
+	testing.expect_value(t, l.error, "runtime_not_ready")
+	testing.expect(t, strings.contains(l.note, "no_rollback_target"), "no_rollback_target recorded")
+	testing.expect_value(t, len(read_pins(&w.e)), 0) // the only release is never pinned
+	testing.expect_value(t, w.e.phase, Phase.Idle)
+	testing.expect_value(t, w.fake.running, to.tree)
+	testing.expect_value(t, lc.read_records(w.root).current, to.tree)
+	testing.expect_value(t, w.fake.violations, 0)
+	// Restarts run it again without a new adopt op (no loop).
+	n := len(journal_lines(&w))
+	for _ in 0 ..< 2 {
+		w.flavour = .Power_Loss
+		crash(&w)
+		x, err := launch(&w)
+		testing.expect(t, err == nil && x == .Run)
+		testing.expect_value(t, w.e.phase, Phase.Idle)
+		testing.expect_value(t, w.fake.running, to.tree)
+	}
+	testing.expect_value(t, len(journal_lines(&w)), n)
+}
+
+@(test)
+test_rollback_without_valid_target_does_not_pin :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13-notarget")
+	defer world_destroy(&w)
+	from, to := two_trees(&w)
+	w.fake.behaviour[to.tree] = .Never_Ready
+	to_probation(&w, to)
+	// The rollback target vanished during probation (e.g. a user deleted the directory).
+	os.remove(join(w.root, "releases", from.tree, ".complete"))
+	testing.expect(t, tick_until(&w, settled))
+	l := last_line(&w)
+	testing.expect_value(t, l.state, "rollback_failed")
+	testing.expect(t, strings.contains(l.note, "no_rollback_target"), "no_rollback_target recorded")
+	testing.expect_value(t, len(read_pins(&w.e)), 0) // checked before the pin
+	testing.expect_value(t, lc.read_records(w.root).current, to.tree)
+	testing.expect_value(t, w.fake.running, "")
+	// Sticky: `current` (= to) is named by the rollback_failed op.
+	crash(&w)
+	x, err := launch(&w)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect_value(t, w.e.phase, Phase.Rollback_Failed)
+	testing.expect_value(t, w.fake.running, "")
+}
