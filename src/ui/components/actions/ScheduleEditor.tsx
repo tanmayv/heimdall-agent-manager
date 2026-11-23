@@ -21,10 +21,27 @@ export default function ScheduleEditor({ value, onChange, debugId = 'action-sche
   };
   const timezone = value.timezone || 'UTC';
   const update = (patch: Partial<ScheduleConfig>) => onChange({ ...value, ...patch });
+  const hasOnceRestrictions = value.mode === 'once' && Boolean(value.active_from || value.active_until || value.blackout_dates?.length);
+  let onceWillBeSkipped = false;
+  if (hasOnceRestrictions && value.run_at) {
+    const runAt = Date.parse(value.run_at);
+    onceWillBeSkipped = Boolean(
+      (value.active_from && runAt < Date.parse(value.active_from))
+      || (value.active_until && runAt > Date.parse(value.active_until))
+    );
+    try {
+      const date = instantToScheduleLocal(value.run_at, timezone).slice(0, 10);
+      onceWillBeSkipped ||= Boolean(value.blackout_dates?.includes(date));
+    } catch { /* Invalid dates/zones are reported by the date/time picker. */ }
+  }
+  const clearRestrictions = () => {
+    const { active_from, active_until, blackout_dates, ...config } = value;
+    onChange(config);
+  };
   const cron = value.mode === 'cron' ? validateCronExpression(value.cron_expr || '') : null;
   const previews = React.useMemo(() => value.mode === 'cron' && cron?.valid ? calculateNextRuns(value.cron_expr || '', value.timezone || 'UTC', value.blackout_dates || [], 3, new Date(), value.active_from, value.active_until) : [], [value.mode, value.cron_expr, value.timezone, value.blackout_dates, value.active_from, value.active_until]);
   return <div className="flex flex-col gap-3">
-    <FormField label="Schedule mode"><Select aria-label="Schedule mode" data-debug-id={debugId + '-mode'} value={value.mode} options={['cron', 'interval', 'once'].map(v => ({ value: v, label: v }))} onChange={mode => onChange({ timezone: value.timezone || 'UTC', blackout_dates: value.blackout_dates || [], active_from: value.active_from, active_until: value.active_until, ...(mode === 'cron' ? { mode: 'cron', cron_expr: '0 9 * * *' } : mode === 'interval' ? { mode: 'interval', interval_s: 3600 } : { mode: 'once', run_at: '' }) })} /></FormField>
+    <FormField label="Schedule mode"><Select aria-label="Schedule mode" data-debug-id={debugId + '-mode'} value={value.mode} options={['cron', 'interval', 'once'].map(v => ({ value: v, label: v }))} onChange={mode => onChange({ timezone: value.timezone || 'UTC', ...(mode === 'once' ? {} : { blackout_dates: value.blackout_dates || [], active_from: value.active_from, active_until: value.active_until }), ...(mode === 'cron' ? { mode: 'cron', cron_expr: '0 9 * * *' } : mode === 'interval' ? { mode: 'interval', interval_s: 3600 } : { mode: 'once', run_at: '' }) })} /></FormField>
     <FormField label="Time zone"><Input list={debugId + '-zones'} data-debug-id={debugId + '-timezone'} aria-label="Time zone" value={timezone} onChange={timezone => update({ timezone })} /></FormField>
     <datalist id={debugId + '-zones'}>{COMMON_TIMEZONES.map(tz => <option key={tz} value={tz} />)}</datalist>
     {value.mode === 'cron' ? <>
@@ -33,19 +50,26 @@ export default function ScheduleEditor({ value, onChange, debugId = 'action-sche
       {previews.length ? <p>Preview: {previews.map(d => d.toISOString()).join(', ')}</p> : null}
     </> : value.mode === 'interval' ? <FormField label="Interval (seconds)"><Input type="number" min={60} max={31536000} data-debug-id={debugId + '-interval'} aria-label="Interval seconds" value={String(value.interval_s || '')} onChange={v => update({ interval_s: Number(v) })} /></FormField>
       : <ScheduleDateTime key={'once-' + timezone} label="Once at" debugId={debugId + '-once'} value={value.run_at || ''} timezone={timezone} onChange={run_at => update({ run_at })} pastHint />}
-    <FormField label="Blackout dates" hint="Choose a date from year 2000 onward, then add it. Dates use the schedule time zone.">
-      <div className="flex items-center gap-2">
-        <Input type="date" min="2000-01-01" max="9999-12-31" data-debug-id={debugId + '-blackouts'} aria-label="Blackout dates" value={blackoutDraft} onChange={setBlackoutDraft} onKeyDown={event => {
-          if (event.key === 'Enter') { event.preventDefault(); addBlackout(); }
-        }} />
-        <Button type="button" data-debug-id={debugId + '-blackout-add'} aria-label="Add blackout date" disabled={!blackoutValid} onClick={addBlackout}>Add</Button>
-      </div>
-    </FormField>
-    <ul className="flex flex-wrap gap-2" aria-label="Selected blackout dates">{(value.blackout_dates || []).map(date => <li key={date} className="inline-flex items-center gap-1 rounded border border-subtle px-2 py-1 text-sm">
-      <span>{date}</span><Button type="button" variant="ghost" size="sm" data-debug-id={debugId + '-blackout-remove-' + date} aria-label={'Remove blackout date ' + date} onClick={() => update({ blackout_dates: (value.blackout_dates || []).filter(d => d !== date) })}>×</Button>
-    </li>)}</ul>
-    <ScheduleDateTime key={'from-' + timezone} label="Active from" debugId={debugId + '-from'} value={value.active_from || ''} timezone={timezone} onChange={active_from => update({ active_from })} />
-    <ScheduleDateTime key={'until-' + timezone} label="Active until" debugId={debugId + '-until'} value={value.active_until || ''} timezone={timezone} onChange={active_until => update({ active_until })} />
+    {hasOnceRestrictions ? <div role="alert" className="text-sm">
+      {onceWillBeSkipped ? 'This Once action will be skipped by its active window or blackout dates.' : 'This Once action has an active window or blackout dates that may prevent it from running.'}
+      {' '}Clear these restrictions before saving.
+      <Button type="button" variant="ghost" size="sm" data-debug-id={debugId + '-once-clear-restrictions'} onClick={clearRestrictions}>Clear</Button>
+    </div> : null}
+    {value.mode !== 'once' ? <>
+      <FormField label="Blackout dates" hint="Choose a date from year 2000 onward, then add it. Dates use the schedule time zone.">
+        <div className="flex items-center gap-2">
+          <Input type="date" min="2000-01-01" max="9999-12-31" data-debug-id={debugId + '-blackouts'} aria-label="Blackout dates" value={blackoutDraft} onChange={setBlackoutDraft} onKeyDown={event => {
+            if (event.key === 'Enter') { event.preventDefault(); addBlackout(); }
+          }} />
+          <Button type="button" data-debug-id={debugId + '-blackout-add'} aria-label="Add blackout date" disabled={!blackoutValid} onClick={addBlackout}>Add</Button>
+        </div>
+      </FormField>
+      <ul className="flex flex-wrap gap-2" aria-label="Selected blackout dates">{(value.blackout_dates || []).map(date => <li key={date} className="inline-flex items-center gap-1 rounded border border-subtle px-2 py-1 text-sm">
+        <span>{date}</span><Button type="button" variant="ghost" size="sm" data-debug-id={debugId + '-blackout-remove-' + date} aria-label={'Remove blackout date ' + date} onClick={() => update({ blackout_dates: (value.blackout_dates || []).filter(d => d !== date) })}>×</Button>
+      </li>)}</ul>
+      <ScheduleDateTime key={'from-' + timezone} label="Active from" debugId={debugId + '-from'} value={value.active_from || ''} timezone={timezone} onChange={active_from => update({ active_from })} />
+      <ScheduleDateTime key={'until-' + timezone} label="Active until" debugId={debugId + '-until'} value={value.active_until || ''} timezone={timezone} onChange={active_until => update({ active_until })} />
+    </> : null}
   </div>;
 }
 
