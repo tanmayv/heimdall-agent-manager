@@ -1,5 +1,6 @@
 #+feature dynamic-literals
 package actions
+import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
@@ -118,7 +119,10 @@ action_test_case :: proc(t:^testing.T,scenario:proc(^testing.T,^Action_Test)) {
    support={ctx=&f,get=action_test_support},agents={ctx=&f,instance=action_test_instance,persist_prompt=action_test_persist,retire_prompt=action_test_retire},
    pipeline={ctx=&f,route=action_test_route,expire=action_test_expire}}
   delivery.register_sink(&f.pipeline,{kind="prompt",ctx=&f.runtime.router,on_final=on_delivery_final,replace=on_delivery_replace})
-  defer delete(f.pipeline.sinks)
+  defer {
+   for sink in f.pipeline.sinks do delete(sink.kind,runtime.heap_allocator())
+   delete(f.pipeline.sinks)
+  }
   _,_,_=iface.content_save_conversation(&f.repos.content,{conversation_id="conversation",owner_user_id="owner",agent_id="agent",agent_instance_id="instance"})
   action_test_seed(t,&f,"action","trigger","owner")
   scenario(t,&f)
