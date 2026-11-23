@@ -171,36 +171,36 @@ lifecycle/event effects run after commit. See `transport/http/bridge_runtime_per
 | mcp_repo_sqlite.odin:58 | `mcp_transaction_sqlite` | direct gate before dedicated MCP mutex/BEGIN; callbacks may use gated native write helpers |
 | mcp_repo_sqlite.odin:92 | `mcp_put_sqlite` | direct gate (before repository/db mutex) |
 | mcp_repo_sqlite.odin:106 | `mcp_remove_sqlite` | direct gate (before repository/db mutex) |
-| migrations.odin:1005 | `run_migrations` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
-| migrations.odin:1889 | `mark_migration_applied` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
-| migrations.odin:1897 | `upgrade_user_api_tokens_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:1911 | `upgrade_task_comments_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:1991 | `upgrade_task_chains_v2_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:1997 | `upgrade_memory_target_scope_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2013 | `upgrade_memory_scope_lists_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
-| migrations.odin:2027 | `upgrade_chat_message_types_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2034 | `upgrade_current_task_and_priority_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2041 | `upgrade_title_tracking_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2052 | `upgrade_agent_instance_display_name_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2060 | `upgrade_push_subscriptions_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2078 | `upgrade_memory_description_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
-| migrations.odin:2091 | `upgrade_cards_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2123 | `upgrade_projects_state_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2130 | `upgrade_artifact_indexes_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2144 | `upgrade_pinned_task_chains_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2153 | `upgrade_task_chain_directories_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2176 | `upgrade_task_chain_fleets_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2206 | `upgrade_task_bridge_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2221 | `upgrade_task_v2_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
-| migrations.odin:2267 | `drop_legacy_column` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2277 | `upgrade_vault_directory_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2298 | `upgrade_shell_sessions_kind_and_key_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2313 | `upgrade_shell_sessions_background_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2336 | `upgrade_shell_sessions_run_seq_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2353 | `upgrade_shell_sessions_kill_intent_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2367 | `upgrade_bridge_version_and_updates_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2377 | `upgrade_bridge_update_progress_schema` | startup-only helper of run_migrations (before request threads) |
-| migrations.odin:2384 | `upgrade_memory_action_expiry_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:1008 | `run_migrations` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:1893 | `mark_migration_applied` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:1901 | `upgrade_user_api_tokens_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:1915 | `upgrade_task_comments_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:1995 | `upgrade_task_chains_v2_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2001 | `upgrade_memory_target_scope_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2017 | `upgrade_memory_scope_lists_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:2031 | `upgrade_chat_message_types_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2038 | `upgrade_current_task_and_priority_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2045 | `upgrade_title_tracking_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2056 | `upgrade_agent_instance_display_name_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2064 | `upgrade_push_subscriptions_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2082 | `upgrade_memory_description_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:2095 | `upgrade_cards_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2127 | `upgrade_projects_state_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2134 | `upgrade_artifact_indexes_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2148 | `upgrade_pinned_task_chains_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2157 | `upgrade_task_chain_directories_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2180 | `upgrade_task_chain_fleets_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2210 | `upgrade_task_bridge_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2225 | `upgrade_task_v2_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:2271 | `drop_legacy_column` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2281 | `upgrade_vault_directory_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2302 | `upgrade_shell_sessions_kind_and_key_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2317 | `upgrade_shell_sessions_background_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2340 | `upgrade_shell_sessions_run_seq_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2357 | `upgrade_shell_sessions_kill_intent_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2371 | `upgrade_bridge_version_and_updates_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2381 | `upgrade_bridge_update_progress_schema` | startup-only helper of run_migrations (before request threads) |
+| migrations.odin:2388 | `upgrade_memory_action_expiry_schema` | startup-only helper of run_migrations (before request threads) |
 | mixed_work_repo_sqlite.odin:25 | `insert_work_dependency_sqlite` | direct gate |
 | mixed_work_repo_sqlite.odin:83 | `insert_work_input_receipt_sqlite` | direct gate |
 | mixed_work_repo_sqlite.odin:159 | `append_work_scope_decision_sqlite` | direct gate |
@@ -294,3 +294,5 @@ Decision-read evidence: `agent_get_instance_sqlite` supplies agent-service start
 ## Coverage and limits
 
 The table contains 262 entries, including internal/startup/SQL-helper candidates. Runtime rollback tests cover both changed Agent and Bridge repositories; representative rollback tests cover every other changed repository interface in `tx_repository_rollback_test.odin`. Dedicated billing mutations are exempt because their constructor opens a distinct handle, not because callers happen to hold a UoW. Vault mutations also gate the in-memory shared-handle fallback. Native MCP shared-handle writes gate individually; its legacy dedicated transaction enters the gate before BEGIN to avoid an inversion with those helpers. Display-only reads are not blanket-gated.
+
+Cross-check: every table symbol and line resolves; every direct-gate entry contains its guard. A conservative DML/DDL scan has no unlisted procedure candidates after four manually reviewed constant boundaries (`actions_rule_query`, `actions_run_joined_count`, `new_pipeline_delivery_repository`, `vault_list_due_resets_sqlite`), where SQL constants follow a read/constructor and belong to the next consuming writer.
