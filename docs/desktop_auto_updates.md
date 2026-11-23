@@ -61,6 +61,17 @@ entitlements, notarization and stapling. ZIPs are update payloads; DMG/PKG are
 manual installation media. Intel macOS remains opt-in and must include a matching
 x64 ZIP and blockmap. ARM64 is the default published architecture.
 
+The standalone Bridge binaries in `heimdall-local-darwin-*.tar.gz` (the bytes
+the curl installer, the DMG and Bridge self-update all install) are signed with
+the same Developer ID Application identity, hardened runtime and a secure
+timestamp by `scripts/release/package-local-binary-tarball.sh`. Bare Mach-O
+files cannot carry a stapled ticket and are not notarized.
+`scripts/release/verify-macos-signatures.sh` checks every binary: strict
+verify, the Developer ID chain to Apple Root CA, the `runtime` flag, the
+`Timestamp=`, stable identifiers, one TeamIdentifier (`APPLE_TEAM_ID`) and no
+`get-task-allow`. CI runs it on the build runner and again in
+`verify-storeless` on a clean runner that never imported the signing keychain.
+
 Windows remains **manual-only until an operator configures signing**:
 
 - Repository variable `WINDOWS_UPDATE_PUBLISHER_NAME`: the exact trusted
@@ -78,6 +89,14 @@ reviewed provider integration. Users of old unsigned Windows apps manually insta
 the first official signed release; old binaries cannot be secured retroactively.
 The presence, validity, expiry and permissions of these external credentials have
 not been verified on this Linux implementation host.
+
+The standalone Windows Bridge binaries (`ham-bridge.exe`, `ham-ctl.exe`,
+`ham-pty-host.exe` in `heimdall-local-windows-amd64.zip`) are **not
+Authenticode-signed**. As of 2026-11-23 no Windows signing certificate exists
+(`WIN_CSC_LINK` and `WINDOWS_UPDATE_PUBLISHER_NAME` are unset), and the owner
+decided not to sign Windows for now. Smart App Control or SmartScreen may block
+or warn on these files. Integrity comes from the release `SHA256SUMS` (and the
+signed release manifest once it lands), not from a native signature.
 
 Release and promotion jobs run `validate-desktop-updates.py` against the final
 NSIS/ZIP bytes: matching version, architecture, file names, size, SHA-512, legacy

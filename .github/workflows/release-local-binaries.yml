@@ -412,15 +412,18 @@ jobs:
       - name: Verify release binaries are portable (macOS)
         if: ${{ startsWith(matrix.target, 'darwin-') }}
         shell: bash
+        env:
+          HEIMDALL_EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/portable-verify"
           rm -rf "$work"; mkdir -p "$work"
           tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
+          # T8: Developer ID chain, hardened runtime, secure timestamp, stable
+          # identifiers and one team; repeated on a clean runner in verify-storeless.
+          python3 tests/test_macos_signature_verify.py
+          scripts/release/verify-macos-signatures.sh "$work/bin"
           for f in "$work"/bin/*; do
-            codesign --verify --strict --verbose=2 "$f"
-            codesign -d --verbose=4 "$f" 2>&1 | grep -q 'Authority=Developer ID Application:' || {
-              echo "FAIL: $f is not signed with Developer ID Application" >&2; exit 1; }
             if otool -L "$f" | grep -q '/nix/store'; then
               echo "FAIL: $f links a nix-store dylib" >&2
               exit 1
@@ -791,6 +794,32 @@ jobs:
           "$work/bin/ham-ctl" --version
           "$work/bin/ham-pty-host" --help >/dev/null
           "$work/bin/ham-bridge" --probe-hub https://github.com
+
+      # T8: the build runner imported the signing keychain; prove the
+      # signatures verify on a runner that never saw it, with the system
+      # trust store only. Bare binaries cannot be stapled (report §8.1).
+      - name: Checkout signature verifier (macOS)
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+          path: src
+          sparse-checkout: scripts/release/verify-macos-signatures.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Verify signatures on a clean runner (macOS)
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        env:
+          HEIMDALL_EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if security find-identity -v -p codesigning | grep -q 'Developer ID Application:'; then
+            echo "FAIL: this runner holds a signing identity; it is not clean" >&2
+            exit 1
+          fi
+          src/scripts/release/verify-macos-signatures.sh "dist/heimdall-local-${{ matrix.target }}.tar.gz"
 
   release:
     name: Publish GitHub Release
