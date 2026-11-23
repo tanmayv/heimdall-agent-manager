@@ -891,9 +891,157 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify-windows-signatures.ps1 @a
           if ($LASTEXITCODE) { throw 'Windows signature verification failed' }
 
+  # Signed release manifest (docs/release-signing.md). Runs on every release
+  # run, including unpublished dry runs, so a dry run proves the key and the
+  # pinned public keys before anything is published. This is the ONLY job that
+  # can read the signing key: the secret lives in the protected `release`
+  # environment (never a repository secret), whose deployment rules admit only
+  # main and v* tags, so pull-request builds cannot obtain it. Keep this job
+  # small: no write token, no third-party actions beyond checkout/artifacts.
+  manifest:
+    name: Sign release manifest
+    needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Download bridge bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          pattern: heimdall-local-*
+          merge-multiple: true
+
+      - name: Install minisign
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          minisign -v
+
+      - name: Generate and sign the manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
+          BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
+          # Two key slots, because secrets are write-only: rotation flips this
+          # environment variable instead of copying key material between them.
+          SIGNING_SLOT: ${{ vars.RELEASE_MINISIGN_SIGNING_SLOT || 'current' }}
+          CURRENT_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_SECRET_KEY }}
+          CURRENT_PASSWORD: ${{ secrets.RELEASE_MINISIGN_PASSWORD }}
+          NEXT_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_NEXT_SECRET_KEY }}
+          NEXT_PASSWORD: ${{ secrets.RELEASE_MINISIGN_NEXT_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SIGNING_SLOT" in
+            current) MINISIGN_SECRET_KEY="$CURRENT_SECRET_KEY"; MINISIGN_PASSWORD="$CURRENT_PASSWORD"; secret=RELEASE_MINISIGN_SECRET_KEY ;;
+            next) MINISIGN_SECRET_KEY="$NEXT_SECRET_KEY"; MINISIGN_PASSWORD="$NEXT_PASSWORD"; secret=RELEASE_MINISIGN_NEXT_SECRET_KEY ;;
+            *) echo "::error::RELEASE_MINISIGN_SIGNING_SLOT must be 'current' or 'next', not '$SIGNING_SLOT'"; exit 1 ;;
+          esac
+          unset CURRENT_SECRET_KEY CURRENT_PASSWORD NEXT_SECRET_KEY NEXT_PASSWORD
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::$secret is not set in the 'release' environment; see docs/release-signing.md"
+            exit 1
+          fi
+          echo "signing with the '$SIGNING_SLOT' key slot ($secret)"
+          manifest_tool=(python3 -I scripts/release/release-manifest.py)
+          staged=staged; out=manifest
+          mkdir -p "$staged" "$out"
+          # Same bundle set the release job requires; the manifest names the
+          # versioned asset files exactly as they are published.
+          targets=(darwin-arm64 linux-amd64 linux-arm64)
+          if [ "$BUILD_DARWIN_X64" = "true" ]; then targets+=(darwin-amd64); fi
+          asset_args=()
+          for target in "${targets[@]}"; do
+            src="bundles/heimdall-local-$target.tar.gz"
+            [ -f "$src" ] || { echo "missing bundle: $src" >&2; exit 1; }
+            cp "$src" "$staged/heimdall-local-$target-$VERSION.tar.gz"
+            asset_args+=(--asset "$target=$staged/heimdall-local-$target-$VERSION.tar.gz")
+          done
+          src=bundles/heimdall-local-windows-amd64.zip
+          [ -f "$src" ] || { echo "missing bundle: $src" >&2; exit 1; }
+          cp "$src" "$staged/heimdall-local-windows-amd64-$VERSION.zip"
+          asset_args+=(--asset "windows-amd64=$staged/heimdall-local-windows-amd64-$VERSION.zip")
+
+          # The key exists on disk only for this step, readable only by us.
+          key="$RUNNER_TEMP/release-minisign.key"
+          trap 'rm -f "$key"' EXIT
+          (umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
+          # A password-protected key reads its password from stdin; an
+          # unencrypted (-W) key ignores it.
+          sign() { printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" "$@" > /dev/null; }
+
+          # The key id goes INTO the signed manifest, and a minisign secret key
+          # stores it encrypted, so learn it from a throwaway signature.
+          printf 'key id probe\n' > "$RUNNER_TEMP/probe"
+          sign -m "$RUNNER_TEMP/probe" -t probe
+          key_id="$("${manifest_tool[@]}" key-id "$RUNNER_TEMP/probe.minisig")"
+          pinned=()
+          for pub in scripts/release/minisign/*.pub; do
+            [ -f "$pub" ] && pinned+=("$("${manifest_tool[@]}" key-id "$pub")")
+          done
+          if [[ " ${pinned[*]:-} " != *" $key_id "* ]]; then
+            echo "::error::signing key $key_id is not one of the pinned keys (${pinned[*]:-none}) in scripts/release/minisign/"
+            exit 1
+          fi
+
+          manifest="$out/heimdall-release-manifest.json"
+          "${manifest_tool[@]}" generate --tag "$VERSION" --commit "$RELEASE_COMMIT" \
+            --key-id "$key_id" "${asset_args[@]}" --out "$manifest"
+          sign -m "$manifest" -x "$manifest.minisig" \
+            -t "$("${manifest_tool[@]}" trusted-comment --manifest "$manifest")"
+          rm -f "$key"
+
+          "${manifest_tool[@]}" verify --manifest "$manifest" --signature "$manifest.minisig" --dist "$staged"
+
+          # Self-test: a single flipped bit in a published bundle must fail.
+          tampered="$RUNNER_TEMP/tampered"
+          mkdir -p "$tampered"
+          cp "$staged"/* "$tampered/"
+          victim="$tampered/heimdall-local-linux-amd64-$VERSION.tar.gz"
+          python3 -I -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[len(b)//2]^=1; open(p,"wb").write(b)' "$victim"
+          # Exit 1 alone is not enough: require the digest check as the reason,
+          # so a crash or an unrelated rejection cannot pass this test.
+          rc=0
+          "${manifest_tool[@]}" verify --manifest "$manifest" --signature "$manifest.minisig" --dist "$tampered" \
+            2> "$RUNNER_TEMP/tampered.err" || rc=$?
+          cat "$RUNNER_TEMP/tampered.err" >&2
+          if [ "$rc" -ne 1 ] || ! grep -q 'linux-amd64: sha256 mismatch' "$RUNNER_TEMP/tampered.err"; then
+            echo "::error::tampered bundle was not rejected for its digest (exit $rc)"; exit 1
+          fi
+          echo "tampered bundle rejected as expected"
+          {
+            echo "### Release manifest $VERSION (key $key_id)"
+            echo '```json'
+            python3 -m json.tool "$manifest"
+            echo '```'
+            echo '```'
+            cat "$manifest.minisig"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload signed manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ needs.prepare.outputs.version }}
+          path: |
+            manifest/heimdall-release-manifest.json
+            manifest/heimdall-release-manifest.json.minisig
+          if-no-files-found: error
+          retention-days: 30
+
   release:
     name: Publish GitHub Release
-    needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures]
+    needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures, manifest]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
     permissions:
@@ -1006,6 +1154,19 @@ jobs:
           python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform windows --arch x64
           sha256sum Ninjy-*.dmg Ninjy-*.zip Ninjy-*.pkg Ninjy-*.AppImage Ninjy-*.deb Ninjy-*.exe >> SHA256SUMS
 
+      # Re-check the signed manifest against the exact files about to be
+      # uploaded (the manifest job signed copies of the same artifacts).
+      - name: Verify the signed release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          python3 -I scripts/release/release-manifest.py verify \
+            --manifest dist/heimdall-release-manifest.json \
+            --signature dist/heimdall-release-manifest.json.minisig \
+            --dist dist
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1041,6 +1202,7 @@ jobs:
           - Ninjy-${{ needs.prepare.outputs.clean_version }}-x86_64.AppImage / -arm64.AppImage, -amd64.deb / -arm64.deb (Linux app; App, Bridge, or both on first launch)
           - Ninjy-*.zip, latest.yml, latest-mac.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)
           - SHA256SUMS
+          - heimdall-release-manifest.json + .minisig (minisign-signed manifest of the bridge bundles; docs/release-signing.md)
           - install.sh, install.ps1 (bootstraps: download + verify + ham-bridge setup)
           NOTES
           if [ "$BUILD_DARWIN_X64" = "true" ]; then
@@ -1067,7 +1229,7 @@ jobs:
             gh release view "$VERSION" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/existing-release-assets.txt"
           }
           upload_release_assets() {
-            gh release upload "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1 --clobber
+            gh release upload "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/heimdall-release-manifest.json dist/heimdall-release-manifest.json.minisig dist/install.sh dist/install.ps1 --clobber
           }
           # Idempotent create: a retry first re-checks for the release, since a
           # failed attempt may still have created it (gh creates a draft, then
@@ -1087,7 +1249,7 @@ jobs:
               esac
             fi
             create_attempted=true
-            gh release create "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1 \
+            gh release create "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/heimdall-release-manifest.json dist/heimdall-release-manifest.json.minisig dist/install.sh dist/install.ps1 \
               --title "$VERSION" \
               --target "$RELEASE_COMMIT" \
               --notes-file "$notes_file" \
