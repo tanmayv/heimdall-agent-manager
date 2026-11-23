@@ -93,6 +93,9 @@ export const SingleActionCard: React.FC<SingleActionCardProps> = ({
     }
   };
 
+  // A missing/deleted card should not fabricate an untitled pending action.
+  if (!card) return null;
+
   return (
     <div
       data-debug-id={`action-card-${actionId}`}
