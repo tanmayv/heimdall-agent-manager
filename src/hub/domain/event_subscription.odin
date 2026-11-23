@@ -36,10 +36,23 @@ event_delivery_destroy :: proc(row: ^Event_Delivery) {
 
 // Small owned snapshot; notification decisions reuse persisted runtime activity.
 Event_Notice_Target :: struct {
-    instance_id, bridge_id, runtime_status, activity_status, stopped_by: string,
-    is_bot: bool,
+	instance_id, bridge_id, runtime_status, activity_status, stopped_by: string,
+	is_bot: bool,
 }
 event_notice_target_destroy :: proc(t: ^Event_Notice_Target) {
-    delete(t.instance_id); delete(t.bridge_id); delete(t.runtime_status)
-    delete(t.activity_status); delete(t.stopped_by); t^ = {}
+	delete(t.instance_id); delete(t.bridge_id); delete(t.runtime_status)
+	delete(t.activity_status); delete(t.stopped_by); t^ = {}
+}
+
+// One row per subscription from a single target/delivery snapshot.
+Event_Notice_Snapshot :: struct {
+	subscription_id: string,
+	target: Event_Notice_Target,
+	oldest_delivery: string,
+	outstanding: i64,
+}
+event_notice_snapshot_destroy :: proc(row: ^Event_Notice_Snapshot) {
+	delete(row.subscription_id); delete(row.oldest_delivery)
+	event_notice_target_destroy(&row.target)
+	row^ = {}
 }

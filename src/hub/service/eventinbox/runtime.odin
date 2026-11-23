@@ -23,6 +23,7 @@ Runtime :: struct {
 	cache_allocator: mem.Allocator,
 	last_prune:      time.Tick,
 	notifications: map[string]Notification_State,
+	notice_reconcile: time.Tick,
 }
 Provisioned_Consumer :: struct {
 	key, fingerprint: string,
@@ -54,6 +55,7 @@ runtime_disconnect :: proc(r: ^Runtime) {
 	nats.pull_destroy(r.advisory); r.advisory = nil
 	nats.destroy(r.connection); r.connection = nil
 	clear_provisioned(r)
+	r.notice_reconcile = {}
 }
 runtime_entry :: proc(data: rawptr) {
 	r := (^Runtime)(data)
@@ -64,6 +66,7 @@ runtime_entry :: proc(data: rawptr) {
 	context.temp_allocator = context.allocator
 	defer runtime_disconnect(r)
 	defer clear_notifications(r)
+	defer clear_notice_dirty(r.service)
 	for sync.atomic_load(&r.stopping) == 0 {
 		ok := reconcile(r)
 		if !ok do runtime_disconnect(r)
@@ -230,6 +233,7 @@ drain_advisories :: proc(r: ^Runtime) -> bool {
 		)
 		nats.message_destroy(msg)
 		if pub_err.status != 0 do return false
+		published(r.service, destination)
 		if nats.ack(advisory).status != 0 do return false
 	}
 	return true

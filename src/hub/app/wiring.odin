@@ -740,6 +740,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	} else {
 		fmt.println("ham-hub web push send disabled (no VAPID keypair configured); subscription endpoints remain active")
 	}
+	graph.event_relay.published_ctx = &graph.event_inbox
+	graph.event_relay.published = proc(ctx: rawptr, subject: string) {
+		eventinbox.published((^eventinbox.Service)(ctx), subject)
+	}
 	eventinbox.start(&graph.event_inbox_runtime, &graph.event_inbox)
 	eventrelay.start(&graph.event_relay, &graph.uow_factory, {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000})
 	if !delivery.start(graph.delivery) do return false, "failed to start delivery pipeline"
@@ -748,12 +752,12 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	eventrelay.stop(&graph.event_relay)
 	eventinbox.stop(&graph.event_inbox_runtime)
 	eventinbox.counters_destroy(&graph.event_inbox)
 	actions_service.stop(&graph.action_runtime)
 	delivery.stop(graph.delivery)
 	graph.delivery = nil
-	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
 	delete(graph.actions.target_kinds,runtime.heap_allocator())
 	placement.service_destroy(&graph.placement)
