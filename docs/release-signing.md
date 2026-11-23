@@ -209,6 +209,67 @@ resolves the newest release it can verify).
 4. Delete or mark releases signed with the compromised key after the
    compromise time, and record the incident in `docs/incidents/`.
 
+## Immutable releases, attestations and promotion checks
+
+A published release never changes. New bytes need a new tag.
+
+**Publishing** (`release` job, `scripts/release/publish-release.sh`):
+
+1. `prepare` fails at once when a publishing run (tag push or
+   `publish_release=true`) targets a tag that already has a **published**
+   release. It fails before the version commit and the builds.
+2. The `release` job checks again (`check-unpublished`) before it attests or
+   writes anything. A published release stops it with exit 3. No asset is
+   uploaded, replaced or deleted, and the notes are not edited.
+3. `actions/attest@v4` records SLSA build provenance for every file about to
+   be published. Then `gh attestation verify --signer-workflow
+   <repo>/.github/workflows/release-local-binaries.yml` checks the manifest and
+   the linux-amd64 bundle.
+4. Draft, then upload, then verify, then publish. A draft left by an earlier
+   failed run, or by the `draft` input, is deleted, because drafts are never
+   public. The release is then created as a fresh draft with every asset. The
+   draft must hold exactly these file names, and each must have the local
+   file's sha256 (GitHub's asset `digest`, or a download when the API has
+   none). Only then is it published (`--draft=false`), and it is checked again
+   after publishing. With the `draft` input the run stops at the verified
+   draft. `--clobber` is not used anywhere in the release path.
+
+**Repository setting.** *Settings → General → Releases → Enable release
+immutability* (API: `PUT /repos/{owner}/{repo}/immutable-releases`) makes
+GitHub itself lock the assets and the tag of each release published after the
+setting is turned on. A locked tag cannot be reused, even after the release is
+deleted. Title, notes, prerelease and latest stay editable, so promotion keeps
+working. The workflow guard above does not depend on the setting. When the
+setting is off, the release job and promotion print a warning
+(`isImmutable=false`).
+
+**Promotion** (`promote-release.yml`, `scripts/release/check-promotion.sh`)
+runs these checks before `--prerelease=false --latest`, in addition to the
+existing bundle, `SHA256SUMS` and desktop update checks:
+
+- the release has `heimdall-release-manifest.json` and its `.minisig`;
+- the signature verifies with a key pinned in the promoting checkout (default
+  branch) and has not expired;
+- the manifest is for the tag being promoted;
+- the release's `heimdall-local-*-<tag>` bundles are exactly the manifest's
+  assets, and each one's size and sha256 match;
+- the manifest and every bundle have a build-provenance attestation from this
+  repository's `release-local-binaries.yml`;
+- for an immutable release, `gh release verify` and
+  `gh release verify-asset` also pass.
+
+Releases from before the signed manifest and attestations (v0.5.74 and
+earlier) therefore cannot be promoted with this workflow.
+
+Check a downloaded asset by hand:
+
+```bash
+gh attestation verify heimdall-local-linux-amd64-vX.Y.Z.tar.gz \
+  --repo tanmayv/heimdall-agent-manager \
+  --signer-workflow tanmayv/heimdall-agent-manager/.github/workflows/release-local-binaries.yml
+gh release verify vX.Y.Z            # immutable releases only
+```
+
 ## Local test
 
 ```bash
@@ -220,3 +281,16 @@ either pinned key, including a password-protected key fed on stdin) and that a
 tampered or truncated bundle, edited manifest, edited trusted comment,
 unpinned key, mismatched key id, wrong tag, expired manifest and empty pin set
 are each rejected.
+
+```bash
+nix shell nixpkgs#minisign -c python3 -I tests/test_release_publish.py -v
+```
+
+It runs `publish-release.sh` and `check-promotion.sh` against a stateful fake
+`gh`. It checks that a re-run on a published tag exits 3 with zero write
+calls and the assets unchanged, that a leftover draft is replaced by exactly
+this run's files, that a partial create is retried from a clean draft, that a
+digest mismatch blocks publishing, that the `draft` input stops at a verified
+draft, and that promotion rejects a missing or unpinned manifest, a manifest
+for another tag, a swapped or unlisted bundle and a missing attestation.
+CI: `.github/workflows/release-scripts.yml`.

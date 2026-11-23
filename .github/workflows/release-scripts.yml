@@ -1,0 +1,50 @@
+name: Release scripts
+
+# Unit tests for the release pipeline's scripts: the signed manifest tool and
+# the immutable publish / promotion checks. These scripts run only inside the
+# release and promotion jobs, which are Linux (ubuntu-24.04) jobs, so Linux is
+# the only OS they need to be tested on.
+
+on:
+  push:
+    paths:
+      - 'scripts/release/release-manifest.py'
+      - 'scripts/release/test_release_manifest.py'
+      - 'scripts/release/publish-release.sh'
+      - 'scripts/release/check-promotion.sh'
+      - 'scripts/release/gh-retry.sh'
+      - 'scripts/release/minisign/**'
+      - 'tests/test_release_publish.py'
+      - '.github/workflows/release-scripts.yml'
+  pull_request:
+    paths:
+      - 'scripts/release/release-manifest.py'
+      - 'scripts/release/test_release_manifest.py'
+      - 'scripts/release/publish-release.sh'
+      - 'scripts/release/check-promotion.sh'
+      - 'scripts/release/gh-retry.sh'
+      - 'scripts/release/minisign/**'
+      - 'tests/test_release_publish.py'
+      - '.github/workflows/release-scripts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Release script tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install minisign and shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign shellcheck
+      - name: shellcheck
+        run: shellcheck -x scripts/release/publish-release.sh scripts/release/check-promotion.sh scripts/release/gh-retry.sh
+      - name: Signed manifest tests
+        run: python3 -I scripts/release/test_release_manifest.py -v
+      - name: Publish and promotion tests
+        run: python3 -I tests/test_release_publish.py -v

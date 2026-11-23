@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  # gh attestation verify reads the release's build-provenance attestations.
+  attestations: read
 
 concurrency:
   group: promote-release
@@ -37,7 +39,7 @@ jobs:
           set -euo pipefail
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "invalid release tag: $VERSION" >&2; exit 2; }
-          gh release view "$VERSION" --json isDraft,isPrerelease,assets > release.json
+          gh release view "$VERSION" --json isDraft,isPrerelease,isImmutable,assets > release.json
           if [ "$(jq -r .isDraft release.json)" = "true" ]; then
             echo "$VERSION is a draft; publish it before promoting" >&2; exit 1
           fi
@@ -80,6 +82,21 @@ jobs:
             --version "${VERSION#v}" --platform mac --arch arm64 --assets release.json
           python3 scripts/release/validate-desktop-updates.py desktop-candidate \
             --version "${VERSION#v}" --platform windows --arch x64 --assets release.json
+
+      # Signed manifest, bundle digests, build provenance and (when enabled)
+      # GitHub's immutable-release record; see scripts/release/check-promotion.sh.
+      # The pinned public keys come from this checkout of the default branch.
+      - name: Verify the signed manifest and attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          scripts/release/check-promotion.sh "$VERSION" release.json "$RUNNER_TEMP/promotion"
 
       - name: Mark as the stable Latest release
         env:
