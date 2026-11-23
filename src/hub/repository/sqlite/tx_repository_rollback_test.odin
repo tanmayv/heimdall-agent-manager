@@ -387,7 +387,9 @@ test_agent_decision_read_ignores_foreign_uncommitted_instance :: proc(t: ^testin
         return !rollback_probe_key(c, "SELECT 1 FROM agent_instances WHERE agent_instance_id=?;", "uncommitted")
     }, owner_write=proc(c: ^Conn) -> bool {
         impl := Agent_Repo_SQLite{conn=c}
-        _, saved, _ := agent_save_instance_sqlite(rawptr(&impl), domain.Agent_Instance{agent_instance_id="uncommitted", owner_user_id="owner"})
+        row, saved, _ := agent_save_instance_sqlite(rawptr(&impl), domain.Agent_Instance{agent_instance_id="uncommitted", owner_user_id="owner"})
+        // Save borrows the input except for a corrected runtime transport.
+        defer delete(row.runtime_transport)
         return saved
     })
 }
