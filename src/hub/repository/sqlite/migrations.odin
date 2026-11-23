@@ -736,6 +736,7 @@ MIGRATION_237_EXTENSION_VERSION_SYNC :: #load("migrations/237_extension_version_
 
 MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE :: #load("migrations/actions_003_history_performance.sql", string)
 MIGRATION_ACTIONS_002_LOOKUP_INDEXES :: #load("migrations/actions_002_lookup_indexes.sql", string)
+MIGRATION_ACP_DELIVERY_001_INPUT_DELIVERIES :: #load("migrations/acp_delivery_001_input_deliveries.sql", string)
 MIGRATION_ACTIONS_001_RESET :: #load("migrations/actions_001_reset.sql", string)
 
 MIGRATION_238_EXTENSION_VERSION_SYNC :: #load("migrations/238_extension_version_sync_0_5_75.sql", string)
@@ -1003,6 +1004,7 @@ migration_order :: [?]string {
 	"actions_003_history_performance.sql",
 	"238_extension_version_sync_0_5_75.sql",
 	"239_extension_version_sync_0_5_76.sql",
+	"acp_delivery_001_input_deliveries.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1559,6 +1561,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
  if name == "actions_003_history_performance.sql" do return strings.clone(MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE)
  if name == "actions_002_lookup_indexes.sql" do return strings.clone(MIGRATION_ACTIONS_002_LOOKUP_INDEXES)
+ if name == "acp_delivery_001_input_deliveries.sql" do return strings.clone(MIGRATION_ACP_DELIVERY_001_INPUT_DELIVERIES)
 	if name == "237_extension_version_sync_0_5_74.sql" do return strings.clone(MIGRATION_237_EXTENSION_VERSION_SYNC)
  if name == "agents_001_start_ref.sql" do return strings.clone(MIGRATION_AGENTS_001_START_REF)
 	if migrations_dir != "" {

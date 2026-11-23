@@ -53,6 +53,8 @@ acp_inbox_accept :: proc(r: ^ACP_Runtime, c: ^ACP_RPC_Client, argument: string) 
     for entry in r.d.queue do if entry.id == input.id do duplicate = true
     for id in r.d.completed_inputs do if id == input.id do duplicate = true
     for id in c.state.queued_input_message_ids do if id == input.id do duplicate = true
+    // A batch member may live only inside the combined batch input.
+    if acp_send_now_member(r, input.id) do duplicate = true
     if duplicate { acp_inbox_input_delete(input); return true }
     replace := -1
     bytes := len(input.text) + len(r.d.steering_input.text)
@@ -72,7 +74,11 @@ acp_inbox_accept :: proc(r: ^ACP_Runtime, c: ^ACP_RPC_Client, argument: string) 
         if r.d.batch_first_ms == 0 do r.d.batch_first_ms = now
         r.d.batch_last_ms = now
     }
-    if r.chat != nil && strings.has_prefix(input.id, "msg_") do append(&c.state.queued_input_message_ids, strings.clone(input.id))
+    if r.chat != nil && strings.has_prefix(input.id, "msg_") {
+        append(&c.state.queued_input_message_ids, strings.clone(input.id))
+        // Admission evidence; the drain below may immediately supersede it.
+        if input.lane == .Steer do acp_delivery_report(r, acp_delivery_entries(r, []string{input.id}, "queued"))
+    }
     // The caller may acknowledge the Hub only after this durable admission.
     if !acp_rpc_checkpoint(c) { acp_runtime_error(r, "acp_state_write_failed"); return false }
     acp_runtime_drain(r)
@@ -110,11 +116,30 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
         if input.lane == .Batch do batch = true
     }
     if r.d.phase == "prompt" {
-        if steer < 0 || !r.d.steering_supported || r.d.queue[steer].kind == "append_next_turn" do return
+        if steer < 0 do return
+        front := r.d.queue[steer]
+        // A pending Send now batch anywhere in the queue owns the decision.
+        batch := false
+        for input in r.d.queue do if input.lane == .Steer && acp_send_now_is_input(r, input) do batch = true
+        if batch && !acp_send_now_is_input(r, front) {
+            // An older rejected input sits ahead of the batch: it cannot be
+            // steered again, so only a cancel lets the batch go next.
+            acp_send_now_hold_or_cancel(r, front)
+            return
+        }
         driver := acp_runtime_driver(r)
-        if driver.can_steer != nil && !driver.can_steer(r) do return
-        r.d.steering_input = r.d.queue[steer]; ordered_remove(&r.d.queue, steer)
+        steerable := r.d.steering_supported && front.kind != "append_next_turn" && (driver.can_steer == nil || driver.can_steer(r))
+        if !steerable {
+            if batch do acp_send_now_hold_or_cancel(r, front)
+            return
+        }
+        if front.kind == ACP_SEND_NOW_KIND {
+            r.d.steering_input = acp_send_now_collect(r)
+        } else {
+            r.d.steering_input = front; ordered_remove(&r.d.queue, steer)
+        }
         r.d.steering_pending = true
+        acp_delivery_steer_started(r)
         if !acp_runtime_driver(r).steer(r) do acp_runtime_error(r, "acp_pipe_write_failed")
         return
     }
@@ -134,7 +159,8 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
     // prompt as one context block; their admission identities become receipts
     // in the same checkpoint as the outgoing RPC.
     primary: ACP_Runtime_Input
-    if steer >= 0 { primary = r.d.queue[steer]; ordered_remove(&r.d.queue, steer) }
+    if steer >= 0 && r.d.queue[steer].kind == ACP_SEND_NOW_KIND { primary = acp_send_now_collect(r) }
+    else if steer >= 0 { primary = r.d.queue[steer]; ordered_remove(&r.d.queue, steer) }
     else { primary.id = strings.clone(fmt.tprintf("digest_%d", r.client.state.next_rpc_id)) }
     defer acp_inbox_input_delete(primary)
     b := strings.builder_make(); defer strings.builder_destroy(&b)

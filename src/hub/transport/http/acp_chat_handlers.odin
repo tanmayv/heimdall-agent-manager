@@ -52,6 +52,19 @@ agent_action_chat_assistant_message_handler :: proc(ctx: rawptr, req: Request) -
         }
     }
     input := contracts.ACP_Assistant_Message_Input{launch_epoch=json_string(raw,"launch_epoch"),turn_id=json_string(raw,"turn_id"),message_id=json_string(raw,"message_id"),revision=i64(revision),body=json_string(raw,"body"),message_status=json_string(raw,"message_status"),stop_reason=json_string(raw,"stop_reason")}
+    if value, present := obj["input_ids"]; present {
+        if _, null := value.(json.Null); !null {
+            ids, array := value.(json.Array)
+            if !array do return respond_error(domain.domain_error(.Validation_Failed,"input_ids must be an array"),req.request_id)
+            list := make([dynamic]string, context.temp_allocator)
+            for v in ids {
+                id, text := v.(json.String)
+                if !text do return respond_error(domain.domain_error(.Validation_Failed,"input_ids must be strings"),req.request_id)
+                append(&list, string(id))
+            }
+            input.input_ids = list[:]
+        }
+    }
     if input.launch_epoch != identity.asserted_epoch do return respond_error(domain.domain_error(.Forbidden,"bridge instance assertion token is invalid"),req.request_id)
     if identity.stale {
         if input.message_status != "failed" do return respond_error(domain.domain_error(.Forbidden,"bridge instance assertion token is invalid"),req.request_id)

@@ -1224,6 +1224,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = bridge_hub_send(conn, final)
 		return
 	}
+	if type == contracts.ACP_SEND_NOW_BATCH_COMMAND || type == contracts.ACP_INPUTS_READ_COMMAND {
+		bridge_acp_delivery_command(conn, type, text)
+		return
+	}
 	if type == "notify_agent_message" {
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)

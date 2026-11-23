@@ -661,6 +661,9 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 			publish_agent_messages_read(h, string(conv.owner_user_id), conv, ids[:], inst.agent_instance_id, read_at)
 		}
 	}
+	// An agent's own chat read is read evidence for ACP input (the bridge's
+	// input drain is admission only and never counts).
+	if mark_read && !bridge_input && target_id == "" do acp_note_agent_read_rows(h, auth, inst, rows[:])
 
 	b := strings.builder_make()
 	mode_str := unread_only ? "inbox_unread" : "history"

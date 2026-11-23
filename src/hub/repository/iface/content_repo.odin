@@ -42,6 +42,15 @@ Content_Repository :: struct {
  action_conversation: proc(ctx:rawptr,owner:domain.User_ID,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error),
 	get_assistant_turn: Content_Get_Assistant_Turn_Proc,
 	save_assistant_turn: Content_Save_Assistant_Turn_Proc,
+	get_input_delivery: Content_Get_Input_Delivery_Proc,
+	save_input_delivery: Content_Save_Input_Delivery_Proc,
+	list_open_input_deliveries: Content_List_Open_Input_Deliveries_Proc,
+	get_send_now_batch: Content_Get_Send_Now_Batch_Proc,
+	find_send_now_batch: Content_Find_Send_Now_Batch_Proc,
+	save_send_now_batch: Content_Save_Send_Now_Batch_Proc,
+	get_input_runtime: Content_Get_Input_Runtime_Proc,
+	save_input_runtime: Content_Save_Input_Runtime_Proc,
+	set_message_delivery_flags: Content_Set_Message_Delivery_Flags_Proc,
 	ctx: rawptr,
 	// Atomically insert one answer only while source is the last visible row.
 	// A duplicate returns the original row with inserted=false, before freshness.
