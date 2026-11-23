@@ -270,6 +270,9 @@ update_setup_argv :: proc(new_exe, hub, profile: string, json_progress: bool) ->
 	// An update never enrolls: an enrolled profile skips the step, an unenrolled one
 	// must not block on a browser approval nobody is watching.
 	append(&a, "--headless")
+	// The whole transaction even for an identical bundle (a forced same-version
+	// update); without it setup would find the healthy instance unchanged (S2).
+	append(&a, REINSTALL_FLAG)
 	if json_progress do append(&a, "--json-progress")
 	return a[:]
 }

@@ -1,12 +1,21 @@
 package main
 
 // `ham-bridge setup --hub <url> [--profile P] [--new-bridge|--reuse-bridge ID] [--reenroll]
-// [--separate-account | --replace-other-account] [--headless] [--no-tray] [--json-progress]`: install this bridge from the bundle the running
-// binary ships in, transactionally (F6, F9). The step order, retry/remediation and
-// rollback live in bridgesvc.run_setup; this file supplies the real side effects.
-// Every run re-renders the service file and adopts an existing per-Hub install
-// (same service name, state and data dirs as install.sh / install.ps1) in place.
-// Progress protocol: docs/bridge-setup-progress.md.
+// [--separate-account | --replace-other-account] [--version V [--allow-downgrade]]
+// [--keep-version] [--reinstall] [--headless] [--no-tray] [--json-progress]`: install this bridge
+// from the bundle the running binary ships in, transactionally (F6, F9). The step
+// order, retry/remediation and rollback live in bridgesvc.run_setup; this file
+// supplies the real side effects. It is idempotent (installer contract,
+// docs/specs/bridge-installer-contract.md §3): after the lock, the instance is
+// classified (bridgesvc.classify_install) and only what that row needs is done. A
+// healthy instance is left untouched (S2), a missing or refused credential is
+// re-enrolled keeping binaries and data (S3/S4), a missing or stopped service is
+// re-registered (S6), an interrupted install is finished (S7). By default the
+// bundle's binaries replace different installed ones (`ham-bridge update` runs this);
+// --keep-version (the installer scripts) keeps them (S8a); --reinstall (update) re-runs
+// the whole transaction even for an identical bundle. Exit codes: contract §4.
+// An existing per-Hub install (same service name, state and data dirs as install.sh
+// / install.ps1) is adopted in place. Progress protocol: docs/bridge-setup-progress.md.
 // Several Ninjy accounts share a machine with one profile each: --separate-account
 // installs into a profile no account has enrolled yet (account-2, account-3, ...)
 // when the requested one already belongs to an account; a setup that would enroll
@@ -19,6 +28,7 @@ import "core:net"
 import "core:os"
 import "core:strings"
 import "core:time"
+import contracts "odin_test:contracts"
 import bridgesvc "odin_test:lib/bridgesvc"
 
 // Binaries a release bundle carries next to ham-bridge; only ham-bridge is required.
@@ -54,30 +64,46 @@ Bridge_Setup :: struct {
 	restart_at:     i64,
 	stale_pid:      int,
 	tray_stopped:   bool, // Binaries stopped a running tray; finish restarts it
+	// Classification (Lock): what is installed and the minimal action.
+	facts:          bridgesvc.Install_Facts,
+	plan:           bridgesvc.Install_Plan,
+	exit_code:      int, // a refusal's or busy lock's code; 0 = derive from the outcome
+	refusal:        string, // the [ERROR] line of a refusal / busy lock
+	recovered:      [dynamic]string, // S7 repairs: lock broken, staging discarded, ...
+	service_action: string, // "registered" when the service definition was (re)written
+	not_enrolled:   string, // S1a: why enrollment did not complete (exit 4)
+	not_connected:  bool, // S2: running but not connected after the wait (warning)
 }
 
-bridge_setup_command :: proc(args: []string) -> bool {
+BRIDGE_SETUP_USAGE :: "usage: ham-bridge setup --hub <url> [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--separate-account | --replace-other-account] [--version V [--allow-downgrade]] [--keep-version] [--reinstall] [--headless] [--no-tray] [--json-progress]"
+
+// bridge_setup_command returns the process exit code (contract §4).
+bridge_setup_command :: proc(args: []string) -> int {
 	hub := strings.trim_space(option_value(args, "--hub", ""))
 	profile_name := strings.trim_space(option_value(args, "--profile", ""))
 	if hub == "" {
-		fmt.eprintln("usage: ham-bridge setup --hub <url> [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--separate-account | --replace-other-account] [--headless] [--no-tray] [--json-progress]")
-		return false
+		fmt.eprintln(BRIDGE_SETUP_USAGE)
+		return bridgesvc.EXIT_USAGE
 	}
 	profile, ok := bridgesvc.profile_from(hub, profile_name, context.temp_allocator)
 	if !ok {
 		fmt.eprintfln("ham-bridge setup: invalid --hub %q or --profile %q (profile: [a-z0-9][a-z0-9-]{{0,30}})", hub, profile_name)
-		return false
+		return bridgesvc.EXIT_USAGE
 	}
 	host := bridge_service_host()
 	if has_flag(args, BRIDGE_SETUP_SEPARATE_ACCOUNT_FLAG) && has_flag(args, BRIDGE_ENROLL_REPLACE_ACCOUNT_FLAG) {
 		fmt.eprintln("ham-bridge setup: --separate-account and --replace-other-account are mutually exclusive")
-		return false
+		return bridgesvc.EXIT_USAGE
+	}
+	if has_flag(args, "--version") && strings.trim_space(option_value(args, "--version", "")) == "" {
+		fmt.eprintln(BRIDGE_SETUP_USAGE)
+		return bridgesvc.EXIT_USAGE
 	}
 	if bridge_setup_wants_separate_account(host, args, profile) {
 		separate, found := bridgesvc.separate_account_profile(host, profile.hub_name, profile.profile)
 		if !found {
 			fmt.eprintfln("ham-bridge setup: every account profile for %s is enrolled; pass --profile P for a new one", profile.hub_url)
-			return false
+			return bridgesvc.EXIT_REFUSED
 		}
 		if separate != profile.profile {
 			profile, _ = bridgesvc.profile_from(hub, separate, context.temp_allocator)
@@ -91,11 +117,12 @@ bridge_setup_command :: proc(args: []string) -> bool {
 		json_progress = has_flag(args, "--json-progress"),
 		pid           = os.get_pid(),
 		backups       = make(map[string]Maybe(string), context.temp_allocator),
+		recovered     = make([dynamic]string, context.temp_allocator),
 	}
 	s.layout = bridgesvc.layout_for(s.host, profile.service_name)
 	if s.layout.backend == .None {
 		fmt.eprintln("ham-bridge setup: no supported service manager on this platform")
-		return false
+		return bridgesvc.EXIT_FAILED
 	}
 	exe, _ := os.get_executable_path(context.temp_allocator)
 	if exe == "" && len(os.args) > 0 do exe = os.args[0]
@@ -112,13 +139,26 @@ bridge_setup_command :: proc(args: []string) -> bool {
 		rollback_status = bridge_setup_rollback_status,
 		emit      = bridge_setup_emit,
 		finish    = bridge_setup_finish,
+		summary   = bridge_setup_summary,
 	}
 	done, failed := bridgesvc.run_setup(ops)
+	code := bridge_setup_exit_code(&s, done)
 	if !done && !s.json_progress {
-		if s.rollback_failed do fmt.eprintfln("ham-bridge setup FAILED at step %q; rollback incomplete: %s", bridgesvc.STEP_NAMES[failed], s.rollback_message)
-		else do fmt.eprintfln("ham-bridge setup FAILED at step %q; the previous install was restored%s.", bridgesvc.STEP_NAMES[failed], " and restarted" if s.was_running && s.stopped_for_setup else "")
+		switch {
+		case s.refusal != "": fmt.printfln("[ERROR] %s", s.refusal)
+		case s.rollback_failed: fmt.printfln("ham-bridge setup FAILED at step %q; rollback incomplete: %s.", bridgesvc.STEP_NAMES[failed], s.rollback_message)
+		case: fmt.printfln("ham-bridge setup FAILED at step %q; the previous install was restored%s.", bridgesvc.STEP_NAMES[failed], " and restarted" if s.was_running && s.stopped_for_setup else "")
+		}
 	}
-	return done
+	return code
+}
+
+// bridge_setup_exit_code maps the outcome onto contract §4.
+bridge_setup_exit_code :: proc(s: ^Bridge_Setup, done: bool) -> int {
+	if done do return bridgesvc.EXIT_NOT_ENROLLED if s.not_enrolled != "" else bridgesvc.EXIT_OK
+	if s.rollback_failed do return bridgesvc.EXIT_ROLLBACK_INCOMPLETE
+	if s.exit_code != 0 do return s.exit_code
+	return bridgesvc.EXIT_FAILED
 }
 
 // bridge_setup_wants_separate_account: --separate-account, or a run that would
@@ -251,7 +291,8 @@ bridge_setup_login_shell_path :: proc() -> string {
 	shell, _ := os.lookup_env("SHELL", context.temp_allocator)
 	if shell == "" || !os.exists(shell) do return ""
 	script := "printf '" + BRIDGE_SETUP_PATH_MARK + "%s" + BRIDGE_SETUP_PATH_MARK + "' \"$PATH\""
-	stdout, _, ok, _ := bridge_process_run_capture({shell, "-ilc", script}, 5 * time.Second)
+	stdout, stderr, ok, _ := bridge_process_run_capture({shell, "-ilc", script}, 5 * time.Second)
+	defer {delete(stdout); delete(stderr)}
 	if !ok do return ""
 	return bridge_setup_extract_marked_path(stdout)
 }
@@ -307,6 +348,152 @@ bridge_setup_check_owner :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
 	return {ok = true}
 }
 
+bridge_setup_saved_hub :: proc(s: ^Bridge_Setup) -> string {
+	existing := bridgesvc.read_first_line(bridgesvc.pjoin(s.layout.state_dir, bridgesvc.HUB_URL_FILE))
+	if existing == "" do existing = bridgesvc.hub_from_config(bridgesvc.pjoin(s.layout.state_dir, bridgesvc.CONFIG_FILE))
+	return existing
+}
+
+// bridge_setup_gather_facts reads the classification inputs (contract §3,
+// "Detection inputs"). Read-only; runs under the instance lock.
+bridge_setup_gather_facts :: proc(s: ^Bridge_Setup) -> bridgesvc.Install_Facts {
+	l := s.layout
+	f: bridgesvc.Install_Facts
+	f.service_registered = bridge_service_registered(s.host, l.service_name)
+	f.running = bridge_service_running(s.host, l) || bridge_service_runtime_pid(s.host, l) > 0
+	installed_exe := bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge"))
+	f.bin_present = os.is_file(installed_exe)
+	f.staging_left = os.exists(s.staging)
+	f.config_present = os.is_file(bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE)) && bridge_setup_saved_hub(s) != ""
+	_, f.ports_present = bridgesvc.read_ports(l.state_dir)
+	f.bridge_id = bridgesvc.credential_bridge_id(bridgesvc.read_first_line(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE)))
+	if m, ok := bridgesvc.read_reenroll_marker(l.state_dir); ok && bridgesvc.reenroll_marker_applies(m, f.bridge_id != "", f.bridge_id) {
+		f.marker, f.marker_present = m, true
+	}
+	f.copy_binaries = s.copy_binaries
+	f.bundle_version = contracts.APP_VERSION
+	if !s.copy_binaries {
+		f.binaries_match = true
+		f.installed_version = contracts.APP_VERSION
+	} else if f.bin_present {
+		f.binaries_match = bridgesvc.files_identical(bridgesvc.pjoin(s.bundle_dir, bridgesvc.exe_name(s.host, "ham-bridge")), installed_exe)
+		if f.binaries_match {
+			f.installed_version = contracts.APP_VERSION
+		} else {
+			out, errout, ran, _ := bridge_process_run_capture({installed_exe, "--version"}, 5 * time.Second)
+			if ran do f.installed_version = bridgesvc.parse_version_output(out)
+			delete(out)
+			delete(errout)
+			if f.installed_version == "" {
+				if rt, ok := bridgesvc.read_runtime_status(l.state_dir); ok do f.installed_version = rt.version
+			}
+		}
+	}
+	f.requested_version = strings.trim_space(option_value(s.args, "--version", ""))
+	f.keep_version = has_flag(s.args, bridgesvc.KEEP_VERSION_FLAG)
+	f.allow_downgrade = has_flag(s.args, bridgesvc.ALLOW_DOWNGRADE_FLAG)
+	f.reinstall = has_flag(s.args, bridgesvc.REINSTALL_FLAG)
+	f.reenroll = has_flag(s.args, "--reenroll")
+	f.new_bridge = has_flag(s.args, "--new-bridge")
+	f.reuse_bridge = strings.trim_space(option_value(s.args, "--reuse-bridge", ""))
+	return f
+}
+
+// bridge_setup_enroll_argv: `bin/ham-bridge enroll` for the plan. Without a terminal
+// (or with --headless / --json-progress) it is always --headless: no browser and no
+// prompt on the machine being installed (contract §6).
+bridge_setup_enroll_argv :: proc(s: ^Bridge_Setup, token: string) -> []string {
+	l := s.layout
+	argv := make([dynamic]string, context.temp_allocator)
+	append(&argv, bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge")), "enroll", "--hub", s.profile.hub_url,
+		"--config", bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE), "--bridge-token-file", token)
+	if has_flag(s.args, "--headless") || !bridge_stdin_is_terminal(s.args) do append(&argv, "--headless")
+	if has_flag(s.args, "--new-bridge") do append(&argv, "--new-bridge")
+	if s.plan.reuse_bridge != "" do append(&argv, "--reuse-bridge", s.plan.reuse_bridge)
+	// F1: a machine enrolled by another account is replaced only when the
+	// caller (the desktop wizard after the user confirmed) says so.
+	if has_flag(s.args, "--replace-other-account") do append(&argv, "--replace-other-account")
+	return argv[:]
+}
+
+// bridge_setup_verify_readonly (S2): wait for connected without touching anything.
+// Re-installing cannot fix a hub outage, so not connected is a warning, not a failure.
+bridge_setup_verify_readonly :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
+	deadline := time.time_add(time.now(), BRIDGE_SETUP_VERIFY_TIMEOUT)
+	for {
+		st := bridge_service_status(s.host, s.layout.service_name)
+		if st.running && st.connected do return {ok = true, message = fmt.tprintf("connected to %s (vault %s); nothing changed", st.hub, st.vault)}
+		if time.diff(time.now(), deadline) <= 0 do break
+		time.sleep(500 * time.Millisecond)
+	}
+	s.not_connected = true
+	message := fmt.tprintf("running but not connected to %s (hub unreachable?); nothing changed", s.profile.hub_url)
+	bridge_setup_emit(s, bridgesvc.Event{step = "verify", state = "warning", pct = bridgesvc.step_pct(.Verify, false), message = message, attempt = 1})
+	return {ok = true, message = message}
+}
+
+// bridge_setup_summary is the final line (contract §3, "Final line").
+bridge_setup_summary :: proc(data: rawptr) -> string {
+	s := (^Bridge_Setup)(data)
+	return bridge_setup_final_line(s.plan, s.facts, bridge_setup_final_state(s))
+}
+
+Bridge_Setup_Final :: struct {
+	service:       string,
+	hub:           string,
+	bridge_id:     string,
+	recovered:     []string,
+	service_action: string,
+	not_enrolled:  string,
+	not_connected: bool,
+}
+
+bridge_setup_final_state :: proc(s: ^Bridge_Setup) -> Bridge_Setup_Final {
+	return {
+		service = s.layout.service_name,
+		hub = s.profile.hub_url,
+		bridge_id = bridgesvc.credential_bridge_id(bridgesvc.read_first_line(bridgesvc.pjoin(s.layout.state_dir, bridgesvc.TOKEN_FILE))),
+		recovered = s.recovered[:],
+		service_action = s.service_action,
+		not_enrolled = s.not_enrolled,
+		not_connected = s.not_connected,
+	}
+}
+
+// bridge_setup_final_line builds the row's final line; pure for tests.
+bridge_setup_final_line :: proc(p: bridgesvc.Install_Plan, f: bridgesvc.Install_Facts, o: Bridge_Setup_Final) -> string {
+	version := bridgesvc.normalize_version(f.bundle_version if p.replace_binaries || f.installed_version == "" else f.installed_version)
+	prefix := ""
+	if len(o.recovered) > 0 do prefix = fmt.tprintf("Recovered an interrupted install of %s: %s; ", o.service, strings.join(o.recovered, ", ", context.temp_allocator))
+	if o.not_enrolled != "" {
+		return fmt.tprintf("%sInstalled %s v%s but not enrolled: %s. Run the same command again to enroll.", prefix, o.service, version, o.not_enrolled)
+	}
+	if p.noop {
+		line := fmt.tprintf("%s v%s is already installed, enrolled as %s and connected; nothing changed.", o.service, version, o.bridge_id)
+		if o.not_connected do line = fmt.tprintf("%s v%s is already installed and enrolled as %s, running but not connected to %s (hub unreachable?); nothing changed.", o.service, version, o.bridge_id, o.hub)
+		if .S8a_Version_Kept in p.rows {
+			line = fmt.tprintf("%s (installed v%s; this installer carried v%s; updates are not done by the installer)", line, bridgesvc.normalize_version(f.installed_version), bridgesvc.normalize_version(f.bundle_version))
+		}
+		return line
+	}
+	switch {
+	case .S1_Fresh in p.rows:
+		return fmt.tprintf("%sInstalled %s v%s, enrolled as %s, connected to %s.", prefix, o.service, version, o.bridge_id, o.hub)
+	case .S4_Enrollment_Invalid in p.rows:
+		return fmt.tprintf("%sRe-enrolled %s (was %s, reason %s) as %s; connected.", prefix, o.service, f.bridge_id, p.reenroll_reason, o.bridge_id)
+	case .S3_Not_Enrolled in p.rows:
+		return fmt.tprintf("%sEnrolled %s as %s; connected to %s.", prefix, o.service, o.bridge_id, o.hub)
+	case .S8b_Version_Change in p.rows && p.reinstall && (f.installed_version == "" || bridgesvc.version_compare(f.installed_version, f.bundle_version) == 0):
+		return fmt.tprintf("%sReinstalled %s v%s; connected.", prefix, o.service, version)
+	case .S8b_Version_Change in p.rows:
+		return fmt.tprintf("%sUpdated %s v%s → v%s; connected.", prefix, o.service, bridgesvc.normalize_version(f.installed_version) if f.installed_version != "" else "?", version)
+	case .S6_Service in p.rows:
+		what := o.service_action if o.service_action != "" else "started"
+		return fmt.tprintf("%sRepaired %s (service %s); connected to %s.", prefix, o.service, what, o.hub)
+	}
+	return fmt.tprintf("%s%s v%s is installed, enrolled as %s and connected to %s.", prefix, o.service, version, o.bridge_id, o.hub)
+}
+
 bridge_setup_rollback_status :: proc(data: rawptr) -> (bool, string) {
 	s := (^Bridge_Setup)(data)
 	return !s.rollback_failed, s.rollback_message
@@ -330,7 +517,31 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 	switch step {
 	case .Lock:
 		if err := os.make_directory_all(l.state_dir); err != nil && !os.is_dir(l.state_dir) do return {failure = .Fatal, message = fmt.tprintf("cannot create %s: %v", l.state_dir, err)}
-		return bridgesvc.lock_acquire(s.lock_path, s.pid, time.now(), bridge_os_pid_alive)
+		locked := bridgesvc.lock_acquire(s.lock_path, s.pid, time.now(), bridge_os_pid_alive)
+		if !locked.ok {
+			if locked.failure == .Fatal {
+				// S7a: a live setup/update owns the instance.
+				owner, _, _ := bridgesvc.lock_read(s.lock_path)
+				s.exit_code = bridgesvc.EXIT_BUSY
+				s.refusal = fmt.tprintf("Another setup or update of %s is running (pid %d); try again when it finishes.", l.service_name, owner)
+			}
+			return locked
+		}
+		// S5b before anything else is read or written.
+		if ownership := bridge_setup_check_owner(s); !ownership.ok {
+			s.exit_code = bridgesvc.EXIT_REFUSED
+			s.refusal = fmt.tprintf("Profile %s belongs to hub %s, not %s; pass --profile <name> to install a separate profile.", l.service_name, bridge_setup_saved_hub(s), s.profile.hub_url)
+			return ownership
+		}
+		s.facts = bridge_setup_gather_facts(s)
+		s.plan = bridgesvc.classify_install(s.facts)
+		if s.plan.refuse {
+			s.exit_code = s.plan.exit_code
+			s.refusal = fmt.tprintf("%s %s", l.service_name, s.plan.message)
+			return {failure = .Fatal, message = s.plan.message}
+		}
+		bridge_setup_emit(s, bridgesvc.Event{step = "detect", state = "ok", pct = bridgesvc.step_pct(.Lock, false), message = bridgesvc.install_rows_label(s.plan.rows), attempt = 1})
+		return {ok = true}
 
 	case .Stage:
 		if ownership := bridge_setup_check_owner(s); !ownership.ok do return ownership
@@ -339,7 +550,14 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			s.was_installed = bridge_service_registered(s.host, l.service_name)
 			s.was_running = bridge_service_running(s.host, l) || bridge_service_runtime_pid(s.host, l) > 0
 		}
-		if !s.copy_binaries do return {ok = true, message = "skipped"}
+		if !s.plan.replace_binaries {
+			// S7: a leftover staging dir is discarded even when bin/ is kept.
+			if !s.plan.noop && os.exists(s.staging) {
+				if err := os.remove_all(s.staging); err != nil do return {failure = .Fatal, message = fmt.tprintf("cannot remove leftover %s: %v", s.staging, err)}
+				append(&s.recovered, "discarded the leftover staging dir")
+			}
+			return {ok = true, message = "skipped"}
+		}
 		if os.exists(s.staging) {
 			return {failure = .Partial_Install, message = fmt.tprintf("leftover staging dir %s from an interrupted setup", s.staging)}
 		}
@@ -358,15 +576,16 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 		return {ok = true, message = fmt.tprintf("staged from %s", s.bundle_dir)}
 
 	case .Binaries:
+		if s.plan.noop do return {ok = true, message = "skipped"}
 		// Quiesce before touching bin/, even on platforms that permit renaming
-		// running executables.
+		// running executables; a repair (enroll, service, config) restarts it too.
 		if s.was_running && !s.stopped_for_setup {
 			if ok, msg := bridge_setup_stop_for_rollback(s); !ok {
 				return {failure = .Fatal, message = fmt.tprintf("cannot stop the previous Bridge before updating: %s", msg)}
 			}
 			s.stopped_for_setup = true
 		}
-		if !s.copy_binaries do return {ok = true, message = "skipped"}
+		if !s.plan.replace_binaries do return {ok = true, message = "skipped"}
 		// The PTY host daemon outlives the service. An idle one is stopped so it does
 		// not keep running the old ham-pty-host from bin.bak*; one hosting agents
 		// stays alive and the new bridge replaces it later (setup_pty_host.odin).
@@ -402,6 +621,7 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 		return {ok = true, message = fmt.tprintf("installed into %s (previous kept as bin.bak)", l.bin_dir)}
 
 	case .Config:
+		if s.plan.noop do return {ok = true, message = "skipped"}
 		if ownership := bridge_setup_check_owner(s); !ownership.ok do return ownership
 		cfg := bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE)
 		hub_file := bridgesvc.pjoin(l.state_dir, bridgesvc.HUB_URL_FILE)
@@ -424,6 +644,7 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 		return {ok = true, message = fmt.tprintf("config.toml %s", migrated)}
 
 	case .Ports:
+		if s.plan.noop do return {ok = true, message = "skipped"}
 		bridge_setup_backup(s, bridgesvc.pjoin(l.state_dir, bridgesvc.PORTS_FILE))
 		// The old process has exited. Any remaining listener is unrelated and
 		// must be avoided, even when this profile was running before setup.
@@ -433,40 +654,42 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 		return {ok = true, message = fmt.tprintf("bridge %d, endpoint %d%s", ports[0], ports[1], " (kept)" if reused else "")}
 
 	case .Service:
-		return bridge_setup_register(s)
+		if s.plan.noop do return {ok = true, message = "skipped"}
+		return bridge_setup_register(s, force = s.plan.reinstall)
 
 	case .Enroll:
+		if s.plan.noop || !s.plan.enroll do return {ok = true, message = "skipped"}
 		token := bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE)
-		reuse := strings.trim_space(option_value(s.args, "--reuse-bridge", ""))
 		current := bridgesvc.credential_bridge_id(bridgesvc.read_first_line(token))
-		if !bridge_setup_enroll_needed(s.args, current) do return {ok = true, message = "skipped"}
-		// --reenroll keeps this profile's identity: offer the credential's bridge for reuse.
-		if reuse == "" && current != "" && !has_flag(s.args, "--new-bridge") do reuse = current
-		argv := make([dynamic]string, context.temp_allocator)
-		append(&argv, bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge")), "enroll", "--hub", s.profile.hub_url,
-			"--config", bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE), "--bridge-token-file", token)
-		if has_flag(s.args, "--headless") do append(&argv, "--headless")
-		if has_flag(s.args, "--new-bridge") do append(&argv, "--new-bridge")
-		if reuse != "" do append(&argv, "--reuse-bridge", reuse)
-		// F1: a machine enrolled by another account is replaced only when the
-		// caller (the desktop wizard after the user confirmed) says so.
-		if has_flag(s.args, "--replace-other-account") do append(&argv, "--replace-other-account")
-		if !bridge_setup_exec_inherit(argv[:]) do return {failure = .Fatal, message = "enrollment did not complete"}
+		argv := bridge_setup_enroll_argv(s, token)
+		if !bridge_setup_exec_inherit(argv) {
+			// S1a: keep what is installed, do not start it; a re-run continues at S3/S4.
+			s.not_enrolled = "enrollment was not approved or did not complete"
+			return {halt = true, message = fmt.tprintf("not enrolled: %s", s.not_enrolled)}
+		}
 		s.enrolled_now = true
+		if s.plan.clear_marker do bridgesvc.clear_reenroll_marker(l.state_dir)
 		if current != "" do return {ok = true, message = fmt.tprintf("re-enrolled (was %s)", current)}
 		return {ok = true, message = "enrolled"}
 
 	case .Extensions:
+		if s.plan.noop || !s.plan.extensions do return {ok = true, message = "skipped"}
 		return bridge_setup_extensions(s)
 
 	case .Start:
+		if s.plan.noop do return {ok = true, message = "skipped"}
 		return bridge_setup_start(s)
 
 	case .Verify:
+		if s.plan.noop do return bridge_setup_verify_readonly(s)
 		deadline := time.time_add(time.now(), BRIDGE_SETUP_VERIFY_TIMEOUT)
 		for time.diff(time.now(), deadline) > 0 {
 			st := bridge_service_status(s.host, l.service_name, s.restart_at, s.stale_pid)
 			if st.running && st.connected do return {ok = true, message = fmt.tprintf("connected to %s (vault %s)", st.hub, st.vault)}
+			// The restarted bridge found its credential refused and parked (S4 next run).
+			if m, ok := bridgesvc.read_reenroll_marker(l.state_dir); ok && m.at >= s.restart_at && bridgesvc.reenroll_marker_applies(m, st.enrolled, bridgesvc.credential_bridge_id(bridgesvc.read_first_line(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE)))) {
+				return {failure = .Fatal, message = fmt.tprintf("the hub refused this bridge's credential (%s); run the same command again to re-enroll", m.reason)}
+			}
 			time.sleep(500 * time.Millisecond)
 		}
 		st := bridge_service_status(s.host, l.service_name, s.restart_at, s.stale_pid)
@@ -520,13 +743,34 @@ bridge_setup_start :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
 	return {ok = true}
 }
 
-// bridge_setup_register renders the service definition and registers it.
-bridge_setup_register :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
+// bridge_setup_file_is :: the file exists and holds exactly text.
+bridge_setup_file_is :: proc(path, text: string) -> bool {
+	data, err := os.read_entire_file_from_path(path, context.temp_allocator)
+	return err == nil && string(data) == text
+}
+
+// bridge_setup_register renders the service definition and registers it. Unless
+// forced (a remediation), a registered service whose rendered files are unchanged
+// is left alone: no write, no daemon-reload, no schtasks /Create (S3/S4 repairs).
+bridge_setup_register :: proc(s: ^Bridge_Setup, force: bool) -> bridgesvc.Step_Result {
 	l := s.layout
 	in_ := bridge_setup_render_input(s)
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "logs"))
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "run"))
 	if r := bridge_setup_write_ctl_wrapper(s, in_); !r.ok do return r
+	if !force && s.facts.service_registered {
+		unchanged := false
+		#partial switch l.backend {
+		case .Systemd, .Launchd, .Runit:
+			unchanged = bridge_setup_file_is(l.service_file, bridgesvc.render_service_file(s.host, l, in_))
+		case .Schtasks:
+			unchanged = bridge_setup_file_is(bridgesvc.windows_run_cmd_path(l), bridgesvc.render_windows_run_cmd(s.host, l, in_)) &&
+				bridge_setup_file_is(bridgesvc.windows_launcher_path(l), bridgesvc.render_windows_launcher(l)) &&
+				bridge_setup_file_is(bridgesvc.pjoin(l.data_dir, "task.xml"), bridgesvc.render_service_file(s.host, l, in_))
+		}
+		if unchanged do return {ok = true, message = fmt.tprintf("%s unchanged", bridgesvc.backend_name(l.backend))}
+	}
+	s.service_action = "registered"
 	switch l.backend {
 	case .None:
 		return {failure = .Fatal, message = "no service manager"}
@@ -567,7 +811,9 @@ bridge_setup_write_ctl_wrapper :: proc(s: ^Bridge_Setup, in_: bridgesvc.Render_I
 	// generic restore would rewrite the wrapper without its execute bit.
 	_ = os.make_directory_all(l.bin_dir)
 	mode: os.Permissions = {.Read_User, .Write_User, .Execute_User, .Read_Group, .Execute_Group, .Read_Other, .Execute_Other}
-	if err := os.write_entire_file_from_string(path, bridgesvc.render_ctl_wrapper(s.host, l, in_), mode); err != nil {
+	text := bridgesvc.render_ctl_wrapper(s.host, l, in_)
+	if bridge_setup_file_is(path, text) do return {ok = true}
+	if err := os.write_entire_file_from_string(path, text, mode); err != nil {
 		return {failure = .Fatal, message = fmt.tprintf("cannot write %s: %v", path, err)}
 	}
 	_ = os.chmod(path, mode) // an existing file keeps its old mode on write
@@ -587,6 +833,7 @@ bridge_setup_remediate :: proc(data: rawptr, step: bridgesvc.Step, failure: brid
 		case .Break_Lock:
 			if !bridgesvc.lock_break(s.lock_path) do return false, "cannot remove the dead owner's install lock"
 			append(&did, "removed the dead owner's install lock")
+			append(&s.recovered, "removed a dead setup's lock")
 		case .Discard_Staging:
 			_ = os.remove_all(s.staging)
 			if bak != "" && !os.exists(l.bin_dir) && os.exists(bak) {
@@ -594,6 +841,7 @@ bridge_setup_remediate :: proc(data: rawptr, step: bridgesvc.Step, failure: brid
 				s.binary_backup = ""
 			}
 			append(&did, "discarded the partial install")
+			append(&s.recovered, "discarded the partial install")
 		case .Restage:
 			if res := bridge_setup_run(data, .Stage); !res.ok do return false, fmt.tprintf("re-staging failed: %s", res.message)
 			append(&did, "re-staged the bundle")
@@ -607,7 +855,7 @@ bridge_setup_remediate :: proc(data: rawptr, step: bridgesvc.Step, failure: brid
 			s.ports = ports
 			append(&did, fmt.tprintf("moved to ports %d/%d", ports[0], ports[1]))
 		case .Register:
-			if res := bridge_setup_register(s); !res.ok do return false, fmt.tprintf("re-registering failed: %s", res.message)
+			if res := bridge_setup_register(s, force = true); !res.ok do return false, fmt.tprintf("re-registering failed: %s", res.message)
 			append(&did, "re-rendered and re-registered the service")
 		case .Start_Service:
 			if res := bridge_setup_start(s); !res.ok do return false, res.message
@@ -674,7 +922,9 @@ bridge_setup_finish :: proc(data: rawptr, ok: bool) {
 		// Leave the previous install running, as it was before setup.
 		if started, msg := bridge_service_action(s.host, s.layout.service_name, .Start); !started do bridge_setup_rollback_fail(s, fmt.tprintf("previous Bridge could not be restarted: %s", msg))
 	}
-	if ok {
+	if ok && s.plan.noop {
+		// S2: nothing was written, the tray included.
+	} else if ok {
 		_ = os.remove_all(s.staging)
 		// The tray is a convenience: it is reported, never a reason to roll back.
 		bridge_setup_emit(data, bridgesvc.Event{step = "tray", state = "start", pct = 100, attempt = 1})

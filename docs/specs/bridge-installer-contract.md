@@ -35,7 +35,7 @@ in §3 and exits with one of the codes in §4.
 
 | Layer | Does | Never does |
 |---|---|---|
-| `install.sh` / `install.ps1` | Parse flags and env (§5); check prerequisites; refuse root (`install.sh:129`); resolve a release tag; download this target's bundle and `SHA256SUMS` (later also the signed manifest, T3b); verify; unpack to a temp dir; run the bundle's `ham-bridge setup --headless …` with stdin detached; delete the temp dir; exit with `ham-bridge`'s exit code unchanged. | Inspect, stop, start, copy into or delete anything under an instance; read credentials; decide whether a bridge is healthy, enrolled or out of date; prompt. |
+| `install.sh` / `install.ps1` | Parse flags and env (§5); check prerequisites; refuse root (`install.sh:129`); resolve a release tag; download this target's bundle and `SHA256SUMS` (later also the signed manifest, T3b); verify; unpack to a temp dir; run the bundle's `ham-bridge setup --headless --keep-version …` with stdin detached; delete the temp dir; exit with `ham-bridge`'s exit code unchanged. | Inspect, stop, start, copy into or delete anything under an instance; read credentials; decide whether a bridge is healthy, enrolled or out of date; prompt. |
 | `ham-bridge setup` (`src/bridge/setup_cmd.odin`, engine `src/lib/bridgesvc/setup.odin`) | **All detection and all action, one implementation for every OS**: classify the instance (§3), choose the minimal action, run it in the existing transaction (Lock → Stage → Binaries → Config → Ports → Service → Enroll → Extensions → Start → Verify, `setup.odin:22-33`) with rollback, print the outcome, return the exit code. | Prompt when stdin is not a terminal or `--headless`/`--json-progress` is set (`enroll_account_replace.odin:94-97`). |
 
 Why the scripts stay thin: the classification needs the credential, the re-enroll marker,
@@ -69,9 +69,9 @@ Unless a row says otherwise: **no TTY needed** (stdin is `/dev/null` under `inst
 |---|---|---|---|---|
 | S1 | **Nothing installed**: no service, no `bin/`, no credential for this instance. | Full transaction: stage, install `bin/`, write config, allocate ports, register service, enroll (device flow, §6), extensions, start, verify connected. | 0 | `Installed <service> v<ver>, enrolled as <bridge_id>, connected to <hub>.` |
 | S1a | S1, but enrollment is not approved before the code expires (incl. reissues) or is denied. | Binaries, config and service stay installed; service is **not** started; profile is `not_enrolled`. Re-running the one-liner continues at S3. | 4 | `Installed <service> v<ver> but not enrolled: <reason>. Run the same command again to enroll.` |
-| S2 | **Installed, enrolled, healthy**: service registered and running, `bin/` present, credential present, no applicable re-enroll marker, saved hub = requested hub, no `--version`, or `--version` equal to the installed version. | **Nothing.** No stop, no file written, no service re-render, no extension sync, no download beyond the script's bootstrap. Waits up to the verify timeout (45 s, `setup_cmd.odin:26`) for `connected`, read-only. | 0 | `<service> v<ver> is already installed, enrolled as <bridge_id> and connected; nothing changed.` If still not connected after the wait: same, with `…running but not connected to <hub> (hub unreachable?); nothing changed.` and a `warning` event — re-installing cannot fix a hub outage. |
+| S2 | **Installed, enrolled, healthy**: service registered and running, `bin/` present, `config.toml` + saved hub and `ports.json` present, no leftover `.staging`, credential present, no applicable re-enroll marker, saved hub = requested hub, and the binaries stay: the bundle's `ham-bridge` is byte-identical to the installed one, or `--keep-version` (S8a), or `--version` equal to the installed version. | **Nothing.** No stop, no file written, no service re-render, no extension sync, no download beyond the script's bootstrap. Waits up to the verify timeout (45 s, `setup_cmd.odin:26`) for `connected`, read-only. | 0 | `<service> v<ver> is already installed, enrolled as <bridge_id> and connected; nothing changed.` If still not connected after the wait: same, with `…running but not connected to <hub> (hub unreachable?); nothing changed.` and a `warning` event — re-installing cannot fix a hub outage. |
 | S3 | **Installed, not enrolled**: `bin/` + service present, no credential (e.g. S1a, or the credential file was deleted). A re-enroll marker with reason `credential_missing` (enrolled but tokenless, `status.odin:67-69`) lands **here**, not in S4: its `bridge_id` is passed as `--reuse-bridge` and the marker is cleared on success. | Keep binaries. Re-render service only if its file differs, run **Enroll**, then Start + Verify. | 0 / 4 | `Enrolled <service> as <bridge_id>; connected to <hub>.` / as S1a. |
-| S4 | **Installed, enrollment invalid**: credential present **and** an applicable `needs-reenrollment.json` (reason `revoked`, `refresh_rejected` or `vault_key_timeout`; `credential_missing` is S3), written by the running bridge when the hub refused it (`hub_quiescence.odin:59`). Also: hub answers 401/403 to the credential during detection. This includes **"hub changed"** in the T0 sense: same hub URL, but the hub behind it no longer accepts the credential (reset, redeployed, re-keyed). | Keep binaries and data. Enroll with `--reuse-bridge <current id>` (today's `--reenroll` path, `setup_cmd.odin:443-444`) so the bridge keeps its identity if the approver allows; clear the marker on success; restart + verify. **New in T2:** the marker triggers this without the caller passing `--reenroll`. | 0 / 4 | `Re-enrolled <service> (was <old_id>, reason <reason>) as <bridge_id>; connected.` |
+| S4 | **Installed, enrollment invalid**: credential present **and** an applicable `needs-reenrollment.json` (reason `revoked`, `refresh_rejected` or `vault_key_timeout`; `credential_missing` is S3), written by the running bridge when the hub refused it (`hub_quiescence.odin:59`). Setup does not probe the hub during detection (T2): a refusal is only known from the marker. When a stopped bridge is started (S6) and then writes the marker, `verify` fails with `the hub refused this bridge's credential (<reason>); run the same command again to re-enroll` (exit 1, previous state restored), and the re-run is S4. This includes **"hub changed"** in the T0 sense: same hub URL, but the hub behind it no longer accepts the credential (reset, redeployed, re-keyed). | Keep binaries and data. Enroll with `--reuse-bridge <current id>` (today's `--reenroll` path, `setup_cmd.odin:443-444`) so the bridge keeps its identity if the approver allows; clear the marker on success; restart + verify. **New in T2:** the marker triggers this without the caller passing `--reenroll`. | 0 / 4 | `Re-enrolled <service> (was <old_id>, reason <reason>) as <bridge_id>; connected.` |
 | S5a | **Other hub URL**: an instance exists for hub A; the run asks for hub B. | Different service name ⇒ S1 for a **new, separate** instance. Hub A's instance is not read or touched, and is **not** moved or re-enrolled to B (user decision, §3.1). | as S1 | as S1 |
 | S5b | **Name collision**: sanitized hub names collide, so the requested service's saved hub ≠ requested hub (`setup_cmd.odin:300-308`). | Refuse before any stop or write. | 5 | `[ERROR] Profile <service> belongs to hub <A>, not <B>; pass --profile <name> to install a separate profile.` |
 | S5c | **Other profile**: `--profile X` while only the default (or another) profile exists. | S1 for profile X; others untouched. | as S1 | as S1 |
@@ -79,8 +79,8 @@ Unless a row says otherwise: **no TTY needed** (stdin is `/dev/null` under `inst
 | S6 | **Service missing or stopped**: `bin/` + credential OK, service file absent/unregistered, or registered but not running (and no re-enroll marker). | Keep binaries and credential. Re-register the service (render + register), Start, Verify. Never re-enroll for this. | 0 / 1 | `Repaired <service> (service <registered|started>); connected to <hub>.` On failure the previous state is restored: `ham-bridge setup FAILED at step "<step>"; the previous install was restored.` (exit 1). |
 | S7 | **Partial / interrupted install**: leftover `.staging`; `bin/` missing (with or without `bin.bak*`); lock held by a dead pid; service registered but `bin/ham-bridge` missing. | Break a dead owner's lock (Stale_Lock), discard staging (Partial_Install, `setup.odin:79-98`), install `bin/` from the downloaded bundle (a `bin.bak*` is **not** trusted as the source), then continue as S1/S3/S6 for the remaining steps. Credential and data are kept. | 0 / 1 / 4 | `Recovered an interrupted install of <service>: <what was fixed>; …` then the S1/S3 line. |
 | S7a | **Busy**: lock held by a **live** setup/update process. | Nothing. | 6 | `[ERROR] Another setup or update of <service> is running (pid <pid>); try again when it finishes.` |
-| S8a | **Version skew, no `--version`**: S2 with installed ≠ the release the script downloaded (newer **or** older). | Treated as S2: **nothing changes**. Updates belong to the update path (today `ham-bridge update` / auto-update; after Phase 2 the supervisor). | 0 | S2 line, plus `(installed v<x>; this installer carried v<y>; updates are not done by the installer)`. |
-| S8b | **`--version X` newer than installed** (any S2–S7 state). | Pre-Phase 2 only: replace `bin/` with X through the existing transaction (today's behaviour; it is the documented `ham-bridge update --version` equivalent). Repairs from S3–S7 are done in the same run. | 0 / 1 | `Updated <service> v<old> → v<X>; connected.` |
+| S8a | **Version skew, no `--version`, `--keep-version`**: S2 with installed ≠ the bundle (newer **or** older); the installer scripts always pass `--keep-version`. | Treated as S2: **nothing changes**. Updates belong to the update path (today `ham-bridge update` / auto-update; after Phase 2 the supervisor). **Without** `--keep-version` setup installs the bundle's binaries (as S8b): `ham-bridge update`, auto-update and hub updates run the new bundle's `setup --hub H [--profile P] --headless` built by the *installed* binary (`src/lib/bridgesvc/uninstall.odin:266`), so this default keeps every existing update path working (user decision 2026-11-23). | 0 | S2 line, plus `(installed v<x>; this installer carried v<y>; updates are not done by the installer)`. |
+| S8b | **`--version X` newer than installed** (any S2–S7 state), or no `--version` and no `--keep-version` with a bundle that differs from `bin/` (the update path), or `--reinstall` (passed by `ham-bridge update`: whole transaction even for an identical bundle). `X` must be this bundle's version, otherwise exit 2. | Pre-Phase 2 only: replace `bin/` with X through the existing transaction (today's behaviour; it is the documented `ham-bridge update --version` equivalent). Repairs from S3–S7 are done in the same run. | 0 / 1 | `Updated <service> v<old> → v<X>; connected.` |
 | S8c | **`--version X` older than installed.** | Refuse unless `--allow-downgrade` is also passed (`REQ-CHAN-1`: no silent downgrade; headless cannot confirm). With it: as S8b. | 5 | `[ERROR] <service> runs v<old>, newer than requested v<X>; pass --allow-downgrade to downgrade.` |
 | S9 | **Rollback incomplete** (any row whose transaction failed and could not restore, `setup_cmd.odin:315-320`). | Stop; nothing further. | 7 | `ham-bridge setup FAILED at step "<step>"; rollback incomplete: <reason>.` |
 
@@ -102,9 +102,17 @@ Notes:
   exit code is that of the last step that ran.
 - Steps a row does not need are reported as `skipped` (existing event state), so
   `--json-progress` consumers (Electron) see the same ten steps in every row.
-- Today (`v0.5.74`) S2, S4, S6 and S8a **re-copy binaries and re-render the service on
-  every run** (`setup_cmd.odin:335-402`) and S4 needs an explicit `--reenroll`
-  (`setup_cmd.odin:151-158`). Closing these gaps is T2's work.
+- Until `v0.5.74` S2, S4, S6 and S8a re-copied binaries and re-rendered the service on
+  every run and S4 needed an explicit `--reenroll`. T2 closed these gaps:
+  `bridgesvc.classify_install` (`src/lib/bridgesvc/install_state.odin`) picks the rows
+  after `lock`, emits `{"step":"detect","state":"ok","message":"<rows>"}`, and
+  `src/bridge/setup_cmd.odin` skips every step the rows do not need.
+- OS differences (T2): none in the classification, which is pure and unit-tested the same
+  everywhere. "Service registered" is the unit/plist/runit file on Linux/macOS/Termux and
+  `schtasks /Query` on Windows; "unchanged service" compares the rendered unit/plist/run
+  file, and on Windows `run.cmd`, the launcher and `task.xml` together. The installed
+  version is read with `bin/ham-bridge --version`, falling back to
+  `runtime-status.json`.
 - S8a/S8b use the bundle's own version (`contracts.APP_VERSION`) and the installed
   version; versions compare as SemVer.
 
@@ -121,13 +129,13 @@ failures and otherwise return `ham-bridge`'s code unchanged (`install.sh:172-178
 | 2 | Usage error: unknown/missing value, no `--hub`, invalid profile, root user. | after fixing the flags |
 | 3 | Bootstrap failure, nothing touched: unsupported OS/arch, missing `curl`/`tar`/`sha256sum`, release not found, download failed, checksum (later: signature) mismatch. | yes |
 | 4 | Installed but not enrolled (approval not given in time or denied). | yes — continues at S3 |
-| 5 | Refused: needs an operator decision (profile owned by another hub, downgrade without `--allow-downgrade`). | with the named flag |
+| 5 | Refused: needs an operator decision (profile owned by another hub, downgrade without `--allow-downgrade`, every account profile already enrolled). | with the named flag |
 | 6 | Busy: another setup/update holds the instance lock. | yes, later |
 | 7 | Rollback incomplete; manual repair needed (message names what is left). | no |
 
-Today `ham-bridge setup` returns 1 for every failure (`main.odin:117-118`) and the
-scripts return 1 for their own failures (`install.sh:28`, `install.ps1:115`); T2/T3
-move them to this table.
+`ham-bridge setup` returns these codes since T2 (`bridge_setup_exit_code`,
+`src/bridge/setup_cmd.odin`; `--version` not matching the bundle is 2). The scripts still
+return 1 for their own failures (`install.sh:28`, `install.ps1:115`) until T3.
 
 ## 5. Flags and environment variables
 
@@ -149,6 +157,7 @@ accepted by `install.ps1` because unknown arguments pass through to `ham-bridge`
 | `--profile NAME` (alias `--name`) | `-Name` (alias `-Profile`) | `HEIMDALL_BRIDGE_NAME` | Profile name, `[a-z0-9][a-z0-9-]{0,30}`; default profile when empty. |
 | `--version TAG\|latest` | `-Version` | `HEIMDALL_VERSION` | Release to bootstrap from. Default `latest` (resolution: §5.1). On an existing instance: §3 S8, §7. |
 | `--allow-downgrade` † | `-AllowDowngrade` † | — | Permit S8c. Deliberately no env var: a downgrade must be visible in the command. |
+| (always) `--keep-version` † | (always) † | — | Not a user option: the scripts always pass it to `ham-bridge setup` so a re-run never changes a working instance's version (S8a). `ham-bridge setup` without it installs the bundle (update path). |
 | `--bundle FILE --checksum-file FILE` | `-Bundle -ChecksumFile` | — | Use an already-downloaded bundle (desktop apps, air-gapped); verified first. |
 | `--new-bridge` | `-NewBridge` | — | Enroll as a new bridge. |
 | `--reuse-bridge ID` | `-ReuseBridge` | — | Enroll reusing bridge `ID`. |
@@ -183,8 +192,9 @@ If the request fails (network, rate limit, 404 because nothing is promoted, a bo
 without `tag_name`): exit 3,
 `[ERROR] Cannot resolve the stable release from GitHub (<reason>); pass --version TAG.`
 
-† New: `--allow-downgrade` is added to `ham-bridge setup` (T2); the marked PowerShell
-parameters are added to `install.ps1` (T3). Until then the `--flag` form passes through.
+† New: `--allow-downgrade` and `--keep-version` are in `ham-bridge setup` since T2; the
+scripts pass `--keep-version` and the marked PowerShell parameters are added to
+`install.ps1` in T3. Until then the `--flag` form passes through.
 
 Justified differences:
 
