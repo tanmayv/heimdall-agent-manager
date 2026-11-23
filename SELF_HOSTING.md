@@ -270,6 +270,10 @@ In `nix-homelab-config` or any NixOS flake:
 
 ### NATS JetStream (required)
 
+Every hub requires **nats-server 2.14 or newer** with JetStream enabled; there is no SQLite queue fallback.
+Only the hub connects to NATS. Bridges and agents use the hub API and do not need
+NATS access or credentials. Keep the broker on loopback for a single-host deployment.
+
 #### Actions rollout and rollback
 
 Upgrade the **hub first, then bridges**. Actions require a bridge that reports
@@ -289,11 +293,6 @@ An action starts its target even when you stopped that agent yourself. **Disable
 the action to stop future action wakes.** Stopping the agent alone is not an off
 switch. Schedule and event triggers, placement rules and run history are available
 behind the owner's `actions` experiment.
-
-
-Every hub requires **nats-server 2.14 or newer** with JetStream enabled; there is no SQLite queue fallback.
-Only the hub connects to NATS. Bridges and agents use the hub API and do not need
-NATS access or credentials. Keep the broker on loopback for a single-host deployment.
 
 #### Authentication and hub settings
 
