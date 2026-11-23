@@ -458,7 +458,8 @@ async function main() {
     expect(!fs.existsSync(P.staging) && !fs.existsSync(P.lock), 'staging dir and stale lock are gone');
     expect(credentialId() === S.id, 'the credential was kept');
     await waitOnline(A, S.id, 'recovered service');
-    fs.rmSync(path.join(P.data, 'bin.bak-e2e'), { recursive: true, force: true });
+    // bin.bak-e2e stays: on Windows the PTY daemon (it outlives service restarts by
+    // design) still runs from it. Step 6's uninstall --purge must remove it too.
   });
 
   await step('6 uninstall through the installer leaves nothing of the profile', async () => {
