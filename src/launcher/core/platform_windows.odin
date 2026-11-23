@@ -234,10 +234,12 @@ current_user_sid :: proc() -> (sid: string, ok: bool, step: string) {
 	size: win.DWORD
 	win.GetTokenInformation(token, .TokenUser, nil, 0, &size)
 	if size == 0 || size > 4096 do return "", false, fmt.tprintf("GetTokenInformation(size) %d size %d", win.GetLastError(), size)
-	buf := make([]byte, int(size), context.temp_allocator)
+	// TOKEN_USER holds pointers: the buffer must be pointer-aligned, or the call fails
+	// with ERROR_NOACCESS (998). A []byte from an arena is only byte-aligned.
+	buf := make([]uintptr, (int(size) + size_of(uintptr) - 1) / size_of(uintptr), context.temp_allocator)
 	if !win.GetTokenInformation(token, .TokenUser, raw_data(buf), size, &size) do return "", false, fmt.tprintf("GetTokenInformation %d", win.GetLastError())
 	// TOKEN_USER begins with SID_AND_ATTRIBUTES whose first member is the SID pointer.
-	raw := (^[^]byte)(raw_data(buf))^
+	raw := (^[^]byte)(raw_data(buf))^ // SID_AND_ATTRIBUTES.Sid
 	if raw == nil do return "", false, "null SID"
 	count := int(raw[1])
 	if raw[0] != 1 || count > 15 do return "", false, fmt.tprintf("bad SID revision %d count %d", raw[0], count)
