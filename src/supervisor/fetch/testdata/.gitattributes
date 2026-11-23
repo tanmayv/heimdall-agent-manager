@@ -1,0 +1,2 @@
+# Signed fixtures and archives must stay byte-exact (no CRLF conversion on Windows).
+* -text
