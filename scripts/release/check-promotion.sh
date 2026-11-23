@@ -15,7 +15,10 @@
 #      exactly the manifest's assets, and each downloaded bundle matches the
 #      manifest's size and sha256;
 #   4. the manifest and every bundle carry a GitHub build-provenance
-#      attestation signed by release-local-binaries.yml of this repository;
+#      attestation signed by release-local-binaries.yml of this repository,
+#      built from refs/tags/<tag> (tag push) or refs/heads/$DEFAULT_BRANCH
+#      (dispatch from the default branch); a dry run on any other branch
+#      does not count;
 #   5. when GitHub reports the release immutable, `gh release verify` and
 #      `gh release verify-asset` pass for it. A mutable release only warns:
 #      immutability is a repository setting (docs/release-signing.md).
@@ -26,6 +29,7 @@ set -euo pipefail
 [ "$#" -eq 3 ] || { echo "usage: $0 <tag> <release.json> <workdir>" >&2; exit 2; }
 tag="$1" release_json="$2" work="$3"
 repo="${GH_REPO:?GH_REPO must name owner/repo}"
+default_branch="${DEFAULT_BRANCH:?DEFAULT_BRANCH must name the default branch}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 manifest_tool=(python3 -I "$script_dir/release-manifest.py")
 manifest=heimdall-release-manifest.json
@@ -67,10 +71,23 @@ gh release download "$tag" --dir "$work" "${patterns[@]}" --clobber
 echo "signed manifest verified for $tag: ${bundles[*]}"
 
 # 4. Build provenance from this repository's release workflow.
+# gh accepts one --source-ref per call, so try each allowed release ref.
+attested_from() {
+  local ref
+  for ref in "refs/tags/$tag" "refs/heads/$default_branch"; do
+    if gh attestation verify "$work/$1" --repo "$repo" --signer-workflow "$signer" \
+      --source-ref "$ref" > /dev/null 2>> "$work/attest.err"; then
+      echo "$ref"; return 0
+    fi
+  done
+  return 1
+}
 for name in "$manifest" "${bundles[@]}"; do
-  gh attestation verify "$work/$name" --repo "$repo" --signer-workflow "$signer" > /dev/null \
-    || reject "$name has no build-provenance attestation from $signer"
-  echo "attestation verified: $name"
+  if ! ref="$(attested_from "$name")"; then
+    cat "$work/attest.err" >&2
+    reject "$name has no build-provenance attestation from $signer on refs/tags/$tag or refs/heads/$default_branch"
+  fi
+  echo "attestation verified: $name (built from $ref)"
 done
 
 # 5. GitHub's own immutability record.

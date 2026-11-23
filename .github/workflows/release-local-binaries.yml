@@ -1060,6 +1060,12 @@ jobs:
     needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures, manifest]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+    # The workflow's concurrency group is per ref, but a tag push (refs/tags/vX)
+    # and a dispatch for vX (refs/heads/...) publish the same release: never
+    # let two release jobs for one version run at once.
+    concurrency:
+      group: release-publish-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: false
     permissions:
       contents: write
       # actions/attest: OIDC identity + attestation store.
@@ -1246,7 +1252,8 @@ jobs:
           signer="$GITHUB_REPOSITORY/.github/workflows/release-local-binaries.yml"
           for f in dist/heimdall-release-manifest.json "dist/heimdall-local-linux-amd64-$VERSION.tar.gz"; do
             for attempt in 1 2 3; do
-              if gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" > /dev/null; then
+              if gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" \
+                --source-ref "$GITHUB_REF" > /dev/null; then
                 echo "attestation verified: $f"; break
               fi
               [ "$attempt" -lt 3 ] || { echo "::error::no valid attestation for $f"; exit 1; }

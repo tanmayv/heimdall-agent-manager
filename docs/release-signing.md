@@ -225,14 +225,22 @@ A published release never changes. New bytes need a new tag.
    be published. Then `gh attestation verify --signer-workflow
    <repo>/.github/workflows/release-local-binaries.yml` checks the manifest and
    the linux-amd64 bundle.
-4. Draft, then upload, then verify, then publish. A draft left by an earlier
-   failed run, or by the `draft` input, is deleted, because drafts are never
-   public. The release is then created as a fresh draft with every asset. The
+4. Draft, then upload, then verify, then publish, all through the REST API
+   and **by release id**. Every draft carrying the tag (left by an earlier
+   failed run, or by the `draft` input) is deleted by id, because drafts are
+   never public. The script then creates one new draft and keeps its id.
+   Uploads, the check and the publish PATCH address only that id, so another
+   draft for the same tag is never verified or published by mistake. The
    draft must hold exactly these file names, and each must have the local
    file's sha256 (GitHub's asset `digest`, or a download when the API has
-   none). Only then is it published (`--draft=false`), and it is checked again
-   after publishing. With the `draft` input the run stops at the verified
+   none). Only then is that id published (`draft=false`). Afterwards the
+   script checks again that it is the only release for the tag and still
+   holds the same files. With the `draft` input the run stops at the verified
    draft. `--clobber` is not used anywhere in the release path.
+5. The workflow's concurrency group is per ref, and a tag push and a
+   dispatch for the same version use different refs. The release job
+   therefore also has a job-level group, `release-publish-<version>`, so two
+   release jobs for one version never run at once.
 
 **Repository setting.** *Settings → General → Releases → Enable release
 immutability* (API: `PUT /repos/{owner}/{repo}/immutable-releases`) makes
@@ -248,13 +256,16 @@ runs these checks before `--prerelease=false --latest`, in addition to the
 existing bundle, `SHA256SUMS` and desktop update checks:
 
 - the release has `heimdall-release-manifest.json` and its `.minisig`;
-- the signature verifies with a key pinned in the promoting checkout (default
-  branch) and has not expired;
+- the signature verifies with a key pinned on the default branch and has not
+  expired. The job always checks out the default branch, whatever ref the
+  dispatch picked, so a branch cannot add its own key;
 - the manifest is for the tag being promoted;
 - the release's `heimdall-local-*-<tag>` bundles are exactly the manifest's
   assets, and each one's size and sha256 match;
 - the manifest and every bundle have a build-provenance attestation from this
-  repository's `release-local-binaries.yml`;
+  repository's `release-local-binaries.yml`, built from `refs/tags/<tag>`
+  (tag push) or from the default branch (dispatch). Provenance from a dry run
+  on a throwaway branch does not count;
 - for an immutable release, `gh release verify` and
   `gh release verify-asset` also pass.
 
@@ -287,10 +298,18 @@ nix shell nixpkgs#minisign -c python3 -I tests/test_release_publish.py -v
 ```
 
 It runs `publish-release.sh` and `check-promotion.sh` against a stateful fake
-`gh`. It checks that a re-run on a published tag exits 3 with zero write
-calls and the assets unchanged, that a leftover draft is replaced by exactly
-this run's files, that a partial create is retried from a clean draft, that a
-digest mismatch blocks publishing, that the `draft` input stops at a verified
-draft, and that promotion rejects a missing or unpinned manifest, a manifest
-for another tag, a swapped or unlisted bundle and a missing attestation.
+`gh` that implements the REST calls. It checks:
+
+- a re-run on a published tag exits 3 with zero write calls and the assets
+  unchanged;
+- every leftover draft for the tag is deleted by id;
+- a failed upload is retried from a new draft;
+- a draft that another run swapped in just before publishing is never
+  published;
+- a digest mismatch blocks publishing;
+- the `draft` input stops at a verified draft;
+- promotion rejects a missing or unpinned manifest, a manifest for another
+  tag, a swapped or unlisted bundle, and a missing attestation or one built
+  from another ref.
+
 CI: `.github/workflows/release-scripts.yml`.

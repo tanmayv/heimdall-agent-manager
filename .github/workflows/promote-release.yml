@@ -28,7 +28,13 @@ jobs:
     name: Promote ${{ inputs.version }}
     runs-on: ubuntu-24.04
     steps:
+      # Always the default branch, whatever ref the dispatch picked: the pinned
+      # minisign keys and the check scripts must not come from a branch that
+      # could add its own key.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
       - name: Verify the release is a complete candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -85,12 +91,13 @@ jobs:
 
       # Signed manifest, bundle digests, build provenance and (when enabled)
       # GitHub's immutable-release record; see scripts/release/check-promotion.sh.
-      # The pinned public keys come from this checkout of the default branch.
+      # The pinned public keys come from the default-branch checkout above.
       - name: Verify the signed manifest and attestations
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         shell: bash
         run: |
           set -euo pipefail
