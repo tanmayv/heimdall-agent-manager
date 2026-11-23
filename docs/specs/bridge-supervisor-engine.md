@@ -89,9 +89,12 @@ independent layers prevent this; all are **required**:
    `KILL_ON_JOB_CLOSE` on the supervisor's job (above).
 3. **Reap at start (J0, §6.3).** Every supervisor start, before READY and before starting
    any runtime, terminates every `procs.json` entry whose `(pid,start_time)` is still alive
-   (process group `SIGTERM` → 10 s → `SIGKILL`, or `TerminateJobObject` on a job opened by
-   name), waits until each has exited (max 30 s), then empties `procs.json`. A survivor
-   after 30 s → the supervisor exits 78 (`orphan_unkillable`) without starting a runtime.
+   (process group `SIGTERM` → 5 s → `SIGKILL`, or `TerminateJobObject` on a job opened by
+   name), waits until each has exited (max 20 s in total for the whole reap), then empties
+   `procs.json`. A survivor after 20 s → the supervisor exits 78 (`orphan_unkillable`)
+   without starting a runtime. The reap is bounded at 20 s so that it always fits inside
+   `T_ready` (30 s, §7.1) with 10 s left for lock, journal read and the §7.6 decision; a
+   slow but successful reap never triggers a launcher fallback.
 
 Handles: `engine.lock`'s fd/handle, the READY pipe's write end and every lifeline end the
 supervisor keeps are opened `O_CLOEXEC` / non-inheritable (`bInheritHandles` only through an
@@ -114,6 +117,7 @@ Roots are today's (`src/lib/bridgesvc/bridgesvc.odin:216-228`): `<data>` =
     launcher.json              {"abi":1,"version":"0.6.0","sha256":"…"}
   releases/
     <ver>-<d12>/               IMMUTABLE release tree, <d12> = first 12 hex of bundle SHA-256
+    <ver>-<d12>-r<n>/          re-install of the same bundle by `repair` (n = 1, 2, …), §4
       ham-supervisor[.exe] ham-bridge[.exe] ham-pty-host[.exe] ham-ctl[.exe] ham-launcher[.exe] …
       extensions/              bundled provider extensions
       release.json             the verified manifest, byte-for-byte as signed
@@ -163,9 +167,20 @@ Permissions: `<data>/supervisor/`, `<state>/` and every snapshot are `0700` / ow
 
 ## 4. Pointers
 
-A pointer names a release tree by its directory name `<ver>-<d12>`. A pointer is **valid**
-when it parses, names a directory under `releases/` that contains `.complete`, and the
-tree's `release.json` version and digest prefix match the name.
+A pointer names a release tree by its directory name. A tree name is `<ver>-<d12>` for the
+first install of a bundle, or `<ver>-<d12>-r<n>` (`n` ≥ 1, decimal, no leading zeros) for a
+re-install of the **same** bundle by `repair` when an existing tree with that digest is
+damaged and, being live, may not be deleted or reused (W1, W2). A pointer is **valid** when
+it parses, names a directory under `releases/` that contains `.complete`, and the tree's
+`release.json` version and digest prefix match the `<ver>-<d12>` part of the name (the
+`-r<n>` suffix is ignored for that check). `<d12>`-equal trees are the same release for
+every rule (eligibility, pins, `noop`); only their directory differs.
+
+Choosing the name (§14 step 9): `<ver>-<d12>` if no directory with that name exists; else,
+if the existing one is a valid, undamaged tree, reuse it (no unpack, J5/J7); else (damaged
+or incomplete): if it is not live, delete it (W5) and use `<ver>-<d12>`; if it is live,
+use the smallest `-r<n>` that does not exist. A non-live `-r<n>` tree is GC'd like any other
+(§15).
 
 ### 4.1 Linux and macOS: symlinks
 
@@ -291,6 +306,7 @@ Which path each action takes:
 | `check_now` | `requested → resolving → noop` (with the available candidate) or `failed` |
 | `rollback_to_previous` | `requested → verifying` (local tree re-check, no network) `→ verified →` gate `→ activating → …` as an install with `to` = `previous` |
 | `set_channel`, `set_auto_update`, `retry_failed` | `requested → applied` (J27) |
+| `cancel` | `requested → applied` (target op closed `cancelled`), or `rejected nothing_to_cancel` / `op_mismatch` / `past_point_of_no_return` (J35) |
 | offline `ham-supervisor repair` (CLI) | `requested → verifying → verified → activating` (no gate: service stopped) `→ handover`; probation by the service's supervisor (J29) |
 | invalid intent | `rejected` (single line, J31) |
 
@@ -346,7 +362,7 @@ The launcher's part of recovery is §7.
 
 | # | Transition / step | Durable effect of the step | Crash during or right after → recovery outcome |
 |---|---|---|---|
-| J0 | **Every supervisor start**, before anything below and before READY | Take `engine.lock`; reap every live `procs.json` entry (§2.1 layer 3); finish an interrupted rotation (J33); reconcile `op-index.json`; delete `*.tmp-*` pointer leftovers | Crash during reaping: the next start reaps again (idempotent; entries are removed only after their process is confirmed gone). Survivor after 30 s → exit 78 (`orphan_unkillable`); the launcher treats 78 like a crash for the fallback rule (§7.2), and a known-good instance stays offline with that reason in `launcher-status.json` rather than running two runtimes. |
+| J0 | **Every supervisor start**, before anything below and before READY | Take `engine.lock`; reap every live `procs.json` entry (§2.1 layer 3); finish an interrupted rotation (J33); reconcile `op-index.json`; delete `*.tmp-*` pointer leftovers | Crash during reaping: the next start reaps again (idempotent; entries are removed only after their process is confirmed gone). Survivor after the 20 s reap budget → exit 78 (`orphan_unkillable`); the launcher treats 78 like a crash for the fallback rule (§7.2), and a known-good instance stays offline with that reason in `launcher-status.json` rather than running two runtimes. |
 | J1 | intent → `requested` | Line appended; intent file deleted **after** the line | Line missing: intent file still in inbox → re-read, same `op_id` (idempotent). Line present, intent file still there → file deleted, op continues. `op_id` already in `op-index.json` → file deleted, nothing runs. |
 | J2 | `requested` → `expired` | Terminal line | Re-evaluated: still expired → terminal written. |
 | J3 | `requested` → `resolving` | Line; HTTP requests | Restart resolution from scratch (idempotent; ETag cache may give 304). |
@@ -376,12 +392,14 @@ The launcher's part of recovery is §7.
 | J25 | `rolling_back/probation` → `rollback_failed` | Terminal line; runtime restart attempts stop | Terminal. The supervisor stays up, keeps the local endpoint and `supervisor-status.json` current, accepts only `repair`, `rollback_to_previous`, `install_version`, `cancel`, `check_now` intents. |
 | J26 | any non-terminal state, op is user-started and `expires_at` passes **before** `activating` | `expired` | As J2. After `activating/gate_closed` expiry is ignored (the op is past its start). |
 | J27 | `set_channel` / `set_auto_update` / `retry_failed`: `requested` → `applied` | Order: `requested` line → `update.json` / `pins.json` replaced atomically, carrying `"last_op":"<op_id>"` → `applied` line → op index | File not yet written (`last_op` ≠ `op_id`) → write it (for `set_channel`, `revision` = stored + 1 only in this case, so a replay never bumps twice). File written, `applied` missing → write `applied`. |
-| J28 | `rollback_to_previous`: `requested` → `verifying` → `verified` | `previous` valid and ≠ `current`; tree `tree.json` sizes match (read-only check, no network) | Rerun the check (read-only). Check fails → `failed no_previous` / `tree_damaged` (status suggests `repair`). From `verified` on, identical to an install with `from` = `current`, `to` = `previous` (J10–J25); at `activating/pointers_begin` the newer tree `from` is pinned (`user_rollback`) so the timer does not re-install it; `retry_failed` clears the pin. |
+| J28 | `rollback_to_previous`: `requested` → `verifying` → `verified` | `previous` valid and ≠ `current`; tree `tree.json` sizes match (read-only check, no network) | Rerun the check (read-only). Check fails → `failed no_previous` / `tree_damaged` (status suggests `repair`). From `verified` on, identical to an install with `from` = `current`, `to` = `previous` (J10–J25); the newer tree `from` is pinned (`user_rollback`) **only after `current := to` has landed**, written together with the `activating/pointers_done` line (pin first, then the line; J21-style idempotent re-add on replay), so the timer does not re-install it; `retry_failed` clears the pin. An op that ends before the switch (`failed interrupted_before_switch`, `service_stopped`, J10–J13, §7.5) never pins the still-running tree. |
 | J29 | Offline `ham-supervisor repair` (CLI, §16) | Holds `.install.lock` (setup) + `engine.lock`; service stopped. Lines: `requested` → `verifying` → `verified` → `activating` sub-steps `stopped` (J0 reap only) → `snapshot` → `pointers_begin` → `previous := current` if valid else the new tree → `current := new` → `pointers_done` → `handover`; CLI exits 0, releasing the locks; setup starts the service | Before the CLI starts its own op it runs J0 and resolves any active op exactly as a supervisor start would. CLI crash before `current := new` → the active op ends `failed interrupted_before_switch` at the next CLI run or supervisor start, and setup reports exit 1 (re-runnable). CLI crash after `current := new` → the service's supervisor of `new` (launched with `C` = `new` ≠ `K`) finds `activating` with `current` = its tree → J15/J16 probation → `committed`, `known-good := new`. `new` fails → launcher fallback to `previous` (may itself be broken → offline, setup reports the result it saw, exit 1/7). |
 | J30 | `update_now` arrives while the active op is `waiting_for_idle` (supersede) | Order: active op line `activating/gate_closed` with `"interrupted_by":"<new op_id>"` → new op single line `noop superseded_by <active op_id>` → op index → inbox file deleted | Crash after the first line: the inbox file is still there; on re-read the active op is past waiting → new op closes `noop superseded_by` (same result). Crash before the first line: the active op is still waiting and the intent is re-read → same outcome. |
-| J31 | Invalid intent (`wrong_instance`, `unknown_action`, `bad_expiry`, `stale_intent`, `expired`, schema error) | Single terminal line `rejected <reason>` → op index → inbox file deleted | File still there → `op_id` found in the index → file deleted, nothing re-journaled. A file that does not parse or has no `op_id` is renamed to `inbox/bad-<ts>.json`, not journaled, and GC deletes it after 7 days. |
+| J31 | Invalid intent (`wrong_instance`, `unknown_action`, `bad_expiry`, `stale_intent`, `expired`, schema error, and `cancel` rejections of J35) | Single terminal line `rejected <reason>` → op index → inbox file deleted | File still there → `op_id` found in the index → file deleted, nothing re-journaled. A file that does not parse or has no `op_id` is renamed to `inbox/bad-<ts>.json`, not journaled, and GC deletes it after 7 days. |
 | J32 | Supervisor start whose launch does not match the records (§7.6) | Decision taken after J0 and the journal read, before READY and before starting any runtime | The supervisor exits 75 or rolls back per §7.6. A crash during the decision repeats it at the next start (it is read-only until the rollback line is written, after which J18 applies). |
 | J33 | Journal rotation (§6.1) | `ops.jsonl.new` → replace `ops.1.jsonl` → rename `.new` | J0 finishes or redoes the rotation; the op index is never touched by rotation, so dedupe history survives any crash in it. |
+| J34 | `repair` of a damaged live tree (intent or CLI) | New tree `<ver>-<d12>-r<n>` unpacked per §14 (rename once, preflight, `.complete`), then activated with `from` = damaged tree, `to` = new tree, as J10–J25 | Same as the matching install row; a half-built `-r<n>` without `.complete` is not live and is deleted at the next attempt, which picks the same or next free `n`. After `committed`, the damaged tree is no longer `current`/`known-good`; it stays as `previous` until the next activation and is GC'd once it is not live. |
+| J35 | `cancel`: `requested` → `applied` / `rejected` | Order: cancel op `requested` line → target op terminal `cancelled` (with `"cancelled_by":"<cancel op_id>"`) → cancel op `applied` → op index → inbox file deleted. Rejections are a single `rejected <reason>` line (J31). | Crash after `requested` only: the target is re-evaluated — still cancellable → continue; already past `gate_closed` → cancel op `rejected past_point_of_no_return`. Crash after the target's `cancelled` line: the target is terminal with `cancelled_by` = this op → write `applied`. A target that reached a terminal state on its own before the cancel was applied → `rejected nothing_to_cancel`. |
 
 Terminal states need no recovery. On start, after the active op (if any) is resolved, the
 supervisor runs GC (§15) and processes the inbox.
@@ -426,22 +444,28 @@ loop:
 
   if fallback_flag:                     start P (fallback mode); on crash restart P with backoff
   elif C == none:                       start P in fallback mode, else K (normal), else wait 60 s, exit 78
-  elif C == K:                          start C (normal); on crash restart with backoff 1 s → 5 min, unbounded
+  elif C == K:                          clear deadline{}; start C (normal); on crash restart with backoff 1 s → 5 min, unbounded
   else:                                 # C is unproven
-      deadline[C] = deadline[C] or now + T_commit     # kept per C value across exit-75 restarts
+      deadline[C] = deadline[C] or now + T_commit     # kept across the exit-75 restarts of one activation
       start C (normal)
       watch: every 5 s re-read known-good
-        known-good == C                 → C is proven; keep supervising as C == K
+        known-good == C                 → C is proven; clear deadline{}; keep supervising as C == K
         no READY within 30 s            → fail
         exit 0                          → exit 0 (service stop)
         exit 75                         → clear fallback_flag, goto loop
         any other exit (78 included)    → fail
         now ≥ deadline[C]               → fail (hang or endless probation)
       fail: terminate C's job / process group, wait for exit,
-            if P != none and P != C: fallback_flag = true, goto loop
+            if P != none and P != C: fallback_flag = true, clear deadline{}, goto loop
             else restart C with backoff (no better tree exists)
 ```
 
+- **Deadline lifetime.** The `deadline` map is cleared (all entries) whenever the launcher
+  observes `C == K` at the top of the loop, whenever it sets `fallback_flag`, and when it
+  starts. A deadline therefore survives only the exit-75 handover chain of a single
+  activation; a tree that becomes unproven `current` again later (e.g. `retry_failed`,
+  `install_version` or `rollback_to_previous` back to a tree that failed earlier in the same
+  launcher lifetime) gets a fresh `T_commit`.
 - `T_commit` = `T_ready` (30 s) + runtime ready (60 s) + probation (120 s) + margin (60 s) =
   **270 s** from launch (§19). Probation restarts after a clean suspend (J16a) happen in a
   new launcher process, so they get a new deadline.
@@ -461,9 +485,28 @@ loop:
   `KillMode=control-group` (today `KillMode=process`, `src/lib/bridgesvc/render.odin:117`,
   report F6) so nothing survives a stop; this is a Phase 2 render change.
 - Windows: the launcher owns a job object containing the supervisor (which nests its own
-  job, §2) with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; ending the scheduled task kills the
-  launcher, the job handle closes, the whole instance tree dies, and nothing of another
-  instance is in that job.
+  job, §2) with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `schtasks /End` and a forced logoff
+  terminate the launcher **without** notice; the job handle closes and the whole instance
+  tree dies, and nothing of another instance is in that job. Because a hard end cannot be
+  graceful, Windows has an explicit **graceful stop path**, used before any hard end:
+  - **Stop event.** The launcher creates the named event
+    `Local\heimdall-launcher-stop-<instance_id>` (same-session namespace, default DACL of
+    the owning user). Setting it is the graceful stop: the launcher forwards it to the
+    supervisor (a second event `…-supervisor-stop-<instance_id>` that the supervisor waits
+    on) and waits up to 20 s for the supervisor to exit, then exits 0. `ham-bridge setup`,
+    the uninstaller and the app must set this event and wait for the launcher to exit
+    (≤ 25 s) **before** calling `schtasks /End`; `schtasks /End` is only the fallback.
+  - **Logoff / shutdown.** The launcher creates a hidden top-level window (not
+    message-only, which receives no session messages) and a console control handler. On
+    `WM_QUERYENDSESSION` / `WM_ENDSESSION` or `CTRL_LOGOFF_EVENT` / `CTRL_SHUTDOWN_EVENT` it
+    sets the supervisor stop event and blocks the handler until the supervisor exits or
+    4 s pass (Windows allows roughly 5 s before it kills a process at logoff,
+    `WaitToKillAppTimeout`). The supervisor's stop work for probation is a single journal
+    line (§7.5), well inside that budget. That these notifications reach a hidden launcher
+    started by the Scheduled Task through `wscript.exe` → `cmd.exe`
+    (`src/lib/bridgesvc/render.odin:146-157`) is a **HYPOTHESIS**; T10 must verify it on
+    Windows. If it does not hold, logoff and reboot during probation are unclean stops on
+    Windows and count toward the 3-attempt limit (J16), and §18 tests them as such.
 - macOS: LaunchAgent `KeepAlive.SuccessfulExit=false` (today, `render.odin:127`) restarts the
   launcher only on non-zero exit, matching 7.1.
 
@@ -480,7 +523,9 @@ is deliberately not designed in Phase 1.
 ### 7.5 Service stop in the middle of an operation
 
 A stop (SIGTERM / task end / logout / reboot / setup stopping the service) reaches the
-supervisor through the launcher (§7.3). The supervisor has 15 s (the launcher waits 20 s)
+supervisor through the launcher (§7.3). On Windows only the graceful paths of §7.3 (stop
+event, session-end notification) are a "stop" in this table; `schtasks /End` without the
+event and any forced kill are crashes, handled by the J rows. The supervisor has 15 s (the launcher waits 20 s)
 and does, by state:
 
 | State at stop | Supervisor action before exit 0 | Next start |
@@ -569,6 +614,7 @@ N+1 builds):
 | `action` | One of the table below; else rejected `unknown_action`. |
 | `channel` | Only for `set_channel`: `stable` \| `fast`. |
 | `version` | Only for `install_version`: a tag (`v0.5.75`). |
+| `target_op_id` | Optional, only for `cancel`: the op to cancel (J35). |
 | `expires_at` | Unix seconds, required. Rejected if already past (`expired`) or more than 30 days ahead (`bad_expiry`). Queued offline intents use it (report §6.8 "Queued, not applied"). |
 | `created_at` | Unix seconds, required. Rejected `stale_intent` if more than 30 days in the past. |
 | `actor` | `timer` \| `app:<user_id>` \| `hub:<user_id>` \| `installer` \| `cli` \| `supervisor`. `timer` and `supervisor` are written only by the supervisor itself. |
@@ -581,7 +627,7 @@ N+1 builds):
 | `rollback_to_previous` | Activate `previous` (no download; the tree is re-checked against `tree.json` sizes; the newer tree is pinned, J28). User-started. |
 | `set_channel` | Write `update.json` with `revision+1`; acknowledged in the journal; no install (report §6.4 "fast → stable"). |
 | `set_auto_update` | Toggle the timer in `update.json`. |
-| `cancel` | Cancel the active op if it is before `activating/gate_closed`; otherwise rejected `past_point_of_no_return`. |
+| `cancel` | Cancel the active op if it is before `activating/gate_closed`. Optional field `target_op_id`: if present and not the active op → rejected `op_mismatch`. No active op → rejected `nothing_to_cancel`. Active op at or past `gate_closed` → rejected `past_point_of_no_return`. Lifecycle and crash outcome: J35. |
 | `retry_failed` | Remove the pin for `version` so the timer may try it again. |
 | `repair` | Re-install `known-good`'s release from GitHub through the full engine (§16). User-started. |
 | `uninstall` | Reserved; defined with Phase 3/4 (report §6.6 Removal). Rejected `not_implemented` in Phase 1. |
@@ -689,7 +735,7 @@ or list.
 
 ### 13.2 Eligibility (in this order, first failure wins)
 
-1. `candidate == installed` (same version, same sha256) → `noop`.
+1. `candidate == installed` (same version, same sha256) → `noop` (not applied to `repair`, which re-installs the same release into a new directory, §4, §16).
 2. Same version, different sha256 or different trusted-comment `seq` → `failed
    digest_conflict` (immutable releases; new bytes need a new tag).
 3. `candidate < installed` → timer/`update_now`: `noop ahead_of_channel` ("Ahead of stable
@@ -744,7 +790,7 @@ Verification, each step fail-closed (installed version keeps running, op `failed
    then on). macOS: whether self-downloaded files get `com.apple.quarantine` is a
    HYPOTHESIS to verify in T12; if they do, the attribute is removed only after step 8 passes.
 9. Write `tree.json`, fsync every file and directory of the staging tree, then rename
-   `.staging-<op_id>` → `<ver>-<d12>` (W2, W3). Nothing has executed from it yet, and the
+   `.staging-<op_id>` → the tree name chosen by §4 (`<ver>-<d12>` or `-r<n>`) (W2, W3). Nothing has executed from it yet, and the
    tree is not valid (no `.complete`), so no pointer can name it.
 10. `--version` preflight of the tree's `ham-supervisor` and `ham-bridge`, run from the final
     tree (must print the manifest version, 10 s timeout); wait until both processes have
@@ -771,7 +817,7 @@ deletions follow W5.
 
 | Situation | Who | Procedure |
 |---|---|---|
-| Supervisor running, `rollback_failed` or user asks | App / hub / installer | Intent `repair`: resolve the release of `known-good` (exact tag), download, verify (§14), install as a **new** tree name if the old tree's `tree.json` sizes do not match, activate as `install_version` with `actor` preserved. |
+| Supervisor running, `rollback_failed` or user asks | App / hub / installer | Intent `repair`: resolve the release of `known-good` (exact tag), download, verify (§14), install it under the name chosen by §4 (a `-r<n>` name when the damaged tree is live), and activate it as `install_version` of the same version (the equal-version `noop` rule of §13.2 is skipped for `repair` because the target directory differs); `actor` preserved. Crash outcomes: J34. |
 | No supervisor can start (both trees broken, `current`/`previous` invalid, launcher gives up) | `ham-bridge setup` (T1 §7, S7 after Phase 2) | Setup stops the service, takes `.install.lock`, then runs the **bundle's** `ham-supervisor repair --instance-root <data> --state-root <state> --bundle <archive> --manifest <m> --signature <sig>`. It takes `engine.lock` (exit 6 "busy" if a live supervisor holds it → setup enqueues an intent `repair` instead), verifies exactly as §14, unpacks a tree, journals op `repair actor installer`, sets `previous := current if valid else new`, `current := new`; `known-good := new` is written **only** by the service's supervisor when it commits. Setup then starts the service and waits for `committed` (T1 §7 exit mapping: 0 / 1 / 7). Journal states, order and crash outcomes: J29. |
 | Journal unreadable beyond a torn tail | Supervisor | Rename to `ops.corrupt-<ts>.jsonl`, start a new journal with a `failed journal_corrupt` line, run from `current` (or `known-good`), report. |
 | `instance.json` missing or mismatched | Supervisor | Refuse (exit 78); only `ham-bridge setup` can recreate it (Phase 2 conversion rules). |
@@ -790,6 +836,7 @@ setup, never by the scripts.
 | READY pipe | fd 3 | fd 3 | inherited handle |
 | Orphan prevention (§2.1) | lifeline pipe + `PR_SET_PDEATHSIG` + J0 reap | lifeline pipe + J0 reap (no parent-death signal) | lifeline pipe + job `KILL_ON_JOB_CLOSE` + J0 reap |
 | File-in-use | rules W1–W9 apply (harmless) | same | **required** |
+| Graceful stop | SIGTERM from systemd | SIGTERM from launchd | named stop event (setup/app/uninstaller), session-end notifications (HYPOTHESIS, verify in T10); `schtasks /End` = crash |
 | OS signature | none (minisign only) | Developer ID + Team ID (T8) | Authenticode publisher (T8) |
 | Unverified assumptions (verify in T15 before relying on them) | `/var/home` btrfs atomic symlink rename on Atomic | quarantine xattr on self-downloads; launchd restart semantics with exit 78 | `ReplaceFileW` under Defender real-time scanning; nested job objects inside the Task Scheduler job (report F12); rename-once of staging while Defender scans |
 
@@ -798,7 +845,7 @@ Service definitions are written once by `ham-bridge setup` (Phase 2) and point a
 
 ## 18. Test obligations (T15 checklist)
 
-Every row of §6.3 (J0–J33) is a failure-injection point: kill the supervisor (and, where
+Every row of §6.3 (J0–J35) is a failure-injection point: kill the supervisor (and, where
 noted, simulate power loss by dropping unsynced writes in a fake filesystem layer) at the
 step, restart, and assert the recovery outcome. Plus the report §7 Phase 1 list: failing
 candidate (READY timeout, crash in probation, unhealthy), failing rollback
@@ -813,7 +860,12 @@ supervisor handover (§8), torn `current.json`, torn journal line, snapshot-requ
 lifeline is the only layer), a supervisor that hangs after READY and one that exits 78
 during probation (§7.2 deadline), crash between `pointers_done` and exit 75 (J15a), fallback
 after commit and fallback with no journal (§7.6), service stop in every row of §7.5 (three
-clean stops during probation must not roll back), op_id replay after rotation (op index),
+clean stops during probation must not roll back; on Windows the clean stops use the
+§7.3 stop event, and logoff/reboot are tested as clean only if T10 verified session-end
+delivery, otherwise as unclean), retry of a previously failed tree in the same launcher
+lifetime (`retry_failed` → timer reinstalls it → must get a fresh `T_commit`, §7.2),
+`repair` of a damaged live tree (J34, `-r<n>` name), a slow orphan reap that still fits
+`T_ready` (J0), `cancel` with no active op and with a non-matching `target_op_id` (J35), op_id replay after rotation (op index),
 and the preflight-after-rename order under injected sharing violations (W2). All on Linux, macOS and Windows runners (REQ-OS-1).
 
 ## 19. Timeouts and limits (one table)
@@ -823,7 +875,9 @@ and the preflight-after-rename order under injected sharing violations (W2). All
 | `T_ready` (supervisor READY) | 30 s |
 | `T_commit` (launcher: unproven `current` must become known-good) | 270 s from launch = 30 + 60 + 120 + 60 margin |
 | Runtime `ready` after start | 60 s |
-| Probation | 120 s; max 3 **unclean** attempts (clean stops do not count, J16a) |
+| Probation | 120 s; max 3 **unclean** attempts (clean stops do not count, J16a; on Windows only stops through the §7.3 graceful paths are clean) |
+| J0 orphan reap | 5 s TERM grace, 20 s total (fits in `T_ready`) |
+| Windows graceful stop | stop event: launcher waits 20 s, callers wait 25 s before `schtasks /End`; session end: 4 s |
 | Agent wait (timer ops) | 2 h (`force_at`) |
 | Session stop grace / process exit wait | 10 s / 30 s |
 | Windows sharing-violation retries | pointer read 10 s; replace/rename 60 s |
