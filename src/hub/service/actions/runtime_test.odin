@@ -45,6 +45,57 @@ runtime_start_scenario :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect(t,f.runtime.thread==nil && f.runtime.options.nats_url=="")
  testing.expect_value(t,f.routes,1)
 }
+
+@(test)
+test_matcher_consumer_default_options :: proc(t:^testing.T) {
+ defer nats.shutdown(5000)
+ server,conn,ok:=runtime_test_server(t)
+ defer natstest.destroy(&server);defer nats.destroy(conn)
+ if !ok do return
+ err:=nats.consumer_add(conn,matcher_consumer_config(0))
+ testing.expect_value(t,err.status,i32(0))
+ testing.expect_value(t,matcher_consumer_config(0).max_deliver,i64(10))
+ testing.expect_value(t,matcher_consumer_config(-1).max_deliver,i64(10))
+ testing.expect_value(t,matcher_consumer_config(8).max_deliver,i64(8))
+}
+
+@(test)
+test_matcher_setup_log_rate_limit :: proc(t:^testing.T) {
+ gate:Setup_Log_Gate
+ testing.expect(t,setup_log_due(&gate,0))
+ testing.expect(t,!setup_log_due(&gate,i64(time.Second)))
+ testing.expect(t,!setup_log_due(&gate,i64(30*time.Second)-1))
+ testing.expect(t,setup_log_due(&gate,i64(30*time.Second)))
+ testing.expect(t,!setup_log_due(&gate,i64(31*time.Second)))
+ testing.expect(t,setup_log_due(&gate,i64(60*time.Second)))
+}
+
+runtime_default_start_scenario :: proc(t:^testing.T,f:^Action_Test) {
+ server,conn,ok:=runtime_test_server(t)
+ defer natstest.destroy(&server);defer nats.destroy(conn)
+ if !ok do return
+ // Exercise production startup: no pre-created consumer and no explicit max_deliver.
+ testing.expect(t,start(&f.runtime,f.runtime.svc,f.runtime.router,{nats_url=server.url}))
+ defer stop(&f.runtime)
+ ready:=false
+ at:=time.tick_now()
+ for time.tick_since(at)<5*time.Second {
+  _,err:=nats.consumer_state(conn,"HEIM_EVENTS","hub_action_matcher")
+  if err.status==0 {ready=true;break}
+  time.sleep(10*time.Millisecond)
+ }
+ if !testing.expect(t,ready) do return
+ _,err:=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"default-start","type":"chain.state","owner_user_id":"owner","data":{"state":"completed"}}`))
+ testing.expect_value(t,err.status,i32(0))
+ testing.expect(t,runtime_test_wait(f,"routed"))
+ stop(&f.runtime)
+ testing.expect_value(t,f.routes,1)
+}
+@(test)
+test_runtime_default_options_create_matcher_and_consume :: proc(t:^testing.T) {
+ action_test_case(t,runtime_default_start_scenario)
+ testing.expect_value(t,nats.shutdown(5000).status,i32(0))
+}
 runtime_poison_scenario :: proc(t:^testing.T,f:^Action_Test) {
  server,conn,ok:=runtime_test_server(t)
  defer natstest.destroy(&server);defer nats.destroy(conn)
