@@ -104,7 +104,7 @@ delete_drafts() {
   local id draft
   while read -r id draft; do
     [ "$draft" = true ] || continue
-    echo "Deleting unpublished draft $id of $1 left by an earlier run."
+    echo "Deleting unpublished draft $id of $1 (left by an earlier run or attempt)."
     retry_transient "Delete draft $id" delete_release "$id" || exit 1
   done < "$work/tagged"
 }
@@ -188,15 +188,17 @@ cmd_publish() {
   refuse_if_published "$tag"
   delete_drafts "$tag"
 
-  # Create + upload is one retry unit: a failed attempt's draft is deleted by
-  # id and the next attempt starts from nothing.
+  # Create + upload is one retry unit. Every attempt after the first deletes
+  # EVERY draft for the tag, not just the id it saw: a POST can be applied
+  # server-side yet answer 502/timeout, leaving a draft whose id we never got.
+  # Safe because the job-level concurrency group serialises runs per version.
   release_id=""
+  create_attempted=false
   create_and_upload() {
-    if [ -n "$release_id" ]; then
-      delete_release "$release_id" || return $?
-      release_id=""
-    fi
+    release_id=""
     refuse_if_published "$tag"
+    if [ "$create_attempted" = true ]; then delete_drafts "$tag"; fi
+    create_attempted=true
     gh api -X POST "$api" -f tag_name="$tag" -f target_commitish="$commit" -f name="$tag" \
       -F draft=true -F prerelease="$prerelease" -F body=@"$notes" > "$work/created.json" || return $?
     release_id="$(jq -r .id "$work/created.json")"
@@ -210,8 +212,9 @@ cmd_publish() {
     esac
     for file in "$@"; do
       name="$(basename "$file")"
+      # Percent-encode: a '+' (SemVer build metadata) would otherwise arrive as a space.
       gh api -X POST -H 'Content-Type: application/octet-stream' --input "$file" \
-        "$upload_url?name=$name" > /dev/null || return $?
+        "$upload_url?name=$(jq -rn --arg n "$name" '$n|@uri')" > /dev/null || return $?
       echo "  uploaded $name"
     done
   }

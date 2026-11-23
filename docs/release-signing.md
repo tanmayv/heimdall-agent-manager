@@ -303,7 +303,9 @@ It runs `publish-release.sh` and `check-promotion.sh` against a stateful fake
 - a re-run on a published tag exits 3 with zero write calls and the assets
   unchanged;
 - every leftover draft for the tag is deleted by id;
-- a failed upload is retried from a new draft;
+- a failed upload, or a create that GitHub applied but answered with an
+  error, is retried from a new draft, and no orphan draft is left behind;
+- asset names are percent-encoded in the upload URL (`+` survives);
 - a draft that another run swapped in just before publishing is never
   published;
 - a digest mismatch blocks publishing;

@@ -28,6 +28,7 @@ REPO = "o/r"
 # attestation` subcommands the scripts use. State lives in $FAKE_GH_STATE:
 # {"next_id": n, "releases": [{"id", "tag", "draft", "prerelease", "immutable",
 #  "assets": [{"id", "name", "blob"}]}]}. Faults via env:
+#   FAKE_GH_CREATE_FAIL=1    the first create is applied, then answers HTTP 502
 #   FAKE_GH_UPLOAD_FAIL=1    the 2nd upload of the run fails once with HTTP 502
 #   FAKE_GH_PATCH_FAIL=1     the first PATCH is applied, then answers HTTP 502
 #   FAKE_GH_RACE=1           right after publish's pre-PATCH read, another run
@@ -112,6 +113,7 @@ if group == "api":
         else: endpoint = a; i += 1
     base = f"repos/{REPO}/releases"
     m_up = re.fullmatch(rf"https://uploads\.github\.com/repos/{REPO}/releases/(\d+)/assets\?name=(.+)", endpoint)
+    from urllib.parse import unquote_plus
     m_id = re.fullmatch(rf"{base}/(\d+)", endpoint)
     m_asset = re.fullmatch(rf"{base}/assets/(\d+)", endpoint)
     if method == "GET" and endpoint == f"{base}?per_page=100":
@@ -125,6 +127,8 @@ if group == "api":
             fail("create must be a draft", 9)
         r = new_release(fields["tag_name"], True, fields["prerelease"] is True)
         r["target"] = fields["target_commitish"]; r["body"] = fields["body"]
+        if os.environ.get("FAKE_GH_CREATE_FAIL") and count("create") == 1:
+            fail("gh: Bad Gateway (HTTP 502)")
         print(json.dumps(to_json(r)))
     elif method == "POST" and m_up:
         r = by_id(int(m_up.group(1)))
@@ -133,7 +137,7 @@ if group == "api":
         n = count("upload")
         if os.environ.get("FAKE_GH_UPLOAD_FAIL") and n == 2:
             fail("gh: Bad Gateway (HTTP 502)")
-        name = m_up.group(2)
+        name = unquote_plus(m_up.group(2))  # how GitHub decodes the query
         data = Path(inp).read_bytes() + (b"tampered" if name == os.environ.get("FAKE_GH_TAMPER") else b"")
         aid = state["next_id"]; state["next_id"] += 1
         r["assets"].append({"id": aid, "name": name, "blob": store(data)})
@@ -380,6 +384,24 @@ class PublishReleaseTest(unittest.TestCase):
         self.assertPublishedExactly(self.files)
         self.assertEqual(verbs(self.gh.write_calls()),
                          ["create", "upload", "upload", "delete", "create"] + ["upload"] * 4 + ["patch"])
+
+    def test_create_applied_but_answering_502_leaves_no_orphan_draft(self):
+        self.gh.seed([])
+        r = self.publish(FAKE_GH_CREATE_FAIL="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertPublishedExactly(self.files)  # exactly one release, published, no drafts
+        self.assertEqual(verbs(self.gh.write_calls())[:3], ["create", "delete", "create"])
+
+    def test_asset_names_are_percent_encoded(self):
+        name = f"heimdall-local-linux-amd64-{TAG}+build.1.tar.gz"
+        data = b"plus"
+        (self.dist / name).write_bytes(data)
+        self.files[name] = data
+        self.gh.seed([])
+        r = self.publish()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertPublishedExactly(self.files)
+        self.assertTrue(any(e.endswith("+build.1.tar.gz".replace("+", "%2B")) for _, e in self.gh.write_calls()))
 
     def test_draft_replaced_by_another_run_is_never_published(self):
         """Another run deletes our draft and creates its own before we publish."""
