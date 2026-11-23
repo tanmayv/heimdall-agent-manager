@@ -50,35 +50,68 @@ test('new triggers retain their blackout input after removing an earlier trigger
     assert.equal((fields[0].querySelector('input[aria-label="Blackout dates"]') as HTMLInputElement).value, '');
     assert.deepEqual(current[0].config.blackout_dates, []);
     assert.equal(current[0].clientKey, keys[1]);
-    // Verify the surviving component still edits its own config, including a comma in progress.
-    await type(fields[0].querySelector('input[aria-label="Blackout dates"]')!, '2026-12-31,');
-    assert.equal((fields[0].querySelector('input[aria-label="Blackout dates"]') as HTMLInputElement).value, '2026-12-31,');
+    // Verify the surviving component still edits its own config, using the native date picker.
+    await type(fields[0].querySelector('input[aria-label="Blackout dates"]')!, '2026-12-31');
+    assert.equal((fields[0].querySelector('input[aria-label="Blackout dates"]') as HTMLInputElement).value, '');
     const form = emptyActionForm();
     form.triggers = current;
     const wire = actionFormBody(form).triggers!;
     assert.deepEqual(wire[0].config.blackout_dates, ['2026-12-31']);
     assert.equal('clientKey' in wire[0], false);
     await click(fields[0].querySelector('[role="combobox"][aria-label="Schedule mode"]'));
-    await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === 'interval')!);
-    await type(doc.querySelector('input[aria-label="Interval seconds"]')!, '120');
-    assert.equal(current[0].config.interval_s, 120);
-    await click(fields[0].querySelector('[role="combobox"][aria-label="Schedule mode"]'));
     await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === 'once')!);
-    assert.equal(current[0].config.mode, 'once');
-    assert.equal('interval_s' in current[0].config, false);
     assert.equal(current[0].config.run_at, '');
     const once = doc.querySelector('input[aria-label="Once at"]') as HTMLInputElement;
     assert.equal(once.value, '');
     assert.equal(doc.body.textContent?.includes('This time has passed'), false);
-    await type(once, '2000-01-01T00:00:00Z');
+    await type(once, '2000-01-01T00:00');
     assert.ok(doc.body.textContent?.includes('This time has passed; the action runs as soon as you save'));
-    await type(once, '2999-01-01T00:00:00Z');
+    await type(once, '2999-01-01T00:00');
     assert.equal(doc.body.textContent?.includes('This time has passed'), false);
-    form.triggers = current;
-    const saved = JSON.parse(JSON.stringify(actionFormBody(form)));
-    assert.equal(saved.triggers[0].config.mode, 'once');
-    assert.equal(saved.triggers[0].config.run_at, '2999-01-01T00:00:00Z');
-    assert.equal('interval_s' in saved.triggers[0].config, false);
+    assert.equal(once.type, 'datetime-local');
+    await type(doc.querySelector('input[aria-label="Time zone"]')!, 'Asia/Kolkata');
+    await type(doc.querySelector('input[aria-label="Once at"]')!, '2026-12-01T09:00');
+    assert.equal(current[0].config.run_at, '2026-12-01T09:00:00+05:30');
+    assert.ok(doc.body.textContent?.includes('2026-12-01T03:30:00.000Z'));
+    for (const label of ['Active from', 'Active until']) {
+      const input = doc.querySelector('input[aria-label="' + label + '"]') as HTMLInputElement;
+      await type(input, '2026-12-02T09:00');
+      const key = label === 'Active from' ? 'active_from' : 'active_until';
+      assert.equal(current[0].config[key], '2026-12-02T09:00:00+05:30');
+      await type(input, '');
+      assert.equal(current[0].config[key], '');
+    }
+    await click(doc.querySelector('[aria-label="Remove blackout date 2026-12-31"]'));
+    assert.deepEqual(current[0].config.blackout_dates, []);
+    const blackout = doc.querySelector('input[aria-label="Blackout dates"]') as HTMLInputElement;
+    assert.equal(blackout.type, 'date');
+    await type(blackout, '2026-12-25');
+    await type(blackout, '2026-12-25');
+    assert.deepEqual(current[0].config.blackout_dates, ['2026-12-25']);
+    // Reopen stored offset and fractional-second values, then edit an unrelated
+    // field and serialize through the actual action model.
+    const stored = { mode: 'once', timezone: 'Asia/Kolkata', run_at: '2026-12-01T03:30:12.123456789Z', active_from: '2026-11-01T09:00:00-04:00', active_until: '2027-01-01T00:00:00+00:00', blackout_dates: [] };
+    let reopened: any = stored;
+    const ScheduleEditor = (await import('../src/ui/components/actions/ScheduleEditor.tsx')).default;
+    function Reopened() {
+      const [config, setConfig] = React.useState<any>(stored);
+      reopened = config;
+      return React.createElement('form', {}, React.createElement(ScheduleEditor, { value: config, onChange: setConfig }));
+    }
+    await React.act(async () => root.render(React.createElement(Reopened)));
+    assert.equal(reopened, stored);
+    assert.equal((doc.querySelector('[aria-label="Once at"]') as HTMLInputElement).value, '2026-12-01T09:00:12.123');
+    await type(doc.querySelector('[aria-label="Blackout dates"]')!, '2026-12-25');
+    const reopenedForm = emptyActionForm();
+    reopenedForm.triggers = [{ kind: 'schedule', config: reopened }] as any;
+    const config = actionFormBody(reopenedForm).triggers![0].config;
+    for (const key of ['run_at', 'active_from', 'active_until']) assert.equal(config[key], (stored as any)[key]);
+    await type(doc.querySelector('[aria-label="Time zone"]')!, 'America/New_York');
+    await type(doc.querySelector('[aria-label="Active from"]')!, '2026-03-08T02:30');
+    assert.ok(doc.body.textContent?.includes('This time does not exist'));
+    assert.equal(doc.querySelector('form')!.checkValidity(), false);
+    await type(doc.querySelector('[aria-label="Active from"]')!, '');
+    assert.equal(doc.querySelector('form')!.checkValidity(), true);
   } finally {
     if (root) await React.act(async () => root.unmount());
     dom.window.close();
