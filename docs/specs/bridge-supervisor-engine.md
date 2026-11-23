@@ -561,11 +561,15 @@ vet-checked and unit-tested like the other packages). Choices this spec left ope
   `start_runtime` refuses (health `Exited`, nothing spawned) while one runs, and the idle
   watcher turns a failed stop into a fatal `stop_timeout` (exit 1 → launcher → J0 reap, or
   78 if it survives the reap too).
-- **What keeps J25 sticky.** `last_terminal` (the line `start` reads for sticky
-  `rollback_failed`, the adopt-without-target rule and the J30 carry) is taken only from
-  installing ops that did something: side ops and `rejected` / `noop` / `expired` /
-  `cancelled` lines (including `rejected rollback_failed` itself and J30's superseded
-  `noop`) never replace it.
+- **What keeps J25 sticky.** `start` decides sticky `rollback_failed` and the
+  adopt-without-target rule from `last_settled`: the last terminal line that decided what
+  the instance runs — `committed`, `rolled_back`, `rollback_failed`, or a `failed` adopt.
+  Side ops and every op that ended before the switch (`failed` download/verify/stop/
+  snapshot errors, `noop`, `cancelled`, `expired`, `rejected`) never change it, so a repair
+  or `install_version` that fails while in `rollback_failed` leaves the instance there; and
+  while it holds, `run_idle` and the pre-switch failure path of an activation return to
+  `Rollback_Failed` instead of starting the failed tree. (The J30 carry keeps reading the
+  last installing terminal line, `failed … interrupted_by` included.)
 - **Stop budget (§7.5).** On a service stop the host stops with 4 s session grace + 2 s
   TERM grace + 6 s wait (inside the 15 s budget, compile-time checked); the activation stop
   keeps §12's 10 s + 30 s.

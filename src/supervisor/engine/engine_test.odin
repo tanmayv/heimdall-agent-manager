@@ -773,6 +773,53 @@ test_rollback_failed_sticky_after_side_and_rejected_lines :: proc(t: ^testing.T)
 	}
 }
 
+// J25 stays sticky after an installing op that ends before the switch (T13b safety review
+// round 3): a failed install_version / repair (download_failed, interrupted_before_switch)
+// changed nothing, across restarts and in-process (a pre-switch failure of an activation
+// started from rollback_failed returns there without starting a runtime).
+@(test)
+test_rollback_failed_sticky_after_failed_install :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13b-sticky-failed")
+	defer world_destroy(&w)
+	from, to := two_trees(&w)
+	w.fake.behaviour[to.tree] = .Never_Ready
+	x, err := launch(&w)
+	handle(&w, x, err)
+	w.fake.behaviour[from.tree] = .Never_Ready
+	out := drive(&w, "op_bb", to)
+	testing.expect_value(t, out.state, "rollback_failed")
+	lines := []Line {
+		{op_id = "op_iv", action = "install_version", actor = "cli", state = "requested", to = {version = "0.6.2"}},
+		{op_id = "op_iv", action = "install_version", actor = "cli", state = "resolving", to = {version = "0.6.2"}},
+		{op_id = "op_iv", action = "install_version", actor = "cli", state = "failed", error = "download_failed", to = {version = "0.6.2"}},
+		{op_id = "op_rp", action = "repair", actor = "cli", state = "requested"},
+		{op_id = "op_rp", action = "repair", actor = "cli", state = "failed", error = "interrupted_before_switch"},
+	}
+	for l in lines do testing.expect(t, journal(&w.e, l) == nil)
+	for flavour in Crash_Flavour {
+		w.flavour = flavour
+		crash(&w)
+		x, err = launch(&w)
+		testing.expect(t, err == nil && x == .Run)
+		testing.expectf(t, w.e.phase == .Rollback_Failed, "phase after restart = %v (want Rollback_Failed)", w.e.phase)
+		testing.expectf(t, w.fake.running == "", "runtime started after restart: %q", w.fake.running)
+	}
+	// In-process: an activation from rollback_failed that fails before the switch
+	// (service stop at gate_closed) returns to Rollback_Failed, no runtime.
+	fixed := make_tree(w.root, Tree_Spec{version = "0.6.2", digit = 'c'})
+	testing.expect(t, begin_verified(&w.e, Activation{op_id = "op_try", action = "install_version", actor = "cli", to = fixed}) == nil)
+	w.fake.stop_flag = true
+	x, err = activate(&w.e)
+	w.fake.stop_flag = false
+	testing.expect(t, err == nil, "activate")
+	st := ""
+	for l in journal_lines(&w) do if l.op_id == "op_try" do st = l.state
+	testing.expect_value(t, st, "failed")
+	testing.expectf(t, w.e.phase == .Rollback_Failed, "phase after a pre-switch failure = %v", w.e.phase)
+	testing.expectf(t, w.fake.running == "", "runtime started: %q", w.fake.running)
+}
+
 // ---- adopt (§6.4: current unproven, no op explains it) ----
 
 @(private = "file")

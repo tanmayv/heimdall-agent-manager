@@ -12,6 +12,7 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:time"
 import lc "../../launcher/core"
@@ -50,10 +51,12 @@ World :: struct {
 	// When set, the bundle download drops this cancel intent into the inbox (it arrives
 	// while the download is in progress).
 	cancel_on_download: string,
+	no_bundle:          string, // tag whose bundle asset is missing (404)
 	// supervisor
 	s:         Service,
 	open:      bool,
 	exits:     [dynamic]int,
+	locked:    bool,
 }
 
 exe :: proc(name: string) -> string {
@@ -67,6 +70,12 @@ helper_bytes :: proc() -> ([]byte, bool) {
 	return data, err == nil
 }
 
+// Install-path tests run one at a time: with several test threads, one thread writing a
+// tree's executables while another forks lets the forked child hold the write fd briefly,
+// and exec of that file then fails with ETXTBSY (preflight_failed). The running supervisor
+// is single-threaded around extraction and preflight, so this is test-only.
+g_install_mutex: sync.Mutex
+
 world_init :: proc(w: ^World, t: ^testing.T) -> bool {
 	w.t = t
 	helper, ok := helper_bytes()
@@ -74,6 +83,8 @@ world_init :: proc(w: ^World, t: ^testing.T) -> bool {
 		log.warn("HEIMDALL_FETCH_FAKEVER not set: install paths skipped")
 		return false
 	}
+	sync.mutex_lock(&g_install_mutex)
+	w.locked = true
 	w.helper = helper
 	base, _ := os.temp_directory(context.temp_allocator)
 	root, err := os.make_directory_temp(base, "t13b-*", context.allocator)
@@ -92,6 +103,7 @@ world_init :: proc(w: ^World, t: ^testing.T) -> bool {
 }
 
 world_destroy :: proc(w: ^World) {
+	defer if w.locked do sync.mutex_unlock(&g_install_mutex)
 	if w.open do close(&w.s)
 	for &r in w.published do testkit.release_destroy(&r)
 	delete(w.published)
@@ -155,6 +167,7 @@ fake_download :: proc(user: rawptr, url: string, sink: fetch.Sink) -> int {
 		data: []byte
 		switch name {
 		case r.asset:
+			if r.tag == w.no_bundle do return 404
 			data = r.bundle
 			if w.cancel_on_download != "" {
 				id := w.cancel_on_download
@@ -759,6 +772,18 @@ test_rollback_failed_stays_sticky_in_service :: proc(t: ^testing.T) {
 	testing.expect_value(t, cc, "rollback_failed")
 	sk, _, _ := op_state(&w, "op_rf_check")
 	testing.expect_value(t, sk, "noop")
+
+	// An install_version allowed in rollback_failed that fails before the switch
+	// (download_failed: the bundle is gone) changes nothing (safety review round 3).
+	c := publish(&w, "v0.6.3")
+	w.behaviour[c.version] = .Good
+	w.no_bundle = c.tag
+	send_intent(&w, "op_rf_iv", intent_json(&w, "op_rf_iv", "install_version", `,"version":"v0.6.3"`))
+	run(&w, 20, proc(w: ^World) -> bool {return committed(w, "op_rf_iv")})
+	si, ci, _ := op_state(&w, "op_rf_iv")
+	testing.expect_value(t, si, "failed")
+	testing.expect_value(t, ci, "download_failed")
+	testing.expect_value(t, w.s.eng.phase, engine.Phase.Rollback_Failed)
 
 	starts := len(w.starts)
 	testing.expect_value(t, launch(&w), -1) // restart (crash / reboot)

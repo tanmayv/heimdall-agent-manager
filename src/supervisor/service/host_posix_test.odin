@@ -5,6 +5,7 @@ package service
 // and no runtime may start beside it; the idle watcher escalates (fatal stop_timeout).
 
 import "core:os"
+import "core:sync"
 import "core:testing"
 import "../engine"
 import "../procs"
@@ -12,6 +13,8 @@ import "../procs"
 @(test)
 test_stop_survivor_is_kept_and_blocks_start :: proc(t: ^testing.T) {
 	defer free_all(context.temp_allocator)
+	sync.mutex_lock(&g_install_mutex) // writes and execs a file: see world_init
+	defer sync.mutex_unlock(&g_install_mutex)
 	base, _ := os.temp_directory(context.temp_allocator)
 	root, _ := os.make_directory_temp(base, "t13b-host-*", context.temp_allocator)
 	defer os.remove_all(root)

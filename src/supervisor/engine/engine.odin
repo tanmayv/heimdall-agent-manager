@@ -203,7 +203,10 @@ Engine :: struct {
 	hub_seen:       bool,
 	refuse_reason:  string,
 	// Last terminal line in the journal (sticky rollback_failed, adopt without a target).
-	last_terminal:  Maybe(Line),
+	last_terminal:  Maybe(Line), // for the J30 carry (gate.odin interrupt_pending)
+	// Last line that settled what the instance runs (committed, rolled_back,
+	// rollback_failed, failed adopt): the only line J25 stickiness and the adopt rule read.
+	last_settled:   Maybe(Line),
 	// committed / rolled_back failed with a retryable write; retried on the next tick.
 	finish_pending: bool,
 	// First fatal error (Error contract); non-nil = poisoned.
@@ -266,6 +269,7 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 		// A terminal line of another op (J30 `noop superseded_by`) leaves the active op alone.
 		if a, has := e.active.?; !has || a.op_id == line.op_id do e.active = nil
 		if decides_state(line) do e.last_terminal = clone_line(e, line)
+		if settles(line) do e.last_settled = clone_line(e, line)
 		// The index is reconciled from the journal at every start (§6.1), so only a crash
 		// stops here; a failed index write (e.g. fs_busy) does not undo a durable result.
 		if err := index_add(e, line.op_id, line.state, line.ts); err != nil && is_crash(err) do return err
@@ -300,6 +304,31 @@ decides_state :: proc(l: Line) -> bool {
 		return false
 	}
 	return true
+}
+
+// settles: a terminal line that decided what the instance runs. Only these keep or end J25
+// rollback_failed and the adopt-without-target rule. An op that ended before the switch —
+// `failed` (download_failed, interrupted_before_switch, stop_timeout, …), `noop`,
+// `cancelled`, `expired`, `rejected` — and every side op changed nothing, so a repair or
+// install_version that fails while in rollback_failed leaves the instance in it (T13b
+// safety review round 3).
+settles :: proc(l: Line) -> bool {
+	if is_side_action(l.action) do return false
+	switch l.state {
+	case "committed", "rolled_back", "rollback_failed":
+		return true
+	case "failed":
+		return l.action == "adopt" // a failed adopt probation settled on running `to`
+	}
+	return false
+}
+
+// sticky_failed: J25 — the last settled line is rollback_failed naming the launched tree.
+// While it holds, no runtime is started (run_idle and the pre-switch failure paths return
+// to Rollback_Failed instead).
+sticky_failed :: proc(e: ^Engine) -> bool {
+	lt, ok := e.last_settled.?
+	return ok && lt.state == "rollback_failed" && e.launched != "" && (lt.from.tree == e.launched || lt.to.tree == e.launched)
 }
 
 // SIDE_ACTIONS: ops that never install and may run beside an active op (§10 coalescing).
@@ -544,11 +573,15 @@ load_journal :: proc(e: ^Engine) -> Error {
 	open_ops_reset(e)
 	for l in open_lines(r.lines[:]) do open_ops_note(e, l)
 	if op, ok := pick_active(non_terminal_ops(e)); ok do e.active = clone_line(e, op)
-	last_t: i64 = -1
+	last_t, last_s: i64 = -1, -1
 	for l in r.lines {
 		if is_terminal(l.state) && decides_state(l) && l.seq > last_t {
 			last_t = l.seq
 			e.last_terminal = clone_line(e, l)
+		}
+		if is_terminal(l.state) && settles(l) && l.seq > last_s {
+			last_s = l.seq
+			e.last_settled = clone_line(e, l)
 		}
 	}
 	if err := reconcile_index(e, r.lines[:]); err != nil do return err
@@ -716,7 +749,7 @@ start :: proc(e: ^Engine, launched: string, mode: Mode) -> (x: Exit, err: Error)
 		e.active = nil
 	}
 	if !has_op {
-		lt, has_lt := e.last_terminal.?
+		lt, has_lt := e.last_settled.?
 		if has_lt && lt.state == "rollback_failed" && (lt.from.tree == C || lt.to.tree == C) {
 			// J25 is sticky: the last op that names `current` ended rollback_failed and no op
 			// came after it, so runtime restarts stay stopped across supervisor restarts and
@@ -855,6 +888,13 @@ start_runtime :: proc(e: ^Engine, tree: string) -> bool {
 
 @(private)
 run_idle :: proc(e: ^Engine) -> (Exit, Error) {
+	if sticky_failed(e) {
+		// J25: an op that ended before the switch (or a start that resumed one) never
+		// starts the tree whose rollback failed.
+		e.phase = .Rollback_Failed
+		if lt, ok := e.last_settled.?; ok do write_status(e, lt)
+		return .Run, nil
+	}
 	e.phase = .Idle
 	start_runtime(e, e.launched)
 	return .Run, nil
@@ -1011,6 +1051,11 @@ activate_steps :: proc(e: ^Engine, op: Line, rule: Schema_Rule, superseded: Line
 	before_switch_fail :: proc(e: ^Engine, cur: Line, code: string, children_stopped: bool) -> (Exit, Error) {
 		if err := journal(e, terminal_of(cur, "failed", code)); err != nil do return .Run, err
 		if crashed(e.inj) do return .Run, crash_error("after failed")
+		if sticky_failed(e) {
+			// J25: in rollback_failed nothing ran before this attempt; nothing runs after it.
+			e.phase = .Rollback_Failed
+			return .Run, nil
+		}
 		if !children_stopped {
 			// The runtime still runs (nothing was stopped): reopen its launch admission
 			// instead of starting a second runtime next to it.
