@@ -154,6 +154,18 @@ bridge_agent_runtime_profile :: proc(profile: Bridge_Provider_Profile) -> agent_
 bridge_runtime_agent_argv_for_profile :: proc(profile: Bridge_Provider_Profile, model, agent_token, agent_instance_id: string, permission_mode := agent_runtime.PERMISSION_MODE_YOLO) -> []string {
 	if strings.trim_space(model) == "" do return nil
 	rp := bridge_agent_runtime_profile(profile)
+	// Closing a native Codex PTY must end its execution, not just detach a
+	// client from a still-running shared daemon thread. Disabling the feature
+	// alone prompts when an existing daemon has different settings; --no-daemon
+	// explicitly bypasses even an already-running daemon.
+	args: [dynamic]string
+	defer delete(args)
+	if bridge_extension_canonical_provider(profile.name) == "codex" && len(profile.command) > 0 && bridge_codex_no_daemon_supported(profile.command[0]) {
+		args = make([dynamic]string, 0, len(rp.extra_args) + 1)
+		append(&args, ..rp.extra_args)
+		append(&args, "--no-daemon")
+		rp.extra_args = args[:]
+	}
 	// T6: a context rollover restart tells the agent to read its previous_context.
 	rp.starter_prompt_suffix = bridge_rollover_launch_prompt_line(agent_instance_id)
 	return agent_runtime.build_agent_command(rp, model, bridge_config.daemon_url, agent_token, agent_instance_id, permission_mode)
