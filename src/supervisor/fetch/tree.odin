@@ -17,6 +17,7 @@ package fetch
 
 import "core:crypto/sha2"
 import "core:encoding/json"
+import "core:io"
 import "core:os"
 import "core:slice"
 import "core:strconv"
@@ -55,8 +56,12 @@ DEFAULT_RETRY :: Retry_Policy {
 
 // is_busy_error: the errors W3 retries (Windows sharing/lock violations and
 // access denied while a scanner holds the file; EBUSY/ETXTBSY elsewhere).
+// core:os maps ERROR_ACCESS_DENIED and ERROR_SHARING_VIOLATION to
+// io.Error.Permission_Denied on Windows; other codes arrive as Platform_Error.
 is_busy_error :: proc(e: os.Error) -> bool {
 	#partial switch v in e {
+	case io.Error:
+		return ODIN_OS == .Windows && v == .Permission_Denied
 	case os.Platform_Error:
 		when ODIN_OS == .Windows {
 			code := u32(v)
@@ -177,7 +182,7 @@ tree_base_name :: proc(m: ^Manifest) -> string {
 read_tree_json :: proc(tree_dir: string) -> (entries: []Tree_Entry, ok: bool) {
 	data, rerr := read_capped(native_join(tree_dir, TREE_JSON), 16 << 20, .Tree_Damaged)
 	if rerr != nil do return nil, false
-	v, perr := json.parse(data, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	v, perr := json.parse(data, .JSON, true, context.temp_allocator) // strict JSON (the default is JSON5)
 	if perr != nil do return nil, false
 	files, fok := v.(json.Object)["files"].(json.Array)
 	if !fok do return nil, false
@@ -215,7 +220,7 @@ tree_intact :: proc(tree_dir: string, m: ^Manifest) -> bool {
 	if !os.exists(native_join(tree_dir, COMPLETE_FILE)) do return false
 	data, rerr := read_capped(native_join(tree_dir, RELEASE_JSON), MAX_MANIFEST_BYTES, .Tree_Damaged)
 	if rerr != nil do return false
-	v, perr := json.parse(data, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	v, perr := json.parse(data, .JSON, true, context.temp_allocator) // strict JSON (the default is JSON5)
 	if perr != nil do return false
 	obj, _ := v.(json.Object)
 	version, _ := obj["version"].(json.String)

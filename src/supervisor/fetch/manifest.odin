@@ -240,7 +240,7 @@ verify_manifest :: proc(
 	}
 
 	// Step 4: canonical form and content.
-	value, perr := json.parse(manifest_bytes, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	value, perr := json.parse(manifest_bytes, .JSON, true, context.temp_allocator) // strict JSON (the default is JSON5)
 	if perr != nil do return m, fail(.Manifest_Invalid, "manifest is not JSON (%v)", perr)
 	canon, canon_ok := canonical_json(value)
 	if !canon_ok || canon != string(manifest_bytes) do return m, fail(.Manifest_Invalid, "manifest is not in canonical form")
@@ -427,10 +427,14 @@ check_manifest_shape :: proc(value: json.Value, m: ^Manifest) -> Error {
 
 @(private)
 parse_trusted_comment :: proc(comment, tag: string, m: ^Manifest) -> Error {
-	value, perr := json.parse_string(comment, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	value, perr := json.parse_string(comment, .JSON, true, context.temp_allocator) // strict JSON (the default is JSON5)
 	if perr != nil do return fail(.Manifest_Invalid, "trusted comment: invalid JSON")
 	obj, is_obj := value.(json.Object)
 	if !is_obj do return fail(.Manifest_Invalid, "trusted comment: not an object")
+	// release-manifest.py writes it canonically (sorted keys, no spaces);
+	// anything else did not come from the release workflow.
+	canon, canon_ok := canonical_json(value)
+	if !canon_ok || canon[:len(canon) - 1] != comment do return fail(.Manifest_Invalid, "trusted comment is not in canonical form")
 	version, _ := obj["version"].(json.String)
 	if version != tag do return fail(.Manifest_Invalid, "trusted comment version %q does not match manifest tag %s", version, tag)
 	seq, _, seq_int := get_int(obj, "seq")

@@ -768,22 +768,36 @@ manifest with `min_engine ≥ 1` that lacks any of them (`manifest_incomplete`).
 
 Verification, each step fail-closed (installed version keeps running, op `failed <code>`):
 
-1. Download `heimdall-release-manifest.json` and `.minisig` (size cap 1 MiB each).
+Implemented by `src/supervisor/fetch` (T12, `prepare_release`); the failure code of each step
+is in parentheses.
+
+1. Download `heimdall-release-manifest.json` and `.minisig` (size cap 1 MiB each;
+   `download_failed`).
 2. Signature key id is one of the keys pinned **in the running supervisor**; else
    `key_unpinned`. For `fast`, and for `stable` only in this case, the resolver may instead
    pick the highest eligible release whose manifest verifies with a pinned key (a "bridging"
    release, `docs/release-signing.md` rotation section on the T5 branch); if none →
    `key_unpinned`.
-3. minisign verify (Ed25519, prehashed) of manifest + trusted comment.
-4. Manifest is canonical, its `key_id` and tag match the trusted comment; `expires` not
+3. minisign verify (Ed25519, prehashed `ED` only; the legacy `Ed` form is refused) of manifest
+   + trusted comment (`signature_invalid`).
+4. Manifest is canonical (and so is the trusted comment, as `release-manifest.py` writes it),
+   schema 1, its `key_id` and tag match the trusted comment (`manifest_invalid`); it names the
+   release's tag and this target's asset (`manifest_mismatch`, §13.1); engine fields present
+   when `min_engine ≥ 1` (`manifest_incomplete`, §13.4); `expires` not
    passed **for a new candidate** (`manifest_expired`). Trees already installed are not
    re-checked for expiry (rollback must work offline and late).
 5. Eligibility §13.2 (uses manifest fields).
 6. Download the bundle (`.part`, size cap = manifest size; abort as soon as exceeded).
-   Size equal, SHA-256 equal → rename (W9).
+   Size equal, SHA-256 equal → rename (W9); otherwise `bundle_mismatch` (transport errors
+   `download_failed`). If `releases/<ver>-<d12>/` is already valid and undamaged, it is reused
+   and nothing is downloaded (J5).
 7. Safe extraction into `.staging-<op_id>`: regular files and directories only; reject
    absolute paths, `..`, symlinks, hard links, device files; total uncompressed ≤ 512 MiB,
-   ≤ 10 000 entries (`archive_unsafe`).
+   ≤ 10 000 entries (`archive_unsafe`). The limits are enforced while decompressing (own
+   streaming inflater; a compression bomb stops at the cap). Also refused: Windows-unsafe
+   names (`\`, `:`, `<>"|?*`, device names, trailing `.`/space), non-ASCII names, names
+   equal under case folding, a file below a file, and the engine's own root names
+   (`tree.json`, `.complete`, `release.json[.minisig]`).
 8. OS signature where available: Windows Authenticode publisher on every `.exe` (T8);
    macOS `codesign --verify --strict` + Developer ID Team ID on every Mach-O (T8). Unsigned
    while T8 is pending → policy flag `require_os_signature` (default **off** until T8 ships,
@@ -794,7 +808,8 @@ Verification, each step fail-closed (installed version keeps running, op `failed
    tree is not valid (no `.complete`), so no pointer can name it.
 10. `--version` preflight of the tree's `ham-supervisor` and `ham-bridge`, run from the final
     tree (must print the manifest version, 10 s timeout); wait until both processes have
-    exited (Windows: process handles signalled).
+    exited (Windows: process handles signalled). Failure (`preflight_failed`) deletes the
+    tree again (W5); it never had `.complete`.
 11. Write `.complete`, fsync it and the directory. The tree is now valid (§4).
 
 Health (probation, after handover):

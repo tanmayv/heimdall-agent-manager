@@ -175,6 +175,11 @@ test_validly_signed_but_bad_manifests_are_refused :: proc(t: ^testing.T) {
 	expect_code(t, err, .Manifest_Invalid)
 	_, err = sign_and_verify(&k, good, `not json`, {now = 6})
 	expect_code(t, err, .Manifest_Invalid)
+	// JSON5 forms (Odin's default parser spec) are not JSON: refused.
+	_, err = sign_and_verify(&k, good, `{expires:1000,seq:5,version:'v1.2.3'}`, {now = 6})
+	expect_code(t, err, .Manifest_Invalid)
+	_, err = sign_and_verify(&k, good, `{"expires":1000,"seq":5,"version":"v1.2.3",}`, {now = 6})
+	expect_code(t, err, .Manifest_Invalid)
 
 	// Shape: bad tag, version, digest, asset path.
 	bad_specs := []Manifest_Spec {
