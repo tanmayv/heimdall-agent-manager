@@ -4,6 +4,7 @@ package main
 import "base:runtime"
 import "core:c"
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:net"
 import "core:time"
@@ -13,6 +14,20 @@ import "core:sys/posix"
 import "core:testing"
 import "core:thread"
 
+// Track caller-owned allocations through the real launcher, including the host
+// handshake. Persistent runtime/lifecycle records deliberately use their heap.
+startup_wake_tracked_launch :: proc(t: ^testing.T, command: string, bot_delivery := false) -> (bool, string, Bridge_Error) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, runtime.heap_allocator())
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	ok, detail, err := bridge_runtime_launch_agent("tracked", command, bot_delivery = bot_delivery)
+	testing.expect(t, track.total_allocation_count > 0, "real launcher must allocate through tracker")
+	testing.expect_value(t, len(track.allocation_map), 0)
+	testing.expect_value(t, len(track.bad_free_array), 0)
+	return ok, detail, err
+}
+
 // Exercise the real launch entry point against a minimal acknowledged PTY host.
 // A duplicate wake must confirm the actual spawn key: no rotation/bootstrap/Spawn.
 @(test)
@@ -20,6 +35,8 @@ startup_wake_duplicate_preserves_child_and_stale_or_stopped_is_denied :: proc(t:
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
+	missing_ok, _, _ := startup_wake_tracked_launch(t, `{"agent_instance_id":"   "}`)
+	testing.expect(t, !missing_ok, "whitespace identifier is rejected without leaking its clone")
 	id := "startup_wake_bridge"
 	was_started := sync.atomic_exchange(&bridge_startup_worker_started, true)
 	defer sync.atomic_store(&bridge_startup_worker_started, was_started)
@@ -89,7 +106,7 @@ startup_wake_duplicate_preserves_child_and_stale_or_stopped_is_denied :: proc(t:
 	command := bridge_wake_launch_command_json("wake", id, "task", "worker", "future", "model", "agent", "name", "chain", "title", "coordinator", "", "", run_count = 4)
 	defer delete(command)
 	for i in 0..<2 {
-		ok, detail, _ := bridge_runtime_launch_agent("wake", command)
+		ok, detail, _ := startup_wake_tracked_launch(t, command)
 		testing.expect(t, ok, detail)
 		if i == 0 {
 			sync.mutex_lock(&bridge_runtime_mutex)
@@ -113,9 +130,9 @@ startup_wake_duplicate_preserves_child_and_stale_or_stopped_is_denied :: proc(t:
 	sync.mutex_unlock(&bridge_local_token_mutex)
 	old := bridge_wake_launch_command_json("old", id, "task", "worker", "future", "model", "agent", "name", "chain", "title", "coordinator", "", "", run_count = 3)
 	defer delete(old)
-	ok, detail, _ := bridge_runtime_launch_agent("old", old)
+	ok, detail, _ := startup_wake_tracked_launch(t, old)
 	testing.expect(t, !ok && strings.contains(detail, "superseded"), "delayed old wake cannot replace child")
-	ok, detail, _ = bridge_runtime_launch_agent("old", old, bot_delivery = true)
+	ok, detail, _ = startup_wake_tracked_launch(t, old, bot_delivery = true)
 	testing.expect(t, !ok && strings.contains(detail, "superseded"), "a stale bot descriptor cannot replace a newer child")
 	bridge_runtime_mark_stop_intent(id)
 	ok, detail, _ = bridge_runtime_launch_agent("wake", command)

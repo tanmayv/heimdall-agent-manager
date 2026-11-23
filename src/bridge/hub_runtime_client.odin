@@ -2748,6 +2748,9 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	if !bridge_auto_update_launch_enter() do return false, "bridge is applying an automatic update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
 	defer bridge_auto_update_launch_leave()
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
+	// Retained lifecycle, token and runtime records clone their identifiers.
+	// Failure reporting and lifecycle cleanup must run before this free.
+	defer delete(instance_id)
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id", bridge_error(.agent_launch_failed, .unsupported)
 	lifecycle := bridge_agent_lifecycle_enter(instance_id)
 	defer bridge_agent_lifecycle_leave(lifecycle)
