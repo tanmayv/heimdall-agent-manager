@@ -126,6 +126,8 @@ bridge_auto_update_launch_enter :: proc() -> bool {
 	sync.mutex_lock(&bridge_auto_update_mutex)
 	defer sync.mutex_unlock(&bridge_auto_update_mutex)
 	if bridge_runtime_now_ms() < bridge_auto_update_reserved_until do return false
+	// The supervisor's agent gate closed admission before an activation (supervisor_gate.odin).
+	if bridge_gate_admission_closed do return false
 	bridge_auto_update_launches += 1
 	return true
 }

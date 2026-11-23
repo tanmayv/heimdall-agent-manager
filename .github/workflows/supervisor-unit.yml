@@ -11,12 +11,16 @@ on:
       - 'src/supervisor/**'
       # src/supervisor/engine reads pointers with the launcher's own code.
       - 'src/launcher/core/**'
+      # src/supervisor/runtimectl dials the runtime with the shared socket library.
+      - 'src/lib/local_socket/**'
       - '.github/workflows/supervisor-unit.yml'
   pull_request:
     paths:
       - 'src/supervisor/**'
       # src/supervisor/engine reads pointers with the launcher's own code.
       - 'src/launcher/core/**'
+      # src/supervisor/runtimectl dials the runtime with the shared socket library.
+      - 'src/lib/local_socket/**'
       - '.github/workflows/supervisor-unit.yml'
   workflow_dispatch:
 permissions:
@@ -26,7 +30,7 @@ concurrency:
   cancel-in-progress: true
 env:
   # Packages under test; one `odin test` run each.
-  PACKAGES: src/supervisor/resolver src/supervisor/engine
+  PACKAGES: src/supervisor/resolver src/supervisor/engine src/supervisor/procs src/supervisor/runtimectl
 jobs:
   unix:
     name: odin test (${{ matrix.os }})

@@ -2747,7 +2747,7 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 // launch_agent command. On failure `err` carries the typed code + class so callers
 // decide retry/park/fail from the class, never from the `detail` text.
 bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0, bot_delivery := false) -> (ok: bool, detail: string, err: Bridge_Error) {
-	if !bridge_auto_update_launch_enter() do return false, "bridge is applying an automatic update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
+	if !bridge_auto_update_launch_enter() do return false, "bridge is applying an update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
 	defer bridge_auto_update_launch_leave()
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id", bridge_error(.agent_launch_failed, .unsupported)
@@ -3070,11 +3070,16 @@ bridge_runtime_ensure_local_endpoint :: proc() -> (string, bool) {
 	if bridge_config.local_endpoint_port == 0 do bridge_config.local_endpoint_port = 49324
 	local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
 	if !bridge_runtime_local_endpoint_started {
+		bridge_supervisor_control_mint()
 		bridge_runtime_local_endpoint_unix_started = bridge_local_endpoint_start_unix(local_config)
 		bridge_runtime_local_endpoint_loopback_started = bridge_local_endpoint_start_loopback(local_config)
 		bridge_runtime_local_endpoint_started = bridge_runtime_local_endpoint_unix_started || bridge_runtime_local_endpoint_loopback_started
 		if bridge_runtime_local_endpoint_started {
 			bridge_runtime_local_endpoint_descriptor = bridge_runtime_select_endpoint(local_config)
+			// The supervisor reaches the agent gate through this endpoint (supervisor_gate.odin).
+			if !bridge_supervisor_control_publish(bridge_config.local_endpoint_run_dir, bridge_runtime_local_endpoint_descriptor) {
+				fmt.println("bridge supervisor gate: cannot write", SUPERVISOR_CONTROL_FILE, "in", bridge_config.local_endpoint_run_dir)
+			}
 		}
 	}
 	if !bridge_runtime_local_endpoint_started do return "", false

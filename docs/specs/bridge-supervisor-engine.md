@@ -412,7 +412,7 @@ The launcher's part of recovery is §7.
 | J27 | `set_channel` / `set_auto_update` / `retry_failed`: `requested` → `applied` | Order: `requested` line → `update.json` / `pins.json` replaced atomically, carrying `"last_op":"<op_id>"` → `applied` line → op index | File not yet written (`last_op` ≠ `op_id`) → write it (for `set_channel`, `revision` = stored + 1 only in this case, so a replay never bumps twice). File written, `applied` missing → write `applied`. |
 | J28 | `rollback_to_previous`: `requested` → `verifying` → `verified` | `previous` valid and ≠ `current`; tree `tree.json` sizes match (read-only check, no network) | Rerun the check (read-only). Check fails → `failed no_previous` / `tree_damaged` (status suggests `repair`). From `verified` on, identical to an install with `from` = `current`, `to` = `previous` (J10–J25); the newer tree `from` is pinned (`user_rollback`) **only after `current := to` has landed**, written together with the `activating/pointers_done` line (pin first, then the line; J21-style idempotent re-add on replay), so the timer does not re-install it; `retry_failed` clears the pin. An op that ends before the switch (`failed interrupted_before_switch`, `service_stopped`, J10–J13, §7.5) never pins the still-running tree. |
 | J29 | Offline `ham-supervisor repair` (CLI, §16) | Holds `.install.lock` (setup) + `engine.lock`; service stopped. Lines: `requested` → `verifying` → `verified` → `activating` sub-steps `stopped` (J0 reap only) → `snapshot` → `pointers_begin` → `previous := current` if valid else the new tree → `current := new` → `pointers_done` → `handover`; CLI exits 0, releasing the locks; setup starts the service | Before the CLI starts its own op it runs J0 and resolves any active op exactly as a supervisor start would. CLI crash before `current := new` → the active op ends `failed interrupted_before_switch` at the next CLI run or supervisor start, and setup reports exit 1 (re-runnable). CLI crash after `current := new` → the service's supervisor of `new` (launched with `C` = `new` ≠ `K`) finds `activating` with `current` = its tree → J15/J16 probation → `committed`, `known-good := new`. `new` fails → launcher fallback to `previous` (may itself be broken → offline, setup reports the result it saw, exit 1/7). |
-| J30 | `update_now` arrives while the active op is `waiting_for_idle` (supersede) | Order: active op line `activating/gate_closed` with `"interrupted_by":"<new op_id>"` → new op single line `noop superseded_by <active op_id>` → op index → inbox file deleted | Crash after the first line: the inbox file is still there; on re-read the active op is past waiting → new op closes `noop superseded_by` (same result). Crash before the first line: the active op is still waiting and the intent is re-read → same outcome. |
+| J30 | `update_now` arrives while the active op is `waiting_for_idle` (supersede) | Order: active op line `activating/gate_closed` with `"interrupted_by":"<new op_id>"` → new op single line `noop` with note `superseded_by <active op_id>` → op index → inbox file deleted | Crash before the first line: the active op is still waiting and the intent is re-read → same outcome. Crash after the first line, before the switch: the next start ends the active op `failed interrupted_before_switch` (J10); an intent still in the inbox then finds no active op and runs as its own user-started op; an intent already answered `noop` is not lost either: **[T14]** a timer op for the same tree within 15 min of a failed op that carries `interrupted_by` interrupts at once instead of waiting (`interrupt_pending`, §12). Same for any other failure before the switch (`stop_timeout`, `snapshot_failed`, …). |
 | J31 | Invalid intent (`wrong_instance`, `unknown_action`, `bad_expiry`, `stale_intent`, `expired`, schema error, and `cancel` rejections of J35) | Single terminal line `rejected <reason>` → op index → inbox file deleted | File still there → `op_id` found in the index → file deleted, nothing re-journaled. A file that does not parse or has no `op_id` is renamed to `inbox/bad-<ts>.json`, not journaled, and GC deletes it after 7 days. |
 | J32 | Supervisor start whose launch does not match the records (§7.6) | Decision taken after J0 and the journal read, before READY and before starting any runtime | The supervisor exits 75 or rolls back per §7.6. A crash during the decision repeats it at the next start (it is read-only until the rollback line is written, after which J18 applies). |
 | J33 | Journal rotation (§6.1) | `ops.jsonl.new` → replace `ops.1.jsonl` → rename `.new` | J0 finishes or redoes the rotation; the op index is never touched by rotation, so dedupe history survives any crash in it. |
@@ -475,6 +475,16 @@ READY handshake are not part of T13. Choices this spec left open, fixed by T13:
   before any further append.
 - **Invalid `current` with no op explaining it**: a fallback launch, or a normal launch of
   `K`, rewrites `current := L` and runs.
+- **Agent gate (T14, §12).** `activate` re-runs the pre-gate refusals (`current_changed`,
+  `noop`, `tree_invalid`, `state_schema_incompatible`, `journal_schema_gap`) on every gate
+  evaluation, so a 2 h wait never outlives a changed `current`. Journal lines carry four
+  more members after `note`, in this order: `"forced"` (bool), `"busy"`
+  (`{"pty_sessions","launches","helpers"}` or null when no count was taken / the runtime
+  did not answer), `"interrupted_by"` and `"cancelled_by"` (op id or null). A terminal line
+  of a different op (J30 `noop`) leaves the active op active. A service stop between
+  `gate_closed` and `stopping` reopens admission in the still-running runtime instead of
+  starting a second one. Usage refusals (nothing written) gain `nothing_to_cancel`,
+  `op_mismatch`, `past_point_of_no_return` (cancel) and `no_op` / `bad_state` (interrupt).
 - **Rollback probation** uses `rolling_back/probation` and, on a clean stop,
   `rolling_back/probation_suspended`, with the same 3-unclean-attempt rule as J16.
 - **Repair of the same release (T9 carry-over (b)).** A rollback whose `to.sha256` equals
@@ -861,6 +871,119 @@ job / process groups; wait for every recorded `(pid,start_time)` to exit (max 30
 `failed stop_timeout` — before the switch, so `from` is restarted). Only this instance's
 processes are touched (REQ-ISO-1); agents are relaunched afterwards by the existing hub
 wake/reconcile (report §6.6).
+
+### 12.1 Implementation (T14)
+
+Engine: `src/supervisor/engine/gate.odin`; process identity and stop:
+`src/supervisor/procs`; the runtime half and its adapter: §12.2. The supervisor binary and
+`procs.json` are T13b's; they plug in through the `Host` hooks below.
+
+- **Host hooks.** `gate_count() -> Busy{counted, pty_sessions, launches, helpers}`,
+  `close_admission() -> bool`, `open_admission()`. **Fails closed:** a nil `gate_count`
+  (or a runtime that does not answer) is "not counted" and a timer op treats it as busy:
+  it waits and is forced at `force_at`. `counted = false` (runtime did not answer) is treated as **busy**: a
+  timer op waits and is forced at `force_at`; a user op interrupts anyway.
+- **Who waits.** Only `actor: timer` ops. Every other actor (`app:*`, `hub:*`, `installer`,
+  `cli`, and the actions `install_version`, `rollback_to_previous`, `repair`) interrupts at
+  once. Exception: a timer op for the **same `to` tree within 15 min** of an op that ended
+  `failed` carrying `interrupted_by` interrupts too (J30 crash window: the user's
+  `update_now` was already answered). Later, or for another tree, the 2 h wait applies
+  again, so agents started long after the failure keep their countdown.
+- **Order for every activation:** close admission → count → journal
+  `activating/gate_closed` with `busy` and `forced` → `stopping` … The idle path re-counts
+  after the close; a non-zero re-count reopens admission and the op waits (no journal line
+  for the race beyond the first `waiting_for_idle`).
+- **The wait is journaled once:** `waiting_for_idle` with `force_at` and the first count.
+  A supervisor restart (crash, reboot, service stop) resumes the wait with the journaled
+  `force_at`; the 2 h are never reset. `tick` re-evaluates every second.
+- **Countdown:** `supervisor-status.json` gains `force_at`, `remaining_s` (both null when
+  not waiting), `busy` (`{pty_sessions, launches, helpers, total}` or null) and `forced`;
+  while waiting the file is rewritten only when the count changes or the remaining time
+  crosses a whole minute (`remaining_s` is then at most 60 s stale; readers count down
+  from the absolute `force_at`). `tick` still re-evaluates every second.
+- **End sessions:** `Host.end_sessions` (optional) is called after `stopping` is journaled,
+  before `stop_children`, for the activation stop and the rollback stop. `gate_status()`
+  returns the same for the local endpoint / hub relay.
+- **Engine API:** `activate` (gate + activation), `interrupt(by_op_id, actor)` (J30; `no_op`
+  when nothing is active → run the intent as its own op; `bad_state` past waiting → the
+  caller applies §10 `cancelled busy`), `cancel_active(by_op_id, target_op_id?)` (target
+  side of J35; the cancel op's own `requested`/`applied` lines are the caller's).
+- **Only this instance's processes** (`procs.stop`): every target is re-identified by
+  `(pid, start_time)` right before each signal; a pid whose start time differs is skipped.
+  POSIX: `SIGTERM` to the target's process group, grace (10 s), `SIGKILL`, wait (30 s);
+  members of a group whose leader already exited are reached only while the leader's pid
+  is held by the recorded leader (zombie) or by nobody (a pgid cannot be reused while its
+  group exists). Windows: no soft signal (the runtime asked the agents to end); after the
+  grace `TerminateProcess` on a handle whose creation time matched, so check and kill hit
+  the same process object (liveness = `WaitForSingleObject(h, 0)`, not the exit code, which
+  a process may set to 259 = `STILL_ACTIVE`); the per-instance job object is T13b's. Zombies count as
+  stopped; `procs` never reaps (the spawning code owns exit statuses). Each inspection runs
+  in its own scratch arena, so a 40 s stop that scans `/proc` every 20 ms does not grow the
+  supervisor's temp allocator. Residual POSIX race: a pid could exit and be reused between
+  the identity check and `kill()` (microseconds; `pidfd` would close it for single
+  processes only).
+- **Tests.** `src/supervisor/engine/gate_test.odin` (fake clock: wait + countdown, force at
+  2 h, idle, admission race, silent runtime, user op, `rollback_to_previous`, `update_now`
+  interrupt with J30 line order, cancel, restart keeps `force_at` under both crash
+  flavours, J30 crash matrix, service stop) and the `Timer_Forced` scenario in both
+  injection matrices; `src/supervisor/procs/*_test.odin` with real processes on all three
+  OSes (two instances on one machine, pid reuse, TERM-ignoring agents, orphaned group
+  members).
+
+### 12.2 Runtime half and adapter (T14)
+
+**Runtime** (`src/bridge/supervisor_gate.odin`). Four JSONL methods on the runtime's
+existing local endpoint (`unix:<run_dir>/bridge.sock`, loopback TCP fallback), request
+`{"v":1,"id","token","method","params":{}}`, response `{"v":1,"id","ok","data"|"error"}`:
+
+| Method | Effect | `data` |
+|---|---|---|
+| `supervisor.gate.count` | none | `{counted, admission, pty_sessions, launches, helpers}`; `counted:false` (only `admission`, `launches`) when the PTY host does not answer its list |
+| `supervisor.admission.close` | refuse new launches | `{admission:"closed", launches}` (launches already admitted) |
+| `supervisor.admission.open` | accept launches | `{admission:"open"}` |
+| `supervisor.sessions.end` | capture, then SIGTERM every live PTY session (the PTY host signals its group) | `{signalled, targets:[{pid,start_time}]}` |
+
+- **Count.** `pty_sessions` = live PTY-host roster entries that are agents; `helpers` = live
+  roster entries that are shell sessions (`sh_*`: `ham-ctl shell run/serve`, terminals);
+  `launches` = launches admitted and still being prepared (`bridge_auto_update_launches`).
+  No PTY-host socket = no daemon = 0 sessions; the count never starts a daemon.
+- **Admission.** One flag under `bridge_auto_update_mutex`, checked by
+  `bridge_auto_update_launch_enter`, the single admission point of
+  `bridge_runtime_launch_agent`. A refused launch is `agent_launch_failed`, retriable after
+  30 s, so the hub re-wakes the agent after the update. Close and launch admission take the
+  same mutex: after a close, every launch was either counted or is refused. The flag is in
+  memory; a new runtime starts open.
+- **Auth.** A 32-byte random control token per runtime process, never an agent token,
+  written with the endpoint to `<run_dir>/supervisor-control.json`
+  (`{"v":1,"endpoint","token","pid"}`, 0600, write-new + fsync + rename). Wrong or missing
+  token → `unauthenticated`, nothing changes. It keeps other OS users on the loopback
+  fallback out; same-user processes (agents included) can read it, as they can signal the
+  bridge (the boundary is the OS user, Q8).
+- **Ending sessions** does not mark a stop intent or a `stopped` status: the sessions exit,
+  their normal exit reporting reaches the hub, and the existing wake/reconcile relaunches
+  them after the update (report §6.6).
+
+**Adapter** (`src/supervisor/runtimectl`): `install(&host, &client)` sets
+`gate_count/close_admission/open_admission/end_sessions` and `gate_user`. Each request reads
+the control file again (a restarted runtime has a new token) and uses a fresh connection
+with a 2 s deadline; any failure is "not counted" / "not confirmed" (fail closed).
+`end_sessions` keeps the reported `(pid, start_time)` of every session as a group target:
+PTY sessions call `setsid`, so the runtime's and PTY host's process groups do not contain
+them. `stop_children(client, recorded)` (for T13b's `Host.stop_children`): the sessions get
+the 10 s grace to end, then `procs.stop` (SIGTERM → 2 s → SIGKILL / TerminateProcess, wait
+30 s) on sessions + the recorded runtime and PTY host. **Windows residual (T13b
+dependency):** Windows has no process groups, so `TerminateProcess` ends only the captured
+session process, not processes it started (node, tools); those end only through the PTY
+host's ConPTY close or the per-instance job object (`KILL_ON_JOB_CLOSE`), which T13b must
+create and assign every child to. Until then a session's own children can outlive a
+forced stop on Windows. **Admission while waiting:** every count carries the runtime's
+admission state (`Busy.closed`, not journaled); a waiting op re-sends `admission.open` on
+each tick while the runtime reports closed or does not answer, so a lost reopen (deadline,
+endpoint restart) cannot keep launches refused for the rest of the wait. Tests: `runtimectl_test.odin`
+(fake endpoint over unix and tcp, fail-closed cases, real setsid'd sessions: this
+instance's stopped, another's untouched) and `src/bridge/supervisor_gate_test.odin` (launch
+refused while closed, in-flight launch counted, count split, end-sessions identities,
+control auth through the JSONL router).
 
 ## 13. Version selection
 

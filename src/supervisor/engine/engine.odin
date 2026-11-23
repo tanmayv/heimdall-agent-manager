@@ -70,6 +70,27 @@ Host :: struct {
 	hub_recently_connected: proc(user: rawptr) -> bool,
 	// A service stop arrived while an activation runs (checked between pre-switch steps).
 	stop_requested:         proc(user: rawptr) -> bool,
+	// User pointer passed to the gate hooks below (gate_count, close/open_admission,
+	// end_sessions) so they can come from src/supervisor/runtimectl while the other hooks
+	// are the supervisor's own. nil = `user`.
+	gate_user:              rawptr,
+	// Agent gate (§12, T14), answered by the runtime over the supervisor<->runtime channel
+	// (src/supervisor/runtimectl: the runtime's local endpoint, spec §12.2).
+	// Fails closed: a nil gate_count is "not counted", which a timer op treats as busy
+	// (it waits, then is forced at force_at); user-started ops interrupt regardless.
+	// gate_count: live PTY sessions, in-flight launches and helper processes of this
+	// instance; `counted` = false when the runtime did not answer (treated as busy).
+	gate_count:             proc(user: rawptr) -> Busy,
+	// Close / reopen launch admission in the running runtime (in memory; a restarted
+	// runtime starts open). false = the runtime did not confirm.
+	close_admission:        proc(user: rawptr) -> bool,
+	open_admission:         proc(user: rawptr),
+	// §12 stopping: ask the runtime to end its sessions (agents and shell sessions get a
+	// soft stop and the hub sees them exit) before stop_children's grace and hard stop.
+	// Called after `stopping` is journaled, for the activation and the rollback stop.
+	// Optional: nil = stop_children alone. Best effort; the result is not checked, because
+	// stop_children waits for every recorded process either way.
+	end_sessions:           proc(user: rawptr),
 }
 
 Mode :: enum {
@@ -90,7 +111,7 @@ Exit :: enum {
 EXIT_ENGINE_FAILURE :: 1
 
 // USAGE_ERRORS: refusals that wrote nothing and leave the engine usable.
-USAGE_ERRORS :: []string{"busy", "no_op", "bad_state", "not_verified"}
+USAGE_ERRORS :: []string{"busy", "no_op", "bad_state", "not_verified", "nothing_to_cancel", "op_mismatch", "past_point_of_no_return"}
 
 // fatal: a non-nil error the supervisor must exit 1 on (Error contract).
 fatal :: proc(err: Error) -> bool {
@@ -146,6 +167,7 @@ Config :: struct {
 	probation_s:          i64, // healthy after ready (120)
 	max_unclean_attempts: int, // 3
 	state_stores:         []State_Store,
+	gate_wait_s:          i64, // agent gate: longest wait of a timer op for idle agents (7200, §12)
 }
 
 default_config :: proc(instance_root, state_root: string) -> Config {
@@ -157,6 +179,7 @@ default_config :: proc(instance_root, state_root: string) -> Config {
 		probation_s = 120,
 		max_unclean_attempts = 3,
 		state_stores = DEFAULT_STATE_STORES,
+		gate_wait_s = GATE_WAIT_S,
 	}
 }
 
@@ -184,6 +207,10 @@ Engine :: struct {
 	finish_pending: bool,
 	// First fatal error (Error contract); non-nil = poisoned.
 	failed:         Error,
+	// Agent gate: latest count while an op waits for idle (status only, not journaled).
+	gate_busy:      Busy,
+	// Agent gate: what the waiting status file last showed (write throttle, gate.odin).
+	gate_shown:     Gate_Shown,
 }
 
 now :: proc(e: ^Engine) -> i64 {
@@ -213,6 +240,8 @@ clone_line :: proc(e: ^Engine, l: Line) -> Line {
 	c.sub = strings.clone(l.sub, e.alloc)
 	c.error = strings.clone(l.error, e.alloc)
 	c.note = strings.clone(l.note, e.alloc)
+	c.interrupted_by = strings.clone(l.interrupted_by, e.alloc)
+	c.cancelled_by = strings.clone(l.cancelled_by, e.alloc)
 	c.from = Ref{strings.clone(l.from.version, e.alloc), strings.clone(l.from.sha256, e.alloc), strings.clone(l.from.tree, e.alloc)}
 	c.to = Ref{strings.clone(l.to.version, e.alloc), strings.clone(l.to.sha256, e.alloc), strings.clone(l.to.tree, e.alloc)}
 	return c
@@ -227,7 +256,8 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 	if err := append_durable(e.inj, journal_path(e), encode_line(line)); err != nil do return err
 	e.last_seq = line.seq
 	if is_terminal(line.state) {
-		e.active = nil
+		// A terminal line of another op (J30 `noop superseded_by`) leaves the active op alone.
+		if a, has := e.active.?; !has || a.op_id == line.op_id do e.active = nil
 		e.last_terminal = clone_line(e, line)
 		// The index is reconciled from the journal at every start (§6.1), so only a crash
 		// stops here; a failed index write (e.g. fs_busy) does not undo a durable result.
@@ -273,6 +303,7 @@ write_status :: proc(e: ^Engine, l: Line) {
 	write_opt_string(&b, l.sub)
 	strings.write_string(&b, `,"error":`)
 	write_opt_string(&b, l.error)
+	write_gate_status(e, &b, l)
 	fmt.sbprintf(&b, `,"at":%d}}`, l.ts)
 	strings.write_byte(&b, '\n')
 	path := join(e.cfg.state_root, "supervisor-status.json")
@@ -297,6 +328,7 @@ open :: proc(e: ^Engine, cfg: Config, host: Host, inj: ^Injector = nil) -> Exit 
 	if e.cfg.ready_timeout_s == 0 do e.cfg.ready_timeout_s = 60
 	if e.cfg.probation_s == 0 do e.cfg.probation_s = 120
 	if e.cfg.max_unclean_attempts == 0 do e.cfg.max_unclean_attempts = 3
+	if e.cfg.gate_wait_s == 0 do e.cfg.gate_wait_s = GATE_WAIT_S
 	e.host = host
 	e.inj = inj
 	_ = virtual.arena_init_growing(&e.arena)
@@ -762,9 +794,11 @@ rollback_to_previous :: proc(e: ^Engine, op_id, actor: string) -> (x: Exit, err:
 	return activate(e)
 }
 
-// activate runs the active `verified` (or `waiting_for_idle`) op through `activating` up to
-// the handover (exit 75). Errors before the `current` switch end the op `failed <code>` with
-// the installed version restarted; an error after it starts the rollback.
+// activate runs the active `verified` (or `waiting_for_idle`) op through the agent gate
+// (§12, gate.odin) and `activating` up to the handover (exit 75). A timer op whose agents
+// are busy is journaled `waiting_for_idle` and returns .Run; `tick` re-evaluates it. Errors
+// before the `current` switch end the op `failed <code>` with the installed version
+// running; an error after it starts the rollback.
 activate :: proc(e: ^Engine) -> (x: Exit, err: Error) {
 	if e.failed != nil do return .Run, e.failed
 	defer poison(e, err)
@@ -772,74 +806,105 @@ activate :: proc(e: ^Engine) -> (x: Exit, err: Error) {
 	if !ok || (op.state != "verified" && op.state != "waiting_for_idle") {
 		return .Run, fail("not_verified", "no verified operation to activate")
 	}
+	cur, rule, done, px, perr := precheck(e, op)
+	if done do return px, perr
+	return gate(e, cur, rule)
+}
+
+// precheck: the refusals that end an op before the gate (§11.3 "before the gate"). Re-run
+// at every gate evaluation, so a wait never outlives a changed `current`. `done` = the op
+// ended (terminal line written) or failed to.
+@(private)
+precheck :: proc(e: ^Engine, op: Line) -> (cur: Line, rule: Schema_Rule, done: bool, x: Exit, err: Error) {
 	F := e.launched
+	done = true
 	if current_valid(e) != F {
 		err = journal(e, terminal_of(op, "failed", "current_changed"))
-		return .Run, err
+		return
 	}
 	if op.to.tree == F {
 		err = journal(e, terminal_of(op, "noop", ""))
-		return .Run, err
+		return
 	}
 	if !tree_is_valid(e, op.to.tree) {
 		err = journal(e, terminal_of(op, "failed", "tree_invalid"))
-		return .Run, err
+		return
 	}
 	from, _ := ref_of_tree(e, F)
 	fs := tree_schemas(e, F)
 	ts := tree_schemas(e, op.to.tree)
-	rule := schema_rule(fs, ts)
+	rule = schema_rule(fs, ts)
 	if rule == .Refuse {
 		err = journal(e, terminal_of(op, "failed", "state_schema_incompatible"))
-		return .Run, err
+		return
 	}
 	if abs(ts.journal_schema - fs.journal_schema) > 1 {
 		err = journal(e, terminal_of(op, "failed", "journal_schema_gap"))
-		return .Run, err
+		return
 	}
-
-	cur := op
+	cur = op
 	cur.from = from
-	cur.state = "activating"
 	cur.error = ""
+	return cur, rule, false, .Run, nil
+}
+
+// activate_steps: `activating` from `gate_closed` (journaled here, with the gate's fields
+// in `cur`) to the handover. Admission is already closed (gate.odin).
+@(private)
+activate_steps :: proc(e: ^Engine, op: Line, rule: Schema_Rule, superseded: Line = {}) -> (x: Exit, err: Error) {
+	F := e.launched
+	cur := op
+	cur.state = "activating"
 	cur.hub = e.host.hub_recently_connected != nil && e.host.hub_recently_connected(e.host.user)
 
 	step :: proc(e: ^Engine, cur: ^Line, sub: string) -> Error {
 		cur.sub = sub
 		return journal(e, cur^)
 	}
-	before_switch_fail :: proc(e: ^Engine, cur: Line, code: string) -> (Exit, Error) {
+	before_switch_fail :: proc(e: ^Engine, cur: Line, code: string, children_stopped: bool) -> (Exit, Error) {
 		if err := journal(e, terminal_of(cur, "failed", code)); err != nil do return .Run, err
 		if crashed(e.inj) do return .Run, crash_error("after failed")
+		if !children_stopped {
+			// The runtime still runs (nothing was stopped): reopen its launch admission
+			// instead of starting a second runtime next to it.
+			gate_open_admission(e)
+			e.phase = .Idle
+			return .Run, nil
+		}
 		// The installed version is restarted as normal (W7 stopped it).
 		return run_idle(e)
 	}
 
 	if err = step(e, &cur, "gate_closed"); err != nil do return
-	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped")
+	if superseded.op_id != "" {
+		// J30: the update_now that ended the wait is answered by this op.
+		if err = journal(e, superseded); err != nil do return
+	}
+	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped", false)
 	if err = step(e, &cur, "stopping"); err != nil do return
 	if crashed(e.inj) do return .Run, crash_error("stopping")
 	e.phase = .Offline
-	if !e.host.stop_children(e.host.user, F) do return before_switch_fail(e, cur, "stop_timeout")
+	host_end_sessions(e)
+	if !e.host.stop_children(e.host.user, F) do return before_switch_fail(e, cur, "stop_timeout", true)
 	if err = step(e, &cur, "stopped"); err != nil do return
-	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped")
+	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped", true)
 	if err = step(e, &cur, "snapshot"); err != nil do return
 	if serr := take_snapshot(e, cur.op_id, F, rule == .One_Way); serr != nil {
 		if is_crash(serr) do return .Run, serr
-		if rule == .One_Way do return before_switch_fail(e, cur, "snapshot_failed")
+		if rule == .One_Way do return before_switch_fail(e, cur, "snapshot_failed", true)
 		// Insurance snapshot only: carry on without it (§11.3 rollback-safe row).
 		cur.note = "snapshot_skipped"
 	}
-	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped")
+	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped", true)
 	if err = step(e, &cur, "pointers_begin"); err != nil do return
 	if perr := write_pointer(e, POINTER_PREVIOUS, F, cur.op_id); perr != nil {
 		if is_crash(perr) do return .Run, perr
-		return before_switch_fail(e, cur, "pointer_write")
+		return before_switch_fail(e, cur, "pointer_write", true)
 	}
 	if perr := write_pointer(e, POINTER_CURRENT, cur.to.tree, cur.op_id); perr != nil {
 		if is_crash(perr) do return .Run, perr
 		if read_pointer_raw(e, POINTER_CURRENT) == F {
-			return before_switch_fail(e, cur, "pointer_write")
+			return before_switch_fail(e, cur, "pointer_write", true)
 		}
 		// `current` is no longer F: past the point of no return.
 		return run_rollback(e, cur, "pointer_write", Ref{})
@@ -875,10 +940,15 @@ tree_sizes_match :: proc(e: ^Engine, tree: string) -> bool {
 // probation (§14), commit (J17)
 // ---------------------------------------------------------------------------------------
 
-// tick advances probation. Call about once a second while running.
+// tick advances probation and an op waiting for idle agents (§12). Call about once a
+// second while running.
 tick :: proc(e: ^Engine) -> (x: Exit, err: Error) {
 	if e.failed != nil do return .Run, e.failed
 	defer poison(e, err)
+	if op, waiting := e.active.?; waiting && op.state == "waiting_for_idle" && e.phase == .Idle {
+		// Agent gate (§12): re-count, activate when idle or at force_at.
+		return activate(e)
+	}
 	if e.phase != .Probation && e.phase != .Rollback_Probation do return .Run, nil
 	op, ok := e.active.?
 	if !ok do return .Run, nil
@@ -1031,6 +1101,7 @@ run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref
 		if e.runtime_tree != "" do stop_tree = e.runtime_tree
 		else if op.to.tree != "" && e.launched == op.to.tree do stop_tree = op.to.tree
 		if !crashed(e.inj) && stop_tree != "" {
+			host_end_sessions(e)
 			if !e.host.stop_children(e.host.user, stop_tree) {
 				return .Run, fail("stop_timeout", "children of %s did not stop", stop_tree)
 			}
