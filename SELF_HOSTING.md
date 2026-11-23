@@ -292,6 +292,10 @@ In `nix-homelab-config` or any NixOS flake:
 
 ### NATS JetStream (required)
 
+Every hub requires **nats-server 2.14 or newer** with JetStream enabled; there is no SQLite queue fallback.
+Only the hub connects to NATS. Bridges and agents use the hub API and do not need
+NATS access or credentials. Keep the broker on loopback for a single-host deployment.
+
 #### Actions rollout and rollback
 
 Upgrade the **hub first, then bridges**. Actions require a bridge that reports
@@ -311,11 +315,6 @@ An action starts its target even when you stopped that agent yourself. **Disable
 the action to stop future action wakes.** Stopping the agent alone is not an off
 switch. Schedule and event triggers, placement rules and run history are available
 behind the owner's `actions` experiment.
-
-
-Every hub requires **nats-server 2.14 or newer** with JetStream enabled; there is no SQLite queue fallback.
-Only the hub connects to NATS. Bridges and agents use the hub API and do not need
-NATS access or credentials. Keep the broker on loopback for a single-host deployment.
 
 #### Authentication and hub settings
 
@@ -892,6 +891,26 @@ Hubs before OIDC-only authenticated browsers with forward-auth identity headers
    non-editable usernames). New users are created only with `HAM_AUTO_PROVISION_USERS=true`.
 7. **User tokens**: migration 135 deletes all `hut_` tokens; `ham-ctl` user mode and the
    Electron app cannot sign in until they gain OIDC support. Bridges are unaffected.
+
+#### Actions rollout and rollback
+
+Upgrade the **hub first, then bridges**. Actions require a bridge that reports
+`event_pipeline_v1`; until a bridge is updated it cannot run actions. Old bridges
+can keep their existing connection and ordinary task/message paths.
+
+This release is **forward-only** (C2): the hub adds `sched.def.>` and enables
+`allow_msg_schedules` and `allow_msg_ttl` on `HEIM_EVENTS`. Those flags cannot be
+removed. An older hub cannot bring its event relay up against the upgraded stream;
+an older NATS server loses schedule support. Do not downgrade either in place.
+Before upgrading, back up SQLite and snapshot the JetStream store consistently.
+Rollback requires restoring both snapshots with the matching previous binaries.
+The action schema reset discards existing actions and run history (R1); recreate
+wanted actions after the upgrade. There is no data backfill.
+
+An action starts its target even when you stopped that agent yourself. **Disable
+the action to stop future action wakes.** Stopping the agent alone is not an off
+switch. Schedule and event triggers, placement rules and run history are available
+behind the owner's `actions` experiment.
 
 ## Part 2 — Bridge (one per agent-running device)
 

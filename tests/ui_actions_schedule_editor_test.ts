@@ -71,7 +71,13 @@ test('new triggers retain their blackout input after removing an earlier trigger
     await type(doc.querySelector('input[aria-label="Active from"]')!, '2026-01-01T00:00');
     await type(doc.querySelector('input[aria-label="Active until"]')!, '2027-01-01T00:00');
     await click(fields[0].querySelector('[role="combobox"][aria-label="Schedule mode"]'));
+    await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === 'interval')!);
+    await type(doc.querySelector('input[aria-label="Interval seconds"]')!, '120');
+    assert.equal(current[0].config.interval_s, 120);
+    await click(fields[0].querySelector('[role="combobox"][aria-label="Schedule mode"]'));
     await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === 'once')!);
+    assert.equal(current[0].config.mode, 'once');
+    assert.equal('interval_s' in current[0].config, false);
     assert.equal(current[0].config.run_at, '');
     for (const label of ['Active from', 'Active until', 'Blackout dates']) assert.equal(doc.querySelector('[aria-label="' + label + '"]'), null);
     form.triggers = current;
