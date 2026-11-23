@@ -31,8 +31,13 @@ TEST_TIMEOUTS :: Timeouts {
 	tick          = 20 * time.Millisecond,
 }
 
+// Odin compiles *_test.odin files of imported packages into normal builds too, so this hook
+// was in every binary that imports launcher/core: a shipped ham-supervisor (which imports it
+// through src/supervisor/engine) ran fake_supervisor_main and exited 64 (found in T13b).
+// It must only ever act in the test binary.
 @(init)
 launcher_test_dispatch :: proc "contextless" () {
+	when !ODIN_TEST do return
 	context = runtime.default_context()
 	exe := os.args[0] if len(os.args) > 0 else ""
 	base := strings.to_lower(filepath_base(exe), context.temp_allocator)

@@ -82,12 +82,18 @@ net_get :: proc(req: resolver.Request, user: rawptr) -> (resp: resolver.Response
 net_download :: proc(user: rawptr, url: string, sink: fetch.Sink) -> (status: int) {
 	ctx := (^Net_Ctx)(user)
 	u, uerr := httpc.parse_url(rewrite_url(url))
-	if uerr != .None do return 0
+	if uerr != .None {
+		service.stderr_log(fmt.tprintf("download %s: invalid url (%v)", url, uerr))
+		return 0
+	}
 	_ = os.make_directory_all(ctx.scratch_dir)
 	tmp := fmt.tprintf("%s/net-%d.tmp", ctx.scratch_dir, os.get_pid())
 	defer os.remove(tmp)
 	st, err := httpc.download_to_file({method = .GET, url = u, headers = {httpc.user_agent(USER_AGENT)}, timeout_ms = DOWNLOAD_TIMEOUT_MS, stall_timeout_ms = DOWNLOAD_STALL_MS, max_response_bytes = MAX_BUNDLE_BYTES, max_redirects = 5, cancel = &service.g_net_cancel}, tmp)
-	if err != .None do return 0
+	if err != .None {
+		service.stderr_log(fmt.tprintf("download %s: %v", url, err))
+		return 0
+	}
 	if st != 200 do return st
 	f, ferr := os.open(tmp)
 	if ferr != nil do return 0

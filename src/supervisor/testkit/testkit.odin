@@ -139,6 +139,34 @@ make_key :: proc() -> Key {
 	ok := ed25519.private_key_generate(&k.priv)
 	assert(ok)
 	crypto.rand_bytes(k.id_le[:])
+	return key_finish(k)
+}
+
+// E2E_SEED: the fixed, TEST-ONLY signing key of the e2e suite. Its public key is
+// src/supervisor/testdata/e2e-test-key.pub, which only test builds of ham-supervisor trust
+// (-define:HEIMDALL_SUPERVISOR_TEST=true -define:HEIMDALL_TEST_PINNED_KEY=<its key line>).
+// Release builds never set either define, so this key signs nothing that ships.
+E2E_SEED :: "heimdall-e2e-test-key-not-secret"
+E2E_KEY_ID_LE :: [8]byte{0x13, 0xb0, 0x5e, 0xed, 0x7e, 0x57, 0x0e, 0x2e}
+
+e2e_key :: proc() -> Key {
+	k: Key
+	seed := E2E_SEED
+	ok := ed25519.private_key_set_bytes(&k.priv, transmute([]byte)seed)
+	assert(ok)
+	k.id_le = E2E_KEY_ID_LE
+	return key_finish(k)
+}
+
+// key_line: the base64 line of the minisign public key (the -define value).
+key_line :: proc(k: ^Key) -> string {
+	lines := strings.split_lines(k.pub_txt, context.temp_allocator)
+	return lines[1] if len(lines) > 1 else ""
+}
+
+@(private)
+key_finish :: proc(key: Key) -> Key {
+	k := key
 	pub: [32]byte
 	ed25519.private_key_public_bytes(&k.priv, pub[:])
 	blob: [42]byte

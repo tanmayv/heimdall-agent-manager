@@ -14,6 +14,7 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import "../engine"
+import "../fetch"
 
 VERSION :: #config(HAM_APP_VERSION, "0.0.0-dev")
 LOOP_INTERVAL :: time.Second
@@ -26,6 +27,7 @@ Run_Args :: struct {
 	mode:          engine.Mode,
 	ready_fd:      string,
 	net:           Net, // the binary's libcurl transport (src/supervisor/net.odin)
+	key_pins:      []fetch.Public_Key, // nil = the embedded release keys
 }
 
 stderr_log :: proc(msg: string) {
@@ -60,6 +62,7 @@ run_supervisor :: proc(a: Run_Args) -> int {
 		mode          = a.mode,
 		host          = engine_host(&h),
 		net           = a.net,
+		key_pins      = a.key_pins,
 		engine_cfg    = cfg,
 		rand          = rand_unit,
 		first_check_s = first_check,
