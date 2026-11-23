@@ -296,16 +296,34 @@ outbox_uow_owns :: proc(conn: ^Conn) -> bool {
 // Short repository-owned transactions/savepoints share the UoW serialization
 // gate. Enter before taking db_mutex; leave after COMMIT/ROLLBACK and releasing
 // db_mutex. When already inside this threads UoW, its gate is already held.
-Repository_Tx_Guard :: struct {locked: bool, token: dbt.Lock_Token}
+Repository_Tx_Guard :: struct {locked, entered: bool, token: dbt.Lock_Token}
+
+// Repository entry points call other repository writers (for example identity
+// provisioning saves a user). Keep their outer guard across the whole operation
+// without trying to acquire the same non-recursive mutex again.
+@(thread_local)
+repository_tx_depth: int
 
 tx_repository_enter :: proc() -> Repository_Tx_Guard {
 	if sync.atomic_load(&tx_depth)>0 && sync.atomic_load(&tx_owner_thread)==sync.current_thread_id() do return {}
+	if repository_tx_depth > 0 {
+		repository_tx_depth += 1
+		return {entered=true}
+	}
 	lockorder.assert_tx_mutex_allowed()
-	return {locked=true, token=dbt.timed_lock(&tx_mutex, .Uow_Tx)}
+	token := dbt.timed_lock(&tx_mutex, .Uow_Tx)
+	repository_tx_depth = 1
+	return {locked=true, entered=true, token=token}
 }
 
 tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
-	if guard.locked do dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
+	if !guard.entered do return
+	assert(repository_tx_depth > 0)
+	repository_tx_depth -= 1
+	if guard.locked {
+		assert(repository_tx_depth == 0)
+		dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
+	}
 }
 
 // Every append-capable transaction is a UoW (outbox_prepare enforces this).

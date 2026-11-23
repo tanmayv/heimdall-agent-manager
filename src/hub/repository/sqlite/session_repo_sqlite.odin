@@ -55,6 +55,8 @@ session_from_stmt :: proc(stmt: sqlite3_stmt) -> iface.User_Session {
 }
 
 session_create_sqlite :: proc(ctx: rawptr, session: iface.User_Session) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Session_Repo_SQLite)(ctx)
 	stmt, ok := session_prepare(impl, "INSERT INTO user_sessions(session_id_hash,user_id,created_at_ms,last_seen_at_ms,expires_at_ms,idle_expires_at_ms,id_token,user_agent) VALUES(?,?,?,?,?,?,?,?);")
 	if !ok do return session_err("failed to prepare session insert")
@@ -80,6 +82,8 @@ session_get_sqlite :: proc(ctx: rawptr, session_id_hash: string) -> (iface.User_
 }
 
 session_touch_sqlite :: proc(ctx: rawptr, session_id_hash: string, now_ms, idle_expires_at_ms: i64) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Session_Repo_SQLite)(ctx)
 	stmt, ok := session_prepare(impl, "UPDATE user_sessions SET last_seen_at_ms=?, idle_expires_at_ms=min(?, expires_at_ms) WHERE session_id_hash=?;")
 	if !ok do return session_err("failed to prepare session touch")
@@ -90,6 +94,8 @@ session_touch_sqlite :: proc(ctx: rawptr, session_id_hash: string, now_ms, idle_
 }
 
 session_delete_sqlite :: proc(ctx: rawptr, session_id_hash: string) -> (iface.User_Session, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Session_Repo_SQLite)(ctx)
 	stmt, ok := session_prepare(impl, "DELETE FROM user_sessions WHERE session_id_hash=? RETURNING session_id_hash,user_id,created_at_ms,last_seen_at_ms,expires_at_ms,idle_expires_at_ms,id_token,user_agent;")
 	if !ok do return {}, false, session_err("failed to prepare session delete")
@@ -108,6 +114,8 @@ session_delete_sqlite :: proc(ctx: rawptr, session_id_hash: string) -> (iface.Us
 
 
 session_purge_expired_sqlite :: proc(ctx: rawptr, now_ms: i64) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Session_Repo_SQLite)(ctx)
 	queries := [?]string{
 		"DELETE FROM user_sessions WHERE expires_at_ms <= ? OR idle_expires_at_ms <= ?;",
@@ -135,6 +143,8 @@ session_delete_user_sqlite :: proc(ctx: rawptr, user_id: string) -> (int, domain
 
 // delete_user_sessions_sqlite ends every browser session of `user_id`.
 delete_user_sessions_sqlite :: proc(conn: ^Conn, user_id: string) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	if conn == nil || conn.db == nil do return 0, session_err("session repository unavailable")
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM user_sessions WHERE user_id=?;"

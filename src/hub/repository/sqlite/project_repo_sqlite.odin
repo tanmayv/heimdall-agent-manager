@@ -40,6 +40,8 @@ project_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID,
 }
 
 project_save_sqlite :: proc(ctx: rawptr, project: domain.Project) -> (domain.Project, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Project_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil
 	q := "INSERT INTO projects (project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET name=excluded.name, slug=excluded.slug, description=excluded.description, repo_url=excluded.repo_url, vcs_kind=excluded.vcs_kind, default_path=excluded.default_path, state=excluded.state, updated_at=excluded.updated_at;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return domain.Project{}, false, domain.domain_error(.Internal_Error, "failed to prepare project save")
@@ -53,6 +55,8 @@ project_save_sqlite :: proc(ctx: rawptr, project: domain.Project) -> (domain.Pro
 }
 
 project_save_bridge_path_sqlite :: proc(ctx: rawptr, path: domain.Project_Bridge_Path) -> (domain.Project_Bridge_Path, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Project_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil
 	q := "INSERT INTO project_bridge_paths (project_id, bridge_id, owner_user_id, path, is_validated, last_validated_at, validation_error, validation_details_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, bridge_id) DO UPDATE SET path=excluded.path, is_validated=excluded.is_validated, last_validated_at=excluded.last_validated_at, validation_error=excluded.validation_error, validation_details_json=excluded.validation_details_json, updated_at=excluded.updated_at;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return domain.Project_Bridge_Path{}, false, domain.domain_error(.Internal_Error, "failed to prepare project bridge path save")
@@ -80,6 +84,8 @@ project_list_bridge_paths_sqlite :: proc(ctx: rawptr, project_id: domain.Project
 }
 
 project_delete_bridge_path_sqlite :: proc(ctx: rawptr, project_id: domain.Project_ID, bridge_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Project_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil
 	q := "DELETE FROM project_bridge_paths WHERE project_id = ? AND bridge_id = ? AND owner_user_id = ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return false, domain.domain_error(.Internal_Error, "failed to prepare path delete")
