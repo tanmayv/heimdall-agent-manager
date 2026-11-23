@@ -14,12 +14,16 @@ import contracts "odin_test:contracts"
 
 Fallback_Test :: struct {
     t: ^testing.T,
+    owned: runtime.Allocator,
     now: i64,
     posts, gets, launches, live_answers: int,
     status: int,
     body, last_ref, first_ref, launched, report: string,
     snap: Bridge_Runtime_Instance,
     has, local_after_post, bot: bool,
+    worker_mode, worker_done: bool,
+    retained: string,
+    retained_allocator: runtime.Allocator,
 }
 fallback_test: ^Fallback_Test
 FALLBACK_LAUNCH :: "{ \"type\":\"launch_agent\", \"command_id\":\"sb_test\", \"agent_instance_id\":\"inst_fb\", \"run_count\":6, \"extra\":{\"escaped\":\"a\\\"b\"} }"
@@ -29,8 +33,8 @@ fallback_test_sleep :: proc(ms: i64) { fallback_test.now += ms }
 fallback_test_record :: proc(id: string) -> (Bridge_Runtime_Launch, bool) { return {}, false }
 fallback_test_rollover :: proc(id: string) -> bool { return false }
 fallback_test_report :: proc(text: string) -> bool {
-    delete(fallback_test.report, runtime.heap_allocator())
-    fallback_test.report = strings.clone(text, runtime.heap_allocator())
+    delete(fallback_test.report, fallback_test.owned)
+    fallback_test.report = strings.clone(text, fallback_test.owned)
     return true
 }
 fallback_test_switch :: proc(id: string, c: contracts.Bot_Candidate_Wire) -> (int, bool, string) { return 200, false, "" }
@@ -54,8 +58,8 @@ fallback_test_http :: proc(req: httpc.Request) -> (httpc.Response, httpc.Error) 
         testing.expect(f.t, ok)
         ref := extract_json_string(string(raw.bytes), "ref", "", context.temp_allocator)
         testing.expect(f.t, strings.has_prefix(ref, "bot_") if f.bot else strings.has_prefix(ref, "fb_inst_fb_"))
-        if f.first_ref == "" do f.first_ref = strings.clone(ref, runtime.heap_allocator())
-        delete(f.last_ref, runtime.heap_allocator()); f.last_ref = strings.clone(ref, runtime.heap_allocator())
+        if f.first_ref == "" do f.first_ref = strings.clone(ref, f.owned)
+        delete(f.last_ref, f.owned); f.last_ref = strings.clone(ref, f.owned)
         if f.posts <= f.live_answers {
             status, body = 409, "{\"error\":{\"code\":\"conflict\",\"details\":{\"code\":\"already_running\"}}}"
         }
@@ -66,6 +70,12 @@ fallback_test_http :: proc(req: httpc.Request) -> (httpc.Response, httpc.Error) 
 fallback_test_launch :: proc(id, text: string, deadline: i64) -> (bool, string, Bridge_Error) {
     f := fallback_test
     f.launches += 1
+    if f.worker_mode {
+        // Model agent_token_issue: this default-allocator clone is retained
+        // outside the worker pass, not a temporary parse buffer.
+        f.retained_allocator = context.allocator
+        f.retained = strings.clone(text)
+    }
     if sync.atomic_load(&bridge_hub_start_begin_supported) {
         testing.expect_value(f.t, text, FALLBACK_LAUNCH)
         testing.expect_value(f.t, id, "sb_test")
@@ -74,8 +84,9 @@ fallback_test_launch :: proc(id, text: string, deadline: i64) -> (bool, string, 
         testing.expect_value(f.t, extract_json_int(text, "run_count", -1), 5 if f.bot else 0)
         if f.bot do testing.expect_value(f.t, id, "botl_att_test_0")
     }
-    delete(f.launched, runtime.heap_allocator()); f.launched = strings.clone(text, runtime.heap_allocator())
+    delete(f.launched, f.owned); f.launched = strings.clone(text, f.owned)
     bridge_task_wake_note_launched("inst_fb", f.now)
+    if f.worker_mode do sync.atomic_store(&f.worker_done, true)
     return true, "", {}
 }
 fallback_test_attempt :: proc() -> Bridge_Wake_Result {
@@ -90,10 +101,11 @@ fallback_test_run :: proc(t: ^testing.T, name: string) {
     {
         arena: virtual.Arena
         assert(virtual.arena_init_growing(&arena) == nil)
-        context.allocator = virtual.arena_allocator(&arena)
-        context.temp_allocator = context.allocator
+        // The default stays on the tracker. Only temporary parsing uses an
+        // arena; otherwise the ownership assertions would observe no activity.
+        context.temp_allocator = virtual.arena_allocator(&arena)
         defer virtual.arena_destroy(&arena)
-        f := Fallback_Test{t=t, now=1_000_000, status=200, body=fmt.tprintf("%s%s%s", "{\"data\":{\"launch\":", FALLBACK_LAUNCH, "}}")}
+        f := Fallback_Test{t=t, owned=context.allocator, now=1_000_000, status=200, body=fmt.tprintf("%s%s%s", "{\"data\":{\"launch\":", FALLBACK_LAUNCH, "}}")}
         fallback_test = &f
         config, cred, flag := bridge_config, g_bridge_cred, sync.atomic_load(&bridge_hub_start_begin_supported)
         saved_map := bridge_agent_wake
@@ -105,7 +117,7 @@ fallback_test_run :: proc(t: ^testing.T, name: string) {
         old_report, old_switch, old_runnable, old_busy := bridge_bot_report_proc, bridge_bot_switch_proc, bridge_bot_runnable_proc, bridge_bot_busy_inputs_proc
         bridge_config.daemon_url, bridge_config.bridge_token, g_bridge_cred = "https://hub.test", "hba_test", {}
         sync.atomic_store(&bridge_hub_start_begin_supported, true)
-        bridge_agent_wake = make(map[string]Bridge_Wake_State, runtime.heap_allocator())
+        bridge_agent_wake = make(map[string]Bridge_Wake_State, context.allocator)
         bridge_wake_snapshot_proc, bridge_wake_launch_proc, bridge_wake_http_proc = fallback_test_snapshot, fallback_test_launch, fallback_test_http
         bridge_wake_start_begin_proc = bridge_wake_start_begin
         bridge_bot_snapshot_proc, bridge_bot_runtime_launch_proc, bridge_bot_now_proc = fallback_test_snapshot, fallback_test_launch, fallback_test_now
@@ -127,20 +139,53 @@ fallback_test_run :: proc(t: ^testing.T, name: string) {
             bridge_bot_sleep_proc, bridge_bot_launch_record_proc, bridge_bot_rollover_proc = bot_sleep, bot_record, bot_rollover
             bridge_bot_current_worker, bridge_bot_launch_proc = old_worker, old_bot_proc
             bridge_bot_report_proc, bridge_bot_switch_proc, bridge_bot_runnable_proc, bridge_bot_busy_inputs_proc = old_report, old_switch, old_runnable, old_busy
-            delete(f.report, runtime.heap_allocator()); delete(f.first_ref, runtime.heap_allocator()); delete(f.last_ref, runtime.heap_allocator()); delete(f.launched, runtime.heap_allocator())
+            delete(f.report, f.owned); delete(f.first_ref, f.owned); delete(f.last_ref, f.owned); delete(f.launched, f.owned)
         }
         switch name {
         case "launch":
             testing.expect_value(t, fallback_test_attempt().outcome, Bridge_Wake_Outcome.Launched)
             testing.expect_value(t, f.posts, 1); testing.expect_value(t, f.gets, 0)
+        case "worker":
+            f.live_answers = 1
+            _ = fallback_test_attempt()
+            sync.mutex_lock(&bridge_wake_mutex)
+            state := &bridge_agent_wake["inst_fb"]
+            state.last_wake_ms = 0
+            state.live_row_retry_at_ms = bridge_runtime_now_ms()-1
+            sync.mutex_unlock(&bridge_wake_mutex)
+            f.worker_mode = true
+            worker := bridge_wake_retry_start()
+            bridge_wake_retry_tick(bridge_runtime_now_ms())
+            started := time.tick_now()
+            for !sync.atomic_load(&f.worker_done) && time.tick_since(started) < 5*time.Second do time.sleep(time.Millisecond)
+            bridge_wake_retry_stop(worker)
+            testing.expect(t, sync.atomic_load(&f.worker_done), "periodic tick must wake the retry worker")
+            testing.expect_value(t, f.posts, 2)
+            testing.expect_value(t, f.launches, 1)
+            heap := runtime.heap_allocator()
+            uses_heap := f.retained_allocator.procedure == heap.procedure && f.retained_allocator.data == heap.data
+            testing.expect(t, uses_heap, "launch default allocations must survive worker arena reset and shutdown")
+            if uses_heap {
+                testing.expect_value(t, f.retained, FALLBACK_LAUNCH)
+                delete(f.retained, f.retained_allocator)
+            }
+            // Pin the production periodic-loop call site as well as exercising
+            // tick -> condition -> worker -> launch -> stop above.
+            source := #load("hub_runtime_client.odin", string)
+            start := strings.index(source, "bridge_hub_runtime_loop :: proc(")
+            end := strings.index(source, "Bridge_Nudge_Record :: struct")
+            if testing.expect(t, start >= 0 && end > start) do testing.expect(t, strings.contains(source[start:end], "bridge_wake_retry_tick(bridge_runtime_now_ms())"))
         case "recover":
             f.live_answers = 3
             _ = fallback_test_attempt()
+            testing.expect(t, rawptr(raw_data(bridge_agent_wake["inst_fb"].ref)) in track.allocation_map, "pending ref must be owned and tracked")
             for i in 1..=3 {
                 f.now = 1_000_000 + i64(i)*30_000
                 bridge_wake_retry_due(f.now-1)
                 testing.expect_value(t, f.posts, i)
+                allocations_before := len(track.allocation_map)
                 bridge_wake_retry_due(f.now)
+                if i < 3 do testing.expect_value(t, len(track.allocation_map), allocations_before)
                 testing.expect_value(t, f.posts, i+1)
                 testing.expect_value(t, f.last_ref, f.first_ref)
                 testing.expect_value(t, bridge_agent_wake["inst_fb"].failures, 0)
@@ -253,7 +298,9 @@ fallback_test_run :: proc(t: ^testing.T, name: string) {
             delete(w.pending_reports)
         }
     }
+    testing.expect(t, track.total_allocation_count > 0, "ownership tracking must actually observe allocations")
     testing.expect_value(t, len(track.allocation_map), 0)
+    testing.expect_value(t, len(track.bad_free_array), 0)
 }
 
 @(test) test_fallback_calls_start_begin_with_ref :: proc(t:^testing.T) {fallback_test_run(t,"launch")}
@@ -270,3 +317,5 @@ fallback_test_run :: proc(t: ^testing.T, name: string) {
 @(test) test_bot_launch_legacy_hub_uses_manifest :: proc(t:^testing.T) {fallback_test_run(t,"bot_legacy")}
 @(test) test_bot_launch_refused_reports_attempt :: proc(t:^testing.T) {fallback_test_run(t,"bot_refused")}
 @(test) test_bot_stale_row_retry_keeps_ready_deadline :: proc(t:^testing.T) {fallback_test_run(t,"bot_timeout")}
+
+@(test) test_fallback_retry_worker_preserves_launch_allocations :: proc(t:^testing.T) {fallback_test_run(t,"worker")}

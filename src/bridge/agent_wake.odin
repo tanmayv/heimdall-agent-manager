@@ -31,6 +31,12 @@ bridge_wake_mutex: sync.Mutex
 bridge_agent_wake: map[string]Bridge_Wake_State // agent_instance_id -> wake state
 
 bridge_wake_once: sync.Once
+// Persistent leaves share the map's stable allocator: heap in production,
+// and the tracking allocator of an isolated ownership-test map.
+bridge_wake_owned_allocator :: proc() -> runtime.Allocator {
+    if bridge_agent_wake.allocator.procedure != nil do return bridge_agent_wake.allocator
+    return runtime.heap_allocator()
+}
 
 // bridge_agent_wake_init allocates the wake state exactly once. It is idempotent
 // and never replaces the mutex or the map, because launch paths
@@ -39,7 +45,7 @@ bridge_wake_once: sync.Once
 // no call order can touch nil state.
 bridge_agent_wake_init :: proc() {
 	sync.once_do(&bridge_wake_once, proc() {
-		bridge_agent_wake = make(map[string]Bridge_Wake_State, runtime.heap_allocator())
+		bridge_agent_wake = make(map[string]Bridge_Wake_State, bridge_wake_owned_allocator())
 	})
 }
 
@@ -50,8 +56,8 @@ bridge_agent_wake_reset :: proc() {
 	defer sync.mutex_unlock(&bridge_wake_mutex)
 	for key, &st in bridge_agent_wake {
         bridge_wake_state_free(&st)
-        delete(st.ref, runtime.heap_allocator())
-        delete(key, runtime.heap_allocator())
+        delete(st.ref, bridge_wake_owned_allocator())
+        delete(key, bridge_wake_owned_allocator())
     }
 	clear(&bridge_agent_wake)
 }
@@ -112,9 +118,9 @@ Bridge_Wake_Transition :: enum {
 }
 
 bridge_wake_state_free :: proc(st: ^Bridge_Wake_State) {
-	delete(st.catalog_etag, runtime.heap_allocator())
-	delete(st.provider, runtime.heap_allocator())
-	delete(st.model, runtime.heap_allocator())
+	delete(st.catalog_etag, bridge_wake_owned_allocator())
+	delete(st.provider, bridge_wake_owned_allocator())
+	delete(st.model, bridge_wake_owned_allocator())
 	st.catalog_etag, st.provider, st.model = "", "", ""
 }
 
@@ -199,7 +205,7 @@ bridge_task_wake_note_launched :: proc(instance_id: string, now_ms: i64 = 0) {
 	bridge_agent_wake_init()
 	sync.mutex_lock(&bridge_wake_mutex)
 	defer sync.mutex_unlock(&bridge_wake_mutex)
-	if instance_id not_in bridge_agent_wake do bridge_agent_wake[strings.clone(instance_id, runtime.heap_allocator())] = Bridge_Wake_State{}
+	if instance_id not_in bridge_agent_wake do bridge_agent_wake[strings.clone(instance_id, bridge_wake_owned_allocator())] = Bridge_Wake_State{}
 	st := &bridge_agent_wake[instance_id]
 	st.last_wake_ms = now_ms if now_ms > 0 else bridge_runtime_now_ms()
 	if st.parked || st.failures > 0 do fmt.println("bridge wake RECOVERED (launched)", instance_id)
@@ -208,7 +214,7 @@ bridge_task_wake_note_launched :: proc(instance_id: string, now_ms: i64 = 0) {
 	// Invalidate any wake attempt still in flight: its (older) result must not
 	// re-park or back off an instance that has since launched.
 	st.generation += 1
-    delete(st.ref, runtime.heap_allocator()); st.ref = ""
+    delete(st.ref, bridge_wake_owned_allocator()); st.ref = ""
     st.live_row_retry_at_ms, st.live_row_retries = 0, 0
 }
 
@@ -275,18 +281,18 @@ bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0,
         case .Wake:
         }
 	}
-	if !has do bridge_agent_wake[strings.clone(instance_id, runtime.heap_allocator())] = Bridge_Wake_State{}
+	if !has do bridge_agent_wake[strings.clone(instance_id, bridge_wake_owned_allocator())] = Bridge_Wake_State{}
 	slot := &bridge_agent_wake[instance_id]
     if delivery_id == "" && sync.atomic_load(&bridge_hub_start_begin_supported) {
         // An accepted fresh notice supersedes a pending stale-row wake.
         if pending_ref == "" && slot.live_row_retry_at_ms != 0 {
-            delete(slot.ref, runtime.heap_allocator()); slot.ref = ""
+            delete(slot.ref, bridge_wake_owned_allocator()); slot.ref = ""
             slot.live_row_retries = 0
             slot.generation += 1
         }
         if slot.ref == "" {
             bridge_wake_ref_counter = max(bridge_wake_ref_counter + 1, time.to_unix_nanoseconds(time.now()))
-            slot.ref = fmt.aprintf("fb_%s_%d", instance_id, bridge_wake_ref_counter, allocator = runtime.heap_allocator())
+            slot.ref = fmt.aprintf("fb_%s_%d", instance_id, bridge_wake_ref_counter, allocator = bridge_wake_owned_allocator())
         }
     }
     ref := strings.clone(slot.ref)
@@ -359,10 +365,10 @@ bridge_task_wake_record_result :: proc(instance_id: string, generation: u64, ok:
 		// unpark attempt: otherwise a changed catalog etag would re-trigger each tick.
 		bridge_wake_state_free(st)
 		etag := bridge_provider_catalog_current_etag()
-        st.catalog_etag = strings.clone(etag, runtime.heap_allocator())
+        st.catalog_etag = strings.clone(etag, bridge_wake_owned_allocator())
         delete(etag)
         provider, model := bridge_runtime_provider_model(command_json)
-        st.provider, st.model = strings.clone(provider, runtime.heap_allocator()), strings.clone(model, runtime.heap_allocator())
+        st.provider, st.model = strings.clone(provider, bridge_wake_owned_allocator()), strings.clone(model, bridge_wake_owned_allocator())
         delete(provider); delete(model)
 	}
 	switch transition {
@@ -415,12 +421,15 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
 		if !ok || resp.status == 0 do return "", bridge_error(.hub_connect_failed, .transport), false
 		return "", bridge_error(.hub_rejected, .other, resp.status), false
 	}
-	// data_obj/inst_obj are ALIASES into resp.body (not owned clones) -- do not free.
+    // The legacy object extractor serializes a new caller-owned string.
 	data_obj, data_ok := bridge_provider_json_extract_object(httpc.text(resp), "data")
+    defer delete(data_obj)
 	if !data_ok do return "", bridge_error(.agent_bootstrap_invalid), false
 	inst_obj, inst_ok := bridge_provider_json_extract_object(data_obj, "instance")
+    defer delete(inst_obj)
 	if !inst_ok do return "", bridge_error(.agent_bootstrap_invalid), false
 	agent_id := extract_json_string(inst_obj, "agent_id", "")
+    defer delete(agent_id)
 	if strings.trim_space(agent_id) == "" do return "", bridge_error(.agent_bootstrap_invalid), false
 	agent_name     := extract_json_string(inst_obj, "agent_name", "")
 	role           := extract_json_string(inst_obj, "role", "")
@@ -430,6 +439,9 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
 	coordinator_display_name := extract_json_string(inst_obj, "coordinator_display_name", "")
 	project_id               := extract_json_string(inst_obj, "project_id", "")
 	project_path             := extract_json_string(inst_obj, "project_path", "")
+    defer {
+        for value in ([]string{agent_name, role, chain_id, chain_title, coordinator_id, coordinator_display_name, project_id, project_path}) do delete(value)
+    }
 	// REQ-ERR-6: provider/model come from the descriptor. The launch path has no
 	// fallback for them, so an older hub that omits them still yields
 	// provider_missing, which now parks the wake instead of looping. task_id stays
@@ -626,8 +638,10 @@ bridge_wake_retry_worker :: proc() {
     arena: virtual.Arena
     if virtual.arena_init_growing(&arena) != nil do return
     defer virtual.arena_destroy(&arena)
-    context.allocator = virtual.arena_allocator(&arena)
-    context.temp_allocator = context.allocator
+    // The launcher retains default-allocator token records and runtime state.
+    // Only parsing/scratch storage may be reset after each worker pass.
+    context.allocator = runtime.heap_allocator()
+    context.temp_allocator = virtual.arena_allocator(&arena)
     for {
         sync.mutex_lock(&bridge_wake_retry_mu)
         for !bridge_wake_retry_requested && !bridge_wake_retry_stopping do sync.cond_wait(&bridge_wake_retry_cond, &bridge_wake_retry_mu)
@@ -636,7 +650,7 @@ bridge_wake_retry_worker :: proc() {
         sync.mutex_unlock(&bridge_wake_retry_mu)
         if stop do return
         bridge_wake_retry_due(bridge_runtime_now_ms())
-        free_all(context.allocator)
+        free_all(context.temp_allocator)
     }
 }
 bridge_wake_retry_start :: proc() -> ^thread.Thread {
