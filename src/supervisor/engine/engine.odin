@@ -1,0 +1,974 @@
+// Package engine is the supervisor's activation engine (T13): the operation journal, the
+// pointer switch, health probation, automatic rollback, the rollback_failed terminal state,
+// the failed-candidate pin and the per-instance lock
+// (docs/specs/bridge-supervisor-engine.md §4, §6, §7.5, §7.6, §9, §11, §14).
+//
+// Phase 1 is dormant (§1): the engine runs only against test roots. It never touches a real
+// instance's bin/, service definition, .install.lock or ~/.heimdall-auto-update.lock.
+//
+// Processes (runtime + PTY host, agents) are behind `Host`, so the same engine code runs in
+// the real supervisor and under the fake host of the failure-injection tests. The engine is
+// single-threaded and tick-driven: the supervisor's main loop calls `tick` (every ~1 s) and
+// `stop` on a service stop; `activate` runs one activation synchronously.
+//
+// Lifecycle of one supervisor process:
+//
+//   e, exit := open(cfg, host)              lock, J0 (reap via host, rotation, index, tmp leftovers)
+//   exit = start(&e, launched_tree, mode)   §7.6 decision + journal recovery; READY after this
+//   loop { exit = tick(&e) }                probation / rollback probation; exit 75 = handover
+//   activate(&e, …)                         verified op -> … -> exit 75 (handover)
+//   stop(&e)                                §7.5, exit 0
+//   close(&e)
+package engine
+
+import "core:fmt"
+import "core:mem"
+import "core:mem/virtual"
+import "core:os"
+import "core:strings"
+import "../fetch"
+
+ENGINE_VERSION :: 1
+
+Health :: enum {
+	Down, // not started
+	Starting, // started, not yet ready
+	Ready, // runtime local health = ready (config loaded, PTY host handshake ok)
+	Exited, // runtime or PTY host exited / restarted
+}
+
+// Host: everything the engine does not do itself.
+Host :: struct {
+	user:                   rawptr,
+	// Wall clock, unix seconds.
+	now:                    proc(user: rawptr) -> i64,
+	// J0 layer 3: terminate every live procs.json entry; false = a survivor after 20 s.
+	reap:                   proc(user: rawptr) -> bool,
+	// Start runtime + PTY host from `tree` (always this supervisor's own tree, §2).
+	start_runtime:          proc(user: rawptr, tree: string) -> bool,
+	// Close admission, stop agents, PTY host and runtime started from `tree`, and wait until
+	// every recorded (pid, start_time) has exited (§12 stopping, W7). false = stop_timeout.
+	stop_children:          proc(user: rawptr, tree: string) -> bool,
+	health:                 proc(user: rawptr) -> Health,
+	hub_connected:          proc(user: rawptr) -> bool,
+	// Did the running runtime report `connected` within 5 min (§14 hub rule)?
+	hub_recently_connected: proc(user: rawptr) -> bool,
+	// A service stop arrived while an activation runs (checked between pre-switch steps).
+	stop_requested:         proc(user: rawptr) -> bool,
+}
+
+Mode :: enum {
+	Normal,
+	Fallback,
+}
+
+// Exit tells the supervisor's main loop what to do next.
+Exit :: enum {
+	Run, // keep running (READY / keep ticking)
+	Stop, // exit 0
+	Handover, // exit 75
+	Refuse, // exit 78
+}
+
+exit_code :: proc(x: Exit) -> int {
+	switch x {
+	case .Run:
+		return -1
+	case .Stop:
+		return 0
+	case .Handover:
+		return 75
+	case .Refuse:
+		return 78
+	}
+	return -1
+}
+
+Phase :: enum {
+	Idle, // runtime running from the launched tree, no probation
+	Probation, // probation of the active op's `to`
+	Rollback_Probation, // probation of `from` after a rollback
+	Rollback_Failed, // terminal; runtime restarts stopped, only repair-type intents accepted
+	Offline, // runtime not started (refused, handed over, stopped)
+}
+
+Config :: struct {
+	instance_root:        string, // <data>
+	state_root:           string, // <state>
+	retry:                Retry_Policy,
+	ready_timeout_s:      i64, // runtime ready after start (60)
+	probation_s:          i64, // healthy after ready (120)
+	max_unclean_attempts: int, // 3
+	state_stores:         []State_Store,
+}
+
+default_config :: proc(instance_root, state_root: string) -> Config {
+	return Config {
+		instance_root = instance_root,
+		state_root = state_root,
+		retry = DEFAULT_RETRY,
+		ready_timeout_s = 60,
+		probation_s = 120,
+		max_unclean_attempts = 3,
+		state_stores = DEFAULT_STATE_STORES,
+	}
+}
+
+Engine :: struct {
+	cfg:            Config,
+	host:           Host,
+	inj:            ^Injector,
+	arena:          virtual.Arena,
+	alloc:          mem.Allocator,
+	lock:           Lock,
+	launched:       string,
+	mode:           Mode,
+	last_seq:       i64,
+	active:         Maybe(Line), // last line of the active op
+	phase:          Phase,
+	// Probation bookkeeping (in memory; a restart restarts the window, J16).
+	runtime_tree:   string,
+	started_at:     i64,
+	ready_at:       i64,
+	hub_seen:       bool,
+	refuse_reason:  string,
+}
+
+now :: proc(e: ^Engine) -> i64 {
+	return e.host.now(e.host.user)
+}
+
+@(private)
+sup_dir :: proc(e: ^Engine, parts: ..string) -> string {
+	all := make([dynamic]string, context.temp_allocator)
+	append(&all, e.cfg.instance_root, "supervisor")
+	append(&all, ..parts)
+	return join(..all[:])
+}
+
+@(private)
+journal_path :: proc(e: ^Engine) -> string {
+	return sup_dir(e, JOURNAL_DIR, JOURNAL_FILE)
+}
+
+@(private)
+clone_line :: proc(e: ^Engine, l: Line) -> Line {
+	c := l
+	c.op_id = strings.clone(l.op_id, e.alloc)
+	c.action = strings.clone(l.action, e.alloc)
+	c.actor = strings.clone(l.actor, e.alloc)
+	c.state = strings.clone(l.state, e.alloc)
+	c.sub = strings.clone(l.sub, e.alloc)
+	c.error = strings.clone(l.error, e.alloc)
+	c.note = strings.clone(l.note, e.alloc)
+	c.from = Ref{strings.clone(l.from.version, e.alloc), strings.clone(l.from.sha256, e.alloc), strings.clone(l.from.tree, e.alloc)}
+	c.to = Ref{strings.clone(l.to.version, e.alloc), strings.clone(l.to.sha256, e.alloc), strings.clone(l.to.tree, e.alloc)}
+	return c
+}
+
+// journal: append one line (write-ahead), then for a terminal line update the op index.
+journal :: proc(e: ^Engine, l: Line) -> Error {
+	line := l
+	line.js = JOURNAL_SCHEMA
+	line.seq = e.last_seq + 1
+	line.ts = now(e)
+	if err := append_durable(e.inj, journal_path(e), encode_line(line)); err != nil do return err
+	e.last_seq = line.seq
+	if is_terminal(line.state) {
+		e.active = nil
+		// The index is reconciled from the journal at every start (§6.1), so only a crash
+		// stops here; a failed index write (e.g. fs_busy) does not undo a durable result.
+		if err := index_add(e, line.op_id, line.state, line.ts); err != nil && is_crash(err) do return err
+	} else {
+		e.active = clone_line(e, line)
+	}
+	write_status(e, line)
+	return nil
+}
+
+@(private)
+index_add :: proc(e: ^Engine, op_id, state: string, at: i64) -> Error {
+	path := sup_dir(e, JOURNAL_DIR, OP_INDEX_FILE)
+	idx, _ := read_op_index(path, context.temp_allocator)
+	if cur, ok := idx[op_id]; ok && cur.state == state do return nil
+	idx[op_id] = Index_Entry{state, at}
+	prune_index(&idx, now(e))
+	data := encode_op_index(idx)
+	return replace_durable(e.inj, e.cfg.retry, path, transmute([]byte)data, op_id, PRIVATE_FILE_PERMS)
+}
+
+@(private)
+prune_index :: proc(idx: ^map[string]Index_Entry, now_s: i64) {
+	old := make([dynamic]string, context.temp_allocator)
+	for k, v in idx do if now_s - v.at > INDEX_HORIZON_S do append(&old, k)
+	for k in old do delete_key(idx, k)
+}
+
+// write_status: <state>/supervisor-status.json (diagnostics, §3). Best effort, not a
+// durable step: the journal is the authority.
+@(private)
+write_status :: proc(e: ^Engine, l: Line) {
+	if crashed(e.inj) || e.cfg.state_root == "" || !os.is_directory(e.cfg.state_root) do return
+	b := strings.builder_make(context.temp_allocator)
+	fmt.sbprintf(&b, `{{"engine":%d,"phase":"%v","tree":`, ENGINE_VERSION, e.phase)
+	write_json_string(&b, e.launched)
+	strings.write_string(&b, `,"op_id":`)
+	write_json_string(&b, l.op_id)
+	strings.write_string(&b, `,"state":`)
+	write_json_string(&b, l.state)
+	strings.write_string(&b, `,"sub":`)
+	write_opt_string(&b, l.sub)
+	strings.write_string(&b, `,"error":`)
+	write_opt_string(&b, l.error)
+	fmt.sbprintf(&b, `,"at":%d}}`, l.ts)
+	strings.write_byte(&b, '\n')
+	path := join(e.cfg.state_root, "supervisor-status.json")
+	tmp := fmt.tprintf("%s.tmp", path)
+	if write_new_synced(tmp, transmute([]byte)strings.to_string(b), PRIVATE_FILE_PERMS) == nil {
+		platform_replace(tmp, path)
+	}
+}
+
+// ---------------------------------------------------------------------------------------
+// open: lock + J0
+// ---------------------------------------------------------------------------------------
+
+// open takes the instance lock and runs J0 (§6.3): orphan reap through the host, finish an
+// interrupted rotation (J33), torn-tail truncation / corrupt journal (§16), op index
+// reconcile, *.tmp-* leftovers. Returns .Refuse (78) when the lock is held or an orphan
+// survives; `e.refuse_reason` says which.
+open :: proc(e: ^Engine, cfg: Config, host: Host, inj: ^Injector = nil) -> Exit {
+	e^ = {}
+	e.cfg = cfg
+	if e.cfg.retry.budget_ms == 0 && e.cfg.retry.first_ms == 0 do e.cfg.retry = DEFAULT_RETRY
+	if e.cfg.ready_timeout_s == 0 do e.cfg.ready_timeout_s = 60
+	if e.cfg.probation_s == 0 do e.cfg.probation_s = 120
+	if e.cfg.max_unclean_attempts == 0 do e.cfg.max_unclean_attempts = 3
+	e.host = host
+	e.inj = inj
+	_ = virtual.arena_init_growing(&e.arena)
+	e.alloc = virtual.arena_allocator(&e.arena)
+	e.cfg.instance_root = strings.clone(cfg.instance_root, e.alloc)
+	e.cfg.state_root = strings.clone(cfg.state_root, e.alloc)
+	e.phase = .Offline
+
+	for d in ([]string{sup_dir(e), sup_dir(e, JOURNAL_DIR)}) {
+		if !os.is_directory(d) {
+			if err := make_dir_durable(e.inj, d); err != nil {
+				e.refuse_reason = strings.clone(error_code(err), e.alloc)
+				return .Refuse
+			}
+		}
+	}
+	l, lerr := lock_acquire(sup_dir(e, "engine.lock"))
+	if lerr != nil {
+		e.refuse_reason = "lock_held"
+		return .Refuse
+	}
+	e.lock = l
+	if e.host.reap != nil && !e.host.reap(e.host.user) {
+		e.refuse_reason = "orphan_unkillable"
+		return .Refuse
+	}
+	if err := recover_rotation(e); err != nil {
+		e.refuse_reason = strings.clone(error_code(err), e.alloc)
+		return .Refuse
+	}
+	if err := load_journal(e); err != nil {
+		e.refuse_reason = strings.clone(error_code(err), e.alloc)
+		return .Refuse
+	}
+	if err := remove_tmp_leftovers(e); err != nil {
+		e.refuse_reason = strings.clone(error_code(err), e.alloc)
+		return .Refuse
+	}
+	return .Run
+}
+
+close :: proc(e: ^Engine) {
+	lock_release(&e.lock)
+	virtual.arena_destroy(&e.arena)
+}
+
+// J33: ops.jsonl missing and .new present -> finish step 3; both present -> delete .new.
+@(private)
+recover_rotation :: proc(e: ^Engine) -> Error {
+	cur := journal_path(e)
+	nw := sup_dir(e, JOURNAL_DIR, JOURNAL_NEW)
+	if !os.exists(nw) do return nil
+	if !os.exists(cur) do return rename_durable(e.inj, e.cfg.retry, nw, cur)
+	return remove_durable(e.inj, nw)
+}
+
+@(private)
+load_journal :: proc(e: ^Engine) -> Error {
+	path := journal_path(e)
+	r := read_journal_file(path, context.temp_allocator)
+	switch r.status {
+	case .Missing, .Ok:
+	case .Torn_Tail:
+		if err := truncate_durable(e.inj, path, r.valid_bytes); err != nil do return err
+	case .Corrupt:
+		// §16: keep the evidence, start a new journal with a failed journal_corrupt line.
+		ts := now(e)
+		if err := rename_durable(e.inj, e.cfg.retry, path, sup_dir(e, JOURNAL_DIR, fmt.tprintf("ops.corrupt-%d.jsonl", ts))); err != nil do return err
+		for l in r.lines do e.last_seq = max(e.last_seq, l.seq)
+		clear(&r.lines)
+		if err := journal(e, Line{op_id = fmt.tprintf("op_journal_corrupt_%d", ts), action = "journal", actor = "supervisor", state = "failed", error = "journal_corrupt"}); err != nil do return err
+	}
+	for l in r.lines do e.last_seq = max(e.last_seq, l.seq)
+	if op, ok := active_op(r.lines[:]); ok do e.active = clone_line(e, op.last)
+	if err := reconcile_index(e, r.lines[:]); err != nil do return err
+	return maybe_rotate(e, r.lines[:], r.valid_bytes)
+}
+
+// reconcile_index: every terminal line within 31 days is in op-index.json (§6.1).
+@(private)
+reconcile_index :: proc(e: ^Engine, lines: []Line) -> Error {
+	path := sup_dir(e, JOURNAL_DIR, OP_INDEX_FILE)
+	idx, _ := read_op_index(path, context.temp_allocator)
+	changed := false
+	rotated := read_journal_file(sup_dir(e, JOURNAL_DIR, JOURNAL_ROTATED), context.temp_allocator)
+	t := now(e)
+	for set in ([][]Line{rotated.lines[:], lines}) {
+		for l in set {
+			if !is_terminal(l.state) || t - l.ts > INDEX_HORIZON_S do continue
+			if cur, ok := idx[l.op_id]; ok && cur.state == l.state do continue
+			idx[l.op_id] = Index_Entry{l.state, l.ts}
+			changed = true
+		}
+	}
+	before := len(idx)
+	prune_index(&idx, t)
+	if len(idx) != before do changed = true
+	if !changed do return nil
+	data := encode_op_index(idx)
+	return replace_durable(e.inj, e.cfg.retry, path, transmute([]byte)data, "reconcile", PRIVATE_FILE_PERMS)
+}
+
+// maybe_rotate: §6.1 rotation when ops.jsonl > 1 MiB and no op is active.
+@(private)
+maybe_rotate :: proc(e: ^Engine, lines: []Line, size: i64) -> Error {
+	if size <= ROTATE_BYTES || e.active != nil do return nil
+	t := now(e)
+	// Final line of every op terminal within 31 days, at least the last 50 ops.
+	finals := make([dynamic]Line, context.temp_allocator)
+	for l, i in lines {
+		if !is_terminal(l.state) do continue
+		last := true
+		for j := i + 1; j < len(lines); j += 1 do if lines[j].op_id == l.op_id {last = false; break}
+		if last do append(&finals, l)
+	}
+	keep_from := len(finals)
+	for i := len(finals) - 1; i >= 0; i -= 1 {
+		if t - finals[i].ts <= INDEX_HORIZON_S || len(finals) - i <= ROTATE_KEEP_MIN do keep_from = i
+	}
+	b := strings.builder_make(context.temp_allocator)
+	for l in finals[keep_from:] do strings.write_string(&b, encode_line(l))
+	nw := sup_dir(e, JOURNAL_DIR, JOURNAL_NEW)
+	if err := write_file_durable(e.inj, nw, transmute([]byte)strings.to_string(b)); err != nil do return err
+	if err := rename_durable(e.inj, e.cfg.retry, journal_path(e), sup_dir(e, JOURNAL_DIR, JOURNAL_ROTATED)); err != nil do return err
+	return rename_durable(e.inj, e.cfg.retry, nw, journal_path(e))
+}
+
+// J0: delete *.tmp-* leftovers of interrupted pointer / record writes.
+@(private)
+remove_tmp_leftovers :: proc(e: ^Engine) -> Error {
+	for dir in ([]string{e.cfg.instance_root, sup_dir(e), sup_dir(e, JOURNAL_DIR)}) {
+		entries, err := os.read_directory_by_path(dir, -1, context.temp_allocator)
+		if err != nil do continue
+		for ent in entries {
+			if strings.contains(ent.name, ".tmp-") {
+				if rerr := remove_durable(e.inj, join(dir, ent.name)); rerr != nil do return rerr
+			}
+		}
+	}
+	// Interrupted snapshot restores (J22) under <state>; only our own temp names.
+	if e.cfg.state_root != "" {
+		entries, err := os.read_directory_by_path(e.cfg.state_root, -1, context.temp_allocator)
+		if err == nil {
+			for ent in entries {
+				if strings.contains(ent.name, ".tmp-restore-") {
+					if rerr := remove_durable(e.inj, join(e.cfg.state_root, ent.name)); rerr != nil do return rerr
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------------------
+// start: §7.6 decision + recovery (J10–J25, J32)
+// ---------------------------------------------------------------------------------------
+
+POST_SWITCH_SUBS :: []string{"pointers_done", "handover"}
+
+// start decides, after J0 and the journal read and before READY, what this supervisor
+// launch does (§7.6), resolves the active op (§6.3) and starts the runtime where the
+// result is to run. Returns .Run (send READY, then tick), .Handover (exit 75 without
+// READY) or .Refuse.
+start :: proc(e: ^Engine, launched: string, mode: Mode) -> (x: Exit, err: Error) {
+	e.launched = strings.clone(launched, e.alloc)
+	e.mode = mode
+	L := launched
+	C := current_valid(e)
+	K := known_good_valid(e)
+
+	if !tree_is_valid(e, L) {
+		e.refuse_reason = "launched_tree_invalid"
+		return .Refuse, nil
+	}
+
+	// Torn / invalid `current` (J14): the launcher started `previous` (fallback) or `K`.
+	if C == "" {
+		if op, ok := e.active.?; ok && (op.state == "activating" || op.state == "probation" || op.state == "rolling_back") && op.from.tree == L {
+			if op.state == "activating" {
+				// The switch never produced a valid `current`: not past the point of no return.
+				if err = write_pointer(e, POINTER_CURRENT, L, op.op_id); err != nil do return
+				if err = journal(e, terminal_of(op, "failed", "pointer_write")); err != nil do return
+				return run_idle(e)
+			}
+			return run_rollback(e, op, op.error if op.state == "rolling_back" else "current_invalid", Ref{})
+		}
+		// No operation explains it: point `current` back at the tree we were started on.
+		if mode == .Fallback || L == K || K == "" {
+			if err = write_pointer(e, POINTER_CURRENT, L, "op_recover_current"); err != nil do return
+			C = L
+		} else {
+			return .Handover, nil
+		}
+	}
+
+	if mode == .Fallback && C != L {
+		if C == K do return .Handover, nil // committed before the launcher gave up (J17)
+		if op, ok := e.active.?; ok && op.to.tree == C && op_past_switch(op) {
+			from := op.from
+			note := ""
+			if from.tree != L {
+				note = "from_mismatch"
+				from, _ = ref_of_tree(e, L)
+			}
+			reason := op.error if op.state == "rolling_back" && op.error != "" else "launcher_fallback"
+			return run_rollback(e, op, reason, from, note)
+		}
+		// No active op naming C (journal lost, fresh install): synthetic rollback (§7.6).
+		if op, ok := e.active.?; ok {
+			if err = journal(e, terminal_of(op, "failed", "interrupted_before_switch")); err != nil do return
+		}
+		to_ref, _ := ref_of_tree(e, C)
+		from_ref, _ := ref_of_tree(e, L)
+		syn := Line {
+			op_id  = fmt.tprintf("op_fallback_%d_%d", now(e), e.last_seq + 1),
+			action = "rollback_to_previous",
+			actor  = "supervisor",
+			state  = "rolling_back",
+			sub    = "stopping",
+			from   = from_ref,
+			to     = to_ref,
+			error  = "launcher_fallback",
+		}
+		return run_rollback(e, syn, "launcher_fallback", from_ref, "", true)
+	}
+
+	if mode == .Normal && L != C do return .Handover, nil
+
+	// From here L == C.
+	op, has_op := e.active.?
+	if !has_op {
+		if K != C {
+			// No journal entry explains an unproven `current` (journal lost, or a fresh
+			// install that wrote no op): prove it like a candidate; rollback target is
+			// `previous` (or K).
+			from_tree := K if K != "" else previous_valid(e)
+			from_ref, _ := ref_of_tree(e, from_tree)
+			to_ref, _ := ref_of_tree(e, C)
+			adopt := Line {
+				op_id             = fmt.tprintf("op_adopt_%d_%d", now(e), e.last_seq + 1),
+				action            = "adopt",
+				actor             = "supervisor",
+				state             = "probation",
+				sub               = "probation",
+				from              = from_ref,
+				to                = to_ref,
+				probation_attempt = 1,
+			}
+			if err = journal(e, adopt); err != nil do return
+			return run_probation(e)
+		}
+		return run_idle(e)
+	}
+
+	switch op.state {
+	case "activating":
+		if C == op.to.tree {
+			// J14/J15/J15a: the switch landed; this is the candidate's first start.
+			if op.action == "rollback_to_previous" {
+				if err = pin_user_rollback(e, op); err != nil do return
+			}
+			if K == op.to.tree {
+				return commit(e, op)
+			}
+			next := op
+			next.state = "probation"
+			next.sub = "probation"
+			next.probation_attempt = 1
+			next.error = ""
+			if err = journal(e, next); err != nil do return
+			return run_probation(e)
+		}
+		// J10–J13: not past the point of no return.
+		if err = drop_incomplete_snapshot(e, op.op_id); err != nil do return
+		if err = journal(e, terminal_of(op, "failed", "interrupted_before_switch")); err != nil do return
+		return run_idle(e)
+	case "probation":
+		if K == op.to.tree do return commit(e, op) // J17: known-good landed, line missing
+		if C != op.to.tree {
+			return run_rollback(e, op, "current_reverted", Ref{})
+		}
+		attempt := op.probation_attempt
+		if op.sub != "probation_suspended" do attempt += 1 // J16 vs J16a
+		if attempt > e.cfg.max_unclean_attempts {
+			return run_rollback(e, op, "probation_interrupted", Ref{})
+		}
+		next := op
+		next.sub = "probation"
+		next.probation_attempt = attempt
+		if err = journal(e, next); err != nil do return
+		return run_probation(e)
+	case "rolling_back":
+		return run_rollback(e, op, op.error, Ref{})
+	}
+	// Pre-activation states (requested … waiting_for_idle): nothing to undo (J3–J9). The
+	// caller resumes or re-drives the op; the installed version runs meanwhile.
+	return run_idle(e)
+}
+
+@(private)
+op_past_switch :: proc(op: Line) -> bool {
+	switch op.state {
+	case "probation", "rolling_back":
+		return true
+	case "activating":
+		return op.sub == "pointers_begin" || op.sub == "pointers_done" || op.sub == "handover"
+	}
+	return false
+}
+
+current_valid :: proc(e: ^Engine) -> string {
+	t := read_pointer_raw(e, POINTER_CURRENT)
+	return t if tree_is_valid(e, t) else ""
+}
+
+previous_valid :: proc(e: ^Engine) -> string {
+	t := read_pointer_raw(e, POINTER_PREVIOUS)
+	return t if tree_is_valid(e, t) else ""
+}
+
+known_good_valid :: proc(e: ^Engine) -> string {
+	t := read_known_good_raw(e)
+	return t if tree_is_valid(e, t) else ""
+}
+
+@(private)
+terminal_of :: proc(op: Line, state, err: string, note := "") -> Line {
+	t := op
+	t.state = state
+	t.sub = ""
+	t.error = err
+	t.note = note
+	return t
+}
+
+@(private)
+drop_incomplete_snapshot :: proc(e: ^Engine, op_id: string) -> Error {
+	dir := snapshot_dir(e, op_id)
+	if os.exists(dir) && !os.exists(join(dir, SNAPSHOT_JSON)) do return remove_durable(e.inj, dir)
+	return nil
+}
+
+@(private)
+start_runtime :: proc(e: ^Engine, tree: string) -> bool {
+	if crashed(e.inj) do return false
+	e.runtime_tree = strings.clone(tree, e.alloc)
+	e.started_at = now(e)
+	e.ready_at = 0
+	e.hub_seen = false
+	return e.host.start_runtime(e.host.user, tree)
+}
+
+@(private)
+run_idle :: proc(e: ^Engine) -> (Exit, Error) {
+	e.phase = .Idle
+	start_runtime(e, e.launched)
+	return .Run, nil
+}
+
+@(private)
+run_probation :: proc(e: ^Engine) -> (Exit, Error) {
+	op, _ := e.active.?
+	e.phase = .Probation if op.state == "probation" else .Rollback_Probation
+	start_runtime(e, e.launched)
+	return .Run, nil
+}
+
+// ---------------------------------------------------------------------------------------
+// activation (verified -> activating -> handover), §4.3, §6.2, J10–J15, J28
+// ---------------------------------------------------------------------------------------
+
+Activation :: struct {
+	op_id:  string,
+	action: string, // update_now, install_version, repair, rollback_to_previous, timer op …
+	actor:  string,
+	to:     Ref, // verified tree (fetch.prepare_release result, or `previous` for J28)
+}
+
+// begin_verified journals `requested` and `verified` for an op whose tree is already
+// prepared (the resolve/download/verify part of the diagram is T11/T12's code, driven by
+// the caller). Used by tests and by rollback_to_previous.
+begin_verified :: proc(e: ^Engine, a: Activation) -> Error {
+	if _, busy := e.active.?; busy do return fail("busy", "an operation is active")
+	base := Line{op_id = a.op_id, action = a.action, actor = a.actor}
+	l := base
+	l.state = "requested"
+	if err := journal(e, l); err != nil do return err
+	l.state = "verified"
+	l.to = a.to
+	return journal(e, l)
+}
+
+// mark_verified journals `verified` for the active op once its tree is prepared (the
+// orchestrator resumes an op left in requested … verifying after a restart this way).
+mark_verified :: proc(e: ^Engine, to: Ref) -> Error {
+	op, ok := e.active.?
+	if !ok do return fail("no_op", "no active operation")
+	if is_terminal(op.state) || op.state == "activating" || op.state == "probation" || op.state == "rolling_back" {
+		return fail("bad_state", "operation is %s", op.state)
+	}
+	l := op
+	l.state = "verified"
+	l.sub = ""
+	l.to = to
+	return journal(e, l)
+}
+
+// rollback_to_previous (J28): requested -> verifying -> verified (read-only local check of
+// `previous`), then the normal activation with to = previous.
+rollback_to_previous :: proc(e: ^Engine, op_id, actor: string) -> (x: Exit, err: Error) {
+	if _, busy := e.active.?; busy do return .Run, fail("busy", "an operation is active")
+	base := Line{op_id = op_id, action = "rollback_to_previous", actor = actor}
+	l := base
+	l.state = "requested"
+	if err = journal(e, l); err != nil do return
+	l.state = "verifying"
+	if err = journal(e, l); err != nil do return
+	P := previous_valid(e)
+	C := current_valid(e)
+	if P == "" || P == C {
+		err = journal(e, terminal_of(l, "failed", "no_previous"))
+		return .Run, err
+	}
+	if !tree_sizes_match(e, P) {
+		err = journal(e, terminal_of(l, "failed", "tree_damaged"))
+		return .Run, err
+	}
+	to, _ := ref_of_tree(e, P)
+	l.state = "verified"
+	l.to = to
+	if err = journal(e, l); err != nil do return
+	return activate(e)
+}
+
+// activate runs the active `verified` (or `waiting_for_idle`) op through `activating` up to
+// the handover (exit 75). Errors before the `current` switch end the op `failed <code>` with
+// the installed version restarted; an error after it starts the rollback.
+activate :: proc(e: ^Engine) -> (x: Exit, err: Error) {
+	op, ok := e.active.?
+	if !ok || (op.state != "verified" && op.state != "waiting_for_idle") {
+		return .Run, fail("not_verified", "no verified operation to activate")
+	}
+	F := e.launched
+	if current_valid(e) != F {
+		err = journal(e, terminal_of(op, "failed", "current_changed"))
+		return .Run, err
+	}
+	if op.to.tree == F {
+		err = journal(e, terminal_of(op, "noop", ""))
+		return .Run, err
+	}
+	if !tree_is_valid(e, op.to.tree) {
+		err = journal(e, terminal_of(op, "failed", "tree_invalid"))
+		return .Run, err
+	}
+	from, _ := ref_of_tree(e, F)
+	fs := tree_schemas(e, F)
+	ts := tree_schemas(e, op.to.tree)
+	rule := schema_rule(fs, ts)
+	if rule == .Refuse {
+		err = journal(e, terminal_of(op, "failed", "state_schema_incompatible"))
+		return .Run, err
+	}
+	if abs(ts.journal_schema - fs.journal_schema) > 1 {
+		err = journal(e, terminal_of(op, "failed", "journal_schema_gap"))
+		return .Run, err
+	}
+
+	cur := op
+	cur.from = from
+	cur.state = "activating"
+	cur.error = ""
+	cur.hub = e.host.hub_recently_connected != nil && e.host.hub_recently_connected(e.host.user)
+
+	step :: proc(e: ^Engine, cur: ^Line, sub: string) -> Error {
+		cur.sub = sub
+		return journal(e, cur^)
+	}
+	before_switch_fail :: proc(e: ^Engine, cur: Line, code: string) -> (Exit, Error) {
+		if err := journal(e, terminal_of(cur, "failed", code)); err != nil do return .Run, err
+		if crashed(e.inj) do return .Run, crash_error("after failed")
+		// The installed version is restarted as normal (W7 stopped it).
+		return run_idle(e)
+	}
+
+	if err = step(e, &cur, "gate_closed"); err != nil do return
+	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped")
+	if err = step(e, &cur, "stopping"); err != nil do return
+	if crashed(e.inj) do return .Run, crash_error("stopping")
+	e.phase = .Offline
+	if !e.host.stop_children(e.host.user, F) do return before_switch_fail(e, cur, "stop_timeout")
+	if err = step(e, &cur, "stopped"); err != nil do return
+	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped")
+	if err = step(e, &cur, "snapshot"); err != nil do return
+	if serr := take_snapshot(e, cur.op_id, F, rule == .One_Way); serr != nil {
+		if is_crash(serr) do return .Run, serr
+		if rule == .One_Way do return before_switch_fail(e, cur, "snapshot_failed")
+		// Insurance snapshot only: carry on without it (§11.3 rollback-safe row).
+		cur.note = "snapshot_skipped"
+	}
+	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped")
+	if err = step(e, &cur, "pointers_begin"); err != nil do return
+	if perr := write_pointer(e, POINTER_PREVIOUS, F, cur.op_id); perr != nil {
+		if is_crash(perr) do return .Run, perr
+		return before_switch_fail(e, cur, "pointer_write")
+	}
+	if perr := write_pointer(e, POINTER_CURRENT, cur.to.tree, cur.op_id); perr != nil {
+		if is_crash(perr) do return .Run, perr
+		if read_pointer_raw(e, POINTER_CURRENT) == F {
+			return before_switch_fail(e, cur, "pointer_write")
+		}
+		// `current` is no longer F: past the point of no return.
+		return run_rollback(e, cur, "pointer_write", Ref{})
+	}
+	// Point of no return passed (J14). J28: pin the tree we leave, then pointers_done.
+	if cur.action == "rollback_to_previous" {
+		if err = pin_user_rollback(e, cur); err != nil do return
+	}
+	if err = step(e, &cur, "pointers_done"); err != nil do return
+	if err = step(e, &cur, "handover"); err != nil do return
+	e.phase = .Offline
+	return .Handover, nil
+}
+
+@(private)
+stop_req :: proc(e: ^Engine) -> bool {
+	return e.host.stop_requested != nil && e.host.stop_requested(e.host.user)
+}
+
+// J28: the newer tree `from` is pinned (user_rollback) only once `current := to` landed.
+@(private)
+pin_user_rollback :: proc(e: ^Engine, op: Line) -> Error {
+	if op.from.version == "" do return nil
+	return add_pin(e, op.from.version, op.from.sha256, op.op_id, "user_rollback")
+}
+
+@(private)
+tree_sizes_match :: proc(e: ^Engine, tree: string) -> bool {
+	return fetch.tree_check_sizes(join(e.cfg.instance_root, "releases", tree)) == nil
+}
+
+// ---------------------------------------------------------------------------------------
+// probation (§14), commit (J17)
+// ---------------------------------------------------------------------------------------
+
+// tick advances probation. Call about once a second while running.
+tick :: proc(e: ^Engine) -> (x: Exit, err: Error) {
+	if e.phase != .Probation && e.phase != .Rollback_Probation do return .Run, nil
+	op, ok := e.active.?
+	if !ok do return .Run, nil
+	h := e.host.health(e.host.user)
+	t := now(e)
+	reason := ""
+	switch {
+	case h == .Exited:
+		reason = "runtime_exited"
+	case e.ready_at == 0 && h == .Ready:
+		e.ready_at = t
+	case e.ready_at == 0 && t - e.started_at >= e.cfg.ready_timeout_s:
+		reason = "runtime_not_ready"
+	case e.ready_at != 0 && h != .Ready:
+		reason = "runtime_unhealthy"
+	}
+	// The hub rule (§14) applies to the candidate only: a rollback must never depend on the
+	// hub (report §8.3), so the rollback probation ignores it.
+	hub_required := op.hub && e.phase == .Probation
+	if reason == "" && hub_required && e.host.hub_connected != nil && e.host.hub_connected(e.host.user) do e.hub_seen = true
+	if reason == "" && e.ready_at != 0 && t - e.ready_at >= e.cfg.probation_s {
+		if hub_required && !e.hub_seen do reason = "hub_unreachable"
+		else if e.phase == .Probation do return commit(e, op)
+		else do return rolled_back(e, op)
+	}
+	if reason == "" do return .Run, nil
+	if e.phase == .Probation do return run_rollback(e, op, reason, Ref{})
+	return rollback_failed(e, op, reason)
+}
+
+@(private)
+commit :: proc(e: ^Engine, op: Line) -> (Exit, Error) {
+	if err := write_known_good(e, op.to.tree, op.op_id); err != nil do return .Run, err
+	note := "" if op.hub else "probation_offline"
+	if err := journal(e, terminal_of(op, "committed", "", note)); err != nil do return .Run, err
+	if e.phase != .Probation {
+		// Committed at start (J17 replay): the runtime of `to` still has to run.
+		return run_idle(e)
+	}
+	e.phase = .Idle
+	return .Run, nil
+}
+
+@(private)
+rolled_back :: proc(e: ^Engine, op: Line) -> (Exit, Error) {
+	if err := write_known_good(e, op.from.tree, op.op_id); err != nil do return .Run, err
+	if err := journal(e, terminal_of(op, "rolled_back", op.error, op.note)); err != nil do return .Run, err
+	e.phase = .Idle
+	return .Run, nil
+}
+
+@(private)
+rollback_failed :: proc(e: ^Engine, op: Line, why: string) -> (Exit, Error) {
+	if !crashed(e.inj) do e.host.stop_children(e.host.user, e.launched)
+	note := why
+	if op.note != "" do note = fmt.tprintf("%s; %s", op.note, why)
+	if err := journal(e, terminal_of(op, "rollback_failed", op.error, note)); err != nil do return .Run, err
+	e.phase = .Rollback_Failed
+	return .Run, nil
+}
+
+// ---------------------------------------------------------------------------------------
+// rollback (J18–J25)
+// ---------------------------------------------------------------------------------------
+
+ROLLBACK_SUBS :: []string{"stopping", "stopped", "pin", "pointers", "restore", "handover", "probation", "probation_suspended"}
+
+@(private)
+sub_index :: proc(sub: string) -> int {
+	for s, i in ROLLBACK_SUBS do if s == sub do return i
+	return 0
+}
+
+// run_rollback starts or resumes the rollback of `op` (to -> from). Every sub-step is
+// idempotent and is re-run from the last journaled one (its line is written before its
+// effect). The executor is this supervisor: if it runs from `to`, it hands over (exit 75)
+// once `current := from`; if it runs from `from` (launcher fallback), it goes straight to
+// the rollback probation.
+@(private)
+run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref, note := "", synthetic := false) -> (x: Exit, err: Error) {
+	op := op_in
+	if !ref_empty(from_override) do op.from = from_override
+	if note != "" do op.note = note
+	op.error = reason if reason != "" else op.error
+	if op.error == "" do op.error = "rollback"
+	resume := 0
+	if op_in.state == "rolling_back" && !synthetic do resume = sub_index(op_in.sub)
+	op.state = "rolling_back"
+	op.probation_attempt = op_in.probation_attempt if op_in.state == "rolling_back" else 0
+
+	if resume <= sub_index("stopping") {
+		op.sub = "stopping"
+		if err = journal(e, op); err != nil do return
+		e.phase = .Offline
+		if !crashed(e.inj) && e.runtime_tree != "" {
+			e.host.stop_children(e.host.user, e.runtime_tree)
+			e.runtime_tree = ""
+		} else if !crashed(e.inj) && op.to.tree != "" && e.launched == op.to.tree {
+			e.host.stop_children(e.host.user, op.to.tree)
+		}
+		op.sub = "stopped"
+		if err = journal(e, op); err != nil do return
+	}
+	if resume <= sub_index("pin") {
+		op.sub = "pin"
+		if err = journal(e, op); err != nil do return
+		if op.to.sha256 != "" && op.to.sha256 == op.from.sha256 {
+			// T9 carry-over (b): a repair (same release, new -r<n> dir) that fails probation
+			// would pin the running release; skip it explicitly.
+			op.note = "pin_skipped same_release" if op.note == "" else fmt.tprintf("%s; pin_skipped same_release", op.note)
+		} else if op.to.version != "" {
+			if err = add_pin(e, op.to.version, op.to.sha256, op.op_id, op.error); err != nil do return
+		}
+	}
+	if resume <= sub_index("pointers") {
+		op.sub = "pointers"
+		if err = journal(e, op); err != nil do return
+		if op.from.tree == "" || !tree_is_valid(e, op.from.tree) {
+			return rollback_failed(e, op, "no_rollback_target")
+		}
+		if read_pointer_raw(e, POINTER_CURRENT) != op.from.tree {
+			if err = write_pointer(e, POINTER_CURRENT, op.from.tree, op.op_id); err != nil do return
+		}
+	}
+	if resume <= sub_index("restore") {
+		op.sub = "restore"
+		if err = journal(e, op); err != nil do return
+		if snapshot_required(e, op.op_id) {
+			if rerr := restore_snapshot(e, op.op_id); rerr != nil {
+				if is_crash(rerr) do return .Run, rerr
+				return rollback_failed(e, op, error_code(rerr))
+			}
+			op.note = "state_restored" if op.note == "" else fmt.tprintf("%s; state_restored", op.note)
+		}
+	}
+	if e.launched != op.from.tree {
+		// J23: the `to` supervisor hands over; the launcher starts `from` (= current = K).
+		if resume <= sub_index("handover") {
+			op.sub = "handover"
+			if err = journal(e, op); err != nil do return
+		}
+		e.phase = .Offline
+		return .Handover, nil
+	}
+	// We are `from`: rollback probation (J24), unclean restarts count (max 3, J16 rule).
+	attempt := op.probation_attempt
+	if op_in.state == "rolling_back" && op_in.sub == "probation_suspended" {
+		// clean stop: same attempt
+	} else {
+		attempt += 1
+	}
+	if attempt < 1 do attempt = 1
+	if attempt > e.cfg.max_unclean_attempts {
+		return rollback_failed(e, op, "probation_interrupted")
+	}
+	op.sub = "probation"
+	op.probation_attempt = attempt
+	if err = journal(e, op); err != nil do return
+	return run_probation(e)
+}
+
+// ---------------------------------------------------------------------------------------
+// service stop (§7.5)
+// ---------------------------------------------------------------------------------------
+
+// stop handles a service stop between ticks: probation (either kind) is suspended with the
+// attempt unchanged (J16a); children are stopped; exit 0.
+stop :: proc(e: ^Engine) -> (x: Exit, err: Error) {
+	if op, ok := e.active.?; ok && (e.phase == .Probation || e.phase == .Rollback_Probation) {
+		s := op
+		s.sub = "probation_suspended"
+		if err = journal(e, s); err != nil do return
+	}
+	if e.runtime_tree != "" && !crashed(e.inj) {
+		e.host.stop_children(e.host.user, e.runtime_tree)
+		e.runtime_tree = ""
+	}
+	e.phase = .Offline
+	return .Stop, nil
+}
+

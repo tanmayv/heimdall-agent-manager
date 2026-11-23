@@ -9,10 +9,14 @@ on:
     branches: [main, 'heimdall/**', 'ci/**']
     paths:
       - 'src/supervisor/**'
+      # src/supervisor/engine reads pointers with the launcher's own code.
+      - 'src/launcher/core/**'
       - '.github/workflows/supervisor-unit.yml'
   pull_request:
     paths:
       - 'src/supervisor/**'
+      # src/supervisor/engine reads pointers with the launcher's own code.
+      - 'src/launcher/core/**'
       - '.github/workflows/supervisor-unit.yml'
   workflow_dispatch:
 permissions:
@@ -22,7 +26,7 @@ concurrency:
   cancel-in-progress: true
 env:
   # Packages under test; one `odin test` run each.
-  PACKAGES: src/supervisor/resolver
+  PACKAGES: src/supervisor/resolver src/supervisor/engine
 jobs:
   unix:
     name: odin test (${{ matrix.os }})
