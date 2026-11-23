@@ -154,9 +154,10 @@ class Stub { static int Main(string[] a) {
     if ($Uri -like '*/v1.0.0/heimdall-local-windows-amd64-v1.0.0.zip') { Copy-Item $script:fixtureZip $OutFile; return }
     throw "404 $Uri"
   }
+  # -Width: Out-String would otherwise wrap long [ERROR] lines at the host width.
   function Invoke-InProcess {
     $script:fetched = @()
-    $o = & ([scriptblock]::Create((Get-Content -Raw $script))) -Hub 'https://h.example' 6>&1 2>&1 | Out-String
+    $o = & ([scriptblock]::Create((Get-Content -Raw $script))) -Hub 'https://h.example' 6>&1 2>&1 | Out-String -Width 4096
     return @{ Code = $global:LASTEXITCODE; Out = $o }
   }
   function New-Release([string[]]$Assets) {
