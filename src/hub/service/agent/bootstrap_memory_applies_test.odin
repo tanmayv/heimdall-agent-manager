@@ -1,6 +1,8 @@
 package agent
 
 import "core:strings"
+import "core:mem"
+import iface "odin_test:hub/repository/iface"
 import "core:testing"
 import domain "odin_test:hub/domain"
 
@@ -151,4 +153,34 @@ test_bootstrap_render_agent_manifest_includes_memory_md :: proc(t: ^testing.T) {
 
 	testing.expect(t, strings.contains(manifest, `{"kind":"MEMORY_MD","relative_path":"MEMORY.md","hash":"`))
 	testing.expect(t, version != "")
+}
+
+// Repository reads own every text column, including fields the capability probe
+// never inspects. Repeated warm polls must release the entire row.
+@(test)
+test_bootstrap_skill_capability_releases_owned_bridge :: proc(t: ^testing.T) {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	reads := 0
+	bridges := iface.Bridge_Repository{ctx = &reads, get_bridge = proc(ctx: rawptr, id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+		(^int)(ctx)^ += 1
+		row := domain.Bridge{
+			bridge_id = strings.clone(id),
+			owner_user_id = domain.User_ID(strings.clone("owner")),
+			label = strings.clone("label"),
+			machine_hostname = strings.clone("hostname"),
+			hub_url = strings.clone("https://hub.invalid"),
+			bridge_token_hash = strings.clone("hash"),
+			capabilities_json = strings.clone("{\"features\":[\"dynamic_skill_v2\"]}"),
+		}
+		return row, true, {}
+	}}
+	service := Agent_Service{bridges = &bridges}
+	for i in 0..<20 {
+		testing.expect(t, bootstrap_bridge_structured_skills(&service, "brg"))
+		testing.expect_value(t, len(track.allocation_map), 0)
+	}
+	testing.expect_value(t, reads, 20)
 }

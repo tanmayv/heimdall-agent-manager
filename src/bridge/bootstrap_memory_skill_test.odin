@@ -64,7 +64,7 @@ test_dynamic_skill_bootstrap_sealed_cache_restart :: proc(t: ^testing.T) {
 	}
 	structured := true
 	bridges := iface.Bridge_Repository{ctx = &structured, get_bridge = proc(ctx: rawptr, id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
-		return {bridge_id = id, capabilities_json = "{\"features\":[\"dynamic_skill_v2\"]}" if (^bool)(ctx)^ else "{}"}, true, {}
+		return {bridge_id = strings.clone(id), capabilities_json = strings.clone("{\"features\":[\"dynamic_skill_v2\"]}" if (^bool)(ctx)^ else "{}")}, true, {}
 	}}
 	memories := []domain.Memory{
 		{memory_id = "mem_18eab58c00000001", type = .Skill, status = "active", agent_ids = {"agt_skillfix"},
