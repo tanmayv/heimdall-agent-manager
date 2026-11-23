@@ -93,6 +93,7 @@ test_placement_recovery_provider_and_owned_identity_validation :: proc(t: ^testi
 	_, repaired, err := recover_placement(&fx.svc, user_auth(), task.task_id, input)
 	testing.expect(t, !repaired && err.code == .Validation_Failed, "foreign durable identity rejected even with a fleet row")
 	input.action = "change_bridge"
+	testing.expect(t, exec_ok(t, fx, "DELETE FROM bridge_provider_status; DELETE FROM bridge_provider_settings;"))
 	provider_impl: sqlite.Provider_Repo_SQLite
 	providers := sqlite.new_provider_repository(&provider_impl, &fx.conn)
 	agents := agent.new_agent_service(&fx.agents, &fx.bridges, &fx.clock, &fx.ids)

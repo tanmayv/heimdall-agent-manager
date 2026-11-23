@@ -154,6 +154,12 @@ agent_save_instance_guarded_sqlite :: proc(ctx: rawptr, instance: domain.Agent_I
 }
 
 agent_save_instance_sqlite_impl :: proc(ctx: rawptr, instance: domain.Agent_Instance, guarded := false, expect_run_count := 0, expect_launch_epoch := "", expect_configuration_revision := 0) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	// A generation save must not join another thread's transaction on the
+	// shared connection. Ordinary status saves also run under state_mutex;
+	// they retain their existing lock order and are outside this start gate.
+	guard: Repository_Tx_Guard
+	if guarded do guard = tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	// RETURNING keeps a write statement active at SQLITE_ROW. Keep step, column
 	// copies and finalization together so another thread cannot BEGIN/COMMIT

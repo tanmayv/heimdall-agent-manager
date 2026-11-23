@@ -211,13 +211,27 @@ placement_snapshot_json :: proc(failures: []Placement_Failure) -> string {
 
 // Fresh context is required: grants in this UoW may have changed both attempt
 // and state since the matcher's initial load. Failures roll back with the UoW.
-reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain) -> (bool, domain.Domain_Error) {
+reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, grant_failures: []Grant_Placement_Failure = nil) -> (bool, domain.Domain_Error) {
 	ctx, ok, err := load_match_context(svc, chain)
 	if !ok do return false, err
 	defer destroy_match_context(&ctx)
 	for task in ctx.tasks {
 		failures, perr := collect_placement_failures(svc, &ctx, task)
 		if perr.code != .None do return false, perr
+		// Grant errors are known only after attempting start_begin. Merge them
+		// into this pass's normal diagnostics; a later pass recomputes afresh.
+		merged := make([dynamic]Placement_Failure, context.temp_allocator)
+		append(&merged, ..failures)
+		for refusal in grant_failures {
+		 if refusal.task_id != task.task_id do continue
+		 if task.state == .Ready {
+		  if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+		 } else if task.state == .In_Review {
+		  if review_lease_live_for(&ctx, svc, task.task_id, refusal.failure.agent_id, "") do continue
+		 } else do continue
+		 append(&merged, refusal.failure)
+		}
+		failures = merged[:]
 		facets, ferr := iface.taskchain_list_facets_by_task(svc.repo, task.task_id, task.owner_user_id)
 		if ferr.code != .None do return false, ferr
 		old: domain.Task_Attempt_Facet

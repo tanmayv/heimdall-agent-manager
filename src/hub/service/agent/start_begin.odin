@@ -84,6 +84,10 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	if req.ref != "" && inst.start_ref == req.ref && runtime_expected_active(inst.runtime_status) {
 		return start_ticket_for_row(service, inst, req.ref, false, true), {}
 	}
+	if req.expected != nil {
+		e := req.expected
+		if inst.run_count != e.run_count || inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id do return {}, domain.domain_error(.Conflict, "instance changed before runtime action", `{"code":"start_raced"}`)
+	}
 	if runtime_expected_active(inst.runtime_status) {
 		switch req.if_live {
 		case .Refuse:
@@ -96,10 +100,7 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 		}
 	}
 	if idle, idle_err := reconfiguration_require_idle(service, instance_id); !idle do return {}, idle_err
-	if req.expected != nil {
-		e := req.expected
-		if inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id do return {}, domain.domain_error(.Conflict, "instance configuration changed before runtime action")
-	}
+
 	next := inst
 	if req.provider != "" {
 		if next.provider != req.provider do next.provider_profile = req.provider

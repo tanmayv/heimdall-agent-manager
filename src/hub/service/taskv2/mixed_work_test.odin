@@ -1,6 +1,8 @@
 #+private file
 package taskv2
 
+import agent "odin_test:hub/service/agent"
+
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -429,6 +431,8 @@ test_mixed_graph_parent_rollback_discards_successful_grant_and_receipts :: proc(
 	fx, chain, task, inst, ok := graph_grant_fixture(t)
 	defer sqlite.close(&fx.conn)
 	if !ok do return
+	agents := agent.new_agent_service(&fx.agents, &fx.bridges, &fx.clock, &fx.ids)
+	fx.svc.agent_service = &agents // Live-child Keep needs no launch dependencies.
 	u, _, _ := begin_uow(&fx.svc)
 	_, granted, err := grant_in_uow(&fx.svc, &u, Grant_Request{
 		chain = chain, task = task, instance = inst, kind = domain.LEASE_KIND_WORK,

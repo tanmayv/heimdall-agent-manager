@@ -5,6 +5,8 @@ import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "core:testing"
+import "core:thread"
+import virtual "core:mem/virtual"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -21,6 +23,15 @@ import lockorder "odin_test:lib/lockorder"
 // ---- fixture extensions ---------------------------------------------------------
 
 Wake_Log :: struct {
+ service: agent.Agent_Service,
+ registry: project.Bridge_Runtime_Registry,
+ provider_impl: sqlite.Provider_Repo_SQLite,
+ providers: iface.Provider_Repository,
+ project_impl: sqlite.Project_Repo_SQLite,
+ projects: iface.Project_Repository,
+ content_impl: sqlite.Content_Repo_SQLite,
+ content: iface.Content_Repository,
+
 	cmds: [dynamic]Wake_Command,
 	// The log outlives the engine's scratch scopes (on_bridge_hello runs on a
 	// per-call arena), so it owns its copies on the allocator it was created with.
@@ -66,19 +77,37 @@ lease_fixture :: proc(t: ^testing.T, tag: string) -> (^Fixture, ^Wake_Log, bool)
 	log := new(Wake_Log)
 	log.allocator = context.allocator
 	log.cmds = make([dynamic]Wake_Command)
-	fx.svc.wake_observer = wake_log_observe
+	log.providers = sqlite.new_provider_repository(&log.provider_impl, &fx.conn)
+ log.projects = sqlite.new_project_repository(&log.project_impl, &fx.conn)
+ log.content = sqlite.new_content_repository(&log.content_impl, &fx.conn)
+ sink := project.Bridge_Command_Sink{send_runtime_command=proc(ctx:rawptr, cmd:project.Runtime_Command)->(bool,domain.Domain_Error){return true,{}}}
+ log.service = agent.new_agent_service_with_runtime(&fx.agents, &fx.bridges, &log.projects, &log.content, &fx.repo, sink, &log.registry, &fx.clock, &fx.ids)
+ log.service.providers = &log.providers
+ fx.svc.agent_service = &log.service
+ fx.svc.bridge_command_sink = sink
+ fx.svc.wake_observer = wake_log_observe
 	fx.svc.wake_observer_ctx = rawptr(log)
 	init_task_metrics()
 	return fx, log, ok
 }
 
 lease_fixture_close :: proc(fx: ^Fixture, log: ^Wake_Log) {
+	project.bridge_runtime_registry_destroy(&log.registry)
 	wake_log_destroy(log)
 	free(log)
 	fixture_close(fx)
 }
 
 seed_bridge :: proc(fx: ^Fixture, id: string, online := true) {
+ if fx.svc.agent_service != nil {
+  service := fx.svc.agent_service
+  if online do _, _, _ = project.bridge_runtime_registry_accept_live(service.bridge_runtime_registry, id, false, "", "u1")
+  if service.providers != nil {
+   _, _ = iface.bridge_provider_status_upsert(service.providers, {bridge_id=id, provider="claude", state="present"})
+   _, _ = iface.bridge_provider_setting_upsert(service.providers, {bridge_id=id, provider="claude", enabled=true})
+  }
+ }
+
 	now := platform.clock_now(&fx.clock)
 	_, _, _ = iface.bridge_save_bridge(&fx.bridges, domain.Bridge{bridge_id = id, owner_user_id = "u1", machine_hostname = id, status = .Online if online else .Offline, capabilities_json = `{"capabilities":[{"provider":"claude","models":["claude-fable-5-1","claude-opus-5-5","claude-sonnet-5-5"],"default_model":"claude-opus-5-5"}],"provider":"claude","default_model":"claude-opus-5-5"}`, created_at = now, updated_at = now})
 }
@@ -86,7 +115,8 @@ seed_bridge :: proc(fx: ^Fixture, id: string, online := true) {
 set_bridge_status :: proc(fx: ^Fixture, id: string, online: bool) {
 	b, ok, _ := iface.bridge_get_bridge(&fx.bridges, id)
 	if !ok do return
-	b.status = .Online if online else .Offline
+	if online && fx.svc.agent_service != nil do _, _, _ = project.bridge_runtime_registry_accept_live(fx.svc.agent_service.bridge_runtime_registry, id, false, "", "u1")
+ b.status = .Online if online else .Offline
 	_, _, _ = iface.bridge_save_bridge(&fx.bridges, b)
 }
 
@@ -1055,6 +1085,7 @@ test_matcher_jit_provisions_within_capacity :: proc(t: ^testing.T) {
 	coord.project_id = "prj_1"
 	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
 	registry := project.Bridge_Runtime_Registry{}
+	defer project.bridge_runtime_registry_destroy(&registry)
 	project.bridge_runtime_registry_mark_live(&registry, "br_1", false, "")
 	project.bridge_runtime_registry_mark_live(&registry, "br_2", false, "")
 	sent := 0
@@ -1117,4 +1148,470 @@ test_matcher_jit_provisions_within_capacity :: proc(t: ^testing.T) {
 		}
 	}
 	assert_projection_matches_fold(t, fx, chain.chain_id, "u1", "jit")
+}
+
+@(test)
+test_jit_instance_run_count_is_one :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "jit")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_jit")
+	seed_bridge(fx, "br_2")
+	// repos the agent service needs
+	pr_impl := sqlite.Project_Repo_SQLite{conn = &fx.conn}
+	pr_repo := sqlite.new_project_repository(&pr_impl, &fx.conn)
+	co_impl := sqlite.Content_Repo_SQLite{conn = &fx.conn}
+	co_repo := sqlite.new_content_repository(&co_impl, &fx.conn)
+	pv_impl := sqlite.Provider_Repo_SQLite{conn = &fx.conn}
+	pv_repo := sqlite.new_provider_repository(&pv_impl, &fx.conn)
+	for b in ([]string{"br_1", "br_2"}) {
+		_, _ = iface.bridge_provider_status_upsert(&pv_repo, domain.Bridge_Provider_Status{bridge_id = b, provider = "claude", state = "present"})
+		_, _ = iface.bridge_provider_setting_upsert(&pv_repo, domain.Bridge_Provider_Setting{bridge_id = b, provider = "claude", enabled = true})
+		_, _, _ = iface.agent_save_support(&fx.agents, domain.Agent_Bridge_Support{agent_id = "agt_w", bridge_id = b, owner_user_id = "u1", enabled = true})
+	}
+	now := platform.clock_now(&fx.clock)
+	_, _, _ = iface.project_save(&pr_repo, domain.Project{project_id = "prj_1", owner_user_id = "u1", name = "P", slug = "p", default_path = "/srv/default", state = .Active, created_at = now, updated_at = now})
+	_, _, _ = iface.project_save_bridge_path(&pr_repo, domain.Project_Bridge_Path{project_id = "prj_1", bridge_id = "br_2", owner_user_id = "u1", path = "/srv/override", created_at = now, updated_at = now})
+	coord, _, _ := iface.agent_get_instance(&fx.agents, "inst_coord")
+	coord.project_id = "prj_1"
+	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
+	registry := project.Bridge_Runtime_Registry{}
+	defer project.bridge_runtime_registry_destroy(&registry)
+	project.bridge_runtime_registry_mark_live(&registry, "br_1", false, "")
+	project.bridge_runtime_registry_mark_live(&registry, "br_2", false, "")
+	sent := 0
+	sink := project.Bridge_Command_Sink{ctx = rawptr(&sent), send_runtime_command = proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) {
+		(^int)(ctx)^ += 1
+		return true, domain.Domain_Error{}
+	}}
+	ag_service := agent.new_agent_service_with_runtime(&fx.agents, &fx.bridges, &pr_repo, &co_repo, &fx.repo, sink, &registry, &fx.clock, &fx.ids)
+	ag_service.providers = &pv_repo
+	fx.svc.agent_service = &ag_service
+	fx.svc.bridge_command_sink = sink
+
+	seed_fleet(fx, chain, "agt_w", capacity = 2)
+	f, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, chain.chain_id, "u1")
+	f[0].provider = "claude"
+	f[0].model = "claude-fable-5-1"
+	_, _ = iface.taskchain_upsert_fleet(&fx.repo, f[0])
+
+	task := publish_task(t, fx, chain, "task_jit", bridge_pin = "br_2")
+	testing.expect_value(t, task.state, domain.Task_State.In_Progress)
+	leases, _ := iface.taskchain_list_leases_by_task(&fx.repo, task.task_id)
+	if !testing.expect(t, len(leases) == 1, "one lease") do return
+	spawned, iok, _ := iface.agent_get_instance(&fx.agents, leases[0].holder_instance_id)
+	if !testing.expect(t, iok, "JIT instance row exists") do return
+	testing.expect_value(t, spawned.agent_id, "agt_w")
+	testing.expect_value(t, spawned.bridge_id, "br_2")
+	testing.expect_value(t, spawned.chain_id, string(chain.chain_id))
+	testing.expect_value(t, string(spawned.project_id), "prj_1")
+	testing.expect_value(t, spawned.project_path, "/srv/override")
+	testing.expect_value(t, spawned.provider, "claude")
+	testing.expect_value(t, spawned.model, "claude-fable-5-1")
+	testing.expect_value(t, spawned.current_task_id, "task_jit")
+	testing.expect_value(t, spawned.run_count, 1)
+	testing.expect(t, len(log.cmds)>0 && strings.contains(log.cmds[0].body_json, `"run_count":1`), "launch carries generation one")
+}
+
+@(test)
+test_explicit_claim_clears_user_stop :: proc(t: ^testing.T) {
+ fx, log, ok := lease_fixture(t, "claim_user_stop")
+ defer lease_fixture_close(fx, log)
+ if !ok do return
+ chain := seed_live_chain(t, fx, "chain_claim_user_stop")
+ inst := seed_instance(fx, chain, "inst_stopped", "agt_w", "br_1", "stopped")
+ inst.stopped_by = "user"
+ _, _, _ = iface.agent_save_instance(&fx.agents, inst)
+ task := publish_task(t, fx, chain, "task_claim_user_stop", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ _, claimed, err := lease_claim(&fx.svc, inst_auth("inst_coord"), {task_id=task.task_id, instance_id=inst.agent_instance_id})
+ if !testing.expect(t, claimed, err.message) do return
+ current, _, _ := iface.agent_get_instance(&fx.agents, inst.agent_instance_id)
+ testing.expect_value(t, current.runtime_status, "launching")
+ testing.expect_value(t, current.stopped_by, "")
+ replacement := seed_instance(fx,chain,"inst_replacement","agt_w","br_1","stopped")
+ replacement.stopped_by="user"
+ _,_,_=iface.agent_save_instance(&fx.agents,replacement)
+ pending,transferred,terr:=lease_transfer(&fx.svc,inst_auth("inst_coord"),{task_id=task.task_id,instance_id=replacement.agent_instance_id,reason="move stopped worker",request_id="t25_transfer"})
+ if !testing.expect(t,transferred,terr.message) do return
+ testing.expect_value(t,pending.status,"stop_pending")
+ confirm_pending_ownership_stop_for_test(t,fx,task,inst.agent_instance_id)
+ next,_,_:=iface.agent_get_instance(&fx.agents,replacement.agent_instance_id)
+ testing.expect_value(t,next.runtime_status,"launching")
+ testing.expect_value(t,next.stopped_by,"")
+}
+
+// Exercise the real grant/savepoint rather than a simulated start ticket.
+t25_grant :: proc(t:^testing.T, fx:^Fixture, chain:domain.Task_Chain, task:domain.Task, inst:domain.Agent_Instance, commit:=true)->(domain.Task_Lease,bool,domain.Domain_Error) {
+ u, ok, err := begin_uow(&fx.svc)
+ if !ok do return {},false,err
+ lease, granted, gerr := grant_in_uow(&fx.svc, &u, {
+  explicit_identity=true, chain=chain, task=task, instance=inst, kind=domain.LEASE_KIND_WORK,
+  delivery=domain.LEASE_DELIVERY_WAKE, placement={bridge_id=inst.bridge_id,provider=inst.provider,model=inst.model},
+  actor=hub_actor(),
+ })
+ _, cerr := end_uow(&fx.svc, &u, granted && commit)
+ if gerr.code!=.None do return lease,granted,gerr
+ return lease,granted,cerr
+}
+
+@(test)
+test_grant_rollback_cancels_ticket :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_rollback")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_rollback")
+ inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ _,granted,err:=t25_grant(t,fx,chain,task,inst,false)
+ testing.expect(t,granted,err.message)
+ current,_,_:=iface.agent_get_instance(&fx.agents,inst.agent_instance_id)
+ testing.expect_value(t,current.run_count,inst.run_count)
+ testing.expect_value(t,current.runtime_status,inst.runtime_status)
+ testing.expect_value(t,current.start_ref,inst.start_ref)
+ testing.expect_value(t,log.registry.active_instances,0)
+ testing.expect_value(t,len(log.cmds),0)
+ _,held:=lease_of(fx,inst.agent_instance_id)
+ testing.expect(t,!held,"rollback removes lease")
+}
+
+@(test)
+test_grant_send_failure_marks_failed :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_send_failure")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_send_failure")
+ seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ fx.svc.bridge_command_sink={send_runtime_command=proc(ctx:rawptr,cmd:project.Runtime_Command)->(bool,domain.Domain_Error){return false,domain.domain_error(.Bridge_Offline,"t25 send failed")}}
+ seed_fleet(fx,chain,"agt_w")
+ task:=publish_task(t,fx,chain,"task_t25")
+ current,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+ testing.expect_value(t,current.runtime_status,"failed")
+ testing.expect_value(t,log.registry.active_instances,0)
+ testing.expect_value(t,task.state,domain.Task_State.Backlog)
+ lease,held:=lease_of(fx,"inst_t25")
+ testing.expect(t,held && lease.phase==domain.LEASE_PHASE_WAITING)
+}
+
+@(test)
+test_grant_live_instance_is_nudged :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_nudge")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_nudge")
+ inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1","running")
+ seed_fleet(fx,chain,"agt_w")
+ _=publish_task(t,fx,chain,"task_t25")
+ current,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+ testing.expect_value(t,current.run_count,inst.run_count)
+ testing.expect_value(t,current.start_ref,inst.start_ref)
+ testing.expect_value(t,current.launch_epoch,inst.launch_epoch)
+ testing.expect_value(t,current.runtime_status,inst.runtime_status)
+ testing.expect(t,len(log.cmds)==1 && strings.contains(log.cmds[0].body_json,`"deliver":"nudge"`))
+}
+
+t25_refusal :: proc(t:^testing.T, kind:int) {
+ fx,log,ok:=lease_fixture(t,fmt.tprintf("t25_refusal_%d",kind))
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_refusal")
+ inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ inst.stopped_by="user"
+ _,_,_=iface.agent_save_instance(&fx.agents,inst)
+ switch kind {
+ case 0: testing.expect(t,exec_ok(t,fx,"UPDATE bridges SET plan_disabled_at='2026-11-22';"))
+ case 1: log.service.bridge_runtime_registry=nil
+ case 2:
+  log.registry.limits.active_instances_per_owner=1
+  generation:=project.bridge_runtime_registry_generation(&log.registry,"br_1")
+  _,admitted,qerr:=project.bridge_runtime_instance_apply(&log.registry,"br_1",generation,"occupant","u1","running","idle",1)
+  testing.expect(t,admitted,qerr.message)
+ case 3: testing.expect(t,exec_ok(t,fx,"UPDATE bridge_provider_settings SET transport='acp';"))
+ }
+ // A user stop is deliberately excluded by automatic placement; explicit grants
+ // must still refuse for the launch reason without clearing that stop mark.
+ task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ _,granted,err:=t25_grant(t,fx,chain,task,inst)
+ testing.expect(t,!granted && err.code!=.None,err.message)
+ wants:=[?]domain.Error_Code{.Plan_Limit_Reached,.Bridge_Offline,.Bridge_Busy,.ACP_Unavailable}
+ testing.expect_value(t,err.code,wants[kind])
+ current,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+ testing.expect_value(t,current.run_count,inst.run_count)
+ testing.expect_value(t,current.runtime_status,"stopped")
+ testing.expect_value(t,current.stopped_by,"user")
+ _,held:=lease_of(fx,"inst_t25");testing.expect(t,!held)
+ // The normal matcher records the refused launch reason as placement detail.
+ current.stopped_by=""
+ _,_,_=iface.agent_save_instance(&fx.agents,current)
+ seed_fleet(fx,chain,"agt_w")
+ testing.expect_value(t,fleet_changed(&fx.svc,chain,"agt_w").code,domain.Error_Code.None)
+ if kind==0 {
+  testing.expect(t,strings.contains(placement_body(fx,"task_t25"),"disabled"),"static placement failure carries plan reason")
+ } else {
+  testing.expect(t,strings.contains(placement_body(fx,"task_t25"),err.message),"placement failure carries start reason")
+ }
+ if kind==2 {
+  generation:=project.bridge_runtime_registry_generation(&log.registry,"br_1")
+  _,_,_=project.bridge_runtime_instance_apply(&log.registry,"br_1",generation,"occupant","u1","stopped","idle",2)
+  _,granted,err=t25_grant(t,fx,chain,get_task(fx,"task_t25"),current)
+  testing.expect(t,granted,err.message)
+  testing.expect_value(t,log.registry.active_instances,1)
+ }
+}
+@(test)
+test_grant_refused_plan_disabled :: proc(t:^testing.T) {t25_refusal(t,0)}
+@(test)
+test_grant_refused_no_live_connection :: proc(t:^testing.T) {t25_refusal(t,1)}
+@(test)
+test_grant_refused_quota :: proc(t:^testing.T) {t25_refusal(t,2)}
+@(test)
+test_grant_refused_acp_withdrawn :: proc(t:^testing.T) {t25_refusal(t,3)}
+
+t25_run_bytes :: proc(body:string)->string {
+ start:=strings.index(body,`"run":[`)
+ if start<0 do return ""
+ start+=len(`"run":`)
+ depth:=0;quoted:=false
+ for i:=start;i<len(body);i+=1 {
+  c:=body[i]
+  if quoted {
+   if c==92 {i+=1;continue}
+   if c==34 do quoted=false
+  } else {
+   if c==34 {quoted=true;continue}
+   if c==91 || c==123 do depth+=1
+   if c==93 || c==125 {depth-=1;if depth==0 do return body[start:i+1]}
+  }
+ }
+ return ""
+}
+t25_redelivery_scenario :: proc(t:^testing.T, kept:bool) {
+ for status in ([]string{"launching","starting","running"}) {
+  fx,log,ok:=lease_fixture(t,"t25_redelivery")
+  if !ok {lease_fixture_close(fx,log);return}
+  chain:=seed_live_chain(t,fx,"chain_t25_redelivery")
+  bridge,_,_:=iface.bridge_get_bridge(&fx.bridges,"br_1")
+  bridge.capabilities_json=`{"features":["start_agent_v1"]}`
+  _,_,_=iface.bridge_save_bridge(&fx.bridges,bridge)
+  inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1","running" if kept else "stopped")
+  inst.run_count=7;_,_,_=iface.agent_save_instance(&fx.agents,inst)
+  seed_fleet(fx,chain,"agt_w")
+  _=publish_task(t,fx,chain,"task_t25")
+  if !testing.expect_value(t,len(log.cmds),1) {lease_fixture_close(fx,log);continue}
+  original:=strings.clone(t25_run_bytes(log.cmds[0].body_json))
+  testing.expect(t,strings.contains(original,`"launch":`),"byte comparison captures the actual run entry")
+  current,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+  current.runtime_status=status
+  _,_,_=iface.agent_save_instance(&fx.agents,current)
+  before:=fmt.tprintf("%#v",current)
+  wake_log_reset(log)
+  on_bridge_hello(&fx.svc,"br_1",nil)
+  boot(&fx.svc)
+  fixture_advance(fx,GRANT_UNCONFIRMED_SECONDS+1)
+  _=fire_due(&fx.svc,now_ms(&fx.clock))
+  testing.expect(t,len(log.cmds)>=3,"hello, boot and timer redeliver")
+  for cmd in log.cmds do testing.expect(t,t25_run_bytes(cmd.body_json)==original,"redelivery must preserve exact run bytes")
+  after,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+  testing.expect_value(t,fmt.tprintf("%#v",after),before)
+  delete(original)
+  lease_fixture_close(fx,log)
+ }
+}
+@(test)
+test_grant_redelivery_reuses_generation :: proc(t:^testing.T) {t25_redelivery_scenario(t,false)}
+@(test)
+test_grant_kept_live_redelivery_reuses_nudge :: proc(t:^testing.T) {t25_redelivery_scenario(t,true)}
+
+t25_dead_redelivery :: proc(t:^testing.T, kept:bool) {
+ for status in ([]string{"failed","unreachable"}) {
+  fx,log,ok:=lease_fixture(t,"t25_dead_redelivery")
+  if !ok {lease_fixture_close(fx,log);return}
+  chain:=seed_live_chain(t,fx,"chain_t25_dead_redelivery")
+  seed_instance(fx,chain,"inst_t25","agt_w","br_1","running" if kept else "stopped")
+  seed_fleet(fx,chain,"agt_w")
+  _=publish_task(t,fx,chain,"task_t25")
+  lease,held:=lease_of(fx,"inst_t25")
+  if !testing.expect(t,held) {lease_fixture_close(fx,log);continue}
+  inst,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+  inst.runtime_status=status
+  _,_,_=iface.agent_save_instance(&fx.agents,inst)
+  before:=fmt.tprintf("%#v",inst)
+  wake_log_reset(log)
+  on_bridge_hello(&fx.svc,"br_1",nil)
+  testing.expect(t,!wake_log_has_run(log,"inst_t25"),"dead generation sends nothing")
+  current,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+  testing.expect_value(t,fmt.tprintf("%#v",current),before)
+  waiting,still:=lease_of(fx,"inst_t25")
+  testing.expect(t,still && waiting.lease_id==lease.lease_id && waiting.phase==domain.LEASE_PHASE_WAITING)
+  task:=get_task(fx,"task_t25")
+  testing.expect_value(t,task.state,domain.Task_State.Backlog)
+  testing.expect(t,is_agent_not_running_block(task.blocked_on_json))
+  // Explicit operator repair precedes answering the infrastructure block.
+  current.runtime_status="stopped";current.last_error_json=""
+  _,_,_=iface.agent_save_instance(&fx.agents,current)
+  _,answered,err:=task_answer(&fx.svc,task,hub_actor(),"repair completed")
+  testing.expect(t,answered,err.message)
+  next,held2:=lease_of(fx,"inst_t25")
+  current,_,_=iface.agent_get_instance(&fx.agents,"inst_t25")
+  testing.expect(t,held2 && next.lease_id!=lease.lease_id,"explicit recovery grants again")
+  testing.expect_value(t,current.run_count,inst.run_count+1)
+  lease_fixture_close(fx,log)
+ }
+}
+@(test)
+test_grant_redelivery_after_child_failed :: proc(t:^testing.T) {t25_dead_redelivery(t,false)}
+@(test)
+test_grant_kept_live_redelivery_after_child_failed :: proc(t:^testing.T) {t25_dead_redelivery(t,true)}
+
+@(test)
+test_lease_start_agent_entry :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_start_entry")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_start_entry")
+ bridge,_,_:=iface.bridge_get_bridge(&fx.bridges,"br_1")
+ bridge.capabilities_json=`{"features":["start_agent_v1"]}`
+ _,_,_=iface.bridge_save_bridge(&fx.bridges,bridge)
+ seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ seed_fleet(fx,chain,"agt_w")
+ task:=publish_task(t,fx,chain,"task_t25")
+ if !testing.expect_value(t,len(log.cmds),1) do return
+ body:=log.cmds[0].body_json
+ lease,_:=lease_of(fx,"inst_t25")
+ testing.expect_value(t,jsonx.extract_string(body,"type","",true,context.temp_allocator),"start_agent")
+ for key in ([]string{"task_id","role","lease_id","pack","permission_mode","launch"}) do testing.expect(t,strings.contains(body,fmt.tprintf(`"%s":`,key)),key)
+ testing.expect(t,strings.contains(body,string(task.task_id)) && strings.contains(body,lease.lease_id))
+}
+
+T25_Race_Job :: struct {
+ fx:^Fixture, chain:domain.Task_Chain, task:domain.Task, inst:domain.Agent_Instance,
+ manual:bool, opened, raced:bool, detail:string,
+}
+t25_race_job :: proc(job:^T25_Race_Job) {
+ scratch:virtual.Arena
+ assert(virtual.arena_init_growing(&scratch)==nil)
+ defer virtual.arena_destroy(&scratch)
+ context.allocator=virtual.arena_allocator(&scratch)
+ context.temp_allocator=context.allocator
+ err:domain.Domain_Error
+ if job.manual {
+  current,ok,e:=agent.start_instance(job.fx.svc.agent_service,{user_id="u1",kind=.Internal_User},job.inst.agent_instance_id)
+  job.opened=ok;err=e
+  domain.agent_instance_destroy(&current)
+ } else {
+  _,ok,e:=t25_grant(nil,job.fx,job.chain,job.task,job.inst)
+  job.opened=ok;err=e
+ }
+ job.detail=strings.clone(err.message,runtime.heap_allocator())
+ job.raced=err.code==.Conflict && (strings.contains(err.details_json,"start_raced") || strings.contains(err.details_json,"already_running"))
+}
+@(test)
+test_grant_race_with_manual_start :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_race")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_race")
+ _=seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ sink:=project.Bridge_Command_Sink{ctx=log,send_runtime_command=proc(ctx:rawptr,cmd:project.Runtime_Command)->(bool,domain.Domain_Error){
+  wake_log_observe(ctx,{bridge_id=cmd.bridge_id,body_json=cmd.body_json})
+  return true,{}
+ }}
+ fx.svc.bridge_command_sink=sink;log.service.bridge_command_sink=sink
+ fx.svc.wake_observer=nil
+ for round in 0..<100 {
+  inst,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+  inst.runtime_status="stopped";inst.current_task_id="";inst.current_task_role=.None
+  _,_,_=iface.agent_save_instance(&fx.agents,inst)
+  task:=publish_task(t,fx,chain,fmt.tprintf("task_race_%d",round),brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+  wake_log_reset(log)
+  jobs: [2]T25_Race_Job
+  jobs[0]={fx=fx,chain=chain,task=task,inst=inst,manual=true}
+  jobs[1]={fx=fx,chain=chain,task=task,inst=inst}
+  previous:=context.allocator
+  context.allocator=runtime.heap_allocator()
+  threads: [2]^thread.Thread
+  for i in 0..<2 do threads[i]=thread.create_and_start_with_poly_data(&jobs[i],t25_race_job)
+  context.allocator=previous
+  for th in threads {thread.join(th);thread.destroy(th)}
+  testing.expectf(t,jobs[0].opened!=jobs[1].opened,"round %d has exactly one winner; manual=%v (%s), grant=%v (%s)",round,jobs[0].opened,jobs[0].detail,jobs[1].opened,jobs[1].detail)
+  testing.expectf(t,jobs[0].raced!=jobs[1].raced,"round %d loser reports start_raced/already_running",round)
+  current,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+  testing.expect_value(t,current.run_count,inst.run_count+1)
+  testing.expect_value(t,len(log.cmds),1)
+  generation:=project.bridge_runtime_registry_generation(&log.registry,"br_1")
+  _,_,_=project.bridge_runtime_instance_apply(&log.registry,"br_1",generation,"inst_t25","u1","running","idle",round+1)
+  state,found:=project.bridge_runtime_instance_get(&log.registry,"br_1",generation,"inst_t25")
+  testing.expect(t,found && !state.reserved,"winner status consumes reservation")
+  delete(state.owner_id);delete(state.runtime_status);delete(state.activity_status)
+  if lease,held:=lease_of(fx,"inst_t25");held do _,_=iface.taskchain_delete_lease(&fx.repo,lease.lease_id)
+  for job in jobs do delete(job.detail,runtime.heap_allocator())
+ }
+}
+
+// Golden ordering and omission rules are those of origin/main's unchanged
+// wake_agent_command_json. Normalize generated IDs, catalog hash and pack only.
+T25_LEGACY_WAKE_GOLDEN :: `{"type":"wake_agent","protocol_version":1,"command_id":"batch","chain_id":"chain_t25_golden","payload":{"run":[{"agent_instance_id":"inst_t25","task_id":"task_t25","role":"worker","provider":"claude","effective_transport":"pty","catalog_etag":"etag","launch_epoch":"","provider_profile":"claude","model":"claude-opus-5-5","agent_id":"agt_w","agent_name":"agt_w","chain_id":"chain_t25_golden","chain_title":"c","coordinator_agent_instance_id":"inst_coord","lease_id":"lease","permission_mode":"yolo","run_count":1,"pack":{}}],"stop":[]}}`
+
+t25_pack_bytes :: proc(body:string)->string {
+ at:=strings.index(body,`"pack":{`)
+ if at<0 do return ""
+ start:=at+len(`"pack":`)
+ depth:=0;quoted:=false
+ for i:=start;i<len(body);i+=1 {
+  c:=body[i]
+  if quoted {
+   if c==92 {i+=1;continue}
+   if c==34 do quoted=false
+  } else {
+   if c==34 {quoted=true;continue}
+   if c==123 do depth+=1
+   if c==125 {depth-=1;if depth==0 do return body[start:i+1]}
+  }
+ }
+ return ""
+}
+@(test)
+test_wake_agent_bytes_unchanged :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_golden")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_golden")
+ seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ seed_fleet(fx,chain,"agt_w")
+ _=publish_task(t,fx,chain,"task_t25")
+ if !testing.expect_value(t,len(log.cmds),1) do return
+ body:=log.cmds[0].body_json
+ pack:=t25_pack_bytes(body)
+ if !testing.expect(t,len(pack)>2,"capture real grant pack") do return
+ normalized,_:=strings.replace_all(body,pack,"{}",context.temp_allocator)
+ command:=jsonx.extract_string(body,"command_id","",true,context.temp_allocator)
+ lease,_:=lease_of(fx,"inst_t25")
+ etag,etag_err:=iface.provider_catalog_etag(&log.providers)
+ testing.expect_value(t,etag_err.code,domain.Error_Code.None)
+ if !testing.expect(t,etag!="","catalog hash is present") do return
+ normalized,_=strings.replace_all(normalized,command,"batch",context.temp_allocator)
+ normalized,_=strings.replace_all(normalized,lease.lease_id,"lease",context.temp_allocator)
+ normalized,_=strings.replace_all(normalized,etag,"etag",context.temp_allocator)
+ testing.expect_value(t,normalized,T25_LEGACY_WAKE_GOLDEN)
+}
+
+@(test)
+test_grant_kept_live_redelivery_rejects_replaced_generation :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_nudge_replaced")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_nudge_replaced")
+ seed_instance(fx,chain,"inst_t25","agt_w","br_1","running")
+ seed_fleet(fx,chain,"agt_w")
+ _=publish_task(t,fx,chain,"task_t25")
+ current,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+ current.run_count+=1
+ _,_,_=iface.agent_save_instance(&fx.agents,current)
+ before:=fmt.tprintf("%#v",current)
+ wake_log_reset(log)
+ on_bridge_hello(&fx.svc,"br_1",nil)
+ testing.expect(t,!wake_log_has_run(log,"inst_t25"))
+ after,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
+ testing.expect_value(t,fmt.tprintf("%#v",after),before)
+ lease,held:=lease_of(fx,"inst_t25")
+ testing.expect(t,held && lease.phase==domain.LEASE_PHASE_WAITING)
 }

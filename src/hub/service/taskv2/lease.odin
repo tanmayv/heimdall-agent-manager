@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import agent "odin_test:hub/service/agent"
 import iface "odin_test:hub/repository/iface"
@@ -84,6 +85,13 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 		}
 	}
 	inst := req.instance
+	// A candidate selected before a competing start must not overwrite it.
+	latest, exists, latest_err := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
+	if !exists do return {}, false, latest_err
+	raced := latest.run_count != inst.run_count || latest.launch_epoch != inst.launch_epoch || latest.configuration_revision != inst.configuration_revision
+	domain.agent_instance_destroy(&latest)
+	if raced do return {}, false, domain.domain_error(.Conflict, "instance changed before lease start", `{"code":"start_raced"}`)
+
 	if ownership_cleanup_pending(svc,task) || instance_ownership_stop_pending(svc,inst) do return {},false,domain.domain_error(.Conflict,"previous process stop is pending; reconcile its generation before granting work",)
 	if busy,err:=iface.agent_runtime_busy(svc.agents,inst.agent_instance_id);err.code!=.None {return {},false,err} else if busy {return {},false,domain.domain_error(.Conflict,"instance has a pending runtime action")}
 	// Resolve the actual wake selection once, so lease history, runtime facets
@@ -160,6 +168,22 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
   if !changed do return {},false,e
   inst=stored
  }
+	// Opening a generation joins the grant transaction; the ticket owns the
+	// reservation until commit dispatch or rollback. Never take the agent mutex.
+	start_ticket: ^agent.Start_Ticket
+	if lease.delivery == domain.LEASE_DELIVERY_WAKE {
+		if svc.agent_service == nil do return {}, false, domain.domain_error(.Internal_Error, "agent launch service is unavailable")
+		current, found, read_err := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
+		if !found do return {}, false, read_err
+		policy := agent.Start_If_Live.Relaunch
+		if wake_reuses_live_child(current, model_changed || stopping) do policy = .Keep
+		domain.agent_instance_destroy(&current)
+		ticket, start_err := agent.start_begin(svc.agent_service, contracts.Auth_Context{user_id=string(task.owner_user_id), kind=.Internal_User}, inst.agent_instance_id, {ref=lease.lease_id, if_live=policy, expected=&inst})
+		if start_err.code != .None do return {}, false, start_err
+		start_ticket = new(agent.Start_Ticket)
+		start_ticket^ = ticket
+		append(&u.effects.tickets, start_ticket)
+	}
 	saved, ok, err := iface.taskchain_save_lease(svc.repo, lease)
 	if !ok do return {}, false, err
 	p := json_begin()
@@ -174,6 +198,10 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	json_str(&p, "delivery", saved.delivery)
 	if saved.review_role != "" do json_str(&p, "review_role", saved.review_role)
 	json_str(&p, "agent_id", inst.agent_id)
+	if start_ticket != nil {
+	 json_int(&p, "start_run_count", i64(start_ticket.instance.run_count))
+	 json_bool(&p, "start_kept_live", start_ticket.kept_live)
+	}
 	refolded, view, rok, rerr := record_event(svc, u, task, req.actor, EV_LEASE_GRANTED, json_end(&p))
 	if !rok do return {}, false, rerr
 	if req.kind == domain.LEASE_KIND_WORK {
@@ -212,36 +240,10 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 		json_str(&rt, "ended_at", "")
 		_, _ = save_facet_verbatim(svc, refolded, view.attempt_no, FACET_RUNTIME, json_end(&rt), FACET_WRITER_HUB, u)
 	}
-	// A wake grant to an instance that is not running launches a new child.
-	// Persist its generation in the grant transaction, before any bridge effect.
-	// All re-deliveries of this lease then reuse this generation. A LIVE
-	// instance on the same provider/model keeps its process and generation: the
-	// bridge nudges it to run `lease next` instead (no re-bootstrap per attempt
-	// or review round; see wake_reuses_live_child).
-	if saved.delivery == domain.LEASE_DELIVERY_WAKE {
-		current, found, read_err := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
-		if !found do return {}, false, read_err
-		if !wake_reuses_live_child(current, model_changed || stopping) {
-			if svc.agent_service!=nil {
-				if e:=agent.freeze_runtime_transport(svc.agent_service,&current);e.code!=.None do return {},false,e
-			}
-			if current.runtime_transport == "acp" {
-				current.launch_epoch = platform.generate_id(svc.ids, "launch_")
-			}
-			current.run_count += 1
-			current.runtime_status = "launching"
-			current.startup_status = "starting"
-			current.activity_status = "unknown"
-			current.started_at = now
-			current.stopped_at = ""
-			current.updated_at = now
-			if _, stored, store_err := iface.agent_save_instance(svc.agents, current); !stored do return {}, false, store_err
-		}
-	}
 	set_instance_pointer(svc, u, inst.agent_instance_id, string(task.task_id), .Work if req.kind == domain.LEASE_KIND_WORK else .Review)
 	arm_lease_timers(svc, saved)
 	metric_lease_granted(saved.kind)
-	if saved.delivery == domain.LEASE_DELIVERY_WAKE do effect_wake_lease(svc, u, saved, refolded)
+	if saved.delivery == domain.LEASE_DELIVERY_WAKE do effect_wake_lease(svc, u, saved, refolded, start_ticket)
 	if saved.delivery == domain.LEASE_DELIVERY_INLINE {
 		if pok, perr := reconcile_placement_in_uow(svc, u, req.chain); !pok do return {}, false, perr
 	}
@@ -1008,10 +1010,6 @@ recently_expired :: proc(svc: ^Service, instance_id: string, now_ms: i64) -> boo
 
 instance_is_live :: proc(inst: domain.Agent_Instance) -> bool {
 	return inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy"
-}
-
-instance_is_pending :: proc(inst: domain.Agent_Instance) -> bool {
-	return inst.runtime_status == "launching" || inst.runtime_status == "starting" || inst.runtime_status == "blocked"
 }
 
 // holder_is_coordinator resolves the lease's OWN chain (never a caller's) and

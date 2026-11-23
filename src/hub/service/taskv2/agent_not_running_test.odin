@@ -41,10 +41,14 @@ test_agent_not_running_offline_start_failure_retry_and_dead_holder :: proc(t: ^t
 	testing.expect(t, strings.contains(get_task(fx, "task_anr").blocked_on_json, "launch refused"), "synchronous reconnect launch failure remains actionable")
 	task = get_task(fx, "task_anr")
 	testing.expect(t, task.state == .Backlog && strings.contains(task.blocked_on_json, "no credentials"), "failure kept and updated block")
-	fx.svc.bridge_command_sink = {}
+	fx.svc.bridge_command_sink = log.service.bridge_command_sink
 	started, err = start_task_agent(&fx.svc, contracts.Auth_Context{kind = .Instance_Token, user_id = "u1"}, task.task_id)
 	testing.expect(t, !started && err.code == .Forbidden, "agents cannot start task agents")
-	// The native app authenticates with an OIDC bearer, not a browser session.
+	repaired, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+ repaired.runtime_status = "stopped"
+ repaired.last_error_json = ""
+ _, _, _ = iface.agent_save_instance(&fx.agents, repaired)
+ // The native app authenticates with an OIDC bearer, not a browser session.
 	started, err = start_task_agent(&fx.svc, contracts.Auth_Context{kind = .OIDC, user_id = "u1"}, task.task_id)
 	testing.expect(t, started && err.code == .None, "browser-session retry succeeds")
 	lease, held := lease_of(fx, "inst_w1")
@@ -105,7 +109,8 @@ test_agent_not_running_unresolvable_provider_and_model :: proc(t: ^testing.T) {
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "stopped")
 	pv_impl := sqlite.Provider_Repo_SQLite{conn = &fx.conn}
 	pv_repo := sqlite.new_provider_repository(&pv_impl, &fx.conn)
-	ag_service := agent.Agent_Service{providers = &pv_repo}
+	ag_service := log.service
+	ag_service.providers = &pv_repo
 	fx.svc.agent_service = &ag_service
 	fleets, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, chain.chain_id, "u1")
 	fleets[0].provider = "unknown-provider"
@@ -151,6 +156,7 @@ test_agent_not_running_solo_start_launches_only_on_user_action :: proc(t: ^testi
 		return true, domain.Domain_Error{}
 	}}
 	ag_service := agent.new_agent_service_with_runtime(&fx.agents, &fx.bridges, &pr_repo, &co_repo, &fx.repo, sink, &registry, &fx.clock, &fx.ids)
+	ag_service.providers = &pv_repo
 	ag_service.providers = &pv_repo
 	fx.svc.agent_service = &ag_service
 	auth := contracts.Auth_Context{kind = .Session, user_id = "u1"}
