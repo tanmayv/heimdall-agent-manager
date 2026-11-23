@@ -167,7 +167,7 @@ bridge_provider_catalog_valid_accepts_any_provider_count :: proc(t: ^testing.T) 
 test_codex_native_launch_bypasses_loaded_daemon_on_restart :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defer free_all(context.temp_allocator)
-	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-supported", proc(_: string) -> bool { return true }))
+	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-supported", proc(_: string) -> Bridge_Codex_Daemon_Probe_Result { return {.Supported, 0, false} }))
 	for mode in ([]string{"ask", "yolo"}) {
 		for extra in ([][]string{nil, {"-c", "features.daemon_auto_start=true"}}) {
 			profile := Bridge_Provider_Profile{
@@ -211,9 +211,9 @@ test_native_daemon_bypass_is_codex_only :: proc(t: ^testing.T) {
 @(test)
 test_codex_native_launch_without_daemon_option_keeps_legacy_argv :: proc(t: ^testing.T) {
 	path := "codex-test-daemon-unsupported"
-	testing.expect(t, !bridge_codex_no_daemon_supported(path, proc(_: string) -> bool { return false }))
+	testing.expect(t, !bridge_codex_no_daemon_supported(path, proc(_: string) -> Bridge_Codex_Daemon_Probe_Result { return {.Unsupported, 0, false} }))
 	// A later caller must use the cached result rather than probe again.
-	testing.expect(t, !bridge_codex_no_daemon_supported(path, proc(_: string) -> bool { return true }))
+	testing.expect(t, !bridge_codex_no_daemon_supported(path, proc(_: string) -> Bridge_Codex_Daemon_Probe_Result { return {.Supported, 0, false} }))
 	profile := Bridge_Provider_Profile{
 		name = "codex", command = {path}, model_flag = "-m",
 		extra_args = {"--verbose"}, prompt_delivery = "none",
@@ -229,16 +229,44 @@ test_codex_native_launch_without_daemon_option_keeps_legacy_argv :: proc(t: ^tes
 
 @(test)
 test_codex_native_daemon_probe_requires_successful_help_option :: proc(t: ^testing.T) {
-	for path in ([]string{"supported", "unsupported", "failed"}) {
-		supported := bridge_codex_no_daemon_probe(path, proc(args: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
+	for path in ([]string{"supported", "unsupported", "failed", "timeout", "start_failed", "empty"}) {
+		result := bridge_codex_no_daemon_probe(path, proc(args: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
 			if len(args) != 2 || args[1] != "--help" || timeout != 2*time.Second do return "", "", -1, false, false
 			help := "Options:\n      --no-daemon\n          Run without daemon\n"
 			if args[0] == "unsupported" do help = "Options:\n      --no-daemon-extra\n"
-			return strings.clone(help), "", 0, args[0] != "failed", false
+			if args[0] == "failed" do return strings.clone(help), "", 1, false, false
+			if args[0] == "timeout" do return strings.clone(help), "", -1, false, true
+			if args[0] == "start_failed" do return "", "", -1, false, false
+			if args[0] == "empty" do return "", "", 0, true, false
+			return strings.clone(help), "", 0, true, false
 		})
-		testing.expect_value(t, supported, path == "supported")
+		expected: Bridge_Codex_Daemon_Support = .Unknown
+		if path == "supported" do expected = .Supported
+		if path == "unsupported" do expected = .Unsupported
+		testing.expect_value(t, result.status, expected)
+		testing.expect_value(t, result.timed_out, path == "timeout")
+		if path == "failed" do testing.expect_value(t, result.exit_code, 1)
+		if path == "start_failed" || path == "timeout" do testing.expect_value(t, result.exit_code, -1)
 	}
 	// Positive capability is cached as well, separately for each binary path.
-	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-cache", proc(_: string) -> bool { return true }))
-	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-cache", proc(_: string) -> bool { return false }))
+	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-cache", proc(_: string) -> Bridge_Codex_Daemon_Probe_Result { return {.Supported, 0, false} }))
+	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-cache", proc(_: string) -> Bridge_Codex_Daemon_Probe_Result { return {.Unsupported, 0, false} }))
+}
+
+@(test)
+test_codex_native_daemon_transient_probe_failure_retries :: proc(t: ^testing.T) {
+	for path in ([]string{"codex-test-probe-slot-or-start", "codex-test-probe-timeout", "codex-test-probe-nonzero"}) {
+		testing.expect(t, !bridge_codex_no_daemon_supported(path, proc(path: string) -> Bridge_Codex_Daemon_Probe_Result {
+			if strings.has_suffix(path, "timeout") do return {.Unknown, -1, true}
+			if strings.has_suffix(path, "nonzero") do return {.Unknown, 1, false}
+			return {.Unknown, -1, false}
+		}))
+		// The next launch must probe again and enable the bypass, rather than
+		// caching a temporary slot shortage, start failure or timeout forever.
+		testing.expect(t, bridge_codex_no_daemon_supported(path, proc(_: string) -> Bridge_Codex_Daemon_Probe_Result { return {.Supported, 0, false} }))
+		profile := Bridge_Provider_Profile{name = "codex", command = {path}, model_flag = "-m", prompt_delivery = "none"}
+		argv := bridge_runtime_agent_argv_for_profile(profile, "model", "token", "inst_retry_codex")
+		testing.expect_value(t, argv[len(argv)-1], "--no-daemon")
+		delete(argv)
+	}
 }
