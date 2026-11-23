@@ -743,6 +743,8 @@ MIGRATION_238_EXTENSION_VERSION_SYNC :: #load("migrations/238_extension_version_
 
 MIGRATION_239_EXTENSION_VERSION_SYNC :: #load("migrations/239_extension_version_sync_0_5_76.sql", string)
 
+MIGRATION_240_EXTENSION_VERSION_SYNC :: #load("migrations/240_extension_version_sync_0_5_77.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1005,6 +1007,7 @@ migration_order :: [?]string {
 	"238_extension_version_sync_0_5_75.sql",
 	"239_extension_version_sync_0_5_76.sql",
 	"acp_delivery_001_input_deliveries.sql",
+	"240_extension_version_sync_0_5_77.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1556,6 +1559,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "240_extension_version_sync_0_5_77.sql" do return strings.clone(MIGRATION_240_EXTENSION_VERSION_SYNC)
 	if name == "239_extension_version_sync_0_5_76.sql" do return strings.clone(MIGRATION_239_EXTENSION_VERSION_SYNC)
 	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
