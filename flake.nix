@@ -456,9 +456,11 @@
           };
           actions-runtime = pkgs.stdenv.mkDerivation {
             name = "check-actions-runtime";
+            TZDIR = "${pkgs.tzdata}/share/zoneinfo";
             src = ./.;
             nativeBuildInputs = [ (mkOdin pkgs) pkgs.nats-server ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
             buildInputs = [ (hamNatsFor pkgs) pkgs.openssl pkgs.sqlite ];
+            TZDIR = "${pkgs.tzdata}/share/zoneinfo";
             dontConfigure = true;
             dontInstall = true;
             buildPhase = ''

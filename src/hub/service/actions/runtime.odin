@@ -21,7 +21,7 @@ Runtime :: struct {
 }
 start :: proc(r:^Runtime,svc:^Service,router:Router,options:Options)->bool {
  if r.thread!=nil do return true
- context.allocator=runtime.heap_allocator()
+ context.allocator = runtime.heap_allocator()
  r.svc=svc; r.router=router; r.options=options
  r.options.nats_url=strings.clone(options.nats_url)
  r.options.creds_file=strings.clone(options.creds_file)
@@ -38,7 +38,7 @@ stop :: proc(r:^Runtime) {
  if r.thread==nil do return
  sync.atomic_store(&r.stop_flag,1)
  thread.join(r.thread); thread.destroy(r.thread); r.thread=nil
- context.allocator=runtime.heap_allocator()
+ context.allocator = runtime.heap_allocator()
  delete(r.options.nats_url); delete(r.options.creds_file); delete(r.options.ca_file); r.options={}
 }
 matcher_consumer_config :: proc(max_deliver:int)->nats.Consumer_Config {
