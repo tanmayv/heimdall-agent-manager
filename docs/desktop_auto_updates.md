@@ -61,6 +61,20 @@ entitlements, notarization and stapling. ZIPs are update payloads; DMG/PKG are
 manual installation media. Intel macOS remains opt-in and must include a matching
 x64 ZIP and blockmap. ARM64 is the default published architecture.
 
+The standalone Bridge binaries in `heimdall-local-darwin-*.tar.gz` (the bytes
+the curl installer, the DMG and Bridge self-update all install) are signed with
+the same Developer ID Application identity, hardened runtime and a secure
+timestamp by `scripts/release/package-local-binary-tarball.sh`. Bare Mach-O
+files cannot carry a stapled ticket, so `scripts/release/notarize-macos-binaries.sh`
+submits a zip of `bin/` with the existing `APPLE_*` secrets and fails unless
+Apple answers `Accepted`. Gatekeeper finds the ticket online, and the tarball
+bytes do not change. `scripts/release/verify-macos-signatures.sh` checks every
+binary: strict verify, the Developer ID chain to Apple Root CA, the `runtime`
+flag, the `Timestamp=`, stable identifiers, one TeamIdentifier (`APPLE_TEAM_ID`),
+no `get-task-allow`, and (with `HEIMDALL_REQUIRE_NOTARIZED=1`) an online
+notarization ticket. CI runs it on the build runner and again in
+`verify-storeless` on a clean runner that never imported the signing keychain.
+
 Windows remains **manual-only until an operator configures signing**:
 
 - Repository variable `WINDOWS_UPDATE_PUBLISHER_NAME`: the exact trusted
@@ -78,6 +92,34 @@ reviewed provider integration. Users of old unsigned Windows apps manually insta
 the first official signed release; old binaries cannot be secured retroactively.
 The presence, validity, expiry and permissions of these external credentials have
 not been verified on this Linux implementation host.
+
+The standalone Windows Bridge binaries (`ham-bridge.exe`, `ham-ctl.exe`,
+`ham-pty-host.exe` in `heimdall-local-windows-amd64.zip`) are **not
+Authenticode-signed today**. As of 2026-11-23 no Windows signing certificate
+exists, and the owner deferred signing. The signing step is wired but **off by
+default**. Smart App Control or SmartScreen may block or warn on unsigned
+files, and integrity comes from the release `SHA256SUMS` (and the signed
+release manifest once it lands).
+
+To turn Windows signing on, the same switch covers the binaries and the
+desktop installer:
+
+1. Get an Authenticode code-signing certificate as an exportable PFX. Since
+   2023, OV/EV keys must live on hardware or a cloud HSM, which needs a
+   separately reviewed provider integration (for example Azure Artifact
+   Signing) instead of a PFX.
+2. Add secrets `WIN_CSC_LINK` (the PFX, **base64-encoded**; the binary signer
+   does not accept a path or URL) and `WIN_CSC_KEY_PASSWORD`.
+3. Set the repository variable `WINDOWS_UPDATE_PUBLISHER_NAME` to the
+   certificate's simple name or full Subject.
+
+`build-windows` then runs `scripts/release/sign-windows-binaries.ps1` (signtool,
+SHA-256, RFC 3161 timestamp) before packaging. The `verify-windows-signatures`
+job checks the bundle on a clean runner with
+`scripts/release/verify-windows-signatures.ps1 -Required`: every `.exe` must be
+Valid, timestamped and from that publisher. While the switch is off, the same
+job passes unsigned binaries with a `SKIP` line, rejects any signature that is
+present but invalid, and runs `tests/windows/verify_windows_signatures_test.ps1`.
 
 Release and promotion jobs run `validate-desktop-updates.py` against the final
 NSIS/ZIP bytes: matching version, architecture, file names, size, SHA-512, legacy
