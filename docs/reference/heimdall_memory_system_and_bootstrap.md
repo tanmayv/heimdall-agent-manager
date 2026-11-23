@@ -347,7 +347,10 @@ The Hub compiles prompt-level memories via `write_bootstrap_memory_markdown` (`a
 
 #### 2. Skill Payloads & Content-Addressed Manifests
 - Static system skills (`STATIC_SKILLS`, generated from `src/prompts/skills/`) and dynamic active `.Skill` memories are processed into individual skill items.
-- For each dynamic skill memory, `render_skill` (`agent_service.odin:1776`) extracts or synthesizes YAML frontmatter (`name`, `description`, `heimdall_managed: true`) and markdown instructions.
+- For each dynamic skill memory, the Hub emits a structured heimdall.dynamic-skill.v1 JSON blob (src/contracts/bootstrap_skill.odin) with memory_id, name, title, description and body. Sealed fields remain sealed on the Hub.
+- Names and directories use the memory ID with underscores replaced by hyphens, independent of title encryption or edits. Identical titles on different memories retain distinct paths.
+- After verifying the blob hash, the Bridge decrypts individual fields and synthesizes frontmatter with a safe slug and a double-quoted, JSON-escaped description. Empty descriptions fall back to the decrypted title, then the stable name. A restricted grammar checker validates generated frontmatter before writing. Authored frontmatter stays unchanged after decryption; structural problems produce diagnostics identifying the memory. Full parsing of arbitrary authored YAML remains the provider's responsibility.
+- All Bridge writers share this handling, including legacy and default-skill responses. Locked skill payloads produce a diagnostic instead of writing broken files. Static skills remain literal Markdown blobs. Memory selection and the Fact/Habit-only MEMORY.md policy are unchanged.
 - The content is hashed using SHA256 (`bootstrap_fragment_hash`) and stored in the Hub's memory cache.
 - The bootstrap response embeds each skill in the `skills` array:
   ```json
