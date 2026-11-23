@@ -29,6 +29,7 @@ package main
 // admission or end sessions. Agents of the same OS user can read the file, as they can
 // signal the bridge itself; the boundary is the OS user (Q8).
 
+import "base:runtime"
 import "core:crypto"
 import "core:encoding/hex"
 import "core:fmt"
@@ -161,7 +162,8 @@ bridge_supervisor_control_mint :: proc() {
 	if bridge_supervisor_control_token != "" do return
 	raw: [SUPERVISOR_CONTROL_TOKEN_BYTES]byte
 	crypto.rand_bytes(raw[:])
-	bridge_supervisor_control_token = string(hex.encode(raw[:]))
+	// Process lifetime: never freed, so not from the caller's (possibly tracked) allocator.
+	bridge_supervisor_control_token = string(hex.encode(raw[:], runtime.heap_allocator()))
 }
 
 // bridge_supervisor_control_publish mints the control token (once per process) and writes

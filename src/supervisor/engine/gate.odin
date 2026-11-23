@@ -56,8 +56,7 @@ gate :: proc(e: ^Engine, op: Line, rule: Schema_Rule) -> (Exit, Error) {
 			cur.forced = false
 			return activate_steps(e, cur, rule)
 		}
-		// A launch raced the close: reopen and keep (or start) waiting.
-		gate_open_admission(e)
+		// A launch raced the close: keep (or start) waiting; admission reopens below.
 		b = again
 	}
 	if op.state == "waiting_for_idle" && op.force_at != 0 && t >= op.force_at {
@@ -65,6 +64,13 @@ gate :: proc(e: ^Engine, op: Line, rule: Schema_Rule) -> (Exit, Error) {
 		cur.busy = gate_close_and_count(e)
 		cur.forced = true
 		return activate_steps(e, cur, rule)
+	}
+	// Admission stays open while an op waits (§12). The runtime reports its admission state
+	// with every count, so a reopen that did not take (request deadline, endpoint restart,
+	// a raced close above) is sent again on every tick until the runtime reports it open.
+	// An unanswered count says nothing about the state: reopen too.
+	if !b.counted || b.closed {
+		gate_open_admission(e)
 	}
 	e.gate_busy = b
 	if op.state != "waiting_for_idle" {

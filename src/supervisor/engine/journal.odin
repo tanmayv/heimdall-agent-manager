@@ -50,6 +50,9 @@ Busy :: struct {
 	pty_sessions: int, // live PTY sessions (agents)
 	launches:     int, // in-flight launches not yet a session
 	helpers:      int, // helper processes in this instance's job / process groups
+	// The runtime's launch admission as it reported it with this count (true = closed). Not
+	// journaled; the gate uses it to retry a reopen that did not take (gate.odin).
+	closed:       bool,
 }
 
 busy_total :: proc(b: Busy) -> int {
@@ -271,7 +274,7 @@ decode_line :: proc(text: string, allocator := context.allocator) -> (l: Line, o
 		ln, ok2 := obj_int(bo, "launches")
 		hp, ok3 := obj_int(bo, "helpers")
 		if !ok1 || !ok2 || !ok3 do return
-		l.busy = Busy{true, int(ps), int(ln), int(hp)}
+		l.busy = Busy{counted = true, pty_sessions = int(ps), launches = int(ln), helpers = int(hp)}
 	}
 	interrupted_by, _ := obj_string(obj, "interrupted_by")
 	cancelled_by, _ := obj_string(obj, "cancelled_by")

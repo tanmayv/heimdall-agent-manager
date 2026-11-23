@@ -98,6 +98,8 @@ Fake :: struct {
 	opens:          int, // open_admission calls
 	// A launch races the close: the count taken right after the next close is one higher.
 	race_on_close:  bool,
+	// The next N open_admission calls do not reach the runtime (deadline, endpoint restart).
+	open_failures:  int,
 	stops:          [dynamic]string, // stop_children calls (tree)
 	// end_sessions calls: len(stops) at the time of each call (0 = before the first stop).
 	ends:           [dynamic]int,
@@ -190,6 +192,7 @@ fake_host :: proc(f: ^Fake) -> Host {
 			if f.running == "" || f.silent do return Busy{}
 			b := f.agents
 			b.counted = true
+			b.closed = !f.admission_open
 			return b
 		},
 		close_admission = proc(u: rawptr) -> bool {
@@ -206,6 +209,10 @@ fake_host :: proc(f: ^Fake) -> Host {
 		open_admission = proc(u: rawptr) {
 			f := (^Fake)(u)
 			f.opens += 1
+			if f.open_failures > 0 {
+				f.open_failures -= 1
+				return
+			}
 			if f.running != "" do f.admission_open = true
 		},
 		end_sessions = proc(u: rawptr) {

@@ -27,6 +27,8 @@ Fake :: struct {
 	token:     string,
 	// sessions.end reply targets
 	end_json:  string,
+	// gate.count reports admission closed
+	closed:    bool,
 	mu:        sync.Mutex,
 	methods:   [dynamic]string,
 	tokens_ok: int,
@@ -49,6 +51,7 @@ fake_reply :: proc(f: ^Fake, line: string) -> string {
 	if f.mode == .Refuse do return `{"v":1,"id":"sup","ok":false,"error":{"code":"unauthenticated","message":"x"}}` + "\n"
 	switch method {
 	case "supervisor.gate.count":
+		if f.closed do return `{"v":1,"id":"sup","ok":true,"data":{"counted":true,"admission":"closed","pty_sessions":0,"launches":0,"helpers":0}}` + "\n"
 		return `{"v":1,"id":"sup","ok":true,"data":{"counted":true,"admission":"open","pty_sessions":2,"launches":1,"helpers":3}}` + "\n"
 	case "supervisor.admission.close":
 		return `{"v":1,"id":"sup","ok":true,"data":{"admission":"closed","launches":0}}` + "\n"
@@ -168,16 +171,20 @@ test_gate_hooks_over_unix_socket :: proc(t: ^testing.T) {
 test_gate_count_over_tcp :: proc(t: ^testing.T) {
 	dir := test_dir(t, "t14-rctl-tcp")
 	defer os.remove_all(dir)
-	f := Fake{conns = 1}
+	f := Fake{conns = 2}
 	control, th := fake_start(t, &f, dir, tcp = true)
 	c: Client
 	init(&c, control)
 	defer destroy(&c)
 	b := count(&c)
+	f.closed = true // the server thread reads it on the next connection
+	b2 := count(&c)
 	fake_stop(&f, th)
 	delete(f.methods)
 	testing.expect_value(t, b, engine.Busy{counted = true, pty_sessions = 2, launches = 1, helpers = 3})
-	testing.expect_value(t, f.tokens_ok, 1)
+	// A runtime that reports admission closed: the engine re-sends open while waiting.
+	testing.expect_value(t, b2, engine.Busy{counted = true, closed = true})
+	testing.expect_value(t, f.tokens_ok, 2)
 }
 
 // Fail closed: no control file, a refused token, a runtime that never answers.

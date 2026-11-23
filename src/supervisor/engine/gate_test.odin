@@ -527,7 +527,7 @@ test_gate_journal_members_roundtrip :: proc(t: ^testing.T) {
 		sub            = "gate_closed",
 		force_at       = 1800007200,
 		forced         = true,
-		busy           = Busy{true, 2, 1, 3},
+		busy           = Busy{counted = true, pty_sessions = 2, launches = 1, helpers = 3},
 		interrupted_by = "op_y",
 		cancelled_by   = "op_z",
 	}
@@ -642,4 +642,29 @@ test_gate_waiting_status_is_throttled :: proc(t: ^testing.T) {
 	testing.expect(t, os.exists(path), "rewritten when the minute changes")
 	rem, _ = status_int(&w, "remaining_s")
 	testing.expect_value(t, rem, i64(GATE_WAIT_S - 120))
+}
+
+// A reopen after a raced close that does not reach the runtime is retried on the next ticks
+// until the runtime reports admission open; the op keeps waiting meanwhile.
+@(test)
+test_gate_failed_reopen_is_retried :: proc(t: ^testing.T) {
+	w: World
+	_, to := gate_world(&w, t, "t14-reopen")
+	defer world_destroy(&w)
+	w.fake.race_on_close = true // idle at first; a launch races the close
+	w.fake.open_failures = 2
+	x, err := timer_op(&w, "op_timer", to)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect_value(t, last_of(&w).state, "waiting_for_idle")
+	testing.expect(t, !w.fake.admission_open, "first reopen lost: runtime still closed")
+	x, err = advance(&w, 5)
+	testing.expect(t, !w.fake.admission_open, "second reopen lost too")
+	x, err = advance(&w, 5)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect(t, w.fake.admission_open, "retried until the runtime reports open")
+	testing.expect_value(t, w.fake.opens, 3)
+	// Once open, no further reopen requests.
+	x, err = advance(&w, 30)
+	testing.expect_value(t, w.fake.opens, 3)
+	testing.expect_value(t, last_of(&w).state, "waiting_for_idle")
 }

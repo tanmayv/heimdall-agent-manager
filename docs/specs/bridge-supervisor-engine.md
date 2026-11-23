@@ -971,7 +971,15 @@ with a 2 s deadline; any failure is "not counted" / "not confirmed" (fail closed
 PTY sessions call `setsid`, so the runtime's and PTY host's process groups do not contain
 them. `stop_children(client, recorded)` (for T13b's `Host.stop_children`): the sessions get
 the 10 s grace to end, then `procs.stop` (SIGTERM → 2 s → SIGKILL / TerminateProcess, wait
-30 s) on sessions + the recorded runtime and PTY host. Tests: `runtimectl_test.odin`
+30 s) on sessions + the recorded runtime and PTY host. **Windows residual (T13b
+dependency):** Windows has no process groups, so `TerminateProcess` ends only the captured
+session process, not processes it started (node, tools); those end only through the PTY
+host's ConPTY close or the per-instance job object (`KILL_ON_JOB_CLOSE`), which T13b must
+create and assign every child to. Until then a session's own children can outlive a
+forced stop on Windows. **Admission while waiting:** every count carries the runtime's
+admission state (`Busy.closed`, not journaled); a waiting op re-sends `admission.open` on
+each tick while the runtime reports closed or does not answer, so a lost reopen (deadline,
+endpoint restart) cannot keep launches refused for the rest of the wait. Tests: `runtimectl_test.odin`
 (fake endpoint over unix and tcp, fail-closed cases, real setsid'd sessions: this
 instance's stopped, another's untouched) and `src/bridge/supervisor_gate_test.odin` (launch
 refused while closed, in-flight launch counted, count split, end-sessions identities,

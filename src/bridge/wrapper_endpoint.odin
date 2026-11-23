@@ -289,11 +289,19 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 }
 
 bridge_local_endpoint_handle_jsonl_line :: proc(line: string) -> string {
+	// The four request fields are owned here and freed on return: every handler answers
+	// synchronously and builds its response in a fresh buffer. (They used to leak on every
+	// local request; the supervisor's gate polls this endpoint every second while it waits.)
 	request_id := bridge_local_extract_json_string(line, "id", "")
+	defer bridge_local_free_extracted(request_id)
 	if bridge_local_extract_json_int(line, "v", 0) != 1 do return bridge_local_response_error(request_id, "bad_version", "local endpoint protocol version must be 1")
 	token := bridge_local_extract_json_string(line, "token", "")
+	defer bridge_local_free_extracted(token)
 	method := bridge_local_extract_json_string(line, "method", "")
-	params := bridge_local_extract_json_object(line, "params")
+	defer bridge_local_free_extracted(method)
+	params, params_owned := jsonx.extract_raw_object(line, "params", false)
+	defer if params_owned do delete(params)
+	if !params_owned do params = "{}"
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
 	// The supervisor's agent gate: its own control token, never an agent token.
 	if strings.has_prefix(method, "supervisor.") do return bridge_supervisor_control_handle(request_id, method, token)
@@ -763,6 +771,12 @@ bridge_local_response_error :: proc(id, code, message: string) -> string {
 	bridge_local_write_json_string(&b, message)
 	strings.write_string(&b, "\"}}")
 	return strings.to_string(b)
+}
+
+// bridge_local_free_extracted frees a bridge_local_extract_json_string result (an empty
+// result may be the unallocated fallback).
+bridge_local_free_extracted :: proc(s: string) {
+	if len(s) > 0 do delete(s)
 }
 
 bridge_local_extract_json_string :: proc(json, key, fallback: string, allocator := context.allocator) -> string {

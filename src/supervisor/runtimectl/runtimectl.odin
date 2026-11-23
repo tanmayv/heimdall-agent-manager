@@ -67,6 +67,7 @@ install :: proc(h: ^engine.Host, c: ^Client) {
 	h.gate_user = c
 	h.gate_count = proc(u: rawptr) -> engine.Busy {return count((^Client)(u))}
 	h.close_admission = proc(u: rawptr) -> bool {return close_admission((^Client)(u))}
+	// Fire and forget: the engine retries while counts report admission closed.
 	h.open_admission = proc(u: rawptr) {_ = open_admission((^Client)(u))}
 	h.end_sessions = proc(u: rawptr) {_, _ = end_sessions((^Client)(u))}
 }
@@ -81,6 +82,8 @@ count :: proc(c: ^Client) -> (b: engine.Busy) {
 	b.launches = get_int(data, "launches") or_else -1
 	b.helpers = get_int(data, "helpers") or_else -1
 	if b.pty_sessions < 0 || b.launches < 0 || b.helpers < 0 do return engine.Busy{}
+	// The engine re-sends open_admission while a waiting op sees "closed" (gate.odin).
+	b.closed = get_string(data, "admission") != "open"
 	b.counted = true
 	return
 }
