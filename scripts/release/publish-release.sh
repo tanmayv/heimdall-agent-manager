@@ -150,7 +150,9 @@ cmd_publish() {
       *) die "unknown publish argument: $1" ;;
     esac
   done
-  [ -n "$tag" ] && [ -n "$commit" ] && [ -f "$notes" ] || die "publish needs --tag, --commit and an existing --notes-file"
+  if [ -z "$tag" ] || [ -z "$commit" ] || [ ! -f "$notes" ]; then
+    die "publish needs --tag, --commit and an existing --notes-file"
+  fi
   [ "$#" -gt 0 ] || die "publish needs at least one asset after --"
   local f names
   for f in "$@"; do [ -f "$f" ] || die "missing asset: $f"; done
