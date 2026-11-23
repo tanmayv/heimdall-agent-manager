@@ -70,8 +70,8 @@ Unless a row says otherwise: **no TTY needed** (stdin is `/dev/null` under `inst
 | S1 | **Nothing installed**: no service, no `bin/`, no credential for this instance. | Full transaction: stage, install `bin/`, write config, allocate ports, register service, enroll (device flow, §6), extensions, start, verify connected. | 0 | `Installed <service> v<ver>, enrolled as <bridge_id>, connected to <hub>.` |
 | S1a | S1, but enrollment is not approved before the code expires (incl. reissues) or is denied. | Binaries, config and service stay installed; service is **not** started; profile is `not_enrolled`. Re-running the one-liner continues at S3. | 4 | `Installed <service> v<ver> but not enrolled: <reason>. Run the same command again to enroll.` |
 | S2 | **Installed, enrolled, healthy**: service registered and running, `bin/` present, credential present, no applicable re-enroll marker, saved hub = requested hub, no `--version`, or `--version` equal to the installed version. | **Nothing.** No stop, no file written, no service re-render, no extension sync, no download beyond the script's bootstrap. Waits up to the verify timeout (45 s, `setup_cmd.odin:26`) for `connected`, read-only. | 0 | `<service> v<ver> is already installed, enrolled as <bridge_id> and connected; nothing changed.` If still not connected after the wait: same, with `…running but not connected to <hub> (hub unreachable?); nothing changed.` and a `warning` event — re-installing cannot fix a hub outage. |
-| S3 | **Installed, not enrolled**: `bin/` + service present, no credential (e.g. S1a, or the credential file was deleted). | Keep binaries. Re-render service only if its file differs, run **Enroll**, then Start + Verify. | 0 / 4 | `Enrolled <service> as <bridge_id>; connected to <hub>.` / as S1a. |
-| S4 | **Installed, enrollment invalid**: credential present **and** an applicable `needs-reenrollment.json` (reason `revoked`, `refresh_rejected`, `credential_missing`, `vault_key_timeout`), written by the running bridge when the hub refused it (`hub_quiescence.odin:59`). Also: hub answers 401/403 to the credential during detection. | Keep binaries and data. Enroll with `--reuse-bridge <current id>` (today's `--reenroll` path, `setup_cmd.odin:443-444`) so the bridge keeps its identity if the approver allows; clear the marker on success; restart + verify. **New in T2:** the marker triggers this without the caller passing `--reenroll`. | 0 / 4 | `Re-enrolled <service> (was <old_id>, reason <reason>) as <bridge_id>; connected.` |
+| S3 | **Installed, not enrolled**: `bin/` + service present, no credential (e.g. S1a, or the credential file was deleted). A re-enroll marker with reason `credential_missing` (enrolled but tokenless, `status.odin:67-69`) lands **here**, not in S4: its `bridge_id` is passed as `--reuse-bridge` and the marker is cleared on success. | Keep binaries. Re-render service only if its file differs, run **Enroll**, then Start + Verify. | 0 / 4 | `Enrolled <service> as <bridge_id>; connected to <hub>.` / as S1a. |
+| S4 | **Installed, enrollment invalid**: credential present **and** an applicable `needs-reenrollment.json` (reason `revoked`, `refresh_rejected` or `vault_key_timeout`; `credential_missing` is S3), written by the running bridge when the hub refused it (`hub_quiescence.odin:59`). Also: hub answers 401/403 to the credential during detection. | Keep binaries and data. Enroll with `--reuse-bridge <current id>` (today's `--reenroll` path, `setup_cmd.odin:443-444`) so the bridge keeps its identity if the approver allows; clear the marker on success; restart + verify. **New in T2:** the marker triggers this without the caller passing `--reenroll`. | 0 / 4 | `Re-enrolled <service> (was <old_id>, reason <reason>) as <bridge_id>; connected.` |
 | S5a | **Other hub**: an instance exists for hub A; the run asks for hub B. | Different service name ⇒ S1 for a **new, separate** instance. Hub A's instance is not read or touched. | as S1 | as S1 |
 | S5b | **Name collision**: sanitized hub names collide, so the requested service's saved hub ≠ requested hub (`setup_cmd.odin:300-308`). | Refuse before any stop or write. | 5 | `[ERROR] Profile <service> belongs to hub <A>, not <B>; pass --profile <name> to install a separate profile.` |
 | S5c | **Other profile**: `--profile X` while only the default (or another) profile exists. | S1 for profile X; others untouched. | as S1 | as S1 |
@@ -119,7 +119,14 @@ move them to this table.
 
 ## 5. Flags and environment variables
 
-Flags win over environment variables. Names are identical in both scripts; PowerShell
+Flags win over environment variables: an env var is only a default, used when the
+option is absent. Exactly one value per option reaches `ham-bridge`. In `install.ps1`
+the env var is the parameter default (`install.ps1:24-26`), and a `--hub`/`--profile`/
+`--name`/`--version` (or `--hub-url`) form arriving through pass-through would today be
+appended **after** it (`install.ps1:100-107`), giving `ham-bridge` two values. T3 must make
+`install.ps1` take those forms out of `$Rest` and bind them to `-Hub`/`-Name`/`-Version`
+itself (overriding the env default) before building argv; the same rule already holds in
+`install.sh`, whose own parser consumes them. Names are identical in both scripts; PowerShell
 spells the same option as a PascalCase parameter, and every `--flag` form is also
 accepted by `install.ps1` because unknown arguments pass through to `ham-bridge`
 (`install.ps1:35,107`).
@@ -128,7 +135,7 @@ accepted by `install.ps1` because unknown arguments pass through to `ham-bridge`
 |---|---|---|---|
 | `--hub URL` (alias `--hub-url`) | `-Hub` (alias `-HubUrl`) | `HEIMDALL_HUB` | Hub API origin. **Required.** |
 | `--profile NAME` (alias `--name`) | `-Name` (alias `-Profile`) | `HEIMDALL_BRIDGE_NAME` | Profile name, `[a-z0-9][a-z0-9-]{0,30}`; default profile when empty. |
-| `--version TAG\|latest` | `-Version` | `HEIMDALL_VERSION` | Release to bootstrap from. Default `latest` = newest **stable** release (`GET /releases/latest`, T3). On an existing instance: §3 S8, §7. |
+| `--version TAG\|latest` | `-Version` | `HEIMDALL_VERSION` | Release to bootstrap from. Default `latest` (resolution: §5.1). On an existing instance: §3 S8, §7. |
 | `--allow-downgrade` † | `-AllowDowngrade` † | — | Permit S8c. Deliberately no env var: a downgrade must be visible in the command. |
 | `--bundle FILE --checksum-file FILE` | `-Bundle -ChecksumFile` | — | Use an already-downloaded bundle (desktop apps, air-gapped); verified first. |
 | `--new-bridge` | `-NewBridge` | — | Enroll as a new bridge. |
@@ -139,6 +146,26 @@ accepted by `install.ps1` because unknown arguments pass through to `ham-bridge`
 | `--interactive` | `-Interactive` | — | Drop `--headless`: open the approval page in a local browser and allow terminal prompts. Not for unattended use. |
 | `--uninstall` | `-Uninstall` | — | Run `ham-bridge uninstall` instead (its own flags pass through, e.g. `--purge --yes`). |
 | `--help` | `-Help` | — | Usage, exit 0. |
+
+### 5.1 Resolving `latest`
+
+`latest` = the **highest SemVer** release that is promoted (not draft, not prerelease)
+**and** carries both `SHA256SUMS` and this target's bundle
+(`heimdall-local-<target>-<tag>.tar.gz` / `.zip`). The scripts page
+`GET /repos/tanmayv/heimdall-agent-manager/releases?per_page=100` **to exhaustion**
+(follow `Link: rel="next"`), as T7 does for the other readers. This keeps today's
+per-target asset check (`install.sh:40-86`, `install.ps1:68-77`) and removes the
+first-30 limit (report F9).
+
+`GET /releases/latest` is **not** used: GitHub returns the release flagged `make_latest`
+(by default the most recently created non-prerelease), which after a promoted backport
+can be lower than the highest SemVer and is not checked for this target's bundle.
+Consistent with Q2 (newest = highest SemVer).
+
+If any page fails (network, rate limit, non-list body) the result is incomplete: the
+script stops with exit 3 and `[ERROR] Cannot list all releases from GitHub (<reason>); pass
+--version TAG.` It never picks from a partial list. If no release qualifies: exit 3,
+`[ERROR] No promoted release has a <target> bundle. Pass --version TAG.`
 
 † New: `--allow-downgrade` is added to `ham-bridge setup` (T2); the marked PowerShell
 parameters are added to `install.ps1` (T3). Until then the `--flag` form passes through.
@@ -216,6 +243,13 @@ second update path.
   first repairs the service (S6) so the launcher starts it. Recovering a supervisor that
   cannot start at all (report §9 risk) is defined by T9 and must run the **same engine
   code** under the instance lock and journal, not a separate copy in the scripts.
+- A partial install on a supervisor-managed instance (S7 after Phase 2: the `current`
+  release tree missing or incomplete, launcher present or not) is **not** repaired by
+  copying from the bundle. It is the same case as the unstartable supervisor above and is
+  deferred to T9's recovery procedure (same engine, instance lock, journal). Setup still
+  breaks a dead owner's lock, repairs the service registration (S6) and prints
+  `[ERROR] <service>: release tree incomplete; recovery: <T9 command>` with exit 1 until T9
+  defines it.
 - A legacy (non-converted) instance found after Phase 2 is converted by setup (Phase 2
   conversion transaction), never updated by the script.
 
