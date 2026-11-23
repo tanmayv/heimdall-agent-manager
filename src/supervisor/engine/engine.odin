@@ -262,11 +262,84 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 		// The index is reconciled from the journal at every start (§6.1), so only a crash
 		// stops here; a failed index write (e.g. fs_busy) does not undo a durable result.
 		if err := index_add(e, line.op_id, line.state, line.ts); err != nil && is_crash(err) do return err
-	} else {
+	} else if a, has := e.active.?; !has || a.op_id == line.op_id {
 		e.active = clone_line(e, line)
 	}
+	// A non-terminal line of another op (a short side op of §10 coalescing, e.g. check_now or
+	// set_channel while an update waits for idle agents) leaves the active op alone too; the
+	// caller restores the view with `reload_active` once the side op is terminal.
 	write_status(e, line)
 	return nil
+}
+
+// reload_active re-reads the journal and sets the active op to the last op whose last line
+// is not terminal (§6.1). The service calls it after a side op (§10 coalescing) ends, and
+// when resuming a side op left non-terminal by a crash shadowed the op it ran beside.
+// `skip_op_id` (optional) is passed over, so a side op left non-terminal by a crash can be
+// resumed against the op it ran beside (J35 cancel replay).
+reload_active :: proc(e: ^Engine) {
+	r := read_journal_file(journal_path(e), context.temp_allocator)
+	e.active = nil
+	if op, ok := pick_active(r.lines[:]); ok do e.active = clone_line(e, op)
+}
+
+// SIDE_ACTIONS: ops that never install and may run beside an active op (§10 coalescing).
+SIDE_ACTIONS :: []string{"check_now", "set_channel", "set_auto_update", "retry_failed", "cancel"}
+
+is_side_action :: proc(action: string) -> bool {
+	for a in SIDE_ACTIONS do if a == action do return true
+	return false
+}
+
+// pick_active: the active op is the last op whose last line is not terminal (§6.1), except
+// that a side op left non-terminal by a crash never shadows an installing op beside it (the
+// service finishes the side op separately, see service.drive).
+@(private)
+pick_active :: proc(lines: []Line) -> (op: Line, ok: bool) {
+	best_main, best_side: Maybe(Line)
+	for l, i in lines {
+		later := false
+		for j := i + 1; j < len(lines); j += 1 {
+			if lines[j].op_id == l.op_id {
+				later = true
+				break
+			}
+		}
+		if later || is_terminal(l.state) do continue
+		if is_side_action(l.action) {
+			if b, has := best_side.?; !has || l.seq > b.seq do best_side = l
+		} else if b, has := best_main.?; !has || l.seq > b.seq {
+			best_main = l
+		}
+	}
+	if b, has := best_main.?; has do return b, true
+	if b, has := best_side.?; has do return b, true
+	return
+}
+
+// non_terminal_ops: the last line of every op whose last line is not terminal, oldest first
+// (normally zero or one; two while a side op runs next to a waiting op).
+non_terminal_ops :: proc(e: ^Engine, allocator := context.temp_allocator) -> []Line {
+	r := read_journal_file(journal_path(e), context.temp_allocator)
+	out := make([dynamic]Line, allocator)
+	for l, i in r.lines {
+		later := false
+		for j := i + 1; j < len(r.lines); j += 1 {
+			if r.lines[j].op_id == l.op_id {
+				later = true
+				break
+			}
+		}
+		if !later && !is_terminal(l.state) do append(&out, l)
+	}
+	return out[:]
+}
+
+// journal_lines: every valid line of ops.jsonl (temp-allocated), for the service's replay
+// checks (J35 `cancelled_by`, J30 interrupt window).
+journal_lines :: proc(e: ^Engine) -> []Line {
+	r := read_journal_file(journal_path(e), context.temp_allocator)
+	return r.lines[:]
 }
 
 @(private)
@@ -402,7 +475,7 @@ load_journal :: proc(e: ^Engine) -> Error {
 		if err := journal(e, Line{op_id = fmt.tprintf("op_journal_corrupt_%d", ts), action = "journal", actor = "supervisor", state = "failed", error = "journal_corrupt"}); err != nil do return err
 	}
 	for l in r.lines do e.last_seq = max(e.last_seq, l.seq)
-	if op, ok := active_op(r.lines[:]); ok do e.active = clone_line(e, op.last)
+	if op, ok := pick_active(r.lines[:]); ok do e.active = clone_line(e, op)
 	last_t: i64 = -1
 	for l in r.lines {
 		if is_terminal(l.state) && l.seq > last_t {
@@ -568,6 +641,12 @@ start :: proc(e: ^Engine, launched: string, mode: Mode) -> (x: Exit, err: Error)
 
 	// From here L == C.
 	op, has_op := e.active.?
+	// A side op (check_now, set_channel, …) left by a crash decides nothing here; the
+	// service finishes it after READY.
+	if has_op && is_side_action(op.action) {
+		has_op = false
+		e.active = nil
+	}
 	if !has_op {
 		lt, has_lt := e.last_terminal.?
 		if has_lt && lt.state == "rollback_failed" && (lt.from.tree == C || lt.to.tree == C) {

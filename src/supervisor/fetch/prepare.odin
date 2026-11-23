@@ -36,6 +36,10 @@ Prepare_Input :: struct {
 	// Step 5 (eligibility, §13.2) runs between verification and download.
 	eligible:        proc(user: rawptr, m: ^Manifest) -> Error,
 	eligible_user:   rawptr,
+	// Called with `eligible_user` once the bundle is downloaded and its size and SHA-256
+	// matched (end of step 6, J6 `downloading -> verifying`), before extraction. Not
+	// called when an identical valid tree is reused (J5). nil = no hook.
+	bundle_ready:    proc(user: rawptr, m: ^Manifest) -> Error,
 	live:            []string, // W1 live tree names
 	os_policy:       Os_Signature_Policy,
 	limits:          Limits,
@@ -122,6 +126,7 @@ prepare_release :: proc(input: Prepare_Input, allocator := context.allocator) ->
 	} else {
 		bundle = download_bundle(in_.downloader, &m, downloads) or_return
 	}
+	if in_.bundle_ready != nil do in_.bundle_ready(in_.eligible_user, &m) or_return
 
 	// Step 7.
 	staging_name := strings.concatenate({".staging-", in_.op_id}, context.temp_allocator)
