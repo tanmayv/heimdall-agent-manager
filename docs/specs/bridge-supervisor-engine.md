@@ -800,9 +800,14 @@ is in parentheses.
    (`tree.json`, `.complete`, `release.json[.minisig]`).
 8. OS signature where available: Windows Authenticode publisher on every `.exe` (T8);
    macOS `codesign --verify --strict` + Developer ID Team ID on every Mach-O (T8). Unsigned
-   while T8 is pending → policy flag `require_os_signature` (default **off** until T8 ships,
-   then on). macOS: whether self-downloaded files get `com.apple.quarantine` is a
-   HYPOTHESIS to verify in T12; if they do, the attribute is removed only after step 8 passes.
+   while T8 is pending → policy flag `require_os_signature` (T12 defaults: **on** for macOS,
+   where T8 notarizes the bare binaries; **off** for Windows, Authenticode deferred). A
+   signature that is present but does not verify fails even when not required
+   (`os_signature_invalid`). The expected Team ID / publisher are build-time constants
+   (`-define:HEIMDALL_MACOS_TEAM_ID=…`, `HEIMDALL_WINDOWS_PUBLISHER`); empty means one shared
+   Team ID / any trusted signer. macOS quarantine: **verified in T12 CI (macos-15)** that
+   files the engine writes get no `com.apple.quarantine`; the attribute is still removed,
+   only after step 8 passes, in case some environment adds it.
 9. Write `tree.json`, fsync every file and directory of the staging tree, then rename
    `.staging-<op_id>` → the tree name chosen by §4 (`<ver>-<d12>` or `-r<n>`) (W2, W3). Nothing has executed from it yet, and the
    tree is not valid (no `.complete`), so no pointer can name it.
