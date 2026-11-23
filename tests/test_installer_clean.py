@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -22,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / 'scripts/install.sh'
 INSTALLER_PS1 = ROOT / 'scripts/install.ps1'
 REPO = 'tanmayv/heimdall-agent-manager'
+# The bash that runs install.sh; CI sets /bin/bash on macOS (bash 3.2).
+BASH = shutil.which(os.environ.get('INSTALLER_BASH', 'bash')) or 'bash'
 
 MOCK_CURL = r'''#!/usr/bin/env bash
 # Maps the URLs install.sh fetches onto $MOCK_ROOT/www; anything else is a 404.
@@ -113,9 +116,9 @@ class BootstrapTests(unittest.TestCase):
     def run_installer(self, *args, stdin_script=False, extra_env=None):
         env = dict(self.env, **(extra_env or {}))
         if stdin_script:
-            return subprocess.run(['bash', '-s', '--', *args], input=INSTALLER.read_text(),
+            return subprocess.run([BASH, '-s', '--', *args], input=INSTALLER.read_text(),
                                   env=env, capture_output=True, text=True, timeout=60)
-        return subprocess.run(['bash', str(INSTALLER), *args], env=env, capture_output=True,
+        return subprocess.run([BASH, str(INSTALLER), *args], env=env, capture_output=True,
                               text=True, timeout=60, stdin=subprocess.DEVNULL)
 
     def bridge_calls(self):
@@ -131,7 +134,7 @@ class BootstrapTests(unittest.TestCase):
         self.publish('v1.0.0')
         res = self.run_installer('--hub', 'https://hub.example.com', '--name', 'bob', '--new-bridge')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com --profile bob --new-bridge'])
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com --profile bob --keep-version --new-bridge'])
         self.assertIn(f'releases/download/v1.0.0/heimdall-local-{self.target}-v1.0.0.tar.gz',
                       (self.root / 'curl.log').read_text())
         self.assert_clean()
@@ -140,7 +143,7 @@ class BootstrapTests(unittest.TestCase):
         self.publish('v1.0.0')
         res = self.run_installer('--hub', 'https://hub.example.com', stdin_script=True)
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com'])
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com --keep-version'])
 
     def test_explicit_version_may_be_prerelease(self):
         self.publish('v1.0.0')
@@ -148,11 +151,13 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--version', 'v1.1.0-rc1', '--hub', 'https://h')
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('/v1.1.0-rc1/', (self.root / 'curl.log').read_text())
+        # An explicit release may move an installed bridge: no --keep-version (S8b).
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://h'])
 
     def test_tampered_bundle_is_refused_before_ham_bridge_runs(self):
         self.publish('v1.0.0', tamper=True)
         res = self.run_installer('--hub', 'https://h')
-        self.assertEqual(res.returncode, 1)
+        self.assertEqual(res.returncode, 3)
         self.assertIn('SHA-256 verification failed', res.stderr)
         self.assertEqual(self.bridge_calls(), [])
         self.assert_clean()
@@ -160,24 +165,48 @@ class BootstrapTests(unittest.TestCase):
     def test_unknown_or_unverifiable_release_is_refused(self):
         self.publish('v1.0.0')
         res = self.run_installer('--version', 'v9.9.9', '--hub', 'https://h')
-        self.assertEqual(res.returncode, 1)
+        self.assertEqual(res.returncode, 3)
         self.assertIn('no SHA256SUMS', res.stderr)
         res = self.run_installer('--version', '../x', '--hub', 'https://h')
+        self.assertEqual(res.returncode, 2)
         self.assertIn('Invalid release tag', res.stderr)
         self.assertEqual(self.bridge_calls(), [])
 
-    def test_no_promoted_release_for_target(self):
+    def test_stable_release_without_target_assets_never_falls_back(self):
+        """Spec §5.1: the release /releases/latest names must carry SHA256SUMS and
+        this target's bundle; an older complete release is never used instead."""
         self.publish('v1.0.0', sums=False)
-        self.publish('v0.9.0', draft=True)
+        self.publish('v0.9.0')
         res = self.run_installer('--hub', 'https://h')
-        self.assertEqual(res.returncode, 1)
-        self.assertIn('No promoted release', res.stderr)
+        self.assertEqual(res.returncode, 3)
+        self.assertIn(f'[ERROR] Stable release v1.0.0 has no SHA256SUMS for {self.target}; pass --version TAG.', res.stderr)
+        self.releases = []
+        (self.root / 'www' / 'download').rename(self.root / 'old-download')
+        self.publish('v1.0.0', bundle=False)
+        self.publish('v0.9.0')
+        res = self.run_installer('--hub', 'https://h')
+        self.assertEqual(res.returncode, 3)
+        self.assertIn(f'[ERROR] Stable release v1.0.0 has no bundle for {self.target}; pass --version TAG.', res.stderr)
+        self.assertNotIn('/v0.9.0/', (self.root / 'curl.log').read_text())
+        self.assertEqual(self.bridge_calls(), [])
+        self.assert_clean()
 
     def test_no_promoted_release_at_all(self):
         self.publish('v1.0.0', prerelease=True)
         res = self.run_installer('--hub', 'https://h')
-        self.assertEqual(res.returncode, 1)
-        self.assertIn('Cannot read the latest promoted release', res.stderr)
+        self.assertEqual(res.returncode, 3)
+        self.assertIn('[ERROR] Cannot resolve the stable release from GitHub (The requested URL returned error: 404); pass --version TAG.', res.stderr)
+        self.assertEqual(self.bridge_calls(), [])
+        self.assert_clean()
+
+    def test_stable_response_that_is_not_a_release(self):
+        www = self.root / 'www'
+        www.mkdir()
+        for body, why in (('[]', 'the response is not a release'), ('{"message": "API rate limit exceeded"}', 'no tag_name in the response')):
+            (www / 'latest.json').write_text(body)
+            res = self.run_installer('--hub', 'https://h')
+            self.assertEqual(res.returncode, 3, res.stderr)
+            self.assertIn(f'Cannot resolve the stable release from GitHub ({why}); pass --version TAG.', res.stderr)
         self.assertEqual(self.bridge_calls(), [])
 
     def test_latest_promoted_release_beyond_one_hundred_releases(self):
@@ -210,7 +239,7 @@ class BootstrapTests(unittest.TestCase):
         other = self.root / 'heimdall-local-plan9-amd64-v1.0.0.tar.gz'
         other.write_bytes(bundle.read_bytes())
         res = self.run_installer('--bundle', str(other), '--checksum-file', str(sums), '--hub', 'https://h')
-        self.assertEqual(res.returncode, 1)
+        self.assertEqual(res.returncode, 3)
         self.assertIn('not for this machine', res.stderr)
 
     def test_desktop_installer_bundle_runs_interactive_setup(self):
@@ -224,16 +253,75 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--bundle', str(staged), '--checksum-file', str(staged_sums),
                                  '--hub', 'https://h', '--interactive')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --hub https://h'])
+        self.assertEqual(self.bridge_calls(), ['setup --hub https://h --keep-version'])
         res = self.run_installer('--bundle', str(staged), '--checksum-file', str(staged_sums), '--hub', 'https://h')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h')
+        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h --keep-version')
 
-    def test_ham_bridge_failure_is_the_exit_code(self):
+    def test_ham_bridge_exit_code_is_returned_unchanged(self):
         self.publish('v1.0.0')
-        res = self.run_installer('--hub', 'https://h', extra_env={'STUB_EXIT': '3'})
-        self.assertEqual(res.returncode, 3)
+        for code in ('1', '4', '5', '6', '7'):
+            res = self.run_installer('--hub', 'https://h', extra_env={'STUB_EXIT': code})
+            self.assertEqual(res.returncode, int(code))
         self.assert_clean()
+
+    def test_environment_configures_the_pipe_form(self):
+        """`curl ... | HEIMDALL_HUB=... bash`: no TTY, no arguments, env only."""
+        self.publish('v1.0.0')
+        self.publish('v1.1.0-rc1', prerelease=True)
+        env = {'HEIMDALL_HUB': 'https://env.example', 'HEIMDALL_BRIDGE_NAME': 'envprof', 'HEIMDALL_VERSION': 'v1.1.0-rc1'}
+        res = self.run_installer(stdin_script=True, extra_env=env)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://env.example --profile envprof'])
+        self.assertIn('/v1.1.0-rc1/', (self.root / 'curl.log').read_text())
+
+    def test_flags_win_over_environment_and_reach_ham_bridge_once(self):
+        self.publish('v1.0.0')
+        self.publish('v1.1.0-rc1', prerelease=True)
+        env = {'HEIMDALL_HUB': 'https://env.example', 'HEIMDALL_BRIDGE_NAME': 'envprof', 'HEIMDALL_VERSION': 'v1.1.0-rc1'}
+        res = self.run_installer('--hub-url', 'https://flag.example', '--name', 'flagprof', '--version', 'latest',
+                                 '--reenroll', extra_env=env)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://flag.example --profile flagprof --keep-version --reenroll'])
+        self.assertIn('/v1.0.0/', (self.root / 'curl.log').read_text())
+
+    def test_usage_errors_exit_2_before_anything_is_fetched(self):
+        self.publish('v1.0.0')
+        cases = [
+            ((), 'No hub given: pass --hub URL or set HEIMDALL_HUB'),
+            (('--hub',), '--hub requires a value.'),
+            (('--hub', 'https://h', '--profile', 'Bad_Name'), 'Invalid profile "Bad_Name"'),
+            (('--hub', 'https://h', '--version', 'a b'), 'Invalid release tag'),
+            (('--hub', 'https://h', '--bundle', '/nonexistent', '--checksum-file', '/nonexistent'), 'must both name regular files'),
+        ]
+        for args, msg in cases:
+            res = self.run_installer(*args)
+            self.assertEqual(res.returncode, 2, (args, res.stderr))
+            self.assertIn(msg, res.stderr)
+        self.assertFalse((self.root / 'curl.log').exists())
+        self.assertEqual(self.bridge_calls(), [])
+
+    def test_uninstall_needs_no_hub(self):
+        self.publish('v1.0.0')
+        res = self.run_installer('--uninstall', '--service', 'heimdall-bridge-h', '--yes')
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls(), ['uninstall --service heimdall-bridge-h --yes'])
+
+    def test_missing_prerequisite_is_a_clear_bootstrap_failure(self):
+        empty = self.root / 'emptybin'
+        empty.mkdir()
+        res = self.run_installer('--hub', 'https://h', extra_env={'PATH': str(empty)})
+        self.assertEqual(res.returncode, 3, res.stderr)
+        self.assertIn('[ERROR] curl is required but was not found on PATH', res.stderr)
+        self.assertEqual(self.bridge_calls(), [])
+
+    def test_help_documents_the_headless_one_liner(self):
+        res = self.run_installer('--help')
+        self.assertEqual(res.returncode, 0)
+        self.assertIn('curl -fsSL https://install.ninjy.ai | bash -s -- --hub', res.stdout)
+        self.assertIn('HEIMDALL_HUB=https://hub.example.com bash', res.stdout)
+        ps1 = INSTALLER_PS1.read_text()
+        self.assertIn("irm https://install.ninjy.ai/ps1 | iex", ps1)
 
     def test_bootstraps_hold_no_install_logic(self):
         """REQ-ENR-5: download + verify + exec only; the lifecycle lives in ham-bridge."""
@@ -247,13 +335,18 @@ class BootstrapTests(unittest.TestCase):
             self.assertNotIn(word, ps1)
         self.assertIn("'setup', '--headless'", ps1)
         # Standalone interactive CLI installation still supports browser approval.
-        self.assertIn("elseif ($Interactive) { $argv += 'setup' }", ps1)
-        # The same promoted-release rule on both sides.
-        self.assertIn('-not $r.draft -and -not $r.prerelease', ps1)
-        # Both read the newest promoted release directly, never a list page (F9).
+        self.assertIn("elseif ($isInteractive) { $argv += 'setup' }", ps1)
+        # Both read the stable release directly, never a list page (F9).
         self.assertIn('/releases/latest"', ps1)
-        self.assertNotIn('releases?per_page', ps1)
-        self.assertNotIn('releases?per_page', sh)
+        self.assertIn('/releases/latest"', sh)
+        for text in (sh, ps1):
+            self.assertNotIn('releases?', text)
+            self.assertNotIn('per_page', text)
+        # The same messages on both sides (spec §5.1).
+        for msg in ('has no SHA256SUMS for', 'has no bundle for', 'Cannot resolve the stable release from GitHub',
+                    'No hub given: pass ', 'or set HEIMDALL_HUB', 'Invalid profile', 'SHA-256 verification failed; nothing installed.'):
+            self.assertIn(msg, sh)
+            self.assertIn(msg, ps1)
 
 
 if __name__ == '__main__':

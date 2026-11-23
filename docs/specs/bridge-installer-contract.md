@@ -197,6 +197,11 @@ Justified differences:
   so `HEIMDALL_*` is the only way to configure that form. `install.sh` must read the same
   three (today it reads only `HEIMDALL_BRIDGE_NAME`, `install.sh:130`; T3 adds
   `HEIMDALL_HUB` and `HEIMDALL_VERSION`).
+- **Missing value for `--hub` in PowerShell** (T3 finding, pwsh 7): PowerShell's own binder
+  matches `--hub`, `--profile`, `--version`, `--bundle` to the parameters of the same name,
+  so `install.ps1 --hub` with no value is a PowerShell parameter-binding error (exit 1 under
+  `-File`), not the script's exit 2. Forms the binder does not match (`--hub-url`,
+  `--checksum-file`) reach the script and give exit 2 as in `install.sh`.
 - **Termux** is detected by `install.sh` only (`install.sh:103-110`); Windows has a single
   target (`windows-amd64`, `install.ps1:39`).
 
@@ -236,7 +241,10 @@ second update path.
 
 **Before the supervisor exists (now → end of Phase 1):**
 
-- Without `--version`, a healthy instance's version is **never** changed (S2, S8a). Repairs
+- Without `--version`, a healthy instance's version is **never** changed (S2, S8a). To make
+  that explicit, both scripts pass `--keep-version` to `ham-bridge setup` whenever no release was
+  given (`--version`/`-Version`/`HEIMDALL_VERSION`; `latest` counts as none) (user decision
+  2026-11-23; the flag is implemented by T2, older `ham-bridge` releases ignore it). Repairs
   (S3, S4, S6, S7) keep the installed binaries unless `bin/` itself is missing or partial.
 - With `--version X` the script behaves as `ham-bridge update --version X` does today:
   the same setup transaction replaces `bin/` (S8b; S8c needs `--allow-downgrade`). This is
