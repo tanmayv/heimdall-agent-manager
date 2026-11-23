@@ -51,9 +51,9 @@ are not the service entry point. In Phase 1 the engine runs only against test ro
 ```
 OS service (systemd --user unit | LaunchAgent | Scheduled Task)   written once per instance
  └─ ham-launcher            <data>/launcher/        frozen; reads pointers; no network
-     └─ ham-supervisor      <data>/releases/<C>/    the engine; holds the instance lock
-         ├─ ham-bridge      <data>/releases/<C>/    runtime (hub connection, agents)
-         └─ ham-pty-host    <data>/releases/<C>/    PTY host + agent process trees
+     └─ ham-supervisor      <data>/releases/<C>/bin/ the engine; holds the instance lock
+         ├─ ham-bridge      <data>/releases/<C>/bin/ runtime (hub connection, agents)
+         └─ ham-pty-host    <data>/releases/<C>/bin/ PTY host + agent process trees
 ```
 
 - Runtime and PTY host are **always** started from the same tree as the supervisor that
@@ -118,8 +118,9 @@ Roots are today's (`src/lib/bridgesvc/bridgesvc.odin:216-228`): `<data>` =
   releases/
     <ver>-<d12>/               IMMUTABLE release tree, <d12> = first 12 hex of bundle SHA-256
     <ver>-<d12>-r<n>/          re-install of the same bundle by `repair` (n = 1, 2, …), §4
-      ham-supervisor[.exe] ham-bridge[.exe] ham-pty-host[.exe] ham-ctl[.exe] ham-launcher[.exe] …
-      extensions/              bundled provider extensions
+      bin/                     ham-supervisor[.exe] ham-bridge[.exe] ham-pty-host[.exe] ham-ctl[.exe] ham-launcher[.exe] …
+      share/heimdall/extensions/   bundled provider extensions
+      README.md LICENSE METADATA.json …   rest of the bundle
       release.json             the verified manifest, byte-for-byte as signed
       release.json.minisig     its signature
       tree.json                {"files":[{"path","size","sha256"}…]} written by the engine at unpack
@@ -160,6 +161,15 @@ stable across re-enrollment (the bridge id may change on S4 re-enroll, T1 §3) a
 `instance_id` in every intent. A supervisor whose effective uid/SID or root path differs
 from the record refuses to run (`ownership_mismatch`); this is how a bridge never manages
 another OS user's bridge **[T0 Q8]**.
+
+**Release tree = the bundle extracted verbatim** (user decision 2026-11-23): the archive's own
+paths (`bin/…`, `share/heimdall/…`, top-level docs), with no flattening or renaming, plus the
+four engine files at the root (`release.json`, `release.json.minisig`, `tree.json`,
+`.complete`; a bundle that contains any of these names is refused, §14 step 7). Executables
+are therefore at `releases/<T>/bin/`. Bundles hold regular files and directories only: the
+POSIX packaging dereferences symlinks (`scripts/release/package-local-binary-tarball.sh`,
+`cp -L`) and the Windows zip ships plain files. The launcher's path to `bin/ham-supervisor`
+is follow-up T10b.
 
 Permissions: `<data>/supervisor/`, `<state>/` and every snapshot are `0700` / owner-only
 (Windows: inherited per-user profile ACL, no explicit grant to others). Release trees are
@@ -414,7 +424,7 @@ network, channel, download, journal or manifest logic** (report §6.3). It write
 `<data>/launcher-status.json` (last decision, last supervisor exit, crash count) via atomic
 replace, for diagnostics.
 
-Supervisor start: `releases/<T>/ham-supervisor run --instance-root … --state-root …
+Supervisor start: `releases/<T>/bin/ham-supervisor[.exe] run --instance-root … --state-root …
 --launched-tree <T> --launch-mode normal|fallback`, with an inherited pipe (POSIX fd 3 /
 Windows inherited handle, number passed as `--ready-fd`). The supervisor must write
 `READY <T> <engine_version> <journal_schema>\n` once it holds the instance lock, has run J0
@@ -792,7 +802,8 @@ is in parentheses.
    `download_failed`). If `releases/<ver>-<d12>/` is already valid and undamaged, it is reused
    and nothing is downloaded (J5).
 7. Safe extraction into `.staging-<op_id>`: regular files and directories only; reject
-   absolute paths, `..`, symlinks, hard links, device files; total uncompressed ≤ 512 MiB,
+   absolute paths, `..`, symlinks, hard links, device files (bundles are packaged without
+   links, §3, so no exception is needed); total uncompressed ≤ 512 MiB,
    ≤ 10 000 entries (`archive_unsafe`). The limits are enforced while decompressing (own
    streaming inflater; a compression bomb stops at the cap). Also refused: Windows-unsafe
    names (`\`, `:`, `<>"|?*`, device names, trailing `.`/space), non-ASCII names, names
@@ -811,7 +822,7 @@ is in parentheses.
 9. Write `tree.json`, fsync every file and directory of the staging tree, then rename
    `.staging-<op_id>` → the tree name chosen by §4 (`<ver>-<d12>` or `-r<n>`) (W2, W3). Nothing has executed from it yet, and the
    tree is not valid (no `.complete`), so no pointer can name it.
-10. `--version` preflight of the tree's `ham-supervisor` and `ham-bridge`, run from the final
+10. `--version` preflight of the tree's `bin/ham-supervisor` and `bin/ham-bridge`, run from the final
     tree (must print the manifest version, 10 s timeout); wait until both processes have
     exited (Windows: process handles signalled). Failure (`preflight_failed`) deletes the
     tree again (W5); it never had `.complete`.

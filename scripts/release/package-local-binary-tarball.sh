@@ -66,7 +66,12 @@ trap cleanup EXIT
 stage="$work_dir/stage"
 mkdir -p "$stage/bin"
 mkdir -p "$stage/share/heimdall/extensions"
-cp -R -P -p extensions/. "$stage/share/heimdall/extensions/"
+# -L: dereference symlinks (e.g. extensions/antigravity/hooks.json ->
+# hooks/hooks.json) so the bundle holds regular files only. The supervisor's
+# extractor rejects every symlink and hard link (docs/specs/
+# bridge-supervisor-engine.md §14 step 7), and the Windows zip already ships
+# plain copies.
+cp -R -L -p extensions/. "$stage/share/heimdall/extensions/"
 install -m 0755 "$ham_bridge_out/bin/ham-bridge" "$stage/bin/ham-bridge"
 if [ -f "$ham_bridge_out/bin/openssl" ]; then
   install -m 0755 "$ham_bridge_out/bin/openssl" "$stage/bin/openssl"
@@ -303,6 +308,12 @@ cat > "$stage/METADATA.json" <<META
   "tls_dependency": "none: HTTPS and WSS use the statically linked pinned libcurl; socat and openssl are not required."
 }
 META
+
+links="$(find "$stage" -type l -print)"
+if [ -n "$links" ]; then
+  echo "error: staged bundle contains symlinks (the supervisor rejects them): $links" >&2
+  exit 1
+fi
 
 tarball="$out_dir/heimdall-local-$target.tar.gz"
 tar -C "$stage" -czf "$tarball" bin share README.md LICENSE METADATA.json

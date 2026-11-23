@@ -12,11 +12,15 @@ on:
     paths:
       - 'src/supervisor/fetch/**'
       - 'scripts/release/minisign/**'
+      - 'scripts/release/package-local-binary-tarball.sh'
+      - 'extensions/**'
       - '.github/workflows/supervisor-fetch.yml'
   pull_request:
     paths:
       - 'src/supervisor/fetch/**'
       - 'scripts/release/minisign/**'
+      - 'scripts/release/package-local-binary-tarball.sh'
+      - 'extensions/**'
       - '.github/workflows/supervisor-fetch.yml'
   workflow_dispatch:
 permissions:
@@ -49,6 +53,17 @@ jobs:
           mkdir -p "$out"
           # Stand-in binary for the --version preflight tests.
           nix develop -c odin build src/supervisor/fetch/testdata/fakever -vet -strict-style -out:"$out/fakever"
+          # A POSIX bundle from the real packaging script (stub binaries): it
+          # must hold no links and extract cleanly (test_real_release_bundles_extract).
+          bundles="$out/bundles"; stubs="$out/stubs"
+          rm -rf "$bundles" "$stubs"
+          for n in ham-bridge ham-ctl ham-pty-host; do
+            mkdir -p "$stubs/$n/bin"; printf '#!/bin/sh\necho stub\n' > "$stubs/$n/bin/$n"; chmod 755 "$stubs/$n/bin/$n"
+          done
+          case "$RUNNER_OS" in macOS) target=darwin-arm64 ;; *) target=linux-amd64 ;; esac
+          bash scripts/release/package-local-binary-tarball.sh "$target" 0.0.0 "$bundles" \
+            "$stubs/ham-bridge" "$stubs/ham-ctl" "$stubs/ham-pty-host"
+          export HEIMDALL_FETCH_REAL_BUNDLES="$bundles"
           HEIMDALL_FETCH_FAKEVER="$out/fakever" nix develop -c odin test src/supervisor/fetch \
             -collection:odin_test=src -vet -strict-style -out:"$out/supervisor-fetch"
 
@@ -77,11 +92,20 @@ jobs:
           "ODIN=$odin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: odin test
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $fake = Join-Path $env:RUNNER_TEMP 'fakever.exe'
           & $env:ODIN build src/supervisor/fetch/testdata/fakever -vet -strict-style "-out:$fake"
           if ($LASTEXITCODE -ne 0) { throw "fakever build failed ($LASTEXITCODE)" }
           $env:HEIMDALL_FETCH_FAKEVER = $fake
+          # The published Windows zip (v0.5.74) must extract cleanly
+          # (test_real_release_bundles_extract).
+          $bundles = Join-Path $env:RUNNER_TEMP 'bundles'
+          New-Item -ItemType Directory -Force $bundles | Out-Null
+          gh release download v0.5.74 -R $env:GITHUB_REPOSITORY -p 'heimdall-local-windows-amd64-v0.5.74.zip' -D $bundles
+          if ($LASTEXITCODE -ne 0) { throw "gh release download failed ($LASTEXITCODE)" }
+          $env:HEIMDALL_FETCH_REAL_BUNDLES = $bundles
           & $env:ODIN test src/supervisor/fetch -collection:odin_test=src -vet -strict-style "-out:$env:RUNNER_TEMP\supervisor-fetch.exe"
           if ($LASTEXITCODE -ne 0) { throw "odin test src/supervisor/fetch failed ($LASTEXITCODE)" }

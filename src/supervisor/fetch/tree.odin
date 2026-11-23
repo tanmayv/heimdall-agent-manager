@@ -33,8 +33,8 @@ RELEASE_SIG :: "release.json.minisig"
 // Executables run by the preflight, relative to the tree root (without the
 // Windows .exe suffix, added here). The tree is the bundle exactly as
 // archived (bin/, share/heimdall/extensions/, ...), so the binaries are in
-// bin/. PENDING user decision (T12 chat): if trees are flattened instead
-// (spec §3 / launcher SUPERVISOR_EXE at the root), this becomes the root.
+// bin/ (user decision 2026-11-23, spec §3: verbatim, no flattening; the
+// launcher's path follows in T10b).
 BIN_DIR :: "bin"
 DEFAULT_PREFLIGHT :: []string{BIN_DIR + "/ham-supervisor", BIN_DIR + "/ham-bridge"}
 
