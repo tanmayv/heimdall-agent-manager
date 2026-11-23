@@ -30,7 +30,7 @@ concurrency:
   cancel-in-progress: true
 env:
   # Packages under test; one `odin test` run each.
-  PACKAGES: src/supervisor/resolver src/supervisor/engine src/supervisor/procs src/supervisor/runtimectl
+  PACKAGES: src/supervisor/resolver src/supervisor/engine src/supervisor/procs src/supervisor/runtimectl src/supervisor/service
 jobs:
   unix:
     name: odin test (${{ matrix.os }})
@@ -53,6 +53,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.cache/heimdall-tests"
+          # src/supervisor/service installs test releases whose binaries are the fetch
+          # preflight helper (HEIMDALL_FETCH_FAKEVER, as in supervisor-fetch.yml).
+          nix develop -c odin build src/supervisor/fetch/testdata/fakever -vet -strict-style -out:"$HOME/.cache/heimdall-tests/fakever"
+          export HEIMDALL_FETCH_FAKEVER="$HOME/.cache/heimdall-tests/fakever"
           for pkg in $PACKAGES; do
             name="$(basename "$pkg")"
             nix develop -c odin test "$pkg" -collection:odin_test=src -vet \
@@ -86,6 +90,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $fake = Join-Path $env:RUNNER_TEMP 'fakever.exe'
+          & $env:ODIN build src/supervisor/fetch/testdata/fakever -vet -strict-style "-out:$fake"
+          if ($LASTEXITCODE -ne 0) { throw "fakever build failed ($LASTEXITCODE)" }
+          $env:HEIMDALL_FETCH_FAKEVER = $fake
           foreach ($pkg in $env:PACKAGES -split '\s+') {
             if (-not $pkg) { continue }
             $name = Split-Path $pkg -Leaf

@@ -1,0 +1,110 @@
+name: Supervisor e2e
+# T13b (REQ-OS-1): the real ham-launcher -> ham-supervisor (test build) -> fake runtime
+# against a fake GitHub on loopback (src/supervisor/e2e): first install via `repair`,
+# timer update that waits on a live session, commit, bad release rolled back + pinned,
+# orphan reap after a hard kill, graceful stop. Linux, macOS and Windows.
+on:
+  push:
+    branches: [main, 'heimdall/**', 'ci/**']
+    paths:
+      - 'src/supervisor/**'
+      - 'src/launcher/**'
+      - 'src/lib/httpc/**'
+      - 'src/lib/local_socket/**'
+      - 'scripts/supervisor/**'
+      - '.github/workflows/supervisor-e2e.yml'
+  pull_request:
+    paths:
+      - 'src/supervisor/**'
+      - 'src/launcher/**'
+      - 'src/lib/httpc/**'
+      - 'src/lib/local_socket/**'
+      - 'scripts/supervisor/**'
+      - '.github/workflows/supervisor-e2e.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: supervisor-e2e-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unix:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: build + run src/supervisor/e2e (flake-pinned Odin and libcurl)
+        shell: bash
+        run: nix develop -c scripts/supervisor/e2e.sh "$HOME/.cache/heimdall-tests/supervisor-e2e"
+
+  windows:
+    name: e2e (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      # Same pin as release-local-binaries.yml (windows job) and flake.nix.
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          $odin = Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe'
+          & $odin version
+          "ODIN=$odin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      # Same pinned static libcurl (Schannel) as the release build.
+      - name: Cache the pinned static libcurl
+        id: curl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libcurl-static
+          key: libcurl-static-windows-x64-${{ hashFiles('nix/libcurl-pin.json', 'scripts/windows/build-libcurl.ps1') }}
+      - name: Build the pinned static libcurl
+        if: ${{ steps.curl-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: scripts/windows/build-libcurl.ps1 -OutDir "$env:RUNNER_TEMP/libcurl-static"
+      - name: build + run src/supervisor/e2e
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'supervisor-e2e'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $src = (Resolve-Path src).Path -replace '\\', '/'
+          $pin = Get-Content -Raw nix/libcurl-pin.json | ConvertFrom-Json
+          $key = (Get-Content src/supervisor/testdata/e2e-test-key.pub)[1].Trim()
+          $curlLib = ((Resolve-Path "$env:RUNNER_TEMP/libcurl-static/lib").Path) -replace '\\', '/'
+          function Build($pkg, $exe, [string[]]$extra) {
+            & $env:ODIN build $pkg "-collection:odin_test=$src" "-out:$out\$exe" @extra
+            if ($LASTEXITCODE -ne 0) { throw "odin build $pkg failed ($LASTEXITCODE)" }
+          }
+          Build src/launcher ham-launcher.exe @()
+          Build src/supervisor ham-supervisor.exe @("-define:HAM_CURL_VERSION=$($pin.curl.version)", '-define:HEIMDALL_SUPERVISOR_TEST=true', "-define:HEIMDALL_TEST_PINNED_KEY=$key", "-extra-linker-flags:/LIBPATH:$curlLib")
+          Build src/supervisor/testdata/fakebridge fakebridge.exe @('-vet', '-strict-style')
+          & "$out\ham-supervisor.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "ham-supervisor --version failed ($LASTEXITCODE)" }
+          $env:HEIMDALL_E2E_BIN_DIR = $out
+          & $env:ODIN test src/supervisor/e2e "-collection:odin_test=$src" -vet -strict-style -define:ODIN_TEST_THREADS=1 "-out:$out\supervisor-e2e.exe"
+          if ($LASTEXITCODE -ne 0) { throw "supervisor e2e failed ($LASTEXITCODE)" }
