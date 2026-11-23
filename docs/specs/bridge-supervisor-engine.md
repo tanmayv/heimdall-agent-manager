@@ -202,7 +202,14 @@ Symlinks need Developer Mode or `SeCreateSymbolicLinkPrivilege`, and a junction 
 replaced atomically, so Windows uses records:
 
 - `current.json` / `previous.json` = `{"tree":"<ver>-<d12>","op_id":"…","seq":n,"crc32":"…"}`,
-  UTF-8, `crc32` over the canonical JSON without the `crc32` member.
+  UTF-8, `crc32` over the canonical JSON without the `crc32` member. **Canonical** (fixed by
+  T10, `src/launcher/core/records.odin` `pointer_record_canonical`): exactly
+  `{"tree":"<tree>","op_id":"<op_id>","seq":<n>}` — members in that order, no whitespace,
+  `seq` a non-negative decimal integer; `crc32` = IEEE CRC-32 of those bytes as 8 lowercase
+  hex digits. Tree names and op ids never need JSON escaping; a record whose strings contain
+  `"`, `\`, a control character or a space is invalid. Readers ignore member order and
+  whitespace in the file itself and recompute the canonical form from the values. Writers
+  (T13) use `pointer_record_encode` from the same package.
 - Switch: write `current.json.tmp-<op_id>`, `FlushFileBuffers`, close; `ReplaceFileW(
   current.json, tmp, NULL, REPLACEFILE_IGNORE_MERGE_ERRORS, …)`. If `current.json` does not
   exist yet, or `ReplaceFileW` fails with `ERROR_UNABLE_TO_MOVE_REPLACEMENT*`, use
@@ -409,18 +416,50 @@ supervisor runs GC (§15) and processes the inbox.
 ### 7.1 Inputs and contract
 
 `ham-launcher --instance-root <data> --state-root <state>`; nothing else. It reads only
-`instance.json` (to check owner), `current`, `previous`, `known-good.json`. It has **no
-network, channel, download, journal or manifest logic** (report §6.3). It writes only
-`<data>/launcher-status.json` (last decision, last supervisor exit, crash count) via atomic
-replace, for diagnostics.
+`instance.json` (to check owner), `current`, `previous`, `known-good.json`, the
+`release.json` of the trees they name (validity, §4: this build's target entry in
+`targets`), and its stop-request file (§7.3). It has **no network, channel, download,
+journal or manifest-signature logic** (report §6.3); its package (`src/launcher/core`)
+imports nothing beyond Odin `core`. It writes only `<data>/launcher-status.json` (state,
+last decision, last supervisor exit, crash count) via atomic replace, for diagnostics, and
+deletes a stop-request file it has consumed or found stale (§7.3).
+
+`instance.json` must have `schema` 1, a valid `instance_id` (`ins_` + 32 lowercase hex: it
+is used in Windows object names), an `owner` matching the effective uid / token user SID,
+and a `data_root` (and `state_root`, if present) equal to the launcher's arguments.
+Otherwise the launcher starts nothing, records `refused` with the reason, sleeps 60 s and
+exits 78.
 
 Supervisor start: `releases/<T>/ham-supervisor run --instance-root … --state-root …
 --launched-tree <T> --launch-mode normal|fallback`, with an inherited pipe (POSIX fd 3 /
 Windows inherited handle, number passed as `--ready-fd`). The supervisor must write
-`READY <T> <engine_version> <journal_schema>\n` once it holds the instance lock, has run J0
+`READY <T> <engine_version> <journal_schema>\n` (as the **first** line on the pipe; `<T>`
+must equal `--launched-tree`, the two numbers decimal; a first line that does not match is
+ignored and the launch times out) once it holds the instance lock, has run J0
 (orphan reaping), has taken the §7.6 decision and has finished journal recovery up to the
 point where it starts the runtime (§6.3), and within **30 s** (`T_ready`). A supervisor that
-exits 75 under §7.6 does so without writing READY.
+exits 75 under §7.6 does so without writing READY. `T_ready` applies to **every** launch,
+including `C == K` and fallback starts: a supervisor that has not written READY after 30 s is
+terminated and handled as a crash (restart with backoff, or the §7.2 fallback while `C` is
+unproven).
+
+On POSIX the READY pipe's write end is fd 3 (`--ready-fd 3`) and the launcher closes every
+other descriptor above 2 in the child before `exec`; the supervisor runs in its own process
+group (Linux: also `PR_SET_PDEATHSIG(SIGKILL)` with the `getppid()` race check). On Windows
+`--ready-fd` is the decimal value of the inherited pipe handle, which, with the three
+standard handles, is the only handle passed (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`); the
+supervisor is created suspended, assigned to the launcher's `KILL_ON_JOB_CLOSE` job, then
+resumed (a failed assignment terminates it: no supervisor ever runs outside the job).
+
+Long-lived loops reset temporary memory every iteration (the watch loop of a running
+supervisor, backoff and refuse waits), so a launcher that supervises one healthy
+supervisor for weeks does not grow.
+
+Crash backoff (`C == K`, fallback, or no better tree): 1 s doubling to 5 min; the streak
+resets after a run that was READY for at least 60 s, after an exit 75 and when a fallback
+starts. Exit 75 never counts as a crash, but after more than three consecutive exit-75
+restarts the launcher waits 1 s before each further start so a supervisor that only hands
+over cannot spin.
 
 Supervisor exit codes the launcher understands:
 
@@ -457,7 +496,7 @@ loop:
         now ≥ deadline[C]               → fail (hang or endless probation)
       fail: terminate C's job / process group, wait for exit,
             if P != none and P != C: fallback_flag = true, clear deadline{}, goto loop
-            else restart C with backoff (no better tree exists)
+            else delete deadline[C]; restart C with backoff (no better tree exists; it gets a fresh T_commit)
 ```
 
 - **Deadline lifetime.** The `deadline` map is cleared (all entries) whenever the launcher
@@ -465,7 +504,11 @@ loop:
   starts. A deadline therefore survives only the exit-75 handover chain of a single
   activation; a tree that becomes unproven `current` again later (e.g. `retry_failed`,
   `install_version` or `rollback_to_previous` back to a tree that failed earlier in the same
-  launcher lifetime) gets a fresh `T_commit`.
+  launcher lifetime) gets a fresh `T_commit`. When an unproven `C` fails and no other tree
+  exists (`P` none or `P == C`), its entry is deleted before the restart, so the restarted
+  supervisor gets a fresh `T_commit`; keeping the expired one would kill every restart
+  before it could READY (T10 review). Such an instance keeps restarting `C` with backoff
+  while it never commits; status shows the repeated `Commit_Deadline`.
 - `T_commit` = `T_ready` (30 s) + runtime ready (60 s) + probation (120 s) + margin (60 s) =
   **270 s** from launch (§19). Probation restarts after a clean suspend (J16a) happen in a
   new launcher process, so they get a new deadline.
@@ -490,12 +533,28 @@ loop:
   tree dies, and nothing of another instance is in that job. Because a hard end cannot be
   graceful, Windows has an explicit **graceful stop path**, used before any hard end:
   - **Stop event.** The launcher creates the named event
-    `Local\heimdall-launcher-stop-<instance_id>` (same-session namespace, default DACL of
-    the owning user). Setting it is the graceful stop: the launcher forwards it to the
-    supervisor (a second event `…-supervisor-stop-<instance_id>` that the supervisor waits
-    on) and waits up to 20 s for the supervisor to exit, then exits 0. `ham-bridge setup`,
+    `Local\heimdall-launcher-stop-<instance_id>` (manual reset, same-session namespace,
+    default DACL of the owning user). Setting it is the graceful stop: the launcher forwards
+    it to the supervisor through a second manual-reset event
+    `Local\heimdall-supervisor-stop-<instance_id>`, which the launcher creates and resets
+    before every supervisor start and the supervisor opens (`SYNCHRONIZE`) and waits on,
+    and waits up to 20 s for the supervisor to exit, then exits 0. `ham-bridge setup`,
     the uninstaller and the app must set this event and wait for the launcher to exit
     (≤ 25 s) **before** calling `schtasks /End`; `schtasks /End` is only the fallback.
+    The launcher resets the stop event when it starts (opening an existing named event
+    keeps its signalled state), so a set event left over from stopping the previous
+    launcher never stops the next one; callers close their handle once the launcher has
+    exited.
+  - **Stop-request file (every OS; T9 review carry-over (a)).** `Local\` objects are per
+    logon session, so a caller in another session (setup over SSH, a headless install, a
+    service) cannot open the stop event. Such a caller writes
+    `<data>/supervisor/launcher-stop.request` = `{"instance_id":"<id>","requested_at":<unix>}`
+    (temp file + rename) and waits for the launcher to exit (≤ 25 s) before the hard end.
+    The launcher polls it every ~0.5 s and honours it only when `instance_id` matches and
+    `requested_at` ≥ the launcher's own start time (whole seconds); it then deletes the file
+    and stops exactly as for the stop event. A file present at launcher start that is older
+    or names another instance is deleted unread, so a request left behind by a crashed
+    caller can never stop a later launcher. On POSIX the file is equivalent to SIGTERM.
   - **Logoff / shutdown.** The launcher creates a hidden top-level window (not
     message-only, which receives no session messages) and a console control handler. On
     `WM_QUERYENDSESSION` / `WM_ENDSESSION` or `CTRL_LOGOFF_EVENT` / `CTRL_SHUTDOWN_EVENT` it
@@ -507,6 +566,14 @@ loop:
     (`src/lib/bridgesvc/render.odin:146-157`) is a **HYPOTHESIS**; T10 must verify it on
     Windows. If it does not hold, logoff and reboot during probation are unclean stops on
     Windows and count toward the 3-attempt limit (J16), and §18 tests them as such.
+    **T10 result:** the handlers are implemented (window class `HeimdallLauncherSession`,
+    title `heimdall-launcher-<instance_id>`; `CTRL_LOGOFF/SHUTDOWN_EVENT` → same path;
+    `CTRL_C/BREAK/CLOSE` → graceful stop) and a CI test drives them with synthetic
+    `WM_QUERYENDSESSION` / `WM_ENDSESSION` messages (supervisor stopped through its event,
+    launcher exit 0). Delivery of **real** session-end notifications to a launcher started by
+    the Scheduled Task was **not** verified: a hosted runner has no interactive session to
+    log off. Until it is verified on a real Windows logon session, T15 must treat
+    logoff/reboot during probation as **unclean** on Windows.
 - macOS: LaunchAgent `KeepAlive.SuccessfulExit=false` (today, `render.odin:127`) restarts the
   launcher only on non-zero exit, matching 7.1.
 
@@ -841,7 +908,7 @@ setup, never by the scripts.
 | READY pipe | fd 3 | fd 3 | inherited handle |
 | Orphan prevention (§2.1) | lifeline pipe + `PR_SET_PDEATHSIG` + J0 reap | lifeline pipe + J0 reap (no parent-death signal) | lifeline pipe + job `KILL_ON_JOB_CLOSE` + J0 reap |
 | File-in-use | rules W1–W9 apply (harmless) | same | **required** |
-| Graceful stop | SIGTERM from systemd | SIGTERM from launchd | named stop event (setup/app/uninstaller), session-end notifications (HYPOTHESIS, verify in T10); `schtasks /End` = crash |
+| Graceful stop | SIGTERM from systemd; stop-request file | SIGTERM from launchd; stop-request file | named stop event (same session) or stop-request file (any session) from setup/app/uninstaller; session-end notifications (handler tested synthetically in T10, real delivery unverified → unclean); `schtasks /End` = crash |
 | OS signature | none (minisign only) | Developer ID + Team ID (T8) | Authenticode publisher (T8) |
 | Unverified assumptions (verify in T15 before relying on them) | `/var/home` btrfs atomic symlink rename on Atomic | quarantine xattr on self-downloads; launchd restart semantics with exit 78 | `ReplaceFileW` under Defender real-time scanning; nested job objects inside the Task Scheduler job (report F12); rename-once of staging while Defender scans |
 
