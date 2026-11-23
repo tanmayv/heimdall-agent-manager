@@ -240,7 +240,8 @@ real_scenario :: proc(t: ^testing.T, which: Real_Case) {
 		// Close after the first forward; the next gate sees the durable closure.
 		fixture_set(f, id, "forwarded", 1, "2000-01-01T00:00:00Z")
 		uow, ok, _ := iface.unit_of_work_begin(&f.factory); assert(ok)
-		testing.expect(t, expire(f.s, &uow, id))
+		closed,expiry_err:=expire(f.s,&uow,id)
+ testing.expect(t,closed && expiry_err.code==.None)
 		_, _ = iface.unit_of_work_commit(&uow)
 		time.sleep(2500 * time.Millisecond)
 		testing.expect_value(t, fixture_frames(f), 1)

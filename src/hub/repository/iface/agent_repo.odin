@@ -49,6 +49,7 @@ Agent_Set_Stop_Reason_Proc :: proc(ctx: rawptr, instance_id, reason: string) -> 
 Agent_Save_Instance_Guarded_Proc :: proc(ctx: rawptr, instance: domain.Agent_Instance, expect_run_count: int, expect_launch_epoch: string, expect_configuration_revision: int) -> (saved: domain.Agent_Instance, updated: bool, err: domain.Domain_Error)
 
 Agent_Repository :: struct {
+ list_action_instances: proc(ctx:rawptr,owner:domain.User_ID,agent_id,bridge_id:string)->([]domain.Agent_Instance,domain.Domain_Error),
 	update_token_usage: Agent_Update_Token_Usage_Proc,
 	add_token_totals: Agent_Add_Token_Totals_Proc,
 	runtime_busy:Agent_Runtime_Busy_Proc,

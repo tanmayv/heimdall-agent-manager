@@ -40,7 +40,7 @@ Replace_Why :: enum {
 Sink :: struct {
 	ctx:         rawptr,
 	kind:        string,
-	on_final:    proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery),
+	on_final:    proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> domain.Domain_Error,
 	still_valid: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> bool,
 	replace:     proc(
 		ctx: rawptr,
@@ -249,7 +249,9 @@ close_delivery :: proc(
 	changed, err := repo.transition(repo.ctx, next, d.state)
 	if err.code != .None || !changed do return false, err
 	sink := find_sink(s, d.kind)
-	if sink.on_final != nil do sink.on_final(sink.ctx, uow, next)
+	if sink.on_final != nil {
+		if err := sink.on_final(sink.ctx, uow, next); err.code != .None do return false, err
+	}
 	_ = iface.unit_of_work_after_commit(uow, {
 		ctx = s,
 		run = proc(ctx: rawptr) {prune_after_final((^Service)(ctx))},
@@ -257,14 +259,13 @@ close_delivery :: proc(
 	return true, {}
 }
 
-expire :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, delivery_id: string) -> bool {
-	repo := &uow.repos.pipeline_deliveries
-	d, found, err := repo.get(repo.ctx, delivery_id)
-	if err.code != .None || !found do return false
-	defer domain.pipeline_delivery_destroy(&d)
-	if d.expires_at > platform.clock_now(s.clock) do return false
-	closed, close_err := close_delivery(s, uow, d, domain.DELIVERY_FAILED, "bridge_offline", "")
-	return closed && close_err.code == .None
+expire :: proc(s:^Service,uow:^iface.Unit_Of_Work,delivery_id:string)->(bool,domain.Domain_Error) {
+ repo:=&uow.repos.pipeline_deliveries
+ d,found,err:=repo.get(repo.ctx,delivery_id)
+ defer domain.pipeline_delivery_destroy(&d)
+ if err.code!=.None do return false,err
+ if !found || d.expires_at>platform.clock_now(s.clock) do return false,{}
+ return close_delivery(s,uow,d,domain.DELIVERY_FAILED,"bridge_offline","")
 }
 
 prune :: proc(s: ^Service) {

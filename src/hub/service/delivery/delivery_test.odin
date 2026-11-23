@@ -38,6 +38,7 @@ Fixture :: struct {
 	finals, ids_next, offline_send, invalid_at_send, incapable, invalid_sink, replace_calls: i32,
 	replace_enabled:                                                                         bool,
 	last_replace_why:                                                                        Replace_Why,
+	fail_final_callback: bool,
 	fail_replace_after_route:                                                                bool,
 	now_ms:                                                                                  i64,
 }
@@ -64,9 +65,11 @@ fixture_clock :: proc(ctx: rawptr) -> string {
 	if ms == 0 do return platform.format_rfc3339_utc(time.now())
 	return platform.format_rfc3339_utc(time.Time{_nsec = ms * 1_000_000})
 }
-fixture_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) {
+fixture_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> domain.Domain_Error {
 	f := (^Fixture)(ctx)
+	if f.fail_final_callback do return domain.domain_error(.Internal_Error, "injected final callback failure")
 	sync.atomic_add(&f.finals, 1)
+	return {}
 }
 fixture_valid :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> bool {
 	return sync.atomic_load(&((^Fixture)(ctx)).invalid_sink) == 0

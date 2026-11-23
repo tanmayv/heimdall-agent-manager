@@ -54,7 +54,10 @@ test_pipeline_never_reads_stopped_by :: proc(t: ^testing.T) {
 		}
 	}
 	root := filepath.dir(strings.trim_right(#directory, "/"))
-	start_path := strings.concatenate({root, "/agent/start_begin.odin"}, context.temp_allocator)
+	action_entries,action_err:=os.read_all_directory_by_path(strings.concatenate({root,"/actions"},context.temp_allocator),context.temp_allocator)
+ testing.expect(t,action_err==nil)
+ for entry in action_entries do if strings.has_suffix(entry.name,".odin") && !strings.has_suffix(entry.name,"_test.odin") do pipeline_check_stop_reads(t,entry.fullpath)
+ start_path := strings.concatenate({root, "/agent/start_begin.odin"}, context.temp_allocator)
 	if _, stat_err := os.stat(start_path, context.temp_allocator); stat_err == nil {
 		pipeline_check_stop_reads(t, start_path)
 	}

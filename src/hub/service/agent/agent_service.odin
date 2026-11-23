@@ -2635,3 +2635,11 @@ agent_launchable :: proc(ps:^placement.Service,agent_id,bridge_id,provider,model
  if resolved.model!=model do canonical=strings.clone(resolved.model,context.temp_allocator)
  return {provider=provider,model=canonical},true,{}
 }
+
+// Action routing reads only this owner/agent/bridge partition, with no page cap.
+list_action_instances :: proc(service:^Agent_Service,auth:contracts.Auth_Context,agent_id,bridge_id:string)->([]domain.Agent_Instance,domain.Domain_Error) {
+ owner,ok,err:=ownership.owner_from_auth(auth)
+ if !ok do return nil,err
+ if service.agents.list_action_instances==nil do return nil,domain.domain_error(.Internal_Error,"action instance lookup unavailable")
+ return service.agents.list_action_instances(service.agents.ctx,owner,agent_id,bridge_id)
+}

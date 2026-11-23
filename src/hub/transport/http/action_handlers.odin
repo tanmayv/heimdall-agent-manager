@@ -3,6 +3,7 @@ package http
 
 import "core:encoding/json"
 import "core:time"
+import "core:strconv"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
@@ -13,6 +14,7 @@ import schedule "odin_test:lib/schedule"
 Action_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
 	service: ^actions.Service,
+ router:^actions.Router,
 	experiments: ^iface.Experiment_Repository,
 }
 action_route_auth :: proc(h:^Action_Handlers,req:Request) -> (string,bool,Response) {
@@ -171,4 +173,34 @@ action_error :: proc(err:domain.Domain_Error,request_id:string) -> Response {
 	e:=err
 	if e.code==.Validation_Failed do e.code=.Unprocessable_Entity
 	return respond_error(e,request_id)
+}
+
+list_action_runs_handler :: proc(ctx:rawptr,req:Request)->Response {
+ h:=(^Action_Handlers)(ctx)
+ owner,ok,response:=action_route_auth(h,req)
+ if !ok do return response
+ limit:=50
+ if text:=query_value(req.query,"limit"); text!="" {
+  n,valid:=strconv.parse_int(text)
+  if !valid || n<1 || n>200 do return action_error(domain.domain_error(.Validation_Failed,"limit must be 1..200"),req.request_id)
+  limit=n
+ }
+ if h.router==nil do return action_error(domain.domain_error(.Internal_Error,"actions router unavailable"),req.request_id)
+ rows,err:=actions.list_runs(h.router,owner,path_part(req.path,4),limit,query_value(req.query,"before"))
+ defer actions.run_views_destroy(rows)
+ if err.code!=.None do return action_error(err,req.request_id)
+ values:=make(json.Array,len(rows),context.temp_allocator)
+ for row,i in rows {
+  run:=row.run
+  obj:=action_json_object()
+  obj["id"]=run.run_id; obj["trigger_id"]=run.trigger_id;obj["event_type"]=run.event_type
+  obj["event_id"]=run.event_id;obj["state"]=run.state;obj["reason"]=run.reason
+  obj["not_before"]=run.not_before;obj["joined_run_id"]=run.joined_run_id
+  obj["joined_count"]=json.Integer(row.joined_count);obj["rule_position"]=json.Integer(run.rule_position)
+  obj["target_instance_id"]=run.target_instance_id;obj["message_id"]=run.message_id;obj["delivery_id"]=run.delivery_id
+  obj["delivery_expires_at"]=row.delivery_expires_at
+  obj["created_at"]=run.created_at;obj["started_at"]=run.started_at;obj["finished_at"]=run.finished_at
+  values[i]=obj
+ }
+ return action_response(req,values)
 }

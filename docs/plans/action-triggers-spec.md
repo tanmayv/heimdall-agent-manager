@@ -1644,7 +1644,7 @@ Sink :: struct {
 	ctx:  rawptr,
 	kind: string,
 	// The delivery is final: d.state is done or failed. Called exactly once per delivery.
-	on_final:    proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery),
+	on_final:    proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> domain.Domain_Error,
 	// May d still be forwarded? nil = always. Example: the lease is still held and unconfirmed.
 	still_valid: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> bool,
 	// Try to place d on another machine. nil = this kind never moves. The flow calls delivery.route with
@@ -1673,7 +1673,7 @@ route :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, input: Route_Input) -> (del
 
 // Closes the delivery as failed/bridge_offline when it is open and expires_at <= now. closed = true when it did.
 // Calls the kind's on_final inside uow.
-expire :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool)
+expire :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool, err: domain.Domain_Error)
 
 // Hooks. Each opens its own unit of work(s). None waits for a bridge answer.
 on_bridge_online  :: proc(s: ^Service, bridge_id: string)                          // after a successful hello
@@ -2371,7 +2371,7 @@ Plan :: struct {
 Route_Port :: struct {
 	ctx:    rawptr,
 	route:  proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, input: delivery.Route_Input) -> (delivery_id: string, err: domain.Domain_Error),
-	expire: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool),
+	expire: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool, err: domain.Domain_Error),
 }
 
 Router :: struct {
@@ -2462,7 +2462,7 @@ Agent_Port :: struct {
 	// Stores the prompt as a user_to_agent chat message with message_type "action", inside uow. Rows only.
 	persist_prompt: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, owner, conversation_id, body, metadata_json: string) -> (message_id: string, err: domain.Domain_Error),
 	// Marks one chat message read and records in its metadata that the prompt moved (6.13.5), inside uow. Rows only.
-	retire_prompt:  proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, owner, message_id, moved_to_instance_id: string),
+	retire_prompt:  proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, owner, message_id, moved_to_instance_id: string) -> domain.Domain_Error,
 }
 ```
 
@@ -2497,10 +2497,10 @@ Every call passes `Requirements.features = {contracts.BRIDGE_FEATURE_EVENT_PIPEL
 
 ```odin
 // src/hub/service/actions/router.odin — registered at wiring as the delivery.Sink of kind "prompt"
-on_delivery_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery)
+on_delivery_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> domain.Domain_Error
 on_delivery_replace :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: delivery.Replace_Why) -> (bool, domain.Domain_Error)
 // Closes the action's open run if its delivery has expired (6.8.4). Rows only.
-expire_open_run :: proc(r: ^Router, uow: ^iface.Unit_Of_Work, action_id: domain.Action_ID)
+expire_open_run :: proc(r: ^Router, uow: ^iface.Unit_Of_Work, action_id: domain.Action_ID) -> (bool, domain.Domain_Error)
 ```
 
 `on_delivery_final`: the run id is the text after `run:` in `d.ref`. Load the run. If it is not `routed`, or `run.delivery_id != d.delivery_id`, do nothing (the report is stale). Otherwise `run_transition` from `routed`:
@@ -2513,6 +2513,8 @@ expire_open_run :: proc(r: ^Router, uow: ^iface.Unit_Of_Work, action_id: domain.
 Then `runs_prune(action, 200, now - 30 days)`. The sink does not call `drain_due`: joined matches never route by themselves, and the next match opens a new run.
 
 The sink's `still_valid` is nil: a prompt delivery is valid until it expires.
+
+Coordinator rulings (T10): finalization and prompt retirement return Domain_Error; delivery.expire, Route_Port.expire and expire_open_run return (bool, Domain_Error), and matcher/history roll back on expiry errors. Options additionally clones/frees creds_file and ca_file from the relay configuration. New owner+agent+bridge instance and owner+instance conversation service/iface/SQLite lookups are used only by T10 adapters, with CREATE INDEX IF NOT EXISTS indexes; legacy capped methods remain unchanged. The pipeline propagates finalization errors from close_delivery; replacement propagates retirement errors. Both roll back the caller transaction, preventing terminal deliveries or partial replacements after failed run/metadata writes.
 
 #### 6.13.5 Placing a prompt again
 
@@ -3480,7 +3482,7 @@ subject_matches :: proc(filter, subject: string) -> bool               // pure
 data_matches    :: proc(filter_json: string, data: json.Object) -> bool // pure
 
 // runtime.odin
-Options :: struct { nats_url: string, max_deliver: int } // cloned into the heap by start
+Options :: struct { nats_url, creds_file, ca_file: string, max_deliver: int } // cloned into the heap by start
 Runtime :: struct { svc: ^Service, router: Router, options: Options, thread: ^thread.Thread, stop_flag: i32 /* atomic */,
 	skipped_owner_mismatch, terminated: i64 /* atomic counters */ }
 start :: proc(r: ^Runtime, svc: ^Service, router: Router, options: Options) -> bool

@@ -338,3 +338,34 @@ downgrade_replace_scenario :: proc(t: ^testing.T) {
 	iface.unit_of_work_rollback(&uow)
 	testing.expect(t, find_forwarder(f.s, "brg_one").worker == nil)
 }
+
+@(test)
+test_final_callback_error_rolls_back_delivery :: proc(t: ^testing.T) {
+ review_tracking(t, final_callback_error_scenario)
+}
+final_callback_error_scenario :: proc(t: ^testing.T) {
+ for succeeded in ([2]bool{true, false}) {
+  f := fixture_new(t, false)
+  id := fixture_route(t, f)
+  fixture_set(f, id, "forwarded")
+  on_bridge_online(f.s, "brg_one")
+  f.fail_final_callback = true
+  body := `{"status":"succeeded"}` if succeeded else `{"status":"failed","class":"fatal"}`
+  on_command_result(f.s, "brg_one", fmt.tprintf("%s:1", id), body)
+  d := fixture_get(f, id)
+  testing.expect_value(t, d.state, "forwarded")
+  domain.pipeline_delivery_destroy(&d)
+  answers := take_answers(find_forwarder(f.s, "brg_one"))
+  testing.expect_value(t, len(answers), 0)
+  free_answers(answers)
+  testing.expect_value(t, sync.atomic_load(&f.finals), i32(0))
+  f.fail_final_callback = false
+  on_command_result(f.s, "brg_one", fmt.tprintf("%s:1", id), body)
+  d = fixture_get(f, id)
+  testing.expect_value(t, d.state, "done" if succeeded else "failed")
+  domain.pipeline_delivery_destroy(&d)
+  testing.expect_value(t, sync.atomic_load(&f.finals), i32(1))
+  delete(id)
+  fixture_destroy(f)
+ }
+}

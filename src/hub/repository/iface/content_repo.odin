@@ -35,6 +35,7 @@ Content_Delete_Template_Proc :: proc(ctx: rawptr, template_id: string, owner_use
 Content_List_Conversation_Project_Links_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Conversation_Project_Link, domain.Domain_Error)
 
 Content_Repository :: struct {
+ action_conversation: proc(ctx:rawptr,owner:domain.User_ID,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error),
 	get_assistant_turn: Content_Get_Assistant_Turn_Proc,
 	save_assistant_turn: Content_Save_Assistant_Turn_Proc,
 	ctx: rawptr,

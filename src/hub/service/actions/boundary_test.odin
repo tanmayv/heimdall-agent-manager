@@ -41,3 +41,19 @@ actions_scan_imports :: proc(t:^testing.T, dir:string, own_package:bool) -> int 
 	return count
 }
 
+
+@(test)
+test_matcher_and_router_name_no_kind :: proc(t:^testing.T) {actions_track(t,matcher_router_kind_boundary)}
+matcher_router_kind_boundary :: proc(t:^testing.T) {
+ for name in ([]string{"matcher.odin","router.odin"}) {
+  path:=strings.concatenate({#directory,"/",name},context.temp_allocator)
+  data,err:=os.read_entire_file(path,context.temp_allocator)
+  if !testing.expect(t,err==nil) do continue
+  for line in strings.split_lines(string(data),context.temp_allocator) {
+   if strings.has_prefix(strings.trim_space(line),"//") do continue
+   if strings.contains(line,"\"schedule\"") || strings.contains(line,"\"event\"") {
+    testing.expect(t,strings.contains(line,"cause"),line)
+   }
+  }
+ }
+}

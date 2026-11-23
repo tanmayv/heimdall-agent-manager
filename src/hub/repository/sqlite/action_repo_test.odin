@@ -132,7 +132,7 @@ actions_matching_keys :: proc(t: ^testing.T, repo: iface.Action_Repository, conn
 }
 actions_query_plans_scenario :: proc(t: ^testing.T) {actions_repo_test(t, actions_index_plans)}
 actions_index_plans :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: ^Conn) {
-	queries := [?]string{ACTIONS_SQL_TRIGGERS_MATCH,ACTIONS_SQL_GET,ACTIONS_SQL_RUN_OPEN,ACTIONS_SQL_RUN_INSERT,ACTIONS_SQL_RUNS_PRUNE,ACTIONS_SQL_RUNS_DUE,ACTIONS_SQL_RUNS_DEFERRED,ACTIONS_SQL_RUN_LAST_STARTED_AT,ACTIONS_SQL_RULES_LIST}
+	queries := [?]string{ACTIONS_SQL_TRIGGERS_MATCH,ACTIONS_SQL_GET,ACTIONS_SQL_RUN_OPEN,ACTIONS_SQL_RUN_INSERT,ACTIONS_SQL_RUNS_PRUNE,ACTIONS_SQL_RUNS_DUE,ACTIONS_SQL_RUNS_DEFERRED,ACTION_INSTANCE_LOOKUP_SQL,ACTION_CONVERSATION_LOOKUP_SQL,ACTIONS_SQL_RUN_LAST_STARTED_AT,ACTIONS_SQL_RULES_LIST}
 	for query in queries {
 		stmt: sqlite3_stmt
 		sql := strings.concatenate({"EXPLAIN QUERY PLAN ",query},context.temp_allocator)
@@ -146,4 +146,3 @@ actions_index_plans :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: 
 		sqlite3_finalize(stmt)
 	}
 }
-

@@ -9,6 +9,8 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import actions "odin_test:hub/service/actions"
+import delivery "odin_test:hub/service/delivery"
+import platform "odin_test:hub/platform"
 import placement "odin_test:hub/service/placement"
 import provider "odin_test:hub/service/provider"
 
@@ -260,4 +262,85 @@ action_api_validation :: proc(t:^testing.T,f:^Action_API_Fixture) {
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	testing.expect_value(t,len(rows),0)
 	testing.expect_value(t,action_api_backlog(t,f),i64(0))
+}
+
+@(test)
+test_runs_endpoint :: proc(t:^testing.T) {action_api_test(t,action_runs_scenario)}
+action_runs_expire :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,id:string)->(bool,domain.Domain_Error) {
+ return delivery.expire((^delivery.Service)(ctx),uow,id)
+}
+action_runs_data :: proc(t:^testing.T,response:Response)->json.Array {
+ if !testing.expect(t,response.status==200,response.body) do return nil
+ value:json.Value
+ if !testing.expect(t,json.unmarshal_string(response.body,&value,.JSON,context.temp_allocator)==nil) do return nil
+ object,_:=value.(json.Object);array,_:=object["data"].(json.Array)
+ return array
+}
+action_runs_scenario :: proc(t:^testing.T,f:^Action_API_Fixture) {
+ impl:sqlite.Pipeline_Delivery_Repo_SQLite
+ f.repos.pipeline_deliveries=sqlite.new_pipeline_delivery_repository(&impl,&f.wire.conn)
+ router:=actions.Router{factory=f.service.factory,clock=f.service.clock,ids=f.service.ids}
+ pipeline:=delivery.Service{factory=f.service.factory,clock=f.service.clock,ids=f.service.ids}
+ delivery.register_sink(&pipeline,{kind="prompt",ctx=&router,on_final=actions.on_delivery_final})
+ defer delete(pipeline.sinks)
+ router.pipeline={ctx=&pipeline,expire=action_runs_expire}
+ f.handlers.router=&router
+ response:=create_action_handler(&f.handlers,action_api_request(f,"POST","/api/v1/actions",action_api_base_body(f)))
+ data:=action_api_data(t,response,201);id,_:=data["id"].(string)
+ if id=="" do return
+ now:=platform.clock_now(f.service.clock)
+ at1,_:=platform.expires_at_after_seconds_from(now,1)
+ at2,_:=platform.expires_at_after_seconds_from(now,2)
+ at3,_:=platform.expires_at_after_seconds_from(now,3)
+ repo:=&f.repos.actions
+ runs:=[3]domain.Action_Run{
+  {run_id="run1",action_id=domain.Action_ID(id),owner_user_id=f.wire.owner,occurrence_key="occ1",state="delivered",event_params_json="{}",created_at=at1,finished_at=at1},
+  {run_id="run2",action_id=domain.Action_ID(id),owner_user_id=f.wire.owner,occurrence_key="occ2",state="routed",event_params_json="{}",created_at=at2,started_at=at2,delivery_id="dlv_history"},
+  {run_id="run3",action_id=domain.Action_ID(id),owner_user_id=f.wire.owner,occurrence_key="occ3",state="joined",event_params_json="{}",created_at=at3,finished_at=at3,joined_run_id="run2"}}
+ for run in runs {
+  inserted,err:=repo.run_insert(repo.ctx,run);testing.expect(t,inserted && err.code==.None)
+ }
+ uow,ok,_:=iface.unit_of_work_begin(f.service.factory);assert(ok)
+ testing.expect_value(t,uow.repos.pipeline_deliveries.insert(uow.repos.pipeline_deliveries.ctx,{delivery_id="dlv_history",kind="prompt",owner_user_id=string(f.wire.owner),
+  bridge_id=f.wire.bridge_pin,agent_instance_id=f.wire.instance_id,ref="run:run2",state="routed",excluded_bridges_json="[]",expires_at="2099-01-01T00:00:00Z",created_at=now,updated_at=now}).code,domain.Error_Code.None)
+ _,_=iface.unit_of_work_commit(&uow)
+ path:=strings.concatenate({"/api/v1/actions/",id,"/runs"},context.temp_allocator)
+ request:=action_api_request(f,"GET",path,"")
+ array:=action_runs_data(t,list_action_runs_handler(&f.handlers,request))
+ if testing.expect_value(t,len(array),3) {
+  first,_:=array[0].(json.Object);second,_:=array[1].(json.Object);last,_:=array[2].(json.Object)
+  first_id,_:=first["id"].(string);testing.expect_value(t,first_id,"run3")
+  state,_:=second["state"].(string);testing.expect_value(t,state,"routed")
+  count,_:=second["joined_count"].(json.Integer);testing.expect_value(t,count,json.Integer(1))
+  state,_=last["state"].(string);testing.expect_value(t,state,"delivered")
+ }
+ request.query="limit=1"
+ array=action_runs_data(t,list_action_runs_handler(&f.handlers,request));testing.expect_value(t,len(array),1)
+ request.query=strings.concatenate({"before=",at3},context.temp_allocator)
+ array=action_runs_data(t,list_action_runs_handler(&f.handlers,request));testing.expect_value(t,len(array),2)
+ request.query="limit=0";testing.expect_value(t,list_action_runs_handler(&f.handlers,request).status,422)
+ uow,ok,_=iface.unit_of_work_begin(f.service.factory);assert(ok)
+ d,_,_:=uow.repos.pipeline_deliveries.get(uow.repos.pipeline_deliveries.ctx,"dlv_history")
+ d.expires_at="2000-01-01T00:00:00Z"
+ changed,e:=uow.repos.pipeline_deliveries.transition(uow.repos.pipeline_deliveries.ctx,d,"routed")
+ testing.expect(t,changed && e.code==.None);_,_=iface.unit_of_work_commit(&uow)
+ request.query=""
+ array=action_runs_data(t,list_action_runs_handler(&f.handlers,request))
+ found:=false
+ for entry in array {
+  object,_:=entry.(json.Object)
+  row_id,_:=object["id"].(string)
+  if row_id=="run2" {
+   state,_:=object["state"].(string);reason,_:=object["reason"].(string)
+   testing.expect(t,state=="failed" && reason=="bridge_offline");found=true
+  }
+ }
+ testing.expect(t,found)
+ foreign_action:=domain.Action{id="foreign_action",owner_user_id="other",name="Foreign",prompt_text="hello",target_kind="instance",instance_strategy="reuse",enabled=true,min_interval_s=30}
+ testing.expect_value(t,repo.save(repo.ctx,foreign_action).code,domain.Error_Code.None)
+ request=action_api_request(f,"GET","/api/v1/actions/foreign_action/runs","")
+ testing.expect_value(t,list_action_runs_handler(&f.handlers,request).status,404)
+ (^Action_API_Experiment)(f.handlers.experiments.ctx).enabled=false
+ request=action_api_request(f,"GET",path,"")
+ testing.expect_value(t,list_action_runs_handler(&f.handlers,request).status,403)
 }

@@ -454,6 +454,19 @@
               odin test src/hub/repository/sqlite -collection:odin_test=src -define:ODIN_TEST_NAMES=test_event_outbox_transactions -out:$out/bin/outbox-tests
             '';
           };
+          actions-runtime = pkgs.stdenv.mkDerivation {
+            name = "check-actions-runtime";
+            src = ./.;
+            nativeBuildInputs = [ (mkOdin pkgs) pkgs.nats-server ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
+            buildInputs = [ (hamNatsFor pkgs) pkgs.openssl pkgs.sqlite ];
+            dontConfigure = true;
+            dontInstall = true;
+            buildPhase = ''
+              mkdir -p $out/bin
+              odin test src/hub/service/actions -collection:odin_test=src -define:ODIN_TEST_THREADS=1 -keep-executable -out:$out/bin/actions-tests
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/actions-tests"}
+            '';
+          };
           delivery-pipeline = pkgs.stdenv.mkDerivation {
             name = "check-delivery-pipeline";
             src = ./.;
