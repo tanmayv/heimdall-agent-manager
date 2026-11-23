@@ -749,6 +749,20 @@ bridge_setup_file_is :: proc(path, text: string) -> bool {
 	return err == nil && string(data) == text
 }
 
+// bridge_setup_service_unchanged: the service files on disk are exactly what this
+// render input produces (unit/plist/runit file; Windows run.cmd + launcher + task.xml).
+bridge_setup_service_unchanged :: proc(host: bridgesvc.Host, l: bridgesvc.Layout, in_: bridgesvc.Render_Input) -> bool {
+	#partial switch l.backend {
+	case .Systemd, .Launchd, .Runit:
+		return bridge_setup_file_is(l.service_file, bridgesvc.render_service_file(host, l, in_))
+	case .Schtasks:
+		return bridge_setup_file_is(bridgesvc.windows_run_cmd_path(l), bridgesvc.render_windows_run_cmd(host, l, in_)) &&
+			bridge_setup_file_is(bridgesvc.windows_launcher_path(l), bridgesvc.render_windows_launcher(l)) &&
+			bridge_setup_file_is(bridgesvc.pjoin(l.data_dir, "task.xml"), bridgesvc.render_service_file(host, l, in_))
+	}
+	return false
+}
+
 // bridge_setup_register renders the service definition and registers it. Unless
 // forced (a remediation), a registered service whose rendered files are unchanged
 // is left alone: no write, no daemon-reload, no schtasks /Create (S3/S4 repairs).
@@ -758,17 +772,8 @@ bridge_setup_register :: proc(s: ^Bridge_Setup, force: bool) -> bridgesvc.Step_R
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "logs"))
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "run"))
 	if r := bridge_setup_write_ctl_wrapper(s, in_); !r.ok do return r
-	if !force && s.facts.service_registered {
-		unchanged := false
-		#partial switch l.backend {
-		case .Systemd, .Launchd, .Runit:
-			unchanged = bridge_setup_file_is(l.service_file, bridgesvc.render_service_file(s.host, l, in_))
-		case .Schtasks:
-			unchanged = bridge_setup_file_is(bridgesvc.windows_run_cmd_path(l), bridgesvc.render_windows_run_cmd(s.host, l, in_)) &&
-				bridge_setup_file_is(bridgesvc.windows_launcher_path(l), bridgesvc.render_windows_launcher(l)) &&
-				bridge_setup_file_is(bridgesvc.pjoin(l.data_dir, "task.xml"), bridgesvc.render_service_file(s.host, l, in_))
-		}
-		if unchanged do return {ok = true, message = fmt.tprintf("%s unchanged", bridgesvc.backend_name(l.backend))}
+	if !force && s.facts.service_registered && bridge_setup_service_unchanged(s.host, l, in_) {
+		return {ok = true, message = fmt.tprintf("%s unchanged", bridgesvc.backend_name(l.backend))}
 	}
 	s.service_action = "registered"
 	switch l.backend {

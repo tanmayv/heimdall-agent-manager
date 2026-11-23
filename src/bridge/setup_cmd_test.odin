@@ -246,10 +246,9 @@ test_setup_s8c_downgrade_refused_at_lock :: proc(t: ^testing.T) {
 	exe := bridgesvc.pjoin(s.layout.bin_dir, "ham-bridge")
 	testing.expect(t, os.write_entire_file_from_string(exe, script, {.Read_User, .Write_User, .Execute_User}) == nil)
 	s.bundle_dir = bridgesvc.pjoin(home, "bundle")
-	when ODIN_OS == .Windows {
-		// No shebangs: the installed version comes from runtime-status.json instead.
-		_ = os.write_entire_file_from_string(bridgesvc.pjoin(s.layout.state_dir, bridgesvc.RUNTIME_STATUS_FILE), `{"version":"99.0.0"}`)
-	}
+	// Where the binary cannot run (Windows: no shebang; a busy process slot under the
+	// parallel test runner) the version comes from runtime-status.json instead.
+	_ = os.write_entire_file_from_string(bridgesvc.pjoin(s.layout.state_dir, bridgesvc.RUNTIME_STATUS_FILE), `{"version":"99.0.0"}`)
 	r := bridge_setup_run(&s, .Lock)
 	defer bridgesvc.lock_release(s.lock_path, s.pid)
 	testing.expect(t, !r.ok)
@@ -277,22 +276,30 @@ test_setup_enroll_argv_headless_and_reuse :: proc(t: ^testing.T) {
 }
 
 // A registered service whose rendered definition is unchanged is not rewritten.
+// Fixed render input: the live one reads PATH, which other tests may change.
 @(test)
-test_setup_register_unchanged_service_is_left_alone :: proc(t: ^testing.T) {
-	when ODIN_OS == .Windows do return
-	home := setup_test_home("setup-register-unchanged")
+test_setup_service_unchanged_detection :: proc(t: ^testing.T) {
+	home := setup_test_home("setup-service-unchanged")
 	defer os.remove_all(home)
-	s := setup_test_make(home, []string{"setup", "--hub", "https://hub.example.com"})
-	l := s.layout
-	s.ports = {49400, 49401}
-	_ = os.make_directory_all(bridgesvc.pdir(l.service_file))
-	in_ := bridge_setup_render_input(&s)
-	testing.expect(t, os.write_entire_file_from_string(l.service_file, bridgesvc.render_service_file(s.host, l, in_)) == nil)
-	s.facts.service_registered = true
-	r := bridge_setup_register(&s, force = false)
-	testing.expect(t, r.ok)
-	testing.expectf(t, strings.has_suffix(r.message, "unchanged"), "got %q", r.message)
-	testing.expect_value(t, s.service_action, "")
+	for backend_os in ([]bridgesvc.Target_OS{.Linux, .Windows}) {
+		host := bridgesvc.Host{os = backend_os, home = home, appdata = home, local_appdata = home, uid = 1000}
+		l := bridgesvc.layout_for(host, "heimdall-bridge-hub-example-com")
+		in_ := bridgesvc.Render_Input{hub = "https://hub.example.com", path_env = "/usr/bin:/bin", windows_user = "D\\u", bridge_port = 49400, endpoint_port = 49401}
+		testing.expectf(t, !bridge_setup_service_unchanged(host, l, in_), "%v: nothing written yet", backend_os)
+		_ = os.make_directory_all(l.data_dir)
+		if l.service_file != "" do _ = os.make_directory_all(bridgesvc.pdir(l.service_file))
+		if backend_os == .Windows {
+			_ = os.write_entire_file_from_string(bridgesvc.windows_run_cmd_path(l), bridgesvc.render_windows_run_cmd(host, l, in_))
+			_ = os.write_entire_file_from_string(bridgesvc.windows_launcher_path(l), bridgesvc.render_windows_launcher(l))
+			_ = os.write_entire_file_from_string(bridgesvc.pjoin(l.data_dir, "task.xml"), bridgesvc.render_service_file(host, l, in_))
+		} else {
+			_ = os.write_entire_file_from_string(l.service_file, bridgesvc.render_service_file(host, l, in_))
+		}
+		testing.expectf(t, bridge_setup_service_unchanged(host, l, in_), "%v: same render is unchanged", backend_os)
+		moved := in_
+		moved.bridge_port = 49500
+		testing.expectf(t, !bridge_setup_service_unchanged(host, l, moved), "%v: other ports are a change", backend_os)
+	}
 }
 
 @(test)
