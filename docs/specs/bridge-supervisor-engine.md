@@ -451,6 +451,10 @@ standard handles, is the only handle passed (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
 supervisor is created suspended, assigned to the launcher's `KILL_ON_JOB_CLOSE` job, then
 resumed (a failed assignment terminates it: no supervisor ever runs outside the job).
 
+Long-lived loops reset temporary memory every iteration (the watch loop of a running
+supervisor, backoff and refuse waits), so a launcher that supervises one healthy
+supervisor for weeks does not grow.
+
 Crash backoff (`C == K`, fallback, or no better tree): 1 s doubling to 5 min; the streak
 resets after a run that was READY for at least 60 s, after an exit 75 and when a fallback
 starts. Exit 75 never counts as a crash, but after more than three consecutive exit-75
@@ -492,7 +496,7 @@ loop:
         now ≥ deadline[C]               → fail (hang or endless probation)
       fail: terminate C's job / process group, wait for exit,
             if P != none and P != C: fallback_flag = true, clear deadline{}, goto loop
-            else restart C with backoff (no better tree exists)
+            else delete deadline[C]; restart C with backoff (no better tree exists; it gets a fresh T_commit)
 ```
 
 - **Deadline lifetime.** The `deadline` map is cleared (all entries) whenever the launcher
@@ -500,7 +504,11 @@ loop:
   starts. A deadline therefore survives only the exit-75 handover chain of a single
   activation; a tree that becomes unproven `current` again later (e.g. `retry_failed`,
   `install_version` or `rollback_to_previous` back to a tree that failed earlier in the same
-  launcher lifetime) gets a fresh `T_commit`.
+  launcher lifetime) gets a fresh `T_commit`. When an unproven `C` fails and no other tree
+  exists (`P` none or `P == C`), its entry is deleted before the restart, so the restarted
+  supervisor gets a fresh `T_commit`; keeping the expired one would kill every restart
+  before it could READY (T10 review). Such an instance keeps restarting `C` with backoff
+  while it never commits; status shows the repeated `Commit_Deadline`.
 - `T_commit` = `T_ready` (30 s) + runtime ready (60 s) + probation (120 s) + margin (60 s) =
   **270 s** from launch (§19). Probation restarts after a clean suspend (J16a) happen in a
   new launcher process, so they get a new deadline.

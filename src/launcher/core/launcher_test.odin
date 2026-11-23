@@ -652,6 +652,73 @@ test_os_stop_is_forwarded :: proc(t: ^testing.T) {
 	testing.expect_value(t, count_lines(fake_log(&f), cat("graceful ", A)), 1)
 }
 
+// Finding (review round 1): a launcher watching a healthy supervisor for weeks must not
+// grow its temp arena. Drive supervise() and wait_interruptible() in-process for
+// thousands of 1 ms ticks (stop-file poll every 5 ticks, known-good + tree validity
+// every tick) and require the arena to come back to where it started.
+@(test)
+test_watch_loops_do_not_grow_temp_memory :: proc(t: ^testing.T) {
+	f := fixture_new(t, "temp-flat")
+	defer dump_on_failure(t, &f)
+	A := add_tree(t, &f, "0.5.74", "ready")
+	B := add_tree(t, &f, "0.5.75", "hang")
+	set_pointer(t, &f, POINTER_CURRENT, B)
+	set_pointer(t, &f, POINTER_PREVIOUS, A)
+	set_known_good(t, &f, A)
+	m := temp_mark()
+	testing.expect(t, m.marked, "temp allocator is not the default arena; the guard would be a no-op")
+	temp_release(m)
+
+	l := Launcher{cfg = {instance_root = f.data, state_root = f.state, timeouts = TEST_TIMEOUTS}}
+	l.cfg.timeouts.tick = time.Millisecond
+	l.cfg.timeouts.known_good = time.Millisecond
+	l.cfg.timeouts.ready = 4 * time.Second
+	l.deadlines = make(map[string]time.Tick)
+	defer {
+		clear_deadlines(&l)
+		delete(l.deadlines)
+	}
+	rec, reason := read_instance_record(f.data, context.temp_allocator)
+	testing.expect_value(t, reason, "")
+	l.instance = rec
+	l.started_unix = time.time_to_unix(time.now())
+	l.deadlines[strings.clone(B)] = time.tick_add(time.tick_now(), time.Hour)
+
+	before := temp_used()
+	res := supervise(&l, {tree = B, mode = .Normal, unproven = true, note = "unproven"})
+	after := temp_used()
+	testing.expect_value(t, res.outcome, Run_Outcome.Ready_Timeout)
+	// The spawn itself (argv, paths, status) stays until the caller's next reset:
+	// a few KiB. Without the per-iteration reset ~4000 iterations allocate MiBs.
+	testing.expectf(t, after - before < 32 * 1024, "supervise grew the temp arena by %d bytes", after - before)
+
+	before = temp_used()
+	stopped := wait_interruptible(&l, 2 * time.Second)
+	after = temp_used()
+	testing.expect(t, !stopped)
+	testing.expectf(t, after - before < 1024, "wait_interruptible grew the temp arena by %d bytes", after - before)
+}
+
+// Finding (review round 1): an unproven current with no other tree whose T_commit
+// expired must get a fresh T_commit when restarted, not be killed before READY.
+@(test)
+test_unproven_without_fallback_gets_fresh_t_commit :: proc(t: ^testing.T) {
+	f := fixture_new(t, "no-fallback-deadline")
+	defer dump_on_failure(t, &f)
+	// 1st start never commits; 2nd commits only after 1 s of READY, so it can commit
+	// only if the restart got a fresh T_commit (with the expired one it is killed at
+	// once; an immediate commit could race that kill).
+	B := add_tree(t, &f, "0.5.75", "ready", "slow-commit")
+	set_pointer(t, &f, POINTER_CURRENT, B) // fresh install: no previous, no known-good
+	l := launch(t, &f)
+	testing.expect(t, wait_lines(&f, cat("committed ", B), 1, 50 * time.Second), "restarted current never got to commit")
+	request_stop_file(t, &f)
+	testing.expect_value(t, finish(t, &f, &l, 20 * time.Second), 0)
+	lines := fake_log(&f)
+	testing.expect_value(t, count_lines(lines, cat("start ", B, " normal")), 2)
+	testing.expect_value(t, count_lines(lines, cat("ready ", B)), 2)
+}
+
 // ---------------------------------------------------------------- fake supervisor
 
 fake_supervisor_main :: proc(args: []string) -> int {
@@ -708,8 +775,9 @@ fake_supervisor_main :: proc(args: []string) -> int {
 	case "ready":
 		ready(ready_fd, tree, logpath)
 		return wait_stop(logpath, tree, true)
-	case "commit":
+	case "commit", "slow-commit":
 		ready(ready_fd, tree, logpath)
+		if behaviour == "slow-commit" do time.sleep(time.Second)
 		_ = os.write_entire_file(join_alloc(root, "known-good.json.tmp"), fmt.tprintf(`{{"tree":"%s","committed_op":"op_fake","at":1}}`, tree))
 		replace_file(join_alloc(root, "known-good.json.tmp"), join_alloc(root, "known-good.json"))
 		note(logpath, fmt.tprintf("committed %s", tree))

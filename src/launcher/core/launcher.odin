@@ -5,6 +5,7 @@
 // nothing beyond core.
 package launcher_core
 
+import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
@@ -118,7 +119,45 @@ Run_Result :: struct {
 	ready:        bool,
 	ready_for:    time.Duration,
 	still_unproven: bool,
-	detail:       string,
+	spawn_error:  bool, // details were logged by supervise
+}
+
+// ---- temp memory in long-lived loops ----
+//
+// The launcher runs for the life of the service; its watch loops poll files every
+// tick. Every loop iteration that allocates from context.temp_allocator takes a mark
+// and releases it at the end of the iteration (temp_scope), so nothing accumulates
+// however long a supervisor runs. Values that must outlive an iteration are never
+// temp-allocated inside it.
+
+Temp_Mark :: struct {
+	temp:   runtime.Arena_Temp,
+	marked: bool,
+}
+
+temp_mark :: proc() -> Temp_Mark {
+	if context.temp_allocator.procedure == runtime.default_temp_allocator_proc && context.temp_allocator.data != nil {
+		a := (^runtime.Default_Temp_Allocator)(context.temp_allocator.data)
+		return {temp = runtime.arena_temp_begin(&a.arena), marked = true}
+	}
+	return {}
+}
+
+temp_release :: proc(m: Temp_Mark) {
+	if m.marked do runtime.arena_temp_end(m.temp)
+}
+
+// temp_used reports the bytes in use in this thread's temp arena (tests).
+temp_used :: proc() -> uint {
+	if context.temp_allocator.procedure == runtime.default_temp_allocator_proc && context.temp_allocator.data != nil {
+		return (^runtime.Default_Temp_Allocator)(context.temp_allocator.data).arena.total_used
+	}
+	return 0
+}
+
+@(deferred_out = temp_release)
+temp_scope :: proc() -> Temp_Mark {
+	return temp_mark()
 }
 
 log :: proc(format: string, args: ..any) {
@@ -206,14 +245,17 @@ run :: proc(cfg: Config) -> int {
 		l.crash_streak += 1
 		if res.still_unproven {
 			if records.previous != "" && records.previous != d.tree {
-				log("supervisor of unproven %s failed (%v %s); falling back to %s", d.tree, res.outcome, res.detail, records.previous)
+				log("supervisor of unproven %s failed (%v, code %d, signal %d); falling back to %s", d.tree, res.outcome, res.code, res.signal, records.previous)
 				l.fallback_flag = true
 				clear_deadlines(&l)
 				l.crash_streak = 0
 				write_status(&l, "fallback", records.previous, .Fallback, fmt.tprint(res.outcome))
 				continue
 			}
-			log("supervisor of unproven %s failed (%v %s); no other tree, restarting it", d.tree, res.outcome, res.detail)
+			// No better tree exists: restart C with backoff and a fresh T_commit (spec
+			// §7.2). Keeping the expired deadline would kill every restart before READY.
+			log("supervisor of unproven %s failed (%v, code %d, signal %d); no other tree, restarting it with a fresh T_commit", d.tree, res.outcome, res.code, res.signal)
+			if key, _ := delete_key(&l.deadlines, d.tree); key != "" do delete(key)
 		} else if res.outcome == .Exit_Refuse && records.current != "" && records.current == records.known_good && d.tree == records.current {
 			// spec §7.1: 78 while C = K = sleep 60 s and exit 78 (the service manager
 			// restarts with its own backoff). While C != K it is a failure (above/below).
@@ -221,7 +263,7 @@ run :: proc(cfg: Config) -> int {
 			write_status(&l, "refused", d.tree, d.mode, "supervisor_refused")
 			return refuse_exit(&l)
 		} else {
-			log("supervisor of %s failed (%v %s); restarting", d.tree, res.outcome, res.detail)
+			log("supervisor of %s failed (%v, code %d, signal %d); restarting", d.tree, res.outcome, res.code, res.signal)
 		}
 		delay := backoff(cfg.timeouts, l.crash_streak)
 		write_status(&l, "backoff", d.tree, d.mode, fmt.tprint(res.outcome))
@@ -252,6 +294,7 @@ refuse_exit :: proc(l: ^Launcher) -> int {
 wait_interruptible :: proc(l: ^Launcher, d: time.Duration) -> bool {
 	start := time.tick_now()
 	for time.tick_since(start) < d {
+		temp_scope()
 		if stop_requested(l) do return true
 		time.sleep(min(l.cfg.timeouts.tick, d - time.tick_since(start)))
 	}
@@ -265,7 +308,7 @@ supervise :: proc(l: ^Launcher, d: Decision) -> (res: Run_Result) {
 	if err != "" {
 		log("cannot start supervisor of %s: %s", d.tree, err)
 		res.outcome = .Spawn_Failed
-		res.detail = err
+		res.spawn_error = true
 		res.still_unproven = d.unproven
 		return
 	}
@@ -276,6 +319,9 @@ supervise :: proc(l: ^Launcher, d: Decision) -> (res: Run_Result) {
 	ready_at: time.Tick
 	last_kg := start
 	for {
+		// Released at the end of every iteration, including the returns below: res
+		// carries no temp-allocated values.
+		temp_scope()
 		if stop_requested(l) {
 			graceful_stop(l, &child)
 			res.outcome = .Stop_Requested
@@ -298,7 +344,6 @@ supervise :: proc(l: ^Launcher, d: Decision) -> (res: Run_Result) {
 			case:
 				res.outcome = .Crash
 			}
-			res.detail = fmt.tprintf("code %d signal %d", code, sig)
 			log("supervisor of %s exited (code %d, signal %d)", d.tree, code, sig)
 			return
 		}
