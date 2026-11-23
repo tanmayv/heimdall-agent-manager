@@ -733,6 +733,8 @@ MIGRATION_AGENTS_001_START_REF :: #load("migrations/agents_001_start_ref.sql", s
 
 MIGRATION_237_EXTENSION_VERSION_SYNC :: #load("migrations/237_extension_version_sync_0_5_74.sql", string)
 
+MIGRATION_238_EXTENSION_VERSION_SYNC :: #load("migrations/238_extension_version_sync_0_5_75.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -988,6 +990,7 @@ migration_order :: [?]string {
 	"agents_001_start_ref.sql",
 	"events_006_instance_subscriptions.sql",
 	"237_extension_version_sync_0_5_74.sql",
+	"238_extension_version_sync_0_5_75.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1530,6 +1533,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
 	if name == "237_extension_version_sync_0_5_74.sql" do return strings.clone(MIGRATION_237_EXTENSION_VERSION_SYNC)
  if name == "agents_001_start_ref.sql" do return strings.clone(MIGRATION_AGENTS_001_START_REF)
 	if migrations_dir != "" {
