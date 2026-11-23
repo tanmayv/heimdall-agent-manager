@@ -3,12 +3,26 @@ on:
   push:
     paths:
       - 'scripts/install.sh'
+      - 'scripts/ci/installer-smoke.sh'
       - 'tests/test_installer_clean.py'
+      - 'tests/e2e/installer_scenarios_e2e.mjs'
+      - 'tests/e2e/hubOidc.mjs'
+      - 'tests/e2e/natsServer.mjs'
+      - 'tests/e2e/realHomeGuard.mjs'
+      - 'src/bridge/setup_cmd.odin'
+      - 'src/lib/bridgesvc/**'
       - '.github/workflows/install-sh.yml'
   pull_request:
     paths:
       - 'scripts/install.sh'
+      - 'scripts/ci/installer-smoke.sh'
       - 'tests/test_installer_clean.py'
+      - 'tests/e2e/installer_scenarios_e2e.mjs'
+      - 'tests/e2e/hubOidc.mjs'
+      - 'tests/e2e/natsServer.mjs'
+      - 'tests/e2e/realHomeGuard.mjs'
+      - 'src/bridge/setup_cmd.odin'
+      - 'src/lib/bridgesvc/**'
       - '.github/workflows/install-sh.yml'
   workflow_dispatch:
 permissions:
@@ -38,3 +52,86 @@ jobs:
           /bin/bash -c 'echo "bash $BASH_VERSION"; [ "${BASH_VERSINFO[0]}" = 3 ]'
           /bin/bash -n scripts/install.sh
           INSTALLER_BASH=/bin/bash python3 tests/test_installer_clean.py
+
+  # REQ-INSTALL-2 on real runners: the real install.sh, a bundle of the binaries
+  # built from this commit, a throwaway local hub and the runner's real service
+  # manager (systemd --user / launchd). Scenarios: fresh install (piped, no TTY),
+  # no-op re-run, re-enroll after the credential is removed and after a revoke,
+  # recovery from an interrupted install, uninstall
+  # (tests/e2e/installer_scenarios_e2e.mjs). Windows: install-ps1.yml.
+  scenarios:
+    name: Installer scenarios (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start a systemd --user manager (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The runner is not a login session: linger starts user@UID so
+          # `systemctl --user` (which ham-bridge setup/uninstall drive) has a bus.
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          uid="$(id -u)"
+          for _ in $(seq 1 30); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
+          # The service inherits the manager's environment; keep TMPDIR the same.
+          {
+            echo "XDG_RUNTIME_DIR=/run/user/$uid"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus"
+            echo "TMPDIR=$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user set-environment "TMPDIR=$RUNNER_TEMP"
+      - name: Unlocked default keychain (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # The bridge keeps its vault keyring in the default keychain; the runner's
+          # may be locked, so give the run its own unlocked default keychain.
+          set -euo pipefail
+          kc="$RUNNER_TEMP/e2e.keychain-db"
+          security create-keychain -p e2e "$kc"
+          security set-keychain-settings "$kc"
+          security unlock-keychain -p e2e "$kc"
+          existing=()
+          while IFS= read -r k; do existing+=("$k"); done < <(security list-keychains -d user | tr -d '"' | sed 's/^ *//')
+          security list-keychains -d user -s "$kc" "${existing[@]}"
+          security default-keychain -d user -s "$kc"
+      - name: Build ham-hub, ham-bridge and ham-pty-host
+        shell: bash
+        run: |
+          set -euo pipefail
+          nats="$(nix build --inputs-from . nixpkgs#nats-server --print-out-paths --no-link)"
+          hub="$(nix build .#ham-hub --print-out-paths --no-link)"
+          bridge="$(nix build .#release-ham-bridge --print-out-paths --no-link)"
+          pty="$(nix build .#release-ham-pty-host --print-out-paths --no-link)"
+          bin="$RUNNER_TEMP/installer-bin"
+          mkdir -p "$bin"
+          cp "$bridge/bin/ham-bridge" "$pty/bin/ham-pty-host" "$bin/"
+          {
+            echo "HEIMDALL_E2E_NATS_BIN=$nats/bin/nats-server"
+            echo "HEIMDALL_E2E_HUB_BIN=$hub/bin/ham-hub"
+            echo "HEIMDALL_E2E_BRIDGE_BIN=$bin/ham-bridge"
+          } >> "$GITHUB_ENV"
+      - name: Installer scenarios (hermetic tests + real install.sh)
+        run: bash scripts/ci/installer-smoke.sh
+      - name: Same scenarios under the system bash 3.2 (macOS /bin/bash)
+        if: runner.os == 'macOS'
+        env:
+          INSTALLER_BASH: /bin/bash
+        run: node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/installer_scenarios_e2e.mjs

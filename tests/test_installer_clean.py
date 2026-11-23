@@ -48,7 +48,14 @@ esac
 cp "$src" "$out"
 '''
 
-STUB_BRIDGE = '#!/bin/sh\nprintf "%s\\n" "$*" >> "$MOCK_ROOT/ham-bridge.log"\nexit "${STUB_EXIT:-0}"\n'
+STUB_BRIDGE = '''#!/bin/sh
+printf "%s\\n" "$*" >> "$MOCK_ROOT/ham-bridge.log"
+# What ham-bridge would see on stdin: a terminal, or how many bytes it could read.
+if [ -n "${STUB_STDIN_LOG:-}" ]; then
+  if [ -t 0 ]; then echo tty > "$STUB_STDIN_LOG"; else printf 'bytes %s\\n' "$(wc -c | tr -d ' ')" > "$STUB_STDIN_LOG"; fi
+fi
+exit "${STUB_EXIT:-0}"
+'''
 
 
 def host_target():
@@ -113,11 +120,14 @@ class BootstrapTests(unittest.TestCase):
         else:
             (www / 'latest.json').write_text(json.dumps(latest, indent=2))
 
-    def run_installer(self, *args, stdin_script=False, extra_env=None):
+    def run_installer(self, *args, stdin_script=False, extra_env=None, stdin_data=None):
         env = dict(self.env, **(extra_env or {}))
         if stdin_script:
-            return subprocess.run([BASH, '-s', '--', *args], input=INSTALLER.read_text(),
+            return subprocess.run([BASH, '-s', '--', *args], input=INSTALLER.read_text() + (stdin_data or ''),
                                   env=env, capture_output=True, text=True, timeout=60)
+        if stdin_data is not None:
+            return subprocess.run([BASH, str(INSTALLER), *args], input=stdin_data, env=env,
+                                  capture_output=True, text=True, timeout=60)
         return subprocess.run([BASH, str(INSTALLER), *args], env=env, capture_output=True,
                               text=True, timeout=60, stdin=subprocess.DEVNULL)
 
@@ -144,6 +154,19 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--hub', 'https://hub.example.com', stdin_script=True)
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com --keep-version'])
+
+    def test_ham_bridge_gets_no_stdin_when_piped(self):
+        """REQ-INSTALL-2 (no TTY): under `curl | bash` stdin is the script itself;
+        ham-bridge must get an empty stdin (never what follows on the pipe, never a
+        prompt source), piped or run as a file with input waiting on stdin."""
+        self.publish('v1.0.0')
+        seen = self.root / 'stdin.log'
+        for piped in (True, False):
+            with self.subTest(piped=piped):
+                res = self.run_installer('--hub', 'https://h', stdin_script=piped, stdin_data='y\ny\n',
+                                         extra_env={'STUB_STDIN_LOG': str(seen)})
+                self.assertEqual(res.returncode, 0, res.stderr)
+                self.assertEqual(seen.read_text().strip(), 'bytes 0')
 
     def test_explicit_version_may_be_prerelease(self):
         self.publish('v1.0.0')
