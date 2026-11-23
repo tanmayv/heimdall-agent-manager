@@ -514,7 +514,9 @@ flush :: proc(conn: ^Connection) -> (err: Error) {
 
 // Unlike fetch, local timeouts keep the same server request outstanding. A
 // caller can process answers/check shutdown between waits without pull traffic.
-// Destroy before conn, with no concurrent next call. Returned messages are owned.\n// These are core subscription messages: use reply-based ack/term operations,\n// not ack(msg)/term(msg), which require nats.c JetStream subscription metadata.
+// Destroy before conn, with no concurrent next call. Returned messages are owned.
+// These are core subscription messages: use reply-based ack/term operations,
+// not ack(msg)/term(msg), which require nats.c JetStream subscription metadata.
 long_pull_bind :: proc(conn: ^Connection, stream, consumer: string) -> (pull: ^Long_Pull, err: Error) {
     if conn == nil || !valid_name(stream) || !valid_name(consumer) do return nil, Error{status = INVALID}
     s := strings.clone_to_cstring(stream); defer delete(s)

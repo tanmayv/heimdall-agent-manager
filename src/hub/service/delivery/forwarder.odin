@@ -77,7 +77,10 @@ forwarder_entry :: proc(data: rawptr) {
 
 forwarder_pass :: proc(f: ^Forwarder) -> time.Duration {
 	s := f.service
-	if s.registry == nil || !project.bridge_runtime_registry_has_live(s.registry, f.bridge_id) do return -1
+	if s.registry == nil || !project.bridge_runtime_registry_has_live(s.registry, f.bridge_id) {
+		retire_idle_pull(f)
+		return -1
+	}
 	sync.rw_mutex_shared_lock(&s.conn_lock)
 	defer sync.rw_mutex_shared_unlock(&s.conn_lock)
 	if sync.atomic_load(&f.disabled) != 0 do return -1
@@ -284,4 +287,18 @@ active_slots :: proc(f: ^Forwarder, ms: i64) -> int {
 		}
 	}
 	return f.recovered_slots + len(f.slots)
+}
+
+// Stop server-side demand before an offline forwarder parks. Exclusive conn_lock
+// waits out the bounded local receive and prevents concurrent destruction.
+retire_idle_pull :: proc(f: ^Forwarder) {
+	s := f.service
+	sync.rw_mutex_lock(&s.conn_lock)
+	defer sync.rw_mutex_unlock(&s.conn_lock)
+	if f.pull != nil {
+		nats.long_pull_destroy(f.pull)
+		f.pull = nil
+		// Order UNSUB before the caller can consider this pull retired.
+		if nats.flush(s.conn).status != 0 do connection_failed(s)
+	}
 }

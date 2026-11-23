@@ -91,7 +91,14 @@ ledger_corrupt_scenario :: proc(t: ^testing.T) {
     bytes, _ := json.marshal(disk, allocator = context.temp_allocator)
     testing.expect(t, bridge_retry_atomic_write(path, bytes))
     bridge_event_ledger_load()
-    testing.expect_value(t, len(bridge_event_ledger), 0)
+    testing.expect_value(t, len(bridge_event_ledger), 5000)
+    testing.expect(t, !bridge_event_ledger_failed)
+    testing.expect(t, !bridge_event_ledger_begin("extra", .Type, bridge_ledger_test_clock, 0))
+    // A recovered map above admission capacity preserves existing dedup state.
+    testing.expect(t, bridge_event_ledger_done("e0", "notified", bridge_ledger_test_clock))
+    bridge_event_ledger_load()
+    e, found := bridge_event_ledger_get("e0")
+    testing.expect(t, found && e.state == .Done && e.outcome == "notified")
 }
 @(test)
 test_ledger_corrupt_file_fails_closed :: proc(t: ^testing.T) { bridge_ledger_test_run(t, ledger_corrupt_scenario) }
@@ -205,14 +212,21 @@ ledger_failed_append_scenario :: proc(t: ^testing.T) {
         testing.expect(t, os.chmod(path, {.Read_User}) == nil)
         testing.expect(t, !bridge_event_ledger_begin("no_effect", .Start, now, 0))
         testing.expect(t, os.chmod(path, {.Read_User, .Write_User}) == nil)
-        // Repairing permissions alone cannot clear an ambiguous-write fence.
-        testing.expect(t, !bridge_event_ledger_begin("still_fenced", .Start, now, 0))
+        testing.expect(t, !bridge_event_ledger_failed && bridge_event_ledger_io_failed)
+        testing.expect_value(t, bridge_event_ledger_failure_reason(), "ledger_unavailable")
+        health := bridge_event_ledger_health_json()
+        testing.expect(t, strings.contains(health, "checkpoint_pending"))
+        delete(health)
+        // No reload/restart: the next mutation atomically repairs the journal.
+        testing.expect(t, bridge_event_ledger_begin("recovered", .Start, now, 0))
+        testing.expect(t, !bridge_event_ledger_io_failed)
         bridge_event_ledger_load()
         e, found := bridge_event_ledger_get("durable")
         testing.expect(t, found && e.state == .Done)
         _, found = bridge_event_ledger_get("no_effect")
         testing.expect(t, !found)
-        testing.expect(t, bridge_event_ledger_begin("recovered", .Start, now, 0))
+        e, found = bridge_event_ledger_get("recovered")
+        testing.expect(t, found && e.state == .In_Progress)
     }
     ledger_test_append(t, "{malformed complete record}\n")
     bridge_event_ledger_load()
@@ -221,3 +235,60 @@ ledger_failed_append_scenario :: proc(t: ^testing.T) {
 }
 @(test)
 test_ledger_append_failure_and_corruption_fail_closed :: proc(t: ^testing.T) { bridge_ledger_test_run(t, ledger_failed_append_scenario) }
+
+ledger_prune_rollback_scenario :: proc(t: ^testing.T) {
+    now := bridge_ledger_test_clock
+    testing.expect(t, bridge_event_ledger_begin("expired", .Type, now, now + 1))
+    bridge_ledger_test_clock = now + BRIDGE_LEDGER_MARGIN_MS + 2
+    testing.expect(t, bridge_event_ledger_begin("new", .Type, bridge_ledger_test_clock, 0))
+    // The prune is carried in the same fsynced record as the new begin.
+    bridge_ledger_test_clock = now
+    bridge_event_ledger_load()
+    _, found := bridge_event_ledger_get("expired")
+    testing.expect(t, !found)
+    e: Bridge_Ledger_Entry
+    e, found = bridge_event_ledger_get("new")
+    testing.expect(t, found && e.state == .In_Progress && !bridge_event_ledger_failed)
+}
+@(test)
+test_ledger_pruned_ids_stay_pruned_after_clock_rollback :: proc(t: ^testing.T) { bridge_ledger_test_run(t, ledger_prune_rollback_scenario) }
+
+ledger_health_scenario :: proc(t: ^testing.T) {
+    path := bridge_ledger_test_path(); defer delete(path)
+    testing.expect(t, bridge_retry_atomic_write(path, transmute([]byte)string("{broken")))
+    bridge_event_ledger_load()
+    testing.expect_value(t, bridge_event_ledger_failure_reason(), "ledger_unavailable")
+    health := bridge_health_json(); defer delete(health)
+    response: struct {event_ledger: struct {status: string, entries, capacity: int}}
+    testing.expect(t, json.unmarshal_string(health, &response, allocator = context.temp_allocator) == nil)
+    testing.expect_value(t, response.event_ledger.status, "unavailable")
+    testing.expect_value(t, response.event_ledger.capacity, BRIDGE_LEDGER_MAX_ENTRIES)
+}
+@(test)
+test_ledger_corruption_is_visible_in_loopback_health :: proc(t: ^testing.T) { bridge_ledger_test_run(t, ledger_health_scenario) }
+
+ledger_checkpoint_failure_scenario :: proc(t: ^testing.T) {
+    now := bridge_ledger_test_clock
+    testing.expect(t, bridge_event_ledger_begin("retained", .Start, now, 0))
+    testing.expect(t, bridge_event_ledger_done("retained", "started", now))
+    path := bridge_ledger_test_path(); defer delete(path)
+    tmp := strings.concatenate({path, ".tmp"}, context.temp_allocator)
+    blocker := strings.concatenate({tmp, "/blocker"}, context.temp_allocator)
+    testing.expect(t, bridge_make_directory_all(tmp) == nil)
+    testing.expect(t, os.write_entire_file_from_string(blocker, "block rename temp") == nil)
+    bridge_event_ledger_records = BRIDGE_LEDGER_CHECKPOINT_RECORDS
+    testing.expect(t, !bridge_event_ledger_begin("not_performed", .Type, now, 0))
+    testing.expect(t, !bridge_event_ledger_failed && bridge_event_ledger_io_failed)
+    _ = os.remove(blocker)
+    _ = os.remove(tmp)
+    testing.expect(t, bridge_event_ledger_begin("recovered_checkpoint", .Type, now, 0))
+    bridge_event_ledger_load()
+    e, found := bridge_event_ledger_get("retained")
+    testing.expect(t, found && e.state == .Done && e.outcome == "started")
+    _, found = bridge_event_ledger_get("not_performed")
+    testing.expect(t, !found)
+    _, found = bridge_event_ledger_get("recovered_checkpoint")
+    testing.expect(t, found)
+}
+@(test)
+test_ledger_checkpoint_failure_recovers_without_restart :: proc(t: ^testing.T) { bridge_ledger_test_run(t, ledger_checkpoint_failure_scenario) }

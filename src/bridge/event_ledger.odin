@@ -29,10 +29,12 @@ Bridge_Ledger_Disk :: struct { version: int, entries: [dynamic]Bridge_Ledger_Dis
 // One fsynced record per transition; a single-file atomic checkpoint every
 // 8192 records bounds replay/disk growth and amortizes the full-map rewrite.
 BRIDGE_LEDGER_CHECKPOINT_RECORDS :: 2 * BRIDGE_LEDGER_MAX_ENTRIES
-Bridge_Ledger_Record :: struct { entry: Bridge_Ledger_Disk_Entry, forget: bool }
+Bridge_Ledger_Record :: struct { entry: Bridge_Ledger_Disk_Entry, forget: bool, pruned: []string }
 bridge_event_ledger_records: int
 bridge_event_ledger_journal: bool
-bridge_event_ledger_failed: bool
+bridge_event_ledger_failed: bool // unknown load state; requires operator repair/reload
+bridge_event_ledger_io_failed: bool // known memory state; next mutation checkpoints
+bridge_event_ledger_pruned: [dynamic]string
 bridge_event_ledger_written_bytes: i64 // durability-path measurement, under mutex
 bridge_event_ledger_mutex: sync.Mutex
 bridge_event_ledger: map[string]Bridge_Ledger_Entry
@@ -55,6 +57,13 @@ bridge_event_ledger_clear_locked :: proc() {
     bridge_event_ledger_records = 0
     bridge_event_ledger_journal = false
     bridge_event_ledger_failed = false
+    bridge_event_ledger_io_failed = false
+    bridge_event_ledger_clear_pruned_locked()
+}
+bridge_event_ledger_clear_pruned_locked :: proc() {
+    for id in bridge_event_ledger_pruned do delete(id, runtime.heap_allocator())
+    delete(bridge_event_ledger_pruned)
+    bridge_event_ledger_pruned = nil
 }
 bridge_event_ledger_prune_locked :: proc(now: i64) {
     for id, e in bridge_event_ledger {
@@ -62,7 +71,8 @@ bridge_event_ledger_prune_locked :: proc(now: i64) {
         if e.expires_ms == 0 do expired = now > e.at_ms && now - e.at_ms > BRIDGE_LEDGER_FALLBACK_MS
         if expired {
             delete_key(&bridge_event_ledger, id)
-            delete(e.id, runtime.heap_allocator())
+            if bridge_event_ledger_pruned == nil do bridge_event_ledger_pruned = make([dynamic]string, runtime.heap_allocator())
+            append(&bridge_event_ledger_pruned, e.id)
             delete(e.outcome, runtime.heap_allocator())
         }
     }
@@ -73,7 +83,9 @@ bridge_event_ledger_load :: proc() {
     bridge_event_ledger_clear_locked()
     path := bridge_event_ledger_path_proc()
     defer delete(path)
-    if !os.exists(path) do return
+    _, stat_err := os.stat(path, context.temp_allocator)
+    if stat_err == .Not_Exist do return
+    if stat_err != nil { bridge_event_ledger_failed = true; return }
     raw, read_err := os.read_entire_file(path, context.temp_allocator)
     if read_err != nil { bridge_event_ledger_failed = true; return }
     disk: Bridge_Ledger_Disk
@@ -88,7 +100,7 @@ bridge_event_ledger_load :: proc() {
         snapshot := raw[:first] if first >= 0 else raw
         bad = json.unmarshal(snapshot, &disk, allocator = context.temp_allocator) != nil
     }
-    bad = bad || (disk.version != 1 && disk.version != 2) || len(disk.entries) > BRIDGE_LEDGER_MAX_ENTRIES
+    bad = bad || (disk.version != 1 && disk.version != 2)
     if !bad {
         for e in disk.entries {
             if !bridge_event_ledger_valid(e) { bad = true; break }
@@ -120,6 +132,10 @@ bridge_event_ledger_load :: proc() {
                 bridge_event_ledger_failed = true
                 return
             }
+            for id in record.pruned {
+                if id == "" { bridge_event_ledger_failed = true; return }
+                bridge_event_ledger_apply_locked(Bridge_Ledger_Disk_Entry{id = id}, true)
+            }
             bridge_event_ledger_apply_locked(record.entry, record.forget)
             bridge_event_ledger_records += 1
             rest = rest[end+1:]
@@ -127,7 +143,8 @@ bridge_event_ledger_load :: proc() {
         bridge_event_ledger_journal = len(rest) == 0
     }
     bridge_event_ledger_prune_locked(bridge_event_ledger_now_proc())
-    if len(bridge_event_ledger) > BRIDGE_LEDGER_MAX_ENTRIES do bridge_event_ledger_failed = true
+    // An old journal plus a clock rollback can recover more than the admission
+    // cap. Preserve those dedup entries; begin refuses new IDs until they expire.
 }
 bridge_event_ledger_valid :: proc(e: Bridge_Ledger_Disk_Entry) -> bool {
     return e.id != "" && e.state >= 1 && e.state <= 2 && e.effect >= 1 && e.effect <= 3
@@ -160,25 +177,28 @@ bridge_event_ledger_save_locked :: proc(id: string, forget := false) -> bool {
         encoded, err := json.marshal(disk, allocator = context.temp_allocator)
         if err != nil do return false
         bytes = transmute([]byte)strings.concatenate({string(encoded), "\n"}, context.temp_allocator)
-        if !bridge_retry_atomic_write(path, bytes) { bridge_event_ledger_failed = true; return false }
+        if !bridge_retry_atomic_write(path, bytes) { bridge_event_ledger_journal = false; bridge_event_ledger_io_failed = true; return false }
         bridge_event_ledger_journal = true
         bridge_event_ledger_records = 0
     } else {
         e := Bridge_Ledger_Disk_Entry{id = id} if forget else bridge_event_ledger_disk_entry(bridge_event_ledger[id])
-        encoded, err := json.marshal(Bridge_Ledger_Record{e, forget}, allocator = context.temp_allocator)
+        encoded, err := json.marshal(Bridge_Ledger_Record{e, forget, bridge_event_ledger_pruned[:]}, allocator = context.temp_allocator)
         if err != nil do return false
         bytes = transmute([]byte)strings.concatenate({string(encoded), "\n"}, context.temp_allocator)
         f, open_err := os.open(path, {.Write, .Append}, {.Read_User, .Write_User})
-        if open_err != nil { bridge_event_ledger_failed = true; return false }
+        if open_err != nil { bridge_event_ledger_journal = false; bridge_event_ledger_io_failed = true; return false }
         n, write_err := os.write(f, bytes)
         sync_err := os.sync(f)
         close_err := os.close(f)
         if write_err != nil || n != len(bytes) || sync_err != nil || close_err != nil {
-            bridge_event_ledger_failed = true
+            bridge_event_ledger_journal = false
+            bridge_event_ledger_io_failed = true
             return false
         }
         bridge_event_ledger_records += 1
     }
+    bridge_event_ledger_io_failed = false
+    bridge_event_ledger_clear_pruned_locked()
     bridge_event_ledger_written_bytes += i64(len(bytes))
     return true
 }
@@ -243,4 +263,24 @@ bridge_event_ledger_forget :: proc(id: string) {
         delete(e.id, runtime.heap_allocator())
         delete(e.outcome, runtime.heap_allocator())
     }
+}
+
+// A corrupt/unreadable load has unknown durable state and stays unavailable.
+// Transient write failures preserve known memory state and retry a checkpoint.
+bridge_event_ledger_failure_reason :: proc() -> string {
+    sync.mutex_lock(&bridge_event_ledger_mutex)
+    defer sync.mutex_unlock(&bridge_event_ledger_mutex)
+    if bridge_event_ledger_failed || bridge_event_ledger_io_failed do return "ledger_unavailable"
+    return "ledger_full"
+}
+bridge_event_ledger_health_json :: proc() -> string {
+    sync.mutex_lock(&bridge_event_ledger_mutex)
+    defer sync.mutex_unlock(&bridge_event_ledger_mutex)
+    status := "ready"
+    if bridge_event_ledger_failed {status = "unavailable"}
+    else if bridge_event_ledger_io_failed {status = "checkpoint_pending"}
+    else if len(bridge_event_ledger) >= BRIDGE_LEDGER_MAX_ENTRIES {status = "full"}
+    bytes, err := json.marshal(struct {status: string, entries, capacity: int}{status, len(bridge_event_ledger), BRIDGE_LEDGER_MAX_ENTRIES})
+    if err != nil do return ""
+    return string(bytes)
 }

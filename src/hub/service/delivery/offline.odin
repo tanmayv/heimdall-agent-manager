@@ -84,6 +84,7 @@ on_bridge_online :: proc(s: ^Service, bridge_id: string) {
 
 on_bridge_offline :: proc(s: ^Service, bridge_id: string) {
 	_ = bridge_rows(s, bridge_id, .Offline)
+	if f := find_forwarder(s, bridge_id); f != nil do retire_idle_pull(f)
 }
 
 on_bridge_deleted :: proc(s: ^Service, bridge_id: string) {

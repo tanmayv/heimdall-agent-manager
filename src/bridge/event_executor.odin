@@ -113,14 +113,14 @@ bridge_event_deliver_handle :: proc(conn: ^ws.Connection, text: string) {
     case .Retry, .Fatal:
         class, reason, retry = ("retry" if action == .Retry else "fatal"), why, delay
     case .Answer_Started:
-        if found && entry.state == .In_Progress && !bridge_event_ledger_done(id, "started", now) { reason = "ledger_full"; class = "fatal" if frame.final else "retry"; retry = 60_000 if !frame.final else 0; return }
+        if found && entry.state == .In_Progress && !bridge_event_ledger_done(id, "started", now) { reason = bridge_event_ledger_failure_reason(); class = "fatal" if frame.final else "retry"; retry = 60_000 if !frame.final else 0; return }
         outcome, class, reason = "started", "", ""
     case .Type_Notice, .Start:
         expires: i64
         if stamp, consumed := time.rfc3339_to_time_utc(frame.delivery.expires_at); consumed == len(frame.delivery.expires_at) && consumed > 0 do expires = time.to_unix_nanoseconds(stamp) / i64(time.Millisecond)
         effect := Bridge_Ledger_Effect.Type if action == .Type_Notice else Bridge_Ledger_Effect.Start
         if !bridge_event_ledger_begin(id, effect, now, expires) {
-            class, reason, retry = ("fatal" if frame.final else "retry"), "ledger_full", (0 if frame.final else 60_000)
+            class, reason, retry = ("fatal" if frame.final else "retry"), bridge_event_ledger_failure_reason(), (0 if frame.final else 60_000)
             return
         }
         if action == .Type_Notice {
@@ -135,7 +135,7 @@ bridge_event_deliver_handle :: proc(conn: ^ws.Connection, text: string) {
             outcome, class, reason, retry = bridge_event_start_answer(result, frame.final)
         }
         if class == "" && !bridge_event_ledger_done(id, outcome, now) {
-            outcome, class, reason, retry = "", ("fatal" if frame.final else "retry"), "ledger_full", (0 if frame.final else 60_000)
+            outcome, class, reason, retry = "", ("fatal" if frame.final else "retry"), bridge_event_ledger_failure_reason(), (0 if frame.final else 60_000)
         }
     }
 }

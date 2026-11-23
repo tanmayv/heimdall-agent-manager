@@ -115,6 +115,13 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
     }
     name := bridge_event_test_case
     switch name {
+    case "corrupt_ledger":
+        path := bridge_ledger_test_path(); defer delete(path)
+        testing.expect(t, bridge_retry_atomic_write(path, transmute([]byte)string("{broken")))
+        bridge_event_ledger_load()
+        bridge_event_deliver_handle(nil, bridge_event_test_frame())
+        bridge_event_test_expect(t, "failed", "", "retry", "ledger_unavailable", 60_000)
+        testing.expect(t, bridge_event_test_notices == 0 && bridge_event_test_starts == 0)
     case "io_failure":
         _ = bridge_make_directory_all(bridge_ledger_test_dir)
         blocked := strings.concatenate({bridge_ledger_test_dir, "/blocked"}, context.temp_allocator)
@@ -122,7 +129,7 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
         saved_path := bridge_event_ledger_path_proc
         bridge_event_ledger_path_proc = bridge_event_test_blocked_path
         bridge_event_deliver_handle(nil, bridge_event_test_frame())
-        bridge_event_test_expect(t, "failed", "", "retry", "ledger_full", 60_000)
+        bridge_event_test_expect(t, "failed", "", "retry", "ledger_unavailable", 60_000)
         testing.expect(t, bridge_event_test_notices == 0 && bridge_event_test_starts == 0)
         _, found := bridge_event_ledger_get("dlv_t17")
         testing.expect(t, !found)
@@ -587,3 +594,6 @@ bridge_event_test_blocked_path :: proc() -> string {
 }
 @(test)
 test_event_ledger_write_failure_prevents_effect :: proc(t: ^testing.T) { bridge_event_test_run(t, "io_failure") }
+
+@(test)
+test_event_corrupt_ledger_reports_unavailable :: proc(t: ^testing.T) { bridge_event_test_run(t, "corrupt_ledger") }

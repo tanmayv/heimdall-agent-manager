@@ -397,3 +397,33 @@ test_reconnect_preserves_limit_and_releases_recovered_slots :: proc(t: ^testing.
 	fixture_destroy(f)
 	testing.expect_value(t, nats.shutdown(5000).status, i32(0))
 }
+
+@(test)
+test_offline_parking_cancels_server_pull_before_ack_wait :: proc(t: ^testing.T) {
+	f := fixture_new(t, true)
+	f.s.ack_wait_ms = 1000
+	testing.expect(t, start(f.s))
+	fixture_live(f)
+	tick := time.tick_now()
+	for sync.atomic_load(&f.s.pull_requests) == 0 && time.tick_since(tick) < 5 * time.Second do time.sleep(10 * time.Millisecond)
+	testing.expect(t, sync.atomic_load(&f.s.pull_requests) > 0)
+	project.bridge_runtime_registry_mark_offline(&f.registry, "brg_one", project.bridge_runtime_registry_generation(&f.registry, "brg_one"))
+	on_bridge_offline(f.s, "brg_one")
+	id := fixture_route(t, f); defer delete(id)
+	fixture_publish(t, f)
+	// This publication falls within the abandoned pull's 30s expiration.
+	time.sleep(1500 * time.Millisecond)
+	state, err := nats.consumer_state(f.client, STREAM, "brg_brg_one")
+	testing.expect_value(t, err.status, i32(0))
+	testing.expect_value(t, state.ack_pending, u64(0))
+	testing.expect_value(t, fixture_frames(f), 0)
+	fixture_live(f)
+	if fixture_wait_frames(t, f, 1) {
+		testing.expect_value(t, fixture_frame(f, 0).attempt, 1)
+		fixture_answer(f, 0)
+		fixture_wait_empty(t, f)
+		testing.expect_value(t, fixture_frames(f), 1)
+	}
+	fixture_destroy(f)
+	testing.expect_value(t, nats.shutdown(5000).status, i32(0))
+}

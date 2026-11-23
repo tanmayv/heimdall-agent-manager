@@ -345,6 +345,7 @@ typedef struct {
 } ham_long_pull;
 void ham_nats_long_pull_destroy(ham_long_pull *p) {
     if (!p) return;
+    if (p->sub) natsSubscription_Unsubscribe(p->sub);
     natsSubscription_Destroy(p->sub);
     natsInbox_Destroy(p->inbox);
     free(p->subject);

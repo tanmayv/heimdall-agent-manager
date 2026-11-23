@@ -1403,6 +1403,12 @@ named `heimdall-bridge` is created and started automatically.
 
 ### 2.11 Bridge self-update
 
+**Event-ledger upgrades and rollback:** before changing bridge binaries, read
+[Event ledger operations](docs/event-ledger-operations.md). A bridge that has
+written the v2 ledger must use a v2-compatible binary, including during rollback;
+a v1-only binary treats that file as corrupt and erases the deduplication history.
+
+
 Every update, hub-initiated or local, runs the **new** release's `ham-bridge update`.
 There is no separate update script: setup's transaction is the update.
 
