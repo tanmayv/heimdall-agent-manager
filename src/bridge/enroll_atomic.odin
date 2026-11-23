@@ -367,7 +367,11 @@ bridge_enroll_atomic_recover :: proc(args: []string) -> Bridge_Enroll_Recovery {
 		}
 	}
 	if token_file == "" do return .None
-	return bridge_enroll_atomic_recover_paths(token_file, config_path)
+	result := bridge_enroll_atomic_recover_paths(token_file, config_path)
+	// A committed enrollment finished here may have moved the profile to a new bridge
+	// id: wipe the predecessor its enroll recorded (enroll_predecessor.odin).
+	if result == .Promoted do bridge_enroll_sweep_predecessors_report(config_path, bridge_enroll_config_bridge_id(config_path), token_file)
+	return result
 }
 
 // bridge_enroll_atomic_seed_config builds the enroll-only runtime's config from the

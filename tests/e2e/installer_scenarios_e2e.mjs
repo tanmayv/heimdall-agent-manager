@@ -16,8 +16,8 @@
 //     install lock of a dead pid): the run recovers without a new enrollment (S7);
 //   6 `install.sh --uninstall --purge` / `install.ps1 -Uninstall --purge`: no profile
 //     files, service registration or OS secret-store items of this run remain;
-//  6b nor of the bridge step 4 replaced. Known gap iss_18eab23e79e956c8 (reported,
-//     not failing the run) until T4b (task_18eab471ed7e7a19) fixes it.
+//  6b nor of the bridge step 4 replaced (iss_18eab23e79e956c8, fixed by T4b: the
+//     re-enroll wipes it, uninstall --purge wipes any recorded predecessor).
 // State rows: docs/specs/bridge-installer-contract.md §3.
 //
 // The service manager starts the bridge with the user's REAL home, so (like
@@ -503,7 +503,7 @@ async function main() {
     expect(old.length > 0, `step 4 enrolled a new bridge (${CREATED})`);
     const left = old.flatMap((id) => [...secretItems(id).map((i) => `secret-store ${i.trim()}`), ...bridgeSecretDirs(id).map((d) => `dir ${path.join(STATE_ROOT, d)}`)]);
     expect(left.length === 0, `no OS secret-store item or secret dir of ${old} remains${left.length ? `:\n      ${left.join('\n      ')}` : ''}`);
-  }, { knownGap: 'iss_18eab23e79e956c8' }); // T4b (task_18eab471ed7e7a19) fixes it and drops knownGap
+  });
 }
 
 // On failure: remove this run's service, files and secret-store items (named by its

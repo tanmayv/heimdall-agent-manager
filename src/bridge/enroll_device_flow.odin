@@ -1134,6 +1134,8 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 	// first (reenroll_identity.odin): its previous identity comes back.
 	bridge_reenroll_recover(cfg_lib.config_path_from_args(args))
 	replacing_bridge_id := bridge_enroll_config_bridge_id(cfg_lib.config_path_from_args(args))
+	// The hub that bridge was enrolled with, before this enrollment rewrites the config.
+	replacing_hub := bridgesvc.hub_from_config(cfg_lib.config_path_from_args(args))
 	reuse_hint, hint_err, hint_ok := bridge_enroll_reuse_hint(args, replacing_bridge_id)
 	if !hint_ok {
 		fmt.eprintfln("ham-bridge enroll: %s", hint_err)
@@ -1348,7 +1350,8 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 				if reenroll {
 					fmt.printfln("Approved: re-enrolling existing bridge %s", cred.bridge_id)
 				} else if reuse_hint != "" {
-					fmt.printfln("Approved: the approver registered a NEW bridge %s instead of reusing %s (that bridge is left as it is)", cred.bridge_id, reuse_hint)
+					fmt.printfln("Approved: the approver registered a NEW bridge %s instead of reusing %s", cred.bridge_id, reuse_hint)
+					if reuse_hint == replacing_bridge_id do fmt.printfln("  %s's local secrets are deleted once this enrollment succeeds; on the hub it stays until revoked in Settings -> Devices", reuse_hint)
 				} else {
 					fmt.printfln("Approved: registering new bridge %s", cred.bridge_id)
 				}
@@ -1365,9 +1368,15 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 					return false
 				}
 				// F1: a machine enrolled by ANOTHER account is replaced only when confirmed.
-				account_ok, _ := bridge_enroll_resolve_account(args, api_base, cfg_lib.config_path_from_args(args), replacing_bridge_id, cred)
+				account_ok, replaced := bridge_enroll_resolve_account(args, api_base, cfg_lib.config_path_from_args(args), replacing_bridge_id, cred)
 				if !account_ok do return false
 				config_path := cfg_lib.config_path_from_args(args)
+				// T4b: the same account moved this profile to a NEW bridge id. The previous
+				// bridge's local secrets are wiped once this enrollment succeeded, never before
+				// (enroll_predecessor.odin).
+				has_predecessor := bridge_enroll_predecessor_to_wipe(replacing_bridge_id, cred.bridge_id, account_ok, replaced)
+				predecessor: Bridge_Predecessor
+				if has_predecessor do predecessor = bridge_enroll_predecessor_for(args, api_base, replacing_hub, replacing_bridge_id, token_file)
 				// Hold the approved scope until restart, including IDs selected only in the UI.
 				scope_lock_path := ""
 				defer if scope_lock_path != "" do bridge_instance_unlock(scope_lock_path)
@@ -1392,8 +1401,18 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 					// commits; enroll_atomic.odin owns the whole sequence.
 					// A vault-key timeout here rolls everything back (F7): the previous
 					// credential, if any, stays usable and a plain re-run retries.
-					if !bridge_enroll_atomic_run(args, cred, token_file, config_path, api_base) do return false
-					if bridge_enroll_atomic_state() == .Committed do fmt.println(bridge_enroll_result_line(reuse_hint, cred.bridge_id, reenroll))
+					// Recorded first: an enrollment the hub commits only after this process
+					// gives up waiting is finished, predecessor sweep included, by the
+					// restarted service's recovery (bridge_enroll_atomic_recover).
+					if has_predecessor do _ = bridge_predecessor_record(config_path, predecessor)
+					if !bridge_enroll_atomic_run(args, cred, token_file, config_path, api_base) {
+						if has_predecessor do bridge_predecessor_forget(config_path, predecessor.bridge_id)
+						return false
+					}
+					if bridge_enroll_atomic_state() == .Committed {
+						fmt.println(bridge_enroll_result_line(reuse_hint, cred.bridge_id, reenroll))
+						bridge_enroll_sweep_predecessors_report(config_path, cred.bridge_id, token_file)
+					}
 					bridge_reenroll_clear(config_path)
 					if !bridge_hub_pause_clear_enrolled(config_path) do return false
 					bridge_instance_unlock(enroll_config_lock) // the restarted service takes it
@@ -1410,6 +1429,9 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 				}
 				// Without atomic enrollment (an older hub) the persist IS the commit.
 				_ = bridge_reenroll_resolve(config_path, cred.bridge_id, true)
+				// The profile now names the new bridge: the predecessor is recorded even if
+				// the vault key never arrives below (uninstall --purge then removes it).
+				if has_predecessor do _ = bridge_predecessor_record(config_path, predecessor)
 				fmt.println("")
 				fmt.printfln("bridge enroll SUCCESS: enrolled as bridge_id=%s", cred.bridge_id)
 				fmt.println(bridge_enroll_result_line(reuse_hint, cred.bridge_id, reenroll))
@@ -1435,6 +1457,7 @@ bridge_enroll_device_command_run :: proc(args: []string) -> bool {
 					}
 					bridge_enroll_print_account_fingerprint(cred.bridge_id)
 				}
+				bridge_enroll_sweep_predecessors_report(config_path, cred.bridge_id, token_file)
 				// Every successful enrollment clears a needs-reenrollment marker before the
 				// service restarts: one naming a reused bridge id would park it for good.
 				bridge_reenroll_clear(config_path)

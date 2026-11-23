@@ -10,6 +10,8 @@ on:
       - 'tests/e2e/natsServer.mjs'
       - 'tests/e2e/realHomeGuard.mjs'
       - 'src/bridge/setup_cmd.odin'
+      - 'src/bridge/enroll_*.odin'
+      - 'src/bridge/uninstall_cmd.odin'
       - 'src/lib/bridgesvc/**'
       - '.github/workflows/install-sh.yml'
   pull_request:
@@ -22,6 +24,8 @@ on:
       - 'tests/e2e/natsServer.mjs'
       - 'tests/e2e/realHomeGuard.mjs'
       - 'src/bridge/setup_cmd.odin'
+      - 'src/bridge/enroll_*.odin'
+      - 'src/bridge/uninstall_cmd.odin'
       - 'src/lib/bridgesvc/**'
       - '.github/workflows/install-sh.yml'
   workflow_dispatch:
