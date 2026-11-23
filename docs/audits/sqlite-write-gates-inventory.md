@@ -120,20 +120,20 @@ runtime writes still need the coordinator-approved generation-fencing refactor.
 | content_repo_sqlite.odin:343 | `content_save_template_sqlite` | PENDING caller/gate audit |
 | content_repo_sqlite.odin:346 | `content_delete_template_sqlite` | PENDING caller/gate audit |
 | conversation_launch_preferences.odin:16 | `launch_preferences_save_sqlite` | PENDING caller/gate audit |
-| event_outbox_repo.odin:37 | `outbox_append` | PENDING caller/gate audit |
-| event_outbox_repo.odin:74 | `outbox_mark` | PENDING caller/gate audit |
-| event_outbox_repo.odin:92 | `outbox_prune` | PENDING caller/gate audit |
-| event_outbox_repo.odin:102 | `outbox_next_version` | PENDING caller/gate audit |
-| event_outbox_repo.odin:113 | `outbox_open_topic` | PENDING caller/gate audit |
-| event_outbox_repo.odin:137 | `outbox_resolve_topic` | PENDING caller/gate audit |
-| event_subscription_repo.odin:53 | `subscription_put` | PENDING caller/gate audit |
-| event_subscription_repo.odin:116 | `subscription_remove` | PENDING caller/gate audit |
-| event_subscription_repo.odin:129 | `subscription_delivered` | PENDING caller/gate audit |
-| event_subscription_repo.odin:250 | `subscription_queue_delete` | PENDING caller/gate audit |
-| event_subscription_repo.odin:261 | `subscription_prune` | PENDING caller/gate audit |
-| event_subscription_repo.odin:281 | `subscription_trim_receipts` | PENDING caller/gate audit |
-| event_subscription_repo.odin:292 | `subscription_mark_delivery` | PENDING caller/gate audit |
-| event_subscription_repo.odin:342 | `subscription_deleted` | PENDING caller/gate audit |
+| event_outbox_repo.odin:37 | `outbox_append` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_outbox_repo.odin:74 | `outbox_mark` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_outbox_repo.odin:92 | `outbox_prune` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_outbox_repo.odin:102 | `outbox_next_version` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_outbox_repo.odin:113 | `outbox_open_topic` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_outbox_repo.odin:137 | `outbox_resolve_topic` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:53 | `subscription_put` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:116 | `subscription_remove` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:129 | `subscription_delivered` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:250 | `subscription_queue_delete` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:261 | `subscription_prune` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:281 | `subscription_trim_receipts` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:292 | `subscription_mark_delivery` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
+| event_subscription_repo.odin:342 | `subscription_deleted` | UoW required by subscription_prepare/outbox_prepare (outbox_uow_owns) |
 | experiment_repo_sqlite.odin:24 | `experiment_set_sqlite` | direct gate |
 | external_identity.odin:40 | `user_resolve_external_sqlite` | direct gate |
 | external_identity.odin:125 | `user_link_external_sqlite` | direct gate |
@@ -147,25 +147,25 @@ runtime writes still need the coordinator-approved generation-fencing refactor.
 | instance_reconfiguration_repo.odin:38 | `instance_reconfiguration_write_sqlite` | PENDING caller/gate audit |
 | instance_reconfiguration_repo.odin:55 | `instance_reconfiguration_begin_impl` | PENDING caller/gate audit |
 | instance_reconfiguration_repo.odin:87 | `instance_reconfiguration_advance_impl` | PENDING caller/gate audit |
-| issue_repo_sqlite.odin:62 | `issue_save_sqlite` | PENDING caller/gate audit |
-| issue_repo_sqlite.odin:213 | `issue_update_sqlite` | PENDING caller/gate audit |
-| issue_repo_sqlite.odin:249 | `issue_delete_sqlite` | PENDING caller/gate audit |
-| issue_repo_sqlite.odin:285 | `issue_comment_save_sqlite` | PENDING caller/gate audit |
-| issue_repo_sqlite.odin:339 | `issue_comment_delete_sqlite` | PENDING caller/gate audit |
-| issue_repo_sqlite.odin:372 | `issue_vote_save_sqlite` | PENDING caller/gate audit |
-| issue_repo_sqlite.odin:403 | `issue_vote_remove_sqlite` | PENDING caller/gate audit |
-| lsp_server_config_repo_sqlite.odin:41 | `lsp_server_config_upsert_sqlite` | PENDING caller/gate audit |
-| lsp_server_config_repo_sqlite.odin:118 | `lsp_server_config_delete_sqlite` | PENDING caller/gate audit |
+| issue_repo_sqlite.odin:62 | `issue_save_sqlite` | direct gate; issue service mutations have no UoW/state lock |
+| issue_repo_sqlite.odin:219 | `issue_update_sqlite` | direct gate; issue service mutations have no UoW/state lock |
+| issue_repo_sqlite.odin:257 | `issue_delete_sqlite` | direct gate; issue service mutations have no UoW/state lock |
+| issue_repo_sqlite.odin:295 | `issue_comment_save_sqlite` | direct gate; issue service mutations have no UoW/state lock |
+| issue_repo_sqlite.odin:351 | `issue_comment_delete_sqlite` | direct gate; issue service mutations have no UoW/state lock |
+| issue_repo_sqlite.odin:386 | `issue_vote_save_sqlite` | direct gate; issue service mutations have no UoW/state lock |
+| issue_repo_sqlite.odin:419 | `issue_vote_remove_sqlite` | direct gate; issue service mutations have no UoW/state lock |
+| lsp_server_config_repo_sqlite.odin:41 | `lsp_server_config_upsert_sqlite` | direct gate; REST upsert/delete callers run outside UoW |
+| lsp_server_config_repo_sqlite.odin:120 | `lsp_server_config_delete_sqlite` | direct gate; REST upsert/delete callers run outside UoW |
 | mcp_mutations.odin:31 | `mcp_receipt_put` | PENDING caller/gate audit |
 | mcp_mutations.odin:52 | `mcp_runtime_receipt_update` | PENDING caller/gate audit |
 | mcp_repo_sqlite.odin:30 | `mcp_cleanup` | PENDING caller/gate audit |
 | mcp_repo_sqlite.odin:89 | `mcp_put_sqlite` | PENDING caller/gate audit |
 | mcp_repo_sqlite.odin:100 | `mcp_remove_sqlite` | PENDING caller/gate audit |
-| migrations.odin:1005 | `run_migrations` | PENDING caller/gate audit |
-| migrations.odin:1889 | `mark_migration_applied` | PENDING caller/gate audit |
-| migrations.odin:2013 | `upgrade_memory_scope_lists_schema` | PENDING caller/gate audit |
-| migrations.odin:2078 | `upgrade_memory_description_schema` | PENDING caller/gate audit |
-| migrations.odin:2221 | `upgrade_task_v2_schema` | PENDING caller/gate audit |
+| migrations.odin:1005 | `run_migrations` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:1889 | `mark_migration_applied` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:2013 | `upgrade_memory_scope_lists_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:2078 | `upgrade_memory_description_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
+| migrations.odin:2221 | `upgrade_task_v2_schema` | startup-only: app/wiring.odin runs migrations before repository/service setup; helpers only called by run_migrations |
 | mixed_work_repo_sqlite.odin:25 | `insert_work_dependency_sqlite` | PENDING caller/gate audit |
 | mixed_work_repo_sqlite.odin:80 | `insert_work_input_receipt_sqlite` | PENDING caller/gate audit |
 | mixed_work_repo_sqlite.odin:153 | `append_work_scope_decision_sqlite` | PENDING caller/gate audit |
@@ -242,3 +242,12 @@ runtime writes still need the coordinator-approved generation-fencing refactor.
 | workflow_run_repo_sqlite.odin:163 | `update_workflow_execution_sqlite` | PENDING caller/gate audit |
 | workflow_run_repo_sqlite.odin:231 | `insert_workflow_stage_execution_sqlite` | PENDING caller/gate audit |
 | workflow_run_repo_sqlite.odin:281 | `append_workflow_run_event_sqlite` | PENDING caller/gate audit |
+
+## Reviewed caller evidence
+
+- LSP configuration REST create/update/delete handlers call the repository directly without a UoW; both mutation entry points now enter the gate.
+- Issue service create/update/delete/comment/vote methods similarly call mutation interfaces without state locks or a UoW; all seven mutation entry points now enter the gate.
+- Every outbox/subscription statement is prepared through `outbox_prepare`/`subscription_prepare`; both reject unless `outbox_uow_owns` verifies positive transaction depth, the current owner thread, and exact connection identity. This protects their decision reads too.
+- The sole production `run_migrations` call is in `app/wiring.odin` before repositories/services are wired. Listed migration helpers are only called by that startup procedure. They are not request-time writes.
+
+Decision-read gate: `issue_get_sqlite` feeds issue service update/comment/vote existence and state checks (`issue_service.odin` update_issue, add_comment, add_vote). It now waits for another thread UoW to settle rather than allowing an action based on a rolled-back issue. Issue listing/count/display-only reads remain unchanged.

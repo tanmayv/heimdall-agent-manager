@@ -17,12 +17,13 @@ Repository_Rollback_Job :: struct {
 // The owner opens a real UoW on the shared handle. A second thread must wait
 // for rollback before its repository operation can write. Verify the persisted
 // row after join as well: merely observing a successful write misses the bug.
-expect_repository_write_survives_rollback :: proc(t: ^testing.T, conn: ^Conn, write: proc(^Conn) -> bool, verify: proc(^Conn) -> bool) {
+expect_repository_write_survives_rollback :: proc(t: ^testing.T, conn: ^Conn, write: proc(^Conn) -> bool, verify: proc(^Conn) -> bool, owner_write: proc(^Conn) -> bool = nil) {
     factory_impl: SQLite_Unit_Of_Work_Factory
     repos: iface.Repositories
     factory := new_unit_of_work_factory(&factory_impl, conn, &repos)
     uow, opened, _ := iface.unit_of_work_begin(&factory)
     if !testing.expect(t, opened) do return
+    if owner_write != nil do testing.expect(t, owner_write(conn), "owner seeded an uncommitted row")
     job := Repository_Rollback_Job{conn=conn, write=write}
     worker := thread.create_and_start_with_data(&job, proc(data: rawptr) {
         arena: virtual.Arena
@@ -151,5 +152,63 @@ test_identity_write_survives_other_thread_rollback :: proc(t: ^testing.T) {
         return saved
     }, proc(c: ^Conn) -> bool {
         return rollback_probe_exists(c, "SELECT 1 FROM user_external_identities i JOIN users u ON u.user_id=i.user_id WHERE i.issuer='issuer' AND i.subject='subject' AND u.user_id='identity_gate';")
+    })
+}
+
+@(test)
+test_lsp_config_write_survives_other_thread_rollback :: proc(t: ^testing.T) {
+    conn, db_path, opened := tmpl_clone_migrated_into_file(t, "lsp_config_rollback")
+    defer tmpl_remove_db(db_path)
+    if !testing.expect(t, opened) do return
+    defer close(&conn)
+    expect_repository_write_survives_rollback(t, &conn, proc(c: ^Conn) -> bool {
+        impl := Lsp_Server_Config_Repo_SQLite{conn=c}
+        saved, _ := lsp_server_config_upsert_sqlite(rawptr(&impl), domain.Lsp_Server_Config{
+            config_id="lsp_gate", owner_user_id="owner", bridge_id="bridge", language="odin", cmd="ols",
+        })
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        impl := Lsp_Server_Config_Repo_SQLite{conn=c}
+        cfg, found, err := lsp_server_config_get_sqlite(rawptr(&impl), "owner", "lsp_gate")
+        defer domain.lsp_server_config_destroy(cfg)
+        return found && err.code == .None && cfg.cmd == "ols"
+    })
+}
+
+@(test)
+test_issue_write_survives_other_thread_rollback :: proc(t: ^testing.T) {
+    conn, db_path, opened := tmpl_clone_migrated_into_file(t, "issue_rollback")
+    defer tmpl_remove_db(db_path)
+    if !testing.expect(t, opened) do return
+    defer close(&conn)
+    expect_repository_write_survives_rollback(t, &conn, proc(c: ^Conn) -> bool {
+        impl := Issue_Repo_SQLite{conn=c}
+        _, saved, _ := issue_save_sqlite(rawptr(&impl), domain.Issue{
+            issue_id="issue_gate", owner_user_id="owner", title="survives",
+        })
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_exists(c, "SELECT 1 FROM issues;")
+    })
+}
+
+@(test)
+test_issue_decision_read_ignores_other_thread_rollback :: proc(t: ^testing.T) {
+    conn, db_path, opened := tmpl_clone_migrated_into_file(t, "issue_read_rollback")
+    defer tmpl_remove_db(db_path)
+    if !testing.expect(t, opened) do return
+    defer close(&conn)
+    expect_repository_write_survives_rollback(t, &conn, proc(c: ^Conn) -> bool {
+        impl := Issue_Repo_SQLite{conn=c}
+        _, found, err := issue_get_sqlite(rawptr(&impl), "uncommitted_issue", "owner")
+        return !found && err.code == .Not_Found
+    }, proc(c: ^Conn) -> bool {
+        return !rollback_probe_exists(c, "SELECT 1 FROM issues;")
+    }, owner_write=proc(c: ^Conn) -> bool {
+        impl := Issue_Repo_SQLite{conn=c}
+        _, saved, _ := issue_save_sqlite(rawptr(&impl), domain.Issue{
+            issue_id="uncommitted_issue", owner_user_id="owner", title="must disappear",
+        })
+        return saved
     })
 }
