@@ -123,11 +123,12 @@ test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
 		"./bin/ham-ctl channel history --limit 20",
 		"./bin/ham-ctl task-chain list",
 		"./bin/ham-ctl task-chain show <chain_id>",
-		"./bin/ham-ctl task list --chain <chain_id>",
 		"./bin/ham-ctl task show <task_id>",
-		"Do not run a shell command the user has not approved",
-		"Do not approve, reject or request changes on reviews, and do not approve or reject memory proposals.",
-		"Chat apps are not end-to-end encrypted",
+		"ninjy-bot-operations",
+		"./bin/ham-ctl events next",
+		"./bin/ham-ctl events ack <event_id>",
+		"review verdicts and memory-proposal approvals",
+		"sensitive file contents out of chat",
 	}) {
 		testing.expect(t, strings.contains(tmpl.instructions, required), required)
 	}

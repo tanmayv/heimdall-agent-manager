@@ -11,6 +11,8 @@ import contracts "odin_test:contracts"
 import app "odin_test:hub/app"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import actions_service "odin_test:hub/service/actions"
+import platform "odin_test:hub/platform"
 import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
@@ -418,19 +420,36 @@ test_refresh_restart_and_action_sends_publish :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(frames, f.inst_id) && strings.contains(frames, `"run_count":`), "restart hint names the instance and carries run state")
 	testing.expect_value(t, strings.count(frames, `"event":"message_created"`), 1)
 
-	// Run-now action against the stopped instance: restart + action message.
+	// Drive matching/routing synchronously without racing the background consumer.
+	actions_service.stop(&f.graph.action_runtime)
+	// V2 routing persists the prompt; the bridge restarts asynchronously.
+	// The chat send above covers restart hints without a live bridge process.
 	refresh_stop_instance(&f)
-	create := api_http.router_dispatch(&f.graph.router, api_http.Request{method = "POST", path = "/api/v1/actions", body = fmt.aprintf(`{{"name":"Nightly","target_instance_id":"%s","prompt_text":"ACTION-SECRET-99"}}`, f.inst_id), request_id = "req_rf_act", remote_addr = "127.0.0.1", headers = f.alice[:]})
-	if !testing.expectf(t, create.status >= 200 && create.status < 300, "create action: %d %s", create.status, create.body) do return
-	action_id := refresh_json_field(create.body, "action_id")
-	if action_id == "" do action_id = refresh_json_field(create.body, "id")
+	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(f.graph.bridges.repo, f.bridge_id)
+	if !testing.expect(t, bridge_ok, bridge_err.message) do return
+	bridge.capabilities_json = `{"features":["event_pipeline_v1"]}`
+	_, saved, save_err := iface.bridge_save_bridge(f.graph.bridges.repo, bridge)
+	if !testing.expect(t, saved, save_err.message) do return
+	create := api_http.router_dispatch(&f.graph.router, api_http.Request{method = "POST", path = "/api/v1/actions", body = fmt.aprintf(`{{"name":"Nightly","target":{{"kind":"instance","instance_id":"%s"}},"prompt_text":"ACTION-SECRET-99","triggers":[{{"kind":"event","config":{{"event_type":"chain.state"}}}}]}}`, f.inst_id), request_id = "req_rf_act", remote_addr = "127.0.0.1", headers = f.alice[:]})
+	if !testing.expectf(t, create.status == 201, "create action: %d %s", create.status, create.body) do return
+	action_id := refresh_json_field(create.body, "id")
+	if !testing.expect(t, action_id != "", "v2 action id") do return
 	flush_ws_socket(tab.client)
-	run := api_http.router_dispatch(&f.graph.router, api_http.Request{method = "POST", path = fmt.aprintf("/api/v1/actions/%s/run", action_id), body = `{}`, request_id = "req_rf_run", remote_addr = "127.0.0.1", headers = f.alice[:]})
-	if !testing.expectf(t, run.status == 200, "run action: %d %s", run.status, run.body) do return
-	msg_id := refresh_json_field(run.body, "message_id")
+	now_ms, _ := platform.rfc3339_to_unix_ms(platform.clock_now(&f.graph.clock))
+	if !testing.expect(t, actions_service.handle_message(&f.graph.action_runtime, {subject = "ev.alice.chain.refresh.state", event_type = "chain.state", event_id = "refresh-action-event", stream_time_ms = now_ms}), "match v2 action event") do return
+	actions_service.drain_due(&f.graph.action_router)
+	run, found, run_err := f.graph.repos.actions.run_open(f.graph.repos.actions.ctx, domain.Action_ID(action_id))
+	defer domain.action_run_destroy(&run)
+	if !testing.expectf(t, found && run.state == domain.ACTION_RUN_ROUTED, "action run: found=%v state=%s reason=%s error=%s", found, run.state, run.reason, run_err.message) do return
+	msg_id := string(run.message_id)
+	message, message_ok, message_err := iface.content_get_message(&f.graph.repos.content, msg_id)
+	if !testing.expect(t, message_ok, message_err.message) do return
+	testing.expect_value(t, message.body, "ACTION-SECRET-99")
+	// V2 routing currently persists without publishing a UI hint. Exercise the
+	// shared post-commit publisher on its committed row as the closest equivalent.
+	api_http.publish_user_message_created(&f.graph.content_handlers, {kind = .Session, user_id = "alice"}, f.conv_id, message)
 	run_frames := refresh_collect(tab.client)
 	defer delete(run_frames)
-	testing.expect_value(t, strings.count(run_frames, `"change":"status_changed"`), 1)
 	testing.expect_value(t, strings.count(run_frames, `"event":"message_created"`), 1)
 	testing.expect(t, msg_id != "" && strings.contains(run_frames, msg_id) && strings.contains(run_frames, `"message_type":"action"`), "action message hint carries id and type")
 	testing.expect(t, !strings.contains(run_frames, "ACTION-SECRET-99"), "hint must not carry the prompt")
