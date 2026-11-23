@@ -784,3 +784,43 @@ their existing instructions, and deduplicate follow-up against inbox events usin
 current task state. Other taskv2 triggers still use that path. The hub flag
 `--legacy-event-notices true|false` defaults to true and controls only catalog
 triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
+
+
+## hub actions — operator actions API v2
+
+These are hub/operator commands, authenticated with the operator's hub credentials.
+The owner's `actions` experiment must be enabled. Phase 1 supports agent and
+instance targets; bot targets require the later bot integration.
+
+```bash
+ham-ctl hub actions list
+ham-ctl hub actions show <action-id>
+ham-ctl hub actions create --prompt <text> --agent-id <id> [--name <text>] [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]... [--min-interval <seconds>] [--disabled] [--trigger <spec>]... [--trigger-json <json>]...
+ham-ctl hub actions create --prompt <text> --instance <id> [--trigger <spec>]...
+ham-ctl hub actions update <action-id> [--prompt <text>] [--name <text>] [--min-interval <seconds>] [--trigger <spec>]... [--trigger-json <json>]...
+ham-ctl hub actions enable <action-id>
+ham-ctl hub actions disable <action-id>
+ham-ctl hub actions delete <action-id>
+ham-ctl hub actions runs <action-id> [--limit <n>] [--before <cursor>]
+```
+
+Each rule part is a value or `*`; omitted model means `*`. Rule order is flag
+order. Trigger specs are `cron:<5-field expr>[@<timezone>]` (last `@` splits the
+zone), `every:<seconds>`, `at:<RFC3339>` and
+`event:<event_type>[,chain=<id>][,<data key>=<value>]...`.
+`--trigger-json` takes a full trigger object, including `blackout_dates`,
+`active_from` and `active_until` in its config. Mixed repeated trigger flags keep
+their order. On update, any trigger flag replaces the whole trigger list; any
+target flag replaces the whole target, including rules. Omitted fields stay as-is.
+Pass the returned history cursor unchanged to `--before`.
+
+```bash
+ham-ctl hub actions create --prompt 'Review {{event.chain_id}}' --agent-id agt_1 --rule '*:claude' --trigger 'event:chain.state,state=completed'
+ham-ctl hub actions create --prompt 'Daily review' --instance inst_1 --trigger 'cron:0 9 * * 1-5@America/New_York'
+```
+
+There is no manual `run` verb. Read run history for waiting, deferred, routed,
+delivered, joined, skipped and failed outcomes, including reasons and delivery
+expiry. An action also starts an agent stopped by the user. Disable the action
+to prevent future action wakes. Machines must report `event_pipeline_v1`; old
+bridges remain visible with `missing_feature` but cannot run actions.
