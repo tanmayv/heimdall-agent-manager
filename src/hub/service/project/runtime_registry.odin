@@ -86,9 +86,9 @@ Bridge_Runtime_Connection :: struct {
 	// connection_state_lock/unlock: the allowed lock order is
 	// sqlite.tx_mutex → state_mutex (a unit of work may reserve capacity), and
 	// NEVER the reverse — code under state_mutex must not begin a unit of work
-	// (see lib/lockorder; Task System v2 review B1). State-locked status writes
-	// may take SQLite db_mutex, so UoWs MUST NOT hold db_mutex while reserving
-	// capacity here. Bot repository transactions enter tx_mutex before db_mutex.
+	// (see lib/lockorder; Task System v2 review B1). Runtime writers snapshot
+	// here and release state_mutex before DB persistence in their outer UoW.
+	// UoWs MUST NOT hold db_mutex while reserving capacity here.
 	state_mutex: sync.Mutex,
 	instances: map[string]Runtime_Instance_State,
 	// Per-connection cached metric series (hot-path atomics only; the series
@@ -371,7 +371,7 @@ bridge_runtime_connection_send_farewell :: proc(c: ^Bridge_Runtime_Connection, t
 // replaced_farewell, when set, is delivered to the superseded connection (if any)
 // before its retirement shuts the socket down — once the shutdown has run, nothing
 // can reach that peer any more.
-bridge_runtime_registry_accept_live :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, adapter: bool, url: string, owner: string = "", replaced_farewell: string = "") -> (replaced: bool, generation: int, ok: bool) {
+bridge_runtime_registry_accept_live :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, adapter: bool, url: string, owner: string = "", replaced_farewell: string = "", deferred_retirement: ^^Bridge_Runtime_Connection = nil) -> (replaced: bool, generation: int, ok: bool) {
 	if r == nil || bridge_id == "" do return false, 0, false
 	sync.lock(&r.metadata_mutex)
 	old, exists := r.connections[bridge_id]
@@ -404,9 +404,18 @@ bridge_runtime_registry_accept_live :: proc(r: ^Bridge_Runtime_Registry, bridge_
 	generation = c.generation
 	sync.unlock(&r.metadata_mutex)
 	if exists {
-		// The registry's lease keeps old alive until retire releases it below.
-		_ = bridge_runtime_connection_send_farewell(old, replaced_farewell)
-		bridge_runtime_connection_retire(r, old)
+		// Admission may run inside a UoW: retire the state now, but never
+		// send farewell/shutdown while holding the transaction gate. The old
+		// registry reference transfers to the caller until retirement finishes.
+		connection_state_lock(old)
+		sync.atomic_store(&old.retired, true)
+		connection_state_unlock(old)
+		if deferred_retirement != nil {
+			deferred_retirement^ = old
+		} else {
+			_ = bridge_runtime_connection_send_farewell(old, replaced_farewell)
+			bridge_runtime_connection_retire(r, old)
+		}
 	}
 	return exists, generation, true
 }

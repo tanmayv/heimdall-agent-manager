@@ -212,3 +212,182 @@ test_issue_decision_read_ignores_other_thread_rollback :: proc(t: ^testing.T) {
         return saved
     })
 }
+
+expect_migrated_repository_rollback :: proc(t: ^testing.T, tag: string, write: proc(^Conn) -> bool, verify: proc(^Conn) -> bool) {
+    conn, db_path, opened := tmpl_clone_migrated_into_file(t, tag)
+    defer tmpl_remove_db(db_path)
+    if !testing.expect(t, opened) do return
+    defer close(&conn)
+    expect_repository_write_survives_rollback(t, &conn, write, verify)
+}
+
+rollback_probe_key :: proc(c: ^Conn, query, key: string) -> bool {
+    stmt: sqlite3_stmt
+    if sqlite3_prepare_v2(c.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false
+    defer sqlite3_finalize(stmt)
+    bind_text(stmt, 1, key)
+    return sqlite3_step(stmt) == SQLITE_ROW
+}
+
+@(test)
+test_agent_audit_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "agent_audit_rollback", proc(c: ^Conn) -> bool {
+        impl := Agent_Write_Repo_SQLite{conn=c}
+        err := agent_write_insert_sqlite(rawptr(&impl), domain.Agent_Write{owner_user_id="owner", resource_kind="project", resource_id="gate", action="create"})
+        return err.code == .None
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM agent_writes WHERE resource_id=?;", "gate")
+    })
+}
+
+@(test)
+test_attention_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "attention_rollback", proc(c: ^Conn) -> bool {
+        impl := Attention_Repo_SQLite{conn=c}
+        saved, _ := attention_card_insert_if_absent_sqlite(rawptr(&impl), domain.Card{card_id="gate", owner_user_id="owner", title="survives"})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM cards WHERE card_id=?;", "gate")
+    })
+}
+
+@(test)
+test_card_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "card_rollback", proc(c: ^Conn) -> bool {
+        impl := Card_Repo_SQLite{conn=c}
+        _, saved, _ := card_create_sqlite(rawptr(&impl), domain.Card{card_id="gate", owner_user_id="owner", title="survives"})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM cards WHERE card_id=?;", "gate")
+    })
+}
+
+@(test)
+test_bot_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "bot_rollback", proc(c: ^Conn) -> bool {
+        impl := Bot_Repo_SQLite{conn=c}
+        err := bot_insert_sqlite(rawptr(&impl), domain.Bot{bot_id="gate", owner_user_id="owner", agent_id="agent", agent_instance_id="instance"})
+        return err.code == .None
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM bots WHERE bot_id=?;", "gate")
+    })
+}
+
+@(test)
+test_bridge_log_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "bridge_log_rollback", proc(c: ^Conn) -> bool {
+        impl := Bridge_Log_Repo_SQLite{conn=c}
+        count, err := bridge_log_insert_batch_sqlite(rawptr(&impl), []domain.Bridge_Log_Event{{bridge_id="gate", level="info", code="probe", count=1}})
+        return count == 1 && err.code == .None
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM bridge_log_events WHERE bridge_id=?;", "gate")
+    })
+}
+
+@(test)
+test_content_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "content_rollback", proc(c: ^Conn) -> bool {
+        impl := Content_Repo_SQLite{conn=c}
+        _, saved, _ := content_save_conversation_sqlite(rawptr(&impl), domain.Chat_Conversation{conversation_id="gate", owner_user_id="owner", title="survives"})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM chat_conversations WHERE conversation_id=?;", "gate")
+    })
+}
+
+@(test)
+test_provider_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "provider_rollback", proc(c: ^Conn) -> bool {
+        impl := Provider_Repo_SQLite{conn=c}
+        saved, _ := bridge_provider_setting_upsert_sqlite(rawptr(&impl), domain.Bridge_Provider_Setting{bridge_id="gate", provider="codex"})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM bridge_provider_settings WHERE bridge_id=?;", "gate")
+    })
+}
+
+@(test)
+test_shell_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "shell_rollback", proc(c: ^Conn) -> bool {
+        impl := Shell_Session_Repo_SQLite{conn=c}
+        saved, _ := shell_session_upsert_sqlite(rawptr(&impl), domain.Shell_Session{session_id="gate", owner_user_id="owner", bridge_id="bridge", kind="run", status="running", cmd="true"})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM shell_sessions WHERE session_id=?;", "gate")
+    })
+}
+
+@(test)
+test_taskchain_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "taskchain_rollback", proc(c: ^Conn) -> bool {
+        impl := Taskchain_Repo_SQLite{conn=c}
+        _, saved, _ := taskchain_save_chain_sqlite(rawptr(&impl), domain.Task_Chain{chain_id="gate", owner_user_id="owner", title="survives", kind=domain.CHAIN_KIND_MIXED_WORK})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM task_chains WHERE chain_id=?;", "gate")
+    })
+}
+
+@(test)
+test_launch_preferences_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "launch_preferences_rollback", proc(c: ^Conn) -> bool {
+        impl := User_Repo_SQLite{conn=c}
+        _, user_saved, _ := user_save_sqlite(rawptr(&impl), domain.User{user_id="gate", name="gate"})
+        if !user_saved do return false
+        saved, _ := launch_preferences_save_sqlite(rawptr(&impl), "gate", "{}")
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM user_conversation_launch_preferences WHERE owner_user_id=?;", "gate")
+    })
+}
+
+@(test)
+test_vault_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "vault_rollback", proc(c: ^Conn) -> bool {
+        impl := Vault_Directory_Repo_SQLite{conn=c}
+        saved, _ := vault_consume_request_nonce_sqlite(rawptr(&impl), "owner", "device", "gate", 100, 200)
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM vault_request_nonces WHERE nonce=?;", "gate")
+    })
+}
+
+@(test)
+test_native_mcp_write_survives_foreign_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "mcp_rollback", proc(c: ^Conn) -> bool {
+        err := mcp_put_sqlite(rawptr(c), domain.MCP_Record{kind="grant", id="gate", owner="owner"})
+        return err.code == .None
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM mcp_records WHERE id=?;", "gate")
+    })
+}
+
+@(test)
+test_native_mcp_receipt_survives_foreign_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "mcp_receipt_rollback", proc(c: ^Conn) -> bool {
+        err := mcp_receipt_put(c, "owner", "grant", "tool", "gate", "digest", "result")
+        return err.code == .None
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM mcp_mutation_receipts WHERE request_id=?;", "gate")
+    })
+}
+
+@(test)
+test_agent_decision_read_ignores_foreign_uncommitted_instance :: proc(t: ^testing.T) {
+    conn, db_path, opened := tmpl_clone_migrated_into_file(t, "agent_decision_rollback")
+    defer tmpl_remove_db(db_path)
+    if !testing.expect(t, opened) do return
+    defer close(&conn)
+    expect_repository_write_survives_rollback(t, &conn, proc(c: ^Conn) -> bool {
+        impl := Agent_Repo_SQLite{conn=c}
+        row, found, err := agent_get_instance_sqlite(rawptr(&impl), "uncommitted")
+        defer domain.agent_instance_destroy(&row)
+        return !found && err.code == .Not_Found
+    }, proc(c: ^Conn) -> bool {
+        return !rollback_probe_key(c, "SELECT 1 FROM agent_instances WHERE agent_instance_id=?;", "uncommitted")
+    }, owner_write=proc(c: ^Conn) -> bool {
+        impl := Agent_Repo_SQLite{conn=c}
+        _, saved, _ := agent_save_instance_sqlite(rawptr(&impl), domain.Agent_Instance{agent_instance_id="uncommitted", owner_user_id="owner"})
+        return saved
+    })
+}

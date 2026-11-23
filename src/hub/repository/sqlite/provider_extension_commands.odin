@@ -8,6 +8,9 @@ provider_extension_command_create_sqlite :: proc(
 	bool,
 	domain.Domain_Error,
 ) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt
@@ -43,6 +46,9 @@ provider_extension_command_save_sqlite :: proc(
 	ctx: rawptr,
 	value: domain.Provider_Extension_Command,
 ) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt

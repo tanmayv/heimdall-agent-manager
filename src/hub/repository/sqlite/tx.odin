@@ -32,8 +32,8 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 // the unlock. lockorder.assert_tx_mutex_allowed enforces it at begin.
 //
 // SQLite connection mutexes are held only for statements / short repository
-// operations, NEVER across an outer UoW: state_mutex holders also write SQLite.
-// A UoW may take state_mutex and then db_mutex, never db_mutex then state_mutex.
+// operations, NEVER across an outer UoW. Runtime persistence releases state_mutex
+// before DB work. A UoW may reserve state, never take state_mutex under db_mutex.
 // Bot multi-statement transactions join the tx_mutex gate before db_mutex via
 // tx_repository_enter/leave; no repository gate may be entered under state_mutex.
 //

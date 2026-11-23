@@ -86,6 +86,9 @@ shell_session_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Shell_Session {
 }
 
 shell_session_upsert_sqlite :: proc(ctx: rawptr, session: domain.Shell_Session) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -554,6 +557,9 @@ shell_session_list_where :: proc(ctx: rawptr, owner_user_id: string, clauses: []
 // port when the incoming one is 0, so clearing a port through the upsert writes
 // nothing. Returns false when no row matched the owner/session pair.
 shell_session_set_server_port_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: string, server_port: int) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -575,6 +581,9 @@ shell_session_set_server_port_sqlite :: proc(ctx: rawptr, owner_user_id, session
 }
 
 shell_session_delete_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -613,6 +622,9 @@ shell_session_delete_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: stri
 // platform.format_rfc3339_utc output: fixed width, zero-padded, always UTC, always
 // Z-suffixed. Lexicographic order is chronological order for that format.
 shell_session_delete_terminal_before_sqlite :: proc(ctx: rawptr, cutoff_rfc3339: string) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	owners, err := shell_session_delete_terminal_before_owners_sqlite(ctx, cutoff_rfc3339)
 	defer { for k in owners do delete(k); delete(owners) }
 	total := 0
@@ -624,6 +636,9 @@ shell_session_delete_terminal_before_sqlite :: proc(ctx: rawptr, cutoff_rfc3339:
 // RETURNING owner_user_id reports which owners lost rows in the same statement,
 // so no row can be deleted unreported or reported undeleted.
 shell_session_delete_terminal_before_owners_sqlite :: proc(ctx: rawptr, cutoff_rfc3339: string) -> (map[string]int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -829,6 +844,9 @@ shell_session_count_live_sqlite :: proc(ctx: rawptr, owner_user_id, kind, scope_
 // It never clears. Clearing belongs to the upsert, keyed on a terminal status
 // landing, so an intent cannot be retired while the process is still alive.
 shell_session_set_kill_requested_sqlite :: proc(ctx: rawptr, owner_user_id, session_id, kill_requested_at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")

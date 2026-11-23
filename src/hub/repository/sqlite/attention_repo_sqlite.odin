@@ -58,6 +58,9 @@ ACTIONABLE_MESSAGE_WHERE :: ` m.direction = 'agent_to_user' AND m.read_at = ''
 	)`
 
 attention_card_insert_if_absent_sqlite :: proc(ctx: rawptr, card: domain.Card) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl, ok := attention_repo_open(ctx)
 	if !ok do return false, not_open()
 	stmt: sqlite3_stmt = nil
@@ -81,6 +84,9 @@ attention_card_insert_if_absent_sqlite :: proc(ctx: rawptr, card: domain.Card) -
 }
 
 attention_card_compare_and_set_sqlite :: proc(ctx: rawptr, card: domain.Card, expect_status, expect_marker: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl, ok := attention_repo_open(ctx)
 	if !ok do return false, not_open()
 	stmt: sqlite3_stmt = nil

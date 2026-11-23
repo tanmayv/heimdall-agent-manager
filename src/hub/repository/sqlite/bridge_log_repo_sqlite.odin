@@ -9,7 +9,7 @@ import iface "odin_test:hub/repository/iface"
 // writer thread (insert_batch/cap_bridge), the reaper (prune_before) and the
 // owner API (list/delete). One multi-row INSERT per batch = one implicit
 // transaction = one journal/fsync cycle on the shared connection; no explicit
-// BEGIN, so a batch can never swallow another thread's autocommit write.
+// BEGIN. The repository gate keeps the batch outside another threads UoW.
 
 Bridge_Log_Repo_SQLite :: struct {
 	conn: ^Conn,
@@ -44,6 +44,9 @@ not_open :: proc() -> domain.Domain_Error {
 }
 
 bridge_log_insert_batch_sqlite :: proc(ctx: rawptr, events: []domain.Bridge_Log_Event) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl, ok := repo_open(ctx)
 	if !ok do return 0, not_open()
 	inserted := 0
@@ -82,6 +85,9 @@ bridge_log_insert_batch_sqlite :: proc(ctx: rawptr, events: []domain.Bridge_Log_
 }
 
 bridge_log_cap_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string, keep: int) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl, ok := repo_open(ctx)
 	if !ok do return 0, not_open()
 	// Everything older than the keep-th newest row goes. Served by the
@@ -100,6 +106,9 @@ bridge_log_cap_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string, keep: int) 
 }
 
 bridge_log_prune_before_sqlite :: proc(ctx: rawptr, received_at_before_ms: i64) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl, ok := repo_open(ctx)
 	if !ok do return 0, not_open()
 	query := "DELETE FROM bridge_log_events WHERE received_at < ?;"
@@ -143,6 +152,9 @@ bridge_log_list_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string, limit: 
 }
 
 bridge_log_delete_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl, ok := repo_open(ctx)
 	if !ok do return 0, not_open()
 	query := "DELETE FROM bridge_log_events WHERE bridge_id = ?;"

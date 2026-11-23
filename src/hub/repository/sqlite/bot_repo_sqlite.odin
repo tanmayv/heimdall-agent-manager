@@ -397,6 +397,9 @@ bot_repo_list_bot_delivery_attempt :: proc(
 }
 
 bot_insert_sqlite :: proc(ctx: rawptr, bot: domain.Bot) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -461,6 +464,9 @@ bot_set_instance_sqlite :: proc(
 	agent_instance_id: string,
 	updated_at: string,
 ) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -472,6 +478,9 @@ bot_set_instance_sqlite :: proc(
 }
 
 bot_delete_sqlite :: proc(ctx: rawptr, bot_id: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(conn, `DELETE FROM bots WHERE bot_id = ?;`, {bot_id})
 	_ = changes
@@ -530,6 +539,9 @@ binding_get_active_by_chat_sqlite :: proc(
 }
 
 binding_revoke_sqlite :: proc(ctx: rawptr, binding_id: string, revoked_at: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -541,6 +553,9 @@ binding_revoke_sqlite :: proc(ctx: rawptr, binding_id: string, revoked_at: strin
 }
 
 pairing_insert_sqlite :: proc(ctx: rawptr, p: domain.Channel_Pairing) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -565,6 +580,9 @@ pairing_get_sqlite :: proc(ctx: rawptr, code_hash: string) -> (domain.Channel_Pa
 }
 
 pairing_delete_for_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string, provider: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -626,6 +644,9 @@ message_set_send_result_sqlite :: proc(
 	external_message_id: string,
 	send_error: string,
 ) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -676,6 +697,9 @@ messages_mark_replied_sqlite :: proc(
 	count: int,
 	err: domain.Domain_Error,
 ) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	return bot_repo_write(
 		conn,
@@ -685,6 +709,9 @@ messages_mark_replied_sqlite :: proc(
 }
 
 messages_purge_binding_sqlite :: proc(ctx: rawptr, binding_id: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -704,6 +731,9 @@ messages_purge_binding_sqlite :: proc(ctx: rawptr, binding_id: string) -> domain
 }
 
 messages_purge_older_than_sqlite :: proc(ctx: rawptr, cutoff: string) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	count, err := bot_repo_write(
 		conn,
@@ -748,6 +778,9 @@ delivery_get_sqlite :: proc(ctx: rawptr, delivery_id: string) -> (domain.Bot_Del
 }
 
 delivery_insert_sqlite :: proc(ctx: rawptr, d: domain.Bot_Delivery) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -797,6 +830,9 @@ delivery_list_recent_sqlite :: proc(
 }
 
 attempt_insert_sqlite :: proc(ctx: rawptr, a: domain.Bot_Delivery_Attempt) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -890,6 +926,9 @@ delivery_update_sqlite :: proc(
 	bool,
 	domain.Domain_Error,
 ) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -921,6 +960,9 @@ attempt_update_sqlite :: proc(
 	bool,
 	domain.Domain_Error,
 ) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	conn := bot_repo_conn(ctx)
 	changes, err := bot_repo_write(
 		conn,
@@ -1195,6 +1237,9 @@ messages_mark_read_sqlite :: proc(
 }
 
 pairing_consume_sqlite :: proc(ctx: rawptr, code_hash, consumed_at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	count, err := bot_repo_write(bot_repo_conn(ctx),
 	"UPDATE channel_pairings SET consumed_at = ? WHERE code_hash = ? AND consumed_at = '' AND expires_at > ?;",
 	{consumed_at, code_hash, consumed_at})
@@ -1252,6 +1297,9 @@ binding_set_reengage_sqlite :: proc(
 	ctx: rawptr,
 	binding_id, reengage_sent_at, reengage_error: string,
 ) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	_, err := bot_repo_write(
 		bot_repo_conn(ctx),
 		"UPDATE channel_bindings SET reengage_sent_at = ?, reengage_error = ? WHERE binding_id = ? AND state = 'active';",
@@ -1433,6 +1481,9 @@ push_batch_commit_sqlite :: proc(
 }
 
 push_events_purge_processed_sqlite :: proc(ctx: rawptr, received_before: string) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	return bot_repo_write(
 		bot_repo_conn(ctx),
 		"DELETE FROM channel_push_events WHERE processed_at <> '' AND received_at < ?;",
@@ -1447,6 +1498,9 @@ messages_mark_replied_binding_sqlite :: proc(
 	count: int,
 	err: domain.Domain_Error,
 ) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	return bot_repo_write(
 		bot_repo_conn(ctx),
 		`UPDATE channel_messages SET replied_at = ? WHERE bot_id = ? AND binding_id = ? AND direction = 'inbound' AND read_at <> '' AND replied_at = '';`,
@@ -1589,6 +1643,9 @@ attachment_store_artifact_sqlite :: proc(ctx: rawptr, attachment_id, artifact_id
 }
 
 attachment_set_state_sqlite :: proc(ctx: rawptr, attachment_id: string, from, to: domain.Channel_Attachment_State, updated_at: string) -> (changed: bool, err: domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	count, write_err := bot_repo_write(bot_repo_conn(ctx), "UPDATE channel_attachments SET state = ?, updated_at = ? WHERE attachment_id = ? AND state = ?;",
 		{domain.channel_attachment_state_text(to), updated_at, attachment_id, domain.channel_attachment_state_text(from)})
 	return count == 1, write_err

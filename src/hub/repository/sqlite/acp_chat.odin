@@ -18,6 +18,9 @@ content_get_assistant_turn_sqlite :: proc(ctx: rawptr, instance, epoch, turn: st
 // The service owns the encompassing unit of work, including the message and
 // conversation mutation. The unique message_id also prevents cross-turn reuse.
 content_save_assistant_turn_sqlite :: proc(ctx: rawptr, turn: domain.ACP_Assistant_Turn) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
     impl := cast(^Content_Repo_SQLite)ctx
     q := "INSERT INTO acp_assistant_turns(agent_instance_id,launch_epoch,turn_id,message_id,revision,payload_hash) VALUES(?,?,?,?,?,?) ON CONFLICT(agent_instance_id,launch_epoch,turn_id) DO UPDATE SET revision=excluded.revision,payload_hash=excluded.payload_hash WHERE message_id=excluded.message_id;"
     stmt: sqlite3_stmt

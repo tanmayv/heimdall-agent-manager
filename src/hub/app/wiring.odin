@@ -594,6 +594,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		bridge_runtime_registry = &graph.bridge_runtime_registry,
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{
+		uow_factory = &graph.uow_factory,
 		delivery = graph.delivery,
 		mcp_control = &graph.mcp_control_handlers,
 		entitlements = billing_service.entitlement_lookup(&graph.billing),

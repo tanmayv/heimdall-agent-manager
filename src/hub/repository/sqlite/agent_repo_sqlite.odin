@@ -17,6 +17,8 @@ new_agent_repository :: proc(impl: ^Agent_Repo_SQLite, conn: ^Conn) -> iface.Age
 }
 
 agent_delete_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM agent_instances WHERE agent_instance_id = ? AND kind = 'provider_test';"
@@ -31,6 +33,8 @@ agent_delete_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (bool,
 // returns the new value. The UPSERT persists across daemon restarts so per-run
 // default titles keep incrementing globally per agent.
 agent_next_title_counter_sqlite :: proc(ctx: rawptr, agent_id: string, owner_user_id: domain.User_ID, now: string) -> (int, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	if strings.trim_space(agent_id) == "" do return 0, false, domain.domain_error(.Validation_Failed, "agent_id is required for title counter")
 	up: sqlite3_stmt = nil
@@ -49,6 +53,8 @@ agent_next_title_counter_sqlite :: proc(ctx: rawptr, agent_id: string, owner_use
 }
 
 agent_save_sqlite :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO agents (agent_id, owner_user_id, name, slug, template_id, instructions, state, created_at, updated_at, permission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET name=excluded.name, slug=excluded.slug, template_id=excluded.template_id, instructions=excluded.instructions, state=excluded.state, updated_at=excluded.updated_at, permission_mode=excluded.permission_mode;"
@@ -94,6 +100,8 @@ agent_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, l
 }
 
 agent_save_support_sqlite :: proc(ctx: rawptr, support: domain.Agent_Bridge_Support) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO agent_bridge_support (agent_id, bridge_id, owner_user_id, enabled, priority, max_instances, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, bridge_id) DO UPDATE SET enabled=excluded.enabled, priority=excluded.priority, max_instances=excluded.max_instances, updated_at=excluded.updated_at;"
@@ -128,6 +136,8 @@ agent_list_support_sqlite :: proc(ctx: rawptr, agent_id: string, owner_user_id: 
 }
 
 agent_delete_support_sqlite :: proc(ctx: rawptr, agent_id, bridge_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM agent_bridge_support WHERE agent_id = ? AND bridge_id = ? AND owner_user_id = ?;"
@@ -154,11 +164,8 @@ agent_save_instance_guarded_sqlite :: proc(ctx: rawptr, instance: domain.Agent_I
 }
 
 agent_save_instance_sqlite_impl :: proc(ctx: rawptr, instance: domain.Agent_Instance, guarded := false, expect_run_count := 0, expect_launch_epoch := "", expect_configuration_revision := 0) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	// A generation save must not join another thread's transaction on the
-	// shared connection. Ordinary status saves also run under state_mutex;
-	// they retain their existing lock order and are outside this start gate.
-	guard: Repository_Tx_Guard
-	if guarded do guard = tx_repository_enter()
+	// Runtime callers snapshot under state_mutex and persist after unlocking.
+	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	// RETURNING keeps a write statement active at SQLITE_ROW. Keep step, column
@@ -210,6 +217,10 @@ agent_save_instance_sqlite_impl :: proc(ctx: rawptr, instance: domain.Agent_Inst
 }
 
 agent_get_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	// This lookup feeds authorization or runtime mutation decisions.
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE agent_instance_id = ?;"
@@ -325,6 +336,8 @@ instance_token_columns_from_stmt :: proc(inst: ^domain.Agent_Instance, stmt: sql
 // agent_touch_user_activity_sqlite: monotonic (RFC 3339 UTC stamps compare
 // lexically), so a late writer with an older stamp never moves it back.
 agent_touch_user_activity_sqlite :: proc(ctx: rawptr, instance_id, at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	if instance_id == "" || at == "" do return false, {}
 	stmt: sqlite3_stmt = nil
@@ -340,6 +353,8 @@ agent_touch_user_activity_sqlite :: proc(ctx: rawptr, instance_id, at: string) -
 // agent_set_stop_reason_sqlite records why the Hub stopped the instance. The
 // upsert clears it when the next run starts (run_count increases).
 agent_set_stop_reason_sqlite :: proc(ctx: rawptr, instance_id, reason: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "UPDATE agent_instances SET stop_reason = ?1 WHERE agent_instance_id = ?2;"
@@ -363,6 +378,8 @@ agent_get_user_activity_sqlite :: proc(ctx: rawptr, instance_id: string) -> (str
 }
 
 agent_update_token_usage_sqlite :: proc(ctx: rawptr, instance_id, bridge_id, usage_json, updated_at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	// An unchanged snapshot (status frames repeat it) is not rewritten, so
@@ -380,6 +397,8 @@ agent_update_token_usage_sqlite :: proc(ctx: rawptr, instance_id, bridge_id, usa
 // guard, so a replayed or retried final for an already-counted run is a no-op
 // and a run the hub never launched (beyond run_count) is refused.
 agent_add_token_totals_sqlite :: proc(ctx: rawptr, instance_id, bridge_id: string, run_count: int, context_tokens, est_tool_tokens, output_tokens: i64) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	if run_count <= 0 do return false, {}
 	stmt: sqlite3_stmt = nil

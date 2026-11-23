@@ -8,6 +8,8 @@ import iface "odin_test:hub/repository/iface"
 // All plan mutations share the enrollment connection and SQLite write lock.
 // Production never BEGINs a transaction on the shared request connection.
 bridge_create_limited_sqlite :: proc(ctx: rawptr, bridge: domain.Bridge, max_bridges: int, sunset: iface.Bridge_Sunset) -> (domain.Bridge, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	conn := impl.conn
 	if impl.commit != nil {
@@ -113,6 +115,8 @@ bridge_drop_sunset_receipt :: proc(conn: ^Conn, replacement_bridge_id: string) -
 }
 
 bridge_delete_pending_restoring_sunset_sqlite :: proc(ctx: rawptr, bridge_id: string, max_bridges: int, restore_allowed: bool, now: string) -> (iface.Sunset_Rollback_Outcome, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if impl.commit != nil {
 		sync.mutex_lock(&impl.commit.mutex)
@@ -235,6 +239,8 @@ bridge_list_owners_sqlite :: proc(ctx: rawptr) -> ([]string, domain.Domain_Error
 }
 
 bridge_reconcile_plan_sqlite :: proc(ctx: rawptr, owner: domain.User_ID, max_bridges: int, now: string, before: iface.Bridge_Plan_Rank_Proc) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if impl.commit != nil {
 		sync.mutex_lock(&impl.commit.mutex)

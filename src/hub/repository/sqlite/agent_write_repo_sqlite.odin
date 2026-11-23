@@ -12,6 +12,9 @@ new_agent_write_repository :: proc(impl: ^Agent_Write_Repo_SQLite, conn: ^Conn) 
 	return {ctx = impl, insert = agent_write_insert_sqlite, list_by_owner = agent_write_list_by_owner_sqlite}
 }
 agent_write_insert_sqlite :: proc(ctx: rawptr, w: domain.Agent_Write) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Agent_Write_Repo_SQLite)(ctx)
 	fields := w.fields
 	if fields == nil do fields = []string{}
