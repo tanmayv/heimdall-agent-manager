@@ -529,3 +529,51 @@ test_gate_journal_members_roundtrip :: proc(t: ^testing.T) {
 	got, ok = decode_line(text[:len(text) - 1], context.temp_allocator)
 	testing.expect(t, ok && !got.busy.counted && !got.forced, "busy null round-trips")
 }
+
+// interrupt_pending is bounded: 15 min after the interrupted failure (or for another tree)
+// a timer op waits its 2 h again.
+@(test)
+test_gate_interrupt_carry_is_bounded :: proc(t: ^testing.T) {
+	w: World
+	from, to := gate_world(&w, t, "t14-carry")
+	defer world_destroy(&w)
+	w.fake.agents = Busy{pty_sessions = 2}
+	x, err := timer_op(&w, "op_timer", to)
+	testing.expect(t, err == nil && x == .Run)
+	w.fake.stop_fail_once = from.tree
+	x, err = interrupt(&w.e, "op_now", "app:usr_1")
+	testing.expect(t, err == nil && x == .Run && last_of(&w).error == "stop_timeout")
+	w.fake.clock += INTERRUPT_CARRY_S + 5
+	x, err = timer_op(&w, "op_later", to)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect_value(t, last_of(&w).state, "waiting_for_idle")
+	testing.expect_value(t, len(w.fake.stops), 1) // only the failed attempt's stop
+}
+
+// Fails closed: a host without gate hooks makes a timer op wait (not counted), never
+// activate at once; it is forced at force_at.
+@(test)
+test_gate_fails_closed_without_hooks :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t14-closed")
+	defer world_destroy(&w)
+	from := make_tree(w.root, Tree_Spec{version = "0.6.0", digit = 'a'})
+	to := make_tree(w.root, Tree_Spec{version = "0.6.1", digit = 'b'})
+	w.fake.behaviour[from.tree] = .Good
+	w.fake.behaviour[to.tree] = .Good
+	install(&w, from)
+	host := fake_host(w.fake)
+	host.gate_count = nil
+	host.close_admission = nil
+	host.open_admission = nil
+	testing.expect(t, open(&w.e, world_config(&w), host) == .Run)
+	w.open = true
+	x, err := start(&w.e, from.tree, .Normal)
+	testing.expect(t, err == nil && x == .Run)
+	x, err = timer_op(&w, "op_timer", to)
+	testing.expect(t, err == nil && x == .Run)
+	l := last_of(&w)
+	testing.expect(t, l.state == "waiting_for_idle" && !l.busy.counted, "no hooks: wait, busy null")
+	x, err = advance(&w, GATE_WAIT_S + 5)
+	testing.expect(t, err == nil && x == .Handover, "forced at force_at")
+}

@@ -3,7 +3,8 @@ package procs
 
 import win "core:sys/windows"
 
-STILL_ACTIVE :: 259
+SYNCHRONIZE_ :: 0x0010_0000
+WAIT_TIMEOUT_ :: 0x0000_0102
 
 @(private)
 _self_pid :: proc() -> int {
@@ -13,11 +14,11 @@ _self_pid :: proc() -> int {
 // _open: a handle to `pid`, with `access`, only while it is running.
 @(private)
 _open :: proc(pid: int, access: win.DWORD) -> (win.HANDLE, bool) {
-	h := win.OpenProcess(access | win.PROCESS_QUERY_LIMITED_INFORMATION, win.FALSE, win.DWORD(pid))
+	h := win.OpenProcess(access | win.PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_, win.FALSE, win.DWORD(pid))
 	if h == nil do return nil, false
-	code: win.DWORD
-	if !win.GetExitCodeProcess(h, &code) || code != STILL_ACTIVE {
-		// Exited (the object lives on while handles to it are open).
+	// Signalled = exited (the object lives on while handles to it are open). Not
+	// GetExitCodeProcess: a process that exited with 259 would look like STILL_ACTIVE.
+	if win.WaitForSingleObject(h, 0) != WAIT_TIMEOUT_ {
 		win.CloseHandle(h)
 		return nil, false
 	}

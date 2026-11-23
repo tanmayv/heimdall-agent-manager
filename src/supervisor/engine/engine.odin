@@ -71,7 +71,8 @@ Host :: struct {
 	// A service stop arrived while an activation runs (checked between pre-switch steps).
 	stop_requested:         proc(user: rawptr) -> bool,
 	// Agent gate (§12, T14), answered by the runtime over the supervisor<->runtime channel.
-	// All three nil = no gate (every op activates at once, as in T13).
+	// Fails closed: a nil gate_count is "not counted", which a timer op treats as busy
+	// (it waits, then is forced at force_at); user-started ops interrupt regardless.
 	// gate_count: live PTY sessions, in-flight launches and helper processes of this
 	// instance; `counted` = false when the runtime did not answer (treated as busy).
 	gate_count:             proc(user: rawptr) -> Busy,

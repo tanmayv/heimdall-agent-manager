@@ -412,7 +412,7 @@ The launcher's part of recovery is §7.
 | J27 | `set_channel` / `set_auto_update` / `retry_failed`: `requested` → `applied` | Order: `requested` line → `update.json` / `pins.json` replaced atomically, carrying `"last_op":"<op_id>"` → `applied` line → op index | File not yet written (`last_op` ≠ `op_id`) → write it (for `set_channel`, `revision` = stored + 1 only in this case, so a replay never bumps twice). File written, `applied` missing → write `applied`. |
 | J28 | `rollback_to_previous`: `requested` → `verifying` → `verified` | `previous` valid and ≠ `current`; tree `tree.json` sizes match (read-only check, no network) | Rerun the check (read-only). Check fails → `failed no_previous` / `tree_damaged` (status suggests `repair`). From `verified` on, identical to an install with `from` = `current`, `to` = `previous` (J10–J25); the newer tree `from` is pinned (`user_rollback`) **only after `current := to` has landed**, written together with the `activating/pointers_done` line (pin first, then the line; J21-style idempotent re-add on replay), so the timer does not re-install it; `retry_failed` clears the pin. An op that ends before the switch (`failed interrupted_before_switch`, `service_stopped`, J10–J13, §7.5) never pins the still-running tree. |
 | J29 | Offline `ham-supervisor repair` (CLI, §16) | Holds `.install.lock` (setup) + `engine.lock`; service stopped. Lines: `requested` → `verifying` → `verified` → `activating` sub-steps `stopped` (J0 reap only) → `snapshot` → `pointers_begin` → `previous := current` if valid else the new tree → `current := new` → `pointers_done` → `handover`; CLI exits 0, releasing the locks; setup starts the service | Before the CLI starts its own op it runs J0 and resolves any active op exactly as a supervisor start would. CLI crash before `current := new` → the active op ends `failed interrupted_before_switch` at the next CLI run or supervisor start, and setup reports exit 1 (re-runnable). CLI crash after `current := new` → the service's supervisor of `new` (launched with `C` = `new` ≠ `K`) finds `activating` with `current` = its tree → J15/J16 probation → `committed`, `known-good := new`. `new` fails → launcher fallback to `previous` (may itself be broken → offline, setup reports the result it saw, exit 1/7). |
-| J30 | `update_now` arrives while the active op is `waiting_for_idle` (supersede) | Order: active op line `activating/gate_closed` with `"interrupted_by":"<new op_id>"` → new op single line `noop` with note `superseded_by <active op_id>` → op index → inbox file deleted | Crash before the first line: the active op is still waiting and the intent is re-read → same outcome. Crash after the first line, before the switch: the next start ends the active op `failed interrupted_before_switch` (J10); an intent still in the inbox then finds no active op and runs as its own user-started op; an intent already answered `noop` is not lost either: **[T14]** the next timer op after a failed op that carries `interrupted_by` interrupts at once instead of waiting (`interrupt_pending`, §12). Same for any other failure before the switch (`stop_timeout`, `snapshot_failed`, …). |
+| J30 | `update_now` arrives while the active op is `waiting_for_idle` (supersede) | Order: active op line `activating/gate_closed` with `"interrupted_by":"<new op_id>"` → new op single line `noop` with note `superseded_by <active op_id>` → op index → inbox file deleted | Crash before the first line: the active op is still waiting and the intent is re-read → same outcome. Crash after the first line, before the switch: the next start ends the active op `failed interrupted_before_switch` (J10); an intent still in the inbox then finds no active op and runs as its own user-started op; an intent already answered `noop` is not lost either: **[T14]** a timer op for the same tree within 15 min of a failed op that carries `interrupted_by` interrupts at once instead of waiting (`interrupt_pending`, §12). Same for any other failure before the switch (`stop_timeout`, `snapshot_failed`, …). |
 | J31 | Invalid intent (`wrong_instance`, `unknown_action`, `bad_expiry`, `stale_intent`, `expired`, schema error, and `cancel` rejections of J35) | Single terminal line `rejected <reason>` → op index → inbox file deleted | File still there → `op_id` found in the index → file deleted, nothing re-journaled. A file that does not parse or has no `op_id` is renamed to `inbox/bad-<ts>.json`, not journaled, and GC deletes it after 7 days. |
 | J32 | Supervisor start whose launch does not match the records (§7.6) | Decision taken after J0 and the journal read, before READY and before starting any runtime | The supervisor exits 75 or rolls back per §7.6. A crash during the decision repeats it at the next start (it is read-only until the rollback line is written, after which J18 applies). |
 | J33 | Journal rotation (§6.1) | `ops.jsonl.new` → replace `ops.1.jsonl` → rename `.new` | J0 finishes or redoes the rotation; the op index is never touched by rotation, so dedupe history survives any crash in it. |
@@ -879,14 +879,16 @@ Engine: `src/supervisor/engine/gate.odin`; process identity and stop:
 `procs.json` are T13b's; they plug in through the `Host` hooks below.
 
 - **Host hooks.** `gate_count() -> Busy{counted, pty_sessions, launches, helpers}`,
-  `close_admission() -> bool`, `open_admission()`. All nil = no gate (every op activates at
-  once, as in T13). `counted = false` (runtime did not answer) is treated as **busy**: a
+  `close_admission() -> bool`, `open_admission()`. **Fails closed:** a nil `gate_count`
+  (or a runtime that does not answer) is "not counted" and a timer op treats it as busy:
+  it waits and is forced at `force_at`. `counted = false` (runtime did not answer) is treated as **busy**: a
   timer op waits and is forced at `force_at`; a user op interrupts anyway.
 - **Who waits.** Only `actor: timer` ops. Every other actor (`app:*`, `hub:*`, `installer`,
   `cli`, and the actions `install_version`, `rollback_to_previous`, `repair`) interrupts at
-  once. Exception: a timer op right after an op that ended `failed` carrying
-  `interrupted_by` interrupts too (J30 crash window: the user's `update_now` was already
-  answered).
+  once. Exception: a timer op for the **same `to` tree within 15 min** of an op that ended
+  `failed` carrying `interrupted_by` interrupts too (J30 crash window: the user's
+  `update_now` was already answered). Later, or for another tree, the 2 h wait applies
+  again, so agents started long after the failure keep their countdown.
 - **Order for every activation:** close admission → count → journal
   `activating/gate_closed` with `busy` and `forced` → `stopping` … The idle path re-counts
   after the close; a non-zero re-count reopens admission and the op waits (no journal line
@@ -909,8 +911,13 @@ Engine: `src/supervisor/engine/gate.odin`; process identity and stop:
   is held by the recorded leader (zombie) or by nobody (a pgid cannot be reused while its
   group exists). Windows: no soft signal (the runtime asked the agents to end); after the
   grace `TerminateProcess` on a handle whose creation time matched, so check and kill hit
-  the same process object; the per-instance job object is T13b's. Zombies count as
-  stopped; `procs` never reaps (the spawning code owns exit statuses).
+  the same process object (liveness = `WaitForSingleObject(h, 0)`, not the exit code, which
+  a process may set to 259 = `STILL_ACTIVE`); the per-instance job object is T13b's. Zombies count as
+  stopped; `procs` never reaps (the spawning code owns exit statuses). Each inspection runs
+  in its own scratch arena, so a 40 s stop that scans `/proc` every 20 ms does not grow the
+  supervisor's temp allocator. Residual POSIX race: a pid could exit and be reused between
+  the identity check and `kill()` (microseconds; `pidfd` would close it for single
+  processes only).
 - **Tests.** `src/supervisor/engine/gate_test.odin` (fake clock: wait + countdown, force at
   2 h, idle, admission race, silent runtime, user op, `rollback_to_previous`, `update_now`
   interrupt with J30 line order, cancel, restart keeps `force_at` under both crash

@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:sys/posix"
 
 // _stat: /proc/<pid>/stat field 22 (starttime, clock ticks since boot). The comm
 // field (2) may contain spaces and ')' so fields are counted after the LAST ')'.
@@ -38,12 +39,20 @@ _stat_full :: proc(pid: int) -> (start_time: u64, zombie: bool, pgrp: int, found
 }
 
 // _group_has_running_member: a non-zombie process in process group `pgid` (/proc scan).
+// Fails safe: an unreadable /proc counts as "still running" (stop keeps escalating and
+// reports survivors) rather than "gone". Plain readdir, not core:os directory reading:
+// that stats every entry and ended the listing early when a pid exited mid-scan, which
+// made a live group member look gone (intermittent, seen in local loops).
 @(private)
 _group_has_running_member :: proc(pgid: int) -> bool {
-	entries, err := os.read_directory_by_path("/proc", -1, context.temp_allocator)
-	if err != nil do return false
-	for ent in entries {
-		pid, is_pid := strconv.parse_int(ent.name, 10)
+	dir := posix.opendir("/proc")
+	if dir == nil do return true
+	defer posix.closedir(dir)
+	for {
+		ent := posix.readdir(dir)
+		if ent == nil do break
+		name := string(cstring(&ent.d_name[0]))
+		pid, is_pid := strconv.parse_int(name, 10)
 		if !is_pid || pid <= 0 do continue
 		_, zombie, pgrp, found := _stat_full(pid)
 		if found && !zombie && pgrp == pgid do return true

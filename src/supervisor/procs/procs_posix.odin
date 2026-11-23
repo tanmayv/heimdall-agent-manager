@@ -1,6 +1,7 @@
 #+build linux, darwin, freebsd, openbsd, netbsd
 package procs
 
+import "core:mem/virtual"
 import "core:sys/posix"
 
 @(private)
@@ -33,6 +34,9 @@ _terminate :: proc(t: Target, hard: bool) {
 // leader itself) do not count: kill(-pgid, 0) succeeds for them, so members are listed.
 @(private)
 _group_orphans_alive :: proc(leader: Id) -> bool {
+	scratch := scratch_begin()
+	defer scratch_end(&scratch)
+	context.temp_allocator = virtual.arena_allocator(&scratch)
 	pid := posix.pid_t(leader.pid)
 	st, _, found := _stat(leader.pid)
 	if found {

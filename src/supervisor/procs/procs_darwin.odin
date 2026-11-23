@@ -57,11 +57,12 @@ _kinfo :: proc(pid: int) -> (start_time: u64, stat: u32, ok: bool) {
 // _group_has_running_member: a non-zombie process in process group `pgid`.
 @(private)
 _group_has_running_member :: proc(pgid: int) -> bool {
+	// Fails safe like Linux: no process list = "still running".
 	n := darwin.proc_listallpids(nil, 0)
-	if n <= 0 do return false
+	if n <= 0 do return true
 	pids := make([]i32, int(n) + 64, context.temp_allocator)
 	got := darwin.proc_listallpids(raw_data(pids), i32(len(pids) * size_of(i32)))
-	if got <= 0 do return false
+	if got <= 0 do return true
 	for pid in pids[:min(int(got), len(pids))] {
 		if pid <= 0 do continue
 		info: darwin.proc_bsdinfo

@@ -30,11 +30,14 @@ GATE_WAIT_S :: 2 * 3600
 
 TIMER_ACTOR :: "timer"
 
+// How long after an interrupted op failed before the switch the next timer op for the same
+// tree still counts as interrupted (interrupt_pending).
+INTERRUPT_CARRY_S :: 15 * 60
+
 // gate decides for an op that passed precheck (engine.odin): wait, or close admission and
 // run activate_steps.
 @(private)
 gate :: proc(e: ^Engine, op: Line, rule: Schema_Rule) -> (Exit, Error) {
-	if !gate_enabled(e) do return activate_steps(e, op, rule)
 	if op.actor != TIMER_ACTOR || interrupt_pending(e, op) {
 		cur := op
 		cur.busy = gate_close_and_count(e)
@@ -96,7 +99,7 @@ interrupt :: proc(e: ^Engine, by_op_id, actor: string) -> (x: Exit, err: Error) 
 		// The active op ended without activating; the update_now runs as its own op.
 		return px, perr
 	}
-	cur.busy = gate_close_and_count(e) if gate_enabled(e) else Busy{}
+	cur.busy = gate_close_and_count(e)
 	cur.forced = false
 	cur.interrupted_by = by_op_id
 	superseded := Line {
@@ -157,14 +160,11 @@ gate_status :: proc(e: ^Engine) -> (s: Gate_Status) {
 
 // ---- host wrappers ----
 
-@(private)
-gate_enabled :: proc(e: ^Engine) -> bool {
-	return e.host.gate_count != nil
-}
-
+// gate_count fails closed: a host without the hook (or a runtime that does not answer)
+// reports counted = false, which a timer op treats as busy (wait, then force at force_at).
 @(private)
 gate_count :: proc(e: ^Engine) -> Busy {
-	if e.host.gate_count == nil do return Busy{counted = true}
+	if e.host.gate_count == nil do return Busy{}
 	return e.host.gate_count(e.host.user)
 }
 
@@ -186,10 +186,14 @@ gate_open_admission :: proc(e: ^Engine) {
 // J10; or stop_timeout, snapshot_failed, …) has already answered its update_now
 // `noop superseded_by`. Without this rule the user's intent would be lost and the retried
 // timer op would wait 2 h again, so the next timer op after such a failure interrupts too.
+//
+// Bounded: only for the same candidate tree and within INTERRUPT_CARRY_S of the failure, so
+// agents started hours later are not killed without their 2 h countdown.
 @(private)
 interrupt_pending :: proc(e: ^Engine, op: Line) -> bool {
 	lt, ok := e.last_terminal.?
-	return ok && lt.interrupted_by != "" && lt.state == "failed"
+	if !ok || lt.interrupted_by == "" || lt.state != "failed" do return false
+	return lt.to.tree == op.to.tree && now(e) - lt.ts <= INTERRUPT_CARRY_S
 }
 
 // write_gate_status: gate members of supervisor-status.json (engine.odin write_status).

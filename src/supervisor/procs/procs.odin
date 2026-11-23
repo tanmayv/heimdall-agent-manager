@@ -22,8 +22,15 @@
 // to end (§12) exit on their own, then TerminateProcess on a handle opened by pid whose
 // creation time matched. Job objects (one per instance, KILL_ON_JOB_CLOSE) are the
 // supervisor's (T13b); this package works on the recorded processes.
+//
+// Residual race (documented, not closed): between the identity check and kill() the target
+// could exit and its pid be reused by a new process within microseconds. For a group
+// signal the pgid cannot be reused while any member lives; for a lone pid the window is
+// the cost of a portable API (Linux pidfd_open + pidfd_send_signal would close it for
+// single processes, but not for groups before Linux 6.9).
 package procs
 
+import "core:mem/virtual"
 import "core:time"
 
 // Id: a process identity. start_time units are per OS (see above) and only compared.
@@ -43,6 +50,9 @@ Target :: struct {
 // user's process) — all cases in which it is not ours to signal.
 identify :: proc(pid: int) -> (id: Id, ok: bool) {
 	if pid <= 0 do return
+	scratch := scratch_begin()
+	defer scratch_end(&scratch)
+	context.temp_allocator = virtual.arena_allocator(&scratch)
 	st, zombie, found := _stat(pid)
 	if !found || zombie do return
 	return Id{pid, st}, true
@@ -62,6 +72,9 @@ alive :: proc(id: Id) -> bool {
 // running: the target (and, for a POSIX group, any member of its group) still runs.
 running :: proc(t: Target) -> bool {
 	if alive(t.id) do return true
+	scratch := scratch_begin()
+	defer scratch_end(&scratch)
+	context.temp_allocator = virtual.arena_allocator(&scratch)
 	when ODIN_OS != .Windows {
 		if t.group do return _group_orphans_alive(t.id)
 	}
@@ -98,6 +111,21 @@ stop :: proc(targets: []Target, grace_ms := DEFAULT_GRACE_MS, wait_ms := DEFAULT
 	wait_all(targets, wait_ms)
 	for t in targets do if running(t) do r.survivors += 1
 	return
+}
+
+// Every inspection runs in its own scratch arena, freed on return: stop() polls every
+// 20 ms for up to 40 s and a group scan reads all of /proc, so allocating from the caller's
+// temp allocator would grow the supervisor's long-lived temp arena by hundreds of MB. A
+// library cannot free_all the caller's temp allocator (it may hold the caller's data).
+@(private)
+scratch_begin :: proc() -> (a: virtual.Arena) {
+	_ = virtual.arena_init_growing(&a, 64 * 1024)
+	return
+}
+
+@(private)
+scratch_end :: proc(a: ^virtual.Arena) {
+	virtual.arena_destroy(a)
 }
 
 // wait_all polls until no target runs or `ms` elapsed; true = all stopped.
