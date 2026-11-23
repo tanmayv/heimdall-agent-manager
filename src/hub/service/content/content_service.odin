@@ -234,7 +234,8 @@ update_conversation_title :: proc(s:^Content_Service, auth:contracts.Auth_Contex
 // token, sets the title, and stamps title_source="agent" so the activity-gated
 // nudge engine (T2) stops nudging this conversation.
 set_own_conversation_title :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id, title:string)->(domain.Chat_Conversation,bool,domain.Domain_Error){ if auth.kind!=.Instance_Token || auth.agent_instance_id=="" || auth.agent_instance_id!=instance_id do return {},false,domain.domain_error(.Forbidden,"instance token is required"); c,ok,err:=get_conversation_by_instance(s,auth,instance_id); if !ok do return {},false,err; return update_conversation_title(s,auth,c.conversation_id,title,"agent") }
-get_conversation_by_instance :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; rows,list_err:=iface.content_list_conversations(s.content,owner,512,""); if list_err.code!=.None do return {},false,list_err; for c in rows { if c.agent_instance_id==instance_id do return c,true,{} }; return {},false,domain.domain_error(.Not_Found,"conversation not found") }
+// Indexed owner+instance lookup; returns the most recently active conversation.
+get_conversation_by_instance :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; return iface.content_conversation_by_instance(s.content,owner,instance_id) }
 list_messages :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,limit:int,cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ c,ok,err:=get_conversation(s,auth,cid); if !ok do return nil,err; rows,list_err:=iface.content_list_messages(s.content,c.conversation_id,c.owner_user_id,limit,cursor); if list_err.code!=.None do return nil,list_err; repair_stale_pane_captures(s, rows); return rows,{} }
 list_user_visible_messages :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,limit:int,cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ c,ok,err:=get_conversation(s,auth,cid); if !ok do return nil,err; rows,list_err:=iface.content_list_user_visible_messages(s.content,c.conversation_id,c.owner_user_id,limit,cursor); if list_err.code!=.None do return nil,list_err; repair_stale_pane_captures(s, rows); return rows,{} }
 list_agent_inbox_messages :: proc(s:^Content_Service, auth:contracts.Auth_Context, filter: Agent_Inbox_Filter) -> ([]domain.Chat_Message,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return nil,err; c,conv_ok,conv_err:=get_conversation_by_instance(s,auth,filter.agent_instance_id); if !conv_ok do return nil,conv_err; limit := filter.limit; if limit <= 0 do limit = 50; if limit > 200 do limit = 200; rows,list_err:=iface.content_list_agent_inbox_messages(s.content,c.conversation_id,c.owner_user_id,filter.agent_instance_id,filter.unread_only,filter.receiver_only,filter.include_outgoing,filter.include_debug,limit,filter.cursor,filter.oldest_first); if list_err.code!=.None do return nil,list_err; repair_stale_pane_captures(s, rows); return rows,{} }
@@ -571,9 +572,9 @@ conversation_instance_binding_valid :: proc(s:^Content_Service, owner:domain.Use
 	if inst.agent_id!=input.agent_id do return false,domain.domain_error(.Conflict,"conversation agent_id must match agent instance")
 	if input.chain_id!="" && inst.chain_id!=input.chain_id do return false,domain.domain_error(.Conflict,"conversation chain_id must match agent instance")
 	if string(input.project_id)!="" && inst.project_id!=input.project_id do return false,domain.domain_error(.Conflict,"conversation project_id must match agent instance")
-	existing,list_err:=iface.content_list_conversations(s.content,owner,256,"")
-	if list_err.code!=.None do return false,list_err
-	for c in existing { if c.agent_instance_id==input.agent_instance_id do return false,domain.domain_error(.Conflict,"agent instance already has a conversation") }
+	_,exists,lookup_err:=iface.content_conversation_by_instance(s.content,owner,input.agent_instance_id)
+	if exists do return false,domain.domain_error(.Conflict,"agent instance already has a conversation")
+	if lookup_err.code!=.Not_Found do return false,lookup_err
 	return true,{}
 }
 artifact_context_owned :: proc(s:^Content_Service, owner:domain.User_ID, input:Artifact_Input)->(bool,domain.Domain_Error){

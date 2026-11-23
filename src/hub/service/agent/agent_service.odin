@@ -491,29 +491,18 @@ list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, li
 	return list_instances_filtered(service, auth, List_Instances_Filter{}, limit, cursor)
 }
 
+// Filters run in SQL (owner-scoped, indexed), so results are exact past any page size.
 list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, filter: List_Instances_Filter, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	has_filter := filter.agent_id != "" || filter.bridge_id != "" || filter.runtime_status != "" || filter.project_id != ""
-	fetch_limit := limit if !has_filter else max(limit * 10, 500)
-	instances, list_err := iface.agent_list_instances_by_owner(service.agents, owner, fetch_limit, cursor)
-	if list_err.code != .None do return nil, list_err
-	out := make([dynamic]domain.Agent_Instance)
-	for inst in instances {
-		if filter.agent_id != "" && inst.agent_id != filter.agent_id do continue
-		if filter.bridge_id != "" && inst.bridge_id != filter.bridge_id do continue
-		if filter.project_id != "" && string(inst.project_id) != filter.project_id do continue
-		if filter.runtime_status != "" {
-			if filter.runtime_status == "live" || filter.runtime_status == "active" {
-				if !runtime_expected_active(inst.runtime_status) do continue
-			} else if inst.runtime_status != filter.runtime_status {
-				continue
-			}
-		}
-		append(&out, inst)
-		if len(out) >= limit do break
+	repo_filter := iface.Agent_Instance_Filter{agent_id = filter.agent_id, bridge_id = filter.bridge_id, project_id = filter.project_id}
+	single := [1]string{filter.runtime_status}
+	if filter.runtime_status == "live" || filter.runtime_status == "active" {
+		repo_filter.runtime_statuses = RUNTIME_EXPECTED_ACTIVE_STATUSES[:]
+	} else if filter.runtime_status != "" {
+		repo_filter.runtime_statuses = single[:]
 	}
-	return out[:], domain.Domain_Error{}
+	return iface.agent_list_instances_filtered(service.agents, owner, repo_filter, limit, cursor)
 }
 
 active_instance_count_for_bridge :: proc(service: ^Agent_Service, bridge_id: string) -> int {
@@ -1496,15 +1485,15 @@ resolve_instance_chain :: proc(service: ^Agent_Service, owner: domain.User_ID, c
 
 ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, default_title: string = "") -> (domain.Chat_Conversation, bool, domain.Domain_Error) {
 	if service.content == nil do return domain.Chat_Conversation{}, false, domain.domain_error(.Internal_Error, "content repository is not configured")
-	existing, list_err := iface.content_list_conversations(service.content, inst.owner_user_id, 512, "")
-	if list_err.code != .None do return domain.Chat_Conversation{}, false, list_err
-	for c in existing {
-		if c.agent_instance_id == inst.agent_instance_id {
-			if c.agent_id != inst.agent_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation agent binding is inconsistent")
-			if c.chain_id != inst.chain_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation chain binding is inconsistent")
-			if inst.conversation_id != "" && c.conversation_id != inst.conversation_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation identity is inconsistent")
-			return c, true, domain.Domain_Error{}
-		}
+	// Indexed owner+instance lookup: a capped owner-wide page missed older
+	// conversations and created a duplicate for the same instance.
+	c, found, lookup_err := iface.content_conversation_by_instance(service.content, inst.owner_user_id, inst.agent_instance_id)
+	if !found && lookup_err.code != .Not_Found do return domain.Chat_Conversation{}, false, lookup_err
+	if found {
+		if c.agent_id != inst.agent_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation agent binding is inconsistent")
+		if c.chain_id != inst.chain_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation chain binding is inconsistent")
+		if inst.conversation_id != "" && c.conversation_id != inst.conversation_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation identity is inconsistent")
+		return c, true, domain.Domain_Error{}
 	}
 	now := platform.clock_now(service.clock)
 	conv_id := inst.conversation_id; if conv_id == "" do conv_id = platform.generate_id(service.ids, "chat_")
@@ -1647,8 +1636,12 @@ runtime_expected_active :: proc(runtime_status: string) -> bool {
 	// "blocked" is active-but-not-ready: the wrapper is alive (still heartbeating),
 	// so the instance counts as live and must not be reaped, but its startup_status
 	// projects to startup_blocked rather than ready.
-	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping" || runtime_status == "blocked"
+	for status in RUNTIME_EXPECTED_ACTIVE_STATUSES do if runtime_status == status do return true
+	return false
 }
+
+// Statuses runtime_expected_active accepts; list_instances_filtered sends them to SQL.
+RUNTIME_EXPECTED_ACTIVE_STATUSES := [?]string{"launching", "starting", "running", "idle", "busy", "stopping", "blocked"}
 
 string_slice_contains :: proc(values: []string, needle: string) -> bool {
 	for value in values { if strings.trim_space(value) == needle do return true }

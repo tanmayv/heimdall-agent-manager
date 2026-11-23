@@ -659,14 +659,14 @@ delivery_op_begin :: proc(ctx: rawptr, op: domain.Instance_Reconfiguration) -> (
 	return placement_clone(op), true, {}
 }
 delivery_chain_save :: proc(ctx: rawptr, chain: domain.Task_Chain) -> (domain.Task_Chain, bool, domain.Domain_Error) {return placement_clone(chain), true, {}}
-delivery_conversation_list :: proc(ctx: rawptr, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error) {return nil, {}}
+delivery_conversation_by_instance :: proc(ctx: rawptr, owner: domain.User_ID, instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) {return {}, false, domain.domain_error(.Not_Found, "conversation not found")}
 delivery_conversation_save :: proc(ctx: rawptr, conv: domain.Chat_Conversation) -> (domain.Chat_Conversation, bool, domain.Domain_Error) {return placement_clone(conv), true, {}}
 
 @(test)
 test_dispatch_prepares_lazily_and_cancels_reservation :: proc(t: ^testing.T) {
 	f := delivery_fixture(t); defer delivery_destroy(f)
 	chains := iface.Taskchain_Repository{save_chain = delivery_chain_save}
-	content := iface.Content_Repository{list_conversations = delivery_conversation_list, save_conversation = delivery_conversation_save}
+	content := iface.Content_Repository{conversation_by_instance = delivery_conversation_by_instance, save_conversation = delivery_conversation_save}
 	f.agents.taskchains, f.agents.content = &chains, &content
 	_ = iface.bot_set_instance(&f.pair.repo, "bot_a", "", delivery_clock(f))
 	delivery_inbound(t, f)
@@ -774,7 +774,7 @@ bot_start_test_run :: proc(t: ^testing.T, first_generation: bool) {
         defer virtual.arena_destroy(&arena)
         f := delivery_fixture(t); defer delivery_destroy(f)
         chains := iface.Taskchain_Repository{save_chain = delivery_chain_save}
-        content := iface.Content_Repository{list_conversations = delivery_conversation_list, save_conversation = delivery_conversation_save}
+        content := iface.Content_Repository{conversation_by_instance = delivery_conversation_by_instance, save_conversation = delivery_conversation_save}
         f.agents.taskchains, f.agents.content = &chains, &content
         _ = iface.bot_set_instance(&f.pair.repo, "bot_a", "", delivery_clock(f))
         delivery_inbound(t, f)

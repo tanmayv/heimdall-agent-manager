@@ -48,7 +48,19 @@ Agent_Set_Stop_Reason_Proc :: proc(ctx: rawptr, instance_id, reason: string) -> 
 // with no error means the expected generation no longer matches.
 Agent_Save_Instance_Guarded_Proc :: proc(ctx: rawptr, instance: domain.Agent_Instance, expect_run_count: int, expect_launch_epoch: string, expect_configuration_revision: int) -> (saved: domain.Agent_Instance, updated: bool, err: domain.Domain_Error)
 
+// Empty fields do not filter. runtime_statuses matches any listed status.
+// cursor is the created_at of the last row of the previous page.
+Agent_Instance_Filter :: struct {
+	agent_id:         string,
+	bridge_id:        string,
+	project_id:       string,
+	runtime_statuses: []string,
+}
+
+Agent_List_Instances_Filtered_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, filter: Agent_Instance_Filter, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error)
+
 Agent_Repository :: struct {
+	list_instances_filtered: Agent_List_Instances_Filtered_Proc,
  list_action_instances: proc(ctx:rawptr,owner:domain.User_ID,agent_id,bridge_id:string)->([]domain.Agent_Instance,domain.Domain_Error),
 	update_token_usage: Agent_Update_Token_Usage_Proc,
 	add_token_totals: Agent_Add_Token_Totals_Proc,
@@ -141,6 +153,11 @@ agent_delete_instance :: proc(repo: ^Agent_Repository, instance_id: string) -> (
 agent_list_instances_by_owner :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	if repo == nil || repo.list_instances_by_owner == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
 	return repo.list_instances_by_owner(repo.ctx, owner_user_id, limit, cursor)
+}
+
+agent_list_instances_filtered :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID, filter: Agent_Instance_Filter, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	if repo == nil || repo.list_instances_filtered == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
+	return repo.list_instances_filtered(repo.ctx, owner_user_id, filter, limit, cursor)
 }
 
 agent_list_active_runtime_instances :: proc(repo: ^Agent_Repository) -> ([]domain.Agent_Instance, domain.Domain_Error) {

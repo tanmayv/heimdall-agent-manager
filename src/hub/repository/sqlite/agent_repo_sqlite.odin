@@ -13,7 +13,7 @@ Agent_Repo_SQLite :: struct {
 
 new_agent_repository :: proc(impl: ^Agent_Repo_SQLite, conn: ^Conn) -> iface.Agent_Repository {
 	impl.conn = conn
-	return iface.Agent_Repository{ctx = rawptr(impl), list_action_instances=agent_list_action_instances_sqlite, runtime_busy=agent_runtime_busy_sqlite, list_agent_refs=agent_catalog_agents, list_instance_refs=agent_catalog_instances, reconfiguration_begin = instance_reconfiguration_begin_sqlite, reconfiguration_get = instance_reconfiguration_get_sqlite, reconfiguration_advance = instance_reconfiguration_advance_sqlite, reconfiguration_list = instance_reconfiguration_list_sqlite, save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, save_instance_guarded = agent_save_instance_guarded_sqlite, get_instance = agent_get_instance_sqlite, delete_instance = agent_delete_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_instances_by_chain = agent_list_instances_by_chain_sqlite, list_tool_instances_by_chain = agent_list_tool_instances_by_chain_sqlite, get_tool_instance = agent_get_tool_instance_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite, update_token_usage = agent_update_token_usage_sqlite, add_token_totals = agent_add_token_totals_sqlite, touch_user_activity = agent_touch_user_activity_sqlite, get_user_activity = agent_get_user_activity_sqlite, set_stop_reason = agent_set_stop_reason_sqlite}
+	return iface.Agent_Repository{ctx = rawptr(impl), list_instances_filtered=agent_list_instances_filtered_sqlite, list_action_instances=agent_list_action_instances_sqlite, runtime_busy=agent_runtime_busy_sqlite, list_agent_refs=agent_catalog_agents, list_instance_refs=agent_catalog_instances, reconfiguration_begin = instance_reconfiguration_begin_sqlite, reconfiguration_get = instance_reconfiguration_get_sqlite, reconfiguration_advance = instance_reconfiguration_advance_sqlite, reconfiguration_list = instance_reconfiguration_list_sqlite, save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, save_instance_guarded = agent_save_instance_guarded_sqlite, get_instance = agent_get_instance_sqlite, delete_instance = agent_delete_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_instances_by_chain = agent_list_instances_by_chain_sqlite, list_tool_instances_by_chain = agent_list_tool_instances_by_chain_sqlite, get_tool_instance = agent_get_tool_instance_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite, update_token_usage = agent_update_token_usage_sqlite, add_token_totals = agent_add_token_totals_sqlite, touch_user_activity = agent_touch_user_activity_sqlite, get_user_activity = agent_get_user_activity_sqlite, set_stop_reason = agent_set_stop_reason_sqlite}
 }
 
 agent_delete_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (bool, domain.Domain_Error) {
@@ -419,7 +419,59 @@ agent_list_tool_instances_by_chain_sqlite :: proc(ctx: rawptr, owner: domain.Use
     return out[:],{}
 }
 
-ACTION_INSTANCE_LOOKUP_SQL :: "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? AND agent_id = ? AND bridge_id = ? ORDER BY created_at DESC, agent_instance_id DESC;"
+// Columns read by instance_from_stmt, shared by instance list queries.
+AGENT_INSTANCE_SELECT_SQL :: "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances"
+ACTION_INSTANCE_LOOKUP_SQL :: AGENT_INSTANCE_SELECT_SQL + " WHERE kind = 'agent' AND owner_user_id = ? AND agent_id = ? AND bridge_id = ? ORDER BY created_at DESC, agent_instance_id DESC;"
+// Every filter is a WHERE term, so pages are exact for any owner size.
+// Owner plus agent_id/bridge_id seek action_instances_owner_agent_bridge;
+// other shapes search its owner prefix rather than scanning the table.
+agent_instances_filtered_sql :: proc(filter: iface.Agent_Instance_Filter, has_cursor: bool, allocator := context.temp_allocator) -> string {
+	b := strings.builder_make(allocator)
+	strings.write_string(&b, AGENT_INSTANCE_SELECT_SQL)
+	strings.write_string(&b, " WHERE kind = 'agent' AND owner_user_id = ?")
+	if filter.agent_id != "" do strings.write_string(&b, " AND agent_id = ?")
+	if filter.bridge_id != "" do strings.write_string(&b, " AND bridge_id = ?")
+	if filter.project_id != "" do strings.write_string(&b, " AND project_id = ?")
+	if len(filter.runtime_statuses) > 0 {
+		strings.write_string(&b, " AND runtime_status IN (")
+		for _, k in filter.runtime_statuses { if k > 0 do strings.write_byte(&b, ','); strings.write_byte(&b, '?') }
+		strings.write_byte(&b, ')')
+	}
+	if has_cursor do strings.write_string(&b, " AND created_at < ?")
+	strings.write_string(&b, " ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;")
+	return strings.to_string(b)
+}
+
+agent_list_instances_filtered_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, filter: iface.Agent_Instance_Filter, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	impl := (^Agent_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
+	query := agent_instances_filtered_sql(filter, cursor != "")
+	if sqlite3_prepare_v2(impl.conn.db, strings.clone_to_cstring(query, context.temp_allocator), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare filtered instance list")
+	defer sqlite3_finalize(stmt)
+	// Plain ? only, bound in the order agent_instances_filtered_sql writes them.
+	n := 1
+	bind_text(stmt, n, string(owner_user_id)); n += 1
+	if filter.agent_id != "" { bind_text(stmt, n, filter.agent_id); n += 1 }
+	if filter.bridge_id != "" { bind_text(stmt, n, filter.bridge_id); n += 1 }
+	if filter.project_id != "" { bind_text(stmt, n, filter.project_id); n += 1 }
+	for status in filter.runtime_statuses { bind_text(stmt, n, status); n += 1 }
+	if cursor != "" { bind_text(stmt, n, cursor); n += 1 }
+	bind_text(stmt, n, i32_to_string(effective_limit))
+	out := make([dynamic]domain.Agent_Instance)
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW {
+			for &row in out do domain.agent_instance_destroy(&row)
+			delete(out)
+			return nil, domain.domain_error(.Internal_Error, "failed filtered instance list")
+		}
+		append(&out, instance_from_stmt(stmt))
+	}
+	return out[:], domain.Domain_Error{}
+}
+
 agent_list_action_instances_sqlite :: proc(ctx: rawptr, owner:domain.User_ID, agent_id, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil

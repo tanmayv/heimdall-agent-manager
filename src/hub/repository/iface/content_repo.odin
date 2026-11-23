@@ -34,7 +34,11 @@ Content_Delete_Template_Proc :: proc(ctx: rawptr, template_id: string, owner_use
 
 Content_List_Conversation_Project_Links_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Conversation_Project_Link, domain.Domain_Error)
 
+// Newest-activity conversation bound to one instance, with summary fields.
+Content_Conversation_By_Instance_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, agent_instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error)
+
 Content_Repository :: struct {
+	conversation_by_instance: Content_Conversation_By_Instance_Proc,
  action_conversation: proc(ctx:rawptr,owner:domain.User_ID,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error),
 	get_assistant_turn: Content_Get_Assistant_Turn_Proc,
 	save_assistant_turn: Content_Save_Assistant_Turn_Proc,
@@ -83,6 +87,7 @@ content_list_memories :: proc(r: ^Content_Repository, owner: domain.User_ID) -> 
 content_save_conversation :: proc(r: ^Content_Repository, c: domain.Chat_Conversation) -> (domain.Chat_Conversation, bool, domain.Domain_Error) { if r == nil || r.save_conversation == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_conversation(r.ctx, c) }
 content_get_conversation :: proc(r: ^Content_Repository, id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) { if r == nil || r.get_conversation == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_conversation(r.ctx, id) }
 content_list_conversations :: proc(r: ^Content_Repository, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error) { if r == nil || r.list_conversations == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_conversations(r.ctx, owner, limit, cursor) }
+content_conversation_by_instance :: proc(r: ^Content_Repository, owner: domain.User_ID, agent_instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) { if r == nil || r.conversation_by_instance == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.conversation_by_instance(r.ctx, owner, agent_instance_id) }
 content_save_message :: proc(r: ^Content_Repository, m: domain.Chat_Message) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.save_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_message(r.ctx, m) }
 content_get_message :: proc(r: ^Content_Repository, id: string) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.get_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_message(r.ctx, id) }
 content_update_message :: proc(r: ^Content_Repository, owner: domain.User_ID, cid, id, body, status, metadata_json: string) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.update_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.update_message(r.ctx, owner, cid, id, body, status, metadata_json) }
