@@ -67,7 +67,8 @@ supervisor_disconnect :: proc(s: ^Service, advisory: ^^nats.Pull) {
 	rows := forwarder_snapshot(s)
 	defer delete(rows)
 	for f in rows {
-		if f.pull != nil {nats.pull_destroy(f.pull); f.pull = nil}
+		if f.pull != nil {nats.long_pull_destroy(f.pull); f.pull = nil}
+		reset_slots(f)
 		free_answers(take_answers(f))
 	}
 	nats.destroy(s.conn); s.conn = nil; s.connected = false
@@ -118,7 +119,8 @@ supervisor_entry :: proc(data: rawptr) {
 				// an already fetched batch before touching its pull binding.
 				sync.rw_mutex_shared_unlock(&s.conn_lock)
 				sync.rw_mutex_lock(&s.conn_lock)
-				if f.pull != nil {nats.pull_destroy(f.pull); f.pull = nil}
+				if f.pull != nil {nats.long_pull_destroy(f.pull); f.pull = nil}
+				reset_slots(f)
 				err := nats.consumer_delete(s.conn, STREAM, fmt.tprintf("brg_%s", f.bridge_id))
 				if err.status != 0 && err.jetstream != 10014 do sync.atomic_store(&f.delete_consumer, 1)
 				sync.rw_mutex_unlock(&s.conn_lock)

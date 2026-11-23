@@ -359,3 +359,41 @@ answer_feeder :: proc(data: rawptr) {
 		} else {time.sleep(5 * time.Millisecond)}
 	}
 }
+
+@(test)
+test_idle_forwarder_query_cost :: proc(t: ^testing.T) {
+	f := fixture_new(t, true)
+	testing.expect(t, start(f.s))
+	fixture_live(f)
+	time.sleep(3200 * time.Millisecond)
+	count := sync.atomic_load(&f.s.in_flight_queries)
+	fmt.printf("idle forwarder: %d count queries / 3.2s, %d server pulls\n", count, sync.atomic_load(&f.s.pull_requests))
+	testing.expect_value(t, count, i64(1))
+	testing.expect_value(t, sync.atomic_load(&f.s.pull_requests), i64(1))
+	fixture_destroy(f)
+	testing.expect_value(t, nats.shutdown(5000).status, i32(0))
+}
+
+@(test)
+test_reconnect_preserves_limit_and_releases_recovered_slots :: proc(t: ^testing.T) {
+	f := fixture_new(t, true)
+	f.s.ack_wait_ms = 30_000
+	for _ in 0..<20 {id := fixture_route(t, f); delete(id)}
+	fixture_publish(t, f)
+	testing.expect(t, start(f.s))
+	fixture_live(f)
+	if fixture_wait_frames(t, f, 16) {
+		connection_failed(f.s)
+		tick := time.tick_now()
+		for sync.atomic_load(&f.s.in_flight_queries) < 2 && time.tick_since(tick) < 5 * time.Second do time.sleep(10 * time.Millisecond)
+		testing.expect(t, sync.atomic_load(&f.s.in_flight_queries) >= 2)
+		time.sleep(200 * time.Millisecond)
+		testing.expect_value(t, fixture_frames(f), 16)
+		// These answers refer to the previous connection's attempts.
+		for i in 0..<4 do fixture_answer(f, i)
+		testing.expect(t, fixture_wait_frames(t, f, 20))
+		testing.expect_value(t, fixture_frames(f), 20)
+	}
+	fixture_destroy(f)
+	testing.expect_value(t, nats.shutdown(5000).status, i32(0))
+}

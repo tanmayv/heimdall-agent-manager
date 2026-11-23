@@ -10,6 +10,7 @@ import "core:strings"
 
 Connection :: struct {}
 Pull :: struct {}
+Long_Pull :: struct {}
 Batch :: struct {}
 Message :: struct {}
 Error :: struct {
@@ -510,3 +511,21 @@ flush :: proc(conn: ^Connection) -> (err: Error) {
 	err.status = ham_nats_flush(conn)
 	return
 }
+
+// Unlike fetch, local timeouts keep the same server request outstanding. A
+// caller can process answers/check shutdown between waits without pull traffic.
+// Destroy before conn, with no concurrent next call. Returned messages are owned.\n// These are core subscription messages: use reply-based ack/term operations,\n// not ack(msg)/term(msg), which require nats.c JetStream subscription metadata.
+long_pull_bind :: proc(conn: ^Connection, stream, consumer: string) -> (pull: ^Long_Pull, err: Error) {
+    if conn == nil || !valid_name(stream) || !valid_name(consumer) do return nil, Error{status = INVALID}
+    s := strings.clone_to_cstring(stream); defer delete(s)
+    d := strings.clone_to_cstring(consumer); defer delete(d)
+    err.status = ham_nats_long_pull_bind(&pull, conn, s, d)
+    return
+}
+long_pull_next :: proc(pull: ^Long_Pull, limit: int, wait_ms: i64) -> (msg: ^Message, requested: bool, err: Error) {
+    if pull == nil || limit < 0 || limit > int(max(i32)) || wait_ms <= 0 do return nil, false, Error{status = INVALID}
+    sent: c.int
+    err.status = ham_nats_long_pull_next(&msg, pull, c.int(limit), wait_ms, &sent)
+    return msg, sent != 0, err
+}
+long_pull_destroy :: proc(pull: ^Long_Pull) {ham_nats_long_pull_destroy(pull)}

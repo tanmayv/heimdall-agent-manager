@@ -2,6 +2,7 @@
 // No callbacks into Odin, including on reconnect/error paths.
 #include <nats/nats.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -331,4 +332,65 @@ int ham_nats_delete_message(ham_nats *h, const char *stream, uint64_t seq, int *
         *err = 0;
     }
     return s;
+}
+
+// A long server pull with short local receive waits. Only the owning forwarder
+// uses this handle; conn_lock fences destruction. At most one request is live.
+// Heartbeats let an idle server pull return regularly without another request.
+typedef struct {
+    ham_nats *owner;
+    natsSubscription *sub;
+    char *inbox, *subject;
+    int remaining;
+} ham_long_pull;
+void ham_nats_long_pull_destroy(ham_long_pull *p) {
+    if (!p) return;
+    natsSubscription_Destroy(p->sub);
+    natsInbox_Destroy(p->inbox);
+    free(p->subject);
+    free(p);
+}
+int ham_nats_long_pull_bind(ham_long_pull **out, ham_nats *h,
+                            const char *stream, const char *consumer) {
+    *out = NULL;
+    ham_long_pull *p = calloc(1, sizeof(*p));
+    if (!p) return NATS_NO_MEMORY;
+    p->owner = h;
+    size_t size = strlen(stream) + strlen(consumer) + 32;
+    p->subject = malloc(size);
+    if (!p->subject) { ham_nats_long_pull_destroy(p); return NATS_NO_MEMORY; }
+    snprintf(p->subject, size, "$JS.API.CONSUMER.MSG.NEXT.%s.%s", stream, consumer);
+    natsStatus s = natsInbox_Create(&p->inbox);
+    if (s == NATS_OK) s = natsConnection_SubscribeSync(&p->sub, h->nc, p->inbox);
+    if (s != NATS_OK) { ham_nats_long_pull_destroy(p); return s; }
+    *out = p;
+    return NATS_OK;
+}
+int ham_nats_long_pull_next(natsMsg **out, ham_long_pull *p, int limit,
+                             int64_t wait_ms, int *requested) {
+    *out = NULL;
+    *requested = 0;
+    if (p->remaining == 0) {
+        if (limit <= 0) return NATS_TIMEOUT;
+        char body[128];
+        int size = snprintf(body, sizeof(body),
+            "{\"batch\":%d,\"expires\":30000000000,\"idle_heartbeat\":500000000}", limit);
+        natsStatus s = natsConnection_PublishRequest(p->owner->nc, p->subject, p->inbox, body, size);
+        if (s != NATS_OK) return s;
+        p->remaining = limit;
+        *requested = 1;
+    }
+    natsStatus s = natsSubscription_NextMsg(out, p->sub, wait_ms);
+    if (s != NATS_OK) return s;
+    const char *status = NULL;
+    if (natsMsgHeader_Get(*out, "Status", &status) == NATS_OK && status) {
+        int code = atoi(status);
+        natsMsg_Destroy(*out); *out = NULL;
+        if (code == 100) return NATS_TIMEOUT;
+        p->remaining = 0;
+        if (code == 404 || code == 408) return NATS_TIMEOUT;
+        return NATS_ERR;
+    }
+    p->remaining--;
+    return NATS_OK;
 }

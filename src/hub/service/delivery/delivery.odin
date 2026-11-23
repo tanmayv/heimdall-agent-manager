@@ -72,7 +72,13 @@ Forwarder :: struct {
 	mutex:                     sync.Mutex,
 	answers:                   [dynamic]Answer,
 	// conn_lock protects pull. Only supervisor clears it on reconnect.
-	pull:                      ^nats.Pull,
+	pull:                      ^nats.Long_Pull,
+	// Only the forwarder thread mutates reservations, under conn_lock.
+	slots: map[string]i64,
+	slots_loaded: bool,
+	recovered_slots: int,
+	recovered_until_ms: i64,
+	invalidate_slots: i32,
 	// Supervisor deletes the consumer; callbacks only set these flags.
 	disabled, delete_consumer: i32,
 }
@@ -98,6 +104,7 @@ Service :: struct {
 	last_prune_ms:                        i64,
 	prune_count:                          i64,
 	forwarders_refused, invalid_messages: i64,
+	in_flight_queries, pull_requests: i64,
 	// Defaults are production constants. Tests may shorten these before start.
 	ack_wait_ms:                          i64,
 	max_deliver:                          int,

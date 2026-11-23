@@ -71,6 +71,7 @@ on_bridge_online :: proc(s: ^Service, bridge_id: string) {
 		sync.mutex_unlock(&f.lifecycle)
 		return
 	}
+	sync.atomic_store(&f.invalidate_slots, 1)
 	sync.atomic_store(&f.disabled, 0)
 	sync.mutex_unlock(&s.mutex)
 	if s.worker != nil && f.worker == nil {

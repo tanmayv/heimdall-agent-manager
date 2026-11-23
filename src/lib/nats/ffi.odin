@@ -11,6 +11,10 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
+    ham_nats_long_pull_bind :: proc(out: ^^Long_Pull, conn: ^Connection, stream, consumer: cstring) -> i32 ---
+    ham_nats_long_pull_next :: proc(out: ^^Message, pull: ^Long_Pull, limit: c.int, wait_ms: i64, requested: ^c.int) -> i32 ---
+    ham_nats_long_pull_destroy :: proc(pull: ^Long_Pull) ---
+
 	ham_nats_delete_error_absent :: proc(status, code: i32, description: cstring) -> c.int ---
 	ham_nats_server_version :: proc(conn: ^Connection, stream: cstring, out: ^u8, size: c.int, js_error: ^i32) -> i32 ---
 	ham_nats_request :: proc(out: ^^Message, conn: ^Connection, subject: cstring, data: rawptr, size: c.int) -> i32 ---
