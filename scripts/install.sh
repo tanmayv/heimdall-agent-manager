@@ -145,8 +145,11 @@ main() {
   else
     if [ -z "$version" ] || [ "$version" = latest ]; then
       # Releases start as prereleases (canary candidates); only promoted ones are picked.
-      fetch "https://api.github.com/repos/$REPO/releases?per_page=30" "$work/releases.json" ||
-        fail 'Cannot list releases from GitHub; pass --version TAG.'
+      # releases/latest is the newest promoted release as one object; a page of the
+      # release list can hold only prereleases (report F9). It is wrapped as a list.
+      fetch "https://api.github.com/repos/$REPO/releases/latest" "$work/latest.json" ||
+        fail 'Cannot read the latest promoted release from GitHub; pass --version TAG.'
+      { printf '[\n'; cat "$work/latest.json"; printf '\n]\n'; } > "$work/releases.json"
       local rc=0
       version="$(select_release "$work/releases.json" "$target")" || rc=$?
       [ "$rc" != 2 ] || fail 'GitHub did not return a release list; pass --version TAG.'

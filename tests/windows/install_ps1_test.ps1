@@ -49,6 +49,34 @@ try {
   $r = Invoke-Bootstrap @('-Version', '..\x', '-Hub', 'https://h.example')
   Check 'invalid tag is refused' ($r.Code -ne 0 -and $r.Out -match 'Invalid release tag') $r.Out
 
+  # F9: 150 releases with 130 prereleases above the promoted v1.0.0. Only
+  # /releases/latest is served; reading a page of the list fails the case. Runs
+  # in-process in the scriptblock form so the web cmdlets can be mocked.
+  $script:fetched = @()
+  # install.ps1 has its own $sums/$archive; PowerShell scoping is dynamic, so the
+  # mocks read the fixtures through distinct script-scoped names.
+  $script:fixtureSums, $script:fixtureZip = $sums, $zip
+  function Invoke-RestMethod { param($Headers, $Uri)
+    $script:fetched += $Uri
+    if ($Uri -like '*/releases/latest') {
+      return [pscustomobject]@{ tag_name = 'v1.0.0'; draft = $false; prerelease = $false
+        assets = @([pscustomobject]@{ name = 'SHA256SUMS' }, [pscustomobject]@{ name = 'heimdall-local-windows-amd64-v1.0.0.zip' }) }
+    }
+    $page = @(); for ($i = 129; $i -ge 30; $i--) { $page += [pscustomobject]@{ tag_name = "v1.1.$i"; draft = $false; prerelease = $true
+      assets = @([pscustomobject]@{ name = 'SHA256SUMS' }, [pscustomobject]@{ name = "heimdall-local-windows-amd64-v1.1.$i.zip" }) } }
+    return $page
+  }
+  function Invoke-WebRequest { param([switch]$UseBasicParsing, $Headers, $Uri, $OutFile)
+    $script:fetched += $Uri
+    if ($Uri -like '*/v1.0.0/SHA256SUMS') { Copy-Item $script:fixtureSums $OutFile; return }
+    if ($Uri -like '*/v1.0.0/heimdall-local-windows-amd64-v1.0.0.zip') { Copy-Item $script:fixtureZip $OutFile; return }
+    throw "404 $Uri"
+  }
+  $out = & ([scriptblock]::Create((Get-Content -Raw $script))) -Hub 'https://h.example' 6>&1 2>&1 | Out-String
+  Check 'latest resolves from /releases/latest beyond 100 releases' ($out -match 'Release v1\.0\.0 \(windows-amd64\)' -and $out -match 'SHA-256 verified' -and
+    -not ($script:fetched | Where-Object { $_.Contains('/releases?') })) ($out + ($script:fetched -join "`n"))
+  Remove-Item Function:\Invoke-RestMethod, Function:\Invoke-WebRequest
+
   $r = Invoke-Bootstrap @('-Help')
   Check '-Help prints usage' ($r.Code -eq 0 -and $r.Out -match 'Usage: install.ps1') $r.Out
 

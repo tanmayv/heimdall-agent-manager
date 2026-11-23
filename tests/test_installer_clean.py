@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import re
 import subprocess
 import tarfile
 import tempfile
@@ -37,6 +36,7 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\n' "$url" >> "$MOCK_ROOT/curl.log"
 case "$url" in
+  https://api.github.com/repos/*/releases/latest) src="$MOCK_ROOT/www/latest.json" ;;
   https://api.github.com/repos/*/releases\?*) src="$MOCK_ROOT/www/releases.json" ;;
   https://github.com/*/releases/download/*) src="$MOCK_ROOT/www/download/${url#*/releases/download/}" ;;
   *) src='' ;;
@@ -95,8 +95,20 @@ class BootstrapTests(unittest.TestCase):
             (d / 'SHA256SUMS').write_text(f'{hashlib.sha256(data).hexdigest()}  {name}\n')
             assets.append({'name': 'SHA256SUMS'})
         self.releases.append({'tag_name': tag, 'draft': draft, 'prerelease': prerelease, 'assets': assets})
-        (self.root / 'www' / 'releases.json').write_text(json.dumps(self.releases))
+        self.write_listing()
         return d / name, d / 'SHA256SUMS'
+
+    def write_listing(self):
+        """The release list, and /releases/latest: like GitHub, the first
+        non-draft, non-prerelease release (404 when there is none)."""
+        www = self.root / 'www'
+        www.mkdir(exist_ok=True)
+        (www / 'releases.json').write_text(json.dumps(self.releases))
+        latest = next((r for r in self.releases if not r['draft'] and not r['prerelease']), None)
+        if latest is None:
+            (www / 'latest.json').unlink(missing_ok=True)
+        else:
+            (www / 'latest.json').write_text(json.dumps(latest, indent=2))
 
     def run_installer(self, *args, stdin_script=False, extra_env=None):
         env = dict(self.env, **(extra_env or {}))
@@ -161,6 +173,29 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn('No promoted release', res.stderr)
 
+    def test_no_promoted_release_at_all(self):
+        self.publish('v1.0.0', prerelease=True)
+        res = self.run_installer('--hub', 'https://h')
+        self.assertEqual(res.returncode, 1)
+        self.assertIn('Cannot read the latest promoted release', res.stderr)
+        self.assertEqual(self.bridge_calls(), [])
+
+    def test_latest_promoted_release_beyond_one_hundred_releases(self):
+        """F9: 130 prereleases above the promoted release; never read from a list page."""
+        for i in range(129, -1, -1):
+            self.releases.append({'tag_name': f'v1.1.{i}', 'draft': False, 'prerelease': True,
+                                  'assets': [{'name': f'heimdall-local-{self.target}-v1.1.{i}.tar.gz'}, {'name': 'SHA256SUMS'}]})
+        self.publish('v1.0.0')
+        for i in range(18, -1, -1):
+            self.releases.append({'tag_name': f'v0.9.{i}', 'draft': False, 'prerelease': False, 'assets': []})
+        self.write_listing()
+        self.assertEqual(len(self.releases), 150)
+        res = self.run_installer('--hub', 'https://h')
+        self.assertEqual(res.returncode, 0, res.stderr)
+        log = (self.root / 'curl.log').read_text()
+        self.assertIn(f'releases/download/v1.0.0/heimdall-local-{self.target}-v1.0.0.tar.gz', log)
+        self.assertNotIn('/releases?', log)
+
     def test_uninstall_runs_ham_bridge_uninstall(self):
         self.publish('v1.0.0')
         res = self.run_installer('--uninstall', '--hub', 'https://h', '--purge')
@@ -215,7 +250,10 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("elseif ($Interactive) { $argv += 'setup' }", ps1)
         # The same promoted-release rule on both sides.
         self.assertIn('-not $r.draft -and -not $r.prerelease', ps1)
-        self.assertTrue(re.search(r'releases\?per_page=30', ps1))
+        # Both read the newest promoted release directly, never a list page (F9).
+        self.assertIn('/releases/latest"', ps1)
+        self.assertNotIn('releases?per_page', ps1)
+        self.assertNotIn('releases?per_page', sh)
 
 
 if __name__ == '__main__':

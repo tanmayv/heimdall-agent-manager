@@ -22,6 +22,10 @@ import httpc "odin_test:lib/httpc"
 
 BRIDGE_RELEASE_REPO :: "tanmayv/heimdall-agent-manager"
 BRIDGE_RELEASE_SUMS :: "SHA256SUMS"
+// The newest promoted (non-draft, non-prerelease) release as a single object.
+// Never a page of the release list: with many prereleases between promotions
+// the promoted release falls off the first page (report F9).
+BRIDGE_RELEASE_LATEST_URL :: "https://api.github.com/repos/" + BRIDGE_RELEASE_REPO + "/releases/latest"
 
 // bridge_release_bundle_name is the release asset for target at tag: a zip on
 // Windows (scripts/install.ps1 reads it with .NET), a tarball everywhere else.
@@ -43,7 +47,7 @@ bridge_release_tag_valid :: proc(tag: string) -> bool {
 }
 
 // bridge_release_select picks the release tag from a GitHub releases document
-// (the list, or a single release object for an explicit tag). want is "latest"
+// (a list, or the single object of /releases/latest or /releases/tags/<tag>). want is "latest"
 // or a tag. err is a user-facing reason when nothing qualifies.
 bridge_release_select :: proc(doc, target, want: string) -> (tag: string, err: string) {
 	value, perr := json.parse_string(doc, parse_integers = true, allocator = context.temp_allocator)
@@ -145,8 +149,7 @@ bridge_release_fetch :: proc(
 	download: Bridge_Update_Download = httpc.download_to_file,
 ) -> (bundle_dir: string, tag: string, err: string) {
 	if want != "latest" && !bridge_release_tag_valid(want) do return "", "", fmt.tprintf("invalid release tag %q", want)
-	api := fmt.tprintf("https://api.github.com/repos/%s/releases", BRIDGE_RELEASE_REPO)
-	url := fmt.tprintf("%s?per_page=30", api) if want == "latest" else fmt.tprintf("%s/tags/%s", api, want)
+	url := BRIDGE_RELEASE_LATEST_URL if want == "latest" else fmt.tprintf("https://api.github.com/repos/%s/releases/tags/%s", BRIDGE_RELEASE_REPO, want)
 	doc, ok, detail := get(url)
 	if !ok do return "", "", fmt.tprintf("cannot list releases (%s)", detail)
 	tag, err = bridge_release_select(doc, target, want)

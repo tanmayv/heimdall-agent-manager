@@ -113,7 +113,7 @@ bridge_auto_update_resolve :: proc(fetch: Bridge_Hub_Fetch = bridge_hub_http_sen
 	}
 	target, blocked := bridge_release_target()
 	if blocked do return ""
-	doc, ok, _ := get("https://api.github.com/repos/" + BRIDGE_RELEASE_REPO + "/releases?per_page=30")
+	doc, ok, _ := get(BRIDGE_RELEASE_LATEST_URL)
 	if !ok do return ""
 	version, detail := bridge_release_select(doc, target, "latest")
 	if detail != "" do return ""
