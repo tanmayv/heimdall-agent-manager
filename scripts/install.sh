@@ -39,7 +39,8 @@ Safe to re-run: a healthy enrolled bridge is left untouched.
                      installed bridge keeps its version (--keep-version). With
                      a TAG (passed on as setup --version) an installed bridge is
                      moved to it; an older TAG is refused (exit 5) unless
-                     --allow-downgrade is given.
+                     --allow-downgrade is given (releases after v0.5.75; up to
+                     v0.5.75 setup ignores --version and installs the TAG).
   --bundle FILE --checksum-file FILE
                      Use an already-downloaded bundle (verified first); an
                      installed bridge is moved to the bundle's version.
