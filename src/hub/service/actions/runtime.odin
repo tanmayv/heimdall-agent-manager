@@ -2,6 +2,7 @@
 package actions
 
 import "base:runtime"
+import retry "odin_test:hub/service/pipelineretry"
 import "core:encoding/json"
 import "core:mem/virtual"
 import "core:strings"
@@ -59,7 +60,13 @@ runtime_entry :: proc(data:rawptr) {
  defer {nats.pull_destroy(pull); nats.destroy(conn)}
  pending:=false
  was_unsupported:=false
+ last_sweep:time.Tick
+ retention_diagnostics:retry.State
  for sync.atomic_load(&r.stop_flag)==0 {
+  if last_sweep._nsec==0 || time.tick_since(last_sweep)>=time.Minute {
+   if err:=sweep_history(r.svc,time.now());err.code!=.None do _=retry.failed(&retention_diagnostics,"actions",.Retention,i32(err.code))
+   last_sweep=time.tick_now()
+  }
   if conn==nil {
    c,err:=nats.connect({url=r.options.nats_url,creds_file=r.options.creds_file,ca_file=r.options.ca_file,timeout_ms=1000})
    if err.status!=0 {runtime_wait(r); free_all(context.allocator); continue}

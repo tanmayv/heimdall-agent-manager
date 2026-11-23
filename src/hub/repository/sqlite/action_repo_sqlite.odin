@@ -10,6 +10,8 @@ Action_Repo_SQLite :: struct { conn: ^Conn }
 new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.Action_Repository {
 	impl.conn = conn
 	return {ctx = impl,
+ rules_for_owner=actions_rules_for_owner, triggers_for_owner=actions_triggers_for_owner,
+ runs_history=actions_runs_history, runs_sweep=actions_runs_sweep,
 		save = actions_save,
 		get = actions_get,
 		list = actions_list,
@@ -428,4 +430,54 @@ actions_runs_prune :: proc(ctx: rawptr, id: domain.Action_ID, keep: int, cutoff:
 	defer tx_repository_leave(guard)
 	_, err := actions_write(ctx, ACTIONS_SQL_RUNS_PRUNE, {string(id),cutoff,fmt.tprintf("%d",keep)})
 	return err
+}
+
+// Owner predicates are applied in SQL; child rows never cross owner boundaries.
+ACTIONS_SQL_RULES_OWNER :: "SELECT r.position,r.bridge_id,r.provider,r.model,r.action_id FROM action_target_rules r JOIN actions a ON a.action_id=r.action_id WHERE a.owner_user_id=?1 ORDER BY r.action_id,r.position;"
+actions_rules_for_owner :: proc(ctx:rawptr,owner:string)->([]iface.Action_Rule_Row,domain.Domain_Error) {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_RULES_OWNER,{owner})
+ if err.code!=.None do return nil,err
+ defer sqlite3_finalize(stmt)
+ rows:=make([dynamic]iface.Action_Rule_Row)
+ for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do return rows[:],{}
+  if rc!=SQLITE_ROW {
+   for row in rows {delete(row.action_id);delete(row.rule.bridge_id);delete(row.rule.provider);delete(row.rule.model)}
+   delete(rows)
+   return nil,domain.domain_error(.Internal_Error,"could not load action rules")
+  }
+  append(&rows,iface.Action_Rule_Row{column_text(stmt,4),actions_rule_read(stmt)})
+ }
+}
+ACTIONS_SQL_TRIGGERS_OWNER :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE a.owner_user_id=?1 ORDER BY t.action_id,t.created_at,t.trigger_id;"
+actions_triggers_for_owner :: proc(ctx:rawptr,owner:string)->([]domain.Action_Trigger,domain.Domain_Error) {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_OWNER,{owner})
+}
+// Materialize the page before grouping joined rows, then join delivery expiry once.
+ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),coalesce(d.expires_at,'') FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON p.state='routed' AND d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
+actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,before_id:string)->([]iface.Action_Run_History,domain.Domain_Error) {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_HISTORY,{string(id),before,fmt.tprintf("%d",limit),before_id})
+ if err.code!=.None do return nil,err
+ defer sqlite3_finalize(stmt)
+ rows:=make([dynamic]iface.Action_Run_History)
+ for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do return rows[:],{}
+  if rc!=SQLITE_ROW {
+   for &row in rows {domain.action_run_destroy(&row.run);delete(row.delivery_expires_at)}
+   delete(rows)
+   return nil,domain.domain_error(.Internal_Error,"could not load action history")
+  }
+  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,20)),column_text(stmt,21)})
+ }
+}
+ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND created_at<?1 ORDER BY created_at,run_id LIMIT ?2);"
+actions_runs_sweep :: proc(ctx:rawptr,cutoff:string,limit:int)->domain.Domain_Error {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ _,err:=actions_write(ctx,ACTIONS_SQL_SWEEP,{cutoff,fmt.tprintf("%d",clamp(limit,1,128))})
+ return err
 }

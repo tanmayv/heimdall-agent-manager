@@ -415,7 +415,7 @@ record_route_failure :: proc(r:^Router,id,from,reason:string) {
 }
 
 
-Run_View :: struct {run:domain.Action_Run,joined_count:int,delivery_expires_at:string}
+Run_View :: iface.Action_Run_History
 run_views_destroy :: proc(rows:[]Run_View) {
  for &row in rows {domain.action_run_destroy(&row.run); delete(row.delivery_expires_at)}
  delete(rows)
@@ -430,24 +430,10 @@ list_runs :: proc(r:^Router,owner,action_id:string,limit:int,before:string,befor
  if e.code!=.None do return nil,e
  if !found || string(action.owner_user_id)!=owner do return nil,domain.domain_error(.Not_Found,"action not found")
  if _,expiry_err:=expire_open_run(r,&uow,action.id);expiry_err.code!=.None do return nil,expiry_err
- runs,re:=repo.runs_list(repo.ctx,action.id,limit,before,before_id)
+ rows,re:=repo.runs_history(repo.ctx,action.id,limit,before,before_id)
  if re.code!=.None do return nil,re
- rows:=make([]Run_View,len(runs))
  success:=false
  defer if !success do run_views_destroy(rows)
- for run,i in runs do rows[i].run=run
- delete(runs)
- for &row in rows {
-  count,ce:=repo.run_joined_count(repo.ctx,row.run.run_id)
-  if ce.code!=.None do return nil,ce
-  row.joined_count=count
-  if row.run.state==domain.ACTION_RUN_ROUTED {
-   delivery,exists,de:=uow.repos.pipeline_deliveries.get(uow.repos.pipeline_deliveries.ctx,row.run.delivery_id)
-   if de.code!=.None {domain.pipeline_delivery_destroy(&delivery);return nil,de}
-   if exists do row.delivery_expires_at=strings.clone(delivery.expires_at)
-   domain.pipeline_delivery_destroy(&delivery)
-  }
- }
  committed,commit_err:=iface.unit_of_work_commit(&uow);uow.ctx=nil
  if !committed do return nil,commit_err
  success=true

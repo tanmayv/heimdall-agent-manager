@@ -1,6 +1,7 @@
 package delivery
 
 import "base:runtime"
+import retry "odin_test:hub/service/pipelineretry"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
@@ -83,6 +84,7 @@ Forwarder :: struct {
 	disabled, delete_consumer: i32,
 }
 Service :: struct {
+	diagnostics: retry.State,
 	factory:                              ^iface.Unit_Of_Work_Factory,
 	bridges:                              ^iface.Bridge_Repository,
 	registry:                             ^project.Bridge_Runtime_Registry,

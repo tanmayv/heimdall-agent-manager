@@ -3,6 +3,7 @@
 package eventrelay
 
 import "base:runtime"
+import retry "odin_test:hub/service/pipelineretry"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem/virtual"
@@ -19,6 +20,7 @@ RELAY_BATCH :: 64
 DELIVERY_STREAM :: "HEIM_DELIVER"
 Schedule_Support :: enum i32 { Unknown, Supported, Unsupported }
 Service :: struct {
+	diagnostics: retry.State,
 	wake_sema: sync.Sema,
 	// Zero selects the production 1 s fallback; tests may lengthen it.
 	idle_wait: time.Duration,
@@ -38,6 +40,7 @@ Service :: struct {
 	// Owned exclusively by the relay thread (or by step's caller before start).
 	connection: ^nats.Connection,
 	last_prune: time.Tick,
+	last_probe: time.Tick,
 }
 stream_config :: proc() -> nats.Stream_Config {
 	subjects := make([]string, 2, context.temp_allocator)
@@ -96,7 +99,7 @@ entry :: proc(data: rawptr) {
 		ok, progress := step(s)
 		wait := time.Duration(0)
 		if !ok {
-			wait = delay
+			wait = retry.jitter(delay,u64(time.tick_now()._nsec))
 			delay = min(delay * 2, 5 * time.Second)
 		} else {
 			delay = 100 * time.Millisecond
@@ -121,13 +124,14 @@ step :: proc(s: ^Service) -> (ok, progress: bool) {
 	if !ok {
 		nats.destroy(s.connection)
 		s.connection = nil
+        s.last_probe={}
 	}
 	return
 }
 step_inner :: proc(s: ^Service) -> (bool, bool) {
 	if s.connection == nil {
 		conn, err := nats.connect(s.options)
-		if err.status != 0 do return false, false
+		if err.status != 0 do return retry.failed(&s.diagnostics,"eventrelay",.Connect,err.status,err.jetstream), false
 		s.connection = conn
 		cfg := stream_config()
 		// Add is idempotent for an identical config. Existing differing configs
@@ -135,21 +139,21 @@ step_inner :: proc(s: ^Service) -> (bool, bool) {
 		_, err = nats.stream_add(conn, cfg)
 		if err.status != 0 {
 			_, err = nats.stream_update(conn, cfg)
-			if err.status != 0 do return false, false
+			if err.status != 0 do return retry.failed(&s.diagnostics,"eventrelay",.Stream,err.status,err.jetstream),false
 		}
 
 		delivery_cfg := delivery_stream_config()
 		_, err = nats.stream_add(conn, delivery_cfg)
 		if err.status != 0 {
 			_, err = nats.stream_update(conn, delivery_cfg)
-			if err.status != 0 do return false, false
+			if err.status != 0 do return retry.failed(&s.diagnostics,"eventrelay",.Stream,err.status,err.jetstream),false
 		}
 		lookup := s.support_lookup
 		if lookup == nil do lookup = nats.server_supports_schedules
 		supported, support_err := lookup(conn, cfg.name)
 		// A failed lookup is a failed setup, not evidence of an old server.
 		// step closes the connection and retries without consuming outbox rows.
-		if support_err.status != 0 do return false, false
+		if support_err.status != 0 do return retry.failed(&s.diagnostics,"eventrelay",.Stream,support_err.status,support_err.jetstream),false
 		sync.atomic_store(&s.support, i32(Schedule_Support.Supported) if supported else i32(Schedule_Support.Unsupported))
 	}
 	progress := false
@@ -161,40 +165,40 @@ step_inner :: proc(s: ^Service) -> (bool, bool) {
 	}
 	if s.last_prune._nsec == 0 || time.tick_since(s.last_prune) >= time.Minute {
 		prune, began, _ := iface.unit_of_work_begin(s.factory)
-		if !began do return false, progress
+		if !began do return retry.failed(&s.diagnostics,"eventrelay",.Retention),progress
 		defer if prune.ctx != nil do iface.unit_of_work_rollback(&prune)
 		before := platform.format_rfc3339_utc(time.time_add(time.now(), -24 * time.Hour))
 		err := prune.repos.event_outbox.prune(prune.repos.event_outbox.ctx, before)
-		if err.code != .None do return false, progress
+		if err.code != .None do return retry.failed(&s.diagnostics,"eventrelay",.Retention,i32(err.code)),progress
 		committed, _ := iface.unit_of_work_commit(&prune)
 		prune.ctx = nil // commit consumes the context even when it fails
-		if !committed do return false, progress
+		if !committed do return retry.failed(&s.diagnostics,"eventrelay",.Commit),progress
 		s.last_prune = time.tick_now()
 	}
 	return true, progress
 }
 relay_one :: proc(s: ^Service) -> (bool, bool) {
 	uow, began, _ := iface.unit_of_work_begin(s.factory)
-	if !began do return false, false
+	if !began do return retry.failed(&s.diagnostics,"eventrelay",.Read),false
 	row, found, err := uow.repos.event_outbox.next(uow.repos.event_outbox.ctx)
-	if err.code != .None { iface.unit_of_work_rollback(&uow); return false, false }
+	if err.code != .None { iface.unit_of_work_rollback(&uow); return retry.failed(&s.diagnostics,"eventrelay",.Read,i32(err.code)),false }
 	committed, _ := iface.unit_of_work_commit(&uow)
-	if !committed { domain.event_outbox_row_destroy(&row); return false, false }
+	if !committed { domain.event_outbox_row_destroy(&row); return retry.failed(&s.diagnostics,"eventrelay",.Commit),false }
 	defer domain.event_outbox_row_destroy(&row)
 	if found {
 		// JSON header values must be strings. Reject malformed persisted metadata
 		// without skipping the head row (and therefore without reordering events).
 		value, parse_err := json.parse(row.headers_json)
-		if parse_err != nil do return false, false
+		if parse_err != nil do return retry.failed(&s.diagnostics,"eventrelay",.Headers),false
 		defer json.destroy_value(value)
 		object, is_object := value.(json.Object)
-		if !is_object do return false, false
+		if !is_object do return retry.failed(&s.diagnostics,"eventrelay",.Headers),false
 		purge := false
 		headers := make([dynamic]nats.Header)
 		defer delete(headers)
 		for k, v in object {
 			str, is_string := v.(json.String)
-			if !is_string do return false, false
+			if !is_string do return retry.failed(&s.diagnostics,"eventrelay",.Headers),false
 			if k == "Heim-Op" { purge = string(str) == "purge"; continue }
 			// event_id is authoritative even if a producer supplied this header.
 			if strings.to_lower(k, context.temp_allocator) == "nats-msg-id" do continue
@@ -217,17 +221,18 @@ relay_one :: proc(s: ^Service) -> (bool, bool) {
 				pub_err = {}
 			}
 		}
-		if pub_err.status != 0 do return false, false
+		if pub_err.status != 0 do return retry.failed(&s.diagnostics,"eventrelay",.Publish,pub_err.status,pub_err.jetstream),false
 		if s.published != nil do s.published(s.published_ctx, row.subject)
 		mark, mark_began, _ := iface.unit_of_work_begin(s.factory)
-		if !mark_began do return false, false
+		if !mark_began do return retry.failed(&s.diagnostics,"eventrelay",.Commit),false
 		err = mark.repos.event_outbox.mark_published(mark.repos.event_outbox.ctx, row.outbox_seq, platform.format_rfc3339_utc(time.now()))
-		if err.code != .None { iface.unit_of_work_rollback(&mark); return false, false }
-		if marked, _ := iface.unit_of_work_commit(&mark); !marked do return false, false
-	} else {
+		if err.code != .None { iface.unit_of_work_rollback(&mark); return retry.failed(&s.diagnostics,"eventrelay",.Commit,i32(err.code)),false }
+		if marked, _ := iface.unit_of_work_commit(&mark); !marked do return retry.failed(&s.diagnostics,"eventrelay",.Commit),false
+	} else if s.last_probe._nsec==0 || time.tick_since(s.last_probe)>=30*time.Second {
 		// Check connectivity even with no pending events so health detects outages.
 		_, info_err := nats.stream_info(s.connection, "HEIM_EVENTS")
-		if info_err.status != 0 do return false, false
+		if info_err.status != 0 do return retry.failed(&s.diagnostics,"eventrelay",.Stream,info_err.status,info_err.jetstream),false
+        s.last_probe=time.tick_now()
 	}
 	return true, found
 }

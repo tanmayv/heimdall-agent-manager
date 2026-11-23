@@ -2,7 +2,14 @@ package iface
 
 import domain "odin_test:hub/domain"
 
+Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
+Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at: string }
 Action_Repository :: struct {
+ rules_for_owner: proc(ctx:rawptr, owner:string)->([]Action_Rule_Row,domain.Domain_Error),
+ triggers_for_owner: proc(ctx:rawptr, owner:string)->([]domain.Action_Trigger,domain.Domain_Error),
+ runs_history: proc(ctx:rawptr, id:domain.Action_ID, limit:int, before,before_id:string)->([]Action_Run_History,domain.Domain_Error),
+ runs_sweep: proc(ctx:rawptr, cutoff:string, limit:int)->domain.Domain_Error,
+
 	ctx: rawptr,
 	// actions
 	save:          proc(ctx: rawptr, a: domain.Action) -> domain.Domain_Error,                         // insert or update by id

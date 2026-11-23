@@ -41,7 +41,7 @@ PIPELINE_EXPIRED_SQL ::
 	PIPELINE_COLUMNS +
 	" FROM pipeline_deliveries WHERE state IN ('routed','forwarded') AND expires_at<=?1 ORDER BY expires_at,delivery_id LIMIT ?2;"
 PIPELINE_IN_FLIGHT_SQL :: "SELECT count(*) FROM pipeline_deliveries WHERE bridge_id=?1 AND state IN ('routed','forwarded') AND state='forwarded' AND retry_at='' AND updated_at>?2;"
-PIPELINE_PRUNE_SQL :: "DELETE FROM pipeline_deliveries WHERE state IN ('done','failed','replaced') AND updated_at<?1;"
+PIPELINE_PRUNE_SQL :: "DELETE FROM pipeline_deliveries WHERE delivery_id IN (SELECT delivery_id FROM pipeline_deliveries WHERE state IN ('done','failed','replaced') AND updated_at<?1 ORDER BY updated_at LIMIT 128);"
 PIPELINE_INSERT_SQL ::
 	"INSERT INTO pipeline_deliveries(" +
 	PIPELINE_COLUMNS +
