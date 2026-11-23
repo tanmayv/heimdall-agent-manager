@@ -13,10 +13,15 @@
 //   Windows  start_time = GetProcessTimes creation time (FILETIME, 100 ns units)
 //
 // POSIX stop: each recorded child leads its own process group (setpgid(0,0) at spawn), so
-// SIGTERM / SIGKILL go to the group and reach the agents and helpers it started. The group
-// is signalled only while its leader still has the recorded identity, or — leader gone —
-// while no process holds the leader's pid (a pgid cannot be reused while its group has
-// members, so that signal can only reach the recorded group's survivors).
+// SIGTERM / SIGKILL go to the group and reach the helpers it started *in that group*. It
+// does not reach PTY agents: the PTY host starts every agent and shell session with
+// setsid (portable-pty pre_exec, src/bridge/hub_runtime_client.odin `setsid`), so each one
+// leads its own session and group. The caller therefore records every agent as its own
+// group target, captured from the runtime before it is asked to end its sessions
+// (src/supervisor/runtimectl). A group is signalled only while its leader still has the
+// recorded identity, or — leader gone — while no process holds the leader's pid (a pgid
+// cannot be reused while its group has members, so that signal can only reach the recorded
+// group's survivors).
 //
 // Windows stop: there is no SIGTERM; the grace period lets processes that the runtime asked
 // to end (§12) exit on their own, then TerminateProcess on a handle opened by pid whose

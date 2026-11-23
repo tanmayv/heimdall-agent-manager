@@ -99,6 +99,8 @@ Fake :: struct {
 	// A launch races the close: the count taken right after the next close is one higher.
 	race_on_close:  bool,
 	stops:          [dynamic]string, // stop_children calls (tree)
+	// end_sessions calls: len(stops) at the time of each call (0 = before the first stop).
+	ends:           [dynamic]int,
 }
 
 fake_new :: proc() -> ^Fake {
@@ -110,6 +112,7 @@ fake_new :: proc() -> ^Fake {
 	f.writes_schema = make(map[string]int)
 	f.starts = make([dynamic]string)
 	f.stops = make([dynamic]string)
+	f.ends = make([dynamic]int)
 	return f
 }
 
@@ -118,6 +121,7 @@ fake_free :: proc(f: ^Fake) {
 	delete(f.writes_schema)
 	delete(f.starts)
 	delete(f.stops)
+	delete(f.ends)
 	free(f)
 }
 
@@ -203,6 +207,10 @@ fake_host :: proc(f: ^Fake) -> Host {
 			f := (^Fake)(u)
 			f.opens += 1
 			if f.running != "" do f.admission_open = true
+		},
+		end_sessions = proc(u: rawptr) {
+			f := (^Fake)(u)
+			append(&f.ends, len(f.stops))
 		},
 	}
 }

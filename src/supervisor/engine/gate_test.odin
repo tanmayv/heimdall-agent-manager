@@ -5,6 +5,7 @@ package engine
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:os"
 import "core:testing"
 import lc "../../launcher/core"
 
@@ -57,6 +58,15 @@ status_obj :: proc(w: ^World) -> json.Object {
 	if err != nil do return nil
 	o, _ := v.(json.Object)
 	return o
+}
+
+@(private = "file")
+status_obj_busy_total :: proc(w: ^World) -> (i64, bool) {
+	o := status_obj(w)
+	if o == nil do return 0, false
+	b, ok := o["busy"].(json.Object)
+	if !ok do return 0, false
+	return obj_int(b, "total")
 }
 
 @(private = "file")
@@ -391,7 +401,9 @@ test_gate_restart_keeps_force_at :: proc(t: ^testing.T) {
 		rem, _ := status_int(&w, "remaining_s")
 		x, err = advance(&w, 5)
 		rem, _ = status_int(&w, "remaining_s")
-		testing.expectf(t, rem == GATE_WAIT_S - 1805, "%v: countdown continues (%d)", flavour, rem)
+		// Throttled to whole minutes (gate_status_due): within a minute of the exact value.
+		exact := i64(GATE_WAIT_S - 1805)
+		testing.expectf(t, rem >= exact && rem < exact + 60, "%v: countdown continues (%d)", flavour, rem)
 		x, err = advance(&w, t0 + GATE_WAIT_S - w.fake.clock + 5)
 		testing.expectf(t, err == nil && x == .Handover, "%v: forced at the original deadline", flavour)
 		world_destroy(&w)
@@ -576,4 +588,58 @@ test_gate_fails_closed_without_hooks :: proc(t: ^testing.T) {
 	testing.expect(t, l.state == "waiting_for_idle" && !l.busy.counted, "no hooks: wait, busy null")
 	x, err = advance(&w, GATE_WAIT_S + 5)
 	testing.expect(t, err == nil && x == .Handover, "forced at force_at")
+}
+
+// §12 stopping: the runtime is asked to end its sessions after `stopping` is journaled and
+// before stop_children's grace and hard stop.
+@(test)
+test_gate_end_sessions_before_stop :: proc(t: ^testing.T) {
+	w: World
+	_, to := gate_world(&w, t, "t14-end")
+	defer world_destroy(&w)
+	w.fake.agents = Busy{pty_sessions = 1}
+	x, err := timer_op(&w, "op_timer", to)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect_value(t, len(w.fake.ends), 0)
+	x, err = advance(&w, GATE_WAIT_S + 5)
+	testing.expect(t, err == nil && x == .Handover, "forced")
+	testing.expect_value(t, len(w.fake.ends), 1)
+	testing.expect_value(t, len(w.fake.stops), 1)
+	if len(w.fake.ends) == 1 do testing.expect_value(t, w.fake.ends[0], 0)
+	_, has := find(&w, "op_timer", "activating", "stopping")
+	testing.expect(t, has, "stopping journaled")
+}
+
+// The waiting status file is rewritten only when the count changes or the remaining time
+// crosses a minute, not on every tick (7200 synced writes per 2 h wait otherwise).
+@(test)
+test_gate_waiting_status_is_throttled :: proc(t: ^testing.T) {
+	w: World
+	_, to := gate_world(&w, t, "t14-throttle")
+	defer world_destroy(&w)
+	w.fake.agents = Busy{pty_sessions = 1}
+	x, err := timer_op(&w, "op_timer", to)
+	testing.expect(t, err == nil && x == .Run)
+	path := join(w.e.cfg.state_root, "supervisor-status.json")
+	// Align to the start of a minute of remaining time, so the next ticks stay in it.
+	x, err = advance(&w, 60)
+	rem, _ := status_int(&w, "remaining_s")
+	testing.expect_value(t, rem, i64(GATE_WAIT_S - 60))
+	testing.expect(t, os.remove(path) == nil, "remove status")
+	// 50 s in the same minute, same count: no rewrite.
+	x, err = advance(&w, 50)
+	testing.expect(t, err == nil && x == .Run)
+	testing.expect(t, !os.exists(path), "no rewrite within the minute")
+	// The count changes: rewritten at once.
+	w.fake.agents.helpers = 1
+	x, err = advance(&w, 5)
+	testing.expect(t, os.exists(path), "rewritten on a count change")
+	b, _ := status_obj_busy_total(&w)
+	testing.expect_value(t, b, i64(2))
+	testing.expect(t, os.remove(path) == nil, "remove status")
+	// The remaining time crosses a minute: rewritten.
+	x, err = advance(&w, 10)
+	testing.expect(t, os.exists(path), "rewritten when the minute changes")
+	rem, _ = status_int(&w, "remaining_s")
+	testing.expect_value(t, rem, i64(GATE_WAIT_S - 120))
 }

@@ -80,6 +80,12 @@ Host :: struct {
 	// runtime starts open). false = the runtime did not confirm.
 	close_admission:        proc(user: rawptr) -> bool,
 	open_admission:         proc(user: rawptr),
+	// §12 stopping: ask the runtime to end its sessions (agents and shell sessions get a
+	// soft stop and the hub sees them exit) before stop_children's grace and hard stop.
+	// Called after `stopping` is journaled, for the activation and the rollback stop.
+	// Optional: nil = stop_children alone. Best effort; the result is not checked, because
+	// stop_children waits for every recorded process either way.
+	end_sessions:           proc(user: rawptr),
 }
 
 Mode :: enum {
@@ -198,6 +204,8 @@ Engine :: struct {
 	failed:         Error,
 	// Agent gate: latest count while an op waits for idle (status only, not journaled).
 	gate_busy:      Busy,
+	// Agent gate: what the waiting status file last showed (write throttle, gate.odin).
+	gate_shown:     Gate_Shown,
 }
 
 now :: proc(e: ^Engine) -> i64 {
@@ -871,6 +879,7 @@ activate_steps :: proc(e: ^Engine, op: Line, rule: Schema_Rule, superseded: Line
 	if err = step(e, &cur, "stopping"); err != nil do return
 	if crashed(e.inj) do return .Run, crash_error("stopping")
 	e.phase = .Offline
+	host_end_sessions(e)
 	if !e.host.stop_children(e.host.user, F) do return before_switch_fail(e, cur, "stop_timeout", true)
 	if err = step(e, &cur, "stopped"); err != nil do return
 	if stop_req(e) do return before_switch_fail(e, cur, "service_stopped", true)
@@ -1087,6 +1096,7 @@ run_rollback :: proc(e: ^Engine, op_in: Line, reason: string, from_override: Ref
 		if e.runtime_tree != "" do stop_tree = e.runtime_tree
 		else if op.to.tree != "" && e.launched == op.to.tree do stop_tree = op.to.tree
 		if !crashed(e.inj) && stop_tree != "" {
+			host_end_sessions(e)
 			if !e.host.stop_children(e.host.user, stop_tree) {
 				return .Run, fail("stop_timeout", "children of %s did not stop", stop_tree)
 			}

@@ -19,7 +19,8 @@ package engine
 //
 // The wait is journaled once (`waiting_for_idle` carries force_at and the first count), so
 // a supervisor restart keeps the original deadline. The countdown is in
-// supervisor-status.json (`force_at`, `remaining_s`, `busy`), refreshed on every tick.
+// supervisor-status.json (`force_at`, `remaining_s`, `busy`), rewritten when the count
+// changes or the remaining time crosses a minute (gate_status_due).
 // Only this instance's processes are stopped afterwards: Host.stop_children stops the
 // children the supervisor recorded by (pid, start_time) (src/supervisor/procs).
 
@@ -75,9 +76,29 @@ gate :: proc(e: ^Engine, op: Line, rule: Schema_Rule) -> (Exit, Error) {
 		if err := journal(e, w); err != nil do return .Run, err
 		return .Run, nil
 	}
-	// Still waiting: refresh the countdown (status only).
-	write_status(e, op)
+	// Still waiting: refresh the countdown (status only), throttled.
+	if gate_status_due(e, op, b, t) do write_status(e, op)
 	return .Run, nil
+}
+
+// Gate_Shown: what the waiting status file last showed.
+Gate_Shown :: struct {
+	force_at: i64, // identifies the wait (0 = nothing shown yet)
+	minute:   i64, // remaining time in whole minutes, rounded up
+	busy:     Busy,
+}
+
+// gate_status_due throttles the waiting status: tick runs every second for up to 2 h and
+// each status write is a synced write plus a replace (7200 fsyncs per wait). The file is
+// rewritten only when the count changes or the remaining time crosses a minute; the app
+// counts down between writes from the absolute `force_at`.
+@(private)
+gate_status_due :: proc(e: ^Engine, op: Line, b: Busy, t: i64) -> bool {
+	minute := (max(op.force_at - t, 0) + 59) / 60
+	shown := Gate_Shown{op.force_at, minute, b}
+	if shown == e.gate_shown do return false
+	e.gate_shown = shown
+	return true
 }
 
 // interrupt: an `update_now` (op `by_op_id`, actor `actor`) arrived while the active op is
@@ -135,6 +156,12 @@ cancel_active :: proc(e: ^Engine, by_op_id: string, target_op_id := "") -> (err:
 	e.gate_busy = {}
 	// Admission stays open while an op waits (§12), so there is nothing to reopen.
 	return journal(e, l)
+}
+
+// host_end_sessions: §12 "ask the runtime to end sessions" before stop_children.
+@(private)
+host_end_sessions :: proc(e: ^Engine) {
+	if e.host.end_sessions != nil do e.host.end_sessions(e.host.user)
 }
 
 // gate_status: what the app shows while an op waits ("Updating in 1 h 12 min — N agents
