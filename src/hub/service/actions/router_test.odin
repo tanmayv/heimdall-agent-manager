@@ -353,3 +353,20 @@ test_retried_busy_target_ends_delivered :: proc(t:^testing.T) {action_test_case(
 test_runs_pruned_after_finish :: proc(t:^testing.T) {
  action_test_case(t,prune_delivered);action_test_case(t,prune_skipped);action_test_case(t,prune_stale);action_test_case(t,prune_joined)
 }
+
+router_bot_flag_scenario :: proc(t:^testing.T,f:^Action_Test) {
+ action,found,err:=f.repos.actions.get(f.repos.actions.ctx,"action")
+ testing.expect(t,found && err.code==.None)
+ action.target_kind=domain.ACTION_TARGET_BOT
+ testing.expect_value(t,f.repos.actions.save(f.repos.actions.ctx,action).code,domain.Error_Code.None)
+ action_test_match(t,f,"one");drain_due(&f.runtime.router)
+ rows:=action_test_rows(t,f)
+ if testing.expect_value(t,len(rows),1) {
+  testing.expect_value(t,rows[0].state,domain.ACTION_RUN_SKIPPED)
+  testing.expect_value(t,rows[0].reason,"experiment_off")
+ }
+ testing.expect_value(t,f.routes,0)
+ testing.expect_value(t,action_test_prompt_count(t,f),0)
+}
+@(test)
+test_router_bot_experiment_off :: proc(t:^testing.T) {action_test_case(t,router_bot_flag_scenario)}

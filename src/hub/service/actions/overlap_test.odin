@@ -173,6 +173,9 @@ overlap_open_delivery :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect_value(t,f.routes,1);testing.expect_value(t,f.prompts,1)
  run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
  at,_:=platform.rfc3339_to_unix_ms(run.started_at);testing.expect_value(t,at,start)
+ for row in action_test_rows(t,f) {
+  if row.state==domain.ACTION_RUN_JOINED do testing.expect_value(t,row.joined_run_id,run.run_id)
+ }
  action_test_done(t,f);action_test_expect(t,f,domain.ACTION_RUN_DELIVERED,1)
 }
 @(test)

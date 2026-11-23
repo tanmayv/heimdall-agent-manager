@@ -297,11 +297,14 @@ place_pinned :: proc(t:^testing.T,f:^Action_Test) {
  p.bridges[0].status=.Offline
  _=f.repos.actions.rules_replace(f.repos.actions.ctx,"action",[]domain.Action_Target_Rule{{0,"bridge1","alpha","m1"}})
  p.existing["bridge1"]="existing"
+ plan:=routing_place_plan(f)
+ testing.expect(t,plan.ok)
+ testing.expect_value(t,plan.bridge_id,"bridge1")
  action_test_match(t,f,"one");drain_due(&f.runtime.router)
  action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
  testing.expect_value(t,p.created,0)
  delete_key(&p.existing,"bridge1")
- plan:=routing_place_plan(f);testing.expect(t,!plan.ok && plan.reason=="no_placement")
+ plan=routing_place_plan(f);testing.expect(t,!plan.ok && plan.reason=="no_placement")
 }
 place_reuse :: proc(t:^testing.T,f:^Action_Test) {
  p:=routing_place_setup(t,f);defer action_place_fixture_destroy(p)

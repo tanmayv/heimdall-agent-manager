@@ -109,7 +109,7 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
    open, exists, e := repo.run_open(repo.ctx, trigger.action_id)
    defer domain.action_run_destroy(&open)
    if e.code != .None do return false
-   if exists { run.state=domain.ACTION_RUN_JOINED; run.joined_run_id=open.run_id; run.finished_at=now }
+   if exists { run.state=domain.ACTION_RUN_JOINED; run.joined_run_id=strings.clone(open.run_id,context.temp_allocator); run.finished_at=now }
   }
   inserted, e := repo.run_insert(repo.ctx, run)
   if e.code != .None do return false

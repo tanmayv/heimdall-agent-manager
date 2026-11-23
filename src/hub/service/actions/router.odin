@@ -136,7 +136,7 @@ prompt_plan :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude
      if !placement.bridge_has_feature(b,contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1) do return {reason="bridge_too_old"}
      c={bridge_id=pinned,provider=rules[0].provider,model=rules[0].model,rule_position=rules[0].position}
      id,conversation,exists:=r.agents.find(r.agents.ctx,owner,string(action.target_agent_id),string(action.target_project_id),string(action.last_spawned_instance_id),c)
-     if exists do return {ok=true,bridge_id=pinned,instance_id=id,conversation_id=conversation,rule_position=c.rule_position}
+     if exists do return {ok=true,bridge_id=strings.clone(pinned,context.temp_allocator),instance_id=id,conversation_id=conversation,rule_position=c.rule_position}
      return {reason="no_placement"}
     }
    }
@@ -299,7 +299,8 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
  if e.code!=.None || !exists do return
  reason:=""
  if !actions_gate_on(r.experiments,string(action.owner_user_id),"actions") {reason="experiment_off"
- } else if !action.enabled {reason="disabled"}
+ } else if !action.enabled {reason="disabled"
+ } else if action.target_kind==domain.ACTION_TARGET_BOT && !actions_gate_on(r.experiments,string(action.owner_user_id),"bots") {reason="experiment_off"}
  if reason!="" {
   if e:=finish_run(repo,run,domain.ACTION_RUN_SKIPPED,reason,now); e.code!=.None do return
   _,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
