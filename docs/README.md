@@ -35,7 +35,6 @@ Groups:
 - [fleet-management.md](fleet-management.md): per-chain, per-agent fleet launch settings and the `bridge_models` API field.
 - [multi-question-messages.md](multi-question-messages.md): version 1 multi-question message form and the agent CLI JSON format.
 - [html-bundle-artifacts.md](html-bundle-artifacts.md): publishing multi-page static HTML bundles as artifacts and viewing them in an isolated iframe.
-- [voice-messages.md](voice-messages.md): voice message flow, the user-provided speech service contract, Hub relay access and agent voice replies.
 - [quoted-context.md](quoted-context.md): the Quote feature that attaches selected message text to a coordinator message.
 
 ### Transport and streaming
