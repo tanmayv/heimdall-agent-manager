@@ -128,7 +128,11 @@ test_bridge_setup_headless_enrolled_profile_defaults_to_separate :: proc(t: ^tes
 
 @(private = "file")
 setup_test_home :: proc(name: string) -> string {
-	home := fmt.tprintf("%s/.cache/heimdall-tests/%s-%d", os.get_env("HOME", context.temp_allocator), name, os.get_pid())
+	// Next to the test binary (under $HOME/.cache/heimdall-tests by the project
+	// convention), not from $HOME at call time: other tests in this package swap
+	// HOME for temp homes they delete, which raced these fixtures away.
+	exe, _ := os.get_executable_path(context.temp_allocator)
+	home := fmt.tprintf("%s/%s-%d", bridgesvc.pdir(exe), name, os.get_pid())
 	_ = os.remove_all(home)
 	return home
 }
@@ -253,7 +257,7 @@ test_setup_s8c_downgrade_refused_at_lock :: proc(t: ^testing.T) {
 	defer bridgesvc.lock_release(s.lock_path, s.pid)
 	testing.expect(t, !r.ok)
 	testing.expect_value(t, s.exit_code, bridgesvc.EXIT_REFUSED)
-	testing.expect(t, strings.contains(s.refusal, "--allow-downgrade"))
+	testing.expectf(t, strings.contains(s.refusal, "--allow-downgrade"), "refusal %q result %q installed %q facts %v", s.refusal, r.message, s.facts.installed_version, s.facts)
 }
 
 // Enrollment never prompts without a terminal and keeps the identity it is given.
@@ -342,4 +346,38 @@ test_setup_final_lines_per_row :: proc(t: ^testing.T) {
 	ne := o
 	ne.not_enrolled = "denied"
 	testing.expect_value(t, line({.S1_Fresh}, f, ne, replace = true), "Installed svc v0.5.75 but not enrolled: denied. Run the same command again to enroll.")
+}
+
+// Review finding (high), end to end through argv: the argv `ham-bridge update`
+// builds (update_setup_argv) on a parked profile does not enroll, and a failed
+// enrollment on the update path rolls back instead of halting with the service down.
+@(test)
+test_setup_update_argv_never_reenrolls_a_parked_profile :: proc(t: ^testing.T) {
+	home := setup_test_home("setup-update-marker")
+	defer os.remove_all(home)
+	argv := bridgesvc.update_setup_argv("/bundle/ham-bridge", "https://hub.example.com", "", true)
+	s := setup_test_make(home, argv[1:])
+	l := s.layout
+	credential := strings.concatenate({bridgesvc.CREDENTIAL_HEADER, "secret brg_a\n"}, context.temp_allocator)
+	testing.expect(t, os.write_entire_file_from_string(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE), credential) == nil)
+	testing.expect(t, bridgesvc.write_reenroll_marker(l.state_dir, {bridge_id = "brg_a", reason = "revoked", at = 1}))
+	s.bundle_dir = bridgesvc.pjoin(home, "bundle")
+	s.facts = bridge_setup_gather_facts(&s)
+	testing.expect(t, s.facts.reinstall && s.facts.marker_present)
+	s.plan = bridgesvc.classify_install(s.facts)
+	testing.expect(t, !s.plan.enroll, "update must not start an enrollment")
+	r := bridge_setup_run(&s, .Enroll)
+	testing.expect(t, r.ok && r.message == "skipped")
+	_, still := bridgesvc.read_reenroll_marker(l.state_dir)
+	testing.expect(t, still, "the marker stays for the next installer run")
+
+	// Enrollment failure: update path rolls back (Fatal), installer path halts (S1a).
+	s.plan = {enroll = true, enroll_rolls_back = true}
+	r = bridge_setup_run(&s, .Enroll) // bin/ham-bridge does not exist: enroll fails
+	testing.expect(t, !r.ok && !r.halt && r.failure == .Fatal)
+	testing.expect_value(t, s.not_enrolled, "")
+	s.plan = {enroll = true}
+	r = bridge_setup_run(&s, .Enroll)
+	testing.expect(t, !r.ok && r.halt)
+	testing.expect(t, s.not_enrolled != "")
 }

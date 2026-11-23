@@ -100,6 +100,9 @@ Install_Plan :: struct {
 	replace_binaries: bool,
 	reinstall:        bool, // re-register the service and restart even if unchanged
 	enroll:           bool,
+	// A failed enrollment rolls the run back (update path) instead of halting with
+	// the install kept and the service not started (S1a, exit 4).
+	enroll_rolls_back: bool,
 	reuse_bridge:     string, // passed to enroll as --reuse-bridge
 	clear_marker:     bool, // remove needs-reenrollment.json once enrolled
 	reenroll_reason:  string,
@@ -183,9 +186,11 @@ classify_install :: proc(f: Install_Facts) -> Install_Plan {
 		switch {
 		case fresh:
 			p.replace_binaries = true
-		case !f.bin_present || f.staging_left:
-			// bin/ missing or half-written: install from the bundle; a bin.bak* is
-			// never trusted as the source.
+		case !f.bin_present:
+			// bin/ missing: install from the bundle; a bin.bak* is never trusted as
+			// the source. A leftover .staging with an intact bin/ is only discarded
+			// (Stage) and the normal version policy below applies, so --keep-version
+			// never replaces a working bin/ with a possibly older bundle.
 			p.replace_binaries = true
 			p.rows += {.S7_Partial}
 		case requested != "":
@@ -205,23 +210,27 @@ classify_install :: proc(f: Install_Facts) -> Install_Plan {
 			p.replace_binaries = true
 			p.rows += {.S8b_Version_Change}
 		}
-	} else if f.staging_left {
-		p.rows += {.S7_Partial}
 	}
+	if f.staging_left do p.rows += {.S7_Partial}
 	if fresh do p.rows += {.S1_Fresh}
 
-	// Enrollment.
+	// Enrollment. The update path (--reinstall: ham-bridge update, auto and hub
+	// updates, often detached with nobody watching) keeps the pre-T2 contract: a
+	// re-enroll marker never starts an enrollment there; only an instance with no
+	// credential enrolls, and a failed enrollment rolls back (enroll_rolls_back).
+	marker := f.marker_present && !f.reinstall
+	p.enroll_rolls_back = f.reinstall
 	switch {
 	case f.bridge_id == "":
 		p.enroll = true
 		if !fresh do p.rows += {.S3_Not_Enrolled}
 		// Enrolled but tokenless (marker credential_missing): keep the identity.
-		if f.marker_present && f.marker.bridge_id != "" {
+		if marker && f.marker.bridge_id != "" {
 			p.reuse_bridge = f.marker.bridge_id
 			p.clear_marker = true
 			p.reenroll_reason = f.marker.reason
 		}
-	case f.marker_present:
+	case marker:
 		p.enroll = true
 		p.rows += {.S4_Enrollment_Invalid}
 		p.reuse_bridge = f.bridge_id

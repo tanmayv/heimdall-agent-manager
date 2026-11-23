@@ -140,11 +140,11 @@ test_install_s7_interrupted_install_is_finished :: proc(t: ^testing.T) {
 	f.installed_version = ""
 	p := classify_install(f)
 	testing.expect(t, .S7_Partial in p.rows && p.replace_binaries && !p.enroll && p.extensions)
-	// Leftover staging, bin/ intact: binaries replaced from the bundle.
+	// Leftover staging, bin/ intact and identical: staging discarded, bin/ kept.
 	f = healthy()
 	f.staging_left = true
 	p = classify_install(f)
-	testing.expect(t, .S7_Partial in p.rows && p.replace_binaries && !p.noop)
+	testing.expect(t, .S7_Partial in p.rows && !p.replace_binaries && !p.noop)
 	// Run from bin/ with leftover staging: staging is discarded, nothing copied.
 	f.copy_binaries = false
 	p = classify_install(f)
@@ -272,4 +272,59 @@ test_install_reinstall_runs_the_full_transaction :: proc(t: ^testing.T) {
 	f.copy_binaries = false
 	p = classify_install(f)
 	testing.expect(t, !p.noop && !p.replace_binaries && p.reinstall)
+}
+
+// Review finding (high): the update path never re-enrolls on a marker; a parked
+// profile is updated, verify reports the refusal and the run rolls back.
+@(test)
+test_install_update_path_ignores_reenroll_marker :: proc(t: ^testing.T) {
+	for reason in ([]string{"revoked", "refresh_rejected", "vault_key_timeout"}) {
+		f := healthy()
+		f.reinstall = true
+		f.marker_present = true
+		f.marker = {bridge_id = "brg_a", reason = reason}
+		p := classify_install(f)
+		testing.expectf(t, !p.enroll && !p.clear_marker, "%s: update must not enroll", reason)
+		testing.expect(t, .S4_Enrollment_Invalid not_in p.rows)
+		testing.expect(t, p.enroll_rolls_back && p.replace_binaries)
+	}
+	// Tokenless on the update path: enrolls as before T2, without the marker's id,
+	// and a failed enrollment rolls back instead of halting.
+	f := healthy()
+	f.reinstall = true
+	f.bridge_id = ""
+	f.marker_present = true
+	f.marker = {bridge_id = "brg_old", reason = "credential_missing"}
+	p := classify_install(f)
+	testing.expect(t, p.enroll && p.enroll_rolls_back && !p.clear_marker)
+	testing.expect_value(t, p.reuse_bridge, "")
+	// The installer path (no --reinstall) halts instead (S1a).
+	f.reinstall = false
+	testing.expect(t, !classify_install(f).enroll_rolls_back)
+}
+
+// Review finding (medium): a leftover staging dir with an intact bin/ never forces
+// a binary replacement under --keep-version (no silent downgrade).
+@(test)
+test_install_leftover_staging_keeps_version_with_keep_version :: proc(t: ^testing.T) {
+	for installed in ([]string{"0.5.80", "0.5.70"}) {
+		f := healthy()
+		f.staging_left = true
+		f.binaries_match = false
+		f.installed_version = installed
+		f.keep_version = true
+		p := classify_install(f)
+		testing.expectf(t, !p.replace_binaries, "installed %s: bin/ kept", installed)
+		testing.expect_value(t, p.rows, Install_Rows{.S7_Partial, .S8a_Version_Kept})
+		testing.expect(t, !p.noop, "staging is still discarded")
+	}
+	// Identical bundle + leftover staging: discard only.
+	f := healthy()
+	f.staging_left = true
+	p := classify_install(f)
+	testing.expect(t, !p.replace_binaries && .S7_Partial in p.rows && !p.noop)
+	// Default policy still applies: a differing bundle replaces (update path).
+	f.binaries_match = false
+	f.installed_version = "0.5.74"
+	testing.expect(t, classify_install(f).replace_binaries)
 }

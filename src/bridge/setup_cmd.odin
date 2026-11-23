@@ -663,6 +663,8 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 		current := bridgesvc.credential_bridge_id(bridgesvc.read_first_line(token))
 		argv := bridge_setup_enroll_argv(s, token)
 		if !bridge_setup_exec_inherit(argv) {
+			// Update path: as before T2, roll back and restart the previous bridge.
+			if s.plan.enroll_rolls_back do return {failure = .Fatal, message = "enrollment did not complete"}
 			// S1a: keep what is installed, do not start it; a re-run continues at S3/S4.
 			s.not_enrolled = "enrollment was not approved or did not complete"
 			return {halt = true, message = fmt.tprintf("not enrolled: %s", s.not_enrolled)}
@@ -927,8 +929,14 @@ bridge_setup_finish :: proc(data: rawptr, ok: bool) {
 		// Leave the previous install running, as it was before setup.
 		if started, msg := bridge_service_action(s.host, s.layout.service_name, .Start); !started do bridge_setup_rollback_fail(s, fmt.tprintf("previous Bridge could not be restarted: %s", msg))
 	}
-	if ok && s.plan.noop {
-		// S2: nothing was written, the tray included.
+	if ok && (s.plan.noop || s.not_enrolled != "") {
+		// S2: nothing was written, the tray included. S1a: the service was
+		// deliberately not started, so no tray is installed or started for it; a
+		// tray that Binaries stopped (Windows) is put back as it was.
+		if s.not_enrolled != "" {
+			_ = os.remove_all(s.staging)
+			if s.tray_stopped do _ = bridge_tray_spawn(bridgesvc.tray_launch_argv(s.host, s.layout), nil)
+		}
 	} else if ok {
 		_ = os.remove_all(s.staging)
 		// The tray is a convenience: it is reported, never a reason to roll back.
