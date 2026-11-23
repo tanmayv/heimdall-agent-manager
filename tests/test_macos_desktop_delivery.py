@@ -236,56 +236,6 @@ def test_gh_retry_retries_only_transient_errors_and_is_bounded():
         assert "Edit failed with a non-transient error (exit 4); not retrying." in fatal.stderr
 
 
-def _publish_block() -> str:
-    workflow = read(".github/workflows/release-local-binaries.yml")
-    start = workflow.index('          source "$GITHUB_WORKSPACE/scripts/release/gh-retry.sh"\n')
-    end = workflow.index("\n", workflow.index('gh release edit "$VERSION" "${edit_flags[@]}"', start))
-    end = workflow.index("          fi\n", end) + len("          fi\n")
-    block = workflow[start:end].replace("${{ needs.prepare.outputs.clean_version }}", "1.2.3")
-    assert "${{" not in block
-    return block
-
-
-def test_publish_create_is_idempotent_after_partial_create():
-    """A create that dies after gh made the (draft) release falls through to upload + edit."""
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        (root / "notes.md").write_text("notes\n")
-        prelude = (
-            f'VERSION=v1.2.3; RELEASE_COMMIT=abc123; BUILD_DARWIN_X64=false; RUNNER_TEMP="{root}"\n'
-            f'notes_file="{root}/notes.md"; release_flags=(--prerelease)\n'
-        )
-        gh = (
-            'case "$1 $2" in\n'
-            '  "release view")\n'
-            '    [ -f "$STATE" ] || { echo "release not found" >&2; exit 1; }\n'
-            '    case "$*" in *assets*) echo "Ninjy-1.2.3-x64.dmg";; esac ;;\n'
-            '  "release create") : > "$STATE"; echo "HTTP 502: Bad Gateway" >&2; exit 1 ;;\n'
-            '  "release delete-asset"|"release upload"|"release edit") ;;\n'
-            '  *) echo "unexpected gh $*" >&2; exit 9 ;;\n'
-            'esac\n'
-        )
-        result, calls = _run_with_fake_gh(root, prelude + _publish_block(), gh)
-        assert result.returncode == 0, result.stdout + result.stderr
-        verbs = [" ".join(c.split()[:2]) for c in calls]
-        assert verbs == [
-            "release view", "release create", "release view", "release view",
-            "release delete-asset", "release upload", "release edit",
-        ], calls
-        assert "switching to upload + edit" in result.stdout
-        assert calls[-1] == (
-            f"release edit v1.2.3 --notes-file {root}/notes.md --title v1.2.3 --target abc123 "
-            "--draft=false --prerelease=true"
-        )
-
-        # Existing release: unchanged upload + notes-only edit, no create.
-        (root / "state").write_text("")
-        result, calls = _run_with_fake_gh(root, prelude + _publish_block(), gh)
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert not any(c.startswith("release create") for c in calls)
-        assert calls[-1] == f"release edit v1.2.3 --notes-file {root}/notes.md"
-
-
 if __name__ == "__main__":
     tests = [
         test_local_bundle_installer_contract,
@@ -294,7 +244,6 @@ if __name__ == "__main__":
         test_stapler_retry_is_bounded_and_recovers_from_transient_error_68,
         test_stapler_validate_retry_is_bounded_and_logged,
         test_gh_retry_retries_only_transient_errors_and_is_bounded,
-        test_publish_create_is_idempotent_after_partial_create,
     ]
     for case in tests:
         case()

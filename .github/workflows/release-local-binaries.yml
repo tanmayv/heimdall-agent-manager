@@ -17,7 +17,7 @@ on:
         default: false
         type: boolean
       publish_release:
-        description: 'Create/update the GitHub Release after building artifacts'
+        description: 'Create and publish the GitHub Release after building (refused when the tag is already published)'
         required: true
         default: false
         type: boolean
@@ -26,7 +26,9 @@ on:
         # callers (absent from /releases, not merely excluded from
         # /releases/latest) and its assets are not publicly downloadable, so
         # scripts/install.sh cannot resolve or fetch it. Tick this only to
-        # stage a release you intend to publish by hand afterwards.
+        # stage a release you intend to publish by hand afterwards: the run
+        # leaves a draft whose assets it has verified. Publishing locks it
+        # (docs/release-signing.md, "Immutable releases").
         description: 'Create the GitHub Release as a draft'
         required: true
         default: false
@@ -87,13 +89,26 @@ jobs:
         shell: bash
         env:
           REQUESTED_VERSION: ${{ inputs.version || '' }}
+          # Same condition as the release job's `if`.
+          PUBLISHING: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # A publishing run for an already published tag can only fail at the
+          # release job (published releases are immutable): fail now, before
+          # the version commit and the builds. The release job re-checks.
+          refuse_published() {
+            if [ "$PUBLISHING" = "true" ]; then
+              scripts/release/publish-release.sh check-unpublished "$1"
+            fi
+          }
 
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             version="$GITHUB_REF_NAME"
             clean_version="${version#v}"
             commit_sha="$GITHUB_SHA"
+            refuse_published "$version"
           else
             # Releases may have created tags after the selected branch was
             # last fetched. Refresh them before calculating the next patch.
@@ -125,6 +140,7 @@ jobs:
             fi
 
             version="v$clean_version"
+            refuse_published "$version"
             scripts/release/bump-version.sh --version-only "$clean_version"
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
@@ -1044,8 +1060,17 @@ jobs:
     needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures, manifest]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+    # The workflow's concurrency group is per ref, but a tag push (refs/tags/vX)
+    # and a dispatch for vX (refs/heads/...) publish the same release: never
+    # let two release jobs for one version run at once.
+    concurrency:
+      group: release-publish-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: false
     permissions:
       contents: write
+      # actions/attest: OIDC identity + attestation store.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout release metadata
         uses: actions/checkout@v4
@@ -1167,9 +1192,79 @@ jobs:
             --signature dist/heimdall-release-manifest.json.minisig \
             --dist dist
 
-      - name: Create or update GitHub Release
+      # Published releases are immutable (report §6.5 item 3): a re-run on a
+      # published tag stops here, before attesting or writing anything.
+      - name: Refuse to modify a published release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: scripts/release/publish-release.sh check-unpublished "$VERSION"
+
+      # One list of release files feeds both the attestation and the upload.
+      - name: List release assets
+        id: assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The thin bootstraps ship as assets too; they are self-contained and
+          # resolve the newest promoted release, so any copy works.
+          cp scripts/install.sh scripts/install.ps1 dist/
+          shopt -s nullglob
+          list="$RUNNER_TEMP/release-assets.txt"
+          : > "$list"
+          for pattern in "dist/heimdall-local-*-$VERSION.tar.gz" "dist/heimdall-local-*-$VERSION.zip" \
+            'dist/Ninjy-*.dmg' 'dist/Ninjy-*.zip' 'dist/Ninjy-*.zip.blockmap' 'dist/Ninjy-*.pkg' \
+            'dist/Ninjy-*.AppImage' 'dist/Ninjy-*.deb' 'dist/Ninjy-*.exe' 'dist/Ninjy-*.exe.blockmap' \
+            dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml \
+            dist/SHA256SUMS dist/heimdall-release-manifest.json dist/heimdall-release-manifest.json.minisig \
+            dist/install.sh dist/install.ps1; do
+            # shellcheck disable=SC2206 # the pattern is meant to glob
+            matches=($pattern)
+            [ "${#matches[@]}" -gt 0 ] || { echo "no release file matches $pattern" >&2; exit 1; }
+            printf '%s\n' "${matches[@]}" >> "$list"
+          done
+          cat "$list"
+          {
+            echo 'paths<<EOF_RELEASE_ASSETS'
+            cat "$list"
+            echo 'EOF_RELEASE_ASSETS'
+          } >> "$GITHUB_OUTPUT"
+
+      # SLSA build provenance for every published file, signed by this
+      # workflow's OIDC identity (gh attestation verify --signer-workflow).
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.assets.outputs.paths }}
+          create-storage-record: false
+
+      - name: Check the attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          signer="$GITHUB_REPOSITORY/.github/workflows/release-local-binaries.yml"
+          for f in dist/heimdall-release-manifest.json "dist/heimdall-local-linux-amd64-$VERSION.tar.gz"; do
+            for attempt in 1 2 3; do
+              if gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" \
+                --source-ref "$GITHUB_REF" > /dev/null; then
+                echo "attestation verified: $f"; break
+              fi
+              [ "$attempt" -lt 3 ] || { echo "::error::no valid attestation for $f"; exit 1; }
+              sleep 10
+            done
+          done
+
+      - name: Create, verify and publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
           VERSION: ${{ needs.prepare.outputs.version }}
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
@@ -1217,87 +1312,8 @@ jobs:
           if [ "${{ github.event_name == 'push' || inputs.prerelease }}" = "true" ]; then
             release_flags+=(--prerelease)
           fi
-          # The thin bootstraps ship as assets too; they are self-contained and
-          # resolve the newest promoted release, so any copy works.
-          cp scripts/install.sh scripts/install.ps1 dist/
-          # Every gh call goes through retry_transient: the release API has failed
-          # this job with a transient "HTTP 403: Resource not accessible by
-          # integration" despite contents: write (run 41329637092).
-          # shellcheck source=scripts/release/gh-retry.sh
-          source "$GITHUB_WORKSPACE/scripts/release/gh-retry.sh"
-          list_release_assets() {
-            gh release view "$VERSION" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/existing-release-assets.txt"
-          }
-          upload_release_assets() {
-            gh release upload "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/heimdall-release-manifest.json dist/heimdall-release-manifest.json.minisig dist/install.sh dist/install.ps1 --clobber
-          }
-          # Idempotent create: a retry first re-checks for the release, since a
-          # failed attempt may still have created it (gh creates a draft, then
-          # uploads, then publishes). Found -> fall through to upload + edit.
-          create_attempted=false
-          recovered_partial_create=false
-          create_release_if_missing() {
-            local rc=0
-            if [ "$create_attempted" = true ]; then
-              gh_release_exists "$VERSION" || rc=$?
-              case "$rc" in
-                0) echo "Release $VERSION exists after a failed create attempt; switching to upload + edit."
-                   recovered_partial_create=true
-                   return 0 ;;
-                1) ;;
-                *) return "$rc" ;;
-              esac
-            fi
-            create_attempted=true
-            gh release create "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/heimdall-release-manifest.json dist/heimdall-release-manifest.json.minisig dist/install.sh dist/install.ps1 \
-              --title "$VERSION" \
-              --target "$RELEASE_COMMIT" \
-              --notes-file "$notes_file" \
-              "${release_flags[@]}"
-          }
-          exists_rc=0
-          retry_transient "Look up release $VERSION" gh_release_exists "$VERSION" || exists_rc=$?
-          case "$exists_rc" in
-            0) release_exists=true ;;
-            1) release_exists=false ;;
-            *) echo "Could not determine whether release $VERSION exists." >&2; exit 1 ;;
-          esac
-          if [ "$release_exists" = false ]; then
-            retry_transient "Create release $VERSION" create_release_if_missing || {
-              echo "Creating release $VERSION failed; see the attempts above." >&2; exit 1; }
-          fi
-          if [ "$release_exists" = true ] || [ "$recovered_partial_create" = true ]; then
-            if [ "$BUILD_DARWIN_X64" != "true" ]; then
-              # --clobber replaces matching names but leaves assets omitted by
-              # this run. Remove only this version's optional Intel macOS set;
-              # otherwise its old assets would outlive their checksum entries.
-              retry_transient "List assets of release $VERSION" list_release_assets
-              for asset in \
-                "heimdall-local-darwin-amd64-$VERSION.tar.gz" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg.blockmap" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip.blockmap" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.pkg"; do
-                if grep -Fxq "$asset" "$RUNNER_TEMP/existing-release-assets.txt"; then
-                  retry_transient "Delete stale asset $asset" gh_release_delete_asset_if_present "$VERSION" "$asset"
-                fi
-              done
-            fi
-            retry_transient "Upload assets to release $VERSION" upload_release_assets
-            edit_flags=(--notes-file "$notes_file")
-            if [ "$recovered_partial_create" = true ]; then
-              # Restore what the interrupted create would have set: gh leaves an
-              # interrupted create as a draft.
-              is_draft=false; is_prerelease=false
-              for flag in "${release_flags[@]}"; do
-                case "$flag" in
-                  --draft) is_draft=true ;;
-                  --prerelease) is_prerelease=true ;;
-                esac
-              done
-              edit_flags+=(--title "$VERSION" --target "$RELEASE_COMMIT" \
-                --draft="$is_draft" --prerelease="$is_prerelease")
-            fi
-            retry_transient "Update notes of release $VERSION" gh release edit "$VERSION" "${edit_flags[@]}"
-          fi
+          mapfile -t assets < "$RUNNER_TEMP/release-assets.txt"
+          # Draft -> upload -> verify digests -> publish. Refuses (exit 3, no
+          # write) when the tag is already published; never uses --clobber.
+          scripts/release/publish-release.sh publish --tag "$VERSION" --commit "$RELEASE_COMMIT" \
+            --notes-file "$notes_file" "${release_flags[@]}" -- "${assets[@]}"
