@@ -118,3 +118,28 @@ test_windows_session_end_is_graceful :: proc(t: ^testing.T) {
 	testing.expect_value(t, finish(t, &f, &l, 20 * time.Second), 0)
 	testing.expect_value(t, count_lines(fake_log(&f), cat("graceful ", A)), 1)
 }
+
+// Safety finding (round 1): the launcher stop event is manual-reset and survives as long
+// as any handle is open. A caller that set it to stop the previous launcher and still
+// holds the handle must not stop the next launcher before it starts a supervisor; the
+// graceful stop must still work afterwards.
+@(test)
+test_windows_stale_stop_event_is_reset_at_start :: proc(t: ^testing.T) {
+	f := fixture_new(t, "stale-stop-event")
+	defer dump_on_failure(t, &f)
+	A := add_tree(t, &f, "0.5.74", "ready")
+	set_pointer(t, &f, POINTER_CURRENT, A)
+	set_known_good(t, &f, A)
+	name := win.utf8_to_wstring(fmt.tprintf("%s%s", LAUNCHER_STOP_EVENT_PREFIX, f.id), context.temp_allocator)
+	h := win.CreateEventW(nil, true, true, name) // manual reset, already signalled
+	testing.expectf(t, h != nil, "CreateEventW(launcher stop): %d", win.GetLastError())
+	if h == nil do return
+	defer win.CloseHandle(h)
+	testing.expect(t, win.WaitForSingleObject(h, 0) == 0, "event not signalled before launch")
+	l := launch(t, &f)
+	testing.expect(t, wait_lines(&f, cat("start ", A, " normal"), 1, 20 * time.Second), "stale stop event stopped the launcher before it started a supervisor")
+	testing.expect(t, wait_lines(&f, cat("ready ", A), 1, 20 * time.Second))
+	win.SetEvent(h)
+	testing.expect_value(t, finish(t, &f, &l, 20 * time.Second), 0)
+	testing.expect_value(t, count_lines(fake_log(&f), cat("graceful ", A)), 1)
+}

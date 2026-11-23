@@ -122,6 +122,11 @@ platform_init :: proc(l: ^Launcher) -> bool {
 		log("CreateEventW(launcher stop) failed: %d", win.GetLastError())
 		return false
 	}
+	// CreateEventW on an existing name opens the object in its current state
+	// (bInitialState is ignored). A caller that set the event to stop the previous
+	// launcher and still holds its handle (setup re-starting the task, the app) would
+	// otherwise stop this launcher before it starts a supervisor (spec §7.3).
+	win.ResetEvent(g_launcher_stop_event)
 	g_supervisor_stop_event = win.CreateEventW(nil, true, false, win.utf8_to_wstring(fmt.tprintf("%s%s", SUPERVISOR_STOP_EVENT_PREFIX, id), context.temp_allocator))
 	if g_supervisor_stop_event == nil {
 		log("CreateEventW(supervisor stop) failed: %d", win.GetLastError())

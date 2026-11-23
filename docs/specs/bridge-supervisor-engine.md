@@ -541,6 +541,10 @@ loop:
     and waits up to 20 s for the supervisor to exit, then exits 0. `ham-bridge setup`,
     the uninstaller and the app must set this event and wait for the launcher to exit
     (≤ 25 s) **before** calling `schtasks /End`; `schtasks /End` is only the fallback.
+    The launcher resets the stop event when it starts (opening an existing named event
+    keeps its signalled state), so a set event left over from stopping the previous
+    launcher never stops the next one; callers close their handle once the launcher has
+    exited.
   - **Stop-request file (every OS; T9 review carry-over (a)).** `Local\` objects are per
     logon session, so a caller in another session (setup over SSH, a headless install, a
     service) cannot open the stop event. Such a caller writes
