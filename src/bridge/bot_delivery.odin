@@ -31,6 +31,8 @@ Bridge_Bot_Worker :: struct {
 	terminal_seq, acked_seq: int,
 	ended_ms, last_sent_ms, last_generation: i64,
 	last_progress_ms, ready_deadline_ms: i64,
+    live_row_retry_at_ms: i64,
+    live_row_retries: int,
 }
 Bridge_Bot_Backoff :: struct { failures: int, next_at_ms: i64 }
 @(thread_local) bridge_bot_current_worker: ^Bridge_Bot_Worker
@@ -42,7 +44,7 @@ bridge_bot_raw_activity: map[string]string
 bridge_bot_raw_activity_mutex: sync.Mutex
 
 bridge_bot_switch_proc: proc(attempt_id: string, cand: contracts.Bot_Candidate_Wire) -> (status: int, relaunched: bool, error_code: string) = bridge_bot_switch_http
-bridge_bot_launch_proc: proc(instance_id, command_id: string) -> (ok: bool, detail: string, err: Bridge_Error) = bridge_bot_launch_via_descriptor
+bridge_bot_launch_proc: proc(instance_id, attempt_id: string) -> (ok: bool, detail: string, err: Bridge_Error) = bridge_bot_launch_via_start_begin
 bridge_bot_snapshot_proc: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) = bridge_runtime_instance_snapshot
 bridge_bot_launch_record_proc: proc(instance_id: string) -> (Bridge_Runtime_Launch, bool) = bridge_runtime_get_launch
 bridge_bot_notice_proc: proc(instance_id: string) -> bool = bridge_bot_deliver_notice
@@ -74,17 +76,45 @@ bridge_bot_switch_http :: proc(attempt_id: string, cand: contracts.Bot_Candidate
 	_ = json.unmarshal(resp.body, &wire, allocator = context.temp_allocator)
 	return resp.status, wire.data.relaunched, wire.error.details.code
 }
-bridge_bot_launch_via_descriptor :: proc(instance_id, command_id: string) -> (ok: bool, detail: string, err: Bridge_Error) {
+bridge_bot_launch_via_start_begin :: proc(instance_id, attempt_id: string) -> (ok: bool, detail: string, err: Bridge_Error) {
 	deadline_ns: i64
 	if w := bridge_bot_current_worker; w != nil {
 		left_ms := w.ready_deadline_ms - bridge_bot_now_proc()
 		if left_ms <= 0 do return false, "launch deadline elapsed", bridge_error(.hub_connect_failed, .transport)
 		deadline_ns = time.to_unix_nanoseconds(time.now()) + left_ms * i64(time.Millisecond)
 	}
-	command_json, fetch_err, fetched := bridge_wake_fetch_enriched_launch_json(instance_id, command_id, deadline_ns, use_manifest_run_count = true)
-	defer delete(command_json)
-	if !fetched do return false, "could not fetch enriched descriptor (agent_id)", fetch_err
-	return bridge_runtime_launch_agent(command_id, command_json, deadline_ns, bot_delivery = true)
+    candidate_index := 0
+    if w := bridge_bot_current_worker; w != nil do candidate_index = w.candidate_index
+    command_id := fmt.aprintf("botl_%s_%d", attempt_id, candidate_index)
+    defer delete(command_id)
+    command_json: string
+    fetch_err: Bridge_Error
+    fetched: bool
+    if sync.atomic_load(&bridge_hub_start_begin_supported) {
+        delete(command_id)
+        command_json, command_id, fetch_err, fetched = bridge_wake_start_begin_proc(instance_id, fmt.tprintf("bot_%s", attempt_id), deadline_ns)
+    } else {
+        command_json, fetch_err, fetched = bridge_wake_manifest(instance_id, command_id, deadline_ns, bot_delivery = true)
+    }
+    defer delete(command_json)
+    if !fetched && bridge_wake_is_live_row(fetch_err) {
+        if snap, found := bridge_bot_snapshot_proc(instance_id); found && bridge_runtime_status_active(snap.runtime_status) && snap.runtime_status != "stopping" {
+            return true, "", {}
+        }
+        if w := bridge_bot_current_worker; w != nil && w.live_row_retries < BRIDGE_LIVE_ROW_RETRIES {
+            w.live_row_retries += 1
+            w.live_row_retry_at_ms = bridge_bot_now_proc() + BRIDGE_LIVE_ROW_RETRY_MS
+            return true, "", {}
+        }
+    }
+    if !fetched do return false, "start-begin or legacy descriptor fetch refused", fetch_err
+    return bridge_bot_runtime_launch_proc(command_id, command_json, deadline_ns)
+
+}
+// Preserve bot launch admission for the legacy launcher as well.
+bridge_bot_runtime_launch_proc: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) = bridge_bot_runtime_launch
+bridge_bot_runtime_launch :: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) {
+    return bridge_runtime_launch_agent(command_id, command_json, deadline_ns, bot_delivery = true)
 }
 bridge_bot_busy_inputs :: proc() -> (traffic_stopped, update_reserved, vault_unlocked: bool) {
 	traffic_stopped = sync.atomic_load(&bridge_hub_traffic_stopped)
@@ -230,6 +260,7 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 		tried += 1
 		w.phase = .Launching; bridge_bot_report(w, "working")
 		w.ready_deadline_ms = bridge_bot_now_proc() + w.frame.timers.launch_ready_ms
+        w.live_row_retry_at_ms, w.live_row_retries = 0, 0
 		pre_id := ""
 		before, _ := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
 		pre_generation := before.startup.generation
@@ -250,7 +281,7 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 			if !relaunched {
 				current, current_found := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
 				if !current_found || !bridge_runtime_status_active(current.runtime_status) {
-					ok, _, launch_err := bridge_bot_launch_proc(w.frame.agent_instance_id, fmt.tprintf("botl_%s_%d", w.frame.attempt_id, i))
+					ok, _, launch_err := bridge_bot_launch_proc(w.frame.agent_instance_id, w.frame.attempt_id)
 					if !ok {
 						bridge_bot_outcome(w, c, "launch_failed", contracts.bridge_error_class_name(launch_err.class), launch_err, true)
 						delete(pre_id); continue
@@ -297,11 +328,21 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 }
 // READY and rollover consume the same candidate launch budget.
 bridge_bot_wait_ready :: proc(w: ^Bridge_Bot_Worker, relaunched: bool, pre_id: string, pre_generation: u64 = 0) -> (outcome, detail: string, err: Bridge_Error, has_err: bool) {
+    defer { w.live_row_retry_at_ms, w.live_row_retries = 0, 0 }
 	observed_record, observed_alive := false, false
 	for !sync.atomic_load(&w.cancel) {
 		free_all(context.temp_allocator)
 		if bridge_bot_now_proc() >= w.ready_deadline_ms do return "launch_timeout", "", {}, false
-		snap, found := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
+        snap, found := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
+        if w.live_row_retry_at_ms != 0 {
+            if found && bridge_runtime_status_active(snap.runtime_status) && snap.runtime_status != "stopping" {
+                w.live_row_retry_at_ms = 0
+            } else if bridge_bot_now_proc() >= w.live_row_retry_at_ms {
+                w.live_row_retry_at_ms = 0
+                ok, _, launch_err := bridge_bot_launch_proc(w.frame.agent_instance_id, w.frame.attempt_id)
+                if !ok do return "launch_failed", contracts.bridge_error_class_name(launch_err.class), launch_err, true
+            }
+        }
 		launch, has_launch := bridge_bot_launch_record_proc(w.frame.agent_instance_id)
 		launch_changed := !relaunched || (has_launch && launch.command_id != pre_id)
 		if launch_changed && has_launch do observed_record = true

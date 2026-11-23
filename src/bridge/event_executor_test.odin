@@ -460,6 +460,9 @@ bridge_event_http_scenario :: proc(t: ^testing.T, name: string) {
             testing.expect_value(t, reason, c.reason)
         }
     case "wrapper":
+        // This regression pins the legacy manifest adapter; T24 separately
+        // covers the capability-enabled fallback start-begin path.
+        sync.atomic_store(&bridge_hub_start_begin_supported, false)
         // The bool wrapper must expose only Launched. Gate setup avoids HTTP
         // for active/coalesced/backoff/parked cases; launch uses the same seam.
         for outcome in ([]Bridge_Wake_Outcome{.Already_Active, .Coalesced, .Backing_Off, .Parked, .Launched, .Failed}) {

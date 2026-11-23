@@ -7,6 +7,8 @@ import "core:time"
 import "core:math/rand"
 import "core:strings"
 import "core:sync"
+import "core:thread"
+import "core:mem/virtual"
 import httpc "odin_test:lib/httpc"
 
 // Bridge-side agent wake machinery. The hub pushes work (leases, notices) to the
@@ -46,7 +48,11 @@ bridge_agent_wake_reset :: proc() {
 	bridge_agent_wake_init()
 	sync.mutex_lock(&bridge_wake_mutex)
 	defer sync.mutex_unlock(&bridge_wake_mutex)
-	for _, &st in bridge_agent_wake do bridge_wake_state_free(&st)
+	for key, &st in bridge_agent_wake {
+        bridge_wake_state_free(&st)
+        delete(st.ref, runtime.heap_allocator())
+        delete(key, runtime.heap_allocator())
+    }
 	clear(&bridge_agent_wake)
 }
 
@@ -74,6 +80,10 @@ bridge_task_status_notify_wake_local :: proc(instance_id: string) -> bool {
 //                  (e.g. a hub launch_agent) or the bridge restarts.
 // Any successful launch resets the state (bridge_task_wake_note_launched).
 Bridge_Wake_State :: struct {
+    ref: string, // owned, stable through retriable failures of one wake
+    live_row_retry_at_ms: i64,
+    live_row_retries: int,
+
 	last_wake_ms:  i64, // last attempt; wakes within BRIDGE_WAKE_COALESCE_MS coalesce
 	failures:      int, // consecutive retriable failures
 	next_at_ms:    i64, // earliest next attempt after a retriable failure
@@ -198,6 +208,8 @@ bridge_task_wake_note_launched :: proc(instance_id: string, now_ms: i64 = 0) {
 	// Invalidate any wake attempt still in flight: its (older) result must not
 	// re-park or back off an instance that has since launched.
 	st.generation += 1
+    delete(st.ref, runtime.heap_allocator()); st.ref = ""
+    st.live_row_retry_at_ms, st.live_row_retries = 0, 0
 }
 
 // bridge_task_wake_if_needed wakes a local instance if it is not currently live,
@@ -211,8 +223,17 @@ BRIDGE_LIVE_ROW_RETRIES :: 5
 bridge_wake_snapshot_proc: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) = bridge_runtime_instance_snapshot
 bridge_wake_launch_proc: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) = bridge_wake_launch
 bridge_wake_start_begin_proc: proc(instance_id, ref: string, deadline_ns: i64) -> (string, string, Bridge_Error, bool) = bridge_wake_start_begin
-bridge_wake_manifest_proc: proc(instance_id, command_id: string, deadline_ns: i64) -> (string, Bridge_Error, bool) = bridge_wake_manifest
-bridge_wake_manifest :: proc(instance_id, command_id: string, deadline_ns: i64) -> (string, Bridge_Error, bool) { return bridge_wake_fetch_enriched_launch_json(instance_id, command_id, deadline_ns) }
+bridge_wake_manifest_proc: proc(instance_id, command_id: string, deadline_ns: i64) -> (string, Bridge_Error, bool) = bridge_wake_legacy_manifest
+// The single legacy manifest call site, shared by fallback and bots.
+bridge_wake_manifest :: proc(instance_id, command_id: string, deadline_ns: i64, bot_delivery := false) -> (string, Bridge_Error, bool) {
+    if !sync.atomic_load(&bridge_hub_start_begin_supported) {
+        return bridge_wake_fetch_enriched_launch_json(instance_id, command_id, deadline_ns, use_manifest_run_count = bot_delivery)
+    }
+    return "", bridge_error(.hub_rejected, .other, 409), false
+}
+bridge_wake_legacy_manifest :: proc(instance_id, command_id: string, deadline_ns: i64) -> (string, Bridge_Error, bool) {
+    return bridge_wake_manifest(instance_id, command_id, deadline_ns)
+}
 bridge_wake_http_proc: proc(req: httpc.Request) -> (httpc.Response, httpc.Error) = bridge_hub_http_send
 bridge_wake_launch :: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) {
     return bridge_runtime_launch_agent(command_id, command_json, deadline_ns)
@@ -220,14 +241,21 @@ bridge_wake_launch :: proc(command_id, command_json: string, deadline_ns: i64) -
 bridge_task_wake_if_needed :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0) -> bool {
     return bridge_wake_attempt(instance_id, now, deadline_ns).outcome == .Launched
 }
-bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0, delivery_id: string = "") -> Bridge_Wake_Result {
+bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0, delivery_id: string = "", pending_ref: string = "") -> Bridge_Wake_Result {
 	bridge_agent_wake_init()
 	sync.mutex_lock(&bridge_wake_mutex)
 	// Activity is checked UNDER the wake mutex (lock order: wake ->
 	// runtime). A launch marks the instance active before it calls
 	// bridge_task_wake_note_launched, so either this check sees it active, or the
 	// launch's generation bump happens after we register and invalidates us.
+    if pending_ref != "" {
+        if st, has := bridge_agent_wake[instance_id]; !has || st.ref != pending_ref {
+            sync.mutex_unlock(&bridge_wake_mutex)
+            return {.Coalesced, {}, 0}
+        }
+    }
 	if inst, found := bridge_wake_snapshot_proc(instance_id); found && bridge_runtime_status_active(inst.runtime_status) && (delivery_id == "" || inst.runtime_status != "stopping") {
+        if st, has := &bridge_agent_wake[instance_id]; has do st.live_row_retry_at_ms = 0
 		sync.mutex_unlock(&bridge_wake_mutex)
 		return {.Already_Active, {}, 0}
 	}
@@ -249,46 +277,63 @@ bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0,
 	}
 	if !has do bridge_agent_wake[strings.clone(instance_id, runtime.heap_allocator())] = Bridge_Wake_State{}
 	slot := &bridge_agent_wake[instance_id]
+    if delivery_id == "" && sync.atomic_load(&bridge_hub_start_begin_supported) {
+        // An accepted fresh notice supersedes a pending stale-row wake.
+        if pending_ref == "" && slot.live_row_retry_at_ms != 0 {
+            delete(slot.ref, runtime.heap_allocator()); slot.ref = ""
+            slot.live_row_retries = 0
+            slot.generation += 1
+        }
+        if slot.ref == "" {
+            bridge_wake_ref_counter = max(bridge_wake_ref_counter + 1, time.to_unix_nanoseconds(time.now()))
+            slot.ref = fmt.aprintf("fb_%s_%d", instance_id, bridge_wake_ref_counter, allocator = runtime.heap_allocator())
+        }
+    }
+    ref := strings.clone(slot.ref)
+    defer delete(ref)
+    slot.live_row_retry_at_ms = 0
 	slot.last_wake_ms = now
 	generation := slot.generation
 	sync.mutex_unlock(&bridge_wake_mutex)
 	if trigger != "" do fmt.println("bridge wake UNPARKED", instance_id, "trigger=", trigger)
 
-	// Reuse the same launch path as a hub launch_agent command; a synthetic
-	// command_id keeps the launch idempotency/caching machinery happy.
-	//
-	// REQ-37 (B1): the bridge knows only the instance_id locally, but a bare
-	// {agent_instance_id} payload used to leave descriptor.agent_id empty, which took
-	// the header-only instance-endpoint fallback and materialized a 6-line CLAUDE.md
-	// (all static skills/persona/instructions missing). We now first fetch the
-	// per-instance descriptor from the hub and build a FULLY-ENRICHED launch command
-	// (same payload keys as agent_service.launch_command_json_full) so the launch
-	// takes the full agent-keyed template bootstrap. If the descriptor cannot be
-	// fetched (or lacks agent_id), the wake fails with a classified error rather
-	// than materialize a degraded bootstrap -- a visible failure, never a silent one.
-	command_id := fmt.aprintf("sched_wake_%s_%d", instance_id, now)
-	command_json: string
+    command_id := fmt.aprintf("sched_wake_%s_%d", instance_id, now)
+    command_json: string
     enrich_err: Bridge_Error
     enrich_ok: bool
-    if delivery_id == "" {
-        command_json, enrich_err, enrich_ok = bridge_wake_manifest_proc(instance_id, command_id, deadline_ns)
-    } else {
+    use_start_begin := delivery_id != "" || sync.atomic_load(&bridge_hub_start_begin_supported)
+    if use_start_begin {
         delete(command_id)
-        command_json, command_id, enrich_err, enrich_ok = bridge_wake_start_begin_proc(instance_id, delivery_id, deadline_ns)
+        command_json, command_id, enrich_err, enrich_ok = bridge_wake_start_begin_proc(instance_id, delivery_id if delivery_id != "" else ref, deadline_ns)
+    } else {
+        command_json, enrich_err, enrich_ok = bridge_wake_manifest_proc(instance_id, command_id, deadline_ns)
     }
     defer delete(command_id)
     defer delete(command_json)
-    if delivery_id != "" && !enrich_ok && enrich_err.hub_status == 409 && enrich_err.retry_after_ms == BRIDGE_LIVE_ROW_RETRY_MS {
+    if use_start_begin && !enrich_ok && bridge_wake_is_live_row(enrich_err) {
         if snap, found := bridge_wake_snapshot_proc(instance_id); found && bridge_runtime_status_active(snap.runtime_status) && snap.runtime_status != "stopping" {
+            sync.mutex_lock(&bridge_wake_mutex)
+            if current, has := &bridge_agent_wake[instance_id]; has && current.generation == generation do current.live_row_retry_at_ms = 0
+            sync.mutex_unlock(&bridge_wake_mutex)
             return {.Already_Active, {}, 0}
         }
-        return {.Failed, enrich_err, BRIDGE_LIVE_ROW_RETRY_MS}
+        if delivery_id != "" do return {.Failed, enrich_err, BRIDGE_LIVE_ROW_RETRY_MS}
+        sync.mutex_lock(&bridge_wake_mutex)
+        current, has := &bridge_agent_wake[instance_id]
+        scheduled := has && current.generation == generation && current.live_row_retries < BRIDGE_LIVE_ROW_RETRIES
+        if scheduled {
+            current.live_row_retries += 1
+            current.live_row_retry_at_ms = now + BRIDGE_LIVE_ROW_RETRY_MS
+        }
+        sync.mutex_unlock(&bridge_wake_mutex)
+        if scheduled do return {.Failed, enrich_err, BRIDGE_LIVE_ROW_RETRY_MS}
+        enrich_err.retry_after_ms = 0
     }
 	ok, detail, err := false, "", enrich_err
 	if enrich_ok {
 		ok, detail, err = bridge_wake_launch_proc(command_id, command_json, deadline_ns)
 	} else {
-		detail = "could not fetch enriched descriptor (agent_id)"
+		detail = "could not fetch start-begin launch" if use_start_begin else "could not fetch enriched descriptor (agent_id)"
 	}
 	bridge_task_wake_record_result(instance_id, generation, ok, detail, err, command_json, now)
 	retry := err.retry_after_ms
@@ -360,9 +405,9 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
         left := (deadline_ns - time.to_unix_nanoseconds(time.now())) / i64(time.Millisecond)
         if left <= 0 do return "", bridge_error(.hub_connect_failed, .transport), false
         req.timeout_ms = int(min(10_000, left))
-        resp, http_err = bridge_hub_http_send_alloc(req)
+        resp, http_err = bridge_wake_http_proc(req)
     } else {
-        resp, http_err = bridge_http_request_retry(req)
+        resp, http_err = bridge_http_request_retry(req, fetch = bridge_wake_http_proc)
     }
 	defer httpc.response_destroy(&resp)
 	ok := http_err == .None
@@ -538,4 +583,77 @@ bridge_wake_object_text :: proc(body, key: string) -> (string, bool) {
         i += 1
     }
     return "", false
+}
+
+bridge_wake_ref_counter: i64
+bridge_wake_is_live_row :: proc(err: Bridge_Error) -> bool {
+    return err.hub_status == 409 && err.retry_after_ms == BRIDGE_LIVE_ROW_RETRY_MS
+}
+
+// One worker for all fallback retries. The WS loop only signals it: HTTP and
+// process launch never block the reader. No thread or sleep per retry.
+bridge_wake_retry_cond: sync.Cond
+bridge_wake_retry_mu: sync.Mutex
+bridge_wake_retry_requested, bridge_wake_retry_stopping: bool
+bridge_wake_retry_tick :: proc(now: i64) {
+    bridge_agent_wake_init()
+    due := false
+    sync.mutex_lock(&bridge_wake_mutex)
+    for _, st in bridge_agent_wake {
+        if st.live_row_retry_at_ms != 0 && st.live_row_retry_at_ms <= now { due = true; break }
+    }
+    sync.mutex_unlock(&bridge_wake_mutex)
+    if !due do return
+    sync.mutex_lock(&bridge_wake_retry_mu)
+    bridge_wake_retry_requested = true
+    sync.cond_signal(&bridge_wake_retry_cond)
+    sync.mutex_unlock(&bridge_wake_retry_mu)
+}
+bridge_wake_retry_due :: proc(now: i64) {
+    Pending :: struct {instance, ref: string}
+    pending := make([dynamic]Pending)
+    defer { for p in pending { delete(p.instance); delete(p.ref) }; delete(pending) }
+    sync.mutex_lock(&bridge_wake_mutex)
+    for id, st in bridge_agent_wake {
+        if st.live_row_retry_at_ms != 0 && st.live_row_retry_at_ms <= now {
+            append(&pending, Pending{strings.clone(id), strings.clone(st.ref)})
+        }
+    }
+    sync.mutex_unlock(&bridge_wake_mutex)
+    for p in pending do _ = bridge_wake_attempt(p.instance, now, pending_ref = p.ref)
+}
+bridge_wake_retry_worker :: proc() {
+    arena: virtual.Arena
+    if virtual.arena_init_growing(&arena) != nil do return
+    defer virtual.arena_destroy(&arena)
+    context.allocator = virtual.arena_allocator(&arena)
+    context.temp_allocator = context.allocator
+    for {
+        sync.mutex_lock(&bridge_wake_retry_mu)
+        for !bridge_wake_retry_requested && !bridge_wake_retry_stopping do sync.cond_wait(&bridge_wake_retry_cond, &bridge_wake_retry_mu)
+        stop := bridge_wake_retry_stopping
+        bridge_wake_retry_requested = false
+        sync.mutex_unlock(&bridge_wake_retry_mu)
+        if stop do return
+        bridge_wake_retry_due(bridge_runtime_now_ms())
+        free_all(context.allocator)
+    }
+}
+bridge_wake_retry_start :: proc() -> ^thread.Thread {
+    bridge_agent_wake_init()
+    sync.mutex_lock(&bridge_wake_retry_mu)
+    bridge_wake_retry_stopping, bridge_wake_retry_requested = false, false
+    sync.mutex_unlock(&bridge_wake_retry_mu)
+    context.allocator = runtime.heap_allocator()
+    return thread.create_and_start(bridge_wake_retry_worker)
+}
+bridge_wake_retry_stop :: proc(worker: ^thread.Thread) {
+    sync.mutex_lock(&bridge_wake_retry_mu)
+    bridge_wake_retry_stopping = true
+    sync.cond_signal(&bridge_wake_retry_cond)
+    sync.mutex_unlock(&bridge_wake_retry_mu)
+    if worker != nil { thread.join(worker); thread.destroy(worker) }
+    sync.mutex_lock(&bridge_wake_mutex)
+    for _, &st in bridge_agent_wake do st.live_row_retry_at_ms = 0
+    sync.mutex_unlock(&bridge_wake_mutex)
 }
