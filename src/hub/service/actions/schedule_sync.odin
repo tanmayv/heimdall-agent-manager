@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "core:time"
+import iface "odin_test:hub/repository/iface"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import nats "odin_test:lib/nats"
@@ -120,3 +121,91 @@ reconcile_ops_destroy :: proc(ops: []Reconcile_Op, allocator:=context.allocator)
 	delete(ops,allocator)
 }
 
+
+reconcile :: proc(s: ^Service, conn: ^nats.Connection) -> (done: bool, err: domain.Domain_Error) {
+	// Outbox reads require a UoW too. Release it before querying JetStream.
+	check, ok, begin_err := iface.unit_of_work_begin(s.factory)
+	if !ok do return false, begin_err
+	backlog, backlog_err := check.repos.event_outbox.backlog(check.repos.event_outbox.ctx)
+	iface.unit_of_work_rollback(&check)
+	check.ctx = nil
+	if backlog_err.code != .None do return false, backlog_err
+	if backlog != 0 do return false, {}
+
+	stored: [dynamic]Stored_Definition
+	owners: [dynamic]string
+	defer {
+		for definition in stored { delete(definition.subject); delete(definition.trigger_id) }
+		for owner in owners do delete(owner)
+		delete(stored)
+		delete(owners)
+	}
+	start: u64 = 1
+	for {
+		msg, sequence, nerr := nats.stream_next(conn, "HEIM_EVENTS", "sched.def.*", start)
+		if nerr.status == 13 && msg == nil do break
+		if nerr.status != 0 {
+			if msg != nil do nats.message_destroy(msg)
+			return false, domain.domain_error(.Internal_Error, "failed to list schedule definitions")
+		}
+		if msg == nil do return false, domain.domain_error(.Internal_Error, "missing schedule definition message")
+		value: json.Value
+		parse_err := json.unmarshal(nats.message_data(msg), &value)
+		if parse_err != nil {
+			nats.message_destroy(msg)
+			return false, domain.domain_error(.Internal_Error, "invalid stored schedule definition")
+		}
+		body, object_ok := value.(json.Object)
+		owner, owner_ok := config_string(body, "owner_user_id")
+		trigger_id, id_ok := config_string(body, "trigger_id")
+		data, _ := body["data"].(json.Object)
+		rev, _ := data["rev"].(json.Integer)
+		if !object_ok || !owner_ok || owner == "" || !id_ok {
+			json.destroy_value(value)
+			nats.message_destroy(msg)
+			return false, domain.domain_error(.Internal_Error, "invalid stored schedule definition")
+		}
+		append(&stored, Stored_Definition{subject=strings.clone(nats.message_subject(msg)),trigger_id=strings.clone(trigger_id),rev=int(rev)})
+		append(&owners, strings.clone(owner))
+		json.destroy_value(value)
+		nats.message_destroy(msg)
+		start = sequence + 1
+	}
+
+	uow, opened, uow_err := iface.unit_of_work_begin(s.factory)
+	if !opened do return false, uow_err
+	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
+	// A writer may have appended while definitions were being read.
+	pending, pending_err := uow.repos.event_outbox.backlog(uow.repos.event_outbox.ctx)
+	if pending_err.code != .None do return false, pending_err
+	if pending != 0 do return false, {}
+	triggers, read_err := uow.repos.actions.triggers_effective(uow.repos.actions.ctx, "schedule")
+	if read_err.code != .None do return false, read_err
+	defer domain.action_triggers_destroy(triggers)
+	ops := reconcile_plan(stored[:], triggers, context.allocator)
+	defer reconcile_ops_destroy(ops)
+	sc := Sync_Context{outbox=&uow.repos.event_outbox,clock=s.clock,ids=s.ids}
+	for op in ops {
+		row: domain.Event_Outbox_Row
+		if op.publish {
+			definition, row_err := schedule_definition_row(&sc, op.trigger^)
+			if row_err.code != .None do return false, row_err
+			row = definition
+		} else {
+			for definition, i in stored {
+				if definition.subject == op.purge_subject {
+					// The subject is authoritative even for malformed/stale body ids.
+					trigger_id := strings.trim_prefix(definition.subject, "sched.def.")
+					row = schedule_purge_row(&sc, owners[i], trigger_id)
+					break
+				}
+			}
+		}
+		append_err := sc.outbox.append(sc.outbox.ctx, row)
+		domain.event_outbox_row_destroy(&row)
+		if append_err.code != .None do return false, append_err
+	}
+	committed, commit_err := iface.unit_of_work_commit(&uow)
+	uow.ctx = nil
+	return committed, commit_err
+}

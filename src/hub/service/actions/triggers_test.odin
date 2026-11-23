@@ -60,6 +60,7 @@ schedule_compile_cases :: proc(t:^testing.T) {
 @(test)
 test_event_compile_table :: proc(t:^testing.T) {actions_track(t,event_compile_cases)}
 event_compile_cases :: proc(t:^testing.T) {
+	service_case(t,service_foreign_chain)
 	compile_case(t,"event","{\"event_type\":\"chain.state\",\"data\":{\"state\":\"completed\"}}","","ev.owner.chain.*.state")
 	compile_case(t,"event","{\"event_type\":\"chain.work_finished\",\"chain_id\":\"chain_a\",\"data\":{\"outcome\":\"done\"}}","","ev.owner.chain.chain_a.work_finished")
 	compile_case(t,"event","{\"event_type\":\"unknown\"}","unknown_event_type","")
@@ -145,6 +146,7 @@ reconcile_cases :: proc(t:^testing.T) {
 @(test)
 test_match_key_derivation :: proc(t:^testing.T) {actions_track(t,match_key_cases)}
 match_key_cases :: proc(t:^testing.T) {
+	service_case(t,service_match_keys)
 	testing.expect_value(t,match_key("ev.owner.sched.trg_a"),"ev.owner.sched.trg_a")
 	testing.expect_value(t,match_key("ev.owner.chain.chain_a.state"),"ev.owner.chain.chain_a.state")
 	testing.expect_value(t,match_key("ev.owner.chain.*.state"),"")

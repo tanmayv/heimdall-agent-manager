@@ -2,6 +2,7 @@ package iface
 
 Repositories :: struct {
 	pipeline_deliveries: Pipeline_Delivery_Repository,
+	bots: Bot_Repository,
  event_subscriptions: Event_Subscription_Repository,
 	event_outbox: Event_Outbox_Repository,
 	users: User_Repository,

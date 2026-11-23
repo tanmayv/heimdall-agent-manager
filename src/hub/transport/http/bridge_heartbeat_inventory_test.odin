@@ -351,15 +351,13 @@ test_heartbeat_inventory_superseded_ids_and_schedule_ack :: proc(t: ^testing.T) 
 	testing.expect_value(t, state, Bridge_Heartbeat_Inventory_State.Complete)
 	testing.expect_value(t, len(superseded), 1)
 	if len(superseded) == 1 do testing.expect_value(t, superseded[0], "inst_moved")
-	ack := bridge_heartbeat_ack_payload(reconciled, superseded, 3, "sched_epoch", 7)
+	ack := bridge_heartbeat_ack_payload(reconciled, superseded)
 	testing.expect(t, strings.contains(ack, `"superseded_instance_ids":["inst_moved"]`), ack)
-	testing.expect(t, strings.contains(ack, `"schedules_version":3,"schedules_epoch":"sched_epoch","schedules_revision":7`), ack)
 	moved, _ := inv_get(t, f, "inst_moved")
 	testing.expect_value(t, moved, "running") // owned by the other Bridge; untouched here
 
 	rejected_reconciled, rejected_superseded, rejected_state := bridge_reconcile_heartbeat_inventory(&f.bh, f.bridge_id, f.generation, `{"type":"bridge_heartbeat"}`)
 	testing.expect_value(t, rejected_state, Bridge_Heartbeat_Inventory_State.Absent)
 	testing.expect_value(t, len(rejected_superseded), 0)
-	rejected_ack := bridge_heartbeat_ack_payload(rejected_reconciled, rejected_superseded, 3, "sched_epoch", 7)
-	testing.expect(t, strings.contains(rejected_ack, `"schedules_epoch":"sched_epoch","schedules_revision":7,"superseded_instance_ids":[]`), rejected_ack)
+	rejected_ack := bridge_heartbeat_ack_payload(rejected_reconciled, rejected_superseded)
 }

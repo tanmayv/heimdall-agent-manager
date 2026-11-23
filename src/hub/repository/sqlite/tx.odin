@@ -80,6 +80,7 @@ Pending_After_Commit :: struct {
 }
 
 SQLite_Unit_Of_Work_Factory :: struct {
+	bots: Bot_Repo_SQLite,
 	conn: ^Conn,
 	repos: ^iface.Repositories,
 }
@@ -95,6 +96,7 @@ SQLite_Unit_Of_Work_Context :: struct {
 new_unit_of_work_factory :: proc(factory: ^SQLite_Unit_Of_Work_Factory, conn: ^Conn, repos: ^iface.Repositories) -> iface.Unit_Of_Work_Factory {
 	factory.conn = conn
 	factory.repos = repos
+	if repos != nil && repos.bots.bot_get_by_instance == nil do repos.bots = new_bot_repository(&factory.bots, conn)
 	return iface.Unit_Of_Work_Factory{ctx = rawptr(factory), begin = sqlite_uow_begin}
 }
 

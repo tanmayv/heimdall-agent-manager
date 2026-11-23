@@ -52,8 +52,6 @@ Bridge_Handlers :: struct {
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
 	mcp_control: ^MCP_Control_Handlers,
-	actions: rawptr,
-	scheduled_prompts: rawptr,
 	// experiments gates explorer relays (domain.PROJECT_VCS_EXPERIMENT_KEY) and Actions
 	// bridge routes (domain.ACTIONS_EXPERIMENT_KEY) per owner (REQ-EXP-GATE-3).
 	experiments: ^iface.Experiment_Repository,
@@ -2460,23 +2458,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		// Plan T2: inventory repair and absence reconciliation run only on a complete
 		// inventory; an absent or malformed one is counted and leaves instances alone.
 		reconciled, superseded, _ := bridge_reconcile_heartbeat_inventory(h, bridge_id, connection_generation, text)
-		schedules_version := 0
-		if h.actions != nil {
-			schedules_version = get_actions_bridge_version(h.actions, bridge_id)
-		} else if h.scheduled_prompts != nil {
-			schedules_version = get_scheduled_prompts_bridge_version(h.scheduled_prompts, bridge_id)
-		}
-		schedules_owner := ""
-		if h.bridges != nil {
-			if owner_bridge, owner_found, _ := iface.bridge_get_bridge(h.bridges.repo, bridge_id); owner_found {
-				schedules_owner = strings.clone(string(owner_bridge.owner_user_id), context.temp_allocator)
-				domain.bridge_destroy(&owner_bridge)
-			}
-		}
-		// REQ-EXP-GATE-4: the token folds in the owner's Actions eligibility, so a
-		// toggle immediately invalidates the bridge's cached schedule freshness.
-		epoch, revision := action_schedules_owner_token(h.actions, h.experiments, schedules_owner)
-		ack := bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version, epoch, revision)
+		ack := bridge_heartbeat_ack_payload(reconciled, superseded)
 		_ = write_ws_text_frame_locked(h, bridge_id, client, ack)
 		delete(ack)
 		if superseded != nil {
@@ -3441,15 +3423,10 @@ bridge_connection_replaced_payload :: proc() -> string {
 	return "{\"type\":\"connection_replaced\",\"protocol_version\":1,\"payload\":{\"reason\":\"newer_bridge_connection\"}}"
 }
 
-bridge_heartbeat_ack_payload :: proc(reconciled: int, superseded_instance_ids: []string = nil, schedules_version: int = 0, schedules_epoch := "", schedules_revision: i64 = -1) -> string {
+bridge_heartbeat_ack_payload :: proc(reconciled: int, superseded_instance_ids: []string = nil) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_heartbeat_ack\",\"protocol_version\":1,\"payload\":{\"reconciled_unreachable_count\":")
 	strings.write_string(&b, fmt.tprintf("%d", reconciled))
-	strings.write_string(&b, ",\"schedules_version\":")
-	strings.write_string(&b, fmt.tprintf("%d", schedules_version))
-	if schedules_epoch != "" && schedules_revision >= 0 {
-        strings.write_string(&b, fmt.tprintf(",\"schedules_epoch\":\"%s\",\"schedules_revision\":%d", schedules_epoch, schedules_revision))
-    }
     // H7: instance ids the reporting bridge must reap (relaunched on another
 	// bridge). The bridge invalidates their local tokens so the stale wrapper exits.
 	strings.write_string(&b, ",\"superseded_instance_ids\":[")

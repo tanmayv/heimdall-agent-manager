@@ -1,6 +1,8 @@
 package app
 
 import "core:fmt"
+import "base:runtime"
+import actions "odin_test:hub/service/actions"
 import eventinbox "odin_test:hub/service/eventinbox"
 import eventrelay "odin_test:hub/service/eventrelay"
 import delivery "odin_test:hub/service/delivery"
@@ -40,6 +42,7 @@ import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
+	actions: actions.Service,
  placement: placement.Service,
  placement_handlers: http.Placement_Handlers,
 	event_relay: eventrelay.Service,
@@ -87,7 +90,6 @@ App_Graph :: struct {
 	sqlite_search: sqlite.Search_Repo_SQLite,
 	search_skills: []sqlite.Skill_Doc,
 	sqlite_actions: sqlite.Action_Repo_SQLite,
-	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
 	sqlite_cards: sqlite.Card_Repo_SQLite,
 	sqlite_attention: sqlite.Attention_Repo_SQLite,
@@ -148,7 +150,6 @@ App_Graph :: struct {
 	push_handlers: http.Push_Handlers,
 	agent_action_handlers: http.Agent_Action_Handlers,
 	action_handlers: http.Action_Handlers,
-	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
 	cards: card_service.Card_Service,
 	shell_session_repo: iface.Shell_Session_Repository,
 	experiment_repo: iface.Experiment_Repository,
@@ -168,8 +169,6 @@ App_Graph :: struct {
 	card_handlers: http.Card_Handlers,
 	issues: issue_service.Issue_Service,
 	issue_handlers: http.Issue_Handlers,
-	action_mutex: sync.Mutex,
-	action_bridge_versions: map[string]int,
 	router: http.Router,
 }
 
@@ -361,10 +360,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db, graph.search_skills)
 	graph.repos.actions = sqlite.new_action_repository(&graph.sqlite_actions, &graph.db)
-    if config.database_path != ":memory:" {
-        if ok, err := sqlite.open_action_snapshot_conn(&graph.sqlite_actions, config.database_path); !ok do return false, err.message
-    }
-	graph.repos.scheduled_prompts = graph.repos.actions
+
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
 	graph.repos.attention = sqlite.new_attention_repository(&graph.sqlite_attention, &graph.db)
@@ -637,23 +633,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth, push = &graph.push, public_app_origin = config.public_app_origin, ui_origin = config.ui_origin, vault = &graph.vault_directory, event_bus = &graph.event_bus, pairing_hub_origins = config.pairing_hub_origin_list, bridges = &graph.bridges}
 	graph.vault_directory_handlers = http.Vault_Directory_Handlers{auth = &graph.auth, vault = &graph.vault_directory, device_auth = &graph.device_auth, bridges = &graph.bridges, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
-	graph.action_bridge_versions = make(map[string]int)
-	graph.action_handlers = http.Action_Handlers{
-		auth = &graph.auth,
-		agents = &graph.agents,
-		bridges = &graph.bridges,
-		content = &graph.content,
-		repo = &graph.repos.actions,
-		clock = &graph.clock,
-		ids = &graph.ids,
-		mutex = &graph.action_mutex,
-		bridge_versions = &graph.action_bridge_versions,
-		event_bus = &graph.event_bus,
-		experiments = &graph.experiment_repo,
+	graph.actions = actions.Service{
+		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,
+		experiments=&graph.experiment_repo,clock=&graph.clock,ids=&graph.ids,
+		support={ctx=rawptr(&graph.event_relay),get=action_schedule_support},
+		target_kinds=make([]string,2,runtime.heap_allocator()),
 	}
-	graph.scheduled_prompt_handlers = graph.action_handlers
-	graph.bridge_handlers.actions = rawptr(&graph.action_handlers)
-	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.action_handlers)
+	graph.actions.target_kinds[0]="agent"
+	graph.actions.target_kinds[1]="instance"
+	graph.action_handlers = http.Action_Handlers{auth=&graph.auth,service=&graph.actions,experiments=&graph.experiment_repo}
 	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)
 	graph.cards = card_service.new_card_service(
 		&graph.repos.cards,
@@ -752,6 +740,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	graph.delivery = nil
 	eventrelay.stop(&graph.event_relay)
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
+	delete(graph.actions.target_kinds,runtime.heap_allocator())
 	placement.service_destroy(&graph.placement)
 	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
@@ -768,9 +757,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	shell_session_svc.shell_session_service_free(&graph.shell_session_service)
 	agent_service.tool_live_destroy(&graph.agents.tool_live)
 	device_auth_service.grant_store_free(&graph.device_auth_store)
-	delete(graph.action_bridge_versions)
 	billing_service.service_free(&graph.billing)
-	sqlite.close(&graph.sqlite_actions.snapshot_conn)
 	sqlite.close_billing_repository(&graph.sqlite_billing)
 	sqlite.close(&graph.sqlite_bridge_commit.conn)
 	if graph.config.mcp_oauth_spike || graph.config.mcp_oauth_key_file != "" do mcp_service.free(&graph.mcp_spike)
@@ -1187,22 +1174,13 @@ register_routes :: proc(graph: ^App_Graph) {
 	// Actions API
 	http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions", rawptr(&graph.action_handlers), http.create_action_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/actions/trigger-types", rawptr(&graph.action_handlers), http.action_trigger_types_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/actions/*/enable", rawptr(&graph.action_handlers), http.enable_action_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/actions/*/disable", rawptr(&graph.action_handlers), http.disable_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.get_action_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.patch_action_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.delete_action_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/actions/*/run", rawptr(&graph.action_handlers), http.run_action_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridge/actions", rawptr(&graph.action_handlers), http.bridge_list_actions_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridge/actions/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_action_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/bot-attempts/*/switch", rawptr(&graph.bridge_handlers), http.bot_bridge_switch_handler)
-
-	// Scheduled Prompts backward compatibility
-	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.list_scheduled_prompts_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.create_scheduled_prompt_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.get_scheduled_prompt_handler)
-	http.router_add(&graph.router, "PATCH", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.patch_scheduled_prompt_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.delete_scheduled_prompt_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridge/scheduled-prompts", rawptr(&graph.action_handlers), http.bridge_list_scheduled_prompts_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridge/scheduled-prompts/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_scheduled_prompt_handler)
 
 	// Cards API
 	http.router_add(&graph.router, "GET", "/api/v1/attention", rawptr(&graph.card_handlers), http.attention_handler)
@@ -1433,4 +1411,8 @@ event_inbox_wake_guard :: proc(ctx: rawptr) -> domain.Domain_Error {
 	if !found || string(inst.owner_user_id) != guard.owner do return domain.domain_error(.Not_Found, "event wake instance no longer belongs to subscriber")
 	if inst.stopped_by != "" || inst.runtime_status != "stopped" do return domain.domain_error(.Conflict, "event wake requires a stopped instance without an explicit stop")
 	return {}
+}
+
+action_schedule_support :: proc(ctx:rawptr) -> int {
+	return int(eventrelay.schedule_support((^eventrelay.Service)(ctx)))
 }
