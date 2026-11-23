@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: true
 env:
   # Packages under test; one `odin test` run each.
-  PACKAGES: src/supervisor/resolver src/supervisor/engine
+  PACKAGES: src/supervisor/resolver src/supervisor/engine src/supervisor/procs
 jobs:
   unix:
     name: odin test (${{ matrix.os }})
