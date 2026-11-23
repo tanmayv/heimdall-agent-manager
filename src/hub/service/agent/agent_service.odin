@@ -2029,9 +2029,22 @@ bootstrap_template_identity_fields :: proc(service: ^Agent_Service, agent: domai
 	return tmpl.persona, tmpl.instructions
 }
 
-render_skill :: proc(m: domain.Memory) -> (string, string) {
+bootstrap_bridge_structured_skills :: proc(service: ^Agent_Service, bridge_id: string) -> bool {
+	if service == nil || service.bridges == nil do return false
+	bridge, ok, _ := iface.bridge_get_bridge(service.bridges, bridge_id)
+	return ok && placement.bridge_has_feature(bridge, contracts.BRIDGE_FEATURE_DYNAMIC_SKILL_V2)
+}
+
+render_skill :: proc(m: domain.Memory, structured := true) -> (string, string) {
 	name := bootstrap_skill_name(m)
-	content := bootstrap_skill_file_content(m, name)
+	content: string
+	if structured {
+		content = bootstrap_skill_file_content(m, name)
+	} else {
+		// Old bridges decrypt embedded body tokens but cannot serialize YAML.
+		// Keep all frontmatter independent of encrypted or arbitrary user fields.
+		content = fmt.aprintf("---\nname: %s\ndescription: %s\nheimdall_managed: true\n---\n\n%s", name, name, m.body)
+	}
 	return name, content
 }
 
@@ -2173,7 +2186,7 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 		if err.code == .None {
 			for m in memories {
 				if !bootstrap_memory_applies(m, service, owner, inst) || m.type != .Skill do continue
-				name, content := render_skill(m)
+				name, content := render_skill(m, bootstrap_bridge_structured_skills(service, bridge_id))
 				skill_hash := bootstrap_fragment_hash(content)
 				hub_fragment_cache_put(skill_hash, content)
 				append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
@@ -2376,7 +2389,9 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 	is_coordinator := norm_role == "coordinator"
 
 	current_epoch := bootcache.content_epoch()
-	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project, bridge_id)
+	capability_key := strings.concatenate({bridge_id, "|dynamic_skill_v2"}) if bootstrap_bridge_structured_skills(service, bridge_id) else strings.clone(bridge_id)
+	defer delete(capability_key)
+	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project, capability_key)
 	defer delete(key)
 
 	sync.mutex_lock(&global_bootstrap_manifest_cache.lock)
@@ -2470,7 +2485,7 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 		if err.code == .None {
 			for m in memories {
 				if !bootstrap_memory_applies_agent(m, agent, owner, domain.Project_ID(project_id), bridge_id) || m.type != .Skill do continue
-				name, content := render_skill(m)
+				name, content := render_skill(m, bootstrap_bridge_structured_skills(service, bridge_id))
 				skill_hash := bootstrap_fragment_hash(content)
 				hub_fragment_cache_put(skill_hash, content)
 				append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
