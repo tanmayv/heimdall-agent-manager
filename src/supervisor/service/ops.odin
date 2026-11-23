@@ -45,6 +45,7 @@ drive :: proc(s: ^Service) -> (x: engine.Exit, err: engine.Error) {
 		}
 	case "verified":
 		if expired(s, op) do return .Run, put(s, terminal(op, "expired"))
+		if cancel_pending(s, op.op_id) do return .Run, nil // the inbox cancels it first
 		return engine.activate(&s.eng)
 	}
 	return .Run, nil
@@ -84,7 +85,7 @@ Install_Ctx :: struct {
 	verdict:  resolver.Verdict,
 	code:     string, // noop / failed code from eligibility
 	journal:  engine.Error, // a journal write inside a callback failed
-	stopped:  bool,
+	stopped:  bool, // service stop or a queued cancel: step back, no line (§7.5, §10)
 }
 
 @(private)
@@ -126,6 +127,10 @@ eligible_cb :: proc(user: rawptr, m: ^fetch.Manifest) -> fetch.Error {
 	}
 	c.verdict, c.code = resolver.check_eligibility(action_kind(c.op), installed_id(s), offer, pins[:], engine.ENGINE_VERSION, launcher_abi(s))
 	if c.verdict != .Proceed do return fetch.Failure{code = .None, detail = "ineligible"}
+	if stop_requested(s) || cancel_pending(s, c.op.op_id) {
+		c.stopped = true
+		return fetch.Failure{code = .Download_Failed, detail = "stepped back before the download"}
+	}
 	// J5: the line naming `to` precedes the bundle download.
 	l := next_state(c.op, "downloading")
 	l.to = engine.Ref{version = m.version, sha256 = m.sha256, tree = fetch.tree_base_name(m)}
@@ -140,7 +145,7 @@ eligible_cb :: proc(user: rawptr, m: ^fetch.Manifest) -> fetch.Error {
 @(private)
 bundle_ready_cb :: proc(user: rawptr, m: ^fetch.Manifest) -> fetch.Error {
 	c := (^Install_Ctx)(user)
-	if stop_requested(c.s) {
+	if stop_requested(c.s) || cancel_pending(c.s, c.op.op_id) {
 		c.stopped = true
 		return fetch.Failure{code = .Download_Failed, detail = "service stop"}
 	}
@@ -239,6 +244,7 @@ run_install :: proc(s: ^Service, op0: engine.Line) -> (x: engine.Exit, err: engi
 	to := engine.Ref{version = m.version, sha256 = m.sha256, tree = prepared.tree}
 	if err = engine.mark_verified(&s.eng, to); err != nil do return
 	if stop_requested(s) do return .Run, nil // §7.5: verified, no line; resumed at next start
+	if cancel_pending(s, op.op_id) do return .Run, nil // §10: the inbox cancels it first
 	return engine.activate(&s.eng)
 }
 

@@ -46,6 +46,10 @@ World :: struct {
 	starts:    [dynamic]string,
 	ends:      int,
 	api_calls: int,
+	exited:    bool, // the running runtime has crashed (health Exited until restarted)
+	// When set, the bundle download drops this cancel intent into the inbox (it arrives
+	// while the download is in progress).
+	cancel_on_download: string,
 	// supervisor
 	s:         Service,
 	open:      bool,
@@ -152,6 +156,11 @@ fake_download :: proc(user: rawptr, url: string, sink: fetch.Sink) -> int {
 		switch name {
 		case r.asset:
 			data = r.bundle
+			if w.cancel_on_download != "" {
+				id := w.cancel_on_download
+				w.cancel_on_download = ""
+				send_intent(w, id, intent_json(w, id, "cancel"))
+			}
 		case fetch.MANIFEST_ASSET:
 			data = transmute([]byte)r.manifest
 		case fetch.SIGNATURE_ASSET:
@@ -180,6 +189,7 @@ fake_engine_host :: proc(w: ^World) -> engine.Host {
 			delete(w.running)
 			w.running = strings.clone(tree)
 			w.started = w.clock
+			w.exited = false
 			append(&w.starts, strings.clone(tree))
 			return true
 		},
@@ -193,6 +203,7 @@ fake_engine_host :: proc(w: ^World) -> engine.Host {
 		health = proc(u: rawptr) -> engine.Health {
 			w := (^World)(u)
 			if w.running == "" do return .Down
+			if w.exited do return .Exited
 			age := w.clock - w.started
 			switch w.behaviour[version_of(w.running)] {
 			case .Good:
@@ -210,7 +221,7 @@ fake_engine_host :: proc(w: ^World) -> engine.Host {
 		stop_requested = proc(u: rawptr) -> bool {return (^World)(u).stop_flag},
 		gate_count = proc(u: rawptr) -> engine.Busy {
 			w := (^World)(u)
-			if w.running == "" do return {}
+			if w.running == "" || w.exited do return {} // not answered: "busy" (fail closed)
 			return engine.Busy{counted = true, pty_sessions = w.sessions}
 		},
 		close_admission = proc(u: rawptr) -> bool {return (^World)(u).running != ""},
@@ -663,4 +674,59 @@ test_gc_keeps_three_trees :: proc(t: ^testing.T) {
 	for e in entries do if e.type == .Directory && !strings.has_prefix(e.name, ".") do trees += 1
 	testing.expect_value(t, trees, TREES_KEPT)
 	testing.expect(t, !os.exists(engine.join(w.data, "releases", w.published[0].tree)), "oldest non-live tree removed")
+}
+
+@(test)
+test_runtime_crash_while_waiting_is_restarted :: proc(t: ^testing.T) {
+	defer free_all(context.temp_allocator)
+	w: World
+	if !world_init(&w, t) do return
+	defer world_destroy(&w)
+	_ = install_first(&w, "v0.6.0")
+	b := publish(&w, "v0.6.1")
+	w.behaviour[b.version] = .Good
+	w.sessions = 1
+	w.s.cache.next_check_at = w.clock + 1
+	waiting :: proc(w: ^World) -> bool {
+		op, ok := w.s.eng.active.?
+		return ok && op.state == "waiting_for_idle"
+	}
+	run(&w, 60, waiting)
+	testing.expect(t, waiting(&w), "timer op waits")
+	starts := len(w.starts)
+	w.exited = true // ham-bridge crashes while the op waits for idle agents
+	run(&w, 10, proc(w: ^World) -> bool {return !w.exited})
+	testing.expect(t, !w.exited, "runtime restarted within the idle backoff")
+	testing.expect_value(t, len(w.starts), starts + 1)
+	testing.expect(t, waiting(&w), "the op keeps waiting with the restarted runtime")
+	// The session ends: the update proceeds as usual.
+	w.sessions = 0
+	run(&w, 400, proc(w: ^World) -> bool {return engine.known_good_valid(&w.s.eng) != "" && version_of(engine.known_good_valid(&w.s.eng)) == "0.6.1"})
+	testing.expect_value(t, version_of(engine.known_good_valid(&w.s.eng)), "0.6.1")
+}
+
+@(test)
+test_cancel_during_download :: proc(t: ^testing.T) {
+	defer free_all(context.temp_allocator)
+	w: World
+	if !world_init(&w, t) do return
+	defer world_destroy(&w)
+	a := install_first(&w, "v0.6.0")
+	b := publish(&w, "v0.6.1")
+	w.behaviour[b.version] = .Good
+	w.cancel_on_download = "op_cancel_dl"
+	send_intent(&w, "op_dl", intent_json(&w, "op_dl", "update_now"))
+	run(&w, 20, proc(w: ^World) -> bool {return committed(w, "op_dl") && committed(w, "op_cancel_dl")})
+	st, _, _ := op_state(&w, "op_dl")
+	testing.expect_value(t, st, "cancelled")
+	sc, _, _ := op_state(&w, "op_cancel_dl")
+	testing.expect_value(t, sc, "applied")
+	by := ""
+	for l in engine.journal_lines(&w.s.eng) do if l.op_id == "op_dl" && l.state == "cancelled" do by = l.cancelled_by
+	testing.expect_value(t, by, "op_cancel_dl")
+	cur, _ := lc.read_pointer(w.data, lc.POINTER_CURRENT)
+	testing.expect_value(t, cur, a.tree)
+	run(&w, 10)
+	testing.expect_value(t, len(w.s.eng.open_ops), 0)
+	testing.expect_value(t, len(w.s.expires), 0)
 }

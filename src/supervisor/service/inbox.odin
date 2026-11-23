@@ -208,3 +208,28 @@ accept_cancel :: proc(s: ^Service, it: Intent, base: engine.Line, path: string) 
 	done_with(path)
 	return finish_cancel(s, req)
 }
+
+// cancel_pending: a valid, not yet handled `cancel` intent in the inbox would cancel `op_id`
+// (no target, or this target). The driver checks it at its step boundaries (before the
+// download, after it, before activation) and steps back without a line, so a §10 cancel of
+// a downloading/verifying/verified op takes effect even though those steps run inside one
+// supervisor step (T13b review). Reads only the inbox directory and small files.
+cancel_pending :: proc(s: ^Service, op_id: string) -> bool {
+	dir := inbox_dir(s)
+	entries, err := os.read_directory_by_path(dir, -1, context.temp_allocator)
+	if err != nil do return false
+	t := now(s)
+	for ent in entries {
+		if !strings.has_suffix(ent.name, ".json") || strings.has_prefix(ent.name, "bad-") do continue
+		data, ferr := os.read_entire_file(engine.join(dir, ent.name), context.temp_allocator)
+		if ferr != nil do continue
+		it, st, schema_ok := parse_intent(data)
+		if st != .Ok || it.action != "cancel" do continue
+		if validate_intent(it, schema_ok, s.instance.instance_id, t) != "" do continue
+		if it.target_op_id != "" && it.target_op_id != op_id do continue
+		if in_index(s, it.op_id) do continue
+		s.scan_now = true
+		return true
+	}
+	return false
+}

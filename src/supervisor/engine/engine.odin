@@ -40,6 +40,7 @@ import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "../fetch"
 
@@ -211,6 +212,12 @@ Engine :: struct {
 	gate_busy:      Busy,
 	// Agent gate: what the waiting status file last showed (write throttle, gate.odin).
 	gate_shown:     Gate_Shown,
+	// Last line of every op whose last line is not terminal (normally 0-2), kept in memory
+	// so the running supervisor never re-parses the journal per tick (T13b review). Built
+	// at load, updated by `journal`; entries (heap clones in `heap`) are removed when the
+	// op's terminal line is written.
+	open_ops:       map[string]Line,
+	heap:           mem.Allocator,
 }
 
 now :: proc(e: ^Engine) -> i64 {
@@ -265,6 +272,7 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 	} else if a, has := e.active.?; !has || a.op_id == line.op_id {
 		e.active = clone_line(e, line)
 	}
+	open_ops_note(e, line)
 	// A non-terminal line of another op (a short side op of §10 coalescing, e.g. check_now or
 	// set_channel while an update waits for idle agents) leaves the active op alone too; the
 	// caller restores the view with `reload_active` once the side op is terminal.
@@ -272,15 +280,11 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 	return nil
 }
 
-// reload_active re-reads the journal and sets the active op to the last op whose last line
-// is not terminal (§6.1). The service calls it after a side op (§10 coalescing) ends, and
-// when resuming a side op left non-terminal by a crash shadowed the op it ran beside.
-// `skip_op_id` (optional) is passed over, so a side op left non-terminal by a crash can be
-// resumed against the op it ran beside (J35 cancel replay).
+// reload_active sets the active op from the open ops (§6.1: the last op whose last line is
+// not terminal; see pick_active). The service calls it after a side op (§10 coalescing) ends.
 reload_active :: proc(e: ^Engine) {
-	r := read_journal_file(journal_path(e), context.temp_allocator)
 	e.active = nil
-	if op, ok := pick_active(r.lines[:]); ok do e.active = clone_line(e, op)
+	if op, ok := pick_active(non_terminal_ops(e)); ok do e.active = clone_line(e, op)
 }
 
 // SIDE_ACTIONS: ops that never install and may run beside an active op (§10 coalescing).
@@ -291,21 +295,13 @@ is_side_action :: proc(action: string) -> bool {
 	return false
 }
 
-// pick_active: the active op is the last op whose last line is not terminal (§6.1), except
-// that a side op left non-terminal by a crash never shadows an installing op beside it (the
-// service finishes the side op separately, see service.drive).
+// pick_active: among the last lines of non-terminal ops, the latest one — except that a side
+// op left non-terminal by a crash never shadows an installing op beside it (the service
+// finishes the side op separately, see service.drive).
 @(private)
-pick_active :: proc(lines: []Line) -> (op: Line, ok: bool) {
+pick_active :: proc(open: []Line) -> (op: Line, ok: bool) {
 	best_main, best_side: Maybe(Line)
-	for l, i in lines {
-		later := false
-		for j := i + 1; j < len(lines); j += 1 {
-			if lines[j].op_id == l.op_id {
-				later = true
-				break
-			}
-		}
-		if later || is_terminal(l.state) do continue
+	for l in open {
 		if is_side_action(l.action) {
 			if b, has := best_side.?; !has || l.seq > b.seq do best_side = l
 		} else if b, has := best_main.?; !has || l.seq > b.seq {
@@ -317,29 +313,81 @@ pick_active :: proc(lines: []Line) -> (op: Line, ok: bool) {
 	return
 }
 
-// non_terminal_ops: the last line of every op whose last line is not terminal, oldest first
-// (normally zero or one; two while a side op runs next to a waiting op).
-non_terminal_ops :: proc(e: ^Engine, allocator := context.temp_allocator) -> []Line {
-	r := read_journal_file(journal_path(e), context.temp_allocator)
+// open_lines: the last line of every op whose last line is not terminal, oldest first; one
+// pass with a map from op_id to its last line index (O(n)).
+@(private)
+open_lines :: proc(lines: []Line, allocator := context.temp_allocator) -> []Line {
+	last := make(map[string]int, 16, context.temp_allocator)
+	for l, i in lines do last[l.op_id] = i
 	out := make([dynamic]Line, allocator)
-	for l, i in r.lines {
-		later := false
-		for j := i + 1; j < len(r.lines); j += 1 {
-			if r.lines[j].op_id == l.op_id {
-				later = true
-				break
-			}
-		}
-		if !later && !is_terminal(l.state) do append(&out, l)
+	for l, i in lines {
+		if last[l.op_id] == i && !is_terminal(l.state) do append(&out, l)
 	}
 	return out[:]
 }
 
-// journal_lines: every valid line of ops.jsonl (temp-allocated), for the service's replay
-// checks (J35 `cancelled_by`, J30 interrupt window).
+// non_terminal_ops: the open ops from memory (no file read), oldest first (by seq).
+non_terminal_ops :: proc(e: ^Engine, allocator := context.temp_allocator) -> []Line {
+	out := make([dynamic]Line, 0, len(e.open_ops), allocator)
+	for _, l in e.open_ops do append(&out, l)
+	slice.sort_by(out[:], proc(a, b: Line) -> bool {return a.seq < b.seq})
+	return out[:]
+}
+
+// is_open: the op has a line and is not terminal.
+is_open :: proc(e: ^Engine, op_id: string) -> bool {
+	return op_id in e.open_ops
+}
+
+// journal_lines: every valid line of ops.jsonl (temp-allocated). Reads the file: only for
+// rare replay checks (J35 `cancelled_by` after a crash), never per tick.
 journal_lines :: proc(e: ^Engine) -> []Line {
 	r := read_journal_file(journal_path(e), context.temp_allocator)
 	return r.lines[:]
+}
+
+// open_ops_note keeps `open_ops` current after `l` was journaled.
+@(private)
+open_ops_note :: proc(e: ^Engine, l: Line) {
+	if old, ok := e.open_ops[l.op_id]; ok {
+		delete_key(&e.open_ops, l.op_id)
+		free_heap_line(e, old)
+	}
+	if is_terminal(l.state) do return
+	c := clone_heap_line(e, l)
+	e.open_ops[c.op_id] = c
+}
+
+@(private)
+open_ops_reset :: proc(e: ^Engine) {
+	for _, l in e.open_ops do free_heap_line(e, l)
+	clear(&e.open_ops)
+}
+
+@(private)
+clone_heap_line :: proc(e: ^Engine, l: Line) -> Line {
+	a := e.heap
+	c := l
+	c.op_id = strings.clone(l.op_id, a)
+	c.action = strings.clone(l.action, a)
+	c.actor = strings.clone(l.actor, a)
+	c.state = strings.clone(l.state, a)
+	c.sub = strings.clone(l.sub, a)
+	c.error = strings.clone(l.error, a)
+	c.note = strings.clone(l.note, a)
+	c.interrupted_by = strings.clone(l.interrupted_by, a)
+	c.cancelled_by = strings.clone(l.cancelled_by, a)
+	c.from = Ref{strings.clone(l.from.version, a), strings.clone(l.from.sha256, a), strings.clone(l.from.tree, a)}
+	c.to = Ref{strings.clone(l.to.version, a), strings.clone(l.to.sha256, a), strings.clone(l.to.tree, a)}
+	return c
+}
+
+@(private)
+free_heap_line :: proc(e: ^Engine, l: Line) {
+	a := e.heap
+	for s in ([]string{l.op_id, l.action, l.actor, l.state, l.sub, l.error, l.note, l.interrupted_by, l.cancelled_by, l.from.version, l.from.sha256, l.from.tree, l.to.version, l.to.sha256, l.to.tree}) {
+		delete(s, a)
+	}
 }
 
 @(private)
@@ -404,6 +452,7 @@ open :: proc(e: ^Engine, cfg: Config, host: Host, inj: ^Injector = nil) -> Exit 
 	if e.cfg.gate_wait_s == 0 do e.cfg.gate_wait_s = GATE_WAIT_S
 	e.host = host
 	e.inj = inj
+	e.heap = context.allocator // open_ops allocates on first insert (nothing to free on refusal before it)
 	_ = virtual.arena_init_growing(&e.arena)
 	e.alloc = virtual.arena_allocator(&e.arena)
 	e.cfg.instance_root = strings.clone(cfg.instance_root, e.alloc)
@@ -444,6 +493,8 @@ open :: proc(e: ^Engine, cfg: Config, host: Host, inj: ^Injector = nil) -> Exit 
 }
 
 close :: proc(e: ^Engine) {
+	open_ops_reset(e)
+	delete(e.open_ops)
 	lock_release(&e.lock)
 	virtual.arena_destroy(&e.arena)
 }
@@ -475,7 +526,9 @@ load_journal :: proc(e: ^Engine) -> Error {
 		if err := journal(e, Line{op_id = fmt.tprintf("op_journal_corrupt_%d", ts), action = "journal", actor = "supervisor", state = "failed", error = "journal_corrupt"}); err != nil do return err
 	}
 	for l in r.lines do e.last_seq = max(e.last_seq, l.seq)
-	if op, ok := pick_active(r.lines[:]); ok do e.active = clone_line(e, op)
+	open_ops_reset(e)
+	for l in open_lines(r.lines[:]) do open_ops_note(e, l)
+	if op, ok := pick_active(non_terminal_ops(e)); ok do e.active = clone_line(e, op)
 	last_t: i64 = -1
 	for l in r.lines {
 		if is_terminal(l.state) && l.seq > last_t {

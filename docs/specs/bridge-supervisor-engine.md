@@ -532,8 +532,19 @@ vet-checked and unit-tested like the other packages). Choices this spec left ope
   endpoint (§12.2, `<data>/run/supervisor-control.json`) names the runtime's recorded pid
   and answers `supervisor.gate.count`; `Exited` = any child exited; hub connected =
   `<state>/runtime-status.json` of that pid says `connected`, updated within 90 s (within
-  5 min for the `gate_closed` decision). While idle, an exited runtime is restarted with
-  1 s → 60 s backoff (the engine judges health only in probation).
+  5 min for the `gate_closed` decision). While idle — also while an op is still before
+  `activating` (`requested` … `waiting_for_idle`) — an exited runtime is restarted with
+  1 s → 60 s backoff (the engine judges health only in probation); otherwise a crash during
+  a gate wait would leave the bridge offline for the 2 h `force_at`.
+- **Cancel reaches a running op.** Resolve, download, verify, unpack and activation run
+  inside one supervisor step, so the driver checks the inbox for a valid `cancel` aimed at
+  the active op at three boundaries (before the bundle download, after it, before
+  activation) and steps back without a line; the inbox (scanned before the driver every
+  step) then applies J35. A download already in flight finishes first.
+- **No per-tick journal parse.** The engine keeps the last line of every open op in memory
+  (`open_ops`, built in O(n) at start, updated by `journal`, entries freed when terminal);
+  the service's per-tick checks use it. The file is read again only per arriving intent
+  (dedupe) and for J35 replay after a crash.
 - **Children.** The supervisor starts `<tree>/bin/ham-bridge` with today's service
   arguments (`src/lib/bridgesvc/render.odin` `service_args`, from `instance.json` and
   `<state>/ports.json`); ham-bridge starts its PTY host. Each child is recorded in

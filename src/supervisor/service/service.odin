@@ -73,6 +73,7 @@ Service :: struct {
 	opened:         bool,
 	gc_due:         bool,
 	idle_restarts:  int,
+	scan_now:       bool, // the driver stepped back for a queued cancel: scan at once
 	idle_retry_at:  i64,
 }
 
@@ -172,17 +173,21 @@ step :: proc(s: ^Service) -> (x: engine.Exit, err: engine.Error) {
 	x, err = engine.tick(&s.eng)
 	if x != .Run || err != nil do return
 	if stop_requested(s) do return
+	// The inbox goes first, so a cancel that made the driver step back (cancel_pending)
+	// reaches the op before the driver resumes it.
+	t := now(s)
+	if t - s.last_scan >= INBOX_INTERVAL_S || s.last_scan == 0 || s.scan_now {
+		s.last_scan = t
+		s.scan_now = false
+		x, err = scan_inbox(s)
+		if x != .Run || err != nil do return
+	}
 	x, err = drive(s)
 	if x != .Run || err != nil do return
+	prune_expiries(s)
 	if s.gc_due {
 		s.gc_due = false
 		gc(s)
-	}
-	t := now(s)
-	if t - s.last_scan >= INBOX_INTERVAL_S || s.last_scan == 0 {
-		s.last_scan = t
-		x, err = scan_inbox(s)
-		if x != .Run || err != nil do return
 	}
 	x, err = timer(s)
 	if x != .Run || err != nil do return
@@ -202,7 +207,10 @@ shutdown :: proc(s: ^Service) -> (x: engine.Exit, err: engine.Error) {
 watch_idle_runtime :: proc(s: ^Service) {
 	h := s.opts.host
 	if s.eng.phase != .Idle || h.health == nil do return
-	if _, active := s.eng.active.?; active do return
+	// An op that has not reached `activating` (requested … waiting_for_idle) leaves the
+	// runtime to us: without a restart a crashed runtime would stay down for the whole gate
+	// wait (an unanswered count is "busy", so a timer op would wait 2 h, T13b review).
+	if op, active := s.eng.active.?; active && !pre_activation(op.state) do return
 	hl := h.health(h.user)
 	t := now(s)
 	if hl == .Ready {
@@ -218,6 +226,15 @@ watch_idle_runtime :: proc(s: ^Service) {
 	s.idle_retry_at = t + min(i64(1) << uint(min(s.idle_restarts, 6)), 60)
 }
 
+// pre_activation: states before `activating` (nothing of the runtime is being stopped).
+pre_activation :: proc(state: string) -> bool {
+	switch state {
+	case "requested", "resolving", "downloading", "verifying", "verified", "waiting_for_idle":
+		return true
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------------------
 // Journal helpers
 // ---------------------------------------------------------------------------------------
@@ -225,8 +242,29 @@ watch_idle_runtime :: proc(s: ^Service) {
 // put journals one line; a terminal line schedules GC (§15 "after every terminal op").
 put :: proc(s: ^Service, l: engine.Line) -> engine.Error {
 	if err := engine.journal(&s.eng, l); err != nil do return err
-	if engine.is_terminal(l.state) do s.gc_due = true
+	if engine.is_terminal(l.state) {
+		s.gc_due = true
+		forget_expiry(s, l.op_id)
+	}
 	return nil
+}
+
+// prune_expiries drops the expiry of every op that is no longer open: terminal lines are
+// also written by the engine itself (cancel_active, interrupt, commit, rollback). An entry is
+// added only right before its op's `requested` line, so an entry without an open op is done.
+prune_expiries :: proc(s: ^Service) {
+	if len(s.expires) == 0 do return
+	done := make([dynamic]string, context.temp_allocator)
+	for k in s.expires do if !engine.is_open(&s.eng, k) do append(&done, k)
+	for k in done do forget_expiry(s, k)
+}
+
+// forget_expiry drops an op's in-memory expires_at once it is terminal (the map would
+// otherwise grow by one entry per accepted intent for the life of the process).
+forget_expiry :: proc(s: ^Service, op_id: string) {
+	if op_id not_in s.expires do return
+	key, _ := delete_key(&s.expires, op_id)
+	delete(key)
 }
 
 terminal :: proc(op: engine.Line, state: string, code := "", note := "") -> engine.Line {
@@ -254,8 +292,11 @@ in_index :: proc(s: ^Service, op_id: string) -> bool {
 	return found
 }
 
-// in_journal: any line of the op exists.
+// in_journal: any line of the op exists. Open ops answer from memory; otherwise the file
+// is read (once per arriving intent, never per tick), which also covers a terminal op whose
+// op-index write failed without a crash (the index is reconciled only at start).
 in_journal :: proc(s: ^Service, op_id: string) -> bool {
+	if engine.is_open(&s.eng, op_id) do return true
 	for l in engine.journal_lines(&s.eng) do if l.op_id == op_id do return true
 	return false
 }

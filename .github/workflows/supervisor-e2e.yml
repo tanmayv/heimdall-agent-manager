@@ -102,6 +102,15 @@ jobs:
           }
           Build src/launcher ham-launcher.exe @()
           Build src/supervisor ham-supervisor.exe @("-define:HAM_CURL_VERSION=$($pin.curl.version)", '-define:HEIMDALL_SUPERVISOR_TEST=true', "-define:HEIMDALL_TEST_PINNED_KEY=$key", "-extra-linker-flags:/LIBPATH:$curlLib")
+          # A default build (release defines only) must not embed the e2e test key.
+          Build src/supervisor ham-supervisor-default.exe @("-define:HAM_CURL_VERSION=$($pin.curl.version)", "-extra-linker-flags:/LIBPATH:$curlLib")
+          function Contains($path) {
+            $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($path))
+            return $text.Contains($key)
+          }
+          if (Contains "$out\ham-supervisor-default.exe") { throw "a default ham-supervisor build contains the e2e test key" }
+          if (-not (Contains "$out\ham-supervisor.exe")) { throw "the test ham-supervisor build lacks the e2e test key (check is vacuous)" }
+          Write-Host "key check: default build has no test key; test build has it"
           Build src/supervisor/testdata/fakebridge fakebridge.exe @('-vet', '-strict-style')
           & "$out\ham-supervisor.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "ham-supervisor --version failed ($LASTEXITCODE)" }

@@ -13,6 +13,16 @@ common=(-collection:odin_test="$root/src")
 odin build src/launcher "${common[@]}" -out:"$out/ham-launcher"
 odin build src/supervisor "${common[@]}" -define:HAM_CURL_VERSION="$curl_version" \
   -define:HEIMDALL_SUPERVISOR_TEST=true -define:HEIMDALL_TEST_PINNED_KEY="$key" -out:"$out/ham-supervisor"
+# A default build (no test defines, as the release workflow builds it) must embed only the
+# pinned release keys: the e2e test key must not be in it; the test build must carry it.
+odin build src/supervisor "${common[@]}" -define:HAM_CURL_VERSION="$curl_version" -out:"$out/ham-supervisor-default"
+if grep -aqF "$key" "$out/ham-supervisor-default"; then
+  echo "FAIL: a default ham-supervisor build contains the e2e test key" >&2; exit 1
+fi
+if ! grep -aqF "$key" "$out/ham-supervisor"; then
+  echo "FAIL: the test ham-supervisor build lacks the e2e test key (check is vacuous)" >&2; exit 1
+fi
+echo "key check: default build has no test key; test build has it"
 odin build src/supervisor/testdata/fakebridge "${common[@]}" -vet -strict-style -out:"$out/fakebridge"
 HEIMDALL_E2E_BIN_DIR="$out" odin test src/supervisor/e2e "${common[@]}" -vet -strict-style \
   -define:ODIN_TEST_THREADS=1 -out:"$out/supervisor-e2e"
