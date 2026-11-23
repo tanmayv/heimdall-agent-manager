@@ -431,7 +431,7 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
     }),
 
     listFlatTaskChains: build.query<any, { includeArchived?: boolean } | void>({
-      queryFn: async (arg) => {
+      queryFn: async (arg, api) => {
         try {
           const options = typeof arg === 'object' && arg !== null ? arg : undefined;
           const params = new URLSearchParams();
@@ -439,7 +439,16 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
           if (options?.includeArchived) params.set('include_archived', '1');
           const qs = params.toString();
           const raw = await cookieJsonFetch(`/task-chains?${qs}`);
-          const data = raw?.data ?? raw;
+          let data = raw?.data ?? raw;
+          const state: any = api.getState();
+          const activeKey = getActiveVaultKey();
+          if (state?.vault?.isUnlocked && activeKey) {
+            if (Array.isArray(data)) {
+              data = await decryptChainList(data, activeKey);
+            } else if (Array.isArray(data?.chains)) {
+              data = { ...data, chains: await decryptChainList(data.chains, activeKey) };
+            }
+          }
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
