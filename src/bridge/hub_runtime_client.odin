@@ -4648,7 +4648,7 @@ Bridge_Hello_Wire :: struct {
 // on every hello and on every legacy beat that carries features.
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
-BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1, contracts.BRIDGE_FEATURE_START_AGENT_V1}
+BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1, contracts.BRIDGE_FEATURE_START_AGENT_V1, contracts.BRIDGE_FEATURE_DYNAMIC_SKILL_V2}
 bridge_runtime_features :: proc() -> []string {
 	features := make([dynamic]string, allocator = context.temp_allocator)
 	append(&features, ..BRIDGE_RUNTIME_FEATURES[:])
