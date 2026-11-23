@@ -333,11 +333,7 @@ test_supervisor_end_to_end :: proc(t: ^testing.T) {
 	@(static) old: Runtime
 	old = last_runtime(&e)
 	testing.expect(t, old.id.pid > 0 && old.parent > 0, "runtime and supervisor pids")
-	sp, operr := os.process_open(old.parent)
-	testing.expectf(t, operr == nil, "open supervisor %d: %v", old.parent, operr)
-	kerr := os.process_kill(sp)
-	testing.expectf(t, kerr == nil, "kill supervisor %d: %v", old.parent, kerr)
-	_, _ = os.process_wait(sp, 5 * time.Second) // frees the handle (not our child: may error)
+	testing.expectf(t, hard_kill(old.parent), "kill supervisor %d", old.parent)
 	reaped :: proc(e: ^Env) -> bool {
 		cur := last_runtime(e)
 		return !procs.alive(old.id) && cur.id != old.id && live_runtimes(e) == 1
