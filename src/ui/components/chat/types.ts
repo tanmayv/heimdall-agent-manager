@@ -1,4 +1,5 @@
 import { containsVaultArmored, isVaultArmored } from '../../utils/vaultContent.ts';
+import type { AcpDelivery } from './acpDelivery.ts';
 
 export type ChatMessage = {
   key: string;
@@ -19,6 +20,8 @@ export type ChatMessage = {
   isLatestMessage?: boolean;
   optionsRevision?: number;
   questionAnswer?: { answer_message_id: string; answered_at: string } | null;
+  /** ACP user rows only (docs/acp-send-now.md); absent for PTY, agent and legacy rows. */
+  acpDelivery?: AcpDelivery | null;
 };
 
 export function messageOptionsEligible(message: {
