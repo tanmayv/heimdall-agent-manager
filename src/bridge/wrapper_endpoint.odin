@@ -295,6 +295,8 @@ bridge_local_endpoint_handle_jsonl_line :: proc(line: string) -> string {
 	method := bridge_local_extract_json_string(line, "method", "")
 	params := bridge_local_extract_json_object(line, "params")
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
+	// The supervisor's agent gate: its own control token, never an agent token.
+	if strings.has_prefix(method, "supervisor.") do return bridge_supervisor_control_handle(request_id, method, token)
 	rec, ok := bridge_agent_token_verify(token)
 	if !ok do return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")
 	if !bridge_local_method_allowed(method, rec.role) do return bridge_local_response_error(request_id, "forbidden", "method is not allowed for this local token role")
@@ -316,7 +318,8 @@ bridge_local_spoofable_params :: proc(params: string) -> bool {
 	// "sender_agent_instance_id"/"owner_user_id"/credentials, which stay blocked.
 	blocked := [?]string{"owner_user_id", "sender_agent_instance_id", "hub_url", "Authorization", "authorization", "hub_token", "bridge_token", "token", "access_token"}
 	for key in blocked {
-		if strings.contains(params, strings.concatenate({"\"", key, "\""})) do return true
+		// Temp: this runs on every local request (a heap copy here leaked 9 strings per call).
+		if strings.contains(params, strings.concatenate({"\"", key, "\""}, context.temp_allocator)) do return true
 	}
 	return false
 }

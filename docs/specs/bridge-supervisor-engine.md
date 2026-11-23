@@ -875,7 +875,7 @@ wake/reconcile (report §6.6).
 ### 12.1 Implementation (T14)
 
 Engine: `src/supervisor/engine/gate.odin`; process identity and stop:
-`src/supervisor/procs`. The supervisor binary, the supervisor↔runtime channel and
+`src/supervisor/procs`; the runtime half and its adapter: §12.2. The supervisor binary and
 `procs.json` are T13b's; they plug in through the `Host` hooks below.
 
 - **Host hooks.** `gate_count() -> Busy{counted, pty_sessions, launches, helpers}`,
@@ -898,7 +898,11 @@ Engine: `src/supervisor/engine/gate.odin`; process identity and stop:
   `force_at`; the 2 h are never reset. `tick` re-evaluates every second.
 - **Countdown:** `supervisor-status.json` gains `force_at`, `remaining_s` (both null when
   not waiting), `busy` (`{pty_sessions, launches, helpers, total}` or null) and `forced`;
-  the waiting status is rewritten on every tick with the latest count. `gate_status()`
+  while waiting the file is rewritten only when the count changes or the remaining time
+  crosses a whole minute (`remaining_s` is then at most 60 s stale; readers count down
+  from the absolute `force_at`). `tick` still re-evaluates every second.
+- **End sessions:** `Host.end_sessions` (optional) is called after `stopping` is journaled,
+  before `stop_children`, for the activation stop and the rollback stop. `gate_status()`
   returns the same for the local endpoint / hub relay.
 - **Engine API:** `activate` (gate + activation), `interrupt(by_op_id, actor)` (J30; `no_op`
   when nothing is active → run the intent as its own op; `bad_state` past waiting → the
@@ -925,6 +929,53 @@ Engine: `src/supervisor/engine/gate.odin`; process identity and stop:
   injection matrices; `src/supervisor/procs/*_test.odin` with real processes on all three
   OSes (two instances on one machine, pid reuse, TERM-ignoring agents, orphaned group
   members).
+
+### 12.2 Runtime half and adapter (T14)
+
+**Runtime** (`src/bridge/supervisor_gate.odin`). Four JSONL methods on the runtime's
+existing local endpoint (`unix:<run_dir>/bridge.sock`, loopback TCP fallback), request
+`{"v":1,"id","token","method","params":{}}`, response `{"v":1,"id","ok","data"|"error"}`:
+
+| Method | Effect | `data` |
+|---|---|---|
+| `supervisor.gate.count` | none | `{counted, admission, pty_sessions, launches, helpers}`; `counted:false` (only `admission`, `launches`) when the PTY host does not answer its list |
+| `supervisor.admission.close` | refuse new launches | `{admission:"closed", launches}` (launches already admitted) |
+| `supervisor.admission.open` | accept launches | `{admission:"open"}` |
+| `supervisor.sessions.end` | capture, then SIGTERM every live PTY session (the PTY host signals its group) | `{signalled, targets:[{pid,start_time}]}` |
+
+- **Count.** `pty_sessions` = live PTY-host roster entries that are agents; `helpers` = live
+  roster entries that are shell sessions (`sh_*`: `ham-ctl shell run/serve`, terminals);
+  `launches` = launches admitted and still being prepared (`bridge_auto_update_launches`).
+  No PTY-host socket = no daemon = 0 sessions; the count never starts a daemon.
+- **Admission.** One flag under `bridge_auto_update_mutex`, checked by
+  `bridge_auto_update_launch_enter`, the single admission point of
+  `bridge_runtime_launch_agent`. A refused launch is `agent_launch_failed`, retriable after
+  30 s, so the hub re-wakes the agent after the update. Close and launch admission take the
+  same mutex: after a close, every launch was either counted or is refused. The flag is in
+  memory; a new runtime starts open.
+- **Auth.** A 32-byte random control token per runtime process, never an agent token,
+  written with the endpoint to `<run_dir>/supervisor-control.json`
+  (`{"v":1,"endpoint","token","pid"}`, 0600, write-new + fsync + rename). Wrong or missing
+  token → `unauthenticated`, nothing changes. It keeps other OS users on the loopback
+  fallback out; same-user processes (agents included) can read it, as they can signal the
+  bridge (the boundary is the OS user, Q8).
+- **Ending sessions** does not mark a stop intent or a `stopped` status: the sessions exit,
+  their normal exit reporting reaches the hub, and the existing wake/reconcile relaunches
+  them after the update (report §6.6).
+
+**Adapter** (`src/supervisor/runtimectl`): `install(&host, &client)` sets
+`gate_count/close_admission/open_admission/end_sessions` and `gate_user`. Each request reads
+the control file again (a restarted runtime has a new token) and uses a fresh connection
+with a 2 s deadline; any failure is "not counted" / "not confirmed" (fail closed).
+`end_sessions` keeps the reported `(pid, start_time)` of every session as a group target:
+PTY sessions call `setsid`, so the runtime's and PTY host's process groups do not contain
+them. `stop_children(client, recorded)` (for T13b's `Host.stop_children`): the sessions get
+the 10 s grace to end, then `procs.stop` (SIGTERM → 2 s → SIGKILL / TerminateProcess, wait
+30 s) on sessions + the recorded runtime and PTY host. Tests: `runtimectl_test.odin`
+(fake endpoint over unix and tcp, fail-closed cases, real setsid'd sessions: this
+instance's stopped, another's untouched) and `src/bridge/supervisor_gate_test.odin` (launch
+refused while closed, in-flight launch counted, count split, end-sessions identities,
+control auth through the JSONL router).
 
 ## 13. Version selection
 

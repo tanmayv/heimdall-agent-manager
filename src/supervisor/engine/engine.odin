@@ -70,7 +70,12 @@ Host :: struct {
 	hub_recently_connected: proc(user: rawptr) -> bool,
 	// A service stop arrived while an activation runs (checked between pre-switch steps).
 	stop_requested:         proc(user: rawptr) -> bool,
-	// Agent gate (§12, T14), answered by the runtime over the supervisor<->runtime channel.
+	// User pointer passed to the gate hooks below (gate_count, close/open_admission,
+	// end_sessions) so they can come from src/supervisor/runtimectl while the other hooks
+	// are the supervisor's own. nil = `user`.
+	gate_user:              rawptr,
+	// Agent gate (§12, T14), answered by the runtime over the supervisor<->runtime channel
+	// (src/supervisor/runtimectl: the runtime's local endpoint, spec §12.2).
 	// Fails closed: a nil gate_count is "not counted", which a timer op treats as busy
 	// (it waits, then is forced at force_at); user-started ops interrupt regardless.
 	// gate_count: live PTY sessions, in-flight launches and helper processes of this

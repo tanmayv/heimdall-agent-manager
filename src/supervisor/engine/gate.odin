@@ -161,7 +161,7 @@ cancel_active :: proc(e: ^Engine, by_op_id: string, target_op_id := "") -> (err:
 // host_end_sessions: §12 "ask the runtime to end sessions" before stop_children.
 @(private)
 host_end_sessions :: proc(e: ^Engine) {
-	if e.host.end_sessions != nil do e.host.end_sessions(e.host.user)
+	if e.host.end_sessions != nil do e.host.end_sessions(gate_user(e))
 }
 
 // gate_status: what the app shows while an op waits ("Updating in 1 h 12 min — N agents
@@ -187,25 +187,30 @@ gate_status :: proc(e: ^Engine) -> (s: Gate_Status) {
 
 // ---- host wrappers ----
 
+@(private)
+gate_user :: proc(e: ^Engine) -> rawptr {
+	return e.host.gate_user if e.host.gate_user != nil else e.host.user
+}
+
 // gate_count fails closed: a host without the hook (or a runtime that does not answer)
 // reports counted = false, which a timer op treats as busy (wait, then force at force_at).
 @(private)
 gate_count :: proc(e: ^Engine) -> Busy {
 	if e.host.gate_count == nil do return Busy{}
-	return e.host.gate_count(e.host.user)
+	return e.host.gate_count(gate_user(e))
 }
 
 // gate_close_and_count closes admission and counts. A runtime that did not confirm the
 // close still gets stopped by activate_steps; the count says what it reported.
 @(private)
 gate_close_and_count :: proc(e: ^Engine) -> Busy {
-	if e.host.close_admission != nil do _ = e.host.close_admission(e.host.user)
+	if e.host.close_admission != nil do _ = e.host.close_admission(gate_user(e))
 	return gate_count(e)
 }
 
 @(private)
 gate_open_admission :: proc(e: ^Engine) {
-	if e.host.open_admission != nil do e.host.open_admission(e.host.user)
+	if e.host.open_admission != nil do e.host.open_admission(gate_user(e))
 }
 
 // interrupt_pending: J30 after-the-fact. An interrupted op that fails before the switch
