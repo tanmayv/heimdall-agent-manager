@@ -32,3 +32,9 @@ jobs:
         run: bash -n scripts/install.sh
       - name: Test Linux and macOS installation with isolated services and downloads
         run: python3 tests/test_installer_clean.py
+      - name: Same tests under the system bash 3.2 (macOS /bin/bash)
+        if: runner.os == 'macOS'
+        run: |
+          /bin/bash -c 'echo "bash $BASH_VERSION"; [ "${BASH_VERSINFO[0]}" = 3 ]'
+          /bin/bash -n scripts/install.sh
+          INSTALLER_BASH=/bin/bash python3 tests/test_installer_clean.py

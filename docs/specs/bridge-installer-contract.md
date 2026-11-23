@@ -197,6 +197,11 @@ Justified differences:
   so `HEIMDALL_*` is the only way to configure that form. `install.sh` must read the same
   three (today it reads only `HEIMDALL_BRIDGE_NAME`, `install.sh:130`; T3 adds
   `HEIMDALL_HUB` and `HEIMDALL_VERSION`).
+- **Missing value for `--hub` in PowerShell** (T3 finding, pwsh 7): PowerShell's own binder
+  matches `--hub`, `--profile`, `--version`, `--bundle` to the parameters of the same name,
+  so `install.ps1 --hub` with no value is a PowerShell parameter-binding error (exit 1 under
+  `-File`), not the script's exit 2. Forms the binder does not match (`--hub-url`,
+  `--checksum-file`) reach the script and give exit 2 as in `install.sh`.
 - **Termux** is detected by `install.sh` only (`install.sh:103-110`); Windows has a single
   target (`windows-amd64`, `install.ps1:39`).
 
