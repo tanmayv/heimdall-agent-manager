@@ -256,12 +256,17 @@ function installer(args, { piped = false } = {}) {
   let child;
   if (WIN) {
     const ps1 = path.join(REPO_ROOT, 'scripts', 'install.ps1');
-    const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+    // Started from PowerShell 7 (the CI step's shell), Windows PowerShell 5.1 would
+    // inherit pwsh's PSModulePath and fail to load its own modules (Get-FileHash
+    // "not recognized"); an operator's 5.1 console has its default path.
+    const psEnv = Object.fromEntries(Object.entries(ENV).filter(([k]) => k.toUpperCase() !== 'PSMODULEPATH'));
+    // Parameter names stay bare: a quoted '-Hub' would bind as a positional string.
+    const q = (s) => (/^-[A-Za-z]+$/.test(s) ? s : `'${String(s).replace(/'/g, "''")}'`);
     if (piped) {
       const cmd = `& ([scriptblock]::Create([IO.File]::ReadAllText(${q(ps1)}))) ${args.map(q).join(' ')}; exit $LASTEXITCODE`;
-      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd], { cwd: ROOT, env: ENV, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd], { cwd: ROOT, env: psEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     } else {
-      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1, ...args], { cwd: ROOT, env: ENV, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1, ...args], { cwd: ROOT, env: psEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     }
   } else {
     const sh = path.join(REPO_ROOT, 'scripts', 'install.sh');
