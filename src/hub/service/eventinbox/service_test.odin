@@ -120,9 +120,16 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 		testing.expect_value(t, string(data["state"].(json.String)), "done")
 	}
 	values_destroy(events)
+	testing.expect_value(t, acknowledge(&service, "alice", "agt_coord", []string{"resolved:evt_notice"}).code, domain.Error_Code.None)
+	testing.expect_value(t, acknowledge(&service, "alice", "agt_coord", []string{"state_3", "resolved:evt_notice", "evt_unknown"}).code, domain.Error_Code.Not_Found)
+	rows, ack_snapshot_err := ack_snapshot(&service, "alice", "agt_coord", []string{"state_3"})
+	testing.expect_value(t, ack_snapshot_err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(rows), 1)
+	if len(rows) > 0 do testing.expect(t, !rows[0].acknowledged, "unknown real id leaves the mixed batch unacknowledged")
+	delivery_rows_destroy(rows)
 	testing.expect_value(
 		t,
-		acknowledge(&service, "alice", "agt_coord", []string{"state_3"}).code,
+		acknowledge(&service, "alice", "agt_coord", []string{"resolved:evt_notice", "state_3"}).code,
 		domain.Error_Code.None,
 	)
 	testing.expect_value(
@@ -130,6 +137,8 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 		acknowledge(&service, "alice", "agt_coord", []string{"state_3"}).code,
 		domain.Error_Code.None,
 	)
+	// Wait beyond AckWait: the real event in the mixed batch must not redeliver.
+	time.sleep(80 * time.Millisecond)
 	// A truly empty long-poll waits for its bounded budget.
 	began_wait := time.tick_now()
 	empty, empty_err := next(&service, "alice", "agt_coord", 50 * time.Millisecond, 20)
