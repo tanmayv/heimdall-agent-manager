@@ -178,9 +178,10 @@ read_instance_record :: proc(instance_root: string, allocator := context.allocat
 // check_instance_record enforces the ownership rule of spec §3 [T0 Q8]: the effective
 // user and the roots must be the ones recorded at install.
 check_instance_record :: proc(rec: Instance_Record, instance_root, state_root: string) -> (reason: string) {
-	if !owner_matches(rec.owner) do return "ownership_mismatch"
-	if rec.data_root == "" || !same_path(rec.data_root, instance_root) do return "ownership_mismatch"
-	if rec.state_root != "" && !same_path(rec.state_root, state_root) do return "ownership_mismatch"
+	// The reason keeps the spec's code (ownership_mismatch) and names the field.
+	if !owner_matches(rec.owner) do return "ownership_mismatch owner"
+	if rec.data_root == "" || !same_path(rec.data_root, instance_root) do return "ownership_mismatch data_root"
+	if rec.state_root != "" && !same_path(rec.state_root, state_root) do return "ownership_mismatch state_root"
 	return ""
 }
 
