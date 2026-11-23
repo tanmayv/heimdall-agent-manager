@@ -190,7 +190,7 @@ fixture_new :: proc(t: ^testing.T, name: string) -> Fixture {
 	testing.expect(t, mkdir_all(join_alloc(f.data, "supervisor")))
 	testing.expect(t, mkdir_all(f.state))
 	f.id = fmt.tprintf("ins_%032x", u128(time.time_to_unix_nano(time.now())) * 7919 + u128(n))
-	write_instance(t, &f, owner_json())
+	write_instance(t, &f, owner_json(t))
 	return f
 }
 
@@ -203,9 +203,10 @@ write_instance :: proc(t: ^testing.T, f: ^Fixture, owner: string) {
 	testing.expect(t, os.write_entire_file(join_alloc(f.data, "instance.json"), body) == nil)
 }
 
-owner_json :: proc() -> string {
+owner_json :: proc(t: ^testing.T) -> string {
 	when ODIN_OS == .Windows {
-		sid, _, _ := current_user_sid()
+		sid, ok, step := current_user_sid()
+		testing.expectf(t, ok && sid != "", "fixture current_user_sid: %q ok=%v step=%q", sid, ok, step)
 		return fmt.tprintf(`{{"sid":"%s"}}`, sid)
 	} else {
 		return fmt.tprintf(`{{"uid":%d}}`, test_current_uid())
