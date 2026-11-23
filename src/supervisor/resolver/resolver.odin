@@ -22,8 +22,22 @@ package resolver
 //     error, never an empty page.
 //   - Rate limits: 403/429 with retry-after or x-ratelimit-remaining: 0 stop the
 //     resolution and set retry_at; no request is made before that time.
+//
+// Memory:
+//   - A Cache owns all of its memory, allocated with cache.allocator (set by
+//     cache_make / cache_unmarshal). resolve frees pages it replaces, prunes or
+//     clears, and the old target; cache_destroy frees the rest. A Cache can be
+//     held for the life of the supervisor.
+//   - A Result owns its detail and candidate strings, allocated with resolve's
+//     allocator argument; nothing in it aliases the cache. Free with
+//     result_destroy (same allocator).
+//   - resolve uses context.temp_allocator for parsing and scratch (a 100-release
+//     page parses into a few MB). It never frees it: the caller must
+//     free_all(context.temp_allocator) after each resolution, e.g. once per
+//     timer tick.
 
 import "core:encoding/json"
+import "core:mem"
 import "core:strconv"
 import "core:strings"
 
@@ -100,7 +114,14 @@ Cached_Page :: struct {
 }
 
 // Cache is resolver.json (§3): conditional-request cache plus the schedule.
+// Create with cache_make or cache_unmarshal; free with cache_destroy.
 Cache :: struct {
+	using wire: Cache_Wire,
+	allocator:  mem.Allocator, // owns target and every page (see Memory above)
+}
+
+// Cache_Wire is the persisted form of a Cache.
+Cache_Wire :: struct {
 	schema:              int `json:"schema"`,
 	target:              string `json:"target"`, // pages are reduced for this target
 	pages:               [dynamic]Cached_Page `json:"pages"`,
@@ -141,8 +162,10 @@ release_usable :: proc(r: Release) -> bool {
 }
 
 // resolve finds the candidate for channel. cache is read for conditional
-// requests and updated with fresh pages; the schedule fields are left to
-// schedule_after (cadence.odin). All strings are allocated with allocator.
+// requests and updated with fresh pages (in cache.allocator); the schedule
+// fields are left to schedule_after (cadence.odin). The Result is owned by the
+// caller (allocator; free with result_destroy). Scratch goes to
+// context.temp_allocator, which the caller must free_all after each call.
 resolve :: proc(
 	channel: Channel,
 	target: string,
@@ -152,20 +175,55 @@ resolve :: proc(
 	now: i64,
 	allocator := context.allocator,
 ) -> (res: Result) {
-	context.allocator = allocator
+	if cache.allocator.procedure == nil do cache.allocator = context.allocator
+	// Appends happen under the temp context below; pin the array to the cache's allocator.
+	if cache.pages.allocator.procedure == nil do cache.pages.allocator = cache.allocator
 	if cache.schema != CACHE_SCHEMA || cache.target != target {
 		// Pages are reduced per target; another target's pages are useless.
-		clear(&cache.pages)
+		cache_clear_pages(cache)
+		delete(cache.target, cache.allocator)
 		cache.schema = CACHE_SCHEMA
-		cache.target = strings.clone(target)
+		cache.target = strings.clone(target, cache.allocator)
 	}
+	visited := make([dynamic]string, context.temp_allocator)
+	complete: bool
+	{
+		context.allocator = context.temp_allocator
+		res, complete = resolve_scratch(channel, target, cache, get, user, now, &visited)
+	}
+	// Copy out before pruning: the candidate may point into a cached page.
+	res.detail = strings.clone(res.detail, allocator)
+	res.candidate = release_clone(res.candidate, allocator)
+	if complete do prune(cache, visited[:])
+	return res
+}
+
+// result_destroy frees what resolve allocated for res.
+result_destroy :: proc(res: ^Result, allocator := context.allocator) {
+	delete(res.detail, allocator)
+	release_destroy(&res.candidate, allocator)
+	res^ = {}
+}
+
+// resolve_scratch does the work with every string in context.allocator
+// (temp) or the cache; its Result may alias cached pages. complete = the
+// resolution saw every page it needed (cache may be pruned to them).
+@(private)
+resolve_scratch :: proc(
+	channel: Channel,
+	target: string,
+	cache: ^Cache,
+	get: Get,
+	user: rawptr,
+	now: i64,
+	visited: ^[dynamic]string,
+) -> (res: Result, complete: bool) {
 	if now < cache.rate_limit_reset_at {
-		return incomplete_rate_limited(res, cache.rate_limit_reset_at, "GitHub rate limit in effect")
+		return incomplete_rate_limited(res, cache.rate_limit_reset_at, "GitHub rate limit in effect"), false
 	}
 
-	visited := make([dynamic]string, context.temp_allocator)
-	stable, stable_ok, stable_res := resolve_stable(target, cache, get, user, now, &visited, &res)
-	if stable_res.status == .Incomplete do return stable_res
+	stable, stable_ok, stable_res := resolve_stable(target, cache, get, user, now, visited, &res)
+	if stable_res.status == .Incomplete do return stable_res, false
 
 	if channel == .Stable {
 		res.status = .Candidate if stable_ok else .No_Candidate
@@ -176,26 +234,25 @@ resolve :: proc(
 		}
 		// rate_limited is reported only with Incomplete; the cache keeps the reset time.
 		res.rate_limited, res.retry_at = false, 0
-		prune(cache, visited[:])
-		return res
+		return res, true
 	}
 
 	best: Release
 	have_best := false
-	url := strings.clone(LIST_URL)
+	url: string = LIST_URL
 	for page_no := 1;; page_no += 1 {
 		if page_no > MAX_PAGES {
-			return incomplete(res, "more than 100 pages of releases; refusing to pick from a partial list")
+			return incomplete(res, "more than 100 pages of releases; refusing to pick from a partial list"), false
 		}
-		for seen in visited {
-			if seen == url do return incomplete(res, "release pages link back to an earlier page")
+		for seen in visited^ {
+			if seen == url do return incomplete(res, "release pages link back to an earlier page"), false
 		}
 		// Stop before a request that GitHub has already told us will be refused.
-		if res.rate_limited do return incomplete_rate_limited(res, res.retry_at, "GitHub rate limit reached while paging releases")
-		append(&visited, url)
+		if res.rate_limited do return incomplete_rate_limited(res, res.retry_at, "GitHub rate limit reached while paging releases"), false
+		append(visited, url)
 		page, perr, rl_at := fetch_page(url, false, target, cache, get, user, now, &res)
-		if rl_at != 0 do return incomplete_rate_limited(res, rl_at, perr)
-		if perr != "" do return incomplete(res, strings.concatenate({"release page ", itoa(page_no), ": ", perr}))
+		if rl_at != 0 do return incomplete_rate_limited(res, rl_at, perr), false
+		if perr != "" do return incomplete(res, strings.concatenate({"release page ", itoa(page_no), ": ", perr})), false
 		for r in page.releases {
 			if !r.prerelease || !release_usable(r) do continue
 			if !have_best || semver_compare_strings(r.version, best.version) > 0 {
@@ -204,12 +261,11 @@ resolve :: proc(
 		}
 		if page.next == "" do break
 		if !next_url_allowed(page.next) {
-			return incomplete(res, "release list links to a page outside api.github.com")
+			return incomplete(res, "release list links to a page outside api.github.com"), false
 		}
 		url = page.next
 	}
 
-	prune(cache, visited[:])
 	switch {
 	case stable_ok && (!have_best || semver_compare_strings(stable.version, best.version) >= 0):
 		res.status, res.candidate, res.from_stable = .Candidate, stable, true
@@ -220,7 +276,7 @@ resolve :: proc(
 		res.detail = strings.concatenate({"no release carries a ", target, " bundle and a signed manifest"})
 	}
 	res.rate_limited, res.retry_at = false, 0
-	return res
+	return res, true
 }
 
 @(private)
@@ -306,17 +362,19 @@ fetch_page :: proc(
 	case:
 		return {}, strings.concatenate({"HTTP ", itoa(resp.status)}), 0
 	}
-	releases, perr := parse_releases(resp.body, single, target)
+	ca := cache.allocator
+	releases, perr := parse_releases(resp.body, single, target, ca)
 	if perr != "" do return {}, perr, 0
 	page = Cached_Page {
-		url           = strings.clone(url),
-		etag          = strings.clone(resp.etag),
-		last_modified = strings.clone(resp.last_modified),
-		next          = "" if single else link_next(resp.link),
+		url           = strings.clone(url, ca),
+		etag          = strings.clone(resp.etag, ca),
+		last_modified = strings.clone(resp.last_modified, ca),
+		next          = "" if single else link_next(resp.link, ca),
 		single        = single,
 		releases      = releases,
 	}
 	if cached_idx >= 0 {
+		page_destroy(&cache.pages[cached_idx], ca)
 		cache.pages[cached_idx] = page
 	} else {
 		append(&cache.pages, page)
@@ -342,7 +400,7 @@ rate_limit_at :: proc(resp: Response, now: i64) -> (at: i64, limited: bool) {
 // parse_releases reduces a GitHub releases document: a list, or with single
 // the object of /releases/latest. Anything else is an error.
 @(private)
-parse_releases :: proc(body: string, single: bool, target: string) -> (out: []Release, err: string) {
+parse_releases :: proc(body: string, single: bool, target: string, allocator: mem.Allocator) -> (out: []Release, err: string) {
 	value, perr := json.parse_string(body, parse_integers = true, allocator = context.temp_allocator)
 	if perr != .None do return nil, "GitHub returned a body that is not JSON"
 	items := make([dynamic]json.Object, context.temp_allocator)
@@ -359,14 +417,14 @@ parse_releases :: proc(body: string, single: bool, target: string) -> (out: []Re
 			append(&items, obj)
 		}
 	}
-	list := make([]Release, len(items))
+	list := make([]Release, len(items), allocator)
 	for obj, i in items {
 		r := &list[i]
 		tag, _ := obj["tag_name"].(json.String)
-		r.tag = strings.clone(tag)
+		r.tag = strings.clone(tag, allocator)
 		r.draft, _ = obj["draft"].(json.Boolean)
 		r.prerelease, _ = obj["prerelease"].(json.Boolean)
-		if _, ok := semver_parse_tag(tag); ok do r.version = r.tag[1:]
+		if _, ok := semver_parse_tag(tag); ok do r.version = strings.clone(tag[1:], allocator)
 		if r.version == "" do continue
 		want_bundle := bundle_asset_name(target, tag, context.temp_allocator)
 		assets, _ := obj["assets"].(json.Array)
@@ -377,14 +435,16 @@ parse_releases :: proc(body: string, single: bool, target: string) -> (out: []Re
 			size, _ := ao["size"].(json.Integer)
 			// The asset must be served from this release's download path.
 			if dl != strings.concatenate({DOWNLOAD_PREFIX, tag, "/", name}, context.temp_allocator) do continue
-			asset := Asset{name = strings.clone(name), size = size, url = strings.clone(dl)}
+			if name != want_bundle && name != MANIFEST_ASSET && name != SIGNATURE_ASSET do continue
+			asset := Asset{name = strings.clone(name, allocator), size = size, url = strings.clone(dl, allocator)}
+			slot := &r.signature
 			if name == want_bundle {
-				r.bundle = asset
+				slot = &r.bundle
 			} else if name == MANIFEST_ASSET {
-				r.manifest = asset
-			} else if name == SIGNATURE_ASSET {
-				r.signature = asset
+				slot = &r.manifest
 			}
+			asset_destroy(slot, allocator) // a duplicate asset name replaces the earlier one
+			slot^ = asset
 		}
 	}
 	return list, ""
@@ -432,6 +492,9 @@ prune :: proc(cache: ^Cache, visited: []string) {
 		if keep {
 			cache.pages[kept] = p
 			kept += 1
+		} else {
+			pp := p
+			page_destroy(&pp, cache.allocator)
 		}
 	}
 	resize(&cache.pages, kept)
@@ -462,13 +525,92 @@ itoa :: proc(n: int, allocator := context.allocator) -> string {
 // bytes with its atomic file replace (§4.3 rules); an unreadable file is
 // replaced by an empty cache (the only cost is unconditional requests).
 cache_marshal :: proc(cache: Cache, allocator := context.allocator) -> (data: []byte, ok: bool) {
-	out, err := json.marshal(cache, {pretty = true}, allocator)
+	out, err := json.marshal(cache.wire, {pretty = true}, allocator)
 	return out, err == nil
 }
 
+// cache_unmarshal returns a Cache owned by allocator. A failed parse leaves
+// nothing allocated (it parses into temp and deep-copies on success).
 cache_unmarshal :: proc(data: []byte, allocator := context.allocator) -> (cache: Cache, ok: bool) {
-	if json.unmarshal(data, &cache, allocator = allocator) != nil || cache.schema != CACHE_SCHEMA {
-		return Cache{}, false
+	wire: Cache_Wire
+	if json.unmarshal(data, &wire, allocator = context.temp_allocator) != nil || wire.schema != CACHE_SCHEMA {
+		return cache_make(allocator), false
 	}
+	cache = cache_make(allocator)
+	cache.wire.schema = wire.schema
+	cache.target = strings.clone(wire.target, allocator)
+	cache.next_check_at, cache.backoff_s, cache.rate_limit_reset_at = wire.next_check_at, wire.backoff_s, wire.rate_limit_reset_at
+	for p in wire.pages do append(&cache.pages, page_clone(p, allocator))
 	return cache, true
+}
+
+// cache_make returns an empty Cache whose memory comes from allocator.
+cache_make :: proc(allocator := context.allocator) -> Cache {
+	return Cache{allocator = allocator, wire = {pages = make([dynamic]Cached_Page, allocator)}}
+}
+
+// cache_destroy frees everything the cache owns.
+cache_destroy :: proc(cache: ^Cache) {
+	cache_clear_pages(cache)
+	delete(cache.pages)
+	delete(cache.target, cache.allocator)
+	cache^ = {}
+}
+
+@(private)
+cache_clear_pages :: proc(cache: ^Cache) {
+	for &p in cache.pages do page_destroy(&p, cache.allocator)
+	clear(&cache.pages)
+}
+
+page_clone :: proc(p: Cached_Page, allocator := context.allocator) -> Cached_Page {
+	out := p
+	out.url = strings.clone(p.url, allocator)
+	out.etag = strings.clone(p.etag, allocator)
+	out.last_modified = strings.clone(p.last_modified, allocator)
+	out.next = strings.clone(p.next, allocator)
+	out.releases = make([]Release, len(p.releases), allocator)
+	for r, i in p.releases do out.releases[i] = release_clone(r, allocator)
+	return out
+}
+
+page_destroy :: proc(p: ^Cached_Page, allocator := context.allocator) {
+	delete(p.url, allocator)
+	delete(p.etag, allocator)
+	delete(p.last_modified, allocator)
+	delete(p.next, allocator)
+	for &r in p.releases do release_destroy(&r, allocator)
+	delete(p.releases, allocator)
+	p^ = {}
+}
+
+release_clone :: proc(r: Release, allocator := context.allocator) -> Release {
+	out := r
+	out.tag = strings.clone(r.tag, allocator)
+	out.version = strings.clone(r.version, allocator)
+	out.bundle = asset_clone(r.bundle, allocator)
+	out.manifest = asset_clone(r.manifest, allocator)
+	out.signature = asset_clone(r.signature, allocator)
+	return out
+}
+
+release_destroy :: proc(r: ^Release, allocator := context.allocator) {
+	delete(r.tag, allocator)
+	delete(r.version, allocator)
+	asset_destroy(&r.bundle, allocator)
+	asset_destroy(&r.manifest, allocator)
+	asset_destroy(&r.signature, allocator)
+	r^ = {}
+}
+
+@(private)
+asset_clone :: proc(a: Asset, allocator: mem.Allocator) -> Asset {
+	return Asset{name = strings.clone(a.name, allocator), size = a.size, url = strings.clone(a.url, allocator)}
+}
+
+@(private)
+asset_destroy :: proc(a: ^Asset, allocator: mem.Allocator) {
+	delete(a.name, allocator)
+	delete(a.url, allocator)
+	a^ = {}
 }

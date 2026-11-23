@@ -1,5 +1,6 @@
 package resolver
 
+import "core:mem"
 import "core:strconv"
 import "core:strings"
 import "core:testing"
@@ -155,7 +156,7 @@ fake_small :: proc(f: ^Fake, rels: ..Fake_Rel) {
 }
 
 new_cache :: proc() -> Cache {
-	return Cache{pages = make([dynamic]Cached_Page, context.temp_allocator)}
+	return cache_make(context.temp_allocator)
 }
 
 // ---------------------------------------------------------------------------
@@ -606,4 +607,101 @@ test_cadence :: proc(t: ^testing.T) {
 	schedule_start(&c, NOW + 60, 0)
 	testing.expect_value(t, c.next_check_at, NOW + 3 * HOUR)
 	testing.expect(t, check_due(c, NOW + 3 * HOUR))
+}
+
+// ---------------------------------------------------------------------------
+// Memory ownership: a long-lived cache on the tracking allocator
+
+@(test)
+test_cache_and_results_own_their_memory :: proc(t: ^testing.T) {
+	// The runner's own tracker only logs leaks, so use one we can assert on:
+	// anything the cache or a result leaks, or frees twice, fails the test.
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	context.allocator = mem.tracking_allocator(&track)
+	f: Fake
+	fake_many(&f)
+	f.etag_pages = true
+	c := cache_make()
+	results := make([dynamic]Result)
+
+	// fresh 200s
+	append(&results, resolve(.Fast, TARGET, &c, fake_get, &f, NOW))
+	testing.expect_value(t, results[0].candidate.tag, "v0.7.0-rc.150")
+	// all 304: pages reused, result still independent
+	n0 := len(f.requests)
+	append(&results, resolve(.Fast, TARGET, &c, fake_get, &f, NOW + 1))
+	for r in f.requests[n0:] do testing.expect(t, r.if_none_match != "")
+	// page 1 changed: the old cached page is replaced (and freed)
+	inject_at(&f.rels, 0, Fake_Rel{tag = "v0.8.0-rc.1", prerelease = true})
+	append(&results, resolve(.Fast, TARGET, &c, fake_get, &f, NOW + 2))
+	testing.expect_value(t, results[2].candidate.tag, "v0.8.0-rc.1")
+	// incomplete and rate-limited results carry allocated details
+	f.overrides[LIST_URL] = Response{status = 500}
+	append(&results, resolve(.Fast, TARGET, &c, fake_get, &f, NOW + 3))
+	testing.expect_value(t, results[3].status, Status.Incomplete)
+	delete_key(&f.overrides, LIST_URL)
+	// target switch clears every page and the old target
+	append(&results, resolve(.Fast, "darwin-arm64", &c, fake_get, &f, NOW + 4))
+	append(&results, resolve(.Fast, TARGET, &c, fake_get, &f, NOW + 5))
+	// stable prunes the list pages
+	append(&results, resolve(.Stable, TARGET, &c, fake_get, &f, NOW + 6))
+	testing.expect_value(t, len(c.pages), 1)
+
+	// resolver.json round trip on the tracking allocator
+	data, ok := cache_marshal(c)
+	testing.expect(t, ok)
+	c2, ok2 := cache_unmarshal(data)
+	testing.expect(t, ok2)
+	delete(data)
+	testing.expect_value(t, c2.pages[0].releases[0].tag, "v0.5.80")
+	cache_destroy(&c2)
+	bad, bad_ok := cache_unmarshal(transmute([]byte)string(`{"schema":1,"pages":[{"url":`))
+	testing.expect(t, !bad_ok)
+	cache_destroy(&bad)
+
+	// Results never alias the cache: destroy the cache, then read them. (The
+	// fake lives in temp, so temp is not freed here.)
+	cache_destroy(&c)
+	testing.expect_value(t, results[0].candidate.manifest.url, DOWNLOAD_PREFIX + "v0.7.0-rc.150/" + MANIFEST_ASSET)
+	testing.expect_value(t, results[5].candidate.tag, "v0.8.0-rc.1")
+	testing.expect_value(t, results[6].candidate.tag, "v0.5.80")
+	testing.expect(t, strings.contains(results[3].detail, "HTTP 500"), results[3].detail)
+	for &r in results do result_destroy(&r)
+	delete(results)
+	results = nil
+	testing.expect_value(t, len(track.allocation_map), 0)
+	testing.expect_value(t, len(track.bad_free_array), 0)
+}
+
+@(test)
+test_repeated_checks_hold_memory_flat :: proc(t: ^testing.T) {
+	// The engine's pattern: one cache for the supervisor's life, a result per
+	// tick, free_all(temp) after each. Live bytes must not grow with ticks.
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	defer mem.tracking_allocator_destroy(&track)
+	alloc := mem.tracking_allocator(&track)
+	f: Fake
+	fake_many(&f)
+	f.etag_pages = true
+	c := cache_make(alloc)
+	live_after: [dynamic]i64
+	live_after.allocator = context.temp_allocator
+	for tick in 0 ..< 12 {
+		if tick % 4 == 3 do inject_at(&f.rels, 0, Fake_Rel{tag = strings.concatenate({"v0.9.0-rc.", titoa(tick)}, context.temp_allocator), prerelease = true})
+		res := resolve(.Fast if tick % 3 != 2 else .Stable, TARGET, &c, fake_get, &f, NOW + i64(tick), alloc)
+		testing.expect(t, res.status == .Candidate)
+		result_destroy(&res, alloc)
+		append(&live_after, track.current_memory_allocated)
+		clear(&f.requests)
+	}
+	// Live memory is the cache only: after a later tick with the same page set
+	// shape it is no larger than earlier (allowing a few grown strings).
+	testing.expectf(t, live_after[11] <= live_after[4] + 4096, "live memory grew: %v", live_after[:])
+	cache_destroy(&c)
+	testing.expect_value(t, len(track.bad_free_array), 0)
+	testing.expect_value(t, track.current_memory_allocated, i64(0))
+	testing.expect_value(t, len(track.allocation_map), 0)
 }
