@@ -161,23 +161,27 @@ accepted by `install.ps1` because unknown arguments pass through to `ham-bridge`
 
 ### 5.1 Resolving `latest`
 
-`latest` = the **highest SemVer** release that is promoted (not draft, not prerelease)
-**and** carries both `SHA256SUMS` and this target's bundle
-(`heimdall-local-<target>-<tag>.tar.gz` / `.zip`). The scripts page
-`GET /repos/tanmayv/heimdall-agent-manager/releases?per_page=100` **to exhaustion**
-(follow `Link: rel="next"`), as T7 does for the other readers. This keeps today's
-per-target asset check (`install.sh:40-86`, `install.ps1:68-77`) and removes the
-first-30 limit (report F9).
+The installer resolves only **stable** (`latest`, the default) or an explicit
+`--version TAG`. It has no channel option; the fast channel is the supervisor's
+business (design report §6.4, T11).
 
-`GET /releases/latest` is **not** used: GitHub returns the release flagged `make_latest`
-(by default the most recently created non-prerelease), which after a promoted backport
-can be lower than the highest SemVer and is not checked for this target's bundle.
-Consistent with Q2 (newest = highest SemVer).
+`latest` = the release returned by
+`GET /repos/tanmayv/heimdall-agent-manager/releases/latest`, exactly as design report §6.4
+defines stable ("the most recent non-prerelease, non-draft release"; what is stable is
+chosen by promoting with `.github/workflows/promote-release.yml`). It is **never inferred
+from a list page**, which also removes the first-30 limit (report F9,
+`install.sh:148`, `install.ps1:70`).
 
-If any page fails (network, rate limit, non-list body) the result is incomplete: the
-script stops with exit 3 and `[ERROR] Cannot list all releases from GitHub (<reason>); pass
---version TAG.` It never picks from a partial list. If no release qualifies: exit 3,
-`[ERROR] No promoted release has a <target> bundle. Pass --version TAG.`
+The per-target check stays (today `install.sh:40-86`, `install.ps1:72-75`): the
+resolved release must carry both `SHA256SUMS` and this target's bundle
+(`heimdall-local-<target>-<tag>.tar.gz` / `.zip`). If it does not, the script stops with
+exit 3 and
+`[ERROR] Stable release <tag> has no <SHA256SUMS|bundle> for <target>; pass --version TAG.`
+It **never falls back** silently to an older release.
+
+If the request fails (network, rate limit, 404 because nothing is promoted, a body
+without `tag_name`): exit 3,
+`[ERROR] Cannot resolve the stable release from GitHub (<reason>); pass --version TAG.`
 
 † New: `--allow-downgrade` is added to `ham-bridge setup` (T2); the marked PowerShell
 parameters are added to `install.ps1` (T3). Until then the `--flag` form passes through.
