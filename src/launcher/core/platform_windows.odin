@@ -218,26 +218,39 @@ session_window_thread :: proc(title: string) {
 
 owner_matches :: proc(owner: Owner) -> bool {
 	if owner.sid == "" do return false
-	sid, ok := current_user_sid()
+	sid, ok, step := current_user_sid()
+	if !ok do log("cannot read the current user SID: %s", step)
 	return ok && strings.equal_fold(sid, owner.sid)
 }
 
-current_user_sid :: proc() -> (sid: string, ok: bool) {
+// current_user_sid returns the token user's SID as "S-1-…", formatted from the binary
+// SID (revision, 48-bit big-endian authority, little-endian sub-authorities) so it
+// depends on nothing beyond OpenProcessToken and GetTokenInformation. On failure
+// `step` names the call that failed (diagnostics).
+current_user_sid :: proc() -> (sid: string, ok: bool, step: string) {
 	token: win.HANDLE
-	if !win.OpenProcessToken(win.GetCurrentProcess(), win.TOKEN_QUERY, &token) do return
+	if !win.OpenProcessToken(win.GetCurrentProcess(), win.TOKEN_QUERY, &token) do return "", false, fmt.tprintf("OpenProcessToken %d", win.GetLastError())
 	defer win.CloseHandle(token)
 	size: win.DWORD
 	win.GetTokenInformation(token, .TokenUser, nil, 0, &size)
-	if size == 0 do return
+	if size == 0 || size > 4096 do return "", false, fmt.tprintf("GetTokenInformation(size) %d size %d", win.GetLastError(), size)
 	buf := make([]byte, int(size), context.temp_allocator)
-	if !win.GetTokenInformation(token, .TokenUser, raw_data(buf), size, &size) do return
-	user := (^win.TOKEN_USER)(raw_data(buf))
-	text: win.wstring
-	if !win.ConvertSidToStringSidW((^win.SID)(user.User.Sid), &text) do return
-	defer win.LocalFree(rawptr(text))
-	s, err := win.wstring_to_utf8(text, -1, context.temp_allocator)
-	if err != nil do return
-	return s, true
+	if !win.GetTokenInformation(token, .TokenUser, raw_data(buf), size, &size) do return "", false, fmt.tprintf("GetTokenInformation %d", win.GetLastError())
+	// TOKEN_USER begins with SID_AND_ATTRIBUTES whose first member is the SID pointer.
+	raw := (^[^]byte)(raw_data(buf))^
+	if raw == nil do return "", false, "null SID"
+	count := int(raw[1])
+	if raw[0] != 1 || count > 15 do return "", false, fmt.tprintf("bad SID revision %d count %d", raw[0], count)
+	authority: u64
+	for i in 0 ..< 6 do authority = authority << 8 | u64(raw[2 + i])
+	b := strings.builder_make(context.temp_allocator)
+	fmt.sbprintf(&b, "S-1-%d", authority)
+	for i in 0 ..< count {
+		o := 8 + 4 * i
+		v := u32(raw[o]) | u32(raw[o + 1]) << 8 | u32(raw[o + 2]) << 16 | u32(raw[o + 3]) << 24
+		fmt.sbprintf(&b, "-%d", v)
+	}
+	return strings.to_string(b), true, ""
 }
 
 // read_file_shared opens with full sharing and retries sharing violations / access

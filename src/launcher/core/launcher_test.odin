@@ -205,7 +205,7 @@ write_instance :: proc(t: ^testing.T, f: ^Fixture, owner: string) {
 
 owner_json :: proc() -> string {
 	when ODIN_OS == .Windows {
-		sid, _ := current_user_sid()
+		sid, _, _ := current_user_sid()
 		return fmt.tprintf(`{{"sid":"%s"}}`, sid)
 	} else {
 		return fmt.tprintf(`{{"uid":%d}}`, test_current_uid())
@@ -317,6 +317,10 @@ test_instance_record_check :: proc(t: ^testing.T) {
 	f := fixture_new(t, "instance-check")
 	defer dump_on_failure(t, &f)
 	testing.expect(t, same_path(f.data, f.data))
+	when ODIN_OS == .Windows {
+		sid, sid_ok, step := current_user_sid()
+		testing.expectf(t, sid_ok && strings.has_prefix(sid, "S-1-5-"), "current_user_sid: %q ok=%v step=%q", sid, sid_ok, step)
+	}
 	testing.expectf(t, same_path(cat(f.data, "/"), f.data), "trailing separator: %q vs %q", normalize_path(cat(f.data, "/")), normalize_path(f.data))
 	rec, reason := read_instance_record(f.data, context.temp_allocator)
 	testing.expectf(t, reason == "", "read_instance_record: %s", reason)
