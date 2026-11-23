@@ -80,8 +80,8 @@ Unless a row says otherwise: **no TTY needed** (stdin is `/dev/null` under `inst
 | S7 | **Partial / interrupted install**: leftover `.staging`; `bin/` missing (with or without `bin.bak*`); lock held by a dead pid; service registered but `bin/ham-bridge` missing. | Break a dead owner's lock (Stale_Lock), discard staging (Partial_Install, `setup.odin:79-98`), install `bin/` from the downloaded bundle (a `bin.bak*` is **not** trusted as the source), then continue as S1/S3/S6 for the remaining steps. Credential and data are kept. | 0 / 1 / 4 | `Recovered an interrupted install of <service>: <what was fixed>; …` then the S1/S3 line. |
 | S7a | **Busy**: lock held by a **live** setup/update process. | Nothing. | 6 | `[ERROR] Another setup or update of <service> is running (pid <pid>); try again when it finishes.` |
 | S8a | **Version skew, no `--version` and no `--bundle`**: S2 with installed ≠ the release the script downloaded (newer **or** older). | Treated as S2: **nothing changes**. Updates belong to the update path (today `ham-bridge update` / auto-update; after Phase 2 the supervisor). | 0 | S2 line, plus `(installed v<x>; this installer carried v<y>; updates are not done by the installer)`. |
-| S8b | **`--version X` (or `--bundle` of version X) newer than installed** (any S2–S7 state). | Pre-Phase 2 only: replace `bin/` with X through the existing transaction (today's behaviour; it is the documented `ham-bridge update --version` equivalent). Repairs from S3–S7 are done in the same run. | 0 / 1 | `Updated <service> v<old> → v<X>; connected.` |
-| S8c | **`--version X` (or `--bundle` of version X) older than installed.** | Refuse unless `--allow-downgrade` is also passed (`REQ-CHAN-1`: no silent downgrade; headless cannot confirm). With it: as S8b. | 5 | `[ERROR] <service> runs v<old>, newer than requested v<X>; pass --allow-downgrade to downgrade.` |
+| S8b | **Version change**: the script was given `--version X` or `--bundle` (of version X), so setup gets no `--keep-version`, and installed ≠ X (any S2–S7 state). Newer **or older**, unless S8c applies. | Pre-Phase 2 only: replace `bin/` with X through the existing transaction (today's behaviour; it is the documented `ham-bridge update --version` equivalent). Repairs from S3–S7 are done in the same run. | 0 / 1 | `Updated <service> v<old> → v<X>; connected.` |
+| S8c | **`ham-bridge setup` itself receives `--version X` and X is older than installed.** | Refuse unless `--allow-downgrade` is also passed (`REQ-CHAN-1`: no silent downgrade; headless cannot confirm). With it: as S8b. **Known gap (pre-Phase 2):** `install.sh`/`install.ps1` do not forward `--version` to setup (`install.sh:228-231`, `install.ps1:203-214`) and a `--bundle` alone carries no requested version, so through the scripts an older release or bundle is installed as S8b, silently, as today's always-copy setup does. Only a direct `ham-bridge setup --version X` reaches this row. | 5 | `[ERROR] <service> runs v<old>, newer than requested v<X>; pass --allow-downgrade to downgrade.` |
 | S9 | **Rollback incomplete** (any row whose transaction failed and could not restore, `setup_cmd.odin:315-320`). | Stop; nothing further. | 7 | `ham-bridge setup FAILED at step "<step>"; rollback incomplete: <reason>.` |
 
 ### 3.1 "Hub changed" (T0 re-enroll trigger)
@@ -148,7 +148,7 @@ accepted by `install.ps1` because unknown arguments pass through to `ham-bridge`
 | `--hub URL` (alias `--hub-url`) | `-Hub` (alias `-HubUrl`) | `HEIMDALL_HUB` | Hub API origin. **Required.** |
 | `--profile NAME` (alias `--name`) | `-Name` (alias `-Profile`) | `HEIMDALL_BRIDGE_NAME` | Profile name, `[a-z0-9][a-z0-9-]{0,30}`; default profile when empty. |
 | `--version TAG\|latest` | `-Version` | `HEIMDALL_VERSION` | Release to bootstrap from. Default `latest` (resolution: §5.1). On an existing instance: §3 S8, §7. |
-| `--allow-downgrade` † | `-AllowDowngrade` † | — | Permit S8c. Deliberately no env var: a downgrade must be visible in the command. |
+| `--allow-downgrade` † | `-AllowDowngrade` † | — | Permit S8c (passed through to setup; through the scripts S8c is not reached today, see the S8c known gap). Deliberately no env var: a downgrade must be visible in the command. |
 | `--bundle FILE --checksum-file FILE` | `-Bundle -ChecksumFile` | — | Use an already-downloaded bundle (desktop apps, air-gapped); verified first. An installed bridge is moved to the bundle's version (no `--keep-version`, §7). |
 | `--new-bridge` | `-NewBridge` | — | Enroll as a new bridge. |
 | `--reuse-bridge ID` | `-ReuseBridge` | — | Enroll reusing bridge `ID`. |
@@ -251,8 +251,8 @@ second update path.
   | Given | `--keep-version` | Effect on a healthy instance |
   |---|---|---|
   | nothing, or `--version latest` / `HEIMDALL_VERSION=latest` | passed | version **never** changed (S2, S8a) |
-  | `--version X` / `HEIMDALL_VERSION=X` | omitted | moved to X (S8b; S8c needs `--allow-downgrade`) |
-  | `--bundle FILE` (with or without a release) | omitted | moved to the bundle's version (S8b/S8c) |
+  | `--version X` / `HEIMDALL_VERSION=X` | omitted | moved to X, newer or older (S8b; S8c known gap) |
+  | `--bundle FILE` (with or without a release) | omitted | moved to the bundle's version, newer or older (S8b) |
 
   So a plain `curl | bash` / `irm | iex` re-run never changes a healthy bridge's version,
   while an explicit bundle means "install this bundle": the macOS `.pkg` postinstall
@@ -261,7 +261,8 @@ second update path.
 - Repairs (S3, S4, S6, S7) keep the installed binaries unless `bin/` itself is missing or
   partial, or the run is one of the "moved to" rows above.
 - With `--version X` the script behaves as `ham-bridge update --version X` does today:
-  the same setup transaction replaces `bin/` (S8b; S8c needs `--allow-downgrade`). This is
+  the same setup transaction replaces `bin/` (S8b; an older X is not refused through the
+  scripts, see the S8c known gap). This is
   today's path P5 (report §2.2), kept working until Phase 4 deletes it.
 
 **After Phase 2 (instance has a launcher, a supervisor and an ownership record):**
