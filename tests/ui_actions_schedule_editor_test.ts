@@ -63,7 +63,13 @@ test('new triggers retain their blackout input after removing an earlier trigger
     assert.deepEqual(wire[0].config.blackout_dates, ['2026-12-31']);
     assert.equal('clientKey' in wire[0], false);
     await click(fields[0].querySelector('[role="combobox"][aria-label="Schedule mode"]'));
+    await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === 'interval')!);
+    await type(doc.querySelector('input[aria-label="Interval seconds"]')!, '120');
+    assert.equal(current[0].config.interval_s, 120);
+    await click(fields[0].querySelector('[role="combobox"][aria-label="Schedule mode"]'));
     await click(Array.from(doc.querySelectorAll('[role="option"]')).find(node => node.textContent === 'once')!);
+    assert.equal(current[0].config.mode, 'once');
+    assert.equal('interval_s' in current[0].config, false);
     assert.equal(current[0].config.run_at, '');
     const once = doc.querySelector('input[aria-label="Once at"]') as HTMLInputElement;
     assert.equal(once.value, '');

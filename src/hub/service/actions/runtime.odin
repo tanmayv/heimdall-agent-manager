@@ -3,6 +3,7 @@ package actions
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem/virtual"
 import "core:strings"
 import "core:sync"
@@ -42,10 +43,26 @@ stop :: proc(r:^Runtime) {
  delete(r.options.nats_url); delete(r.options.creds_file); delete(r.options.ca_file); r.options={}
 }
 matcher_consumer_config :: proc(max_deliver:int)->nats.Consumer_Config {
+ // The inbox service applies this default at use time; its stored option can
+ // still be zero when wiring passes it to us. The NATS wrapper rejects zero.
+ attempts:=max_deliver
+ if attempts<=0 do attempts=10
  filters:=make([]string,1,context.temp_allocator)
  filters[0]="ev.>"
  return {stream="HEIM_EVENTS",durable="hub_action_matcher",filter_subjects=filters,
-  deliver_new=true,ack_wait_ns=i64(time.Minute),max_deliver=i64(max_deliver)}
+  deliver_new=true,ack_wait_ns=i64(time.Minute),max_deliver=i64(attempts)}
+}
+Setup_Log_Gate :: struct {logged:bool,last_ns:i64}
+setup_log_due :: proc(gate:^Setup_Log_Gate,now_ns:i64)->bool {
+ if gate.logged && now_ns-gate.last_ns<i64(30*time.Second) do return false
+ gate.logged=true;gate.last_ns=now_ns
+ return true
+}
+runtime_setup_error :: proc(gate:^Setup_Log_Gate,stage:string,err:nats.Error) {
+ if setup_log_due(gate,time.tick_now()._nsec) {
+  // Never log connection URLs or credential paths.
+  fmt.eprintf("actions: matcher setup failed at %s (status=%d, jetstream=%d, %s); retrying\n",stage,err.status,err.jetstream,nats.error_text(err))
+ }
 }
 runtime_entry :: proc(data:rawptr) {
  r:=(^Runtime)(data)
@@ -58,21 +75,28 @@ runtime_entry :: proc(data:rawptr) {
  pull:^nats.Pull
  defer {nats.pull_destroy(pull); nats.destroy(conn)}
  pending:=false
+ setup_log:Setup_Log_Gate
  was_unsupported:=false
  for sync.atomic_load(&r.stop_flag)==0 {
   if conn==nil {
    c,err:=nats.connect({url=r.options.nats_url,creds_file=r.options.creds_file,ca_file=r.options.ca_file,timeout_ms=1000})
-   if err.status!=0 {runtime_wait(r); free_all(context.allocator); continue}
+   if err.status!=0 {runtime_setup_error(&setup_log,"connect",err);runtime_wait(r); free_all(context.allocator); continue}
    conn=c
   }
   if pull==nil {
    _,err:=nats.stream_info(conn,"HEIM_EVENTS")
    if err.status!=0 {
+    runtime_setup_error(&setup_log,"stream_info HEIM_EVENTS",err)
     nats.destroy(conn); conn=nil; runtime_wait(r); free_all(context.allocator); continue
    }
+   stage:="consumer_add hub_action_matcher"
    err=nats.consumer_add(conn,matcher_consumer_config(r.options.max_deliver))
-   if err.status==0 do pull,err=nats.pull_bind(conn,"HEIM_EVENTS","hub_action_matcher")
+   if err.status==0 {
+    stage="pull_bind hub_action_matcher"
+    pull,err=nats.pull_bind(conn,"HEIM_EVENTS","hub_action_matcher")
+   }
    if err.status!=0 {
+    runtime_setup_error(&setup_log,stage,err)
     nats.pull_destroy(pull); pull=nil; nats.destroy(conn); conn=nil
     runtime_wait(r); free_all(context.allocator); continue
    }
