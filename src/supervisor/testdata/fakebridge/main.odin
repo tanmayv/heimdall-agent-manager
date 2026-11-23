@@ -10,7 +10,7 @@
 //                        test drops a file there for a "live PTY session").
 //
 // bin/behaviour.txt next to the exe: "good" (default) or "crash" (exits 3 s after start,
-// before probation can pass). Every start appends "<pid> <tree> <behaviour> <parent pid>" to
+// before probation can pass). Every start appends "<pid> <tree> <behaviour> <parent pid> <start_time>" to
 // <data>/fake-starts.log (the parent is the supervisor).
 package fakebridge
 
@@ -20,6 +20,7 @@ import "core:net"
 import "core:os"
 import "core:strings"
 import "core:time"
+import "../../procs"
 
 next_to_exe :: proc(name: string) -> string {
 	exe, _ := os.get_executable_path(context.temp_allocator)
@@ -60,7 +61,8 @@ main :: proc() {
 	exe, _ := os.get_executable_path(context.temp_allocator)
 	tree := os.base(os.dir(os.dir(exe)))
 	if f, err := os.open(join(data_dir, "fake-starts.log"), {.Write, .Create, .Append}, os.Permissions_Default_File); err == nil {
-		fmt.fprintfln(f, "%d %s %s %d", os.get_pid(), tree, behaviour, os.get_ppid())
+		me, _ := procs.self()
+		fmt.fprintfln(f, "%d %s %s %d %d", os.get_pid(), tree, behaviour, os.get_ppid(), me.start_time)
 		os.close(f)
 	}
 

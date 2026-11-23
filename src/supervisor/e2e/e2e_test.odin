@@ -128,6 +128,7 @@ wait_for :: proc(e: ^Env, what: string, timeout: time.Duration, cond: proc(e: ^E
 	}
 	testing.expectf(e.t, false, "timed out waiting for %s (logs in %s)", what, e.base)
 	dump_journal(e)
+	dump_logs(e)
 	return false
 }
 
@@ -166,34 +167,48 @@ timer_noops :: proc(e: ^Env) -> int {
 	return n
 }
 
-// runtime_pids: every fakebridge started so far (from <data>/fake-starts.log).
-runtime_pids :: proc(e: ^Env) -> []int {
+// runtimes: every fakebridge started so far, with its identity (from <data>/fake-starts.log:
+// "<pid> <tree> <behaviour> <parent pid> <start_time>"). Liveness is checked by identity:
+// Windows reuses pids quickly.
+Runtime :: struct {
+	id:     procs.Id,
+	parent: int,
+}
+
+runtimes :: proc(e: ^Env) -> []Runtime {
 	data, _ := os.read_entire_file(pj(e.data, "fake-starts.log"), context.temp_allocator)
-	out := make([dynamic]int, context.temp_allocator)
+	out := make([dynamic]Runtime, context.temp_allocator)
 	for line in strings.split_lines(string(data), context.temp_allocator) {
 		f := strings.fields(line, context.temp_allocator)
-		if len(f) == 0 do continue
-		if pid, ok := strconv.parse_int(f[0]); ok do append(&out, pid)
+		if len(f) < 5 do continue
+		r: Runtime
+		r.id.pid, _ = strconv.parse_int(f[0])
+		r.parent, _ = strconv.parse_int(f[3])
+		st, _ := strconv.parse_u64(f[4])
+		r.id.start_time = st
+		append(&out, r)
 	}
 	return out[:]
 }
 
-// last_runtime: pid of the latest runtime start and of its parent (the supervisor).
-last_runtime :: proc(e: ^Env) -> (pid, parent: int) {
-	data, _ := os.read_entire_file(pj(e.data, "fake-starts.log"), context.temp_allocator)
-	for line in strings.split_lines(string(data), context.temp_allocator) {
-		f := strings.fields(line, context.temp_allocator)
-		if len(f) < 4 do continue
-		pid, _ = strconv.parse_int(f[0])
-		parent, _ = strconv.parse_int(f[3])
-	}
-	return
+last_runtime :: proc(e: ^Env) -> Runtime {
+	rs := runtimes(e)
+	return rs[len(rs) - 1] if len(rs) > 0 else {}
 }
 
 live_runtimes :: proc(e: ^Env) -> int {
 	n := 0
-	for pid in runtime_pids(e) do if _, ok := procs.identify(pid); ok do n += 1
+	for r in runtimes(e) do if procs.alive(r.id) do n += 1
 	return n
+}
+
+dump_logs :: proc(e: ^Env) {
+	for i in 1 ..= e.launches {
+		data, err := os.read_entire_file(pj(e.base, fmt.tprintf("launcher-%d.log", i)), context.temp_allocator)
+		if err == nil do log.infof("launcher-%d.log:\n%s", i, string(data))
+	}
+	data, _ := os.read_entire_file(pj(e.data, "fake-starts.log"), context.temp_allocator)
+	log.infof("fake-starts.log:\n%s", string(data))
 }
 
 send_intent :: proc(e: ^Env, op_id, action: string) {
@@ -315,18 +330,17 @@ test_supervisor_end_to_end :: proc(t: ^testing.T) {
 	//    J0 reap clears the runtime the dead supervisor left (Linux: parent-death signal
 	//    first; Windows: the job died with it; macOS: only the reap), before it starts its own.
 	time.sleep(3 * time.Second)
-	@(static) old_pid: int
-	sup_pid: int
-	old_pid, sup_pid = last_runtime(&e)
-	testing.expect(t, old_pid > 0 && sup_pid > 0, "runtime and supervisor pids")
-	sp, operr := os.process_open(sup_pid)
-	testing.expectf(t, operr == nil, "open supervisor %d: %v", sup_pid, operr)
-	_ = os.process_kill(sp)
+	@(static) old: Runtime
+	old = last_runtime(&e)
+	testing.expect(t, old.id.pid > 0 && old.parent > 0, "runtime and supervisor pids")
+	sp, operr := os.process_open(old.parent)
+	testing.expectf(t, operr == nil, "open supervisor %d: %v", old.parent, operr)
+	kerr := os.process_kill(sp)
+	testing.expectf(t, kerr == nil, "kill supervisor %d: %v", old.parent, kerr)
 	_, _ = os.process_wait(sp, 5 * time.Second) // frees the handle (not our child: may error)
 	reaped :: proc(e: ^Env) -> bool {
-		_, alive := procs.identify(old_pid)
-		pid, _ := last_runtime(e)
-		return !alive && pid != old_pid && live_runtimes(e) == 1
+		cur := last_runtime(e)
+		return !procs.alive(old.id) && cur.id != old.id && live_runtimes(e) == 1
 	}
 	if !wait_for(&e, "orphaned runtime gone and a new one running", 60 * time.Second, reaped) do return
 	testing.expect_value(t, current(&e), t1)
