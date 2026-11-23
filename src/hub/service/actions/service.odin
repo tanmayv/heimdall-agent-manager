@@ -81,11 +81,38 @@ list :: proc(s: ^Service, owner: string) -> ([]Action_View, domain.Domain_Error)
 	views := make([]Action_View, len(rows))
 	success := false
 	defer if !success do action_views_destroy(views)
-	for row, i in rows {
-		v, e := load_view(repo, owner, string(row.id))
-		if e.code != .None do return nil, e
-		views[i] = v
-	}
+ index:=make(map[string]int)
+ defer delete(index)
+ for row,i in rows {
+  views[i].action=row
+  index[string(row.id)]=i
+  rows[i]={}
+ }
+ rules,rules_err:=repo.rules_for_owner(repo.ctx,owner)
+ defer {
+  for row in rules {delete(row.action_id);delete(row.rule.bridge_id);delete(row.rule.provider);delete(row.rule.model)}
+  delete(rules)
+ }
+ if rules_err.code!=.None do return nil,rules_err
+ grouped_rules:=make([][dynamic]domain.Action_Target_Rule,len(views))
+ defer delete(grouped_rules)
+ for &row in rules {
+  if i,found:=index[row.action_id];found {
+   append(&grouped_rules[i],row.rule);row.rule={}
+  }
+ }
+ for i in 0..<len(views) do views[i].rules=grouped_rules[i][:]
+ triggers,triggers_err:=repo.triggers_for_owner(repo.ctx,owner)
+ defer domain.action_triggers_destroy(triggers)
+ if triggers_err.code!=.None do return nil,triggers_err
+ grouped_triggers:=make([][dynamic]domain.Action_Trigger,len(views))
+ defer delete(grouped_triggers)
+ for &row in triggers {
+  if i,found:=index[string(row.action_id)];found {
+   append(&grouped_triggers[i],row);row={}
+  }
+ }
+ for i in 0..<len(views) do views[i].triggers=grouped_triggers[i][:]
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	uow.ctx = nil
 	if !committed do return nil, commit_err

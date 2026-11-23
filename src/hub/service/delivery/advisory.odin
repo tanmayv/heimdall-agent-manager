@@ -1,6 +1,7 @@
 package delivery
 
 import "base:runtime"
+import retry "odin_test:hub/service/pipelineretry"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem/virtual"
@@ -89,7 +90,7 @@ supervisor_entry :: proc(data: rawptr) {
 			if !supervisor_connect(s, &advisory) {
 				supervisor_disconnect(s, &advisory)
 				free_all(context.allocator)
-				_ = sync.sema_wait_with_timeout(&s.wake, delay)
+				_ = sync.sema_wait_with_timeout(&s.wake, retry.jitter(delay,u64(time.tick_now()._nsec)))
 				delay = min(2 * delay, 5 * time.Second)
 				continue
 			}
@@ -107,7 +108,10 @@ supervisor_entry :: proc(data: rawptr) {
 		sync.mutex_unlock(&s.mutex)
 		for id in deletions {
 			err := nats.consumer_delete(s.conn, STREAM, fmt.tprintf("brg_%s", id))
-			if err.status != 0 && err.jetstream != 10014 do queue_consumer_deletion(s, id)
+			if err.status != 0 && err.jetstream != 10014 {
+    _=retry.failed(&s.diagnostics,"delivery",.Consumer,err.status,err.jetstream)
+    queue_consumer_deletion(s,id)
+   }
 			delete(id, runtime.heap_allocator())
 		}
 		delete(deletions)
@@ -120,14 +124,20 @@ supervisor_entry :: proc(data: rawptr) {
 				sync.rw_mutex_lock(&s.conn_lock)
 				if f.pull != nil {nats.pull_destroy(f.pull); f.pull = nil}
 				err := nats.consumer_delete(s.conn, STREAM, fmt.tprintf("brg_%s", f.bridge_id))
-				if err.status != 0 && err.jetstream != 10014 do sync.atomic_store(&f.delete_consumer, 1)
+				if err.status != 0 && err.jetstream != 10014 {
+     _=retry.failed(&s.diagnostics,"delivery",.Consumer,err.status,err.jetstream)
+     sync.atomic_store(&f.delete_consumer,1)
+    }
 				sync.rw_mutex_unlock(&s.conn_lock)
 				sync.rw_mutex_shared_lock(&s.conn_lock)
 			}
 		}
 		delete(rows)
 		batch, err := nats.fetch(advisory, 20, 1000)
-		if err.status != 0 && err.status != 26 do connection_failed(s)
+		if err.status != 0 && err.status != 26 {
+   _=retry.failed(&s.diagnostics,"delivery",.Advisory,err.status,err.jetstream)
+   connection_failed(s)
+  }
 		for i in 0 ..< nats.batch_count(batch) do drain_advisory(s, nats.batch_message(batch, i))
 		nats.batch_destroy(batch)
 		sync.rw_mutex_shared_unlock(&s.conn_lock)
@@ -139,7 +149,7 @@ supervisor_connect :: proc(s: ^Service, advisory: ^^nats.Pull) -> bool {
 	sync.rw_mutex_lock(&s.conn_lock)
 	defer sync.rw_mutex_unlock(&s.conn_lock)
 	conn, err := nats.connect(s.options)
-	if err.status != 0 do return false
+	if err.status != 0 do return retry.failed(&s.diagnostics,"delivery",.Connect,err.status,err.jetstream)
 	s.conn = conn
 	cfg := nats.Stream_Config {
 		name                = ADVISORY_STREAM,
@@ -151,7 +161,7 @@ supervisor_connect :: proc(s: ^Service, advisory: ^^nats.Pull) -> bool {
 	_, err = nats.stream_add(conn, cfg)
 	if err.status != 0 {
 		_, err = nats.stream_update(conn, cfg)
-		if err.status != 0 do return false
+		if err.status != 0 do return retry.failed(&s.diagnostics,"delivery",.Stream,err.status,err.jetstream)
 	}
 	err = nats.consumer_add(
 		conn,
@@ -162,9 +172,9 @@ supervisor_connect :: proc(s: ^Service, advisory: ^^nats.Pull) -> bool {
 			max_deliver = 0x7fffffffffffffff,
 		},
 	)
-	if err.status != 0 do return false
+	if err.status != 0 do return retry.failed(&s.diagnostics,"delivery",.Consumer,err.status,err.jetstream)
 	advisory^, err = nats.pull_bind(conn, ADVISORY_STREAM, ADVISORY_CONSUMER)
-	if err.status != 0 do return false
+	if err.status != 0 do return retry.failed(&s.diagnostics,"delivery",.Bind,err.status,err.jetstream)
 	s.connected = true
 	sync.atomic_store(&s.reconnect, 0)
 	return true
@@ -180,25 +190,29 @@ drain_advisory :: proc(s: ^Service, msg: ^nats.Message) {
 	}
 	original, err := nats.stream_get(s.conn, STREAM, value.stream_seq)
 	if err.status != 0 {
-		if err.jetstream == 10037 do _ = nats.ack(msg)
+		if err.jetstream == 10037 {
+   if ae:=nats.ack(msg);ae.status!=0 do _=retry.failed(&s.diagnostics,"delivery",.Advisory,ae.status,ae.jetstream)
+  } else {_=retry.failed(&s.diagnostics,"delivery",.Read,err.status,err.jetstream)}
 		return
 	}
 	defer nats.message_destroy(original)
 	wire: contracts.Delivery_Wire
 	if json.unmarshal(nats.message_data(original), &wire) == nil && wire.delivery_id != "" {
 		uow, ok, _ := iface.unit_of_work_begin(s.factory)
-		if !ok do return
+		if !ok {_=retry.failed(&s.diagnostics,"delivery",.Read);return}
 		repo := &uow.repos.pipeline_deliveries
 		d, found, de := repo.get(repo.ctx, wire.delivery_id)
-		if de.code != .None {iface.unit_of_work_rollback(&uow); return}
+		if de.code != .None {iface.unit_of_work_rollback(&uow);_=retry.failed(&s.diagnostics,"delivery",.Read,i32(de.code));return}
 		changed := false
 		if found do changed, de = close_delivery(s, &uow, d, domain.DELIVERY_FAILED, "no_answer", "")
 		domain.pipeline_delivery_destroy(&d)
-		if de.code != .None {iface.unit_of_work_rollback(&uow); return}
+		if de.code != .None {iface.unit_of_work_rollback(&uow);_=retry.failed(&s.diagnostics,"delivery",.Read,i32(de.code));return}
 		committed, _ := iface.unit_of_work_commit(&uow)
-		if !committed do return
+		if !committed {_=retry.failed(&s.diagnostics,"delivery",.Commit);return}
 		if changed do prune_after_final(s)
 	}
 	_, err = nats.stream_delete_message(s.conn, STREAM, value.stream_seq)
-	if err.status == 0 do _ = nats.ack(msg)
+	if err.status == 0 {
+  if ae:=nats.ack(msg);ae.status!=0 do _=retry.failed(&s.diagnostics,"delivery",.Advisory,ae.status,ae.jetstream)
+ } else {_=retry.failed(&s.diagnostics,"delivery",.Advisory,err.status,err.jetstream)}
 }
