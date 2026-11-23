@@ -15,6 +15,10 @@ import ws "odin_test:lib/ws"
 // All state here is owned by the runtime dispatcher thread.
 
 ACP_SEND_NOW_KIND :: "send_now"
+
+// Test seam: assistant-outbox suites that predate delivery evidence switch
+// reports off; acp_send_now_test covers reports interleaved with assistant rows.
+acp_delivery_reports_enabled := true
 ACP_SEND_NOW_INPUT_PREFIX :: "batch_"
 
 // Durable batch selection. members is FIFO and frozen at the first merge;
@@ -92,7 +96,7 @@ acp_send_now_set_state :: proc(r: ^ACP_Runtime, state: string) {
 // newest entry per message and the newest report_seq; it never merges two
 // different batch outcomes, so a final batch state is never lost.
 acp_delivery_report :: proc(r: ^ACP_Runtime, entries: []contracts.ACP_Input_State_Entry, batch_state := "", batch_error := "", batch_id := "", batch_attempt: i64 = 0) {
-    if r.chat == nil || r.d.replay_only do return
+    if r.chat == nil || r.d.replay_only || !acp_delivery_reports_enabled do return
     if len(entries) == 0 && batch_state == "" do return
     context.allocator = runtime.heap_allocator()
     r.d.report_seq += 1
@@ -351,7 +355,7 @@ acp_delivery_runtime_failed :: proc(r: ^ACP_Runtime, reason: string) {
 // Initial runtime facts for a launch epoch (steering capability). The first
 // report of a new epoch also lets the Hub reopen inputs lost with the old queue.
 acp_delivery_hello :: proc(r: ^ACP_Runtime) {
-    if r.chat == nil || r.d.replay_only do return
+    if r.chat == nil || r.d.replay_only || !acp_delivery_reports_enabled do return
     entries := make([dynamic]contracts.ACP_Input_State_Entry, context.temp_allocator)
     for input in r.d.queue do if input.lane == .Steer && strings.has_prefix(input.id, "msg_") {
         append(&entries, contracts.ACP_Input_State_Entry{message_id=input.id, state="queued", hold_reason=acp_delivery_hold(r), batch_id=r.d.send_now.batch_id if acp_send_now_member(r, input.id) else ""})

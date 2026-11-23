@@ -14,6 +14,17 @@ import contracts "odin_test:contracts"
 // pipe is faked (ACP_Test writes/feeds).
 
 sn_fn: proc(f: ^T4_Runtime_Test)
+
+// c4_chat_test pins the legacy assistant-only outbox; these scenarios run with
+// delivery reports enabled so reports interleave with assistant revisions.
+@(thread_local) sn_scenario: proc(t: ^testing.T, f: ^T4_Runtime_Test)
+sn_chat_test :: proc(t: ^testing.T, scenario: proc(t: ^testing.T, f: ^T4_Runtime_Test)) {
+    sn_scenario = scenario
+    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+        acp_delivery_reports_enabled = true
+        sn_scenario(t, f)
+    })
+}
 // Results cross from the dispatcher thread; keep them out of either thread's
 // temp allocator (the dispatcher frees its own per frame).
 sn_arena: vm.Arena
@@ -99,7 +110,7 @@ sn_ids_target: ^[dynamic]string
 
 @(test)
 sn_idle_send_is_not_turn_held_and_delivers_as_prompt :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_idle", "hello"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         e := sn_last(f, "msg_idle")
@@ -114,7 +125,7 @@ sn_idle_send_is_not_turn_held_and_delivers_as_prompt :: proc(t: ^testing.T) {
 
 @(test)
 sn_batch_without_steering_cancels_once_then_one_fifo_prompt :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         testing.expect(t, sn_msg(f, "msg_b", "TEXT-B"))
@@ -151,7 +162,7 @@ sn_batch_without_steering_cancels_once_then_one_fifo_prompt :: proc(t: ^testing.
 
 @(test)
 sn_batch_steers_after_inflight_steer_without_cancel :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         f.r.d.steering_supported = true
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
@@ -176,7 +187,7 @@ sn_batch_steers_after_inflight_steer_without_cancel :: proc(t: ^testing.T) {
 
 @(test)
 sn_rejected_batch_steer_falls_back_to_one_cancel_without_resteer :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         testing.expect(t, sn_msg(f, "msg_b", "TEXT-B"))
@@ -201,7 +212,7 @@ sn_rejected_batch_steer_falls_back_to_one_cancel_without_resteer :: proc(t: ^tes
 
 @(test)
 sn_natural_rejected_steer_returns_to_queue_front :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         f.r.d.steering_supported = true
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
@@ -221,7 +232,7 @@ sn_natural_rejected_steer_returns_to_queue_front :: proc(t: ^testing.T) {
 
 @(test)
 sn_empty_stale_and_already_dispatched_batches_never_cancel :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         // msg_a is the running turn: nothing left to send, so no interruption.
@@ -236,7 +247,7 @@ sn_empty_stale_and_already_dispatched_batches_never_cancel :: proc(t: ^testing.T
 
 @(test)
 sn_agent_read_drops_queued_and_batch_member :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         testing.expect(t, sn_msg(f, "msg_b", "TEXT-B"))
@@ -260,7 +271,7 @@ sn_agent_read_drops_queued_and_batch_member :: proc(t: ^testing.T) {
 
 @(test)
 sn_cancel_timeout_fails_batch_honestly_and_keeps_inputs :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         testing.expect(t, sn_msg(f, "msg_b", "TEXT-B"))
@@ -282,7 +293,7 @@ sn_cancel_timeout_fails_batch_honestly_and_keeps_inputs :: proc(t: ^testing.T) {
 
 @(test)
 sn_retry_attempt_reevaluates_existing_selection :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         testing.expect(t, sn_msg(f, "msg_b", "TEXT-B"))
@@ -309,7 +320,7 @@ sn_retry_attempt_reevaluates_existing_selection :: proc(t: ^testing.T) {
 
 @(test)
 sn_codex_waits_for_turn_id_instead_of_cancelling :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         sn_do(f, proc(f: ^T4_Runtime_Test) {
             f.r.driver = &acp_protocol_codex_driver
             f.r.d.steering_supported = true
@@ -329,7 +340,7 @@ sn_codex_waits_for_turn_id_instead_of_cancelling :: proc(t: ^testing.T) {
 
 @(test)
 sn_reports_precede_assistant_rows_and_name_inputs :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         c4_text(f, t, 1, "answer")
@@ -353,7 +364,7 @@ sn_ok: bool
 
 @(test)
 sn_durable_send_now_round_trips_and_validates :: proc(t: ^testing.T) {
-    c4_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_a", "first turn"))
         if !acp_test_wait(t, &f.f, .Writes, 1) do return
         testing.expect(t, sn_msg(f, "msg_b", "TEXT-B"))
