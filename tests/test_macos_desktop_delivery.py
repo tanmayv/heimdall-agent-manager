@@ -41,6 +41,12 @@ def test_curl_and_dmg_share_signed_archive():
     # T8: build runner and clean storeless runner both run the strict verifier.
     assert workflow.count("verify-macos-signatures.sh") >= 3
     assert "Verify signatures on a clean runner (macOS)" in workflow
+    assert 'notarize-macos-binaries.sh "dist/heimdall-local-${{ matrix.target }}.tar.gz"' in workflow
+    assert workflow.count("HEIMDALL_REQUIRE_NOTARIZED: '1'") == 2
+    # Windows Authenticode: off by default, one switch, clean-runner verifier gates release.
+    assert "if: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME != '' }}" in workflow
+    assert workflow.index("sign-windows-binaries.ps1") < workflow.index("package-windows-bundle.ps1 -BinDir")
+    assert "needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures]" in workflow
     assert "Build, sign, and notarize Ninjy DMG" in workflow
     assert 'electron-builder --mac dmg zip "$arch" --publish never' in workflow
     assert 'scripts/release/staple-with-retry.sh "$dmg"' in workflow

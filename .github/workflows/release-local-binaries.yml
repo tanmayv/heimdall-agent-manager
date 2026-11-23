@@ -295,6 +295,17 @@ jobs:
             *) sha256sum "dist/heimdall-local-${{ matrix.target }}.tar.gz" > "dist/SHA256SUMS-${{ matrix.target }}.txt" ;;
           esac
 
+      # T8: bare binaries cannot be stapled; notarize them so Gatekeeper finds
+      # the ticket online. The tarball bytes (and SHA256SUMS) do not change.
+      - name: Notarize standalone binaries (macOS)
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: scripts/release/notarize-macos-binaries.sh "dist/heimdall-local-${{ matrix.target }}.tar.gz"
+
       - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
@@ -414,13 +425,15 @@ jobs:
         shell: bash
         env:
           HEIMDALL_EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HEIMDALL_REQUIRE_NOTARIZED: '1'
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/portable-verify"
           rm -rf "$work"; mkdir -p "$work"
           tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
           # T8: Developer ID chain, hardened runtime, secure timestamp, stable
-          # identifiers and one team; repeated on a clean runner in verify-storeless.
+          # identifiers, one team and notarization; repeated on a clean runner
+          # in verify-storeless.
           python3 tests/test_macos_signature_verify.py
           scripts/release/verify-macos-signatures.sh "$work/bin"
           for f in "$work"/bin/*; do
@@ -658,6 +671,20 @@ jobs:
           rustc --version
           scripts/windows/build.ps1 -OutDir dist/windows-bin -Odin $env:ODIN -Version "${{ needs.prepare.outputs.version }}" -CurlLibDir "$env:RUNNER_TEMP/libcurl-static/lib"
 
+      # T8 / REQ-SIGN-1: Authenticode signing is OFF by default (owner decision
+      # 2026-11-23: no certificate yet). Setting the repository variable
+      # WINDOWS_UPDATE_PUBLISHER_NAME turns it on for these binaries and the
+      # desktop installer together; WIN_CSC_LINK (base64 PFX) and
+      # WIN_CSC_KEY_PASSWORD are then required and missing ones fail closed.
+      # Signing precedes packaging so the zip and SHA256SUMS cover signed bytes.
+      - name: Sign Windows binaries (only when signing is configured)
+        if: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME != '' }}
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: scripts/release/sign-windows-binaries.ps1 -BinDir dist/windows-bin -Publisher "${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME }}"
+
       - name: Verify Windows binaries are self-contained and run
         shell: pwsh
         run: |
@@ -796,8 +823,8 @@ jobs:
           "$work/bin/ham-bridge" --probe-hub https://github.com
 
       # T8: the build runner imported the signing keychain; prove the
-      # signatures verify on a runner that never saw it, with the system
-      # trust store only. Bare binaries cannot be stapled (report §8.1).
+      # signatures and the online notarization ticket verify on a runner that
+      # never saw it, with the system trust store only (report §8.1).
       - name: Checkout signature verifier (macOS)
         if: ${{ startsWith(matrix.target, 'darwin-') }}
         uses: actions/checkout@v4
@@ -813,6 +840,7 @@ jobs:
         shell: bash
         env:
           HEIMDALL_EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HEIMDALL_REQUIRE_NOTARIZED: '1'
         run: |
           set -euo pipefail
           if security find-identity -v -p codesigning | grep -q 'Developer ID Application:'; then
@@ -821,9 +849,51 @@ jobs:
           fi
           src/scripts/release/verify-macos-signatures.sh "dist/heimdall-local-${{ matrix.target }}.tar.gz"
 
+  # T8: check the Windows bundle's Authenticode state on a clean runner. With
+  # signing off (no WINDOWS_UPDATE_PUBLISHER_NAME) unsigned binaries pass with a
+  # SKIP line; with it on, every .exe must be Valid, timestamped and from that
+  # publisher.
+  verify-windows-signatures:
+    name: Verify Windows signatures on a clean runner
+    needs: [prepare, build-windows]
+    runs-on: windows-2022
+    steps:
+      - name: Checkout signature verifier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+          sparse-checkout: |
+            scripts/release/verify-windows-signatures.ps1
+            tests/windows/verify_windows_signatures_test.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download Windows bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: heimdall-local-windows-amd64-${{ needs.prepare.outputs.version }}
+          path: dist
+
+      - name: Test the verifier
+        if: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME == '' }}
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows/verify_windows_signatures_test.ps1 -Bundle dist/heimdall-local-windows-amd64.zip
+          if ($LASTEXITCODE) { throw 'verify-windows-signatures tests failed' }
+
+      - name: Verify the release bundle
+        shell: pwsh
+        env:
+          PUBLISHER: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME }}
+        run: |
+          $a = @('-Path', 'dist/heimdall-local-windows-amd64.zip')
+          if ($env:PUBLISHER) { $a += @('-Required', '-Publisher', $env:PUBLISHER) }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify-windows-signatures.ps1 @a
+          if ($LASTEXITCODE) { throw 'Windows signature verification failed' }
+
   release:
     name: Publish GitHub Release
-    needs: [prepare, build, build-windows, verify-storeless]
+    needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
     permissions:

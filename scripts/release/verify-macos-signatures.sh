@@ -15,6 +15,8 @@
 #   - one TeamIdentifier shared by all binaries (equal to
 #     HEIMDALL_EXPECTED_TEAM_ID when that is set)
 #   - no com.apple.security.get-task-allow entitlement (debug-only)
+#   - with HEIMDALL_REQUIRE_NOTARIZED=1: a notarization ticket Apple serves
+#     online (codesign --check-notarization, requirement "=notarized")
 # ham-bridge and ham-ctl are required; ham-pty-host is checked when present.
 #
 # Release CI runs this on the build runner and again on a clean runner that
@@ -24,6 +26,7 @@ set -euo pipefail
 
 codesign_bin="${CODESIGN:-codesign}"
 expected_team="${HEIMDALL_EXPECTED_TEAM_ID:-}"
+require_notarized="${HEIMDALL_REQUIRE_NOTARIZED:-0}"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -116,9 +119,18 @@ for f in "$bin_dir"/*; do
     die "$name: carries the debug-only get-task-allow entitlement"
   fi
 
-  echo "ok: $name identifier=$identifier team=$this_team flags=$flags"
+  notarized=no
+  if [ "$require_notarized" = 1 ]; then
+    "$codesign_bin" --verify --strict --check-notarization --test-requirement='=notarized' --verbose=2 "$f" \
+      || die "$name: not notarized (no ticket found online)"
+    notarized=yes
+  fi
+
+  echo "ok: $name identifier=$identifier team=$this_team flags=$flags notarized=$notarized"
   checked=$((checked + 1))
 done
 
 [ "$checked" -ge 2 ] || die "only $checked Mach-O binaries found in $bin_dir"
-echo "verified $checked Developer ID + hardened runtime + timestamp signatures (team $team)"
+suffix=""
+[ "$require_notarized" = 1 ] && suffix=" + notarization"
+echo "verified $checked Developer ID + hardened runtime + timestamp$suffix signatures (team $team)"

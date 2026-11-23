@@ -28,6 +28,10 @@ FAKE = textwrap.dedent(r'''
     f="${@: -1}"; n="$(basename "$f")"
     case "$1" in
       --verify) [ -e "$FAKE_DIR/$n.badverify" ] && { echo "$f: invalid signature" >&2; exit 1; }
+                case " $* " in *" --check-notarization "*)
+                  [ -e "$FAKE_DIR/$n.notnotarized" ] && { echo "$f: not notarized" >&2; exit 3; }
+                  [ "$4" = "--test-requirement==notarized" ] || exit 65 ;;
+                esac
                 echo "$f: valid on disk" >&2; exit 0 ;;
       -d) if [ "$2" = "--entitlements" ]; then cat "$FAKE_DIR/$n.ent" 2>/dev/null; exit 0; fi
           cat "$FAKE_DIR/$n.details" >&2; exit 0 ;;
@@ -72,9 +76,10 @@ class Fixture:
     def set(self, name, text):
         (self.fake / f"{name}.details").write_text(text)
 
-    def run(self, target=None, team=None):
+    def run(self, target=None, team=None, notarized=False):
         env = dict(os.environ, CODESIGN=str(self.codesign), FAKE_DIR=str(self.fake))
         env.pop("HEIMDALL_EXPECTED_TEAM_ID", None)
+        env["HEIMDALL_REQUIRE_NOTARIZED"] = "1" if notarized else "0"
         if team:
             env["HEIMDALL_EXPECTED_TEAM_ID"] = team
         return subprocess.run(["bash", str(SCRIPT), str(target or self.bin)],
@@ -143,6 +148,77 @@ def test_rejects_failed_verify_and_get_task_allow():
     (fx.fake / "ham-ctl.ent").write_text(
         "<plist><dict><key>com.apple.security.get-task-allow</key><true/></dict></plist>")
     expect_fail(fx, "get-task-allow")
+
+
+def test_notarization_required_only_when_asked():
+    fx = Fixture()
+    (fx.fake / "ham-pty-host.notnotarized").write_text("")
+    assert fx.run().returncode == 0
+    expect_fail(fx, "ham-pty-host: not notarized", notarized=True)
+    (fx.fake / "ham-pty-host.notnotarized").unlink()
+    r = fx.run(notarized=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "timestamp + notarization signatures" in r.stdout
+
+
+NOTARIZE = ROOT / "scripts/release/notarize-macos-binaries.sh"
+FAKE_NOTARY = textwrap.dedent(r'''
+    #!/usr/bin/env bash
+    # Fake notarytool: replies with $FAKE_NOTARY_REPLY, exit $FAKE_NOTARY_RC.
+    echo "$*" >> "$FAKE_NOTARY_CALLS"
+    case "$1" in
+      submit) [ -f "$2" ] || exit 9
+              unzip -l "$2" | grep -q 'bin/ham-bridge' || exit 8
+              printf '%s' "$FAKE_NOTARY_REPLY"; exit "${FAKE_NOTARY_RC:-0}" ;;
+      log) echo "issues: hardened runtime missing"; exit 0 ;;
+    esac
+    exit 64
+''').lstrip()
+
+
+def run_notarize(reply, rc=0, creds=True):
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
+    (root / "bin").mkdir()
+    (root / "bin/ham-bridge").write_bytes(MACHO)
+    tgz = root / "b.tar.gz"
+    with tarfile.open(tgz, "w:gz") as t:
+        t.add(root / "bin", arcname="bin")
+    fake = root / "notarytool"
+    fake.write_text(FAKE_NOTARY)
+    fake.chmod(0o755)
+    calls = root / "calls"
+    env = dict(os.environ, NOTARYTOOL=str(fake), FAKE_NOTARY_REPLY=reply,
+               FAKE_NOTARY_RC=str(rc), FAKE_NOTARY_CALLS=str(calls))
+    for k in ("APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"):
+        env.pop(k, None)
+        if creds:
+            env[k] = "x-" + k.lower()
+    before = tgz.read_bytes()
+    r = subprocess.run(["bash", str(NOTARIZE), str(tgz)], env=env, text=True,
+                       capture_output=True, timeout=60)
+    assert tgz.read_bytes() == before, "notarization must not modify the tarball"
+    log = calls.read_text() if calls.exists() else ""
+    tmp.cleanup()
+    return r, log
+
+
+def test_notarize_accepts_only_accepted_status():
+    r, calls = run_notarize('{"id":"abc","status":"Accepted"}')
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "--wait --output-format json" in calls and "--team-id x-apple_team_id" in calls
+    assert " log " not in f" {calls} "
+    for rc in (0, 1):  # exit code alone never decides
+        r, calls = run_notarize('{"id":"abc","status":"Invalid"}', rc=rc)
+        assert r.returncode != 0 and "status is 'Invalid'" in r.stderr, r.stderr
+        assert "log abc" in calls and "hardened runtime missing" in r.stderr
+
+
+def test_notarize_fails_closed():
+    r, _ = run_notarize("Error: HTTP 401", rc=1)
+    assert r.returncode != 0 and "returned no status" in r.stderr, r.stderr
+    r, calls = run_notarize('{"id":"abc","status":"Accepted"}', creds=False)
+    assert r.returncode != 0 and "APPLE_ID is required" in r.stderr and calls == ""
 
 
 if __name__ == "__main__":
