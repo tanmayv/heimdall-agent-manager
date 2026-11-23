@@ -214,6 +214,17 @@ acp_send_now_apply :: proc(r: ^ACP_Runtime, req: ACP_Send_Now_Request) -> bool {
     }
     if d.batch_id == req.batch_id {
         d.attempt = req.attempt
+        if acp_send_now_in_flight(r) {
+            // Retry while the combined input is already steering, cancelling
+            // or delivered: membership is frozen. Re-report the current state
+            // for this attempt; never re-select (which would drop members).
+            if d.state == "delivered" {
+                acp_delivery_report(r, nil, "delivered")
+            } else {
+                acp_delivery_report(r, acp_delivery_entries(r, d.members[:], "dispatching"), "dispatching")
+            }
+            return acp_rpc_checkpoint(r.client)
+        }
     } else {
         // An older batch's combined input that was never dispatched (failed)
         // is released back to ordinary queued inputs before the new selection.
@@ -256,6 +267,15 @@ acp_send_now_apply :: proc(r: ^ACP_Runtime, req: ACP_Send_Now_Request) -> bool {
     if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return false }
     acp_runtime_drain(r)
     return true
+}
+
+// The batch already left the queue as one input: a steer in flight, a cancel
+// before its prompt, or dispatched.
+acp_send_now_in_flight :: proc(r: ^ACP_Runtime) -> bool {
+    d := &r.d.send_now
+    if d.batch_id == "" do return false
+    if r.d.steering_pending && r.d.steering_input.id == acp_send_now_input_id(r) do return true
+    return d.state == "steering" || d.state == "cancelling" || d.state == "delivered"
 }
 
 acp_send_now_combined_index :: proc(r: ^ACP_Runtime) -> int {

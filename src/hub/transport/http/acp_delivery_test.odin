@@ -315,3 +315,59 @@ ad_assistant_upsert_records_all_batch_input_ids :: proc(t: ^testing.T) {
     input.revision = 2; input.input_ids = {"bad id"}
     r = acp_chat_call(&f, input); testing.expect_value(t, r.status, 400)
 }
+
+ad_agent_req :: proc(f: ^ACP_Chat_Fixture, path, body: string) -> Request {
+    req := mq_http_req(f.mq.base, path, body)
+    // Heap-backed: a slice literal would point into this returning frame.
+    headers := make([]contracts.HTTP_Header, 2)
+    headers[0] = {name = "Authorization", value = fmt.tprintf("Bearer %s", f.mq.base.bridge_token)}
+    headers[1] = {name = "X-Heimdall-Instance-Token", value = "hit_inst_mq~epoch"}
+    req.headers = headers
+    return req
+}
+
+// Review blocker (rev 4): the bridge's admission ack sets legacy read_at, so the
+// agent's DEFAULT unread read must still return a queued, never-delivered input
+// and record actual read evidence for it.
+@(test)
+ad_default_unread_agent_read_after_bridge_admission_is_read_evidence :: proc(t: ^testing.T) {
+    arena := ad_arena(); defer virtual.arena_destroy(&arena)
+    context.allocator = virtual.arena_allocator(&arena); context.temp_allocator = context.allocator
+    f: ACP_Chat_Fixture; ad_open(t, &f); defer mq_http_base_close(f.mq.base)
+    held := ad_send(t, &f, "held by turn")
+    prompted := ad_send(t, &f, "already prompted")
+    // Bridge admission ack of both inputs (legacy read_at), then queue reports.
+    r := agent_action_chat_read_handler(&f.mq.agent_handlers, ad_agent_req(&f, "/api/v1/agent-actions/chat/read", fmt.tprintf(`{{"agent_instance_id":"inst_mq","params":{{"ack_message_ids":["%s","%s"]}}}}`, held, prompted)))
+    testing.expect(t, r.status == 200, r.body)
+    m, _, _ := iface.content_get_message(&f.mq.repo, held)
+    testing.expect(t, m.read_at != "", "bridge admission sets legacy read_at")
+    r = ad_queued(&f, 1, held, prompted); testing.expect(t, r.status == 200, r.body)
+    r = ad_report(&f, {launch_epoch = "epoch", report_seq = 2, inputs = {{message_id = prompted, state = "delivered", mode = "prompt", turn_id = "ham:epoch:1"}}})
+    testing.expect(t, r.status == 200, r.body)
+    testing.expect(t, content_service.acp_delivery_turn_held(ad_row(&f, held)))
+    // The bridge's own input drain keeps the legacy filter: admission never loops.
+    r = agent_action_chat_fetch_handler(&f.mq.agent_handlers, ad_agent_req(&f, "/api/v1/agent-actions/chat/fetch", `{"agent_instance_id":"inst_mq","params":{"input_source":"bridge_acp","unread_only":true,"receiver_only":true,"oldest_first":true,"limit":100}}`))
+    testing.expect(t, r.status == 200, r.body)
+    testing.expect(t, !strings.contains(r.body, held) && !strings.contains(r.body, prompted), r.body)
+    testing.expect_value(t, ad_row(&f, held).agent_read_at, "")
+    // The agent's default `ham-ctl chat read` (unread_only=true, mark_read).
+    r = agent_action_chat_read_handler(&f.mq.agent_handlers, ad_agent_req(&f, "/api/v1/agent-actions/chat/read", `{"agent_instance_id":"inst_mq","params":{"limit":50}}`))
+    testing.expect(t, r.status == 200, r.body)
+    testing.expect(t, strings.contains(r.body, held), "queued admitted input is unread for the agent")
+    testing.expect(t, !strings.contains(r.body, prompted), "delivered input is not resurfaced as unread")
+    testing.expect(t, strings.contains(r.body, `"unread_count_before":1,"unread_count_after":0`), r.body)
+    row := ad_row(&f, held)
+    testing.expect(t, row.agent_read_at != "" && row.state == "delivered" && row.mode == "read", "actual read implies delivery")
+    testing.expect(t, !content_service.acp_delivery_turn_held(row), "read clears tray eligibility")
+    testing.expect(t, strings.contains(ad_message_json(&f, held), `"status":"read"`))
+    testing.expect_value(t, ad_row(&f, prompted).agent_read_at, "")
+    testing.expect_value(t, ad_count(contracts.ACP_INPUTS_READ_COMMAND), 1)
+    testing.expect(t, strings.contains(ad_cmd(contracts.ACP_INPUTS_READ_COMMAND, 0), held), "bridge drops the read input from its queue")
+    // Send now no longer selects it; a repeat default read returns nothing new.
+    r = ad_send_now(&f, "req_after_read")
+    outcome, _, _ := ad_batch_of(r.body)
+    testing.expect_value(t, outcome, "empty")
+    r = agent_action_chat_read_handler(&f.mq.agent_handlers, ad_agent_req(&f, "/api/v1/agent-actions/chat/read", `{"agent_instance_id":"inst_mq","params":{}}`))
+    testing.expect(t, r.status == 200 && !strings.contains(r.body, held), r.body)
+    testing.expect_value(t, ad_count(contracts.ACP_INPUTS_READ_COMMAND), 1)
+}

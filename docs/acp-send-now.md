@@ -17,6 +17,13 @@ The bridge's inbox admission sets the legacy `chat_messages.read_at`, so for ACP
 that field means **admission, not read**. `chat_messages.delivered_at` is now written
 once a row is delivered.
 
+The ACP agent's own default `chat read` (`unread_only=true`) therefore treats a row as
+unread when its legacy `read_at` is empty **or** its delivery row has no `agent_read_at`
+and is not yet `delivered`/`discarded`. That read records `agent_read_at`, sends
+`acp_inputs_read` to the bridge, and removes the row from the tray and Send now. The
+bridge input drain (`input_source=bridge_acp`) keeps the legacy `read_at` filter, so
+admission never loops. Cross-agent reads (`target_instance_id`) are unchanged.
+
 `hold_reason` is reported by the bridge:
 
 - `turn_active`: the input is held because a turn is running. This is the only reason
@@ -67,7 +74,11 @@ The response is `{"outcome":..., "batch":{batch_id,request_id,launch_epoch,attem
 - **Retry:** the same `request_id` after `failed`. The attempt goes up by one, the
   frozen members are checked again (rows that were delivered, read or are stale drop
   out), and the batch is never re-snapshotted. The bridge command id is
-  `cmd_sn_<batch>_a<attempt>`.
+  `cmd_sn_<batch>_a<attempt>`. If the bridge receives a retry while the batch is
+  already in flight (a steer pending, a cancel before its prompt, or delivered), it
+  keeps the frozen membership and only re-reports the current batch state
+  (`dispatching` or `delivered`) for the new attempt. Nothing is re-selected,
+  re-steered or cancelled again.
 - A `pending` or `sent` batch with no bridge progress for 30 s becomes `failed`
   (`bridge_no_response`) and can be retried.
 

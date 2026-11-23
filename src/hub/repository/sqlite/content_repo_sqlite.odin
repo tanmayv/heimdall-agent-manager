@@ -141,12 +141,17 @@ content_list_user_visible_messages_sqlite :: proc(ctx: rawptr, cid: string, owne
 	return out[:], {}
 }
 
-content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, agent_instance_id: string, unread_only, receiver_only, include_outgoing, include_debug: bool, limit:int, cursor:string, oldest_first:bool)->([]domain.Chat_Message,domain.Domain_Error){
+content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, agent_instance_id: string, unread_only, receiver_only, include_outgoing, include_debug: bool, limit:int, cursor:string, oldest_first:bool, acp_agent_unread:bool)->([]domain.Chat_Message,domain.Domain_Error){
 	impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil
 	
 	filters := make([dynamic]string)
 	append(&filters, "conversation_id=? AND owner_user_id=?")
-	if unread_only do append(&filters, "read_at=''")
+	if unread_only && acp_agent_unread {
+		// ACP agent's own read: legacy read_at is bridge admission, so an admitted
+		// input the agent has not itself read and that was never delivered (prompt
+		// or steer) is still unread for the agent.
+		append(&filters, "(read_at='' OR EXISTS (SELECT 1 FROM acp_input_deliveries d WHERE d.message_id=chat_messages.message_id AND d.agent_read_at='' AND d.state NOT IN ('delivered','discarded')))")
+	} else if unread_only do append(&filters, "read_at=''")
 	if !include_outgoing {
 		append(&filters, "direction != 'agent_to_user'")
 	}

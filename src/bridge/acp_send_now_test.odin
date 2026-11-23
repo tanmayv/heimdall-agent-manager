@@ -318,6 +318,46 @@ sn_retry_attempt_reevaluates_existing_selection :: proc(t: ^testing.T) {
     })
 }
 
+sn_next_ids: string
+// Review finding (rev 4): a same-batch retry that arrives while the combined
+// input is in flight as a steer must keep membership, so the injected steer
+// still delivers every member and records all causal input ids.
+@(test)
+sn_retry_while_batch_steer_in_flight_keeps_members :: proc(t: ^testing.T) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+        testing.expect(t, sn_msg(f, "msg_a", "first turn"))
+        if !acp_test_wait(t, &f.f, .Writes, 1) do return
+        testing.expect(t, sn_msg(f, "msg_b", "TEXT-B"))
+        testing.expect(t, sn_msg(f, "msg_c", "TEXT-C"))
+        sn_do(f, proc(f: ^T4_Runtime_Test) { f.r.d.steering_supported = true })
+        testing.expect(t, sn_batch(f, "snb_fly", 1, {"msg_b", "msg_c"}))
+        if !acp_test_wait(t, &f.f, .Writes, 2) do return
+        testing.expect(t, strings.contains(sn_write(f, 1), "_session/steering"))
+        // Hub stall timer fired; the user retries with attempt 2 mid-steer.
+        testing.expect(t, sn_batch(f, "snb_fly", 2, {"msg_b", "msg_c"}))
+        state, _, attempt := sn_last_batch(f)
+        testing.expect_value(t, state, "dispatching")
+        testing.expect_value(t, attempt, 2)
+        testing.expect_value(t, sn_last(f, "msg_c").state, "dispatching")
+        testing.expect_value(t, t16_writes(f), 2) // no re-steer, no cancel
+        t4_runtime_reply(t, f, 1, `{"outcome":"injected"}`, 1)
+        b, c := sn_last(f, "msg_b"), sn_last(f, "msg_c")
+        testing.expect(t, b.state == "delivered" && b.mode == "steer" && b.batch_id == "snb_fly", "member b delivered")
+        testing.expect(t, c.state == "delivered" && c.mode == "steer" && c.batch_id == "snb_fly", "member c delivered")
+        state, _, attempt = sn_last_batch(f)
+        testing.expect_value(t, state, "delivered")
+        testing.expect_value(t, attempt, 2)
+        sn_do(f, proc(f: ^T4_Runtime_Test) { sn_next_ids = strings.join(f.r.chat.d.next_input_ids[:], ",", sn_alloc()) })
+        testing.expect_value(t, sn_next_ids, "msg_b,msg_c")
+        // A further retry after delivery only re-confirms; nothing is resent.
+        testing.expect(t, sn_batch(f, "snb_fly", 3, {"msg_b", "msg_c"}))
+        state, _, attempt = sn_last_batch(f)
+        testing.expect_value(t, state, "delivered"); testing.expect_value(t, attempt, 3)
+        testing.expect_value(t, sn_count_writes(f, "_session/steering"), 1)
+        testing.expect_value(t, sn_count_writes(f, "session/cancel"), 0)
+    })
+}
+
 @(test)
 sn_codex_waits_for_turn_id_instead_of_cancelling :: proc(t: ^testing.T) {
     sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {

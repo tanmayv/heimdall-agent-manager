@@ -130,12 +130,14 @@ get_send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 // Actual agent read evidence. Only the ACP instance's own read of its own
 // conversation counts; the bridge input drain (input_source) never does.
-acp_note_agent_read_rows :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, inst: domain.Agent_Instance, rows: []domain.Chat_Message) {
-    if inst.runtime_transport != "acp" || len(rows) == 0 do return
+// Returns the IDs that gained read evidence (temp allocator).
+acp_note_agent_read_rows :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, inst: domain.Agent_Instance, rows: []domain.Chat_Message) -> []string {
+    if inst.runtime_transport != "acp" || len(rows) == 0 do return nil
     ids := make([dynamic]string, context.temp_allocator)
     for row in rows do if row.direction == "user_to_agent" do append(&ids, row.message_id)
     changed, drop, c, err := content.note_agent_read(h.content,auth,inst.agent_instance_id,ids[:])
-    if err.code != .None { fmt.println("ACP agent read evidence failed",inst.agent_instance_id,err.message); return }
+    if err.code != .None { fmt.println("ACP agent read evidence failed",inst.agent_instance_id,err.message); return nil }
     publish_messages_delivery(h.event_bus,c,changed[:],"")
     content.acp_send_inputs_read(h.content,c,drop[:])
+    return changed[:]
 }
