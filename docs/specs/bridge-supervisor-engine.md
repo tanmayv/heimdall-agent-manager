@@ -428,7 +428,7 @@ Implemented by `src/supervisor/engine` (dormant library; tests in `engine_test.o
 `inject_test.odin`, run on all three OSes by `.github/workflows/supervisor-unit.yml`).
 Processes are behind a `Host` interface (start/stop runtime, health, hub, J0 reap); the
 `procs.json` reaper, job objects, lifeline pipes and the `ham-supervisor` binary with the
-READY handshake are not part of T13. Choices this spec left open, fixed by T13:
+READY handshake are not part of T13 (T13b: §6.5). Choices this spec left open, fixed by T13:
 
 - **Journal line bytes.** Members always in the order of §6.1 plus `"hub"` (bool: hub
   connection required in probation, §14, decided at `gate_closed`) and `"note"` (string or
@@ -500,6 +500,64 @@ READY handshake are not part of T13. Choices this spec left open, fixed by T13:
   first) and drives the result through the Error contract; the harness's exit 1 leaves the
   children running so only the J0 reap can clear them. Both matrices also restart once more
   at the end and check that nothing resumes (sticky `rollback_failed`).
+
+### 6.5 Implementation (T13b): the running supervisor
+
+`src/supervisor/main.odin` (`ham-supervisor run|repair|--version`, libcurl transport in
+`src/supervisor/net.odin`) and `src/supervisor/service` (everything else, curl-free so it is
+vet-checked and unit-tested like the other packages). Choices this spec left open:
+
+- **Where an op's inputs live after J1.** The intent file is deleted after `requested`, so
+  the fields a resumed op needs ride on its own lines: `install_version`/`retry_failed` put
+  the version in `to.version` of `requested`; `set_channel` notes `channel <c>`;
+  `set_auto_update` notes `auto_update <bool>` (resolved at accept time: the optional
+  additive intent field `auto_update`, or a toggle when absent); `cancel` notes
+  `target <op_id>`. A resumed op in `downloading`/`verifying` reuses the `to.version` of that
+  line instead of resolving again. `expires_at` (J2/J26) is kept in memory only: an op
+  resumed by a later supervisor was accepted and runs.
+- **Side ops (§10 coalescing).** `check_now`, `set_channel`, `set_auto_update`,
+  `retry_failed` and `cancel` run beside an active op. The engine's `journal` leaves the
+  active op alone for a non-terminal line of another op; at start the active op is the
+  latest non-terminal **installing** op (a side op left by a crash never shadows it), and
+  the service finishes such side ops after READY.
+- **Busy.** An installing intent while an op is active is a single line `cancelled`,
+  `error: busy`, `note: active_op <op_id>`. Rejections the spec does not name:
+  `schema_error`, `bad_actor` (`timer`/`supervisor` from the inbox), `bad_channel`,
+  `bad_version`, `rollback_failed` (J25: an action not accepted in that state).
+- **Eligibility** runs inside `fetch.prepare_release` step 5; the `downloading` line (J5)
+  is written there, and `verifying` (J6) from the new `bundle_ready` hook after the bundle
+  matched. `noop` reasons are in `note` (`up_to_date`, `ahead_of_channel`, `pinned`,
+  `no_candidate`, `available` for `check_now` with `to.version`).
+- **Runtime health (§14) without a runtime change.** `Ready` = the runtime's control
+  endpoint (§12.2, `<data>/run/supervisor-control.json`) names the runtime's recorded pid
+  and answers `supervisor.gate.count`; `Exited` = any child exited; hub connected =
+  `<state>/runtime-status.json` of that pid says `connected`, updated within 90 s (within
+  5 min for the `gate_closed` decision). While idle, an exited runtime is restarted with
+  1 s → 60 s backoff (the engine judges health only in probation).
+- **Children.** The supervisor starts `<tree>/bin/ham-bridge` with today's service
+  arguments (`src/lib/bridgesvc/render.odin` `service_args`, from `instance.json` and
+  `<state>/ports.json`); ham-bridge starts its PTY host. Each child is recorded in
+  `procs.json` right after the spawn; POSIX children lead their own process group (Linux:
+  `PR_SET_PDEATHSIG`), Windows children are created suspended, put in the per-instance job
+  `Local\heimdall-supervisor-job-<instance_id>` (`KILL_ON_JOB_CLOSE`) and resumed. **The
+  lifeline (§2.1 layer 1) is deferred** (user decision 2026-11-23): `ham-bridge` and
+  `ham-pty-host` do not yet take `--lifeline-fd`, so on macOS a runtime orphaned by a
+  supervisor crash is cleared only by the next start's J0 reap (Linux: parent-death signal;
+  Windows: job), and PTY agents (setsid) still depend on the PTY host's own reaping.
+- **Offline repair exit codes:** 0 switched (or the bundle is the intact running tree:
+  `noop up_to_date`), 1 failed (journaled `failed <code>`), 2 usage, 6 lock held, 78
+  refused. An op past the switch found by the CLI is ended `failed superseded_by_repair`.
+- **Test builds** (`-define:HEIMDALL_SUPERVISOR_TEST=true`, never set by the release
+  workflow): `HEIMDALL_SUPERVISOR_TEST_ORIGIN` points the transport at a fake GitHub,
+  `HEIMDALL_SUPERVISOR_TEST_{PROBATION_S,READY_S,GATE_WAIT_S,FIRST_CHECK_S}` shorten the
+  clocks, `--version` appends `bin/test-version.txt`, and
+  `-define:HEIMDALL_TEST_PINNED_KEY` adds the e2e key (`src/supervisor/testdata/e2e-test-key.pub`;
+  a compile-time assert refuses it outside a test build).
+- **Tests.** `src/supervisor/service/service_test.odin` (fake GitHub in memory, simulated
+  launcher) and `src/supervisor/e2e` (real `ham-launcher` → `ham-supervisor` →
+  `src/supervisor/testdata/fakebridge`, which speaks the §12.2 control endpoint and counts
+  files in `<data>/fake-sessions/` as live PTY sessions), run by
+  `.github/workflows/supervisor-unit.yml` and `supervisor-e2e.yml` on all three OSes.
 
 ## 7. Launcher
 
