@@ -12,6 +12,7 @@ bridge_start_nudge_proc := bridge_wake_nudge_live_child
 bridge_start_stop_proc := bridge_runtime_stop_agent
 bridge_start_send_proc := bridge_hub_send
 bridge_start_status_proc := bridge_wake_report_failed_status
+bridge_start_capture_proc := bridge_ext_token_capture_final
 
 bridge_start_launch :: proc(command_id, text: string, deadline: i64) -> (bool, string, Bridge_Error) {
 	return bridge_runtime_launch_agent(command_id, text, deadline)
@@ -80,6 +81,7 @@ bridge_start_agent_apply_detail :: proc(conn: ^ws.Connection, text: string, dead
 	defer virtual.arena_destroy(&arena)
 	context.allocator = virtual.arena_allocator(&arena)
 	context.temp_allocator = context.allocator
+	scratch_context := context
 	root, parse_err := json.parse_string(text)
 	if parse_err != .None do return false, bridge_error(.agent_launch_failed, .unsupported)
 	if _, valid := root.(json.Object); !valid do return false, bridge_error(.agent_launch_failed, .unsupported)
@@ -88,6 +90,7 @@ bridge_start_agent_apply_detail :: proc(conn: ^ws.Connection, text: string, dead
 	coordinator_ids := make(map[string]bool)
 	ok = true
 	for entry in bridge_start_run_views(payload) {
+		context = scratch_context
 		launch, has_launch := bridge_wake_object_text(entry, "launch")
 		if !has_launch {
 			if ok do err = bridge_error(.agent_launch_failed, .unsupported)
@@ -110,11 +113,18 @@ bridge_start_agent_apply_detail :: proc(conn: ^ws.Connection, text: string, dead
 		}
 		pack, _ := bridge_wake_object_text(launch, "payload")
 		pack, _ = bridge_wake_object_text(pack, "pack")
-		if deliver == contracts.START_DELIVER_NUDGE && bridge_start_nudge_proc(id, extract_json_string(launch,"task_id",""), role, extract_json_string(launch,"lease_id",""), extract_json_int(launch,"run_count",0), pack) {
+		task_id := extract_json_string(launch,"task_id","")
+		lease_id := extract_json_string(launch,"lease_id","")
+		run_count := extract_json_int(launch,"run_count",0)
+		entry_id := extract_json_string(launch, "command_id", "")
+		// Parsing views remain alive until this apply returns. Persistent launch,
+		// token, startup and wake state must use the caller's heap context, never
+		// the private scratch arena (including its temporary allocator).
+		context = saved_context
+		if deliver == contracts.START_DELIVER_NUDGE && bridge_start_nudge_proc(id, task_id, role, lease_id, run_count, pack) {
 			bridge_runtime_set_launch_role(id, role)
 			continue
 		}
-		entry_id := extract_json_string(launch, "command_id", "")
 		launched, detail, launch_err := bridge_start_launch_proc(entry_id, launch, deadline_ns)
 		if launched {
 			bridge_runtime_set_launch_role(id, role)
@@ -127,11 +137,13 @@ bridge_start_agent_apply_detail :: proc(conn: ^ws.Connection, text: string, dead
 			ok = false
 		}
 	}
+	context = scratch_context
 	if stop_ids, has_stop := bridge_provider_json_extract_string_array(payload, "stop"); has_stop {
+		context = saved_context
 		for id in stop_ids {
 			if strings.trim_space(id) == "" || coordinator_ids[id] do continue
 			if launch, has := bridge_runtime_get_launch(id); has && launch.role == "coordinator" do continue
-			if bridge_start_stop_proc(id) do _ = bridge_ext_token_capture_final(id, bridge_agent_instance_run_count(id))
+			if bridge_start_stop_proc(id) do _ = bridge_start_capture_proc(id, bridge_agent_instance_run_count(id))
 		}
 	}
 	return

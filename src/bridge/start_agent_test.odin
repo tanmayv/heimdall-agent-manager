@@ -16,6 +16,9 @@ START_TEST_WAKE_LAUNCH :: `{"type":"launch_agent","command_id":"SYN","payload":{
 Start_Bridge_Test :: struct {
 	t:^testing.T,
 	allocator:mem.Allocator,
+	caller_allocator, caller_temp_allocator:mem.Allocator,
+	check_context, capture:bool,
+	captures:int,
 	launches, frames, statuses, stops:[dynamic]string,
 	nudges:int,
 	live, fail:bool,
@@ -26,8 +29,15 @@ start_bridge_expect_json :: proc(t:^testing.T,text,key,expected:string) {
     testing.expect_value(t,value,expected)
 }
 start_bridge_test:^Start_Bridge_Test
+start_bridge_check_context :: proc() {
+	h := start_bridge_test
+	if !h.check_context do return
+	testing.expect(h.t,context.allocator.procedure == h.caller_allocator.procedure && context.allocator.data == h.caller_allocator.data,"side effect must use caller allocator before the hook changes it")
+	testing.expect(h.t,context.temp_allocator.procedure == h.caller_temp_allocator.procedure && context.temp_allocator.data == h.caller_temp_allocator.data,"side effect must use caller temporary allocator")
+}
 start_bridge_launch :: proc(id,text:string,deadline:i64)->(bool,string,Bridge_Error) {
 	h:=start_bridge_test
+	start_bridge_check_context()
 	context.allocator=h.allocator
 	append(&h.launches,strings.clone(text))
 	start_bridge_expect_json(h.t,text,"command_id",id)
@@ -36,6 +46,7 @@ start_bridge_launch :: proc(id,text:string,deadline:i64)->(bool,string,Bridge_Er
 }
 start_bridge_nudge :: proc(id,task,role,lease:string,generation:int,pack:string)->bool {
 	h:=start_bridge_test
+	start_bridge_check_context()
 	h.nudges+=1
 	testing.expect(h.t,generation>0)
 	testing.expect(h.t,lease!="")
@@ -43,18 +54,26 @@ start_bridge_nudge :: proc(id,task,role,lease:string,generation:int,pack:string)
 	return h.live
 }
 start_bridge_stop :: proc(id:string,force:bool=false)->bool {
+	start_bridge_check_context()
 	context.allocator=start_bridge_test.allocator
 	append(&start_bridge_test.stops,strings.clone(id))
-	return false // No real process/token side effects in this fixture.
+	return start_bridge_test.capture
 }
 start_bridge_send :: proc(conn:^ws.Connection,text:string)->bool {
+	start_bridge_check_context()
 	context.allocator=start_bridge_test.allocator
 	append(&start_bridge_test.frames,strings.clone(text))
 	return true
 }
 start_bridge_status :: proc(conn:^ws.Connection,id:string) {
+	start_bridge_check_context()
 	context.allocator=start_bridge_test.allocator
 	append(&start_bridge_test.statuses,strings.clone(id))
+}
+start_bridge_capture :: proc(id:string,generation:int,reset_live:bool=false,now:i64=0)->bool {
+	start_bridge_check_context()
+	start_bridge_test.captures+=1
+	return true
 }
 
 start_bridge_run :: proc(t:^testing.T,scenario:proc(t:^testing.T,h:^Start_Bridge_Test)) {
@@ -65,11 +84,14 @@ start_bridge_run :: proc(t:^testing.T,scenario:proc(t:^testing.T,h:^Start_Bridge
 	defer mem.tracking_allocator_destroy(&track)
 	context.allocator=mem.tracking_allocator(&track)
 	{
-		h:=Start_Bridge_Test{t=t,allocator=context.allocator}
+		h:=Start_Bridge_Test{t=t,allocator=context.allocator,caller_allocator=context.allocator,caller_temp_allocator=context.temp_allocator}
 		start_bridge_test=&h
 		launch,nudge,stop,send,status:=bridge_start_launch_proc,bridge_start_nudge_proc,bridge_start_stop_proc,bridge_start_send_proc,bridge_start_status_proc
 		bridge_start_launch_proc,bridge_start_nudge_proc,bridge_start_stop_proc,bridge_start_send_proc,bridge_start_status_proc=start_bridge_launch,start_bridge_nudge,start_bridge_stop,start_bridge_send,start_bridge_status
 		defer {bridge_start_launch_proc,bridge_start_nudge_proc,bridge_start_stop_proc,bridge_start_send_proc,bridge_start_status_proc=launch,nudge,stop,send,status;start_bridge_test=nil}
+		capture:=bridge_start_capture_proc
+		bridge_start_capture_proc=start_bridge_capture
+		defer bridge_start_capture_proc=capture
 		// Isolate the legacy cache and launch registry from other bridge tests.
 		saved_results,saved_launches:=bridge_runtime_results,bridge_runtime_launches
 		bridge_runtime_results=nil
@@ -150,7 +172,7 @@ start_bridge_old_launch :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 	testing.expect_value(t,len(h.launches),1)
 	testing.expect_value(t,len(h.statuses),1)
 	// Preserve the old failed result's detail and its single status frame too.
-	for s in h.launches do delete(s)
+	for s in h.launches do delete(s,h.allocator)
 	clear(&h.launches)
 	h.fail=true
 	failure_text,_:=strings.replace_all(START_TEST_OLD_LAUNCH,`"command_id":"old"`,`"command_id":"failure"`)
@@ -181,7 +203,7 @@ start_bridge_old_wake :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 	}
 	// The old name still reports succeeded even when a launch fails.
 	h.fail=true
-	for s in h.launches do delete(s)
+	for s in h.launches do delete(s,h.allocator)
 	clear(&h.launches)
 	bridge_hub_handle_wake_agent(nil,START_TEST_OLD_WAKE)
 	testing.expect_value(t,len(h.statuses),1)
@@ -210,6 +232,45 @@ start_bridge_spec :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 @(test) test_launch_agent_adapter_unchanged :: proc(t:^testing.T) {start_bridge_run(t,start_bridge_old_launch)}
 @(test) test_wake_agent_adapter_unchanged :: proc(t:^testing.T) {start_bridge_run(t,start_bridge_old_wake)}
 @(test) test_start_agent_spec_and_key :: proc(t:^testing.T) {start_bridge_run(t,start_bridge_spec)}
+
+start_bridge_context_scenario :: proc(t:^testing.T,h:^Start_Bridge_Test) {
+	h.check_context=true
+	// Production dispatch callers use a heap allocator. Keep capture allocations
+	// tracked separately, and assert the context before any hook switches it.
+	context.allocator=runtime.heap_allocator()
+	h.caller_allocator=context.allocator
+	h.caller_temp_allocator=context.temp_allocator
+	h.live,h.fail,h.capture=true,true,true
+	text:=`{"command_id":"batch","payload":{"run":[{"deliver":"launch","launch":{"command_id":"one","payload":{"agent_instance_id":"i1"}}},{"deliver":"nudge","launch":{"command_id":"two","payload":{"agent_instance_id":"i2","role":"worker","task_id":"task","lease_id":"lease","run_count":4,"pack":{}}}},{"deliver":"launch","launch":{"command_id":"three","payload":{"agent_instance_id":"i3"}}}],"stop":["ordinary"]}}`
+	bridge_hub_handle_start_agent(nil,text)
+	testing.expect_value(t,len(h.launches),2)
+	testing.expect_value(t,h.nudges,1)
+	testing.expect_value(t,len(h.statuses),1)
+	testing.expect_value(t,len(h.stops),1)
+	testing.expect_value(t,h.captures,1)
+	h.live=false
+	bridge_hub_handle_start_agent(nil,text)
+	testing.expect_value(t,len(h.launches),5) // nudge falls back to a launch
+	testing.expect_value(t,h.nudges,2)
+	testing.expect_value(t,h.captures,2)
+}
+start_bridge_launch_context_scenario :: proc(t:^testing.T,h:^Start_Bridge_Test) {
+	h.check_context=true
+	context.allocator=runtime.heap_allocator()
+	h.caller_allocator=context.allocator
+	start_bridge_old_launch(t,h)
+}
+start_bridge_wake_context_scenario :: proc(t:^testing.T,h:^Start_Bridge_Test) {
+	h.check_context=true
+	context.allocator=runtime.heap_allocator()
+	h.caller_allocator=context.allocator
+	start_bridge_old_wake(t,h)
+	bridge_hub_handle_wake_agent(nil,`{"command_id":"missing_payload"}`)
+	testing.expect_value(t,len(h.frames),3)
+}
+@(test) test_start_agent_side_effects_use_caller_context :: proc(t:^testing.T) {start_bridge_run(t,start_bridge_context_scenario)}
+@(test) test_launch_agent_adapter_uses_caller_context :: proc(t:^testing.T) {start_bridge_run(t,start_bridge_launch_context_scenario)}
+@(test) test_wake_agent_adapter_uses_caller_context :: proc(t:^testing.T) {start_bridge_run(t,start_bridge_wake_context_scenario)}
 
 @(test) test_features_list_has_start_agent :: proc(t:^testing.T) {
 	track:mem.Tracking_Allocator

@@ -2521,7 +2521,12 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
     command_id := extract_json_string(text, "command_id", "")
     payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
     if !payload_ok {
-        if command_id != "" do _ = bridge_start_send_proc(conn, bridge_command_result_json(command_id, "succeeded", ""))
+        context = saved_context
+        if command_id != "" {
+            result := bridge_command_result_json(command_id, "succeeded", "")
+            defer delete(result)
+            _ = bridge_start_send_proc(conn, result)
+        }
         return
     }
     coordinator_ids := make(map[string]bool)
@@ -2600,8 +2605,16 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
         }
     }
     strings.write_string(&builder, "]}}")
-    _, _ = bridge_start_agent_apply(conn, strings.to_string(builder), bridge_command_worker_deadline_ns(conn))
-    if command_id != "" do _ = bridge_start_send_proc(conn, bridge_command_result_json(command_id, "succeeded", ""))
+    adapted := strings.to_string(builder)
+    // The adapter arena owns only conversion text. The common apply and all
+    // side effects inherit the original dispatch context while it stays alive.
+    context = saved_context
+    _, _ = bridge_start_agent_apply(conn, adapted, bridge_command_worker_deadline_ns(conn))
+    if command_id != "" {
+        result := bridge_command_result_json(command_id, "succeeded", "")
+        defer delete(result)
+        _ = bridge_start_send_proc(conn, result)
+    }
 }
 
 // bridge_wake_nudge_live_child delivers a wake run[] entry to a child that is
@@ -2984,7 +2997,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	}
 	bridge_runtime_set_pty_process_alive(instance_id, true)
 	bridge_startup_spawned(instance_id, agent_token, pid)
-	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), project_path = strings.clone(strings.trim_space(project_path)), pane_id = fmt.tprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token), provider_sym = contracts.bridge_log_provider_sym(provider), launched_at_ns = time.tick_now()._nsec})
+	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), project_path = strings.clone(strings.trim_space(project_path)), pane_id = fmt.aprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token), provider_sym = contracts.bridge_log_provider_sym(provider), launched_at_ns = time.tick_now()._nsec})
 	// BR-3: ensure the event-subscription worker is running so this instance's
 	// ChildExited/StartupReady/StartupBlocked/ScreenChanged events flow to the hub
 	// status/activity surface without polling.
