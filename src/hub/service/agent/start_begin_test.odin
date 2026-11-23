@@ -509,7 +509,7 @@ start_owned_scenario :: proc(t:^testing.T,h:^Start_Test) {
 		context.allocator=allocator
 		ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="owned"},allocator)
 		testing.expect_value(t,err.code,domain.Error_Code.None)
-		launch:=start_launch_json(&h.service,ticket,allocator)
+		launch:=start_launch_json(&h.service,ticket,allocator=allocator)
 		delete(launch,allocator)
 		start_cancel(&h.service,&ticket)
 		start_ticket_destroy(&ticket)

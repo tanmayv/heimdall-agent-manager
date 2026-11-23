@@ -420,8 +420,10 @@ send_instance_launch :: proc(service: ^Agent_Service, saved: domain.Agent_Instan
 // Bridge, but settings must never replace the persisted launch snapshot.
 send_frozen_instance_launch :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
 	if err:=validate_frozen_runtime_transport(service,inst);err.code!=.None do return false,err
-	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, inst)}
-	return project_service.bridge_command_send_runtime(service.bridge_command_sink, command)
+	body := start_launch_json(service, {instance=inst, command_id=command_id})
+	defer delete(body)
+	entry := Start_Run_Entry{bridge_id=inst.bridge_id, deliver=contracts.START_DELIVER_LAUNCH, launch_json=body}
+	return start_command_send(service, inst.bridge_id, command_id, inst.chain_id, {entry}, nil)
 }
 
 launch_agent :: create_instance
@@ -1659,7 +1661,7 @@ launch_command_json :: proc(command_id: string, inst: domain.Agent_Instance) -> 
 // locally — WITHOUT the bridge querying hub chains/agents tables. When `service`
 // is nil (or lookups fail) the descriptor fields degrade to empty strings and the
 // role defaults to "worker"; the routing fields are always present.
-launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance) -> string {
+launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance, lease: ^Start_Lease = nil) -> string {
 	role := "worker"
 	coordinator_id := ""
 	chain_title := ""
@@ -1681,10 +1683,17 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 			}
 		}
 	}
+	if lease != nil {
+		role = lease.role
+		if lease.permission_mode != "" do permission_mode = lease.permission_mode
+	}
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"launch_agent\",\"protocol_version\":1,\"message_id\":\""); write_service_json_string(&b, strings.concatenate({"msg_", command_id}))
 	strings.write_string(&b, "\",\"command_id\":\""); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"payload\":{\"agent_instance_id\":\""); write_service_json_string(&b, inst.agent_instance_id)
+	if lease != nil {
+		strings.write_string(&b, "\",\"task_id\":\""); write_service_json_string(&b, lease.task_id)
+	}
 	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, inst.agent_id)
 	strings.write_string(&b, "\",\"agent_name\":\""); write_service_json_string(&b, agent_name)
 	strings.write_string(&b, "\",\"display_name\":\""); write_service_json_string(&b, inst.display_name)
@@ -1706,7 +1715,16 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	token := instance_assertion_token(inst); defer delete(token)
 	strings.write_string(&b, "\",\"instance_token\":\""); write_service_json_string(&b, token)
 	strings.write_string(&b, "\",\"bootstrap_url\":\"/api/v1/bridge/agent-instances/"); write_service_json_string(&b, inst.agent_instance_id)
-	strings.write_string(&b, "/bootstrap\"}}")
+	strings.write_string(&b, "/bootstrap\"")
+	if lease != nil {
+		if lease.lease_id != "" {
+			strings.write_string(&b, ",\"lease_id\":\""); write_service_json_string(&b, lease.lease_id); strings.write_byte(&b, '"')
+		}
+		if strings.has_prefix(strings.trim_space(lease.pack_json), "{") {
+			strings.write_string(&b, ",\"pack\":"); strings.write_string(&b, strings.trim_space(lease.pack_json))
+		}
+	}
+	strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }
 

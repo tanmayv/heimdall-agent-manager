@@ -267,7 +267,7 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Recovery, key_kind = .LSP, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
 	case "shell_kill", "shell_signal", "shell_stream_detach":
 		return Bridge_Command_Spec{class = .Shell, priority = .Recovery, key_kind = .Shell, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2}, true
-	case "launch_agent", "launch_provider_test", "wake_agent":
+	case "start_agent", "launch_agent", "launch_provider_test", "wake_agent":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 8}, true
 	case "agent_pty_input", "agent_pty_resize":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 1}, true
@@ -407,6 +407,11 @@ bridge_command_ordering_key :: proc(command_type, text: string) -> string {
 		return ""
 	}
 	switch command_type {
+	case "start_agent":
+		id := jsonx.extract_string(text, "agent_instance_id", "", top_level_only=true)
+		defer delete(id)
+		if id != "" do return strings.concatenate({"agent:", id})
+		return strings.clone("agent-control")
 	case "event_deliver", "bot_deliver", "launch_agent", "launch_provider_test", "stop_agent", "agent_pty_input", "agent_pty_resize", "capture_agent_pane", "get_agent_pane", "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge":
 		id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(id)
@@ -512,6 +517,10 @@ bridge_wake_synth_counter: u64
 // wake_agent.command_id. ok=false means the caller must reject with
 // missing_command_id. The returned id is owned by the caller (context allocator).
 bridge_command_dispatch_resolve_id :: proc(command_type, text: string) -> (id: string, ok: bool) {
+	if command_type == "start_agent" {
+		id = jsonx.extract_string(text, "command_id", "", top_level_only=true)
+		return id, id != ""
+	}
 	id = extract_json_string(text, "command_id", "")
 	if id != "" do return id, true
 	delete(id)

@@ -1,5 +1,7 @@
 package main
 
+import virtual "core:mem/virtual"
+
 import "base:runtime"
 import "core:crypto"
 import "core:crypto/hash"
@@ -1140,26 +1142,32 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = bridge_hub_send(conn, result)
 		return
 	}
+	if type == contracts.START_AGENT_FRAME {
+		bridge_hub_handle_start_agent(conn, text)
+		return
+	}
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_start_send_proc(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
-		_ = bridge_hub_send(conn, accepted)
-		ok, detail, launch_err := bridge_runtime_launch_agent(command_id, text, bridge_command_worker_deadline_ns(conn))
+		_ = bridge_start_send_proc(conn, accepted)
+		wrapped := bridge_start_wrap_launch(text)
+		defer delete(wrapped)
+		detail := ""
+		ok, launch_err := bridge_start_agent_apply_detail(conn, wrapped, bridge_command_worker_deadline_ns(conn), &detail)
+		defer delete(detail)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
-		st_json := bridge_instance_status_json(instance_id)
-		defer delete(st_json)
-		_ = bridge_hub_send(conn, st_json)
+		bridge_start_status_proc(conn, instance_id)
 		final := bridge_command_result_json(command_id, "succeeded", "starting") if ok else bridge_command_failed_json(command_id, bridge_error_wire(launch_err, detail), "failed")
 		defer delete(final)
 		if !ok do fmt.println("bridge launch_agent failed", detail, bridge_error_string(launch_err))
 		bridge_runtime_cache_command(command_id, final)
-		_ = bridge_hub_send(conn, final)
+		_ = bridge_start_send_proc(conn, final)
 		return
 	}
 	if type == "launch_provider_test" {
@@ -2503,20 +2511,24 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 // no command_id and the hub fire-and-forgets the send, so there is normally nothing
 // to ack; we still ack if a command_id is ever present.
 bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
-	command_id := extract_json_string(text, "command_id", "")
-	payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
-	if !payload_ok {
-		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
-		return
-	}
+    saved_context := context
+    defer context = saved_context
+    arena: virtual.Arena
+    if virtual.arena_init_growing(&arena) != nil do return
+    defer virtual.arena_destroy(&arena)
+    context.allocator = virtual.arena_allocator(&arena)
+    context.temp_allocator = context.allocator
+    command_id := extract_json_string(text, "command_id", "")
+    payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
+    if !payload_ok {
+        if command_id != "" do _ = bridge_start_send_proc(conn, bridge_command_result_json(command_id, "succeeded", ""))
+        return
+    }
+    coordinator_ids := make(map[string]bool)
+    builder := strings.builder_make()
+    strings.write_string(&builder, "{\"payload\":{\"run\":[")
+    count := 0
 
-	// coordinator_ids collects any instance the hub (unexpectedly) marked coordinator
-	// in run[]; combined with the local launch-record role in the stop loop below it
-	// guarantees a coordinator can never be terminated by this path.
-	coordinator_ids := make(map[string]bool)
-	defer delete(coordinator_ids)
-
-	// RUN: start fresh, restart, or no-op each entry.
 	if run_arr, run_ok := bridge_provider_json_extract_array(payload, "run"); run_ok {
 		entries := bridge_provider_json_top_level_objects(run_arr)
 		defer { for e in entries do delete(e); delete(entries) }
@@ -2560,73 +2572,36 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			pack_json, _ := bridge_provider_json_extract_object(entry, "pack")
 			defer delete(pack_json)
 
-			// T8: a lease for an instance that is already running is delivered as
-			// a nudge (keep the process; refresh TASK.md; "run lease next"). When
-			// the child is not confirmed live, fall through to the launch paths.
 			deliver := extract_json_string(entry, "deliver", "")
-			defer delete(deliver)
-			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json) {
-				bridge_runtime_set_launch_role(instance_id, role)
-				fmt.println("bridge wake_agent: nudged live instance", instance_id, "to run lease next")
-				continue
-			}
-
-			if _, has := bridge_runtime_get_launch(instance_id); has {
-				// A launch record exists, but restart via the pty-host's remembered
-				// spec would reuse the ORIGINAL run_dir contents — including a stale
-				// CLAUDE.md written at first launch. Re-bootstrap instead: run the full
-				// launch path (deterministic run_dir, fresh token, current bootstrap
-				// template) so template updates take effect on each reconcile restart.
-				// bridge_runtime_launch_agent_pty_host already closes any registered
-				// instance before re-spawning, so no separate is_registered check.
-				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, lease_id, pack_json, permission_mode, run_count,provider_profile,effective_transport,catalog_etag,launch_epoch)
-				defer delete(command_json)
-				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn))
-				if ok {
-					bridge_runtime_set_launch_role(instance_id, role)
-					fmt.println("bridge wake_agent: re-bootstrapped and restarted instance", instance_id)
-				} else {
-					fmt.eprintln("bridge wake_agent: restart via re-bootstrap failed", instance_id, detail, bridge_error_string(launch_err))
-					bridge_wake_report_failed_status(conn, instance_id)
-					blog_error(.agent_launch_failed, blog_sym(.command_kind, .wake_agent), blog_sym(.stage, .materialize))
-				}
-			} else {
-				// No launch record: fresh full bootstrap via the standard launch path.
-				// The instance id MUST live inside a "payload" object (matching the hub
-				// launch_agent contract) so bridge_bootstrap_descriptor_from_launch can
-				// resolve it — a top-level-only id aborts the launch at validate. This
-				// mirrors the scheduler sched_wake synthetic launch.
-				syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, "", lease_id, pack_json, permission_mode, run_count,provider_profile,effective_transport,catalog_etag,launch_epoch)
-				defer delete(command_json)
-				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn))
-				if ok {
-					bridge_runtime_set_launch_role(instance_id, role)
-					fmt.println("bridge wake_agent: launched instance", instance_id)
-				} else {
-					fmt.eprintln("bridge wake_agent: launch failed", instance_id, detail, bridge_error_string(launch_err))
-					bridge_wake_report_failed_status(conn, instance_id)
-					blog_error(.agent_launch_failed, blog_sym(.command_kind, .wake_agent), blog_sym(.stage, .spawn))
-				}
-			}
-		}
-	}
-
-	// STOP: terminate each instance whose task is no longer actionable, honoring the
-	// coordinator exemption (defense in depth — the hub never emits coordinators).
-	if stop_ids, stop_ok := bridge_provider_json_extract_string_array(payload, "stop"); stop_ok {
-		defer delete(stop_ids)
-		for id in stop_ids {
-			if strings.trim_space(id) == "" do continue
-			if coordinator_ids[id] do continue
-			if launch, has := bridge_runtime_get_launch(id); has && launch.role == "coordinator" do continue
-			if bridge_runtime_stop_agent(id) do _ = bridge_ext_token_capture_final(id, bridge_agent_instance_run_count(id))
-			fmt.println("bridge wake_agent: stopped instance", id)
-		}
-	}
-
-	if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+            syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
+            if _, has := bridge_runtime_get_launch(instance_id); has {
+                syn_command_id = fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
+            } else { coordinator_display_name = "" }
+            launch := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, lease_id, pack_json, permission_mode, run_count, provider_profile, effective_transport, catalog_etag, launch_epoch)
+            if count > 0 do strings.write_byte(&builder, ',')
+            count += 1
+            strings.write_string(&builder, "{\"deliver\":\"")
+            strings.write_string(&builder, "nudge" if deliver == "nudge" else "launch")
+            strings.write_string(&builder, "\",\"launch\":")
+            strings.write_string(&builder, launch)
+            strings.write_byte(&builder, '}')
+        }
+    }
+    strings.write_string(&builder, "],\"stop\":[")
+    if stop_ids, has_stop := bridge_provider_json_extract_string_array(payload, "stop"); has_stop {
+        first := true
+        for id in stop_ids {
+            if coordinator_ids[id] do continue
+            if !first do strings.write_byte(&builder, ',')
+            first = false
+            strings.write_byte(&builder, '"')
+            bridge_runtime_write_json_string(&builder, id)
+            strings.write_byte(&builder, '"')
+        }
+    }
+    strings.write_string(&builder, "]}}")
+    _, _ = bridge_start_agent_apply(conn, strings.to_string(builder), bridge_command_worker_deadline_ns(conn))
+    if command_id != "" do _ = bridge_start_send_proc(conn, bridge_command_result_json(command_id, "succeeded", ""))
 }
 
 // bridge_wake_nudge_live_child delivers a wake run[] entry to a child that is
@@ -3228,10 +3203,13 @@ bridge_runtime_update_launch_pane :: proc(instance_id, pane_id: string) {
 // no launch record exists for the instance yet.
 bridge_runtime_set_launch_role :: proc(instance_id, role: string) {
 	if strings.trim_space(instance_id) == "" || strings.trim_space(role) == "" do return
+	// The role survives the command's scratch arena, like the launch registry.
+	context.allocator = runtime.heap_allocator()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for i in 0..<len(bridge_runtime_launches) {
 		if bridge_runtime_launches[i].agent_instance_id == instance_id {
+			if bridge_runtime_launches[i].role == role do return
 			bridge_runtime_launches[i].role = strings.clone(role)
 			break
 		}
@@ -4657,7 +4635,7 @@ Bridge_Hello_Wire :: struct {
 // on every hello and on every legacy beat that carries features.
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
-BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1}
+BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1, contracts.BRIDGE_FEATURE_START_AGENT_V1}
 bridge_runtime_features :: proc() -> []string {
 	features := make([dynamic]string, allocator = context.temp_allocator)
 	append(&features, ..BRIDGE_RUNTIME_FEATURES[:])

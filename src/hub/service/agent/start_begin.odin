@@ -165,8 +165,7 @@ start_reuse :: proc(service: ^Agent_Service, instance_id, ref: string, allocator
 	return {}, false, true, {}
 }
 
-// T23 adds the optional Start_Lease argument and changes the sender, per rev 2.
-start_launch_json :: proc(service: ^Agent_Service, t: Start_Ticket, allocator := context.allocator) -> string {
+start_launch_json :: proc(service: ^Agent_Service, t: Start_Ticket, lease: ^Start_Lease = nil, allocator := context.allocator) -> string {
 	saved_context := context
 	defer context = saved_context
 	arena: virtual.Arena
@@ -174,7 +173,7 @@ start_launch_json :: proc(service: ^Agent_Service, t: Start_Ticket, allocator :=
 	defer virtual.arena_destroy(&arena)
 	context.allocator = virtual.arena_allocator(&arena)
 	context.temp_allocator = context.allocator
-	text := launch_command_json_full(service, t.command_id, t.instance)
+	text := launch_command_json_full(service, t.command_id, t.instance, lease)
 	return strings.clone(text, allocator)
 }
 
@@ -205,7 +204,8 @@ start_send :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_E
 	sent := false
 	if err.code == .None {
 		body := start_launch_json(service, t^)
-		sent, err = project_service.bridge_command_send_runtime(service.bridge_command_sink, {bridge_id=t.instance.bridge_id,command_id=t.command_id,body_json=body})
+		entry := Start_Run_Entry{bridge_id=t.instance.bridge_id,deliver=contracts.START_DELIVER_LAUNCH,launch_json=body}
+		sent, err = start_command_send(service, t.instance.bridge_id, t.command_id, t.instance.chain_id, {entry}, nil)
 		delete(body)
 	}
 	if !sent {
