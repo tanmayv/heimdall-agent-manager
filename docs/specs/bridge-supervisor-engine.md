@@ -422,6 +422,75 @@ The launcher's part of recovery is §7.
 Terminal states need no recovery. On start, after the active op (if any) is resolved, the
 supervisor runs GC (§15) and processes the inbox.
 
+### 6.4 Implementation (T13)
+
+Implemented by `src/supervisor/engine` (dormant library; tests in `engine_test.odin` and
+`inject_test.odin`, run on all three OSes by `.github/workflows/supervisor-unit.yml`).
+Processes are behind a `Host` interface (start/stop runtime, health, hub, J0 reap); the
+`procs.json` reaper, job objects, lifeline pipes and the `ham-supervisor` binary with the
+READY handshake are not part of T13. Choices this spec left open, fixed by T13:
+
+- **Journal line bytes.** Members always in the order of §6.1 plus `"hub"` (bool: hub
+  connection required in probation, §14, decided at `gate_closed`) and `"note"` (string or
+  null: `pin_skipped same_release`, `probation_offline`, `from_mismatch`, `state_restored`,
+  `snapshot_skipped`). `crc32` = IEEE CRC-32 of the line's bytes before `,"crc32":"`.
+  Readers use strict JSON, accept `js` N and N+1 (unknown members ignored).
+- **Torn vs corrupt.** An invalid *last* line (or a tail without LF) is a torn write and is
+  truncated at start. An invalid line followed by more data is corruption (§16): the file is
+  renamed `ops.corrupt-<ts>.jsonl` and a new journal starts with `failed journal_corrupt`.
+- **Unproven `current` with no op** (journal lost, or a fresh install that wrote none),
+  normal launch with `L` = `C` ≠ `K`: the supervisor journals a synthetic op `adopt` (actor
+  `supervisor`, `from` = `K` or `previous`) in `probation` and proves `C` like a candidate.
+  Success commits (`known-good := C`); failure with a valid `from` ≠ `C` rolls back and pins
+  `C` as usual. **Without a rollback target** (no valid `from` other than `C`) a failed
+  probation never stops or pins the only release: the op ends `failed <reason>` with note
+  `no_rollback_target`, `C` keeps running, and later starts run `C` without a new `adopt`
+  while that line is the last terminal one (no probation loop); a repair intent replaces it.
+- **Rollback target checked before the pin.** At `rolling_back/pin`, a `from` that is
+  missing, invalid or equal to `to` ends the op `rollback_failed` with note
+  `no_rollback_target` before `to` is pinned.
+- **`rollback_failed` is sticky (J25).** At a normal start with `L` = `C` and no active op,
+  if the last terminal line in the journal is `rollback_failed` and names `C` (as `from` or
+  `to`), the supervisor re-enters `Rollback_Failed` without starting the runtime and rewrites
+  `supervisor-status.json`. Only a new op (repair-type intent) leaves it. A corrupt journal
+  (§16) loses this state, like every other.
+- **Error contract (non-crash failures).** `start`/`tick`/`activate`/`rollback_to_previous`/
+  `stop`/`begin_verified`/`mark_verified` return an error code; every code except the usage
+  refusals `busy`, `no_op`, `bad_state`, `not_verified` (which write nothing) is fatal: the
+  supervisor exits **1** at once and the engine refuses further calls. Typical fatal codes:
+  `fs_busy` (W3 budget spent, e.g. a scanner holding `current.json`), `fs_error` (ENOSPC,
+  EIO), `journal_torn`, `stop_timeout`. Because each sub-step's line precedes its effect and
+  every sub-step is idempotent, the next start (J0 reap, then §6.3/§7.6) resumes the op as it
+  would after a crash; the launcher restarts on exit 1 and applies §7.2 while `C` ≠ `K`.
+  Exceptions retried in place on the next tick, because the runtime is healthy: the
+  `known-good` write and terminal line of `committed` / `rolled_back` (if `known-good`
+  already names the result, the next tick only writes the line). A rollback whose stop of
+  the candidate times out does not journal `stopped`: it exits 1 at `rolling_back/stopping`
+  and the next start's J0 reap terminates the survivors before `current := from` takes
+  effect. A snapshot restore that fails on a write is fatal (redone from `restore`); a
+  missing or damaged snapshot is terminal (`rollback_failed restore_failed`).
+- **Journal append failure.** A short write or fsync error cuts `ops.jsonl` back to its size
+  before the append; if that cut fails too the code is `journal_torn` and the fragment (no LF)
+  is truncated as a torn tail at the next start, which the exit-1 contract guarantees comes
+  before any further append.
+- **Invalid `current` with no op explaining it**: a fallback launch, or a normal launch of
+  `K`, rewrites `current := L` and runs.
+- **Rollback probation** uses `rolling_back/probation` and, on a clean stop,
+  `rolling_back/probation_suspended`, with the same 3-unclean-attempt rule as J16.
+- **Repair of the same release (T9 carry-over (b)).** A rollback whose `to.sha256` equals
+  `from.sha256` (a `-r<n>` re-install) does not pin; the terminal line notes
+  `pin_skipped same_release`.
+- **Restore temp files** are `<path>.tmp-restore-<op_id>`, so the J0 `*.tmp-*` sweep also
+  removes a restore interrupted by a crash.
+- **Power-loss model** of the failure-injection suite (§18): every durable write is one step;
+  the crash at step *k* either drops it, lands it, or tears it (half a journal line with no
+  LF; a replace that left its `*.tmp-*`). It assumes `fsync` is honest; a filesystem that
+  reorders fsynced writes is out of scope. A second matrix fails step *k* once **without** a
+  crash (`fs_busy` through the real W3 loop, or `fs_error`; an append writes half its line
+  first) and drives the result through the Error contract; the harness's exit 1 leaves the
+  children running so only the J0 reap can clear them. Both matrices also restart once more
+  at the end and check that nothing resumes (sticky `rollback_failed`).
+
 ## 7. Launcher
 
 ### 7.1 Inputs and contract
@@ -632,7 +701,7 @@ supervisor launched with `--launched-tree L --launch-mode M` compares with the r
 | `M` = fallback, `L` = `C` | Already rolled back (or `C` = `P`); behave as normal. |
 | `M` = fallback, `C` = `K` ≠ `L` | The candidate committed before the launcher gave up (e.g. crash right after J17). Exit 75; the launcher clears its fallback flag and starts `C` normally. |
 | `M` = fallback, `C` ≠ `K`, `C` ≠ `L`, active op with `to` = `C` | Roll back (J18): `from` must equal `L`; if it does not, roll back to `L` anyway and record `from_mismatch`. |
-| `M` = fallback, `C` ≠ `K`, `C` ≠ `L`, no active op (journal lost, or `K` missing on a fresh install) | Write a synthetic op `rollback_to_previous actor supervisor reason launcher_fallback` (from = `C`, to = `L`), pin `C`, and run it through J18–J24. |
+| `M` = fallback, `C` ≠ `K`, `C` ≠ `L`, no active op (journal lost, or `K` missing on a fresh install) | Write a synthetic op `rollback_to_previous actor supervisor reason launcher_fallback` and run it through J18–J24. Fields use the rollback convention of every `rolling_back` line: `to` = `C` (the tree being left, which is pinned) and `from` = `L` (the rollback target that becomes `current`). |
 
 All cases are T15 tests (J32).
 
