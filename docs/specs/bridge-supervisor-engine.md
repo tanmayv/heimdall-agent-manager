@@ -719,6 +719,11 @@ wake/reconcile (report §6.6).
 
 ### 13.1 Resolution (T11)
 
+Implemented by `src/supervisor/resolver` (resolution, §13.2 rules 1–6, §13.3 cadence,
+`resolver.json` encoding); tests in `resolver_test.odin`, run on all three OSes by
+`.github/workflows/supervisor-unit.yml`. In `fast`, a failed stable lookup (not a mere
+`no_candidate`) also fails the resolution with `resolve_incomplete`.
+
 Source: only `api.github.com` metadata and GitHub release asset downloads for
 `tanmayv/heimdall-agent-manager` (REQ-SRC-1). The hub never supplies a version, URL, digest
 or list.
