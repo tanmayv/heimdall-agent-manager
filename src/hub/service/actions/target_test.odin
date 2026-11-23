@@ -416,3 +416,21 @@ test_instance_target_missing_and_offline :: proc(t:^testing.T) {action_test_case
 test_replace_moves_prompt_to_next_rule :: proc(t:^testing.T) {action_test_case(t,replace_move)}
 @(test)
 test_replace_retirement_error_rolls_back :: proc(t:^testing.T) {action_test_case(t,replace_retire_error)}
+
+// T14: an explicitly pinned legacy machine must fail, never fall through.
+old_bridge_pinned :: proc(t: ^testing.T, f: ^Action_Test) {
+	p := routing_place_setup(t, f); defer action_place_fixture_destroy(p)
+	p.bridges[0].capabilities_json = `{}`
+	err := f.repos.actions.rules_replace(f.repos.actions.ctx, "action", []domain.Action_Target_Rule{{0, "bridge1", "alpha", "m1"}})
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	action_test_match(t, f, "legacy-pinned"); drain_due(&f.runtime.router)
+	rows := action_test_rows(t, f)
+	testing.expect_value(t, len(rows), 1)
+	if len(rows) == 1 {
+		testing.expect_value(t, rows[0].state, "failed")
+		testing.expect_value(t, rows[0].reason, "bridge_too_old")
+	}
+	testing.expect_value(t, p.created, 0)
+}
+@(test)
+test_old_bridge_is_not_a_candidate :: proc(t: ^testing.T) {action_test_case(t, old_bridge_pinned)}

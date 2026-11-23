@@ -60,10 +60,40 @@ taskv2 state change ──same tx──▶ event_outbox ──relay──▶ Jet
 ### 3.2 Stream
 
 `HEIM_EVENTS`:
-- file storage, limits retention, `max_age` 14 days, `duplicate_window` 2 minutes;
-- `allow_rollup_hdrs: true`, `allow_direct: true` for subject-filtered replay, replicas 1 by default.
+- subjects `ev.>` and `sched.def.>`; file storage, limits retention, `max_age` 14 days, `duplicate_window` 2 minutes;
+- `allow_rollup_hdrs: true`, `allow_direct: true` for subject-filtered replay, replicas 1 by default;
+- `allow_msg_schedules: true`, `allow_msg_ttl: true` (forward-only; never remove these flags).
 
-The hub creates or updates the stream idempotently at boot.
+The hub creates or updates the stream idempotently at boot. Schedule support needs
+nats-server 2.14 or newer. `sched.def.<trigger_id>` definitions target
+`ev.<owner>.sched.<trigger_id>`; one-shot deferrals use
+`sched.def.defer.<action_id>` and target `ev.<owner>.action.<action_id>.resume`.
+Schedule definitions use `Nats-TTL: never`; fires use `Nats-Schedule-TTL: 24h`.
+The durable pull consumer `hub_action_matcher` handles schedules and event triggers.
+Reconcile runs on connect and preserves unchanged definitions, including their
+stream sequence and interval phase. An older hub cannot bring its relay up after
+the stream upgrade; restore SQLite and JetStream backups together to roll back.
+
+#### Delivery commands (phase 1 actions)
+
+`HEIM_DELIVER` is a separate file-backed work-queue stream on `dlv.>`, with
+24-hour maximum age, 2-minute duplicate window, one replica and direct reads.
+Subjects are `dlv.<owner>.<bridge_id>.<kind>`. Each capable bridge has a durable
+pull consumer named `brg_<bridge_id>`, filtered to `dlv.*.<bridge_id>.>`, with explicit acknowledgements.
+Only the hub connects to NATS and forwards commands over the bridge WebSocket;
+bridges never connect to the broker. The bridge's persistent delivery ledger
+suppresses duplicate effects across retries/restarts. Actions require
+`event_pipeline_v1`; rollout upgrades the hub before bridges.
+
+Package `delivery` owns the separate `HEIM_DELIVER_ADVISORIES` stream on
+`$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.HEIM_DELIVER.>` and consumer
+`hub_delivery_dlq`. It must not share the event inbox advisory consumer.
+
+Deliveries are **commands**, not event envelopes: D6 applies to `HEIM_EVENTS`
+events, not to deliveries. A delivery may carry encrypted prompt content through
+the established content path; event envelopes still contain only ids, enums and
+versions. See [the action contracts](action-triggers-spec.md#611-the-delivery-pipeline-t16-t17).
+
 
 ### 3.3 Hub config and startup (REQ-EVA-9)
 
