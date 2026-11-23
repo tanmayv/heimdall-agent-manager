@@ -2,6 +2,7 @@ package main
 
 import natstest "odin_test:lib/natstest"
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:os"
@@ -432,7 +433,15 @@ test_refresh_restart_and_action_sends_publish :: proc(t: ^testing.T) {
 	if !testing.expect(t, saved, save_err.message) do return
 	create := api_http.router_dispatch(&f.graph.router, api_http.Request{method = "POST", path = "/api/v1/actions", body = fmt.aprintf(`{{"name":"Nightly","target":{{"kind":"instance","instance_id":"%s"}},"prompt_text":"ACTION-SECRET-99","triggers":[{{"kind":"event","config":{{"event_type":"chain.state"}}}}]}}`, f.inst_id), request_id = "req_rf_act", remote_addr = "127.0.0.1", headers = f.alice[:]})
 	if !testing.expectf(t, create.status == 201, "create action: %d %s", create.status, create.body) do return
-	action_id := refresh_json_field(create.body, "id")
+	// The response also contains trigger IDs: select the action ID from the data object.
+	created: json.Value
+	if !testing.expect(t, json.unmarshal(transmute([]u8)create.body, &created) == nil) do return
+	defer json.destroy_value(created)
+	created_object, object_ok := created.(json.Object)
+	if !testing.expect(t, object_ok, "v2 action response object") do return
+	created_data, data_ok := created_object["data"].(json.Object)
+	if !testing.expect(t, data_ok, "v2 action response data") do return
+	action_id, _ := created_data["id"].(string)
 	if !testing.expect(t, action_id != "", "v2 action id") do return
 	flush_ws_socket(tab.client)
 	now_ms, _ := platform.rfc3339_to_unix_ms(platform.clock_now(&f.graph.clock))
@@ -447,6 +456,8 @@ test_refresh_restart_and_action_sends_publish :: proc(t: ^testing.T) {
 	testing.expect_value(t, message.body, "ACTION-SECRET-99")
 	// V2 routing currently persists without publishing a UI hint. Exercise the
 	// shared post-commit publisher on its committed row as the closest equivalent.
+	// TODO(task_18eaa362cb34bb32): remove explicit publication when routing emits it.
+	// Restart is asserted only by the chat-send half above.
 	api_http.publish_user_message_created(&f.graph.content_handlers, {kind = .Session, user_id = "alice"}, f.conv_id, message)
 	run_frames := refresh_collect(tab.client)
 	defer delete(run_frames)

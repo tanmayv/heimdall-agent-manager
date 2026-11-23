@@ -125,6 +125,7 @@ test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
 		"./bin/ham-ctl task-chain show <chain_id>",
 		"./bin/ham-ctl task show <task_id>",
 		"ninjy-bot-operations",
+		"only within the user's approval",
 		"./bin/ham-ctl events next",
 		"./bin/ham-ctl events ack <event_id>",
 		"review verdicts and memory-proposal approvals",
