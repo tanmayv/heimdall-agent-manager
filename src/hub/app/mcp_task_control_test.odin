@@ -17,6 +17,7 @@ import tv2 "odin_test:hub/service/taskv2"
 import vd "odin_test:hub/service/vault_directory"
 import http "odin_test:hub/transport/http"
 import contracts "odin_test:contracts"
+import project "odin_test:hub/service/project"
 
 MCP_Task_Test_Vector :: struct {
 	now_ms:i64,
@@ -236,6 +237,11 @@ mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Ha
 	g.agents.agents=&g.repos.agents;g.agents.bridges=&g.repos.bridges;g.agents.providers=&g.provider_repo
 	g.taskchains.agents=&g.repos.agents;g.taskchains.agent_service=&g.agents
 	g.task_engine.agents=&g.repos.agents;g.task_engine.bridges=&g.repos.bridges
+	// Wake grants prepare a generation through the same agent service as runtime calls.
+	g.task_engine.agent_service=&g.agents
+	g.agents.clock=&g.clock;g.agents.ids=&g.ids
+	g.agents.bridge_runtime_registry=&g.bridge_runtime_registry
+	defer project.bridge_runtime_registry_destroy(&g.bridge_runtime_registry)
 	owner:=domain.User_ID(view.owner)
 	_,ok,_:=iface.agent_save(&g.repos.agents,{agent_id="agt_placement",owner_user_id=owner,name="Synthetic placement",slug="synthetic-placement",template_id=domain.TEMPLATE_EMPTY_ID,state=.Active,created_at=now,updated_at=now})
 	if !testing.expect(t,ok) do return
@@ -247,6 +253,10 @@ mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Ha
 		status:=domain.Bridge_Status.Online;if bridge=="brg_placement_offline" do status=.Offline
 		_,saved,_:=iface.bridge_save_bridge(&g.repos.bridges,{bridge_id=bridge,owner_user_id=owner,label=bridge,status=status,created_at=now,updated_at=now})
 		testing.expect(t,saved)
+		if status==.Online {
+			_,_,live:=project.bridge_runtime_registry_accept_live(&g.bridge_runtime_registry,bridge,false,"",view.owner)
+			testing.expect(t,live)
+		}
 		status_ok,_:=iface.bridge_provider_status_upsert(&g.provider_repo,{bridge_id=bridge,provider="codex",state="present",checked_at=now})
 		setting_ok,_:=iface.bridge_provider_setting_upsert(&g.provider_repo,{bridge_id=bridge,provider="codex",enabled=true,updated_at=now})
 		testing.expect(t,status_ok && setting_ok)
