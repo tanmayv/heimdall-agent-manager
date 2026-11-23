@@ -324,7 +324,8 @@ test_instance_record_check :: proc(t: ^testing.T) {
 	testing.expectf(t, same_path(cat(f.data, "/"), f.data), "trailing separator: %q vs %q", normalize_path(cat(f.data, "/")), normalize_path(f.data))
 	rec, reason := read_instance_record(f.data, context.temp_allocator)
 	testing.expectf(t, reason == "", "read_instance_record: %s", reason)
-	testing.expectf(t, owner_matches(rec.owner), "owner %v does not match (uid %d)", rec.owner, test_current_uid())
+	raw, _ := os.read_entire_file(join_alloc(f.data, "instance.json"), context.temp_allocator)
+	testing.expectf(t, owner_matches(rec.owner), "owner %v does not match (uid %d); instance.json %q", rec.owner, test_current_uid(), string(raw))
 	testing.expectf(t, same_path(rec.data_root, f.data), "data_root %q (%q) vs %q (%q)", rec.data_root, normalize_path(rec.data_root), f.data, normalize_path(f.data))
 	testing.expectf(t, check_instance_record(rec, f.data, f.state) == "", "check: %s", check_instance_record(rec, f.data, f.state))
 	other := rec
