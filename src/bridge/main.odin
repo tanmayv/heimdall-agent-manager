@@ -267,6 +267,7 @@ main :: proc() {
 	// Wake state must exist before the hub worker can run a launch, which
 	// records itself via bridge_task_wake_note_launched.
 	bridge_agent_wake_init()
+	bridge_event_ledger_load()
 	// Name the HTTPS client and its trust anchors once, so a host whose CA store
 	// was not found (embedded Mozilla fallback) is visible in the service log.
 	// (Locals, not inline calls: check-http-boundary.sh's library-path pattern

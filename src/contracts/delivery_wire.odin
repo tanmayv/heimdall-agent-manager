@@ -45,3 +45,5 @@ Event_Deliver_Wire :: struct {
 	final:             bool `json:"final"`, // attempt == DELIVERY_MAX_DELIVER
 	delivery:          Delivery_Wire `json:"delivery"`,
 }
+
+EVENTS_NOTICE_FORMAT :: "[events] %d new event(s) — run ham-ctl events next"

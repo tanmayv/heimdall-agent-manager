@@ -1,6 +1,8 @@
 package main
 
 import "core:fmt"
+import "base:runtime"
+import "core:encoding/json"
 import "core:time"
 import "core:math/rand"
 import "core:strings"
@@ -35,7 +37,7 @@ bridge_wake_once: sync.Once
 // no call order can touch nil state.
 bridge_agent_wake_init :: proc() {
 	sync.once_do(&bridge_wake_once, proc() {
-		bridge_agent_wake = make(map[string]Bridge_Wake_State)
+		bridge_agent_wake = make(map[string]Bridge_Wake_State, runtime.heap_allocator())
 	})
 }
 
@@ -100,9 +102,9 @@ Bridge_Wake_Transition :: enum {
 }
 
 bridge_wake_state_free :: proc(st: ^Bridge_Wake_State) {
-	delete(st.catalog_etag)
-	delete(st.provider)
-	delete(st.model)
+	delete(st.catalog_etag, runtime.heap_allocator())
+	delete(st.provider, runtime.heap_allocator())
+	delete(st.model, runtime.heap_allocator())
 	st.catalog_etag, st.provider, st.model = "", "", ""
 }
 
@@ -187,7 +189,7 @@ bridge_task_wake_note_launched :: proc(instance_id: string, now_ms: i64 = 0) {
 	bridge_agent_wake_init()
 	sync.mutex_lock(&bridge_wake_mutex)
 	defer sync.mutex_unlock(&bridge_wake_mutex)
-	if instance_id not_in bridge_agent_wake do bridge_agent_wake[strings.clone(instance_id)] = Bridge_Wake_State{}
+	if instance_id not_in bridge_agent_wake do bridge_agent_wake[strings.clone(instance_id, runtime.heap_allocator())] = Bridge_Wake_State{}
 	st := &bridge_agent_wake[instance_id]
 	st.last_wake_ms = now_ms if now_ms > 0 else bridge_runtime_now_ms()
 	if st.parked || st.failures > 0 do fmt.println("bridge wake RECOVERED (launched)", instance_id)
@@ -202,16 +204,32 @@ bridge_task_wake_note_launched :: proc(instance_id: string, now_ms: i64 = 0) {
 // subject to coalescing (BRIDGE_WAKE_COALESCE_MS), retriable-failure backoff and
 // parking (see Bridge_Wake_State). Returns true if a wake was requested and the
 // launch succeeded.
+Bridge_Wake_Outcome :: enum { Launched, Already_Active, Coalesced, Backing_Off, Parked, Failed }
+Bridge_Wake_Result :: struct { outcome: Bridge_Wake_Outcome, err: Bridge_Error, retry_after_ms: i64 }
+BRIDGE_LIVE_ROW_RETRY_MS :: i64(30_000)
+BRIDGE_LIVE_ROW_RETRIES :: 5
+bridge_wake_snapshot_proc: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) = bridge_runtime_instance_snapshot
+bridge_wake_launch_proc: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) = bridge_wake_launch
+bridge_wake_start_begin_proc: proc(instance_id, ref: string, deadline_ns: i64) -> (string, string, Bridge_Error, bool) = bridge_wake_start_begin
+bridge_wake_manifest_proc: proc(instance_id, command_id: string, deadline_ns: i64) -> (string, Bridge_Error, bool) = bridge_wake_manifest
+bridge_wake_manifest :: proc(instance_id, command_id: string, deadline_ns: i64) -> (string, Bridge_Error, bool) { return bridge_wake_fetch_enriched_launch_json(instance_id, command_id, deadline_ns) }
+bridge_wake_http_proc: proc(req: httpc.Request) -> (httpc.Response, httpc.Error) = bridge_hub_http_send
+bridge_wake_launch :: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) {
+    return bridge_runtime_launch_agent(command_id, command_json, deadline_ns)
+}
 bridge_task_wake_if_needed :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0) -> bool {
+    return bridge_wake_attempt(instance_id, now, deadline_ns).outcome == .Launched
+}
+bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0, delivery_id: string = "") -> Bridge_Wake_Result {
 	bridge_agent_wake_init()
 	sync.mutex_lock(&bridge_wake_mutex)
 	// Activity is checked UNDER the wake mutex (lock order: wake ->
 	// runtime). A launch marks the instance active before it calls
 	// bridge_task_wake_note_launched, so either this check sees it active, or the
 	// launch's generation bump happens after we register and invalidates us.
-	if inst, found := bridge_runtime_instance_snapshot(instance_id); found && bridge_runtime_status_active(inst.runtime_status) {
+	if inst, found := bridge_wake_snapshot_proc(instance_id); found && bridge_runtime_status_active(inst.runtime_status) && (delivery_id == "" || inst.runtime_status != "stopping") {
 		sync.mutex_unlock(&bridge_wake_mutex)
-		return false
+		return {.Already_Active, {}, 0}
 	}
 	st, has := bridge_agent_wake[instance_id]
 	trigger := ""
@@ -219,11 +237,17 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64, deadline_ns: i
 		trigger = bridge_wake_unpark_trigger(&bridge_agent_wake[instance_id], now)
 		st = bridge_agent_wake[instance_id]
 	}
-	if bridge_wake_gate(st, has, now, trigger != "") != .Wake {
+	gate := bridge_wake_gate(st, has, now, trigger != "")
+	if gate != .Wake {
 		sync.mutex_unlock(&bridge_wake_mutex)
-		return false
+		switch gate {
+        case .Coalesced: return {.Coalesced, {}, max(0, st.last_wake_ms + BRIDGE_WAKE_COALESCE_MS - now)}
+        case .Backing_Off: return {.Backing_Off, st.err, max(0, st.next_at_ms - now)}
+        case .Parked: return {.Parked, st.err, 0}
+        case .Wake:
+        }
 	}
-	if !has do bridge_agent_wake[strings.clone(instance_id)] = Bridge_Wake_State{}
+	if !has do bridge_agent_wake[strings.clone(instance_id, runtime.heap_allocator())] = Bridge_Wake_State{}
 	slot := &bridge_agent_wake[instance_id]
 	slot.last_wake_ms = now
 	generation := slot.generation
@@ -242,17 +266,36 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64, deadline_ns: i
 	// takes the full agent-keyed template bootstrap. If the descriptor cannot be
 	// fetched (or lacks agent_id), the wake fails with a classified error rather
 	// than materialize a degraded bootstrap -- a visible failure, never a silent one.
-	command_id := fmt.tprintf("sched_wake_%s_%d", instance_id, now)
-	command_json, enrich_err, enrich_ok := bridge_wake_fetch_enriched_launch_json(instance_id, command_id, deadline_ns)
-	defer delete(command_json)
+	command_id := fmt.aprintf("sched_wake_%s_%d", instance_id, now)
+	command_json: string
+    enrich_err: Bridge_Error
+    enrich_ok: bool
+    if delivery_id == "" {
+        command_json, enrich_err, enrich_ok = bridge_wake_manifest_proc(instance_id, command_id, deadline_ns)
+    } else {
+        delete(command_id)
+        command_json, command_id, enrich_err, enrich_ok = bridge_wake_start_begin_proc(instance_id, delivery_id, deadline_ns)
+    }
+    defer delete(command_id)
+    defer delete(command_json)
+    if delivery_id != "" && !enrich_ok && enrich_err.hub_status == 409 && enrich_err.retry_after_ms == BRIDGE_LIVE_ROW_RETRY_MS {
+        if snap, found := bridge_wake_snapshot_proc(instance_id); found && bridge_runtime_status_active(snap.runtime_status) && snap.runtime_status != "stopping" {
+            return {.Already_Active, {}, 0}
+        }
+        return {.Failed, enrich_err, BRIDGE_LIVE_ROW_RETRY_MS}
+    }
 	ok, detail, err := false, "", enrich_err
 	if enrich_ok {
-		ok, detail, err = bridge_runtime_launch_agent(command_id, command_json, deadline_ns)
+		ok, detail, err = bridge_wake_launch_proc(command_id, command_json, deadline_ns)
 	} else {
 		detail = "could not fetch enriched descriptor (agent_id)"
 	}
 	bridge_task_wake_record_result(instance_id, generation, ok, detail, err, command_json, now)
-	return ok
+	retry := err.retry_after_ms
+    sync.mutex_lock(&bridge_wake_mutex)
+    if state, found := bridge_agent_wake[instance_id]; found do retry = max(retry, state.next_at_ms - now)
+    sync.mutex_unlock(&bridge_wake_mutex)
+    return {.Launched if ok else .Failed, err, max(0, retry)}
 }
 
 // bridge_task_wake_record_result applies a wake outcome and logs only state
@@ -270,8 +313,12 @@ bridge_task_wake_record_result :: proc(instance_id: string, generation: u64, ok:
 		// Snapshot the trigger baselines on EVERY parked failure, including a failed
 		// unpark attempt: otherwise a changed catalog etag would re-trigger each tick.
 		bridge_wake_state_free(st)
-		st.catalog_etag = bridge_provider_catalog_current_etag()
-		st.provider, st.model = bridge_runtime_provider_model(command_json) // caller-owned
+		etag := bridge_provider_catalog_current_etag()
+        st.catalog_etag = strings.clone(etag, runtime.heap_allocator())
+        delete(etag)
+        provider, model := bridge_runtime_provider_model(command_json)
+        st.provider, st.model = strings.clone(provider, runtime.heap_allocator()), strings.clone(model, runtime.heap_allocator())
+        delete(provider); delete(model)
 	}
 	switch transition {
 	case .None:
@@ -358,4 +405,137 @@ bridge_wake_fetch_enriched_launch_json :: proc(instance_id, command_id: string, 
 	run_count := 0
 	if use_manifest_run_count do run_count, _ = bridge_provider_json_extract_int(inst_obj, "run_count")
 	return bridge_wake_launch_command_json(command_id, instance_id, "", role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, "", "", permission_mode,run_count=run_count,provider_profile=provider_profile,effective_transport=effective_transport,catalog_etag=catalog_etag,launch_epoch=launch_epoch, bot_idle_restart=use_manifest_run_count && extract_json_bool(inst_obj, "bot_idle_restart", false)), {}, true
+}
+
+// Start-begin returns a hub-authored launch object; do not rebuild its fields.
+bridge_wake_start_begin :: proc(instance_id, ref: string, deadline_ns: i64 = 0) -> (launch_json, command_id: string, err: Bridge_Error, ok: bool) {
+    if !sync.atomic_load(&bridge_hub_start_begin_supported) {
+        e := bridge_error(.hub_rejected, .other, 400); e.class = .fatal
+        return "", "", e, false
+    }
+    credential := bridge_credential_snapshot()
+    defer delete(credential)
+    if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(credential) == "" {
+        return "", "", bridge_error(.hub_connect_failed, .transport), false
+    }
+    body, _ := json.marshal(struct {ref: string}{ref})
+    defer delete(body)
+    headers := [?]httpc.Header{httpc.bearer(credential)}
+    req := httpc.Request{method = .POST, url = bridge_hub_url(),
+        path = {"api", "v1", "bridge", "agent-instances", instance_id, "start-begin"},
+        headers = headers[:], body = httpc.raw_body(httpc.CONTENT_TYPE_JSON, body)}
+    resp: httpc.Response
+    http_err: httpc.Error
+    if deadline_ns != 0 {
+        left := (deadline_ns - time.to_unix_nanoseconds(time.now())) / i64(time.Millisecond)
+        if left <= 0 do return "", "", bridge_error(.hub_connect_failed, .transport), false
+        req.timeout_ms = int(min(10_000, left))
+        resp, http_err = bridge_wake_http_proc(req)
+    } else {
+        resp, http_err = bridge_http_request_retry(req, fetch = bridge_wake_http_proc)
+    }
+    defer httpc.response_destroy(&resp)
+    if http_err != .None || resp.status == 0 do return "", "", bridge_error(.hub_connect_failed, .transport), false
+    if resp.status != 200 {
+        e := bridge_error(.hub_rejected, .other, resp.status)
+        value: json.Value
+        parse_err := json.unmarshal(resp.body, &value, allocator = context.temp_allocator)
+        already_running := bridge_wake_error_is_live(value)
+        e.class = .fatal
+        if resp.status == 409 || resp.status == 423 || resp.status == 401 || resp.status == 403 || resp.status == 429 || resp.status >= 500 do e.class = .retriable
+        if resp.status == 409 && already_running do e.retry_after_ms = BRIDGE_LIVE_ROW_RETRY_MS
+        if resp.status == 404 {
+            obj, has := bridge_wake_object_text(httpc.text(resp), "error")
+            if parse_err != nil || !has || extract_json_string(obj, "code", "", context.temp_allocator) == "" do e.class = .retriable
+        }
+        return "", "", e, false
+    }
+    value: json.Value
+    if json.unmarshal(resp.body, &value, allocator = context.temp_allocator) != nil {
+        e := bridge_error(.hub_rejected, .other, 200); e.class = .fatal
+        return "", "", e, false
+    }
+    data, data_ok := bridge_wake_object_text(httpc.text(resp), "data")
+    launch, launch_ok := bridge_wake_object_text(data, "launch")
+    if !data_ok || !launch_ok {
+        e := bridge_error(.hub_rejected, .other, 200); e.class = .fatal
+        return "", "", e, false
+    }
+    id := extract_json_string(launch, "command_id", "")
+    if id == "" || extract_json_int(launch, "run_count", 0) <= 0 {
+        delete(id)
+        e := bridge_error(.hub_rejected, .other, 200); e.class = .fatal
+        return "", "", e, false
+    }
+    return strings.clone(launch), id, {}, true
+}
+
+// Search details at any depth; the outer error.code is usually "conflict".
+bridge_wake_error_is_live :: proc(value: json.Value) -> bool {
+    #partial switch v in value {
+    case json.Object:
+        for key, item in v {
+            if text, ok := item.(json.String); ok && key == "code" && string(text) == "already_running" do return true
+            if bridge_wake_error_is_live(item) do return true
+        }
+    case json.Array:
+        for item in v do if bridge_wake_error_is_live(item) do return true
+    }
+    return false
+}
+
+
+// Returns a view of an object field without reserializing it. The enclosing
+// response is JSON-validated first. Strings and nested containers are skipped
+// lexically, preserving whitespace, member order and escaped launch values.
+bridge_wake_object_text :: proc(body, key: string) -> (string, bool) {
+    depth := 0
+    i := 0
+    for i < len(body) {
+        ch := body[i]
+        if ch == '"' {
+            begin := i
+            i += 1
+            for i < len(body) {
+                if body[i] == '\\' { i += 2; continue }
+                if body[i] == '"' do break
+                i += 1
+            }
+            if i >= len(body) do return "", false
+            end := i
+            i += 1
+            if depth != 1 do continue
+            j := i
+            for j < len(body) && (body[j] == ' ' || body[j] == 10 || body[j] == 13 || body[j] == 9) do j += 1
+            if j >= len(body) || body[j] != ':' do continue
+            field: string
+            if json.unmarshal_string(body[begin:end+1], &field, allocator = context.temp_allocator) != nil || field != key do continue
+            j += 1
+            for j < len(body) && (body[j] == ' ' || body[j] == 10 || body[j] == 13 || body[j] == 9) do j += 1
+            if j >= len(body) || body[j] != '{' do return "", false
+            start := j
+            nested := 0
+            quoted := false
+            for j < len(body) {
+                c := body[j]
+                if quoted {
+                    if c == '\\' { j += 2; continue }
+                    if c == '"' do quoted = false
+                } else {
+                    if c == '"' { quoted = true }
+                    else if c == '{' { nested += 1 }
+                    else if c == '}' {
+                        nested -= 1
+                        if nested == 0 do return body[start:j+1], true
+                    }
+                }
+                j += 1
+            }
+            return "", false
+        }
+        if ch == '{' || ch == '[' do depth += 1
+        if ch == '}' || ch == ']' do depth -= 1
+        i += 1
+    }
+    return "", false
 }

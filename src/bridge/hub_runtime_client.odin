@@ -642,6 +642,7 @@ bridge_hub_apply_ready_settings :: proc(text: string) {
 	sync.atomic_store(&bridge_hub_diagnostics_frame_v1, extract_json_bool(text, "diagnostics_frame_v1", false))
 	// Absent on hubs that predate bridge_features_update (acp_runtime_probe.odin).
 	sync.atomic_store(&bridge_hub_features_update_supported, extract_json_bool(text, contracts.BRIDGE_READY_FEATURES_UPDATE, false))
+	sync.atomic_store(&bridge_hub_start_begin_supported, extract_json_bool(text, contracts.BRIDGE_READY_START_BEGIN, false))
 }
 
 // Per-connection heartbeat negotiation (minimal heartbeat plan §4.4, T4). Both start
@@ -653,6 +654,7 @@ bridge_hub_apply_ready_settings :: proc(text: string) {
 // metadata authority (it also requires our hello to list
 // contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION), so heartbeats may drop
 // capabilities/features.
+bridge_hub_start_begin_supported: bool
 bridge_hub_heartbeat_metadata_omission: bool
 // diagnostics_frame_v1: the hub accepts the separate bridge_diagnostics frame. Our
 // heartbeat drops its diagnostic members only once that frame is actually sent
@@ -670,6 +672,7 @@ bridge_hub_reset_heartbeat_negotiation :: proc() {
 	sync.atomic_store(&bridge_hub_heartbeat_metadata_omission, false)
 	sync.atomic_store(&bridge_hub_diagnostics_frame_v1, false)
 	sync.atomic_store(&bridge_hub_features_update_supported, false)
+	sync.atomic_store(&bridge_hub_start_begin_supported, false)
 }
 
 // Bridge_Heartbeat_Shape selects which optional member groups a heartbeat carries.
@@ -1032,6 +1035,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				bridge_runtime_remove_launch(id)
 			}
 		}
+		return
+	}
+	if type == "event_deliver" {
+		bridge_event_deliver_handle(conn, text)
 		return
 	}
 	if type == "bot_deliver" {
@@ -4351,6 +4358,9 @@ bridge_get_agent_pane_result_json :: proc(command_id: string, ok: bool, unchange
 // failures go through bridge_command_failed_json so they always carry a typed error.
 Bridge_Command_Runtime_Status :: struct {
 	runtime_status: string,
+	outcome: string `json:"outcome,omitempty"`,
+	class: string `json:"class,omitempty"`,
+	retry_after_ms: Maybe(i64) `json:"retry_after_ms,omitempty"`,
 	agent_instance_id: Maybe(string) `json:"agent_instance_id,omitempty"`,
 	expected_run_count: Maybe(int) `json:"expected_run_count,omitempty"`,
 }
@@ -4390,6 +4400,22 @@ bridge_command_result_wire :: proc(command_id, status, runtime_status: string) -
 	res.payload.status = status
 	if runtime_status != "" do res.payload.result = Bridge_Command_Runtime_Status{runtime_status = runtime_status}
 	return res
+}
+
+bridge_event_result_json :: proc(command_id, status, outcome, class: string, retry_after_ms: i64, cause, message: string) -> string {
+    res := bridge_command_result_wire(command_id, status, "")
+    res.ok = status == "succeeded"
+    result := Bridge_Command_Runtime_Status{outcome = outcome, class = class}
+    // Odin's omitempty does not omit integer zero. Absence asks for the hub schedule.
+    if class == "retry" && retry_after_ms > 0 do result.retry_after_ms = retry_after_ms
+    res.payload.result = result
+    if status == "failed" {
+        err := bridge_cause_wire_error(cause, message, retry_after_ms)
+        err.class = .retriable if class == "retry" else .fatal
+        res.error = contracts.wire_error_json_value(err)
+    }
+    out, _ := vault.wire_encode(res)
+    return out
 }
 
 bridge_command_result_json :: proc(command_id, status, runtime_status: string) -> string {
@@ -4628,7 +4654,7 @@ Bridge_Hello_Wire :: struct {
 // on every hello and on every legacy beat that carries features.
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
-BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1}
+BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1}
 bridge_runtime_features :: proc() -> []string {
 	features := make([dynamic]string, allocator = context.temp_allocator)
 	append(&features, ..BRIDGE_RUNTIME_FEATURES[:])
