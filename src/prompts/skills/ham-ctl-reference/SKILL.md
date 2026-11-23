@@ -801,7 +801,7 @@ ham-ctl hub actions update <action-id> [--prompt <text>] [--name <text>] [--min-
 ham-ctl hub actions enable <action-id>
 ham-ctl hub actions disable <action-id>
 ham-ctl hub actions delete <action-id>
-ham-ctl hub actions runs <action-id> [--limit <n>] [--before <cursor>]
+ham-ctl hub actions runs <action-id> [--limit <n>] [--before <created_at>] [--before-id <run_id>]
 ```
 
 Each rule part is a value or `*`; omitted model means `*`. Rule order is flag
@@ -812,7 +812,8 @@ zone), `every:<seconds>`, `at:<RFC3339>` and
 `active_from` and `active_until` in its config. Mixed repeated trigger flags keep
 their order. On update, any trigger flag replaces the whole trigger list; any
 target flag replaces the whole target, including rules. Omitted fields stay as-is.
-Pass the returned history cursor unchanged to `--before`.
+For stable history paging, pass the last row's `created_at` to `--before` and
+its run id to `--before-id`; a timestamp alone excludes all rows at that time.
 
 ```bash
 ham-ctl hub actions create --prompt 'Review {{event.chain_id}}' --agent-id agt_1 --rule '*:claude' --trigger 'event:chain.state,state=completed'
