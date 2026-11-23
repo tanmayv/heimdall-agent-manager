@@ -132,6 +132,11 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 		acknowledge(&service, "alice", "agt_coord", []string{"resolved:evt_notice", "state_3"}).code,
 		domain.Error_Code.None,
 	)
+	rows, ack_snapshot_err = ack_snapshot(&service, "alice", "agt_coord", []string{"state_3"})
+	testing.expect_value(t, ack_snapshot_err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(rows), 1)
+	if len(rows) > 0 do testing.expect(t, rows[0].acknowledged, "mixed batch acknowledges the real delivery before any plain re-ack")
+	delivery_rows_destroy(rows)
 	testing.expect_value(
 		t,
 		acknowledge(&service, "alice", "agt_coord", []string{"state_3"}).code,
