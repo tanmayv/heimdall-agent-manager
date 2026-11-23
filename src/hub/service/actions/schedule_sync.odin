@@ -92,28 +92,39 @@ schedule_on_change :: proc(sc: ^Sync_Context, before, after: ^domain.Action_Trig
 	defer domain.event_outbox_row_destroy(&row)
 	return sc.outbox.append(sc.outbox.ctx,row)
 }
-// No I/O: callers hold the trigger slice until all planned operations finish.
+// No I/O or temporary-allocator use. Keys borrow the inputs until the plan
+// finishes; returned operations point into triggers and own purge_subject.
 reconcile_plan :: proc(stored: []Stored_Definition, triggers: []domain.Action_Trigger, allocator: mem.Allocator) -> []Reconcile_Op {
-	ops: [dynamic]Reconcile_Op
+	definitions := make(map[string]int, allocator=allocator)
+	defer delete(definitions)
+	effective := make(map[string]bool, allocator=allocator)
+	defer delete(effective)
+	prefix :: "sched.def."
+	for definition, i in stored {
+		if !strings.has_prefix(definition.subject, prefix) do continue
+		id := definition.subject[len(prefix):]
+		// Preserve first-definition semantics if a caller supplies duplicates.
+		if _, exists := definitions[id]; !exists do definitions[id] = i
+	}
+	ops := make([dynamic]Reconcile_Op, allocator=allocator)
 	defer delete(ops)
 	for &trigger in triggers {
-		present:=false
-		for definition in stored {
-			if definition.subject==fmt.tprintf("sched.def.%s",trigger.trigger_id) {
-				present=true
-				if definition.trigger_id!=trigger.trigger_id || definition.rev!=trigger.rev do append(&ops,Reconcile_Op{publish=true,trigger=&trigger})
-				break
-			}
+		effective[trigger.trigger_id] = true
+		index, present := definitions[trigger.trigger_id]
+		if !present {
+			append(&ops, Reconcile_Op{publish=true, trigger=&trigger})
+		} else {
+			definition := stored[index]
+			if definition.trigger_id != trigger.trigger_id || definition.rev != trigger.rev do append(&ops, Reconcile_Op{publish=true, trigger=&trigger})
 		}
-		if !present do append(&ops,Reconcile_Op{publish=true,trigger=&trigger})
 	}
 	for definition in stored {
-		found:=false
-		for trigger in triggers do if definition.subject==fmt.tprintf("sched.def.%s",trigger.trigger_id) {found=true; break}
-		if !found do append(&ops,Reconcile_Op{purge_subject=strings.clone(definition.subject,allocator)})
+		present := false
+		if strings.has_prefix(definition.subject, prefix) do present = effective[definition.subject[len(prefix):]]
+		if !present do append(&ops, Reconcile_Op{purge_subject=strings.clone(definition.subject, allocator)})
 	}
-	result:=make([]Reconcile_Op,len(ops),allocator)
-	copy(result,ops[:])
+	result := make([]Reconcile_Op, len(ops), allocator)
+	copy(result, ops[:])
 	return result
 }
 reconcile_ops_destroy :: proc(ops: []Reconcile_Op, allocator:=context.allocator) {
@@ -133,12 +144,12 @@ reconcile :: proc(s: ^Service, conn: ^nats.Connection) -> (done: bool, err: doma
 	if backlog != 0 do return false, {}
 
 	stored: [dynamic]Stored_Definition
-	owners: [dynamic]string
+	owners := make(map[string]string)
 	defer {
-		for definition in stored { delete(definition.subject); delete(definition.trigger_id) }
-		for owner in owners do delete(owner)
-		delete(stored)
+		for _, owner in owners do delete(owner)
 		delete(owners)
+		for definition in stored { delete(definition.subject); delete(definition.trigger_id) }
+		delete(stored)
 	}
 	start: u64 = 1
 	for {
@@ -152,6 +163,7 @@ reconcile :: proc(s: ^Service, conn: ^nats.Connection) -> (done: bool, err: doma
 		value: json.Value
 		parse_err := json.unmarshal(nats.message_data(msg), &value)
 		if parse_err != nil {
+			json.destroy_value(value)
 			nats.message_destroy(msg)
 			return false, domain.domain_error(.Internal_Error, "invalid stored schedule definition")
 		}
@@ -166,7 +178,9 @@ reconcile :: proc(s: ^Service, conn: ^nats.Connection) -> (done: bool, err: doma
 			return false, domain.domain_error(.Internal_Error, "invalid stored schedule definition")
 		}
 		append(&stored, Stored_Definition{subject=strings.clone(nats.message_subject(msg)),trigger_id=strings.clone(trigger_id),rev=int(rev)})
-		append(&owners, strings.clone(owner))
+		subject := stored[len(stored)-1].subject
+		if previous, exists := owners[subject]; exists do delete(previous)
+		owners[subject] = strings.clone(owner)
 		json.destroy_value(value)
 		nats.message_destroy(msg)
 		start = sequence + 1
@@ -192,14 +206,9 @@ reconcile :: proc(s: ^Service, conn: ^nats.Connection) -> (done: bool, err: doma
 			if row_err.code != .None do return false, row_err
 			row = definition
 		} else {
-			for definition, i in stored {
-				if definition.subject == op.purge_subject {
-					// The subject is authoritative even for malformed/stale body ids.
-					trigger_id := strings.trim_prefix(definition.subject, "sched.def.")
-					row = schedule_purge_row(&sc, owners[i], trigger_id)
-					break
-				}
-			}
+			// The subject is authoritative even for a stale body trigger id.
+			trigger_id := strings.trim_prefix(op.purge_subject, "sched.def.")
+			row = schedule_purge_row(&sc, owners[op.purge_subject], trigger_id)
 		}
 		append_err := sc.outbox.append(sc.outbox.ctx, row)
 		domain.event_outbox_row_destroy(&row)

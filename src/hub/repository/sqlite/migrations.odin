@@ -1041,6 +1041,17 @@ run_migrations :: proc(
          continue
         }
 		if migration_applied(conn, name) do continue
+		// The reset commits atomically before its ledger entry. Its LAST index
+		// plus the absence of the old schema proves the exec-to-mark gap; do
+		// not reapply the destructive reset to already committed new rows.
+		if name == "actions_001_reset.sql" &&
+		   sqlite_object_exists(conn, "action_runs_due") &&
+		   !sqlite_object_exists(conn, "action_schedule_revision") &&
+		   !sqlite_object_exists(conn, "scheduled_prompts") &&
+		   table_column_exists(conn, "actions", "action_id") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 215 commits atomically; repair a crash before its ledger insert.
 		if name == "215_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
 			mark_migration_applied(conn, name)
@@ -1492,7 +1503,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,

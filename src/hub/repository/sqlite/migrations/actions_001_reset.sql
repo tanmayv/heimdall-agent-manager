@@ -1,4 +1,6 @@
 -- actions_001_reset.sql : no backfill; existing action rows are discarded (R1)
+BEGIN;
+
 DROP TRIGGER IF EXISTS action_revision_insert;
 DROP TRIGGER IF EXISTS action_revision_update;
 DROP TRIGGER IF EXISTS action_revision_delete;
@@ -87,3 +89,5 @@ CREATE UNIQUE INDEX action_runs_one_open ON action_runs(action_id) WHERE state I
 CREATE INDEX action_runs_action ON action_runs(action_id, created_at);
 CREATE INDEX action_runs_joined ON action_runs(joined_run_id) WHERE state = 'joined';
 CREATE INDEX action_runs_due    ON action_runs(state, not_before) WHERE state IN ('queued','deferred'); -- S2: runs_due, runs_deferred (6.16)
+
+COMMIT;

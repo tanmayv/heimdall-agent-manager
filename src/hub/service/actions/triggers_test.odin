@@ -1,6 +1,7 @@
 package actions
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "core:testing"
@@ -133,6 +134,7 @@ fire_ttl_case :: proc(t:^testing.T) {
 @(test)
 test_reconcile_plan_table :: proc(t:^testing.T) {actions_track(t,reconcile_cases)}
 reconcile_cases :: proc(t:^testing.T) {
+	reconcile_scale_cases(t)
 	triggers:=[?]domain.Action_Trigger{{trigger_id="missing",rev=1},{trigger_id="stale",rev=2},{trigger_id="same",rev=1}}
 	stored:=[?]Stored_Definition{{"sched.def.stale","stale",1},{"sched.def.same","same",1},{"sched.def.orphan","orphan",1}}
 	ops:=reconcile_plan(stored[:],triggers[:],context.allocator)
@@ -152,3 +154,39 @@ match_key_cases :: proc(t:^testing.T) {
 	testing.expect_value(t,match_key("ev.owner.chain.*.state"),"")
 }
 
+
+reconcile_scale_cases :: proc(t: ^testing.T) {
+	count :: 2000
+	triggers := make([]domain.Action_Trigger, count)
+	defer domain.action_triggers_destroy(triggers)
+	stored := make([]Stored_Definition, count)
+	defer {
+		for definition in stored { delete(definition.subject); delete(definition.trigger_id) }
+		delete(stored)
+	}
+	for &trigger, i in triggers {
+		id := fmt.tprintf("trigger_%d", i)
+		trigger.trigger_id = strings.clone(id)
+		trigger.rev = 2
+	}
+	for &definition, i in stored {
+		id := triggers[i].trigger_id if i < 1500 else fmt.tprintf("orphan_%d", i)
+		definition = {subject=strings.clone(fmt.tprintf("sched.def.%s", id)), trigger_id=strings.clone(id), rev=2}
+		if i == 10 do definition.rev = 1
+	}
+	temp_track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&temp_track, context.allocator)
+	defer mem.tracking_allocator_destroy(&temp_track)
+	context.temp_allocator = mem.tracking_allocator(&temp_track)
+	ops := reconcile_plan(stored, triggers, context.allocator)
+	defer reconcile_ops_destroy(ops)
+	// One stale definition, 500 missing definitions and 500 orphans.
+	if !testing.expect_value(t, len(ops), 1001) do return
+	testing.expect(t, ops[0].publish && ops[0].trigger == &triggers[10])
+	for i in 0..<500 {
+		testing.expect(t, ops[i+1].publish && ops[i+1].trigger == &triggers[i+1500])
+		testing.expect(t, !ops[i+501].publish && ops[i+501].purge_subject == stored[i+1500].subject)
+	}
+	testing.expect_value(t, len(temp_track.allocation_map), 0)
+	testing.expect_value(t, temp_track.total_allocation_count, i64(0))
+}
