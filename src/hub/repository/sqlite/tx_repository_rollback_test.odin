@@ -391,3 +391,25 @@ test_agent_decision_read_ignores_foreign_uncommitted_instance :: proc(t: ^testin
         return saved
     })
 }
+
+@(test)
+test_agent_instance_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "agent_instance_rollback", proc(c: ^Conn) -> bool {
+        impl := Agent_Repo_SQLite{conn=c}
+        _, saved, _ := agent_save_instance_sqlite(rawptr(&impl), domain.Agent_Instance{agent_instance_id="gate", owner_user_id="owner", runtime_status="running"})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM agent_instances WHERE agent_instance_id=?;", "gate")
+    })
+}
+
+@(test)
+test_bridge_repository_write_survives_rollback :: proc(t: ^testing.T) {
+    expect_migrated_repository_rollback(t, "bridge_rollback", proc(c: ^Conn) -> bool {
+        impl := Bridge_Repo_SQLite{conn=c}
+        _, saved, _ := bridge_save_bridge_sqlite(rawptr(&impl), domain.Bridge{bridge_id="gate", owner_user_id="owner", status=.Online})
+        return saved
+    }, proc(c: ^Conn) -> bool {
+        return rollback_probe_key(c, "SELECT 1 FROM bridges WHERE bridge_id=?;", "gate")
+    })
+}
