@@ -159,6 +159,7 @@ test_event_path_queries_use_indexes :: proc(t: ^testing.T) {
 	defer mem.tracking_allocator_destroy(&track)
 	context.allocator = mem.tracking_allocator(&track)
 	pipeline_query_plans_scenario(t)
+	actions_query_plans_scenario(t)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }
 

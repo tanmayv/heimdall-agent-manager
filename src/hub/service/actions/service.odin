@@ -126,21 +126,21 @@ validate_target :: proc(s: ^Service, repos: ^iface.Repositories, owner: string, 
 		if e := placement.validate_rules(s.placement, owner, rules, domain.ACTION_MAX_RULES); e.code != .None {
 			if e.code == .Validation_Failed do return detail_error(e.message)
 			if e.code == .Not_Found {
-		// Normalize missing references at the actions boundary (T9 ruling).
-		// Placement retains its existing error contract for other callers.
-		for rule in target.rules {
-			if rule.bridge_id != placement.ANY {
-				bridge, exists, err := iface.bridge_get_bridge(&repos.bridges, rule.bridge_id)
-				if err.code != .None && err.code != .Not_Found do return err
-				if !exists || err.code == .Not_Found || string(bridge.owner_user_id) != owner do return detail_error("unknown_bridge")
-			}
-			if rule.provider != placement.ANY {
-				entry, exists, err := iface.provider_catalog_get(s.placement.providers.repo, rule.provider)
-				_ = entry
-				if err.code != .None && err.code != .Not_Found do return err
-				if !exists || err.code == .Not_Found do return detail_error("unknown_provider")
-			}
-		}
+				// Normalize missing references at the actions boundary (T9 ruling).
+				// Placement retains its existing error contract for other callers.
+				for rule in target.rules {
+					if rule.bridge_id != placement.ANY {
+						bridge, exists, err := iface.bridge_get_bridge(&repos.bridges, rule.bridge_id)
+						if err.code != .None && err.code != .Not_Found do return err
+						if !exists || err.code == .Not_Found || string(bridge.owner_user_id) != owner do return detail_error("unknown_bridge")
+					}
+					if rule.provider != placement.ANY {
+						entry, exists, err := iface.provider_catalog_get(s.placement.providers.repo, rule.provider)
+						_ = entry
+						if err.code != .None && err.code != .Not_Found do return err
+						if !exists || err.code == .Not_Found do return detail_error("unknown_provider")
+					}
+				}
 			}
 			return e
 		}

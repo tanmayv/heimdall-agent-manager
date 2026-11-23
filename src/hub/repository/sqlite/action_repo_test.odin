@@ -130,8 +130,7 @@ actions_matching_keys :: proc(t: ^testing.T, repo: iface.Action_Repository, conn
 	testing.expect(t,err.code == .None && len(rows)==1)
 	if len(rows)==1 do testing.expect_value(t,rows[0].trigger_id,"trg_500")
 }
-@(test)
-test_event_path_queries_use_indexes :: proc(t: ^testing.T) {actions_repo_test(t, actions_index_plans)}
+actions_query_plans_scenario :: proc(t: ^testing.T) {actions_repo_test(t, actions_index_plans)}
 actions_index_plans :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: ^Conn) {
 	queries := [?]string{ACTIONS_SQL_TRIGGERS_MATCH,ACTIONS_SQL_GET,ACTIONS_SQL_RUN_OPEN,ACTIONS_SQL_RUN_INSERT,ACTIONS_SQL_RUNS_PRUNE,ACTIONS_SQL_RUNS_DUE,ACTIONS_SQL_RUNS_DEFERRED,ACTIONS_SQL_RUN_LAST_STARTED_AT,ACTIONS_SQL_RULES_LIST}
 	for query in queries {
