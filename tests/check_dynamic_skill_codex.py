@@ -80,6 +80,8 @@ def main():
         assert body.endswith(expected["body"]), repr(body)
         paths[name] = path
     assert set(paths) == names, paths
+    authored = root / ".codex/skills/authored/SKILL.md"
+    assert authored.read_text().startswith("---\nname: authored\n")
     for run in range(2):  # a new real Codex process also covers loader restart
         cold, warm = enumerate_skills(root)
         for label, response in (("cold", cold), ("warm", warm)):
@@ -87,11 +89,11 @@ def main():
             skills = {skill["name"]: skill for entry in entries for skill in entry["skills"]}
             errors = [error for entry in entries for error in entry["errors"]]
             assert not [e for e in errors if "mem-18eab58c" in e["path"]], errors
-            assert names <= skills.keys(), {"missing": sorted(names - skills.keys()), "response": response}
+            assert ({"authored"} | names) <= skills.keys(), {"missing": sorted(names - skills.keys()), "response": response}
             for name in names:
                 assert Path(skills[name]["path"]).resolve() == paths[name]
                 assert skills[name]["enabled"], skills[name]
-            print(f"PASS: Codex process {run + 1} {label} discovers both dynamic skills")
+            print(f"PASS: Codex process {run + 1} {label} discovers both dynamic skills and trimmed authored skill")
     print("PASS: exact YAML description/body, unique stable names/paths, real Codex cold/warm/restart")
 
 

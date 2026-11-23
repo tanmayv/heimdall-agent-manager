@@ -62,8 +62,9 @@ test_dynamic_skill_bootstrap_sealed_cache_restart :: proc(t: ^testing.T) {
 			        bridge_id = "brg_skillfix", provider = "codex", runtime_status = "stopped"}, true, {}
 		},
 	}
-	bridges := iface.Bridge_Repository{get_bridge = proc(ctx: rawptr, id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
-		return {bridge_id = id}, true, {}
+	structured := true
+	bridges := iface.Bridge_Repository{ctx = &structured, get_bridge = proc(ctx: rawptr, id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+		return {bridge_id = id, capabilities_json = "{\"features\":[\"dynamic_skill_v2\"]}" if (^bool)(ctx)^ else "{}"}, true, {}
 	}}
 	memories := []domain.Memory{
 		{memory_id = "mem_18eab58c00000001", type = .Skill, status = "active", agent_ids = {"agt_skillfix"},
@@ -89,10 +90,12 @@ test_dynamic_skill_bootstrap_sealed_cache_restart :: proc(t: ^testing.T) {
 	testing.expect(t, fresh_ok && fresh.status == 200)
 	// Conditional cache results are borrowed. Epoch invalidation below can free
 	// that entry, so retain an owned snapshot for restart comparisons/assembly.
+	fresh_etag := strings.clone(fresh.etag)
+	defer delete(fresh_etag)
 	fresh_manifest := strings.clone(fresh.manifest_json)
 	defer delete(fresh_manifest)
 	warm, warm_ok, _ := agent.bootstrap_manifest_conditional(&service, identity.owner_user_id, identity.agent_id,
-	                                                       "coordinator", "codex", "", "brg_skillfix", fresh.etag)
+	                                                       "coordinator", "codex", "", "brg_skillfix", fresh_etag)
 	testing.expect(t, warm_ok && warm.status == 304 && !warm.was_render)
 	bootcache.bump_content_epoch()
 	restarted, restarted_ok, _ := agent.bootstrap_manifest_conditional(&service, identity.owner_user_id, identity.agent_id,
@@ -100,6 +103,30 @@ test_dynamic_skill_bootstrap_sealed_cache_restart :: proc(t: ^testing.T) {
 	testing.expect(t, restarted_ok)
 	testing.expect_value(t, restarted.manifest_json, fresh_manifest)
 
+	// Changing only the bridge capability must bypass the warm manifest cache.
+	structured = false
+	legacy_instance, legacy_ok, _ := agent.bootstrap_manifest_json_for_bridge(&service, identity.owner_user_id, "brg_skillfix", "inst_skillfix")
+	testing.expect(t, legacy_ok)
+	legacy_agent, legacy_agent_ok, _ := agent.bootstrap_manifest_conditional(&service, identity.owner_user_id, identity.agent_id, "coordinator", "codex", "", "brg_skillfix", fresh_etag)
+	testing.expect(t, legacy_agent_ok && legacy_agent.status == 200 && legacy_agent.was_render)
+	for manifest in ([]string{legacy_instance, legacy_agent.manifest_json}) {
+		doc: struct{skills: []struct{name, hash: string}}
+		testing.expect(t, json.unmarshal_string(manifest, &doc, allocator = context.temp_allocator) == nil)
+		count := 0
+		for skill in doc.skills {
+			if !strings.has_prefix(skill.name, "mem-18eab58c") do continue
+			payload, found := agent.resolve_single_blob(&service, skill.hash)
+			testing.expect(t, found && bootstrap_cache_verify_hash(payload, skill.hash))
+			// Simulate the OLD bridge's embedded-token replacement, not the new renderer.
+			plain := bridge_bootstrap_decrypt_owned(strings.clone(payload))
+			defer delete(plain)
+			testing.expect(t, strings.has_prefix(plain, fmt.tprintf("---\nname: %s\ndescription: %s\n", skill.name, skill.name)))
+			testing.expect(t, strings.has_suffix(plain, body))
+			count += 1
+		}
+		testing.expect_value(t, count, 2)
+	}
+	structured = true
 	export_dir, export_ok := os.lookup_env("HEIMDALL_SKILLFIX_EXPORT_DIR", context.temp_allocator)
 	for manifest, manifest_index in ([]string{instance_manifest, fresh_manifest}) {
 		testing.expect(t, strings.contains(manifest, "mem-18eab58c00000001") && strings.contains(manifest, "mem-18eab58c00000002"), "both skills selected")
@@ -231,6 +258,32 @@ test_dynamic_skill_locked_is_diagnosed :: proc(t: ^testing.T) {
 	raw, _ := json.marshal(blob, allocator = context.temp_allocator)
 	_, _, ok := bridge_bootstrap_render_skill("mem-locked", string(raw))
 	testing.expect(t, !ok)
-	testing.expect(t, bridge_bootstrap_skill_unavailable("[Encrypted]"))
-	testing.expect(t, bridge_bootstrap_skill_unavailable("[encrypted: from a previous vault]"))
+}
+
+@(test)
+test_dynamic_skill_authored_whitespace_and_plaintext_markers :: proc(t: ^testing.T) {
+	body := "---\nname: authored\ndescription: authored\n---\n\n[Encrypted] [encrypted: bridge vault locked] vault:v2:example\n"
+	for literal_newlines in ([]bool{false, true}) {
+		input := strings.concatenate({"\n \t", body})
+		if literal_newlines {
+			replaced, _ := strings.replace_all(input, "\n", "\\n")
+			delete(input)
+			input = replaced
+		}
+		defer delete(input)
+		blob := contracts.Dynamic_Skill_Blob{format = contracts.DYNAMIC_SKILL_FORMAT, memory_id = "mem_authored", name = "mem-authored", body = input}
+		raw, _ := json.marshal(blob, allocator = context.temp_allocator)
+		name, rendered, ok := bridge_bootstrap_render_skill("mem-authored", string(raw))
+		defer delete(name); defer delete(rendered)
+		testing.expect(t, ok)
+		testing.expect_value(t, rendered, body)
+		if export_dir, present := os.lookup_env("HEIMDALL_SKILLFIX_EXPORT_DIR", context.temp_allocator); present {
+			testing.expect(t, bridge_bootstrap_write_skill_file(export_dir, ".codex/skills/authored/SKILL.md", rendered))
+		}
+	}
+	// Static/legacy Markdown also trims leading whitespace without losing the tail.
+	name, rendered, ok := bridge_bootstrap_render_skill("authored", "\n \t---\nname: authored\ndescription: authored\n---\n\n[Encrypted] Literal \\n documentation\n")
+	defer delete(name); defer delete(rendered)
+	testing.expect(t, ok)
+	testing.expect_value(t, rendered, "---\nname: authored\ndescription: authored\n---\n\n[Encrypted] Literal \\n documentation\n")
 }

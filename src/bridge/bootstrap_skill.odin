@@ -21,22 +21,21 @@ bridge_bootstrap_render_skill :: proc(name, payload: string) -> (string, string,
 			fmt.eprintln("bridge bootstrap skill:", blob.memory_id, "invalid memory skill identity")
 			return "", "", false
 		}
-		title := bridge_bootstrap_decrypt_owned(strings.clone(blob.title))
-		decrypted_description := bridge_bootstrap_decrypt_owned(strings.clone(blob.description))
-		body := bridge_bootstrap_decrypt_owned(strings.clone(blob.body))
+		title, title_ok := bridge_bootstrap_skill_field(blob.title)
+		decrypted_description, description_ok := bridge_bootstrap_skill_field(blob.description)
+		body, body_ok := bridge_bootstrap_skill_field(blob.body, unescape_plain = true)
 		defer delete(title)
 		defer delete(decrypted_description)
 		defer delete(body)
 		description := decrypted_description
-		if bridge_bootstrap_skill_unavailable(title) || bridge_bootstrap_skill_unavailable(description) ||
-		   bridge_bootstrap_skill_unavailable(body) {
+		if !title_ok || !description_ok || !body_ok {
 			fmt.eprintln("bridge bootstrap skill:", blob.memory_id, "vault locked or decryption failed; skill cannot be materialized")
 			return "", "", false
 		}
-		// Authored frontmatter stays byte-for-byte intact after decryption.
+		// Providers require the opening delimiter at byte zero. Preserve the rest.
 		if strings.has_prefix(strings.trim_space(body), "---") {
 			bridge_bootstrap_skill_explicit_diagnostic(blob.memory_id, body)
-			return strings.clone(blob.name), strings.clone(body), true
+			return strings.clone(blob.name), strings.clone(strings.trim_left_space(body)), true
 		}
 		if strings.trim_space(description) == "" do description = title
 		if strings.trim_space(description) == "" do description = blob.name
@@ -63,15 +62,17 @@ bridge_bootstrap_render_skill :: proc(name, payload: string) -> (string, string,
 		return strings.clone(blob.name), content, true
 	}
 	// Static skills and pre-structural hub responses are literal Markdown.
-	plain_name := bridge_decrypt_embedded_vault_tokens(name, locked_marker = VAULT_LOCKED_MARKER)
-	content := bridge_bootstrap_decrypt_owned(strings.clone(payload))
-	if bridge_bootstrap_skill_unavailable(plain_name) || bridge_bootstrap_skill_unavailable(content) {
+	plain_name, name_ok := bridge_bootstrap_skill_legacy(name)
+	content, content_ok := bridge_bootstrap_skill_legacy(payload)
+	if !name_ok || !content_ok {
 		fmt.eprintln("bridge bootstrap skill:", name, "vault locked or decryption failed; skill cannot be materialized")
 		delete(plain_name); delete(content)
 		return "", "", false
 	}
-	bridge_bootstrap_skill_explicit_diagnostic(name, content)
-	return plain_name, content, true
+	normalized := strings.clone(strings.trim_left_space(content))
+	delete(content)
+	bridge_bootstrap_skill_explicit_diagnostic(name, normalized)
+	return plain_name, normalized, true
 }
 
 bridge_bootstrap_skill_slug_valid :: proc(name: string) -> bool {
@@ -150,7 +151,42 @@ bridge_bootstrap_skill_quote :: proc(value: string) -> string {
 	return strings.to_string(b)
 }
 
-bridge_bootstrap_skill_unavailable :: proc(value: string) -> bool {
-	return bridge_has_vault_token(value) || strings.contains(value, VAULT_LOCKED_MARKER) ||
-	       strings.contains(value, vault.FAILED_MARKER) || strings.contains(value, vault.OTHER_VAULT_MARKER)
+// Stored fields are whole envelopes, never embedded-token templates. Check the
+// decrypt result, so plaintext examples and marker strings remain ordinary text.
+bridge_bootstrap_skill_field :: proc(value: string, unescape_plain := false) -> (string, bool) {
+	if !vault.is_armored(value) {
+		if unescape_plain {
+			text, changed := strings.replace_all(value, "\\n", "\n")
+			return text if changed else strings.clone(value), true
+		}
+		return strings.clone(value), true
+	}
+	kr, key_ok := bridge_read_vault_keyring()
+	defer vault.keyring_wipe(&kr)
+	return bridge_vault_decrypt_field(value, &kr if key_ok else nil)
+}
+
+// Legacy Markdown may embed multiple envelopes. Inspect original tokens only;
+// never scan the decrypted text for markers or recursively decrypt examples.
+bridge_bootstrap_skill_legacy :: proc(value: string) -> (string, bool) {
+	if !bridge_has_vault_token(value) do return strings.clone(value), true
+	kr, key_ok := bridge_read_vault_keyring()
+	defer vault.keyring_wipe(&kr)
+	b := strings.builder_make()
+	pos := 0
+	for pos < len(value) {
+		start, end := vault.next_token(value, pos)
+		if start < 0 do break
+		strings.write_string(&b, value[pos:start])
+		plain, ok := bridge_vault_decrypt_field(value[start:end], &kr if key_ok else nil)
+		if !ok {
+			strings.builder_destroy(&b)
+			return "", false
+		}
+		strings.write_string(&b, plain)
+		delete(plain)
+		pos = end
+	}
+	strings.write_string(&b, value[pos:])
+	return strings.to_string(b), true
 }
