@@ -44,7 +44,7 @@ match_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, tri
 		}
 		grant_work(svc, u, &ctx, task, trigger)
 	}
-	return reconcile_placement_in_uow(svc, u, chain, ctx.grant_failures[:])
+	return reconcile_placement_in_uow(svc, u, chain, ctx.grant_failures[:], true)
 }
 
 @(private = "package")
@@ -780,6 +780,6 @@ fleet_owns_task :: proc(ctx: ^Match_Context, task: domain.Task, agent_id: string
 record_grant_placement_failure :: proc(ctx:^Match_Context, task:domain.Task, fleet:domain.Task_Chain_Fleet, placement:Placement, phase, role:string, err:domain.Domain_Error) {
  failures:=make([dynamic]Placement_Failure,context.temp_allocator)
  reason:=jsonx.extract_string(err.details_json,"code","launch_refused",true,context.temp_allocator)
- append_placement_failure(&failures,ctx,task,fleet,placement,phase,role,reason,err.message)
+ append_placement_failure(&failures,ctx,task,fleet,placement,phase,role,reason,err.message,"grant")
  for failure in failures do append(&ctx.grant_failures,Grant_Placement_Failure{task.task_id,failure})
 }

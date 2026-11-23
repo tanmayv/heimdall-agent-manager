@@ -1615,3 +1615,118 @@ test_grant_kept_live_redelivery_rejects_replaced_generation :: proc(t:^testing.T
  lease,held:=lease_of(fx,"inst_t25")
  testing.expect(t,held && lease.phase==domain.LEASE_PHASE_WAITING)
 }
+
+@(test)
+test_grant_refusal_survives_nonmatcher_reconcile :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_refusal_stable")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_refusal_stable")
+ seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ seed_fleet(fx,chain,"agt_w")
+ log.registry.limits.active_instances_per_owner=1
+ generation:=project.bridge_runtime_registry_generation(&log.registry,"br_1")
+ _,_,_=project.bridge_runtime_instance_apply(&log.registry,"br_1",generation,"occupant","u1","running","idle",1)
+ _=publish_task(t,fx,chain,"task_t25")
+ before,found:=get_facet(&fx.svc,get_task(fx,"task_t25"),0,FACET_PLACEMENT)
+ if !testing.expect(t,found && strings.contains(before.body_json,"quota")) do return
+ notices:=0
+ notifier:=contracts.Attention_Notifier{ctx=&notices,notify=proc(ctx:rawptr,owner,kind,id:string){(^int)(ctx)^+=1}}
+ fx.svc.attention=&notifier
+ // This path runs for all active chains on an unrelated bridge disconnect.
+ on_bridge_placement_changed(&fx.svc)
+ after,still:=get_facet(&fx.svc,get_task(fx,"task_t25"),0,FACET_PLACEMENT)
+ testing.expect(t,still)
+ testing.expect_value(t,after.body_json,before.body_json)
+ testing.expect_value(t,after.v,before.v)
+ testing.expect_value(t,notices,0)
+ // A matching pass that retries and succeeds replaces the refused snapshot.
+ _,_,_=project.bridge_runtime_instance_apply(&log.registry,"br_1",generation,"occupant","u1","stopped","idle",2)
+ testing.expect_value(t,fleet_changed(&fx.svc,chain,"agt_w").code,domain.Error_Code.None)
+ _,held:=lease_of(fx,"inst_t25")
+ testing.expect(t,held,"quota repair allows a new grant")
+ testing.expect_value(t,placement_count(fx,"task_t25"),0)
+}
+
+@(test)
+test_legacy_unconfirmed_wake_redelivers_without_new_generation :: proc(t:^testing.T) {
+ for scenario in 0..<6 {
+  statuses:=[?]string{"launching","starting","running","failed","unreachable","running"}
+  status:=statuses[scenario]
+  fx,log,ok:=lease_fixture(t,"t25_legacy_wake")
+  if !ok {lease_fixture_close(fx,log);return}
+  chain:=seed_live_chain(t,fx,"chain_t25_legacy_wake")
+  task:=publish_task(t,fx,chain,"task_t25")
+  inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1",status)
+  inst.run_count=7
+  if scenario==5 do inst.start_ref="newer_manual_start"
+  inst.current_task_id="task_t25";inst.current_task_role=.Work
+  _,_,_=iface.agent_save_instance(&fx.agents,inst)
+  now:=platform.clock_now(&fx.clock)
+  lease:=domain.Task_Lease{lease_id="lease_legacy",task_id=task.task_id,chain_id=chain.chain_id,owner_user_id="u1",holder_instance_id=inst.agent_instance_id,kind=domain.LEASE_KIND_WORK,bridge_id="br_1",provider=inst.provider,model=inst.model,granted_at=now,last_beat_at=now,delivery=domain.LEASE_DELIVERY_WAKE,phase=domain.LEASE_PHASE_ACTIVE,attempt_no=1}
+  u,opened,_:=begin_uow(&fx.svc)
+  if !testing.expect(t,opened) {lease_fixture_close(fx,log);return}
+  _,_,_=iface.taskchain_save_lease(&fx.repo,lease)
+  payload:=json_begin()
+  json_str(&payload,"lease_id",lease.lease_id);json_str(&payload,"kind",lease.kind)
+  json_str(&payload,"instance_id",inst.agent_instance_id);json_int(&payload,"attempt_no",1)
+  json_str(&payload,"agent_id",inst.agent_id);json_str(&payload,"delivery",lease.delivery)
+  _,_,recorded,err:=record_event(&fx.svc,&u,task,hub_actor(),EV_LEASE_GRANTED,json_end(&payload))
+  _,_=end_uow(&fx.svc,&u,recorded)
+  testing.expect(t,recorded,err.message)
+  before,_,_:=iface.agent_get_instance(&fx.agents,inst.agent_instance_id)
+  wake_log_reset(log)
+  on_bridge_hello(&fx.svc,"br_1",nil)
+  boot(&fx.svc)
+  if scenario<3 {
+   testing.expect(t,len(log.cmds)>=2,"legacy launch is resent by hello and hub startup")
+  } else {
+   testing.expect(t,!wake_log_has_run(log,inst.agent_instance_id),"ended or replaced legacy child is not resent")
+  }
+  for cmd in log.cmds do testing.expect(t,strings.contains(cmd.body_json,`"run_count":7`),"legacy generation is reused")
+  after,_,_:=iface.agent_get_instance(&fx.agents,inst.agent_instance_id)
+  testing.expect_value(t,fmt.tprintf("%#v",after),fmt.tprintf("%#v",before))
+  current,held:=lease_of(fx,inst.agent_instance_id)
+  testing.expect(t,held && current.lease_id==lease.lease_id)
+  if scenario<3 {
+   testing.expect_value(t,current.phase,domain.LEASE_PHASE_ACTIVE)
+   testing.expect_value(t,get_task(fx,"task_t25").state,domain.Task_State.In_Progress)
+  } else {
+   testing.expect_value(t,current.phase,domain.LEASE_PHASE_WAITING)
+   testing.expect_value(t,get_task(fx,"task_t25").state,domain.Task_State.Backlog)
+  }
+  lease_fixture_close(fx,log)
+ }
+}
+
+@(test)
+test_grant_chain_lookup_failure_settles_ticket :: proc(t:^testing.T) {
+ fx,log,ok:=lease_fixture(t,"t25_chain_failure")
+ defer lease_fixture_close(fx,log)
+ if !ok do return
+ chain:=seed_live_chain(t,fx,"chain_t25_chain_failure")
+ inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
+ task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ u,opened,err:=begin_uow(&fx.svc)
+ if !testing.expect(t,opened,err.message) do return
+ lease,granted,gerr:=grant_in_uow(&fx.svc,&u,{explicit_identity=true,chain=chain,task=task,instance=inst,kind=domain.LEASE_KIND_WORK,delivery=domain.LEASE_DELIVERY_WAKE,placement={bridge_id="br_1",provider=inst.provider,model=inst.model},actor=hub_actor()})
+ if !testing.expect(t,granted,gerr.message) {_,_=end_uow(&fx.svc,&u,false);return}
+ // Rebuild the delivery with the same real grant ticket at the failed lookup
+ // seam; discard the initial queued entry before testing that failure path.
+ key:=effects_key(&u.effects,"br_1",string(chain.chain_id))
+ delete(u.effects.runs[key]);delete_key(&u.effects.runs,key)
+ getter:=fx.repo.get_chain
+ fx.repo.get_chain=proc(ctx:rawptr,id:domain.Task_Chain_ID)->(domain.Task_Chain,bool,domain.Domain_Error){
+  return {},false,domain.domain_error(.Internal_Error,"transient chain read")
+ }
+ effect_wake_lease(&fx.svc,&u,lease,get_task(fx,"task_t25"),u.effects.tickets[0])
+ fx.repo.get_chain=getter
+ _,cerr:=end_uow(&fx.svc,&u,true)
+ testing.expect_value(t,cerr.code,domain.Error_Code.None)
+ current,_,_:=iface.agent_get_instance(&fx.agents,inst.agent_instance_id)
+ testing.expect_value(t,current.runtime_status,"failed")
+ testing.expect_value(t,log.registry.active_instances,0)
+ testing.expect(t,!wake_log_has_run(log,inst.agent_instance_id),"no launch on failed lookup")
+ waiting,held:=lease_of(fx,inst.agent_instance_id)
+ testing.expect(t,held && waiting.phase==domain.LEASE_PHASE_WAITING)
+}

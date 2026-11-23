@@ -1,6 +1,8 @@
 package taskv2
 
 import "core:crypto/hash"
+import "core:encoding/json"
+import jsonx "odin_test:lib/jsonx"
 import "core:encoding/hex"
 import "core:slice"
 import "core:strings"
@@ -211,13 +213,20 @@ placement_snapshot_json :: proc(failures: []Placement_Failure) -> string {
 
 // Fresh context is required: grants in this UoW may have changed both attempt
 // and state since the matcher's initial load. Failures roll back with the UoW.
-reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, grant_failures: []Grant_Placement_Failure = nil) -> (bool, domain.Domain_Error) {
+reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, grant_failures: []Grant_Placement_Failure = nil, matcher_pass := false) -> (bool, domain.Domain_Error) {
 	ctx, ok, err := load_match_context(svc, chain)
 	if !ok do return false, err
 	defer destroy_match_context(&ctx)
 	for task in ctx.tasks {
 		failures, perr := collect_placement_failures(svc, &ctx, task)
 		if perr.code != .None do return false, perr
+		facets, ferr := iface.taskchain_list_facets_by_task(svc.repo, task.task_id, task.owner_user_id)
+		if ferr.code != .None do return false, ferr
+		old: domain.Task_Attempt_Facet
+		exists := false
+		for f in facets {
+			if f.attempt_no == task.attempt_no && f.kind == FACET_PLACEMENT { old = f; exists = true; break }
+		}
 		// Grant errors are known only after attempting start_begin. Merge them
 		// into this pass's normal diagnostics; a later pass recomputes afresh.
 		merged := make([dynamic]Placement_Failure, context.temp_allocator)
@@ -231,14 +240,19 @@ reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Ch
 		 } else do continue
 		 append(&merged, refusal.failure)
 		}
-		failures = merged[:]
-		facets, ferr := iface.taskchain_list_facets_by_task(svc.repo, task.task_id, task.owner_user_id)
-		if ferr.code != .None do return false, ferr
-		old: domain.Task_Attempt_Facet
-		exists := false
-		for f in facets {
-			if f.attempt_no == task.attempt_no && f.kind == FACET_PLACEMENT { old = f; exists = true; break }
+		// A disconnect/recheck did not retry the grant. Keep its durable
+		// diagnostic until a matching pass replaces it, avoiding attention churn.
+		if !matcher_pass && exists {
+		 for previous in placement_saved_grant_failures(old.body_json) {
+		  if task.state == .Ready {
+		   if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+		  } else if task.state == .In_Review {
+		   if review_lease_live_for(&ctx, svc, task.task_id, previous.agent_id, "") do continue
+		  } else do continue
+		  append(&merged, previous)
+		 }
 		}
+		failures = merged[:]
 		if len(failures) == 0 && !exists do continue
 		body := placement_snapshot_json(failures)
 		if exists && old.body_json == body do continue
@@ -286,4 +300,16 @@ placement_target_queued :: proc(svc: ^Service, ctx: ^Match_Context, fleet: domai
 		}
 	}
 	return waiting >= max(1, fleet.capacity)
+}
+
+// Parsed strings live only through this reconciliation's scratch scope.
+placement_saved_grant_failures :: proc(body:string)->[]Placement_Failure {
+ context.allocator=context.temp_allocator
+ raw,found:=jsonx.extract_raw_array(body,"failures",true)
+ if !found do return nil
+ entries:[]Placement_Failure
+ if json.unmarshal_string(raw,&entries)!=nil do return nil
+ out:=make([dynamic]Placement_Failure,context.temp_allocator)
+ for entry in entries do if entry.source=="grant" do append(&out,entry)
+ return out[:]
 }

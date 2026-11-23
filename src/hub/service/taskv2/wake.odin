@@ -49,8 +49,15 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
      if eerr.code == .None {
       for event in events {
        if event.kind != EV_LEASE_GRANTED || jsonx.extract_string(event.payload_json,"lease_id","",true,context.temp_allocator) != lease.lease_id do continue
-       if jsonx.extract_bool(event.payload_json,"start_kept_live",false,true) && jsonx.extract_int(event.payload_json,"start_run_count",-1,true) == current.run_count {
-        reused = agent.Start_Ticket{instance=domain.agent_instance_clone(current),command_id=strings.concatenate({"sb_",lease.lease_id}),kept_live=true}
+       kept := jsonx.extract_bool(event.payload_json,"start_kept_live",false,true) && jsonx.extract_int(event.payload_json,"start_run_count",-1,true) == current.run_count
+       // Pre-T25 grants opened this generation without start_ref or event
+       // metadata. Preserve their pending wake across the deploy/restart.
+       legacy := !jsonx.has_key(event.payload_json,"start_run_count",true) && current.start_ref == "" &&
+        (instance_is_live(current) || instance_is_pending(current)) &&
+        held.confirmed_at == "" && held.delivery == domain.LEASE_DELIVERY_WAKE && held.phase == domain.LEASE_PHASE_ACTIVE &&
+        (current.current_task_id == "" || current.current_task_id == string(lease.task_id))
+       if kept || legacy {
+        reused = agent.Start_Ticket{instance=domain.agent_instance_clone(current),command_id=strings.concatenate({"sb_",lease.lease_id}),kept_live=kept || instance_is_live(current),reused=true}
         reused.allocator = context.allocator
         ok = true
        }
@@ -90,7 +97,15 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
  }
  inst := ticket.instance
  chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
- if !cok do return
+ if !cok {
+  key := effects_key(&u.effects, inst.bridge_id, string(lease.chain_id))
+  entries := u.effects.runs[key]
+  detail := strings.clone("lease chain lookup failed before dispatch")
+  append(&u.effects.owned_strings,detail)
+  append(&entries,Lease_Wake{agent_instance_id=inst.agent_instance_id,ticket=ticket,entry={lease_id=lease.lease_id},failure=detail})
+  u.effects.runs[key]=entries
+  return
+ }
  role := "worker"
  if lease.kind == domain.LEASE_KIND_REVIEW do role = "reviewer"
  permission_mode := domain.agent_instance_effective_permission_mode(inst)
@@ -187,7 +202,11 @@ flush_wakes :: proc(svc: ^Service, e: ^Effects) {
   wakes := e.runs[key]
   runs := make([dynamic]agent.Start_Run_Entry, context.temp_allocator)
   for wake in wakes {
-   if wake.failure != "" { on_dispatch_failed(svc, wake.entry.lease_id, wake.failure); continue }
+   if wake.failure != "" {
+    if wake.ticket != nil do agent.start_settle(svc.agent_service,wake.ticket,false)
+    on_dispatch_failed(svc, wake.entry.lease_id, wake.failure)
+    continue
+   }
    append(&runs, wake.entry)
   }
   stops := e.stops[key]
@@ -208,7 +227,7 @@ flush_wakes :: proc(svc: ^Service, e: ^Effects) {
   dispatch.chain_id = chain_id
   sent, err := agent.start_command_send(&sender, bridge_id, cmd_id, chain_id, runs[:], stops[:])
   for wake in wakes {
-   if wake.ticket == nil do continue
+   if wake.ticket == nil || wake.failure != "" do continue
    agent.start_settle(svc.agent_service, wake.ticket, sent)
    if !sent do on_dispatch_failed(svc, wake.entry.lease_id, err.message)
   }
