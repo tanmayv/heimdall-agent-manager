@@ -51,6 +51,7 @@ Options :: struct {
 	key_pins:             []fetch.Public_Key, // nil = the embedded pinned keys
 	os_policy:            fetch.Os_Signature_Policy,
 	preflight_timeout_ms: int,
+	retry:                fetch.Retry_Policy, // zero = fetch.DEFAULT_RETRY (tests shorten it)
 	// Random source in [0, 1) for the cadence jitter; nil = 0.5.
 	rand:                 proc() -> f64,
 	// First timer check this many seconds after start; < 0 = the spec's 10–30 min (§13.3).
@@ -102,11 +103,11 @@ open :: proc(s: ^Service, opts: Options) -> (code: int, reason: string) {
 	s.opts = opts
 	s.expires = make(map[string]i64)
 	rec, rreason := lc.read_instance_record(opts.instance_root)
+	s.instance = rec // owned by s (freed by close), also on refusal
 	if rreason != "" do return EXIT_REFUSE, rreason
 	if creason := lc.check_instance_record(rec, opts.instance_root, opts.state_root); creason != "" {
 		return EXIT_REFUSE, creason
 	}
-	s.instance = rec
 	cfg := opts.engine_cfg
 	if cfg.instance_root == "" {
 		base := engine.default_config(opts.instance_root, opts.state_root)
@@ -127,7 +128,12 @@ open :: proc(s: ^Service, opts: Options) -> (code: int, reason: string) {
 close :: proc(s: ^Service) {
 	if s.opened do engine.close(&s.eng)
 	resolver.cache_destroy(&s.cache)
+	for k in s.expires do delete(k)
 	delete(s.expires)
+	delete(s.instance.instance_id)
+	delete(s.instance.owner.sid)
+	delete(s.instance.data_root)
+	delete(s.instance.state_root)
 	s.opened = false
 }
 

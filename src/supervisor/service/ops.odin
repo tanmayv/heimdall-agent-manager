@@ -219,6 +219,7 @@ run_install :: proc(s: ^Service, op0: engine.Line) -> (x: engine.Exit, err: engi
 	in_.live = live_trees(s)
 	in_.os_policy = s.opts.os_policy
 	if s.opts.preflight_timeout_ms > 0 do in_.preflight_timeout_ms = s.opts.preflight_timeout_ms
+	if s.opts.retry.budget_ms > 0 do in_.retry = s.opts.retry
 	prepared, perr := fetch.prepare_release(in_, context.temp_allocator)
 	if ctx.journal != nil do return .Run, ctx.journal
 	op = ctx.op

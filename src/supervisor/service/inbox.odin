@@ -107,7 +107,7 @@ handle_intent_file :: proc(s: ^Service, path: string) -> (x: engine.Exit, err: e
 		done_with(path)
 		return .Run, nil
 	}
-	s.expires[strings.clone(it.op_id)] = it.expires_at
+	if it.op_id not_in s.expires do s.expires[strings.clone(it.op_id)] = it.expires_at
 
 	if it.action == "cancel" do return accept_cancel(s, it, base, path)
 

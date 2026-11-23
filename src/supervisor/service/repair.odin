@@ -53,7 +53,7 @@ repair :: proc(ro: Repair_Options) -> int {
 	rlog :: proc(ro: Repair_Options, format: string, args: ..any) {
 		if ro.log != nil do ro.log(fmt.tprintf(format, ..args))
 	}
-	rec, rreason := lc.read_instance_record(ro.instance_root)
+	rec, rreason := lc.read_instance_record(ro.instance_root, context.temp_allocator)
 	if rreason != "" {
 		rlog(ro, "refused: %s", rreason)
 		return EXIT_REFUSE
