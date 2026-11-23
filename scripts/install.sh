@@ -35,7 +35,9 @@ Safe to re-run: a healthy enrolled bridge is left untouched.
   --profile NAME     Profile, [a-z0-9][a-z0-9-]{0,30} (alias --name;
                      env HEIMDALL_BRIDGE_NAME). Default profile when empty.
   --version TAG      Release to bootstrap from (env HEIMDALL_VERSION). Default
-                     latest = GitHub's latest (promoted, stable) release.
+                     latest = GitHub's latest (promoted, stable) release; then an
+                     installed bridge keeps its version (--keep-version). With
+                     a TAG an installed bridge is moved to it.
   --bundle FILE --checksum-file FILE
                      Use an already-downloaded bundle (verified first).
   --interactive      Open the approval page in a browser (no --headless).
@@ -174,6 +176,11 @@ main() {
     [[ "$profile" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || fail 2 "Invalid profile \"$profile\": use [a-z0-9][a-z0-9-]{0,30}."
   fi
   [ "$version" != latest ] || version=''
+  # Without an explicit release (--version / HEIMDALL_VERSION) a re-run must
+  # never change an installed bridge's version (spec §3 S8a): ham-bridge setup
+  # keeps it. Releases before --keep-version ignore the flag.
+  local keep=''
+  [ -n "$version" ] || keep=--keep-version
   if [ -n "$version" ]; then
     [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || fail 2 "Invalid release tag: $version"
   fi
@@ -218,6 +225,7 @@ main() {
   local -a argv=()
   [ -z "$hub" ] || argv+=(--hub "$hub")
   [ -z "$profile" ] || argv+=(--profile "$profile")
+  [ "$verb" = uninstall ] || [ -z "$keep" ] || argv+=("$keep")
   # ham-bridge copies what it needs out of the bundle, so the temporary copy is
   # removed afterwards. stdin is not the script's: `curl | bash` already read it.
   # ham-bridge's exit code is returned unchanged.

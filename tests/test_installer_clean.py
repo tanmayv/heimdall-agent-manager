@@ -134,7 +134,7 @@ class BootstrapTests(unittest.TestCase):
         self.publish('v1.0.0')
         res = self.run_installer('--hub', 'https://hub.example.com', '--name', 'bob', '--new-bridge')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com --profile bob --new-bridge'])
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com --profile bob --keep-version --new-bridge'])
         self.assertIn(f'releases/download/v1.0.0/heimdall-local-{self.target}-v1.0.0.tar.gz',
                       (self.root / 'curl.log').read_text())
         self.assert_clean()
@@ -143,7 +143,7 @@ class BootstrapTests(unittest.TestCase):
         self.publish('v1.0.0')
         res = self.run_installer('--hub', 'https://hub.example.com', stdin_script=True)
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com'])
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://hub.example.com --keep-version'])
 
     def test_explicit_version_may_be_prerelease(self):
         self.publish('v1.0.0')
@@ -151,6 +151,8 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--version', 'v1.1.0-rc1', '--hub', 'https://h')
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('/v1.1.0-rc1/', (self.root / 'curl.log').read_text())
+        # An explicit release may move an installed bridge: no --keep-version (S8b).
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://h'])
 
     def test_tampered_bundle_is_refused_before_ham_bridge_runs(self):
         self.publish('v1.0.0', tamper=True)
@@ -251,10 +253,10 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--bundle', str(staged), '--checksum-file', str(staged_sums),
                                  '--hub', 'https://h', '--interactive')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --hub https://h'])
+        self.assertEqual(self.bridge_calls(), ['setup --hub https://h --keep-version'])
         res = self.run_installer('--bundle', str(staged), '--checksum-file', str(staged_sums), '--hub', 'https://h')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h')
+        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h --keep-version')
 
     def test_ham_bridge_exit_code_is_returned_unchanged(self):
         self.publish('v1.0.0')
@@ -280,7 +282,7 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--hub-url', 'https://flag.example', '--name', 'flagprof', '--version', 'latest',
                                  '--reenroll', extra_env=env)
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://flag.example --profile flagprof --reenroll'])
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://flag.example --profile flagprof --keep-version --reenroll'])
         self.assertIn('/v1.0.0/', (self.root / 'curl.log').read_text())
 
     def test_usage_errors_exit_2_before_anything_is_fetched(self):

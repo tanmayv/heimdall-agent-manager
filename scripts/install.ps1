@@ -107,7 +107,9 @@ Safe to re-run: a healthy enrolled bridge is left untouched.
   -Name PROFILE   Profile, [a-z0-9][a-z0-9-]{0,30} (alias -Profile, --profile, --name;
                   env HEIMDALL_BRIDGE_NAME). Default profile when empty.
   -Version TAG    Release to bootstrap from (--version; env HEIMDALL_VERSION). Default
-                  latest = GitHub's latest (promoted, stable) release.
+                  latest = GitHub's latest (promoted, stable) release; then an
+                  installed bridge keeps its version (--keep-version). With a TAG
+                  an installed bridge is moved to it.
   -Bundle ZIP -ChecksumFile FILE
                   Use an already-downloaded bundle (verified first).
   -Interactive    Open the approval page in a browser (no --headless).
@@ -127,6 +129,10 @@ Exit codes: 0 done, 1 setup failed (previous state restored), 2 usage error,
     if (-not $isUninstall -and -not $hubUrl) { Stop-HeimdallBootstrap 2 'No hub given: pass -Hub URL or set HEIMDALL_HUB (see -Help).' }
     if ($profileName -and $profileName -cnotmatch '^[a-z0-9][a-z0-9-]{0,30}$') { Stop-HeimdallBootstrap 2 "Invalid profile `"$profileName`": use [a-z0-9][a-z0-9-]{0,30}." }
     if ($tag -eq 'latest') { $tag = '' }
+    # Without an explicit release (-Version / HEIMDALL_VERSION) a re-run must never
+    # change an installed bridge's version (spec section 3 S8a): ham-bridge setup
+    # keeps it. Releases before --keep-version ignore the flag.
+    $keepVersion = -not $tag
     if ($tag -and $tag -cnotmatch '^[A-Za-z0-9._-]+$') { Stop-HeimdallBootstrap 2 "Invalid release tag: $tag" }
     $useLocalBundle = [bool]($bundlePath -or $sumsPath)
     if ($useLocalBundle -and (-not $bundlePath -or -not $sumsPath -or -not (Test-Path -PathType Leaf -LiteralPath $bundlePath) -or -not (Test-Path -PathType Leaf -LiteralPath $sumsPath))) {
@@ -196,6 +202,7 @@ Exit codes: 0 done, 1 setup failed (previous state restored), 2 usage error,
     if ($hubUrl) { $argv += @('--hub', $hubUrl) }
     if ($profileName) { $argv += @('--profile', $profileName) }
     if (-not $isUninstall) {
+      if ($keepVersion) { $argv += '--keep-version' }
       if ($NewBridge) { $argv += '--new-bridge' }
       if ($ReuseBridge) { $argv += @('--reuse-bridge', $ReuseBridge) }
       if ($Reenroll) { $argv += '--reenroll' }

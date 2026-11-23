@@ -241,7 +241,10 @@ second update path.
 
 **Before the supervisor exists (now → end of Phase 1):**
 
-- Without `--version`, a healthy instance's version is **never** changed (S2, S8a). Repairs
+- Without `--version`, a healthy instance's version is **never** changed (S2, S8a). To make
+  that explicit, both scripts pass `--keep-version` to `ham-bridge setup` whenever no release was
+  given (`--version`/`-Version`/`HEIMDALL_VERSION`; `latest` counts as none) (user decision
+  2026-11-23; the flag is implemented by T2, older `ham-bridge` releases ignore it). Repairs
   (S3, S4, S6, S7) keep the installed binaries unless `bin/` itself is missing or partial.
 - With `--version X` the script behaves as `ham-bridge update --version X` does today:
   the same setup transaction replaces `bin/` (S8b; S8c needs `--allow-downgrade`). This is

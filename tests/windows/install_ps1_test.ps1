@@ -111,13 +111,17 @@ class Stub { static int Main(string[] a) {
   # the environment, and reach ham-bridge exactly once.
   $envVars = @{ HEIMDALL_HUB = 'https://env.example'; HEIMDALL_BRIDGE_NAME = 'envprof' }
   $r = Invoke-Bootstrap @('--bundle', $good.Zip, '--checksum-file', $good.Sums, '--hub', 'https://flag.example', '--name', 'flagprof', '--reenroll') $envVars
-  Check '--flag forms win over env and pass once' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://flag.example --profile flagprof --reenroll') ($r.Out + ((Get-StubCalls) -join "`n"))
+  Check '--flag forms win over env and pass once' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://flag.example --profile flagprof --keep-version --reenroll') ($r.Out + ((Get-StubCalls) -join "`n"))
 
   $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums, '-HubUrl', 'https://param.example', '-Profile', 'pprof', '-AllowDowngrade', '-SeparateAccount', '-JsonProgress') $envVars
-  Check 'parameters win over env; new switches map to ham-bridge flags' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://param.example --profile pprof --allow-downgrade --separate-account --json-progress') ($r.Out + ((Get-StubCalls) -join "`n"))
+  Check 'parameters win over env; new switches map to ham-bridge flags' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://param.example --profile pprof --keep-version --allow-downgrade --separate-account --json-progress') ($r.Out + ((Get-StubCalls) -join "`n"))
 
   $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums) $envVars
-  Check 'environment configures an argument-less run' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://env.example --profile envprof') ($r.Out + ((Get-StubCalls) -join "`n"))
+  Check 'environment configures an argument-less run' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://env.example --profile envprof --keep-version') ($r.Out + ((Get-StubCalls) -join "`n"))
+
+  # An explicit release (parameter or HEIMDALL_VERSION) may move an installed bridge: no --keep-version.
+  $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums) ($envVars + @{ HEIMDALL_VERSION = 'v1.0.0' })
+  Check 'explicit version drops --keep-version' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'setup --headless --hub https://env.example --profile envprof') ($r.Out + ((Get-StubCalls) -join "`n"))
 
   $r = Invoke-Bootstrap @('-Bundle', $good.Zip, '-ChecksumFile', $good.Sums, '-Uninstall', '--service', 'heimdall-bridge-h', '--yes')
   Check 'uninstall needs no hub' ($r.Code -eq 0 -and @(Get-StubCalls)[-1] -ceq 'uninstall --service heimdall-bridge-h --yes') ($r.Out + ((Get-StubCalls) -join "`n"))
