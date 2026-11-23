@@ -2,6 +2,20 @@ package main
 
 import "core:testing"
 
+@(test)
+launch_rejection_before_new_start_preserves_existing_child :: proc(t: ^testing.T) {
+	id := "inst_t14_rejected_duplicate"
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	for status in ([]string{"starting", "running", "blocked"}) {
+		bridge_runtime_set_status(id, status, "idle")
+		before, _ := bridge_runtime_instance_snapshot(id)
+		bridge_runtime_record_failure(id, bridge_error(.agent_launch_failed, .denied))
+		after, _ := bridge_runtime_instance_snapshot(id)
+		testing.expect_value(t, after.runtime_status, status)
+		testing.expect_value(t, after.state_seq, before.state_seq)
+	}
+}
+
 // AE-5 regression tests: a startup probe that classifies the pane as blocked must
 // surface as a distinct "blocked" runtime state that is active-but-not-ready.
 //
