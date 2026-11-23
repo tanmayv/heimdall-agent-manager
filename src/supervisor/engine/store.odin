@@ -308,15 +308,18 @@ append_durable :: proc(inj: ^Injector, path: string, line: string) -> Error {
 		return crash_error(what)
 	}
 	cut_back :: proc(f: ^os.File, path: string, before: i64, why: Error) -> Error {
-		if te := os.truncate(f, before); te != nil {
-			os.close(f)
+		// Through a new handle: on Windows an append-mode handle has FILE_APPEND_DATA only,
+		// and SetEndOfFile on it fails (seen on windows-latest CI).
+		os.close(f)
+		g, oe := os.open(path, {.Write})
+		if oe != nil do return fail("journal_torn", "%s; reopening %s to cut it back failed: %v", error_detail(why), path, oe)
+		defer os.close(g)
+		if te := os.truncate(g, before); te != nil {
 			return fail("journal_torn", "%s; cutting %s back to %d bytes failed: %v", error_detail(why), path, before, te)
 		}
-		if se := os.sync(f); se != nil {
-			os.close(f)
+		if se := os.sync(g); se != nil {
 			return fail("journal_torn", "%s; fsync after cutting %s back failed: %v", error_detail(why), path, se)
 		}
-		os.close(f)
 		return why
 	}
 	if action == .Fail_Io {
