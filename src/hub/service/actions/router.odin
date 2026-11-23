@@ -1,6 +1,7 @@
 #+feature dynamic-literals
 package actions
 
+import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem/virtual"
@@ -36,7 +37,29 @@ Agent_Port :: struct {
  persist_prompt: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,conversation_id,body,metadata_json:string)->(string,domain.Domain_Error),
  retire_prompt: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,message_id,moved_to_instance_id:string)->domain.Domain_Error,
 }
+Message_Created_Hook :: struct {
+ ctx:rawptr,
+ created:proc(ctx:rawptr,message:domain.Chat_Message),
+}
+Prompt_Hint :: struct {hook:Message_Created_Hook,message:domain.Chat_Message}
+prompt_hint_discard :: proc(ctx:rawptr) {
+ context.allocator=runtime.heap_allocator()
+ hint:=(^Prompt_Hint)(ctx)
+ delete(hint.message.message_id)
+ delete(hint.message.conversation_id)
+ delete(string(hint.message.owner_user_id))
+ delete(hint.message.message_type)
+ delete(hint.message.direction)
+ delete(hint.message.created_at)
+ free(hint)
+}
+prompt_hint_run :: proc(ctx:rawptr) {
+ hint:=(^Prompt_Hint)(ctx)
+ defer prompt_hint_discard(ctx)
+ hint.hook.created(hint.hook.ctx,hint.message)
+}
 Router :: struct {
+ message_created:Message_Created_Hook,
  factory:^iface.Unit_Of_Work_Factory,
  experiments:^iface.Experiment_Repository,
  placement:^placement.Service,
@@ -191,6 +214,25 @@ route_prompt :: proc(r:^Router,uow:^iface.Unit_Of_Work,action:domain.Action,run:
  if me.code!=.None do return "","",me
  message_id,err=r.agents.persist_prompt(r.agents.ctx,uow,string(action.owner_user_id),plan.conversation_id,body,metadata)
  if err.code!=.None do return
+ if r.message_created.created!=nil {
+  context.allocator=context.temp_allocator
+  stored,found,read_err:=iface.content_get_message(&uow.repos.content,message_id)
+  if read_err.code!=.None do return "","",read_err
+  if !found do return "","",domain.domain_error(.Internal_Error,"action message not found")
+  // Own only hint fields until the outer transaction commits; never copy the prompt.
+  hint:=new(Prompt_Hint,runtime.heap_allocator())
+  hint.hook=r.message_created
+  hint.message={message_id=strings.clone(message_id,runtime.heap_allocator()),
+   conversation_id=strings.clone(plan.conversation_id,runtime.heap_allocator()),
+   owner_user_id=domain.User_ID(strings.clone(string(action.owner_user_id),runtime.heap_allocator())),
+   message_type=strings.clone("action",runtime.heap_allocator()),
+   direction=strings.clone(stored.direction,runtime.heap_allocator()),
+   created_at=strings.clone(stored.created_at,runtime.heap_allocator())}
+  if !iface.unit_of_work_after_commit(uow,{ctx=hint,run=prompt_hint_run,discard=prompt_hint_discard}) {
+   prompt_hint_discard(hint)
+   return "","",domain.domain_error(.Internal_Error,"cannot defer action message hint")
+  }
+ }
  cause:="event"
  if run.event_type=="schedule.fired" do cause="schedule"
  delivery_id,err=r.pipeline.route(r.pipeline.ctx,uow,{

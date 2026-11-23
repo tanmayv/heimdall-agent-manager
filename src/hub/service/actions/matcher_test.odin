@@ -35,6 +35,8 @@ Action_Test :: struct {
  pipeline:delivery.Service,
  now_ms:i64,
  serial,routes,prompts:int,
+ hints:int,
+ hint_valid:bool,
  support:int,
  last_cause,last_notice:string,
  flag_off,fail_prompt,fail_retire:bool,

@@ -648,6 +648,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.action_router=actions_service.Router{
  factory=&graph.uow_factory,experiments=&graph.experiment_repo,placement=&graph.placement,
  clock=&graph.clock,ids=&graph.ids,support=graph.actions.support,
+ message_created={ctx=graph,created=service_message_created},
  agents={ctx=graph,find=action_agent_find,create=action_agent_create,stop=action_agent_stop,instance=action_agent_instance,persist_prompt=action_persist_prompt,retire_prompt=action_retire_prompt},
  pipeline={ctx=graph.delivery,route=action_route_delivery,expire=action_expire_delivery},
  }

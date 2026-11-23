@@ -454,11 +454,6 @@ test_refresh_restart_and_action_sends_publish :: proc(t: ^testing.T) {
 	message, message_ok, message_err := iface.content_get_message(&f.graph.repos.content, msg_id)
 	if !testing.expect(t, message_ok, message_err.message) do return
 	testing.expect_value(t, message.body, "ACTION-SECRET-99")
-	// V2 routing currently persists without publishing a UI hint. Exercise the
-	// shared post-commit publisher on its committed row as the closest equivalent.
-	// TODO(task_18eaa362cb34bb32): remove explicit publication when routing emits it.
-	// Restart is asserted only by the chat-send half above.
-	api_http.publish_user_message_created(&f.graph.content_handlers, {kind = .Session, user_id = "alice"}, f.conv_id, message)
 	run_frames := refresh_collect(tab.client)
 	defer delete(run_frames)
 	testing.expect_value(t, strings.count(run_frames, `"event":"message_created"`), 1)

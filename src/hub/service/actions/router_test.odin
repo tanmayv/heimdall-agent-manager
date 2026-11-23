@@ -370,3 +370,58 @@ router_bot_flag_scenario :: proc(t:^testing.T,f:^Action_Test) {
 }
 @(test)
 test_router_bot_experiment_off :: proc(t:^testing.T) {action_test_case(t,router_bot_flag_scenario)}
+
+// Read the persisted run from the hook, proving the routed transition is visible.
+action_test_hint :: proc(ctx:rawptr,m:domain.Chat_Message) {
+ f:=(^Action_Test)(ctx)
+ f.hints+=1
+ run,found,err:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
+ message,present,me:=iface.content_get_message(&f.repos.content,m.message_id)
+ f.hint_valid=found && err.code==.None && run.state==domain.ACTION_RUN_ROUTED &&
+  run.message_id==m.message_id && present && me.code==.None &&
+  message.body!="" && m.body=="" && m.message_type=="action" && m.conversation_id=="conversation"
+}
+router_hint_scenario :: proc(t:^testing.T,f:^Action_Test) {
+ f.runtime.router.message_created={ctx=f,created=action_test_hint}
+ action_test_match(t,f,"one")
+ f.original_factory=f.factory;f.factory={ctx=f,begin=action_test_begin_fault}
+ f.crash_before_commit=true
+ drain_due(&f.runtime.router)
+ testing.expect_value(t,f.hints,0)
+ testing.expect_value(t,action_test_prompt_count(t,f),0)
+ drain_due(&f.runtime.router)
+ testing.expect_value(t,f.hints,1)
+ testing.expect(t,f.hint_valid,"hint contains only identifiers/type and sees committed routed run")
+ drain_due(&f.runtime.router)
+ testing.expect_value(t,f.hints,1)
+ action_test_done(t,f)
+ action_test_match(t,f,"two")
+ f.flag_off=true
+ drain_due(&f.runtime.router)
+ action_test_expect(t,f,domain.ACTION_RUN_SKIPPED,1)
+ testing.expect_value(t,f.hints,1)
+}
+@(test)
+test_router_message_hint_commit_rollback_skip :: proc(t:^testing.T) {action_test_case(t,router_hint_scenario)}
+router_hint_outer_scenario :: proc(t:^testing.T,f:^Action_Test) {
+ f.runtime.router.message_created={ctx=f,created=action_test_hint}
+ action_test_match(t,f,"one")
+ outer,ok,_:=iface.unit_of_work_begin(&f.factory)
+ if !testing.expect(t,ok) do return
+ rows:=action_test_rows(t,f)
+ drain_run(&f.runtime.router,rows[0].run_id,false)
+ testing.expect_value(t,f.hints,0)
+ iface.unit_of_work_rollback(&outer)
+ testing.expect_value(t,f.hints,0)
+ testing.expect_value(t,action_test_prompt_count(t,f),0)
+ outer,ok,_=iface.unit_of_work_begin(&f.factory)
+ if !testing.expect(t,ok) do return
+ drain_run(&f.runtime.router,rows[0].run_id,false)
+ testing.expect_value(t,f.hints,0)
+ committed,_:=iface.unit_of_work_commit(&outer)
+ testing.expect(t,committed)
+ testing.expect_value(t,f.hints,1)
+ testing.expect(t,f.hint_valid)
+}
+@(test)
+test_router_message_hint_waits_for_outer_commit :: proc(t:^testing.T) {action_test_case(t,router_hint_outer_scenario)}
