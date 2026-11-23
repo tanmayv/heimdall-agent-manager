@@ -160,3 +160,85 @@ bridge_provider_catalog_valid_accepts_any_provider_count :: proc(t: ^testing.T) 
 	no_models := []Bridge_Catalog_Provider{{provider = "pi", display_name = "Pi", binary = "pi", state = "active"}}
 	testing.expect(t, !bridge_provider_catalog_valid({providers = no_models}), "provider without models is rejected")
 }
+
+// Pin the native PTY boundary, including account-profile args and repeated
+// launches of the same instance. ACP constructs its argv separately.
+@(test)
+test_codex_native_launch_bypasses_loaded_daemon_on_restart :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-supported", proc(_: string) -> bool { return true }))
+	for mode in ([]string{"ask", "yolo"}) {
+		for extra in ([][]string{nil, {"-c", "features.daemon_auto_start=true"}}) {
+			profile := Bridge_Provider_Profile{
+				name = "codex", command = {"codex-test-daemon-supported"}, model_flag = "-m",
+				ask_flags = {"--ask-for-approval", "on-request"},
+				yolo_flags = {"--ask-for-approval", "never"},
+				extra_args = extra, prompt_delivery = "flag-injection",
+				starter_prompt = "start the worker",
+			}
+			// The old daemon can still be loaded when the PTY is restarted. Both
+			// launches must bypass it, regardless of the user's feature setting.
+			for attempt in 0..<2 {
+				req, ok := bridge_pty_host_build_spawn_for_profile("inst_codex_restart", "/managed/run", profile, "model", "token", nil, permission_mode = mode)
+				testing.expect(t, ok)
+				if !ok do continue
+				testing.expect_value(t, req.instance, "inst_codex_restart")
+				testing.expect_value(t, req.argv[len(req.argv)-2], "--no-daemon")
+				testing.expect(t, strings.has_prefix(req.argv[len(req.argv)-1], "start the worker"))
+				for arg, i in extra do testing.expect_value(t, req.argv[len(req.argv)-2-len(extra)+i], arg)
+				bridge_pty_host_spawn_request_delete(req)
+			}
+		}
+	}
+	bridge_pty_host_untrack_instance_provider("inst_codex_restart")
+}
+
+@(test)
+test_native_daemon_bypass_is_codex_only :: proc(t: ^testing.T) {
+	profile := Bridge_Provider_Profile{
+		name = "claude", command = {"claude"}, model_flag = "--model",
+		extra_args = {"--verbose"}, prompt_delivery = "none",
+	}
+	argv := bridge_runtime_agent_argv_for_profile(profile, "model", "token", "inst_claude")
+	defer delete(argv)
+	testing.expect_value(t, len(argv), 4)
+	for arg in argv do testing.expect(t, arg != "--no-daemon")
+	testing.expect_value(t, argv[len(argv)-1], "--verbose")
+}
+
+
+@(test)
+test_codex_native_launch_without_daemon_option_keeps_legacy_argv :: proc(t: ^testing.T) {
+	path := "codex-test-daemon-unsupported"
+	testing.expect(t, !bridge_codex_no_daemon_supported(path, proc(_: string) -> bool { return false }))
+	// A later caller must use the cached result rather than probe again.
+	testing.expect(t, !bridge_codex_no_daemon_supported(path, proc(_: string) -> bool { return true }))
+	profile := Bridge_Provider_Profile{
+		name = "codex", command = {path}, model_flag = "-m",
+		extra_args = {"--verbose"}, prompt_delivery = "none",
+	}
+	argv := bridge_runtime_agent_argv_for_profile(profile, "model", "token", "inst_legacy_codex")
+	defer delete(argv)
+	testing.expect_value(t, len(argv), 4)
+	testing.expect_value(t, argv[0], path)
+	testing.expect_value(t, argv[1], "-m")
+	testing.expect_value(t, argv[2], "model")
+	testing.expect_value(t, argv[3], "--verbose")
+}
+
+@(test)
+test_codex_native_daemon_probe_requires_successful_help_option :: proc(t: ^testing.T) {
+	for path in ([]string{"supported", "unsupported", "failed"}) {
+		supported := bridge_codex_no_daemon_probe(path, proc(args: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
+			if len(args) != 2 || args[1] != "--help" || timeout != 2*time.Second do return "", "", -1, false, false
+			help := "Options:\n      --no-daemon\n          Run without daemon\n"
+			if args[0] == "unsupported" do help = "Options:\n      --no-daemon-extra\n"
+			return strings.clone(help), "", 0, args[0] != "failed", false
+		})
+		testing.expect_value(t, supported, path == "supported")
+	}
+	// Positive capability is cached as well, separately for each binary path.
+	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-cache", proc(_: string) -> bool { return true }))
+	testing.expect(t, bridge_codex_no_daemon_supported("codex-test-daemon-cache", proc(_: string) -> bool { return false }))
+}
