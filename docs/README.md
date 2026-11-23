@@ -70,6 +70,7 @@ Groups:
 - [bridge-retirement.md](bridge-retirement.md): how the bridge parks Hub traffic on sunset or credential revocation.
 - [provider-profiles.md](provider-profiles.md): provider profiles and isolated local homes.
 - [release-targets.md](release-targets.md): release workflow targets and the optional Intel macOS build.
+- [release-signing.md](release-signing.md): the minisign-signed release manifest, the protected signing key, and key rotation.
 
 ### Desktop app
 
