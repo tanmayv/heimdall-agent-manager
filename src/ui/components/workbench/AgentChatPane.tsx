@@ -94,6 +94,7 @@ import { VaultText, useDecryptedText } from '../vault/VaultText';
 import { resolveRenameTarget } from './renameTarget';
 import { decryptPaneCaptureBody } from '../../utils/vaultChats';
 import { VAULT_LOCKED_MARKER } from '../../utils/vaultCrypto';
+import { actionMessageContext } from '../actions/actionModel';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import { useActionsAccess } from '../actions/useActionsAccess';
 import { TaskChainSelectorModal } from '../chains/TaskChainSelectorModal';
@@ -2136,6 +2137,8 @@ export function AgentChatPane({
     }
     if (message.messageType === 'action') {
       const { summary, triggeredAt } = scheduleContextFromMetadata(message.metadata);
+      const context = actionMessageContext(message.metadata);
+      const eventRun = context.eventType && context.eventType !== 'schedule.fired';
       return (
         <div
           data-debug-id={`conversation-action-message-${message.messageId}`}
@@ -2143,8 +2146,8 @@ export function AgentChatPane({
         >
           <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption uppercase tracking-wide text-warning">
             <span className="inline-flex items-center gap-1.5 font-semibold text-warning">
-              <Icon name="clock" size={13} title="Scheduled action" />
-              Scheduled action
+              <Icon name="clock" size={13} title={eventRun ? "Event action" : "Scheduled action"} />
+              {eventRun ? context.eventType : "Scheduled action"}
             </span>
             {summary ? (
               <span className="normal-case tracking-normal text-muted">
@@ -2154,9 +2157,12 @@ export function AgentChatPane({
           </div>
           {triggeredAt ? (
             <div className="mb-2 text-caption text-faint">
-              Ran on schedule: {triggeredAt}
+              {eventRun ? 'Triggered at: ' : 'Ran on schedule: '}{triggeredAt}
             </div>
           ) : null}
+          {context.actionName ? <div className="mb-2"><VaultText value={context.actionName} as="span" /></div> : null}
+          {context.joinedCount > 0 ? <p>+{context.joinedCount} merged</p> : null}
+          {context.movedTo ? <a data-debug-id={`conversation-action-moved-${message.messageId}`} href={buildConversationHash([context.movedTo])}>Moved to another machine</a> : null}
           <ThreadMessageBody body={message.body} />
           {message.artifactIds && message.artifactIds.length > 0 && (
             <div className="mt-2 flex max-w-full flex-wrap gap-2">

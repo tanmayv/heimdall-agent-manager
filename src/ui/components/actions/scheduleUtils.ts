@@ -444,3 +444,20 @@ export function calculateNextRuns(
 
   return results;
 }
+
+
+/** One compact pill per trigger; no client-side scheduling. */
+export function triggerSummary(trigger: import('../../api/endpoints/actions').ActionTrigger): string {
+  if (trigger.kind === 'event') {
+    const config = trigger.config;
+    if (config.event_type === 'chain.state' && config.data?.state === 'completed') return 'Task chain completed';
+    return config.event_type + (config.data && Object.keys(config.data).length ? ' · ' + Object.entries(config.data).map(([k, v]) => k + '=' + v).join(', ') : '');
+  }
+  const c = trigger.config;
+  if (c.mode === 'interval') {
+    const n = c.interval_s || 0;
+    return 'every ' + (n % 3600 === 0 ? n / 3600 + ' h' : n % 60 === 0 ? n / 60 + ' min' : n + ' s');
+  }
+  if (c.mode === 'once') return 'once ' + (c.run_at || '');
+  return (c.cron_expr || '') + ' · ' + (c.timezone || 'UTC').split('/').pop()!.replaceAll('_', ' ');
+}
