@@ -335,12 +335,9 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
  return start_instance(service, auth, inst.agent_instance_id)
 }
 
-// prepare_instance is create_instance WITHOUT the network send: it validates,
-// reserves runtime capacity, writes the instance row, conversation and chain
-// membership, and returns the row plus the registry generation of the
-// reservation. The caller either sends the launch (send_instance_launch) or
-// delivers the instance through a wake_agent run[] entry after its own commit
-// (Task System v2 JIT grants), and must cancel the reservation if it gives up.
+// prepare_instance validates and creates a stopped instance, conversation and
+// membership. It never opens a generation or reserves launch quota; only
+// create_instance_stopped calls it. The legacy generation result is always zero.
 prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input, default_title_override:string="") -> (inst: domain.Agent_Instance, generation: int, ok: bool, err: domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return domain.Agent_Instance{}, 0, false, owner_err
@@ -381,13 +378,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	conversation_id := platform.generate_id(service.ids, "chat_")
 	display_name := strings.trim_space(input.display_name)
 	if display_name == "" do display_name = default_title
-	instance := domain.Agent_Instance{runtime_transport=transport,launch_epoch=runtime_launch_epoch(service,transport),agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
-	admitted: bool
-	quota_err: domain.Domain_Error
-	generation, admitted, quota_err = reserve_runtime_launch(service, instance)
-	if !admitted do return {}, 0, false, quota_err
-	prepared := false
-	defer if !prepared do project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, instance.bridge_id, generation, instance.agent_instance_id)
+	instance := domain.Agent_Instance{runtime_transport=transport,agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "stopped", startup_status = "stopped", activity_status = "unknown", last_applied_seq = 0, run_count = 0, created_at = now, updated_at = now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, instance)
 	if !saved_ok do return domain.Agent_Instance{}, 0, false, save_err
 	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved, default_title)
@@ -406,8 +397,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 			update_private_chain_coordinator(service, saved)
 		}
 	}
-	prepared = true
-	return saved, generation, true, domain.Domain_Error{}
+	return saved, 0, true, domain.Domain_Error{}
 }
 
 // send_instance_launch pushes the launch_agent command for a prepared instance.

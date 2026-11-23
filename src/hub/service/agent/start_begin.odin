@@ -254,27 +254,12 @@ create_instance_stopped :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	defer virtual.arena_destroy(&arena)
 	context.allocator = virtual.arena_allocator(&arena)
 	context.temp_allocator = context.allocator
-	prepared, generation, prepared_ok, prepare_err := prepare_instance(service, auth, input, default_title_override)
+	prepared, _, prepared_ok, prepare_err := prepare_instance(service, auth, input, default_title_override)
+	context.allocator = allocator
 	if !prepared_ok {
-		prepare_err.message = strings.clone(prepare_err.message, allocator)
-		prepare_err.details_json = strings.clone(prepare_err.details_json, allocator)
+		prepare_err.message = strings.clone(prepare_err.message)
+		prepare_err.details_json = strings.clone(prepare_err.details_json)
 		return {}, false, prepare_err
 	}
-	project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, prepared.bridge_id, generation, prepared.agent_instance_id)
-	prepared.runtime_status = "stopped"
-	prepared.startup_status = "stopped"
-	prepared.activity_status = "unknown"
-	prepared.stopped_by = ""
-	prepared.run_count = 0
-	// Creation has no prior generation. Reset through the repository's creation
-	// path inside the caller's UOW (prepare_instance remains for bots and leases).
-	saved, updated, save_err := iface.agent_save_instance_guarded(service.agents, prepared, 1, prepared.launch_epoch, prepared.configuration_revision)
-	context.allocator = allocator
-	if save_err.code != .None {
-		save_err.message = strings.clone(save_err.message)
-		save_err.details_json = strings.clone(save_err.details_json)
-		return {}, false, save_err
-	}
-	if !updated do return {}, false, domain.domain_error(.Conflict, "instance changed during creation")
-	return domain.agent_instance_clone(saved), true, {}
+	return domain.agent_instance_clone(prepared), true, {}
 }

@@ -7,6 +7,28 @@ HTTPS, so they can live on different machines, networks, and operating systems.
 
 ---
 
+## Upgrade order: hub, then bridges
+
+For the action pipeline and Phase S start convergence, upgrade the hub first,
+verify its health and the bridge start-begin endpoint, then upgrade bridges.
+Bridge-initiated notice and bot wakes need that endpoint to obtain a valid
+generation; an older hub cannot supply it. Keep the previous bridge binary
+available until staging checks pass.
+
+The hub negotiates `start_agent_v1` from each bridge's hello: updated bridges
+receive `start_agent`, while older bridges continue to receive `launch_agent`
+and `wake_agent`. The legacy adapters remain supported, so a mixed bridge
+fleet is expected during rollout. The command negotiation alone does not remove
+the hub-first requirement for bridge-initiated starts.
+
+Validate manual Start/Restart, task worker/reviewer launch and confirmation,
+quota refusal/recovery, notice fallback after a lost process, and a stopped bot
+receiving a web message. Also exercise reconnect with a stale live row and an
+unconfirmed task grant. The Phase S checklist is
+[the T26 E2E list](docs/plans/action-triggers-spec.md#t26-phase-s-integration-and-e2e-amendment-s2).
+Deploy to Mundus through the release change request; Brolabs requires the user's
+explicit approval after staging evidence.
+
 ## Part 1 — Hub and UI (one device, internet/VPN-accessible)
 
 The hub is the central control plane. It exposes a REST/WebSocket API that bridges,
