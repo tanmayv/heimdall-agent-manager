@@ -74,6 +74,19 @@ write_procs :: proc(instance_root: string, list: []Proc_Record) -> engine.Error 
 	return engine.replace_durable(nil, engine.DEFAULT_RETRY, procs_path(instance_root), transmute([]byte)data, "procs", engine.PRIVATE_FILE_PERMS)
 }
 
+// write_procs_merged writes `list` plus every entry already in procs.json that still runs
+// and is not in `list`: a record is dropped only once its process is gone (§2.1 layer 3).
+write_procs_merged :: proc(instance_root: string, list: []Proc_Record) -> engine.Error {
+	out := make([dynamic]Proc_Record, context.temp_allocator)
+	append(&out, ..list)
+	for old in read_procs(instance_root) {
+		dup := false
+		for r in list do if r.id == old.id do dup = true
+		if !dup && procs.running(procs.Target{id = old.id, group = old.group}) do append(&out, old)
+	}
+	return write_procs(instance_root, out[:])
+}
+
 // procs_trees: trees of recorded processes that still run (W1 "live").
 procs_trees :: proc(instance_root: string) -> []string {
 	out := make([dynamic]string, context.temp_allocator)

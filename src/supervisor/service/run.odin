@@ -18,7 +18,6 @@ import "../fetch"
 
 VERSION :: #config(HAM_APP_VERSION, "0.0.0-dev")
 LOOP_INTERVAL :: time.Second
-STOP_BUDGET :: 15 * time.Second // §7.5: the launcher waits 20 s
 
 Run_Args :: struct {
 	instance_root: string,

@@ -740,6 +740,39 @@ test_rollback_failed_survives_restart :: proc(t: ^testing.T) {
 	testing.expect_value(t, w.fake.running, fixed.tree)
 }
 
+// J25 stays sticky after lines that change nothing: a side op (check_now, allowed in
+// rollback_failed), a single-line J31 rejection (including `rejected rollback_failed`
+// itself), a J35 rejected cancel and a busy-cancelled install (T13b safety review).
+@(test)
+test_rollback_failed_sticky_after_side_and_rejected_lines :: proc(t: ^testing.T) {
+	w: World
+	world_init(&w, t, "t13b-sticky")
+	defer world_destroy(&w)
+	from, to := two_trees(&w)
+	w.fake.behaviour[to.tree] = .Never_Ready
+	x, err := launch(&w)
+	handle(&w, x, err)
+	w.fake.behaviour[from.tree] = .Never_Ready
+	out := drive(&w, "op_bb", to)
+	testing.expect_value(t, out.state, "rollback_failed")
+	lines := []Line {
+		{op_id = "op_check", action = "check_now", actor = "cli", state = "requested"},
+		{op_id = "op_check", action = "check_now", actor = "cli", state = "noop", note = "up_to_date"},
+		{op_id = "op_rej", action = "set_channel", actor = "cli", state = "rejected", error = "rollback_failed"},
+		{op_id = "op_cx", action = "cancel", actor = "cli", state = "rejected", error = "nothing_to_cancel"},
+		{op_id = "op_busy", action = "install_version", actor = "cli", state = "cancelled", error = "busy"},
+	}
+	for l in lines do testing.expect(t, journal(&w.e, l) == nil)
+	for flavour in Crash_Flavour {
+		w.flavour = flavour
+		crash(&w)
+		x, err = launch(&w)
+		testing.expect(t, err == nil && x == .Run)
+		testing.expectf(t, w.e.phase == .Rollback_Failed, "phase after restart = %v (want Rollback_Failed)", w.e.phase)
+		testing.expectf(t, w.fake.running == "", "runtime started after restart: %q", w.fake.running)
+	}
+}
+
 // ---- adopt (§6.4: current unproven, no op explains it) ----
 
 @(private = "file")

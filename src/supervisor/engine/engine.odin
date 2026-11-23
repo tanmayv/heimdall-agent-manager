@@ -265,7 +265,7 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 	if is_terminal(line.state) {
 		// A terminal line of another op (J30 `noop superseded_by`) leaves the active op alone.
 		if a, has := e.active.?; !has || a.op_id == line.op_id do e.active = nil
-		e.last_terminal = clone_line(e, line)
+		if decides_state(line) do e.last_terminal = clone_line(e, line)
 		// The index is reconciled from the journal at every start (§6.1), so only a crash
 		// stops here; a failed index write (e.g. fs_busy) does not undo a durable result.
 		if err := index_add(e, line.op_id, line.state, line.ts); err != nil && is_crash(err) do return err
@@ -285,6 +285,21 @@ journal :: proc(e: ^Engine, l: Line) -> Error {
 reload_active :: proc(e: ^Engine) {
 	e.active = nil
 	if op, ok := pick_active(non_terminal_ops(e)); ok do e.active = clone_line(e, op)
+}
+
+// decides_state: may this terminal line be `last_terminal`, the line start() reads to keep
+// J25 rollback_failed sticky (and an adopt without a target settled) and gate.odin reads for
+// the J30 carry? Only an installing op that did something: side ops (check_now, set_channel,
+// cancel, …) and lines of ops that changed nothing — `rejected` (J31, including the
+// `rejected rollback_failed` answer itself), `noop` (J30 superseded, up to date, pinned),
+// `expired`, `cancelled` (J35, `busy`) — never end or replace that state (T13b safety review).
+decides_state :: proc(l: Line) -> bool {
+	if is_side_action(l.action) do return false
+	switch l.state {
+	case "rejected", "noop", "expired", "cancelled":
+		return false
+	}
+	return true
 }
 
 // SIDE_ACTIONS: ops that never install and may run beside an active op (§10 coalescing).
@@ -531,7 +546,7 @@ load_journal :: proc(e: ^Engine) -> Error {
 	if op, ok := pick_active(non_terminal_ops(e)); ok do e.active = clone_line(e, op)
 	last_t: i64 = -1
 	for l in r.lines {
-		if is_terminal(l.state) && l.seq > last_t {
+		if is_terminal(l.state) && decides_state(l) && l.seq > last_t {
 			last_t = l.seq
 			e.last_terminal = clone_line(e, l)
 		}

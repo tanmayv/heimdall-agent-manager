@@ -730,3 +730,40 @@ test_cancel_during_download :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(w.s.eng.open_ops), 0)
 	testing.expect_value(t, len(w.s.expires), 0)
 }
+
+// J25 through the service: in rollback_failed, a check_now (allowed) and a rejected intent
+// (set_channel -> rejected rollback_failed) must not end the sticky state across a restart.
+@(test)
+test_rollback_failed_stays_sticky_in_service :: proc(t: ^testing.T) {
+	defer free_all(context.temp_allocator)
+	w: World
+	if !world_init(&w, t) do return
+	defer world_destroy(&w)
+	a := install_first(&w, "v0.6.0")
+	b := publish(&w, "v0.6.1")
+	w.behaviour[b.version] = .Crash
+	send_intent(&w, "op_rf", intent_json(&w, "op_rf", "update_now"))
+	// Once the candidate runs, the previous release turns bad too: the rollback fails.
+	run(&w, 200, proc(w: ^World) -> bool {return w.s.opts.launched != "" && version_of(w.s.opts.launched) == "0.6.1"})
+	w.behaviour[a.version] = .Never_Ready
+	run(&w, 600, proc(w: ^World) -> bool {return committed(w, "op_rf")})
+	st, _, _ := op_state(&w, "op_rf")
+	testing.expect_value(t, st, "rollback_failed")
+	testing.expect_value(t, w.s.eng.phase, engine.Phase.Rollback_Failed)
+
+	send_intent(&w, "op_rf_check", intent_json(&w, "op_rf_check", "check_now"))
+	send_intent(&w, "op_rf_chan", intent_json(&w, "op_rf_chan", "set_channel", `,"channel":"fast"`))
+	run(&w, 10, proc(w: ^World) -> bool {return committed(w, "op_rf_check") && committed(w, "op_rf_chan")})
+	sc, cc, _ := op_state(&w, "op_rf_chan")
+	testing.expect_value(t, sc, "rejected")
+	testing.expect_value(t, cc, "rollback_failed")
+	sk, _, _ := op_state(&w, "op_rf_check")
+	testing.expect_value(t, sk, "noop")
+
+	starts := len(w.starts)
+	testing.expect_value(t, launch(&w), -1) // restart (crash / reboot)
+	testing.expectf(t, w.s.eng.phase == .Rollback_Failed, "phase after restart = %v", w.s.eng.phase)
+	testing.expect_value(t, len(w.starts), starts) // no runtime started
+	run(&w, 30)
+	testing.expect_value(t, len(w.starts), starts)
+}

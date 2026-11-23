@@ -191,7 +191,7 @@ step :: proc(s: ^Service) -> (x: engine.Exit, err: engine.Error) {
 	}
 	x, err = timer(s)
 	if x != .Run || err != nil do return
-	watch_idle_runtime(s)
+	err = watch_idle_runtime(s)
 	return
 }
 
@@ -204,26 +204,31 @@ shutdown :: proc(s: ^Service) -> (x: engine.Exit, err: engine.Error) {
 // runtime that exited is restarted from the launched tree with backoff (1 s doubling to
 // 60 s); the hub reconnect and agent reconcile are the runtime's own.
 @(private)
-watch_idle_runtime :: proc(s: ^Service) {
+watch_idle_runtime :: proc(s: ^Service) -> engine.Error {
 	h := s.opts.host
-	if s.eng.phase != .Idle || h.health == nil do return
+	if s.eng.phase != .Idle || h.health == nil do return nil
 	// An op that has not reached `activating` (requested … waiting_for_idle) leaves the
 	// runtime to us: without a restart a crashed runtime would stay down for the whole gate
 	// wait (an unanswered count is "busy", so a timer op would wait 2 h, T13b review).
-	if op, active := s.eng.active.?; active && !pre_activation(op.state) do return
+	if op, active := s.eng.active.?; active && !pre_activation(op.state) do return nil
 	hl := h.health(h.user)
 	t := now(s)
 	if hl == .Ready {
 		s.idle_restarts = 0
-		return
+		return nil
 	}
-	if hl != .Exited do return
-	if t < s.idle_retry_at do return
+	if hl != .Exited do return nil
+	if t < s.idle_retry_at do return nil
 	logf(s, "runtime exited while idle; restarting from %s (attempt %d)", s.opts.launched, s.idle_restarts + 1)
-	_ = h.stop_children(h.user, s.opts.launched)
+	if !h.stop_children(h.user, s.opts.launched) {
+		// A survivor must never run beside a new runtime: exit 1, the launcher restarts us
+		// and J0 reaps it (or refuses with 78 if it cannot), T13b safety review.
+		return engine.fail("stop_timeout", "a recorded process of %s survived its stop", s.opts.launched)
+	}
 	_ = h.start_runtime(h.user, s.opts.launched)
 	s.idle_restarts += 1
 	s.idle_retry_at = t + min(i64(1) << uint(min(s.idle_restarts, 6)), 60)
+	return nil
 }
 
 // pre_activation: states before `activating` (nothing of the runtime is being stopped).

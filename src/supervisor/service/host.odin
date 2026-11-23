@@ -28,6 +28,11 @@ CONTROL_FILE :: "supervisor-control.json"
 RUNTIME_STATUS_FILE :: "runtime-status.json"
 REAP_TERM_GRACE_MS :: 5_000 // J0: SIGTERM -> 5 s -> SIGKILL
 REAP_TOTAL_MS :: 20_000 // J0: 20 s for the whole reap
+STOP_BUDGET_MS :: 15_000 // §7.5: the supervisor's whole stop budget (launcher waits 20 s)
+STOP_SESSION_GRACE_MS :: 4_000 // service stop: sessions' grace (activation stop: 10 s, §12)
+STOP_TERM_GRACE_MS :: 2_000
+STOP_WAIT_MS :: 6_000 // service stop: wait after SIGKILL / TerminateProcess (activation: 30 s)
+#assert(STOP_SESSION_GRACE_MS + STOP_TERM_GRACE_MS + STOP_WAIT_MS < STOP_BUDGET_MS)
 HUB_RECENT_S :: 300 // §14: `connected` within 5 min before gate_closed
 STATUS_FRESH_S :: 90 // a runtime-status.json older than this is not "connected now"
 
@@ -60,6 +65,7 @@ Host_Ctx :: struct {
 	running:       [dynamic]Running,
 	tree:          string,
 	job:           Job,
+	stop_fn:       Stop_Proc, // tests; nil = runtimectl.stop_children
 }
 
 host_init :: proc(h: ^Host_Ctx, instance_root, state_root, instance_id: string) {
@@ -172,7 +178,16 @@ host_start :: proc(h: ^Host_Ctx, tree: string) -> bool {
 	}
 	delete(h.tree)
 	h.tree = strings.clone(tree)
+	for &r in h.running do child_release(&r.child)
 	clear(&h.running)
+	// Never start a runtime next to a recorded process that still runs (a survivor of a
+	// failed stop: same credentials, report F5). Health then reports Exited; the idle
+	// watcher's next stop attempt escalates (fatal stop_timeout -> exit 1 -> J0 reap).
+	if n := live_recorded(h); n > 0 {
+		hlog(h, "not starting %s: %d recorded process(es) from an earlier start still run", tree, n)
+		append(&h.running, Running{exited = true})
+		return false
+	}
 	_ = os.make_directory_all(engine.join(h.instance_root, RUN_DIR), engine.PRIVATE_DIR_PERMS)
 	_ = os.make_directory_all(engine.join(h.instance_root, "logs"), engine.PRIVATE_DIR_PERMS)
 	// A stale control file from the previous runtime must not count as this one ready.
@@ -188,7 +203,7 @@ host_start :: proc(h: ^Host_Ctx, tree: string) -> bool {
 			break
 		}
 		append(&h.running, Running{rec = Proc_Record{id = id, group = ODIN_OS != .Windows, role = spec.role, tree = h.tree, job = job_name(&h.job)}, child = child})
-		if werr := write_procs(h.instance_root, records(h)); werr != nil {
+		if werr := write_procs_merged(h.instance_root, records(h)); werr != nil {
 			hlog(h, "procs.json: %s", engine.error_detail(werr))
 		}
 	}
@@ -201,17 +216,58 @@ host_start :: proc(h: ^Host_Ctx, tree: string) -> bool {
 	return true
 }
 
+// live_recorded: procs.json entries whose (pid, start_time) still run.
+live_recorded :: proc(h: ^Host_Ctx) -> int {
+	n := 0
+	for r in read_procs(h.instance_root) do if procs.running(procs.Target{id = r.id, group = r.group}) do n += 1
+	return n
+}
+
+// Stop_Proc stops the recorded children (and the sessions the runtime reported); false =
+// a survivor. Tests replace it; nil = runtimectl.stop_children with host_stop's budget.
+Stop_Proc :: proc(h: ^Host_Ctx, recorded: []procs.Target) -> bool
+
 // host_stop (§12 stopping, W7): the runtime's sessions get their grace, then every
-// recorded process is stopped and waited for; procs.json is emptied once all are gone.
+// recorded process is stopped and waited for. procs.json then keeps exactly the recorded
+// processes (children and sessions) that still run — never fewer — so a later start refuses
+// to run beside them and the next supervisor's J0 reap can find them (§2.1 layer 3).
+//
+// Budget: the activation stop uses §12's 10 s session grace + 30 s wait. A service stop
+// (§7.5, the launcher waits 20 s) uses STOP_SESSION_GRACE_MS + STOP_TERM_GRACE_MS +
+// STOP_WAIT_MS = 4 + 2 + 6 s, inside STOP_BUDGET_MS (15 s) with room for the journal line
+// and the child_wait below.
 host_stop :: proc(h: ^Host_Ctx) -> bool {
 	recorded := make([dynamic]procs.Target, context.temp_allocator)
-	for r in h.running do if !r.exited && r.rec.id.pid > 0 do append(&recorded, procs.Target{id = r.rec.id, group = r.rec.group})
-	ok := runtimectl.stop_children(&h.rt, recorded[:])
-	// Collect exit statuses (procs never reaps) and close handles.
+	keep := make([dynamic]Proc_Record, context.temp_allocator)
+	for r in h.running {
+		if !r.exited && r.rec.id.pid > 0 {
+			append(&recorded, procs.Target{id = r.rec.id, group = r.rec.group})
+			append(&keep, r.rec)
+		}
+	}
+	// Recorded survivors of an earlier start (a stop that failed before) are ours too.
+	for r in read_procs(h.instance_root) {
+		dup := false
+		for k in keep do if k.id == r.id do dup = true
+		if dup || !procs.running(procs.Target{id = r.id, group = r.group}) do continue
+		append(&recorded, procs.Target{id = r.id, group = r.group})
+		append(&keep, r)
+	}
+	for t in h.rt.sessions do append(&keep, Proc_Record{id = t.id, group = t.group, role = "session", tree = h.tree})
+	ok: bool
+	if h.stop_fn != nil {
+		ok = h.stop_fn(h, recorded[:])
+	} else if h.stop_flag != nil && h.stop_flag() {
+		ok = runtimectl.stop_children(&h.rt, recorded[:], STOP_SESSION_GRACE_MS, STOP_TERM_GRACE_MS, STOP_WAIT_MS)
+	} else {
+		ok = runtimectl.stop_children(&h.rt, recorded[:])
+	}
+	// Collect exit statuses (procs never reaps) and close handles. A survivor's handle is
+	// released too; its record stays in procs.json below.
 	for &r in h.running {
 		if !r.exited {
-			child_wait(&r.child, 2_000)
-			r.exited = true
+			child_wait(&r.child, 2_000 if ok else 0)
+			if child_exited(&r.child) do r.exited = true
 		}
 		child_release(&r.child)
 	}
@@ -220,7 +276,13 @@ host_stop :: proc(h: ^Host_Ctx) -> bool {
 		job_terminate(&h.job)
 	}
 	clear(&h.running)
-	if ok do _ = write_procs(h.instance_root, nil)
+	survivors := make([dynamic]Proc_Record, context.temp_allocator)
+	for r in keep do if procs.running(procs.Target{id = r.id, group = r.group}) do append(&survivors, r)
+	if len(survivors) > 0 {
+		hlog(h, "stop: %d recorded process(es) survive; kept in procs.json", len(survivors))
+		ok = false
+	}
+	_ = write_procs_merged(h.instance_root, survivors[:])
 	return ok
 }
 

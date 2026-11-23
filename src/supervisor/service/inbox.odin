@@ -43,8 +43,12 @@ scan_inbox :: proc(s: ^Service) -> (x: engine.Exit, err: engine.Error) {
 		}
 		if !strings.has_suffix(ent.name, ".json") || ent.type != .Regular do continue
 		path := engine.join(dir, ent.name)
-		data, ferr := os.read_entire_file(path, context.temp_allocator)
-		if ferr != nil do continue
+		data, rok, too_big := read_intent_file(path)
+		if too_big {
+			move_bad(s, path)
+			continue
+		}
+		if !rok do continue
 		it, st, _ := parse_intent(data)
 		created := it.created_at if st == .Ok else 0
 		append(&list, Inbox_Entry{ent.name, path, created})
@@ -59,6 +63,19 @@ scan_inbox :: proc(s: ^Service) -> (x: engine.Exit, err: engine.Error) {
 		if stop_requested(s) do return
 	}
 	return .Run, nil
+}
+
+// read_intent_file: an inbox file, read only if it is a regular file no larger than
+// MAX_INTENT_BYTES (allocation is never sized by untrusted input). too_big = present but over
+// the limit (the caller moves it to bad-*).
+@(private)
+read_intent_file :: proc(path: string) -> (data: []byte, ok: bool, too_big: bool) {
+	fi, serr := os.stat(path, context.temp_allocator)
+	if serr != nil || fi.type != .Regular do return
+	if fi.size > MAX_INTENT_BYTES do return nil, false, true
+	d, rerr := os.read_entire_file(path, context.temp_allocator)
+	if rerr != nil || len(d) > MAX_INTENT_BYTES do return nil, false, rerr == nil
+	return d, true, false
 }
 
 @(private)
@@ -82,8 +99,9 @@ done_with :: proc(path: string) {
 
 // handle_intent_file: one intent (§10 table and coalescing rules).
 handle_intent_file :: proc(s: ^Service, path: string) -> (x: engine.Exit, err: engine.Error) {
-	data, ferr := os.read_entire_file(path, context.temp_allocator)
-	if ferr != nil do return .Run, nil
+	data, rok, too_big := read_intent_file(path)
+	if too_big do move_bad(s, path)
+	if !rok do return .Run, nil
 	it, st, schema_ok := parse_intent(data)
 	if st == .Bad {
 		move_bad(s, path)
@@ -126,18 +144,24 @@ handle_intent_file :: proc(s: ^Service, path: string) -> (x: engine.Exit, err: e
 	if has_active {
 		if it.action == "update_now" && active.state == "waiting_for_idle" {
 			// J30: the waiting op activates now; this intent is answered `noop superseded_by`.
+			// Every outcome journals a line for this intent before its file is deleted.
 			x, err = engine.interrupt(&s.eng, it.op_id, it.actor)
-			if engine.error_code(err) == "no_op" {
-				// The waiting op ended in its pre-gate check: run this intent on its own.
-				err = nil
-			} else {
-				if err == nil || !engine.fatal(err) do done_with(path)
-				if err != nil && !engine.fatal(err) {
-					// bad_state: it moved on in between; answer busy like any install.
-					err = put(s, busy_line(base, active.op_id))
-				}
+			switch {
+			case engine.fatal(err):
+				return // the file stays; the next start re-reads it (J30 crash rows)
+			case err != nil && engine.error_code(err) != "no_op":
+				// bad_state: it moved on in between; answer busy like any install.
+				if err = put(s, busy_line(base, active.op_id)); err != nil do return
+				done_with(path)
+				return .Run, nil
+			case in_journal(s, it.op_id):
+				done_with(path) // superseded noop written (J30)
 				return
 			}
+			// The waiting op ended in its pre-gate check (or nothing was active): this intent
+			// has no line yet and runs as its own op.
+			err = nil
+			if x != .Run do return
 		} else {
 			// §10: any other installing action while an op is active.
 			if err = put(s, busy_line(base, active.op_id)); err != nil do return
@@ -221,8 +245,8 @@ cancel_pending :: proc(s: ^Service, op_id: string) -> bool {
 	t := now(s)
 	for ent in entries {
 		if !strings.has_suffix(ent.name, ".json") || strings.has_prefix(ent.name, "bad-") do continue
-		data, ferr := os.read_entire_file(engine.join(dir, ent.name), context.temp_allocator)
-		if ferr != nil do continue
+		data, rok, _ := read_intent_file(engine.join(dir, ent.name))
+		if !rok do continue
 		it, st, schema_ok := parse_intent(data)
 		if st != .Ok || it.action != "cancel" do continue
 		if validate_intent(it, schema_ok, s.instance.instance_id, t) != "" do continue

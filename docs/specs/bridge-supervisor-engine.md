@@ -555,6 +555,20 @@ vet-checked and unit-tested like the other packages). Choices this spec left ope
   `ham-pty-host` do not yet take `--lifeline-fd`, so on macOS a runtime orphaned by a
   supervisor crash is cleared only by the next start's J0 reap (Linux: parent-death signal;
   Windows: job), and PTY agents (setsid) still depend on the PTY host's own reaping.
+- **Survivors are never forgotten.** A record leaves `procs.json` only once its
+  `(pid, start_time)` no longer runs: a failed stop keeps the survivors (children, recorded
+  earlier starts and the sessions the runtime reported), every write merges live entries,
+  `start_runtime` refuses (health `Exited`, nothing spawned) while one runs, and the idle
+  watcher turns a failed stop into a fatal `stop_timeout` (exit 1 → launcher → J0 reap, or
+  78 if it survives the reap too).
+- **What keeps J25 sticky.** `last_terminal` (the line `start` reads for sticky
+  `rollback_failed`, the adopt-without-target rule and the J30 carry) is taken only from
+  installing ops that did something: side ops and `rejected` / `noop` / `expired` /
+  `cancelled` lines (including `rejected rollback_failed` itself and J30's superseded
+  `noop`) never replace it.
+- **Stop budget (§7.5).** On a service stop the host stops with 4 s session grace + 2 s
+  TERM grace + 6 s wait (inside the 15 s budget, compile-time checked); the activation stop
+  keeps §12's 10 s + 30 s.
 - **Offline repair exit codes:** 0 switched (or the bundle is the intact running tree:
   `noop up_to_date`), 1 failed (journaled `failed <code>`), 2 usage, 6 lock held, 78
   refused. An op past the switch found by the CLI is ended `failed superseded_by_repair`.
