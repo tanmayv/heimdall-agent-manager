@@ -48,7 +48,29 @@ esac
 cp "$src" "$out"
 '''
 
-STUB_BRIDGE = '#!/bin/sh\nprintf "%s\\n" "$*" >> "$MOCK_ROOT/ham-bridge.log"\nexit "${STUB_EXIT:-0}"\n'
+# The stub records its argv. With STUB_INSTALLED it also applies setup's S8c
+# rule: an older --version than the installed one exits 5 unless
+# --allow-downgrade (the real check lives in bridgesvc.classify_install).
+STUB_BRIDGE = r'''#!/bin/sh
+printf "%s\n" "$*" >> "$MOCK_ROOT/ham-bridge.log"
+if [ -n "${STUB_INSTALLED:-}" ]; then
+  req='' allow=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --version) req="${2#v}"; shift ;;
+      --allow-downgrade) allow=1 ;;
+    esac
+    shift
+  done
+  inst="${STUB_INSTALLED#v}"
+  if [ -n "$req" ] && [ -z "$allow" ] && [ "$req" != "$inst" ] &&
+     [ "$(printf '%s\n%s\n' "$req" "$inst" | sort -t. -k1,1n -k2,2n -k3,3n | head -n 1)" = "$req" ]; then
+    echo "ham-bridge setup: runs v$inst, newer than requested v$req; pass --allow-downgrade to downgrade" >&2
+    exit 5
+  fi
+fi
+exit "${STUB_EXIT:-0}"
+'''
 
 
 def host_target():
@@ -151,8 +173,9 @@ class BootstrapTests(unittest.TestCase):
         res = self.run_installer('--version', 'v1.1.0-rc1', '--hub', 'https://h')
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn('/v1.1.0-rc1/', (self.root / 'curl.log').read_text())
-        # An explicit release may move an installed bridge: no --keep-version (S8b).
-        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://h'])
+        # An explicit release may move an installed bridge: no --keep-version (S8b),
+        # and setup gets the TAG so an older one is refused (S8c).
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://h --version v1.1.0-rc1'])
 
     def test_tampered_bundle_is_refused_before_ham_bridge_runs(self):
         self.publish('v1.0.0', tamper=True)
@@ -304,8 +327,68 @@ class BootstrapTests(unittest.TestCase):
             with self.subTest(args=args, env=env):
                 res = self.run_installer('--hub', 'https://h', *args, extra_env=env)
                 self.assertEqual(res.returncode, 0, res.stderr)
-                want = 'setup --headless --hub https://h' + (' --keep-version' if keep else '')
-                self.assertEqual(self.bridge_calls()[-1], want)
+                self.assertEqual(self.bridge_calls()[-1].split(' --version ')[0],
+                                 'setup --headless --hub https://h' + (' --keep-version' if keep else ''))
+
+    def test_explicit_version_is_forwarded_to_setup(self):
+        """Spec §7: setup gets --version TAG iff the user named a concrete TAG
+        (flag or HEIMDALL_VERSION); never for latest, a release the script
+        resolved, or --bundle alone. With --bundle the TAG is still forwarded and
+        setup checks it names that bundle."""
+        bundle, sums = self.publish('v1.0.0')
+        self.publish('v1.1.0-rc1', prerelease=True)
+        b = ('--bundle', str(bundle), '--checksum-file', str(sums))
+        cases = [
+            ((), {}, None),
+            (('--version', 'latest'), {}, None),
+            ((), {'HEIMDALL_VERSION': 'latest'}, None),
+            (b, {}, None),
+            (b + ('--version', 'latest'), {}, None),
+            (('--version', 'v1.1.0-rc1'), {}, 'v1.1.0-rc1'),
+            ((), {'HEIMDALL_VERSION': 'v1.1.0-rc1'}, 'v1.1.0-rc1'),
+            (('--version', 'v1.0.0'), {'HEIMDALL_VERSION': 'v1.1.0-rc1'}, 'v1.0.0'),
+            (b + ('--version', 'v1.0.0'), {}, 'v1.0.0'),
+            (b, {'HEIMDALL_VERSION': 'v1.0.0'}, 'v1.0.0'),
+        ]
+        for args, env, tag in cases:
+            with self.subTest(args=args, env=env):
+                res = self.run_installer('--hub', 'https://h', *args, extra_env=env)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                call = self.bridge_calls()[-1].split()
+                if tag is None:
+                    self.assertNotIn('--version', call)
+                else:
+                    self.assertEqual(call.count('--version'), 1, call)
+                    self.assertEqual(call[call.index('--version') + 1], tag)
+        # Uninstall never gets --version.
+        res = self.run_installer('--uninstall', '--version', 'v1.0.0', '--yes')
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls()[-1], 'uninstall --yes')
+
+    def test_older_explicit_version_is_refused_unless_allow_downgrade(self):
+        """S8c: an installed v1.2.0 and an explicit older TAG -> setup refuses
+        with exit 5, returned unchanged; --allow-downgrade installs it (S8b). A
+        newer TAG and the self-resolved release are unchanged."""
+        self.publish('v1.0.0')
+        self.publish('v1.3.0-rc1', prerelease=True)
+        installed = {'STUB_INSTALLED': 'v1.2.0'}
+        for args, env in ((('--version', 'v1.0.0'), installed),
+                          ((), dict(installed, HEIMDALL_VERSION='v1.0.0'))):
+            with self.subTest(args=args, env=env):
+                res = self.run_installer('--hub', 'https://h', *args, extra_env=env)
+                self.assertEqual(res.returncode, 5, res.stderr)
+                self.assertIn('runs v1.2.0, newer than requested v1.0.0; pass --allow-downgrade to downgrade', res.stderr)
+        res = self.run_installer('--hub', 'https://h', '--version', 'v1.0.0', '--allow-downgrade', extra_env=installed)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h --version v1.0.0 --allow-downgrade')
+        res = self.run_installer('--hub', 'https://h', '--version', 'v1.3.0-rc1', extra_env=installed)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h --version v1.3.0-rc1')
+        # The resolved stable release (v1.0.0, older) keeps the installed version.
+        res = self.run_installer('--hub', 'https://h', extra_env=installed)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.bridge_calls()[-1], 'setup --headless --hub https://h --keep-version')
+        self.assert_clean()
 
     def test_ham_bridge_exit_code_is_returned_unchanged(self):
         self.publish('v1.0.0')
@@ -321,7 +404,7 @@ class BootstrapTests(unittest.TestCase):
         env = {'HEIMDALL_HUB': 'https://env.example', 'HEIMDALL_BRIDGE_NAME': 'envprof', 'HEIMDALL_VERSION': 'v1.1.0-rc1'}
         res = self.run_installer(stdin_script=True, extra_env=env)
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://env.example --profile envprof'])
+        self.assertEqual(self.bridge_calls(), ['setup --headless --hub https://env.example --profile envprof --version v1.1.0-rc1'])
         self.assertIn('/v1.1.0-rc1/', (self.root / 'curl.log').read_text())
 
     def test_flags_win_over_environment_and_reach_ham_bridge_once(self):
