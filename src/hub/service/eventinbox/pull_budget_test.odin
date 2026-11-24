@@ -88,8 +88,10 @@ pull_fixture_destroy :: proc(f: ^Pull_Fixture) {
 // pull_fixture_publish publishes one review_verdict event for chain_<chain>
 // under owner, which every coordinator filter for that chain matches.
 pull_fixture_publish :: proc(t: ^testing.T, conn: ^nats.Connection, owner: string, chain: int, id: string) {
-	data := fmt.tprintf(`{{"event_id":"%s","type":"task.review_verdict","owner_user_id":"%s","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"chain_%d"},"topic_key":"","topic_generation":0}}`, id, owner, chain)
-	_, err := nats.publish(conn, fmt.tprintf("ev.%s.chain.chain_%d.task.task_1.review_verdict", owner, chain), transmute([]byte)data, id)
+	data, encode_err := json.marshal(inbox_v2(id, "task.review_verdict", owner, fmt.tprintf("chain_%d",chain), "task_1"))
+	if !testing.expect(t, encode_err==nil) do return
+	defer delete(data)
+	_, err := nats.publish(conn, fmt.tprintf("ev.%s.chain.chain_%d.task.task_1.review_verdict", owner, chain), data, id)
 	testing.expect_value(t, err.status, i32(0))
 }
 

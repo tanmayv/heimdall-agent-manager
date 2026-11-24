@@ -31,3 +31,17 @@ test_v2_catalog_parent_decoder :: proc(t: ^testing.T) {
 		json.destroy_value(value)
 	}
 }
+
+@(test)
+test_v2_inbox_fixture_serializes_nested_parent :: proc(t: ^testing.T) {
+ bytes, err := json.marshal(inbox_v2("orphan_1", "task.review_verdict", "alice", "chain_1", "task_1"))
+ testing.expect_value(t, err, nil)
+ defer delete(bytes)
+ value: json.Value
+ testing.expect_value(t, json.unmarshal(bytes, &value), nil)
+ defer json.destroy_value(value)
+ obj, _ := value.(json.Object)
+ id, _ := obj["event_id"].(string)
+ testing.expect_value(t, id, "orphan_1")
+ testing.expect_value(t, catalog_chain(obj), "chain_1")
+}

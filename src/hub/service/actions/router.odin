@@ -200,7 +200,7 @@ prompt_metadata :: proc(repo:^iface.Action_Repository,action:domain.Action,run:d
  object,_:=params.(json.Object)
  metadata["triggered_at"]=object["fired_at"]
  entity,_:=object["entity"].(json.Object)
- if entity!=nil do metadata["entity"]=entity
+ if entity!=nil {metadata["entity_kind"]=entity["kind"]; metadata["entity_id"]=entity["id"]}
  if id,ok:=object["id"].(string);ok && id!="" do metadata["event_id"]=id
  trigger,found,err:=repo.trigger_get(repo.ctx,run.trigger_id)
  defer domain.action_trigger_destroy(&trigger)

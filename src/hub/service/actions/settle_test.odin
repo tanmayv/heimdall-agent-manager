@@ -108,7 +108,7 @@ settle_debounce_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  value:json.Value
  testing.expect_value(t,json.unmarshal(transmute([]u8)metadata,&value),nil)
  object,_:=value.(json.Object)
- testing.expect_value(t,object["entity"].(json.Object)["id"].(string),"chain2")
+ testing.expect_value(t,object["entity_id"].(string),"chain2")
  testing.expect_value(t,object["event_id"].(string),"second-chain")
 }
 @(test)

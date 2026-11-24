@@ -42,6 +42,8 @@ catalog_emit :: proc(
   object, valid := value.(json.Object)
   if !valid do return "", domain.domain_error(.Validation_Failed, "invalid catalog data")
   object[strings.clone("chain_id", context.temp_allocator)] = strings.clone(string(chain_id), context.temp_allocator)
+  // Insertion may grow the copied map header; keep the owning value current.
+  value = object
   bytes, encode_err := json.marshal(object, allocator=context.temp_allocator)
   encoded = bytes
   if encode_err != nil do return "", domain.domain_error(.Internal_Error, "catalog encoding failed")

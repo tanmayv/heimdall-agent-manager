@@ -38,7 +38,7 @@ runtime_start_scenario :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect_value(t,nats.consumer_add(conn,matcher_consumer_config(8)).status,i32(0))
  testing.expect(t,start(&f.runtime,f.runtime.svc,f.runtime.router,{nats_url=server.url,max_deliver=8}))
  defer stop(&f.runtime)
- _,err:=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"live","type":"chain.state","owner_user_id":"owner","data":{"state":"completed"}}`))
+ _,err:=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"live","type":"chain.state","entity":{"kind":"chain","id":"chain1"},"owner_user_id":"owner","data":{"state":"completed"}}`))
  testing.expect_value(t,err.status,i32(0))
  testing.expect(t,runtime_test_wait(f,"routed"))
  stop(&f.runtime)
@@ -85,7 +85,7 @@ runtime_default_start_scenario :: proc(t:^testing.T,f:^Action_Test) {
   time.sleep(10*time.Millisecond)
  }
  if !testing.expect(t,ready) do return
- _,err:=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"default-start","type":"chain.state","owner_user_id":"owner","data":{"state":"completed"}}`))
+ _,err:=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"default-start","type":"chain.state","entity":{"kind":"chain","id":"chain1"},"owner_user_id":"owner","data":{"state":"completed"}}`))
  testing.expect_value(t,err.status,i32(0))
  testing.expect(t,runtime_test_wait(f,"routed"))
  stop(&f.runtime)
@@ -119,7 +119,7 @@ runtime_history_scenario :: proc(t:^testing.T,f:^Action_Test) {
  server,conn,ok:=runtime_test_server(t)
  defer natstest.destroy(&server);defer nats.destroy(conn)
  if !ok do return
- _,err:=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"old","type":"chain.state","data":{}}`))
+ _,err:=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"old","type":"chain.state","entity":{"kind":"chain","id":"chain1"},"data":{}}`))
  testing.expect_value(t,err.status,i32(0))
  testing.expect_value(t,nats.consumer_add(conn,matcher_consumer_config(8)).status,i32(0))
  pull,e:=nats.pull_bind(conn,"HEIM_EVENTS","hub_action_matcher");testing.expect_value(t,e.status,i32(0))
@@ -127,7 +127,7 @@ runtime_history_scenario :: proc(t:^testing.T,f:^Action_Test) {
  batch,_:=nats.fetch(pull,1,100)
  testing.expect_value(t,nats.batch_count(batch),0);nats.batch_destroy(batch)
  testing.expect_value(t,len(action_test_rows(t,f)),0)
- _,err=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"new","type":"chain.state","data":{}}`))
+ _,err=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"new","type":"chain.state","entity":{"kind":"chain","id":"chain1"},"data":{}}`))
  testing.expect_value(t,err.status,i32(0))
  batch,e=nats.fetch(pull,1,1000)
  testing.expect_value(t,e.status,i32(0));defer nats.batch_destroy(batch)
@@ -148,7 +148,7 @@ runtime_real_matches :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect_value(t,nats.consumer_add(conn,matcher_consumer_config(8)).status,i32(0))
  pull,err:=nats.pull_bind(conn,"HEIM_EVENTS","hub_action_matcher");testing.expect_value(t,err.status,i32(0))
  defer nats.pull_destroy(pull)
- _,err=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"chain","type":"chain.state","data":{}}`))
+ _,err=nats.publish(conn,"ev.owner.chain.chain1.state",transmute([]u8)string(`{"event_id":"chain","type":"chain.state","entity":{"kind":"chain","id":"chain1"},"data":{}}`))
  testing.expect_value(t,err.status,i32(0))
  headers:=[1]nats.Header{{"Heim-Trigger-Rev","1"}}
  _,err=nats.publish(conn,"ev.owner.sched.schedule",transmute([]u8)string(`{"event_id":"fire","type":"schedule.fired","data":{}}`),headers=headers[:])
