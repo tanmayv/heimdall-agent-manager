@@ -6,12 +6,13 @@ No code in this task. Written against `a7d501da`; every `file:line` reference is
 **Summary.** Event rules v2 extends the existing actions system; it does not replace it. An
 event stays `type + envelope`, but the envelope gets one universal shape (`entity`, not
 `chain_id`/`task_id`). A rule is an existing action trigger whose filter grows from an
-equals-only map to a flat list of clauses with `eq`, `ne`, `in`, `not_in`, `exists` and
-`prefix`. Targets are unchanged (agent, instance, bot). Two producers are added: memory
+equals-only map to a boolean condition tree: nested `all`/`any`/`not` groups whose leaves
+are checks with `eq`, `ne`, `in`, `not_in`, `exists` and `prefix`. The tree is evaluated
+against one event, statelessly, and every run records which nodes were true. Targets are unchanged (agent, instance, bot). Two producers are added: memory
 state changes and authenticated inbound webhooks. Because the expected profile is hundreds of
 rules pointing at a handful of agents, matching moves to an in-memory compiled index and
 delivery moves from one prompt per action to one prompt per target, gated by "the target has
-read the previous one". Schema cost: three small new tables, one table rebuild, two indexes,
+read the previous one". Schema cost: two small new tables, one table rebuild, two indexes,
 no new columns on existing tables.
 
 Terms used here:
@@ -27,10 +28,11 @@ Terms used here:
 
 | ID | Requirement | Where |
 |---|---|---|
-| R1 | Event = type + envelope; rules filter envelope params with `eq`, `ne`, `in`, `not_in` (+ justified extras) | §2, §3 |
+| R1 | Event = type + envelope; rules filter envelope params with `eq`, `ne`, `in`, `not_in` (+ justified extras) | §2, §3.5 |
 | R2 | A matching rule resolves to a target: new instance of `agt_`, existing `inst_`, or bot | §4 |
 | R3 | Sources: chain/task catalog (exists), cron (exists), memory (new), inbound webhooks (new) | §5 |
-| R4 | Many actions targeting few agents: cheap matcher, coalesced wakes, per-target backpressure | §3.5, §6, §7 |
+| R4 | Many actions targeting few agents: cheap matcher, coalesced wakes, per-target backpressure | §3.7, §6, §7 |
+| R5 | Matching is a boolean condition tree (nested AND/OR, NOT), leaves = R1 checks, evaluated per single event; UI tree editor and per-run matched-node display. One event = one fact: no event arrays, no `cause_id`/correlation | §3, §10 |
 
 | ID | Coordinator input | Position |
 |---|---|---|
@@ -162,7 +164,7 @@ memory and webhook rules a per-entity debounce without a callback. The descripto
 Rows are deleted with their entity where a delete path exists; otherwise they are bounded by
 entities × state types (two state types today plus `memory.state`).
 
-## 3. Filter grammar (R1)
+## 3. Condition tree (R1, R5)
 
 ### 3.1 Today
 
@@ -171,9 +173,26 @@ A trigger stores `event_type`, `subject_filter`, `match_key` and `data_filter`
 top-level `data` scalars (`matcher.odin:31-46`), and only string values on keys the
 descriptor lists are accepted (`event_kind.odin:26-36`).
 
-### 3.2 JSON shape
+### 3.2 Model
 
-A filter is a flat list of clauses. All clauses must hold (AND).
+A rule's condition is a boolean tree evaluated against **one event**. The evaluation is
+stateless: it reads only that event's envelope, never other events, earlier results or the
+database. When the root is true, the rule matches and the action triggers (subject to the
+existing guards, delay and delivery rules). One event is one fact.
+
+Four node types:
+
+| Node | JSON | True when |
+|---|---|---|
+| All (AND) | `{"all": [node, …]}` | every child is true |
+| Any (OR) | `{"any": [node, …]}` | at least one child is true |
+| Not | `{"not": node}` | the child is false |
+| Check (leaf) | `{"field": "…", "op": "…", "value": …}` | the R1 check holds (§3.5) |
+
+`not` is included because it is free: one boolean flip, no new semantics. It also lets the
+UI offer a "none of" group.
+
+### 3.3 JSON shape
 
 ```json
 {
@@ -181,39 +200,80 @@ A filter is a flat list of clauses. All clauses must hold (AND).
   "config": {
     "event_type": "webhook.received",
     "entity_id": "wh_18eb...",
-    "filter": [
-      {"field": "data.action",       "op": "in",     "value": ["opened", "reopened"]},
-      {"field": "data.repo.name",    "op": "prefix", "value": "heimdall-"},
-      {"field": "data.draft",        "op": "ne",     "value": true},
-      {"field": "data.pull_request", "op": "exists", "value": true}
-    ]
+    "filter": {
+      "all": [
+        {"field": "data.action", "op": "in", "value": ["opened", "reopened"]},
+        {"any": [
+          {"field": "data.repo.name", "op": "prefix", "value": "heimdall-"},
+          {"field": "data.labels.urgent", "op": "exists", "value": true}
+        ]},
+        {"not": {"field": "data.draft", "op": "eq", "value": true}}
+      ]
+    }
   }
 }
 ```
 
+- `filter` is one node. Omitted or `{}` means "always true".
 - `entity_id` (optional) pins the rule to one entity. It is compiled into the subject filter,
   so it costs nothing at match time. `chain_id` stays accepted as its alias for `chain.*`
-  types (`event_kind.odin:16`, `:22-23`).
-- The legacy `"data": {"state": "completed"}` map stays accepted and is compiled into `eq`
-  clauses on `data.<key>`. Sending both `data` and `filter` is `invalid_data_filter`.
+  types (`event_kind.odin:16`, `:22-23`). A check `entity.id eq X` that is a direct child of
+  a root `all` is folded the same way.
+- The legacy `"data": {"state": "completed"}` map stays accepted as input and is compiled
+  into `{"all": [eq checks on data.<key>]}`. Sending both `data` and `filter` is
+  `invalid_filter`.
 - **Storage reuses the existing column.** `action_triggers.data_filter` is only constrained
-  to valid JSON (`actions_001_reset.sql:56`). A JSON **array** is a v2 clause list; a JSON
-  **object** is the v1 equals map. New writes always store the array form. No DDL, no data
-  migration; old rows keep matching.
+  to valid JSON (`actions_001_reset.sql:56`). New writes store the tree, and the stored root
+  is always a group: a single check is wrapped in `all`. That makes the two stored forms
+  unambiguous without a version field: a v1 equals map has only string values
+  (`event_kind.odin:30-35`), while a stored tree is an object with exactly one key, `all`,
+  `any` or `not`, whose value is an array or object. No DDL, no data migration; old rows keep
+  matching.
 
-No OR, no nesting, no negation wrapper. OR on one field is `in`; OR across fields is a second
-trigger on the same action (up to `ACTION_MAX_TRIGGERS = 16`, `action.odin:7`).
+### 3.4 Limits and validation
 
-### 3.3 Fields
+| Limit | Value |
+|---|---|
+| Depth (root = 1) | 4 |
+| Checks (leaves) per tree | 16 |
+| Nodes per tree | 24 |
+| Children per group | 1 to 16 (an empty group is rejected) |
+| Values per `in`/`not_in` list | 32 |
+| Bytes per value / per field path | 256 / 128 |
+| Stored tree, serialized | 4 KiB |
+
+Depth 4 covers "A and (B or (C and D))" with room to spare and keeps the editor readable on
+a phone. The limits are returned by the trigger-types endpoint so UI and CLI do not hardcode
+them.
+
+Validation happens on save, in the trigger kind's `compile` step
+(`triggers.odin:26-27`), and reports through the existing `detail_error` mechanism
+(`triggers.odin:49-55`) with code `invalid_filter` plus two detail fields: `path`, a JSON
+pointer to the offending node (for example `/all/1/any/0`), and `reason`:
+
+| `reason` | Meaning |
+|---|---|
+| `unknown_node` | Object is not exactly one of the four node shapes (extra or missing keys). |
+| `empty_group` | `all` or `any` with no children. |
+| `too_deep` / `too_many_nodes` / `too_large` | A limit above was exceeded. |
+| `unknown_field` | Path syntax invalid, or not a known field for this event type. |
+| `unknown_op` | Operator not in §3.5. |
+| `bad_value` | Wrong value type or size for the operator. |
+
+The UI uses `path` to mark the node in the editor.
+
+### 3.5 Checks: fields and operators
+
+Fields:
 
 | Path | Notes |
 |---|---|
-| `entity.id` | An `eq` on it is folded into the subject filter like `entity_id`. |
+| `entity.id` | See folding in §3.3. |
 | `entity.kind` | Allowed for completeness; constant per event type today. |
 | `actor` | `user`, `hub`, `agt_…` (`catalog.odin:71-76`), `webhook:<id>`. |
 | `data.<seg>[.<seg>…]` | Up to 4 segments after `data`, each `[A-Za-z0-9_-]{1,64}`. Object keys only; no array indexing. |
 
-`type`, `owner_user_id`, `class` and `occurred_at` are not filterable: type and owner are the
+`type`, `owner_user_id`, `class` and `occurred_at` are not checkable: type and owner are the
 index key, the other two have no use case yet.
 
 For catalog and memory types the descriptor lists the known `data` keys and values, and
@@ -221,7 +281,7 @@ validation keeps rejecting unknown keys (as `event_kind.odin:30-35` does today).
 `webhook.received` any syntactically valid `data.` path is accepted, because the body is
 user-defined.
 
-### 3.4 Operators
+Operators:
 
 | Op | `value` | True when |
 |---|---|---|
@@ -237,16 +297,18 @@ Semantics, stated once:
 - **Scalars compare as text**, exactly like the current matcher: strings by content, numbers
   and booleans by their JSON text (`matcher.odin:20-30`). So `3` equals `"3"`. Integers and
   booleans compare reliably; floats compare by serialized text and should not be used.
-  Filter values are normalized to text when the rule is compiled.
+  Check values are normalized to text when the rule is compiled.
 - **Present** means the path resolves to a string, number or boolean. `null`, objects, arrays
   and absent keys are **not present** for `eq`/`in`/`prefix`. For `exists`, objects and
   arrays count as present; `null` and absent do not.
 - **Missing fields:** positive operators (`eq`, `in`, `prefix`) are false. `ne` and `not_in`
-  are the exact negations of `eq` and `in`, so they are **true** on a missing field. Use
-  `exists: true` next to them when the field must be there. One rule, no three-valued logic.
+  are the exact negations of `eq` and `in`, so they are **true** on a missing field, and
+  they mean the same as wrapping the positive check in `not`. Put `exists: true` next to
+  them when the field must be there. Two-valued logic throughout: every node is true or
+  false, never "unknown".
 - **Comparison is byte-wise and case-sensitive.** No trimming, no Unicode folding.
 
-Why the two extras, and why nothing else:
+Why the two extra operators, and why nothing else:
 
 | Operator | Decision | Reason |
 |---|---|---|
@@ -255,13 +317,33 @@ Why the two extras, and why nothing else:
 | `gt`/`lt`/`gte`/`lte` | Out | Needs typed numeric comparison, which contradicts "scalars compare as text". First candidate if a real case appears. |
 | `suffix`, `contains` | Out | No current case; `contains` invites scanning large webhook strings. |
 | regex / glob | Out | Unbounded cost and a ReDoS surface on an unauthenticated-input path. |
-| OR / nesting | Out | `in` plus multiple triggers covers it; nesting complicates validation, UI and CLI. |
+| Checks across events (sequences, counts, "A then B", correlation ids) | Out | R5 is explicit: one event, stateless. See §12. |
 
-Limits (validated on save, reported through `detail_error` codes like today,
-`triggers.odin:49-55`): 8 clauses per trigger, 32 values per list, 256 bytes per value,
-128 bytes per field path. New code: `invalid_filter`.
+### 3.6 Match trace per run
 
-### 3.5 Evaluation cost (R4)
+Run history must show which nodes matched (R5). When a rule matches, the matcher evaluates
+the tree a second time **without** short-circuiting and stores the outcome in the run
+snapshot next to the existing `_trigger_rev` convention (`matcher.odin:166`):
+
+```json
+"_match": {"rev": 7, "nodes": "TTTFTTF"}
+```
+
+`nodes` has one character per node in pre-order (`T` or `F`), at most 24 characters. The
+values each check saw are already in the snapshot, because the paths a rule's checks
+reference are part of the run projection (§5.4).
+
+- The trace is written only for matched rules, so its cost is bounded by matches, not by
+  candidates.
+- The tree itself is **not** copied into the run (up to 4 KiB × every run would defeat R4).
+  The UI overlays the trace on the trigger's current tree when `_match.rev` equals the
+  trigger's `rev`; otherwise it shows "the rule changed after this run" and only the
+  recorded values. This is a deliberate trade-off (§14).
+- Runs exist only for events that matched, so the root is always `T` in history. To answer
+  "why did it not fire?", a stateless dry-run endpoint evaluates a tree against a pasted
+  sample event and returns the same trace (§10).
+
+### 3.7 Evaluation cost (R4)
 
 Today each event costs one SQL query for candidate triggers (`matcher.odin:91`,
 `ACTIONS_SQL_TRIGGERS_MATCH` at `src/hub/repository/sqlite/action_repo_sqlite.odin:316`), a
@@ -279,37 +361,44 @@ v2 matcher:
 
    `exact` holds rules whose subject filter has no `*` (this is today's `match_key`,
    `triggers.odin:70-73`); `wild` holds the rest with pre-split subject tokens. A rule is
-   `{trigger_id, action_id, rev, updated_at_ms, kind, delay_s, clauses, projection}` with
-   clause values already normalized and clauses ordered cheapest first (`exists`, `eq`, `in`,
-   `prefix`).
-2. **Load:** one query per owner on first use (all effective triggers of that owner, the
+   `{trigger_id, action_id, rev, updated_at_ms, kind, delay_s, tree, projection}`.
+2. **Compile once.** The tree is parsed and validated when the rule is loaded into the
+   index, never per event. The compiled form is a flat array of nodes in pre-order (kind,
+   child range, and for checks: pre-split path, operator, normalized values). Within each
+   group, checks are ordered before sub-groups and cheap operators first; the original
+   position of each node is kept so the trace in §3.6 is reported in the author's order.
+3. **Load:** one query per owner on first use (all effective triggers of that owner, the
    per-owner form of `ACTIONS_SQL_TRIGGERS_EFFECTIVE`, `action_repo_sqlite.odin:324`).
-3. **Invalidate:** one atomic epoch counter on the actions service, bumped after commit by
+4. **Invalidate:** one atomic epoch counter on the actions service, bumped after commit by
    every action or trigger write (`service.odin:218-227`, `:360`) and by the matcher's own
    retire path (`matcher.odin:136-145`). The matcher compares the epoch once per fetched
    batch and drops the whole cache when it changed. Safety net: drop it once a minute in the
    existing sweep tick (`runtime.odin:84-87`). SQL stays the source of truth. A global epoch
    means one owner's edit makes every owner reload lazily (one query each on their next
    event); that is acceptable until edit rates say otherwise.
-4. **Per event:** two hash lookups, then for each candidate: subject match (exact bucket:
-   none), the existing `updated_at` guard (`matcher.odin:99-100`), then clauses. A clause is
-   at most five map lookups in the already-parsed envelope (`runtime.odin:158-177`) and one
-   string comparison. The trigger-kind `guard` and `event_key` hooks
-   (`triggers.odin:33-37`) run unchanged.
-5. **Per matched rule:** one insert statement, no separate read. The join-or-queue decision
-   that needs the action's open run today (`matcher.odin:119-122`) moves into that statement
-   (insert `joined` when the action already has an open run, else `queued`; the unique index
-   `action_runs_one_open`, `actions_005_settle.sql:7`, is the arbiter). History pruning
-   leaves the hot path (`matcher.odin:132-134`) and stays in the minute sweep
+5. **Per event:** two hash lookups, then for each candidate: subject match (exact bucket:
+   none), the existing `updated_at` guard (`matcher.odin:99-100`), then the tree with
+   short-circuit: `all` stops at the first false child, `any` at the first true one. A check
+   is at most five map lookups in the already-parsed envelope (`runtime.odin:158-177`) and one
+   string comparison. Worst case per rule is 16 checks; no allocation, no recursion deeper
+   than 4. The trigger-kind `guard` and `event_key` hooks (`triggers.odin:33-37`) run
+   unchanged.
+6. **Per matched rule:** the full-evaluation trace (§3.6), then one insert statement, no
+   separate read. The join-or-queue decision that needs the action's open run today
+   (`matcher.odin:119-122`) moves into that statement (insert `joined` when the action
+   already has an open run, else `queued`; the unique index `action_runs_one_open`,
+   `actions_005_settle.sql:7`, is the arbiter). History pruning leaves the hot path
+   (`matcher.odin:132-134`) and stays in the minute sweep
    (`src/hub/service/actions/retention.odin:8-20`).
-6. The lazy unread fallback (`expire_open_run` at match time, `matcher.odin:118`) moves to
+7. The lazy unread fallback (`expire_open_run` at match time, `matcher.odin:118`) moves to
    the per-target drain (§6).
 
 Expected numbers for the profile "300 rules, 5 targets" (estimates, to be confirmed by the
-test in F2): worst case 300 wildcard rules of one type × 8 clauses is 2,400 short string
-comparisons per event, tens of microseconds; the per-owner cache is on the order of a few
-hundred bytes per rule. Schedule rules always land in an exact bucket because their subject
-contains the trigger id (`src/hub/service/actions/schedule_kind.odin:75`).
+test in F2): worst case 300 wildcard rules of one type × 16 checks is 4,800 short string
+comparisons per event, still tens of microseconds, and short-circuiting makes the typical
+case far smaller; the per-owner cache is on the order of a kilobyte per rule at the size
+limit. Schedule rules always land in an exact bucket because their subject contains the
+trigger id (`src/hub/service/actions/schedule_kind.odin:75`).
 
 ## 4. Targets (R2)
 
@@ -456,11 +545,12 @@ therefore a projection for every type:
 
 - envelope header fields: `type`, `id`, `actor`, `occurred_at`, `fired_at`, `entity_kind`,
   `entity_id`, and the aliases `chain_id`/`task_id` (§8);
-- `data`: every top-level scalar of at most 256 bytes (today's behaviour,
-  `matcher.odin:57-61`), plus the nested paths the rule's own filter and the action's prompt
-  template reference. That path list is computed when the rule is compiled;
+- `data`: every top-level scalar of at most 256 bytes (today the matcher copies every
+  top-level scalar, `matcher.odin:57-61`), plus the nested paths the rule's own checks and
+  the action's prompt template reference. That path list is computed when the rule is compiled;
 - if the template uses the new variable `{{event.json}}`: the compact `data` JSON, cut at
   4 KiB;
+- the match trace `_match` (§3.6);
 - total cap 8 KiB per run.
 
 Template additions (`template.odin:34-53`): nested `{{event.data.a.b}}`,
@@ -615,7 +705,7 @@ JetStream message.
 | Hub readers (matcher, inbox, validity) | Read `entity`/`data.chain_id` first; fall back to top-level ids. One shared accessor in `src/contracts/events.odin` with its TS mirror, used by every reader in §2.1. |
 | Web UI | `useUserWebSocket.ts:260-264` uses the same accessor logic. |
 | Templates | `{{event.chain_id}}` and `{{event.task_id}}` stay as aliases: the entity id when the entity is that kind, else `data.chain_id`. The matcher writes both aliases into every run snapshot, so stored old-shape and new-shape `action_runs.event_params` render identically and no stored row is rewritten. |
-| Stored filters | Object-form `data_filter` rows keep matching (§3.2). |
+| Stored filters | v1 equals-map `data_filter` rows keep matching (§3.3). |
 | Delayed runs created before the upgrade | Their events have no head row. A run whose entity has no head row falls back to the legacy per-type check (`event_kind.odin:72-124`). Delays are capped at 24 hours (`action.odin:6`), so this path is dead a day after the upgrade. |
 | JetStream backlog | Old-shape messages (retained up to 14 days, `relay.odin:49`) are read through the fallback. |
 | In-flight deliveries | One run per delivery; the "all runs with this `delivery_id`" update covers them as the one-member case. |
@@ -628,13 +718,13 @@ top-level fields for one release costs about sixty bytes per event and removes t
 problem.
 
 **Release N+1 (one cleanup task):** stop writing top-level `chain_id`/`task_id`; remove the
-reader fallback, the legacy validity callback for chain state, and the object-form filter
+reader fallback, the legacy validity callback for chain state, and the v1 equals-map filter
 reader after a one-statement rewrite of remaining rows. The template aliases stay; they are
 part of the user-facing prompt language.
 
 **Rollback.** Every schema change is additive except the `event_entity_versions` rebuild,
 which only drops a CHECK. An older hub ignores the new tables. It would not understand
-array-form filters, so rules saved with v2 operators must be disabled before a rollback; the
+tree-form filters, so rules saved with a condition tree must be disabled before a rollback; the
 release notes must say so.
 
 ## 9. Data model changes
@@ -645,12 +735,12 @@ release notes must say so.
 | `actions_006_target_batches.sql` | `CREATE INDEX action_runs_delivery ON action_runs(delivery_id) WHERE state = 'routed';` and `CREATE INDEX action_runs_parked ON action_runs(target_instance_id) WHERE state = 'deferred' AND target_instance_id <> '';` |
 | `webhooks_001.sql` | `event_webhooks` (§5.4). |
 
-No new columns. `action_triggers.data_filter` changes meaning by JSON type only (§3.2).
+No new columns. `action_triggers.data_filter` holds either a v1 equals map or a condition tree, told apart by shape (§3.3).
 `action_runs.target_instance_id` gains a second use: set on parked runs (§6.2).
 Each named migration must be added to the migration allowlist that the SQLite suite checks
 (see the chain's dead-end notes for `actions_004`).
 
-Domain and contract changes: filter clause types and the envelope accessor in
+Domain and contract changes: condition-tree node types, the match trace, and the envelope accessor in
 `src/contracts` with the TS mirror; `Event_Descriptor` gains `class`, entity kind, subject
 template and field list (`event_kind.odin:47-54`); no change to `Action`, `Action_Trigger` or
 `Action_Run` structs.
@@ -661,7 +751,7 @@ template and field list (`event_kind.odin:47-54`); no change to `Action`, `Actio
 `event:<type>,key=value` (tested at `src/ctl/actions_test.odin:51`) grows operators; a bare
 key still means `data.<key>`:
 
-| Shorthand | Clause |
+| Shorthand | Check |
 |---|---|
 | `state=completed` | `eq` |
 | `state!=archived` | `ne` |
@@ -671,7 +761,10 @@ key still means `data.<key>`:
 | `pull_request?` / `!pull_request?` | `exists` true / false |
 | `@wh_18eb…` | `entity_id` |
 
-`--trigger-json` keeps accepting the full config. New group:
+Several shorthand checks on one trigger are combined with AND, as today. The shorthand does
+not express `any`/`not` groups; trees are passed through `--trigger-json`, which keeps
+accepting the full config. `ham-ctl actions runs` prints the match trace of each run as an
+indented tree with a true/false mark per node. New group:
 
 ```bash
 ham-ctl webhook create --name "CI" [--auth bearer|hmac]   # prints URL and secret once
@@ -685,13 +778,70 @@ The `ham-ctl-reference` skill and the Ninjy bot skill are updated in the same ta
 **HTTP.** `GET/POST /api/v1/webhooks`, `GET/PATCH/DELETE /api/v1/webhooks/<id>`,
 `POST /api/v1/webhooks/<id>/rotate` (session auth, owner-scoped), plus the ingress in §5.4.
 `GET /api/v1/actions/trigger-types` (`service.odin:404-435`) additionally returns, per event
-type, its fields with allowed operators and known values, and the filter limits.
+type, its fields with allowed operators and known values, and the tree limits (§3.4).
+`POST /api/v1/actions/filter-test` takes `{event_type, filter, event}` (a pasted sample
+envelope or webhook body) and returns the validation result and the per-node trace of §3.6.
+It is a pure function: no event is emitted and nothing is stored.
 
-**UI** (`src/ui/components/actions/`): `TriggerListEditor.tsx` gets clause rows (field, operator,
-value) driven by the trigger-types response, with a free path input for webhook types;
-a Webhooks section lists webhooks, creates one, copies the URL and rotates the secret;
-`RunHistory.tsx` shows "delivered with N other actions" and "waiting for the agent to read
-the previous prompt" for parked runs. API types in `src/ui/api/endpoints/actions.ts`.
+**UI** (`src/ui/components/actions/`).
+
+*Tree editor* (in `TriggerListEditor.tsx`, per event trigger). One component renders the
+tree as nested cards; each node is one row or card:
+
+```
+┌ Match [ All of ▾ ]                                   [+ check] [+ group]
+│  data.action     [ is one of ▾ ]  opened, reopened                  ✕
+│  ┌ [ Any of ▾ ]                                    [+ check] [+ group] ✕
+│  │  data.repo.name    [ starts with ▾ ]  heimdall-                  ✕
+│  │  data.labels.urgent [ exists ▾ ]                                 ✕
+│  └
+│  ┌ [ None of ▾ ]                                   [+ check] [+ group] ✕
+│  │  data.draft        [ is ▾ ]  true                                ✕
+│  └
+└
+In words: action is one of opened, reopened AND (repo.name starts with "heimdall-" OR
+labels.urgent exists) AND NOT (draft is true)
+```
+
+- A group has a mode selector: **All of** (`all`), **Any of** (`any`), **None of**
+  (`not` around `any`). A `not` around any other node, which only hand-written JSON
+  produces, renders as a **Not** wrapper card.
+- A check row is field, operator, value. Field and value are pickers when the event type's
+  descriptor lists them (trigger-types response) and free text for webhook paths.
+- "+ group" is disabled at depth 4 and both add buttons at the node limits; the limits come
+  from the trigger-types response.
+- A plain-language sentence under the tree restates it, so nesting mistakes are visible.
+- Server validation errors carry the node `path` (§3.4); the editor marks that node.
+- A trigger with no conditions shows "Always" and one "+ check" button. Existing v1 filters
+  open as an "All of" group, which is what they mean.
+- "Test with a sample event" opens a JSON box and calls `filter-test`, then shows the same
+  read-only view as run history. This is how a user finds out why a rule did not fire.
+- On narrow screens nested cards indent by a fixed small step and check rows stack field,
+  operator and value vertically.
+
+*Matched nodes in run history* (`RunHistory.tsx`). Expanding a run shows the same tree,
+read-only, with the recorded trace overlaid:
+
+```
+✓ All of
+   ✓ data.action is one of opened, reopened        saw: "opened"
+   ✓ Any of
+      ✗ data.repo.name starts with "heimdall-"     saw: "docs-site"
+      ✓ data.labels.urgent exists
+   ✓ None of
+      ✗ data.draft is true                          saw: false
+```
+
+- Every node shows true or false with an icon and a text label, never colour alone.
+- Checks show the value the event carried ("saw: …", or "missing").
+- If the trigger was edited after the run (`_match.rev` differs from the trigger's `rev`),
+  the view says so and lists only the recorded values (§3.6).
+- Joined runs have their own trace, since each is its own event.
+
+*Other UI.* A Webhooks section lists webhooks, creates one, copies the URL and rotates the
+secret. `RunHistory.tsx` also shows "delivered with N other actions" and "waiting for the
+agent to read the previous prompt" for parked runs. API types in
+`src/ui/api/endpoints/actions.ts`.
 
 ## 11. Security notes
 
@@ -711,7 +861,7 @@ the previous prompt" for parked runs. API types in `src/ui/api/endpoints/actions
 - **Abuse bounds.** Size, rate and failed-auth limits are checked before parsing and before
   any SQL (§5.4). A webhook wired to a `fresh_per_run` agent can spawn at most one instance
   per `min_interval_s` (default 30 s, `action.odin:9`) per action.
-- **Filters cannot be made expensive:** no regex, bounded lists, bounded path depth (§3.4).
+- **Filters cannot be made expensive:** no regex, bounded tree depth and size, bounded lists, bounded path depth (§3.4, §3.5).
 - **Experiment gates** stay as they are: `actions` (and `bots` for bot targets) are checked at
   drain (`router.odin:356-358`); the webhook ingress also requires `actions`.
 
@@ -719,7 +869,10 @@ the previous prompt" for parked runs. API types in `src/ui/api/endpoints/actions
 
 | Left out | Why |
 |---|---|
-| Regex, numeric comparisons, `contains`/`suffix`, OR/nesting | §3.4. |
+| Regex, numeric comparisons, `contains`/`suffix` | §3.5. |
+| Event arrays, conditions across several events, `cause_id`/correlation, counts or time windows | User decision: keep it simple. One event is one fact and the tree is evaluated statelessly against it (§3.2). |
+| A copy of the tree in every run | The trace is tiny, the tree is not; an edited rule shows values only (§3.6). |
+| `any`/`not` in the CLI shorthand | The shorthand stays a flat AND; trees go through `--trigger-json` (§10). |
 | Per-trigger targets, new target kinds | R2 is met by existing kinds (§4). |
 | Webhook request headers in `data` | Keeps the envelope to the body. Consequence: senders that put the event name in a header (GitHub) cannot be filtered on it. |
 | Provider-specific signature formats (GitHub, Stripe) | Each is its own verifier. v2 webhooks are for senders you control or that can set a header. A natural follow-up: signature profiles plus a small header allowlist. |
@@ -727,7 +880,7 @@ the previous prompt" for parked runs. API types in `src/ui/api/endpoints/actions
 | A per-target rate or concurrency setting | One open delivery per target is the backpressure (§6.2). |
 | A batch table, any redesign of delivery state | §6.3; the SQL/JetStream duplication is not touched. |
 | Rewriting stored schedule definitions and internal timer envelopes | §2.2. |
-| Per-owner cache invalidation | A global epoch is enough to start (§3.5). |
+| Per-owner cache invalidation | A global epoch is enough to start (§3.7). |
 | Descriptors for `task.requirements_changed`, `task.review_verdict`, `task.merge_conflict` | A table row each when needed (§5.1). |
 | Memory events for edits that keep the status | No use case; avoids noise. |
 
@@ -742,29 +895,33 @@ chain's Test Runner. "Deps" are hard ordering constraints.
 | E1 | **Envelope v2 producer.** Extract the producer-neutral emit helper; `catalog_emit` wraps it; emit `entity` and `data.chain_id`, keep top-level ids (dual write). Migration `events_007` (versions rebuild only). | – | Golden test of the envelope for one chain and one task event shows both shapes; versions accept kind `memory`; `taskv2` suite passes; SQLite migration suite passes incl. upgrade from a populated `event_entity_versions`. |
 | E2 | **Readers accept v2.** Envelope accessor in `src/contracts` + TS mirror; switch matcher snapshot, settle key, prompt metadata, templates, event inbox, UI replay. Run snapshot writes `entity_kind`, `entity_id` and both aliases. | E1 | Each reader has a test fed a v2-only envelope and an old-shape envelope with equal results; `{{event.chain_id}}` renders for a task event; actions, eventinbox and UI suites pass. |
 | E3 | **Generic validity (D2).** `event_state_heads` in `events_007`; upsert in the emit helper for `state` class; generic check with legacy fallback when no head row; generic settle key. | E2 | Tests: reopened chain → `superseded`; chain row touched without state change → delivered; completed→active→completed → delivered once; pre-upgrade run without head row uses legacy check; `chain.work_finished` still uses `work_revision`. The four real-producer settle tests from `task_18eaf94a6a6d3b39` still pass. |
-| F1 | **Filter grammar.** Clause parsing, validation, compile and evaluation as pure procs; legacy map compiled to `eq`; array form stored in `data_filter`; `invalid_filter` errors; trigger-types returns fields, operators, limits. | E2 | Table test over every operator × {present string, number, bool, null, object, array, absent}; limits rejected on save; object-form rows still match; `3` equals `"3"`. |
-| F2 | **Compiled rule index.** Per-owner cache with epoch invalidation and minute refresh; single-statement join-or-queue insert; pruning out of the hot path. | F1 | Test with 300 rules for one owner: second event runs zero trigger queries (query counter, like `src/hub/service/actions/performance_test.odin:23-25`); an edit, disable or delete is honoured on the next event; redelivery inserts nothing; schedule guard and retire still work. Records the measured per-event cost in the task comment. |
+| F1 | **Condition tree.** Node parsing, validation with `path`/`reason`, compile to the flat form, short-circuit evaluation and full-trace evaluation as pure procs; legacy map compiled to an `all` group; tree stored in `data_filter`; trigger-types returns fields, operators, limits; `filter-test` endpoint. | E2 | Table test over every operator × {present string, number, bool, null, object, array, absent}; tests for `all`/`any`/`not` nesting incl. short-circuit result equal to full evaluation; every limit in §3.4 rejected with the right `reason` and `path`; v1 equals-map rows still match and are never misread as trees; `3` equals `"3"`; trace characters are in the author's node order. |
+| F2 | **Compiled rule index.** Per-owner cache with epoch invalidation and minute refresh; single-statement join-or-queue insert; `_match` trace written to the run snapshot; pruning out of the hot path. | F1 | Test with 300 rules for one owner: second event runs zero trigger queries (query counter, like `src/hub/service/actions/performance_test.odin:23-25`); an edit, disable or delete is honoured on the next event; redelivery inserts nothing; schedule guard and retire still work. Records the measured per-event cost in the task comment. |
 | B1 | **Per-target batch send.** Grouping, resolve once per group, backpressure park, digest render, one message/delivery, member update. Migration `actions_006`. | – | Tests: 10 actions → 1 instance, one event → 1 chat message, 1 delivery, 10 runs `routed` with one `delivery_id`; single run renders byte-identical to today; bot and instance groups resolve once each (call counter); `fresh_per_run` unchanged; 25 runs split 20 + 5. |
 | B2 | **Batch lifecycle.** Final-state fan-out by `delivery_id`; parked release + single `action.ready`; lazy expiry at drain; replacement moves all members; schedules-unsupported sweep excludes parked runs; history exposes batch size. | B1 | Tests: read → all members `delivered`; `not_read` → all members failed with `not_read`, parked runs go out next as one digest; lost wake → released at expiry; bridge replacement keeps one delivery for all members; parked runs survive unsupported-schedule mode; in-flight single-run deliveries from before the change finalize. |
 | M1 | **Memory producer.** `save_memory` in a unit of work; `memory.state` event on create and status change; descriptor + two presets. | E1, E3 | Tests: create pending, approve, reject, archive each emit one event with correct `status`/`previous_status`; edit without status change emits none; system memory emits none; rollback of the memory write leaves no outbox row; a rule with preset "Memory approved" produces a run. |
 | W1 | **Webhook model and ingress.** `webhooks_001`; CRUD service + HTTP; ingress with auth modes, uniform 401, size/type/shape limits, rate limits, deterministic event id, outbox append-if-absent. Cites the secret-at-rest mechanism or ships `bearer` only. | E1 | Tests: valid bearer and valid hmac → 202 and one outbox row with owner from the row; wrong secret, unknown id and disabled webhook return identical 401; stale and future timestamps rejected; 64 KiB + 1 → 413; non-object → 400; 61st request in a minute → 429; same `Idempotency-Key` twice → one outbox row and `duplicate: true`; cross-owner CRUD → not found. |
 | W2 | **Webhook rules.** `webhook.received` descriptor with free `data.` paths; run snapshot projection and 8 KiB cap; nested template variables and `{{event.json}}`; untrusted-data line; control-character stripping. | F1, W1 | Tests: 64 KiB body → run snapshot ≤ 8 KiB and contains the paths used by filter and template; nested variable renders; `{{` inside a webhook value is not expanded; prompt contains the untrusted-data line only for webhook-derived values. |
-| C1 | **CLI.** Filter shorthand operators, `ham-ctl webhook` group, `ham-ctl-reference` and Ninjy skill text. | F1, W1 | `src/ctl` tests for each shorthand form and each webhook verb, in the style of `src/ctl/actions_test.odin`; old shorthand `event:chain.state,state=completed` produces the same request as before. |
-| U1 | **UI.** Clause editor, Webhooks section, batch and parked labels in history, API types. | F1, W1, B2 | UI tests for editing each operator, creating a webhook with the secret shown once, and both history labels; existing actions UI tests pass. |
+| C1 | **CLI.** Filter shorthand operators, match trace in `actions runs`, `ham-ctl webhook` group, `ham-ctl-reference` and Ninjy skill text. | F1, W1 | `src/ctl` tests for each shorthand form and each webhook verb, in the style of `src/ctl/actions_test.odin`; old shorthand `event:chain.state,state=completed` produces the same request as before. |
+| U1a | **UI tree editor.** Nested group cards with All/Any/None modes, check rows, limits, plain-language sentence, error marking by node path, sample-event test. API types. | F1 | UI tests: build the §3.3 example and get exactly that JSON; open a v1 filter as an All-of group; depth and node limits disable the add buttons; a server `path` error marks the right node; usable at phone width. |
+| U1b | **UI history and webhooks.** Read-only tree with per-node result and seen values in run history, edited-rule fallback; Webhooks section; batch and parked labels. | U1a, F2, W1, B2 | UI tests for a trace overlay with true and false nodes, the edited-rule fallback, creating a webhook with the secret shown once, and both history labels; existing actions UI tests pass. |
 | X1 | **E2E on dev.** One webhook and one memory rule to a bot; 20 actions to one instance; a delayed chain rule across a reopen. | all above | Observed on dev: one digest prompt for the 20 actions, a second digest only after the read; webhook duplicate suppressed; reopened chain skipped as `superseded`. No rollout without the user's explicit OK. |
 | N1 | **Next release cleanup.** Remove dual write, reader fallback, legacy chain-state validity and the object-form filter reader. | one release after X1 | Suites pass with v2-only envelopes; no `chain_id`/`task_id` at the envelope top level. |
 
 Parallelism: E1 and B1 can start together. After E2, the tracks F (filters), M/W (producers)
-and B (delivery) are independent until C1, U1 and X1.
+and B (delivery) are independent until C1, U1b and X1.
 
 ## 14. Open points for the reviewer
 
-1. **Missing-field rule for `ne`/`not_in`** (true on missing, §3.4). The alternative, "false
+1. **Missing-field rule for `ne`/`not_in`** (true on missing, §3.5). The alternative, "false
    unless present", is how some rule engines behave; I chose plain negation because it is one
    sentence and `exists` makes the strict form available.
 2. **Dual write for one release** (§8) goes beyond D3 as given. It rests on the desktop UI and
    agent skill text being able to lag the hub; if both always ship with the hub, it can be
    dropped and E1 gets simpler.
 3. **Webhook `hmac` mode** depends on a secret-at-rest mechanism I did not verify (§5.4).
-4. **Batch limits** (20 runs, 24 KiB) and webhook limits (64 KiB, 60/min) are starting values,
-   not measured ones.
+4. **Batch limits** (20 runs, 24 KiB), webhook limits (64 KiB, 60/min) and tree limits
+   (depth 4, 16 checks, 24 nodes) are starting values, not measured ones.
+5. **Match trace without a tree copy** (§3.6): after a rule is edited, older runs show the
+   values they saw but not the per-node view. Storing the tree per run would fix that at up
+   to 4 KiB per run.
