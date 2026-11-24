@@ -435,15 +435,12 @@ drain_run :: proc(r:^Router,id:string,hinted:bool,hint_deadline:string="") {
  // Validate before planning: planning can spawn or start an instance.
  // Immediate and rate-limit-only runs never perform this lookup.
  if run.delay_s > 0 {
-  descriptor := event_descriptor_find(run.event_type)
-  if descriptor != nil && descriptor.still_valid != nil {
-   valid, why := descriptor.still_valid(uow.repos, run)
-   if !valid {
-    if why == "" do why = "superseded"
-    if e := finish_run(r,&uow, run, domain.ACTION_RUN_SKIPPED, why, now); e.code != .None do return
-    _, _ = iface.unit_of_work_commit(&uow); uow.ctx=nil
-    return
-   }
+  valid, why := event_still_valid(uow.repos, run)
+  if !valid {
+   if why == "" do why = "superseded"
+   if e := finish_run(r,&uow, run, domain.ACTION_RUN_SKIPPED, why, now); e.code != .None do return
+   _, _ = iface.unit_of_work_commit(&uow); uow.ctx=nil
+   return
   }
  }
  committed,_:=iface.unit_of_work_commit(&uow); uow.ctx=nil

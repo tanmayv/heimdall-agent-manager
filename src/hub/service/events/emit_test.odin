@@ -8,7 +8,7 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
 emit_test_clock :: proc(ctx: rawptr) -> string { return "2026-11-24T00:00:00Z" }
-Emit_Test :: struct {t: ^testing.T, appended: bool}
+Emit_Test :: struct {t: ^testing.T, appended, headed: bool}
 emit_test_version :: proc(ctx: rawptr, owner, kind, id: string) -> (i64, domain.Domain_Error) {
 	f := (^Emit_Test)(ctx)
 	testing.expect_value(f.t, kind, "memory")
@@ -40,7 +40,7 @@ test_v2_neutral_emit_owns_temporary_allocations :: proc(t: ^testing.T) {
 	context.allocator = mem.tracking_allocator(&track)
 	context.temp_allocator = context.allocator
 	f := Emit_Test{t=t}
-	repo := iface.Event_Outbox_Repository{ctx=&f, next_version=emit_test_version, append=emit_test_append}
+	repo := iface.Event_Outbox_Repository{ctx=&f, next_version=emit_test_version, set_state_head=emit_test_head, append=emit_test_append}
 	clock := platform.Clock{now=emit_test_clock}
 	id, err := emit(&repo, &clock, {owner="owner", type="memory.state", class="state",
 		entity_kind="memory", entity_id="m1", subject="ev.owner.memory.m1.state",
@@ -48,4 +48,16 @@ test_v2_neutral_emit_owns_temporary_allocations :: proc(t: ^testing.T) {
 	testing.expect_value(t, id, "evt")
 	testing.expect(t, err.code==.None && f.appended)
 	testing.expect_value(t, len(track.allocation_map), 0)
+}
+
+emit_test_head :: proc(ctx: rawptr, owner, kind, id, event_type, event_id: string, version: i64) -> domain.Domain_Error {
+ f := (^Emit_Test)(ctx)
+ testing.expect_value(f.t,owner,"owner")
+ testing.expect_value(f.t,kind,"memory")
+ testing.expect_value(f.t,id,"m1")
+ testing.expect_value(f.t,event_type,"memory.state")
+ testing.expect_value(f.t,event_id,"evt")
+ testing.expect_value(f.t,version,i64(7))
+ f.headed=true
+ return {}
 }

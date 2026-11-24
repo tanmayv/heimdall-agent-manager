@@ -160,9 +160,7 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
 // to the latest event. A redelivery therefore cannot restart its timer.
 settle_match :: proc(r: ^Runtime, uow: ^iface.Unit_Of_Work, trigger: domain.Action_Trigger, msg: Event_View, run: domain.Action_Run, now: string) -> (bool, domain.Domain_Error) {
  repo := &uow.repos.actions
- descriptor := event_descriptor_find(msg.event_type)
- key := ""
- if descriptor != nil && descriptor.settle_key != nil do key = descriptor.settle_key(msg)
+ key := entity_settle_key(msg)
  pending, found, err := repo.run_settle_pending(repo.ctx, trigger.trigger_id, key)
  defer domain.action_run_destroy(&pending)
  if err.code != .None do return false, err

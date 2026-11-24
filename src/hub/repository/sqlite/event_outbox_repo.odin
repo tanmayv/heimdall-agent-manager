@@ -10,6 +10,8 @@ new_event_outbox_repository :: proc(impl: ^Event_Outbox_Repo_SQLite, conn: ^Conn
 	impl.conn = conn
 	return {
 		ctx = impl,
+		set_state_head = outbox_set_state_head,
+		state_head_matches = outbox_state_head_matches,
 		next_version = outbox_next_version,
 		open_topic = outbox_open_topic,
 		resolve_topic = outbox_resolve_topic,
@@ -153,4 +155,25 @@ outbox_backlog_owner :: proc(ctx: rawptr, owner: string) -> (i64, domain.Domain_
 	bind_text(stmt, 1, owner)
 	if sqlite3_step(stmt) != SQLITE_ROW do return 0, domain.domain_error(.Internal_Error, "failed to count owner outbox")
 	return sqlite3_column_int64(stmt, 0), {}
+}
+
+// Head writes and reads require the producer/router caller's unit of work.
+outbox_set_state_head :: proc(ctx: rawptr, owner, kind, id, event_type, event_id: string, version: i64) -> domain.Domain_Error {
+ stmt, err := outbox_prepare(ctx, "INSERT INTO event_state_heads(owner_user_id,entity_kind,entity_id,event_type,event_id,entity_version) VALUES(?,?,?,?,?,?) ON CONFLICT(owner_user_id,entity_kind,entity_id,event_type) DO UPDATE SET event_id=excluded.event_id,entity_version=excluded.entity_version;")
+ if err.code != .None do return err
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt,1,owner); bind_text(stmt,2,kind); bind_text(stmt,3,id); bind_text(stmt,4,event_type); bind_text(stmt,5,event_id)
+ sqlite3_bind_int64(stmt,6,version)
+ if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to set event state head")
+ return {}
+}
+outbox_state_head_matches :: proc(ctx: rawptr, owner, kind, id, event_type, event_id: string) -> (bool, domain.Domain_Error) {
+ stmt, err := outbox_prepare(ctx, "SELECT event_id=? FROM event_state_heads WHERE owner_user_id=? AND entity_kind=? AND entity_id=? AND event_type=?;")
+ if err.code != .None do return false, err
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt,1,event_id); bind_text(stmt,2,owner); bind_text(stmt,3,kind); bind_text(stmt,4,id); bind_text(stmt,5,event_type)
+ rc := sqlite3_step(stmt)
+ if rc == SQLITE_DONE do return false, {}
+ if rc != SQLITE_ROW do return false, domain.domain_error(.Internal_Error, "failed to read event state head")
+ return sqlite3_column_int64(stmt,0) != 0, {}
 }

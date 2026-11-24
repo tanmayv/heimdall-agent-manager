@@ -29,12 +29,19 @@ settle_test_setup :: proc(t: ^testing.T, f: ^Action_Test, delay: int) {
  f.repos.taskchains.get_chain=settle_test_chain
  f.chain_status=.Completed
 }
-settle_test_event :: proc(t: ^testing.T, f: ^Action_Test, chain, id: string, seq: u64) {
- envelope := test_config(`{"data":{"state":"completed","completed_at":"2026-11-23T00:00:00Z"}}`)
+settle_test_event :: proc(t: ^testing.T, f: ^Action_Test, chain, id: string, seq: u64, update_head := true) {
+ envelope := test_config(`{"class":"state","data":{"state":"completed","completed_at":"2026-11-23T00:00:00Z"}}`)
  entity := make(json.Object, context.temp_allocator)
  entity["kind"]="chain"; entity["id"]=chain
  envelope["entity"]=entity
  testing.expect(t, len(envelope)>0, "valid event envelope")
+ if update_head {
+  uow, began, _ := iface.unit_of_work_begin(&f.factory)
+  testing.expect(t, began)
+  outbox := &uow.repos.event_outbox
+  testing.expect_value(t, outbox.set_state_head(outbox.ctx,"owner","chain",chain,"chain.state",id,i64(seq)).code,domain.Error_Code.None)
+  _, _ = iface.unit_of_work_commit(&uow)
+ }
  testing.expect(t,handle_message(&f.runtime,{
   subject=fmt.tprintf("ev.owner.chain.%s.state",chain),event_type="chain.state",event_id=id,
   stream_time_ms=f.now_ms,stream_sequence=seq,
@@ -46,25 +53,25 @@ test_settle_debounce_isolation_and_stale_hint :: proc(t: ^testing.T) { action_te
 settle_debounce_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  settle_test_setup(t,f,10)
  settle_test_event(t,f,"chain1","first",1)
- original,found,err:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain1")
+ original,found,err:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
  testing.expect(t,found && err.code==.None && original.delay_s==10)
  f.now_ms+=5000
  settle_test_event(t,f,"chain1","latest",2)
- pending,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain1")
+ pending,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
  testing.expect(t,pending.run_id==original.run_id && pending.event_id=="latest" && pending.not_before>original.not_before)
  // Old occurrence redelivery does not restart the latest timer.
  f.now_ms+=1000
- settle_test_event(t,f,"chain1","first",1)
- repeated,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain1")
+ settle_test_event(t,f,"chain1","first",1,update_head=false)
+ repeated,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
  testing.expect_value(t,repeated.not_before,pending.not_before)
  settle_test_event(t,f,"chain2","second-chain",3)
  action_test_expect(t,f,domain.ACTION_RUN_DEFERRED,2)
  sc:=Sync_Context{clock=&f.clock,ids=&f.ids}
  one,_:=settle_deferral_row(&sc,pending)
- other:=pending;other.settle_key="chain2"
+ other:=pending;other.settle_key="chain:chain2"
  two,_:=settle_deferral_row(&sc,other)
  testing.expect(t,one.subject!=two.subject)
- other.settle_key="chain1";same,_:=settle_deferral_row(&sc,other)
+ other.settle_key="chain:chain1";same,_:=settle_deferral_row(&sc,other)
  testing.expect_value(t,one.subject,same.subject)
  f.now_ms+=4000
  drain_run(&f.runtime.router,pending.run_id,true)
@@ -73,10 +80,10 @@ settle_debounce_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  f.now_ms+=5000
  drain_run(&f.runtime.router,pending.run_id,true)
  testing.expect_value(t,f.routes,1)
- testing.expect_value(t,f.validity_reads,1)
+ testing.expect_value(t,f.validity_reads,0)
  // The other key waits until the action slot is released, then delivers separately.
  f.now_ms+=1000
- remaining,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain2")
+ remaining,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain2")
  drain_run(&f.runtime.router,remaining.run_id,true)
  action_test_expect(t,f,domain.ACTION_RUN_JOINED,1) // debounce receipt only
  testing.expect_value(t,f.routes,1)
@@ -116,13 +123,18 @@ test_settle_reopen_superseded_and_zero_delay_no_check :: proc(t: ^testing.T) { a
 settle_reopen_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  settle_test_setup(t,f,10)
  settle_test_event(t,f,"chain1","completed",1)
- pending,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain1")
+ pending,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
  f.chain_status=.Active
+ uow, began, _ := iface.unit_of_work_begin(&f.factory)
+ testing.expect(t,began)
+ outbox := &uow.repos.event_outbox
+ testing.expect_value(t,outbox.set_state_head(outbox.ctx,"owner","chain","chain1","chain.state","reopened",2).code,domain.Error_Code.None)
+ _, _ = iface.unit_of_work_commit(&uow)
  f.now_ms+=10000
  drain_run(&f.runtime.router,pending.run_id,false)
  run,_,_:=f.repos.actions.run_get(f.repos.actions.ctx,pending.run_id)
  testing.expect(t,run.state==domain.ACTION_RUN_SKIPPED && run.reason=="superseded")
- testing.expect_value(t,f.validity_reads,1)
+ testing.expect_value(t,f.validity_reads,0)
  testing.expect_value(t,f.routes,0)
  testing.expect_value(t,f.settle_plans,0)
  settle_test_setup(t,f,0)
@@ -130,7 +142,7 @@ settle_reopen_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  settle_test_event(t,f,"chain1","immediate",2)
  for row in action_test_rows(t,f) do if row.state==domain.ACTION_RUN_QUEUED do drain_run(&f.runtime.router,row.run_id,false)
  testing.expect_value(t,f.routes,1)
- testing.expect_value(t,f.validity_reads,1)
+ testing.expect_value(t,f.validity_reads,0)
  testing.expect_value(t,f.settle_plans,1)
 }
 @(test)
@@ -143,7 +155,7 @@ settle_rate_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  settle_test_setup(t,f,5)
  f.now_ms+=1000
  settle_test_event(t,f,"chain1","delayed",2)
- pending,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain1")
+ pending,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
  f.now_ms+=5000
  drain_run(&f.runtime.router,pending.run_id,false)
  deferred,_,_:=f.repos.actions.run_get(f.repos.actions.ctx,pending.run_id)
@@ -154,7 +166,7 @@ settle_rate_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  f.now_ms+=23000
  drain_due(&f.runtime.router,{{owner="owner",run_id=pending.run_id,not_before=deferred.not_before}})
  testing.expect_value(t,f.routes,2)
- testing.expect_value(t,f.validity_reads,1)
+ testing.expect_value(t,f.validity_reads,0)
 }
 @(test)
 test_settle_work_revision_and_optional_callbacks :: proc(t: ^testing.T) { action_test_case(t,settle_work_scenario) }
@@ -189,7 +201,7 @@ test_settle_current_hint_tolerates_clock_skew :: proc(t:^testing.T) { action_tes
 settle_skew_scenario :: proc(t:^testing.T,f:^Action_Test) {
  settle_test_setup(t,f,10)
  settle_test_event(t,f,"chain1","early",1)
- run,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain1")
+ run,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
  sc:=Sync_Context{clock=&f.clock,ids=&f.ids}
  row,_:=settle_deferral_row(&sc,run)
  value:json.Value
@@ -211,7 +223,7 @@ settle_cancel_scenario :: proc(t:^testing.T,f:^Action_Test) {
   trigger.enabled=true
   testing.expect_value(t,f.repos.actions.trigger_save(f.repos.actions.ctx,trigger).code,domain.Error_Code.None)
   settle_test_event(t,f,"chain1",fmt.tprintf("cancel%d",mode),u64(mode+1))
-  run,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain1")
+  run,_,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
   switch mode {
   case 0: trigger.enabled=false
   case 1: trigger.rev+=1
@@ -285,7 +297,7 @@ settle_read_scenario :: proc(t:^testing.T,f:^Action_Test) {
  f.now_ms+=30000
  drain_due(&f.runtime.router)
  testing.expect_value(t,f.routes,1)
- second,pending,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain2")
+ second,pending,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain2")
  testing.expect(t,pending && second.state==domain.ACTION_RUN_DEFERRED)
  action_test_expect(t,f,domain.ACTION_RUN_JOINED,0)
  ack_read(t,f,first)
