@@ -8,6 +8,9 @@ import domain "odin_test:hub/domain"
 // instance's subscriptions, even one of the same durable agent.
 Event_Subscription_Repository :: struct {
 	ctx:           rawptr,
+ changes: proc(ctx: rawptr, after: i64) -> ([]domain.Event_Inbox_Change, domain.Domain_Error),
+ chain_rows: proc(ctx: rawptr, owner, chain: string) -> ([]domain.Event_Subscription, domain.Domain_Error),
+ chain_snapshot: proc(ctx: rawptr, owner, chain: string) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error),
 	notice_snapshot: proc(ctx: rawptr) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error),
 	by_owner: proc(ctx: rawptr, owner: string) -> ([]domain.Event_Subscription, domain.Domain_Error),
 	// Returns the canonical bot identity for this owned instance, or empty.

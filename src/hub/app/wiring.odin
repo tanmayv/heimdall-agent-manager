@@ -397,7 +397,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.repos.pipeline_deliveries = sqlite.new_pipeline_delivery_repository(&graph.sqlite_pipeline_deliveries, &graph.db)
-	graph.db.outbox_after_commit_ctx = &graph.event_relay
+	sqlite.install_inbox_notifications(&graph.db, &graph.event_inbox, proc(ctx: rawptr) {eventinbox.wake((^eventinbox.Service)(ctx))})
+ graph.db.outbox_after_commit_ctx = &graph.event_relay
 	graph.db.outbox_after_commit = proc(ctx: rawptr) {eventrelay.wake((^eventrelay.Service)(ctx))}
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.users.on_agent_seeded = users_on_agent_seeded
@@ -717,6 +718,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.bots.boot_unix_ms, _ = platform.rfc3339_to_unix_ms(platform.clock_now(&graph.clock))
 	graph.bridge_handlers.bots = &graph.bots
 	graph.event_inbox = eventinbox.Service{
+ reconcile_interval = time.Duration(config.event_inbox_reconcile_seconds)*time.Second,
 		factory = &graph.uow_factory, ids = &graph.ids,
 		notice_ctx = graph, notice = event_inbox_notice,
 		options = {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000},

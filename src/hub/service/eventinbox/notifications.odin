@@ -53,12 +53,17 @@ published :: proc(s: ^Service, subject: string) {
 	if len(parts) > 1 && parts[1] == "dlq" do offset = 2
 	if len(parts) < offset+4 || parts[offset+1] != "chain" do return
 	key := fmt.tprintf("%s/%s", parts[offset], parts[offset+2])
-	context.allocator = runtime.heap_allocator()
+ mark_notice_dirty(s,key,true)
+}
+mark_notice_dirty :: proc(s:^Service,key:string,signal:bool) {
+ context.allocator = runtime.heap_allocator()
 	sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
-	if s.notice_dirty.all do return
-	if len(s.notice_dirty.chains) >= 4096 {s.notice_dirty.all = true; return}
+	if s.interest_ready && !s.watched_scopes[key] do return
+ if s.notice_dirty.all {if signal do wake(s); return}
+	if len(s.notice_dirty.chains) >= 4096 {s.notice_dirty.all = true; if signal do wake(s); return}
 	if s.notice_dirty.chains == nil do s.notice_dirty.chains = make(map[string]bool)
 	if key not_in s.notice_dirty.chains do s.notice_dirty.chains[strings.clone(key)] = true
+ if signal do wake(s)
 }
 take_notice_dirty :: proc(s: ^Service) -> (map[string]bool, bool) {
 	sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
@@ -74,6 +79,10 @@ destroy_notice_dirty :: proc(chains: map[string]bool) {
 clear_notice_dirty :: proc(s: ^Service) {
 	chains, _ := take_notice_dirty(s)
 	destroy_notice_dirty(chains)
+ context.allocator = runtime.heap_allocator()
+ sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
+ for key in s.watched_scopes do delete(key)
+ delete(s.watched_scopes); s.watched_scopes=nil; s.interest_ready=false
 }
 notice_snapshots :: proc(s: ^Service) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error) {
 	uow, began, err := iface.unit_of_work_begin(s.factory)
@@ -219,12 +228,14 @@ notice_live :: proc(s: ^Service, candidate: Notice_Candidate) -> (bool, domain.D
 	if !committed do return false, commit_err
 	return live, {}
 }
-notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time.Tick) -> bool {
+notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time.Tick, cached: bool = false) -> bool {
 	s := r.service
 	if s.notice == nil do return true
-	snapshots, snapshot_err := notice_snapshots(s)
+	snapshots: []domain.Event_Notice_Snapshot
+ snapshot_err: domain.Domain_Error
+ if !cached do snapshots, snapshot_err = notice_snapshots(s)
 	if snapshot_err.code != .None do return false
-	defer {for &snapshot in snapshots do domain.event_notice_snapshot_destroy(&snapshot); delete(snapshots)}
+	defer {if !cached {for &snapshot in snapshots do domain.event_notice_snapshot_destroy(&snapshot)}; delete(snapshots)}
 	targets := make(map[string]domain.Event_Notice_Snapshot)
 	defer delete(targets)
 	for snapshot in snapshots do targets[snapshot.subscription_id] = snapshot
@@ -233,7 +244,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 	// A failed pass forces full recovery on the next attempt.
 	completed := false
 	defer if !completed do r.notice_reconcile = {}
-	full := dirty_all || r.notice_reconcile._nsec == 0 || now._nsec - r.notice_reconcile._nsec >= i64(NOTICE_RECONCILE_INTERVAL)
+	full := dirty_all || r.notice_reconcile._nsec == 0 || now._nsec - r.notice_reconcile._nsec >= i64(reconcile_interval(s))
 	if full do r.notice_reconcile = now
 	candidates := make([dynamic]Notice_Candidate)
 	defer {
@@ -249,6 +260,13 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		active[subscriber_key] = true
 		schedule_key := fmt.tprintf("schedule:%s", row.consumer_name)
 		active[schedule_key] = true
+
+  schedule, known := r.notifications[schedule_key]
+  signaled := full || dirty[fmt.tprintf("%s/%s",row.owner_user_id,row.chain_id)]
+  // Stable cached targets need no JSON decode or fingerprint allocation
+  // until a publication, activity change or schedule deadline makes them due.
+  if cached && !r.subscription_cache_changed && !signaled && known &&
+    !schedule.dirty && now._nsec < schedule.next_check._nsec {continue}
 		// Keep bounded-scan cursors alive while their consumer waits for its
 		// next deadline. Otherwise every skipped pass restarts stale history.
 		subjects: []string
@@ -256,15 +274,17 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		defer filters_destroy(subjects)
 		for subject in subjects do active[fmt.tprintf("scan:%s/%s",row.consumer_name,subject)] = true
 		snapshot := targets[row.subscription_id]
+  if cached {
+   chain:=r.subscription_cache[fmt.tprintf("%s/%s",row.owner_user_id,row.chain_id)]
+   snapshot=chain.snapshot_by_id[row.subscription_id]
+  }
 		target := snapshot.target
 		fingerprint := fmt.tprintf("%s/%s/%s/%s/%s/%s/%s/%s/%t/%s/%d/%s",
 			row.owner_user_id,row.subscriber_instance_id,row.filter_subjects,row.wake_policy,
 			target.instance_id,target.bridge_id,target.runtime_status,target.activity_status,
 			target.is_bot,target.stopped_by,snapshot.outstanding,snapshot.oldest_delivery)
 		fingerprint = fmt.tprintf("%s/%s/%s/%s",fingerprint,row.subscription_id,row.chain_id,row.created_at)
-		schedule, known := r.notifications[schedule_key]
 		changed := !known || schedule.fingerprint != fingerprint
-		signaled := full || dirty[fmt.tprintf("%s/%s",row.owner_user_id,row.chain_id)]
 		if changed || signaled {
 			schedule.dirty = true
 			schedule.fingerprint = fingerprint
@@ -284,7 +304,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		state, state_err := nats.consumer_state(r.connection, "HEIM_EVENTS", row.consumer_name)
 		if state_err.status != 0 do return false
 		schedule.dirty = false
-		delay := NOTICE_RECONCILE_INTERVAL
+		delay := reconcile_interval(s)
 		if state.pending > 0 do delay = 30 * time.Second
 		if state.ack_pending > 0 {
 			wait := s.ack_wait if s.ack_wait > 0 else 5 * time.Minute
@@ -407,6 +427,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		}
 		domain.event_notice_target_destroy(&target)
 	}
+ if !cached || full || r.subscription_cache_changed {
 	expired := make([dynamic]string)
 	defer delete(expired)
 	for key in r.notifications do if !active[key] do append(&expired, key)
@@ -417,6 +438,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		state := r.notifications[key]
 		delete_key(&r.notifications, key); delete(state.key); delete(state.fingerprint)
 	}
+ }
 	completed = true
 	return true
 }
