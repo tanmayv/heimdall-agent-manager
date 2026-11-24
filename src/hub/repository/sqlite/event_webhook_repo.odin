@@ -5,7 +5,15 @@ import iface "odin_test:hub/repository/iface"
 Event_Webhook_Repo_SQLite :: struct { conn:^Conn }
 new_event_webhook_repository :: proc(impl:^Event_Webhook_Repo_SQLite,conn:^Conn)->iface.Event_Webhook_Repository {
  impl.conn=conn
- return {ctx=impl,get=event_webhook_get,list=event_webhook_list,save=event_webhook_save,remove=event_webhook_remove}
+ return {ctx=impl,get=event_webhook_get,list=event_webhook_list,save=event_webhook_save,remove=event_webhook_remove,record_received=event_webhook_record_received}
+}
+event_webhook_record_received :: proc(ctx:rawptr,id,at:string)->domain.Domain_Error {
+ stmt,e:=event_webhook_prepare(ctx,"UPDATE event_webhooks SET last_received_at=? WHERE webhook_id=?;")
+ if e.code!=.None do return e
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt,1,at);bind_text(stmt,2,id)
+ if sqlite3_step(stmt)!=SQLITE_DONE do return domain.domain_error(.Internal_Error,"could not record webhook receipt")
+ return {}
 }
 event_webhook_prepare :: proc(ctx:rawptr,sql:cstring)->(sqlite3_stmt,domain.Domain_Error) {
  impl:=(^Event_Webhook_Repo_SQLite)(ctx)

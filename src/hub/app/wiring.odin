@@ -267,7 +267,8 @@ service_message_created :: proc(ctx: rawptr, m: domain.Chat_Message) {
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
- if !webhooks.limits_valid(config.webhook_limits) do return false,"invalid webhook limits"
+ webhook_limits:=webhooks.resolve_limits(config.webhook_limits)
+ if !webhooks.limits_valid(webhook_limits) do return false,"invalid webhook limits"
  if !actions_service.filter_limits_valid(actions_service.filter_limits(config.action_filter_limits)) do return false,"invalid action filter limits"
 	if strings.trim_space(config.nats_url) == "" do return false, "--nats-url / HEIMDALL_NATS_URL is required"
 	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
@@ -649,7 +650,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.agent_action_handlers = http.Agent_Action_Handlers{automations = &graph.action_handlers, auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
 	graph.actions = actions_service.Service{
   filter_limits=actions_service.filter_limits(config.action_filter_limits),
- webhook_limits=config.webhook_limits,
+ webhook_limits=webhook_limits,
  max_per_owner=config.automation_max_per_owner,
 		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,
 		experiments=&graph.experiment_repo,clock=&graph.clock,ids=&graph.ids,
@@ -668,7 +669,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
  }
  graph.content.messages_read={ctx=graph.delivery,read=delivery_messages_read}
  delivery.register_sink(graph.delivery,{kind="prompt",ctx=&graph.action_router,on_final=actions_service.on_delivery_final,replace=actions_service.on_delivery_replace})
- graph.webhooks = webhooks.Service{factory=graph.actions.factory,clock=&graph.clock,limits=config.webhook_limits,experiments=&graph.experiment_repo}
+ graph.webhooks = webhooks.Service{factory=graph.actions.factory,clock=&graph.clock,limits=webhook_limits,experiments=&graph.experiment_repo}
  graph.webhook_handlers = http.Event_Webhook_Handlers{actions=&graph.action_handlers,service=&graph.webhooks,trusted_cidrs=config.forwarded_for_trusted_cidrs}
  graph.action_handlers = http.Action_Handlers{auth=&graph.auth,service=&graph.actions,router=&graph.action_router,experiments=&graph.experiment_repo}
 	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)

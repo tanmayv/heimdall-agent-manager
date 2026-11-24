@@ -545,7 +545,7 @@ apply_webhook_limits_json :: proc(config:^Hub_Config,raw:string)->bool {
  defer json.destroy_value(value)
  obj,ok:=value.(json.Object)
  if !ok do return false
- l:=config.webhook_limits
+ l:=webhooks.resolve_limits(config.webhook_limits)
  for key,item in obj {
   number,valid:=item.(json.Integer)
   if !valid || number<1 || number>1048576 do return false

@@ -486,7 +486,7 @@ trigger_types :: proc(s:^Service) -> Trigger_Types_View {
 		}
 	}
 	return {target_kinds=s.target_kinds,schedules_supported=schedule_supported(s),
-		limits={max_automations_per_owner=(s.max_per_owner if s.max_per_owner>0 else DEFAULT_MAX_PER_OWNER),filter=filter_limits(s.filter_limits),webhook=s.webhook_limits,max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
+		limits={max_automations_per_owner=(s.max_per_owner if s.max_per_owner>0 else DEFAULT_MAX_PER_OWNER),filter=filter_limits(s.filter_limits),webhook=webhooks.resolve_limits(s.webhook_limits),max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
 			min_interval_s={min=domain.ACTION_MIN_INTERVAL_MIN_S,max=domain.ACTION_MIN_INTERVAL_MAX_S,default=domain.ACTION_MIN_INTERVAL_DEFAULT_S}},
 		trigger_kinds=kinds}
 }

@@ -96,7 +96,7 @@ event_webhook_receive_handler :: proc(ctx:rawptr,req:Request)->Response {
   event_webhook_bad_auth(h,ip,now)
   return event_webhook_unauthorized()
  }
- if !safe.hook_redacted && strings.has_prefix(authorization,"Bearer ") do token=strings.trim_space(authorization[len("Bearer "):])
+ if !safe.hook_redacted && ascii_has_prefix_fold(authorization,"Bearer ") do token=strings.trim_space(authorization[len("Bearer "):])
  // Content type and shape are checked after auth so rejected calls share one 401.
  result,outcome:=webhooks.receive(h.service,path_part(safe.path,4),token,safe.body,header_value(safe.headers,"Idempotency-Key"),header_value(safe.headers,"Content-Type"),{ctx=h,admit=event_webhook_admit})
  switch outcome {

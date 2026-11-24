@@ -16,7 +16,8 @@ limits_valid :: proc(l:Limits)->bool {
  l.per_webhook_per_minute>=1 && l.per_webhook_per_minute<=1000000 && l.failed_auth_per_ip>=1 && l.failed_auth_per_ip<=1000000 && l.per_owner>=1 && l.per_owner<=10000
 }
 Service :: struct { factory:^iface.Unit_Of_Work_Factory, clock:^platform.Clock, limits:Limits, experiments:^iface.Experiment_Repository }
-effective_limits :: proc(s:^Service)->Limits {return DEFAULT_LIMITS if s.limits==Limits{} else s.limits}
+resolve_limits :: proc(l:Limits)->Limits {return DEFAULT_LIMITS if l==Limits{} else l}
+effective_limits :: proc(s:^Service)->Limits {return resolve_limits(s.limits)}
 Input :: struct { name:Maybe(string), enabled:Maybe(bool) }
 hash_token :: proc(token:string)->string {
  h:sha2.Context_256; digest:[32]byte
@@ -138,8 +139,7 @@ receive :: proc(s:^Service,id,token,body,key,content_type:string,admission:Admis
  event_id,e=events.emit(&u.repos.event_outbox,s.clock,{owner=row.owner_user_id,type="webhook.received",class="occurrence",entity_kind="webhook",entity_id=id,
   subject=fmt.tprintf("ev.%s.webhook.%s.received",row.owner_user_id,id),actor=fmt.tprintf("webhook:%s",id),data=body,event_id=event_id,append_if_absent=true})
  if e.code!=.None do return {},.Failed
- delete(row.last_received_at);row.last_received_at=strings.clone(platform.clock_now(s.clock))
- if e=u.repos.webhooks.save(u.repos.webhooks.ctx,row);e.code!=.None do return {},.Failed
+ if e=u.repos.webhooks.record_received(u.repos.webhooks.ctx,id,platform.clock_now(s.clock));e.code!=.None do return {},.Failed
  committed,_:=iface.unit_of_work_commit(&u);u.ctx=nil
  if !committed do return {},.Failed
  return {event_id=strings.clone(event_id)},.Accepted

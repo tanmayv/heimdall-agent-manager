@@ -131,6 +131,9 @@ webhook_auth_scenario :: proc(t:^testing.T,api:^Action_API_Fixture) {
  exp.enabled=false
  testing.expect_value(t,event_webhook_test_send(&f,event_webhook_test_request(id,new_token)).body,missing.body)
  exp.enabled=true
+ scheme:=event_webhook_test_request(id,new_token)
+ scheme.headers=[]contracts.HTTP_Header{{name="Authorization",value=fmt.tprintf("bEaReR %s",new_token)},{name="Content-Type",value="application/json"}}
+ testing.expect_value(t,event_webhook_test_send(&f,scheme).status,202)
  disabled:=event_webhook_crud_handler(&f.h,action_api_request(api,"PATCH",fmt.tprintf("/api/v1/webhooks/%s",id),`{"enabled":false}`))
  testing.expect_value(t,disabled.status,200)
  testing.expect_value(t,event_webhook_test_send(&f,event_webhook_test_request(id,new_token)).body,missing.body)
