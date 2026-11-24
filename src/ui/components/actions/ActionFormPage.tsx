@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Combobox, FormField, Input, PageShell, Panel, Select, Toggle } from '@ui';
 import { useActionTriggerTypesQuery, useCreateActionMutation, useFetchActionQuery, usePatchActionMutation, type ActionTarget } from '../../api/endpoints/actions';
 import { useActionCatalog, catalogNote, type CatalogSlice } from './actionCatalog';
-import { emptyActionForm, formFromAction, actionFormBody, actionTitle, actionListHref, actionViewHref, navigateTo, mapServerError, type ActionFormField } from './actionModel';
+import { emptyActionForm, defaultBotTarget, formFromAction, actionFormBody, actionTitle, actionListHref, actionViewHref, navigateTo, mapServerError, type ActionFormField } from './actionModel';
 import TriggerListEditor from './TriggerListEditor';
 import PlacementRulesEditor from './PlacementRulesEditor';
 
@@ -29,6 +29,16 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
       setForm(next); setBaseline(JSON.stringify(next)); initialized.current = 'new';
     }
   }, [actionId, record.data, types]);
+  // The catalog contains the owner's bot. Fill only an empty selection, so an
+  // existing explicit target survives loading and editing.
+  React.useEffect(() => {
+    const ownerBotId = catalog.bots.all[0]?.id;
+    if (!ownerBotId) return;
+    setForm(prev => {
+      const target = defaultBotTarget(prev.target, ownerBotId);
+      return target === prev.target ? prev : { ...prev, target };
+    });
+  }, [catalog.bots.all, form.target.kind]);
   const dirty = Boolean(baseline && JSON.stringify(form) !== baseline);
   React.useEffect(() => { if (!dirty) return; const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn); }, [dirty]);
   const field = <K extends keyof typeof form>(key: K, value: typeof form[K]) => { setForm(prev => ({ ...prev, [key]: value })); setErrors({}); };

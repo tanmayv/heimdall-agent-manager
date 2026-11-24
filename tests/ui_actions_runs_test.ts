@@ -1,7 +1,7 @@
 import './helpers/vaultEndpointHarness.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runRowText, RUN_REASON_TEXT } from '../src/ui/components/actions/RunHistory.tsx';
+import { runRowText, runTargetLabel, RUN_REASON_TEXT } from '../src/ui/components/actions/RunHistory.tsx';
 const base: any = { not_before: '2026-12-01T09:00:00Z', joined_run_id: 'arun_12345678901234', joined_count: 0, delivery_expires_at: '2026-12-02T09:00:00Z' };
 test('all seven run states have the required text', () => {
   assert.equal(runRowText({ ...base, state: 'queued' }), 'Waiting');
@@ -69,4 +69,15 @@ test('Load more sends both fields from the last rendered run', async () => {
       else delete g[name];
     }
   }
+});
+
+test('run targets resolve bot names by the actual instance and degrade to raw IDs', () => {
+  const catalog: any = {
+    bots: { all: [{ id: 'bot_1', label: 'Ninjy', instanceId: 'inst_bot' }] },
+    instances: { byId: new Map([['inst_agent', { label: 'Reviewer' }]]) },
+  };
+  assert.equal(runTargetLabel({ target_instance_id: 'inst_bot' }, catalog), 'Bot · Ninjy');
+  assert.equal(runTargetLabel({ target_instance_id: 'inst_agent' }, catalog), 'Reviewer');
+  assert.equal(runTargetLabel({ target_instance_id: 'inst_old_bot' }, catalog), 'inst_old_bot');
+  assert.equal(runTargetLabel({ target_instance_id: '' }, catalog), '');
 });
