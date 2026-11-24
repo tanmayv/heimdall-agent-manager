@@ -30,6 +30,9 @@ mcp_resource_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers
 	g.repos.projects=sqlite.new_project_repository(&g.sqlite_projects,&g.db)
 	g.repos.issues=sqlite.new_issue_repository(&g.sqlite_issues,&g.db)
 	g.content=content.new_content_service(&g.repos.content,&g.repos.agents,&g.repos.bridges,&g.repos.projects,&g.repos.taskchains,&g.clock,&g.ids)
+	// Memory writes join the same outer MCP mutation transaction.
+	g.content.uow_factory=&g.uow_factory
+	g.repos.event_outbox=sqlite.new_event_outbox_repository(&g.sqlite_event_outbox,&g.db)
 	g.projects=project.new_project_service_with_command_sink(&g.repos.projects,&g.repos.bridges,{},&g.clock,&g.ids)
 	g.issues=issue.new_issue_service(&g.repos.issues,&g.clock,&g.ids)
 	h.control=mcp_resource_control(g);h.mutate_resource=mcp_mutate_resource

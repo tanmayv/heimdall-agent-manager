@@ -20,6 +20,8 @@ settle_test_instance :: proc(ctx: rawptr, owner, id: string) -> (string, string,
  return action_test_instance(ctx, owner, id)
 }
 settle_test_setup :: proc(t: ^testing.T, f: ^Action_Test, delay: int) {
+ // This fixture writes below the service; invalidate its cached rules explicitly.
+ defer rule_index_clear(&f.runtime.rule_index)
  trigger, found, err := f.repos.actions.trigger_get(f.repos.actions.ctx, "trigger")
  testing.expect(t, found && err.code==.None)
  trigger.delay_s=delay

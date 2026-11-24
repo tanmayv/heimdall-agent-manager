@@ -148,6 +148,11 @@ test_accept_card_executes_memory_approve :: proc(t: ^testing.T) {
 	ids := platform.real_id_generator()
 
 	cnt_svc := content_service.new_content_service(&content_repo, nil, nil, nil, nil, &clock, &ids)
+	outbox_impl: sqlite.Event_Outbox_Repo_SQLite
+	repos := iface.Repositories{content=content_repo, event_outbox=sqlite.new_event_outbox_repository(&outbox_impl, &conn)}
+	factory_impl: sqlite.SQLite_Unit_Of_Work_Factory
+	factory := sqlite.new_unit_of_work_factory(&factory_impl, &conn, &repos)
+	cnt_svc.uow_factory = &factory
 
 	card_svc := new_card_service(
 		cards       = &card_repo,

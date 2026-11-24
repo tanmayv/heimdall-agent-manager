@@ -14,6 +14,10 @@ import project_service "odin_test:hub/service/project"
 
 Capabilities_Fixture :: struct {
 	wire:         ^wire_fixture,
+	outbox_impl: sqlite.Event_Outbox_Repo_SQLite,
+	repos: iface.Repositories,
+	factory_impl: sqlite.SQLite_Unit_Of_Work_Factory,
+	factory: iface.Unit_Of_Work_Factory,
 	serial:       int,
 	writes_impl:  sqlite.Agent_Write_Repo_SQLite,
 	writes:       iface.Agent_Write_Repository,
@@ -43,6 +47,9 @@ cap_setup :: proc(t: ^testing.T) -> ^Capabilities_Fixture {
 		&f.wire.clock,
 		&f.wire.ids,
 	)
+	f.repos = {content=f.content_repo, agents=f.wire.ag_repo, event_outbox=sqlite.new_event_outbox_repository(&f.outbox_impl, &f.wire.conn)}
+	f.factory = sqlite.new_unit_of_work_factory(&f.factory_impl, &f.wire.conn, &f.repos)
+	f.content.uow_factory = &f.factory
 	f.projects = project_service.new_project_service_with_command_sink(
 		&f.project_repo,
 		&f.wire.br_repo,

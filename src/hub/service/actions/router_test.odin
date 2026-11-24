@@ -5,6 +5,7 @@ import "core:thread"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import delivery "odin_test:hub/service/delivery"
@@ -135,14 +136,16 @@ router_expiry_failure :: proc(t:^testing.T,f:^Action_Test) {
  action_original_finish=f.repos.actions.runs_finish_delivery
  f.repos.actions.runs_finish_delivery=action_finish_fault
  f.now_ms+=3601000
- testing.expect(t,!handle_message(&f.runtime,{subject="ev.owner.chain.chain1.state",event_type="chain.state",event_id="two",
+ testing.expect(t,handle_message(&f.runtime,{subject="ev.owner.chain.chain1.state",event_type="chain.state",event_id="two",
   stream_time_ms=f.now_ms,envelope=test_config(`{"entity":{"kind":"chain","id":"chain1"},"data":{}}`)}))
  _,err:=list_runs(&f.runtime.router,"owner","action",50,"")
  testing.expect(t,err.code!=.None)
  d,_,_:=action_test_delivery(f,run.delivery_id)
  testing.expect_value(t,d.state,"routed");action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_JOINED,1)
+ testing.expect(t,f.runtime.router.expiry_failures>0)
  f.repos.actions.runs_finish_delivery=action_original_finish
- action_test_match(t,f,"two")
+ action_test_match(t,f,"three")
  action_test_expect(t,f,domain.ACTION_RUN_FAILED,1);action_test_expect(t,f,domain.ACTION_RUN_QUEUED,1)
 }
 router_final_failure :: proc(t:^testing.T,f:^Action_Test) {
@@ -329,22 +332,26 @@ prune_delivered :: proc(t:^testing.T,f:^Action_Test) {
  for i in 0..<210 {
   action_test_match(t,f,fmt.tprintf("finish%d",i));drain_due(&f.runtime.router);action_test_done(t,f);f.now_ms+=31000
  }
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
 }
 prune_skipped :: proc(t:^testing.T,f:^Action_Test) {
  f.flag_off=true
  for i in 0..<210 {action_test_match(t,f,fmt.tprintf("skip%d",i));drain_due(&f.runtime.router);f.now_ms+=1000}
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
 }
 prune_stale :: proc(t:^testing.T,f:^Action_Test) {
  action_test_schedule(t,f,`{"mode":"interval","interval_s":60}`)
  for i in 0..<210 {action_test_fire(t,f,fmt.tprintf("stale%d",i),"0");f.now_ms+=1000}
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
 }
 prune_joined :: proc(t:^testing.T,f:^Action_Test) {
  action_test_first(t,f);f.now_ms+=1000
  action_test_match(t,f,"deferred");drain_due(&f.runtime.router)
  for i in 0..<210 {action_test_match(t,f,fmt.tprintf("join%d",i));f.now_ms+=1}
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
  action_test_expect(t,f,domain.ACTION_RUN_DEFERRED,1)
 }

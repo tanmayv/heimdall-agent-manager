@@ -14,6 +14,7 @@ import nats "odin_test:lib/nats"
 
 Options :: struct {nats_url,creds_file,ca_file:string,max_deliver:int}
 Runtime :: struct {
+ rule_index:Rule_Index,
  svc:^Service,
  router:Router,
  options:Options,
@@ -67,6 +68,8 @@ runtime_setup_error :: proc(gate:^Setup_Log_Gate,stage:string,err:nats.Error) {
 }
 runtime_entry :: proc(data:rawptr) {
  r:=(^Runtime)(data)
+ defer rule_index_clear(&r.rule_index)
+ defer expiry_cursor_clear(&r.router)
  arena:virtual.Arena
  if virtual.arena_init_growing(&arena)!=nil do return
  defer virtual.arena_destroy(&arena)
@@ -82,6 +85,8 @@ runtime_entry :: proc(data:rawptr) {
  retention_diagnostics:retry.State
  for sync.atomic_load(&r.stop_flag)==0 {
   if last_sweep._nsec==0 || time.tick_since(last_sweep)>=time.Minute {
+   rule_index_clear(&r.rule_index)
+   drain_due(&r.router) // Periodic expiry also runs without new events or queued work.
    if err:=sweep_history(r.svc,time.now());err.code!=.None do _=retry.failed(&retention_diagnostics,"actions",.Retention,i32(err.code))
    last_sweep=time.tick_now()
   }
@@ -115,8 +120,10 @@ runtime_entry :: proc(data:rawptr) {
    if done do pending=false
   }
   batch,err:=nats.fetch(pull,64,1000)
+  rule_index_sync(r)
   hints:=make([dynamic]Resume_Hint)
   count:=nats.batch_count(batch)
+  if count>0 do _=expire_prompt_deliveries(&r.router)
   for i in 0..<count {
    msg:=nats.batch_message(batch,i)
    view,valid,poison:=runtime_event_view(msg)
@@ -126,7 +133,7 @@ runtime_entry :: proc(data:rawptr) {
     continue
    }
    if !valid {_=nats.ack(msg); continue}
-   if handle_message(r,view) {
+   if handle_message(r,view,false) {
     _=nats.ack(msg)
     if view.event_type=="action.resume" {
      data,_:=view.envelope["data"].(json.Object)

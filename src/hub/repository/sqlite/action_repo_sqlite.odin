@@ -25,7 +25,11 @@ new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.A
 		trigger_get = actions_trigger_get,
 		trigger_delete = actions_trigger_delete,
 		triggers_list = actions_triggers_list,
-		triggers_match = actions_triggers_match,
+  trigger_retire = actions_trigger_retire,
+  expired_prompt_deliveries=actions_expired_prompt_deliveries,
+  runs_cap_page=actions_runs_cap_page,
+  triggers_effective_owner = actions_triggers_effective_owner,
+  run_enqueue = actions_run_enqueue,
 		triggers_effective = actions_triggers_effective,
 		run_insert = actions_run_insert,
         run_settle_pending = actions_run_settle_pending,
@@ -232,6 +236,12 @@ actions_save :: proc(ctx: rawptr, v: domain.Action) -> domain.Domain_Error {
 	return err
 }
 
+// Retirement cannot overwrite a rule edited since the cache was loaded.
+actions_trigger_retire :: proc(ctx:rawptr,id:string,rev:int,now:string)->(bool,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ return actions_write(ctx,"UPDATE action_triggers SET enabled=0,rev=rev+1,updated_at=?3 WHERE trigger_id=?1 AND rev=?2 AND enabled=1;",{id,fmt.tprintf("%d",rev),now})
+}
+
 ACTIONS_SQL_TRIGGER_SAVE :: "INSERT INTO action_triggers(trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(trigger_id) DO UPDATE SET kind=excluded.kind,config=excluded.config,event_type=excluded.event_type,subject_filter=excluded.subject_filter,match_key=excluded.match_key,data_filter=excluded.data_filter,enabled=excluded.enabled,rev=excluded.rev,updated_at=excluded.updated_at,delay_s=excluded.delay_s;"
 
 actions_trigger_save :: proc(ctx: rawptr, v: domain.Action_Trigger) -> domain.Domain_Error {
@@ -243,10 +253,22 @@ actions_trigger_save :: proc(ctx: rawptr, v: domain.Action_Trigger) -> domain.Do
 
 ACTIONS_SQL_RUN_INSERT :: "INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23) ON CONFLICT(occurrence_key) DO NOTHING;"
 
+ACTIONS_SQL_RUN_ENQUEUE :: "INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,CASE WHEN o.run_id IS NULL THEN 'queued' ELSE 'joined' END,?11,COALESCE(o.run_id,''),?13,?14,?15,?16,?17,?18,?19,CASE WHEN o.run_id IS NULL THEN '' ELSE ?18 END,?21,?22,?23 FROM (SELECT 1) LEFT JOIN (SELECT run_id FROM action_runs WHERE action_id=?2 AND state IN ('queued','deferred','routed') AND settle_pending=0 LIMIT 1) o ON 1 WHERE 1 ON CONFLICT(occurrence_key) DO NOTHING;"
+
 actions_run_insert :: proc(ctx: rawptr, v: domain.Action_Run) -> (bool, domain.Domain_Error) {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
-	return actions_write(ctx,ACTIONS_SQL_RUN_INSERT,{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),fmt.tprintf("%d",v.delay_s),v.settle_key,("1" if v.settle_pending else "0")})
+ return actions_run_insert_sql(ctx,v,ACTIONS_SQL_RUN_INSERT)
+}
+
+actions_run_enqueue :: proc(ctx:rawptr,v:domain.Action_Run)->(bool,domain.Domain_Error) {
+ guard:=tx_repository_enter()
+ defer tx_repository_leave(guard)
+ return actions_run_insert_sql(ctx,v,ACTIONS_SQL_RUN_ENQUEUE)
+}
+
+actions_run_insert_sql :: proc(ctx:rawptr,v:domain.Action_Run,sql:string)->(bool,domain.Domain_Error) {
+	return actions_write(ctx,sql,{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),fmt.tprintf("%d",v.delay_s),v.settle_key,("1" if v.settle_pending else "0")})
 }
 
 ACTIONS_SQL_GET :: "SELECT " + ACTIONS_ACTION_COLUMNS + " FROM actions WHERE action_id=?1;"
@@ -317,20 +339,19 @@ actions_triggers_list :: proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Ac
 	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_LIST,{string(id)})
 }
 
-ACTIONS_SQL_TRIGGERS_MATCH :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.owner_user_id=?1 AND t.event_type=?2 AND (t.match_key=?3 OR t.match_key='') AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
-
-actions_triggers_match :: proc(ctx: rawptr, owner,event_type,subject: string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
-	guard := tx_repository_enter()
-	defer tx_repository_leave(guard)
-	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_MATCH,{owner,event_type,subject})
-}
-
 ACTIONS_SQL_TRIGGERS_EFFECTIVE :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.kind=?1 AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
 
 actions_triggers_effective :: proc(ctx: rawptr, kind: string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_EFFECTIVE,{kind})
+}
+
+ACTIONS_SQL_TRIGGERS_EFFECTIVE_OWNER :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.owner_user_id=?1 AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
+actions_triggers_effective_owner :: proc(ctx:rawptr,owner:string)->([]domain.Action_Trigger,domain.Domain_Error) {
+ guard:=tx_repository_enter()
+ defer tx_repository_leave(guard)
+ return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_EFFECTIVE_OWNER,{owner})
 }
 
 ACTIONS_SQL_RUNS_DUE :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND (state='queued' OR not_before<=?1) ORDER BY created_at,run_id LIMIT ?2;"
@@ -559,4 +580,62 @@ actions_runs_release_parked :: proc(ctx:rawptr,owner,instance_id,now:string)->(b
  guard:=tx_repository_enter();defer tx_repository_leave(guard)
  if instance_id=="" do return false,{}
  return actions_write(ctx,"UPDATE action_runs SET not_before=?3 WHERE owner_user_id=?1 AND target_instance_id=?2 AND state='deferred' AND target_instance_id<>'';",{owner,instance_id,now})
+}
+
+
+ACTIONS_SQL_EXPIRED_PROMPTS :: "SELECT d.delivery_id,d.expires_at FROM pipeline_deliveries d WHERE d.kind='prompt' AND d.state IN ('routed','forwarded','delivered') AND d.expires_at<=?1 AND (d.expires_at,d.delivery_id)>(?3,?4) AND EXISTS (SELECT 1 FROM action_runs r WHERE r.delivery_id=d.delivery_id AND r.state='routed') ORDER BY d.expires_at,d.delivery_id LIMIT ?2;"
+// Include awaiting-read (delivered) prompts; the generic transport expiry query
+// intentionally handles only routed/forwarded deliveries.
+actions_expired_prompt_deliveries :: proc(ctx:rawptr,now,after_time,after_id:string,limit:int)->([]iface.Action_Expiry_Row,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_EXPIRED_PROMPTS,{now,fmt.tprintf("%d",clamp(limit,1,128)),after_time,after_id})
+ if err.code!=.None do return nil,err
+ defer sqlite3_finalize(stmt)
+ rows: [dynamic]iface.Action_Expiry_Row
+ for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do return rows[:],{}
+  if rc!=SQLITE_ROW {
+   for row in rows {delete(row.delivery_id);delete(row.expires_at)}
+   delete(rows)
+   return nil,domain.domain_error(.Internal_Error,"could not load expired action deliveries")
+  }
+  append(&rows,iface.Action_Expiry_Row{column_text(stmt,0),column_text(stmt,1)})
+ }
+}
+
+
+// Work is bounded by 16 actions and 128 finished rows per action. Each count-cap
+// subquery is indexed and scoped to ONE action, never correlated across history.
+ACTIONS_SQL_CAP_ACTIONS :: "SELECT rowid,action_id FROM actions WHERE rowid>?1 ORDER BY rowid LIMIT ?2;"
+ACTIONS_SQL_CAP_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE action_id=?1 AND state NOT IN ('queued','deferred','routed') AND run_id NOT IN (SELECT run_id FROM action_runs WHERE action_id=?1 ORDER BY created_at DESC,run_id DESC LIMIT 200) ORDER BY created_at,run_id LIMIT 128);"
+actions_runs_cap_page :: proc(ctx:rawptr,after:i64,limit:int)->(i64,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ cursor:=after
+ for attempt in 0..<2 {
+  stmt,err:=actions_prepare(ctx,ACTIONS_SQL_CAP_ACTIONS,{fmt.tprintf("%d",cursor),fmt.tprintf("%d",clamp(limit,1,16))})
+  if err.code!=.None do return after,err
+  found:=false
+  for {
+   rc:=sqlite3_step(stmt)
+   if rc==SQLITE_DONE do break
+   if rc!=SQLITE_ROW {
+    sqlite3_finalize(stmt)
+    return after,domain.domain_error(.Internal_Error,"could not page action retention")
+   }
+   found=true
+   cursor=sqlite3_column_int64(stmt,0)
+   id:=column_text_unowned(stmt,1)
+   if _,e:=actions_write(ctx,ACTIONS_SQL_CAP_SWEEP,{id});e.code!=.None {
+    sqlite3_finalize(stmt)
+    return after,e
+   }
+  }
+  sqlite3_finalize(stmt)
+  if found do return cursor,{}
+  // Wrap once without spending an entire minute on an empty tail page.
+  if cursor==0 do return 0,{}
+  cursor=0
+ }
+ return cursor,{}
 }

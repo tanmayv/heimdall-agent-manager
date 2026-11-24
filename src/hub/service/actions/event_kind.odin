@@ -80,6 +80,17 @@ EVENT_DESCRIPTORS := [?]Event_Descriptor{
 	 presets   = {{id = "chain_completed", label = "Task chain completed", filter_json = `{"all":[{"field":"data.state","op":"eq","value":"completed"}]}`}}},
 	{event_type = "chain.work_finished", class = "occurrence", label = "Task chain work finished", scope = "chain", still_valid=chain_work_finished_still_valid,
 	 data_keys = {{key = "outcome", values = {}}}, presets = {}},
+	{event_type = "memory.state", class = "state", label = "Memory status changed", scope = "memory",
+	 data_keys = {
+		{key="status", values={"pending", "active", "rejected", "archived"}},
+		{key="previous_status", values={"", "pending", "active", "rejected", "archived"}},
+		{key="memory_type", values={"fact", "habit", "episode", "expertise", "skill"}},
+		{key="proposed_by_instance_id"}, {key="proposed_in_chain_id"},
+	 },
+	 presets = {
+		{id="memory_proposed", label="Memory proposed", filter_json=`{"all":[{"field":"data.status","op":"eq","value":"pending"}]}`},
+		{id="memory_approved", label="Memory approved", filter_json=`{"all":[{"field":"data.status","op":"eq","value":"active"},{"field":"data.previous_status","op":"eq","value":"pending"}]}`},
+	 }},
 }
 
 event_descriptor_find :: proc(event_type: string) -> ^Event_Descriptor {

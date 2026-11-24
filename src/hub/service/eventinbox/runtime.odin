@@ -119,11 +119,12 @@ runtime_connect :: proc(r: ^Runtime) -> bool {
  r.advisory_signals=hints
  sync.atomic_store(&r.advisory_stopping,0)
  sync.atomic_store(&r.advisory_failed,0)
- {
-  context.allocator=runtime.heap_allocator()
-  context.temp_allocator=context.allocator
-  r.advisory_worker=thread.create_and_start_with_data(r,advisory_signal_entry,init_context=context)
- }
+	{
+		// The Thread record and inherited context must outlive the runtime pass arena.
+		context.allocator = runtime.heap_allocator()
+		context.temp_allocator = context.allocator
+		r.advisory_worker = thread.create_and_start_with_data(r, advisory_signal_entry, init_context = context)
+	}
 	err = nats.consumer_add(
 		conn,
 		{

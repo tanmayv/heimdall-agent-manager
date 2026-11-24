@@ -116,7 +116,7 @@ actions_prune :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: ^Conn)
 	testing.expect_value(t,actions_reset_text(conn,"SELECT count(*) FROM action_runs;"),"1")
 }
 @(test)
-test_triggers_match_reads_only_matching_keys :: proc(t: ^testing.T) {actions_repo_test(t, actions_matching_keys)}
+test_effective_triggers_load_owner_rules :: proc(t: ^testing.T) {actions_repo_test(t, actions_matching_keys)}
 actions_matching_keys :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: ^Conn) {
 	for i in 0..<1000 {
 		id := fmt.tprintf("trg_%d",i)
@@ -125,14 +125,16 @@ actions_matching_keys :: proc(t: ^testing.T, repo: iface.Action_Repository, conn
 		testing.expect_value(t,repo.trigger_save(repo.ctx,trg).code,domain.Error_Code.None)
 	}
 	testing.expect_value(t,repo.trigger_save(repo.ctx,{trigger_id="wild",action_id="act_a",owner_user_id="owner",kind="event",config_json="{}",event_type="chain.state",subject_filter="ev.owner.chain.*.state",data_filter_json="{}",enabled=true,rev=1,created_at="now",updated_at="now"}).code,domain.Error_Code.None)
-	rows, err := repo.triggers_match(repo.ctx,"owner","schedule.fired","ev.owner.sched.trg_500")
+	rows, err := repo.triggers_effective_owner(repo.ctx,"owner")
 	defer domain.action_triggers_destroy(rows)
-	testing.expect(t,err.code == .None && len(rows)==1)
-	if len(rows)==1 do testing.expect_value(t,rows[0].trigger_id,"trg_500")
+	testing.expect(t,err.code == .None && len(rows)==1001)
+ empty,e:=repo.triggers_effective_owner(repo.ctx,"other")
+ defer domain.action_triggers_destroy(empty)
+ testing.expect(t,e.code==.None && len(empty)==0)
 }
 actions_query_plans_scenario :: proc(t: ^testing.T) {actions_repo_test(t, actions_index_plans)}
 actions_index_plans :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: ^Conn) {
-	queries := [?]string{BOT_ACTION_ACTIVITY_SQL,ACTIONS_SQL_TRIGGERS_MATCH,ACTIONS_SQL_GET,ACTIONS_SQL_RUN_OPEN,ACTIONS_SQL_RUN_INSERT,ACTIONS_SQL_RUNS_PRUNE,ACTIONS_SQL_RUNS_DUE,ACTIONS_SQL_RUNS_DEFERRED,ACTION_INSTANCE_LOOKUP_SQL,ACTION_CONVERSATION_LOOKUP_SQL,ACTIONS_SQL_RUN_LAST_STARTED_AT,ACTIONS_SQL_RULES_LIST}
+	queries := [?]string{BOT_ACTION_ACTIVITY_SQL,ACTIONS_SQL_CAP_ACTIONS,ACTIONS_SQL_CAP_SWEEP,ACTIONS_SQL_TRIGGERS_EFFECTIVE_OWNER,ACTIONS_SQL_GET,ACTIONS_SQL_RUN_OPEN,ACTIONS_SQL_RUN_INSERT,ACTIONS_SQL_RUNS_PRUNE,ACTIONS_SQL_RUNS_DUE,ACTIONS_SQL_RUNS_DEFERRED,ACTION_INSTANCE_LOOKUP_SQL,ACTION_CONVERSATION_LOOKUP_SQL,ACTIONS_SQL_RUN_LAST_STARTED_AT,ACTIONS_SQL_RULES_LIST}
 	for query in queries {
 		stmt: sqlite3_stmt
 		sql := strings.concatenate({"EXPLAIN QUERY PLAN ",query},context.temp_allocator)
@@ -145,4 +147,20 @@ actions_index_plans :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: 
 		}
 		sqlite3_finalize(stmt)
 	}
+}
+
+@(test)
+test_actions_prompt_expiry_uses_index :: proc(t:^testing.T) {actions_repo_test(t,actions_prompt_expiry_plan)}
+actions_prompt_expiry_plan :: proc(t:^testing.T,repo:iface.Action_Repository,conn:^Conn) {
+ stmt:sqlite3_stmt
+ sql:="EXPLAIN QUERY PLAN "+ACTIONS_SQL_EXPIRED_PROMPTS
+ if !testing.expect_value(t,sqlite3_prepare_v2(conn.db,strings.clone_to_cstring(sql,context.temp_allocator),-1,&stmt,nil),SQLITE_OK) do return
+ defer sqlite3_finalize(stmt)
+ uses_index:=false
+ for sqlite3_step(stmt)==SQLITE_ROW {
+  detail:=column_text_unowned(stmt,3)
+  if strings.contains(detail,"pipeline_deliveries_action_prompt_expiry") do uses_index=true
+  testing.expect(t,!strings.contains(detail,"SCAN d"),detail)
+ }
+ testing.expect(t,uses_index,"expiry sweep must use the partial prompt deadline index")
 }

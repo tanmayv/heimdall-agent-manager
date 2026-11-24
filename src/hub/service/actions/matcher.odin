@@ -39,7 +39,7 @@ data_matches :: proc(filter_json:string,envelope:json.Object)->bool {
  result,_:=filter_evaluate(tree,envelope)
  return result
 }
-event_params :: proc(msg: Event_View) -> string {
+event_params :: proc(msg: Event_View, rev:int, nodes:string) -> string {
  params := make(json.Object, context.temp_allocator)
  data := make(json.Object, context.temp_allocator)
  params["entity"] = msg.envelope["entity"]
@@ -58,10 +58,16 @@ event_params :: proc(msg: Event_View) -> string {
   if ok do data[key] = text
  }
  params["data"] = data
+ trace:=make(json.Object,context.temp_allocator)
+ trace["rev"]=json.Integer(rev);trace["nodes"]=nodes
+ params["_match"]=trace
+ params["_trigger_rev"]=json.Integer(rev)
  encoded, _ := json.marshal(params, allocator=context.temp_allocator)
  return string(encoded)
 }
-handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
+// Direct callers represent a one-event batch. The NATS runtime sweeps once
+// before its whole fetched batch and disables this wrapper for each member.
+handle_message :: proc(r: ^Runtime, msg: Event_View, sweep_before_match:=true) -> (acked: bool) {
  tokens := strings.split(msg.subject, ".", context.temp_allocator)
  if len(tokens) < 3 || tokens[0] != "ev" || tokens[1] == "" || tokens[1] == "dlq" do return true
  owner := tokens[1]
@@ -76,6 +82,7 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
  if (strings.has_prefix(msg.event_type, "chain.") || strings.has_prefix(msg.event_type, "task.")) {
   if _, present := msg.envelope["entity"].(json.Object); !present do return true
  }
+ if sweep_before_match do _=expire_prompt_deliveries(&r.router) // Best effort; diagnostics and idle retries own failures.
  uow, ok, _ := iface.unit_of_work_begin(r.svc.factory)
  if !ok do return false
  defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
@@ -90,15 +97,30 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
   return committed
  }
  repo := &uow.repos.actions
- triggers, err := repo.triggers_match(repo.ctx, owner, msg.event_type, msg.subject)
- defer domain.action_triggers_destroy(triggers)
- if err.code != .None do return false
+ cached,err:=rule_index_owner(r,repo,owner)
+ if err.code!=.None do return false
+ bucket,exists:=cached.events[msg.event_type]
+ if !exists {
+  committed,_:=iface.unit_of_work_commit(&uow);uow.ctx=nil
+  return committed
+ }
+ exact:=bucket.exact[msg.subject]
+ wild:=bucket.wild
  now := platform.clock_now(r.svc.clock)
- for trigger in triggers {
-  if string(trigger.owner_user_id) != owner || !trigger.enabled do continue
-  if !subject_matches(trigger.subject_filter, msg.subject) || !data_matches(trigger.data_filter_json, msg.envelope) do continue
-  updated, valid := platform.rfc3339_to_unix_ms(trigger.updated_at)
-  if !valid || msg.stream_time_ms < updated do continue
+ retired:=false
+ // Merge bucket positions to preserve the repository's deterministic order
+ // when exact and wildcard rules of one action both match the same event.
+ for a,b:=0,0;a<len(exact) || b<len(wild); {
+  i:=0
+  is_wild:=b<len(wild) && (a==len(exact) || wild[b]<exact[a])
+  if is_wild {i=wild[b];b+=1} else {i=exact[a];a+=1}
+  rule:=&cached.rules[i]
+  trigger:=rule.trigger
+  if is_wild && !rule_subject_matches(rule.subject_tokens,tokens) do continue
+  if msg.stream_time_ms<rule.updated_at_ms do continue
+  matched,_:=filter_evaluate(rule.tree,msg.envelope)
+  if !matched do continue
+  _,nodes:=filter_evaluate(rule.tree,msg.envelope,true,context.temp_allocator)
   kind, found := trigger_kind_find(trigger.kind)
   if !found do continue
   allowed, reason, retire := true, "", false
@@ -110,41 +132,38 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
    trigger_id=trigger.trigger_id, owner_user_id=trigger.owner_user_id,
    occurrence_key=fmt.tprintf("%s:%s", trigger.trigger_id, key),
    event_type=msg.event_type, event_id=msg.event_id, stream_sequence=i64(msg.stream_sequence),
-   event_params_json=event_params(msg), state=domain.ACTION_RUN_QUEUED,
+   event_params_json=event_params(msg,trigger.rev,nodes), state=domain.ACTION_RUN_QUEUED,
    created_at=now, rule_position=-1,
   }
   if !allowed {
    run.state=domain.ACTION_RUN_SKIPPED; run.reason=reason; run.finished_at=now
-  } else if trigger.delay_s == 0 {
-   if _,expiry_err:=expire_open_run(&r.router, &uow, trigger.action_id);expiry_err.code!=.None do return false
-   open, exists, e := repo.run_open(repo.ctx, trigger.action_id)
-   defer domain.action_run_destroy(&open)
-   if e.code != .None do return false
-   if exists { run.state=domain.ACTION_RUN_JOINED; run.joined_run_id=strings.clone(open.run_id,context.temp_allocator); run.finished_at=now }
   }
   inserted: bool
   e: domain.Domain_Error
   if allowed && trigger.delay_s > 0 {
    inserted, e = settle_match(r, &uow, trigger, msg, run, now)
+  } else if allowed {
+   inserted,e=repo.run_enqueue(repo.ctx,run)
   } else {
    inserted, e = repo.run_insert(repo.ctx, run)
   }
   if e.code != .None do return false
-  if inserted && run.finished_at != "" {
-   if e := repo.runs_prune(repo.ctx, trigger.action_id, 200, history_cutoff(now)); e.code != .None do return false
-  }
   // A redelivery must not increment rev or append another purge.
   if inserted && retire {
+   retired=true
    before := trigger
    after := trigger
    after.enabled=false; after.rev+=1; after.updated_at=now
-   if e := repo.trigger_save(repo.ctx, after); e.code != .None do return false
+   changed,e:=repo.trigger_retire(repo.ctx,trigger.trigger_id,trigger.rev,now)
+   if e.code!=.None do return false
+   if !changed {rule_index_clear(&r.rule_index);return false}
    if kind.on_change != nil {
     sc := Sync_Context{outbox=&uow.repos.event_outbox, clock=r.svc.clock, ids=r.svc.ids}
     if e := kind.on_change(&sc, &before, &after); e.code != .None do return false
    }
   }
  }
+ if retired do sync.atomic_add(&r.svc.rule_epoch,1)
  committed, _ := iface.unit_of_work_commit(&uow)
  uow.ctx=nil
  return committed

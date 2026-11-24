@@ -5,6 +5,7 @@ import "core:strings"
 import "core:testing"
 import "core:time"
 import contracts "odin_test:contracts"
+import iface "odin_test:hub/repository/iface"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import sqlite "odin_test:hub/repository/sqlite"
@@ -29,6 +30,12 @@ test_content_service_memory_default_expiry_24h :: proc(t: ^testing.T) {
 	ids := platform.real_id_generator()
 
 	svc := new_content_service(&content_repo, nil, nil, nil, nil, &clock, &ids)
+	outbox_impl: sqlite.Event_Outbox_Repo_SQLite
+	agent_impl: sqlite.Agent_Repo_SQLite
+	repos := iface.Repositories{content=content_repo, event_outbox=sqlite.new_event_outbox_repository(&outbox_impl, &conn), agents=sqlite.new_agent_repository(&agent_impl, &conn)}
+	factory_impl: sqlite.SQLite_Unit_Of_Work_Factory
+	factory := sqlite.new_unit_of_work_factory(&factory_impl, &conn, &repos)
+	svc.uow_factory = &factory
 	auth := contracts.Auth_Context{user_id = "test_user"}
 
 	// 1. Create memory without explicit expires_at -> should default to roughly now + 24h
@@ -85,6 +92,12 @@ memory_expiry_case :: proc(t: ^testing.T, status: string) {
 	clock := platform.real_clock()
 	ids := platform.real_id_generator()
 	svc := new_content_service(&repo, nil, nil, nil, nil, &clock, &ids)
+	outbox_impl: sqlite.Event_Outbox_Repo_SQLite
+	agent_impl: sqlite.Agent_Repo_SQLite
+	repos := iface.Repositories{content=repo, event_outbox=sqlite.new_event_outbox_repository(&outbox_impl, &conn), agents=sqlite.new_agent_repository(&agent_impl, &conn)}
+	factory_impl: sqlite.SQLite_Unit_Of_Work_Factory
+	factory := sqlite.new_unit_of_work_factory(&factory_impl, &conn, &repos)
+	svc.uow_factory = &factory
 	auth := contracts.Auth_Context {
 		kind              = .Instance_Token,
 		user_id           = "expiry_owner",
