@@ -19,8 +19,9 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import httpc "odin_test:lib/httpc"
+import "odin_test:lib/releaserepo"
 
-BRIDGE_RELEASE_REPO :: "tanmayv/heimdall-agent-manager"
+BRIDGE_RELEASE_REPO :: releaserepo.REPO
 BRIDGE_RELEASE_SUMS :: "SHA256SUMS"
 // The newest promoted (non-draft, non-prerelease) release as a single object.
 // Never a page of the release list: with many prereleases between promotions
@@ -44,6 +45,17 @@ bridge_release_tag_valid :: proc(tag: string) -> bool {
 		}
 	}
 	return true
+}
+
+// bridge_release_tag_for maps a release version to its GitHub tag. Releases are
+// tagged v<SemVer>, but the hub's update catalog strips the prefix
+// (bridge_promoted_release.odin: trim_prefix(tag_name, "v")) and so does a user
+// who types `update --version 0.5.81`; GitHub answers /releases/tags/0.5.81 with
+// 404 (T16c). A version that starts with a digit gets the "v"; "latest" and an
+// already prefixed (or any other) tag pass through unchanged.
+bridge_release_tag_for :: proc(version: string, allocator := context.temp_allocator) -> string {
+	if len(version) > 0 && version[0] >= '0' && version[0] <= '9' do return strings.concatenate({"v", version}, allocator)
+	return strings.clone(version, allocator)
 }
 
 // bridge_release_select picks the release tag from a GitHub releases document
@@ -149,10 +161,11 @@ bridge_release_fetch :: proc(
 	download: Bridge_Update_Download = httpc.download_to_file,
 ) -> (bundle_dir: string, tag: string, err: string) {
 	if want != "latest" && !bridge_release_tag_valid(want) do return "", "", fmt.tprintf("invalid release tag %q", want)
-	url := BRIDGE_RELEASE_LATEST_URL if want == "latest" else fmt.tprintf("https://api.github.com/repos/%s/releases/tags/%s", BRIDGE_RELEASE_REPO, want)
+	wanted := bridge_release_tag_for(want) // a bare hub/catalog version names tag v<version>
+	url := BRIDGE_RELEASE_LATEST_URL if wanted == "latest" else fmt.tprintf("https://api.github.com/repos/%s/releases/tags/%s", BRIDGE_RELEASE_REPO, wanted)
 	doc, ok, detail := get(url)
 	if !ok do return "", "", fmt.tprintf("cannot list releases (%s)", detail)
-	tag, err = bridge_release_select(doc, target, want)
+	tag, err = bridge_release_select(doc, target, wanted)
 	if err != "" do return "", "", err
 	base := fmt.tprintf("https://github.com/%s/releases/download/%s", BRIDGE_RELEASE_REPO, tag)
 	sums: string

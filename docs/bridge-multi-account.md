@@ -199,3 +199,31 @@ With `0`, a profile with continuously running agents waits indefinitely, as
 before. If the PTY host cannot be queried, the quiet window is never granted,
 so only forcing (or a manual update) can proceed. Stop long-lived agents to
 permit the next automatic check, or use the manual Update action.
+
+Only *running* PTY host entries count against the quiet window: agents and
+`ham-ctl shell` sessions that are alive. The PTY host keeps an exited agent or
+shell run registered (with its exit code) until it is closed; those do not
+block an update. Bridges up to v0.5.80 counted them, so one finished shell run
+was enough to postpone every automatic check until it was forced
+`auto_update_max_defer_hours` later.
+
+The worker writes its decisions to the bridge log (journal / service log), each
+line prefixed `bridge auto-update:`. At start it logs `worker started for
+<profile> (...)` with the next due time, or `worker not started: <reason>`
+(for example, the binary is not running from its profile's `bin/`). Each check
+logs its outcome: `up to date`, `check failed` (lookup), `updating A -> B`, or
+why it did not start the updater. While a due check waits for a quiet window it
+logs the reason once, and again only when the reason changes:
+
+```text
+bridge auto-update: check due; waiting for a quiet window: 2 running agent(s) or shell session(s) on the PTY host
+```
+
+**Bridges on v0.5.80 or older** (one time). These versions wait for a quiet
+window that exited PTY entries never grant. Nothing needs reinstalling; any of
+these gets them onto a fixed version, after which they update on their own:
+
+- use the bridge's **Update** action in the Hub (not gated on the quiet window), or
+  run `ham-bridge update --service <profile>` on the host;
+- or wait: the update is forced `auto_update_max_defer_hours` (default 24) after
+  the overdue check, stopping that profile's PTY host and agents.

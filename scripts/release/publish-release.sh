@@ -3,12 +3,21 @@
 # item 3, chain task T6). Used by the "Publish GitHub Release" job of
 # .github/workflows/release-local-binaries.yml. Needs GH_REPO=<owner>/<repo>.
 #
-#   publish-release.sh check-unpublished <tag>
+#   publish-release.sh check-unpublished <tag> [--allow-identical -- <asset file>...]
 #       Exit 0 when <tag> has no release or only drafts, 3 when a published
 #       release carries it (nothing may change it), 2 when the lookup failed.
+#       --allow-identical: a published release holding exactly these asset
+#       names and bytes also exits 0 ("already published, nothing to do").
 #
-#   publish-release.sh publish --tag <tag> --commit <sha> --notes-file <file>
-#       [--prerelease] [--draft] -- <asset file>...
+#   publish-release.sh publish --tag <tag> (--commit <sha> | --target-default-branch)
+#       --notes-file <file> [--prerelease] [--draft] [--allow-identical]
+#       -- <asset file>...
+#       --commit is the source commit the tag is created on. A repository that
+#       holds only releases (no source, e.g. heimdall-releases) has no such
+#       commit: --target-default-branch creates the tag on its default branch.
+#       --allow-identical makes a re-run idempotent: when <tag> is already
+#       published with exactly these assets (same names, same sha256) the run
+#       is a no-op that exits 0; any difference is still refused (exit 3).
 #       1. Every release carrying <tag> is listed (REST, all pages). A
 #          published one -> exit 3 before any write call.
 #       2. Every draft carrying <tag> is deleted by id: drafts are never
@@ -69,6 +78,23 @@ refuse_published() {
   exit 3
 }
 
+# settle_published <tag>: like refuse_if_published, but with --allow-identical a
+# single published release holding exactly the expected assets ends the run
+# successfully (nothing is written). Needs $work/expected.
+settle_published() {
+  list_tag_releases "$1"
+  grep -q ' false$' "$work/tagged" || return 0
+  if [ "$allow_identical" = true ] && [ "$(grep -c ' false$' "$work/tagged")" -eq 1 ]; then
+    local id
+    id="$(grep ' false$' "$work/tagged" | cut -d' ' -f1)"
+    if check_release "$id" "$1" false "already published" >&2; then
+      echo "Release $1 (id $id) in $repo is already published with exactly these assets; nothing to do."
+      exit 0
+    fi
+  fi
+  refuse_published "$1"
+}
+
 # refuse_if_published <tag>: lists, refuses on any published release.
 refuse_if_published() {
   list_tag_releases "$1"
@@ -77,9 +103,19 @@ refuse_if_published() {
 }
 
 cmd_check_unpublished() {
-  [ "$#" -eq 1 ] || die "usage: check-unpublished <tag>"
+  local usage="usage: check-unpublished <tag> [--allow-identical -- <asset file>...]"
+  [ "$#" -ge 1 ] || die "$usage"
   valid_tag "$1"
-  refuse_if_published "$1"
+  if [ "$#" -eq 1 ]; then
+    refuse_if_published "$1"
+  else
+    { [ "$2" = --allow-identical ] && [ "${3:-}" = -- ] && [ "$#" -ge 4 ]; } || die "$usage"
+    allow_identical=true
+    local f
+    for f in "${@:4}"; do [ -f "$f" ] || die "missing asset: $f"; done
+    expected_assets "${@:4}" > "$work/expected"
+    settle_published "$1"
+  fi
   local drafts
   drafts="$(grep -c ' true$' "$work/tagged" || true)"
   if [ "$drafts" -eq 0 ]; then
@@ -162,7 +198,7 @@ check_release() {
 }
 
 cmd_publish() {
-  local tag="" commit="" notes="" prerelease=false draft=false
+  local tag="" commit="" notes="" prerelease=false draft=false default_branch=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --tag) tag="${2:-}"; shift 2 ;;
@@ -170,12 +206,19 @@ cmd_publish() {
       --notes-file) notes="${2:-}"; shift 2 ;;
       --prerelease) prerelease=true; shift ;;
       --draft) draft=true; shift ;;
+      --allow-identical) allow_identical=true; shift ;;
+      --target-default-branch) default_branch=true; shift ;;
       --) shift; break ;;
       *) die "unknown publish argument: $1" ;;
     esac
   done
-  if [ -z "$tag" ] || [ -z "$commit" ] || [ ! -f "$notes" ]; then
-    die "publish needs --tag, --commit and an existing --notes-file"
+  if [ -z "$tag" ] || [ ! -f "$notes" ]; then
+    die "publish needs --tag, --commit (or --target-default-branch) and an existing --notes-file"
+  fi
+  if [ "$default_branch" = true ]; then
+    [ -z "$commit" ] || die "--commit and --target-default-branch are mutually exclusive"
+  else
+    [ -n "$commit" ] || die "publish needs --tag, --commit (or --target-default-branch) and an existing --notes-file"
   fi
   valid_tag "$tag"
   [ "$#" -gt 0 ] || die "publish needs at least one asset after --"
@@ -185,8 +228,17 @@ cmd_publish() {
   [ -z "$(uniq -d <<< "$names")" ] || die "duplicate asset names: $(uniq -d <<< "$names" | tr '\n' ' ')"
   expected_assets "$@" > "$work/expected"
 
-  refuse_if_published "$tag"
+  settle_published "$tag"
   delete_drafts "$tag"
+
+  if [ "$default_branch" = true ]; then
+    _default_branch() { gh api "repos/$repo" --jq .default_branch > "$work/default_branch"; }
+    retry_transient "Read the default branch of $repo" _default_branch \
+      || { echo "Could not read the default branch of $repo." >&2; exit 1; }
+    commit="$(cat "$work/default_branch")"
+    [[ "$commit" =~ ^[A-Za-z0-9_./-]+$ ]] || { echo "unexpected default branch '$commit' for $repo" >&2; exit 1; }
+    echo "Tag $tag will be created on the default branch ($commit) of $repo."
+  fi
 
   # Create + upload is one retry unit. Every attempt after the first deletes
   # EVERY draft for the tag, not just the id it saw: a POST can be applied
@@ -254,6 +306,7 @@ cmd_publish() {
   fi
 }
 
+allow_identical=false
 work="$(mktemp -d)"
 _err="$work/gh.err"
 trap 'rm -rf "$work"' EXIT
@@ -261,5 +314,5 @@ trap 'rm -rf "$work"' EXIT
 case "${1:-}" in
   check-unpublished) shift; cmd_check_unpublished "$@" ;;
   publish) shift; cmd_publish "$@" ;;
-  *) die "usage: $0 check-unpublished <tag> | publish --tag <tag> --commit <sha> --notes-file <f> [--prerelease] [--draft] -- <asset>..." ;;
+  *) die "usage: $0 check-unpublished <tag> [--allow-identical -- <asset>..] | publish --tag <tag> (--commit <sha> | --target-default-branch) --notes-file <f> [--prerelease] [--draft] [--allow-identical] -- <asset>.." ;;
 esac

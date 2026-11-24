@@ -41,15 +41,31 @@ bridge_update_command :: proc(args: []string) -> bool {
 	auto_lock := bridge_auto_update_lock_path()
 	auto_locked := false
 	defer if auto_locked do bridge_instance_unlock(auto_lock)
-	defer if automatic do bridge_auto_update_finish(name, automatic_success)
+	// Why an automatic update did not go through. The --auto-worker runs detached
+	// with stdio on /dev/null, so its outcome is recorded in auto-update.json and
+	// logged by the bridge's worker (T16c).
+	auto_failure := ""
+	defer if automatic {
+		result := fmt.tprintf("update to %s succeeded", version)
+		if !automatic_success do result = fmt.tprintf("update to %s failed: %s", version, auto_failure if auto_failure != "" else "setup failed; the previous install was kept or restored")
+		fmt.eprintfln("ham-bridge update: %s", result)
+		bridge_auto_update_finish(name, automatic_success, result)
+	}
 	if automatic {
-		if !bridge_auto_update_enabled(bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE)) do return false
-		if !bridge_instance_lock(auto_lock) do return false
+		if !bridge_auto_update_enabled(bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE)) {
+			auto_failure = "automatic updates are turned off in the config"
+			return false
+		}
+		if !bridge_instance_lock(auto_lock) {
+			auto_failure = "another automatic update holds the lock"
+			return false
+		}
 		auto_locked = true
 	}
 	hub := bridgesvc.read_first_line(bridgesvc.pjoin(l.state_dir, bridgesvc.HUB_URL_FILE))
 	if hub == "" do hub = bridgesvc.hub_from_config(bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE))
 	if hub == "" {
+		auto_failure = fmt.tprintf("%s records no hub", l.state_dir)
 		fmt.eprintfln("ham-bridge update: %s records no hub; run ham-bridge setup --hub <url>", l.state_dir)
 		return false
 	}
@@ -57,6 +73,7 @@ bridge_update_command :: proc(args: []string) -> bool {
 	if version != "" {
 		target, blocked := bridge_release_target()
 		if blocked {
+			auto_failure = fmt.tprintf("this binary was not built for this platform (%s)", target)
 			fmt.eprintfln("ham-bridge update: this binary was not built for this platform (%s); reinstall with the matching bundle", target)
 			return false
 		}
@@ -65,6 +82,7 @@ bridge_update_command :: proc(args: []string) -> bool {
 		work := bridgesvc.pjoin(l.data_dir, "updates", "release")
 		_ = os.remove_all(work)
 		if bridge_make_directory_all(work) != nil {
+			auto_failure = fmt.tprintf("cannot create %s", work)
 			fmt.eprintfln("ham-bridge update: cannot create %s", work)
 			return false
 		}
@@ -72,6 +90,7 @@ bridge_update_command :: proc(args: []string) -> bool {
 		dir, tag, ferr := bridge_release_fetch(version, target, work)
 		if ferr != "" {
 			_ = os.remove_all(work)
+			auto_failure = fmt.tprintf("%s; nothing was changed", ferr)
 			fmt.eprintfln("ham-bridge update: %s; nothing was changed", ferr)
 			return false
 		}
@@ -80,6 +99,7 @@ bridge_update_command :: proc(args: []string) -> bool {
 	}
 	exe := bridgesvc.update_bundle_exe(host, bundle, proc(p: string) -> bool {return os.is_file(p)})
 	if exe == "" {
+		auto_failure = fmt.tprintf("%s has no %s", bundle, bridgesvc.exe_name(host, "ham-bridge"))
 		fmt.eprintfln("ham-bridge update: %s has no %s (looked in it and in its bin/)", bundle, bridgesvc.exe_name(host, "ham-bridge"))
 		return false
 	}
@@ -88,6 +108,7 @@ bridge_update_command :: proc(args: []string) -> bool {
 	out, errout, ran, _ := bridge_process_run_capture({exe, "--version"}, 5 * time.Second)
 	defer {delete(out); delete(errout)}
 	if !ran {
+		auto_failure = fmt.tprintf("%s --version failed; nothing was changed", exe)
 		fmt.eprintfln("ham-bridge update: %s --version failed; nothing was changed", exe)
 		return false
 	}
@@ -97,8 +118,18 @@ bridge_update_command :: proc(args: []string) -> bool {
 		current, current_err, current_ok, _ := bridge_process_run_capture({installed, "--version"}, 5 * time.Second)
 		defer {delete(current); delete(current_err)}
 		current_fields := strings.fields(current, context.temp_allocator)
-		if !current_ok || len(fields) < 2 || len(current_fields) < 2 || !bridge_auto_update_newer(fields[1], current_fields[1]) do return false
-		if !bridge_auto_update_enabled(bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE)) do return false
+		if !current_ok || len(fields) < 2 || len(current_fields) < 2 {
+			auto_failure = "cannot read the --version of the downloaded or the installed ham-bridge; nothing was changed"
+			return false
+		}
+		if !bridge_auto_update_newer(fields[1], current_fields[1]) {
+			auto_failure = fmt.tprintf("the downloaded %s is not newer than the installed %s; nothing was changed", fields[1], current_fields[1])
+			return false
+		}
+		if !bridge_auto_update_enabled(bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE)) {
+			auto_failure = "automatic updates were turned off in the config; nothing was changed"
+			return false
+		}
 	}
 	argv := bridgesvc.update_setup_argv(exe, hub, profile, has_flag(args, "--json-progress"))
 	own, _ := os.lookup_env("HEIMDALL_BRIDGE_SERVICE_NAME", context.temp_allocator)

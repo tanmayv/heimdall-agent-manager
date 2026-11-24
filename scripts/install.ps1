@@ -43,7 +43,7 @@ param(
   [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest = @()
 )
 
-$HeimdallRepo = 'tanmayv/heimdall-agent-manager'
+$HeimdallRepo = 'tanmayv/heimdall-releases'
 $HeimdallTarget = 'windows-amd64'
 # Which options were given as parameters (an env var is only their default).
 $HeimdallBound = @{}

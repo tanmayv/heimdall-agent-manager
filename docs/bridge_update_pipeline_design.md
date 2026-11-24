@@ -147,7 +147,7 @@ sequenceDiagram
        }
        ```
   2. **GitHub Releases (Fallback / Open-Source Nodes):**
-     - Query `https://api.github.com/repos/tanmayv/heimdall-agent-manager/releases/latest` (as `ham-bridge update --version` does in `src/bridge/release_fetch.odin`).
+     - Query `https://api.github.com/repos/tanmayv/heimdall-releases/releases/latest` (as `ham-bridge update --version` does in `src/bridge/release_fetch.odin`).
 - **Hub Catalog Service (`src/hub/service/bridge/update_catalog.odin`):**
   - Maintains latest available version per architecture.
   - Automatically computes `update_available: bool` in bridge list payloads:

@@ -14,8 +14,9 @@ import "core:encoding/hex"
 import "core:io"
 import "core:os"
 import "core:strings"
+import "odin_test:lib/releaserepo"
 
-REPO :: "tanmayv/heimdall-agent-manager"
+REPO :: releaserepo.REPO
 DOWNLOAD_PREFIX :: "https://github.com/" + REPO + "/releases/download/"
 
 // Download_Proc returns the HTTP status (0 when the request failed before a

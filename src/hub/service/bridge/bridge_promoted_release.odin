@@ -10,6 +10,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import httpc "odin_test:lib/httpc"
+import "odin_test:lib/releaserepo"
 
 // A structured request seam keeps tests offline and the outbound HTTP boundary intact.
 Bridge_Catalog_Get :: #type proc(req: httpc.Request) -> (body: string, ok: bool, reason: string)
@@ -103,7 +104,7 @@ bridge_catalog_releases_request :: proc(page: int) -> httpc.Request {
 	query := make([]httpc.Query_Param, 1 if page <= 1 else 2, context.temp_allocator)
 	query[0] = {"per_page", size}
 	if page > 1 do query[1] = {"page", fmt.tprintf("%d", page)}
-	return bridge_catalog_request("https://api.github.com", {"repos", "tanmayv", "heimdall-agent-manager", "releases"}, query)
+	return bridge_catalog_request("https://api.github.com", {"repos", releaserepo.OWNER, releaserepo.NAME, "releases"}, query)
 }
 
 // bridge_catalog_fetch_release resolves the newest promoted release that has a
@@ -118,7 +119,7 @@ bridge_catalog_fetch_release :: proc(memo: ^Bridge_Catalog_Memo, target, pin: st
 			return info, true
 		}
 		tag := pin if strings.has_prefix(pin, "v") else fmt.tprintf("v%s", pin)
-		req := bridge_catalog_request("https://api.github.com", {"repos", "tanmayv", "heimdall-agent-manager", "releases", "tags", tag})
+		req := bridge_catalog_request("https://api.github.com", {"repos", releaserepo.OWNER, releaserepo.NAME, "releases", "tags", tag})
 		doc, ok, reason := bridge_catalog_memo_get(memo, req)
 		if !ok {
 			info.fallback_reason = fmt.tprintf("cannot resolve promoted releases: %s", reason)
@@ -169,7 +170,7 @@ bridge_catalog_pick_release :: proc(memo: ^Bridge_Catalog_Memo, info: ^Bridge_Up
 			if asset.name == "SHA256SUMS" do has_sums = true
 		}
 		if !has_bundle || !has_sums do continue
-		path := []string{"tanmayv", "heimdall-agent-manager", "releases", "download", release.tag_name, "SHA256SUMS"}
+		path := []string{releaserepo.OWNER, releaserepo.NAME, "releases", "download", release.tag_name, "SHA256SUMS"}
 		sums, fetched, detail := bridge_catalog_memo_get(memo, bridge_catalog_request("https://github.com", path))
 		if !fetched {
 			info.fallback_reason = fmt.tprintf("cannot fetch SHA256SUMS for %s: %s", release.tag_name, detail)

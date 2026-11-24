@@ -5,6 +5,12 @@ name: Promote release
 # binaries to the ones the canary hub soaked. Run this when the stable hub
 # (brolabs) is pinned to the tag; see nix-homelab-config
 # docs/heimdall-release-channels.md.
+#
+# The candidate is promoted on the public releases repository
+# (tanmayv/heimdall-releases, GitHub App token) and, while the migration switch
+# is on (repository variable PUBLISH_SOURCE_RELEASES != 'false'), on this
+# repository too. Both are verified first; only then is either marked Latest.
+# A repeat run is safe: an already promoted release is verified and re-marked.
 
 on:
   workflow_dispatch:
@@ -18,6 +24,10 @@ permissions:
   contents: write
   # gh attestation verify reads the release's build-provenance attestations.
   attestations: read
+
+env:
+  RELEASES_REPO: tanmayv/heimdall-releases
+  PUBLISH_SOURCE_RELEASES: ${{ vars.PUBLISH_SOURCE_RELEASES == 'false' && 'false' || 'true' }}
 
 concurrency:
   group: promote-release
@@ -35,83 +45,130 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+
+      # Installation token for the releases repository only (contents: write).
+      - name: Mint the releases-repository token
+        id: releases_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASES_APP_ID }}
+          private-key: ${{ secrets.RELEASES_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: heimdall-releases
+          permission-contents: write
+
+      # Both repositories carry the same bytes, so each is checked completely:
+      # asset set, desktop update files, signed manifest, attestations, and
+      # GitHub's immutable-release record. Nothing is changed in this step.
       - name: Verify the release is a complete candidate
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "invalid release tag: $VERSION" >&2; exit 2; }
-          gh release view "$VERSION" --json isDraft,isPrerelease,isImmutable,assets > release.json
-          if [ "$(jq -r .isDraft release.json)" = "true" ]; then
-            echo "$VERSION is a draft; publish it before promoting" >&2; exit 1
-          fi
-          if [ "$(jq -r .isPrerelease release.json)" != "true" ]; then
-            echo "$VERSION is already promoted; nothing to do"
-          fi
-          # Same bundle set the release job requires (keep in sync with
-          # release-local-binaries.yml "Verify tarballs and create SHA256SUMS").
-          missing=0
-          # termux-arm64 temporarily disabled (see release-local-binaries.yml build matrix).
-          for target in darwin-arm64 linux-amd64 linux-arm64; do
-            name="heimdall-local-$target-$VERSION.tar.gz"
-            jq -e --arg n "$name" '.assets | any(.name == $n)' release.json >/dev/null || {
-              echo "missing asset: $name" >&2; missing=1; }
-          done
-          # Intel macOS is opt-in. Windows was absent from older candidates.
-          # Either optional asset must agree with the published checksum manifest:
-          # listed-but-missing and present-but-unlisted both fail promotion.
-          gh release download "$VERSION" --pattern SHA256SUMS --output sums.txt --clobber
-          for name in "heimdall-local-darwin-amd64-$VERSION.tar.gz" "heimdall-local-windows-amd64-$VERSION.zip"; do
-            listed=0
-            awk -v n="$name" '{ sub(/^\*/, "", $2) } $2 == n { found = 1 } END { exit !found }' sums.txt && listed=1
-            present=0
-            jq -e --arg n "$name" '.assets | any(.name == $n)' release.json >/dev/null && present=1
-            if [ "$listed" = 1 ] && [ "$present" = 0 ]; then
-              echo "missing asset: $name (listed in SHA256SUMS)" >&2; missing=1
-            elif [ "$listed" = 0 ] && [ "$present" = 1 ]; then
-              echo "asset $name has no SHA256SUMS line" >&2; missing=1
-            fi
-          done
-          jq -e '.assets | any(.name == "SHA256SUMS")' release.json >/dev/null || {
-            echo "missing asset: SHA256SUMS" >&2; missing=1; }
-          [ "$missing" = 0 ]
-          mkdir -p desktop-candidate
-          gh release download "$VERSION" --dir desktop-candidate \
-            --pattern latest.yml --pattern latest-mac.yml \
-            --pattern 'Ninjy-*.zip' --pattern 'Ninjy-*.zip.blockmap' \
-            --pattern 'Ninjy-*.exe' --pattern 'Ninjy-*.exe.blockmap'
-          python3 scripts/release/validate-desktop-updates.py desktop-candidate \
-            --version "${VERSION#v}" --platform mac --arch arm64 --assets release.json
-          python3 scripts/release/validate-desktop-updates.py desktop-candidate \
-            --version "${VERSION#v}" --platform windows --arch x64 --assets release.json
-
-      # Signed manifest, bundle digests, build provenance and (when enabled)
-      # GitHub's immutable-release record; see scripts/release/check-promotion.sh.
-      # The pinned public keys come from the default-branch checkout above.
-      - name: Verify the signed manifest and attestations
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          VERSION: ${{ inputs.version }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        shell: bash
-        run: |
-          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq minisign
-          scripts/release/check-promotion.sh "$VERSION" release.json "$RUNNER_TEMP/promotion"
 
+          # The first target is the releases repository; the source repository
+          # follows while PUBLISH_SOURCE_RELEASES is not 'false'.
+          targets=("$RELEASES_REPO|$RELEASES_TOKEN")
+          if [ "$PUBLISH_SOURCE_RELEASES" != false ]; then
+            targets+=("$SOURCE_REPO|$SOURCE_TOKEN")
+          fi
+
+          verify_target() {
+            local dir="$1"
+            mkdir -p "$dir"
+            cd "$dir"
+            gh release view "$VERSION" --json isDraft,isPrerelease,isImmutable,assets > release.json
+            if [ "$(jq -r .isDraft release.json)" = "true" ]; then
+              echo "$VERSION is a draft in $GH_REPO; publish it before promoting" >&2; return 1
+            fi
+            if [ "$(jq -r .isPrerelease release.json)" != "true" ]; then
+              echo "$VERSION is already promoted in $GH_REPO; re-verifying"
+            fi
+            # Same bundle set the release job requires (keep in sync with
+            # release-local-binaries.yml "Verify tarballs and create SHA256SUMS").
+            local missing=0 target name listed present
+            # termux-arm64 temporarily disabled (see release-local-binaries.yml build matrix).
+            for target in darwin-arm64 linux-amd64 linux-arm64; do
+              name="heimdall-local-$target-$VERSION.tar.gz"
+              jq -e --arg n "$name" '.assets | any(.name == $n)' release.json >/dev/null || {
+                echo "missing asset: $name" >&2; missing=1; }
+            done
+            # Intel macOS is opt-in. Windows was absent from older candidates.
+            # Either optional asset must agree with the published checksum manifest:
+            # listed-but-missing and present-but-unlisted both fail promotion.
+            gh release download "$VERSION" --pattern SHA256SUMS --output sums.txt --clobber
+            for name in "heimdall-local-darwin-amd64-$VERSION.tar.gz" "heimdall-local-windows-amd64-$VERSION.zip"; do
+              listed=0
+              awk -v n="$name" '{ sub(/^\*/, "", $2) } $2 == n { found = 1 } END { exit !found }' sums.txt && listed=1
+              present=0
+              jq -e --arg n "$name" '.assets | any(.name == $n)' release.json >/dev/null && present=1
+              if [ "$listed" = 1 ] && [ "$present" = 0 ]; then
+                echo "missing asset: $name (listed in SHA256SUMS)" >&2; missing=1
+              elif [ "$listed" = 0 ] && [ "$present" = 1 ]; then
+                echo "asset $name has no SHA256SUMS line" >&2; missing=1
+              fi
+            done
+            jq -e '.assets | any(.name == "SHA256SUMS")' release.json >/dev/null || {
+              echo "missing asset: SHA256SUMS" >&2; missing=1; }
+            [ "$missing" = 0 ] || return 1
+            mkdir -p desktop-candidate
+            gh release download "$VERSION" --dir desktop-candidate \
+              --pattern latest.yml --pattern latest-mac.yml \
+              --pattern 'Ninjy-*.zip' --pattern 'Ninjy-*.zip.blockmap' \
+              --pattern 'Ninjy-*.exe' --pattern 'Ninjy-*.exe.blockmap'
+            python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" desktop-candidate \
+              --version "${VERSION#v}" --platform mac --arch arm64 --assets release.json
+            python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" desktop-candidate \
+              --version "${VERSION#v}" --platform windows --arch x64 --assets release.json
+
+            # Signed manifest, bundle digests, build provenance and (when
+            # enabled) GitHub's immutable-release record; see
+            # scripts/release/check-promotion.sh. The pinned public keys come
+            # from the default-branch checkout above. Attestations live in this
+            # (source) repository whichever repository holds the release.
+            ATTEST_REPO="$SOURCE_REPO" ATTEST_GH_TOKEN="$SOURCE_TOKEN" \
+              "$GITHUB_WORKSPACE/scripts/release/check-promotion.sh" "$VERSION" release.json "$dir/promotion"
+          }
+
+          export -f verify_target
+          for t in "${targets[@]}"; do
+            export GH_REPO="${t%%|*}" GH_TOKEN="${t#*|}"
+            echo "== verifying $VERSION in $GH_REPO =="
+            # A fresh shell, not a subshell: errexit is off inside `(...) ||`.
+            bash -euo pipefail -c 'verify_target "$1"' _ "$RUNNER_TEMP/candidate/${GH_REPO//\//_}" || {
+              echo "::error::$VERSION is not a complete, verified candidate in $GH_REPO; nothing was promoted." >&2
+              exit 1
+            }
+          done
+
+      # Promotion changes nothing but the prerelease/Latest flags. Both
+      # repositories passed verification above; the releases repository is
+      # marked first. If the second edit fails, re-run: the edit is idempotent.
       - name: Mark as the stable Latest release
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
           VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release edit "$VERSION" --prerelease=false --latest
-          gh release view "$VERSION" --json tagName,isPrerelease,url
+          targets=("$RELEASES_REPO|$RELEASES_TOKEN")
+          if [ "$PUBLISH_SOURCE_RELEASES" != false ]; then
+            targets+=("$SOURCE_REPO|$SOURCE_TOKEN")
+          fi
+          for t in "${targets[@]}"; do
+            export GH_REPO="${t%%|*}" GH_TOKEN="${t#*|}"
+            echo "== promoting $VERSION in $GH_REPO =="
+            gh release edit "$VERSION" --prerelease=false --latest
+            gh release view "$VERSION" --json tagName,isPrerelease,url
+          done

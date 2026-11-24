@@ -225,8 +225,108 @@ test_auto_update_quiet_preserved_pty_agent :: proc(t: ^testing.T) {
 	testing.expect(t, !bridge_auto_update_quiet_with_host(true, proc(socket: string) -> (Pty_Host_Reply, bool) {
 		return {}, false
 	}), "failed PTY listing prevents update admission")
+	testing.expect_value(t, bridge_auto_update_busy, Bridge_Auto_Update_Busy.Host_Unlisted)
 	testing.expect(t, bridge_auto_update_launch_enter(), "busy or unavailable host must not reserve admission")
 	bridge_auto_update_launch_leave()
+}
+
+// T16b: the PTY host keeps exited agents and `ham-ctl shell` runs registered
+// (alive = false) until they are closed. dawnstar listed two exited shell runs,
+// riverwood three exited agents, and neither bridge ever found a quiet window.
+@(test)
+test_auto_update_quiet_ignores_exited_pty_entries :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	defer {
+		sync.mutex_lock(&bridge_auto_update_mutex)
+		bridge_auto_update_reserved_until = 0
+		sync.mutex_unlock(&bridge_auto_update_mutex)
+	}
+	exited :: proc(socket: string) -> (Pty_Host_Reply, bool) {
+		reply := Pty_Host_Reply{kind = .Agent_List}
+		reply.agents = make([]Pty_Host_Agent_Info, 3)
+		reply.agents[0] = {instance_id = strings.clone("sh_72984ce9a102bdc903cb78f104b3bc41"), program = strings.clone("sh"), alive = false, has_exit_code = true}
+		reply.agents[1] = {instance_id = strings.clone("inst_exited_sigterm"), alive = false, has_exit_code = true, exit_code = 143}
+		reply.agents[2] = {instance_id = strings.clone("inst_exited_error"), alive = false, has_exit_code = true, exit_code = 1}
+		return reply, true
+	}
+	testing.expect(t, bridge_auto_update_quiet_with_host(false, exited), "exited PTY entries leave the bridge quiet")
+	mixed :: proc(socket: string) -> (Pty_Host_Reply, bool) {
+		reply := Pty_Host_Reply{kind = .Agent_List}
+		reply.agents = make([]Pty_Host_Agent_Info, 3)
+		reply.agents[0] = {instance_id = strings.clone("inst_exited"), alive = false, has_exit_code = true}
+		reply.agents[1] = {instance_id = strings.clone("inst_running"), alive = true}
+		reply.agents[2] = {instance_id = strings.clone("sh_running"), alive = true}
+		return reply, true
+	}
+	testing.expect(t, !bridge_auto_update_quiet_with_host(false, mixed), "a running PTY entry still prevents update admission")
+	testing.expect_value(t, bridge_auto_update_busy, Bridge_Auto_Update_Busy.Running_On_Host)
+	testing.expect_value(t, bridge_auto_update_busy_count, 2)
+	testing.expect_value(t, bridge_auto_update_busy_text(), "2 running agent(s) or shell session(s) on the PTY host")
+}
+
+auto_test_log: [dynamic]string
+
+auto_test_log_sink :: proc(line: string) {
+	append(&auto_test_log, strings.clone(line, context.temp_allocator))
+}
+
+auto_test_log_count :: proc(prefix: string) -> int {
+	n := 0
+	for line in auto_test_log do if strings.has_prefix(line, prefix) do n += 1
+	return n
+}
+
+// Each check outcome is logged; the 30 s wait for a quiet window is logged once
+// per change, not on every tick.
+@(test)
+test_auto_update_tick_logs_outcomes :: proc(t: ^testing.T) {
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	auto_test_log = make([dynamic]string, context.temp_allocator)
+	bridge_auto_update_log_sink = auto_test_log_sink
+	defer bridge_auto_update_log_sink = nil
+	bridge_auto_update_clear_wait()
+	defer bridge_auto_update_clear_wait()
+	dir, path, config := auto_test_fixture(t, "[bridge]\n", 0)
+	defer os.remove_all(dir)
+	auto_test_spawns = 0
+	auto_test_version = contracts.APP_VERSION
+	auto_test_busy, auto_test_busy_during_lookup = true, false
+	quiet: i64
+	bridge_auto_update_tick("profile-a", config, path, &quiet, 1000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("first check scheduled (next check in "), 1)
+	now := bridge_auto_update_read(path).next_check_ms
+	for i in 0..<5 do bridge_auto_update_tick("profile-a", config, path, &quiet, now + i64(i) * 30_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check due; waiting for a quiet window: "), 1)
+	auto_test_busy = false
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now + 150_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now + 180_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check due; no agents running"), 1)
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now + 210_001, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check: up to date ("), 1)
+	// Lookup failure.
+	auto_test_version = ""
+	now = bridge_auto_update_read(path).next_check_ms
+	quiet = now - 60_000
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check failed: could not look up the latest release (failures 1; "), 1)
+	// Newer release: the updater is started.
+	auto_test_version = "v999.0.0"
+	now = bridge_auto_update_read(path).next_check_ms
+	quiet = now - 60_000
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_spawns, 1)
+	testing.expect_value(t, auto_test_log_count(fmt.tprintf("check: updating %s -> v999.0.0", contracts.APP_VERSION)), 1)
+	// Turned off: logged once, however many ticks.
+	testing.expect(t, os.write_entire_file(config, transmute([]byte)string("[bridge]\nauto_update_enabled = false\n")) == nil)
+	for i in 0..<3 do bridge_auto_update_tick("profile-a", config, path, &quiet, now + i64(i) * 30_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("automatic updates are turned off"), 1)
+	testing.expect_value(t, bridge_auto_update_due_text(0, 5), "first check not scheduled yet")
+	testing.expect_value(t, bridge_auto_update_due_text(1000, 1000 + 3 * 60_000), "check overdue by 3 min")
+	testing.expect_value(t, bridge_auto_update_due_text(1000 + 60_001, 1000), "next check in 2 min")
 }
 
 // ---- REQ-AUP-3..6: forcing an update that stays overdue ----
@@ -481,4 +581,101 @@ test_auto_update_tick_quiet_preferred_over_force :: proc(t: ^testing.T) {
 	state := bridge_auto_update_read(path)
 	testing.expect_value(t, state.force_at_ms, i64(0))
 	testing.expect_value(t, state.forced_version, "v999.0.0")
+}
+
+// ---- T16c: the hub catalog's bare version must reach the GitHub release tag ----
+
+auto_test_release_urls: [dynamic]string
+
+auto_test_release_get :: proc(url: string) -> (string, bool, string) {
+	append(&auto_test_release_urls, strings.clone(url, context.temp_allocator))
+	target, _ := bridge_release_target()
+	bundle := bridge_release_bundle_name(target, "v999.0.0")
+	if strings.has_suffix(url, "/SHA256SUMS") {
+		return strings.concatenate({strings.repeat("0", 64, context.temp_allocator), "  ", bundle, "\n"}, context.temp_allocator), true, ""
+	}
+	// GitHub knows only the v-prefixed tag: /releases/tags/999.0.0 is a 404.
+	if url != "https://api.github.com/repos/" + BRIDGE_RELEASE_REPO + "/releases/tags/v999.0.0" do return "", false, "HTTP 404"
+	return strings.concatenate({`{"tag_name":"v999.0.0","draft":false,"prerelease":false,"assets":[{"name":"SHA256SUMS"},{"name":"`, bundle, `"}]}`}, context.temp_allocator), true, ""
+}
+
+auto_test_release_download :: proc(req: httpc.Request, dest: string) -> (int, httpc.Error) {
+	append(&auto_test_release_urls, strings.clone(httpc.url_string(req.url), context.temp_allocator))
+	_ = os.write_entire_file(dest, transmute([]byte)string("tampered"))
+	return 200, .None
+}
+
+@(test)
+test_auto_update_hub_bare_version_reaches_release_tag :: proc(t: ^testing.T) {
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	target, blocked := bridge_release_target()
+	testing.expectf(t, !blocked, "fixture target %s must permit updates", target)
+	// 1. The hub catalog carries the bare SemVer (bridge_promoted_release.odin trims "v").
+	version := bridge_auto_update_resolve(proc(req: httpc.Request) -> (httpc.Response, httpc.Error) {
+		return hub_test_response(200, `{"data":{"latest_version":"999.0.0","artifact_available":true}}`), .None
+	}, proc(url: string) -> (string, bool, string) {return "", false, "GitHub must not be used"})
+	testing.expect_value(t, version, "v999.0.0")
+	auto_test_version = version
+	delete(version)
+	// 2. The quiet check hands that tag to the detached updater.
+	auto_test_force_reset()
+	auto_test_version = "v999.0.0"
+	auto_test_busy = false
+	dir, path, config := auto_test_fixture(t, "[bridge]\n", 1000)
+	defer os.remove_all(dir)
+	quiet := i64(1000 - BRIDGE_AUTO_UPDATE_QUIET_MS)
+	bridge_auto_update_tick("profile-t", config, path, &quiet, 1000, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_spawns, 1)
+	testing.expect_value(t, auto_test_argv, "update --version v999.0.0 --service profile-t --auto-worker")
+	testing.expect_value(t, bridge_auto_update_read(path).pending_version, "v999.0.0")
+	// 3. `update --version` looks the release up by its v-tag, for the new argv
+	// and for a bare one (an older bridge's timer, or a user typing 999.0.0).
+	work := fmt.tprintf("%s/work", dir)
+	_ = bridge_make_directory_all(work)
+	for want in ([]string{"v999.0.0", "999.0.0"}) {
+		auto_test_release_urls = make([dynamic]string, context.temp_allocator)
+		_, tag, err := bridge_release_fetch(want, target, work, auto_test_release_get, auto_test_release_download)
+		testing.expectf(t, tag == "v999.0.0", "%s: tag %q", want, tag)
+		testing.expectf(t, strings.contains(err, "SHA-256 mismatch"), "%s: the fake bundle must reach verification, got %q", want, err)
+		BASE :: "https://github.com/" + BRIDGE_RELEASE_REPO + "/releases/download/v999.0.0/"
+		testing.expectf(t, len(auto_test_release_urls) == 3, "%s: %v", want, auto_test_release_urls[:])
+		if len(auto_test_release_urls) == 3 {
+			testing.expect_value(t, auto_test_release_urls[0], "https://api.github.com/repos/" + BRIDGE_RELEASE_REPO + "/releases/tags/v999.0.0")
+			testing.expect_value(t, auto_test_release_urls[1], BASE + "SHA256SUMS")
+			testing.expect_value(t, auto_test_release_urls[2], strings.concatenate({BASE, bridge_release_bundle_name(target, "v999.0.0")}, context.temp_allocator))
+		}
+	}
+	testing.expect_value(t, bridge_release_tag_for("0.5.81"), "v0.5.81")
+	testing.expect_value(t, bridge_release_tag_for("v0.5.81"), "v0.5.81")
+	testing.expect_value(t, bridge_release_tag_for("latest"), "latest")
+}
+
+@(test)
+test_auto_update_tick_logs_worker_result :: proc(t: ^testing.T) {
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	auto_test_log = make([dynamic]string, context.temp_allocator)
+	bridge_auto_update_log_sink = auto_test_log_sink
+	defer bridge_auto_update_log_sink = nil
+	auto_test_force_reset()
+	dir, path, config := auto_test_fixture(t, "[bridge]\n", 0)
+	defer os.remove_all(dir)
+	now := i64(10 * HOUR_MS)
+	// The updater is still running: nothing to report yet.
+	testing.expect(t, bridge_auto_update_write(path, {next_check_ms = now + HOUR_MS, pending_version = "v999.0.0", last_result = "stale"}))
+	quiet: i64
+	bridge_auto_update_tick("profile-r", config, path, &quiet, now, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_log_count("stale"), 0)
+	// It failed: finish records why; the bridge's worker logs it exactly once.
+	bridge_auto_update_finish_at(path, false, now, 0, "update to v999.0.0 failed: release v999.0.0 not found; nothing was changed")
+	for i in 0..<3 do bridge_auto_update_tick("profile-r", config, path, &quiet, now + i64(i) * 30_000, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_log_count("update to v999.0.0 failed: release v999.0.0 not found; nothing was changed (running "), 1)
+	testing.expect_value(t, bridge_auto_update_read(path).last_result, "")
+	testing.expect_value(t, bridge_auto_update_read(path).failures, 1)
+	// A success is reported the same way.
+	bridge_auto_update_finish_at(path, true, now, 0, "update to v999.0.0 succeeded")
+	bridge_auto_update_tick("profile-r", config, path, &quiet, now, auto_test_resolve, auto_test_spawn_argv, auto_test_quiet, auto_test_force_hooks)
+	testing.expect_value(t, auto_test_log_count("update to v999.0.0 succeeded (running "), 1)
+	testing.expect_value(t, auto_test_spawns, 0)
 }
