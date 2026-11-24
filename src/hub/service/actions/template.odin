@@ -28,7 +28,7 @@ render :: proc(prompt: string, action: domain.Action, run: domain.Action_Run, jo
 		replacement, known := render_value(key,action,run,joined_count,params)
 		if known {
    if run.event_type=="webhook.received" && strings.has_prefix(key,"event.") && replacement!="" {
-    untrusted=true
+    if strings.has_prefix(key,"event.data.") || key=="event.json" do untrusted=true
     replacement=webhook_prompt_value(replacement)
     if key!="event.json" {
      limit:=SNAPSHOT_DEFAULT_LIMITS.value_bytes

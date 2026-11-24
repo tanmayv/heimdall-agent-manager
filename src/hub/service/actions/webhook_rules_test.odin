@@ -5,6 +5,9 @@ import "core:strings"
 import "core:testing"
 import "core:fmt"
 import "core:unicode/utf8"
+import "core:mem"
+import "core:mem/virtual"
+import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
@@ -30,8 +33,72 @@ test_webhook_nested_projection_and_render :: proc(t:^testing.T) {
  testing.expect_value(t,body,"hello {{action.name}}/42\n"+WEBHOOK_UNTRUSTED_LINE)
  plain:=render("{{action.name}}",{name="own prompt"},{event_type="webhook.received",event_params_json=snapshot},0,context.allocator)
  testing.expect_value(t,plain,"own prompt")
+ metadata_only:=render("{{event.type}}",{},{event_type="webhook.received",event_params_json=snapshot},0,context.allocator)
+ testing.expect_value(t,metadata_only,"webhook.received")
  trusted:=render("{{event.data.repo.name}}",{},{event_type="memory.state",event_params_json=snapshot},0,context.allocator)
  testing.expect(t,!strings.contains(trusted,WEBHOOK_UNTRUSTED_LINE))
+}
+
+@(test)
+test_snapshot_wide_body_bounded_cost :: proc(t:^testing.T) {
+ context.allocator=context.temp_allocator
+ data:=make(json.Object,context.temp_allocator)
+ for i in 0..<4720 do data[fmt.tprintf("k%05d",i)]=json.Integer(0)
+ encoded:=snapshot_encode(data)
+ data["padding"]=strings.repeat("x",65536-len(encoded)-len(`,"padding":""`),context.temp_allocator)
+ envelope:=make(json.Object,context.temp_allocator)
+ envelope["data"]=data
+ testing.expect_value(t,len(snapshot_encode(data)),65536)
+ tree,_:=filter_compile(test_config(`{"field":"data.k00001","op":"eq","value":0}`),nil,FILTER_DEFAULT_LIMITS)
+ limits:=SNAPSHOT_DEFAULT_LIMITS
+ default_projection:=snapshot_projection(tree,"{{event.data.k00002}}",context.allocator,limits)
+ snapshot_wide_probe(t,envelope,default_projection,limits)
+ prompt:strings.Builder
+ defer strings.builder_destroy(&prompt)
+ for i in 0..<4096 do strings.write_string(&prompt,strings.concatenate({"{{event.data.",fmt.tprintf("k%05d",i),"}}"},context.temp_allocator))
+ limits.template_paths=4096
+ max_projection:=snapshot_projection(tree,strings.to_string(prompt),context.allocator,limits)
+ testing.expect_value(t,len(max_projection.paths),4096)
+ snapshot_wide_probe(t,envelope,max_projection,limits)
+ snapshot_fetch_probe(t,envelope,default_projection)
+}
+snapshot_wide_probe :: proc(t:^testing.T,envelope:json.Object,p:Snapshot_Projection,l:Snapshot_Limits) {
+ arena:virtual.Arena
+ if !testing.expect_value(t,virtual.arena_init_growing(&arena),nil) do return
+ defer virtual.arena_destroy(&arena)
+ track:mem.Tracking_Allocator
+ mem.tracking_allocator_init(&track,virtual.arena_allocator(&arena))
+ defer mem.tracking_allocator_destroy(&track)
+ context.allocator=mem.tracking_allocator(&track)
+ context.temp_allocator=context.allocator
+ start:=time.tick_now()
+ snapshot:=event_params_scratch({event_type="webhook.received",event_id="wide",envelope=envelope},1,"T",p,l)
+ elapsed:=time.tick_since(start)
+ bytes:=track.total_memory_allocated
+ fmt.printf("W2 64 KiB / 4720 keys / template_paths=%d: %v, %d temp bytes\n",l.template_paths,elapsed,bytes)
+ testing.expect(t,len(snapshot)<=8192)
+ testing.expect(t,bytes<4*1024*1024,"projection temp allocation must remain below 4 MiB")
+ testing.expect(t,elapsed<time.Second,"wide-body projection must finish within one second")
+ params:=test_config(snapshot)
+ _,filter_kept:=snapshot_lookup(params,[]string{"data","k00001"})
+ _,template_kept:=snapshot_lookup(params,[]string{"data","k00002"})
+ testing.expect(t,filter_kept && template_kept)
+}
+snapshot_fetch_probe :: proc(t:^testing.T,envelope:json.Object,p:Snapshot_Projection) {
+ arena:virtual.Arena
+ if !testing.expect_value(t,virtual.arena_init_growing(&arena),nil) do return
+ defer virtual.arena_destroy(&arena)
+ track:mem.Tracking_Allocator
+ mem.tracking_allocator_init(&track,virtual.arena_allocator(&arena))
+ defer mem.tracking_allocator_destroy(&track)
+ context.allocator=mem.tracking_allocator(&track)
+ context.temp_allocator=context.allocator
+ for _ in 0..<64 {
+  snapshot:=event_params({event_type="webhook.received",event_id="wide",envelope=envelope},1,"T",p)
+  testing.expect(t,len(snapshot)>0 && len(snapshot)<=8192)
+ }
+ fmt.printf("W2 64 wide-body matches retain %d caller temp bytes\n",track.total_memory_allocated)
+ testing.expect(t,track.total_memory_allocated<=64*8192,"caller fetch arena retains only bounded snapshots")
 }
 
 @(test)
