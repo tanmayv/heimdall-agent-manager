@@ -316,6 +316,8 @@ second update path.
   defines it.
 - A legacy (non-converted) instance found after Phase 2 is converted by setup (Phase 2
   conversion transaction), never updated by the script.
+  The conversion transaction, its S-rows (S10–S10c), the mapping of S8b / `--reinstall` from old
+  updaters, and its crash/rollback table are in `docs/specs/bridge-supervisor-conversion.md`.
 
 ## 8. Out of scope here
 

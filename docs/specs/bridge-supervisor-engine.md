@@ -36,7 +36,7 @@ unless it cites current code.
 
 In scope: what one bridge instance's launcher and supervisor store, accept, decide and do,
 on every OS, including crash recovery. Out of scope: the hub relay and UI (Phase 3), Phase 2
-conversion of today's `bin/` installs (only its preconditions are fixed here: §3 ownership record, §7.4, §16), uninstall
+conversion of today's `bin/` installs (specified in `docs/specs/bridge-supervisor-conversion.md`; only its preconditions are fixed here: §3 ownership record, §7.4, §16), uninstall
 details beyond reserving the action, Termux (no bundle, report F8), always-on mode (dropped,
 **[T0 Q4]**).
 
