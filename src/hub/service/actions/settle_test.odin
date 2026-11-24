@@ -255,3 +255,43 @@ settle_no_wake_scenario :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect_value(t,err.code,domain.Error_Code.None)
  testing.expect_value(t,count,before)
 }
+
+
+// Exercise the actual delivered -> read hook from T0, not a synthetic final.
+@(test)
+test_settle_other_key_waits_for_read :: proc(t:^testing.T) { action_test_case(t,settle_read_scenario) }
+settle_read_scenario :: proc(t:^testing.T,f:^Action_Test) {
+ settle_test_setup(t,f,5)
+ settle_test_event(t,f,"chain1","first",1)
+ f.now_ms+=5000
+ drain_due(&f.runtime.router)
+ first,found,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
+ testing.expect(t,found)
+ uow,ok,_:=iface.unit_of_work_begin(&f.factory)
+ testing.expect(t,ok)
+ repo:=&uow.repos.pipeline_deliveries
+ d,_,_:=repo.get(repo.ctx,first.delivery_id)
+ next:=d;next.state=domain.DELIVERY_FORWARDED;next.attempt=1
+ changed,err:=repo.transition(repo.ctx,next,d.state)
+ testing.expect(t,changed && err.code==.None)
+ _,_=iface.unit_of_work_commit(&uow)
+ ack_succeed(f,first)
+ ack_assert(t,f,first,domain.DELIVERY_DELIVERED,"","")
+ settle_test_event(t,f,"chain2","second",2)
+ f.now_ms+=30000
+ drain_due(&f.runtime.router)
+ testing.expect_value(t,f.routes,1)
+ second,pending,_:=f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain2")
+ testing.expect(t,pending && second.state==domain.ACTION_RUN_DEFERRED)
+ action_test_expect(t,f,domain.ACTION_RUN_JOINED,0)
+ ack_read(t,f,first)
+ ack_assert(t,f,first,domain.DELIVERY_DONE,"read","")
+ wakes:=ack_backlog_rows(t,f)
+ wake_found:=false
+ for row in wakes do if row.subject=="ev.owner.action.action.ready" do wake_found=true
+ testing.expect(t,wake_found,"read finalization must wake waiting settle key")
+ drain_due(&f.runtime.router)
+ testing.expect_value(t,f.routes,2)
+ own,_,_:=f.repos.actions.run_get(f.repos.actions.ctx,second.run_id)
+ testing.expect(t,own.state==domain.ACTION_RUN_ROUTED && own.message_id!=first.message_id)
+}

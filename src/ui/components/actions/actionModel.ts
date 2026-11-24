@@ -207,6 +207,10 @@ export function actionFormBody(form: ActionForm): CreateActionInput {
   if (target.kind === 'agent') delete target.last_spawned_instance_id;
   return { ...form, target, triggers: form.triggers.map(({ id, kind, config, enabled, delay_s }) => ({ ...(id ? { id } : {}), kind, config: structuredClone(config), enabled, delay_s: delay_s || 0 } as ActionTrigger)) };
 }
+export function defaultBotTarget(target: ActionTarget, ownerBotId?: string): ActionTarget {
+  return target.kind === 'bot' && !target.bot_id && ownerBotId
+    ? { kind: 'bot', bot_id: ownerBotId } : target;
+}
 export type ActionFormField = 'prompt_text' | 'min_interval_s' | 'target' | 'triggers' | 'form';
 export function mapServerError(err: any): { field: ActionFormField; message: string } {
   const details = err?.data?.details;

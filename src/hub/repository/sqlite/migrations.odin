@@ -684,6 +684,7 @@ MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_
 MIGRATION_221_EXTENSION_VERSION_SYNC :: #load("migrations/221_extension_version_sync_0_5_61.sql", string)
 
 MIGRATION_222_EXTENSION_VERSION_SYNC :: #load("migrations/222_extension_version_sync_0_5_62.sql", string)
+MIGRATION_PIPELINE_002_READ_ACK :: #load("migrations/pipeline_002_read_ack.sql", string)
 MIGRATION_PIPELINE_001_DELIVERIES :: #load("migrations/pipeline_001_deliveries.sql", string)
 MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
 
@@ -1007,11 +1008,12 @@ migration_order :: [?]string {
 	"actions_002_lookup_indexes.sql",
 	"actions_003_history_performance.sql",
 	"actions_004_bot_activity.sql",
-	"actions_005_settle.sql",
 	"238_extension_version_sync_0_5_75.sql",
 	"239_extension_version_sync_0_5_76.sql",
 	"acp_delivery_001_input_deliveries.sql",
 	"240_extension_version_sync_0_5_77.sql",
+	"pipeline_002_read_ack.sql",
+	"actions_005_settle.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1608,6 +1610,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
 	if name == "events_003_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_003_SUBSCRIPTIONS)
 	if name == "events_002_topics.sql" do return strings.clone(MIGRATION_EVENTS_002_TOPICS)
+	if name == "pipeline_002_read_ack.sql" do return strings.clone(MIGRATION_PIPELINE_002_READ_ACK)
 	if name == "pipeline_001_deliveries.sql" do return strings.clone(MIGRATION_PIPELINE_001_DELIVERIES)
 	if name == "events_001_outbox.sql" do return strings.clone(MIGRATION_EVENTS_001_OUTBOX)
 	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)

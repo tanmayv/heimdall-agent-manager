@@ -652,8 +652,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
  clock=&graph.clock,ids=&graph.ids,support=graph.actions.support,
  message_created={ctx=graph,created=service_message_created},
  agents={ctx=graph,find=action_agent_find,create=action_agent_create,stop=action_agent_stop,instance=action_agent_instance,persist_prompt=action_persist_prompt,retire_prompt=action_retire_prompt},
- pipeline={ctx=graph.delivery,route=action_route_delivery,expire=action_expire_delivery},
+ pipeline={ctx=graph.delivery,route=action_route_delivery,expire=action_expire_delivery,unread=action_unread_delivery},
  }
+ graph.content.messages_read={ctx=graph.delivery,read=delivery_messages_read}
  delivery.register_sink(graph.delivery,{kind="prompt",ctx=&graph.action_router,on_final=actions_service.on_delivery_final,replace=actions_service.on_delivery_replace})
  graph.action_handlers = http.Action_Handlers{auth=&graph.auth,service=&graph.actions,router=&graph.action_router,experiments=&graph.experiment_repo}
 	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)
@@ -1523,4 +1524,11 @@ action_route_delivery :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,input:delivery.
 }
 action_expire_delivery :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,id:string)->(bool,domain.Domain_Error) {
  return delivery.expire((^delivery.Service)(ctx),uow,id)
+}
+
+action_unread_delivery :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,id:string)->domain.Domain_Error {
+ return delivery.on_unread((^delivery.Service)(ctx),uow,owner,id)
+}
+delivery_messages_read :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner:domain.User_ID,ids:[]string)->domain.Domain_Error {
+ return delivery.on_messages_read((^delivery.Service)(ctx),uow,owner,ids)
 }

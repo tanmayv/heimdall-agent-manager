@@ -77,6 +77,16 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
  uow, ok, _ := iface.unit_of_work_begin(r.svc.factory)
  if !ok do return false
  defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
+ if msg.event_type == "delivery.unread" {
+  if len(tokens) != 5 || tokens[2] != "delivery" || tokens[4] != "unread" do return true
+  data, _ := msg.envelope["data"].(json.Object)
+  id, _ := data["delivery_id"].(string)
+  if id == "" || id != tokens[3] do return true
+  if r.router.pipeline.unread == nil do return false
+  if err := r.router.pipeline.unread(r.router.pipeline.ctx, &uow, owner, id); err.code != .None do return false
+  committed, _ := iface.unit_of_work_commit(&uow); uow.ctx = nil
+  return committed
+ }
  repo := &uow.repos.actions
  triggers, err := repo.triggers_match(repo.ctx, owner, msg.event_type, msg.subject)
  defer domain.action_triggers_destroy(triggers)

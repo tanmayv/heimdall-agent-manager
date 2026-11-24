@@ -527,7 +527,8 @@ CTL_ACTIONS_HELP :: `ham-ctl hub actions <list|show|create|update|enable|disable
 Targets:
   --agent-id <id> [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]...
   --instance <id>
-  --bot <id>
+  --target bot [--bot <id>] (omitting --bot selects your bot)
+  --bot <id> (shorthand for --target bot --bot <id>)
 Each rule part is a value or *; an omitted model means *. Rule order is flag order.
 Triggers:
   cron:<5-field expr>[@<timezone>] (split at the last @)
@@ -667,7 +668,7 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 		case "--disabled":
 			if action != "create" do return {}, false
 			body["enabled"] = json.Boolean(false)
-		case "--prompt", "--name", "--min-interval", "--agent-id", "--project", "--instance-strategy", "--rule", "--instance", "--bot", "--trigger", "--trigger-json", "--delay":
+		case "--prompt", "--name", "--min-interval", "--agent-id", "--project", "--instance-strategy", "--rule", "--instance", "--bot", "--target", "--trigger", "--trigger-json", "--delay":
 			if i + 1 >= len(args) || strings.has_prefix(args[i + 1], "--") do return {}, false
 			i += 1
 			value := args[i]
@@ -687,6 +688,10 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 				n, ok := strconv.parse_i64(value)
 				if !ok do return {}, false
 				body["min_interval_s"] = json.Integer(n)
+			case "--target":
+				if value != "bot" do return {}, false
+				target_given = true
+				target["kind"] = json.String("bot")
 			case "--agent-id", "--instance", "--bot":
 				if value == "" do return {}, false
 				target_given = true
@@ -740,6 +745,10 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 	if action == "create" {
 		prompt, _ := body["prompt_text"].(json.String)
 		if strings.trim_space(string(prompt)) == "" || !target_given do return {}, false
+	}
+	if has_flag(args, "--target") {
+		if has_flag(args, "--agent-id") || has_flag(args, "--instance") do return {}, false
+		if !has_flag(args, "--bot") do target_count += 1
 	}
 	if target_given {
 		if target_count != 1 do return {}, false

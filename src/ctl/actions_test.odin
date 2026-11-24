@@ -214,3 +214,36 @@ test_ctl_actions_settle_delay :: proc(t: ^testing.T) {
   testing.expect(t, !orphan, "delay requires a preceding trigger")
  })
 }
+
+@(test)
+test_ctl_actions_bot_target_defaults_and_flags :: proc(t: ^testing.T) {
+	ctl_actions_test_tracked(t, proc(t: ^testing.T) {
+		for verb in ([]string{"create", "update"}) {
+			tokens := []string{verb, "act_1"}
+			req, ok := ctl_actions_request(tokens, {"--prompt", "P", "--target", "bot"})
+			testing.expect(t, ok)
+			ctl_actions_test_json(t, req, `{"prompt_text":"P","target":{"kind":"bot"}}`)
+			explicit, eok := ctl_actions_request(tokens, {"--prompt", "P", "--target", "bot", "--bot", "bot_1"})
+			testing.expect(t, eok)
+			ctl_actions_test_json(t, explicit, `{"prompt_text":"P","target":{"kind":"bot","bot_id":"bot_1"}}`)
+			reverse, rok := ctl_actions_request(tokens, {"--bot", "bot_1", "--target", "bot", "--prompt", "P"})
+			testing.expect(t, rok)
+			ctl_actions_test_json(t, reverse, `{"prompt_text":"P","target":{"kind":"bot","bot_id":"bot_1"}}`)
+		}
+		for args in ([][]string{
+			{"--target"}, {"--target", "unknown"},
+			{"--target", "bot", "--instance", "inst_1"},
+			{"--agent-id", "agt_1", "--target", "bot"},
+			{"--target", "bot", "--bot"},
+			{"--target", "bot", "--rule", "*:codex"},
+		}) {
+			_, ok := ctl_actions_request({"update", "act_1"}, args)
+			testing.expect(t, !ok, "invalid or conflicting target rejected")
+		}
+		tokens := command_tokens({"ham-ctl", "hub", "actions", "--target", "bot", "--bot", "bot_1", "show", "act_1"})
+		testing.expect_value(t, len(tokens), 4)
+		testing.expect_value(t, tokens[2], "show")
+		testing.expect_value(t, tokens[3], "act_1")
+		delete(tokens)
+	})
+}

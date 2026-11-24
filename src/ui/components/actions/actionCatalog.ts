@@ -33,6 +33,7 @@ export interface CatalogEntry {
   label: string;
   sub?: string;
   bridgeId?: string;
+  instanceId?: string;
   keywords?: string;
   /**
    * Where this record can be opened, when a route for it exists. Absent is a real
@@ -67,7 +68,7 @@ export interface ActionCatalog {
 
 export function useActionCatalog(allowBots = false): ActionCatalog {
   const botsQuery = useGetBotQuery(undefined, { skip: !allowBots });
-  const bots = React.useMemo(() => sliceFrom((botsQuery.data ? [botsQuery.data] : []).map((b: any) => ({ id: b.bot_id || b.id, label: b.display_name || b.bot_id || b.id })), botsQuery.isLoading, Boolean(botsQuery.error)), [botsQuery.data, botsQuery.isLoading, botsQuery.error]);
+  const bots = React.useMemo(() => sliceFrom((botsQuery.data ? [botsQuery.data] : []).map((b: any) => ({ id: b.bot_id || b.id, label: b.display_name || b.bot_id || b.id, instanceId: b.advanced?.agent_instance_id })), botsQuery.isLoading, Boolean(botsQuery.error)), [botsQuery.data, botsQuery.isLoading, botsQuery.error]);
   const instancesQuery = useListAllAgentInstancesQuery();
   const agentsQuery = useListAgentIdentitiesQuery();
   const bridgesQuery = useListBridgesQuery();

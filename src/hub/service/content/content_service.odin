@@ -48,7 +48,7 @@ reviewer_template :: proc() -> domain.Template { t, _ := domain.builtin_template
 soloist_template :: proc() -> domain.Template { t, _ := domain.builtin_template(domain.TEMPLATE_SOLOIST_ID); return t }
 empty_template :: proc() -> domain.Template { t, _ := domain.builtin_template(domain.TEMPLATE_EMPTY_ID); return t }
 
-Content_Service :: struct { uow_factory: ^iface.Unit_Of_Work_Factory, vault_directory: ^iface.Vault_Directory_Repository, agent_configuration_service: ^agent_service.Agent_Service, content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool, attention: ^contracts.Attention_Notifier, user_activity: User_Activity_Hook }
+Content_Service :: struct { messages_read: Messages_Read_Hook, uow_factory: ^iface.Unit_Of_Work_Factory, vault_directory: ^iface.Vault_Directory_Repository, agent_configuration_service: ^agent_service.Agent_Service, content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool, attention: ^contracts.Attention_Notifier, user_activity: User_Activity_Hook }
 Memory_Input :: struct { title,description,body,evidence,status,expires_at: string, proposed_by_instance_id,proposed_in_chain_id: string, agent_ids,template_ids,bridge_ids: []string, project_ids: []domain.Project_ID, type: domain.Memory_Type }
 Memory_Update_Input :: struct {
 	title:            string,
@@ -244,7 +244,31 @@ list_agent_inbox_messages :: proc(s:^Content_Service, auth:contracts.Auth_Contex
 mark_messages_read_by_ids :: proc(s:^Content_Service, auth:contracts.Auth_Context, message_ids:[]string) -> (int,domain.Domain_Error){ n,_,err:=mark_messages_read_by_ids_at(s,auth,message_ids); return n,err }
 // mark_messages_read_by_ids_at also returns the read_at it wrote, so callers can
 // report the committed receipt instead of the pre-mark row (E4).
-mark_messages_read_by_ids_at :: proc(s:^Content_Service, auth:contracts.Auth_Context, message_ids:[]string) -> (int,string,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return 0,"",err; read_at:=platform.clock_now(s.clock); n,mark_err:=iface.content_mark_messages_read(s.content, owner, message_ids, read_at); return n,read_at,mark_err }
+mark_messages_read_by_ids_at :: proc(s:^Content_Service, auth:contracts.Auth_Context, message_ids:[]string) -> (int,string,domain.Domain_Error){
+ owner,ok,err:=ownership.owner_from_auth(auth)
+ if !ok do return 0,"",err
+ read_at:=platform.clock_now(s.clock)
+ n,mark_err:=mark_messages_read_at(s,owner,message_ids,read_at)
+ return n,read_at,mark_err
+}
+
+Messages_Read_Hook :: struct {
+ ctx: rawptr,
+ read: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner:domain.User_ID,ids:[]string)->domain.Domain_Error,
+}
+mark_messages_read_at :: proc(s:^Content_Service, owner:domain.User_ID, ids:[]string, at:string)->(int,domain.Domain_Error) {
+ if len(ids)==0 do return 0,{}
+ if s.messages_read.read==nil do return iface.content_mark_messages_read(s.content,owner,ids,at)
+ uow,ok,err:=iface.unit_of_work_begin(s.uow_factory)
+ if !ok do return 0,err
+ defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
+ n,mark_err:=iface.content_mark_messages_read(&uow.repos.content,owner,ids,at)
+ if mark_err.code!=.None do return 0,mark_err
+ if err=s.messages_read.read(s.messages_read.ctx,&uow,owner,ids);err.code!=.None do return 0,err
+ committed,ce:=iface.unit_of_work_commit(&uow);uow.ctx=nil
+ if !committed do return 0,ce
+ return n,{}
+}
 send_message :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,input:Message_Input)->(domain.Chat_Message,bool,domain.Domain_Error) {
  m,ok,err:=persist_user_message(s,auth,cid,input)
  if !ok do return {},false,err
@@ -399,7 +423,7 @@ mark_read_with_receipts :: proc(s:^Content_Service, auth:contracts.Auth_Context,
 		MARK_READ_BATCH :: 500
 		for start:=0; start<len(marked_ids); start+=MARK_READ_BATCH {
 			end:=min(start+MARK_READ_BATCH,len(marked_ids))
-			_,mark_err:=iface.content_mark_messages_read(s.content,owner,marked_ids[start:end],read_at)
+			_,mark_err:=mark_messages_read_at(s,owner,marked_ids[start:end],read_at)
 			if mark_err.code!=.None {
 				// Earlier batches did commit: let the projector re-read so the
 				// card matches what is actually still unread, then report.

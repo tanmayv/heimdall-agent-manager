@@ -27,6 +27,7 @@ Route_Port :: struct {
  ctx: rawptr,
  route: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,input:delivery.Route_Input)->(string,domain.Domain_Error),
  expire: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,delivery_id:string)->(bool,domain.Domain_Error),
+ unread: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,delivery_id:string)->domain.Domain_Error,
 }
 Agent_Port :: struct {
  ctx: rawptr,
@@ -117,7 +118,7 @@ on_delivery_final :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,d:domain.Pipeline_D
  switch d.state {
  case domain.DELIVERY_DONE: state=domain.ACTION_RUN_DELIVERED; reason=""
  case domain.DELIVERY_FAILED:
-  switch reason {case "bridge_offline","no_answer","bridge_too_old","target_missing": case: reason="start_failed"}
+  switch reason {case "bridge_offline","no_answer","bridge_too_old","target_missing","not_read": case: reason="start_failed"}
  case: return {}
  }
  return finish_run(r,uow,run,state,reason,platform.clock_now(r.clock))
@@ -490,7 +491,7 @@ record_route_failure :: proc(r:^Router,id,from,reason:string) {
 
 Run_View :: iface.Action_Run_History
 run_views_destroy :: proc(rows:[]Run_View) {
- for &row in rows {domain.action_run_destroy(&row.run); delete(row.delivery_expires_at)}
+ for &row in rows {domain.action_run_destroy(&row.run); delete(row.delivery_expires_at); delete(row.delivery_state); delete(row.delivery_outcome)}
  delete(rows)
 }
 list_runs :: proc(r:^Router,owner,action_id:string,limit:int,before:string,before_id:string="")->([]Run_View,domain.Domain_Error) {

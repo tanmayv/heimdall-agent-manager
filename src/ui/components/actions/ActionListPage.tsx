@@ -111,7 +111,8 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   const twoPane = viewport === 'desktop';
   const searchRef = React.useRef<HTMLInputElement | null>(null);
 
-  const catalog = useActionCatalog();
+  const listQuery = useListActionsQuery();
+  const catalog = useActionCatalog(Boolean(listQuery.data?.actions.some(action => action.target.kind === 'bot')));
 
   /* ---------------- URL state ---------------- */
   const [urlState, setUrlState] = React.useState<ActionListUrlState>(() =>
@@ -141,7 +142,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   }, [queryInput, urlState, applyUrlState]);
 
   /* ---------------- The one data path ---------------- */
-  const listQuery = useListActionsQuery();
+
   const allRows: Action[] = React.useMemo(
     () => (listQuery.data?.actions || []) as Action[],
     [listQuery.data],

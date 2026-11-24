@@ -170,6 +170,7 @@ pipeline_query_plans_scenario :: proc(t: ^testing.T) {
 	ok, _ := run_migrations(&conn)
 	if !testing.expect(t, ok) do return
 	queries := []string {
+		PIPELINE_AWAITING_READ_SQL,
 		PIPELINE_IN_FLIGHT_SQL,
 		PIPELINE_GET_SQL,
 		PIPELINE_TRANSITION_SQL,
