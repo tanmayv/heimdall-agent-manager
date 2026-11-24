@@ -15,14 +15,15 @@ test_render_table :: proc(t: ^testing.T) {
 }
 render_scenario :: proc(t: ^testing.T) {
 	a:=domain.Action{id="act_a",name="{{run.id}}"}
-	r:=domain.Action_Run{run_id="run_a",event_params_json="{\"type\":\"chain.state\",\"id\":\"evt_a\",\"chain_id\":\"chain_a\",\"task_id\":\"task_a\",\"actor\":\"hub\",\"occurred_at\":\"then\",\"fired_at\":\"now\",\"data\":{\"state\":\"completed\"}}"}
+	r:=domain.Action_Run{run_id="run_a",event_params_json=`{"type":"chain.state","id":"evt_a","entity":{"kind":"chain","id":"chain_a"},"actor":"hub","occurred_at":"then","fired_at":"now","data":{"state":"completed"}}`}
 	cases:=[?]struct{input,expected:string}{
-		{"{{event.type}}|{{event.id}}|{{event.chain_id}}|{{event.task_id}}|{{event.actor}}|{{event.occurred_at}}","chain.state|evt_a|chain_a|task_a|hub|then"},
+		{"{{event.type}}|{{event.id}}|{{event.entity.id}}|{{event.entity.kind}}|{{event.actor}}|{{event.occurred_at}}","chain.state|evt_a|chain_a|chain|hub|then"},
 		{"{{event.data.state}}|{{event.data.absent}}|{{schedule.fired_at}}","completed||now"},
 		{"{{action.id}}|{{action.name}}|{{run.id}}|{{run.joined_count}}","act_a|{{run.id}}|run_a|3"},
 		{"{{ event.type }}|{{ unknown }}","chain.state|{{ unknown }}"},
 		{"unclosed {{event.type","unclosed {{event.type"},
 		{"plain","plain"},
+  {"{{event.chain_id}}|{{event.task_id}}","{{event.chain_id}}|{{event.task_id}}"},
 	}
 	for tc in cases {
 		got:=render(tc.input,a,r,3,context.allocator)

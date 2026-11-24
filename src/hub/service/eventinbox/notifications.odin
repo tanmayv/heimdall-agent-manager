@@ -166,7 +166,7 @@ notice_candidate :: proc(
 	obj, ok := value.(json.Object)
 	if !ok ||
 	   notice_string(obj, "owner_user_id") != row.owner_user_id ||
-	   notice_string(obj, "chain_id") != row.chain_id ||
+	   catalog_chain(obj) != row.chain_id ||
 	   notice_string(obj, "event_id") == "" ||
 	   notice_string(obj, "type") == "task.state" {
 		json.destroy_value(value); return

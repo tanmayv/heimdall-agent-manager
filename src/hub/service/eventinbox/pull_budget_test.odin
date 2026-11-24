@@ -88,8 +88,10 @@ pull_fixture_destroy :: proc(f: ^Pull_Fixture) {
 // pull_fixture_publish publishes one review_verdict event for chain_<chain>
 // under owner, which every coordinator filter for that chain matches.
 pull_fixture_publish :: proc(t: ^testing.T, conn: ^nats.Connection, owner: string, chain: int, id: string) {
-	data := fmt.tprintf(`{{"event_id":"%s","type":"task.review_verdict","owner_user_id":"%s","chain_id":"chain_%d","task_id":"task_1","topic_key":"","topic_generation":0}}`, id, owner, chain)
-	_, err := nats.publish(conn, fmt.tprintf("ev.%s.chain.chain_%d.task.task_1.review_verdict", owner, chain), transmute([]byte)data, id)
+	data, encode_err := json.marshal(inbox_v2(id, "task.review_verdict", owner, fmt.tprintf("chain_%d",chain), "task_1"))
+	if !testing.expect(t, encode_err==nil) do return
+	defer delete(data)
+	_, err := nats.publish(conn, fmt.tprintf("ev.%s.chain.chain_%d.task.task_1.review_verdict", owner, chain), data, id)
 	testing.expect_value(t, err.status, i32(0))
 }
 
@@ -143,7 +145,7 @@ test_event_inbox_pull_many_subscriptions_within_budget :: proc(t: ^testing.T) {
 		publisher, perr := nats.connect({url = late.url, timeout_ms = 1000})
 		if perr.status != 0 do return
 		defer nats.destroy(publisher)
-		data := `{"event_id":"late_1","type":"task.review_verdict","owner_user_id":"alice","chain_id":"chain_33","task_id":"task_1","topic_key":"","topic_generation":0}`
+		data := `{"event_id":"late_1","type":"task.review_verdict","owner_user_id":"alice","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"chain_33"},"topic_key":"","topic_generation":0}`
 		_, pub_err := nats.publish(publisher, "ev.alice.chain.chain_33.task.task_1.review_verdict", transmute([]byte)string(data), "late_1")
 		late.ok = pub_err.status == 0
 	})

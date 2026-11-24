@@ -31,7 +31,9 @@ settle_test_setup :: proc(t: ^testing.T, f: ^Action_Test, delay: int) {
 }
 settle_test_event :: proc(t: ^testing.T, f: ^Action_Test, chain, id: string, seq: u64) {
  envelope := test_config(`{"data":{"state":"completed","completed_at":"2026-11-23T00:00:00Z"}}`)
- envelope["chain_id"]=chain
+ entity := make(json.Object, context.temp_allocator)
+ entity["kind"]="chain"; entity["id"]=chain
+ envelope["entity"]=entity
  testing.expect(t, len(envelope)>0, "valid event envelope")
  testing.expect(t,handle_message(&f.runtime,{
   subject=fmt.tprintf("ev.owner.chain.%s.state",chain),event_type="chain.state",event_id=id,
@@ -106,7 +108,7 @@ settle_debounce_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  value:json.Value
  testing.expect_value(t,json.unmarshal(transmute([]u8)metadata,&value),nil)
  object,_:=value.(json.Object)
- testing.expect_value(t,object["chain_id"].(string),"chain2")
+ testing.expect_value(t,object["entity_id"].(string),"chain2")
  testing.expect_value(t,object["event_id"].(string),"second-chain")
 }
 @(test)
@@ -161,7 +163,7 @@ settle_work_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  // Matcher string snapshots remain readable; producer integer coverage lives
  // in chain_completion_test.odin and drives the actual work-finished emitter.
  f.chain_revision=7
- run:=domain.Action_Run{owner_user_id="owner",event_params_json=`{"chain_id":"chain1","data":{"work_revision":"7"}}`}
+ run:=domain.Action_Run{owner_user_id="owner",event_params_json=`{"entity":{"kind":"chain","id":"chain1"},"data":{"work_revision":"7"}}`}
  valid,reason:=chain_work_finished_still_valid(&f.repos,run)
  testing.expect(t,valid && reason=="")
  f.chain_revision=8

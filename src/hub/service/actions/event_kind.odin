@@ -66,7 +66,8 @@ event_descriptor_find :: proc(event_type: string) -> ^Event_Descriptor {
  return nil
 }
 chain_settle_key :: proc(msg: Event_View) -> string {
- key, _ := msg.envelope["chain_id"].(string)
+ entity, _ := msg.envelope["entity"].(json.Object)
+ key, _ := entity["id"].(string)
  return key
 }
 chain_state_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run) -> (bool, string) {
@@ -84,7 +85,8 @@ chain_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run, wo
  value: json.Value
  if json.unmarshal(transmute([]u8)run.event_params_json, &value) != nil do return false, "superseded"
  params, _ := value.(json.Object)
- id, _ := params["chain_id"].(string)
+ entity, _ := params["entity"].(json.Object)
+ id, _ := entity["id"].(string)
  data, _ := params["data"].(json.Object)
  if id == "" do return false, "superseded"
  chain, found, err := iface.taskchain_get_chain(&repos.taskchains, domain.Task_Chain_ID(id))

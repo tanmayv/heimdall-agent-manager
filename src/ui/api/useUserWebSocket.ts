@@ -1,3 +1,4 @@
+import type { EventEnvelope } from './eventEnvelope';
 import { ACCOUNT_MISMATCH_EVENT } from '../utils/expectedUser';
 import { apiAbsoluteUrl } from './apiBase';
 import { refreshMcpWorkerRegistration, setMcpWorkerEnabled } from '../services/mcpWorker';
@@ -257,11 +258,14 @@ export function startUserWsConnection(env: UserWsConnectionEnv): () => void {
       } else if (verdict.deliver && payload?.type === 'catalog_replay') {
         if (payload.cursor_expired) scheduler.trigger('reconnect');
         for (const envelope of Array.isArray(payload.events) ? payload.events : []) {
-          const task = typeof envelope.task_id === 'string' && envelope.task_id !== '';
+          const entity: EventEnvelope['entity'] | undefined = envelope.entity;
+          if (!entity || !entity.id || (entity.kind !== 'task' && entity.kind !== 'chain')) continue;
+          const task = entity.kind === 'task';
+          const chainId = task ? envelope.data?.chain_id : entity.id;
           handleEvent(dispatch, {
             type: 'resource_changed', resource: task ? 'task' : 'task_chain',
-            resource_id: task ? envelope.task_id : envelope.chain_id, change: 'updated',
-            summary: { chain_id: envelope.chain_id, task_id: envelope.task_id },
+            resource_id: entity.id, change: 'updated',
+            summary: { chain_id: chainId, task_id: task ? entity.id : undefined },
           }, getCtx());
         }
         if (typeof payload.catalog_cursor === 'string' && /^[0-9]{1,20}$/.test(payload.catalog_cursor)) catalogCursor = payload.catalog_cursor;

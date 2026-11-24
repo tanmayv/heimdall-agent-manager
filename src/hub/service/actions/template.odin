@@ -40,10 +40,15 @@ render_value :: proc(key: string, action: domain.Action, run: domain.Action_Run,
 	case "schedule.fired_at":
 		v,_ := params["fired_at"].(string)
 		return v,true
-	case "event.type","event.id","event.chain_id","event.task_id","event.actor","event.occurred_at":
+	case "event.type","event.id","event.actor","event.occurred_at":
 		v,_ := params[key[len("event."):]].(string)
 		return v,true
 	}
+	if key == "event.entity.id" || key == "event.entity.kind" {
+  entity, _ := params["entity"].(json.Object)
+  v, _ := entity[key[len("event.entity."):]].(string)
+  return v, true
+ }
 	if strings.has_prefix(key,"event.data.") {
 		data,_ := params["data"].(json.Object)
 		v,_ := data[key[len("event.data."):]].(string)

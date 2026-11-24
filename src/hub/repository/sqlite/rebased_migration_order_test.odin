@@ -116,7 +116,7 @@ test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 	prev, events_prev := 0, 0
 	for name in order {
 		if name == "pipeline_001_deliveries.sql" || name == "pipeline_002_read_ack.sql" || name == "acp_delivery_001_input_deliveries.sql" do continue
-		if name == "actions_008_target_batches.sql" || name == "actions_001_reset.sql" || name == "actions_002_lookup_indexes.sql" || name == "actions_003_history_performance.sql" || name == "actions_004_bot_activity.sql" || name == "actions_005_settle.sql" || name == "agents_001_start_ref.sql" || name == "native_001_oidc_identities.sql" || name == "whatsapp_001_invite_only.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "bots_web_003_action_refs.sql" || name == "coordinator_idle_001_user_activity.sql" || name == "coordinator_idle_002_stop_reason.sql" do continue
+		if name == "actions_008_target_batches.sql" || name == "events_007_entity_versions.sql" || name == "actions_006_template_vars.sql" || name == "actions_001_reset.sql" || name == "actions_002_lookup_indexes.sql" || name == "actions_003_history_performance.sql" || name == "actions_004_bot_activity.sql" || name == "actions_005_settle.sql" || name == "agents_001_start_ref.sql" || name == "native_001_oidc_identities.sql" || name == "whatsapp_001_invite_only.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "bots_web_003_action_refs.sql" || name == "coordinator_idle_001_user_activity.sql" || name == "coordinator_idle_002_stop_reason.sql" do continue
 		if strings.has_prefix(name, "events_") {
 			if !testing.expectf(t, len(name) > 10, "%s has an events sequence", name) do continue
 			n, n_ok := strconv.parse_int(name[7:10])

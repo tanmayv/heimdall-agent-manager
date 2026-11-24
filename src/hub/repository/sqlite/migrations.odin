@@ -690,6 +690,7 @@ MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
 
 MIGRATION_EVENTS_005_DELIVERY_RETENTION :: #load("migrations/events_005_delivery_retention.sql", string)
 MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS :: #load("migrations/events_006_instance_subscriptions.sql", string)
+MIGRATION_EVENTS_007_ENTITY_VERSIONS :: #load("migrations/events_007_entity_versions.sql", string)
 MIGRATION_EVENTS_004_DELIVERY :: #load("migrations/events_004_delivery.sql", string)
 MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions.sql", string)
 
@@ -738,6 +739,7 @@ MIGRATION_237_EXTENSION_VERSION_SYNC :: #load("migrations/237_extension_version_
 MIGRATION_ACTIONS_004_BOT_ACTIVITY :: #load("migrations/actions_004_bot_activity.sql", string)
 MIGRATION_ACTIONS_008_TARGET_BATCHES :: #load("migrations/actions_008_target_batches.sql", string)
 MIGRATION_ACTIONS_005_SETTLE :: #load("migrations/actions_005_settle.sql", string)
+MIGRATION_ACTIONS_006_TEMPLATE_VARS :: #load("migrations/actions_006_template_vars.sql", string)
 MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE :: #load("migrations/actions_003_history_performance.sql", string)
 MIGRATION_ACTIONS_002_LOOKUP_INDEXES :: #load("migrations/actions_002_lookup_indexes.sql", string)
 MIGRATION_ACP_DELIVERY_001_INPUT_DELIVERIES :: #load("migrations/acp_delivery_001_input_deliveries.sql", string)
@@ -1009,6 +1011,7 @@ migration_order :: [?]string {
 	"236_extension_version_sync_0_5_73.sql",
 	"agents_001_start_ref.sql",
 	"events_006_instance_subscriptions.sql",
+	"events_007_entity_versions.sql",
 	"237_extension_version_sync_0_5_74.sql",
 	"pipeline_001_deliveries.sql",
 	"actions_001_reset.sql",
@@ -1021,6 +1024,7 @@ migration_order :: [?]string {
 	"240_extension_version_sync_0_5_77.sql",
 	"pipeline_002_read_ack.sql",
 	"actions_005_settle.sql",
+	"actions_006_template_vars.sql",
 	"241_extension_version_sync_0_5_78.sql",
 	"242_extension_version_sync_0_5_79.sql",
 	"243_extension_version_sync_0_5_80.sql",
@@ -1535,7 +1539,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1584,6 +1588,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
  if name == "actions_004_bot_activity.sql" do return strings.clone(MIGRATION_ACTIONS_004_BOT_ACTIVITY)
+ if name == "actions_006_template_vars.sql" do return strings.clone(MIGRATION_ACTIONS_006_TEMPLATE_VARS)
  if name == "actions_008_target_batches.sql" do return strings.clone(MIGRATION_ACTIONS_008_TARGET_BATCHES)
  if name == "actions_005_settle.sql" do return strings.clone(MIGRATION_ACTIONS_005_SETTLE)
  if name == "actions_003_history_performance.sql" do return strings.clone(MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE)
@@ -1621,6 +1626,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "coordinator_idle_002_stop_reason.sql" do return strings.clone(MIGRATION_COORDINATOR_IDLE_002_STOP_REASON)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
+ if name == "events_007_entity_versions.sql" do return strings.clone(MIGRATION_EVENTS_007_ENTITY_VERSIONS)
 	if name == "events_006_instance_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS)
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
 	if name == "events_003_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_003_SUBSCRIPTIONS)

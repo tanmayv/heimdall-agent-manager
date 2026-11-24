@@ -107,6 +107,16 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 	testing.expect_value(t, watch(&service, "alice", "agt_bot", "chain_watch", true).code, domain.Error_Code.None)
 	testing.expect(t, reconcile(&runtime), "unprovision an unpulled watch")
 
+ _, old_err := nats.publish(conn, "ev.alice.chain.chain_1.task.task_1.review_verdict",
+  transmute([]byte)string(`{"event_id":"old_v1","type":"task.review_verdict","owner_user_id":"alice","chain_id":"chain_1","task_id":"task_1"}`))
+ testing.expect_value(t, old_err.status, i32(0))
+ old_events, old_read_err := next(&service, "alice", "agt_coord", 0, 20)
+ testing.expect_value(t, old_read_err.code, domain.Error_Code.None)
+ testing.expect_value(t, len(old_events), 0)
+ values_destroy(old_events)
+ old_consumer, old_state_err := nats.consumer_state(conn, "HEIM_EVENTS", "coord")
+ testing.expect_value(t, old_state_err.status, i32(0))
+ testing.expect_value(t, old_consumer.ack_pending, u64(0))
 	subject := "ev.alice.chain.chain_1.task.task_1.state"
 	for state, i in ([]string{"ready", "in_progress", "in_review", "done"}) {
 		inbox_test_publish(t, conn, subject, fmt.tprintf("state_%d", i), "task.state", "", 0, state, true)
@@ -330,13 +340,7 @@ inbox_test_publish :: proc(
 	state: string,
 	rollup: bool,
 ) {
-	envelope := struct {
-		event_id, type, owner_user_id, chain_id, task_id, topic_key: string,
-		topic_generation:                                            i64,
-		data:                                                        struct {
-			state: string,
-		},
-	}{id, typ, "alice", "chain_1", "task_1", topic, generation, {state}}
+	envelope := inbox_v2(id, typ, "alice", "chain_1", "task_1", topic, generation, state)
 	data, err := json.marshal(envelope)
 	if !testing.expect(t, err == nil) do return
 	defer delete(data)

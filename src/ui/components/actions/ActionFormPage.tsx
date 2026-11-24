@@ -65,7 +65,7 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
       <Panel className="p-4 flex flex-col gap-3"><h3>Prompt</h3>
         <FormField label="Name"><Input data-debug-id="action-form-name" value={form.name} onChange={v => field('name', v)} /></FormField>
         <FormField label="Prompt" required error={errors.prompt_text}><textarea className="w-full rounded border border-subtle bg-surface p-3" data-debug-id="action-form-prompt" aria-label="Prompt" rows={8} value={form.prompt_text} onChange={e => field('prompt_text', e.target.value)} /></FormField>
-        <p className="text-caption text-muted">Placeholders: {'{{event.type}}, {{event.id}}, {{event.chain_id}}, {{event.task_id}}, {{event.actor}}, {{event.occurred_at}}, {{event.data.<key>}}, {{schedule.fired_at}}, {{action.id}}, {{action.name}}, {{run.id}}, {{run.joined_count}}'}</p>
+        <p className="text-caption text-muted">Placeholders: {'{{event.type}}, {{event.id}}, {{event.entity.id}}, {{event.entity.kind}}, {{event.actor}}, {{event.occurred_at}}, {{event.data.<key>}}, {{schedule.fired_at}}, {{action.id}}, {{action.name}}, {{run.id}}, {{run.joined_count}}'}</p>
         <Toggle data-debug-id="action-form-enabled" aria-label="Action enabled" checked={form.enabled} onChange={v => field('enabled', v)} />
       </Panel>
       <Panel className="p-4 flex flex-col gap-3"><h3>Target</h3>

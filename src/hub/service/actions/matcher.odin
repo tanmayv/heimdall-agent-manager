@@ -47,7 +47,10 @@ data_matches :: proc(filter_json: string, data: json.Object) -> bool {
 event_params :: proc(msg: Event_View) -> string {
  params := make(json.Object, context.temp_allocator)
  data := make(json.Object, context.temp_allocator)
- for key in ([]string{"chain_id", "task_id", "actor", "occurred_at"}) {
+ params["entity"] = msg.envelope["entity"]
+ params["entity_version"] = msg.envelope["entity_version"]
+ params["class"] = msg.envelope["class"]
+ for key in ([]string{"actor", "occurred_at"}) {
   text, _ := msg.envelope[key].(string)
   params[key] = text
  }
@@ -73,6 +76,10 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
    sync.atomic_add(&r.skipped_owner_mismatch, 1)
    return true
   }
+ }
+ // Retained v1 catalog events are consumed without matching any rules.
+ if (strings.has_prefix(msg.event_type, "chain.") || strings.has_prefix(msg.event_type, "task.")) {
+  if _, present := msg.envelope["entity"].(json.Object); !present do return true
  }
  uow, ok, _ := iface.unit_of_work_begin(r.svc.factory)
  if !ok do return false

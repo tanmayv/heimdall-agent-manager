@@ -131,7 +131,7 @@ router_expiry_failure :: proc(t:^testing.T,f:^Action_Test) {
  f.repos.actions.run_transition=action_transition_fault
  f.now_ms+=3601000
  testing.expect(t,!handle_message(&f.runtime,{subject="ev.owner.chain.chain1.state",event_type="chain.state",event_id="two",
-  stream_time_ms=f.now_ms,envelope=test_config(`{"data":{}}`)}))
+  stream_time_ms=f.now_ms,envelope=test_config(`{"entity":{"kind":"chain","id":"chain1"},"data":{}}`)}))
  _,err:=list_runs(&f.runtime.router,"owner","action",50,"")
  testing.expect(t,err.code!=.None)
  d,_,_:=action_test_delivery(f,run.delivery_id)

@@ -1,6 +1,7 @@
 package taskv2
 
 import "core:fmt"
+import "core:encoding/json"
 import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -35,7 +36,23 @@ catalog_expect :: proc(t: ^testing.T, fx: ^Fixture, typ, class, topic: string) {
 	testing.expect_value(t, jsonx.extract_string(env, "type", "", true, context.temp_allocator), typ)
 	testing.expect_value(t, jsonx.extract_string(env, "class", "", true, context.temp_allocator), class)
 	testing.expect_value(t, jsonx.extract_string(env, "owner_user_id", "", true, context.temp_allocator), "u1")
-	testing.expect_value(t, jsonx.extract_string(env, "chain_id", "", true, context.temp_allocator), "catalog_chain")
+ value: json.Value
+ testing.expect_value(t, json.unmarshal(transmute([]u8)env, &value), nil)
+ defer json.destroy_value(value)
+ obj, _ := value.(json.Object)
+ wire_entity, _ := obj["entity"].(json.Object)
+ kind, _ := wire_entity["kind"].(string)
+ id, _ := wire_entity["id"].(string)
+ is_chain := typ == "chain.state" || typ == "chain.work_finished"
+ testing.expect_value(t, kind, "chain" if is_chain else "task")
+ testing.expect_value(t, id, "catalog_chain" if is_chain else "catalog_task")
+ _, old_chain := obj["chain_id"]; _, old_task := obj["task_id"]
+ testing.expect(t, !old_chain && !old_task)
+ if !is_chain {
+  data, _ := obj["data"].(json.Object)
+  parent, _ := data["chain_id"].(string)
+  testing.expect_value(t, parent, "catalog_chain")
+ }
 	testing.expect(t, jsonx.extract_int(env, "entity_version", 0, true) > 0, "nonzero entity version")
 	testing.expect(t, jsonx.extract_string(env, "event_id", "", true, context.temp_allocator) != "", "minted event id")
 	testing.expect(t, jsonx.extract_string(env, "occurred_at", "", true, context.temp_allocator) != "", "timestamp")
@@ -380,4 +397,20 @@ test_catalog_real_jetstream_rollup :: proc(t: ^testing.T) {
 	testing.expect_value(t, rollup, "sub")
 	id, _ := nats.message_header(msg, "Nats-Msg-Id")
 	testing.expect_value(t, id, jsonx.extract_string(env, "event_id", "", true, context.temp_allocator))
+}
+
+@(test)
+test_v2_catalog_golden :: proc(t: ^testing.T) {
+ fx, chain, _ := catalog_fixture(t)
+ defer fixture_close(fx)
+ catalog_expect(t, fx, "task.state", "state", "")
+ u, began, err := begin_uow(&fx.svc)
+ if !testing.expect(t, began, err.message) do return
+ after := chain
+ after.status = .Completed
+ after.completed_at = "2026-11-24T00:00:00Z"
+ after.updated_at = after.completed_at
+ testing.expect_value(t, catalog_chain_state(&fx.repo, &fx.clock, chain, after).code, domain.Error_Code.None)
+ _, _ = end_uow(&fx.svc, &u, true)
+ catalog_expect(t, fx, "chain.state", "state", "")
 }

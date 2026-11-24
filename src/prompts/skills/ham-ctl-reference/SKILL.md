@@ -816,7 +816,7 @@ For stable history paging, pass the last row's `created_at` to `--before` and
 its run id to `--before-id`; a timestamp alone excludes all rows at that time.
 
 ```bash
-ham-ctl hub actions create --prompt 'Review {{event.chain_id}}' --agent-id agt_1 --rule '*:claude' --trigger 'event:chain.state,state=completed'
+ham-ctl hub actions create --prompt 'Review {{event.entity.id}}' --agent-id agt_1 --rule '*:claude' --trigger 'event:chain.state,state=completed'
 ham-ctl hub actions create --prompt 'Daily review' --instance inst_1 --trigger 'cron:0 9 * * 1-5@America/New_York'
 ```
 

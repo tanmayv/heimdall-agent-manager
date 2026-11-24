@@ -534,6 +534,11 @@ read_message :: proc(
 		json.destroy_value(parsed)
 		return nil, false, unavailable()
 	}
+	if catalog_chain(obj) == "" {
+  json.destroy_value(parsed)
+  if nats.ack(msg).status != 0 do return nil, false, unavailable()
+  return nil, false, {}
+ }
 	meta, merr := nats.message_metadata(msg)
 	if merr.status != 0 {json.destroy_value(parsed); return nil, false, unavailable()}
 	accepted, err = record(

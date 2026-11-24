@@ -82,7 +82,7 @@ notification_scheduler_scenario :: proc(t: ^testing.T) {
 	if !testing.expect(t, began) do return
 	testing.expect_value(t, repos.event_outbox.append(repos.event_outbox.ctx, {
 		event_id="relay_event",owner_user_id="alice",subject=subject,
-		envelope_json=`{"event_id":"relay_event","owner_user_id":"alice","chain_id":"audit","type":"task.review_verdict"}`,
+		envelope_json=`{"event_id":"relay_event","owner_user_id":"alice","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"audit"},"type":"task.review_verdict"}`,
 		headers_json="{}",created_at="now",
 	}).code, domain.Error_Code.None)
 	iface.unit_of_work_commit(&uow)
@@ -203,7 +203,7 @@ notification_scheduler_scenario :: proc(t: ^testing.T) {
 	testing.expect_value(t,len(r.notifications),0)
 }
 scheduler_publish :: proc(t: ^testing.T, conn: ^nats.Connection, subject, id: string) {
-	data, encode_err := json.marshal(struct{event_id,owner_user_id,chain_id,type: string}{id,"alice","audit","task.review_verdict"})
+	data, encode_err := json.marshal(inbox_v2(id,"task.review_verdict","alice","audit","task_1"))
 	if !testing.expect(t, encode_err == nil) do return
 	defer delete(data)
 	_, err := nats.publish(conn, subject, data, id)
