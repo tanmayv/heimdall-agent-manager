@@ -171,6 +171,8 @@ c2_acp_copilot_profile_env_pin_and_native_argv :: proc(t: ^testing.T) {
 @(private = "file") t4_adapter_probe_ran: bool
 @(private = "file") t4_adapter_install_argv_ok: bool
 @(private = "file") t4_profile_probe_calls: int
+@(private = "file") t4_adapter_lock_version: string
+@(private = "file") t4_adapter_install_prefix: string
 
 t4_adapter_fake_runner :: proc(argv: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
     if len(argv) == 2 && argv[0] == "node" && argv[1] == "--version" do return strings.clone("v22.0.0"), "", 0, true, false
@@ -178,6 +180,7 @@ t4_adapter_fake_runner :: proc(argv: []string, timeout: time.Duration) -> (strin
         argv[4] == "--save-exact" && argv[5] == "--ignore-scripts" && argv[6] == "--no-audit" && argv[7] == "--no-fund" && argv[8] == ACP_CLAUDE_PACKAGE+"@"+ACP_CLAUDE_VERSION && timeout <= 120*time.Second
     if !t4_adapter_install_argv_ok do return "", "", 1, false, false
     root := argv[3]
+    t4_adapter_install_prefix = strings.clone(root, context.temp_allocator)
     pkg := strings.concatenate({root, "/node_modules/", ACP_CLAUDE_PACKAGE}, context.temp_allocator)
     bridge_make_directory_all(strings.concatenate({pkg, "/dist"}, context.temp_allocator))
     bridge_make_directory_all(strings.concatenate({root, "/node_modules/.bin"}, context.temp_allocator))
@@ -186,7 +189,14 @@ t4_adapter_fake_runner :: proc(argv: []string, timeout: time.Duration) -> (strin
     _ = os.write_entire_file(script, string("#!/bin/sh\nexit 0\n")); bridge_os_make_owner_executable(script)
     os.symlink("../@agentclientprotocol/claude-agent-acp/dist/cli.js", acp_adapter_bin(root, "claude"))
     integrity := ACP_CLAUDE_INTEGRITY if !t4_adapter_bad_integrity else "sha512-wrong"
-    lock := strings.concatenate({`{"packages":{"node_modules/@agentclientprotocol/claude-agent-acp":{"version":"0.108.0","integrity":"`, integrity, `"}}}`}, context.temp_allocator)
+    lock_version := t4_adapter_lock_version if t4_adapter_lock_version != "" else ACP_CLAUDE_VERSION
+    // Like npm 11, key the entry relative to the prefix as given while the
+    // package lives at its real path: a symlinked prefix yields "../" keys.
+    entry_key := strings.concatenate({"node_modules/", ACP_CLAUDE_PACKAGE}, context.temp_allocator)
+    if real_root := bridge_fs_canonicalize_existing(root); real_root != root {
+        entry_key, _ = filepath.rel(root, strings.concatenate({real_root, "/", entry_key}, context.temp_allocator), context.temp_allocator)
+    }
+    lock := strings.concatenate({`{"packages":{"`, entry_key, `":{"version":"`, lock_version, `","integrity":"`, integrity, `"}}}`}, context.temp_allocator)
     _ = os.write_entire_file(strings.concatenate({root, "/package-lock.json"}, context.temp_allocator), lock)
     // Synthetic npm output must never reach the status record.
     if t4_adapter_bad_integrity do return strings.clone("npm-stdout credential=secret"), strings.clone("npm-stderr HOME=/secret-home"), 0, true, false
@@ -215,6 +225,69 @@ t4_adapter_fake_probe :: proc(provider, root, scratch: string) -> (bool, string)
     final := acp_adapter_root("claude"); defer delete(final)
     t4_adapter_probe_ran = !os.is_dir(final) && strings.has_prefix(scratch, root) && root != final && acp_adapter_status("claude").state == "installing" && acp_adapter_files_valid(root, "claude")
     return t4_adapter_probe_ran, ""
+}
+
+// REQ-ACP-LOCK-2: a data directory reached through a symlink (Riverwood:
+// /home -> var/home) must still install. npm keys lock entries relative to the
+// --prefix it is given, so the installer must pass the resolved stage path,
+// while genuine lock version and integrity mismatches stay rejected.
+@(test)
+lock2_acp_adapter_symlinked_data_dir_installs_with_canonical_prefix :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    context.allocator = context.temp_allocator
+    previous_config := bridge_config
+    previous_snapshot := bridge_provider_catalog_snapshot
+    previous_loaded := bridge_provider_catalog_loaded
+    previous_runner := acp_adapter_runner; previous_probe := acp_adapter_probe_hook
+    previous_claude_probe := acp_adapter_cli_probe_hook
+    previous_binding := acp_adapter_binding_hook
+    defer {
+        bridge_config = previous_config; bridge_provider_catalog_snapshot = previous_snapshot; bridge_provider_catalog_loaded = previous_loaded
+        acp_adapter_runner = previous_runner; acp_adapter_probe_hook = previous_probe; acp_adapter_cli_probe_hook = previous_claude_probe; acp_adapter_binding_hook = previous_binding
+        t4_adapter_lock_version = ""; t4_adapter_bad_integrity = false; t4_adapter_install_prefix = ""
+    }
+    base := fmt.tprintf("%s/.cache/heimdall-tests/lock2-symlink-%d", os.get_env("HOME", context.temp_allocator), time.tick_now()._nsec)
+    real_dir := strings.concatenate({base, "/real"}); link := strings.concatenate({base, "/link"})
+    testing.expect(t, bridge_make_directory_all(real_dir) == nil); defer os.remove_all(base)
+    testing.expect(t, os.symlink(real_dir, link) == nil)
+    real_canonical := bridge_fs_canonicalize_existing(real_dir)
+    bridge_config.data_dir = link; bridge_config.daemon_id = "brg_test_lock2_symlink"
+    env := make(map[string]string); env["CLAUDE_AGENT_ACP_PROTOCOL"] = "v1"
+    snapshot := Bridge_Provider_Catalog_Snapshot{etag = "sha256:lock2", providers = {Bridge_Catalog_Provider{provider = "claude", state = "active", acp_recipe = {command = "claude-agent-acp", protocol_version = 1, adapter_package = ACP_CLAUDE_PACKAGE, adapter_version = ACP_CLAUDE_VERSION, env = env}}}}
+    bridge_provider_catalog_snapshot = &snapshot; bridge_provider_catalog_loaded = true
+    acp_adapter_binding_hook = t4_adapter_fake_binding
+    acp_adapter_runner = t4_adapter_fake_runner; acp_adapter_probe_hook = t4_adapter_fake_probe; acp_adapter_cli_probe_hook = t4_adapter_fake_claude_probe
+    final := acp_adapter_root("claude")
+    testing.expect(t, strings.has_prefix(final, link), "root keeps the configured (symlinked) data dir")
+    read_diagnostic :: proc(final: string) -> string {
+        raw, err := os.read_entire_file(strings.concatenate({final, ".status.json"}, context.temp_allocator), context.temp_allocator)
+        record: struct{diagnostic: string}
+        if err != nil || json.unmarshal(raw, &record, allocator = context.temp_allocator) != nil do return "<unreadable>"
+        return record.diagnostic
+    }
+    // A genuine lock entry version mismatch is still rejected.
+    t4_adapter_lock_version = "0.107.0"
+    installed, reason := acp_adapter_install("claude", "sha256:lock2", ACP_CLAUDE_VERSION)
+    testing.expect(t, !installed && reason == "acp_adapter_integrity_failed", reason)
+    testing.expect_value(t, read_diagnostic(final), "lock_entry_version")
+    testing.expect(t, !os.is_dir(final))
+    // A genuine integrity mismatch is still rejected.
+    t4_adapter_lock_version = ""; t4_adapter_bad_integrity = true
+    installed, reason = acp_adapter_install("claude", "sha256:lock2", ACP_CLAUDE_VERSION)
+    testing.expect(t, !installed && reason == "acp_adapter_integrity_failed", reason)
+    testing.expect_value(t, read_diagnostic(final), "lock_entry_integrity")
+    // The pinned package installs: npm received the resolved stage path.
+    t4_adapter_bad_integrity = false; t4_adapter_install_prefix = ""
+    installed, reason = acp_adapter_install("claude", "sha256:lock2", ACP_CLAUDE_VERSION)
+    testing.expect(t, installed, reason)
+    testing.expect(t, strings.has_prefix(t4_adapter_install_prefix, real_canonical), "npm --prefix is the canonical stage")
+    testing.expect_value(t, acp_adapter_files_check(final, "claude"), ACP_Adapter_Files_Check.None)
+    status := acp_adapter_status("claude")
+    testing.expect(t, status.installed && status.state == "ready" && status.version == ACP_CLAUDE_VERSION)
+    // The executable check still applies to the promoted tree.
+    bin_target := strings.concatenate({final, "/node_modules/", ACP_CLAUDE_PACKAGE, "/dist/cli.js"})
+    testing.expect(t, os.chmod(bin_target, {.Read_User, .Write_User}) == nil)
+    testing.expect_value(t, acp_adapter_files_check(final, "claude"), ACP_Adapter_Files_Check.Bin_Executable)
 }
 
 @(test)
