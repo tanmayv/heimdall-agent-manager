@@ -62,6 +62,10 @@ prompt_succeeded :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, d: domain.Pipeli
 	next.state = domain.DELIVERY_DELIVERED
 	next.outcome = ""; next.reason = ""; next.retry_at = ""
 	next.updated_at = platform.clock_now(s.clock)
+	ms, valid := platform.rfc3339_to_unix_ms(next.updated_at)
+	if !valid do return false, false, domain.domain_error(.Internal_Error, "invalid unread clock")
+	// Lazy action lookup expiry recovers a lost or unsupported broker schedule.
+	next.expires_at = platform.format_rfc3339_utc(time.Time{_nsec = ms * 1_000_000 + i64(UNREAD_TIMEOUT + UNREAD_EXPIRY_GRACE)})
 	changed, e := uow.repos.pipeline_deliveries.transition(uow.repos.pipeline_deliveries.ctx, next, d.state)
 	if e.code != .None || !changed do return false, false, e
 	if e = unread_schedule(s, uow, next, false); e.code != .None do return false, false, e

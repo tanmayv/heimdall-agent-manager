@@ -18,6 +18,7 @@ import nats "odin_test:lib/nats"
 
 LIFETIME_PROMPT :: time.Hour
 UNREAD_TIMEOUT :: 30 * time.Minute
+UNREAD_EXPIRY_GRACE :: 5 * time.Minute
 LIFETIME_NOTICE :: 5 * time.Minute
 LIFETIME_FLOW :: 24 * time.Hour
 STREAM :: "HEIM_DELIVER"
@@ -285,6 +286,10 @@ expire :: proc(s:^Service,uow:^iface.Unit_Of_Work,delivery_id:string)->(bool,dom
  defer domain.pipeline_delivery_destroy(&d)
  if err.code!=.None do return false,err
  if !found || d.expires_at>platform.clock_now(s.clock) do return false,{}
+ if d.state == domain.DELIVERY_DELIVERED {
+  err := on_unread(s,uow,d.owner_user_id,d.delivery_id)
+  return err.code == .None,err
+ }
  return close_delivery(s,uow,d,domain.DELIVERY_FAILED,"bridge_offline","")
 }
 

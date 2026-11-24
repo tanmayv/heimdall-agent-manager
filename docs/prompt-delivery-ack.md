@@ -22,3 +22,30 @@ Completed reads purge the definition; a late or duplicate occurrence is harmless
 
 Action history exposes `delivery_state` and `delivery_outcome` alongside the run
 state, so the UI distinguishes “Delivered (awaiting read)” from “Delivered (read)”.
+
+## Runtime acknowledgment contract
+
+Every agent runtime must acknowledge the linked chat message through `chat read`
+or `ack_message_ids`; both write the same transactional read receipt. Inline
+prompt delivery alone does not count as a read. This includes fresh launches
+reporting `started` and ACP prompt injection: ACP transport `agent_read_at` is
+a separate receipt and does not complete the prompt pipeline. A runtime that
+never calls either chat acknowledgment path receives a reminder and `not_read`
+even if it processed inline content. T4 live E2E must verify acknowledgment for
+both a fresh `started` launch and an ACP instance.
+
+## Coalescing and missed schedules
+
+While a delivered prompt awaits a read receipt, matching events join its action
+run instead of sending additional prompts. Joined history rows reference that
+run through `joined_run_id`; its eventual `read` or `not_read` outcome applies
+to the shared delivery. Joined events do not send their own prompt payload.
+
+The primary unread deadline remains the NATS schedule at 30 minutes. On entering
+`delivered`, its expiry becomes 35 minutes (30 minutes plus a named 5-minute
+grace). Existing lazy action lookups, including a later matching event or run
+history request, invoke the same unread handler after this bound. This recovers
+unsupported, rejected, or missed schedules: one reminder and `not_read`, then a
+later event can create a new run. No periodic sweep or hub tick is added; without
+another lookup the fallback waits until one occurs. Other delivery states retain
+the existing one-hour prompt lifetime.

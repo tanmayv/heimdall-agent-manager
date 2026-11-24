@@ -186,3 +186,37 @@ test_prompt_unread_fires_via_nats_schedule :: proc(t:^testing.T) {
  action_test_case(t,ack_nats_schedule)
  testing.expect_value(t,nats.shutdown(5000).status,i32(0))
 }
+
+ack_join_awaiting_read :: proc(t:^testing.T,f:^Action_Test) {
+ run:=ack_prompt(t,f);ack_succeed(f,run)
+ action_test_match(t,f,"while-unread")
+ action_test_expect(t,f,domain.ACTION_RUN_JOINED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
+ testing.expect_value(t,f.routes,1)
+ ack_read(t,f,run)
+ action_test_expect(t,f,domain.ACTION_RUN_DELIVERED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_JOINED,1)
+}
+ack_lost_fire :: proc(t:^testing.T,f:^Action_Test) {
+ run:=ack_prompt(t,f);ack_succeed(f,run)
+ f.now_ms+=i64((delivery.UNREAD_TIMEOUT+delivery.UNREAD_EXPIRY_GRACE-time.Second)/time.Millisecond)
+ uow,ok,_:=iface.unit_of_work_begin(&f.factory);assert(ok)
+ changed,err:=expire_open_run(&f.runtime.router,&uow,"action")
+ testing.expect(t,!changed && err.code==.None)
+ _,_=iface.unit_of_work_commit(&uow)
+ ack_assert(t,f,run,"delivered","","")
+ f.now_ms+=i64(time.Second/time.Millisecond)
+ action_test_match(t,f,"after-lost-fire")
+ ack_assert(t,f,run,"failed","","not_read")
+ action_test_expect(t,f,domain.ACTION_RUN_FAILED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_JOINED,0)
+ action_test_expect(t,f,domain.ACTION_RUN_QUEUED,1)
+ drain_due(&f.runtime.router)
+ action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
+ ack_fire(t,f,run)
+ ack_assert(t,f,run,"failed","","not_read")
+}
+@(test)
+test_prompt_awaiting_read_coalesces_events :: proc(t:^testing.T) {action_test_case(t,ack_join_awaiting_read)}
+@(test)
+test_prompt_lost_unread_fire_expires_before_join :: proc(t:^testing.T) {action_test_case(t,ack_lost_fire)}
