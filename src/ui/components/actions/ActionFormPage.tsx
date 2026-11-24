@@ -1,10 +1,11 @@
 import React from 'react';
 import { Alert, Button, Combobox, FormField, Input, PageShell, Panel, Select, Toggle } from '@ui';
-import { useActionTriggerTypesQuery, useCreateActionMutation, useFetchActionQuery, usePatchActionMutation, type ActionTarget } from '../../api/endpoints/actions';
+import { useActionTriggerTypesQuery, useCreateActionMutation, useFetchActionQuery, usePatchActionMutation, useTestActionFilterMutation, type ActionTarget } from '../../api/endpoints/actions';
 import { useActionCatalog, catalogNote, type CatalogSlice } from './actionCatalog';
 import { emptyActionForm, defaultBotTarget, formFromAction, actionFormBody, actionTitle, actionListHref, actionViewHref, navigateTo, mapServerError, type ActionFormField } from './actionModel';
 import TriggerListEditor from './TriggerListEditor';
 import PlacementRulesEditor from './PlacementRulesEditor';
+import { filterIssueFromError, type FilterIssue } from './filterTree';
 
 export const offeredTargetKinds = (kinds: ActionTarget['kind'][]) => kinds.map(value => ({ value, label: value === 'agent' ? 'Agent' : value === 'instance' ? 'Instance' : 'Bot' }));
 export default function ActionFormPage({ actionId }: { actionId?: string } = {}) {
@@ -17,6 +18,8 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
   const [form, setForm] = React.useState(() => emptyActionForm());
   const [baseline, setBaseline] = React.useState('');
   const [errors, setErrors] = React.useState<Partial<Record<ActionFormField, string>>>({});
+  const [filterErrors, setFilterErrors] = React.useState<Record<number, FilterIssue>>({});
+  const [validateFilter] = useTestActionFilterMutation();
   const initialized = React.useRef('');
   React.useEffect(() => {
     if (actionId && record.data?.action && initialized.current !== actionId) {
@@ -41,7 +44,7 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
   }, [catalog.bots.all, form.target.kind]);
   const dirty = Boolean(baseline && JSON.stringify(form) !== baseline);
   React.useEffect(() => { if (!dirty) return; const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn); }, [dirty]);
-  const field = <K extends keyof typeof form>(key: K, value: typeof form[K]) => { setForm(prev => ({ ...prev, [key]: value })); setErrors({}); };
+  const field = <K extends keyof typeof form>(key: K, value: typeof form[K]) => { setForm(prev => ({ ...prev, [key]: value })); setErrors({}); setFilterErrors({}); };
   const target = form.target;
   const targetField = (patch: Record<string, unknown>) => field('target', { ...target, ...patch } as ActionTarget);
   function picker(label: string, slice: CatalogSlice, value: string, change: (v: string) => void, optional = false) {
@@ -56,7 +59,22 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
       const body = actionFormBody(form);
       const result = actionId ? await patch({ id: actionId, ...body }).unwrap() : await create(body).unwrap();
       setBaseline(JSON.stringify(form)); navigateTo(actionViewHref(result.action.id));
-    } catch (error) { const mapped = mapServerError(error); setErrors({ [mapped.field]: mapped.message }); }
+    } catch (error) {
+      const mapped = mapServerError(error); setErrors({ [mapped.field]: mapped.message });
+      // Save errors have a node pointer but no trigger index. Validate each event
+      // independently rather than marking unrelated nodes with the same pointer.
+      if (filterIssueFromError(error)) {
+        const found: Record<number, FilterIssue> = {};
+        await Promise.all(form.triggers.map(async (trigger, index) => {
+          if (trigger.kind !== 'event') return;
+          try {
+            const result = await validateFilter({ ...trigger.config, event: {} }).unwrap();
+            if (!result.valid) found[index] = { path: result.path, reason: result.reason };
+          } catch { /* The form-level error remains visible if validation is unavailable. */ }
+        }));
+        setFilterErrors(found);
+      }
+    }
   }
   if (typesQuery.isLoading || (actionId && record.isLoading)) return <PageShell title="Action" loading />;
   if (!types || typesQuery.error || (actionId && (record.error || !record.data?.action))) return <PageShell title="Action"><Alert tone="danger" title="Couldn't load action form" /></PageShell>;
@@ -80,7 +98,7 @@ export default function ActionFormPage({ actionId }: { actionId?: string } = {})
         <p>An action also starts an agent that you stopped. Disable the action to stop that.</p>
       </Panel>
       <Panel className="p-4 flex flex-col gap-3"><h3>Triggers</h3>
-        <TriggerListEditor value={form.triggers} onChange={v => field('triggers', v)} types={types} />
+        <TriggerListEditor value={form.triggers} onChange={v => field('triggers', v)} types={types} filterErrors={filterErrors} />
         {errors.triggers ? <Alert tone="danger" title="Check triggers">{errors.triggers}</Alert> : null}
       </Panel>
       <FormField label="Minimum interval (seconds)" error={errors.min_interval_s}><Input type="number" min={types.limits.min_interval_s.min} max={types.limits.min_interval_s.max} data-debug-id="action-form-min-interval" value={String(form.min_interval_s)} onChange={v => field('min_interval_s', Number(v))} /></FormField>

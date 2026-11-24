@@ -4,8 +4,9 @@ import type { TriggerTypes } from '../../api/endpoints/actions';
 import type { FormTrigger } from './actionModel';
 import ScheduleEditor from './ScheduleEditor';
 import EventTriggerEditor from './EventTriggerEditor';
+import type { FilterIssue } from './filterTree';
 
-export default function TriggerListEditor({ value, onChange, types }: { value: FormTrigger[]; onChange: (value: FormTrigger[]) => void; types: TriggerTypes }) {
+export default function TriggerListEditor({ value, onChange, types, filterErrors }: { value: FormTrigger[]; onChange: (value: FormTrigger[]) => void; types: TriggerTypes; filterErrors?: Record<number, FilterIssue> }) {
   const events = types.trigger_kinds.find(k => k.kind === 'event')?.events || [];
   const full = value.length >= types.limits.max_triggers;
   return <div className="flex flex-col gap-4">
@@ -16,8 +17,8 @@ export default function TriggerListEditor({ value, onChange, types }: { value: F
         <legend>{trigger.kind === 'schedule' ? 'Schedule' : 'Event'} {i + 1}</legend>
         <Toggle aria-label={'Enable trigger ' + (i + 1)} data-debug-id={'action-trigger-enabled-' + id} checked={trigger.enabled} onChange={enabled => change({ ...trigger, enabled })} />
         {trigger.kind === 'schedule' ? <ScheduleEditor debugId={'action-trigger-' + id} value={trigger.config} onChange={config => change({ ...trigger, config })} />
-          : <EventTriggerEditor debugId={'action-trigger-' + id} value={trigger.config} onChange={config => change({ ...trigger, config })} events={events} />}
-        {trigger.kind === 'event' ? <FormField label="Delay (seconds)" hint="Wait for the event to settle before delivery. A matching event restarts the timer. Zero delivers immediately."><Input type="number" min={0} max={86400} step={1} data-debug-id={'action-trigger-delay-' + id} aria-label="Delay (seconds)" value={String(trigger.delay_s || 0)} onChange={v => change({ ...trigger, delay_s: Number(v) })} /></FormField> : null}
+          : <EventTriggerEditor debugId={'action-trigger-' + id} value={trigger.config} onChange={config => change({ ...trigger, config, delay_s: events.find(e => e.event_type === config.event_type)?.no_delay || config.event_type === 'webhook.received' ? 0 : trigger.delay_s })} events={events} limits={types.limits.filter} error={filterErrors?.[i]} />}
+        {trigger.kind === 'event' && trigger.config.event_type !== 'webhook.received' && !events.find(e => e.event_type === trigger.config.event_type)?.no_delay ? <FormField label="Delay (seconds)" hint="Wait for the event to settle before delivery. A matching event restarts the timer. Zero delivers immediately."><Input type="number" min={0} max={86400} step={1} data-debug-id={'action-trigger-delay-' + id} aria-label="Delay (seconds)" value={String(trigger.delay_s || 0)} onChange={v => change({ ...trigger, delay_s: Number(v) })} /></FormField> : null}
         <Button type="button" variant="danger" data-debug-id={'action-trigger-remove-' + id} onClick={() => onChange(value.filter((_, n) => n !== i))}>Remove trigger</Button>
       </fieldset>;
     })}
