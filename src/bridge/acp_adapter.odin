@@ -605,8 +605,14 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
         if !acp_adapter_marker_write(root, binding) do return false, "acp_adapter_directory_failed"
         return true, ""
     }
-    stage := strings.concatenate({root, fmt.tprintf(".stage-%d", time.tick_now()._nsec)}); defer delete(stage)
-    if bridge_make_directory_all(stage) != nil do return false, "acp_adapter_directory_failed"
+    requested_stage := strings.concatenate({root, fmt.tprintf(".stage-%d", time.tick_now()._nsec)}, context.temp_allocator)
+    if bridge_make_directory_all(requested_stage) != nil do return false, "acp_adapter_directory_failed"
+    // REQ-ACP-LOCK-2: npm records installed packages by real path but keys
+    // package-lock.json entries relative to --prefix. A prefix through a
+    // symlink (e.g. /home -> var/home on Fedora Atomic) yields
+    // "../../var/home/.../node_modules/<pkg>" keys, so the pinned
+    // "node_modules/<pkg>" entry is absent. Hand npm the resolved stage.
+    stage := bridge_fs_canonicalize_existing(requested_stage); defer delete(stage)
     defer os.remove_all(stage)
     install_argv, prepared := acp_adapter_prepare_install(d, stage)
     if !prepared do return false, "acp_adapter_directory_failed"
