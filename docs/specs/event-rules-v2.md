@@ -49,6 +49,7 @@ User decisions applied in this revision:
 | U3 | Webhook auth is a generated secret token, shown once, stored hashed; HMAC later. Per-webhook rate limit. Ingress only authenticates, size-checks, rate-limits and enqueues | §5.4 |
 | U4 | Limits are configurable defaults | §9.1 |
 | U5 | No per-run tree copy; older runs show seen values plus "rule edited since" | §3.6 |
+| U6 | Two webhook URL forms sharing one hashed token: bearer header, and a secret URL for URL-only senders, with the token redacted from hub logs, traces and errors | §5.4 |
 
 ## 2. Envelope v2 (R1, D1, D2)
 
@@ -484,29 +485,56 @@ CREATE INDEX event_webhooks_owner ON event_webhooks(owner_user_id);
 
 Limit: 50 webhooks per owner (default).
 
-**Endpoint.** `POST /api/v1/hooks/<webhook_id>`, registered outside session auth like the
-existing provider webhooks (`src/hub/app/wiring.odin:802`, `:946-947`). The owner comes from
-the webhook row, never from the request.
+**Endpoints.** Two URL forms reach the same handler and the same webhook (user decision
+U6). Both are registered outside session auth like the existing provider webhooks
+(`src/hub/app/wiring.odin:802`, `:946-947`). The owner comes from the webhook row, never
+from the request.
 
-**Authentication: one generated secret token** (user decision U3).
+| Form | Request | For |
+|---|---|---|
+| A, bearer header | `POST /api/v1/hooks/<webhook_id>` with `Authorization: Bearer <token>` | Senders that can set a header: scripts, CI, Alertmanager, Grafana, n8n. Preferred. |
+| B, secret URL | `POST /api/v1/hooks/<webhook_id>/<token>` | Senders that can only be given a URL (the Slack/Discord incoming-webhook style). |
 
-- The hub generates the token (32 random bytes, prefixed `whsec_`), shows it **once** on
-  create and on rotate, and stores only its hash, the way bridge tokens are stored
-  (`token_hash`, `src/hub/domain/bridge_token.odin:26-36`). The hub never holds the token in
-  recoverable form, so this design depends on no secret-at-rest mechanism.
-- The sender presents it as `Authorization: Bearer <token>`. Tokens are never accepted in
-  the query string.
-- The check hashes the presented token and compares in constant time.
+**Authentication: one generated secret token** (user decisions U3, U6).
+
+- The hub generates the token (32 random bytes, URL-safe, prefixed `whsec_`), shows it
+  **once** on create and on rotate, and stores only its hash, the way bridge tokens are
+  stored (`token_hash`, `src/hub/domain/bridge_token.odin:26-36`). The hub never holds the
+  token in recoverable form, so this design depends on no secret-at-rest mechanism.
+- **Both forms use the same token and the same check:** hash the presented token, compare
+  with the stored hash in constant time. There is one `token_hash` per webhook, so
+  **rotation invalidates both forms at once**.
+- A request that carries a token in both places is rejected with the uniform `401`. Tokens
+  are never accepted in the query string.
 - Every failure (unknown id, disabled webhook, wrong or missing token, actions experiment
-  off) returns the same `401` body, so the endpoint is not an oracle for webhook ids.
-- Rotation replaces the hash; the old token stops working immediately.
+  off) returns the same `401` body in both forms, so neither is an oracle for webhook ids
+  or tokens. Error bodies never echo the request path.
+
+**Keeping the URL token out of the hub's records (form B).** A token in a path is a secret
+in a place software likes to write down. Requirements:
+
+- The handler takes the token segment out of the request before anything else sees it. From
+  that point the path is `/api/v1/hooks/<webhook_id>/[redacted]` for every consumer: access
+  and request logs, error logs, error responses, traces and spans, metrics labels, panic
+  output and the rate limiter's keys.
+- Redaction happens in the router or request wrapper, in one place, not at each log call.
+  W1 must list every site in the hub that records a request path and show each receives the
+  redacted form; I did not enumerate those sites in this task.
+- The token is never stored, returned by any API after creation, or included in events,
+  run snapshots or prompts.
+- What the hub cannot control: a reverse proxy or load balancer in front of it, and the
+  sender's own logs, see the full URL. `SELF_HOSTING.md` gets a note to exclude or mask
+  `/api/v1/hooks/` paths in proxy access logs. This residual exposure is why form A stays
+  the recommended one, and why the UI and CLI label form B as "anyone with this URL can
+  post events".
 
 HMAC request signing is not part of v1 (§12). It needs the hub to keep a recoverable secret,
 and it can be added later as a second auth mode without changing the envelope or the rules.
 
 **Ingress does four things and nothing else** (user decision U3):
 
-1. rate-limit and size-check, before parsing and before any SQL;
+1. redact the token segment (form B), then rate-limit and size-check, before parsing and
+   before any SQL;
 2. authenticate (one indexed read of the webhook row);
 3. append one event to the outbox in one short transaction (version bump + outbox row, §2.3);
 4. answer `202`.
@@ -821,9 +849,9 @@ accepting the full config. `ham-ctl actions runs` prints the match trace of each
 indented tree with a true/false mark per node. New group:
 
 ```bash
-ham-ctl webhook create --name "CI"                         # prints URL and token once
+ham-ctl webhook create --name "CI"       # prints once: the token, the header URL, the secret URL
 ham-ctl webhook list | show <id> | enable <id> | disable <id> | delete <id>
-ham-ctl webhook rotate <id>                                # prints the new token once
+ham-ctl webhook rotate <id>              # new token + new secret URL, once; old ones stop working
 ham-ctl webhook test <id> --token <token> --data '{"hello":"world"}'   # POST from the CLI
 ```
 
@@ -891,8 +919,8 @@ read-only, with the recorded trace overlaid:
   the view says "rule edited since this run" and lists only the recorded values (§3.6, U5).
 - Joined runs have their own trace, since each is its own event.
 
-*Other UI.* A Webhooks section lists webhooks, creates one (token shown once), copies the URL and rotates the
-token. `RunHistory.tsx` also shows "delivered with N other actions" and "waiting for the
+*Other UI.* A Webhooks section lists webhooks, creates one (token, header URL and secret URL shown once, the secret URL with a warning that
+anyone holding it can post events), and rotates the token. `RunHistory.tsx` also shows "delivered with N other actions" and "waiting for the
 agent to read the previous prompt" for parked runs. API types in
 `src/ui/api/endpoints/actions.ts`.
 
@@ -909,8 +937,11 @@ agent to read the previous prompt" for parked runs. API types in
   prompt-injection risk; the rule author decides which agent a webhook may wake.
 - **No bodies in non-webhook envelopes.** Memory events carry ids and enums only (§5.3),
   matching the existing "metadata-only" outbox rule (`events_001_outbox.sql:1`).
-- **Webhook tokens.** Generated by the hub, shown once, stored only as a hash, never logged,
-  never in URLs; compared in constant time; rotation invalidates the old token immediately.
+- **Webhook tokens.** Generated by the hub, shown once, stored only as a hash, compared in
+  constant time; rotation invalidates the old token for both URL forms immediately. Never in
+  a query string. In the secret-URL form the token segment is redacted from hub logs,
+  traces, metrics and errors before any other code sees the path (§5.4); proxies in front of
+  the hub must be configured not to log it.
 - **Abuse bounds.** Size, rate and failed-auth limits are checked before parsing and before
   any SQL (§5.4). A webhook wired to a `fresh_per_run` agent can spawn at most one instance
   per `min_interval_s` (default 30 s, `action.odin:9`) per action.
@@ -955,7 +986,7 @@ chain's Test Runner. "Deps" are hard ordering constraints.
 | B1 | **Per-target batch send.** Grouping, resolve once per group, backpressure park, digest render, one message/delivery, member update. Migration `actions_006` (indexes). | – | Tests: 10 actions → 1 instance, one event → 1 chat message, 1 delivery, 10 runs `routed` with one `delivery_id`; single run renders byte-identical to today; bot and instance groups resolve once each (call counter); `fresh_per_run` unchanged; 25 runs split 20 + 5. |
 | B2 | **Batch lifecycle.** Final-state fan-out by `delivery_id`; parked release + single `action.ready`; lazy expiry at drain; replacement moves all members; schedules-unsupported sweep excludes parked runs; history exposes batch size. | B1 | Tests: read → all members `delivered`; `not_read` → all members failed with `not_read`, parked runs go out next as one digest; lost wake → released at expiry; bridge replacement keeps one delivery for all members; parked runs survive unsupported-schedule mode; in-flight single-run deliveries from before the change finalize. |
 | M1 | **Memory producer.** `save_memory` in a unit of work; `memory.state` event on create and status change; descriptor + two presets. | E1, E3 | Tests: create pending, approve, reject, archive each emit one event with correct `status`/`previous_status`; edit without status change emits none; system memory emits none; rollback of the memory write leaves no outbox row; a rule with preset "Memory approved" produces a run. |
-| W1 | **Webhook model and ingress.** `webhooks_001`; CRUD service + HTTP; generated token shown once and stored hashed; ingress = rate limit, size check, token auth, outbox append-if-absent, `202`; uniform 401; deterministic event id from `Idempotency-Key`; limits from hub config. No HMAC. | E1 | Tests: valid token → 202 and exactly one outbox row with the owner from the row; the token is not retrievable after create and the table holds no plaintext; wrong token, missing token, unknown id and disabled webhook return identical 401; rotate invalidates the old token; default 64 KiB + 1 → 413; non-object → 400; 61st request in a minute to one webhook → 429 while another webhook is unaffected; same `Idempotency-Key` twice → one outbox row and `duplicate: true`; cross-owner CRUD → not found; the handler runs no trigger query and no delivery code (query counter). |
+| W1 | **Webhook model and ingress.** `webhooks_001`; CRUD service + HTTP; generated token shown once and stored hashed; ingress = rate limit, size check, token auth, outbox append-if-absent, `202`; uniform 401; deterministic event id from `Idempotency-Key`; limits from hub config. No HMAC. Both URL forms (bearer header, secret URL) on one handler; token segment redacted in the request wrapper; list of every hub site that records a request path; `SELF_HOSTING.md` proxy note. | E1 | Tests: valid token → 202 and exactly one outbox row with the owner from the row, through each URL form; a secret-URL request (accepted, rejected, oversized, rate-limited and one forced to error) leaves no token in captured logs, traces, metrics labels or response bodies; token in both header and path → 401; rotate invalidates both forms; the token is not retrievable after create and the table holds no plaintext; wrong token, missing token, unknown id and disabled webhook return identical 401; rotate invalidates the old token; default 64 KiB + 1 → 413; non-object → 400; 61st request in a minute to one webhook → 429 while another webhook is unaffected; same `Idempotency-Key` twice → one outbox row and `duplicate: true`; cross-owner CRUD → not found; the handler runs no trigger query and no delivery code (query counter). |
 | W2 | **Webhook rules.** `webhook.received` descriptor with free `data.` paths; run snapshot projection and 8 KiB cap; nested template variables and `{{event.json}}`; untrusted-data line; control-character stripping. | F1, W1 | Tests: 64 KiB body → run snapshot ≤ 8 KiB and contains the paths used by filter and template; nested variable renders; `{{` inside a webhook value is not expanded; prompt contains the untrusted-data line only for webhook-derived values. |
 | C1 | **CLI.** Filter shorthand operators, match trace in `actions runs`, `ham-ctl webhook` group, `ham-ctl-reference` and Ninjy skill text. | F1, W1 | `src/ctl` tests for each shorthand form and each webhook verb, in the style of `src/ctl/actions_test.odin`; shorthand `event:chain.state,state=completed` produces a `filter` tree with one `eq` check. |
 | U1a | **UI tree editor.** Nested group cards with All/Any/None modes, check rows, limits, plain-language sentence, error marking by node path, sample-event test. API types. | F1 | UI tests: build the §3.3 example and get exactly that JSON; depth and node limits disable the add buttons; a server `path` error marks the right node; usable at phone width. |
