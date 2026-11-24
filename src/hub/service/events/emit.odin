@@ -42,6 +42,9 @@ emit :: proc(repo: ^iface.Event_Outbox_Repository, clock: ^platform.Clock, input
 	encoded, encode_err := json.marshal(envelope, allocator=context.temp_allocator)
 	if encode_err != nil do return "", domain.domain_error(.Internal_Error, "event encoding failed")
 	defer delete(encoded, context.temp_allocator)
+	if input.class == "state" {
+		if err := repo.set_state_head(repo.ctx, input.owner, input.entity_kind, input.entity_id, input.type, id, version); err.code != .None do return "", err
+	}
 	return id, repo.append(repo.ctx, {
 		event_id=id, owner_user_id=input.owner, subject=input.subject, envelope_json=string(encoded),
 		headers_json=`{"Nats-Rollup":"sub"}` if input.class=="state" else "{}", created_at=at,

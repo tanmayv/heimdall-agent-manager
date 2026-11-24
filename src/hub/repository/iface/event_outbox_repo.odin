@@ -8,6 +8,8 @@ import domain "odin_test:hub/domain"
 Event_Outbox_Repository :: struct {
 	backlog_owner: proc(ctx: rawptr, owner: string) -> (i64, domain.Domain_Error),
 	ctx:            rawptr,
+	set_state_head: proc(ctx: rawptr, owner, kind, id, event_type, event_id: string, version: i64) -> domain.Domain_Error,
+	state_head_matches: proc(ctx: rawptr, owner, kind, id, event_type, event_id: string) -> (bool, domain.Domain_Error),
 	next_version:   proc(ctx: rawptr, owner, kind, id: string) -> (i64, domain.Domain_Error),
 	open_topic:     proc(
 		ctx: rawptr,

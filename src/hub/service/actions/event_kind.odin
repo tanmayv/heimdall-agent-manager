@@ -46,18 +46,17 @@ event_compile :: proc(owner, action_id, trigger_id: string, config: json.Object,
 
 Data_Key :: struct { key: string, values: []string } // values empty = free text
 Preset   :: struct { id, label: string, data_json: string }
-Event_Descriptor :: struct { event_type, label, scope: string, data_keys: []Data_Key, presets: []Preset,
- // Both callbacks borrow inputs. Validity checks perform one indexed repository
+Event_Descriptor :: struct { event_type, label, scope, class: string, data_keys: []Data_Key, presets: []Preset,
+ // The occurrence callback borrows inputs and performs one indexed repository
  // lookup and no network I/O. Returned reasons are static strings.
- settle_key: proc(msg: Event_View) -> string,
  still_valid: proc(ctx: ^iface.Repositories, run: domain.Action_Run) -> (ok: bool, reason: string),
 }
 
 EVENT_DESCRIPTORS := [?]Event_Descriptor{
-	{event_type = "chain.state", label = "Task chain state changed", scope = "chain", settle_key=chain_settle_key, still_valid=chain_state_still_valid,
+	{event_type = "chain.state", class = "state", label = "Task chain state changed", scope = "chain",
 	 data_keys = {{key = "state", values = {"active", "completed", "archived"}}},
 	 presets   = {{id = "chain_completed", label = "Task chain completed", data_json = `{"state":"completed"}`}}},
-	{event_type = "chain.work_finished", label = "Task chain work finished", scope = "chain", settle_key=chain_settle_key, still_valid=chain_work_finished_still_valid,
+	{event_type = "chain.work_finished", class = "occurrence", label = "Task chain work finished", scope = "chain", still_valid=chain_work_finished_still_valid,
 	 data_keys = {{key = "outcome", values = {}}}, presets = {}},
 }
 
@@ -65,18 +64,39 @@ event_descriptor_find :: proc(event_type: string) -> ^Event_Descriptor {
  for &entry in EVENT_DESCRIPTORS do if entry.event_type == event_type do return &entry
  return nil
 }
-chain_settle_key :: proc(msg: Event_View) -> string {
- entity, _ := msg.envelope["entity"].(json.Object)
- key, _ := entity["id"].(string)
- return key
+entity_settle_key :: proc(msg: Event_View) -> string {
+	entity, _ := msg.envelope["entity"].(json.Object)
+	kind, _ := entity["kind"].(string)
+	id, _ := entity["id"].(string)
+	if kind == "" || id == "" do return ""
+	return fmt.tprintf("%s:%s", kind, id)
 }
-chain_state_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run) -> (bool, string) {
- return chain_still_valid(repos, run, false)
+// The router calls this only for delayed runs, before planning has side effects.
+event_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run) -> (bool, string) {
+	value: json.Value
+	if json.unmarshal(transmute([]u8)run.event_params_json, &value, allocator=context.temp_allocator) != nil do return false, "superseded"
+	defer json.destroy_value(value, allocator=context.temp_allocator)
+	params, _ := value.(json.Object)
+	class, _ := params["class"].(string)
+	// Persisted snapshots can predate v2. The server's descriptor determines
+	// known event classes; an absent or incorrect snapshot class cannot bypass validity.
+	descriptor := event_descriptor_find(run.event_type)
+	if descriptor != nil do class = descriptor.class
+	if class == "state" {
+		entity, _ := params["entity"].(json.Object)
+		kind, _ := entity["kind"].(string)
+		id, _ := entity["id"].(string)
+		if kind == "" || id == "" || run.event_id == "" do return false, "superseded"
+		repo := &repos.event_outbox
+		valid, err := repo.state_head_matches(repo.ctx, string(run.owner_user_id), kind, id, run.event_type, run.event_id)
+		if err.code != .None do return false, "validity_unavailable"
+		if !valid do return false, "superseded"
+		return true, ""
+	}
+	if descriptor != nil && descriptor.still_valid != nil do return descriptor.still_valid(repos, run)
+	return true, ""
 }
 chain_work_finished_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run) -> (bool, string) {
- return chain_still_valid(repos, run, true)
-}
-chain_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run, work: bool) -> (bool, string) {
  arena: virtual.Arena
  if virtual.arena_init_growing(&arena) != nil do return false, "validity_unavailable"
  defer virtual.arena_destroy(&arena)
@@ -92,35 +112,19 @@ chain_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run, wo
  chain, found, err := iface.taskchain_get_chain(&repos.taskchains, domain.Task_Chain_ID(id))
  if err.code != .None do return false, "validity_unavailable"
  if !found || chain.owner_user_id != run.owner_user_id do return false, "superseded"
- if work {
-  // The catalog emits a JSON integer. Retain strings for matcher run snapshots,
-  // but never coerce floats or missing values into a matching revision.
-  rev: i64
-  valid: bool
-  #partial switch value in data["work_revision"] {
-  case json.Integer:
-   rev = i64(value)
-   valid = true
-  case string:
-   rev, valid = strconv.parse_i64(value)
-  case:
-   return false, "superseded"
-  }
-  if !valid || rev != chain.work_revision do return false, "superseded"
- } else {
-  state, _ := data["state"].(string)
-  expected := ""
-  switch chain.status {
-  case .Active: expected = "active"
-  case .Completed: expected = "completed"
-  case .Archived: expected = "archived"
-  case .Cancelled: expected = "cancelled"
-  }
-  if state != expected do return false, "superseded"
-  key, current := "updated_at", chain.updated_at
-  if state == "completed" { key = "completed_at"; current = chain.completed_at }
-  snapshot, _ := data[key].(string)
-  if snapshot == "" || snapshot != current do return false, "superseded"
+ // The catalog emits a JSON integer. Retain strings for matcher run snapshots,
+ // but never coerce floats or missing values into a matching revision.
+ rev: i64
+ valid: bool
+ #partial switch value in data["work_revision"] {
+ case json.Integer:
+  rev = i64(value)
+  valid = true
+ case string:
+  rev, valid = strconv.parse_i64(value)
+ case:
+  return false, "superseded"
  }
+ if !valid || rev != chain.work_revision do return false, "superseded"
  return true, ""
 }

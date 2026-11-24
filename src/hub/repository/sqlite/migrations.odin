@@ -690,6 +690,7 @@ MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
 
 MIGRATION_EVENTS_005_DELIVERY_RETENTION :: #load("migrations/events_005_delivery_retention.sql", string)
 MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS :: #load("migrations/events_006_instance_subscriptions.sql", string)
+MIGRATION_EVENTS_008_STATE_HEADS :: #load("migrations/events_008_state_heads.sql", string)
 MIGRATION_EVENTS_007_ENTITY_VERSIONS :: #load("migrations/events_007_entity_versions.sql", string)
 MIGRATION_EVENTS_004_DELIVERY :: #load("migrations/events_004_delivery.sql", string)
 MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions.sql", string)
@@ -1030,6 +1031,7 @@ migration_order :: [?]string {
 	"242_extension_version_sync_0_5_79.sql",
 	"243_extension_version_sync_0_5_80.sql",
 	"actions_008_target_batches.sql",
+	"events_008_state_heads.sql",
 	"actions_009_batch_history.sql",
 }
 
@@ -1629,6 +1631,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "coordinator_idle_002_stop_reason.sql" do return strings.clone(MIGRATION_COORDINATOR_IDLE_002_STOP_REASON)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
+	if name == "events_008_state_heads.sql" do return strings.clone(MIGRATION_EVENTS_008_STATE_HEADS)
  if name == "events_007_entity_versions.sql" do return strings.clone(MIGRATION_EVENTS_007_ENTITY_VERSIONS)
 	if name == "events_006_instance_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS)
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)

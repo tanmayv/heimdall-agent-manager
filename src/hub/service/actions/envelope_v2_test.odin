@@ -9,7 +9,7 @@ import domain "odin_test:hub/domain"
 test_v2_snapshot_settle_and_templates :: proc(t: ^testing.T) {
 	envelope := test_config(`{"entity":{"kind":"chain","id":"chain_v2"},"actor":"hub","data":{"state":"completed"}}`)
 	msg := Event_View{event_id="evt_v2", event_type="chain.state", envelope=envelope}
-	testing.expect_value(t, chain_settle_key(msg), "chain_v2")
+	testing.expect_value(t, entity_settle_key(msg), "chain:chain_v2")
 	params := event_params(msg)
 	value: json.Value
 	testing.expect_value(t, json.unmarshal(transmute([]u8)params, &value), nil)
