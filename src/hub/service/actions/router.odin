@@ -122,7 +122,8 @@ prompt_plan :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude
   instance_id:=strings.clone(bot.agent_instance_id,context.temp_allocator)
   committed,_:=iface.unit_of_work_commit(&uow)
   if !committed do return {reason="delivery_failed"}
-  if err.code!=.None || instance_id=="" do return {reason="target_missing"}
+  if err.code!=.None && err.code!=.Not_Found do return {reason="delivery_failed"}
+  if err.code==.Not_Found || instance_id=="" do return {reason="target_missing"}
   return instance_plan(r,owner,instance_id,req)
  }
  if action.target_kind!=domain.ACTION_TARGET_AGENT do return {reason="target_missing"}

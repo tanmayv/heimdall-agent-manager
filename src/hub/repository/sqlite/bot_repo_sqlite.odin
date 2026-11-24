@@ -1655,7 +1655,7 @@ attachment_set_state_sqlite :: proc(ctx: rawptr, attachment_id: string, from, to
 BOT_ACTION_ACTIVITY_SQL :: `SELECT EXISTS(
  SELECT 1 FROM pipeline_deliveries WHERE agent_instance_id=?1 AND kind='prompt' AND state IN ('routed','forwarded','delivered')
  ) OR EXISTS(
- SELECT 1 FROM action_runs WHERE target_instance_id=?1 AND state='routed' AND started_at>=?2
+ SELECT 1 FROM action_runs WHERE target_instance_id=?1 AND state IN ('routed','delivered') AND started_at>=?2
  );`
 
 // Both EXISTS branches use instance-prefixed partial indexes and stop at the first match.

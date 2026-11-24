@@ -24,12 +24,14 @@ idle_stop_guards_action_prompts :: proc(t:^testing.T) {
   delivery_destroy(f)
  }
 }
-idle_stop_guards_recent_routed_action :: proc(t:^testing.T) {
+idle_stop_guards_recent_delivered_action :: proc(t:^testing.T) {
  f:=delivery_fixture(t);defer delivery_destroy(f)
  f.instance.runtime_status="running"
  f.ms+=f.pair.service.timers.bot_idle_stop_ms+60_000
  testing.expect(t,sqlite.exec(&f.pair.conn,`INSERT INTO actions(action_id,owner_user_id,prompt_text,target_kind,created_at,updated_at) VALUES('action','alice','hello','bot','old','old');`))
- testing.expect(t,sqlite.exec(&f.pair.conn,fmt.tprintf(`INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,state,target_instance_id,created_at,started_at) VALUES('run','action','trigger','alice','once','chain.state','routed','inst_a','old','%s');`,delivery_clock(f))))
+ testing.expect(t,sqlite.exec(&f.pair.conn,fmt.tprintf(`INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,state,target_instance_id,created_at,started_at) VALUES('run','action','trigger','alice','once','chain.state','delivered','inst_a','old','%s');`,delivery_clock(f))))
+ // Completed injection must retain the recent-action idle window.
+ testing.expect(t,sqlite.exec(&f.pair.conn,`INSERT INTO pipeline_deliveries(delivery_id,owner_user_id,kind,bridge_id,agent_instance_id,ref,state,expires_at,created_at,updated_at) VALUES('finished-action','alice','prompt','b1','inst_a','run:run','done','later','old','old');`))
  bots_supervisor_tick(&f.pair.service)
  testing.expect_value(t,f.instance.runtime_status,"running")
  f.ms+=f.pair.service.timers.bot_idle_stop_ms+1000
@@ -55,5 +57,5 @@ action_idle_arena :: proc(t:^testing.T,scenario:proc(^testing.T)) {
  scenario(t)
 }
 @(test) test_idle_stop_guards_action_prompts :: proc(t:^testing.T) {action_idle_arena(t,idle_stop_guards_action_prompts)}
-@(test) test_idle_stop_guards_recent_routed_action :: proc(t:^testing.T) {action_idle_arena(t,idle_stop_guards_recent_routed_action)}
+@(test) test_idle_stop_guards_recent_delivered_action :: proc(t:^testing.T) {action_idle_arena(t,idle_stop_guards_recent_delivered_action)}
 @(test) test_idle_stop_preserves_bot_on_action_lookup_failure :: proc(t:^testing.T) {action_idle_arena(t,idle_stop_preserves_bot_on_action_lookup_failure)}
