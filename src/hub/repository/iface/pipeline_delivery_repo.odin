@@ -8,6 +8,7 @@ Pipeline_Delivery_Repository :: struct {
 	ctx:             rawptr,
 	insert:          proc(ctx: rawptr, d: domain.Pipeline_Delivery) -> domain.Domain_Error,
 	get:             proc(ctx: rawptr, delivery_id: string) -> (domain.Pipeline_Delivery, bool, domain.Domain_Error),
+	awaiting_read:   proc(ctx: rawptr, message_id: string) -> ([]domain.Pipeline_Delivery, domain.Domain_Error),
 	transition:      proc(
 		ctx: rawptr,
 		next: domain.Pipeline_Delivery,

@@ -527,7 +527,8 @@ CTL_ACTIONS_HELP :: `ham-ctl hub actions <list|show|create|update|enable|disable
 Targets:
   --agent-id <id> [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]...
   --instance <id>
-  --bot <id>
+  --target bot [--bot <id>] (omitting --bot selects your bot)
+  --bot <id> (shorthand for --target bot --bot <id>)
 Each rule part is a value or *; an omitted model means *. Rule order is flag order.
 Triggers:
   cron:<5-field expr>[@<timezone>] (split at the last @)
@@ -537,10 +538,27 @@ Triggers:
   --trigger-json takes a trigger object, including blackout_dates, active_from and active_until in its config.
 On update, any --trigger or --trigger-json replaces the whole trigger list.
 Any target flag replaces the whole target, including rules.
+Delay: --delay <seconds|Ns|Nm|Nh> applies to the preceding --trigger or --trigger-json (0 disables; max 24h).
+
 Examples:
   ham-ctl hub actions create --prompt 'Review' --agent-id agt_1 --rule '*:claude' --trigger 'cron:0 9 * * 1-5@America/New_York'
   ham-ctl hub actions update act_1 --trigger event:chain.state,state=completed
 `
+
+// Delays use whole seconds; accept a bare count or s/m/h suffix.
+ctl_action_delay :: proc(text: string) -> (i64, bool) {
+ if text == "" do return 0, false
+ multiplier: i64 = 1
+ number := text
+ switch text[len(text)-1] {
+ case 's': number = text[:len(text)-1]
+ case 'm': number = text[:len(text)-1]; multiplier = 60
+ case 'h': number = text[:len(text)-1]; multiplier = 3600
+ }
+ n, ok := strconv.parse_i64(number)
+ if !ok || n < 0 || n > 86400/multiplier do return 0, false
+ return n*multiplier, true
+}
 
 ctl_action_object :: proc() -> json.Object {
 	return make(json.Object, context.temp_allocator)
@@ -650,12 +668,19 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 		case "--disabled":
 			if action != "create" do return {}, false
 			body["enabled"] = json.Boolean(false)
-		case "--prompt", "--name", "--min-interval", "--agent-id", "--project", "--instance-strategy", "--rule", "--instance", "--bot", "--trigger", "--trigger-json":
+		case "--prompt", "--name", "--min-interval", "--agent-id", "--project", "--instance-strategy", "--rule", "--instance", "--bot", "--target", "--trigger", "--trigger-json", "--delay":
 			if i + 1 >= len(args) || strings.has_prefix(args[i + 1], "--") do return {}, false
 			i += 1
 			value := args[i]
 			switch flag {
-			case "--prompt":
+			case "--delay":
+                if len(triggers) == 0 do return {}, false
+                delay, valid := ctl_action_delay(value)
+                if !valid do return {}, false
+                trigger, valid_object := triggers[len(triggers)-1].(json.Object)
+                if !valid_object do return {}, false
+                trigger["delay_s"] = json.Integer(delay)
+            case "--prompt":
 				body["prompt_text"] = json.String(value)
 			case "--name":
 				body["name"] = json.String(value)
@@ -663,6 +688,10 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 				n, ok := strconv.parse_i64(value)
 				if !ok do return {}, false
 				body["min_interval_s"] = json.Integer(n)
+			case "--target":
+				if value != "bot" do return {}, false
+				target_given = true
+				target["kind"] = json.String("bot")
 			case "--agent-id", "--instance", "--bot":
 				if value == "" do return {}, false
 				target_given = true
@@ -716,6 +745,10 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 	if action == "create" {
 		prompt, _ := body["prompt_text"].(json.String)
 		if strings.trim_space(string(prompt)) == "" || !target_given do return {}, false
+	}
+	if has_flag(args, "--target") {
+		if has_flag(args, "--agent-id") || has_flag(args, "--instance") do return {}, false
+		if !has_flag(args, "--bot") do target_count += 1
 	}
 	if target_given {
 		if target_count != 1 do return {}, false

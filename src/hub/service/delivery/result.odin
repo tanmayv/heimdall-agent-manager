@@ -40,9 +40,13 @@ on_command_result :: proc(s: ^Service, bridge_id, command_id, result_json: strin
 		defer delete(raw_outcome)
 		outcome := raw_outcome
 		if outcome == "" do outcome = contracts.DELIVERY_OUTCOME_NOTIFIED
-		changed, err = close_delivery(s, &uow, d, domain.DELIVERY_DONE, "", outcome)
+		if d.kind == domain.DELIVERY_KIND_PROMPT && d.message_id != "" {
+			changed, finalized, err = prompt_succeeded(s, &uow, d)
+		} else {
+			changed, err = close_delivery(s, &uow, d, domain.DELIVERY_DONE, "", outcome)
+			finalized = changed
+		}
 		if err.code != .None do return
-		finalized = changed
 	} else {
 		if attempt != d.attempt do return
 		class := jsonx.extract_string(result_json, "class", top_level_only = false)

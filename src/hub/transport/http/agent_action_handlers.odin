@@ -661,7 +661,9 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 		defer delete(ids)
 		for row in rows { if row.read_at == "" do append(&ids, row.message_id) }
 		read_at := ""
-		marked_count, read_at, _ = content_service.mark_messages_read_by_ids_at(h.content, auth, ids[:])
+		mark_err: domain.Domain_Error
+		marked_count, read_at, mark_err = content_service.mark_messages_read_by_ids_at(h.content, auth, ids[:])
+		if mark_err.code != .None do return respond_error(mark_err, req.request_id)
 		// E4: the rows were listed before the mark; report the committed receipt.
 		if marked_count > 0 {
 			for &row in rows { if row.read_at == "" do row.read_at = read_at }

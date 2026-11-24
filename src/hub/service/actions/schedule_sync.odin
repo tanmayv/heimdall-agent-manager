@@ -2,6 +2,7 @@
 package actions
 
 import "core:encoding/json"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:mem"
 import "core:strings"
@@ -20,12 +21,13 @@ encode_object :: proc(obj: json.Object) -> string {
 	bytes,_:=json.marshal(obj)
 	return string(bytes)
 }
-schedule_row :: proc(sc: ^Sync_Context, owner, subject, event_type, action_id, trigger_id, run_id: string, rev: int, headers: json.Object) -> domain.Event_Outbox_Row {
+schedule_row :: proc(sc: ^Sync_Context, owner, subject, event_type, action_id, trigger_id, run_id: string, rev: int, headers: json.Object, not_before: string = "") -> domain.Event_Outbox_Row {
 	id:=platform.generate_id(sc.ids,"evt_")
 	data:=make(json.Object)
 	defer delete(data)
 	if rev>0 do data["rev"]=json.Integer(rev)
 	if run_id!="" do data["run_id"]=run_id
+ if not_before!="" do data["not_before"]=not_before
 	body:=json.Object{"event_id"=id,"type"=event_type,"class"=string("occurrence"),"owner_user_id"=owner,"data"=data}
 	defer delete(body)
 	if action_id!="" do body["action_id"]=action_id
@@ -76,7 +78,7 @@ deferral_row :: proc(sc: ^Sync_Context, owner, action_id, run_id, not_before: st
 	at:=platform.format_rfc3339_utc(time.unix(ms/1000,(ms%1000)*1_000_000))
 	headers:=json.Object{"Nats-Schedule"=fmt.tprintf("@at %s",at),"Nats-Schedule-Target"=fmt.tprintf("ev.%s.action.%s.resume",owner,action_id),"Nats-Schedule-TTL"=string(SCHEDULE_FIRE_TTL)}
 	defer delete(headers)
-	return schedule_row(sc,owner,fmt.tprintf("sched.def.defer.%s",action_id),"action.resume",action_id,"",run_id,0,headers),{}
+	return schedule_row(sc,owner,fmt.tprintf("sched.def.defer.%s",action_id),"action.resume",action_id,"",run_id,0,headers,not_before),{}
 }
 schedule_on_change :: proc(sc: ^Sync_Context, before, after: ^domain.Action_Trigger) -> domain.Domain_Error {
 	row:domain.Event_Outbox_Row
@@ -217,4 +219,16 @@ reconcile :: proc(s: ^Service, conn: ^nats.Connection) -> (done: bool, err: doma
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	uow.ctx = nil
 	return committed, commit_err
+}
+
+// Encode the entire key, including empty or punctuation-containing keys, into
+// one subject token. Trigger IDs are globally unique.
+settle_deferral_row :: proc(sc: ^Sync_Context, run: domain.Action_Run) -> (domain.Event_Outbox_Row, domain.Domain_Error) {
+ row, err := deferral_row(sc, string(run.owner_user_id), string(run.action_id), run.run_id, run.not_before)
+ if err.code != .None do return {}, err
+ if !nats.subject_token(run.trigger_id) {domain.event_outbox_row_destroy(&row); return {}, detail_error("invalid_subject_token")}
+ delete(row.subject)
+ key := string(hex.encode(transmute([]u8)run.settle_key, context.temp_allocator))
+ row.subject = strings.clone(fmt.tprintf("sched.def.settle.%s.k%s", run.trigger_id, key))
+ return row, {}
 }

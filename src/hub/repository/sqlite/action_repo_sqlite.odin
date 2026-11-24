@@ -26,6 +26,8 @@ new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.A
 		triggers_match = actions_triggers_match,
 		triggers_effective = actions_triggers_effective,
 		run_insert = actions_run_insert,
+        run_settle_pending = actions_run_settle_pending,
+        run_settle_waiting = actions_run_settle_waiting,
 		run_get = actions_run_get,
 		run_open = actions_run_open,
 		runs_due = actions_runs_due,
@@ -98,7 +100,7 @@ actions_action_query :: proc(ctx: rawptr, query: string, params: []string) -> ([
 	return result, {}
 }
 
-ACTIONS_TRIGGER_COLUMNS :: "trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at"
+ACTIONS_TRIGGER_COLUMNS :: "trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s"
 actions_trigger_read :: proc(stmt: sqlite3_stmt) -> domain.Action_Trigger {
 	return {
 		trigger_id = string(column_text(stmt,0)),
@@ -114,6 +116,7 @@ actions_trigger_read :: proc(stmt: sqlite3_stmt) -> domain.Action_Trigger {
 		rev = int(sqlite3_column_int64(stmt,10)),
 		created_at = string(column_text(stmt,11)),
 		updated_at = string(column_text(stmt,12)),
+        delay_s = int(sqlite3_column_int64(stmt,13)),
 	}
 }
 
@@ -137,7 +140,7 @@ actions_trigger_query :: proc(ctx: rawptr, query: string, params: []string) -> (
 	return result, {}
 }
 
-ACTIONS_RUN_COLUMNS :: "run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at"
+ACTIONS_RUN_COLUMNS :: "run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending"
 actions_run_read :: proc(stmt: sqlite3_stmt) -> domain.Action_Run {
 	return {
 		run_id = string(column_text(stmt,0)),
@@ -160,6 +163,9 @@ actions_run_read :: proc(stmt: sqlite3_stmt) -> domain.Action_Run {
 		created_at = string(column_text(stmt,17)),
 		started_at = string(column_text(stmt,18)),
 		finished_at = string(column_text(stmt,19)),
+        delay_s = int(sqlite3_column_int64(stmt,20)),
+        settle_key = column_text(stmt,21),
+        settle_pending = sqlite3_column_int64(stmt,22) != 0,
 	}
 }
 
@@ -222,21 +228,21 @@ actions_save :: proc(ctx: rawptr, v: domain.Action) -> domain.Domain_Error {
 	return err
 }
 
-ACTIONS_SQL_TRIGGER_SAVE :: "INSERT INTO action_triggers(trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(trigger_id) DO UPDATE SET kind=excluded.kind,config=excluded.config,event_type=excluded.event_type,subject_filter=excluded.subject_filter,match_key=excluded.match_key,data_filter=excluded.data_filter,enabled=excluded.enabled,rev=excluded.rev,updated_at=excluded.updated_at;"
+ACTIONS_SQL_TRIGGER_SAVE :: "INSERT INTO action_triggers(trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(trigger_id) DO UPDATE SET kind=excluded.kind,config=excluded.config,event_type=excluded.event_type,subject_filter=excluded.subject_filter,match_key=excluded.match_key,data_filter=excluded.data_filter,enabled=excluded.enabled,rev=excluded.rev,updated_at=excluded.updated_at,delay_s=excluded.delay_s;"
 
 actions_trigger_save :: proc(ctx: rawptr, v: domain.Action_Trigger) -> domain.Domain_Error {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
-	_, err := actions_write(ctx,ACTIONS_SQL_TRIGGER_SAVE,{string(v.trigger_id),string(v.action_id),string(v.owner_user_id),string(v.kind),string(v.config_json),string(v.event_type),string(v.subject_filter),string(v.match_key),string(v.data_filter_json),("1" if v.enabled else "0"),fmt.tprintf("%d",v.rev),string(v.created_at),string(v.updated_at)})
+	_, err := actions_write(ctx,ACTIONS_SQL_TRIGGER_SAVE,{string(v.trigger_id),string(v.action_id),string(v.owner_user_id),string(v.kind),string(v.config_json),string(v.event_type),string(v.subject_filter),string(v.match_key),string(v.data_filter_json),("1" if v.enabled else "0"),fmt.tprintf("%d",v.rev),string(v.created_at),string(v.updated_at),fmt.tprintf("%d",v.delay_s)})
 	return err
 }
 
-ACTIONS_SQL_RUN_INSERT :: "INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20) ON CONFLICT(occurrence_key) DO NOTHING;"
+ACTIONS_SQL_RUN_INSERT :: "INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23) ON CONFLICT(occurrence_key) DO NOTHING;"
 
 actions_run_insert :: proc(ctx: rawptr, v: domain.Action_Run) -> (bool, domain.Domain_Error) {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
-	return actions_write(ctx,ACTIONS_SQL_RUN_INSERT,{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at)})
+	return actions_write(ctx,ACTIONS_SQL_RUN_INSERT,{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),fmt.tprintf("%d",v.delay_s),v.settle_key,("1" if v.settle_pending else "0")})
 }
 
 ACTIONS_SQL_GET :: "SELECT action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at FROM actions WHERE action_id=?1;"
@@ -250,7 +256,7 @@ actions_get :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action, bool, 
 	return rows[0],true,{}
 }
 
-ACTIONS_SQL_TRIGGER_GET :: "SELECT trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at FROM action_triggers WHERE trigger_id=?1;"
+ACTIONS_SQL_TRIGGER_GET :: "SELECT trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s FROM action_triggers WHERE trigger_id=?1;"
 
 actions_trigger_get :: proc(ctx: rawptr, id: string) -> (domain.Action_Trigger, bool, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -261,7 +267,7 @@ actions_trigger_get :: proc(ctx: rawptr, id: string) -> (domain.Action_Trigger, 
 	return rows[0],true,{}
 }
 
-ACTIONS_SQL_RUN_GET :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at FROM action_runs WHERE run_id=?1;"
+ACTIONS_SQL_RUN_GET :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE run_id=?1;"
 
 actions_run_get :: proc(ctx: rawptr, id: string) -> (domain.Action_Run, bool, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -272,7 +278,7 @@ actions_run_get :: proc(ctx: rawptr, id: string) -> (domain.Action_Run, bool, do
 	return rows[0],true,{}
 }
 
-ACTIONS_SQL_RUN_OPEN :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at FROM action_runs WHERE action_id=?1 AND state IN ('queued','deferred','routed');"
+ACTIONS_SQL_RUN_OPEN :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE action_id=?1 AND state IN ('queued','deferred','routed') AND settle_pending=0;"
 
 actions_run_open :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action_Run, bool, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -299,7 +305,7 @@ actions_rules_list :: proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Actio
 	return actions_rule_query(ctx,ACTIONS_SQL_RULES_LIST,{string(id)})
 }
 
-ACTIONS_SQL_TRIGGERS_LIST :: "SELECT trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at FROM action_triggers WHERE action_id=?1 ORDER BY created_at,trigger_id;"
+ACTIONS_SQL_TRIGGERS_LIST :: "SELECT trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s FROM action_triggers WHERE action_id=?1 ORDER BY created_at,trigger_id;"
 
 actions_triggers_list :: proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Action_Trigger, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -307,7 +313,7 @@ actions_triggers_list :: proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Ac
 	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_LIST,{string(id)})
 }
 
-ACTIONS_SQL_TRIGGERS_MATCH :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.owner_user_id=?1 AND t.event_type=?2 AND (t.match_key=?3 OR t.match_key='') AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
+ACTIONS_SQL_TRIGGERS_MATCH :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.owner_user_id=?1 AND t.event_type=?2 AND (t.match_key=?3 OR t.match_key='') AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
 
 actions_triggers_match :: proc(ctx: rawptr, owner,event_type,subject: string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -315,7 +321,7 @@ actions_triggers_match :: proc(ctx: rawptr, owner,event_type,subject: string) ->
 	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_MATCH,{owner,event_type,subject})
 }
 
-ACTIONS_SQL_TRIGGERS_EFFECTIVE :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.kind=?1 AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
+ACTIONS_SQL_TRIGGERS_EFFECTIVE :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.kind=?1 AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
 
 actions_triggers_effective :: proc(ctx: rawptr, kind: string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -323,7 +329,7 @@ actions_triggers_effective :: proc(ctx: rawptr, kind: string) -> ([]domain.Actio
 	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_EFFECTIVE,{kind})
 }
 
-ACTIONS_SQL_RUNS_DUE :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at FROM action_runs WHERE state IN ('queued','deferred') AND (state='queued' OR not_before<=?1) ORDER BY created_at,run_id LIMIT ?2;"
+ACTIONS_SQL_RUNS_DUE :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND (state='queued' OR not_before<=?1) ORDER BY created_at,run_id LIMIT ?2;"
 
 actions_runs_due :: proc(ctx: rawptr, now: string, limit: int) -> ([]domain.Action_Run, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -331,7 +337,7 @@ actions_runs_due :: proc(ctx: rawptr, now: string, limit: int) -> ([]domain.Acti
 	return actions_run_query(ctx,ACTIONS_SQL_RUNS_DUE,{now,fmt.tprintf("%d",limit)})
 }
 
-ACTIONS_SQL_RUNS_DEFERRED :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at FROM action_runs WHERE state IN ('queued','deferred') AND state='deferred' ORDER BY created_at,run_id LIMIT ?1;"
+ACTIONS_SQL_RUNS_DEFERRED :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND state='deferred' ORDER BY created_at,run_id LIMIT ?1;"
 
 actions_runs_deferred :: proc(ctx: rawptr, limit: int) -> ([]domain.Action_Run, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -339,7 +345,7 @@ actions_runs_deferred :: proc(ctx: rawptr, limit: int) -> ([]domain.Action_Run, 
 	return actions_run_query(ctx,ACTIONS_SQL_RUNS_DEFERRED,{fmt.tprintf("%d",limit)})
 }
 
-ACTIONS_SQL_RUNS_LIST :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3;"
+ACTIONS_SQL_RUNS_LIST :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3;"
 
 actions_runs_list :: proc(ctx: rawptr, id: domain.Action_ID, limit: int, before_created_at: string, before_id: string) -> ([]domain.Action_Run, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -397,7 +403,7 @@ actions_rules_replace :: proc(ctx: rawptr, id: domain.Action_ID, rows: []domain.
 actions_run_transition :: proc(ctx: rawptr, v: domain.Action_Run, from_state: string) -> (bool, domain.Domain_Error) {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
-	return actions_write(ctx,"UPDATE action_runs SET trigger_id=?3,event_type=?6,event_id=?7,stream_sequence=?8,event_params=?9,state=?10,not_before=?11,joined_run_id=?12,reason=?13,rule_position=?14,target_instance_id=?15,message_id=?16,delivery_id=?17,started_at=?19,finished_at=?20 WHERE run_id=?1 AND state=?21;",{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),from_state})
+	return actions_write(ctx,"UPDATE action_runs SET trigger_id=?3,event_type=?6,event_id=?7,stream_sequence=?8,event_params=?9,state=?10,not_before=?11,joined_run_id=?12,reason=?13,rule_position=?14,target_instance_id=?15,message_id=?16,delivery_id=?17,started_at=?19,finished_at=?20,delay_s=?21,settle_key=?22,settle_pending=?23 WHERE run_id=?1 AND state=?24;",{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),fmt.tprintf("%d",v.delay_s),v.settle_key,("1" if v.settle_pending else "0"),from_state})
 }
 
 ACTIONS_SQL_RUN_LAST_STARTED_AT :: "SELECT started_at FROM action_runs WHERE action_id=?1 AND started_at<>'' ORDER BY created_at DESC,run_id DESC LIMIT 1;"
@@ -451,13 +457,13 @@ actions_rules_for_owner :: proc(ctx:rawptr,owner:string)->([]iface.Action_Rule_R
   append(&rows,iface.Action_Rule_Row{column_text(stmt,4),actions_rule_read(stmt)})
  }
 }
-ACTIONS_SQL_TRIGGERS_OWNER :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE a.owner_user_id=?1 ORDER BY t.action_id,t.created_at,t.trigger_id;"
+ACTIONS_SQL_TRIGGERS_OWNER :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE a.owner_user_id=?1 ORDER BY t.action_id,t.created_at,t.trigger_id;"
 actions_triggers_for_owner :: proc(ctx:rawptr,owner:string)->([]domain.Action_Trigger,domain.Domain_Error) {
  guard:=tx_repository_enter(); defer tx_repository_leave(guard)
  return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_OWNER,{owner})
 }
 // Materialize the page before grouping joined rows, then join delivery expiry once.
-ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),coalesce(d.expires_at,'') FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON p.state='routed' AND d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
+ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),CASE WHEN p.state='routed' THEN coalesce(d.expires_at,'') ELSE '' END,coalesce(d.state,''),coalesce(d.outcome,'') FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
 actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,before_id:string)->([]iface.Action_Run_History,domain.Domain_Error) {
  guard:=tx_repository_enter(); defer tx_repository_leave(guard)
  stmt,err:=actions_prepare(ctx,ACTIONS_SQL_HISTORY,{string(id),before,fmt.tprintf("%d",limit),before_id})
@@ -468,11 +474,11 @@ actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,bef
   rc:=sqlite3_step(stmt)
   if rc==SQLITE_DONE do return rows[:],{}
   if rc!=SQLITE_ROW {
-   for &row in rows {domain.action_run_destroy(&row.run);delete(row.delivery_expires_at)}
+   for &row in rows {domain.action_run_destroy(&row.run);delete(row.delivery_expires_at);delete(row.delivery_state);delete(row.delivery_outcome)}
    delete(rows)
    return nil,domain.domain_error(.Internal_Error,"could not load action history")
   }
-  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,20)),column_text(stmt,21)})
+  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,23)),column_text(stmt,24),column_text(stmt,25),column_text(stmt,26)})
  }
 }
 ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND created_at<?1 ORDER BY created_at,run_id LIMIT ?2);"
@@ -480,4 +486,23 @@ actions_runs_sweep :: proc(ctx:rawptr,cutoff:string,limit:int)->domain.Domain_Er
  guard:=tx_repository_enter(); defer tx_repository_leave(guard)
  _,err:=actions_write(ctx,ACTIONS_SQL_SWEEP,{cutoff,fmt.tprintf("%d",clamp(limit,1,128))})
  return err
+}
+
+actions_run_settle_pending :: proc(ctx: rawptr, trigger_id, settle_key: string) -> (domain.Action_Run, bool, domain.Domain_Error) {
+ guard := tx_repository_enter(); defer tx_repository_leave(guard)
+ rows, err := actions_run_query(ctx, "SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE trigger_id=?1 AND settle_key=?2 AND state='deferred' AND settle_pending=1;", {trigger_id,settle_key})
+ defer delete(rows)
+ if err.code != .None || len(rows)==0 do return {},false,err
+ return rows[0],true,{}
+}
+
+
+actions_run_settle_waiting :: proc(ctx: rawptr, id: domain.Action_ID, now: string) -> (bool, domain.Domain_Error) {
+ guard := tx_repository_enter()
+ defer tx_repository_leave(guard)
+ stmt, err := actions_prepare(ctx, "SELECT EXISTS(SELECT 1 FROM action_runs WHERE action_id=?1 AND state='deferred' AND settle_pending=1 AND not_before<=?2);", {string(id),now})
+ if err.code != .None do return false, err
+ defer sqlite3_finalize(stmt)
+ if sqlite3_step(stmt) != SQLITE_ROW do return false, domain.domain_error(.Internal_Error,"could not read waiting settle runs")
+ return sqlite3_column_int64(stmt,0)!=0, {}
 }

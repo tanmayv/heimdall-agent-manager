@@ -131,10 +131,11 @@ runtime_entry :: proc(data:rawptr) {
     if view.event_type=="action.resume" {
      data,_:=view.envelope["data"].(json.Object)
      id,ok:=data["run_id"].(string)
+     deadline,_:=data["not_before"].(string)
      claimed,present:=view.envelope["owner_user_id"]
      allowed:=!present
      if present {owner,is_string:=claimed.(string); allowed=is_string && owner==view.owner}
-     if ok && allowed do append(&hints,Resume_Hint{owner=strings.clone(view.owner),run_id=strings.clone(id)})
+     if ok && allowed do append(&hints,Resume_Hint{owner=strings.clone(view.owner),run_id=strings.clone(id),not_before=strings.clone(deadline)})
     }
    }
   }

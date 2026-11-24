@@ -112,6 +112,8 @@ catalog_chain_state :: proc(
 	}
 	p := json_begin()
 	json_str(&p, "state", state)
+	json_str(&p, "completed_at", after.completed_at)
+	json_str(&p, "updated_at", after.updated_at)
 	_, err := catalog_emit(
 		repo,
 		clock,
@@ -234,6 +236,10 @@ catalog_review_request :: proc(svc: ^Service, task: domain.Task) -> domain.Domai
 catalog_work_finished :: proc(svc: ^Service, chain: domain.Task_Chain, outcome: string) -> domain.Domain_Error {
 	p := json_begin()
 	json_str(&p, "outcome", outcome)
+ current, found, read_err := iface.taskchain_get_chain(svc.repo, chain.chain_id)
+ if read_err.code != .None do return read_err
+ if !found do return domain.domain_error(.Not_Found, "chain not found")
+ json_int(&p, "work_revision", current.work_revision)
 	_, err := catalog_emit(
 		svc.repo,
 		svc.clock,

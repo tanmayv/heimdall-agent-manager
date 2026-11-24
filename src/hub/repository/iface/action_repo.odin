@@ -3,7 +3,7 @@ package iface
 import domain "odin_test:hub/domain"
 
 Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
-Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at: string }
+Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string }
 Action_Repository :: struct {
  rules_for_owner: proc(ctx:rawptr, owner:string)->([]Action_Rule_Row,domain.Domain_Error),
  triggers_for_owner: proc(ctx:rawptr, owner:string)->([]domain.Action_Trigger,domain.Domain_Error),
@@ -31,6 +31,8 @@ Action_Repository :: struct {
 	// Enabled triggers of one kind whose action is enabled, across all owners (reconcile).
 	triggers_effective: proc(ctx: rawptr, kind: string) -> ([]domain.Action_Trigger, domain.Domain_Error),
 	// runs
+	run_settle_pending: proc(ctx: rawptr, trigger_id, settle_key: string) -> (domain.Action_Run, bool, domain.Domain_Error),
+	run_settle_waiting: proc(ctx: rawptr, action_id: domain.Action_ID, now: string) -> (bool, domain.Domain_Error),
 	run_insert: proc(ctx: rawptr, r: domain.Action_Run) -> (inserted: bool, err: domain.Domain_Error),  // INSERT OR IGNORE on occurrence_key
 	run_get:    proc(ctx: rawptr, run_id: string) -> (domain.Action_Run, bool, domain.Domain_Error),
 	run_open:   proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action_Run, bool, domain.Domain_Error), // the queued, deferred or routed run

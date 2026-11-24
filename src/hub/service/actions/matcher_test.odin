@@ -19,6 +19,7 @@ Action_Test :: struct {
  db:sqlite.Conn,
  repos:iface.Repositories,
  actions_impl:sqlite.Action_Repo_SQLite,
+ bots_impl:sqlite.Bot_Repo_SQLite,
  content_impl:sqlite.Content_Repo_SQLite,
  outbox_impl:sqlite.Event_Outbox_Repo_SQLite,
  deliveries_impl:sqlite.Pipeline_Delivery_Repo_SQLite,
@@ -39,7 +40,10 @@ Action_Test :: struct {
  hint_valid:bool,
  support:int,
  last_cause,last_notice:string,
- flag_off,fail_prompt,fail_retire:bool,
+ validity_reads,settle_plans:int,
+ chain_status:domain.Task_Chain_Status,
+ chain_revision:i64,
+ flag_off,fail_prompt,fail_retire,bots_on:bool,
 }
 action_test_clock :: proc(ctx:rawptr)->string {
  return platform.format_rfc3339_utc(time.Time{_nsec=((^Action_Test)(ctx)).now_ms*1_000_000})
@@ -53,6 +57,7 @@ action_test_experiments :: proc(ctx:rawptr,owner:string)->([dynamic]domain.Exper
  f:=(^Action_Test)(ctx)
  rows: [dynamic]domain.Experiment
  if !f.flag_off do append(&rows,domain.Experiment{owner_user_id=strings.clone(owner),key=strings.clone("actions"),enabled=true})
+ if f.bots_on do append(&rows,domain.Experiment{owner_user_id=strings.clone(owner),key=strings.clone("bots"),enabled=true})
  return rows,{}
 }
 action_test_bridge :: proc(ctx:rawptr,id:string)->(domain.Bridge,bool,domain.Domain_Error) {
@@ -105,6 +110,7 @@ action_test_case :: proc(t:^testing.T,scenario:proc(^testing.T,^Action_Test)) {
   migrated,_:=sqlite.run_migrations(&f.db)
   if !testing.expect(t,migrated) do return
   testing.expect(t,sqlite.exec(&f.db,"PRAGMA foreign_keys=OFF;"))
+  f.repos.bots=sqlite.new_bot_repository(&f.bots_impl,&f.db)
   f.repos.actions=sqlite.new_action_repository(&f.actions_impl,&f.db)
   f.repos.content=sqlite.new_content_repository(&f.content_impl,&f.db)
   f.repos.event_outbox=sqlite.new_event_outbox_repository(&f.outbox_impl,&f.db)

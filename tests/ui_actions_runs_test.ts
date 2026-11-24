@@ -1,7 +1,7 @@
 import './helpers/vaultEndpointHarness.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runRowText, RUN_REASON_TEXT } from '../src/ui/components/actions/RunHistory.tsx';
+import { runRowText, runTargetLabel, RUN_REASON_TEXT } from '../src/ui/components/actions/RunHistory.tsx';
 const base: any = { not_before: '2026-12-01T09:00:00Z', joined_run_id: 'arun_12345678901234', joined_count: 0, delivery_expires_at: '2026-12-02T09:00:00Z' };
 test('all seven run states have the required text', () => {
   assert.equal(runRowText({ ...base, state: 'queued' }), 'Waiting');
@@ -15,6 +15,12 @@ test('v7 delivery failure reasons have exact wording', () => {
   assert.deepEqual(Object.fromEntries(['bridge_offline', 'no_answer', 'start_failed', 'bridge_too_old', 'no_placement', 'target_missing', 'delivery_failed'].map(k => [k, RUN_REASON_TEXT[k]])), {
     bridge_offline: 'The machine stayed offline', no_answer: 'The machine did not answer', start_failed: 'The agent could not be started on that machine', bridge_too_old: "The machine's bridge needs an update", no_placement: 'No machine matched the rules', target_missing: 'The target no longer exists', delivery_failed: 'The prompt could not be stored',
   });
+});
+
+test('prompt delivery distinguishes awaiting read, read, and unread timeout', () => {
+  assert.equal(runRowText({ ...base, state: 'routed', delivery_state: 'delivered' }), 'Delivered (awaiting read)');
+  assert.equal(runRowText({ ...base, state: 'delivered', delivery_state: 'done', delivery_outcome: 'read' }), 'Delivered (read)');
+  assert.equal(runRowText({ ...base, state: 'failed', reason: 'not_read' }), 'The agent did not read the prompt');
 });
 
 test('Load more sends both fields from the last rendered run', async () => {
@@ -69,4 +75,15 @@ test('Load more sends both fields from the last rendered run', async () => {
       else delete g[name];
     }
   }
+});
+
+test('run targets resolve bot names by the actual instance and degrade to raw IDs', () => {
+  const catalog: any = {
+    bots: { all: [{ id: 'bot_1', label: 'Ninjy', instanceId: 'inst_bot' }] },
+    instances: { byId: new Map([['inst_agent', { label: 'Reviewer' }]]) },
+  };
+  assert.equal(runTargetLabel({ target_instance_id: 'inst_bot' }, catalog), 'Bot · Ninjy');
+  assert.equal(runTargetLabel({ target_instance_id: 'inst_agent' }, catalog), 'Reviewer');
+  assert.equal(runTargetLabel({ target_instance_id: 'inst_old_bot' }, catalog), 'inst_old_bot');
+  assert.equal(runTargetLabel({ target_instance_id: '' }, catalog), '');
 });
