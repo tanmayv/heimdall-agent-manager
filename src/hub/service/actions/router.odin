@@ -90,12 +90,15 @@ finish_run :: proc(r:^Router,uow:^iface.Unit_Of_Work,run:domain.Action_Run,state
   waiting,read_err:=repo.run_settle_waiting(repo.ctx,run.action_id,now)
   if read_err.code!=.None do return read_err
   if !waiting do return {}
-  sc:=Sync_Context{outbox=&uow.repos.event_outbox,clock=r.clock,ids=r.ids}
-  row:=schedule_row(&sc,string(run.owner_user_id),fmt.tprintf("ev.%s.action.%s.ready",run.owner_user_id,run.action_id),"action.ready",string(run.action_id),"","",0,json.Object{})
-  defer domain.event_outbox_row_destroy(&row)
-  return sc.outbox.append(sc.outbox.ctx,row)
+  return action_ready(r,uow,run)
  }
  return {}
+}
+action_ready :: proc(r:^Router,uow:^iface.Unit_Of_Work,run:domain.Action_Run)->domain.Domain_Error {
+ sc:=Sync_Context{outbox=&uow.repos.event_outbox,clock=r.clock,ids=r.ids}
+ row:=schedule_row(&sc,string(run.owner_user_id),fmt.tprintf("ev.%s.action.%s.ready",run.owner_user_id,run.action_id),"action.ready",string(run.action_id),"","",0,json.Object{})
+ defer domain.event_outbox_row_destroy(&row)
+ return sc.outbox.append(sc.outbox.ctx,row)
 }
 expire_open_run :: proc(r:^Router,uow:^iface.Unit_Of_Work,action_id:domain.Action_ID)->(bool,domain.Domain_Error) {
  repo:=&uow.repos.actions
@@ -110,10 +113,10 @@ on_delivery_final :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,d:domain.Pipeline_D
  r:=(^Router)(ctx)
  if !strings.has_prefix(d.ref,"run:") do return {}
  repo:=&uow.repos.actions
- run,found,err:=repo.run_get(repo.ctx,d.ref[4:])
- defer domain.action_run_destroy(&run)
+ members,err:=repo.runs_for_delivery(repo.ctx,d.delivery_id)
+ defer domain.action_runs_destroy(members)
  if err.code!=.None do return err
- if !found || run.state!=domain.ACTION_RUN_ROUTED || run.delivery_id!=d.delivery_id do return {}
+ if len(members)==0 do return {}
  state,reason:=domain.ACTION_RUN_FAILED,d.reason
  switch d.state {
  case domain.DELIVERY_DONE: state=domain.ACTION_RUN_DELIVERED; reason=""
@@ -121,7 +124,19 @@ on_delivery_final :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,d:domain.Pipeline_D
   switch reason {case "bridge_offline","no_answer","bridge_too_old","target_missing","not_read": case: reason="start_failed"}
  case: return {}
  }
- return finish_run(r,uow,run,state,reason,platform.clock_now(r.clock))
+ now:=platform.clock_now(r.clock)
+ if err:=repo.runs_finish_delivery(repo.ctx,d.delivery_id,state,reason,now);err.code!=.None do return err
+ wake,release_err:=repo.runs_release_parked(repo.ctx,string(members[0].owner_user_id),members[0].target_instance_id,now)
+ if release_err.code!=.None do return release_err
+ for run in members {
+  if err:=repo.runs_prune(repo.ctx,run.action_id,200,history_cutoff(now));err.code!=.None do return err
+  waiting,err:=repo.run_settle_waiting(repo.ctx,run.action_id,now)
+  if err.code!=.None do return err
+  wake=wake || waiting
+ }
+ // One arrival drains every due action, including settle waiters. Share its wake.
+ if wake do return action_ready(r,uow,members[0])
+ return {}
 }
 prompt_plan :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude:[]string)->Plan {
  return prompt_plan_with_rules(r,action,run,exclude,nil,false)
@@ -282,14 +297,29 @@ on_delivery_replace :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,d:domain.Pipeline
  copy(ids,excluded); ids[len(excluded)]=d.bridge_id
  plan:=EFFECTS[0].plan(r,action,run,ids)
  if !plan.ok do return false,{}
- message,id,route_err:=route_prompt(r,uow,action,run,plan,d.round+1,ids)
+ rows,rows_err:=repo.runs_for_delivery(repo.ctx,d.delivery_id)
+ defer domain.action_runs_destroy(rows)
+ if rows_err.code!=.None do return false,rows_err
+ members:=make([]Prepared_Run,len(rows),context.temp_allocator)
+ defer for &item in members do domain.action_destroy(&item.action)
+ updates:=make([]iface.Action_Batch_Member,len(rows),context.temp_allocator)
+ for row,i in rows {
+  member_action,found,e:=repo.get(repo.ctx,row.action_id)
+  if e.code!=.None do return false,e
+  if !found do return false,domain.domain_error(.Conflict,"batch action missing")
+  members[i]={action=member_action,run=row}
+  updates[i]={run_id=row.run_id,from_state=domain.ACTION_RUN_ROUTED}
+ }
+ if len(members)==0 do return false,{}
+ body,metadata,notice_count,render_err:=batch_render(repo,members)
+ if render_err.code!=.None do return false,render_err
+ message,id,route_err:=route_prompt(r,uow,action,run,plan,d.round+1,ids,body,metadata,notice_count)
  if route_err.code!=.None do return false,route_err
  if e:=r.agents.retire_prompt(r.agents.ctx,uow,string(action.owner_user_id),d.message_id,plan.instance_id); e.code!=.None do return false,e
- next:=run
- next.message_id=message; next.delivery_id=id; next.target_instance_id=plan.instance_id; next.rule_position=plan.rule_position
- changed,transition_err:=repo.run_transition(repo.ctx,next,domain.ACTION_RUN_ROUTED)
- if transition_err.code!=.None do return false,transition_err
- if !changed do return false,domain.domain_error(.Conflict,"action run changed during replacement")
+ if e:=repo.runs_route_batch(repo.ctx,updates,id,message,plan.instance_id,run.started_at,plan.rule_position);e.code!=.None do return false,e
+ if plan.spawned {
+  for item in members do if e:=repo.set_last_spawned(repo.ctx,item.action.id,plan.instance_id,platform.clock_now(r.clock));e.code!=.None do return false,e
+ }
  return true,{}
 }
 
@@ -334,7 +364,7 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
    if err.code!=.None {iface.unit_of_work_rollback(&uow); return}
    progress:=false
    for run in rows {
-    if run.not_before<=now do continue
+    if run.target_instance_id!="" || run.not_before<=now do continue
     why:="rate_limited"
     if run.delay_s>0 do why="schedules_unsupported"
     if e:=finish_run(r,&uow,run,domain.ACTION_RUN_SKIPPED,why,now); e.code!=.None {

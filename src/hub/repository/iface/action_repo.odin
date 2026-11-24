@@ -3,9 +3,12 @@ package iface
 import domain "odin_test:hub/domain"
 
 Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
-Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string }
+Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string, batch_size: int }
 Action_Batch_Member :: struct {run_id, from_state: string}
 Action_Repository :: struct {
+ runs_for_delivery: proc(ctx:rawptr,delivery_id:string)->([]domain.Action_Run,domain.Domain_Error),
+ runs_finish_delivery: proc(ctx:rawptr,delivery_id,state,reason,now:string)->domain.Domain_Error,
+ runs_release_parked: proc(ctx:rawptr,owner,instance_id,now:string)->(bool,domain.Domain_Error),
  // Shared delivery write is atomic: every member must still be in its prepared state.
  runs_route_batch: proc(ctx:rawptr,members:[]Action_Batch_Member,delivery_id,message_id,instance_id,started_at:string,rule_position:int)->domain.Domain_Error,
  target_open_delivery: proc(ctx:rawptr,owner,instance_id:string)->(string,string,bool,domain.Domain_Error),
@@ -42,7 +45,7 @@ Action_Repository :: struct {
 	run_open:   proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action_Run, bool, domain.Domain_Error), // the queued, deferred or routed run
 	// Runs that are due for routing: state queued, or state deferred with not_before <= now. Never a routed run. Ordered by created_at, run_id.
 	runs_due:   proc(ctx: rawptr, now: string, limit: int) -> ([]domain.Action_Run, domain.Domain_Error),
-	// Runs in state deferred, whatever their not_before. Ordered by created_at, run_id.
+	// Timer-deferred runs (target_instance_id empty), whatever their not_before. Excludes parked runs. Ordered by created_at, run_id.
 	runs_deferred: proc(ctx: rawptr, limit: int) -> ([]domain.Action_Run, domain.Domain_Error),
 	// Compare-and-set: writes next only if the stored state equals from_state. changed = false when it did not.
 	run_transition: proc(ctx: rawptr, next: domain.Action_Run, from_state: string) -> (changed: bool, err: domain.Domain_Error),
