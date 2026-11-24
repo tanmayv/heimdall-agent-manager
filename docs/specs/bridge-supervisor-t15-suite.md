@@ -88,6 +88,18 @@ check that a default build carries no test key.
   wording should follow (or the runtime must keep a last-connected timestamp) — decided
   outside T15.
 
+- **Windows file-in-use, verified on windows-latest (CI run 45337661021).** A handle without
+  `FILE_SHARE_DELETE` on `.staging-<op>/bin` blocks the staging rename, and one on
+  `current.json` blocks `ReplaceFileW`; both ops waited in the W3 loop and committed once
+  the handle closed (spec §17 "verify in T15": confirmed). GC of a tree whose `ham-bridge.exe`
+  was still **running** (a straggler): the directory rename to `.trash-*` *succeeded* and
+  only the delete failed, so the report's F11 hypothesis ("a directory with a loaded image
+  cannot be renamed") does not hold for running executables; W1 (never touch a live tree) is
+  what protects live trees, and W5 left the `.trash-*` for the next start, which removed it.
+- **A refusing launcher writes `launcher-status.json` into the root it refused** (here another
+  user's root that was opened to everyone on purpose) and waits `refuse_wait` (60 s) before
+  exiting 78. Diagnostics only and harmless with normal permissions; noted for Phase 2.
+
 ## Launcher and supervisor in the bundle, not the service entry point
 
 - Bundles: `release-ham-launcher` / `release-ham-supervisor` flake attrs (same static
