@@ -1,6 +1,7 @@
 package bots
 
 import "core:strings"
+import "core:os"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -78,7 +79,7 @@ test_queued_reaction_intake_busy_idle_failure_duplicate :: proc(t: ^testing.T) {
 			}
 			expected := 0 if scenario == 0 || scenario == 3 else 1
 			testing.expect_value(t, state.calls, expected)
-			if expected > 0 do testing.expect_value(t, state.emoji, BOT_QUEUED_REACTION)
+			if expected > 0 do testing.expect_value(t, state.emoji, "⏳" if whatsapp else "✍")
 			messages, err := iface.messages_history(&f.repo, "bot_a", -1)
 			testing.expect(t, err.code == .None && len(messages) == 1, "intake succeeds even when reactions fail")
 			for &m in messages do domain.channel_message_destroy(&m)
@@ -142,4 +143,43 @@ test_queued_reaction_batch_failure_and_gating :: proc(t: ^testing.T) {
 		testing.expect_value(t, state.calls, expected)
 		pairing_fixture_destroy(f)
 	}
+}
+
+// An invalid provider reaction is reported through the production diagnostic
+// writer without aborting feedback for the next queued message.
+@(test)
+test_queued_provider_reaction_invalid_logged_nonfatal :: proc(t: ^testing.T) {
+	testing.expect_value(t, bots_queued_reaction("telegram"), "✍")
+	testing.expect_value(t, bots_queued_reaction("whatsapp"), "⏳")
+	testing.expect_value(t, bots_queued_reaction("web"), "")
+	f := pairing_fixture(t)
+	defer pairing_fixture_destroy(f)
+	pairing_test_bound(t, f)
+	state := Queued_Test_State{t = t, f = f, failure = .Invalid_Request}
+	f.adapter.ctx, f.adapter.react = &state, queued_invalid_test_react
+	binding, found, err := iface.binding_get_active_by_owner(&f.repo, "alice", "telegram")
+	defer domain.channel_binding_destroy(&binding)
+	if !testing.expect(t, found && err.code == .None) do return
+	reader, writer, pipe_err := os.pipe()
+	if !testing.expect(t, pipe_err == nil) do return
+	defer os.close(reader)
+	fresh := [2]domain.Channel_Message{
+		{binding_id = binding.binding_id, external_message_id = "mid"},
+		{binding_id = binding.binding_id, external_message_id = "mid"},
+	}
+	bots_queued_feedback(&f.service, fresh[:], writer)
+	os.close(writer)
+	buffer: [2048]byte
+	n, read_err := os.read(reader, buffer[:])
+	testing.expect(t, read_err == nil)
+	output := string(buffer[:n])
+	testing.expect_value(t, state.calls, 2)
+	testing.expect_value(t, state.emoji, "✍")
+	testing.expect_value(t, strings.count(output, "provider=telegram operation=queued_reaction kind=Invalid_Request http_status=400 provider_code=400 description=Bad Request: REACTION_INVALID"), 2)
+	testing.expect(t, !strings.contains(output, "111") && !strings.contains(output, "mid"))
+}
+
+queued_invalid_test_react :: proc(ctx: rawptr, chat, message, emoji: string) -> channel.Channel_Error {
+	_ = queued_test_react(ctx, chat, message, emoji)
+	return {kind = .Invalid_Request, http_status = 400, provider_code = 400, message = "Bad Request: REACTION_INVALID"}
 }

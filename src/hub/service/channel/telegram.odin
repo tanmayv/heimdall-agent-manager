@@ -46,7 +46,18 @@ telegram_error :: proc(status: int, transport: httpc.Error, code: int, descripti
 	case: kind = .Transient
 	}
 	wait := clamp(retry_after, 0, max(i64)/1000) * 1000
-	return {kind = kind, retry_after_ms = wait if kind == .Rate_Limited else 0, provider_code = code, message = "telegram request failed"}
+	// Only exact, fixed descriptions may escape the response scratch allocator.
+	// Unknown descriptions can contain credentials or user text and stay redacted.
+	message := "telegram request failed (description redacted)"
+	switch description {
+	case "Bad Request: REACTION_INVALID": message = "Bad Request: REACTION_INVALID"
+	case "Bad Request: REACTION_EMPTY": message = "Bad Request: REACTION_EMPTY"
+	case "Bad Request: message to react not found": message = "Bad Request: message to react not found"
+	case "Bad Request: MESSAGE_NOT_MODIFIED": message = "Bad Request: MESSAGE_NOT_MODIFIED"
+	case "Forbidden: bot was blocked by the user": message = "Forbidden: bot was blocked by the user"
+	case "Bad Request: not enough rights": message = "Bad Request: not enough rights"
+	}
+	return {kind = kind, http_status = status, retry_after_ms = wait if kind == .Rate_Limited else 0, provider_code = code, message = message}
 }
 
 Telegram_Envelope :: struct {
@@ -68,7 +79,9 @@ telegram_request :: proc(t: ^Telegram_Adapter, method: string, verb: httpc.Metho
 	if resp.status < 200 || resp.status >= 300 || !env.ok {
 		status := resp.status
 		if status >= 200 && status < 300 && env.error_code > 0 do status = env.error_code
-		return resp, telegram_error(status, .None, env.error_code, env.description, env.parameters.retry_after)
+		error := telegram_error(status, .None, env.error_code, env.description, env.parameters.retry_after)
+		error.http_status = resp.status // retain HTTP status for 200 + ok:false envelopes
+		return resp, error
 	}
 	if decode != nil do return resp, {kind = .Transient, message = "invalid telegram response"}
 	return resp, {}

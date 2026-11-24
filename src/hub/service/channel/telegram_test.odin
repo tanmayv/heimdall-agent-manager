@@ -425,3 +425,42 @@ test_telegram_media_errors_hide_token :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+@(test)
+test_telegram_feedback_safe_error_descriptions :: proc(t: ^testing.T) {
+	for description in ([]string{
+		"Bad Request: REACTION_INVALID",
+		"Bad Request: REACTION_EMPTY",
+		"Bad Request: message to react not found",
+		"Bad Request: MESSAGE_NOT_MODIFIED",
+		"Forbidden: bot was blocked by the user",
+		"Bad Request: not enough rights",
+	}) {
+		err := telegram_error(400, .None, 400, description, 0)
+		testing.expect_value(t, err.message, description)
+		testing.expect(t, err.kind == .Invalid_Request && err.http_status == 400 && err.provider_code == 400)
+	}
+	for unsafe in ([]string{
+		"Bad Request: REACTION_INVALID secret TEST:FAKE",
+		"Bad Request: REACTION_INVALID\nmessage text",
+		"secret TEST:FAKE +15551234567 user message",
+	}) {
+		err := telegram_error(400, .None, 400, unsafe, 0)
+		testing.expect_value(t, err.message, "telegram request failed (description redacted)")
+	}
+}
+
+@(test)
+test_telegram_invalid_reaction_description_survives_scratch :: proc(t: ^testing.T) {
+	f: Telegram_Test_Fixture
+	defer telegram_test_stop(&f)
+	if !telegram_test_start(t, &f) do return
+	a := telegram_adapter(&f.telegram)
+	testing.expect_value(t, a.provider, "telegram")
+	telegram_test_control(t, &f, "fail", struct {method: string, status, count: int, description: string}{"setMessageReaction", 400, 1, "Bad Request: REACTION_INVALID"})
+	err := a.react(a.ctx, "111", "42", "⏳")
+	testing.expect(t, err.kind == .Invalid_Request && err.http_status == 400 && err.provider_code == 400)
+	testing.expect_value(t, err.message, "Bad Request: REACTION_INVALID")
+	// Failure is best effort; the adapter remains usable for the allowed emoji.
+	testing.expect(t, a.react(a.ctx, "111", "42", "✍").kind == .None)
+}

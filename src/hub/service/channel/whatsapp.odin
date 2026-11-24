@@ -118,7 +118,7 @@ whatsapp_error :: proc(status: int, transport: httpc.Error, code: int) -> Channe
 	}
 	wait: i64
 	if kind == .Rate_Limited do wait = WHATSAPP_PAIR_RATE_RETRY_MS if code == 131056 else WHATSAPP_THROUGHPUT_RETRY_MS
-	return {kind = kind, retry_after_ms = wait, provider_code = code, message = "whatsapp request failed"}
+	return {kind = kind, http_status = status, retry_after_ms = wait, provider_code = code, message = "whatsapp request failed"}
 }
 
 // All provider descriptions and transport details are untrusted. Only fixed
