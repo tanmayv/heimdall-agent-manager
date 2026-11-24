@@ -9,6 +9,7 @@ import "core:testing"
 import "core:time"
 import domain "odin_test:hub/domain"
 import sqlite "odin_test:hub/repository/sqlite"
+import iface "odin_test:hub/repository/iface"
 
 @(test)
 test_compiled_rule_index_warm_300 :: proc(t:^testing.T) {action_test_case(t,compiled_index_warm)}
@@ -219,4 +220,48 @@ compiled_read_before_sweep :: proc(t:^testing.T,f:^Action_Test) {
  action_test_expect(t,f,domain.ACTION_RUN_FAILED,0)
  drain_due(&f.runtime.router)
  action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
+}
+
+@(test)
+test_compiled_rule_index_retention_200k :: proc(t:^testing.T) {action_test_case(t,compiled_retention_200k)}
+compiled_retention_200k :: proc(t:^testing.T,f:^Action_Test) {
+ testing.expect(t,sqlite.exec(&f.db,"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000) INSERT INTO actions(action_id,owner_user_id,prompt_text,target_kind,created_at,updated_at) SELECT 'history-'||x,'owner','p','instance','2026-11-23','2026-11-23' FROM n;"))
+ testing.expect(t,sqlite.exec(&f.db,"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<200) INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,state,created_at) SELECT a.action_id||'-'||x,a.action_id,'trigger','owner',a.action_id||'-'||x,'chain.state','skipped','2026-11-23T00:00:00Z' FROM actions a CROSS JOIN n WHERE a.action_id LIKE 'history-%';"))
+ started:=time.tick_now()
+ e:=sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000})
+ elapsed:=time.tick_since(started)
+ testing.expect_value(t,e.code,domain.Error_Code.None)
+ testing.expect_value(t,f.runtime.svc.history_cursor,i64(16))
+ // The replaced correlated scan took 8 seconds at this steady-state size.
+ testing.expect(t,elapsed<2*time.Second,fmt.tprintf("retention held the global transaction for %v",elapsed))
+ fmt.printf("F2 retention at 200k finished rows: %v (16 actions/page, no deletion)\n",elapsed)
+ testing.expect(t,sqlite.exec(&f.db,"CREATE TEMP TABLE retained_count(n INTEGER CHECK(n=200000)); INSERT INTO retained_count SELECT count(*) FROM action_runs;"))
+}
+compiled_expiry_fault :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,id:string)->(bool,domain.Domain_Error) {
+ if strings.has_prefix(id,"bad-") do return false,domain.domain_error(.Internal_Error,"injected expiry failure")
+ return action_test_expire(ctx,uow,id)
+}
+@(test)
+test_compiled_rule_index_expiry_failure_isolation :: proc(t:^testing.T) {action_test_case(t,compiled_expiry_isolation)}
+compiled_expiry_isolation :: proc(t:^testing.T,f:^Action_Test) {
+ // A complete page of broken deliveries must not hide the healthy tail.
+ testing.expect(t,sqlite.exec(&f.db,"WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<127) INSERT INTO actions(action_id,owner_user_id,prompt_text,target_kind,created_at,updated_at) SELECT printf('bad-%03d',x),'owner','p','instance','2026-11-23','2026-11-23' FROM n; INSERT INTO actions(action_id,owner_user_id,prompt_text,target_kind,created_at,updated_at) VALUES('good','owner','p','instance','2026-11-23','2026-11-23');"))
+ testing.expect(t,sqlite.exec(&f.db,"INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,state,delivery_id,created_at) SELECT action_id,action_id,'trigger','owner',action_id,'chain.state','routed',action_id,'2026-11-23T00:00:00Z' FROM actions WHERE action_id LIKE 'bad-%' OR action_id='good'; INSERT INTO pipeline_deliveries(delivery_id,owner_user_id,kind,bridge_id,agent_instance_id,ref,state,expires_at,created_at,updated_at) SELECT run_id,'owner','prompt','bridge','instance','run:'||run_id,'routed','2026-11-22T00:00:00Z','2026-11-23T00:00:00Z','2026-11-23T00:00:00Z' FROM action_runs;"))
+ f.runtime.router.pipeline.expire=compiled_expiry_fault
+ action_test_seed(t,f,"other-action","other-trigger","other")
+ testing.expect(t,handle_message(&f.runtime,{subject="ev.other.chain.chain1.state",owner="other",event_type="chain.state",event_id="other-event",stream_time_ms=f.now_ms,envelope=test_config(`{"entity":{"kind":"chain","id":"chain1"},"data":{}}`)}))
+ other,found,err:=f.repos.actions.run_open(f.repos.actions.ctx,"other-action")
+ defer domain.action_run_destroy(&other)
+ testing.expect(t,found && err.code==.None && other.state==domain.ACTION_RUN_QUEUED)
+ testing.expect_value(t,f.runtime.router.expiry_failures,i64(128))
+ // Cursor advances beyond all 128 failed rows; the later delivery still closes.
+ testing.expect_value(t,expire_prompt_deliveries(&f.runtime.router).code,domain.Error_Code.None)
+ good,exists,e:=f.repos.actions.run_get(f.repos.actions.ctx,"good")
+ defer domain.action_run_destroy(&good)
+ testing.expect(t,exists && e.code==.None && good.state==domain.ACTION_RUN_FAILED)
+ action_test_match(t,f,"healthy-event")
+ expiry_cursor_clear(&f.runtime.router)
+ drain_due(&f.runtime.router) // Even a failing sweep must not suppress routing.
+ action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
+ testing.expect(t,f.runtime.router.expiry_failures>=256)
 }

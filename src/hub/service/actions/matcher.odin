@@ -82,7 +82,7 @@ handle_message :: proc(r: ^Runtime, msg: Event_View, sweep_before_match:=true) -
  if (strings.has_prefix(msg.event_type, "chain.") || strings.has_prefix(msg.event_type, "task.")) {
   if _, present := msg.envelope["entity"].(json.Object); !present do return true
  }
- if sweep_before_match {if e:=expire_prompt_deliveries(&r.router);e.code!=.None do return false}
+ if sweep_before_match do _=expire_prompt_deliveries(&r.router) // Best effort; diagnostics and idle retries own failures.
  uow, ok, _ := iface.unit_of_work_begin(r.svc.factory)
  if !ok do return false
  defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)

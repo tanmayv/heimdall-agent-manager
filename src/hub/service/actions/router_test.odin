@@ -136,14 +136,16 @@ router_expiry_failure :: proc(t:^testing.T,f:^Action_Test) {
  action_original_finish=f.repos.actions.runs_finish_delivery
  f.repos.actions.runs_finish_delivery=action_finish_fault
  f.now_ms+=3601000
- testing.expect(t,!handle_message(&f.runtime,{subject="ev.owner.chain.chain1.state",event_type="chain.state",event_id="two",
+ testing.expect(t,handle_message(&f.runtime,{subject="ev.owner.chain.chain1.state",event_type="chain.state",event_id="two",
   stream_time_ms=f.now_ms,envelope=test_config(`{"entity":{"kind":"chain","id":"chain1"},"data":{}}`)}))
  _,err:=list_runs(&f.runtime.router,"owner","action",50,"")
  testing.expect(t,err.code!=.None)
  d,_,_:=action_test_delivery(f,run.delivery_id)
  testing.expect_value(t,d.state,"routed");action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_JOINED,1)
+ testing.expect(t,f.runtime.router.expiry_failures>0)
  f.repos.actions.runs_finish_delivery=action_original_finish
- action_test_match(t,f,"two")
+ action_test_match(t,f,"three")
  action_test_expect(t,f,domain.ACTION_RUN_FAILED,1);action_test_expect(t,f,domain.ACTION_RUN_QUEUED,1)
 }
 router_final_failure :: proc(t:^testing.T,f:^Action_Test) {

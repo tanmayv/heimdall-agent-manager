@@ -7,6 +7,8 @@ import "core:fmt"
 import "core:mem/virtual"
 import "core:strings"
 import "core:time"
+import "core:sync"
+import retry "odin_test:hub/service/pipelineretry"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -60,6 +62,9 @@ prompt_hint_run :: proc(ctx:rawptr) {
  hint.hook.created(hint.hook.ctx,hint.message)
 }
 Router :: struct {
+ expiry_after_time,expiry_after_id:string, // Owned heap strings, matcher thread only.
+ expiry_failures:i64,
+ expiry_diagnostics:retry.State,
  message_created:Message_Created_Hook,
  factory:^iface.Unit_Of_Work_Factory,
  experiments:^iface.Experiment_Repository,
@@ -330,7 +335,7 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
  defer virtual.arena_destroy(&arena)
  context.allocator=virtual.arena_allocator(&arena)
  context.temp_allocator=context.allocator
- if e:=expire_prompt_deliveries(r);e.code!=.None do return
+ _=expire_prompt_deliveries(r) // A bad delivery must not block unrelated draining.
  seen:=make(map[string]bool)
  prepared:=make([dynamic]Prepared_Run)
  for hint in hints {
@@ -544,19 +549,48 @@ instance_plan :: proc(r:^Router,owner,instance_id:string,req:placement.Requireme
 }
 
 
-// One bounded pass per drain, including when no queued work exists. Expiring a
-// shared prompt finalizes all its members and releases parked work atomically.
+// Cursor keys use the heap because per-batch scratch is reset by the runtime.
+expiry_cursor_clear :: proc(r:^Router) {
+ delete(r.expiry_after_time,runtime.heap_allocator())
+ delete(r.expiry_after_id,runtime.heap_allocator())
+ r.expiry_after_time="";r.expiry_after_id=""
+}
+expiry_failure :: proc(r:^Router,e:domain.Domain_Error) {
+ sync.atomic_add(&r.expiry_failures,1)
+ _=retry.failed(&r.expiry_diagnostics,"actions expiry",.Read,i32(e.code))
+}
+// Selection is one indexed query; each delivery has its own transaction.
+// Advance past even failing rows so a broken head page cannot starve others.
 expire_prompt_deliveries :: proc(r:^Router)->domain.Domain_Error {
  if r.pipeline.expire==nil do return {}
  uow,ok,err:=iface.unit_of_work_begin(r.factory)
- if !ok do return err
- defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
- ids,e:=uow.repos.actions.expired_prompt_deliveries(uow.repos.actions.ctx,platform.clock_now(r.clock),128)
- defer {for id in ids do delete(id);delete(ids)}
- if e.code!=.None do return e
- for id in ids {
-  if _,e:=r.pipeline.expire(r.pipeline.ctx,&uow,id);e.code!=.None do return e
+ if !ok {expiry_failure(r,err);return err}
+ rows,e:=uow.repos.actions.expired_prompt_deliveries(uow.repos.actions.ctx,platform.clock_now(r.clock),r.expiry_after_time,r.expiry_after_id,128)
+ iface.unit_of_work_rollback(&uow)
+ defer {for row in rows {delete(row.delivery_id);delete(row.expires_at)};delete(rows)}
+ if e.code!=.None {expiry_failure(r,e);return e}
+ expiry_cursor_clear(r)
+ if len(rows)==128 {
+  last:=rows[len(rows)-1]
+  r.expiry_after_time=strings.clone(last.expires_at,runtime.heap_allocator())
+  r.expiry_after_id=strings.clone(last.delivery_id,runtime.heap_allocator())
  }
- _,err=iface.unit_of_work_commit(&uow);uow.ctx=nil
- return err
+ first_error:domain.Domain_Error
+ for row in rows {
+  one,began,begin_err:=iface.unit_of_work_begin(r.factory)
+  if !began {
+   expiry_failure(r,begin_err)
+   if first_error.code==.None do first_error=begin_err
+   continue
+  }
+  _,expire_err:=r.pipeline.expire(r.pipeline.ctx,&one,row.delivery_id)
+  if expire_err.code==.None {
+   _,expire_err=iface.unit_of_work_commit(&one);one.ctx=nil
+  } else {iface.unit_of_work_rollback(&one)}
+  if expire_err.code!=.None {
+   expiry_failure(r,expire_err)
+   if first_error.code==.None do first_error=expire_err
+  }
+ }
+ return first_error
 }

@@ -27,6 +27,7 @@ new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.A
 		triggers_list = actions_triggers_list,
   trigger_retire = actions_trigger_retire,
   expired_prompt_deliveries=actions_expired_prompt_deliveries,
+  runs_cap_page=actions_runs_cap_page,
   triggers_effective_owner = actions_triggers_effective_owner,
   run_enqueue = actions_run_enqueue,
 		triggers_effective = actions_triggers_effective,
@@ -505,7 +506,7 @@ actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,bef
   append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,23)),column_text(stmt,24),column_text(stmt,25),column_text(stmt,26),int(sqlite3_column_int64(stmt,27))})
  }
 }
-ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND (created_at<?1 OR run_id NOT IN (SELECT recent.run_id FROM action_runs recent WHERE recent.action_id=action_runs.action_id ORDER BY recent.created_at DESC,recent.run_id DESC LIMIT 200)) ORDER BY created_at,run_id LIMIT ?2);"
+ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND created_at<?1 ORDER BY created_at,run_id LIMIT ?2);"
 actions_runs_sweep :: proc(ctx:rawptr,cutoff:string,limit:int)->domain.Domain_Error {
  guard:=tx_repository_enter(); defer tx_repository_leave(guard)
  _,err:=actions_write(ctx,ACTIONS_SQL_SWEEP,{cutoff,fmt.tprintf("%d",clamp(limit,1,128))})
@@ -582,23 +583,59 @@ actions_runs_release_parked :: proc(ctx:rawptr,owner,instance_id,now:string)->(b
 }
 
 
-ACTIONS_SQL_EXPIRED_PROMPTS :: "SELECT d.delivery_id FROM pipeline_deliveries d WHERE d.kind='prompt' AND d.state IN ('routed','forwarded','delivered') AND d.expires_at<=?1 AND EXISTS (SELECT 1 FROM action_runs r WHERE r.delivery_id=d.delivery_id AND r.state='routed') ORDER BY d.expires_at,d.delivery_id LIMIT ?2;"
+ACTIONS_SQL_EXPIRED_PROMPTS :: "SELECT d.delivery_id,d.expires_at FROM pipeline_deliveries d WHERE d.kind='prompt' AND d.state IN ('routed','forwarded','delivered') AND d.expires_at<=?1 AND (d.expires_at,d.delivery_id)>(?3,?4) AND EXISTS (SELECT 1 FROM action_runs r WHERE r.delivery_id=d.delivery_id AND r.state='routed') ORDER BY d.expires_at,d.delivery_id LIMIT ?2;"
 // Include awaiting-read (delivered) prompts; the generic transport expiry query
 // intentionally handles only routed/forwarded deliveries.
-actions_expired_prompt_deliveries :: proc(ctx:rawptr,now:string,limit:int)->([]string,domain.Domain_Error) {
+actions_expired_prompt_deliveries :: proc(ctx:rawptr,now,after_time,after_id:string,limit:int)->([]iface.Action_Expiry_Row,domain.Domain_Error) {
  guard:=tx_repository_enter();defer tx_repository_leave(guard)
- stmt,err:=actions_prepare(ctx,ACTIONS_SQL_EXPIRED_PROMPTS,{now,fmt.tprintf("%d",clamp(limit,1,128))})
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_EXPIRED_PROMPTS,{now,fmt.tprintf("%d",clamp(limit,1,128)),after_time,after_id})
  if err.code!=.None do return nil,err
  defer sqlite3_finalize(stmt)
- rows: [dynamic]string
+ rows: [dynamic]iface.Action_Expiry_Row
  for {
   rc:=sqlite3_step(stmt)
   if rc==SQLITE_DONE do return rows[:],{}
   if rc!=SQLITE_ROW {
-   for row in rows do delete(row)
+   for row in rows {delete(row.delivery_id);delete(row.expires_at)}
    delete(rows)
    return nil,domain.domain_error(.Internal_Error,"could not load expired action deliveries")
   }
-  append(&rows,column_text(stmt,0))
+  append(&rows,iface.Action_Expiry_Row{column_text(stmt,0),column_text(stmt,1)})
  }
+}
+
+
+// Work is bounded by 16 actions and 128 finished rows per action. Each count-cap
+// subquery is indexed and scoped to ONE action, never correlated across history.
+ACTIONS_SQL_CAP_ACTIONS :: "SELECT rowid,action_id FROM actions WHERE rowid>?1 ORDER BY rowid LIMIT ?2;"
+ACTIONS_SQL_CAP_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE action_id=?1 AND state NOT IN ('queued','deferred','routed') AND run_id NOT IN (SELECT run_id FROM action_runs WHERE action_id=?1 ORDER BY created_at DESC,run_id DESC LIMIT 200) ORDER BY created_at,run_id LIMIT 128);"
+actions_runs_cap_page :: proc(ctx:rawptr,after:i64,limit:int)->(i64,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ cursor:=after
+ for attempt in 0..<2 {
+  stmt,err:=actions_prepare(ctx,ACTIONS_SQL_CAP_ACTIONS,{fmt.tprintf("%d",cursor),fmt.tprintf("%d",clamp(limit,1,16))})
+  if err.code!=.None do return after,err
+  found:=false
+  for {
+   rc:=sqlite3_step(stmt)
+   if rc==SQLITE_DONE do break
+   if rc!=SQLITE_ROW {
+    sqlite3_finalize(stmt)
+    return after,domain.domain_error(.Internal_Error,"could not page action retention")
+   }
+   found=true
+   cursor=sqlite3_column_int64(stmt,0)
+   id:=column_text_unowned(stmt,1)
+   if _,e:=actions_write(ctx,ACTIONS_SQL_CAP_SWEEP,{id});e.code!=.None {
+    sqlite3_finalize(stmt)
+    return after,e
+   }
+  }
+  sqlite3_finalize(stmt)
+  if found do return cursor,{}
+  // Wrap once without spending an entire minute on an empty tail page.
+  if cursor==0 do return 0,{}
+  cursor=0
+ }
+ return cursor,{}
 }

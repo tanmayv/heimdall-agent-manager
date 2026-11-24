@@ -104,6 +104,7 @@ action_test_case :: proc(t:^testing.T,scenario:proc(^testing.T,^Action_Test)) {
   context.allocator=virtual.arena_allocator(&arena); context.temp_allocator=context.allocator
   f:Action_Test
   defer rule_index_clear(&f.runtime.rule_index)
+  defer expiry_cursor_clear(&f.runtime.router)
   opened:bool
   f.db,opened,_=sqlite.open(":memory:")
   if !testing.expect(t,opened) do return

@@ -14,6 +14,7 @@ import placement "odin_test:hub/service/placement"
 DEFAULT_MAX_PER_OWNER :: 1000
 Schedule_Support_Port :: struct { ctx: rawptr, get: proc(ctx: rawptr) -> int }
 Service :: struct {
+ history_cursor:i64, // Matcher-thread round-robin cursor; advanced after sweep commit.
  rule_epoch: i64, // Changed only after a successful rule/action commit.
  filter_limits: Filter_Limits,
  max_per_owner: int, // Zero selects DEFAULT_MAX_PER_OWNER.

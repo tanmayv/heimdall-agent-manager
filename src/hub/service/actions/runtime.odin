@@ -69,6 +69,7 @@ runtime_setup_error :: proc(gate:^Setup_Log_Gate,stage:string,err:nats.Error) {
 runtime_entry :: proc(data:rawptr) {
  r:=(^Runtime)(data)
  defer rule_index_clear(&r.rule_index)
+ defer expiry_cursor_clear(&r.router)
  arena:virtual.Arena
  if virtual.arena_init_growing(&arena)!=nil do return
  defer virtual.arena_destroy(&arena)
@@ -122,8 +123,7 @@ runtime_entry :: proc(data:rawptr) {
   rule_index_sync(r)
   hints:=make([dynamic]Resume_Hint)
   count:=nats.batch_count(batch)
-  batch_ready:=true
-  if count>0 {batch_ready=expire_prompt_deliveries(&r.router).code==.None}
+  if count>0 do _=expire_prompt_deliveries(&r.router)
   for i in 0..<count {
    msg:=nats.batch_message(batch,i)
    view,valid,poison:=runtime_event_view(msg)
@@ -133,7 +133,7 @@ runtime_entry :: proc(data:rawptr) {
     continue
    }
    if !valid {_=nats.ack(msg); continue}
-   if batch_ready && handle_message(r,view,false) {
+   if handle_message(r,view,false) {
     _=nats.ack(msg)
     if view.event_type=="action.resume" {
      data,_:=view.envelope["data"].(json.Object)
