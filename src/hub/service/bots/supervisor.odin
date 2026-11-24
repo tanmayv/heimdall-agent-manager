@@ -330,6 +330,11 @@ bots_idle_stop :: proc(s: ^Bots_Service, now: string, ms: i64) {
 		stop := !open && e.code == .None && recent_err.code == .None && found && inst_err.code == .None &&
 			agent_service.runtime_expected_active(inst.runtime_status) && stamp != "" && ms - bots_stamp_ms(stamp) > s.timers.bot_idle_stop_ms
 		sync.mutex_unlock(&s.mutex)
+		if stop {
+			cutoff := platform.format_rfc3339_utc(time.Time{_nsec = (ms - s.timers.bot_idle_stop_ms) * 1_000_000})
+			active, activity_err := iface.bot_action_activity(s.repo, bot.agent_instance_id, cutoff)
+			stop = !active && activity_err.code == .None
+		}
 		if stop do _, _, _ = agent_service.stop_instance(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id}, inst.agent_instance_id, {reason = "bot_idle"})
 	}
 }

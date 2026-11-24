@@ -734,6 +734,7 @@ MIGRATION_AGENTS_001_START_REF :: #load("migrations/agents_001_start_ref.sql", s
 
 MIGRATION_237_EXTENSION_VERSION_SYNC :: #load("migrations/237_extension_version_sync_0_5_74.sql", string)
 
+MIGRATION_ACTIONS_004_BOT_ACTIVITY :: #load("migrations/actions_004_bot_activity.sql", string)
 MIGRATION_ACTIONS_005_SETTLE :: #load("migrations/actions_005_settle.sql", string)
 MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE :: #load("migrations/actions_003_history_performance.sql", string)
 MIGRATION_ACTIONS_002_LOOKUP_INDEXES :: #load("migrations/actions_002_lookup_indexes.sql", string)
@@ -1005,6 +1006,7 @@ migration_order :: [?]string {
 	"actions_001_reset.sql",
 	"actions_002_lookup_indexes.sql",
 	"actions_003_history_performance.sql",
+	"actions_004_bot_activity.sql",
 	"actions_005_settle.sql",
 	"238_extension_version_sync_0_5_75.sql",
 	"239_extension_version_sync_0_5_76.sql",
@@ -1565,6 +1567,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "239_extension_version_sync_0_5_76.sql" do return strings.clone(MIGRATION_239_EXTENSION_VERSION_SYNC)
 	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
+ if name == "actions_004_bot_activity.sql" do return strings.clone(MIGRATION_ACTIONS_004_BOT_ACTIVITY)
  if name == "actions_005_settle.sql" do return strings.clone(MIGRATION_ACTIONS_005_SETTLE)
  if name == "actions_003_history_performance.sql" do return strings.clone(MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE)
  if name == "actions_002_lookup_indexes.sql" do return strings.clone(MIGRATION_ACTIONS_002_LOOKUP_INDEXES)

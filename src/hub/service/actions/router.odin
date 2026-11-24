@@ -126,24 +126,18 @@ prompt_plan :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude
  owner:=string(action.owner_user_id)
  features:=[]string{contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1}
  req:=placement.Requirements{owner=owner,agent_id=string(action.target_agent_id),features=features,exclude=exclude}
- if action.target_kind==domain.ACTION_TARGET_INSTANCE {
-  _,bridge,conversation,found:=r.agents.instance(r.agents.ctx,owner,string(action.target_instance_id))
-  if !found do return {reason="target_missing"}
-  for id in exclude do if id==bridge do return {reason="no_placement"}
-  b,exists,err:=iface.bridge_get_bridge(r.placement.bridges,bridge)
-  defer domain.bridge_destroy(&b)
-  if err.code!=.None || !exists do return {reason="no_placement"}
-  eligible,why:=placement.bridge_eligible(r.placement,b,req)
-  if !eligible {
-   switch why {
-   case placement.REASON_MISSING_FEATURE: return {reason="bridge_too_old"}
-   case placement.REASON_NOT_OWNER,placement.REASON_REVOKED,placement.REASON_ENROLLMENT_PENDING,placement.REASON_PLAN_DISABLED: return {reason="no_placement"}
-   }
-   // Connectivity is not evidence of capability. Even offline targets must
-   // have advertised the feature before they receive a pipeline delivery.
-   if !placement.bridge_has_feature(b,contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1) do return {reason="bridge_too_old"}
-  }
-  return {ok=true,bridge_id=bridge,instance_id=string(action.target_instance_id),conversation_id=conversation,rule_position=-1}
+ if action.target_kind==domain.ACTION_TARGET_INSTANCE do return instance_plan(r,owner,string(action.target_instance_id),req)
+ if action.target_kind==domain.ACTION_TARGET_BOT {
+  uow,opened,_:=iface.unit_of_work_begin(r.factory)
+  if !opened do return {reason="delivery_failed"}
+  bot,err:=owned_bot(&uow.repos.bots,owner,action.target_bot_id)
+  defer domain.bot_destroy(&bot)
+  instance_id:=strings.clone(bot.agent_instance_id,context.temp_allocator)
+  committed,_:=iface.unit_of_work_commit(&uow)
+  if !committed do return {reason="delivery_failed"}
+  if err.code!=.None && err.code!=.Not_Found do return {reason="delivery_failed"}
+  if err.code==.Not_Found || instance_id=="" do return {reason="target_missing"}
+  return instance_plan(r,owner,instance_id,req)
  }
  if action.target_kind!=domain.ACTION_TARGET_AGENT do return {reason="target_missing"}
  uow,opened,_:=iface.unit_of_work_begin(r.factory)
@@ -517,4 +511,24 @@ list_runs :: proc(r:^Router,owner,action_id:string,limit:int,before:string,befor
  if !committed do return nil,commit_err
  success=true
  return rows,{}
+}
+
+instance_plan :: proc(r:^Router,owner,instance_id:string,req:placement.Requirements)->Plan {
+  _,bridge,conversation,found:=r.agents.instance(r.agents.ctx,owner,instance_id)
+  if !found do return {reason="target_missing"}
+  for id in req.exclude do if id==bridge do return {reason="no_placement"}
+  b,exists,err:=iface.bridge_get_bridge(r.placement.bridges,bridge)
+  defer domain.bridge_destroy(&b)
+  if err.code!=.None || !exists do return {reason="no_placement"}
+  eligible,why:=placement.bridge_eligible(r.placement,b,req)
+  if !eligible {
+   switch why {
+   case placement.REASON_MISSING_FEATURE: return {reason="bridge_too_old"}
+   case placement.REASON_NOT_OWNER,placement.REASON_REVOKED,placement.REASON_ENROLLMENT_PENDING,placement.REASON_PLAN_DISABLED: return {reason="no_placement"}
+   }
+   // Connectivity is not evidence of capability. Even offline targets must
+   // have advertised the feature before they receive a pipeline delivery.
+   if !placement.bridge_has_feature(b,contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1) do return {reason="bridge_too_old"}
+  }
+  return {ok=true,bridge_id=bridge,instance_id=instance_id,conversation_id=conversation,rule_position=-1}
 }

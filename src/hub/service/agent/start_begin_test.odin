@@ -683,3 +683,20 @@ start_expected_generation_scenario :: proc(t:^testing.T,h:^Start_Test) {
 }
 @(test)
 test_start_expected_generation_precedes_live_policy :: proc(t:^testing.T) {start_test_run(t,start_expected_generation_scenario)}
+
+start_action_bot_scenario :: proc(t:^testing.T,h:^Start_Test) {
+ start_test_sql(t,h,"UPDATE agent_instances SET kind='bot',stopped_by='user',runtime_status='stopped';")
+ // This is the same bridge endpoint used by event-executor and bot-delivery starts.
+ text,count,reused,ok,err:=start_begin_for_bridge(&h.service,"owner","brg","inst","event_action-delivery")
+ defer delete(text)
+ testing.expect(t,ok && err.code==.None,err.message)
+ testing.expect_value(t,count,4)
+ testing.expect(t,!reused && text!="")
+ inst:=start_test_row(t,h)
+ defer domain.agent_instance_destroy(&inst)
+ testing.expect_value(t,inst.stopped_by,"")
+ testing.expect_value(t,inst.runtime_status,"launching")
+ testing.expect_value(t,inst.start_ref,"event_action-delivery")
+}
+@(test)
+test_action_start_wakes_user_stopped_bot :: proc(t:^testing.T) {start_test_run(t,start_action_bot_scenario)}
