@@ -3,6 +3,7 @@ package actions
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:mem/virtual"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -39,9 +40,20 @@ data_matches :: proc(filter_json:string,envelope:json.Object)->bool {
  result,_:=filter_evaluate(tree,envelope)
  return result
 }
-event_params :: proc(msg: Event_View, rev:int, nodes:string) -> string {
+event_params :: proc(msg: Event_View, rev:int, nodes:string, projection:=Snapshot_Projection{}, limits:=Snapshot_Limits{}) -> string {
+ output_allocator:=context.temp_allocator
+ arena:virtual.Arena
+ if virtual.arena_init_growing(&arena)!=nil do return ""
+ defer virtual.arena_destroy(&arena)
+ context.allocator=virtual.arena_allocator(&arena)
+ context.temp_allocator=context.allocator
+ encoded:=event_params_scratch(msg,rev,nodes,projection,limits)
+ // Only the bounded result survives this match. Scratch storage must not
+ // accumulate across all rules and all 64 events in the NATS fetch arena.
+ return strings.clone(encoded,output_allocator)
+}
+event_params_scratch :: proc(msg: Event_View, rev:int, nodes:string, projection:Snapshot_Projection, limits:Snapshot_Limits) -> string {
  params := make(json.Object, context.temp_allocator)
- data := make(json.Object, context.temp_allocator)
  params["entity"] = msg.envelope["entity"]
  params["entity_version"] = msg.envelope["entity_version"]
  params["class"] = msg.envelope["class"]
@@ -52,18 +64,11 @@ event_params :: proc(msg: Event_View, rev:int, nodes:string) -> string {
  params["type"] = msg.event_type
  params["id"] = msg.event_id
  params["fired_at"] = platform.format_rfc3339_utc(time.Time{_nsec=msg.stream_time_ms*1_000_000})
- source, _ := msg.envelope["data"].(json.Object)
- for key, value in source {
-  text, ok := scalar_text(value)
-  if ok do data[key] = text
- }
- params["data"] = data
  trace:=make(json.Object,context.temp_allocator)
  trace["rev"]=json.Integer(rev);trace["nodes"]=nodes
  params["_match"]=trace
  params["_trigger_rev"]=json.Integer(rev)
- encoded, _ := json.marshal(params, allocator=context.temp_allocator)
- return string(encoded)
+ return snapshot_project(params,msg.envelope,projection,limits)
 }
 // Direct callers represent a one-event batch. The NATS runtime sweeps once
 // before its whole fetched batch and disables this wrapper for each member.
@@ -132,9 +137,10 @@ handle_message :: proc(r: ^Runtime, msg: Event_View, sweep_before_match:=true) -
    trigger_id=trigger.trigger_id, owner_user_id=trigger.owner_user_id,
    occurrence_key=fmt.tprintf("%s:%s", trigger.trigger_id, key),
    event_type=msg.event_type, event_id=msg.event_id, stream_sequence=i64(msg.stream_sequence),
-   event_params_json=event_params(msg,trigger.rev,nodes), state=domain.ACTION_RUN_QUEUED,
+   event_params_json=event_params(msg,trigger.rev,nodes,rule.projection,r.svc.snapshot_limits), state=domain.ACTION_RUN_QUEUED,
    created_at=now, rule_position=-1,
   }
+  if run.event_params_json=="" do return false
   if !allowed {
    run.state=domain.ACTION_RUN_SKIPPED; run.reason=reason; run.finished_at=now
   }

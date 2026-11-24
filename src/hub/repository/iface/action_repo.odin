@@ -4,9 +4,15 @@ import domain "odin_test:hub/domain"
 
 Action_Expiry_Row :: struct {delivery_id,expires_at:string}
 Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
+Action_Projection_Row :: struct {trigger:domain.Action_Trigger,prompt_text:string}
+action_projection_rows_destroy :: proc(rows:[]Action_Projection_Row) {
+ for &row in rows {domain.action_trigger_destroy(&row.trigger);delete(row.prompt_text)}
+ delete(rows)
+}
 Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string, batch_size: int }
 Action_Batch_Member :: struct {run_id, from_state: string}
 Action_Repository :: struct {
+ projection_rules_owner:proc(ctx:rawptr,owner:string)->([]Action_Projection_Row,domain.Domain_Error),
  expired_prompt_deliveries:proc(ctx:rawptr,now,after_time,after_id:string,limit:int)->([]Action_Expiry_Row,domain.Domain_Error),
  runs_cap_page:proc(ctx:rawptr,after:i64,limit:int)->(i64,domain.Domain_Error),
  trigger_retire:proc(ctx:rawptr,id:string,rev:int,now:string)->(bool,domain.Domain_Error),

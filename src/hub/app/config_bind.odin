@@ -13,6 +13,7 @@ import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
  action_filter_limits:actions.Filter_Limits,
+ action_snapshot_limits:actions.Snapshot_Limits,
  webhook_limits:webhooks.Limits,
  automation_max_per_owner:int,
 	// Default on until catalog v1 staging parity is approved.
@@ -167,6 +168,7 @@ default_config :: proc() -> Hub_Config {
 	cidrs[0] = "127.0.0.1/32"
 	return Hub_Config{
   action_filter_limits=actions.FILTER_DEFAULT_LIMITS,
+  action_snapshot_limits=actions.SNAPSHOT_DEFAULT_LIMITS,
  webhook_limits=webhooks.DEFAULT_LIMITS,
  automation_max_per_owner=actions.DEFAULT_MAX_PER_OWNER,
 		telegram_api_base = "https://api.telegram.org",
@@ -536,6 +538,29 @@ apply_action_filter_limits_json :: proc(config:^Hub_Config,raw:string)->bool {
  }
  if !actions.filter_limits_valid(l) do return false
  config.action_filter_limits=l
+ return true
+}
+
+apply_action_snapshot_limits_json :: proc(config:^Hub_Config,raw:string)->bool {
+ value:json.Value
+ if json.unmarshal_string(raw,&value)!=nil do return false
+ defer json.destroy_value(value)
+ obj,ok:=value.(json.Object)
+ if !ok do return false
+ l:=actions.snapshot_limits(config.action_snapshot_limits)
+ for key,item in obj {
+  number,valid:=item.(json.Integer)
+  if !valid || number<1 || number>1048576 do return false
+  switch key {
+  case "total_bytes":l.total_bytes=int(number)
+  case "value_bytes":l.value_bytes=int(number)
+  case "json_bytes":l.json_bytes=int(number)
+  case "template_paths":l.template_paths=int(number)
+  case:return false
+  }
+ }
+ if !actions.snapshot_limits_valid(l) do return false
+ config.action_snapshot_limits=l
  return true
 }
 

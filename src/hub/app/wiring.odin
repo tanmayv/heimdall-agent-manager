@@ -270,6 +270,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
  webhook_limits:=webhooks.resolve_limits(config.webhook_limits)
  if !webhooks.limits_valid(webhook_limits) do return false,"invalid webhook limits"
  if !actions_service.filter_limits_valid(actions_service.filter_limits(config.action_filter_limits)) do return false,"invalid action filter limits"
+ if !actions_service.snapshot_limits_valid(actions_service.snapshot_limits(config.action_snapshot_limits)) do return false,"invalid action snapshot limits"
 	if strings.trim_space(config.nats_url) == "" do return false, "--nats-url / HEIMDALL_NATS_URL is required"
 	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
 		live_bridges = config.runtime_max_live_bridges,
@@ -650,6 +651,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.agent_action_handlers = http.Agent_Action_Handlers{webhooks = &graph.webhook_handlers, automations = &graph.action_handlers, auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
 	graph.actions = actions_service.Service{
   filter_limits=actions_service.filter_limits(config.action_filter_limits),
+  snapshot_limits=actions_service.snapshot_limits(config.action_snapshot_limits),
  webhook_limits=webhook_limits,
  max_per_owner=config.automation_max_per_owner,
 		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,

@@ -75,6 +75,7 @@ Event_Descriptor :: struct {
 }
 
 EVENT_DESCRIPTORS := [?]Event_Descriptor{
+ {event_type="webhook.received",label="Webhook received",scope="webhook",class="occurrence",no_delay=true,free_data_paths=true},
 	{event_type = "chain.state", class = "state", label = "Task chain state changed", scope = "chain",
 	 data_keys = {{key = "state", values = {"active", "completed", "archived"}}},
 	 presets   = {{id = "chain_completed", label = "Task chain completed", filter_json = `{"all":[{"field":"data.state","op":"eq","value":"completed"}]}`}}},
