@@ -1,6 +1,7 @@
 package bridge
 
 import "core:fmt"
+import "core:strconv"
 import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
@@ -107,4 +108,54 @@ test_update_choices_find_stable_beyond_first_page :: proc(t: ^testing.T) {
 		testing.expect_value(t, choices[30].tag, "v0.5.1")
 		testing.expect(t, !choices[30].prerelease)
 	}
+}
+
+// A 172-release list like the live repository: 120 prereleases (v0.7.0..v0.7.119,
+// newest first, plus one draft) above the only promoted release v0.6.0, and
+// older promoted releases below it. Pages hold BRIDGE_CATALOG_PAGE_SIZE.
+@(thread_local) many_page_calls: int
+
+many_releases_get :: proc(req: httpc.Request) -> (string, bool, string) {
+	if req.path[len(req.path)-1] == "SHA256SUMS" {
+		tag := req.path[len(req.path)-2]
+		return fmt.tprintf("%s  heimdall-local-linux-amd64-%s.tar.gz\n", CATALOG_TEST_SHA, tag), true, ""
+	}
+	many_page_calls += 1
+	page := 1
+	for q in req.query do if q.name == "page" do page, _ = strconv.parse_int(q.value)
+	all := make([dynamic]string, context.temp_allocator)
+	for i := 119; i >= 0; i -= 1 do append(&all, catalog_test_release(fmt.tprintf("v0.7.%d", i), "linux-amd64", pre = true))
+	append(&all, catalog_test_release("v0.8.0", "linux-amd64", draft = true))
+	append(&all, catalog_test_release("v0.6.0", "linux-amd64"))
+	for i := 50; i >= 0; i -= 1 do append(&all, catalog_test_release(fmt.tprintf("v0.5.%d", i), "linux-amd64"))
+	lo := (page - 1) * BRIDGE_CATALOG_PAGE_SIZE
+	hi := min(lo + BRIDGE_CATALOG_PAGE_SIZE, len(all))
+	if lo >= len(all) do return "[]", true, ""
+	return fmt.tprintf("[%s]", strings.join(all[lo:hi], ",", context.temp_allocator)), true, ""
+}
+
+@(test)
+test_catalog_stable_and_fast_beyond_one_hundred_releases :: proc(t: ^testing.T) {
+	many_page_calls = 0
+	cat := Bridge_Update_Catalog{release_get = many_releases_get}
+	defer bridge_update_catalog_destroy(&cat)
+	_, _ = bridge_catalog_refresh(&cat)
+	br := domain.Bridge{version = "0.7.100", machine_os = "linux", machine_arch = "amd64"}
+	// Stable: the newest promoted release, entry 122 of 172 (page 5).
+	info := resolve_bridge_update_info(&cat, br)
+	testing.expect_value(t, info.latest_source, "promoted")
+	testing.expect_value(t, info.latest_version, "0.6.0")
+	testing.expect(t, info.artifact_available)
+	// Fast: every prerelease newer than the bridge plus the current stable, from all pages.
+	choices := resolve_bridge_update_choices(&cat, br)
+	testing.expect_value(t, len(choices), 20)
+	if len(choices) == 20 {
+		testing.expect_value(t, choices[0].version, "v0.7.119")
+		testing.expect(t, choices[0].prerelease && choices[0].artifact_available)
+		testing.expect_value(t, choices[19].version, "v0.6.0")
+		testing.expect(t, !choices[19].prerelease && choices[19].downgrade)
+	}
+	// 172 releases = 6 pages; the stable reader's pages are shared with the
+	// choices reader through the refresh memo, never fetched twice.
+	testing.expect_value(t, many_page_calls, 6)
 }

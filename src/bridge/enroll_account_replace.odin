@@ -135,8 +135,11 @@ bridge_enroll_old_token :: proc(args: []string, api_base, old_bridge_id: string)
 // bridge_enroll_wipe_bridge deletes every local secret of bridge_id: its access and
 // refresh token files (and rotation leftovers), vault keyring, identity record and
 // epoch floor (with its backup and per-scope directory), its re-enroll journal and
-// any needs-reenrollment marker. Returns the paths it could not remove.
-bridge_enroll_wipe_bridge :: proc(config_path, token_file, bridge_id: string) -> (failed: [dynamic]string) {
+// any needs-reenrollment marker (config_path "" leaves those to the live bridge).
+// keep_in_memory_key leaves this process's in-memory vault key alone, for a wipe of
+// a predecessor while the live bridge's key is held (enroll_predecessor.odin).
+// Returns the paths it could not remove.
+bridge_enroll_wipe_bridge :: proc(config_path, token_file, bridge_id: string, keep_in_memory_key := false) -> (failed: [dynamic]string) {
 	failed = make([dynamic]string, context.temp_allocator)
 	if token_file != "" {
 		for suffix in ([?]string{"", ".pending-rotation-v1", BRIDGE_ENROLL_MARKER_SUFFIX}) {
@@ -147,7 +150,12 @@ bridge_enroll_wipe_bridge :: proc(config_path, token_file, bridge_id: string) ->
 			if os.exists(p) && os.remove(p) != nil do append(&failed, p)
 		}
 	}
-	keystore_lock_and_purge(bridge_id)
+	if keep_in_memory_key {
+		// keystore_unlink_vault_key would also wipe the memory copy.
+		if keystore_bridge_id_ok(bridge_id) && !keystore_backend_delete(.Keyring, bridge_id) do append(&failed, fmt.tprintf("vault key of %s", bridge_id))
+	} else {
+		keystore_lock_and_purge(bridge_id)
+	}
 	if !keystore_delete_identity_key(bridge_id) do append(&failed, fmt.tprintf("identity of %s", bridge_id))
 	if !keystore_identity_backup_drop(bridge_id) do append(&failed, fmt.tprintf("identity backup of %s", bridge_id))
 	// The per-scope directory (identity file, epoch floor, default credential) of

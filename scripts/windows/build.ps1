@@ -1,5 +1,7 @@
 # Builds the Windows bridge binaries (the windows-amd64 release bundle's bin/):
-# ham-bridge.exe and ham-ctl.exe (Odin, hub-less) and ham-pty-host.exe (Rust).
+# ham-bridge.exe and ham-ctl.exe (Odin, hub-less) and ham-pty-host.exe (Rust), plus the
+# dormant ham-launcher.exe and ham-supervisor.exe (T15, Phase 1: shipped, not yet the
+# service entry point; docs/specs/bridge-supervisor-engine.md).
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/build.ps1 -OutDir <dir>
 #
@@ -34,7 +36,7 @@ param(
   [string]$CurlLibDir = '',
   [string]$NatsLibDir = '',
   [string]$Version = '',
-  [string[]]$Components = @('ham-bridge', 'ham-ctl', 'ham-pty-host')
+  [string[]]$Components = @('ham-bridge', 'ham-ctl', 'ham-pty-host', 'ham-launcher', 'ham-supervisor')
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -57,7 +59,7 @@ $OutDir = (Resolve-Path $OutDir).Path
 $work = Join-Path ([IO.Path]::GetTempPath()) ('heimdall-winbuild-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $work | Out-Null
 try {
-  $needOdin = ($Components -contains 'ham-bridge') -or ($Components -contains 'ham-ctl') -or ($Components -contains 'ham-hub')
+  $needOdin = @('ham-bridge', 'ham-ctl', 'ham-hub', 'ham-launcher', 'ham-supervisor' | Where-Object { $Components -contains $_ }).Count -gt 0
   if ((($Components -contains 'ham-bridge') -or ($Components -contains 'ham-hub')) -and -not $SqliteLibDir) {
     if (-not $SqliteAmalgamationDir) {
       $zip = Join-Path $work 'sqlite.zip'
@@ -107,12 +109,12 @@ try {
       $NatsLibDir = (Resolve-Path $NatsLibDir).Path
     }
     # ham-hub is opt-in (-Components ham-hub): the e2e workflow builds it, releases do not.
-    foreach ($pair in @(@('ham-bridge', 'src/bridge'), @('ham-ctl', 'src/ctl'), @('ham-hub', 'src/hub'))) {
+    foreach ($pair in @(@('ham-bridge', 'src/bridge'), @('ham-ctl', 'src/ctl'), @('ham-hub', 'src/hub'), @('ham-launcher', 'src/launcher'), @('ham-supervisor', 'src/supervisor'))) {
       if ($Components -notcontains $pair[0]) { continue }
       $out = Join-Path $OutDir ($pair[0] + '.exe')
       $odinArgs = @('build', (Join-Path $repo $pair[1]), "-collection:odin_test=$srcRoot", "-out:$out") + $defines
       $libPaths = "/LIBPATH:$($curlLibDir -replace '\\', '/')"
-      if ($pair[0] -ne 'ham-ctl') { $libPaths += " /LIBPATH:$($SqliteLibDir -replace '\\', '/')" }
+      if ($pair[0] -eq 'ham-bridge' -or $pair[0] -eq 'ham-hub') { $libPaths += " /LIBPATH:$($SqliteLibDir -replace '\\', '/')" }
       if ($pair[0] -eq 'ham-hub') {
         $libPaths += " /LIBPATH:$($NatsLibDir -replace '\\', '/') ws2_32.lib gdi32.lib advapi32.lib crypt32.lib user32.lib"
       }

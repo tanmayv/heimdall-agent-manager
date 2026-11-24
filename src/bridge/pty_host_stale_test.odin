@@ -490,7 +490,7 @@ test_setup_binaries_step_stops_idle_pty_host_before_rename :: proc(t: ^testing.T
 		},
 	}
 
-	s := Bridge_Setup{host = bridge_service_host(), layout = l, staging = staging, copy_binaries = true, pid = 1, json_progress = true}
+	s := Bridge_Setup{host = bridge_service_host(), layout = l, staging = staging, copy_binaries = true, pid = 1, json_progress = true, plan = {replace_binaries = true}}
 	result := bridge_setup_run(&s, .Binaries)
 	testing.expect(t, result.ok, result.message)
 	testing.expect_value(t, setup_step_test_stops, 1)

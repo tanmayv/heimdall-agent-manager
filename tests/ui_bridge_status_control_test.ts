@@ -598,7 +598,7 @@ test('F27: setup downloads and SHA-256-verifies the latest promoted release', { 
   const fetched: string[] = [];
   const fetchImpl = async (url: string) => {
     fetched.push(url);
-    if (url.includes('/releases?')) return Response.json(releases);
+    if (url.endsWith('/releases/latest')) return Response.json(releases[1]);
     if (url.endsWith('/SHA256SUMS')) return new Response(fixture.sums);
     if (url.endsWith(fixture.archive)) return new Response(fixture.bytes);
     return new Response('', { status: 404 });
@@ -615,6 +615,36 @@ test('F27: setup downloads and SHA-256-verifies the latest promoted release', { 
   process.env.HEIMDALL_BRIDGE_RESOURCES = path.join(fixture.dir, 'no-bundle');
   t.after(() => { delete process.env.HEIMDALL_BRIDGE_RESOURCES; });
   await assert.rejects(bridgeManager.prepareBinary(() => undefined, () => undefined, { fetchImpl: tampered }), /SHA-256 mismatch/);
+});
+
+test('F9: with more than 100 releases the promoted one is resolved from /releases/latest', { skip: process.platform !== 'linux' }, async (t) => {
+  const fixture = releaseFixture(t, 'v9.1.0');
+  process.env.HEIMDALL_BRIDGE_CACHE = path.join(fixture.dir, 'cache');
+  t.after(() => { delete process.env.HEIMDALL_BRIDGE_CACHE; });
+  // 150 releases: 130 prereleases above the promoted v9.1.0, as GitHub lists them.
+  const asset = (tag: string) => [{ name: fixture.archive.replace('v9.1.0', tag) }, { name: 'SHA256SUMS' }];
+  const all: any[] = [];
+  for (let i = 129; i >= 0; i--) all.push({ tag_name: `v9.2.${i}`, prerelease: true, assets: asset(`v9.2.${i}`) });
+  all.push({ tag_name: 'v9.1.0', prerelease: false, assets: asset('v9.1.0') });
+  for (let i = 18; i >= 0; i--) all.push({ tag_name: `v9.0.${i}`, prerelease: false, assets: asset(`v9.0.${i}`) });
+  assert.equal(all.length, 150);
+  // The old first-page reader found nothing among the first 100.
+  assert.equal(bridgeManager.latestRelease(all.slice(0, 100), fixture.target, 'linux'), '');
+  const fetched: string[] = [];
+  const fetchImpl = async (url: string) => {
+    fetched.push(url);
+    if (url.endsWith('/releases/latest')) return Response.json(all.find((r) => !r.prerelease && !r.draft));
+    if (url.includes('/releases?')) return Response.json(all.slice(0, 100));
+    if (url.endsWith('/v9.1.0/SHA256SUMS')) return new Response(fixture.sums);
+    if (url.endsWith(fixture.archive)) return new Response(fixture.bytes);
+    return new Response('', { status: 404 });
+  };
+  const prepared = await bridgeManager.prepareBinary(() => undefined, () => undefined, { fetchImpl });
+  assert.equal(prepared.source, 'release');
+  assert.equal(prepared.version, '9.1.0');
+  assert.ok(!fetched.some((u) => u.includes('/releases?')), 'the release list is never paged');
+  // A prerelease object (never returned by /releases/latest, but defended) is refused.
+  assert.equal(bridgeManager.latestRelease(all[0], fixture.target, 'linux'), '');
 });
 
 test('F27: offline, the bundled Bridge is the verified fallback', { skip: process.platform !== 'linux' }, async (t) => {
@@ -653,14 +683,14 @@ test('F27: a promoted release older than the bundled Bridge is never installed',
   const fetched: string[] = [];
   const fetchImpl = async (url: string) => {
     fetched.push(url);
-    if (url.includes('/releases?')) return Response.json([{ tag_name: 'v9.0.0', assets: [{ name: older }, { name: 'SHA256SUMS' }] }]);
+    if (url.endsWith('/releases/latest')) return Response.json({ tag_name: 'v9.0.0', assets: [{ name: older }, { name: 'SHA256SUMS' }] });
     return new Response('', { status: 404 });
   };
   const events: any[] = [];
   const prepared = await bridgeManager.prepareBinary((e: any) => events.push(e), () => undefined, { fetchImpl });
   assert.equal(prepared.source, 'bundled');
   assert.equal(prepared.version, '9.1.0');
-  assert.deepEqual(fetched.filter((u) => !u.includes('/releases?')), [], 'nothing of the older release is downloaded');
+  assert.deepEqual(fetched.filter((u) => !u.endsWith('/releases/latest')), [], 'nothing of the older release is downloaded');
   assert.ok(events.some((e) => e.step === 'download' && /older than this app's Bridge/.test(e.message || '')));
   assert.ok(!events.some((e) => e.state === 'retry'), 'not reported as a failed download');
   assert.equal(bridgeManager.compareVersions('v0.5.21', '0.5.22'), -1);

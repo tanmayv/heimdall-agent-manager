@@ -2,7 +2,6 @@ package bridge
 
 import "base:runtime"
 import "core:encoding/json"
-import "core:fmt"
 import "core:strings"
 import "core:sync"
 import contracts "odin_test:contracts"
@@ -24,11 +23,8 @@ bridge_catalog_fetch_choices :: proc(memo: ^Bridge_Catalog_Memo) -> ([]Bridge_Ca
 	stable := false
 	// GitHub's release list is paginated. Never replace a complete snapshot
 	// with a partial list after an error or the defensive page limit.
-	for page in 1..=100 {
-		query := []httpc.Query_Param{{"per_page", "30"}}
-		if page > 1 do query = []httpc.Query_Param{{"per_page", "30"}, {"page", fmt.tprintf("%d", page)}}
-		doc, ok, _ := bridge_catalog_memo_get(memo, bridge_catalog_request("https://api.github.com",
-			{"repos", "tanmayv", "heimdall-agent-manager", "releases"}, query))
+	for page in 1..=BRIDGE_CATALOG_MAX_PAGES {
+		doc, ok, _ := bridge_catalog_memo_get(memo, bridge_catalog_releases_request(page))
 		if !ok do return nil, false
 		releases: []Bridge_Catalog_Release
 		if json.unmarshal_string(doc, &releases, allocator = context.temp_allocator) != nil do return nil, false
@@ -52,7 +48,7 @@ bridge_catalog_fetch_choices :: proc(memo: ^Bridge_Catalog_Memo) -> ([]Bridge_Ca
 			}
 			append(&result, item)
 		}
-		if len(releases) < 30 do return result[:], true
+		if len(releases) < BRIDGE_CATALOG_PAGE_SIZE do return result[:], true
 	}
 	return nil, false
 }

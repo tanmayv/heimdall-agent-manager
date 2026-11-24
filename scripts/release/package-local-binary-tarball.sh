@@ -3,12 +3,15 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-usage: package-local-binary-tarball.sh <target> <version> <out-dir> <ham-bridge-out> <ham-ctl-out> [ham-pty-host-out]
+usage: package-local-binary-tarball.sh <target> <version> <out-dir> <ham-bridge-out> <ham-ctl-out> [ham-pty-host-out [ham-launcher-out ham-supervisor-out]]
 
 Creates dist tarball: <out-dir>/heimdall-local-<target>.tar.gz
 Tarball root contains: bin/ham-bridge, bin/ham-ctl, share/heimdall/extensions/, README.md, LICENSE, METADATA.json
 When the optional <ham-pty-host-out> is given, bin/ham-pty-host is also shipped
 (self-contained; PTYH-4).
+When <ham-launcher-out> and <ham-supervisor-out> are given (T15, Phase 1), bin/ham-launcher
+and bin/ham-supervisor are shipped too. They are dormant: the service still runs
+bin/ham-bridge; Phase 2 makes the launcher the service entry point.
 USAGE
 }
 
@@ -17,7 +20,7 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+if [ "$#" -lt 5 ] || [ "$#" -gt 8 ] || [ "$#" -eq 7 ]; then
   usage
   exit 2
 fi
@@ -28,6 +31,12 @@ out_dir="$3"
 ham_bridge_out="$4"
 ham_ctl_out="$5"
 ham_pty_host_out="${6:-}"
+ham_launcher_out="${7:-}"
+ham_supervisor_out="${8:-}"
+if [ -n "$ham_launcher_out" ] && [ -z "$ham_pty_host_out" ]; then
+  echo "ham-launcher/ham-supervisor need the ham-pty-host argument too" >&2
+  exit 2
+fi
 
 case "$target" in
   # termux-arm64 (T12): Android/Termux bundle. Same ELF layout and the same
@@ -66,7 +75,12 @@ trap cleanup EXIT
 stage="$work_dir/stage"
 mkdir -p "$stage/bin"
 mkdir -p "$stage/share/heimdall/extensions"
-cp -R -P -p extensions/. "$stage/share/heimdall/extensions/"
+# -L: dereference symlinks (e.g. extensions/antigravity/hooks.json ->
+# hooks/hooks.json) so the bundle holds regular files only. The supervisor's
+# extractor rejects every symlink and hard link (docs/specs/
+# bridge-supervisor-engine.md §14 step 7), and the Windows zip already ships
+# plain copies.
+cp -R -L -p extensions/. "$stage/share/heimdall/extensions/"
 install -m 0755 "$ham_bridge_out/bin/ham-bridge" "$stage/bin/ham-bridge"
 if [ -f "$ham_bridge_out/bin/openssl" ]; then
   install -m 0755 "$ham_bridge_out/bin/openssl" "$stage/bin/openssl"
@@ -82,6 +96,19 @@ if [ -n "$ham_pty_host_out" ]; then
   fi
   install -m 0755 "$ham_pty_host_out/bin/ham-pty-host" "$stage/bin/ham-pty-host"
   ham_pty_host_shipped=true
+fi
+# T15: the dormant launcher + supervisor (docs/specs/bridge-supervisor-engine.md §1, §3).
+engine_shipped=false
+if [ -n "$ham_launcher_out" ]; then
+  for spec in "$ham_launcher_out/bin/ham-launcher" "$ham_supervisor_out/bin/ham-supervisor"; do
+    if [ ! -f "$spec" ]; then
+      echo "missing required release input: $spec" >&2
+      exit 1
+    fi
+  done
+  install -m 0755 "$ham_launcher_out/bin/ham-launcher" "$stage/bin/ham-launcher"
+  install -m 0755 "$ham_supervisor_out/bin/ham-supervisor" "$stage/bin/ham-supervisor"
+  engine_shipped=true
 fi
 install -m 0644 README.md "$stage/README.md"
 install -m 0644 LICENSE "$stage/LICENSE"
@@ -263,6 +290,8 @@ if [[ "$target" == darwin-* ]]; then
         ham-bridge) identifier=works.earendil.heimdall.bridge ;;
         ham-ctl) identifier=works.earendil.heimdall.ctl ;;
         ham-pty-host) identifier=works.earendil.heimdall.pty-host ;;
+        ham-launcher) identifier=works.earendil.heimdall.launcher ;;
+        ham-supervisor) identifier=works.earendil.heimdall.supervisor ;;
         *) identifier="works.earendil.heimdall.$(basename "$staged" | tr -cs 'A-Za-z0-9.-' '-')" ;;
       esac
       codesign --force --sign "$signing_identity" --identifier "$identifier" --options runtime --timestamp "$staged"
@@ -280,7 +309,9 @@ if [ -n "$built_at" ]; then
 else
   built_at_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
-if [ "$ham_pty_host_shipped" = true ]; then
+if [ "$engine_shipped" = true ]; then
+  binaries_json='["ham-bridge", "ham-ctl", "ham-pty-host", "ham-launcher", "ham-supervisor"]'
+elif [ "$ham_pty_host_shipped" = true ]; then
   binaries_json='["ham-bridge", "ham-ctl", "ham-pty-host"]'
 else
   binaries_json='["ham-bridge", "ham-ctl"]'
@@ -304,6 +335,12 @@ cat > "$stage/METADATA.json" <<META
 }
 META
 
+links="$(find "$stage" -type l -print)"
+if [ -n "$links" ]; then
+  echo "error: staged bundle contains symlinks (the supervisor rejects them): $links" >&2
+  exit 1
+fi
+
 tarball="$out_dir/heimdall-local-$target.tar.gz"
 tar -C "$stage" -czf "$tarball" bin share README.md LICENSE METADATA.json
 
@@ -320,6 +357,9 @@ required_entries=(
 )
 if [ "$ham_pty_host_shipped" = true ]; then
   required_entries+=("bin/ham-pty-host")
+fi
+if [ "$engine_shipped" = true ]; then
+  required_entries+=("bin/ham-launcher" "bin/ham-supervisor")
 fi
 # List once into a file: piping tar into `grep -q` races under pipefail
 # (grep exits on first match -> tar hits EPIPE -> false "missing entry").

@@ -65,10 +65,12 @@ Groups:
 
 - [INSTALL_ANALYSIS_AND_RECOVERY.md](INSTALL_ANALYSIS_AND_RECOVERY.md): bridge install, update and recovery built around the single `ham-bridge` binary.
 - [bridge-setup-progress.md](bridge-setup-progress.md): the `ham-bridge` `setup --json-progress`, `status --json` and `list --json` lifecycle CLI.
+- [specs/bridge-supervisor-engine.md](specs/bridge-supervisor-engine.md): bridge update engine spec (launcher, supervisor, journal, pointers, agent gate, crash recovery); spec for Phase 1, not implemented.
 - [bridge-multi-account.md](bridge-multi-account.md): several accounts on one machine, each with its own bridge profile.
 - [bridge-retirement.md](bridge-retirement.md): how the bridge parks Hub traffic on sunset or credential revocation.
 - [provider-profiles.md](provider-profiles.md): provider profiles and isolated local homes.
 - [release-targets.md](release-targets.md): release workflow targets and the optional Intel macOS build.
+- [release-signing.md](release-signing.md): the minisign-signed release manifest, the protected signing key, and key rotation.
 
 ### Desktop app
 

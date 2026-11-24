@@ -1,0 +1,111 @@
+name: Supervisor fetch tests
+# Odin unit tests of the dormant supervisor's download/verify/unpack package
+# (src/supervisor/fetch, docs/specs/bridge-supervisor-engine.md §14) on Linux,
+# macOS and Windows (REQ-OS-1). Separate from supervisor-unit.yml (T11) while
+# both task branches are unmerged; T15 folds them into the failure-injection
+# suite.
+on:
+  push:
+    # heimdall/** and ci/** : task and throwaway branches pushed for a CI run
+    # (workflow_dispatch only reaches workflows on the default branch).
+    branches: [main, 'heimdall/**', 'ci/**']
+    paths:
+      - 'src/supervisor/fetch/**'
+      - 'scripts/release/minisign/**'
+      - 'scripts/release/package-local-binary-tarball.sh'
+      - 'extensions/**'
+      - '.github/workflows/supervisor-fetch.yml'
+  pull_request:
+    paths:
+      - 'src/supervisor/fetch/**'
+      - 'scripts/release/minisign/**'
+      - 'scripts/release/package-local-binary-tarball.sh'
+      - 'extensions/**'
+      - '.github/workflows/supervisor-fetch.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: supervisor-fetch-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unix:
+    name: odin test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: odin test (flake-pinned Odin)
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$HOME/.cache/heimdall-tests"
+          mkdir -p "$out"
+          # Stand-in binary for the --version preflight tests.
+          nix develop -c odin build src/supervisor/fetch/testdata/fakever -vet -strict-style -out:"$out/fakever"
+          # A POSIX bundle from the real packaging script (stub binaries): it
+          # must hold no links and extract cleanly (test_real_release_bundles_extract).
+          bundles="$out/bundles"; stubs="$out/stubs"
+          rm -rf "$bundles" "$stubs"
+          for n in ham-bridge ham-ctl ham-pty-host; do
+            mkdir -p "$stubs/$n/bin"; printf '#!/bin/sh\necho stub\n' > "$stubs/$n/bin/$n"; chmod 755 "$stubs/$n/bin/$n"
+          done
+          case "$RUNNER_OS" in macOS) target=darwin-arm64 ;; *) target=linux-amd64 ;; esac
+          bash scripts/release/package-local-binary-tarball.sh "$target" 0.0.0 "$bundles" \
+            "$stubs/ham-bridge" "$stubs/ham-ctl" "$stubs/ham-pty-host"
+          export HEIMDALL_FETCH_REAL_BUNDLES="$bundles"
+          HEIMDALL_FETCH_FAKEVER="$out/fakever" nix develop -c odin test src/supervisor/fetch \
+            -collection:odin_test=src -vet -strict-style -out:"$out/supervisor-fetch"
+
+  windows:
+    name: odin test (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # Same pin as release-local-binaries.yml (windows job) and flake.nix.
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          $odin = Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe'
+          & $odin version
+          "ODIN=$odin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: odin test
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fake = Join-Path $env:RUNNER_TEMP 'fakever.exe'
+          & $env:ODIN build src/supervisor/fetch/testdata/fakever -vet -strict-style "-out:$fake"
+          if ($LASTEXITCODE -ne 0) { throw "fakever build failed ($LASTEXITCODE)" }
+          $env:HEIMDALL_FETCH_FAKEVER = $fake
+          # The published Windows zip (v0.5.74) must extract cleanly
+          # (test_real_release_bundles_extract).
+          $bundles = Join-Path $env:RUNNER_TEMP 'bundles'
+          New-Item -ItemType Directory -Force $bundles | Out-Null
+          gh release download v0.5.74 -R $env:GITHUB_REPOSITORY -p 'heimdall-local-windows-amd64-v0.5.74.zip' -D $bundles
+          if ($LASTEXITCODE -ne 0) { throw "gh release download failed ($LASTEXITCODE)" }
+          $env:HEIMDALL_FETCH_REAL_BUNDLES = $bundles
+          & $env:ODIN test src/supervisor/fetch -collection:odin_test=src -vet -strict-style "-out:$env:RUNNER_TEMP\supervisor-fetch.exe"
+          if ($LASTEXITCODE -ne 0) { throw "odin test src/supervisor/fetch failed ($LASTEXITCODE)" }
