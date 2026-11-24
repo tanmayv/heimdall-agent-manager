@@ -40,6 +40,10 @@ Bridge_Auto_Update_State :: struct {
 	// A forced update handed to the --auto-worker. Its outcome is reported to the
 	// hub once the worker has finished (pending_version cleared).
 	forced_version: string,
+	// The --auto-worker's outcome ("update to vX succeeded" / "update to vX
+	// failed: <reason>"). That process runs detached with stdio on /dev/null, so
+	// it records the outcome here and the bridge's worker logs it once (T16c).
+	last_result: string,
 }
 
 // Seams of the forced path; a zero field means the real implementation.
@@ -157,7 +161,9 @@ bridge_auto_update_resolve :: proc(fetch: Bridge_Hub_Fetch = bridge_hub_http_sen
 		version := extract_json_string(body, "latest_version", "")
 		defer delete(version)
 		available := extract_json_bool(body, "artifact_available", false)
-		if available && bridge_release_tag_valid(version) do return strings.clone(version)
+		// The catalog carries the bare SemVer (the hub trims the tag's "v");
+		// `update --version` looks the GitHub release up by its tag (T16c).
+		if available && bridge_release_tag_valid(version) do return bridge_release_tag_for(version, context.allocator)
 	}
 	target, blocked := bridge_release_target()
 	if blocked do return ""
@@ -277,6 +283,7 @@ bridge_auto_update_tick :: proc(
 ) {
 	hooks := bridge_auto_update_force_hooks(force)
 	state := bridge_auto_update_read(path)
+	bridge_auto_update_report_result(path, &state)
 	bridge_auto_update_report_forced(path, &state, hooks)
 	if !bridge_auto_update_enabled(config) {
 		quiet_since^ = 0
@@ -464,6 +471,16 @@ bridge_auto_update_report_forced :: proc(path: string, state: ^Bridge_Auto_Updat
 	_ = bridge_auto_update_write(path, state^)
 }
 
+// bridge_auto_update_report_result logs the --auto-worker's recorded outcome
+// once it has finished (pending_version cleared in the same write).
+bridge_auto_update_report_result :: proc(path: string, state: ^Bridge_Auto_Update_State) {
+	if state.last_result == "" || state.pending_version != "" do return
+	bridge_auto_update_log("%s (running %s; failures %d; %s)", state.last_result, contracts.APP_VERSION, state.failures,
+		bridge_auto_update_due_text(state.next_check_ms, bridge_runtime_now_ms()))
+	state.last_result = ""
+	_ = bridge_auto_update_write(path, state^)
+}
+
 bridge_auto_update_force_hooks :: proc(h: Bridge_Auto_Update_Force_Hooks) -> Bridge_Auto_Update_Force_Hooks {
 	out := h
 	if out.agents == nil do out.agents = bridge_auto_update_host_agent_count
@@ -517,14 +534,15 @@ bridge_auto_update_lock_path :: proc() -> string {
 	return bridgesvc.pjoin(bridge_service_host().home, ".heimdall-auto-update.lock")
 }
 
-bridge_auto_update_finish :: proc(service: string, success: bool) {
+bridge_auto_update_finish :: proc(service: string, success: bool, result := "") {
 	path := bridge_auto_update_state_path(service)
-	bridge_auto_update_finish_at(path, success, bridge_runtime_now_ms(), rand.uint64())
+	bridge_auto_update_finish_at(path, success, bridge_runtime_now_ms(), rand.uint64(), result)
 }
 
-bridge_auto_update_finish_at :: proc(path: string, success: bool, now: i64, entropy: u64) {
+bridge_auto_update_finish_at :: proc(path: string, success: bool, now: i64, entropy: u64, result := "") {
 	state := bridge_auto_update_read(path)
 	state.pending_version = ""
+	state.last_result = result
 	if success do state.failures = 0
 	else do state.failures = max(1, state.failures)
 	state.next_check_ms = now + bridge_auto_update_delay(state.failures, entropy)
