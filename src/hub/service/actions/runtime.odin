@@ -14,6 +14,7 @@ import nats "odin_test:lib/nats"
 
 Options :: struct {nats_url,creds_file,ca_file:string,max_deliver:int}
 Runtime :: struct {
+ rule_index:Rule_Index,
  svc:^Service,
  router:Router,
  options:Options,
@@ -67,6 +68,7 @@ runtime_setup_error :: proc(gate:^Setup_Log_Gate,stage:string,err:nats.Error) {
 }
 runtime_entry :: proc(data:rawptr) {
  r:=(^Runtime)(data)
+ defer rule_index_clear(&r.rule_index)
  arena:virtual.Arena
  if virtual.arena_init_growing(&arena)!=nil do return
  defer virtual.arena_destroy(&arena)
@@ -82,6 +84,7 @@ runtime_entry :: proc(data:rawptr) {
  retention_diagnostics:retry.State
  for sync.atomic_load(&r.stop_flag)==0 {
   if last_sweep._nsec==0 || time.tick_since(last_sweep)>=time.Minute {
+   rule_index_clear(&r.rule_index)
    if err:=sweep_history(r.svc,time.now());err.code!=.None do _=retry.failed(&retention_diagnostics,"actions",.Retention,i32(err.code))
    last_sweep=time.tick_now()
   }
@@ -115,6 +118,7 @@ runtime_entry :: proc(data:rawptr) {
    if done do pending=false
   }
   batch,err:=nats.fetch(pull,64,1000)
+  rule_index_sync(r)
   hints:=make([dynamic]Resume_Hint)
   count:=nats.batch_count(batch)
   for i in 0..<count {

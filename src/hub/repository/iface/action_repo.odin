@@ -6,6 +6,9 @@ Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
 Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string, batch_size: int }
 Action_Batch_Member :: struct {run_id, from_state: string}
 Action_Repository :: struct {
+ triggers_effective_owner: proc(ctx:rawptr,owner:string)->([]domain.Action_Trigger,domain.Domain_Error),
+ // Immediate match: atomically join the action's open run or queue a new one.
+ run_enqueue: proc(ctx:rawptr,r:domain.Action_Run)->(bool,domain.Domain_Error),
  runs_for_delivery: proc(ctx:rawptr,delivery_id:string)->([]domain.Action_Run,domain.Domain_Error),
  runs_finish_delivery: proc(ctx:rawptr,delivery_id,state,reason,now:string)->domain.Domain_Error,
  runs_release_parked: proc(ctx:rawptr,owner,instance_id,now:string)->(bool,domain.Domain_Error),

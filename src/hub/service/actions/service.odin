@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:mem/virtual"
 import "core:strings"
 import "core:fmt"
+import "core:sync"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -13,6 +14,7 @@ import placement "odin_test:hub/service/placement"
 DEFAULT_MAX_PER_OWNER :: 1000
 Schedule_Support_Port :: struct { ctx: rawptr, get: proc(ctx: rawptr) -> int }
 Service :: struct {
+ rule_epoch: i64, // Changed only after a successful rule/action commit.
  filter_limits: Filter_Limits,
  max_per_owner: int, // Zero selects DEFAULT_MAX_PER_OWNER.
 	factory: ^iface.Unit_Of_Work_Factory,
@@ -402,6 +404,7 @@ write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, c
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	uow.ctx = nil
 	if !committed { action_view_destroy(&result); return {}, commit_err }
+	sync.atomic_add(&s.rule_epoch,1)
 	return result, {}
 }
 delete_action :: proc(s: ^Service, owner, action_id: string) -> domain.Domain_Error {
@@ -421,8 +424,9 @@ delete_action :: proc(s: ^Service, owner, action_id: string) -> domain.Domain_Er
 		}
 	}
 	if e := uow.repos.actions.delete_action(uow.repos.actions.ctx, v.action.id); e.code != .None do return e
-	_, commit_err := iface.unit_of_work_commit(&uow)
+	committed, commit_err := iface.unit_of_work_commit(&uow)
 	uow.ctx = nil
+ if committed do sync.atomic_add(&s.rule_epoch,1)
 	return commit_err
 }
 
