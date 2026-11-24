@@ -8,13 +8,18 @@ export type ActionTarget =
   | { kind: 'instance'; instance_id: string }
   | { kind: 'bot'; bot_id: string };
 export type ScheduleConfig = { mode: 'cron' | 'interval' | 'once'; cron_expr?: string; timezone?: string; interval_s?: number; run_at?: string; blackout_dates?: string[]; active_from?: string; active_until?: string };
-export type EventConfig = { event_type: string; chain_id?: string; data?: Record<string, string> };
+export type FilterScalar = string | number | boolean;
+export type FilterNode = { all: FilterNode[] } | { any: FilterNode[] } | { not: FilterNode } | { field: string; op: 'eq' | 'ne' | 'in' | 'not_in' | 'exists' | 'prefix'; value: FilterScalar | FilterScalar[] };
+export type FilterLimits = { max_depth: number; max_checks: number; max_nodes: number; max_children: number; max_values: number; max_value_bytes: number; max_field_bytes: number; max_path_segments: number; max_segment_bytes: number; max_bytes: number };
+export type MatchTrace = { rev: number; nodes: string };
+export type FilterTestResult = { valid: boolean; matched: boolean; nodes: string; path: string; reason: string };
+export type EventConfig = { event_type: string; entity_id?: string; filter?: FilterNode | Record<string, never> };
 export type ActionTrigger = ({ kind: 'schedule'; config: ScheduleConfig } | { kind: 'event'; config: EventConfig }) & { id?: string; enabled: boolean; delay_s?: number; rev?: number; next_fire_at?: string; created_at?: string; updated_at?: string };
 export type Action = { id: string; owner_user_id: string; name: string; prompt_text: string; enabled: boolean; min_interval_s: number; target: ActionTarget; triggers: ActionTrigger[]; created_at: string; updated_at: string };
 export type CreateActionInput = Pick<Action, 'prompt_text' | 'target'> & Partial<Pick<Action, 'name' | 'enabled' | 'min_interval_s' | 'triggers'>>;
 export type PatchActionInput = Partial<CreateActionInput>;
-export type TriggerEvent = { event_type: string; label: string; scope: string; data_keys: { key: string; values: string[] }[]; presets: { id: string; label: string; data: Record<string, string> }[] };
-export type TriggerTypes = { target_kinds: ActionTarget['kind'][]; schedules_supported: boolean; limits: { max_triggers: number; max_rules: number; min_interval_s: { min: number; max: number; default: number } }; trigger_kinds: { kind: string; label: string; modes?: ScheduleConfig['mode'][]; events?: TriggerEvent[] }[] };
+export type TriggerEvent = { event_type: string; label: string; scope: string; no_delay: boolean; free_data_paths: boolean; fields: { field: string; operators: string[]; values: string[] }[]; presets: { id: string; label: string; filter: FilterNode }[] };
+export type TriggerTypes = { target_kinds: ActionTarget['kind'][]; schedules_supported: boolean; limits: { filter: FilterLimits; max_triggers: number; max_rules: number; min_interval_s: { min: number; max: number; default: number } }; trigger_kinds: { kind: string; label: string; modes?: ScheduleConfig['mode'][]; events?: TriggerEvent[] }[] };
 export type PlacementCandidates = { candidates: { bridge_id: string; provider: string; provider_profile: string; model: string; rank: number }[]; bridges: { bridge_id: string; label: string; eligible: boolean; reason: string }[]; providers: { provider: string; label: string; models: string[] }[] };
 export type ActionRun = { id: string; trigger_id: string; event_type: string; event_id: string; state: 'queued' | 'deferred' | 'routed' | 'delivered' | 'joined' | 'skipped' | 'failed'; reason: string; not_before: string; joined_run_id: string; joined_count: number; rule_position: number; target_instance_id: string; message_id: string; delivery_id: string; delivery_expires_at: string; delivery_state?: string; delivery_outcome?: string; created_at: string; started_at: string; finished_at: string };
 
@@ -52,6 +57,9 @@ export const actionsApi = heimdallApi.injectEndpoints({
     actionTriggerTypes: build.query<TriggerTypes, void>({
       queryFn: () => request('/actions/trigger-types'),
     }),
+    testActionFilter: build.mutation<FilterTestResult, { event_type: string; filter?: FilterNode | Record<string, never>; event: Record<string, unknown> }>({
+      queryFn: body => request('/actions/filter-test', 'POST', body),
+    }),
     actionPlacementCandidates: build.query<PlacementCandidates, { agent_id: string }>({
       queryFn: ({ agent_id }) => request('/placement/candidates?' + new URLSearchParams({ agent_id, feature: 'event_pipeline_v1' })),
     }),
@@ -69,4 +77,4 @@ export const actionsApi = heimdallApi.injectEndpoints({
     }),
   }),
 });
-export const { useListActionsQuery, useFetchActionQuery, useCreateActionMutation, usePatchActionMutation, useDeleteActionMutation, useActionTriggerTypesQuery, useActionPlacementCandidatesQuery, useActionRunsQuery, useLazyActionRunsQuery, useSetActionEnabledMutation, useListAllAgentInstancesQuery } = actionsApi;
+export const { useListActionsQuery, useFetchActionQuery, useCreateActionMutation, usePatchActionMutation, useDeleteActionMutation, useActionTriggerTypesQuery, useTestActionFilterMutation, useActionPlacementCandidatesQuery, useActionRunsQuery, useLazyActionRunsQuery, useSetActionEnabledMutation, useListAllAgentInstancesQuery } = actionsApi;

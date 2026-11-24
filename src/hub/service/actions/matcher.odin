@@ -28,21 +28,16 @@ scalar_text :: proc(value: json.Value) -> (string, bool) {
  }
  return "", false
 }
-data_matches :: proc(filter_json: string, data: json.Object) -> bool {
- if filter_json == "" do return true
- value: json.Value
- if json.unmarshal(transmute([]u8)filter_json, &value, allocator=context.temp_allocator) != nil do return false
- defer json.destroy_value(value, allocator=context.temp_allocator)
- filters, valid := value.(json.Object)
- if !valid do return false
- for key, expected in filters {
-  actual, found := data[key]
-  if !found do return false
-  a, a_ok := scalar_text(actual)
-  b, b_ok := scalar_text(expected)
-  if !a_ok || !b_ok || a != b do return false
- }
- return true
+data_matches :: proc(filter_json:string,envelope:json.Object,limits:=FILTER_DEFAULT_LIMITS)->bool {
+ if filter_json=="" do return true
+ value:json.Value
+ if json.unmarshal(transmute([]u8)filter_json,&value,allocator=context.temp_allocator)!=nil do return false
+ defer json.destroy_value(value,allocator=context.temp_allocator)
+ tree,e:=filter_compile(value,nil,limits,context.temp_allocator)
+ defer filter_destroy(&tree,context.temp_allocator)
+ if e.reason!="" do return false
+ result,_:=filter_evaluate(tree,envelope)
+ return result
 }
 event_params :: proc(msg: Event_View) -> string {
  params := make(json.Object, context.temp_allocator)
@@ -99,10 +94,9 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
  defer domain.action_triggers_destroy(triggers)
  if err.code != .None do return false
  now := platform.clock_now(r.svc.clock)
- data, _ := msg.envelope["data"].(json.Object)
  for trigger in triggers {
   if string(trigger.owner_user_id) != owner || !trigger.enabled do continue
-  if !subject_matches(trigger.subject_filter, msg.subject) || !data_matches(trigger.data_filter_json, data) do continue
+  if !subject_matches(trigger.subject_filter, msg.subject) || !data_matches(trigger.data_filter_json, msg.envelope, filter_limits(r.svc.filter_limits)) do continue
   updated, valid := platform.rfc3339_to_unix_ms(trigger.updated_at)
   if !valid || msg.stream_time_ms < updated do continue
   kind, found := trigger_kind_find(trigger.kind)

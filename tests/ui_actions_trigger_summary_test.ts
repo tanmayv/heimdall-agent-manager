@@ -10,6 +10,6 @@ test('one pill summarizes cron, interval, once, preset and plain event', () => {
     assert.equal(summarize('schedule', { mode: 'interval', interval_s }), label);
   }
   assert.equal(summarize('schedule', { mode: 'once', run_at: '2026-12-01T09:00:00Z' }), 'once 2026-12-01 09:00 UTC');
-  assert.equal(summarize('event', { event_type: 'chain.state', data: { state: 'completed' } }), 'Task chain completed');
+  assert.equal(summarize('event', { event_type: 'chain.state', filter: { all: [{ field: 'data.state', op: 'eq', value: 'completed' }] } }), 'Task chain completed');
   assert.equal(summarize('event', { event_type: 'chain.work_finished' }), 'chain.work_finished');
 });

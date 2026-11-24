@@ -179,10 +179,11 @@ subject_match_cases :: proc(t:^testing.T) {
 @(test)
 test_data_matches_table :: proc(t:^testing.T) {actions_track(t,data_match_cases)}
 data_match_cases :: proc(t:^testing.T) {
- data:=test_config(`{"state":"completed","n":3,"bool":true,"nested":{"key":"v"}}`)
- for filter in ([]string{"","{}",`{"state":"completed"}`,`{"n":"3","bool":"true"}`}) do testing.expect(t,data_matches(filter,data),filter)
- for filter in ([]string{`{"missing":"x"}`,`{"state":"failed"}`,`{"nested":"x"}`,"[]","broken"}) do testing.expect(t,!data_matches(filter,data),filter)
+ envelope:=test_config(`{"data":{"state":"completed","n":3,"bool":true,"nested":{"key":"v"}}}`)
+ for filter in ([]string{"","{}",`{"field":"data.state","op":"eq","value":"completed"}`,`{"all":[{"field":"data.n","op":"eq","value":"3"},{"field":"data.bool","op":"eq","value":"true"}]}`}) do testing.expect(t,data_matches(filter,envelope),filter)
+ for filter in ([]string{`{"field":"data.missing","op":"eq","value":"x"}`,`{"field":"data.state","op":"eq","value":"failed"}`,`{"field":"data.nested","op":"eq","value":"x"}`,"[]","broken",`{"state":"completed"}`}) do testing.expect(t,!data_matches(filter,envelope),filter)
 }
+
 @(test)
 test_matcher_tenant_isolation :: proc(t:^testing.T) {action_test_case(t,tenant_scenario)}
 tenant_scenario :: proc(t:^testing.T,f:^Action_Test) {

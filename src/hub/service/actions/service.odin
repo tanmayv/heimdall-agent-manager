@@ -3,6 +3,8 @@ package actions
 import "core:encoding/json"
 import "core:mem/virtual"
 import "core:strings"
+import "core:fmt"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
@@ -10,6 +12,7 @@ import placement "odin_test:hub/service/placement"
 
 Schedule_Support_Port :: struct { ctx: rawptr, get: proc(ctx: rawptr) -> int }
 Service :: struct {
+ filter_limits: Filter_Limits,
 	factory: ^iface.Unit_Of_Work_Factory,
 	repos: ^iface.Repositories,
 	placement: ^placement.Service,
@@ -189,18 +192,42 @@ validate_target :: proc(s: ^Service, repos: ^iface.Repositories, owner: string, 
 	}
 	return {}
 }
-validate_chain :: proc(repos: ^iface.Repositories, owner: string, config: json.Object) -> domain.Domain_Error {
-	chain_id, _ := config_string(config, "chain_id")
-	if chain_id == "" do return {}
-	arena: virtual.Arena
-	_ = virtual.arena_init_growing(&arena)
-	defer virtual.arena_destroy(&arena)
-	context.allocator = virtual.arena_allocator(&arena)
-	chain, found, err := iface.taskchain_get_chain(&repos.taskchains, domain.Task_Chain_ID(chain_id))
-	if err.code != .None && err.code != .Not_Found do return err
-	if !found || string(chain.owner_user_id) != owner do return detail_error("unknown_chain")
-	return {}
+validate_entity :: proc(repos:^iface.Repositories,owner:string,config:json.Object)->domain.Domain_Error {
+ id,valid:=config_string(config,"entity_id")
+ if !valid do return detail_error("unknown_entity")
+ if id=="" do return {}
+ event_type,_:=config_string(config,"event_type")
+ descriptor:=event_descriptor_find(event_type)
+ if descriptor==nil do return detail_error("unknown_event_type")
+ if descriptor.validate_entity!=nil do return descriptor.validate_entity(repos,owner,id)
+ arena:virtual.Arena
+ if virtual.arena_init_growing(&arena)!=nil do return domain.domain_error(.Internal_Error,"entity validation unavailable")
+ defer virtual.arena_destroy(&arena)
+ context.allocator=virtual.arena_allocator(&arena)
+ // Returned errors use the caller's request temp allocator, not this row arena.
+ found:=false
+ actual:=""
+ err:domain.Domain_Error
+ switch descriptor.scope {
+ case "chain":
+  row:domain.Task_Chain
+  row,found,err=iface.taskchain_get_chain(&repos.taskchains,domain.Task_Chain_ID(id))
+  actual=string(row.owner_user_id)
+ case "task":
+  row:domain.Task
+  row,found,err=iface.taskchain_get_task(&repos.taskchains,domain.Task_ID(id))
+  actual=string(row.owner_user_id)
+ case "memory":
+  row:domain.Memory
+  row,found,err=iface.content_get_memory(&repos.content,id)
+  actual=string(row.owner_user_id)
+ case: return detail_error("unknown_entity")
+ }
+ if err.code!=.None && err.code!=.Not_Found do return err
+ if !found || actual!=owner do return detail_error("unknown_entity")
+ return {}
 }
+
 replace_string :: proc(dst: ^string, value: string) {
 	delete(dst^)
 	dst^ = strings.clone(value)
@@ -279,9 +306,13 @@ write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, c
 			id := input.id
 			if id == "" do id = platform.generate_id(s.ids, "trg_")
 			if input.kind == "event" {
-				if err := validate_chain(uow.repos, owner, input.config); err.code != .None do return {}, err
+				if err := validate_entity(uow.repos, owner, input.config); err.code != .None do return {}, err
 			}
-			spec, compile_err := kind.compile(owner, string(v.action.id), id, input.config, context.allocator)
+			spec:Match_Spec
+   compile_err:domain.Domain_Error
+   if input.kind=="event" {
+    spec,compile_err=event_compile_limits(owner,string(v.action.id),id,input.config,filter_limits(s.filter_limits),context.allocator)
+   } else {spec,compile_err=kind.compile(owner,string(v.action.id),id,input.config,context.allocator)}
 			if compile_err.code != .None do return {}, compile_err
 			encoded, encode_err := json.marshal(input.config, opt={sort_maps_by_key=true}, allocator=context.allocator)
 			if encode_err != nil { match_spec_destroy(&spec); return {}, detail_error("invalid_config") }
@@ -298,7 +329,11 @@ write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, c
 			}
 			if old != nil do t.delay_s = old.delay_s
 			if delay, present := input.delay_s.?; present do t.delay_s = delay
-			if t.delay_s < 0 || t.delay_s > domain.ACTION_MAX_DELAY_S do return {}, detail_error("delay_out_of_range")
+			if t.delay_s>0 && input.kind=="event" {
+    descriptor:=event_descriptor_find(t.event_type)
+    if descriptor!=nil && descriptor.no_delay do return {},detail_error("delay_not_supported")
+   }
+   if t.delay_s < 0 || t.delay_s > domain.ACTION_MAX_DELAY_S do return {}, detail_error("delay_out_of_range")
 			if enabled, present := input.enabled.?; present do t.enabled = enabled
 			if old != nil && (old.config_json != t.config_json || old.enabled != t.enabled || old.delay_s != t.delay_s || old_enabled != v.action.enabled) do t.rev += 1
 		}
@@ -384,6 +419,7 @@ Trigger_Types_View :: struct {
 	schedules_supported: bool,
 	limits: struct {
 		max_triggers, max_rules: int,
+  filter: Filter_Limits,
 		min_interval_s: struct {min,max,default:int},
 	},
 	trigger_kinds: []Trigger_Type_View,
@@ -395,10 +431,12 @@ Trigger_Type_View :: struct {
 }
 Event_Type_View :: struct {
 	event_type,label,scope:string,
-	data_keys:[]Data_Key,
+ no_delay, free_data_paths:bool,
+ fields:[]Filter_Field_View,
 	presets:[]Event_Preset_View,
 }
-Event_Preset_View :: struct {id,label:string,data:json.Object}
+Event_Preset_View :: struct {id,label:string,filter:json.Object}
+Filter_Field_View :: struct {field:string,operators:[]string,values:[]string}
 // Metadata strings are borrowed. The returned slices/maps live in the pass
 // temporary allocator and must be serialized before that allocator is reset.
 trigger_types :: proc(s:^Service) -> Trigger_Types_View {
@@ -416,19 +454,23 @@ trigger_types :: proc(s:^Service) -> Trigger_Types_View {
 			kind.events=make([]Event_Type_View,len(EVENT_DESCRIPTORS),context.temp_allocator)
 			for descriptor,i in EVENT_DESCRIPTORS {
 				event:=&kind.events[i]
-				event^={event_type=descriptor.event_type,label=descriptor.label,scope=descriptor.scope,data_keys=descriptor.data_keys,
-					presets=make([]Event_Preset_View,len(descriptor.presets),context.temp_allocator)}
+				event^={event_type=descriptor.event_type,label=descriptor.label,scope=descriptor.scope,
+					no_delay=descriptor.no_delay,free_data_paths=descriptor.free_data_paths,
+     fields=make([]Filter_Field_View,3+len(descriptor.data_keys),context.temp_allocator),
+     presets=make([]Event_Preset_View,len(descriptor.presets),context.temp_allocator)}
+    for field,k in ([]string{"entity.id","entity.kind","actor"}) do event.fields[k]={field=field,operators=FILTER_OPERATORS}
+    for field,k in descriptor.data_keys do event.fields[k+3]={field=fmt.tprintf("data.%s",field.key),operators=FILTER_OPERATORS,values=field.values}
 				for preset,j in descriptor.presets {
 					value:json.Value
-					_ = json.unmarshal(transmute([]u8)preset.data_json,&value,allocator=context.temp_allocator)
+					_ = json.unmarshal(transmute([]u8)preset.filter_json,&value,allocator=context.temp_allocator)
 					data,_:=value.(json.Object)
-					event.presets[j]={id=preset.id,label=preset.label,data=data}
+					event.presets[j]={id=preset.id,label=preset.label,filter=data}
 				}
 			}
 		}
 	}
 	return {target_kinds=s.target_kinds,schedules_supported=schedule_supported(s),
-		limits={max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
+		limits={filter=filter_limits(s.filter_limits),max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
 			min_interval_s={min=domain.ACTION_MIN_INTERVAL_MIN_S,max=domain.ACTION_MIN_INTERVAL_MAX_S,default=domain.ACTION_MIN_INTERVAL_DEFAULT_S}},
 		trigger_kinds=kinds}
 }
@@ -442,4 +484,27 @@ owned_bot :: proc(repo: ^iface.Bot_Repository, owner, bot_id: string) -> (domain
  if err.code != .None do return bot, err
  if !found || bot.owner_user_id != owner do return bot, domain.domain_error(.Not_Found, "bot not found")
  return bot, {}
+}
+
+// Pure sample evaluation: borrows the request; returned text uses the pass allocator.
+filter_test :: proc(s:^Service,input:contracts.Action_Filter_Test_Request)->contracts.Action_Filter_Test_Response {
+ descriptor:=event_descriptor_find(input.event_type)
+ if descriptor==nil do return {reason="unknown_event_type"}
+ raw:=input.filter
+ if _,null:=raw.(json.Null);null do raw=json.Object{}
+ tree,e:=filter_compile(raw,descriptor,filter_limits(s.filter_limits),context.temp_allocator)
+ defer filter_destroy(&tree,context.temp_allocator)
+ if e.reason!="" do return {path=e.path,reason=e.reason}
+ sample,ok:=input.event.(json.Object)
+ if !ok do return {reason="invalid_event"}
+ envelope:=sample
+ if descriptor.free_data_paths {
+  // A full envelope has type + entity. Otherwise the sample is a body.
+  if _,full:=sample["entity"].(json.Object); !full {
+   envelope=make(json.Object,context.temp_allocator)
+   envelope["data"]=sample
+  }
+ }
+ matched,nodes:=filter_evaluate(tree,envelope,true,context.temp_allocator)
+ return {valid=true,matched=matched,nodes=nodes}
 }

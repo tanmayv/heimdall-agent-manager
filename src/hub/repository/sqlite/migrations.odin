@@ -738,6 +738,7 @@ MIGRATION_237_EXTENSION_VERSION_SYNC :: #load("migrations/237_extension_version_
 
 MIGRATION_ACTIONS_004_BOT_ACTIVITY :: #load("migrations/actions_004_bot_activity.sql", string)
 MIGRATION_ACTIONS_005_SETTLE :: #load("migrations/actions_005_settle.sql", string)
+MIGRATION_ACTIONS_007_FILTER_TREE :: #load("migrations/actions_007_filter_tree.sql", string)
 MIGRATION_ACTIONS_006_TEMPLATE_VARS :: #load("migrations/actions_006_template_vars.sql", string)
 MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE :: #load("migrations/actions_003_history_performance.sql", string)
 MIGRATION_ACTIONS_002_LOOKUP_INDEXES :: #load("migrations/actions_002_lookup_indexes.sql", string)
@@ -1024,6 +1025,7 @@ migration_order :: [?]string {
 	"pipeline_002_read_ack.sql",
 	"actions_005_settle.sql",
 	"actions_006_template_vars.sql",
+	"actions_007_filter_tree.sql",
 	"241_extension_version_sync_0_5_78.sql",
 	"242_extension_version_sync_0_5_79.sql",
 	"243_extension_version_sync_0_5_80.sql",
@@ -1537,7 +1539,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1586,6 +1588,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
  if name == "actions_004_bot_activity.sql" do return strings.clone(MIGRATION_ACTIONS_004_BOT_ACTIVITY)
+ if name == "actions_007_filter_tree.sql" do return strings.clone(MIGRATION_ACTIONS_007_FILTER_TREE)
  if name == "actions_006_template_vars.sql" do return strings.clone(MIGRATION_ACTIONS_006_TEMPLATE_VARS)
  if name == "actions_005_settle.sql" do return strings.clone(MIGRATION_ACTIONS_005_SETTLE)
  if name == "actions_003_history_performance.sql" do return strings.clone(MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE)

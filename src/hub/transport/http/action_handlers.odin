@@ -2,6 +2,7 @@
 package http
 
 import "core:encoding/json"
+import contracts "odin_test:contracts"
 import "core:time"
 import "core:strconv"
 import domain "odin_test:hub/domain"
@@ -205,4 +206,13 @@ list_action_runs_handler :: proc(ctx:rawptr,req:Request)->Response {
   values[i]=obj
  }
  return action_response(req,values)
+}
+
+action_filter_test_handler :: proc(ctx:rawptr,req:Request)->Response {
+ h:=(^Action_Handlers)(ctx)
+ _,ok,response:=action_route_auth(h,req)
+ if !ok do return response
+ input:contracts.Action_Filter_Test_Request
+ if json.unmarshal_string(req.body,&input,.JSON,context.temp_allocator)!=nil do return action_error(domain.domain_error(.Validation_Failed,"invalid filter test request"),req.request_id)
+ return action_response(req,actions.filter_test(h.service,input))
 }

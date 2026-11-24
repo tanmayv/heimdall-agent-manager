@@ -60,7 +60,7 @@ settle_real_producer_scenario :: proc(t: ^testing.T, f: ^Action_Test, work, supe
  typ := "chain.work_finished" if work else "chain.state"
  trigger.event_type = typ
  trigger.subject_filter = "ev.owner.chain.*.work_finished" if work else "ev.owner.chain.*.state"
- trigger.data_filter_json = `{"outcome":"work_batch_finished"}` if work else `{"state":"completed"}`
+ trigger.data_filter_json = `{"all":[{"field":"data.outcome","op":"eq","value":"work_batch_finished"}]}` if work else `{"all":[{"field":"data.state","op":"eq","value":"completed"}]}`
  testing.expect_value(t, f.repos.actions.trigger_save(f.repos.actions.ctx, trigger).code, domain.Error_Code.None)
  svc := taskv2.Service{repo=repo, uow_factory=&f.factory, clock=&f.clock, ids=&f.ids}
  if work {

@@ -1754,3 +1754,15 @@ kept and shown in Settings > Bots, and delivered when the user writes again.
 
 `HEIMDALL_WHATSAPP_API_BASE` overrides the default `https://graph.facebook.com`
 (tests point it at a fake server); `--whatsapp-api-base <url>` overrides that.
+
+## Action filter limits
+
+`HEIMDALL_ACTION_FILTER_LIMITS_JSON` overrides condition-tree limits hub-wide.
+For example, `{"max_depth":4,"max_checks":8,"max_nodes":16,"max_bytes":4096}`.
+Unspecified values retain the defaults. Unknown keys, non-integers, nonpositive
+values and values outside the supported bounds stop startup. The effective values
+are returned in `limits.filter` by `GET /api/v1/actions/trigger-types`.
+
+The keys are `max_depth`, `max_checks`, `max_nodes`, `max_children`, `max_values`,
+`max_value_bytes`, `max_field_bytes`, `max_path_segments`, `max_segment_bytes` and
+`max_bytes`. Defaults are 4, 16, 24, 16, 32, 256, 128, 4, 64 and 4096 respectively.
