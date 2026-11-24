@@ -10,6 +10,7 @@ import "core:strings"
 
 Connection :: struct {}
 Pull :: struct {}
+Core_Subscription :: struct {}
 Long_Pull :: struct {}
 Batch :: struct {}
 Message :: struct {}
@@ -531,3 +532,26 @@ long_pull_next :: proc(pull: ^Long_Pull, limit: int, wait_ms: i64) -> (msg: ^Mes
     return msg, sent != 0, err
 }
 long_pull_destroy :: proc(pull: ^Long_Pull) {ham_nats_long_pull_destroy(pull)}
+
+// A non-durable wake hint. Subscribe/flush before starting the waiter. The
+// subscription stays alive until its receiving thread has joined.
+core_subscribe :: proc(conn: ^Connection, subject: string) -> (^Core_Subscription, Error) {
+ if conn==nil || !valid_string(subject) || subject=="" do return nil, Error{status=INVALID}
+ encoded:=strings.clone_to_cstring(subject)
+ defer delete(encoded)
+ sub:^Core_Subscription
+ status:=ham_nats_core_subscribe(&sub,conn,encoded)
+ return sub,Error{status=status}
+}
+// Local blocking receive; idle waiting sends no network/API requests.
+// Unsubscribe may run concurrently to interrupt it. Destroy only after join.
+core_next :: proc(sub:^Core_Subscription, timeout_ms:i64) -> (^Message,Error) {
+ msg:^Message
+ status:=natsSubscription_NextMsg(&msg,sub,timeout_ms)
+ return msg,Error{status=status}
+}
+core_unsubscribe :: proc(sub:^Core_Subscription) -> Error {
+ if sub==nil do return {}
+ return Error{status=natsSubscription_Unsubscribe(sub)}
+}
+core_destroy :: proc(sub:^Core_Subscription) {if sub!=nil do natsSubscription_Destroy(sub)}

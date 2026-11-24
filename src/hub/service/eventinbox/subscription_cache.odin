@@ -12,14 +12,16 @@ Cached_Chain :: struct {
  key: string,
  rows: [dynamic]domain.Event_Subscription,
  snapshots: [dynamic]domain.Event_Notice_Snapshot,
+ snapshot_by_id: map[string]domain.Event_Notice_Snapshot,
 }
 destroy_cached_chain :: proc(entry: Cached_Chain) {
  for row in entry.rows {value := row; domain.event_subscription_destroy(&value)}
  for snapshot in entry.snapshots {value := snapshot; domain.event_notice_snapshot_destroy(&value)}
- delete(entry.rows); delete(entry.snapshots); delete(entry.key)
+ delete(entry.snapshot_by_id); delete(entry.rows); delete(entry.snapshots); delete(entry.key)
 }
 clear_subscription_cache :: proc(r: ^Runtime) {
  context.allocator = r.cache_allocator
+ delete(r.subscription_rows); r.subscription_rows=nil
  for _, entry in r.subscription_cache do destroy_cached_chain(entry)
  delete(r.subscription_cache); r.subscription_cache = nil
  r.subscriptions_ready = false
@@ -41,6 +43,8 @@ cache_chain_rows :: proc(r: ^Runtime, rows: []domain.Event_Subscription, snapsho
   if scope, found := scopes[snapshot.subscription_id]; found {
    entry := r.subscription_cache[scope]
    append(&entry.snapshots, snapshot)
+   if entry.snapshot_by_id==nil do entry.snapshot_by_id=make(map[string]domain.Event_Notice_Snapshot)
+   entry.snapshot_by_id[snapshot.subscription_id]=snapshot
    r.subscription_cache[entry.key] = entry
   } else {
    value := snapshot; domain.event_notice_snapshot_destroy(&value)
@@ -56,6 +60,7 @@ refresh_subscription_cache :: proc(r: ^Runtime, repo: iface.Event_Subscription_R
   delete(changes)
  }
  full := !r.subscriptions_ready || now._nsec-r.subscription_reconcile._nsec >= i64(reconcile_interval(r.service))
+ r.subscription_cache_changed=full || len(changes)>0
  if full {
   rows, rerr := repo.all(repo.ctx)
   if rerr.code != .None do return false
@@ -81,12 +86,15 @@ refresh_subscription_cache :: proc(r: ^Runtime, repo: iface.Event_Subscription_R
    cache_chain_rows(r, rows, snapshots)
    delete(rows); delete(snapshots)
    // Target and receipt changes must rescan promptly, not wait for the slow reconcile.
-   published(r.service, fmt.tprintf("ev.%s.chain.%s.state",change.owner_user_id,change.chain_id))
+   mark_notice_dirty(r.service, fmt.tprintf("%s/%s",change.owner_user_id,change.chain_id),false)
   }
  }
  for change in changes do r.subscription_revision = max(r.subscription_revision,change.revision)
  r.subscriptions_ready = true
- if full || len(changes)>0 {
+ if r.subscription_cache_changed {
+  rows:=make([dynamic]domain.Event_Subscription)
+  for _,entry in r.subscription_cache do append(&rows,..entry.rows[:])
+  delete(r.subscription_rows); r.subscription_rows=rows[:]
   s := r.service
   context.allocator = runtime.heap_allocator()
   sync.mutex_lock(&s.notice_dirty.mutex)
@@ -99,13 +107,7 @@ refresh_subscription_cache :: proc(r: ^Runtime, repo: iface.Event_Subscription_R
  }
  return true
 }
+// Borrowed until the next refresh; no per-wake copy of unchanged subscriptions.
 cached_subscription_rows :: proc(r: ^Runtime) -> []domain.Event_Subscription {
- rows := make([dynamic]domain.Event_Subscription)
- for _, entry in r.subscription_cache do append(&rows,..entry.rows[:])
- return rows[:]
-}
-cached_notice_snapshots :: proc(r: ^Runtime) -> []domain.Event_Notice_Snapshot {
- rows := make([dynamic]domain.Event_Notice_Snapshot)
- for _, entry in r.subscription_cache do append(&rows,..entry.snapshots[:])
- return rows[:]
+ return r.subscription_rows
 }

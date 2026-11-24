@@ -73,3 +73,10 @@ watches survive completion and cancellation; archiving removes them. Every
 retirement queues a durable JetStream consumer deletion, retried on reconnect.
 Reopening a chain recreates current role defaults, starting from the reopen time;
 it does not recreate explicit watches removed by archiving.
+
+The durable max-delivery advisory stream also has a core subscription used only
+as a wake hint. An Odin-owned waiter receives hints without polling the server;
+the runtime reads and acknowledges durable advisories in bounded batches.
+A full batch signals immediate continuation, including for advisories queued
+before startup. Disconnect unsubscribes the hint and joins its waiter before
+destroying any subscription or connection.

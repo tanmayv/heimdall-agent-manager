@@ -75,6 +75,22 @@ subscription_put :: proc(ctx: rawptr, row: domain.Event_Subscription) -> domain.
 	bind_text(stmt, 9, row.consumer_name); bind_text(stmt, 10, row.created_at)
 	bind_text(stmt, 11, row.subscriber_instance_id)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to store event subscription")
+ if row.source=="explicit" {
+  // RAISE(IGNORE) protects trigger-driven inserts too, but an API watch
+  // must report a retired scope rather than silently claiming success.
+  check,cerr:=subscription_prepare(ctx,"SELECT status FROM task_chains WHERE owner_user_id=?1 AND chain_id=?2;")
+  if cerr.code!=.None do return cerr
+  defer sqlite3_finalize(check)
+  bind_text(check,1,row.owner_user_id); bind_text(check,2,row.chain_id)
+  rc:=sqlite3_step(check)
+  if rc==SQLITE_ROW {
+   status:=column_text(check,0)
+   defer delete(status)
+   if status=="archived" do return domain.domain_error(.Conflict,"chain archived")
+  } else if rc!=SQLITE_DONE {
+   return domain.domain_error(.Internal_Error,"failed to inspect watch scope")
+  }
+ }
 	return {}
 }
 

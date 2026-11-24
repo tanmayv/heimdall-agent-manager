@@ -59,6 +59,11 @@ test_incremental_inbox_terminal_retirement_and_cleanup :: proc(t:^testing.T) {
  testing.expect_value(t,count,0)
  iface.unit_of_work_commit(&uow)
  testing.expect_value(t,count,1)
+
+ uow,began,_=iface.unit_of_work_begin(&factory)
+ testing.expect(t,began)
+ testing.expect_value(t,repo.put(repo.ctx,{subscription_id="archived_watch",owner_user_id="alice",subscriber_instance_id="new_watch",chain_id="active",source="explicit",filter_subjects="[]",consumer_name="archived_watch",created_at="now"}).code,domain.Error_Code.Conflict)
+ iface.unit_of_work_rollback(&uow)
  // Rollbacks and rolled-back nested savepoints must not emit a commit wake.
  count=0
  uow,began,_=iface.unit_of_work_begin(&factory)

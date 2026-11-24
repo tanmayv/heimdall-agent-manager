@@ -395,3 +395,16 @@ int ham_nats_long_pull_next(natsMsg **out, ham_long_pull *p, int limit,
     p->remaining--;
     return NATS_OK;
 }
+
+// Core subscriptions are wake hints only; durable delivery stays in JetStream.
+// A synchronous Odin-owned waiter receives them, never a C callback into Odin.
+int ham_nats_core_subscribe(natsSubscription **out, ham_nats *h, const char *subject) {
+    *out = NULL;
+    natsStatus s = natsConnection_SubscribeSync(out, h->nc, subject);
+    if (s == NATS_OK) s = natsConnection_Flush(h->nc);
+    if (s != NATS_OK) {
+        natsSubscription_Destroy(*out);
+        *out = NULL;
+    }
+    return s;
+}

@@ -47,8 +47,10 @@ test_incremental_subscription_cache_queries_and_deadlines :: proc(t: ^testing.T)
  for _ in 0..<20 do testing.expect(t,refresh_subscription_cache(&r,repo,now))
  testing.expect_value(t,impl.queries-before,u64(20))
  testing.expect_value(t,repo.remove(repo.ctx,"alice","inst","sub_1").code,domain.Error_Code.None)
+ consume_wake(&service)
  before=impl.queries
  testing.expect(t,refresh_subscription_cache(&r,repo,now))
+ testing.expect(t,!service.wake_pending,"runtime-owned invalidation does not signal a redundant pass")
  testing.expect_value(t,impl.queries-before,u64(3))
  testing.expect_value(t,len(r.subscription_cache),511)
  // Slow safety reconciliation discovers a deliberately lost invalidation.
@@ -133,7 +135,7 @@ event_driven_inbox_idle_scenario :: proc(t:^testing.T) {
   chain_id="chain",source="explicit",filter_subjects=`["ev.alice.chain.chain.state"]`,consumer_name="new_sub",created_at="now"}).code,domain.Error_Code.None)
  iface.unit_of_work_commit(&uow)
  // put itself is one query; the runtime must do further work after it.
- baseline:=before+1
+ baseline:=before+2
  for _ in 0..<100 {
   if sync.atomic_load(&impl.queries)>baseline do break
   time.sleep(20*time.Millisecond)
