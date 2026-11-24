@@ -1,0 +1,77 @@
+.condition-tree-diagram, .condition-tree-root, .condition-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.condition-tree-root, .condition-tree-children { list-style: none; margin: 0; }
+.condition-tree-root { padding: 0; }
+.condition-tree-children {
+  margin-inline-start: var(--space-3);
+  padding-inline-start: var(--space-3);
+  padding-block-start: var(--space-3);
+  border-inline-start: var(--border-width) solid var(--color-border-strong);
+}
+.condition-tree-branch { position: relative; min-width: 0; }
+.condition-tree-children > .condition-tree-branch::before {
+  content: '';
+  position: absolute;
+  inline-size: var(--space-3);
+  inset-inline-start: calc(-1 * var(--space-3));
+  inset-block-start: var(--space-6);
+  border-block-start: var(--border-width) solid var(--color-border-strong);
+}
+.condition-tree-node {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: calc(var(--space-8) + var(--space-3));
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.condition-tree-branch[aria-selected="true"] > .condition-tree-node { background: var(--color-neutral-soft); }
+.condition-tree-branch:focus-visible { outline: none; }
+.condition-tree-branch:focus-visible > .condition-tree-node {
+  outline: var(--border-width-strong) solid var(--color-focus-ring);
+  outline-offset: var(--space-0-5);
+}
+.condition-tree-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: calc(var(--space-8) + var(--space-3));
+  min-height: calc(var(--space-8) + var(--space-3));
+  border-radius: var(--radius-md);
+}
+.condition-editor-fieldset { min-inline-size: 0; }
+.condition-editor { overflow-wrap: anywhere; }
+.condition-test-result { block-size: calc(var(--space-8) * 8); overflow: auto; }
+.condition-editor-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+@media (max-width: 639px) {
+  .condition-editor button, .action-trigger-editor button:not([role="switch"]) {
+    min-height: calc(var(--space-8) + var(--space-3));
+    width: 100%;
+  }
+  .condition-editor-toolbar { flex-direction: column; }
+  .condition-tree-children {
+    margin-inline-start: var(--space-1);
+    padding-inline-start: var(--space-2);
+  }
+  .condition-tree-children > .condition-tree-branch::before {
+    inline-size: var(--space-2);
+    inset-inline-start: calc(-1 * var(--space-2));
+  }
+  .condition-tree-chevron { width: auto !important; }
+  /* Preserve the shared switch drawing; its transparent hit area is 44px tall. */
+  .action-trigger-editor button[role="switch"]::before {
+    content: '';
+    position: absolute;
+    inset: calc(-1 * var(--space-2-5)) 0;
+  }
+}

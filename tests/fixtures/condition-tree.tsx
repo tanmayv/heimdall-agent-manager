@@ -34,6 +34,7 @@ window.fetch = async input => {
 const store = configureStore({ reducer: { vault: vaultReducer, [heimdallApi.reducerPath]: heimdallApi.reducer }, middleware: g => g({ serializableCheck: false }).concat(heimdallApi.middleware) });
 function Fixture() {
   const [value, onChange] = React.useState(initial);
+  (window as any).setConditionFixture = onChange;
   return <main className="bg-surface text-primary" style={{ padding: 'var(--space-4)' }}>
     <div className="mx-auto flex max-w-3xl flex-col" style={{ gap: 'var(--space-4)' }}>
       <Text as="h1" role="display">Event conditions</Text>

@@ -42,14 +42,37 @@ export function withinLimits(tree: Filter, limits: FilterLimits): boolean {
     && new TextEncoder().encode(JSON.stringify(tree)).length <= limits.max_bytes
     && children(tree).length <= limits.max_children && children(tree).every(child => withinLimits(child.node, limits));
 }
-export function filterSentence(node: Filter): string {
+export function filterSentence(node: Filter, nested = false): string {
   if ('field' in node) {
-    if (node.op === 'exists') return node.field + (node.value ? ' exists' : ' does not exist');
-    return node.field + ' ' + operatorOptions.find(o => o.value === node.op)?.label + ' ' + JSON.stringify(node.value);
+    const name = node.field.replace(/^data\./, '');
+    if (node.op === 'exists') return name + (node.value ? ' exists' : ' does not exist');
+    const value = Array.isArray(node.value) ? node.value.map(String).join(', ') : node.op === 'prefix' ? JSON.stringify(node.value) : String(node.value);
+    return name + ' ' + operatorOptions.find(o => o.value === node.op)?.label + ' ' + value;
   }
   if ('not' in node) return 'NOT (' + filterSentence(node.not) + ')';
   const items = children(node);
-  return items.length ? '(' + items.map(child => filterSentence(child.node)).join('all' in node ? ' AND ' : ' OR ') + ')' : 'Always';
+  const sentence = items.map(child => filterSentence(child.node, true)).join('all' in node ? ' AND ' : ' OR ');
+  return items.length ? nested ? '(' + sentence + ')' : sentence : 'Always';
+}
+export function groupName(node: Filter): string {
+  return 'not' in node ? 'any' in node.not ? 'None of' : 'Not' : 'all' in node ? 'All of' : 'any' in node ? 'Any of' : 'Always';
+}
+export function groupSummary(node: Filter): string {
+  const count = measureFilter(node).checks;
+  return groupName(node) + (count ? ' ' + count + (count === 1 ? ' check' : ' checks') : '');
+}
+export function filterReason(reason: string): string {
+  const messages: Record<string, string> = {
+    unknown_node: 'Choose a group or check with a field, operator and value.',
+    empty_group: 'Add a check to this group, or remove the group.',
+    too_deep: 'Move this condition up a level or remove a nested group.',
+    too_many_nodes: 'Remove a check or group before adding another.',
+    too_large: 'Shorten values or remove conditions to fit the rule size limit.',
+    unknown_field: 'Choose an available field or enter a valid data path.',
+    unknown_op: 'Choose an operator allowed for this field.',
+    bad_value: 'Check the value type, length and allowed values for this operator.',
+  };
+  return messages[reason] || 'Review this condition and try again.';
 }
 export function filterIssueFromError(error: any): FilterIssue | undefined {
   let details = error?.data?.details;

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { Provider } from 'react-redux';
 import { makeVaultStore, installFetchCapture } from './helpers/vaultEndpointHarness.ts';
-import { filterIssueFromError, measureFilter, replaceFilter, withinLimits } from '../src/ui/components/actions/filterTree.ts';
+import { filterIssueFromError, filterSentence, measureFilter, replaceFilter, withinLimits } from '../src/ui/components/actions/filterTree.ts';
 import type { FilterLimits, TriggerEvent } from '../src/ui/api/endpoints/actions.ts';
 import { actionFormBody, emptyActionForm } from '../src/ui/components/actions/actionModel.ts';
 
@@ -19,6 +19,7 @@ const example = { all: [
 test('pointer edits preserve wrappers and use effective tree limits', () => {
   const tree = structuredClone(example) as any;
   assert.deepEqual(measureFilter(tree), { nodes: 7, checks: 4, depth: 3 });
+  assert.equal(filterSentence(tree), 'action is one of opened, reopened AND (repo.name starts with "heimdall-" OR labels.urgent exists) AND NOT (draft is true)');
   assert.equal(withinLimits(tree, limits), true);
   assert.equal(withinLimits(tree, { ...limits, max_nodes: 6 }), false);
   assert.equal(withinLimits(tree, { ...limits, max_depth: 2 }), false);
@@ -97,8 +98,9 @@ test('build the spec example through controls; show exact path errors, limits, u
     assert.deepEqual(current, example);
     assert.ok(doc.body.textContent?.includes('In words:'));
     // Equivalent nested-group semantics: named fieldsets, native tab controls.
-    assert.ok(doc.querySelector('fieldset[aria-label="Group root"]'));
-    assert.ok(doc.querySelector('fieldset[aria-label="Check /all/1/any/0"]'));
+    assert.ok(doc.querySelector('fieldset[data-node-path=""]'));
+    assert.ok(doc.querySelector('fieldset[data-node-path="/all/1/any/0"]'));
+    assert.equal(Array.from(doc.querySelectorAll('fieldset')).some(el => el.getAttribute('aria-label')?.includes('/all')), false);
     issue = { path: '/all/1/any/0', reason: 'bad_value' };
     await React.act(async () => render());
     assert.equal(doc.querySelectorAll('[data-node-path][aria-invalid="true"]').length, 1);
@@ -114,8 +116,22 @@ test('build the spec example through controls; show exact path errors, limits, u
     effective = limits;
     await React.act(async () => render());
     await click(byId('test-node--all-1-any-0-remove'));
+    assert.equal(doc.activeElement, byId('test-undo'));
+    assert.equal(byId('test-undo').parentElement?.getAttribute('role'), 'status');
     await click(byId('test-undo'));
     assert.deepEqual(current, example);
+    assert.equal(doc.activeElement, byId('test-node--all-1-any-0-field'));
+    await click(byId('test-node--all-1-collapse'));
+    assert.equal(byId('test-node--all-1-collapse').getAttribute('aria-expanded'), 'false');
+    assert.ok(byId('test-node--all-1-collapse').textContent?.includes('Any of 2 checks'));
+    await click(byId('test-view-tree'));
+    assert.equal(doc.querySelectorAll('[role="treeitem"]').length, 7);
+    const rootNode = byId('test-diagram-node-root');
+    await React.act(async () => rootNode.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+    assert.equal(doc.activeElement?.getAttribute('data-tree-path'), '/all/0');
+    await click(byId('test-diagram-node--all-1-any-0'));
+    assert.equal(doc.activeElement, byId('test-node--all-1-any-0-field'));
+    assert.equal(byId('test-node--all-1-collapse').getAttribute('aria-expanded'), 'true');
     await click(byId('test-sample-toggle'));
     await type(byId('test-sample'), 'not JSON');
     await click(byId('test-test'));
@@ -126,7 +142,7 @@ test('build the spec example through controls; show exact path errors, limits, u
     assert.ok(doc.body.textContent?.includes('Sample does not match'));
     const result = doc.querySelector('[aria-label="Condition test results"]');
     assert.equal(result?.querySelectorAll('li').length, 7);
-    assert.ok(result?.textContent?.includes('Did not match: data.action'));
+    assert.ok(result?.querySelector('[role="treeitem"][aria-label*="action is one of"][aria-label*="Did not match"]'));
     const testRequest = capture.requests.find(c => c.url.includes('/actions/filter-test'));
     assert.ok(testRequest);
     assert.deepEqual(testRequest.body.filter, example);
@@ -142,4 +158,21 @@ test('build the spec example through controls; show exact path errors, limits, u
     for (const name of names) { const descriptor = previous.get(name); if (descriptor) Object.defineProperty(g, name, descriptor); else delete g[name]; }
     dom.window.close();
   }
+});
+
+test('reusable diagram collapses None-of wire wrapper without shifting trace indices', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { JSDOM } = await import('jsdom');
+  const Tree = (await import('../src/ui/components/actions/ConditionTree.tsx')).default;
+  const html = renderToStaticMarkup(React.createElement(Tree, { value: { not: { any: [{ field: 'data.a', op: 'eq', value: 'one' }, { field: 'data.b', op: 'eq', value: 'two' }] } }, trace: 'TFFT', debugId: 'trace' }));
+  const dom = new JSDOM(html);
+  try {
+    const doc = dom.window.document;
+    assert.equal(doc.querySelectorAll('[role="treeitem"]').length, 3);
+    assert.match(doc.querySelector('[data-tree-path=""]')!.getAttribute('aria-label')!, /None of 2 checks.*Matched/);
+    assert.match(doc.querySelector('[data-tree-path="/not/any/0"]')!.getAttribute('aria-label')!, /Did not match/);
+    assert.match(doc.querySelector('[data-tree-path="/not/any/1"]')!.getAttribute('aria-label')!, /Matched/);
+    assert.equal(doc.querySelector('[role="group"]')?.parentElement?.getAttribute('role'), 'treeitem');
+    assert.equal(doc.querySelectorAll('[tabindex="0"]').length, 1);
+  } finally { dom.window.close(); }
 });

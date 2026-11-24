@@ -13,6 +13,7 @@ test('new triggers retain their blackout input after removing an earlier trigger
   for (const name of names) Object.defineProperty(g, name, { configurable: true, writable: true, value: name === 'IS_REACT_ACT_ENVIRONMENT' ? true : (dom.window as any)[name] });
   g.CSS = { escape: (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, char => '\\' + char) };
   dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+  dom.window.confirm = () => true;
   let root: any;
   try {
     const { createRoot } = await import('react-dom/client');
