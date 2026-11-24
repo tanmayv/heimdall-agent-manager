@@ -39,9 +39,7 @@ isolation_record :: proc(
 	return true
 }
 isolation_publish :: proc(t: ^testing.T, conn: ^nats.Connection, chain, id: string) {
-	envelope := struct {
-		event_id, type, owner_user_id, chain_id, task_id: string,
-	}{id, "task.review_verdict", "alice", chain, "task_1"}
+	envelope := inbox_v2(id, "task.review_verdict", "alice", chain, "task_1")
 	data, err := json.marshal(envelope)
 	if !testing.expect(t, err == nil) do return
 	defer delete(data)
@@ -208,9 +206,7 @@ isolation_all_rows :: proc(t: ^testing.T, factory: ^iface.Unit_Of_Work_Factory) 
 	return rows
 }
 isolation_publish_subject :: proc(t: ^testing.T, conn: ^nats.Connection, subject, typ, id: string) {
-	envelope := struct {
-		event_id, type, owner_user_id, chain_id, task_id: string,
-	}{id, typ, "alice", "chain_a", "task_1"}
+	envelope := inbox_v2(id, typ, "alice", "chain_a", "task_1")
 	data, err := json.marshal(envelope)
 	if !testing.expect(t, err == nil) do return
 	defer delete(data)

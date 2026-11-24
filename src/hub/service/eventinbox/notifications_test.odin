@@ -153,7 +153,7 @@ notification_scenario :: proc(t: ^testing.T) {
 	// A stale observation taken before next must be rejected by the final SQL
 	// receipt check even if its consumer snapshot raced the pull.
 	stale_value, _ := json.parse_string(
-		`{"event_id":"burst_0","owner_user_id":"alice","chain_id":"chain_1","type":"task.review_verdict"}`,
+		`{"event_id":"burst_0","owner_user_id":"alice","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"chain_1"},"type":"task.review_verdict"}`,
 	)
 	stale_live, stale_err := notice_live(&service, Notice_Candidate{row = rows[0], value = stale_value})
 	testing.expect_value(t, stale_err.code, domain.Error_Code.None)

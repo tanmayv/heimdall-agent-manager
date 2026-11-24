@@ -148,7 +148,7 @@ action_test_seed :: proc(t:^testing.T,f:^Action_Test,id,trigger,owner:string) {
 action_test_match :: proc(t:^testing.T,f:^Action_Test,id:string) {
  testing.expect(t,handle_message(&f.runtime,{
   subject="ev.owner.chain.chain1.state",owner="owner",event_type="chain.state",event_id=id,
-  stream_time_ms=f.now_ms,stream_sequence=u64(f.serial+1),envelope=test_config(`{"type":"chain.state","data":{"state":"completed"}}`)}))
+  stream_time_ms=f.now_ms,stream_sequence=u64(f.serial+1),envelope=test_config(`{"type":"chain.state","entity":{"kind":"chain","id":"chain1"},"data":{"state":"completed"}}`)}))
 }
 action_test_rows :: proc(t:^testing.T,f:^Action_Test)->[]domain.Action_Run {
  rows,err:=f.repos.actions.runs_list(f.repos.actions.ctx,"action",1000,"","")

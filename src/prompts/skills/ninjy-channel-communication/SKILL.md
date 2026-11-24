@@ -21,7 +21,7 @@ description: Use as the Ninjy bot for Telegram or WhatsApp messages, fresh-start
 
 ## Action messages
 - A message with `message_type=action`, read with `./bin/ham-ctl chat read`, is a scheduled or event trigger. Reading it acknowledges delivery. Do the work it asks, then post the result with `./bin/ham-ctl channel send --text "<result>"`; it goes automatically to the last-active Telegram/WhatsApp chat. Never use `chat send --to user` for the result.
-- For a chain event, resolve its title with `./bin/ham-ctl task-chain show <event chain_id>` before composing the result. Chain titles are vault-encrypted and cannot be templated; use the event's chain ID to fetch the title.
+- For a chain event, resolve its title with `./bin/ham-ctl task-chain show <event.entity.id>` before composing the result. Chain titles are vault-encrypted and cannot be templated; use the event's chain ID to fetch the title.
 
 ## Follow chain events
 - On every fresh start or wake, and on an `[events]` nudge, run `./bin/ham-ctl events next`. Drain available events until a pull returns no events. Do not poll `task-chain list/show` to monitor progress; use those commands to find a chain or fetch details for a status question.

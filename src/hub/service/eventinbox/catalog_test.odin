@@ -40,7 +40,7 @@ catalog_scenario :: proc(t: ^testing.T) {
 		{"alice","chain_1","task.state"}, {"bob","chain_1","task.state"},
 		{"alice","chain_2","task.state"}, {"alice","chain_1","task.review_verdict"},
 	}) {
-		encoded,_ := json.marshal(struct{event_id,owner_user_id,chain_id,type:string}{fmt.tprintf("event_%d",i),row[0],row[1],row[2]})
+		encoded,_ := json.marshal(inbox_v2(fmt.tprintf("event_%d",i),row[2],row[0],row[1],"task_1"))
 		_, pe := nats.publish(conn,fmt.tprintf("ev.%s.chain.%s.task.task_1.%s",row[0],row[1],row[2]),encoded)
 		delete(encoded)
 		testing.expect_value(t,pe.status,i32(0))
@@ -138,7 +138,9 @@ catalog_scenario :: proc(t: ^testing.T) {
 	}
 	_,bad_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"partial":[`))
 	testing.expect_value(t,bad_err.status,i32(0))
-	_,good_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"owner_user_id":"alice","chain_id":"chain_1","type":"chain.state"}`))
+ _,old_publish_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"owner_user_id":"alice","chain_id":"chain_1","type":"chain.state"}`))
+ testing.expect_value(t,old_publish_err.status,i32(0))
+	_,good_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"owner_user_id":"alice","entity":{"kind":"chain","id":"chain_1"},"type":"chain.state"}`))
 	testing.expect_value(t,good_err.status,i32(0))
 	api_before,_,_:=nats.api_stats(conn)
 	sparse,sparse_err:=catalog_read(conn,"alice","chain_1",checkpoint)

@@ -1,6 +1,8 @@
 package taskv2
 
 import "core:fmt"
+import "core:encoding/json"
+import events "odin_test:hub/service/events"
 import "core:strings"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -23,49 +25,33 @@ catalog_emit :: proc(
 	string,
 	domain.Domain_Error,
 ) {
-	if repo == nil || repo.catalog.append == nil do return "", {}
-	event_id := platform.time_id_generate(nil, "evt_")
-	topic := ""
-	generation: i64
-	if topic_suffix != "" {
-		topic = fmt.tprintf("task.%s.%s", task_id, topic_suffix)
-		g, opened, err := repo.catalog.open_topic(repo.catalog.ctx, string(owner), topic, event_id, replace_open)
-		if err.code != .None do return "", err
-		if !opened do return "", {}
-		generation = g
-	}
-	kind := "task" if task_id != "" else "chain"
-	id := string(task_id) if task_id != "" else string(chain_id)
-	version, err := repo.catalog.next_version(repo.catalog.ctx, string(owner), kind, id)
-	if err.code != .None do return "", err
-	at := platform.clock_now(clock)
-	p := json_begin()
-	json_str(&p, "event_id", event_id)
-	json_str(&p, "type", typ)
-	json_str(&p, "class", class)
-	json_str(&p, "owner_user_id", string(owner))
-	json_str(&p, "chain_id", string(chain_id))
-	json_str(&p, "task_id", string(task_id))
-	json_int(&p, "entity_version", version)
-	if topic != "" {json_str(&p, "topic_key", topic)
-		json_int(&p, "topic_generation", generation)}
-	json_raw(&p, "data", data)
-	json_str(&p, "actor", actor)
-	json_str(&p, "occurred_at", at)
-	suffix := strings.trim_prefix(typ, fmt.tprintf("%s.", kind))
-	subject := fmt.tprintf("ev.%s.chain.%s.%s", owner, chain_id, suffix)
-	if task_id != "" {
-		subject = fmt.tprintf("ev.%s.chain.%s.task.%s.%s", owner, chain_id, task_id, suffix)
-	}
-	row := domain.Event_Outbox_Row {
-		event_id      = event_id,
-		owner_user_id = string(owner),
-		subject       = subject,
-		envelope_json = json_end(&p),
-		headers_json  = `{"Nats-Rollup":"sub"}` if class == "state" else "{}",
-		created_at    = at,
-	}
-	return event_id, repo.catalog.append(repo.catalog.ctx, row)
+ if repo == nil || repo.catalog.append == nil do return "", {}
+ payload := data
+ kind := "task" if task_id != "" else "chain"
+ id := string(task_id) if task_id != "" else string(chain_id)
+ suffix := strings.trim_prefix(typ, fmt.tprintf("%s.", kind))
+ subject := fmt.tprintf("ev.%s.chain.%s.%s", owner, chain_id, suffix)
+ topic := ""
+ value: json.Value
+ encoded: []u8
+ defer json.destroy_value(value, allocator=context.temp_allocator)
+ defer delete(encoded, context.temp_allocator)
+ if task_id != "" {
+  subject = fmt.tprintf("ev.%s.chain.%s.task.%s.%s", owner, chain_id, task_id, suffix)
+  if json.unmarshal(transmute([]u8)data, &value, allocator=context.temp_allocator) != nil do return "", domain.domain_error(.Validation_Failed, "invalid catalog data")
+  object, valid := value.(json.Object)
+  if !valid do return "", domain.domain_error(.Validation_Failed, "invalid catalog data")
+  object[strings.clone("chain_id", context.temp_allocator)] = strings.clone(string(chain_id), context.temp_allocator)
+  bytes, encode_err := json.marshal(object, allocator=context.temp_allocator)
+  encoded = bytes
+  if encode_err != nil do return "", domain.domain_error(.Internal_Error, "catalog encoding failed")
+  payload = string(encoded)
+ }
+ if topic_suffix != "" do topic = fmt.tprintf("task.%s.%s", task_id, topic_suffix)
+ return events.emit(&repo.catalog, clock, {
+  owner=string(owner), type=typ, class=class, entity_kind=kind, entity_id=id,
+  subject=subject, data=payload, actor=actor, topic_key=topic, replace_open=replace_open,
+ })
 }
 
 catalog_actor :: proc(actor: Actor, agent_id := "") -> string {

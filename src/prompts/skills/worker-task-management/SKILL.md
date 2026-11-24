@@ -229,3 +229,5 @@ their existing instructions, and deduplicate follow-up against inbox events usin
 current task state. Other taskv2 triggers still use that path. The hub flag
 `--legacy-event-notices true|false` defaults to true and controls only catalog
 triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
+
+Catalog events use v2: `entity.kind` and `entity.id` identify the entity; task events carry the parent in `data.chain_id`. There are no top-level `chain_id` or `task_id` fields.
