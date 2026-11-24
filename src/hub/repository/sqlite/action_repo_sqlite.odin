@@ -528,8 +528,8 @@ actions_runs_route_batch :: proc(ctx:rawptr,members:[]iface.Action_Batch_Member,
  if sqlite3_changes((^Action_Repo_SQLite)(ctx).conn.db)!=i32(len(members)) do return domain.domain_error(.Conflict,"action batch changed")
  return {}
 }
-// Match the partial index predicate exactly; SQLite does not infer IN from equality.
-ACTIONS_SQL_TARGET_OPEN_DELIVERY :: "SELECT d.delivery_id,d.expires_at FROM action_runs r JOIN pipeline_deliveries d ON d.delivery_id=r.delivery_id WHERE r.owner_user_id=?1 AND r.target_instance_id=?2 AND r.state IN ('routed','delivered') AND d.state IN ('routed','forwarded') ORDER BY d.created_at,d.delivery_id LIMIT 1;"
+// Keep both predicates: IN enables the partial index; equality excludes completed runs.
+ACTIONS_SQL_TARGET_OPEN_DELIVERY :: "SELECT d.delivery_id,d.expires_at FROM action_runs r JOIN pipeline_deliveries d ON d.delivery_id=r.delivery_id WHERE r.owner_user_id=?1 AND r.target_instance_id=?2 AND r.state IN ('routed','delivered') AND r.state='routed' AND d.state IN ('routed','forwarded') ORDER BY d.created_at,d.delivery_id LIMIT 1;"
 actions_target_open_delivery :: proc(ctx:rawptr,owner,instance_id:string)->(string,string,bool,domain.Domain_Error) {
  guard:=tx_repository_enter()
  defer tx_repository_leave(guard)

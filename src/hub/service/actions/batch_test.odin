@@ -191,3 +191,20 @@ batch_owner_failure :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect_value(t,other.state,"routed");testing.expect_value(t,f.routes,1)
 }
 @(test) test_batch_rules_failure_preserves_other_targets :: proc(t:^testing.T) {action_test_case(t,batch_owner_failure)}
+
+batch_delivered_not_blocking :: proc(t:^testing.T,f:^Action_Test) {
+ action_test_match(t,f,"completed");drain_due(&f.runtime.router)
+ run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
+ // The action final hook must release backpressure even if a historical
+ // delivery row still has its old state (the existing final-hook fixture).
+ action_test_done(t,f)
+ historical,_,_:=action_test_delivery(f,run.delivery_id)
+ testing.expect_value(t,historical.state,domain.DELIVERY_ROUTED)
+ f.now_ms+=31000
+ action_test_match(t,f,"next");drain_due(&f.runtime.router)
+ next,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
+ testing.expect_value(t,next.state,domain.ACTION_RUN_ROUTED)
+ testing.expect_value(t,f.routes,2)
+ testing.expect(t,next.delivery_id!=run.delivery_id)
+}
+@(test) test_batch_delivered_runs_do_not_block_target :: proc(t:^testing.T) {action_test_case(t,batch_delivered_not_blocking)}
