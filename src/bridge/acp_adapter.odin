@@ -85,54 +85,128 @@ acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
     return acp_adapter_files_valid_for_platform(root, provider, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
 }
 
+// ACP_Adapter_Files_Check names the first staged-layout predicate that failed.
+// Identifiers are fixed strings: diagnostics never carry npm output, environment
+// values, paths or file contents.
+ACP_Adapter_Files_Check :: enum u8 {
+    None,
+    Unknown_Provider,
+    Manifest_Read,
+    Lockfile_Read,
+    Lockfile_Pin,
+    Manifest_Parse,
+    Lockfile_Parse,
+    Manifest_Identity,
+    Manifest_Version,
+    Lock_Entry_Version,
+    Lock_Entry_Integrity,
+    Bin_Entry,
+    Bin_Path,
+    Native_Platform,
+    Native_Lock_Entry,
+    Native_Manifest_Read,
+    Native_Manifest_Parse,
+    Native_Manifest_Identity,
+    Native_Manifest_Version,
+    Native_Bin_Entry,
+    Native_Executable,
+    Native_Target,
+    Bin_Target,
+    Bin_Executable,
+}
+
+ACP_ADAPTER_FILES_CHECK_IDS := [ACP_Adapter_Files_Check]string{
+    .None                     = "",
+    .Unknown_Provider         = "unknown_provider",
+    .Manifest_Read            = "manifest_read",
+    .Lockfile_Read            = "lockfile_read",
+    .Lockfile_Pin             = "lockfile_pin",
+    .Manifest_Parse           = "manifest_parse",
+    .Lockfile_Parse           = "lockfile_parse",
+    .Manifest_Identity        = "manifest_identity",
+    .Manifest_Version         = "manifest_version",
+    .Lock_Entry_Version       = "lock_entry_version",
+    .Lock_Entry_Integrity     = "lock_entry_integrity",
+    .Bin_Entry                = "bin_entry",
+    .Bin_Path                 = "bin_path",
+    .Native_Platform          = "native_platform",
+    .Native_Lock_Entry        = "native_lock_entry",
+    .Native_Manifest_Read     = "native_manifest_read",
+    .Native_Manifest_Parse    = "native_manifest_parse",
+    .Native_Manifest_Identity = "native_manifest_identity",
+    .Native_Manifest_Version  = "native_manifest_version",
+    .Native_Bin_Entry         = "native_bin_entry",
+    .Native_Executable        = "native_executable",
+    .Native_Target            = "native_target",
+    .Bin_Target               = "bin_target",
+    .Bin_Executable           = "bin_executable",
+}
+
 // Keep package-layout validation independent of the host so every supported
 // native layout can be checked without executing a foreign binary.
 acp_adapter_files_valid_for_platform :: proc(root, provider, platform_os, platform_arch: string) -> bool {
+    return acp_adapter_files_check_for_platform(root, provider, platform_os, platform_arch) == .None
+}
+
+acp_adapter_files_check :: proc(root: string, provider: string) -> ACP_Adapter_Files_Check {
+    return acp_adapter_files_check_for_platform(root, provider, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
+}
+
+// acp_adapter_files_check_for_platform returns the first failed predicate, in
+// evaluation order, or .None when the layout is valid.
+acp_adapter_files_check_for_platform :: proc(root, provider, platform_os, platform_arch: string) -> ACP_Adapter_Files_Check {
     d, known := contracts.acp_provider_descriptor(provider)
-    if !known do return false
+    if !known do return .Unknown_Provider
     // A system CLI is user-installed: there are no managed files to verify,
     // and the root only holds the lock and per-profile probe markers.
-    if d.launch == .System do return true
+    if d.launch == .System do return .None
     context.allocator = context.temp_allocator
     manifest, me := os.read_entire_file(strings.concatenate({root, "/node_modules/", d.pkg.name, "/package.json"}), context.temp_allocator)
+    if me != nil do return .Manifest_Read
     lock, le := os.read_entire_file(strings.concatenate({root, "/package-lock.json"}), context.temp_allocator)
-    if me != nil || le != nil do return false
-    if d.provider == "copilot" && string(lock) != ACP_COPILOT_LOCK_JSON do return false
-    m, err := json.parse(string(manifest)); if err != nil do return false
-    l, lerr := json.parse(string(lock)); if lerr != nil do return false
-    mo, mok := m.(json.Object); lo, lok := l.(json.Object)
-    if !mok || !lok do return false
+    if le != nil do return .Lockfile_Read
+    if d.provider == "copilot" && string(lock) != ACP_COPILOT_LOCK_JSON do return .Lockfile_Pin
+    m, err := json.parse(string(manifest)); if err != nil do return .Manifest_Parse
+    l, lerr := json.parse(string(lock)); if lerr != nil do return .Lockfile_Parse
+    mo, mok := m.(json.Object); if !mok do return .Manifest_Parse
+    lo, lok := l.(json.Object); if !lok do return .Lockfile_Parse
     name, _ := mo["name"].(json.String); version, _ := mo["version"].(json.String)
     bins, _ := mo["bin"].(json.Object); bin, _ := bins[d.command].(json.String)
     packages, _ := lo["packages"].(json.Object)
     entry, _ := packages[strings.concatenate({"node_modules/", d.pkg.name})].(json.Object)
     lv, _ := entry["version"].(json.String); integrity, _ := entry["integrity"].(json.String)
-    if string(name) != d.pkg.name || string(version) != d.pkg.version || string(lv) != d.pkg.version ||
-       string(integrity) != d.pkg.integrity || bin == "" || filepath.is_abs(string(bin)) || strings.contains(string(bin), "..") { return false }
+    if string(name) != d.pkg.name do return .Manifest_Identity
+    if string(version) != d.pkg.version do return .Manifest_Version
+    if string(lv) != d.pkg.version do return .Lock_Entry_Version
+    if string(integrity) != d.pkg.integrity do return .Lock_Entry_Integrity
+    if bin == "" do return .Bin_Entry
+    if filepath.is_abs(string(bin)) || strings.contains(string(bin), "..") do return .Bin_Path
     if d.launch == .Native {
         pin, supported := contracts.acp_descriptor_platform_package(d, platform_os, platform_arch)
-        if !supported do return false
+        if !supported do return .Native_Platform
         native, present := packages[strings.concatenate({"node_modules/", pin.name}, context.temp_allocator)].(json.Object)
         nv, _ := native["version"].(json.String); ni, _ := native["integrity"].(json.String)
-        if !present || string(nv) != pin.version || string(ni) != pin.integrity do return false
+        if !present || string(nv) != pin.version || string(ni) != pin.integrity do return .Native_Lock_Entry
         native_manifest, ne := os.read_entire_file(strings.concatenate({root, "/node_modules/", pin.name, "/package.json"}, context.temp_allocator), context.temp_allocator)
-        if ne != nil do return false
-        nm, pe := json.parse(string(native_manifest)); if pe != nil do return false
+        if ne != nil do return .Native_Manifest_Read
+        nm, pe := json.parse(string(native_manifest)); if pe != nil do return .Native_Manifest_Parse
         no, _ := nm.(json.Object)
         nn, _ := no["name"].(json.String); nversion, _ := no["version"].(json.String)
-        if string(nn) != pin.name || string(nversion) != pin.version do return false
+        if string(nn) != pin.name do return .Native_Manifest_Identity
+        if string(nversion) != pin.version do return .Native_Manifest_Version
         native_bins, _ := no["bin"].(json.Object)
         native_entry, _ := native_bins[strings.trim_prefix(pin.name, "@github/")].(json.String)
-        if string(native_entry) != "copilot" do return false
+        if string(native_entry) != "copilot" do return .Native_Bin_Entry
         native_dir := strings.concatenate({root, "/node_modules/", pin.name}, context.temp_allocator)
         native_binary := strings.concatenate({native_dir, "/copilot"}, context.temp_allocator)
-        if !bridge_provider_path_executable(native_binary) ||
-           filepath.dir(bridge_fs_canonicalize_existing(native_binary)) != bridge_fs_canonicalize_existing(native_dir) { return false }
+        if !bridge_provider_path_executable(native_binary) do return .Native_Executable
+        if filepath.dir(bridge_fs_canonicalize_existing(native_binary)) != bridge_fs_canonicalize_existing(native_dir) do return .Native_Target
     }
     executable := acp_adapter_bin(root, provider)
     expected, _ := filepath.join({root, "node_modules", d.pkg.name, string(bin)}, context.temp_allocator)
-    if bridge_fs_canonicalize_existing(executable) != bridge_fs_canonicalize_existing(expected) do return false
-    return bridge_provider_path_executable(executable)
+    if bridge_fs_canonicalize_existing(executable) != bridge_fs_canonicalize_existing(expected) do return .Bin_Target
+    if !bridge_provider_path_executable(executable) do return .Bin_Executable
+    return .None
 }
 
 acp_adapter_node_compatible :: proc(version: string, minimum: int = 22) -> bool {
@@ -539,7 +613,13 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     out, npm_diagnostic, npm_exit, installed, npm_timeout := acp_adapter_runner(install_argv, 100*time.Second)
     delete(out); delete(npm_diagnostic) // Never expose npm diagnostics/environment.
     if !installed || npm_exit != 0 || npm_timeout do return false, "acp_adapter_install_failed"
-    if !acp_adapter_files_valid(stage, provider) do return false, "acp_adapter_integrity_failed"
+    // REQ-ACP-L1: name the failed predicate while the stage still exists (its
+    // removal is deferred). Only the fixed identifier is printed and persisted.
+    if check := acp_adapter_files_check(stage, provider); check != .None {
+        diagnostic = ACP_ADAPTER_FILES_CHECK_IDS[check]
+        fmt.eprintfln("bridge acp adapter: staged layout validation failed provider=%s check=%s", d.provider, diagnostic)
+        return false, "acp_adapter_integrity_failed"
+    }
     scratch := strings.concatenate({stage, "/probe"}, context.temp_allocator)
     if bridge_make_directory_all(scratch) != nil do return false, "acp_adapter_directory_failed"
     probed: bool
