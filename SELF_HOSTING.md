@@ -1762,6 +1762,7 @@ For example, `{"max_depth":4,"max_checks":8,"max_nodes":16,"max_bytes":4096}`.
 Unspecified values retain the defaults. Unknown keys, non-integers, nonpositive
 values and values outside the supported bounds stop startup. The effective values
 are returned in `limits.filter` by `GET /api/v1/actions/trigger-types`.
+Overrides validate new saves; lowering them does not disable stored rules.
 
 The keys are `max_depth`, `max_checks`, `max_nodes`, `max_children`, `max_values`,
 `max_value_bytes`, `max_field_bytes`, `max_path_segments`, `max_segment_bytes` and

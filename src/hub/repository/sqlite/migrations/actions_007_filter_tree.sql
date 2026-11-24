@@ -18,6 +18,13 @@ SET config = CASE
 WHERE kind = 'event';
 
 UPDATE action_triggers
-SET config = json_set(config,'$.filter',json(data_filter))
-WHERE kind = 'event' AND data_filter <> '{}';
+SET config = CASE
+ WHEN json_type(config,'$.entity_id') IS NOT NULL AND data_filter <> '{}'
+ THEN json_object('entity_id',json_extract(config,'$.entity_id'),'event_type',json_extract(config,'$.event_type'),'filter',json(data_filter))
+ WHEN json_type(config,'$.entity_id') IS NOT NULL
+ THEN json_object('entity_id',json_extract(config,'$.entity_id'),'event_type',json_extract(config,'$.event_type'))
+ WHEN data_filter <> '{}'
+ THEN json_object('event_type',json_extract(config,'$.event_type'),'filter',json(data_filter))
+ ELSE json_object('event_type',json_extract(config,'$.event_type')) END
+WHERE kind = 'event';
 COMMIT;

@@ -9,7 +9,7 @@ import taskv2 "odin_test:hub/service/taskv2"
 import jsonx "odin_test:lib/jsonx"
 
 // Exercise the real completion producer and delayed matcher/router against the
-// same SQLite store. Synthetic envelopes would hide missing completion stamps.
+// same SQLite store. State validity follows the producer head, not timestamps.
 @(test)
 test_settle_real_chain_completion :: proc(t: ^testing.T) {
  action_test_case(t, settle_real_completion_scenario)
@@ -38,7 +38,7 @@ test_settle_real_work_finished_new_work :: proc(t: ^testing.T) {
 settle_real_work_finished_new_work_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  settle_real_producer_scenario(t, f, true, true)
 }
-settle_real_producer_scenario :: proc(t: ^testing.T, f: ^Action_Test, work, superseded: bool) {
+settle_real_producer_scenario :: proc(t: ^testing.T, f: ^Action_Test, work, superseded: bool, touch := false, cycle := false) {
  impl: sqlite.Taskchain_Repo_SQLite
  f.repos.taskchains = sqlite.new_taskchain_repository(&impl, &f.db)
  f.repos.taskchains.catalog = f.repos.event_outbox
@@ -117,10 +117,49 @@ settle_real_producer_scenario :: proc(t: ^testing.T, f: ^Action_Test, work, supe
   event_id=jsonx.extract_string(row.envelope_json, "event_id", "", true, context.temp_allocator),
   stream_time_ms=f.now_ms, stream_sequence=1, envelope=test_config(row.envelope_json),
  }))
- pending, pending_found, _ := f.repos.actions.run_settle_pending(f.repos.actions.ctx, "trigger", "chain1")
+ pending, pending_found, _ := f.repos.actions.run_settle_pending(f.repos.actions.ctx, "trigger", "chain:chain1")
  if !testing.expect(t, pending_found) do return
  drain_run(&f.runtime.router, pending.run_id, true)
  testing.expect_value(t, f.routes, 0)
+ if touch {
+  before := stored
+  stored.updated_at="2026-11-24T12:00:00Z"
+  _, saved, err := iface.taskchain_save_chain(repo,stored)
+  testing.expect(t,saved,err.message)
+  u, began, _ := iface.unit_of_work_begin(&f.factory)
+  testing.expect(t,began)
+  testing.expect_value(t,taskv2.catalog_chain_state(repo,&f.clock,before,stored).code,domain.Error_Code.None)
+  _, _ = iface.unit_of_work_commit(&u)
+ }
+ if cycle {
+  before := stored
+  stored.status=.Active
+  stored.completed_at=""
+  _, saved, err := iface.taskchain_save_chain(repo,stored)
+  testing.expect(t,saved,err.message)
+  u, began, _ := iface.unit_of_work_begin(&f.factory)
+  testing.expect(t,began)
+  testing.expect_value(t,taskv2.catalog_chain_state(repo,&f.clock,before,stored).code,domain.Error_Code.None)
+  _, _ = iface.unit_of_work_commit(&u)
+  stored, _, _ = iface.taskchain_get_chain(repo,chain.chain_id)
+  _, completed, cerr := taskv2.work_chain_complete(&svc,"owner",{kind=taskv2.ACTOR_USER,id="owner"},chain.chain_id,stored.work_revision,"Complete again")
+  testing.expect(t,completed,cerr.message)
+  u, began, _ = iface.unit_of_work_begin(&f.factory)
+  testing.expect(t,began)
+  latest: domain.Event_Outbox_Row
+  for {
+   next, exists, err := u.repos.event_outbox.next(u.repos.event_outbox.ctx)
+   testing.expect_value(t,err.code,domain.Error_Code.None)
+   if !exists do break
+   if jsonx.extract_string(next.envelope_json,"type","",true,context.temp_allocator)=="chain.state" do latest=next
+   testing.expect_value(t,u.repos.event_outbox.mark_published(u.repos.event_outbox.ctx,next.outbox_seq,"now").code,domain.Error_Code.None)
+  }
+  _, _ = iface.unit_of_work_commit(&u)
+  testing.expect(t,latest.event_id!=row.event_id)
+  testing.expect(t,handle_message(&f.runtime,{subject=latest.subject,owner="owner",event_type="chain.state",event_id=latest.event_id,stream_time_ms=f.now_ms,stream_sequence=2,envelope=test_config(latest.envelope_json)}))
+  replaced,found,_ := f.repos.actions.run_settle_pending(f.repos.actions.ctx,"trigger","chain:chain1")
+  testing.expect(t,found && replaced.run_id==pending.run_id && replaced.event_id==latest.event_id)
+ }
  if superseded {
   if work {
    // Inserting new work advances the revision via the real SQLite trigger.
@@ -134,10 +173,15 @@ settle_real_producer_scenario :: proc(t: ^testing.T, f: ^Action_Test, work, supe
    testing.expect(t, !valid && reason=="superseded", "new work supersedes numeric snapshot")
   } else {
    // Persist a reopened chain before the pending completion action fires.
+   before := stored
    stored.status=.Active
    stored.completed_at=""
    _, reopened, rerr := iface.taskchain_save_chain(repo, stored)
    testing.expect(t, reopened, rerr.message)
+   u, began, _ := iface.unit_of_work_begin(&f.factory)
+   testing.expect(t,began)
+   testing.expect_value(t,taskv2.catalog_chain_state(repo,&f.clock,before,stored).code,domain.Error_Code.None)
+   _, _ = iface.unit_of_work_commit(&u)
   }
  }
  f.now_ms += 10_000
@@ -155,4 +199,19 @@ settle_real_producer_scenario :: proc(t: ^testing.T, f: ^Action_Test, work, supe
   testing.expect_value(t, action_test_prompt_count(t, f), 1)
   action_test_expect(t, f, domain.ACTION_RUN_SKIPPED, 0)
  }
+}
+
+@(test)
+test_settle_real_chain_touch_keeps_head :: proc(t: ^testing.T) {
+ action_test_case(t,settle_real_touch_scenario)
+}
+settle_real_touch_scenario :: proc(t: ^testing.T,f: ^Action_Test) {
+ settle_real_producer_scenario(t,f,false,false,touch=true)
+}
+@(test)
+test_settle_real_chain_recompletion_delivers_once :: proc(t: ^testing.T) {
+ action_test_case(t,settle_real_cycle_scenario)
+}
+settle_real_cycle_scenario :: proc(t: ^testing.T,f: ^Action_Test) {
+ settle_real_producer_scenario(t,f,false,false,cycle=true)
 }

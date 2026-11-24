@@ -491,6 +491,7 @@ filter_test :: proc(s:^Service,input:contracts.Action_Filter_Test_Request)->cont
  descriptor:=event_descriptor_find(input.event_type)
  if descriptor==nil do return {reason="unknown_event_type"}
  raw:=input.filter
+ if raw==nil do raw=json.Object{}
  if _,null:=raw.(json.Null);null do raw=json.Object{}
  tree,e:=filter_compile(raw,descriptor,filter_limits(s.filter_limits),context.temp_allocator)
  defer filter_destroy(&tree,context.temp_allocator)

@@ -28,12 +28,12 @@ scalar_text :: proc(value: json.Value) -> (string, bool) {
  }
  return "", false
 }
-data_matches :: proc(filter_json:string,envelope:json.Object,limits:=FILTER_DEFAULT_LIMITS)->bool {
+data_matches :: proc(filter_json:string,envelope:json.Object)->bool {
  if filter_json=="" do return true
  value:json.Value
  if json.unmarshal(transmute([]u8)filter_json,&value,allocator=context.temp_allocator)!=nil do return false
  defer json.destroy_value(value,allocator=context.temp_allocator)
- tree,e:=filter_compile(value,nil,limits,context.temp_allocator)
+ tree,e:=filter_compile(value,nil,FILTER_READ_LIMITS,context.temp_allocator)
  defer filter_destroy(&tree,context.temp_allocator)
  if e.reason!="" do return false
  result,_:=filter_evaluate(tree,envelope)
@@ -96,7 +96,7 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
  now := platform.clock_now(r.svc.clock)
  for trigger in triggers {
   if string(trigger.owner_user_id) != owner || !trigger.enabled do continue
-  if !subject_matches(trigger.subject_filter, msg.subject) || !data_matches(trigger.data_filter_json, msg.envelope, filter_limits(r.svc.filter_limits)) do continue
+  if !subject_matches(trigger.subject_filter, msg.subject) || !data_matches(trigger.data_filter_json, msg.envelope) do continue
   updated, valid := platform.rfc3339_to_unix_ms(trigger.updated_at)
   if !valid || msg.stream_time_ms < updated do continue
   kind, found := trigger_kind_find(trigger.kind)
@@ -154,9 +154,7 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
 // to the latest event. A redelivery therefore cannot restart its timer.
 settle_match :: proc(r: ^Runtime, uow: ^iface.Unit_Of_Work, trigger: domain.Action_Trigger, msg: Event_View, run: domain.Action_Run, now: string) -> (bool, domain.Domain_Error) {
  repo := &uow.repos.actions
- descriptor := event_descriptor_find(msg.event_type)
- key := ""
- if descriptor != nil && descriptor.settle_key != nil do key = descriptor.settle_key(msg)
+ key := entity_settle_key(msg)
  pending, found, err := repo.run_settle_pending(repo.ctx, trigger.trigger_id, key)
  defer domain.action_run_destroy(&pending)
  if err.code != .None do return false, err

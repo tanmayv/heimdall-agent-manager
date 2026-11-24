@@ -21,6 +21,10 @@ action_filter_api :: proc(t:^testing.T,f:^Action_API_Fixture) {
  testing.expect_value(t,result["valid"].(bool),true)
  testing.expect_value(t,result["matched"].(bool),true)
  testing.expect_value(t,result["nodes"].(string),"TT")
+ request.body=`{"event_type":"chain.state","event":{"data":{}}}`
+ result=action_api_data(t,action_filter_test_handler(&f.handlers,request))
+ testing.expect_value(t,result["valid"].(bool),true)
+ testing.expect_value(t,result["matched"].(bool),true)
  request.body=`{"event_type":"chain.state","filter":{"all":[{"field":"actor","op":"eq","value":"a"},{"field":"actor","op":"eq","value":"b"}]},"event":{}}`
  result=action_api_data(t,action_filter_test_handler(&f.handlers,request))
  testing.expect_value(t,result["valid"].(bool),false)
@@ -65,4 +69,6 @@ action_filter_roundtrip :: proc(t:^testing.T,f:^Action_API_Fixture) {
  if !testing.expect(t,after_err.code==.None && len(after)==1) do return
  testing.expect_value(t,after[0].data_filter_json,before[0].data_filter_json)
  testing.expect_value(t,after[0].subject_filter,before[0].subject_filter)
+ testing.expect_value(t,after[0].config_json,before[0].config_json)
+ testing.expect_value(t,after[0].rev,before[0].rev)
 }

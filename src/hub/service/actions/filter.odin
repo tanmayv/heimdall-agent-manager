@@ -9,6 +9,9 @@ import domain "odin_test:hub/domain"
 
 Filter_Limits :: contracts.Action_Filter_Limits
 FILTER_DEFAULT_LIMITS :: contracts.ACTION_FILTER_DEFAULT_LIMITS
+// Save-time operator settings must not silently disable already-stored rules.
+// These are the supported safety ceilings, independent of current save limits.
+FILTER_READ_LIMITS :: Filter_Limits{64,4096,8192,4096,4096,65536,4096,64,256,1048576}
 FILTER_OPERATORS := []string{"eq","ne","in","not_in","exists","prefix"}
 Filter_Node_Kind :: enum {All, Any, Not, Check}
 Filter_Node :: struct {
@@ -185,7 +188,9 @@ filter_lookup :: proc(envelope:json.Object,path:[]string) -> json.Value {
  for segment in path {
   obj,ok:=value.(json.Object)
   if !ok do return json.Null{}
-  value=obj[segment]
+  next,found:=obj[segment]
+  if !found do return json.Null{}
+  value=next
  }
  return value
 }

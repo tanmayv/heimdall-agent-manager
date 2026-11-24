@@ -15,6 +15,9 @@ filter_operator_matrix :: proc(t:^testing.T) {
   {`"3"`,true,true,true},{`3`,true,true,false},{`true`,false,true,false},
   {`null`,false,false,false},{`{}`,false,true,false},{`[]`,false,true,false},{``,false,false,false},
  }
+ // Empty data exercises an absent final segment; an absent data object only
+ // exercises the intermediate segment. Both must obey identical semantics.
+ leaf_absent:=test_config(`{"data":{}}`)
  for tc in cases {
   sample:="{}"
   if tc.json!="" do sample=fmt.tprintf("%s%s%s",`{"data":{"x":`,tc.json,`}}`)
@@ -39,6 +42,19 @@ filter_operator_matrix :: proc(t:^testing.T) {
    testing.expect(t,matched==expected,fmt.tprintf("%s %s",op,tc.json))
    testing.expect_value(t,full,matched)
    testing.expect_value(t,trace,"T" if expected else "F")
+   missing,_:=filter_evaluate(tree,leaf_absent)
+   missing_full,missing_trace:=filter_evaluate(tree,leaf_absent,true)
+   expected_missing:=op=="ne" || op=="not_in"
+   testing.expect_value(t,missing,expected_missing)
+   testing.expect_value(t,missing_full,missing)
+   delete(missing_trace)
+   if op=="exists" {
+    tree.nodes[0].exists=false
+    inverted,_:=filter_evaluate(tree,envelope)
+    missing_false,_:=filter_evaluate(tree,leaf_absent)
+    testing.expect_value(t,inverted,!tc.exists)
+    testing.expect(t,missing_false)
+   }
    delete(trace)
    filter_destroy(&tree)
    json.destroy_value(raw)
@@ -133,6 +149,7 @@ filter_contract_scenario :: proc(t:^testing.T,s:^Service,db:^sqlite.Conn) {
  compile_case(t,"event",`{"event_type":"chain.state","chain_id":"c"}`,"invalid_config","")
  compile_case(t,"event",`{"event_type":"chain.state","filter":null}`,"unknown_node","")
  compile_case(t,"event",`{"event_type":"chain.state","filter":{"all":[{"field":"entity.id","op":"eq","value":"c"}]}}`,"","ev.owner.chain.c.state")
+ compile_case(t,"event",`{"event_type":"chain.state","filter":{"field":"entity.id","op":"eq","value":"c"}}`,"","ev.owner.chain.c.state")
  config:=test_config(`{"event_type":"chain.state","filter":{"field":"data.state","op":"eq","value":"completed"}}`)
  spec,err:=event_compile("owner","a","t",config,context.allocator)
  defer match_spec_destroy(&spec)
@@ -148,6 +165,21 @@ filter_contract_scenario :: proc(t:^testing.T,s:^Service,db:^sqlite.Conn) {
  view,e:=create(s,"owner",input)
  defer action_view_destroy(&view)
  testing.expect(t,strings.contains(e.details_json,"delay_not_supported"))
+}
+
+@(test)
+test_filter_stored_rules_survive_lower_save_limits :: proc(t:^testing.T) {
+ config:=test_config(`{"event_type":"chain.state","filter":{"all":[{"field":"actor","op":"eq","value":"user"},{"field":"data.state","op":"eq","value":"completed"}]}}`)
+ spec,err:=event_compile("owner","a","t",config,context.allocator)
+ defer match_spec_destroy(&spec)
+ testing.expect_value(t,err.code,domain.Error_Code.None)
+ lowered:=FILTER_DEFAULT_LIMITS
+ lowered.max_checks=1
+ rejected,e:=event_compile_limits("owner","a","t",config,lowered,context.allocator)
+ defer match_spec_destroy(&rejected)
+ testing.expect_value(t,e.code,domain.Error_Code.Validation_Failed)
+ event:=test_config(`{"actor":"user","data":{"state":"completed"}}`)
+ testing.expect(t,data_matches(spec.data_filter_json,event))
 }
 
 @(test)
