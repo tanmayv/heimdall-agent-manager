@@ -76,7 +76,7 @@ try {
     $r = Invoke-Verify @('-Path', $bin, '-Required', '-Publisher', 'Heimdall T8 Test Signer')
     Check 'switch on: missing timestamp fails' ($r.Code -ne 0 -and $r.Out -match 'has no timestamp') $r.Out
     $r = Invoke-Verify @('-Path', $bin)
-    Check 'switch off: valid signatures pass' ($r.Code -eq 0 -and $r.Out -match '3 valid signatures') $r.Out
+    Check 'switch off: valid signatures pass' ($r.Code -eq 0 -and $r.Out -match '5 valid signatures') $r.Out
 
     # 7. Trusted and timestamped: passes for the right publisher only.
     $bin = New-BinCopy 'timestamped'
@@ -89,7 +89,7 @@ try {
       Write-Host 'SKIP: timestamp server unreachable; timestamped cases not run'
     } else {
       $r = Invoke-Verify @('-Path', $bin, '-Required', '-Publisher', 'Heimdall T8 Test Signer')
-      Check 'switch on: valid timestamped signatures pass' ($r.Code -eq 0 -and $r.Out -match 'verified 3 Authenticode') $r.Out
+      Check 'switch on: valid timestamped signatures pass' ($r.Code -eq 0 -and $r.Out -match 'verified 5 Authenticode') $r.Out
       $r = Invoke-Verify @('-Path', $bin, '-Required', '-Publisher', 'CN=Heimdall T8 Test Signer')
       Check 'switch on: full Subject publisher matches' ($r.Code -eq 0) $r.Out
       $r = Invoke-Verify @('-Path', $bin, '-Required', '-Publisher', 'Someone Else')
