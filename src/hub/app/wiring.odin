@@ -642,10 +642,11 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,
 		experiments=&graph.experiment_repo,clock=&graph.clock,ids=&graph.ids,
 		support={ctx=rawptr(&graph.event_relay),get=action_schedule_support},
-		target_kinds=make([]string,2,runtime.heap_allocator()),
+		target_kinds=make([]string,3,runtime.heap_allocator()),
 	}
 	graph.actions.target_kinds[0]="agent"
 	graph.actions.target_kinds[1]="instance"
+	graph.actions.target_kinds[2]="bot"
 	graph.action_router=actions_service.Router{
  factory=&graph.uow_factory,experiments=&graph.experiment_repo,placement=&graph.placement,
  clock=&graph.clock,ids=&graph.ids,support=graph.actions.support,

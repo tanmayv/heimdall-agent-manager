@@ -3,6 +3,8 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
+	// One indexed query for pending prompts or recently routed actions.
+	action_activity: proc(ctx: rawptr, instance_id, routed_since: string) -> (bool, domain.Domain_Error),
 	// Web intake atomically creates the local binding and deduplicates the message.
 	web_message_store: proc(ctx: rawptr, binding: domain.Channel_Binding, message: domain.Channel_Message, attachments: []domain.Channel_Attachment) -> (domain.Channel_Message, bool, domain.Domain_Error),
 	messages_page: proc(ctx: rawptr, owner, bot_id, before: string, limit: int) -> ([]domain.Channel_Message, domain.Domain_Error),
@@ -765,4 +767,9 @@ messages_by_ids :: proc(repo: ^Bot_Repository, owner, bot_id: string, ids: []str
 messages_page :: proc(repo: ^Bot_Repository, owner, bot_id, before: string, limit: int) -> ([]domain.Channel_Message, domain.Domain_Error) {
 	if repo == nil || repo.messages_page == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
 	return repo.messages_page(repo.ctx, owner, bot_id, before, limit)
+}
+
+bot_action_activity :: proc(repo: ^Bot_Repository, instance_id, routed_since: string) -> (bool, domain.Domain_Error) {
+ if repo == nil || repo.action_activity == nil do return false, domain.domain_error(.Internal_Error, "bot action activity lookup is not configured")
+ return repo.action_activity(repo.ctx, instance_id, routed_since)
 }
