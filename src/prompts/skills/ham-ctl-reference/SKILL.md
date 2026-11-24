@@ -41,6 +41,24 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 - `agents restart <instance-id>` — restart (stop-then-start) an instance.
 
 ## task-chain — your task chains
+Authenticated agent instances may perform the following operations on **any chain of their owner**;
+caller chain membership and coordinator status are not required. The authenticated instance and
+target resources must belong to the same owner; cross-owner access remains refused.
+
+| Category | Supported surface | Guards that still apply |
+| --- | --- | --- |
+| Chain lifecycle | `publish`, `complete`, `set-status`, `archive`, `unarchive` | Draft/brief publication rules; completion revision, successes, merges, leases and pending proposals; status transition rules |
+| Work graph and scope | `graph`, `depend`, `remove-dependency`, `scope`; ticket dependency edits | Active chain for mutations; endpoints in the same chain, DAG, started-input and consumption guards |
+| Workflows | `run`, `retry`, `cancel`; `list`, `status`, `output`, `history` | Active chain for controls; request/revision/execution, terminal-state and consumed-output rules |
+| Fleet | `list`, `set`, `pause`, `resume`; deletion through the fleet API | Referenced agents/bridges share the owner; capacity, role and placement rules |
+| Ordinary task publication | `task publish` | Draft ordinary task in a published chain; complete brief and available review roles |
+| Chain metadata | Title, description, curated summary and relevant directories | Field/summary limits and referenced bridge ownership |
+
+This authorization does not make the caller the coordinator. Proposal controls, explicit named
+claim assignment/transfer, assignee eligibility, lease-bound submissions and review eligibility
+retain their separate policies. Keep required reviewer and explicit user approval gates; owner
+access never substitutes for a verdict. Unpublish is unsupported.
+
 - `task-chain list [--mine] [--project <id>]` — chains (`--mine` = ones you coordinate).
 - `task-chain show [<chain-id>]` — show a chain (defaults to your current chain), including embedded `tasks` and `directories`.
 - `task-chain create --title <title> [--description <desc>] [--coordinator <agt_id> --bridge <brg_id> --provider <p> --model <m> [--provider-profile <id>]] [--project <proj_id>]` — create a task chain (always `mixed_work`; `--kind` is optional and only `mixed_work` is accepted). With `--coordinator`, the Hub launches that durable agent as the chain's coordinator on `--bridge`, so `--provider` and `--model` are required and must be enabled and present on that bridge (e.g. `--provider claude --model opus`); list them with `bridge providers --bridge <brg_id>` (use a provider with `enabled: true` and one of its `models[].model_id`). `--project` needs `--coordinator`. A rejected create (missing or unknown provider/model, bad agent, bridge or project, offline bridge) returns the error and creates nothing: no chain and no instance.
@@ -48,15 +66,15 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
   ./bin/ham-ctl task-chain create --title 'Fix flaky auth tests' \
     --coordinator agt_coord --bridge brg_main --provider claude --model opus [--project proj_x]
   ```
-- `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
+- `task-chain set-title <title> [--chain <id>]` — rename a chain of your owner.
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
-  description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
+  description (any authenticated agent of the owner; pass `""` to clear; `--chain` defaults to your chain).
 - `task-chain summary get [<chain-id>]` (or `--chain <id>`) — read-only: the rendered chain summary
   as agents see it, with `line_count`, `max_lines`, `overflow_active`, `version`, `curated` (your full
   stored notes) and `curated_line_count` (defaults to your current chain; any chain of the same owner).
   Never writes, whatever else is passed.
 - `task-chain summary set <text> [--chain <id>]` (or `--body <text>`, `--file <path>`, `--stdin`) — replace
-  the stored curated notes (`<= 60` lines; coordinator only) and re-render the summary surfaced in every
+  the stored curated notes (`<= 60` lines; any authenticated agent of the owner) and re-render the summary surfaced in every
   agent's `TASK.md`. The 60-line render shows the title, your first 20 non-blank note lines (always),
   then dead ends, further note lines when room is left, then tasks. Mechanical sections are rebuilt from
   task history, so set cannot remove dead ends; ones that do not fit stay in each task's handoff facet
@@ -68,14 +86,16 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
   publishes (or runs the proposed workflow) immediately.
 - `task-chain decide <chain-id> --decision approve|reject [--reason <text>]` — approve or reject
   a pending chain proposal (publishes all tasks or starts the proposed workflow atomically on `approve`).
-- `task-chain publish <chain-id>` — validate all task briefs and publish the chain (`422 brief_incomplete` lists missing fields per task, including `review_role:<r>` when no fleet row holds a requested role). `decide` and `publish` need the chain id (positional or `--chain`).
+- `task-chain publish <chain-id>` — any authenticated agent of the owner may validate all task briefs and publish the chain (`422 brief_incomplete` lists missing fields per task, including `review_role:<r>` when no fleet row holds a requested role). `decide` and `publish` need the chain id (positional or `--chain`).
 - `task-chain set-status --status <active|cancelled|archived> [--chain <id>]` — change
   the chain status. Any agent instance of the chain's owner may do this; chain membership
-  and the coordinator role are not required. Completion uses `task-chain complete` with a work revision and final summary.
+  and the coordinator role are not required. Cancel with `task-chain set-status cancelled --chain <id>` (there is no standalone chain cancel verb). Completion uses `task-chain complete` with a work revision and final summary.
 - `task-chain archive [<chain-id>]` / `unarchive [<chain-id>]` — archive or restore a chain (any agent instance of the chain's owner).
 - `task-chain pin <chain-id>` / `unpin <chain-id>` — pin a chain to the top of the sidebar.
 
 ### Relevant directories (`task-chain directory`)
+Any authenticated agent of the owner may list/add/update/remove relevant directories; referenced bridges must belong to that owner.
+
 Associate one or more working directories (local checkouts, CitC workspaces, repos) with a task chain so participating agents and the UI know which workspaces/directories are in scope. Directories are also embedded directly in `task-chain show [<chain-id>]` and `GET /api/v1/task-chains/:id` output under the `"directories"` array.
 
 - `task-chain directory list [--chain <id>]` — list relevant directories for a task chain (`--chain` defaults to your current chain).
@@ -131,10 +151,15 @@ ham-ctl task-chain show chain_18d711c5384a0119
 - `task-chain token-usage [<chain-id>]` — per-agent (with its instances) and chain-total token usage, JSON (defaults to your chain). Each `lifetime` is `{total_tokens, context_tokens, est_tool_tokens, output_tokens, runs}`: counted runs (added at each hub stop/restart) plus the latest run when not counted yet; `total_tokens` = context (sum of runs) + output. An agent's `context` is the highest current % of window among its live instances. `has_data:false` when nothing was reported. A context figure is the provider's (`context_source` = its usage source) or, when the provider reports none, an estimate (`context_source:"estimate"`, `estimated_context_tokens` = tool-traffic tokens × 1.5; `context_tokens` stays provider-only). `usage_supported:false` means the provider cannot report context; absent means unknown. `warn_pct` / `rollover_pct` come from the bridge's shipped config, per row.
 
 ### Fleet management (`task-chain fleet`)
+Any authenticated agent of the chain owner may configure, inspect, pause/resume or delete fleet rows without chain membership/coordinator status. Referenced durable agents and bridges must share that owner; capacity, role and placement validation still apply. Deletion uses `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; there is no dedicated `task-chain fleet delete` CLI verb.
+
 Configure and inspect agent concurrency caps and placement (fleets) for a task chain. Fleets allow tasks to be assigned to durable agent types (`agt_...`) instead of individual instances (`inst_...`). Heimdall dynamically routes or provisions worker and reviewer instances to satisfy fleet capacity and placement rules.
 
 - `task-chain fleet list [<chain-id>]` — list fleet capacities, placement (`roles`, `bridge_id`, `provider`, `model`, `bridge_models`), and live active worker counts for a chain (defaults to current chain if omitted).
 - `task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--min-warm <M>] [--idle-ttl <seconds>] [--roles worker,reviewer] [--bridge <bridge_id>] [--provider <p>] [--model <m>] [--bridge-models <json>] [--bridge-models-file <path>]` — configure fleet capacity and placement for an agent class on the chain.
+
+- `task-chain fleet pause [<chain-id>] --agent <agent_id> [--roles worker,reviewer]` — stop new leases for all or selected roles; current work continues.
+- `task-chain fleet resume [<chain-id>] --agent <agent_id> [--roles worker,reviewer]` — allow new leases again.
 
 #### Fleet JSON shape
 `task-chain fleet list` returns a JSON array of fleet configurations:
@@ -191,8 +216,8 @@ globally unique — you rarely need `--chain`).
 - `task comments <task-id> [--last N]` — fetch comment BODIES; `--last N` = newest N (max 100).
 - `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval] [--brief-file <path.json>]` — create a task.
   `--assignee` and `--reviewer` take durable agent IDs (`agt_...`) only.
-- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>]` — edit an existing task. Any agent instance of the task's owner may update it (chain membership is not required); dependency edits (`--depends-on`) stay coordinator/owner only.
-- `task publish <task-id>` — validate the task's brief and publish it. A brief needs a non-empty `goal` and at least one `acceptance` item; nothing else is required (`422 brief_incomplete` lists what is missing).
+- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>]` — edit an existing task. Any agent instance of the task's owner may update it (chain membership is not required); dependency edits (`--depends-on`) use the same owner policy while preserving same-chain endpoints, DAG and started-input/consumption guards.
+- `task publish <task-id>` — any authenticated agent of the owner may publish an ordinary draft task in a published chain after validating its brief and requested review roles. A brief needs a non-empty `goal` and at least one `acceptance` item; nothing else is required (`422 brief_incomplete` lists what is missing).
 - `task unblock <task-id> [--note <reason>]` — the owner or any of its agent instances clears a block and retries matching. Unavailable agents carry `blocked_on.kind=agent_not_running` (legacy `dispatch` is supported) and an agent/provider/model/bridge/error reason. Fix the cause first. The user can click **Start agent** (`agent.start {task_id}`) on the attention card or chat tray; failures keep the block, update its reason and show the error inline for retry. Updating the affected fleet row also clears its blocks. Infrastructure failures do not consume work attempt budget; a full fleet row is normal queueing. A solo coordinator remains pull-only: an explicit user Start launches it before clearing the block, then it pulls the ready task.
 - `task recheck <task-id>` — owner or any of its agent instances: recompute what the Hub would decide for the task now — the review gate against the CURRENT reviewers, review roles and user-approval flag; dependency readiness; a `bridge_offline` agent block whose bridge is back; dispatch against fleet capacity, roles, pause and bridge state; and a done task's pending/failed merge-back (only when the task was already done and no merge job for it is still running; a task the re-check itself moves to done gets its one merge from that transition). Never approves (it only counts verdicts already posted), never touches a task with a live lease, never spends an attempt; a call that changes nothing records nothing. Prints `{task, changed, actions[], reasons[], message}`: `actions` say what changed (`state: in_review → done`, `dispatched: work lease …`, `merge-back re-queued …`), `reasons` say what still holds it (`waiting on review from agt_x (role reviewer)`, `agt_w: fleet full 2/2 on bridge …`, `agt_w: bridge … is offline`, `chain directory … already has a live work lease (vcs_kind "")`, `merge pending: the merge-back is in flight on bridge …`, `merge none: chain directory … has vcs_kind ""`). Use it instead of `task hold` + `task release` to unstick a task. Also `POST /api/v1/tasks/{id}/recheck` and the **Re-check** item in the task card menu.
 - `task hold <task-id> --reason <text>` — owner or any of its agent instances: stop dispatching the task until someone runs `task release`. No work or review lease is granted, the review gate freezes (verdicts are still recorded), and `task answer` is refused. A current lease is NOT revoked: its holder sees **Checkpoint Requested** in TASK.md and should `lease handoff`, after which the task parks in `backlog`. A hold never gives the user an Answer card: the user cannot answer a held task. A Review card the user already owes stays (their verdict is still recorded, and the gate resumes on release), and so does a nested agent-not-running **Start agent** action. Use it only to pause deliberately (re-routing to another identity or model, re-planning, waiting on an external event). Do NOT use it to postpone work (`lease switch`/`lease handoff`, `--depends-on`, `--priority`) or to ask the user (`lease block --waiting-on user`). Prints `{task, changed, checkpoint_requested, message}`; holding a held task is a no-op.
@@ -219,6 +244,8 @@ All chains have `kind: mixed_work`. Choose tickets or workflow runs per item whi
 keeping the same chain, coordinator, team, and directories. See coordinator-task-management.
 
 ## workflow — runs inside a mixed-work task chain
+Any authenticated agent of the chain owner may start/retry/cancel runs and read their list, status, output and history without chain membership/coordinator status. Owner/reference isolation and active-chain, request/revision/execution, terminal-state and consumption rules still apply to controls. Workflow review gates retain their separate approver policy.
+
 - `workflow templates` lists built-ins and owner definitions; `workflow define --file <definition.json>` saves a version.
 - `workflow run <ref> --chain <id> --request-id <stable-key> [--title <text>] [--input k=v ...] [--inputs-file <json>] [--after task:<id>|workflow_run:<id> ...]` snapshots a recipe into that chain. Reuse the request key on network retries.
 - `workflow list --chain <id>` lists runs and the chain work revision.
@@ -242,12 +269,12 @@ keeping the same chain, coordinator, team, and directories. See coordinator-task
 - Placeholders per item: `{{item.<field>}}` for object items (`{{item.key}}` falls back to `id`, then `item_<index>`; an item `priority` overrides the stage priority), `{{item}}` for the whole item (a string item renders unquoted, a number as written, an object as JSON), plus `{{stage.index}}` and `{{stage.count}}`. Scalar items have no fields: `{{item.<field>}}` is empty (except `{{item.key}}`, which is `item_<index>`) and item `priority` does not apply. `{{inputs.<name>}}` for an array input renders the JSON array (or its declared default).
 
 ### Mixed-work graph, scope, and completion
-Same verbs and flags in agent mode and user mode. The chain is positional (`task-chain graph <chain-id>`) or `--chain <id>`; `graph`, `depend`, `remove-dependency` and `scope` default to your own chain, `complete` always needs an explicit chain id. Mutations require the chain owner or its coordinator; other agents get `403 Forbidden`.
+Same verbs and flags in agent mode and user mode. The chain is positional (`task-chain graph <chain-id>`) or `--chain <id>`; `graph`, `depend`, `remove-dependency` and `scope` default to your own chain, `complete` always needs an explicit chain id. Reads and mutations allow any authenticated agent of the chain owner without chain membership/coordinator status. Mutations retain active-chain checks; typed endpoints must belong to this same chain, and DAG, started-input and consumption guards remain.
 - `task-chain graph [<chain-id>]` reads dependency (with dependency ids) and scope history plus `work_revision`.
 - `task-chain depend [<chain-id>] --item task:<id>|workflow_run:<id> --on task:<id>|workflow_run:<id>` adds an acyclic prerequisite before the consumer starts (idempotent).
 - `task-chain remove-dependency [<chain-id>] --dependency <id> --reason <text>` explicitly removes an edge without erasing provenance or consumption receipts.
 - `task-chain scope [<chain-id>] --item task:<id>|workflow_run:<id> --action include|exclude --reason <text>` records a scope decision. Exclusion requires terminal work and does not unblock dependents.
-- `task-chain complete <chain-id> --expected-work-revision <n> --summary <text>` explicitly accepts the final result. Every included item must succeed, with no leases or pending proposal. Read a fresh graph revision first (a stale one is a `work_changed` conflict). Finishing a batch never closes the chain automatically.
+- `task-chain complete <chain-id> --expected-work-revision <n> --summary <text>` explicitly accepts the final result. Every included item must succeed with required merges resolved, at least one success, no leases and no pending proposal; excluded work must be terminal. Read a fresh graph revision first (a stale one is a `work_changed` conflict). Finishing a batch never closes the chain automatically.
 - Generated stage tasks cannot be manually created, edited, reopened, or cancelled; use run controls. Historical executions remain readable.
 
 ## issue — track, discuss, and vote on issues and blockers
@@ -363,7 +390,7 @@ ham-ctl issue update iss_18d7a123bc45de67 --status fixed
   `--to` is REQUIRED: `user` for the bound user, or an exact agent-instance-id for
   agent-to-agent.
 - `chat set-title <title>` — DEPRECATED: conversation titles are no longer used. Do not
-  call it; name your work with `task-chain set-title` (coordinator only) instead.
+  call it; name your work with `task-chain set-title` for a chain of your owner instead.
 
 ### Grouped questions (`chat send --questions-file`)
 Use one grouped message for a set of questions. For one simple choice, flat
