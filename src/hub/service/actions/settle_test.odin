@@ -236,3 +236,22 @@ settle_unsupported_scenario :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect(t,len(rows)==1 && rows[0].state==domain.ACTION_RUN_SKIPPED && rows[0].reason=="schedules_unsupported")
  testing.expect_value(t,f.settle_plans,0)
 }
+
+
+@(test)
+test_settle_finish_without_waiter_has_no_wake :: proc(t:^testing.T) { action_test_case(t,settle_no_wake_scenario) }
+settle_no_wake_scenario :: proc(t:^testing.T,f:^Action_Test) {
+ settle_test_setup(t,f,0)
+ settle_test_event(t,f,"chain1","immediate",1)
+ for row in action_test_rows(t,f) do drain_run(&f.runtime.router,row.run_id,false)
+ before_uow,_,_:=iface.unit_of_work_begin(&f.factory)
+ before,_:=before_uow.repos.event_outbox.backlog(before_uow.repos.event_outbox.ctx)
+ iface.unit_of_work_rollback(&before_uow)
+ action_test_done(t,f)
+ uow,ok,_:=iface.unit_of_work_begin(&f.factory)
+ testing.expect(t,ok)
+ defer iface.unit_of_work_rollback(&uow)
+ count,err:=uow.repos.event_outbox.backlog(uow.repos.event_outbox.ctx)
+ testing.expect_value(t,err.code,domain.Error_Code.None)
+ testing.expect_value(t,count,before)
+}

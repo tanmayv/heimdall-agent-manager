@@ -8,7 +8,8 @@ A pending timer belongs to a trigger and settle key. New occurrences for that
 key restart its timer and replace the event snapshot; redelivery does not.
 Different keys have independent timers. Once ready, a key waits for any open
 run with a different key to finish, including its awaiting-read period.
-Completion writes an outbox event that wakes waiting keys without a timer loop.
+Completion checks an indexed pending-run lookup and writes an outbox event only
+when a ready settle run is waiting. That event wakes waiting keys without a timer loop.
 Ready runs still obey the action's minimum interval. Same-key ready runs retain
 the existing join behavior. Immediate triggers retain their existing join behavior.
 

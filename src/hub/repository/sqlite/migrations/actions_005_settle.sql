@@ -6,4 +6,5 @@ ALTER TABLE action_runs ADD COLUMN settle_pending INTEGER NOT NULL DEFAULT 0 CHE
 DROP INDEX action_runs_one_open;
 CREATE UNIQUE INDEX action_runs_one_open ON action_runs(action_id) WHERE state IN ('queued','deferred','routed') AND settle_pending=0;
 CREATE UNIQUE INDEX action_runs_settle_pending ON action_runs(trigger_id,settle_key) WHERE state='deferred' AND settle_pending=1;
+CREATE INDEX action_runs_settle_waiting ON action_runs(action_id,not_before) WHERE state='deferred' AND settle_pending=1;
 COMMIT;

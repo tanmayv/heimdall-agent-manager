@@ -86,6 +86,9 @@ finish_run :: proc(r:^Router,uow:^iface.Unit_Of_Work,run:domain.Action_Run,state
  // A terminal open run frees the action slot. Persist a wake in the same
  // transaction so different-key settle runs resume even on a quiet hub.
  if !run.settle_pending {
+  waiting,read_err:=repo.run_settle_waiting(repo.ctx,run.action_id,now)
+  if read_err.code!=.None do return read_err
+  if !waiting do return {}
   sc:=Sync_Context{outbox=&uow.repos.event_outbox,clock=r.clock,ids=r.ids}
   row:=schedule_row(&sc,string(run.owner_user_id),fmt.tprintf("ev.%s.action.%s.ready",run.owner_user_id,run.action_id),"action.ready",string(run.action_id),"","",0,json.Object{})
   defer domain.event_outbox_row_destroy(&row)
@@ -385,7 +388,18 @@ drain_run :: proc(r:^Router,id:string,hinted:bool,hint_deadline:string="") {
   open, exists, open_err := repo.run_open(repo.ctx, action.id)
   if open_err.code != .None do return
   if exists {
-   if open.settle_key!=run.settle_key do return
+   if open.settle_key!=run.settle_key {
+    // A trusted timer is already ready even when the hub clock trails NATS.
+    // Persist that fact so the terminal wake can find it without another timer.
+    if trusted_hint && run.not_before>now {
+     next:=run
+     next.not_before=now
+     changed,e:=repo.run_transition(repo.ctx,next,run.state)
+     if e.code!=.None || !changed do return
+     _,_=iface.unit_of_work_commit(&uow);uow.ctx=nil
+    }
+    return
+   }
    next := run
    next.joined_run_id = open.run_id
    if e := finish_run(r,&uow, next, domain.ACTION_RUN_JOINED, "", now); e.code != .None do return

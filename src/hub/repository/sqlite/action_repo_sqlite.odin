@@ -27,6 +27,7 @@ new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.A
 		triggers_effective = actions_triggers_effective,
 		run_insert = actions_run_insert,
         run_settle_pending = actions_run_settle_pending,
+        run_settle_waiting = actions_run_settle_waiting,
 		run_get = actions_run_get,
 		run_open = actions_run_open,
 		runs_due = actions_runs_due,
@@ -493,4 +494,15 @@ actions_run_settle_pending :: proc(ctx: rawptr, trigger_id, settle_key: string) 
  defer delete(rows)
  if err.code != .None || len(rows)==0 do return {},false,err
  return rows[0],true,{}
+}
+
+
+actions_run_settle_waiting :: proc(ctx: rawptr, id: domain.Action_ID, now: string) -> (bool, domain.Domain_Error) {
+ guard := tx_repository_enter()
+ defer tx_repository_leave(guard)
+ stmt, err := actions_prepare(ctx, "SELECT EXISTS(SELECT 1 FROM action_runs WHERE action_id=?1 AND state='deferred' AND settle_pending=1 AND not_before<=?2);", {string(id),now})
+ if err.code != .None do return false, err
+ defer sqlite3_finalize(stmt)
+ if sqlite3_step(stmt) != SQLITE_ROW do return false, domain.domain_error(.Internal_Error,"could not read waiting settle runs")
+ return sqlite3_column_int64(stmt,0)!=0, {}
 }
