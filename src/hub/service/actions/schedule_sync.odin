@@ -21,12 +21,13 @@ encode_object :: proc(obj: json.Object) -> string {
 	bytes,_:=json.marshal(obj)
 	return string(bytes)
 }
-schedule_row :: proc(sc: ^Sync_Context, owner, subject, event_type, action_id, trigger_id, run_id: string, rev: int, headers: json.Object) -> domain.Event_Outbox_Row {
+schedule_row :: proc(sc: ^Sync_Context, owner, subject, event_type, action_id, trigger_id, run_id: string, rev: int, headers: json.Object, not_before: string = "") -> domain.Event_Outbox_Row {
 	id:=platform.generate_id(sc.ids,"evt_")
 	data:=make(json.Object)
 	defer delete(data)
 	if rev>0 do data["rev"]=json.Integer(rev)
 	if run_id!="" do data["run_id"]=run_id
+ if not_before!="" do data["not_before"]=not_before
 	body:=json.Object{"event_id"=id,"type"=event_type,"class"=string("occurrence"),"owner_user_id"=owner,"data"=data}
 	defer delete(body)
 	if action_id!="" do body["action_id"]=action_id
@@ -77,7 +78,7 @@ deferral_row :: proc(sc: ^Sync_Context, owner, action_id, run_id, not_before: st
 	at:=platform.format_rfc3339_utc(time.unix(ms/1000,(ms%1000)*1_000_000))
 	headers:=json.Object{"Nats-Schedule"=fmt.tprintf("@at %s",at),"Nats-Schedule-Target"=fmt.tprintf("ev.%s.action.%s.resume",owner,action_id),"Nats-Schedule-TTL"=string(SCHEDULE_FIRE_TTL)}
 	defer delete(headers)
-	return schedule_row(sc,owner,fmt.tprintf("sched.def.defer.%s",action_id),"action.resume",action_id,"",run_id,0,headers),{}
+	return schedule_row(sc,owner,fmt.tprintf("sched.def.defer.%s",action_id),"action.resume",action_id,"",run_id,0,headers,not_before),{}
 }
 schedule_on_change :: proc(sc: ^Sync_Context, before, after: ^domain.Action_Trigger) -> domain.Domain_Error {
 	row:domain.Event_Outbox_Row

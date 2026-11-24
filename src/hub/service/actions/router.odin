@@ -69,19 +69,29 @@ Router :: struct {
  clock:^platform.Clock,
  ids:^platform.ID_Generator,
 }
-Resume_Hint :: struct {owner,run_id:string}
+Resume_Hint :: struct {owner,run_id,not_before:string}
 history_cutoff :: proc(now:string)->string {
  ms,ok:=platform.rfc3339_to_unix_ms(now)
  if !ok do return ""
  return platform.format_rfc3339_utc(time.Time{_nsec=(ms-i64(30*24*time.Hour/time.Millisecond))*1_000_000})
 }
-finish_run :: proc(repo:^iface.Action_Repository,run:domain.Action_Run,state,reason,now:string)->domain.Domain_Error {
+finish_run :: proc(r:^Router,uow:^iface.Unit_Of_Work,run:domain.Action_Run,state,reason,now:string)->domain.Domain_Error {
+ repo:=&uow.repos.actions
  next:=run
  next.state=state; next.reason=reason; next.finished_at=now
  changed,err:=repo.run_transition(repo.ctx,next,run.state)
  if err.code!=.None do return err
  if !changed do return domain.domain_error(.Conflict,"action run changed")
- return repo.runs_prune(repo.ctx,run.action_id,200,history_cutoff(now))
+ if err:=repo.runs_prune(repo.ctx,run.action_id,200,history_cutoff(now)); err.code!=.None do return err
+ // A terminal open run frees the action slot. Persist a wake in the same
+ // transaction so different-key settle runs resume even on a quiet hub.
+ if !run.settle_pending {
+  sc:=Sync_Context{outbox=&uow.repos.event_outbox,clock=r.clock,ids=r.ids}
+  row:=schedule_row(&sc,string(run.owner_user_id),fmt.tprintf("ev.%s.action.%s.ready",run.owner_user_id,run.action_id),"action.ready",string(run.action_id),"","",0,json.Object{})
+  defer domain.event_outbox_row_destroy(&row)
+  return sc.outbox.append(sc.outbox.ctx,row)
+ }
+ return {}
 }
 expire_open_run :: proc(r:^Router,uow:^iface.Unit_Of_Work,action_id:domain.Action_ID)->(bool,domain.Domain_Error) {
  repo:=&uow.repos.actions
@@ -107,7 +117,7 @@ on_delivery_final :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,d:domain.Pipeline_D
   switch reason {case "bridge_offline","no_answer","bridge_too_old","target_missing": case: reason="start_failed"}
  case: return {}
  }
- return finish_run(repo,run,state,reason,platform.clock_now(r.clock))
+ return finish_run(r,uow,run,state,reason,platform.clock_now(r.clock))
 }
 prompt_plan :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude:[]string)->Plan {
  owner:=string(action.owner_user_id)
@@ -191,6 +201,8 @@ prompt_metadata :: proc(repo:^iface.Action_Repository,action:domain.Action,run:d
  _=json.unmarshal(transmute([]u8)run.event_params_json,&params,allocator=context.temp_allocator)
  object,_:=params.(json.Object)
  metadata["triggered_at"]=object["fired_at"]
+ if id,ok:=object["chain_id"].(string);ok && id!="" do metadata["chain_id"]=id
+ if id,ok:=object["id"].(string);ok && id!="" do metadata["event_id"]=id
  trigger,found,err:=repo.trigger_get(repo.ctx,run.trigger_id)
  defer domain.action_trigger_destroy(&trigger)
  if err.code!=.None do return "",err
@@ -289,7 +301,7 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
   iface.unit_of_work_rollback(&uow)
   if err.code==.None && found && string(run.owner_user_id)==hint.owner && run.state==domain.ACTION_RUN_DEFERRED {
    seen[strings.clone(run.run_id)]=true
-   drain_run(r,run.run_id,true)
+   drain_run(r,run.run_id,true,hint.not_before)
   }
  }
  now:=platform.clock_now(r.clock)
@@ -318,7 +330,9 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
    progress:=false
    for run in rows {
     if run.not_before<=now do continue
-    if e:=finish_run(repo,run,domain.ACTION_RUN_SKIPPED,"rate_limited",now); e.code!=.None {
+    why:="rate_limited"
+    if run.delay_s>0 do why="schedules_unsupported"
+    if e:=finish_run(r,&uow,run,domain.ACTION_RUN_SKIPPED,why,now); e.code!=.None {
      iface.unit_of_work_rollback(&uow); return
     }
     progress=true
@@ -328,7 +342,7 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
   }
  }
 }
-drain_run :: proc(r:^Router,id:string,hinted:bool) {
+drain_run :: proc(r:^Router,id:string,hinted:bool,hint_deadline:string="") {
  uow,ok,_:=iface.unit_of_work_begin(r.factory)
  if !ok do return
  defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
@@ -336,7 +350,8 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
  run,found,err:=repo.run_get(repo.ctx,id)
  if err.code!=.None || !found || (run.state!=domain.ACTION_RUN_QUEUED && run.state!=domain.ACTION_RUN_DEFERRED) do return
  now:=platform.clock_now(r.clock)
- if run.state==domain.ACTION_RUN_DEFERRED && (run.delay_s>0 || !hinted) && run.not_before>now do return
+ trusted_hint := hinted && (run.delay_s==0 || (hint_deadline!="" && hint_deadline==run.not_before))
+ if run.state==domain.ACTION_RUN_DEFERRED && !trusted_hint && run.not_before>now do return
  action,exists,e:=repo.get(repo.ctx,run.action_id)
  if e.code!=.None || !exists do return
  reason:=""
@@ -344,20 +359,36 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
  } else if !action.enabled {reason="disabled"
  } else if action.target_kind==domain.ACTION_TARGET_BOT && !actions_gate_on(r.experiments,string(action.owner_user_id),"bots") {reason="experiment_off"}
  if reason!="" {
-  if e:=finish_run(repo,run,domain.ACTION_RUN_SKIPPED,reason,now); e.code!=.None do return
+  if e:=finish_run(r,&uow,run,domain.ACTION_RUN_SKIPPED,reason,now); e.code!=.None do return
   _,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
   return
  }
+ if run.delay_s>0 {
+  trigger,present,trigger_err:=repo.trigger_get(repo.ctx,run.trigger_id)
+  defer domain.action_trigger_destroy(&trigger)
+  if trigger_err.code!=.None do return
+  snapshot:json.Value
+  _=json.unmarshal(transmute([]u8)run.event_params_json,&snapshot,allocator=context.temp_allocator)
+  object,_:=snapshot.(json.Object)
+  revision,_:=object["_trigger_rev"].(json.Integer)
+  if !present || !trigger.enabled || i64(revision)!=i64(trigger.rev) {
+   if e:=finish_run(r,&uow,run,domain.ACTION_RUN_SKIPPED,"stale_rev",now); e.code!=.None do return
+   _,_=iface.unit_of_work_commit(&uow);uow.ctx=nil
+   return
+  }
+ }
  // A pending timer occupies only its trigger/key slot. Claim the action's
- // ordinary slot (or join it) once the settle window has elapsed.
+ // ordinary slot once the settle window has elapsed. Different settle keys
+ // wait for a transactional action.ready wake; only same-key runs may join.
  if run.settle_pending {
   if _, expiry_err := expire_open_run(r, &uow, action.id); expiry_err.code != .None do return
   open, exists, open_err := repo.run_open(repo.ctx, action.id)
   if open_err.code != .None do return
   if exists {
+   if open.settle_key!=run.settle_key do return
    next := run
    next.joined_run_id = open.run_id
-   if e := finish_run(repo, next, domain.ACTION_RUN_JOINED, "", now); e.code != .None do return
+   if e := finish_run(r,&uow, next, domain.ACTION_RUN_JOINED, "", now); e.code != .None do return
    _, _ = iface.unit_of_work_commit(&uow); uow.ctx=nil
    return
   }
@@ -375,7 +406,7 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
   now_ms,now_valid:=platform.rfc3339_to_unix_ms(now)
   if last!="" && valid && now_valid && now_ms-last_ms<i64(action.min_interval_s)*1000 {
    if r.support.get!=nil && r.support.get(r.support.ctx)==2 {
-    if e:=finish_run(repo,run,domain.ACTION_RUN_SKIPPED,"rate_limited",now); e.code!=.None do return
+    if e:=finish_run(r,&uow,run,domain.ACTION_RUN_SKIPPED,"rate_limited",now); e.code!=.None do return
    } else {
     next:=run
     next.state=domain.ACTION_RUN_DEFERRED
@@ -399,7 +430,7 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
    valid, why := descriptor.still_valid(uow.repos, run)
    if !valid {
     if why == "" do why = "superseded"
-    if e := finish_run(repo, run, domain.ACTION_RUN_SKIPPED, why, now); e.code != .None do return
+    if e := finish_run(r,&uow, run, domain.ACTION_RUN_SKIPPED, why, now); e.code != .None do return
     _, _ = iface.unit_of_work_commit(&uow); uow.ctx=nil
     return
    }
@@ -414,7 +445,7 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
  current,present,ce:=repo.run_get(repo.ctx,id)
  if ce.code!=.None || !present || current.state!=run.state do return
  if !plan.ok {
-  if e:=finish_run(repo,current,domain.ACTION_RUN_FAILED,plan.reason,now); e.code!=.None do return
+  if e:=finish_run(r,&uow,current,domain.ACTION_RUN_FAILED,plan.reason,now); e.code!=.None do return
   _,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
   return
  }
@@ -444,7 +475,7 @@ record_route_failure :: proc(r:^Router,id,from,reason:string) {
  repo:=&uow.repos.actions
  run,found,err:=repo.run_get(repo.ctx,id)
  if err.code!=.None || !found || run.state!=from do return
- if err=finish_run(repo,run,domain.ACTION_RUN_FAILED,reason,platform.clock_now(r.clock)); err.code!=.None do return
+ if err=finish_run(r,&uow,run,domain.ACTION_RUN_FAILED,reason,platform.clock_now(r.clock)); err.code!=.None do return
  _,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
 }
 

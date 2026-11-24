@@ -150,6 +150,12 @@ settle_match :: proc(r: ^Runtime, uow: ^iface.Unit_Of_Work, trigger: domain.Acti
  defer domain.action_run_destroy(&pending)
  if err.code != .None do return false, err
  next := run
+ snapshot: json.Value
+ if json.unmarshal(transmute([]u8)run.event_params_json, &snapshot, allocator=context.temp_allocator) != nil do return false, detail_error("invalid_event")
+ object, _ := snapshot.(json.Object)
+ object["_trigger_rev"] = json.Integer(trigger.rev)
+ encoded, _ := json.marshal(object, allocator=context.temp_allocator)
+ next.event_params_json = string(encoded)
  next.delay_s = trigger.delay_s
  next.settle_key = key
  next.settle_pending = true
