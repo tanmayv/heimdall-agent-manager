@@ -31,6 +31,7 @@ agent_webhook_handler :: proc(ctx:rawptr,req:Request)->Response {
   row,e:=webhooks.get(wh.service,owner,params.id);defer domain.event_webhook_destroy(&row)
   if e.code!=.None do return action_error(e,req.request_id)
   if verb=="show" do return action_response(req,row)
+  if !row.enabled do return action_error(domain.domain_error(.Conflict,"webhook disabled; enable it before testing"),req.request_id)
   if len(params.body)>webhooks.effective_limits(wh.service).body_bytes do return event_webhook_status(413,`{"error":"body_too_large"}`)
   sample:json.Value
   if json.unmarshal_string(params.body,&sample,.JSON,context.temp_allocator)!=nil do return action_error(domain.domain_error(.Validation_Failed,"invalid sample body"),req.request_id)
@@ -49,7 +50,7 @@ agent_webhook_handler :: proc(ctx:rawptr,req:Request)->Response {
    {name="Content-Type",value="application/json"},
    {name="Authorization",value=strings.concatenate({"Bearer ",params.webhook_secret},context.temp_allocator)},
   }
-  return event_webhook_receive(wh,ingress,inst.agent_instance_id)
+  return event_webhook_receive(wh,ingress,inst.agent_instance_id,owner)
  }
  input:=webhooks.Input{name=params.name}
  operation:=verb

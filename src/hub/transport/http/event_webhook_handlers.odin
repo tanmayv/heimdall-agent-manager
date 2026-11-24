@@ -87,11 +87,14 @@ event_webhook_receive_handler :: proc(ctx:rawptr,req:Request)->Response {
  return event_webhook_receive(ctx,req)
 }
 // actor is supplied only by the owner-authenticated agent relay, never HTTP input.
-event_webhook_receive :: proc(ctx:rawptr,req:Request,actor:="")->Response {
+event_webhook_receive :: proc(ctx:rawptr,req:Request,actor:="",relay_owner:="")->Response {
  h:=(^Event_Webhook_Handlers)(ctx)
  safe:=event_webhook_redact(req)
  now:=i64(time.tick_since(time.Tick{}))/i64(time.Second)
  ip:=device_auth.resolve_client_ip(safe.remote_addr,header_value(safe.headers,"X-Forwarded-For"),h.trusted_cidrs)
+ // Relays are already instance-authenticated; their shared bridge/proxy peer
+ // cannot identify a caller. Keep owner failures separate from public IPs.
+ if relay_owner!="" do ip=strings.concatenate({"agent:",relay_owner},context.temp_allocator)
  if !event_webhook_pre_auth(h,ip,now) do return event_webhook_limited()
  if len(safe.body)>webhooks.effective_limits(h.service).body_bytes do return event_webhook_status(413,`{"error":"body_too_large"}`)
  token:=safe.hook_token

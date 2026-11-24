@@ -59,7 +59,7 @@ ham-ctl automations webhooks show wh_1
 ham-ctl automations webhooks rotate wh_1
 ham-ctl automations webhooks disable wh_1
 ham-ctl automations webhooks enable wh_1
-ham-ctl automations webhooks test wh_1 --token whsec_example --body-file sample.json
+ham-ctl automations webhooks test wh_1 --token-file webhook.secret --body-file sample.json
 ham-ctl automations webhooks delete wh_1
 ```
 
@@ -68,7 +68,11 @@ invalidates the old token. List/show/enable/disable never return tokens or hashe
 Foreign and unknown webhook IDs return not found. Use each verb's `--help` for
 flags and examples; global transport flags are `--bridge-endpoint` and `--agent-token`.
 
-`test` requires the current webhook `--token`, and accepts an optional JSON-object
+`test` requires the current webhook token. Prefer `--token-file <path>`
+(whitespace trimmed) to keep the secret out of argv and transcripts; `--token`
+also accepts it inline. A disabled owned webhook returns a clear conflict.
+Relay failed-auth limits are keyed by authenticated owner, separate from public
+IP limits; global and per-webhook limits still apply. It accepts a JSON-object
 `--body-file` or inline `--data` (default `{}`). It POSTs through normal ingress, subject to the same
 enabled state, token checks, body/depth and rate limits. It emits a **real**
 `webhook.received` event and can fire automations; it is not a dry run.

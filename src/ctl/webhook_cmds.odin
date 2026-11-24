@@ -13,6 +13,7 @@ ctl_webhook_call :: proc(tokens,args:[]string)->(string,string,bool) {
  }
  params:=ctl_action_object()
  sample_given:=false
+ secret_given:=false
  if verb!="create" && verb!="list" {
   id:=pos(tokens,1)
   if id=="" || strings.has_prefix(id,"--") do return "","",false
@@ -23,13 +24,22 @@ ctl_webhook_call :: proc(tokens,args:[]string)->(string,string,bool) {
   if !strings.has_prefix(flag,"--") do continue
   allowed:=flag=="--bridge-endpoint" || flag=="--agent-token" ||
    (flag=="--name" && verb=="create") ||
-   ((flag=="--token" || flag=="--body-file" || flag=="--data") && verb=="test")
+   ((flag=="--token" || flag=="--token-file" || flag=="--body-file" || flag=="--data") && verb=="test")
   if !allowed || i+1>=len(args) || strings.has_prefix(args[i+1],"--") do return "","",false
   i+=1
   value:=args[i]
   switch flag {
   case "--name": params["name"]=json.String(value)
-  case "--token": params["webhook_secret"]=json.String(value)
+  case "--token","--token-file":
+   if secret_given do return "","",false
+   secret_given=true
+   secret:=value
+   if flag=="--token-file" {
+    bytes,err:=os.read_entire_file(value,context.temp_allocator)
+    if err!=nil do return "","",false
+    secret=strings.trim_space(string(bytes))
+   }
+   params["webhook_secret"]=json.String(secret)
   case "--body-file","--data":
    if sample_given do return "","",false
    sample_given=true
@@ -77,14 +87,16 @@ Example: ham-ctl automations webhooks rotate wh_1`
     "Enable the owned webhook for incoming requests." if verb=="enable" else
     "Disable the owned webhook; ingress rejects requests until enabled."),
    "\nUnknown or foreign ids return not found.\nExample: ham-ctl automations webhooks ",verb," wh_1"},context.temp_allocator)
- case "test": return `ham-ctl automations webhooks test <id> --token <webhook-token> [--body-file <path> | --data <json>]
+ case "test": return `ham-ctl automations webhooks test <id> (--token-file <path> | --token <webhook-token>) [--body-file <path> | --data <json>]
 POST a sample JSON object (default {}) through webhook ingress after checking ownership.
 Emits a real webhook.received event and can fire automations. Requires an enabled webhook
 and its current token; normal ingress limits apply. Returns event_id and duplicate.
+Prefer --token-file (whitespace trimmed) to keep the secret out of argv and transcripts.
+An owned disabled webhook returns a clear conflict; enable it before testing.
 The actor is your agent instance; data._test=true is added (overwriting any supplied _test).
 Rules can exclude samples with {"not":{"field":"data._test","op":"eq","value":true}}.
 This relay test does NOT exercise public networking, proxies or TLS.
-Example: ham-ctl automations webhooks test wh_1 --token whsec_example --body-file sample.json
+Example: ham-ctl automations webhooks test wh_1 --token-file webhook.secret --body-file sample.json
 Public network check: curl -X POST <bearer_url> -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' -d '{"hello":"world"}'
 Or: curl -X POST <secret_url> -H 'Content-Type: application/json' -d '{"hello":"world"}'`
  }
