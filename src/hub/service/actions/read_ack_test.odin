@@ -182,4 +182,7 @@ ack_nats_schedule :: proc(t:^testing.T,f:^Action_Test) {
  ack_assert(t,f,run,"failed","","not_read")
 }
 @(test)
-test_prompt_unread_fires_via_nats_schedule :: proc(t:^testing.T) {action_test_case(t,ack_nats_schedule)}
+test_prompt_unread_fires_via_nats_schedule :: proc(t:^testing.T) {
+ action_test_case(t,ack_nats_schedule)
+ testing.expect_value(t,nats.shutdown(5000).status,i32(0))
+}
