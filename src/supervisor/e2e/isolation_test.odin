@@ -82,10 +82,8 @@ test_two_profiles_at_different_versions :: proc(t: ^testing.T) {
 	defer delete(t3)
 	send_intent(a, "op_iso_a", "install_version", `,"version":"v0.6.3"`)
 	send_intent(b, "op_iso_b", "install_version", `,"version":"v0.6.3"`)
-	g_want = t3
-	both :: proc(i: ^Inst) -> bool {return known_good(i) == g_want}
-	if !wait_for(a, "A on v0.6.3", 150 * time.Second, both) do return
-	if !wait_for(b, "B on v0.6.3", 150 * time.Second, both) do return
+	if !wait_committed(a, "op_iso_a", t3, "A on v0.6.3", 150 * time.Second) do return
+	if !wait_committed(b, "op_iso_b", t3, "B on v0.6.3", 150 * time.Second) do return
 	for i in ([]^Inst{a, b}) {
 		op := "op_iso_a" if i == a else "op_iso_b"
 		st, code, _ := op_final(i, op)

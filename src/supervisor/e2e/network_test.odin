@@ -64,8 +64,7 @@ test_github_offline :: proc(t: ^testing.T) {
 	r := release_of(&s, "v0.6.1")
 
 	send_intent(a, "op_gh_back", "update_now")
-	g_want = r.tree
-	if !wait_for(a, "update after GitHub is back", 120 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_gh_back", r.tree, "update after GitHub is back", 120 * time.Second) do return
 	st, _, _ := op_final(a, "op_gh_back")
 	testing.expectf(t, st == "committed", "op_gh_back %s", st)
 	testing.expect_value(t, stop_launcher(a), 0)
@@ -97,8 +96,7 @@ test_hub_offline :: proc(t: ^testing.T) {
 	t1 := strings.clone(publish(&s, "v0.6.1"))
 	defer delete(t1)
 	send_intent(a, "op_hub_up", "install_version", `,"version":"v0.6.1"`)
-	g_want = t1
-	if !wait_for(a, "v0.6.1 committed with the hub up", 120 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_hub_up", t1, "v0.6.1 committed with the hub up", 120 * time.Second) do return
 	st, _, note = op_final(a, "op_hub_up")
 	testing.expectf(t, st == "committed" && !strings.contains(note, "probation_offline"), "hub-up update: %s note %q", st, note)
 
@@ -108,8 +106,7 @@ test_hub_offline :: proc(t: ^testing.T) {
 	t2 := strings.clone(publish(&s, "v0.6.2"))
 	defer delete(t2)
 	send_intent(a, "op_hub_down", "install_version", `,"version":"v0.6.2"`)
-	g_want = t2
-	if !wait_for(a, "v0.6.2 committed with the hub down", 120 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_hub_down", t2, "v0.6.2 committed with the hub down", 120 * time.Second) do return
 	st, _, note = op_final(a, "op_hub_down")
 	testing.expectf(t, st == "committed" && strings.contains(note, "probation_offline"), "hub-down update: %s note %q", st, note)
 
@@ -151,8 +148,7 @@ test_many_releases_and_mutable_assets :: proc(t: ^testing.T) {
 
 	// 1.
 	send_intent(a, "op_rel_fast", "update_now")
-	g_want = t7
-	if !wait_for(a, "v0.7.0 from page 2 committed", 150 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_rel_fast", t7, "v0.7.0 from page 2 committed", 150 * time.Second) do return
 	testing.expectf(t, testkit.github_pages_2plus(&s.gh) > 0, "the resolver read page 2+")
 	rt := last_runtime(a).id
 

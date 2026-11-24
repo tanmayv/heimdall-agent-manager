@@ -42,6 +42,8 @@ other_view_inst :: proc(b: ^Other) -> ^Inst {
 
 other_refresh :: proc(b: ^Other) {}
 
+other_share :: proc(b: ^Other, path: string) {}
+
 @(private = "file")
 quote_arg :: proc(a: string) -> string {
 	if a != "" && !strings.contains_any(a, " \t\"") do return a

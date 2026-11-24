@@ -59,8 +59,7 @@ test_file_in_use_and_antivirus_delay :: proc(t: ^testing.T) {
 		}
 	}
 	if HOLDS_BLOCK do testing.expect(t, caught, "caught the staging dir to hold it")
-	g_want = t1
-	if !wait_for(a, "v0.6.1 committed after the held rename", 150 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_av_stage", t1, "v0.6.1 committed after the held rename", 150 * time.Second) do return
 	st, code, _ := op_final(a, "op_av_stage")
 	testing.expectf(t, st == "committed", "op_av_stage %s %s", st, code)
 
@@ -85,8 +84,7 @@ test_file_in_use_and_antivirus_delay :: proc(t: ^testing.T) {
 	hold_close(&ph)
 	log.infof("current held 3 s past pointers_begin; pointers_done while held: %v", switched)
 	if HOLDS_BLOCK do testing.expect(t, !switched, "the pointer replace waited while current was held")
-	g_want = t2
-	if !wait_for(a, "v0.6.2 committed after the held replace", 120 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_av_ptr", t2, "v0.6.2 committed after the held replace", 120 * time.Second) do return
 	st, code, _ = op_final(a, "op_av_ptr")
 	testing.expectf(t, st == "committed", "op_av_ptr %s %s", st, code)
 
@@ -94,8 +92,7 @@ test_file_in_use_and_antivirus_delay :: proc(t: ^testing.T) {
 	t3 := strings.clone(publish(&s, "v0.6.3"))
 	defer delete(t3)
 	send_intent(a, "op_gc", "install_version", `,"version":"v0.6.3"`)
-	g_want = t3
-	if !wait_for(a, "v0.6.3 committed", 120 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_gc", t3, "v0.6.3 committed", 120 * time.Second) do return
 	time.sleep(5 * time.Second) // gc runs on the tick after the terminal op
 	_, still := os.process_wait(straggler, 0)
 	testing.expect(t, still != nil, "the straggler from v0.6.0 keeps running (W4)")

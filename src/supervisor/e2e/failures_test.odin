@@ -177,8 +177,7 @@ test_stops_during_probation :: proc(t: ^testing.T) {
 		testing.expect_value(t, live_runtimes(a), 0)
 		start_launcher(a)
 	}
-	g_want = t1
-	if !wait_for(a, "op_clean committed after 3 clean stops", 180 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want}) do return
+	if !wait_committed(a, "op_clean", t1, "op_clean committed after 3 clean stops", 180 * time.Second) do return
 	st, code, _ := op_final(a, "op_clean")
 	testing.expectf(t, st == "committed", "op_clean %s %s", st, code)
 

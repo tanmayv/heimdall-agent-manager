@@ -434,9 +434,21 @@ g_want: string
 install :: proc(i: ^Inst, tag: string) -> bool {
 	r := release_of(i.s, tag)
 	op, _ := strings.replace_all(tag, ".", "_", context.temp_allocator)
-	res := repair(i, tag, fmt.tprintf("op_install_%s", op))
+	op = fmt.tprintf("op_install_%s", op)
+	res := repair(i, tag, op)
 	if !testing.expectf(i.s.t, res.ok && res.code == 0, "%s: repair %s exit %d", i.name, tag, res.code) do return false
 	start_launcher(i)
 	g_want = r.tree
-	return wait_for(i, fmt.tprintf("%s committed", tag), 90 * time.Second, proc(i: ^Inst) -> bool {return known_good(i) == g_want})
+	// known-good lands one step before the `committed` line (J17): wait for both, so a
+	// caller's snapshot of the journal is not taken in between.
+	return wait_committed(i, op, r.tree, fmt.tprintf("%s committed", tag), 90 * time.Second)
+}
+
+g_op: string
+
+// wait_committed: op `op` committed (journal line written) with `tree` as known-good.
+wait_committed :: proc(i: ^Inst, op, tree, what: string, timeout: time.Duration) -> bool {
+	g_want = tree
+	g_op = op
+	return wait_for(i, what, timeout, proc(i: ^Inst) -> bool {return known_good(i) == g_want && op_done(i, g_op)})
 }
