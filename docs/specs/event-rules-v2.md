@@ -169,7 +169,16 @@ Why this is right for the cases that matter:
 
 **Settle key** becomes generic too: `"<entity.kind>:<entity.id>"`, or `""` when there is no
 entity. This equals today's behaviour for chain events (`event_kind.odin:68-71`) and gives
-memory and webhook rules a per-entity debounce without a callback. The descriptor fields
+memory rules a per-entity debounce without a callback.
+
+A debounce keeps only the newest event for its settle key: the pending run's snapshot is
+replaced (`matcher.odin:184-193`). That is right for state events and wrong for webhooks,
+where the entity is the endpoint and two requests inside the window can be about different
+things (two different pull requests); "latest request wins" would silently drop the first
+body. So **`webhook.received` rules reject `delay_s > 0`** in v2 (`delay_not_supported`,
+a per-descriptor flag). A debounce keyed on a field of the body is listed in §12.
+
+The descriptor fields
 `settle_key` and `still_valid` (`event_kind.odin:52-53`) remain only as optional overrides.
 The chain-state snapshot check (`event_kind.odin:72-74`, `:108-122`) is deleted. A delayed
 state run with no head row is skipped as `superseded`: the hub does not act on state it
@@ -238,7 +247,8 @@ UI offer a "none of" group.
 - **Storage reuses the existing column.** `action_triggers.data_filter` is only constrained
   to valid JSON (`actions_001_reset.sql:56`), so it holds the tree without DDL. The stored
   root is always a group: a single check is wrapped in `all`. Existing rows are converted
-  once by the migration in §9; the matcher has no reader for the old map.
+  once by migration `actions_007` (§8, §9), together with the raw `config`; the matcher has
+  no reader for the old map.
 
 ### 3.4 Limits and validation
 
@@ -531,13 +541,23 @@ in a place software likes to write down. Requirements:
 HMAC request signing is not part of v1 (§12). It needs the hub to keep a recoverable secret,
 and it can be added later as a second auth mode without changing the envelope or the rules.
 
-**Ingress does four things and nothing else** (user decision U3):
+**Ingress does five things, in this order, and nothing else** (user decision U3):
 
-1. redact the token segment (form B), then rate-limit and size-check, before parsing and
-   before any SQL;
-2. authenticate (one indexed read of the webhook row);
-3. append one event to the outbox in one short transaction (version bump + outbox row, §2.3);
-4. answer `202`.
+1. Redact the token segment (form B). Then the checks that need no knowledge of the
+   webhook: the hub-wide pre-auth request limit, the per-IP failed-auth limit, and the body
+   size. No SQL yet.
+2. Authenticate: one indexed read of the webhook row and one hash compare.
+3. Only after successful authentication, charge and check the **per-webhook** rate limit.
+4. Append one event to the outbox in one short transaction (§2.3; duplicates below).
+5. Answer `202`.
+
+The order of 2 and 3 matters. The webhook id is not a secret: it is the whole form-A URL
+and it remains visible in the redacted form-B path. If unauthenticated requests counted
+against a webhook's budget, anyone could exhaust it and block the real sender, and a known
+id would start answering `429` while an unknown id answers `401`, which would reveal which
+ids exist. With this order an unauthenticated request can only ever get the uniform `401`
+or a pre-auth `429` that does not depend on the webhook id, so unknown and known ids are
+indistinguishable.
 
 No rule lookup, no matching, no target resolution and no delivery happens in the request.
 The event reaches the matcher the same way every other event does: outbox, relay, JetStream,
@@ -551,12 +571,16 @@ costs the request path only outbox inserts.
 | Body size | 64 KiB, checked before parsing | `413` |
 | Content type | `application/json` | `415` |
 | Body | a JSON object, nesting depth ≤ 16 | `400` |
-| Rate, per webhook | 60 requests per minute (required, U3) | `429` with `Retry-After` |
+| Pre-auth requests, hub-wide | 1,200 per minute | `429` |
 | Failed auth, per client IP | 20 per minute, then `429` before any lookup | `429` |
+| Rate, per webhook, **authenticated requests only** (required, U3) | 60 per minute | `429` with `Retry-After` |
 
 The limiter is the fixed-window, in-memory pattern the bot webhook already uses
-(`src/hub/transport/http/bot_webhook_handlers.odin:25-76`), keyed by webhook id instead of
-globally. All values in this table are configurable defaults (§9.1). Client IP resolution reuses the trusted-CIDR logic at
+(`src/hub/transport/http/bot_webhook_handlers.odin:25-76`, which also has a hub-wide POST
+limit and a per-IP bad-signature limit). The per-webhook counter is new and keyed by webhook
+id. The hub-wide pre-auth limit protects the hub, not a tenant: a flood large enough to hit
+it delays all webhooks, and the per-IP limit is what cuts off a single source first. All
+values in this table are configurable defaults (§9.1). Client IP resolution reuses the trusted-CIDR logic at
 `bot_webhook_handlers.odin:88`. Counters reset on hub restart; that is acceptable for a
 protective limit.
 
@@ -571,6 +595,11 @@ protective limit.
   24 hours hits that constraint and is answered `202` with the original event id and
   `"duplicate": true`. The outbox gets an "append if absent" operation for this; today a
   conflict is an internal error (`event_outbox_repo.odin:37-50`).
+- **A duplicate must not advance the entity version.** The envelope carries
+  `entity_version`, so the version is bumped before the row is built. With a deterministic
+  id the handler therefore looks the event id up first, inside the same transaction, and
+  returns the duplicate answer without bumping; if an insert still conflicts, the
+  transaction is rolled back, never committed with the bump alone.
 - The relay publishes with the event id as the JetStream message id (`relay.odin:216`), so
   the stream's two-minute duplicate window (`relay.odin:49-50`) is a second layer.
 - Runs dedupe on `occurrence_key = <trigger_id>:<event_id>`, which is UNIQUE
@@ -762,15 +791,15 @@ other side:
 | Web UI | Catalog replay reads `entity` (`useUserWebSocket.ts:260-264`). |
 | Agents | `ham-ctl events next` returns v2 envelopes; skill text that names the id fields is updated. |
 | Templates | `{{event.chain_id}}`/`{{event.task_id}}` are removed; `{{event.entity.id}}` and `{{event.data.chain_id}}` replace them. Unknown variables render literally (`template.odin:28`), so a missed prompt is visible, not silent. |
-| Trigger config | `filter` tree only; the `data` map and `chain_id` key are rejected. CLI shorthand compiles to a tree on the client. |
+| Trigger config | `filter` tree only; the `data` map and `chain_id` key are rejected. CLI shorthand compiles to a tree on the client. The save-time ownership check `validate_chain` (`service.odin:192-203`) becomes a per-kind `entity_id` check: the chain, task, memory or webhook named by `entity_id` must belong to the caller, else `unknown_entity`. |
 | Validity | Head-row check only (§2.4). |
 
 **What happens to data that exists at upgrade:**
 
 | Data | Handling |
 |---|---|
-| Stored event triggers | Converted once in the migration: each equals map becomes an `all` group of `eq` checks on `data.<key>` (one `UPDATE` using SQLite JSON functions). `{}` already means "always". |
-| Stored prompts | The same migration replaces `{{event.chain_id}}` with `{{event.entity.id}}` in `actions.prompt_text`. That is exact, because only `chain.*` event types exist today (`event_kind.odin:56-62`). `{{event.task_id}}` is always empty today and is replaced with nothing. Spellings with inner spaces are not caught and will render literally. |
+| Stored event triggers | Converted once by migration `actions_007` (§9), in **both** places a trigger keeps its filter. `action_triggers.config` is the raw user config (`actions_001_reset.sql:52`), holding `{event_type, chain_id, data}`; it is what the API returns, what the UI and CLI send back, and what every save recompiles (`service.odin:283-286`). `data_filter` and `subject_filter` are derived from it. The migration rewrites `config` (`data` → a `filter` tree of `all`/`eq` checks on `data.<key>`, `chain_id` → `entity_id`) and writes the same tree to `data_filter`, so the two agree and `subject_filter` stays as it is. Empty `data` becomes no `filter`; `{}` already means "always". After it, a migrated trigger loads, shows in the editor and re-saves unchanged. |
+| Stored prompts | Migration `actions_006` (§9), part of the task that removes the variables, replaces `{{event.chain_id}}` with `{{event.entity.id}}` in `actions.prompt_text`. That is exact, because only `chain.*` event types exist today (`event_kind.odin:56-62`). `{{event.task_id}}` is always empty today and is replaced with nothing. Spellings with inner spaces are not caught and will render literally. |
 | Old-shape events still in JetStream (retained up to 14 days, `relay.odin:49`) | Not interpreted. Catalog events without `entity` are acknowledged and skipped by the matcher and ignored by inbox replay. |
 | Delayed runs pending at upgrade | No head row exists for their event, so they are skipped as `superseded` (§2.4). Delays are at most 24 hours (`action.odin:6`). |
 | Runs already routed | Finish normally; the "all runs with this `delivery_id`" update covers them as the one-member case. |
@@ -791,11 +820,21 @@ other side:
 
 ## 9. Data model changes
 
-| Migration | Content |
-|---|---|
-| `events_007_entity_heads.sql` | Rebuild `event_entity_versions` without the `entity_kind` CHECK (copy, drop, rename; the table has no triggers or foreign keys in `events_002_topics.sql:1-5`). Create `event_state_heads` (§2.4). |
-| `actions_006_rules_v2.sql` | Convert stored equals maps to trees and rewrite removed template variables (§8). `CREATE INDEX action_runs_delivery ON action_runs(delivery_id) WHERE state = 'routed';` and `CREATE INDEX action_runs_parked ON action_runs(target_instance_id) WHERE state = 'deferred' AND target_instance_id <> '';` |
-| `webhooks_001.sql` | `event_webhooks` (§5.4). |
+| Migration | Task | Content |
+|---|---|---|
+| `events_007_entity_versions.sql` | E1 | Rebuild `event_entity_versions` without the `entity_kind` CHECK (copy, drop, rename; the table has no triggers or foreign keys in `events_002_topics.sql:1-5`). |
+| `events_008_state_heads.sql` | E3 | Create `event_state_heads` (§2.4). |
+| `actions_006_template_vars.sql` | E1 | Rewrite the removed template variables in `actions.prompt_text` (§8). |
+| `actions_007_filter_tree.sql` | F1 | Rewrite `action_triggers.config` and `data_filter` to the tree form (§8). |
+| `actions_008_target_batches.sql` | B1 | `CREATE INDEX action_runs_delivery ON action_runs(delivery_id) WHERE state = 'routed';` and `CREATE INDEX action_runs_parked ON action_runs(target_instance_id) WHERE state = 'deferred' AND target_instance_id <> '';` |
+| `webhooks_001.sql` | W1 | `event_webhooks` (§5.4). |
+
+**One migration file per task, never shared and never amended.** Applied migrations are
+recorded by file name (`schema_migrations.version`,
+`src/hub/repository/sqlite/migrations.odin:1858`, `:1930`), so a file that changes after it
+has run on a database is not applied again there. A task that needs schema or data changes adds its own file. The files above
+are independent of each other, so the order in which parallel tasks merge does not matter;
+if two tasks would claim the same number, the later one renumbers before merging.
 
 No new columns. `action_triggers.data_filter` holds the condition tree (§3.3).
 `action_runs.target_instance_id` gains a second use: set on parked runs (§6.2).
@@ -819,7 +858,8 @@ overrides are rejected at startup. The effective values are returned by
 | Tree depth / checks / nodes / stored bytes | 4 / 16 / 24 / 4 KiB |
 | Values per `in` list, bytes per value | 32 / 256 |
 | Webhook body size | 64 KiB |
-| Webhook requests per minute, per webhook | 60 |
+| Webhook pre-auth requests per minute, hub-wide | 1,200 |
+| Webhook authenticated requests per minute, per webhook | 60 |
 | Failed webhook auth per minute, per client IP | 20 |
 | Webhooks per owner | 50 |
 | Runs per batch / batch body size | 20 / 24 KiB |
@@ -959,6 +999,7 @@ agent to read the previous prompt" for parked runs. API types in
 | `any`/`not` in the CLI shorthand | The shorthand stays a flat AND; trees go through `--trigger-json` (§10). |
 | Per-trigger targets, new target kinds | R2 is met by existing kinds (§4). |
 | Webhook request headers in `data` | Keeps the envelope to the body. Consequence: senders that put the event name in a header (GitHub) cannot be filtered on it. |
+| Delay (debounce) on webhook rules, settle key taken from a body field | A per-endpoint debounce would drop request bodies (§2.4). A rule-defined settle key such as `data.pull_request.id` is the follow-up. |
 | HMAC request signing | User decision U3: token auth is the v1 baseline. HMAC needs a recoverable secret at rest and is a later, optional auth mode. |
 | Provider-specific signature formats (GitHub, Stripe) | Each is its own verifier. v2 webhooks are for senders you control or that can set a header. A natural follow-up together with HMAC: signature profiles plus a small header allowlist. |
 | Any backward compatibility (dual write, reader fallback, template aliases, old filter reader) | User decision U2 (§8). |
@@ -979,17 +1020,17 @@ chain's Test Runner. "Deps" are hard ordering constraints.
 
 | ID | Task | Deps | Acceptance |
 |---|---|---|---|
-| E1 | **Envelope v2 switch.** Extract the producer-neutral emit helper; `catalog_emit` wraps it and emits only the v2 shape. In the same task switch every reader: matcher snapshot, settle key, prompt metadata, templates, event inbox, UI replay, v2 envelope type in `src/contracts` + TS mirror, skill text. Migration `events_007` (versions rebuild). One task on purpose: there is no fallback, so producer and readers cannot merge separately. | – | Golden test: chain and task envelopes have `entity`, `data.chain_id` on task events, and no top-level `chain_id`/`task_id`; each reader has a test fed a v2 envelope; an old-shape catalog event is acked and skipped without error; `{{event.entity.id}}` renders and `{{event.chain_id}}` renders literally; versions accept kind `memory`; `taskv2`, actions, eventinbox, SQLite and UI suites pass. |
-| E3 | **Generic validity (D2).** `event_state_heads` in `events_007`; upsert in the emit helper for `state` class; head-row check; generic settle key; delete the chain-state snapshot check. | E1 | Tests: reopened chain → `superseded`; chain row touched without state change → delivered; completed→active→completed → delivered once; delayed state run without a head row → `superseded`; `chain.work_finished` still uses `work_revision`. The real-producer settle tests from `task_18eaf94a6a6d3b39` are updated to the head-row rule and pass. |
-| F1 | **Condition tree.** Node parsing, validation with `path`/`reason`, compile to the flat form, short-circuit evaluation and full-trace evaluation as pure procs; tree stored in `data_filter`; the `data` map and `chain_id` config key rejected; limits read from hub config (§9.1); trigger-types returns fields, operators, effective limits; `filter-test` endpoint; migration `actions_006` data conversion. | E1 | Table test over every operator × {present string, number, bool, null, object, array, absent}; tests for `all`/`any`/`not` nesting incl. short-circuit result equal to full evaluation; every limit in §3.4 rejected with the right `reason` and `path`; the migration converts a stored equals map and a stored `{{event.chain_id}}` prompt as §8 describes, and `{}` stays "always"; a limit overridden in config is enforced and reported; `3` equals `"3"`; trace characters are in the author's node order. |
+| E1 | **Envelope v2 switch.** Extract the producer-neutral emit helper; `catalog_emit` wraps it and emits only the v2 shape. In the same task switch every reader: matcher snapshot, settle key, prompt metadata, templates, event inbox, UI replay, v2 envelope type in `src/contracts` + TS mirror, skill text. Migrations `events_007_entity_versions` and `actions_006_template_vars`, both owned by this task. One task on purpose: there is no fallback, so producer and readers cannot merge separately. | – | Golden test: chain and task envelopes have `entity`, `data.chain_id` on task events, and no top-level `chain_id`/`task_id`; each reader has a test fed a v2 envelope; an old-shape catalog event is acked and skipped without error; `{{event.entity.id}}` renders and `{{event.chain_id}}` renders literally; the migration rewrites a stored `{{event.chain_id}}` prompt; versions accept kind `memory`; `taskv2`, actions, eventinbox, SQLite and UI suites pass. |
+| E3 | **Generic validity (D2).** `event_state_heads` in its own migration `events_008_state_heads`; upsert in the emit helper for `state` class; head-row check; generic settle key; delete the chain-state snapshot check. | E1 | Tests: reopened chain → `superseded`; chain row touched without state change → delivered; completed→active→completed → delivered once; delayed state run without a head row → `superseded`; upgrade test on a database that already applied `events_007` creates the table; `chain.work_finished` still uses `work_revision`. The real-producer settle tests from `task_18eaf94a6a6d3b39` are updated to the head-row rule and pass. |
+| F1 | **Condition tree.** Node parsing, validation with `path`/`reason`, compile to the flat form, short-circuit evaluation and full-trace evaluation as pure procs; tree stored in `data_filter`; the `data` map and `chain_id` config key rejected; limits read from hub config (§9.1); trigger-types returns fields, operators, effective limits; `filter-test` endpoint; `validate_chain` replaced by the per-kind `entity_id` ownership check; a per-descriptor "no delay" flag checked on save; own migration `actions_007_filter_tree` rewriting `config` and `data_filter`. | E1 | Table test over every operator × {present string, number, bool, null, object, array, absent}; tests for `all`/`any`/`not` nesting incl. short-circuit result equal to full evaluation; every limit in §3.4 rejected with the right `reason` and `path`; round trip: a trigger stored as `{event_type, chain_id, data}` is migrated, loads through the API with `entity_id` and a `filter` tree, and re-saves unchanged with identical `data_filter` and `subject_filter`; `{}` stays "always"; `entity_id` of another owner's chain → `unknown_entity`; a limit overridden in config is enforced and reported; `3` equals `"3"`; trace characters are in the author's node order. |
 | F2 | **Compiled rule index.** Per-owner cache with epoch invalidation and minute refresh; single-statement join-or-queue insert; `_match` trace written to the run snapshot; pruning out of the hot path. | F1 | Test with 300 rules for one owner: second event runs zero trigger queries (query counter, like `src/hub/service/actions/performance_test.odin:23-25`); an edit, disable or delete is honoured on the next event; redelivery inserts nothing; schedule guard and retire still work. Records the measured per-event cost in the task comment. |
-| B1 | **Per-target batch send.** Grouping, resolve once per group, backpressure park, digest render, one message/delivery, member update. Migration `actions_006` (indexes). | – | Tests: 10 actions → 1 instance, one event → 1 chat message, 1 delivery, 10 runs `routed` with one `delivery_id`; single run renders byte-identical to today; bot and instance groups resolve once each (call counter); `fresh_per_run` unchanged; 25 runs split 20 + 5. |
+| B1 | **Per-target batch send.** Grouping, resolve once per group, backpressure park, digest render, one message/delivery, member update. Own migration `actions_008_target_batches` (indexes). | – | Tests: 10 actions → 1 instance, one event → 1 chat message, 1 delivery, 10 runs `routed` with one `delivery_id`; single run renders byte-identical to today; bot and instance groups resolve once each (call counter); `fresh_per_run` unchanged; 25 runs split 20 + 5. |
 | B2 | **Batch lifecycle.** Final-state fan-out by `delivery_id`; parked release + single `action.ready`; lazy expiry at drain; replacement moves all members; schedules-unsupported sweep excludes parked runs; history exposes batch size. | B1 | Tests: read → all members `delivered`; `not_read` → all members failed with `not_read`, parked runs go out next as one digest; lost wake → released at expiry; bridge replacement keeps one delivery for all members; parked runs survive unsupported-schedule mode; in-flight single-run deliveries from before the change finalize. |
 | M1 | **Memory producer.** `save_memory` in a unit of work; `memory.state` event on create and status change; descriptor + two presets. | E1, E3 | Tests: create pending, approve, reject, archive each emit one event with correct `status`/`previous_status`; edit without status change emits none; system memory emits none; rollback of the memory write leaves no outbox row; a rule with preset "Memory approved" produces a run. |
-| W1 | **Webhook model and ingress.** `webhooks_001`; CRUD service + HTTP; generated token shown once and stored hashed; ingress = rate limit, size check, token auth, outbox append-if-absent, `202`; uniform 401; deterministic event id from `Idempotency-Key`; limits from hub config. No HMAC. Both URL forms (bearer header, secret URL) on one handler; token segment redacted in the request wrapper; list of every hub site that records a request path; `SELF_HOSTING.md` proxy note. | E1 | Tests: valid token → 202 and exactly one outbox row with the owner from the row, through each URL form; a secret-URL request (accepted, rejected, oversized, rate-limited and one forced to error) leaves no token in captured logs, traces, metrics labels or response bodies; token in both header and path → 401; rotate invalidates both forms; the token is not retrievable after create and the table holds no plaintext; wrong token, missing token, unknown id and disabled webhook return identical 401; rotate invalidates the old token; default 64 KiB + 1 → 413; non-object → 400; 61st request in a minute to one webhook → 429 while another webhook is unaffected; same `Idempotency-Key` twice → one outbox row and `duplicate: true`; cross-owner CRUD → not found; the handler runs no trigger query and no delivery code (query counter). |
-| W2 | **Webhook rules.** `webhook.received` descriptor with free `data.` paths; run snapshot projection and 8 KiB cap; nested template variables and `{{event.json}}`; untrusted-data line; control-character stripping. | F1, W1 | Tests: 64 KiB body → run snapshot ≤ 8 KiB and contains the paths used by filter and template; nested variable renders; `{{` inside a webhook value is not expanded; prompt contains the untrusted-data line only for webhook-derived values. |
+| W1 | **Webhook model and ingress.** `webhooks_001`; CRUD service + HTTP; generated token shown once and stored hashed; ingress order = pre-auth limits and size check, token auth, per-webhook rate limit charged only after auth, outbox append-if-absent, `202`; uniform 401; deterministic event id from `Idempotency-Key`; limits from hub config. No HMAC. Both URL forms (bearer header, secret URL) on one handler; token segment redacted in the request wrapper; list of every hub site that records a request path; `SELF_HOSTING.md` proxy note. | E1 | Tests: valid token → 202 and exactly one outbox row with the owner from the row, through each URL form; a secret-URL request (accepted, rejected, oversized, rate-limited and one forced to error) leaves no token in captured logs, traces, metrics labels or response bodies; token in both header and path → 401; rotate invalidates both forms; the token is not retrievable after create and the table holds no plaintext; wrong token, missing token, unknown id and disabled webhook return identical 401; rotate invalidates the old token; default 64 KiB + 1 → 413; non-object → 400; 61st authenticated request in a minute to one webhook → 429 while another webhook is unaffected; 100 bad-token requests to a webhook id do not stop a following valid-token request; unknown and known ids get byte-identical responses before and after such a flood; same `Idempotency-Key` twice → one outbox row, `duplicate: true` and `entity_version` unchanged by the duplicate; cross-owner CRUD → not found; the handler runs no trigger query and no delivery code (query counter). |
+| W2 | **Webhook rules.** `webhook.received` descriptor with free `data.` paths and the "no delay" flag; run snapshot projection and 8 KiB cap; nested template variables and `{{event.json}}`; untrusted-data line; control-character stripping. | F1, W1 | Tests: a webhook rule with `delay_s > 0` is rejected with `delay_not_supported`; 64 KiB body → run snapshot ≤ 8 KiB and contains the paths used by filter and template; nested variable renders; `{{` inside a webhook value is not expanded; prompt contains the untrusted-data line only for webhook-derived values. |
 | C1 | **CLI.** Filter shorthand operators, match trace in `actions runs`, `ham-ctl webhook` group, `ham-ctl-reference` and Ninjy skill text. | F1, W1 | `src/ctl` tests for each shorthand form and each webhook verb, in the style of `src/ctl/actions_test.odin`; shorthand `event:chain.state,state=completed` produces a `filter` tree with one `eq` check. |
-| U1a | **UI tree editor.** Nested group cards with All/Any/None modes, check rows, limits, plain-language sentence, error marking by node path, sample-event test. API types. | F1 | UI tests: build the §3.3 example and get exactly that JSON; depth and node limits disable the add buttons; a server `path` error marks the right node; usable at phone width. |
+| U1a | **UI tree editor.** Delay input hidden for webhook rules. Nested group cards with All/Any/None modes, check rows, limits, plain-language sentence, error marking by node path, sample-event test. API types. | F1 | UI tests: build the §3.3 example and get exactly that JSON; depth and node limits disable the add buttons; a server `path` error marks the right node; usable at phone width. |
 | U1b | **UI history and webhooks.** Read-only tree with per-node result and seen values in run history, edited-rule fallback; Webhooks section; batch and parked labels. | U1a, F2, W1, B2 | UI tests for a trace overlay with true and false nodes, the edited-rule fallback, creating a webhook with the token shown once, and both history labels; existing actions UI tests pass. |
 | X1 | **E2E on dev.** One webhook and one memory rule to a bot; 20 actions to one instance; a delayed chain rule across a reopen. | all above | Observed on dev: one digest prompt for the 20 actions, a second digest only after the read; webhook duplicate suppressed; reopened chain skipped as `superseded`. No rollout without the user's explicit OK. |
 
