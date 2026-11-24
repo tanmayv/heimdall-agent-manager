@@ -10,6 +10,8 @@ new_event_outbox_repository :: proc(impl: ^Event_Outbox_Repo_SQLite, conn: ^Conn
 	impl.conn = conn
 	return {
 		ctx = impl,
+  contains = outbox_contains,
+  append_if_absent = outbox_append_if_absent,
 		set_state_head = outbox_set_state_head,
 		state_head_matches = outbox_state_head_matches,
 		next_version = outbox_next_version,
@@ -22,6 +24,28 @@ new_event_outbox_repository :: proc(impl: ^Event_Outbox_Repo_SQLite, conn: ^Conn
 	backlog_owner = outbox_backlog_owner,
 		prune = outbox_prune,
 	}
+}
+outbox_contains :: proc(ctx:rawptr,id:string)->(bool,domain.Domain_Error) {
+ stmt,e:=outbox_prepare(ctx,"SELECT 1 FROM event_outbox WHERE event_id=?;")
+ if e.code!=.None do return false,e
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt,1,id)
+ rc:=sqlite3_step(stmt)
+ if rc==SQLITE_ROW do return true,{}
+ if rc==SQLITE_DONE do return false,{}
+ return false,domain.domain_error(.Internal_Error,"could not check event outbox")
+}
+outbox_append_if_absent :: proc(ctx:rawptr,row:domain.Event_Outbox_Row)->(bool,domain.Domain_Error) {
+ stmt,e:=outbox_prepare(ctx,"INSERT INTO event_outbox(event_id,owner_user_id,subject,envelope_json,headers_json,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING;")
+ if e.code!=.None do return false,e
+ defer sqlite3_finalize(stmt)
+ bind_text(stmt,1,row.event_id);bind_text(stmt,2,row.owner_user_id);bind_text(stmt,3,row.subject)
+ bind_text(stmt,4,row.envelope_json);bind_text(stmt,5,row.headers_json);bind_text(stmt,6,row.created_at)
+ if sqlite3_step(stmt)!=SQLITE_DONE do return false,domain.domain_error(.Internal_Error,"could not append event outbox")
+ impl:=(^Event_Outbox_Repo_SQLite)(ctx)
+ inserted:=sqlite3_changes(impl.conn.db)>0
+ if inserted do outbox_mark_appended()
+ return inserted,{}
 }
 // The shared request connection must never expose uncommitted rows to the relay.
 // Require the caller's UoW for reads as well as writes.

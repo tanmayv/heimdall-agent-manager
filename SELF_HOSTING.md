@@ -144,6 +144,15 @@ For local development use `tools/mock-oidc` (see its README).
 The hub binds to `127.0.0.1` by default. Put nginx/Caddy in front to expose it over
 HTTPS. The web UI is served as a static bundle and can be served by the same reverse proxy.
 
+For inbound event webhooks, prefer `/api/v1/hooks/<id>` with a Bearer header.
+The URL-only form `/api/v1/hooks/<id>/<token>` is a credential: **anyone with this
+URL can post events**. Exclude `/api/v1/hooks/` requests from reverse-proxy access
+logs, or mask everything after the webhook ID (including query strings) in access,
+error, tracing and load-balancer logs. The hub redacts the token in its own request
+wrapper; it cannot redact a proxy or sender's earlier copy. Rotate the token if
+a full URL has been recorded. See [webhook ingress](docs/webhook-ingress.md) for
+the API, configurable limits and the hub request-path recording audit.
+
 **Idle task-chain coordinators** are stopped automatically. These settings are hub-wide, with no
 per-chain override:
 

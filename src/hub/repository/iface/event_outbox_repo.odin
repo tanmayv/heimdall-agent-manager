@@ -6,6 +6,8 @@ import domain "odin_test:hub/domain"
 // caller-owned strings (destroy with domain.event_outbox_row_destroy).
 // headers_json is a JSON object of string header names to string values.
 Event_Outbox_Repository :: struct {
+ contains: proc(ctx:rawptr,event_id:string)->(bool,domain.Domain_Error),
+ append_if_absent: proc(ctx:rawptr,row:domain.Event_Outbox_Row)->(bool,domain.Domain_Error),
 	backlog_owner: proc(ctx: rawptr, owner: string) -> (i64, domain.Domain_Error),
 	ctx:            rawptr,
 	set_state_head: proc(ctx: rawptr, owner, kind, id, event_type, event_id: string, version: i64) -> domain.Domain_Error,

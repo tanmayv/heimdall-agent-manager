@@ -9,7 +9,9 @@ Handler_Proc :: proc(ctx: rawptr, req: Request) -> Response
 Upgrade_Handler_Proc :: proc(ctx: rawptr, req: Request, client: net.TCP_Socket)
 
 Request :: struct {
-	method:     string,
+	hook_token: string `json:"-"`, // Private ingress credential; never log Request.
+ hook_redacted: bool,
+ method:     string,
 	path:       string,
 	query:      string,
 	// Exact HTTP request target, including an empty '?' and original percent encoding.
@@ -94,6 +96,10 @@ route_matches :: proc(pattern, path: string) -> bool {
 // router_dispatch_upgrade handles WebSocket-gated upgrade routes (raw=false).
 // Called only when the request carries Upgrade: websocket.
 router_dispatch_upgrade :: proc(router: ^Router, req: Request, client: net.TCP_Socket) -> bool {
+ safe := event_webhook_redact(req)
+ return router_dispatch_upgrade_safe(router,safe,client)
+}
+router_dispatch_upgrade_safe :: proc(router: ^Router, req: Request, client: net.TCP_Socket) -> bool {
 	if router == nil || !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) do return false
 	for route in router.upgrade_routes {
 		if !route.raw && (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) { route.handler(route.ctx, req, client); return true }
@@ -104,6 +110,10 @@ router_dispatch_upgrade :: proc(router: ^Router, req: Request, client: net.TCP_S
 // router_dispatch_raw_upgrade handles raw-socket routes (raw=true) for ALL request methods.
 // Called unconditionally; the heap allocator must be set by the caller before this call.
 router_dispatch_raw_upgrade :: proc(router: ^Router, req: Request, client: net.TCP_Socket) -> bool {
+ safe := event_webhook_redact(req)
+ return router_dispatch_raw_upgrade_safe(router,safe,client)
+}
+router_dispatch_raw_upgrade_safe :: proc(router: ^Router, req: Request, client: net.TCP_Socket) -> bool {
 	if router == nil || !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) do return false
 	for route in router.upgrade_routes {
 		if route.raw && (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) { route.handler(route.ctx, req, client); return true }
@@ -124,6 +134,10 @@ ROUTE_UNMATCHED :: "unmatched"
 // router_dispatch_matched is router_dispatch plus the matched route PATTERN
 // (e.g. "/api/v1/bridges/*/heartbeat"), for the HTTP metrics `route` label.
 router_dispatch_matched :: proc(router: ^Router, req: Request) -> (Response, string) {
+ safe := event_webhook_redact(req)
+ return router_dispatch_matched_safe(router,safe)
+}
+router_dispatch_matched_safe :: proc(router: ^Router, req: Request) -> (Response, string) {
 	if router == nil {
 		return respond_error(domain.domain_error(.Internal_Error, "router is not configured"), req.request_id), ROUTE_UNMATCHED
 	}

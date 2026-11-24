@@ -1,5 +1,7 @@
 package actions
 
+import webhooks "odin_test:hub/service/webhooks"
+
 import "core:encoding/json"
 import "core:mem/virtual"
 import "core:strings"
@@ -14,6 +16,7 @@ DEFAULT_MAX_PER_OWNER :: 1000
 Schedule_Support_Port :: struct { ctx: rawptr, get: proc(ctx: rawptr) -> int }
 Service :: struct {
  filter_limits: Filter_Limits,
+ webhook_limits:webhooks.Limits,
  max_per_owner: int, // Zero selects DEFAULT_MAX_PER_OWNER.
 	factory: ^iface.Unit_Of_Work_Factory,
 	repos: ^iface.Repositories,
@@ -432,6 +435,7 @@ Trigger_Types_View :: struct {
 	limits: struct {
 		max_triggers, max_rules, max_automations_per_owner: int,
   filter: Filter_Limits,
+  webhook:webhooks.Limits,
 		min_interval_s: struct {min,max,default:int},
 	},
 	trigger_kinds: []Trigger_Type_View,
@@ -482,7 +486,7 @@ trigger_types :: proc(s:^Service) -> Trigger_Types_View {
 		}
 	}
 	return {target_kinds=s.target_kinds,schedules_supported=schedule_supported(s),
-		limits={max_automations_per_owner=(s.max_per_owner if s.max_per_owner>0 else DEFAULT_MAX_PER_OWNER),filter=filter_limits(s.filter_limits),max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
+		limits={max_automations_per_owner=(s.max_per_owner if s.max_per_owner>0 else DEFAULT_MAX_PER_OWNER),filter=filter_limits(s.filter_limits),webhook=s.webhook_limits,max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
 			min_interval_s={min=domain.ACTION_MIN_INTERVAL_MIN_S,max=domain.ACTION_MIN_INTERVAL_MAX_S,default=domain.ACTION_MIN_INTERVAL_DEFAULT_S}},
 		trigger_kinds=kinds}
 }

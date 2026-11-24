@@ -1,5 +1,7 @@
 package app
 
+import webhooks "odin_test:hub/service/webhooks"
+
 import "core:strings"
 import "core:encoding/json"
 import actions "odin_test:hub/service/actions"
@@ -11,6 +13,7 @@ import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
  action_filter_limits:actions.Filter_Limits,
+ webhook_limits:webhooks.Limits,
  automation_max_per_owner:int,
 	// Default on until catalog v1 staging parity is approved.
 	legacy_event_notices: Maybe(bool),
@@ -164,6 +167,7 @@ default_config :: proc() -> Hub_Config {
 	cidrs[0] = "127.0.0.1/32"
 	return Hub_Config{
   action_filter_limits=actions.FILTER_DEFAULT_LIMITS,
+ webhook_limits=webhooks.DEFAULT_LIMITS,
  automation_max_per_owner=actions.DEFAULT_MAX_PER_OWNER,
 		telegram_api_base = "https://api.telegram.org",
 		whatsapp_api_base = "https://graph.facebook.com",
@@ -532,5 +536,30 @@ apply_action_filter_limits_json :: proc(config:^Hub_Config,raw:string)->bool {
  }
  if !actions.filter_limits_valid(l) do return false
  config.action_filter_limits=l
+ return true
+}
+
+apply_webhook_limits_json :: proc(config:^Hub_Config,raw:string)->bool {
+ value:json.Value
+ if json.unmarshal_string(raw,&value)!=nil do return false
+ defer json.destroy_value(value)
+ obj,ok:=value.(json.Object)
+ if !ok do return false
+ l:=config.webhook_limits
+ for key,item in obj {
+  number,valid:=item.(json.Integer)
+  if !valid || number<1 || number>1048576 do return false
+  n:=int(number)
+  switch key {
+  case "body_bytes": l.body_bytes=n
+  case "pre_auth_per_minute": l.pre_auth_per_minute=n
+  case "per_webhook_per_minute": l.per_webhook_per_minute=n
+  case "failed_auth_per_ip": l.failed_auth_per_ip=n
+  case "per_owner": l.per_owner=n
+  case: return false
+  }
+ }
+ if !webhooks.limits_valid(l) do return false
+ config.webhook_limits=l
  return true
 }

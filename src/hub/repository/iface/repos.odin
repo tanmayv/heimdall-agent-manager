@@ -1,6 +1,7 @@
 package iface
 
 Repositories :: struct {
+ webhooks: Event_Webhook_Repository,
 	pipeline_deliveries: Pipeline_Delivery_Repository,
 	bots: Bot_Repository,
  event_subscriptions: Event_Subscription_Repository,

@@ -1,5 +1,7 @@
 package app
 
+import webhooks "odin_test:hub/service/webhooks"
+
 import "core:fmt"
 import "core:encoding/json"
 import contracts "odin_test:contracts"
@@ -57,6 +59,9 @@ App_Graph :: struct {
 	event_inbox_runtime: eventinbox.Runtime,
 	event_inbox_handlers: http.Event_Inbox_Handlers,
 	sqlite_event_outbox: sqlite.Event_Outbox_Repo_SQLite,
+ sqlite_webhooks: sqlite.Event_Webhook_Repo_SQLite,
+ webhooks: webhooks.Service,
+ webhook_handlers: http.Event_Webhook_Handlers,
 	sqlite_event_subscriptions: sqlite.Event_Subscription_Repo_SQLite,
 	mcp_runtime_mutex:sync.Mutex,
 	mcp_spike: mcp_service.Store,
@@ -262,6 +267,7 @@ service_message_created :: proc(ctx: rawptr, m: domain.Chat_Message) {
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
+ if !webhooks.limits_valid(config.webhook_limits) do return false,"invalid webhook limits"
  if !actions_service.filter_limits_valid(actions_service.filter_limits(config.action_filter_limits)) do return false,"invalid action filter limits"
 	if strings.trim_space(config.nats_url) == "" do return false, "--nats-url / HEIMDALL_NATS_URL is required"
 	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
@@ -333,7 +339,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.billing = billing_service.Service{repo = &graph.billing_repo, clock = &graph.clock, config = billing_config}
 	graph.billing_handlers = http.Billing_Handlers{auth = &graph.auth, billing = &graph.billing, ui_origin = config.ui_origin}
 
-	graph.repos.event_outbox = sqlite.new_event_outbox_repository(&graph.sqlite_event_outbox, &graph.db)
+	graph.repos.webhooks = sqlite.new_event_webhook_repository(&graph.sqlite_webhooks,&graph.db)
+ graph.repos.event_outbox = sqlite.new_event_outbox_repository(&graph.sqlite_event_outbox, &graph.db)
 	graph.repos.event_subscriptions = sqlite.new_event_subscription_repository(&graph.sqlite_event_subscriptions, &graph.db)
 	graph.repos.users = sqlite.new_user_repository(&graph.sqlite_users, &graph.db)
 	// External identity claiming is atomic on an isolated connection so its
@@ -642,6 +649,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.agent_action_handlers = http.Agent_Action_Handlers{automations = &graph.action_handlers, auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
 	graph.actions = actions_service.Service{
   filter_limits=actions_service.filter_limits(config.action_filter_limits),
+ webhook_limits=config.webhook_limits,
  max_per_owner=config.automation_max_per_owner,
 		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,
 		experiments=&graph.experiment_repo,clock=&graph.clock,ids=&graph.ids,
@@ -660,6 +668,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
  }
  graph.content.messages_read={ctx=graph.delivery,read=delivery_messages_read}
  delivery.register_sink(graph.delivery,{kind="prompt",ctx=&graph.action_router,on_final=actions_service.on_delivery_final,replace=actions_service.on_delivery_replace})
+ graph.webhooks = webhooks.Service{factory=graph.actions.factory,clock=&graph.clock,limits=config.webhook_limits,experiments=&graph.experiment_repo}
+ graph.webhook_handlers = http.Event_Webhook_Handlers{actions=&graph.action_handlers,service=&graph.webhooks,trusted_cidrs=config.forwarded_for_trusted_cidrs}
  graph.action_handlers = http.Action_Handlers{auth=&graph.auth,service=&graph.actions,router=&graph.action_router,experiments=&graph.experiment_repo}
 	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)
 	graph.cards = card_service.new_card_service(
@@ -771,7 +781,8 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
 	channel.whatsapp_destroy(&graph.whatsapp)
-	http.webhook_rate_destroy(&graph.bot_webhook_handlers.limiter)
+	http.event_webhook_limiter_destroy(&graph.webhook_handlers.limiter)
+ http.webhook_rate_destroy(&graph.bot_webhook_handlers.limiter)
 	bridge_service.bridge_update_catalog_destroy(&graph.bridge_update_catalog)
 	db_collectors_detach()
 	// Join the bridge_log writer (final drain) while the DB is still open.
@@ -1201,7 +1212,15 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/events", rawptr(&graph.bridge_handlers), http.bridge_events_list_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bridges/*/events", rawptr(&graph.bridge_handlers), http.bridge_events_purge_handler)
 	// Actions API
-	http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)
+	http.router_add(&graph.router,"POST","/api/v1/hooks/*",rawptr(&graph.webhook_handlers),http.event_webhook_receive_handler)
+ http.router_add(&graph.router,"POST","/api/v1/hooks/*/*",rawptr(&graph.webhook_handlers),http.event_webhook_receive_handler)
+ http.router_add(&graph.router,"GET","/api/v1/webhooks",rawptr(&graph.webhook_handlers),http.event_webhook_crud_handler)
+ http.router_add(&graph.router,"POST","/api/v1/webhooks",rawptr(&graph.webhook_handlers),http.event_webhook_crud_handler)
+ http.router_add(&graph.router,"GET","/api/v1/webhooks/*",rawptr(&graph.webhook_handlers),http.event_webhook_crud_handler)
+ http.router_add(&graph.router,"PATCH","/api/v1/webhooks/*",rawptr(&graph.webhook_handlers),http.event_webhook_crud_handler)
+ http.router_add(&graph.router,"DELETE","/api/v1/webhooks/*",rawptr(&graph.webhook_handlers),http.event_webhook_crud_handler)
+ http.router_add(&graph.router,"POST","/api/v1/webhooks/*/rotate",rawptr(&graph.webhook_handlers),http.event_webhook_crud_handler)
+ http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions", rawptr(&graph.action_handlers), http.create_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/actions/trigger-types", rawptr(&graph.action_handlers), http.action_trigger_types_handler)
  http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/list", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)

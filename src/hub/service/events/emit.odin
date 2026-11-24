@@ -13,6 +13,7 @@ Emit_Input :: struct {
 	topic_key: string,
 	replace_open: bool,
 	event_id: string,
+ append_if_absent: bool,
 }
 emit :: proc(repo: ^iface.Event_Outbox_Repository, clock: ^platform.Clock, input: Emit_Input) -> (string, domain.Domain_Error) {
 	if repo == nil || repo.append == nil do return "", {}
@@ -45,8 +46,16 @@ emit :: proc(repo: ^iface.Event_Outbox_Repository, clock: ^platform.Clock, input
 	if input.class == "state" {
 		if err := repo.set_state_head(repo.ctx, input.owner, input.entity_kind, input.entity_id, input.type, id, version); err.code != .None do return "", err
 	}
-	return id, repo.append(repo.ctx, {
+ row:=domain.Event_Outbox_Row{
 		event_id=id, owner_user_id=input.owner, subject=input.subject, envelope_json=string(encoded),
 		headers_json=`{"Nats-Rollup":"sub"}` if input.class=="state" else "{}", created_at=at,
-	})
+ }
+ if input.append_if_absent {
+  inserted,e:=repo.append_if_absent(repo.ctx,row)
+  if e.code!=.None do return "",e
+  // Caller must roll back the version increment if a competing insert won.
+  if !inserted do return "",domain.domain_error(.Conflict,"event already exists")
+  return id,{}
+ }
+ return id,repo.append(repo.ctx,row)
 }

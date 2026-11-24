@@ -104,6 +104,7 @@ handle_client :: proc(client: net.TCP_Socket, source: net.Endpoint, router: ^Rou
 		remote_addr = net.address_to_string_allocator(source.address),
 		headers = headers,
 	}
+	req_obj = event_webhook_redact(req_obj)
 	// The preview origin is a separate security boundary. Dispatch it before
 	// OPTIONS and every router path so no Hub API can ever be reached by Host.
 	if config.preview_origin != "" && preview_origin_host_matches(header_value(headers, "Host"), config.preview_origin) {
@@ -292,6 +293,8 @@ status_text :: proc(status: int) -> string {
 	case 404: return "Not Found"
 	case 409: return "Conflict"
 	case 410: return "Gone"
+ case 413: return "Payload Too Large"
+ case 415: return "Unsupported Media Type"
 	case 429: return "Too Many Requests"
 	case 500: return "Internal Server Error"
 	case 503: return "Service Unavailable"

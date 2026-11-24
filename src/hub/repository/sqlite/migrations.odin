@@ -1050,6 +1050,7 @@ migration_order :: [?]string {
 	"246_extension_version_sync_0_5_83.sql",
 	"247_extension_version_sync_0_5_84.sql",
 	"actions_010_agent_automation_audit.sql",
+ "webhooks_001.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1611,6 +1612,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "240_extension_version_sync_0_5_77.sql" do return strings.clone(MIGRATION_240_EXTENSION_VERSION_SYNC)
 	if name == "239_extension_version_sync_0_5_76.sql" do return strings.clone(MIGRATION_239_EXTENSION_VERSION_SYNC)
 	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
+	if name == "webhooks_001.sql" do return strings.clone(MIGRATION_WEBHOOKS_001)
 	if name == "actions_010_agent_automation_audit.sql" do return strings.clone(MIGRATION_ACTIONS_010_AGENT_AUTOMATION_AUDIT)
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
  if name == "actions_004_bot_activity.sql" do return strings.clone(MIGRATION_ACTIONS_004_BOT_ACTIVITY)
@@ -2468,3 +2470,5 @@ upgrade_memory_action_expiry_schema :: proc(conn: ^Conn) -> bool {
 }
 
 MIGRATION_EVENTS_009_INCREMENTAL_INBOX :: #load("migrations/events_009_incremental_inbox.sql", string)
+
+MIGRATION_WEBHOOKS_001 :: #load("migrations/webhooks_001.sql",string)
