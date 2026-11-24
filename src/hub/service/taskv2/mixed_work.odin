@@ -25,15 +25,10 @@ work_control_chain :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, c
 	return chain, true, domain.Domain_Error{}
 }
 
-// work_task_write_chain authorizes the per-task state writes any agent of the
-// chain's owner may perform — cancel, hold, release, answer, reopen — without
-// being a member or coordinator of that chain. It differs from
-// work_control_chain ONLY in who is authorized: an agent actor passes when it
-// is the chain's coordinator OR an agent instance owned by the chain's owner.
-// Owner isolation is explicit (the instance row's owner must equal the chain
-// owner; an unknown instance or an unwired agent repository fails closed), and
-// the active-chain requirement is unchanged. Graph shaping (dependencies,
-// workflow runs, plans, lease assignment/transfer) keeps work_control_chain.
+// Owner-scoped task and orchestration writes require a real same-owner agent
+// instance, the owning user, or the internal Hub actor. The active-chain guard
+// is unchanged. Proposal decisions and explicit claim assignment/transfer keep
+// the coordinator policy in work_control_chain.
 work_task_write_chain :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := iface.taskchain_get_chain(svc.repo, chain_id)
 	if !ok do return {}, false, err
@@ -52,7 +47,6 @@ task_write_actor_authorized :: proc(svc: ^Service, chain: domain.Task_Chain, act
 	case ACTOR_USER:
 		return actor.id == string(chain.owner_user_id)
 	case ACTOR_AGENT, ACTOR_COORDINATOR:
-		if is_coordinator(svc, chain, actor.id) do return true
 		if actor.id == "" || svc.agents == nil do return false
 		inst, found, _ := iface.agent_get_instance(svc.agents, actor.id)
 		return found && inst.owner_user_id == chain.owner_user_id
@@ -125,7 +119,7 @@ work_dependency_add :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, 
 }
 
 work_dependency_add_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, actor: Actor, chain_id: domain.Task_Chain_ID, dependent, prerequisite: domain.Work_Item_Ref) -> (domain.Work_Dependency, bool, domain.Domain_Error) {
-	if _, ok, err := work_control_chain(svc, owner, actor, chain_id); !ok do return {}, false, err
+	if _, ok, err := work_task_write_chain(svc, owner, actor, chain_id); !ok do return {}, false, err
 	consumer, cok, cerr := work_item_snapshot(svc, chain_id, owner, dependent)
 	if !cok do return {}, false, cerr
 	if _, pok, perr := work_item_snapshot(svc, chain_id, owner, prerequisite); !pok do return {}, false, perr
@@ -163,7 +157,7 @@ work_dependency_remove :: proc(svc: ^Service, owner: domain.User_ID, actor: Acto
 }
 
 work_dependency_remove_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, actor: Actor, chain_id: domain.Task_Chain_ID, dependency_id, reason: string) -> (bool, domain.Domain_Error) {
-	if _, ok, err := work_control_chain(svc, owner, actor, chain_id); !ok do return false, err
+	if _, ok, err := work_task_write_chain(svc, owner, actor, chain_id); !ok do return false, err
 	if strings.trim_space(reason) == "" do return false, domain.domain_error(.Validation_Failed, "dependency removal reason required")
 	edges, err := iface.taskchain_list_work_dependencies(svc.repo, chain_id, owner)
 	if err.code != .None do return false, err
@@ -339,7 +333,7 @@ work_scope_decide :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, ch
 }
 
 work_scope_decide_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, actor: Actor, chain_id: domain.Task_Chain_ID, item: domain.Work_Item_Ref, action, reason: string) -> (domain.Work_Scope_Decision, bool, domain.Domain_Error) {
-	if _, ok, err := work_control_chain(svc, owner, actor, chain_id); !ok do return {}, false, err
+	if _, ok, err := work_task_write_chain(svc, owner, actor, chain_id); !ok do return {}, false, err
 	snapshot, sok, serr := work_item_snapshot(svc, chain_id, owner, item)
 	if !sok do return {}, false, serr
 	if action != "include" && action != "exclude" do return {}, false, domain.domain_error(.Validation_Failed, "scope action must be include or exclude")
@@ -366,7 +360,7 @@ work_chain_complete :: proc(svc: ^Service, owner: domain.User_ID, actor: Actor, 
 }
 
 work_chain_complete_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, actor: Actor, chain_id: domain.Task_Chain_ID, expected_revision: i64, summary: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {
-	chain, ok, err := work_control_chain(svc, owner, actor, chain_id)
+	chain, ok, err := work_task_write_chain(svc, owner, actor, chain_id)
 	if !ok do return {}, false, err
 	if strings.trim_space(summary) == "" do return {}, false, domain.domain_error(.Validation_Failed, "final acceptance summary is required")
 	if pending := strings.trim_space(chain_proposal_json(chain)); pending != "" && pending != "{}" && pending != "null" do return {}, false, domain.domain_error(.Conflict, "decide the pending proposal before finishing")

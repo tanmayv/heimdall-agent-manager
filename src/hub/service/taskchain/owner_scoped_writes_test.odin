@@ -6,8 +6,6 @@ package taskchain
 // different owner is still refused, and the non-membership guards (draft chain,
 // `complete` for completion, valid transitions, lease-holder self-edit) stay.
 
-import "core:fmt"
-import "core:os"
 import "core:testing"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -32,15 +30,13 @@ Az_Fx :: struct {
 	ids:     platform.ID_Generator,
 	svc:     Taskchain_Service,
 	engine:  taskv2.Service,
-	db_path: string,
 }
 
 @(private = "file")
 az_make :: proc(fx: ^Az_Fx, t: ^testing.T, name: string) -> bool {
-	fx.db_path = fmt.tprintf("%s/.cache/heimdall-tests/authz_%s_%d.db", os.get_env("HOME", context.temp_allocator), name, os.get_pid())
-	os.remove(fx.db_path)
 	ok: bool
-	fx.conn, ok, _ = sqlite.open(fx.db_path)
+	// Authorization does not depend on disk durability; each case owns a private DB.
+	fx.conn, ok, _ = sqlite.open(":memory:")
 	if !testing.expect(t, ok, "open database") do return false
 	mig_ok, _ := sqlite.run_migrations(&fx.conn)
 	if !testing.expect(t, mig_ok, "migrations") do return false
@@ -69,7 +65,6 @@ az_make :: proc(fx: ^Az_Fx, t: ^testing.T, name: string) -> bool {
 @(private = "file")
 az_free :: proc(fx: ^Az_Fx) {
 	sqlite.close(&fx.conn)
-	os.remove(fx.db_path)
 }
 
 @(private = "file")
@@ -198,4 +193,132 @@ test_authz_lease_holder_still_cannot_update_its_own_task :: proc(t: ^testing.T) 
 	testing.expect(t, !hok && herr.code == .Forbidden, "holder cannot rewrite the task it holds")
 	_, ook, oerr := update_task(&fx.svc, az_instance("inst_outsider"), task.task_id, Update_Task_Input{brief_json = `{"acceptance":["corrected"]}`})
 	testing.expectf(t, ook, "another same-owner instance may correct acceptance: %s", oerr.message)
+}
+
+@(private = "file")
+az_wire_uow :: proc(fx: ^Az_Fx, repos: ^iface.Repositories, impl: ^sqlite.SQLite_Unit_Of_Work_Factory, factory: ^iface.Unit_Of_Work_Factory) {
+	repos.taskchains=fx.repo
+	repos.agents=fx.agents
+	factory^=sqlite.new_unit_of_work_factory(impl,&fx.conn,repos)
+	fx.svc.uow_factory=factory
+	fx.engine.uow_factory=factory
+}
+
+@(test)
+test_cross_chain_publication_metadata_fleet_and_advertisement :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	fx: Az_Fx
+	if !az_make(&fx,t,"orchestration") do return
+	defer az_free(&fx)
+	repos:iface.Repositories
+	impl:sqlite.SQLite_Unit_Of_Work_Factory
+	factory:iface.Unit_Of_Work_Factory
+	az_wire_uow(&fx,&repos,&impl,&factory)
+	outsider:=az_instance("inst_outsider")
+	chain:=az_chain(&fx,"chain_authz",.Draft)
+	task:=az_task(&fx,string(chain.chain_id),"draft_task")
+	task.publish_state=.Draft
+	task.brief_json=`{"goal":"g","acceptance":["a"],"review_roles":["security"]}`
+	_,_,_=iface.taskchain_save_task(&fx.repo,task)
+
+	// Valid same-owner outsiders reach validation; rejected publication is atomic.
+	_,published,perr:=publish_chain(&fx.svc,outsider,chain.chain_id)
+	testing.expect(t,!published && perr.code==.Validation_Failed,"missing review role still blocks chain publish")
+	stored,_,_:=iface.taskchain_get_chain(&fx.repo,chain.chain_id)
+	unchanged,_,_:=iface.taskchain_get_task(&fx.repo,task.task_id)
+	testing.expect(t,stored.publish_state==.Draft && unchanged.publish_state==.Draft,"failed publish leaves chain and task drafts")
+	task.brief_json=`{"goal":"g","acceptance":["a"],"review_roles":[]}`
+	_,_,_=iface.taskchain_save_task(&fx.repo,task)
+	published_chain: domain.Task_Chain
+	published_chain,published,perr=publish_chain(&fx.svc,outsider,chain.chain_id)
+	testing.expect(t,published,perr.message)
+	testing.expect_value(t,published_chain.publish_state,domain.Publish_State.Published)
+	cascaded,_,_:=iface.taskchain_get_task(&fx.repo,task.task_id)
+	testing.expect_value(t,cascaded.publish_state,domain.Publish_State.Published)
+	_,again,aerr:=publish_chain(&fx.svc,outsider,chain.chain_id)
+	testing.expect(t,!again && aerr.code==.Conflict,"published-chain guard unchanged")
+
+	draft:=az_task(&fx,string(chain.chain_id),"individual_draft")
+	draft.publish_state=.Draft
+	_,_,_=iface.taskchain_save_task(&fx.repo,draft)
+	actions,acterr:=task_control_actions(&fx.svc,outsider,draft)
+	advertised:=false
+	for action in actions do if action=="publish" do advertised=true
+	testing.expect(t,acterr.code==.None && advertised,"outsider is advertised the executable publish control")
+	_,individual,ierr:=publish_task(&fx.svc,outsider,draft.task_id)
+	testing.expect(t,individual,ierr.message)
+
+	renamed,rok,rerr:=set_own_chain_title(&fx.svc,outsider,string(chain.chain_id),"Renamed across chains")
+	testing.expect(t,rok && renamed.title=="Renamed across chains" && renamed.title_source=="agent",rerr.message)
+	described,dok,derr:=set_own_chain_description(&fx.svc,outsider,string(chain.chain_id),"New description")
+	testing.expect(t,dok && described.description=="New description",derr.message)
+	_,coordinated,coerr:=update_chain(&fx.svc,outsider,chain.chain_id,Update_Chain_Input{has_coordinator=true,coordinator_agent_instance_id="inst_holder",title="must not persist"})
+	testing.expect(t,!coordinated && coerr.code==.Forbidden,"metadata access cannot change coordinator")
+	persisted,_,_:=iface.taskchain_get_chain(&fx.repo,chain.chain_id)
+	testing.expect_value(t,persisted.title,"Renamed across chains")
+	testing.expect(t,!is_chain_coordinator(&fx.svc,persisted,"inst_outsider"),"outsider remains noncoordinator")
+
+	dir,added,direrr:=add_chain_directory(&fx.svc,outsider,Add_Directory_Input{chain_id=chain.chain_id,path="/isolated/repo"})
+	if testing.expect(t,added,direrr.message) {
+		moved,mok,merr:=update_chain_directory(&fx.svc,outsider,Update_Directory_Input{chain_id=chain.chain_id,directory_id=dir.directory_id,path="/isolated/renamed",has_path=true})
+		testing.expect(t,mok && moved.path=="/isolated/renamed",merr.message)
+		removed,remerr:=remove_chain_directory(&fx.svc,outsider,chain.chain_id,dir.directory_id)
+		testing.expect(t,removed,remerr.message)
+	}
+
+	_,_,_=iface.agent_save(&fx.agents,domain.Agent{agent_id="agt_authz",owner_user_id=AZ_OWNER,name="Worker",slug="authz"})
+	_,_,_=iface.agent_save(&fx.agents,domain.Agent{agent_id="agt_foreign",owner_user_id=AZ_FOREIGN,name="Foreign",slug="foreign"})
+	for id in ([]string{"agt_foreign","agt_unknown"}) {
+		_,referr:=upsert_fleet(&fx.svc,outsider,Upsert_Fleet_Input{chain_id=chain.chain_id,agent_id=id,capacity=1})
+		testing.expect(t,referr.code==.Not_Found,"same-owner actor cannot reference a foreign or unknown fleet agent")
+	}
+	row,ferr:=upsert_fleet(&fx.svc,outsider,Upsert_Fleet_Input{chain_id=chain.chain_id,agent_id="agt_authz",capacity=1})
+	testing.expect(t,ferr.code==.None,ferr.message)
+	_,badcap:=upsert_fleet(&fx.svc,outsider,Upsert_Fleet_Input{chain_id=chain.chain_id,agent_id="agt_authz",capacity=0})
+	testing.expect(t,badcap.code==.Validation_Failed,"fleet capacity still validated")
+	_,badrole:=set_fleet_pause(&fx.svc,outsider,Fleet_Pause_Input{chain_id=chain.chain_id,agent_id=row.agent_id,roles=[]string{"nonexistent"},paused=true})
+	testing.expect(t,badrole.code==.Validation_Failed,"unknown fleet role refused")
+	paused,pauseerr:=set_fleet_pause(&fx.svc,outsider,Fleet_Pause_Input{chain_id=chain.chain_id,agent_id=row.agent_id,paused=true})
+	testing.expect(t,pauseerr.code==.None && paused.paused_roles_json!="","outsider pauses fleet")
+	resumed,reserr:=set_fleet_pause(&fx.svc,outsider,Fleet_Pause_Input{chain_id=chain.chain_id,agent_id=row.agent_id,paused=false})
+	testing.expect(t,reserr.code==.None && resumed.paused_roles_json=="","outsider resumes fleet")
+	deleted,delerr:=delete_fleet(&fx.svc,outsider,chain.chain_id,row.agent_id)
+	testing.expect(t,deleted,delerr.message)
+}
+
+@(test)
+test_cross_chain_invalid_actors_leave_metadata_publication_and_fleet_unchanged :: proc(t: ^testing.T) {
+	context.allocator=context.temp_allocator
+	fx: Az_Fx
+	if !az_make(&fx,t,"denials") do return
+	defer az_free(&fx)
+	chain:=az_chain(&fx,"chain_authz",.Draft)
+	task:=az_task(&fx,string(chain.chain_id),"draft_denied")
+	task.publish_state=.Draft
+	_,_,_=iface.taskchain_save_task(&fx.repo,task)
+	chain,_,_=iface.taskchain_get_chain(&fx.repo,chain.chain_id)
+	for auth in ([]contracts.Auth_Context{
+		az_instance("inst_foreign",AZ_FOREIGN),az_instance("missing"),az_instance(""),
+		az_instance("inst_foreign"),{kind=.None,user_id=AZ_OWNER},
+		{kind=.Bridge_Token,user_id=AZ_OWNER},
+	}) {
+		_,changed,err:=update_chain(&fx.svc,auth,chain.chain_id,Update_Chain_Input{title="forged"})
+		testing.expect(t,!changed && err.code!=.None,"invalid metadata actor denied")
+		_,published,perr:=publish_chain(&fx.svc,auth,chain.chain_id)
+		testing.expect(t,!published && perr.code!=.None,"invalid chain publisher denied")
+		_,tpublished,terr:=publish_task(&fx.svc,auth,task.task_id)
+		testing.expect(t,!tpublished && terr.code!=.None,"invalid task publisher denied")
+		_,ferr:=upsert_fleet(&fx.svc,auth,Upsert_Fleet_Input{chain_id=chain.chain_id,agent_id="agt_authz",capacity=1})
+		testing.expect(t,ferr.code!=.None,"invalid fleet actor denied")
+		_,added,derr:=add_chain_directory(&fx.svc,auth,Add_Directory_Input{chain_id=chain.chain_id,path="/forged"})
+		testing.expect(t,!added && derr.code!=.None,"invalid directory actor denied")
+		_,completed,cerr:=complete_chain(&fx.svc,auth,chain.chain_id,chain.work_revision,"forged")
+		testing.expect(t,!completed && cerr.code!=.None,"invalid completion actor denied")
+	}
+	persisted,_,_:=iface.taskchain_get_chain(&fx.repo,chain.chain_id)
+	draft,_,_:=iface.taskchain_get_task(&fx.repo,task.task_id)
+	fleets,_:=iface.taskchain_list_fleets_by_chain(&fx.repo,chain.chain_id,chain.owner_user_id)
+	dirs,_:=iface.taskchain_list_directories_by_chain(&fx.repo,chain.chain_id,chain.owner_user_id)
+	testing.expect(t,persisted.title==chain.title && persisted.publish_state==.Draft && persisted.work_revision==chain.work_revision,"denials preserve chain")
+	testing.expect(t,draft.publish_state==.Draft && len(fleets)==0 && len(dirs)==0,"denials preserve draft and referenced resources")
 }
