@@ -9,7 +9,7 @@ export type ActionTarget =
   | { kind: 'bot'; bot_id: string };
 export type ScheduleConfig = { mode: 'cron' | 'interval' | 'once'; cron_expr?: string; timezone?: string; interval_s?: number; run_at?: string; blackout_dates?: string[]; active_from?: string; active_until?: string };
 export type EventConfig = { event_type: string; chain_id?: string; data?: Record<string, string> };
-export type ActionTrigger = ({ kind: 'schedule'; config: ScheduleConfig } | { kind: 'event'; config: EventConfig }) & { id?: string; enabled: boolean; rev?: number; next_fire_at?: string; created_at?: string; updated_at?: string };
+export type ActionTrigger = ({ kind: 'schedule'; config: ScheduleConfig } | { kind: 'event'; config: EventConfig }) & { id?: string; enabled: boolean; delay_s?: number; rev?: number; next_fire_at?: string; created_at?: string; updated_at?: string };
 export type Action = { id: string; owner_user_id: string; name: string; prompt_text: string; enabled: boolean; min_interval_s: number; target: ActionTarget; triggers: ActionTrigger[]; created_at: string; updated_at: string };
 export type CreateActionInput = Pick<Action, 'prompt_text' | 'target'> & Partial<Pick<Action, 'name' | 'enabled' | 'min_interval_s' | 'triggers'>>;
 export type PatchActionInput = Partial<CreateActionInput>;

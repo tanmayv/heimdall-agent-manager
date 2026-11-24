@@ -8,7 +8,7 @@ export const RUN_REASON_TEXT: Record<string, string> = {
   start_failed: 'The agent could not be started on that machine', bridge_too_old: "The machine's bridge needs an update",
   no_placement: 'No machine matched the rules', target_missing: 'The target no longer exists',
   delivery_failed: 'The prompt could not be stored', experiment_off: 'Actions experiment is off',
-  disabled: 'Action is disabled', rate_limited: 'Minimum interval has not elapsed',
+  superseded: 'Superseded by a newer event or change', disabled: 'Action is disabled', rate_limited: 'Minimum interval has not elapsed',
   stale_rev: 'Trigger has changed', outside_window: 'Outside the active window', blackout: 'Blackout date',
 };
 export function runRowText(run: ActionRun, machine = 'machine') {

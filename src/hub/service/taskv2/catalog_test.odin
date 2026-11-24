@@ -95,12 +95,14 @@ test_catalog_task_state :: proc(t: ^testing.T) {
 test_catalog_chain_state :: proc(t: ^testing.T) {
 	fx, chain, _ := catalog_fixture(t); defer fixture_close(fx)
 	u, _, _ := begin_uow(&fx.svc)
-	after := chain; after.status = .Completed
+	after := chain; after.status = .Completed; after.completed_at="2026-11-23T00:00:00Z"; after.updated_at=after.completed_at
 	testing.expect_value(t, catalog_chain_state(&fx.repo, &fx.clock, chain, after).code, domain.Error_Code.None)
 	testing.expect_value(t, catalog_chain_state(&fx.repo, &fx.clock, after, after).code, domain.Error_Code.None)
 	_, _ = end_uow(&fx.svc, &u, true)
 	testing.expect_value(t, catalog_count(fx, "chain.state"), 1)
 	catalog_expect(t, fx, "chain.state", "state", "")
+ testing.expect_value(t, scalar_text(fx, "SELECT json_extract(envelope_json,'$.data.completed_at') FROM event_outbox WHERE json_extract(envelope_json,'$.type')='chain.state';"), after.completed_at)
+ testing.expect_value(t, scalar_text(fx, "SELECT json_extract(envelope_json,'$.data.updated_at') FROM event_outbox WHERE json_extract(envelope_json,'$.type')='chain.state';"), after.updated_at)
 }
 
 @(test)
@@ -290,6 +292,7 @@ test_catalog_work_finished :: proc(t: ^testing.T) {
 	task = catalog_record(t, fx, task, EV_SUBMITTED, "{}")
 	testing.expect_value(t, catalog_count(fx, "chain.work_finished"), 1)
 	catalog_expect(t, fx, "chain.work_finished", "occurrence", "")
+ testing.expect_value(t, scalar_int(fx, "SELECT json_extract(envelope_json,'$.data.work_revision') FROM event_outbox WHERE json_extract(envelope_json,'$.type')='chain.work_finished';"), scalar_int(fx, "SELECT work_revision FROM task_chains WHERE chain_id='catalog_chain';"))
 	u, _, _ := begin_uow(&fx.svc)
 	_, _, ok, _ := refold_task(&fx.svc, &u, task); _, _ = end_uow(&fx.svc, &u, ok)
 	testing.expect_value(t, catalog_count(fx, "chain.work_finished"), 1)

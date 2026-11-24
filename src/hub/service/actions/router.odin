@@ -336,7 +336,7 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
  run,found,err:=repo.run_get(repo.ctx,id)
  if err.code!=.None || !found || (run.state!=domain.ACTION_RUN_QUEUED && run.state!=domain.ACTION_RUN_DEFERRED) do return
  now:=platform.clock_now(r.clock)
- if run.state==domain.ACTION_RUN_DEFERRED && !hinted && run.not_before>now do return
+ if run.state==domain.ACTION_RUN_DEFERRED && (run.delay_s>0 || !hinted) && run.not_before>now do return
  action,exists,e:=repo.get(repo.ctx,run.action_id)
  if e.code!=.None || !exists do return
  reason:=""
@@ -347,6 +347,26 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
   if e:=finish_run(repo,run,domain.ACTION_RUN_SKIPPED,reason,now); e.code!=.None do return
   _,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
   return
+ }
+ // A pending timer occupies only its trigger/key slot. Claim the action's
+ // ordinary slot (or join it) once the settle window has elapsed.
+ if run.settle_pending {
+  if _, expiry_err := expire_open_run(r, &uow, action.id); expiry_err.code != .None do return
+  open, exists, open_err := repo.run_open(repo.ctx, action.id)
+  if open_err.code != .None do return
+  if exists {
+   next := run
+   next.joined_run_id = open.run_id
+   if e := finish_run(repo, next, domain.ACTION_RUN_JOINED, "", now); e.code != .None do return
+   _, _ = iface.unit_of_work_commit(&uow); uow.ctx=nil
+   return
+  }
+  next := run
+  next.settle_pending=false
+  next.state=domain.ACTION_RUN_QUEUED
+  changed, transition_err := repo.run_transition(repo.ctx, next, run.state)
+  if transition_err.code != .None || !changed do return
+  run=next
  }
  if run.state==domain.ACTION_RUN_QUEUED {
   last,e:=repo.run_last_started_at(repo.ctx,action.id)
@@ -369,6 +389,20 @@ drain_run :: proc(r:^Router,id:string,hinted:bool) {
    }
    _,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
    return
+  }
+ }
+ // Validate before planning: planning can spawn or start an instance.
+ // Immediate and rate-limit-only runs never perform this lookup.
+ if run.delay_s > 0 {
+  descriptor := event_descriptor_find(run.event_type)
+  if descriptor != nil && descriptor.still_valid != nil {
+   valid, why := descriptor.still_valid(uow.repos, run)
+   if !valid {
+    if why == "" do why = "superseded"
+    if e := finish_run(repo, run, domain.ACTION_RUN_SKIPPED, why, now); e.code != .None do return
+    _, _ = iface.unit_of_work_commit(&uow); uow.ctx=nil
+    return
+   }
   }
  }
  committed,_:=iface.unit_of_work_commit(&uow); uow.ctx=nil

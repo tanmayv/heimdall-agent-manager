@@ -2,6 +2,7 @@
 package actions
 
 import "core:encoding/json"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:mem"
 import "core:strings"
@@ -217,4 +218,16 @@ reconcile :: proc(s: ^Service, conn: ^nats.Connection) -> (done: bool, err: doma
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	uow.ctx = nil
 	return committed, commit_err
+}
+
+// Encode the entire key, including empty or punctuation-containing keys, into
+// one subject token. Trigger IDs are globally unique.
+settle_deferral_row :: proc(sc: ^Sync_Context, run: domain.Action_Run) -> (domain.Event_Outbox_Row, domain.Domain_Error) {
+ row, err := deferral_row(sc, string(run.owner_user_id), string(run.action_id), run.run_id, run.not_before)
+ if err.code != .None do return {}, err
+ if !nats.subject_token(run.trigger_id) {domain.event_outbox_row_destroy(&row); return {}, detail_error("invalid_subject_token")}
+ delete(row.subject)
+ key := string(hex.encode(transmute([]u8)run.settle_key, context.temp_allocator))
+ row.subject = strings.clone(fmt.tprintf("sched.def.settle.%s.k%s", run.trigger_id, key))
+ return row, {}
 }

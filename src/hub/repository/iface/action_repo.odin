@@ -31,6 +31,7 @@ Action_Repository :: struct {
 	// Enabled triggers of one kind whose action is enabled, across all owners (reconcile).
 	triggers_effective: proc(ctx: rawptr, kind: string) -> ([]domain.Action_Trigger, domain.Domain_Error),
 	// runs
+	run_settle_pending: proc(ctx: rawptr, trigger_id, settle_key: string) -> (domain.Action_Run, bool, domain.Domain_Error),
 	run_insert: proc(ctx: rawptr, r: domain.Action_Run) -> (inserted: bool, err: domain.Domain_Error),  // INSERT OR IGNORE on occurrence_key
 	run_get:    proc(ctx: rawptr, run_id: string) -> (domain.Action_Run, bool, domain.Domain_Error),
 	run_open:   proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action_Run, bool, domain.Domain_Error), // the queued, deferred or routed run

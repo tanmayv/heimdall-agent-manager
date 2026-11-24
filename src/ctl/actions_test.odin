@@ -194,3 +194,23 @@ test_ctl_actions_no_run_verb :: proc(t: ^testing.T) {
 		testing.expect(t, !strings.contains(CTL_ACTIONS_HELP, "scheduled-prompt"))
 	})
 }
+
+@(test)
+test_ctl_actions_settle_delay :: proc(t: ^testing.T) {
+ ctl_actions_test_tracked(t, proc(t: ^testing.T) {
+  for text in ([]string{"600", "600s", "10m"}) {
+   req, ok := ctl_actions_request({"update", "act_1"}, {"--trigger", "event:chain.state,state=completed", "--delay", text})
+   testing.expect(t, ok)
+   ctl_actions_test_json(t, req, `{"triggers":[{"kind":"event","config":{"event_type":"chain.state","data":{"state":"completed"}},"delay_s":600}]}`)
+  }
+  req, ok := ctl_actions_request({"update", "act_1"}, {"--trigger-json", `{"id":"trg_1","kind":"event","config":{"event_type":"chain.state"}}`, "--delay", "0"})
+  testing.expect(t, ok)
+  ctl_actions_test_json(t, req, `{"triggers":[{"id":"trg_1","kind":"event","config":{"event_type":"chain.state"},"delay_s":0}]}`)
+  for bad in ([]string{"-1", "25h", "86401", "1.5s", "forever", ""}) {
+   _, valid := ctl_actions_request({"update", "act_1"}, {"--trigger", "event:chain.state", "--delay", bad})
+   testing.expect(t, !valid, bad)
+  }
+  _, orphan := ctl_actions_request({"update", "act_1"}, {"--delay", "10m"})
+  testing.expect(t, !orphan, "delay requires a preceding trigger")
+ })
+}

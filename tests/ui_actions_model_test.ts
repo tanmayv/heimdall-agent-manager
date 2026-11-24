@@ -5,13 +5,14 @@ import { emptyActionForm, formFromAction, actionFormBody, mapServerError, matche
 import { actionsApi } from '../src/ui/api/endpoints/actions.ts';
 import { makeVaultStore, installFetchCapture } from './helpers/vaultEndpointHarness.ts';
 
-const record: any = { id: 'act_1', owner_user_id: 'u', name: 'Review', prompt_text: 'Review {{event.type}}', enabled: true, min_interval_s: 30, target: { kind: 'agent', agent_id: 'agt_1', project_id: '', instance_strategy: 'reuse', selector: 'first', rules: [{ bridge_id: '*', provider: 'claude', model: '*' }] }, triggers: [{ id: 'trg_1', kind: 'schedule', enabled: true, rev: 2, next_fire_at: '2026-12-01T09:00:00Z', config: { mode: 'cron', cron_expr: '0 9 * * 1-5', timezone: 'America/New_York', blackout_dates: ['2026-12-25'] } }, { id: 'trg_2', kind: 'event', enabled: false, config: { event_type: 'chain.state', chain_id: 'chain_1', data: { state: 'completed' } } }], created_at: '', updated_at: '' };
+const record: any = { id: 'act_1', owner_user_id: 'u', name: 'Review', prompt_text: 'Review {{event.type}}', enabled: true, min_interval_s: 30, target: { kind: 'agent', agent_id: 'agt_1', project_id: '', instance_strategy: 'reuse', selector: 'first', rules: [{ bridge_id: '*', provider: 'claude', model: '*' }] }, triggers: [{ id: 'trg_1', kind: 'schedule', enabled: true, rev: 2, next_fire_at: '2026-12-01T09:00:00Z', config: { mode: 'cron', cron_expr: '0 9 * * 1-5', timezone: 'America/New_York', blackout_dates: ['2026-12-25'] } }, { id: 'trg_2', kind: 'event', enabled: false, delay_s: 600, config: { event_type: 'chain.state', chain_id: 'chain_1', data: { state: 'completed' } } }], created_at: '', updated_at: '' };
 test('API v2 form round trip preserves target, config and trigger IDs; removal omits trigger', () => {
   const form = formFromAction(record);
   const body = actionFormBody(form);
   assert.deepEqual(body.target, record.target);
   assert.deepEqual(body.triggers?.map(t => t.id), ['trg_1', 'trg_2']);
   assert.deepEqual(body.triggers?.[0].config, record.triggers[0].config);
+  assert.equal(body.triggers?.[1].delay_s, 600);
   assert.equal('rev' in body.triggers![0], false);
   form.triggers.splice(0, 1);
   assert.deepEqual(actionFormBody(form).triggers?.map(t => t.id), ['trg_2']);
@@ -24,7 +25,7 @@ test('filters cover all, schedule, event and no trigger', () => {
   assert.equal(matchesTab({ ...record, triggers: [] }, 'none'), true);
 });
 test('validation detail codes map to the responsible form field', () => {
-  for (const [code, field] of Object.entries({ prompt_required: 'prompt_text', min_interval_out_of_range: 'min_interval_s', unknown_bridge: 'target', invalid_strategy: 'target', invalid_cron: 'triggers', schedules_unsupported: 'triggers', unknown_chain: 'triggers' })) {
+  for (const [code, field] of Object.entries({ prompt_required: 'prompt_text', min_interval_out_of_range: 'min_interval_s', unknown_bridge: 'target', invalid_strategy: 'target', invalid_cron: 'triggers', schedules_unsupported: 'triggers', unknown_chain: 'triggers', delay_out_of_range: 'triggers' })) {
     assert.equal(mapServerError({ error: 'Bad value', data: { details: { code } } }).field, field);
   }
 });

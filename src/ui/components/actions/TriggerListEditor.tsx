@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Toggle } from '@ui';
+import { Button, Toggle, Input, FormField } from '@ui';
 import type { TriggerTypes } from '../../api/endpoints/actions';
 import type { FormTrigger } from './actionModel';
 import ScheduleEditor from './ScheduleEditor';
@@ -17,6 +17,7 @@ export default function TriggerListEditor({ value, onChange, types }: { value: F
         <Toggle aria-label={'Enable trigger ' + (i + 1)} data-debug-id={'action-trigger-enabled-' + id} checked={trigger.enabled} onChange={enabled => change({ ...trigger, enabled })} />
         {trigger.kind === 'schedule' ? <ScheduleEditor debugId={'action-trigger-' + id} value={trigger.config} onChange={config => change({ ...trigger, config })} />
           : <EventTriggerEditor debugId={'action-trigger-' + id} value={trigger.config} onChange={config => change({ ...trigger, config })} events={events} />}
+        {trigger.kind === 'event' ? <FormField label="Delay (seconds)" hint="Wait for the event to settle before delivery. A matching event restarts the timer. Zero delivers immediately."><Input type="number" min={0} max={86400} step={1} data-debug-id={'action-trigger-delay-' + id} aria-label="Delay (seconds)" value={String(trigger.delay_s || 0)} onChange={v => change({ ...trigger, delay_s: Number(v) })} /></FormField> : null}
         <Button type="button" variant="danger" data-debug-id={'action-trigger-remove-' + id} onClick={() => onChange(value.filter((_, n) => n !== i))}>Remove trigger</Button>
       </fieldset>;
     })}
