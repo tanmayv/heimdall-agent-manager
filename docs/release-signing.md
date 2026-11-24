@@ -209,6 +209,66 @@ resolves the newest release it can verify).
 4. Delete or mark releases signed with the compromised key after the
    compromise time, and record the incident in `docs/incidents/`.
 
+## Release repositories (migration to heimdall-releases)
+
+Every release is published, byte for byte, to **two** repositories:
+
+| Repository | Role | Credential |
+| --- | --- | --- |
+| `tanmayv/heimdall-releases` (public, no source) | the home of all release artifacts, so the source repository can go private | a GitHub App installation token scoped to this repository only |
+| `tanmayv/heimdall-agent-manager` | kept during the migration window: already installed bridges and desktops have it compiled in | the workflow's `github.token` |
+
+`scripts/release/publish-targets.sh` runs `publish-release.sh` once per
+repository, releases repository first. If that fails nothing is published on
+the source repository. The tag has the same name in both. In the releases
+repository, which has no source, it is created on the default branch when the
+release is published, and the release notes end with a link to the source
+commit the release was built from. All rules below (signed manifest, drafts,
+digest verification, immutability) apply to each repository.
+
+**Configuration** (source repository: *Settings → Secrets and variables → Actions*):
+
+| Name | Kind | Meaning |
+| --- | --- | --- |
+| `RELEASES_APP_ID` | variable | ID of the GitHub App that publishes to `heimdall-releases` |
+| `RELEASES_APP_PRIVATE_KEY` | secret | the App's private key (PEM) |
+| `PUBLISH_SOURCE_RELEASES` | variable, optional | `false` stops publishing and promoting on the source repository. Unset or any other value keeps the dual publish (default) |
+
+The App is installed on `tanmayv/heimdall-releases` only, with repository
+permission **Contents: read and write** (releases, tags and assets;
+**Metadata: read** is implicit). The workflows mint a token with
+`actions/create-github-app-token`, restricted to that repository and to
+`contents: write`. Enable *Release immutability* on **both** repositories.
+Attestations are always made, and verified, in the source repository: the
+bundle bytes are identical, so promotion on the releases repository verifies
+them with `ATTEST_REPO`/`ATTEST_GH_TOKEN` (the workflow's own token) while it
+reads the release itself from the releases repository.
+
+**Re-runs.** `publish-release.sh publish --allow-identical` (always used by
+`publish-targets.sh`) treats a repository whose tag is already published with
+exactly these file names and sha256 digests as done. If the releases
+repository published and the source repository failed, use *Re-run failed
+jobs*, not *Re-run all jobs*: the artifacts are reused, the identical-file
+check passes on the published repository and the run finishes the other one. A
+full re-run rebuilds different bytes; `prepare` then refuses (exit 3) because
+a repository already holds the tag. Different bytes under a published tag are
+always refused.
+
+**Promotion** verifies the candidate in every enabled repository first and
+only then marks any of them Latest, releases repository first.
+
+**Turning the source repository off.** Set `PUBLISH_SOURCE_RELEASES=false`
+once installed clients have moved to `heimdall-releases`. Nothing else
+changes.
+
+**Dry run of the scripts** (no GitHub calls; prints what would run):
+
+```bash
+DRY_RUN=1 SOURCE_REPO=tanmayv/heimdall-agent-manager \
+  scripts/release/publish-targets.sh publish --tag v0.0.1 --commit abcdef0 \
+  --notes-file notes.md -- dist/SHA256SUMS
+```
+
 ## Immutable releases, attestations and promotion checks
 
 A published release never changes. New bytes need a new tag.
@@ -217,9 +277,11 @@ A published release never changes. New bytes need a new tag.
 
 1. `prepare` fails at once when a publishing run (tag push or
    `publish_release=true`) targets a tag that already has a **published**
-   release. It fails before the version commit and the builds.
+   release in either repository (see *Release repositories*). It fails before
+   the version commit and the builds.
 2. The `release` job checks again (`check-unpublished`) before it attests or
-   writes anything. A published release stops it with exit 3. No asset is
+   writes anything. A published release stops it with exit 3, unless that
+   release already holds exactly these files (re-run of a failed job). No asset is
    uploaded, replaced or deleted, and the notes are not edited.
 3. `actions/attest@v4` records SLSA build provenance for every file about to
    be published. Then `gh attestation verify --signer-workflow
