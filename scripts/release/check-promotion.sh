@@ -15,13 +15,20 @@
 #      exactly the manifest's assets, and each downloaded bundle matches the
 #      manifest's size and sha256;
 #   4. the manifest and every bundle carry a GitHub build-provenance
-#      attestation signed by release-local-binaries.yml of this repository,
+#      attestation signed by release-local-binaries.yml of the SOURCE
+#      repository (ATTEST_REPO; the release repository itself when unset),
 #      built from refs/tags/<tag> (tag push) or refs/heads/$DEFAULT_BRANCH
 #      (dispatch from the default branch); a dry run on any other branch
 #      does not count;
 #   5. when GitHub reports the release immutable, `gh release verify` and
 #      `gh release verify-asset` pass for it. A mutable release only warns:
 #      immutability is a repository setting (docs/release-signing.md).
+#
+# GH_REPO is the repository holding the release (heimdall-releases or the
+# source repository). The attestations are always made in the source
+# repository, so ATTEST_REPO names it and ATTEST_GH_TOKEN (default GH_TOKEN) is
+# the token allowed to read its attestations; the bundle bytes are identical
+# in every release repository, so the same attestation covers all of them.
 # Exit codes: 0 ok, 1 rejected, 2 usage.
 
 set -euo pipefail
@@ -33,7 +40,8 @@ default_branch="${DEFAULT_BRANCH:?DEFAULT_BRANCH must name the default branch}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 manifest_tool=(python3 -I "$script_dir/release-manifest.py")
 manifest=heimdall-release-manifest.json
-signer="$repo/.github/workflows/release-local-binaries.yml"
+attest_repo="${ATTEST_REPO:-$repo}"
+signer="$attest_repo/.github/workflows/release-local-binaries.yml"
 mkdir -p "$work"
 
 reject() { echo "::error::promotion of $tag rejected: $*" >&2; exit 1; }
@@ -75,7 +83,8 @@ echo "signed manifest verified for $tag: ${bundles[*]}"
 attested_from() {
   local ref
   for ref in "refs/tags/$tag" "refs/heads/$default_branch"; do
-    if gh attestation verify "$work/$1" --repo "$repo" --signer-workflow "$signer" \
+    if GH_TOKEN="${ATTEST_GH_TOKEN:-${GH_TOKEN:-}}" gh attestation verify "$work/$1" --repo "$attest_repo" \
+      --signer-workflow "$signer" \
       --source-ref "$ref" > /dev/null 2>> "$work/attest.err"; then
       echo "$ref"; return 0
     fi

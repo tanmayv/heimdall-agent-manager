@@ -56,6 +56,16 @@ on:
 permissions:
   contents: read
 
+env:
+  # Releases are published on a separate PUBLIC repository (so this one can be
+  # private) and, during the migration window, on this repository too. Both
+  # go through scripts/release/publish-targets.sh; docs/release-signing.md
+  # lists the App credentials and the PUBLISH_SOURCE_RELEASES switch.
+  RELEASES_REPO: tanmayv/heimdall-releases
+  # Repository variable; `false` stops publishing to this repository. Anything
+  # else (including unset) keeps the dual publish.
+  PUBLISH_SOURCE_RELEASES: ${{ vars.PUBLISH_SOURCE_RELEASES == 'false' && 'false' || 'true' }}
+
 concurrency:
   group: release-local-binaries-${{ github.ref }}
   cancel-in-progress: false
@@ -84,6 +94,19 @@ jobs:
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
         run: echo "matrix=$(python3 scripts/release/local-build-matrix.py)" >> "$GITHUB_OUTPUT"
 
+      # Installation token for the releases repository only (contents: write).
+      # Same condition as the release job's `if`.
+      - name: Mint the releases-repository token
+        id: releases_token
+        if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASES_APP_ID }}
+          private-key: ${{ secrets.RELEASES_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: heimdall-releases
+          permission-contents: write
+
       - name: Resolve and commit release version
         id: prepare
         shell: bash
@@ -91,16 +114,19 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version || '' }}
           # Same condition as the release job's `if`.
           PUBLISHING: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
         run: |
           set -euo pipefail
           # A publishing run for an already published tag can only fail at the
           # release job (published releases are immutable): fail now, before
           # the version commit and the builds. The release job re-checks.
+          # Every target counts (releases repository and, while the switch is
+          # on, this one): a rebuild would not match what is already published.
           refuse_published() {
             if [ "$PUBLISHING" = "true" ]; then
-              scripts/release/publish-release.sh check-unpublished "$1"
+              scripts/release/publish-targets.sh check-unpublished "$1"
             fi
           }
 
@@ -1088,6 +1114,16 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Mint the releases-repository token
+        id: releases_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASES_APP_ID }}
+          private-key: ${{ secrets.RELEASES_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: heimdall-releases
+          permission-contents: write
+
       - name: Checkout release metadata
         uses: actions/checkout@v4
         with:
@@ -1208,16 +1244,6 @@ jobs:
             --signature dist/heimdall-release-manifest.json.minisig \
             --dist dist
 
-      # Published releases are immutable (report §6.5 item 3): a re-run on a
-      # published tag stops here, before attesting or writing anything.
-      - name: Refuse to modify a published release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        shell: bash
-        run: scripts/release/publish-release.sh check-unpublished "$VERSION"
-
       # One list of release files feeds both the attestation and the upload.
       - name: List release assets
         id: assets
@@ -1250,6 +1276,23 @@ jobs:
             echo 'EOF_RELEASE_ASSETS'
           } >> "$GITHUB_OUTPUT"
 
+      # Published releases are immutable (report §6.5 item 3): a re-run on a
+      # published tag stops here, before attesting or writing anything, unless
+      # the published release already holds exactly these files. That is the
+      # "re-run failed jobs" case after one repository published and the other
+      # did not: the artifacts are the same, so the run may finish the rest.
+      - name: Refuse to modify a published release
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < "$RUNNER_TEMP/release-assets.txt"
+          scripts/release/publish-targets.sh check-unpublished "$VERSION" --allow-identical -- "${assets[@]}"
+
       # SLSA build provenance for every published file, signed by this
       # workflow's OIDC identity (gh attestation verify --signer-workflow).
       - name: Attest release assets
@@ -1277,10 +1320,11 @@ jobs:
             done
           done
 
-      - name: Create, verify and publish the GitHub Release
+      - name: Create, verify and publish the GitHub Releases
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
           VERSION: ${{ needs.prepare.outputs.version }}
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
@@ -1329,7 +1373,10 @@ jobs:
             release_flags+=(--prerelease)
           fi
           mapfile -t assets < "$RUNNER_TEMP/release-assets.txt"
-          # Draft -> upload -> verify digests -> publish. Refuses (exit 3, no
-          # write) when the tag is already published; never uses --clobber.
-          scripts/release/publish-release.sh publish --tag "$VERSION" --commit "$RELEASE_COMMIT" \
+          # Per repository (releases repo first, then this one unless
+          # PUBLISH_SOURCE_RELEASES=false): draft -> upload -> verify digests
+          # -> publish. Refuses (exit 3, no write) when the tag is already
+          # published with different files; a published release with exactly
+          # these files is left alone; never uses --clobber.
+          scripts/release/publish-targets.sh publish --tag "$VERSION" --commit "$RELEASE_COMMIT" \
             --notes-file "$notes_file" "${release_flags[@]}" -- "${assets[@]}"
