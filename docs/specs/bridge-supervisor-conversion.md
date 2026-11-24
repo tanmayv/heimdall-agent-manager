@@ -35,7 +35,7 @@ Decisions this spec adds **[P2-1]**:
 | C2 | Which runs convert? | Every `ham-bridge setup` run of a **supervisor-capable bundle** (§3.1) on a legacy instance: the old updater's S8b (with or without `--reinstall`), an `install.sh`/`install.ps1` re-run (S2/S8a), a `--bundle` run (desktop `.pkg`/app), a plain `ham-bridge setup`. Conversion is **not** a version policy: it overrides `--keep-version`, and applies after the S8c downgrade refusal. A bundle that is **not** supervisor-capable (older release) is a plain legacy S8b update, as today. |
 | C3 | New instances | S1 (nothing installed) with a supervisor-capable bundle installs the supervisor layout **directly** (§4.5, "greenfield"); it never creates a legacy `bin/` instance, so no new bridge needs a later conversion. |
 | C4 | Where does the new tree come from? | From the **signed manifest and archive**, re-fetched and verified by setup (§3.2), installed by the bundle's `ham-supervisor repair` (§4, C5). The directory the old updater extracted is **not** trusted as a source of the release tree (v0.5.77 verified only `SHA256SUMS`, and never downloaded `release.json`/`.minisig`). |
-| C5 | `bin/` | **Untouched** (not moved, not rewritten, not deleted) until Phase 4. Rollback therefore needs no binary restore; the old exe in `bin/` is also the reason the legacy updater refuses to run from a release tree (§12.2). |
+| C5 | `bin/` | **Untouched** (not moved, not deleted; every file except one is never rewritten) until Phase 4. **The one exception** is the generated `bin/ham-ctl-<svc>` wrapper (§8.3), which C6 rewrites and the supervisor keeps rewriting; rollback restores it from the C3 backup. Rollback therefore needs no binary restore; the old exe in `bin/` is also the reason the legacy updater refuses to run from a release tree (§12.2). |
 | C6 | Service identity | Linux unit name and macOS label/plist path are **unchanged**; only Windows renames its task (§10.3). A running-state crash therefore never leaves two definitions of one service except on Windows, where the old task is **disabled** (not deleted) until commit. |
 | C7 | Env | The service definition stops naming `bin/`. The **supervisor** sets `PATH`, `HEIMDALL_HAM_PTY_HOST_BIN`, `HEIMDALL_HAM_CTL_BIN` per release tree when it spawns the runtime (§8). |
 | C8 | `KillMode` | Final unit has `KillMode=control-group`, but it is written as `KillMode=process` during the transaction and flipped after the commit (§10.1), because the legacy worker and setup run inside the unit's cgroup. |
@@ -192,15 +192,15 @@ at the end of C9 (§4.4). The file is deleted last.
 | **C0** lock & classify | `Lock` | `.install.lock` as today (S7a if busy). Owner check (Q8, S5b). Gather facts incl. `legacy`, `conversion_record`. Recover an interrupted conversion first (§6.3). Delete layout **garbage** of a crashed rollback: with no `conversion.json` and no valid `instance.json`, any of `launcher/`, `releases/`, `current`, `previous`, `known-good.json`, `supervisor/` is removed (rename-aside on Windows if busy). Record `was_running`, `was_connected` (status read, no probe), runtime pid, ports. | nothing yet |
 | **C1** agent gate | (new, before `Stage`) | §9. No service is touched; the old bridge keeps running and admitting launches. | `conversion.json` (`gate`), `<state>/conversion-status.json` |
 | **C2** fetch & verify | `Stage` | §3.2. Exit 1 on any failure, **nothing** changed. | `<data>/updates/convert-<txn>/` (deleted at end) |
-| **C3** backup | (new) | Copy to `<data>/.convert-<txn>/`: the service definition (`l.service_file`; Windows `run.cmd`, `run.vbs`, `task.xml`), `config.toml`, `hub-url`, `profile`, `ports.json`, `update.json` if present, `bin/ham-ctl-<svc>` wrapper. **Never** credentials (`bridge-token*`, keystore, `identity_key`; engine §11.1). `bin/` is not copied. Write `conversion.json` (`mode`, `from_version`, `op_id`, …). | backup dir, `conversion.json` |
-| **C4** quiesce | `Binaries` (first half) | Stop the old bridge with today's action (`bridge_service_action(.Stop)`, `service_cmds.odin:145`; Windows: the verified-pid stop, never `schtasks /End`, so the task's PTY daemon and this setup survive), then stop the profile's **PTY daemon(s)** (`bridge_setup_stop_idle_pty_host`, `setup_pty_host.odin:39`; with agents still running after the gate (forced) `bridge_update_stop_pty_host`), wait until each recorded pid has exited. A daemon that cannot be stopped fails the step. Windows: stop the tray as setup does today. **The tray is not otherwise touched in Phase 2** (it keeps running `bin/ham-bridge tray`; moved in Phase 4). | service stopped |
+| **C3** backup | (new) | Copy to `<data>/.convert-<txn>/`: the service definition (`l.service_file`; Windows `run.cmd`, `run.vbs`, `task.xml`), `config.toml`, `hub-url`, `profile`, `ports.json`, `update.json` if present, `bin/ham-ctl-<svc>` wrapper. **Never** credentials (`bridge-token*`, keystore, `identity_key`; engine §11.1). `bin/` is not copied. The schema-bearing **state stores** are snapshotted in C4b, not here (they must be quiescent). Write `conversion.json` (`mode`, `from_version`, `op_id`, …). | backup dir, `conversion.json` |
+| **C4** quiesce | `Binaries` (first half) | Stop the old bridge with today's action (`bridge_service_action(.Stop)`, `service_cmds.odin:145`; Windows: the verified-pid stop, never `schtasks /End`, so the task's PTY daemon and this setup survive), then stop the profile's **PTY daemon(s)** (`bridge_setup_stop_idle_pty_host`, `setup_pty_host.odin:39`; with agents still running after the gate (forced) `bridge_update_stop_pty_host`), wait until each recorded pid has exited. A daemon that cannot be stopped fails the step. **C4a (rescuer)** is started first, see §6.4. **C4b (state snapshot)**, once the old bridge and PTY daemon have exited: copy every store of the engine's registry (`state_stores`, engine §11.1: `config.toml`, `ports.json`, the JSON stores under `<data>/bridge/` such as `provider_*.json`, `acp-runtimes/`; same list, same per-store and 256 MiB total limits as `engine.take_snapshot`, `src/supervisor/engine/snapshot.odin:107`, which `repair` skips when there is no `from`, `repair.odin:179`) into `<data>/.convert-<txn>/state/` with a `snapshot.json` (path, size, SHA-256), written last, fsynced. Never credentials. A store over its limit or an unreadable store fails the step (nothing changed yet). Windows: stop the tray as setup does today. **The tray is not otherwise touched in Phase 2** (it keeps running `bin/ham-bridge tray`; moved in Phase 4). | service stopped |
 | **C5** instance record, tree, launcher | `Binaries` (second half) | (a) write `instance.json` (engine §3; fresh `instance_id`, or the existing one on resume; `data_root`/`state_root` are the **textual** `layout_for` strings, no realpath, so the launcher's textual equality check (engine §7.1) holds on Fedora Atomic `/home` → `/var/home`); (b) run `<bundle>/bin/ham-supervisor repair --instance-root <data> --state-root <state> --bundle <archive> --manifest <m> --signature <sig> --op-id op_convert_<txn>` (`src/supervisor/service/repair.odin:52`): verifies offline again, unpacks `releases/<ver>-<d12>`, `previous := current if valid else new`, `current := new`, journals op `repair actor installer`; exit 0 required (6 busy / 78 refused / 1 failed → fail the step); (c) compare the running setup exe's SHA-256 with `releases/<T>/bin/ham-bridge` (`bundle_mismatch`); (d) copy `releases/<T>/bin/ham-launcher[.exe]` to `launcher/ham-launcher[.exe]` and write `launcher/launcher.json {"abi":1,"version","sha256"}` (D8: only setup writes the launcher; the engine never replaces it); (e) seed `<state>/update.json` (§11.3). | `instance.json`, `releases/`, `current`/`previous` (or `.json`), `launcher/`, `supervisor/`, `update.json` |
 | **C6** service cut-over | `Config` (kept), `Ports` (kept), `Service` | Re-render and register the launcher entry (§10) using `bridge_setup_register` (`setup_cmd.odin:771`) with the new render input: Linux `systemctl --user daemon-reload` + `enable` (unit name unchanged, `KillMode=process` for now, §10.1); macOS plist (label unchanged) re-loaded by `bridge_launchd_reload`; Windows: write the new `run-launcher.cmd`/`.vbs`/`task-launcher.xml`, `schtasks /Create /XML … /F` for the **new** task name, then `schtasks /Change /TN <old> /DISABLE` (§10.3). Ports/config unchanged (the same ports are reused, `ports.json`). Also write `bin/ham-ctl-<svc>` anew pointing into the tree (§8.3). | service def (backed up in C3), new Windows task |
 | **C6b** enroll | `Enroll` | As the plan says (S3/S4 repairs); a healthy enrolled legacy instance skips it. Uses `<tree>/bin/ham-bridge enroll`. A failed enrollment on the update path rolls back (exit 1), as before T2. | credential kept (setup_undo `Enroll`) |
 | **C6c** extensions | `Extensions` | Today's extension sync, with the source `releases/<T>/share/heimdall/extensions/`. Failures are reported, never fatal (as today). | extension copies (`bridge_extensions_restore`) |
 | **C7** start | `Start` | Start the service (Linux `systemctl --user start`, macOS `launchctl bootstrap`/`kickstart`, Windows `schtasks /Run` the **new** task). Record `restart_at`, `stale_pid`. The launcher starts the supervisor of `current`; the supervisor finds `activating/handover` for `op_convert_<txn>` and runs probation (engine §6, J15/J16). | processes |
 | **C8** verify = committed | `Verify` | Wait up to **300 s** (`T_commit` 270 s + 30 s) from C7 for: journal op `op_convert_<txn>` terminal `committed` **and** `known-good.json.committed_op == op_id` (engine §3), printing each journal state as `convert_commit` events (`probation 1/…`). Fail fast on a journal `failed`/`rolling_back`, on `launcher-status.json` = `refused`, or on the service not running. Then, if `was_connected`, wait up to 45 s (`BRIDGE_SETUP_VERIFY_TIMEOUT`, `setup_cmd.odin:36`) for `bridge_service_status` = running + connected (+ the re-enroll marker check as today). Not connected before → the hub requirement is waived (journaled by the engine as `probation_offline`). | — |
-| **C9** finalize | `finish` (new tail) | Idempotent, recorded in `conversion.json` (`step: C9`): Linux rewrite the unit with `KillMode=control-group` + `daemon-reload` (no restart); Windows `schtasks /Delete` the old (disabled) task; tray: nothing (§C4); delete `<data>/updates/convert-<txn>/` and `.convert-<txn>/`; `conversion.json` → removed. Print `Converted <service> …`. | — |
+| **C9** finalize | `finish` (new tail) | `finalize_conversion` (§6.5): idempotent, recorded in `conversion.json` (`step: C9`), runnable **without setup**: Linux rewrite the unit with `KillMode=control-group` + `daemon-reload` (no restart); Windows `schtasks /Delete` the old (disabled) task; tray: nothing (§C4); delete `<data>/updates/convert-<txn>/` and `.convert-<txn>/`; `conversion.json` → removed. Print `Converted <service> …`. | — |
 
 **C6 before C5?** No: the service must not point at a launcher whose tree, `instance.json`
 or `launcher/` does not exist; C5 is complete and durable first (every file and the tree are
@@ -251,7 +251,7 @@ identical. L = Linux (incl. Fedora Atomic), M = macOS, W = Windows.
 | C1 gate | `conversion.json` not yet written, or `gate` only. Old bridge running. | Next run restarts the gate from `force_at` kept in `conversion-status.json` (the 2 h never reset, §9). | — |
 | C2 | Download dir only. Old bridge running. | Delete `updates/convert-<txn>`. | — |
 | C3 | Backup dir (partial) + `conversion.json` `begin C3`. Old bridge running. | Delete backup + record. | — |
-| C4 | Old bridge **stopped**, maybe PTY daemon stopped. `bin/`, service def untouched. | Roll back: start the old service (R5). | L: unit is `enabled`, so a reboot/login restarts the legacy bridge by itself even without setup. M: LaunchAgent `RunAtLoad`. W: task has a logon trigger. In all three, a `SIGKILL` of setup here leaves the bridge **down until next login/boot or the next setup run** (residual risk; mitigated by handling `SIGTERM`/`SIGINT`/`SIGHUP`/console-close with the §6.2 rollback). |
+| C4 | Old bridge **stopped**, maybe PTY daemon stopped. `bin/`, service def untouched. | Roll back: start the old service (R5). | L: unit is `enabled`, so a reboot/login restarts the legacy bridge by itself even without setup. M: LaunchAgent `RunAtLoad`. W: task has a logon trigger. A `SIGKILL`/OOM kill of setup is caught by the **rescuer** (§6.4), which recovers within ~5 s (roll forward if C6 is done, else R1–R6). Setup also handles `SIGTERM`/`SIGINT`/`SIGHUP`/console-close with the §6.2 rollback. Remaining window: setup **and** the rescuer die together (a cgroup/job kill, OOM of both); then the bridge is down until login/boot or the next setup run, and the user is told in §15 item 6. |
 | C5(a) `instance.json` | Record present, no tree. Service def is legacy. | R4 removes it. A legacy bridge running with an `instance.json` but no tree is S10a (recovered at once). | — |
 | C5(b) `repair` | Tree missing/partial, pointers unwritten or written. Journal has a `repair` op. | R4: stop nothing (service is stopped or legacy); delete `releases/`, pointers, `supervisor/`, `instance.json`. **Never** restart `repair`'s op: the layout is deleted wholesale. | W: if the tree is open (antivirus), retry deletion 60 s (engine §19 sharing retries), then rename aside. L/M: plain `remove_all`. |
 | C5(d) launcher | `launcher/` partial. | R4 as above. | W: the file may be scanned/locked: copy with sharing-violation retries 60 s. M: copied signed binary keeps its signature; verify with `codesign --verify --strict` (cheap, fail the step). |
@@ -259,9 +259,9 @@ identical. L = Linux (incl. Fedora Atomic), M = macOS, W = Windows.
 | C6 render | Service def is new (or partial) while the old bridge is stopped. | R2 restores the C3 backup; L `daemon-reload`; M `bootout`+`bootstrap`; W: delete the new task, `schtasks /Change /TN <old> /ENABLE`. **Roll forward instead** if C6 is `done` (§6.3). | W: old task disabled but present means rollback needs no XML restore; a crash after `/Create new` but before `/DISABLE old` leaves **two enabled logon tasks** → the next setup run disables/deletes (§10.3). L: unit file is written by rename; a torn file cannot occur. |
 | C6b enroll | Credential possibly new. | Kept (existing `Enroll` undo); legacy bridge uses it (same hub). | — |
 | C6c ext | Extension copies. | `bridge_extensions_restore`. | — |
-| C7 start | Service started or starting; supervisor may run probation. | **Roll forward** if C6 done and the setup is gone: the supervisor commits on its own, `conversion.json` stays until the next setup run finalizes (C9). If the setup is alive and C8 fails → rollback. | L: with `KillMode=process` a launcher `SIGTERM` is forwarded to the supervisor (engine §7.3). W: `schtasks /End` is never used while rolling back; the stop-request file + event is used first (engine §7.3). |
+| C7 start | Service started or starting; supervisor may run probation. | **Roll forward** if C6 done and the setup is gone: the supervisor commits on its own, `conversion.json` stays until `finalize_conversion` (§6.5) runs, which does not need setup. If the setup is alive and C8 fails → rollback. | L: with `KillMode=process` a launcher `SIGTERM` is forwarded to the supervisor (engine §7.3). W: `schtasks /End` is never used while rolling back; the stop-request file + event is used first (engine §7.3). |
 | C8 | As C7. | Rollback (R1–R6) on timeout, journal `failed`, launcher `refused`, or no connection. Supervisor crash-loop: the launcher restarts `C` with backoff; setup stops it at R1. | W: a supervisor stuck in the job is ended by the stop request, then by terminating the launcher job (`KILL_ON_JOB_CLOSE`). |
-| C9 | Committed. `conversion.json` `step: C9`. | Always roll **forward** (every sub-step idempotent). | W: crash between "new task enabled" and "old deleted" → next run deletes the old. L: crash before the `control-group` flip → next run flips (a plain S6/service-render difference). |
+| C9 | Committed. `conversion.json` `step: C9`. | Always roll **forward** (every sub-step idempotent). | W: crash between "new task enabled" and "old deleted" → `finalize_conversion` (§6.5) deletes the old at the next bridge start. L: crash before the `control-group` flip → `finalize_conversion` flips it at the next bridge start. |
 
 Failure injection: P2-7 must inject a failure (a returning error and a hard kill) at each row
 and assert the §6 outcome on all three OSes.
@@ -270,7 +270,7 @@ and assert the §6 outcome on all three OSes.
 
 ### 6.1 Principles (REQ-CONV-2)
 
-- `bin/` was never modified, so restoring it is a **verification**, not a copy: after R5
+- `bin/` was never modified (apart from the generated wrapper, restored from the backup), so restoring it is a **verification**, not a copy: after R5
   `bin/ham-bridge --version` must print `from_version` (otherwise exit 7).
 - Rollback is a **full undo of everything the transaction created**: legacy instances have no
   `instance.json`, `launcher/`, `releases/`, pointers, `known-good.json`, `supervisor/`,
@@ -285,7 +285,7 @@ and assert the §6 outcome on all three OSes.
 |---|---|
 | R1 stop the new service | Write the launcher stop-request file `<data>/supervisor/launcher-stop.request` (engine §7.3) and wait ≤ 25 s; W: set `Local\heimdall-launcher-stop-<instance_id>` first when in the same session. Then the OS stop (L `systemctl --user stop`; M `launchctl bootout`; W `schtasks /End` **only now, as the fallback**). Then `procs.stop` over `procs.json` entries (the supervisor's own recorded `(pid,start_time)`), and wait for them (engine §2.1 layer 3). Failure → exit 7 `rollback incomplete`, nothing deleted. |
 | R2 restore the service | Linux: copy back the unit, `daemon-reload`. macOS: copy back the plist; `bootout`/`bootstrap`. Windows: delete the new task; enable the old task; delete the new `run-launcher.*`/`task-launcher.xml`. |
-| R3 restore settings | `config.toml`, `hub-url`, `profile`, `ports.json`, `bin/ham-ctl-<svc>` from the backup; delete a `update.json` that did not exist. Credentials were never copied and never need restoring. |
+| R3 restore settings and state | `config.toml`, `hub-url`, `profile`, `ports.json`, `bin/ham-ctl-<svc>` from the backup; delete a `update.json` that did not exist; **every store of the C4b snapshot** is restored (per file: copy to `<path>.restore-<txn>`, fsync, atomic replace, as engine §11.3), whether or not the new runtime ran, because probation may have migrated or rewritten them. Credentials were never copied and are **not** restored (they may have rotated; see §6.6). |
 | R4 remove the created layout | Order: `instance.json` first (any stray supervisor then refuses with `ownership_mismatch`), then `current`/`previous`, `known-good.json`, `launcher/`, `releases/`, `supervisor/` **after** copying `supervisor/journal/` and `launcher-status.json` to `<data>/conversion-failed-<txn>/` (one kept, the older deleted; no credentials in them). W: sharing retries 60 s, then rename aside. |
 | R5 restart the old bridge | `bridge_service_action(.Start)` (existing `bridge_setup_finish` behaviour, `setup_cmd.odin:925`); verify running and, if `was_connected`, connected (45 s); verify `bin/ham-bridge --version`. |
 | R6 close | Remove the backup dir and `conversion.json`. Exit **1**, final line `ham-bridge setup FAILED at step "<step>"; the previous install was restored.` (exit 7 `rollback incomplete: <reason>` if R1, R5 or the `--version` check failed; the backup dir and `conversion.json` are then **kept** so a later run can finish). |
@@ -302,6 +302,60 @@ Under `.install.lock`, before classification:
    when it carries a capable bundle.
 4. `conversion.json` unreadable → treat as case 3 using filesystem facts (backup dir present,
    service def comparison); if the legacy service definition cannot be re-derived, exit 7.
+
+### 6.4 The rescuer (C4a): setup killed after the old bridge was stopped
+
+Neither the service manager nor the old worker restarts a bridge that was stopped on purpose
+(`Restart=on-failure`, `KeepAlive.SuccessfulExit=false`, the task restart policy do not apply;
+the worker only records the failure, `update_cmd.odin:117-123`). So before C4 stops anything,
+setup starts a **rescuer**:
+
+- A copy of the running `ham-bridge` at `<data>/.convert-<txn>/rescue/ham-bridge[.exe]`, run as
+  `ham-bridge convert-rescue --txn <txn> --setup-pid <pid> --setup-start <start_time>`,
+  detached in a **new session** (`bridge_os_spawn_new_session`) like the old worker, so it is
+  not a child of setup. Linux: the old unit is `KillMode=process`; the rescuer is in its cgroup
+  but survives its stop (as the worker and PTY daemon do today). macOS: `AbandonProcessGroup`
+  true on the old plist. Windows: spawned with `CREATE_BREAKAWAY_FROM_JOB` where allowed (a
+  **HYPOTHESIS** for P2-7, same as §10.3).
+- Every 2 s it checks the identity `(pid, start_time)` of setup. While setup lives it does
+  nothing. When setup is gone and `conversion.json` still exists, it runs the §6.3 recovery
+  under `.install.lock` (free, it is an OS lock): roll forward if C6 is done, else R1–R6.
+- It exits when `conversion.json` is gone, or after the recovery. Setup terminates it at the end
+  of C9. A rescuer found by C0 of a later run (stale, `conversion.json` gone) exits on its own.
+- This shrinks the SIGKILL window from "until login/boot" to about 5 s. The remaining risk,
+  setup and rescuer killed together (a cgroup/job kill, OOM taking both, power loss — which on
+  reboot starts whichever definition is on disk), is listed in §15.
+
+### 6.5 `finalize_conversion`: C9 without setup
+
+After a commit nothing runs setup again (legacy timer off, supervisor updates never call
+setup). C9's effects therefore live in an idempotent function `finalize_conversion(layout)`
+that is called:
+
+1. by setup at the end of a successful C8 (the normal path);
+2. by the **new `ham-bridge` runtime at start** when `supervisor_managed` and
+   `conversion.json` exists with `step` ≥ C8 or `done` containing `C8` (setup died after the
+   commit, or the rescuer rolled forward);
+3. by `ham-bridge status` for the same condition (so the user's look at status completes it);
+4. by any later setup run (S10a).
+
+It takes `.install.lock` non-blocking and does nothing if a live setup holds it. Effects, each
+idempotent: Linux — rewrite the unit with `KillMode=control-group` and `daemon-reload` (no
+restart); Windows — delete the old (disabled) task; both — delete `updates/convert-<txn>/` and
+`.convert-<txn>/`, stop the rescuer, remove `conversion.json`. Owned by **P2-5**
+(setup calls it from P2-4). P2-7 case: kill setup after C8, start the bridge, assert all C9
+effects without running setup.
+
+### 6.6 State and credential compatibility (the two-release rule)
+
+Rollback after the new runtime ran is only correct if the legacy bridge can read what is on disk.
+Stores are restored from the C4b snapshot (R3). **Credentials are not** (engine §11.1: they
+rotate during probation; restoring an old refresh token breaks enrollment), so the first
+supervisor release must **not change any credential format**: what it reads and writes in
+`bridge-token*`, the keystore items, `identity_key`, `epoch_floor` must stay readable by
+v0.5.77+ (the two-release rule: a credential format change ships at least one release after the
+conversion release). P2-4 adds a unit check that the conversion release's credential files
+round-trip through the v0.5.77 reader; P2-7 has the state round-trip test above.
 
 ## 7. Per-OS differences (one table)
 
@@ -369,16 +423,20 @@ Windows). The wrapper stays in `bin/` (still on users' PATH) until Phase 4. Owne
 ### 9.1 When it applies
 
 The gate applies to **timer-started** conversions, exactly as engine §12 applies the 2 h wait
-only to `actor: timer`. Setup tells the two apart by the user-wide auto-update lock
-(`~/.heimdall-auto-update.lock`, `bridge_auto_update_lock_path`, `auto_update.odin:533`): the
-old worker holds it for the whole update. Setup tries to take it with
-`bridge_instance_lock` (non-blocking) and **releases it at once if it got it**:
+only to `actor: timer`. Setup tells the two apart by a **direct signal**: its **parent
+process** is the legacy worker, i.e. the parent's command line (`bridge_os_process_lstart_and_command`,
+`service_cmds.odin`, the helper `bridge_service_runtime_pid` already uses) is a `ham-bridge`
+from this profile's `bin/` with `update … --auto-worker --service <this service>`
+(`auto_update.odin:349,436`):
 
-| Lock | Meaning | Gate |
+| Parent | Meaning | Gate |
 |---|---|---|
-| held by another process | the legacy timer is converting this user's bridges | wait ≤ 2 h (§9.2) |
-| free | user-started (installer re-run, desktop app, `ham-bridge update`, a hub update, manual `ham-bridge setup`) | **interrupt at once**: stop agents, convert (engine §12 "user" row) |
+| the legacy `--auto-worker` of this service | timer-started | wait ≤ 2 h (§9.2) |
+| anything else (installer script, desktop app, `ham-bridge update`/hub update without `--auto-worker`, a shell) | user-started | **interrupt at once**: stop agents, convert (engine §12 "user" row) |
+| unknown (parent gone, platform cannot read it) | treated as user-started | interrupt at once |
 
+The auto-update lock is **not** used as the discriminator: it is user-wide, so a user-started
+setup of profile B would otherwise wait while profile A's worker holds it.
 `--convert-gate wait|now` forces either mode (tests and scripted callers). The old bridge's own
 logic runs **before** it spawns the worker: it waits for a quiet window up to
 `auto_update_max_defer_hours` (24 h default), then notifies the hub, waits two minutes, stops
@@ -424,7 +482,7 @@ and as the safety net the user asked for.
 ### 9.3 Cost of waiting
 
 While waiting, setup holds `.install.lock` (another setup/update of this profile gets S7a/exit
-6) and the old worker holds the user-wide lock, so **other profiles' timer updates fail with
+6) and the old worker holds the user-wide lock (§11.1), so **other profiles' timer updates fail with
 "another automatic update holds the lock"** and retry on backoff. Accepted: at most 2 h, then
 they convert one after the other.
 
@@ -519,10 +577,10 @@ An **OS lock** held by the old worker process (`bridge_instance_lock`, `lockf`/`
 `instance_lock_unix.odin:19`), shared by all of the user's profiles. Setup:
 
 - **never opens, deletes or breaks it** (it belongs to other profiles' updaters too);
-- uses it only as the gate discriminator (§9.1) and releases it at once;
+- does not even probe it (the gate discriminator is the parent process, §9.1);
 - the kernel frees it when the worker exits. If the worker dies mid-conversion (it is killed
-  with the old cgroup/job, or setup's rollback R1 kills its cgroup under `control-group`), no
-  stale lock remains. There is nothing to clean up and no "stale lock" mode.
+  with the old job on Windows, or by a power loss; on Linux the unit is `KillMode=process`
+  during the transaction, §10.1, so R1 does not kill it), no stale lock remains. There is nothing to clean up and no "stale lock" mode.
 
 ### 11.2 `<state>/auto-update.json`
 
@@ -617,8 +675,14 @@ On Linux (incl. Fedora Atomic), macOS, Windows:
    repo): old worker → new setup → converted, `committed`, connected, `status`/`stop`/`start`
    work, no legacy timer, hub-started update → intent.
 2. **Failure injection** at every row of §5 (a returned error **and** a hard kill of setup),
-   asserting §6: the old bridge restarted, `bin/` byte-identical, service def identical
-   (hash), no `instance.json`/`releases/`, `ham-bridge --version` = old.
+   asserting §6: the old bridge restarted, `bin/` identical **except** the generated
+   `ham-ctl-<svc>` wrapper (restored from the backup, compare to the backup), service def
+   identical (hash), state stores identical to the C4b snapshot, no `instance.json`/`releases/`,
+   `ham-bridge --version` = old. Includes **`SIGKILL` of setup at C4** (expected: the rescuer
+   restarts the legacy bridge within ~5 s, or rolls forward if C6 was done), and **kill setup
+   after C8**: start the bridge and assert the C9 effects (`finalize_conversion`, §6.5).
+   Includes **state round trip**: convert, let probation write/migrate state, force rollback,
+   assert the legacy bridge starts and connects on the restored stores.
 3. Failures of the supervisor itself: READY timeout, crash in probation, never connects with
    `was_connected`, `from = none` rollback (§4.2), launcher `refused`.
 4. Agents: running agents during a timer conversion wait (fake clock), countdown fields,
@@ -694,5 +758,6 @@ On Linux (incl. Fedora Atomic), macOS, Windows:
 4. **Disk**: the first conversion needs the archive (≈ bundle size) in `updates/`, the tree
    under `releases/`, and the legacy `bin/` stays: roughly 3× the bundle. C2 checks free space
    (archive + 512 MiB extraction cap) and refuses with `disk_full` before stopping anything.
+6. **Setup and rescuer killed together** (§6.4): the bridge stays down until login/boot or a manual setup run; accepted by design (no further mitigation is possible without a resident watchdog, which Phase 2 does not add). The reviewer/user should confirm.
 5. **Hub-offline conversions**: a legacy bridge that was not connected converts without a
    connection check (§4.2, C8); the hub reconnect is then the supervisor's normal behaviour.
