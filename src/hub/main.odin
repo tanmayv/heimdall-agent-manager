@@ -586,6 +586,12 @@ apply_action_filter_env :: proc(config:^app.Hub_Config) {
   config.automation_max_per_owner=n
  }
 
+ if raw:=os.get_env_alloc("HEIMDALL_ACTION_SNAPSHOT_LIMITS_JSON",context.temp_allocator);raw!="" {
+  if !app.apply_action_snapshot_limits_json(config,raw) {
+   fmt.eprintln("HEIMDALL_ACTION_SNAPSHOT_LIMITS_JSON contains invalid snapshot limits")
+   os.exit(2)
+  }
+ }
  if raw:=os.get_env_alloc("HEIMDALL_WEBHOOK_LIMITS_JSON",context.temp_allocator);raw!="" {
   if !app.apply_webhook_limits_json(config,raw) {
    fmt.eprintln("HEIMDALL_WEBHOOK_LIMITS_JSON contains invalid webhook limits")

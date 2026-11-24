@@ -29,6 +29,7 @@ new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.A
   expired_prompt_deliveries=actions_expired_prompt_deliveries,
   runs_cap_page=actions_runs_cap_page,
   triggers_effective_owner = actions_triggers_effective_owner,
+  projection_rules_owner=actions_projection_rules_owner,
   run_enqueue = actions_run_enqueue,
 		triggers_effective = actions_triggers_effective,
 		run_insert = actions_run_insert,
@@ -352,6 +353,27 @@ actions_triggers_effective_owner :: proc(ctx:rawptr,owner:string)->([]domain.Act
  guard:=tx_repository_enter()
  defer tx_repository_leave(guard)
  return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_EFFECTIVE_OWNER,{owner})
+}
+
+// Fetch the template in the same cold-cache query as its effective triggers.
+// Warm matching still performs no action/trigger SELECTs.
+actions_projection_rules_owner :: proc(ctx:rawptr,owner:string)->([]iface.Action_Projection_Row,domain.Domain_Error) {
+ guard:=tx_repository_enter()
+ defer tx_repository_leave(guard)
+ sql,_:=strings.replace_all(ACTIONS_SQL_TRIGGERS_EFFECTIVE_OWNER," FROM action_triggers"," ,a.prompt_text FROM action_triggers",context.temp_allocator)
+ stmt,err:=actions_prepare(ctx,sql,{owner})
+ if err.code!=.None do return nil,err
+ defer sqlite3_finalize(stmt)
+ rows:=make([dynamic]iface.Action_Projection_Row)
+ for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do break
+  if rc!=SQLITE_ROW {iface.action_projection_rows_destroy(rows[:]);return nil,domain.domain_error(.Internal_Error,"could not read action projection rules")}
+  append(&rows,iface.Action_Projection_Row{trigger=actions_trigger_read(stmt),prompt_text=string(column_text(stmt,14))})
+ }
+ result:=make([]iface.Action_Projection_Row,len(rows))
+ copy(result,rows[:]);delete(rows)
+ return result,{}
 }
 
 ACTIONS_SQL_RUNS_DUE :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND (state='queued' OR not_before<=?1) ORDER BY created_at,run_id LIMIT ?2;"

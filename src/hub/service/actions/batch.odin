@@ -83,6 +83,7 @@ batch_render :: proc(repo:^iface.Action_Repository,members:[]Prepared_Run)->(str
  strings.write_string(&body,fmt.tprintf("%d actions fired for you.\n",len(members)))
  runs:=make(json.Array,0,len(members),context.temp_allocator)
  notice_count:=0
+ untrusted:=false
  metadata:json.Object
  for item,i in members {
   joined,err:=repo.run_joined_count(repo.ctx,item.run.run_id)
@@ -96,13 +97,14 @@ batch_render :: proc(repo:^iface.Action_Repository,members:[]Prepared_Run)->(str
   fired,_:=object["triggered_at"].(string)
   events:=""
   if joined>0 do events=fmt.tprintf(", %d events",joined+1)
-  strings.write_string(&body,fmt.tprintf("\n### %d. %s  (%s, %s%s)\n%s\n",i+1,item.action.name,item.run.event_type,fired,events,render(item.action.prompt_text,item.action,item.run,joined,context.temp_allocator)))
+  strings.write_string(&body,fmt.tprintf("\n### %d. %s  (%s, %s%s)\n%s\n",i+1,item.action.name,item.run.event_type,fired,events,render(item.action.prompt_text,item.action,item.run,joined,context.temp_allocator,&untrusted)))
   entry:=make(json.Object,context.temp_allocator)
   for key in ([]string{"action_id","action_name","run_id","trigger_id","event_type","event_id","joined_count"}) do entry[key]=object[key]
   append(&runs,entry)
   notice_count+=joined+1
  }
  metadata["runs"]=runs
+ if untrusted do strings.write_string(&body,"\n"+WEBHOOK_UNTRUSTED_LINE)
  bytes,e:=json.marshal(metadata,allocator=context.temp_allocator)
  if e!=nil do return "","",0,domain.domain_error(.Internal_Error,"cannot encode batch metadata")
  return strings.to_string(body),string(bytes),notice_count,{}

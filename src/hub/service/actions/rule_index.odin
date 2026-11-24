@@ -13,6 +13,7 @@ import platform "odin_test:hub/platform"
 Compiled_Rule :: struct {
  trigger: domain.Action_Trigger,
  tree: Compiled_Filter,
+ projection: Snapshot_Projection,
  subject_tokens: []string,
  updated_at_ms: i64,
 }
@@ -43,12 +44,13 @@ rule_index_owner :: proc(r:^Runtime,repo:^iface.Action_Repository,owner:string)-
  }
  if cached,found:=index.owners[owner];found do return cached,{}
  context.allocator=virtual.arena_allocator(&index.arena)
- rows,err:=repo.triggers_effective_owner(repo.ctx,owner)
+ rows,err:=repo.projection_rules_owner(repo.ctx,owner)
  if err.code!=.None do return nil,err
  cached:=new(Owner_Rules)
  cached.rules=make([]Compiled_Rule,len(rows))
  cached.events=make(map[string]^Rule_Bucket)
- for trigger,i in rows {
+ for row,i in rows {
+  trigger:=row.trigger
   if string(trigger.owner_user_id)!=owner || !trigger.enabled do continue
   updated,valid:=platform.rfc3339_to_unix_ms(trigger.updated_at)
   if !valid do continue
@@ -59,7 +61,8 @@ rule_index_owner :: proc(r:^Runtime,repo:^iface.Action_Repository,owner:string)-
   tree,e:=filter_compile(value,nil,FILTER_READ_LIMITS,context.allocator)
   json.destroy_value(value,allocator=context.temp_allocator)
   if e.reason!="" do continue
-  cached.rules[i]={trigger=trigger,tree=tree,updated_at_ms=updated}
+  projection:=snapshot_projection(tree,row.prompt_text,context.allocator,r.svc.snapshot_limits)
+  cached.rules[i]={trigger=trigger,tree=tree,projection=projection,updated_at_ms=updated}
   bucket,exists:=cached.events[trigger.event_type]
   if !exists {
    bucket=new(Rule_Bucket)

@@ -20,6 +20,7 @@ Service :: struct {
  rule_epoch: i64, // Changed only after a successful rule/action commit.
  filter_limits: Filter_Limits,
  webhook_limits:webhooks.Limits,
+ snapshot_limits: Snapshot_Limits,
  max_per_owner: int, // Zero selects DEFAULT_MAX_PER_OWNER.
 	factory: ^iface.Unit_Of_Work_Factory,
 	repos: ^iface.Repositories,
@@ -229,6 +230,10 @@ validate_entity :: proc(repos:^iface.Repositories,owner:string,config:json.Objec
   row:domain.Memory
   row,found,err=iface.content_get_memory(&repos.content,id)
   actual=string(row.owner_user_id)
+ case "webhook":
+  row:domain.Event_Webhook
+  row,found,err=repos.webhooks.get(repos.webhooks.ctx,id)
+  actual=row.owner_user_id
  case: return detail_error("unknown_entity")
  }
  if err.code!=.None && err.code!=.Not_Found do return err
@@ -443,6 +448,7 @@ Trigger_Types_View :: struct {
 		max_triggers, max_rules, max_automations_per_owner: int,
   filter: Filter_Limits,
   webhook:webhooks.Limits,
+  snapshot:Snapshot_Limits,
 		min_interval_s: struct {min,max,default:int},
 	},
 	trigger_kinds: []Trigger_Type_View,
@@ -493,7 +499,7 @@ trigger_types :: proc(s:^Service) -> Trigger_Types_View {
 		}
 	}
 	return {target_kinds=s.target_kinds,schedules_supported=schedule_supported(s),
-		limits={max_automations_per_owner=(s.max_per_owner if s.max_per_owner>0 else DEFAULT_MAX_PER_OWNER),filter=filter_limits(s.filter_limits),webhook=webhooks.resolve_limits(s.webhook_limits),max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
+		limits={max_automations_per_owner=(s.max_per_owner if s.max_per_owner>0 else DEFAULT_MAX_PER_OWNER),filter=filter_limits(s.filter_limits),webhook=webhooks.resolve_limits(s.webhook_limits),snapshot=snapshot_limits(s.snapshot_limits),max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
 			min_interval_s={min=domain.ACTION_MIN_INTERVAL_MIN_S,max=domain.ACTION_MIN_INTERVAL_MAX_S,default=domain.ACTION_MIN_INTERVAL_DEFAULT_S}},
 		trigger_kinds=kinds}
 }
