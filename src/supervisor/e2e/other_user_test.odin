@@ -106,6 +106,7 @@ other_user_install :: proc(b: ^Other, tag: string) -> bool {
 	_ = os.write_entire_file(pj(local, r.asset), r.bundle)
 	_ = os.write_entire_file(pj(local, "m.json"), transmute([]byte)r.manifest)
 	_ = os.write_entire_file(pj(local, "m.json.minisig"), transmute([]byte)r.signature)
+	other_prepare(b) // B reads the bundle files A just wrote
 	res := other_run(b, {pj(b.bin, exe("ham-supervisor")), "repair", "--instance-root", b.inst.data, "--state-root", b.inst.state, "--bundle", pj(local, r.asset), "--manifest", pj(local, "m.json"), "--signature", pj(local, "m.json.minisig"), "--op-id", "op_install_b"})
 	log.infof("B: repair %s -> exit %d: %s", tag, res.code, strings.trim_space(res.output))
 	if !testing.expectf(s.t, res.ok && res.code == 0, "B's repair exit %d", res.code) do return false

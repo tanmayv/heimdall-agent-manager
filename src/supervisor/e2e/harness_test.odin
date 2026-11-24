@@ -16,6 +16,7 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:testing"
+import "core:thread"
 import "core:time"
 import lc "../../launcher/core"
 import "../engine"
@@ -182,23 +183,41 @@ Run_Result :: struct {
 }
 
 run_cmd :: proc(s: ^Suite, command: []string, timeout := 90 * time.Second, env: []string = nil) -> Run_Result {
-	out_path := pj(s.base, fmt.tprintf("cmd-%d.log", time.tick_now()._nsec))
-	f, ferr := os.create(out_path)
-	if ferr != nil do return {}
-	p, perr := os.process_start({command = command, stdout = f, stderr = f, env = env})
-	if perr != nil {
-		os.close(f)
-		log.errorf("start %v: %v", command, perr)
+	// A pipe and a reader thread: on Windows a file passed as stdout came out empty.
+	r, w, perr := os.pipe()
+	if perr != nil do return {}
+	p, serr := os.process_start({command = command, stdout = w, stderr = w, env = env})
+	os.close(w)
+	if serr != nil {
+		os.close(r)
+		log.errorf("start %v: %v", command, serr)
 		return {}
 	}
+	Reader :: struct {
+		f:   ^os.File,
+		out: [dynamic]byte,
+	}
+	rd := Reader{f = r, out = make([dynamic]byte)}
+	th := thread.create_and_start_with_data(&rd, proc(data: rawptr) {
+		rd := (^Reader)(data)
+		buf: [4096]byte
+		for {
+			n, err := os.read(rd.f, buf[:])
+			if n > 0 do append(&rd.out, ..buf[:n])
+			if err != nil || n <= 0 do break
+		}
+	})
 	st, werr := os.process_wait(p, timeout)
-	os.close(f)
 	if werr != nil || !st.exited {
 		_ = os.process_kill(p)
 		_, _ = os.process_wait(p, 5 * time.Second)
 	}
-	data, _ := os.read_entire_file(out_path, context.temp_allocator)
-	return {ok = werr == nil && st.exited, code = st.exit_code, output = string(data)}
+	thread.join(th)
+	thread.destroy(th)
+	os.close(r)
+	output := strings.clone(string(rd.out[:]), context.temp_allocator)
+	delete(rd.out)
+	return {ok = werr == nil && st.exited, code = st.exit_code, output = output}
 }
 
 // repair runs `ham-supervisor repair` with local copies of a published release.

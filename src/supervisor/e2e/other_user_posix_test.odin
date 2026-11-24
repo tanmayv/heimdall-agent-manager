@@ -8,6 +8,8 @@ import "core:sys/posix"
 import "core:testing"
 import "core:time"
 
+SUDO :: "/usr/bin/sudo"
+
 Other_Proc :: struct {
 	p: os.Process,
 	f: ^os.File,
@@ -15,14 +17,17 @@ Other_Proc :: struct {
 
 // other_prepare: B must traverse the shared root and run the copied binaries.
 other_prepare :: proc(b: ^Other) -> bool {
-	res := run_cmd(b.s, {"chmod", "-R", "a+rX", b.root})
+	bins := []string{"/bin/chmod", "0755", pj(b.bin, "ham-launcher"), pj(b.bin, "ham-supervisor")}
+	res := run_cmd(b.s, bins)
+	if !testing.expectf(b.s.t, res.ok && res.code == 0, "chmod binaries: %s", res.output) do return false
+	res = run_cmd(b.s, {"/bin/chmod", "-R", "a+rX", b.root})
 	if !testing.expectf(b.s.t, res.ok && res.code == 0, "chmod root: %s", res.output) do return false
-	res = run_cmd(b.s, {"chmod", "0777", b.root})
+	res = run_cmd(b.s, {"/bin/chmod", "0777", b.root})
 	return testing.expectf(b.s.t, res.ok && res.code == 0, "chmod root: %s", res.output)
 }
 
 other_owner_json :: proc(b: ^Other) -> string {
-	res := run_cmd(b.s, {"id", "-u", b.user})
+	res := run_cmd(b.s, {"/usr/bin/id", "-u", b.user})
 	return fmt.tprintf(`{{"uid":%s}}`, strings.trim_space(res.output))
 }
 
@@ -42,7 +47,7 @@ other_write :: proc(b: ^Other, dir, name, body: string) {
 	_ = os.make_directory_all(xfer)
 	src := pj(xfer, fmt.tprintf("%d-%s", time.tick_now()._nsec, name))
 	_ = os.write_entire_file(src, transmute([]byte)body)
-	_ = run_cmd(b.s, {"chmod", "-R", "a+rX", xfer})
+	_ = run_cmd(b.s, {"/bin/chmod", "-R", "a+rX", xfer})
 	res := other_run(b, {"/bin/sh", "-c", `mkdir -p "$1" && cp "$2" "$1/$3.tmp" && mv "$1/$3.tmp" "$1/$3"`, "sh", dir, src, name})
 	testing.expectf(b.s.t, res.ok && res.code == 0, "B writes %s: %s", name, res.output)
 }
@@ -61,18 +66,19 @@ other_view_inst :: proc(b: ^Other) -> ^Inst {
 // other_refresh copies B's data root (without release trees) to the view, as root.
 other_refresh :: proc(b: ^Other) {
 	script := `rm -rf "$2" && mkdir -p "$2" && cd "$1" && tar cf - --exclude releases . | (cd "$2" && tar xf -) && chown -R "$3" "$2"`
-	_ = run_cmd(b.s, {"sudo", "-n", "/bin/sh", "-c", script, "sh", b.inst.data, b.view.data, fmt.tprintf("%d", posix.getuid())})
+	_ = run_cmd(b.s, {SUDO, "-n", "/bin/sh", "-c", script, "sh", b.inst.data, b.view.data, fmt.tprintf("%d", posix.getuid())})
 }
 
 other_spawn :: proc(b: ^Other, command: []string, env: []string, log_path: string) -> (Other_Proc, bool) {
 	f, err := os.create(log_path)
 	if err != nil do return {}, false
 	full := make([dynamic]string, context.temp_allocator)
-	append(&full, "sudo", "-n", "-u", b.user, "env")
+	append(&full, SUDO, "-n", "-u", b.user, "/usr/bin/env")
 	append(&full, ..env)
 	append(&full, ..command)
 	p, perr := os.process_start({command = full[:], stdout = f, stderr = f})
 	if perr != nil {
+		testing.expectf(b.s.t, false, "start %v: %v", full[:], perr)
 		os.close(f)
 		return {}, false
 	}
@@ -100,6 +106,6 @@ other_kill :: proc(p: ^Other_Proc) {
 
 other_cleanup :: proc(b: ^Other) {
 	if b.root == "" do return
-	_ = run_cmd(b.s, {"sudo", "-n", "pkill", "-KILL", "-u", b.user})
-	if !testing.failed(b.s.t) do _ = run_cmd(b.s, {"sudo", "-n", "rm", "-rf", b.root})
+	_ = run_cmd(b.s, {SUDO, "-n", "/usr/bin/pkill", "-KILL", "-u", b.user})
+	if !testing.failed(b.s.t) do _ = run_cmd(b.s, {SUDO, "-n", "/bin/rm", "-rf", b.root})
 }

@@ -128,8 +128,8 @@ test_two_os_users_on_one_hub :: proc(t: ^testing.T) {
 	publish(&s, "v0.6.1", {behaviour = "crash", stable = true})
 
 	b, ok := other_user_open(&s, other)
-	if !testing.expect(t, ok, "second OS user's instance") do return
 	defer other_user_close(&b)
+	if !testing.expect(t, ok, "second OS user's instance") do return
 
 	// 1. + 2.
 	if !other_user_install(&b, "v0.6.0") do return
@@ -139,7 +139,8 @@ test_two_os_users_on_one_hub :: proc(t: ^testing.T) {
 	// 3. A acting on B's instance: refused, nothing written.
 	other_refresh(&b)
 	bj := journal_len(b.view)
-	res := run_cmd(&s, {pj(s.bin, exe("ham-launcher")), "--instance-root", b.inst.data, "--state-root", b.inst.state}, 30 * time.Second)
+	// A refusing launcher waits refuse_wait (60 s) before it exits 78 (service restart damping).
+	res := run_cmd(&s, {pj(s.bin, exe("ham-launcher")), "--instance-root", b.inst.data, "--state-root", b.inst.state}, 120 * time.Second)
 	testing.expectf(t, res.ok && res.code == 78, "A's launcher on B's instance: exit %d (want 78): %s", res.code, res.output)
 	res = repair(b.inst, "v0.6.0", "op_users_cross")
 	testing.expectf(t, res.ok && res.code == 78, "A's repair on B's instance: exit %d (want 78): %s", res.code, res.output)
