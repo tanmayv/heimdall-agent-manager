@@ -450,9 +450,10 @@ export function calculateNextRuns(
 export function triggerSummary(trigger: import('../../api/endpoints/actions').ActionTrigger): string {
   if (trigger.kind === 'event') {
     const config = trigger.config;
-    const checks = config.filter?.all || (config.filter?.field ? [config.filter] : []);
-    if (config.event_type === 'chain.state' && checks.some((n: any) => n.field === 'data.state' && n.op === 'eq' && n.value === 'completed')) return 'Task chain completed';
-    return config.event_type + (checks.length ? ' · ' + checks.map((n: any) => n.field ? n.field + ' ' + n.op + ' ' + String(n.value) : 'condition group').join(', ') : '');
+    const filter = config.filter;
+    const checks = filter && 'all' in filter ? filter.all : filter && 'field' in filter ? [filter] : [];
+    if (config.event_type === 'chain.state' && checks.some(n => 'field' in n && n.field === 'data.state' && n.op === 'eq' && n.value === 'completed')) return 'Task chain completed';
+    return config.event_type + (checks.length ? ' · ' + checks.map(n => 'field' in n ? n.field + ' ' + n.op + ' ' + String(n.value) : 'condition group').join(', ') : '');
   }
   const c = trigger.config;
   if (c.mode === 'interval') {

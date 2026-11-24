@@ -23,7 +23,7 @@ export default function TriggerListEditor({ value, onChange, types }: { value: F
     })}
     <div className="flex gap-2">
       <Button type="button" variant="secondary" data-debug-id="action-trigger-add-schedule" disabled={full || !types.schedules_supported} onClick={() => onChange([...value, { clientKey: crypto.randomUUID(), kind: 'schedule', enabled: true, config: { mode: 'interval', interval_s: 3600, timezone: 'UTC', blackout_dates: [] } }])}>Add Schedule</Button>
-      <Button type="button" variant="secondary" data-debug-id="action-trigger-add-event" disabled={full || !events.length} onClick={() => onChange([...value, { clientKey: crypto.randomUUID(), kind: 'event', enabled: true, config: { event_type: events[0].event_type, data: {} } }])}>Add Event</Button>
+      <Button type="button" variant="secondary" data-debug-id="action-trigger-add-event" disabled={full || !events.length} onClick={() => onChange([...value, { clientKey: crypto.randomUUID(), kind: 'event', enabled: true, config: { event_type: events[0].event_type, filter: {} } }])}>Add Event</Button>
     </div>
     {!types.schedules_supported ? <p>Scheduled triggers need nats-server 2.14 or newer.</p> : null}
   </div>;
