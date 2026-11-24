@@ -251,7 +251,7 @@ identical. L = Linux (incl. Fedora Atomic), M = macOS, W = Windows.
 | C1 gate | `conversion.json` not yet written, or `gate` only. Old bridge running. | Next run restarts the gate from `force_at` kept in `conversion-status.json` (the 2 h never reset, §9). | — |
 | C2 | Download dir only. Old bridge running. | Delete `updates/convert-<txn>`. | — |
 | C3 | Backup dir (partial) + `conversion.json` `begin C3`. Old bridge running. | Delete backup + record. | — |
-| C4 | Old bridge **stopped**, maybe PTY daemon stopped. `bin/`, service def untouched. | Roll back: start the old service (R5). | L: unit is `enabled`, so a reboot/login restarts the legacy bridge by itself even without setup. M: LaunchAgent `RunAtLoad`. W: task has a logon trigger. A `SIGKILL`/OOM kill of setup is caught by the **rescuer** (§6.4), which recovers within ~5 s (roll forward if C6 is done, else R1–R6). Setup also handles `SIGTERM`/`SIGINT`/`SIGHUP`/console-close with the §6.2 rollback. Remaining window: setup **and** the rescuer die together (a cgroup/job kill, OOM of both); then the bridge is down until login/boot or the next setup run, and the user is told in §15 item 6. |
+| C4 (a–b) | Rescuer running; old bridge **stopped**, maybe PTY daemon stopped; snapshot partial. `bin/`, service def untouched. | Roll back: start the old service (R5); state stores are restored only from a complete snapshot (`snapshot.json` is written last; without it the stores were never touched by the new runtime). | L: unit is `enabled`, so a reboot/login restarts the legacy bridge by itself even without setup. M: LaunchAgent `RunAtLoad`. W: task has a logon trigger. A `SIGKILL`/OOM kill of setup is caught by the **rescuer** (§6.4), which recovers within ~5 s (roll forward if C6 is done, else R1–R6). Setup also handles `SIGTERM`/`SIGINT`/`SIGHUP`/console-close with the §6.2 rollback. Remaining window: setup **and** the rescuer die together (a cgroup/job kill, OOM of both); then the bridge is down until login/boot or the next setup run, and the user is told in §15 item 6. |
 | C5(a) `instance.json` | Record present, no tree. Service def is legacy. | R4 removes it. A legacy bridge running with an `instance.json` but no tree is S10a (recovered at once). | — |
 | C5(b) `repair` | Tree missing/partial, pointers unwritten or written. Journal has a `repair` op. | R4: stop nothing (service is stopped or legacy); delete `releases/`, pointers, `supervisor/`, `instance.json`. **Never** restart `repair`'s op: the layout is deleted wholesale. | W: if the tree is open (antivirus), retry deletion 60 s (engine §19 sharing retries), then rename aside. L/M: plain `remove_all`. |
 | C5(d) launcher | `launcher/` partial. | R4 as above. | W: the file may be scanned/locked: copy with sharing-violation retries 60 s. M: copied signed binary keeps its signature; verify with `codesign --verify --strict` (cheap, fail the step). |
@@ -729,11 +729,11 @@ On Linux (incl. Fedora Atomic), macOS, Windows:
 - **P2-4 Conversion transaction in `ham-bridge setup`.** S10/S10a/S10b/S10c, greenfield S1,
   C0–C9, `conversion.json`, backup, R1–R6, recovery §6.3, signal handling, gate §9 incl.
   `--convert-now` and `--convert-gate`, §3.2 fetch/verify through `src/supervisor/fetch`,
-  `update.json` seeding §11.3, exit codes, progress events + `docs/bridge-setup-progress.md`,
+  `update.json` seeding §11.3, C4a rescuer and `convert-rescue` subcommand (§6.4), C4b state snapshot and R3 restore, credential round-trip check (§6.6), parent-process gate discriminator (§9.1), exit codes, progress events + `docs/bridge-setup-progress.md`,
   unit tests of classification and of each failure point with fake host seams.
 - **P2-5 Post-conversion runtime.** `supervisor_managed`, `active_tree_bin`, status/stop/
   restart/uninstall for the converted layout (§12.1), legacy updater off (§12.2), hub update →
-  intent (§12.3), wrapper rewrite (§8.3), ham-bridge extension sync from its own tree at
+  intent (§12.3), `finalize_conversion` (§6.5) at runtime start and in `status`, wrapper rewrite (§8.3), ham-bridge extension sync from its own tree at
   start when supervisor-managed.
 - **P2-6 Auto-convert trigger from the old updater path.** No change to old binaries: a
   compatibility contract test that drives the **real** v0.5.77 (and latest legacy)
@@ -742,7 +742,7 @@ On Linux (incl. Fedora Atomic), macOS, Windows:
   `bridge_setup_exec_inherit` and the S8b classification lead to conversion; the new-release
   invariants of §1 (asset names, `bin/ham-bridge`, `--version` output, newer-than check);
   the §11 lock/state expectations (the old worker's late `auto-update.json` write is harmless).
-- **P2-7 Cross-OS conversion CI** (§13), also a throwaway-branch run on all three runners.
+- **P2-7 Cross-OS conversion CI** (§13, including SIGKILL at C4, kill after C8 with `finalize_conversion`, and the state round trip), also a throwaway-branch run on all three runners.
 - **P2-8** is the release and staged rollout (Mundus, then brolabs); out of this spec's scope,
   but U4 says: validate on Mundus (dawnstar/riverwood) with a pre-release or branch binaries
   **before** a stable release, because there is no kill switch.
@@ -758,6 +758,6 @@ On Linux (incl. Fedora Atomic), macOS, Windows:
 4. **Disk**: the first conversion needs the archive (≈ bundle size) in `updates/`, the tree
    under `releases/`, and the legacy `bin/` stays: roughly 3× the bundle. C2 checks free space
    (archive + 512 MiB extraction cap) and refuses with `disk_full` before stopping anything.
-6. **Setup and rescuer killed together** (§6.4): the bridge stays down until login/boot or a manual setup run; accepted by design (no further mitigation is possible without a resident watchdog, which Phase 2 does not add). The reviewer/user should confirm.
 5. **Hub-offline conversions**: a legacy bridge that was not connected converts without a
    connection check (§4.2, C8); the hub reconnect is then the supervisor's normal behaviour.
+6. **Setup and rescuer killed together** (§6.4): the bridge stays down until login/boot or a manual setup run; accepted by design (no further mitigation is possible without a resident watchdog, which Phase 2 does not add). The reviewer/user should confirm.
