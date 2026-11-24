@@ -35,7 +35,7 @@ catalog_ws_scenario :: proc(t: ^testing.T) {
 	_,ne=nats.stream_add(conn,eventrelay.stream_config())
 	testing.expect_value(t,ne.status,i32(0))
 	for subject in ([]string{"ev.bob.chain.chain_1.task.task_1.state","ev.alice.chain.chain_1.task.task_1.state"}) {
-		payload:=`{"event_id":"evt_missed","type":"task.state","owner_user_id":"alice","chain_id":"chain_1","task_id":"task_1"}`
+		payload:=`{"event_id":"evt_missed","type":"task.state","owner_user_id":"alice","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"chain_1"}}`
 		// Subject scoping also prevents an inconsistent foreign-tenant envelope.
 		_,ne=nats.publish(conn,subject,transmute([]byte)payload)
 		testing.expect_value(t,ne.status,i32(0))
@@ -78,6 +78,14 @@ catalog_ws_scenario :: proc(t: ^testing.T) {
 	obj:=value.(json.Object)
 	list:=obj["events"].(json.Array)
 	testing.expect_value(t,len(list),1)
+	if len(list)==1 {
+		event:=list[0].(json.Object)
+		entity:=event["entity"].(json.Object)
+		data:=event["data"].(json.Object)
+		testing.expect_value(t,entity["kind"].(json.String),json.String("task"))
+		testing.expect_value(t,entity["id"].(json.String),json.String("task_1"))
+		testing.expect_value(t,data["chain_id"].(json.String),json.String("chain_1"))
+	}
 	testing.expect_value(t,obj["stream_seq"].(json.Integer),json.Integer(1))
 	testing.expect_value(t,obj["catalog_cursor"].(json.String),json.String("2"))
 	// Legacy invalidation still uses the very next transport sequence.
@@ -86,7 +94,7 @@ catalog_ws_scenario :: proc(t: ^testing.T) {
 	testing.expect(t,read_live && strings.contains(live,`"stream_seq":2`) && strings.contains(live,"resource_changed"))
 	delete(live)
 	// A new live invalidation is followed only by a watermark, never a replay.
-	_,ne=nats.publish(conn,"ev.alice.chain.chain_1.task.task_1.state",transmute([]byte)string(`{"owner_user_id":"alice","chain_id":"chain_1","type":"task.state"}`))
+	_,ne=nats.publish(conn,"ev.alice.chain.chain_1.task.task_1.state",transmute([]byte)string(`{"owner_user_id":"alice","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"chain_1"},"type":"task.state"}`))
 	testing.expect_value(t,ne.status,i32(0))
 	testing.expect(t,user_ws_catalog_receive(&h,handle,"alice",&state,`{"type":"client_heartbeat","at":1}`))
 	_,mark,mark_ok:=ws.read_frame(peer,&reader,time.Second)
@@ -105,7 +113,7 @@ catalog_ws_scenario :: proc(t: ^testing.T) {
 	testing.expect_value(t,bus.stream_seqs[handle.idx],u64(3))
 	prior_conn:=state.connection
 	for _ in 0..<201 {
-		_,ne=nats.publish(conn,"ev.alice.chain.chain_1.task.task_1.state",transmute([]byte)string(`{"owner_user_id":"alice","chain_id":"chain_1","type":"task.state"}`))
+		_,ne=nats.publish(conn,"ev.alice.chain.chain_1.task.task_1.state",transmute([]byte)string(`{"owner_user_id":"alice","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"chain_1"},"type":"task.state"}`))
 		testing.expect_value(t,ne.status,i32(0))
 	}
 	testing.expect(t,user_ws_catalog_step(&h,handle,"alice",&state,.Attach))

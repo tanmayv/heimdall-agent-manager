@@ -177,7 +177,9 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	wire: struct {
 		data: struct {
 			events: []struct {
-				event_id, type, chain_id, task_id: string,
+				event_id, type: string,
+				entity: struct {kind, id: string},
+				data: struct {chain_id: string},
 			},
 		},
 	}
@@ -186,8 +188,9 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	if len(wire.data.events) != 1 do return
 	ev := wire.data.events[0]
 	testing.expect_value(t, ev.type, "task.review_requested_from_user")
-	testing.expect_value(t, ev.chain_id, string(f.chain_id))
-	testing.expect_value(t, ev.task_id, "task_bot_review")
+	testing.expect_value(t, ev.data.chain_id, string(f.chain_id))
+	testing.expect_value(t, ev.entity.kind, "task")
+	testing.expect_value(t, ev.entity.id, "task_bot_review")
 	body := strings.concatenate({`{"params":{"event_ids":["`, ev.event_id, `"]}}`})
 	resp = event_ack_handler(&handlers, wire_agent_request(f, "events", body))
 	testing.expectf(t, resp.status == 200, "%s", resp.body)
