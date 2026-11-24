@@ -1,0 +1,57 @@
+package delivery
+
+import "core:fmt"
+import "core:sync"
+import "core:testing"
+import "core:time"
+import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
+import project "odin_test:hub/service/project"
+
+@(test)
+test_rca_offline_capacity_and_expiry :: proc(t: ^testing.T) {
+ f := fixture_new(t, false)
+ defer fixture_destroy(f)
+ sync.atomic_store(&f.now_ms, 1794916800000)
+ for i in 0..<256 {
+  id := fmt.tprintf("brg_slot_%d", i)
+  testing.expect(t, project.bridge_runtime_registry_mark_live(&f.registry, id, false, ""))
+  on_bridge_online(f.s, id)
+  project.bridge_runtime_registry_mark_offline(&f.registry, id, 0)
+  on_bridge_offline(f.s, id)
+ }
+ testing.expect_value(t, active_forwarders_locked(f.s), 256)
+ testing.expect_value(t, len(f.s.forwarders), 256)
+ testing.expect(t, !project.bridge_runtime_registry_has_live(&f.registry, "brg_slot_0"))
+ testing.expect_value(t, forwarder_pass(find_forwarder(f.s,"brg_slot_0")), time.Duration(-1))
+ testing.expect(t, project.bridge_runtime_registry_mark_live(&f.registry, "brg_one", false, ""))
+ on_bridge_online(f.s, "brg_one")
+ testing.expect(t, find_forwarder(f.s,"brg_one") == nil)
+ testing.expect_value(t, sync.atomic_load(&f.s.forwarders_refused), i64(1))
+ on_bridge_online(f.s, "brg_one")
+ testing.expect_value(t, sync.atomic_load(&f.s.forwarders_refused), i64(1))
+ id := fixture_route(t, f)
+ defer delete(id)
+ d := fixture_get(f,id)
+ testing.expect_value(t,d.state,domain.DELIVERY_ROUTED)
+ domain.pipeline_delivery_destroy(&d)
+ testing.expect(t, project.bridge_runtime_registry_has_live(&f.registry,"brg_one"))
+ sync.atomic_add(&f.now_ms,i64(LIFETIME_PROMPT/time.Millisecond)+1)
+ uow,ok,_ := iface.unit_of_work_begin(&f.factory)
+ testing.expect(t,ok)
+ changed,err := expire(f.s,&uow,id)
+ testing.expect(t,changed && err.code == .None)
+ committed,_ := iface.unit_of_work_commit(&uow)
+ testing.expect(t,committed)
+ d = fixture_get(f,id)
+ testing.expect_value(t,d.state,domain.DELIVERY_FAILED)
+ testing.expect_value(t,d.reason,"bridge_offline")
+ testing.expect_value(t,sync.atomic_load(&f.finals),i32(1))
+ domain.pipeline_delivery_destroy(&d)
+ testing.expect(t,project.bridge_runtime_registry_has_live(&f.registry,"brg_one"))
+ on_bridge_deleted(f.s,"brg_slot_0")
+ on_bridge_online(f.s,"brg_one")
+ testing.expect(t,find_forwarder(f.s,"brg_one") != nil)
+ testing.expect_value(t,active_forwarders_locked(f.s),256)
+ fmt.println("RCA: 256 offline retained; live 257th refused; route accepted; failed/bridge_offline on expiry while live; deletion releases capacity")
+}

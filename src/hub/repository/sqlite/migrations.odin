@@ -1043,6 +1043,7 @@ migration_order :: [?]string {
 	"243_extension_version_sync_0_5_80.sql",
 	"actions_008_target_batches.sql",
 	"events_008_state_heads.sql",
+	"events_009_incremental_inbox.sql",
 	"actions_009_batch_history.sql",
 	"actions_007_filter_tree.sql",
 	"244_extension_version_sync_0_5_81.sql",
@@ -1050,7 +1051,7 @@ migration_order :: [?]string {
 	"246_extension_version_sync_0_5_83.sql",
 	"247_extension_version_sync_0_5_84.sql",
 	"actions_010_agent_automation_audit.sql",
- "actions_011_prompt_expiry.sql",
+	"actions_011_prompt_expiry.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1656,6 +1657,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "coordinator_idle_002_stop_reason.sql" do return strings.clone(MIGRATION_COORDINATOR_IDLE_002_STOP_REASON)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
+	if name == "events_009_incremental_inbox.sql" do return strings.clone(MIGRATION_EVENTS_009_INCREMENTAL_INBOX)
 	if name == "events_008_state_heads.sql" do return strings.clone(MIGRATION_EVENTS_008_STATE_HEADS)
  if name == "events_007_entity_versions.sql" do return strings.clone(MIGRATION_EVENTS_007_ENTITY_VERSIONS)
 	if name == "events_006_instance_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS)
@@ -2467,3 +2469,5 @@ upgrade_memory_action_expiry_schema :: proc(conn: ^Conn) -> bool {
 	}
 	return true
 }
+
+MIGRATION_EVENTS_009_INCREMENTAL_INBOX :: #load("migrations/events_009_incremental_inbox.sql", string)

@@ -15,6 +15,7 @@ Hub_Config :: struct {
 	// Default on until catalog v1 staging parity is approved.
 	legacy_event_notices: Maybe(bool),
 	nats_url, nats_creds_file, nats_ca_file: string,
+ event_inbox_reconcile_seconds: int, // <=0 defaults to 300 seconds.
 	telegram_bot_token:                     string, // secret; never logged
 	telegram_api_base:                      string,
 	whatsapp_access_token:                  string, // secret; never logged

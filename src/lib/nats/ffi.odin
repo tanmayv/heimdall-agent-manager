@@ -11,6 +11,11 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
+ ham_nats_core_subscribe :: proc(out: ^^Core_Subscription, conn: ^Connection, subject: cstring) -> i32 ---
+ natsSubscription_NextMsg :: proc(out: ^^Message, sub: ^Core_Subscription, timeout_ms: i64) -> i32 ---
+ natsSubscription_Unsubscribe :: proc(sub: ^Core_Subscription) -> i32 ---
+ natsSubscription_Destroy :: proc(sub: ^Core_Subscription) ---
+
     ham_nats_long_pull_bind :: proc(out: ^^Long_Pull, conn: ^Connection, stream, consumer: cstring) -> i32 ---
     ham_nats_long_pull_next :: proc(out: ^^Message, pull: ^Long_Pull, limit: c.int, wait_ms: i64, requested: ^c.int) -> i32 ---
     ham_nats_long_pull_destroy :: proc(pull: ^Long_Pull) ---
