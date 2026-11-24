@@ -189,7 +189,11 @@ workflow_set_state :: proc(svc: ^Service, u: ^Uow, wf: ^Workflow_Context, state:
 	if previous_state != state && (state == "failed" || state == "succeeded") {
 		p := json_begin()
 		json_str(&p, "outcome", state)
-		json_str(&p, "workflow_run_id", string(wf.run.run_id))
+		chain, found, read_err := iface.taskchain_get_chain(svc.repo, wf.chain_id)
+        if read_err.code != .None do return read_err
+        if !found do return domain.domain_error(.Not_Found, "chain not found")
+        json_int(&p, "work_revision", chain.work_revision)
+        json_str(&p, "workflow_run_id", string(wf.run.run_id))
 		json_int(&p, "execution_no", i64(wf.execution.execution_no))
 		if _, cerr := catalog_emit(svc.repo, svc.clock, wf.owner_user_id, wf.chain_id, "", "chain.work_finished", "occurrence", json_end(&p), "hub"); cerr.code != .None do return cerr
 	}

@@ -3,6 +3,7 @@ package domain
 ACTION_TARGET_AGENT    :: "agent"
 ACTION_TARGET_INSTANCE :: "instance"
 ACTION_TARGET_BOT      :: "bot"
+ACTION_MAX_DELAY_S     :: 86400
 ACTION_MAX_TRIGGERS    :: 16
 ACTION_MAX_RULES       :: 16
 ACTION_MIN_INTERVAL_DEFAULT_S :: 30
@@ -39,6 +40,7 @@ Action_Trigger :: struct {
 	action_id:              Action_ID,
 	owner_user_id:          User_ID,
 	kind:                   string,
+	delay_s:                int,
 	config_json:            string, // column config
 	event_type:             string,
 	subject_filter:         string,
@@ -56,6 +58,9 @@ Action_Run :: struct {
 	occurrence_key:                     string,
 	event_type, event_id:               string,
 	stream_sequence:                    i64,
+	delay_s:                            int, // snapshot: only these runs invoke still_valid
+	settle_key:                         string,
+	settle_pending:                     bool, // debounce phase, outside the action-level open slot
 	event_params_json:                  string,
 	state:                              string, // ACTION_RUN_* below
 	not_before, joined_run_id, reason:  string,
@@ -116,6 +121,7 @@ action_run_destroy :: proc(v: ^Action_Run) {
 	delete(string(v.occurrence_key))
 	delete(string(v.event_type))
 	delete(string(v.event_id))
+	delete(string(v.settle_key))
 	delete(string(v.event_params_json))
 	delete(string(v.state))
 	delete(string(v.not_before))

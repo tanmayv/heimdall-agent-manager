@@ -205,7 +205,7 @@ export function formFromAction(action: Action): ActionForm {
 export function actionFormBody(form: ActionForm): CreateActionInput {
   const target = structuredClone(form.target);
   if (target.kind === 'agent') delete target.last_spawned_instance_id;
-  return { ...form, target, triggers: form.triggers.map(({ id, kind, config, enabled }) => ({ ...(id ? { id } : {}), kind, config: structuredClone(config), enabled } as ActionTrigger)) };
+  return { ...form, target, triggers: form.triggers.map(({ id, kind, config, enabled, delay_s }) => ({ ...(id ? { id } : {}), kind, config: structuredClone(config), enabled, delay_s: delay_s || 0 } as ActionTrigger)) };
 }
 export function defaultBotTarget(target: ActionTarget, ownerBotId?: string): ActionTarget {
   return target.kind === 'bot' && !target.bot_id && ownerBotId
@@ -220,7 +220,7 @@ export function mapServerError(err: any): { field: ActionFormField; message: str
   const field: ActionFormField = code === 'prompt_required' ? 'prompt_text'
     : code === 'min_interval_out_of_range' ? 'min_interval_s'
     : /target|strategy|selector|rule|candidate|bridge|provider|model/.test(code) ? 'target'
-    : /trigger|cron|timezone|schedule|event|chain|interval|run_at|blackout|window|active_/.test(code) ? 'triggers' : 'form';
+    : /trigger|delay|cron|timezone|schedule|event|chain|interval|run_at|blackout|window|active_/.test(code) ? 'triggers' : 'form';
   return { field, message: actionErrorText(err) };
 }
 

@@ -538,10 +538,27 @@ Triggers:
   --trigger-json takes a trigger object, including blackout_dates, active_from and active_until in its config.
 On update, any --trigger or --trigger-json replaces the whole trigger list.
 Any target flag replaces the whole target, including rules.
+Delay: --delay <seconds|Ns|Nm|Nh> applies to the preceding --trigger or --trigger-json (0 disables; max 24h).
+
 Examples:
   ham-ctl hub actions create --prompt 'Review' --agent-id agt_1 --rule '*:claude' --trigger 'cron:0 9 * * 1-5@America/New_York'
   ham-ctl hub actions update act_1 --trigger event:chain.state,state=completed
 `
+
+// Delays use whole seconds; accept a bare count or s/m/h suffix.
+ctl_action_delay :: proc(text: string) -> (i64, bool) {
+ if text == "" do return 0, false
+ multiplier: i64 = 1
+ number := text
+ switch text[len(text)-1] {
+ case 's': number = text[:len(text)-1]
+ case 'm': number = text[:len(text)-1]; multiplier = 60
+ case 'h': number = text[:len(text)-1]; multiplier = 3600
+ }
+ n, ok := strconv.parse_i64(number)
+ if !ok || n < 0 || n > 86400/multiplier do return 0, false
+ return n*multiplier, true
+}
 
 ctl_action_object :: proc() -> json.Object {
 	return make(json.Object, context.temp_allocator)
@@ -651,12 +668,19 @@ ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
 		case "--disabled":
 			if action != "create" do return {}, false
 			body["enabled"] = json.Boolean(false)
-		case "--prompt", "--name", "--min-interval", "--agent-id", "--project", "--instance-strategy", "--rule", "--instance", "--bot", "--target", "--trigger", "--trigger-json":
+		case "--prompt", "--name", "--min-interval", "--agent-id", "--project", "--instance-strategy", "--rule", "--instance", "--bot", "--target", "--trigger", "--trigger-json", "--delay":
 			if i + 1 >= len(args) || strings.has_prefix(args[i + 1], "--") do return {}, false
 			i += 1
 			value := args[i]
 			switch flag {
-			case "--prompt":
+			case "--delay":
+                if len(triggers) == 0 do return {}, false
+                delay, valid := ctl_action_delay(value)
+                if !valid do return {}, false
+                trigger, valid_object := triggers[len(triggers)-1].(json.Object)
+                if !valid_object do return {}, false
+                trigger["delay_s"] = json.Integer(delay)
+            case "--prompt":
 				body["prompt_text"] = json.String(value)
 			case "--name":
 				body["name"] = json.String(value)

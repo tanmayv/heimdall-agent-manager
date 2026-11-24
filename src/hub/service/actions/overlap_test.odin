@@ -125,7 +125,7 @@ overlap_disabled :: proc(t:^testing.T,f:^Action_Test) {
 overlap_double_resume :: proc(t:^testing.T,f:^Action_Test) {
  action_test_first(t,f);f.now_ms+=1000;action_test_match(t,f,"second");drain_due(&f.runtime.router)
  run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
- hints:=[2]Resume_Hint{{"owner",run.run_id},{"owner",run.run_id}}
+ hints:=[2]Resume_Hint{{owner="owner",run_id=run.run_id},{owner="owner",run_id=run.run_id}}
  drain_due(&f.runtime.router,hints[:]);drain_due(&f.runtime.router,hints[:])
  testing.expect_value(t,f.routes,2)
 }
@@ -149,9 +149,9 @@ overlap_early_hint :: proc(t:^testing.T,f:^Action_Test) {
  run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
  f.now_ms+=27000
  // A different owner's hint must not route this run.
- wrong:=[1]Resume_Hint{{"other",run.run_id}}
+ wrong:=[1]Resume_Hint{{owner="other",run_id=run.run_id}}
  drain_due(&f.runtime.router,wrong[:]);testing.expect_value(t,f.routes,1)
- hints:=[1]Resume_Hint{{"owner",run.run_id}}
+ hints:=[1]Resume_Hint{{owner="owner",run_id=run.run_id}}
  drain_due(&f.runtime.router,hints[:]);action_test_done(t,f)
  testing.expect_value(t,f.routes,2);action_test_expect(t,f,domain.ACTION_RUN_DEFERRED,0)
 }

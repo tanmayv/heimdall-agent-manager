@@ -3,6 +3,9 @@ package actions
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
+import "core:mem/virtual"
+import "core:strconv"
+import iface "odin_test:hub/repository/iface"
 import "core:strings"
 import domain "odin_test:hub/domain"
 import nats "odin_test:lib/nats"
@@ -43,12 +46,68 @@ event_compile :: proc(owner, action_id, trigger_id: string, config: json.Object,
 
 Data_Key :: struct { key: string, values: []string } // values empty = free text
 Preset   :: struct { id, label: string, data_json: string }
-Event_Descriptor :: struct { event_type, label, scope: string, data_keys: []Data_Key, presets: []Preset }
+Event_Descriptor :: struct { event_type, label, scope: string, data_keys: []Data_Key, presets: []Preset,
+ // Both callbacks borrow inputs. Validity checks perform one indexed repository
+ // lookup and no network I/O. Returned reasons are static strings.
+ settle_key: proc(msg: Event_View) -> string,
+ still_valid: proc(ctx: ^iface.Repositories, run: domain.Action_Run) -> (ok: bool, reason: string),
+}
 
 EVENT_DESCRIPTORS := [?]Event_Descriptor{
-	{event_type = "chain.state", label = "Task chain state changed", scope = "chain",
+	{event_type = "chain.state", label = "Task chain state changed", scope = "chain", settle_key=chain_settle_key, still_valid=chain_state_still_valid,
 	 data_keys = {{key = "state", values = {"active", "completed", "archived"}}},
 	 presets   = {{id = "chain_completed", label = "Task chain completed", data_json = `{"state":"completed"}`}}},
-	{event_type = "chain.work_finished", label = "Task chain work finished", scope = "chain",
+	{event_type = "chain.work_finished", label = "Task chain work finished", scope = "chain", settle_key=chain_settle_key, still_valid=chain_work_finished_still_valid,
 	 data_keys = {{key = "outcome", values = {}}}, presets = {}},
+}
+
+event_descriptor_find :: proc(event_type: string) -> ^Event_Descriptor {
+ for &entry in EVENT_DESCRIPTORS do if entry.event_type == event_type do return &entry
+ return nil
+}
+chain_settle_key :: proc(msg: Event_View) -> string {
+ key, _ := msg.envelope["chain_id"].(string)
+ return key
+}
+chain_state_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run) -> (bool, string) {
+ return chain_still_valid(repos, run, false)
+}
+chain_work_finished_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run) -> (bool, string) {
+ return chain_still_valid(repos, run, true)
+}
+chain_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run, work: bool) -> (bool, string) {
+ arena: virtual.Arena
+ if virtual.arena_init_growing(&arena) != nil do return false, "validity_unavailable"
+ defer virtual.arena_destroy(&arena)
+ context.allocator = virtual.arena_allocator(&arena)
+ context.temp_allocator = context.allocator
+ value: json.Value
+ if json.unmarshal(transmute([]u8)run.event_params_json, &value) != nil do return false, "superseded"
+ params, _ := value.(json.Object)
+ id, _ := params["chain_id"].(string)
+ data, _ := params["data"].(json.Object)
+ if id == "" do return false, "superseded"
+ chain, found, err := iface.taskchain_get_chain(&repos.taskchains, domain.Task_Chain_ID(id))
+ if err.code != .None do return false, "validity_unavailable"
+ if !found || chain.owner_user_id != run.owner_user_id do return false, "superseded"
+ if work {
+  text, _ := data["work_revision"].(string)
+  rev, valid := strconv.parse_i64(text)
+  if !valid || rev != chain.work_revision do return false, "superseded"
+ } else {
+  state, _ := data["state"].(string)
+  expected := ""
+  switch chain.status {
+  case .Active: expected = "active"
+  case .Completed: expected = "completed"
+  case .Archived: expected = "archived"
+  case .Cancelled: expected = "cancelled"
+  }
+  if state != expected do return false, "superseded"
+  key, current := "updated_at", chain.updated_at
+  if state == "completed" { key = "completed_at"; current = chain.completed_at }
+  snapshot, _ := data[key].(string)
+  if snapshot == "" || snapshot != current do return false, "superseded"
+ }
+ return true, ""
 }

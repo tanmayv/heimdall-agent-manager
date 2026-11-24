@@ -89,6 +89,7 @@ action_view_json :: proc(s:^actions.Service,v:actions.Action_View) -> json.Objec
 		config,_:=value.(json.Object)
 		obj:=action_json_object()
 		obj["id"]=trigger.trigger_id;obj["kind"]=trigger.kind;obj["enabled"]=trigger.enabled
+		obj["delay_s"]=json.Integer(trigger.delay_s)
 		obj["rev"]=json.Integer(trigger.rev);obj["config"]=config
 		obj["next_fire_at"]=action_next_fire(s,a,trigger,config)
 		obj["created_at"]=trigger.created_at;obj["updated_at"]=trigger.updated_at

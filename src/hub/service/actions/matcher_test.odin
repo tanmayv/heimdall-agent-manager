@@ -40,6 +40,9 @@ Action_Test :: struct {
  hint_valid:bool,
  support:int,
  last_cause,last_notice:string,
+ validity_reads,settle_plans:int,
+ chain_status:domain.Task_Chain_Status,
+ chain_revision:i64,
  flag_off,fail_prompt,fail_retire,bots_on:bool,
 }
 action_test_clock :: proc(ctx:rawptr)->string {

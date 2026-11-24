@@ -24,7 +24,7 @@ Target_Input :: struct {
 	kind, agent_id, project_id, instance_id, bot_id, instance_strategy, selector: string,
 	rules: []Rule_Input,
 }
-Trigger_Input :: struct { id, kind: string, config: json.Object, enabled: Maybe(bool) }
+Trigger_Input :: struct { id, kind: string, config: json.Object, enabled: Maybe(bool), delay_s: Maybe(int) }
 Action_Input :: struct {
 	name, prompt_text: Maybe(string),
 	enabled: Maybe(bool),
@@ -296,8 +296,11 @@ write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, c
 				t.rev = old.rev
 				replace_string(&t.created_at, old.created_at)
 			}
+			if old != nil do t.delay_s = old.delay_s
+			if delay, present := input.delay_s.?; present do t.delay_s = delay
+			if t.delay_s < 0 || t.delay_s > domain.ACTION_MAX_DELAY_S do return {}, detail_error("delay_out_of_range")
 			if enabled, present := input.enabled.?; present do t.enabled = enabled
-			if old != nil && (old.config_json != t.config_json || old.enabled != t.enabled || old_enabled != v.action.enabled) do t.rev += 1
+			if old != nil && (old.config_json != t.config_json || old.enabled != t.enabled || old.delay_s != t.delay_s || old_enabled != v.action.enabled) do t.rev += 1
 		}
 	} else {
 		// Transfer ownership to next; v retains only the original action/rules.
@@ -341,7 +344,7 @@ write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, c
 		if before_ptr != nil do before.enabled = before.enabled && old_enabled
 		after := trigger
 		after.enabled = after.enabled && v.action.enabled
-		if trigger.kind == "schedule" && after.enabled && !schedule_supported(s) do return {}, domain.domain_error(.Conflict, "Scheduled triggers need nats-server 2.14 or newer.", "{\"code\":\"schedules_unsupported\"}")
+		if (trigger.kind == "schedule" || trigger.delay_s > 0) && after.enabled && !schedule_supported(s) do return {}, domain.domain_error(.Conflict, "Scheduled triggers need nats-server 2.14 or newer.", "{\"code\":\"schedules_unsupported\"}")
 		if err := repo.trigger_save(repo.ctx, trigger); err.code != .None do return {}, err
 		if kind.on_change != nil {
 			if err := kind.on_change(&sc, before_ptr, &after); err.code != .None do return {}, err
