@@ -174,3 +174,20 @@ batch_failure :: proc(t:^testing.T,f:^Action_Test) {
 @(test) test_batch_agent_reuse_resolves_once :: proc(t:^testing.T) {action_test_case(t,batch_agent_reuse)}
 @(test) test_batch_body_size_parks_remainder :: proc(t:^testing.T) {action_test_case(t,batch_body_cap)}
 @(test) test_batch_failure_rolls_back_all_members :: proc(t:^testing.T) {action_test_case(t,batch_failure)}
+
+batch_rules_failure :: proc(_:rawptr,_:string)->([]iface.Action_Rule_Row,domain.Domain_Error) {
+ return nil,domain.domain_error(.Internal_Error,"injected rules lookup failure")
+}
+batch_owner_failure :: proc(t:^testing.T,f:^Action_Test) {
+ action_test_seed(t,f,"action2","trigger2","owner")
+ action,_,_:=f.repos.actions.get(f.repos.actions.ctx,"action")
+ action.target_kind=domain.ACTION_TARGET_AGENT;action.target_agent_id="agent"
+ _=f.repos.actions.save(f.repos.actions.ctx,action)
+ f.repos.actions.rules_for_owner=batch_rules_failure
+ action_test_match(t,f,"isolated");drain_due(&f.runtime.router)
+ run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
+ testing.expect_value(t,run.state,"queued")
+ other,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action2")
+ testing.expect_value(t,other.state,"routed");testing.expect_value(t,f.routes,1)
+}
+@(test) test_batch_rules_failure_preserves_other_targets :: proc(t:^testing.T) {action_test_case(t,batch_owner_failure)}

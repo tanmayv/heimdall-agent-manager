@@ -48,18 +48,20 @@ route_groups :: proc(r:^Router,items:[]Prepared_Run) {
  groups:=make([dynamic]Target_Group)
  indices:=make(map[string]int)
  owner_rules:=make(map[string][]iface.Action_Rule_Row)
+ failed_owners:=make(map[string]bool)
  for item in items {
   rules:=make([dynamic]domain.Action_Target_Rule)
   if item.action.target_kind==domain.ACTION_TARGET_AGENT {
    owner:=string(item.action.owner_user_id)
+   if failed_owners[owner] do continue
    rows,loaded:=owner_rules[owner]
    if !loaded {
     uow,ok,_:=iface.unit_of_work_begin(r.factory)
-    if !ok do return
+    if !ok {failed_owners[owner]=true;continue}
     err:domain.Domain_Error
     rows,err=uow.repos.actions.rules_for_owner(uow.repos.actions.ctx,owner)
     iface.unit_of_work_rollback(&uow)
-    if err.code!=.None do return
+    if err.code!=.None {failed_owners[owner]=true;continue}
     owner_rules[owner]=rows
    }
    for row in rows do if row.action_id==string(item.action.id) do append(&rules,row.rule)
