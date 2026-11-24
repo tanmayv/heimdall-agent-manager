@@ -10,6 +10,7 @@ Action_Repo_SQLite :: struct { conn: ^Conn }
 new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.Action_Repository {
 	impl.conn = conn
 	return {ctx = impl,
+ runs_for_delivery=actions_runs_for_delivery, runs_finish_delivery=actions_runs_finish_delivery, runs_release_parked=actions_runs_release_parked,
  runs_route_batch=actions_runs_route_batch, target_open_delivery=actions_target_open_delivery,
  rules_for_owner=actions_rules_for_owner, triggers_for_owner=actions_triggers_for_owner,
  runs_history=actions_runs_history, runs_sweep=actions_runs_sweep,
@@ -338,7 +339,7 @@ actions_runs_due :: proc(ctx: rawptr, now: string, limit: int) -> ([]domain.Acti
 	return actions_run_query(ctx,ACTIONS_SQL_RUNS_DUE,{now,fmt.tprintf("%d",limit)})
 }
 
-ACTIONS_SQL_RUNS_DEFERRED :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND state='deferred' ORDER BY created_at,run_id LIMIT ?1;"
+ACTIONS_SQL_RUNS_DEFERRED :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND state='deferred' AND target_instance_id='' ORDER BY created_at,run_id LIMIT ?1;"
 
 actions_runs_deferred :: proc(ctx: rawptr, limit: int) -> ([]domain.Action_Run, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -464,7 +465,7 @@ actions_triggers_for_owner :: proc(ctx:rawptr,owner:string)->([]domain.Action_Tr
  return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_OWNER,{owner})
 }
 // Materialize the page before grouping joined rows, then join delivery expiry once.
-ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),CASE WHEN p.state='routed' THEN coalesce(d.expires_at,'') ELSE '' END,coalesce(d.state,''),coalesce(d.outcome,'') FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
+ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),CASE WHEN p.state='routed' THEN coalesce(d.expires_at,'') ELSE '' END,coalesce(d.state,''),coalesce(d.outcome,''),CASE WHEN p.delivery_id='' THEN 0 ELSE (SELECT count(*) FROM action_runs b WHERE b.delivery_id=p.delivery_id AND b.delivery_id<>'') END FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
 actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,before_id:string)->([]iface.Action_Run_History,domain.Domain_Error) {
  guard:=tx_repository_enter(); defer tx_repository_leave(guard)
  stmt,err:=actions_prepare(ctx,ACTIONS_SQL_HISTORY,{string(id),before,fmt.tprintf("%d",limit),before_id})
@@ -479,7 +480,7 @@ actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,bef
    delete(rows)
    return nil,domain.domain_error(.Internal_Error,"could not load action history")
   }
-  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,23)),column_text(stmt,24),column_text(stmt,25),column_text(stmt,26)})
+  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,23)),column_text(stmt,24),column_text(stmt,25),column_text(stmt,26),int(sqlite3_column_int64(stmt,27))})
  }
 }
 ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND created_at<?1 ORDER BY created_at,run_id LIMIT ?2);"
@@ -529,7 +530,7 @@ actions_runs_route_batch :: proc(ctx:rawptr,members:[]iface.Action_Batch_Member,
  return {}
 }
 // Keep both predicates: IN enables the partial index; equality excludes completed runs.
-ACTIONS_SQL_TARGET_OPEN_DELIVERY :: "SELECT d.delivery_id,d.expires_at FROM action_runs r JOIN pipeline_deliveries d ON d.delivery_id=r.delivery_id WHERE r.owner_user_id=?1 AND r.target_instance_id=?2 AND r.state IN ('routed','delivered') AND r.state='routed' AND d.state IN ('routed','forwarded') ORDER BY d.created_at,d.delivery_id LIMIT 1;"
+ACTIONS_SQL_TARGET_OPEN_DELIVERY :: "SELECT d.delivery_id,d.expires_at FROM action_runs r JOIN pipeline_deliveries d ON d.delivery_id=r.delivery_id WHERE r.owner_user_id=?1 AND r.target_instance_id=?2 AND r.state IN ('routed','delivered') AND r.state='routed' AND d.state IN ('routed','forwarded','delivered') ORDER BY d.created_at,d.delivery_id LIMIT 1;"
 actions_target_open_delivery :: proc(ctx:rawptr,owner,instance_id:string)->(string,string,bool,domain.Domain_Error) {
  guard:=tx_repository_enter()
  defer tx_repository_leave(guard)
@@ -540,4 +541,20 @@ actions_target_open_delivery :: proc(ctx:rawptr,owner,instance_id:string)->(stri
  if rc==SQLITE_DONE do return "","",false,{}
  if rc!=SQLITE_ROW do return "","",false,domain.domain_error(.Internal_Error,"cannot read target delivery")
  return column_text(stmt,0),column_text(stmt,1),true,{}
+}
+
+// Only routed members participate in finalization/replacement; terminal rows are history.
+actions_runs_for_delivery :: proc(ctx:rawptr,delivery_id:string)->([]domain.Action_Run,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ return actions_run_query(ctx,"SELECT "+ACTIONS_RUN_COLUMNS+" FROM action_runs WHERE delivery_id=?1 AND state='routed' ORDER BY created_at,run_id;",{delivery_id})
+}
+actions_runs_finish_delivery :: proc(ctx:rawptr,delivery_id,state,reason,now:string)->domain.Domain_Error {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ _,err:=actions_write(ctx,"UPDATE action_runs SET state=?2,reason=?3,finished_at=?4 WHERE delivery_id=?1 AND state='routed';",{delivery_id,state,reason,now})
+ return err
+}
+actions_runs_release_parked :: proc(ctx:rawptr,owner,instance_id,now:string)->(bool,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ if instance_id=="" do return false,{}
+ return actions_write(ctx,"UPDATE action_runs SET not_before=?3 WHERE owner_user_id=?1 AND target_instance_id=?2 AND state='deferred' AND target_instance_id<>'';",{owner,instance_id,now})
 }

@@ -124,11 +124,16 @@ action_transition_fault :: proc(ctx:rawptr,next:domain.Action_Run,from:string)->
  if next.state=="failed" || next.state=="delivered" do return false,domain.domain_error(.Internal_Error,"injected run transition failure")
  return action_original_transition(ctx,next,from)
 }
+@(thread_local)
+action_original_finish:proc(ctx:rawptr,delivery_id,state,reason,now:string)->domain.Domain_Error
+action_finish_fault :: proc(ctx:rawptr,delivery_id,state,reason,now:string)->domain.Domain_Error {
+ return domain.domain_error(.Internal_Error,"injected batch finalization failure")
+}
 router_expiry_failure :: proc(t:^testing.T,f:^Action_Test) {
  action_test_match(t,f,"one");drain_due(&f.runtime.router)
  run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
- action_original_transition=f.repos.actions.run_transition
- f.repos.actions.run_transition=action_transition_fault
+ action_original_finish=f.repos.actions.runs_finish_delivery
+ f.repos.actions.runs_finish_delivery=action_finish_fault
  f.now_ms+=3601000
  testing.expect(t,!handle_message(&f.runtime,{subject="ev.owner.chain.chain1.state",event_type="chain.state",event_id="two",
   stream_time_ms=f.now_ms,envelope=test_config(`{"entity":{"kind":"chain","id":"chain1"},"data":{}}`)}))
@@ -136,18 +141,18 @@ router_expiry_failure :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect(t,err.code!=.None)
  d,_,_:=action_test_delivery(f,run.delivery_id)
  testing.expect_value(t,d.state,"routed");action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
- f.repos.actions.run_transition=action_original_transition
+ f.repos.actions.runs_finish_delivery=action_original_finish
  action_test_match(t,f,"two")
  action_test_expect(t,f,domain.ACTION_RUN_FAILED,1);action_test_expect(t,f,domain.ACTION_RUN_QUEUED,1)
 }
 router_final_failure :: proc(t:^testing.T,f:^Action_Test) {
  action_test_match(t,f,"one");drain_due(&f.runtime.router)
  run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
- action_original_transition=f.repos.actions.run_transition;f.repos.actions.run_transition=action_transition_fault
+ action_original_finish=f.repos.actions.runs_finish_delivery;f.repos.actions.runs_finish_delivery=action_finish_fault
  uow,ok,_:=iface.unit_of_work_begin(&f.factory);assert(ok)
  err:=on_delivery_final(&f.runtime.router,&uow,{ref=fmt.tprintf("run:%s",run.run_id),delivery_id=run.delivery_id,state=domain.DELIVERY_DONE})
  testing.expect(t,err.code!=.None);iface.unit_of_work_rollback(&uow)
- f.repos.actions.run_transition=action_original_transition
+ f.repos.actions.runs_finish_delivery=action_original_finish
  action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
  action_test_done(t,f);action_test_expect(t,f,domain.ACTION_RUN_DELIVERED,1)
 }

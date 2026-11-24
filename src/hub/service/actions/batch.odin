@@ -126,8 +126,15 @@ route_group :: proc(r:^Router,group:Target_Group) {
   } else {append(&members,item)}
  }
  if !plan.ok || len(members)==0 {_,_=iface.unit_of_work_commit(&uow);uow.ctx=nil;return}
- _,expiry,open,err:=repo.target_open_delivery(repo.ctx,string(first.action.owner_user_id),plan.instance_id)
+ open_id,expiry,open,err:=repo.target_open_delivery(repo.ctx,string(first.action.owner_user_id),plan.instance_id)
  if err.code!=.None do return
+ // A lost terminal wake must not leave a target blocked forever. Expire in
+ // this UoW, then recheck: expiry may replace/finalize the delivery through its sink.
+ if open && expiry<=now && r.pipeline.expire!=nil {
+  if _,e:=r.pipeline.expire(r.pipeline.ctx,&uow,open_id);e.code!=.None do return
+  _,expiry,open,err=repo.target_open_delivery(repo.ctx,string(first.action.owner_user_id),plan.instance_id)
+  if err.code!=.None do return
+ }
  if open {
   if e:=park_members(repo,members[:],plan.instance_id,expiry);e.code!=.None do return
   _,_=iface.unit_of_work_commit(&uow);uow.ctx=nil;return
