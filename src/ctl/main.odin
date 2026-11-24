@@ -107,7 +107,7 @@ main :: proc() {
 		switch cmd[0] {
 		case "bridge", "bridges", "agents", "task-chain", "task-chains",
 		     "task", "tasks", "events", "channel", "channels", "chat", "chats", "artifact", "artifacts",
-		     "memory", "cards", "card", "action", "actions", "context", "search", "shell",
+		     "automations", "memory", "cards", "card", "action", "actions", "context", "search", "shell",
 		     "issue", "issues", "project", "projects", "lease", "review", "verify",
 		     "workflow", "workflows":
 			ctl_agent_mode(cmd[:], os.args)
@@ -119,7 +119,7 @@ main :: proc() {
 	// context (so `ham-ctl task --help` documents the agent surface).
 	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
 		switch cmd[0] {
-		case "bridge", "bridges", "agents", "task-chain", "task-chains", "task", "tasks", "events", "channel", "channels", "chat", "chats", "artifact", "artifacts", "memory", "cards", "card", "action", "actions", "shell", "issue", "issues", "project", "projects", "lease", "review", "verify", "workflow", "workflows":
+		case "bridge", "bridges", "agents", "task-chain", "task-chains", "task", "tasks", "events", "channel", "channels", "chat", "chats", "artifact", "artifacts", "automations", "memory", "cards", "card", "action", "actions", "shell", "issue", "issues", "project", "projects", "lease", "review", "verify", "workflow", "workflows":
 			print_agent_help(cmd[:]); return
 		}
 	}
@@ -140,16 +140,10 @@ main :: proc() {
 		return
 	}
 
-	if cmd[0] == "actions" || cmd[0] == "action" {
-		url := hub_user_mode_url(os.args)
-		tok := hub_user_mode_token(os.args)
-		if url == "" || tok == "" {
-			fmt.println(`{"ok":false,"message":"actions requires --hub-url and --user-token (or HAM_HUB_URL/HEIMDALL_HUB_URL and HAM_HUB_USER_TOKEN/HEIMDALL_USER_TOKEN)"}`)
-			return
-		}
-		ctl_hub_actions(ctl_hub_make(strings.trim_right(url, "/"), tok), cmd[1:], os.args)
-		return
-	}
+ if cmd[0] == "automations" {
+  ctl_agent_mode(cmd[:],os.args)
+  return
+ }
 
 	if cmd[0] == "issue" || cmd[0] == "issues" {
 		ctl_issues_command(cmd[:], os.args)

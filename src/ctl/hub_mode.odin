@@ -40,9 +40,8 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 	if resource == "artifacts" || resource == "artifact" { ctl_hub_artifacts(hub, cmd[idx + 1:], args); return }
 	if resource == "memories" || resource == "memory" { ctl_hub_memories(hub, cmd[idx + 1:], args); return }
 	if resource == "cards" || resource == "card" { ctl_hub_cards(hub, cmd[idx + 1:], args); return }
-	if resource == "actions" || resource == "action" { ctl_hub_actions(hub, cmd[idx + 1:], args); return }
 	if resource == "issues" || resource == "issue" { ctl_issues_command(cmd[idx:], args); return }
-	fmt.println("usage: ham-ctl hub <me|health|agents|launch|chats|tasks|task-chains|projects|artifacts|memories|cards|actions|issues> ...")
+	fmt.println("usage: ham-ctl hub <me|health|agents|launch|chats|tasks|task-chains|projects|artifacts|memories|cards|issues> ...")
 }
 
 Ctl_Agent_Create_Body :: struct {
@@ -512,272 +511,6 @@ ctl_hub_cards :: proc(hub: Ctl_Hub, tokens, args: []string) {
 	fmt.println("usage: ham-ctl hub cards <list|show|create|discard|accept|reject|snooze> ...")
 }
 
-// API v2 actions. All request-building storage belongs to the command's
-// temporary allocator; the transport marshals/sends it before that scope ends.
-CTL_ACTIONS_USAGE :: "usage: ham-ctl hub actions <list|show|create|update|enable|disable|delete|runs> ..."
-CTL_ACTIONS_HELP :: `ham-ctl hub actions <list|show|create|update|enable|disable|delete|runs>
-  list
-  show <action-id>
-  create --prompt <text> [--name <text>] <target> [--min-interval <seconds>] [--disabled] [--trigger <spec>]... [--trigger-json <json>]...
-  update <action-id> [--prompt <text>] [--name <text>] [<target>] [--min-interval <seconds>] [--trigger <spec>]... [--trigger-json <json>]...
-  enable <action-id>
-  disable <action-id>
-  delete <action-id>
-  runs <action-id> [--limit <n>] [--before <created_at>] [--before-id <run_id>]
-Targets:
-  --agent-id <id> [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]...
-  --instance <id>
-  --target bot [--bot <id>] (omitting --bot selects your bot)
-  --bot <id> (shorthand for --target bot --bot <id>)
-Each rule part is a value or *; an omitted model means *. Rule order is flag order.
-Triggers:
-  cron:<5-field expr>[@<timezone>] (split at the last @)
-  every:<seconds>
-  at:<RFC3339>
-  event:<event_type>[,chain=<id>][,<data key>=<value>]...
-  --trigger-json takes a trigger object, including blackout_dates, active_from and active_until in its config.
-On update, any --trigger or --trigger-json replaces the whole trigger list.
-Any target flag replaces the whole target, including rules.
-Delay: --delay <seconds|Ns|Nm|Nh> applies to the preceding --trigger or --trigger-json (0 disables; max 24h).
-
-Examples:
-  ham-ctl hub actions create --prompt 'Review' --agent-id agt_1 --rule '*:claude' --trigger 'cron:0 9 * * 1-5@America/New_York'
-  ham-ctl hub actions update act_1 --trigger event:chain.state,state=completed
-`
-
-// Delays use whole seconds; accept a bare count or s/m/h suffix.
-ctl_action_delay :: proc(text: string) -> (i64, bool) {
- if text == "" do return 0, false
- multiplier: i64 = 1
- number := text
- switch text[len(text)-1] {
- case 's': number = text[:len(text)-1]
- case 'm': number = text[:len(text)-1]; multiplier = 60
- case 'h': number = text[:len(text)-1]; multiplier = 3600
- }
- n, ok := strconv.parse_i64(number)
- if !ok || n < 0 || n > 86400/multiplier do return 0, false
- return n*multiplier, true
-}
-
-ctl_action_object :: proc() -> json.Object {
-	return make(json.Object, context.temp_allocator)
-}
-
-ctl_action_trigger :: proc(spec: string) -> (json.Value, bool) {
-	config := ctl_action_object()
-	trigger := ctl_action_object()
-	colon := strings.index(spec, ":")
-	if colon < 1 || colon == len(spec) - 1 do return nil, false
-	form, value := spec[:colon], spec[colon + 1:]
-	switch form {
-	case "cron":
-		expr, zone := value, "UTC"
-		if at := strings.last_index(value, "@"); at >= 0 {
-			expr, zone = value[:at], value[at + 1:]
-		}
-		if strings.trim_space(expr) == "" || zone == "" do return nil, false
-		trigger["kind"] = json.String("schedule")
-		config["mode"] = json.String("cron")
-		config["cron_expr"] = json.String(expr)
-		config["timezone"] = json.String(zone)
-	case "every":
-		seconds, ok := strconv.parse_i64(value)
-		if !ok || seconds <= 0 do return nil, false
-		trigger["kind"] = json.String("schedule")
-		config["mode"] = json.String("interval")
-		config["interval_s"] = json.Integer(seconds)
-	case "at":
-		trigger["kind"] = json.String("schedule")
-		config["mode"] = json.String("once")
-		config["run_at"] = json.String(value)
-	case "event":
-		parts := strings.split(value, ",", context.temp_allocator)
-		if parts[0] == "" do return nil, false
-		trigger["kind"] = json.String("event")
-		config["event_type"] = json.String(parts[0])
-		data := ctl_action_object()
-		for pair in parts[1:] {
-			eq := strings.index(pair, "=")
-			if eq <= 0 || eq == len(pair) - 1 do return nil, false
-			key, val := pair[:eq], pair[eq + 1:]
-			if key == "chain" {
-				config["chain_id"] = json.String(val)
-			} else {
-				data[key] = json.String(val)
-			}
-		}
-		config["data"] = data
-	case:
-		return nil, false
-	}
-	trigger["config"] = config
-	return trigger, true
-}
-
-// Build without I/O so malformed syntax cannot send a partial request.
-ctl_actions_request :: proc(tokens, args: []string) -> (Ctl_Request, bool) {
-	action := pos(tokens, 0)
-	if action == "" || action == "list" {
-		return {method = .GET, path = ctl_api("actions")}, true
-	}
-	id := pos(tokens, 1)
-	switch action {
-	case "show", "delete", "enable", "disable", "runs":
-		if id == "" || strings.has_prefix(id, "--") do return {}, false
-		switch action {
-		case "show":
-			return {method = .GET, path = ctl_api("actions", id)}, true
-		case "delete":
-			return {method = .DELETE, path = ctl_api("actions", id)}, true
-		case "enable", "disable":
-			return {method = .POST, path = ctl_api("actions", id, action), body = ctl_empty_object_body()}, true
-		case "runs":
-			query := ctl_query_make()
-			for flag in ([]string{"--limit", "--before", "--before-id"}) {
-				if has_flag(args, flag) {
-					value := option_value(args, flag, "")
-					if value == "" || strings.has_prefix(value, "--") do return {}, false
-					if flag == "--limit" {
-						n, ok := strconv.parse_int(value)
-						if !ok || n < 1 || n > 200 do return {}, false
-						ctl_query_add(&query, "limit", value)
-					} else {
-						key := "before"
-						if flag == "--before-id" do key = "before_id"
-						ctl_query_add(&query, key, value)
-					}
-				}
-			}
-			return {method = .GET, path = ctl_api("actions", id, "runs"), query = query[:]}, true
-		}
-	case "create", "update":
-	case:
-		return {}, false
-	}
-	if action == "update" && (id == "" || strings.has_prefix(id, "--")) do return {}, false
-	body := ctl_action_object()
-	target := ctl_action_object()
-	rules := make([dynamic]json.Value, context.temp_allocator)
-	triggers := make([dynamic]json.Value, context.temp_allocator)
-	target_given, triggers_given := false, false
-	target_count := 0
-	for i := 0; i < len(args); i += 1 {
-		flag := args[i]
-		switch flag {
-		case "--disabled":
-			if action != "create" do return {}, false
-			body["enabled"] = json.Boolean(false)
-		case "--prompt", "--name", "--min-interval", "--agent-id", "--project", "--instance-strategy", "--rule", "--instance", "--bot", "--target", "--trigger", "--trigger-json", "--delay":
-			if i + 1 >= len(args) || strings.has_prefix(args[i + 1], "--") do return {}, false
-			i += 1
-			value := args[i]
-			switch flag {
-			case "--delay":
-                if len(triggers) == 0 do return {}, false
-                delay, valid := ctl_action_delay(value)
-                if !valid do return {}, false
-                trigger, valid_object := triggers[len(triggers)-1].(json.Object)
-                if !valid_object do return {}, false
-                trigger["delay_s"] = json.Integer(delay)
-            case "--prompt":
-				body["prompt_text"] = json.String(value)
-			case "--name":
-				body["name"] = json.String(value)
-			case "--min-interval":
-				n, ok := strconv.parse_i64(value)
-				if !ok do return {}, false
-				body["min_interval_s"] = json.Integer(n)
-			case "--target":
-				if value != "bot" do return {}, false
-				target_given = true
-				target["kind"] = json.String("bot")
-			case "--agent-id", "--instance", "--bot":
-				if value == "" do return {}, false
-				target_given = true
-				target_count += 1
-				switch flag {
-				case "--agent-id":
-					target["kind"] = json.String("agent")
-					target["agent_id"] = json.String(value)
-				case "--instance":
-					target["kind"] = json.String("instance")
-					target["instance_id"] = json.String(value)
-				case "--bot":
-					target["kind"] = json.String("bot")
-					target["bot_id"] = json.String(value)
-				}
-			case "--project":
-				target_given = true
-				target["project_id"] = json.String(value)
-			case "--instance-strategy":
-				target_given = true
-				target["instance_strategy"] = json.String(value)
-			case "--rule":
-				target_given = true
-				parts := strings.split(value, ":", context.temp_allocator)
-				if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || parts[1] == "" do return {}, false
-				model := "*"
-				if len(parts) == 3 {
-					model = parts[2]
-					if model == "" do return {}, false
-				}
-				rule := ctl_action_object()
-				rule["bridge_id"] = json.String(parts[0])
-				rule["provider"] = json.String(parts[1])
-				rule["model"] = json.String(model)
-				append(&rules, rule)
-			case "--trigger", "--trigger-json":
-				triggers_given = true
-				trigger: json.Value
-				ok := false
-				if flag == "--trigger" {
-					trigger, ok = ctl_action_trigger(value)
-				} else {
-					trigger, ok = ctl_parse_json_document(value)
-					if _, object := trigger.(json.Object); !object do ok = false
-				}
-				if !ok do return {}, false
-				append(&triggers, trigger)
-			}
-		}
-	}
-	if action == "create" {
-		prompt, _ := body["prompt_text"].(json.String)
-		if strings.trim_space(string(prompt)) == "" || !target_given do return {}, false
-	}
-	if has_flag(args, "--target") {
-		if has_flag(args, "--agent-id") || has_flag(args, "--instance") do return {}, false
-		if !has_flag(args, "--bot") do target_count += 1
-	}
-	if target_given {
-		if target_count != 1 do return {}, false
-		kind, _ := target["kind"].(json.String)
-		if kind != "agent" && (len(rules) > 0 || has_flag(args, "--project") || has_flag(args, "--instance-strategy")) do return {}, false
-		if kind == "agent" do target["rules"] = json.Array(rules)
-		body["target"] = target
-	}
-	if triggers_given do body["triggers"] = json.Array(triggers)
-	if action == "create" {
-		return {method = .POST, path = ctl_api("actions"), body = httpc.json_body(body)}, true
-	}
-	return {method = .PATCH, path = ctl_api("actions", id), body = httpc.json_body(body)}, true
-}
-
-// The same result is printed verbatim by the command, so API errors and newly
-// added run states remain visible without maintaining a second server schema.
-ctl_actions_response :: proc(hub: Ctl_Hub, tokens, args: []string) -> string {
-	req, ok := ctl_actions_request(tokens, args)
-	if !ok do return CTL_ACTIONS_USAGE
-	response, _, reached := ctl_hub_fetch(hub, req, context.temp_allocator)
-	if !reached do return CTL_HUB_REQUEST_FAILED
-	return response
-}
-
-ctl_hub_actions :: proc(hub: Ctl_Hub, tokens, args: []string) {
-	fmt.println(ctl_actions_response(hub, tokens, args))
-}
-
 hub_user_mode_url :: proc(args: []string) -> string {
 	if v := option_value(args, "--hub-url", ""); v != "" do return v
 	if v := option_value(args, "--daemon-url", ""); v != "" do return v
@@ -848,7 +581,6 @@ print_hub_help :: proc(cmd: []string) {
 		fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards accept crd_123")
 		return
 	}
-	if resource == "actions" || resource == "action" { fmt.println(CTL_ACTIONS_HELP); return }
 	if resource == "issues" || resource == "issue" { print_issues_help(); return }
 	fmt.println("ham-ctl hub — Hub /api/v1 user mode; uses Authorization: Bearer only")
 	fmt.println("commands:")
@@ -863,7 +595,6 @@ print_hub_help :: proc(cmd: []string) {
 	fmt.println("  artifacts    List/create/show/update artifacts")
 	fmt.println("  memories     List/create/show/content/approve/reject/archive memories")
 	fmt.println("  cards        List/show/create/discard/accept/reject/snooze action cards")
-	fmt.println("  actions      List/show/create/update/enable/disable/delete/runs actions")
 	fmt.println("  issues       List/show/create/update/comment/vote/unvote issues")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... me")

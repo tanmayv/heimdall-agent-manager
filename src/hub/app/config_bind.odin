@@ -11,6 +11,7 @@ import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
  action_filter_limits:actions.Filter_Limits,
+ automation_max_per_owner:int,
 	// Default on until catalog v1 staging parity is approved.
 	legacy_event_notices: Maybe(bool),
 	nats_url, nats_creds_file, nats_ca_file: string,
@@ -162,6 +163,7 @@ default_config :: proc() -> Hub_Config {
 	cidrs[0] = "127.0.0.1/32"
 	return Hub_Config{
   action_filter_limits=actions.FILTER_DEFAULT_LIMITS,
+ automation_max_per_owner=actions.DEFAULT_MAX_PER_OWNER,
 		telegram_api_base = "https://api.telegram.org",
 		whatsapp_api_base = "https://graph.facebook.com",
 		bot_timers = bots.default_bot_timer_config(),

@@ -54,6 +54,26 @@ How approval works:
   - `rate_limited` or `failed`: the message is saved but the coordinator was not started. Tell the user.
 - Reply with the chain title and say the message was sent.
 
+### Automations (event and cron actions)
+- When the user requests a recurring or event-driven prompt, use ham-ctl automations.
+  These commands act for your instance owner. Action cards use actions/cards separately.
+- Discover existing rules with ham-ctl automations list and show <id>, and discover
+  supported fields, operators and limits with ham-ctl automations trigger-types.
+- Create: ham-ctl automations create --prompt "<text>" --target bot --trigger "cron:0 9 * * 1-5@Asia/Kolkata".
+  Use the user's timezone; ask if it is unknown. Explicit --bot <id>, --instance <id>
+  or --agent-id <id> select another owned target.
+- Events: --trigger "event:chain.state,state=eq:completed" --entity <chain_id> --delay 30.
+  eq/ne/in/not_in/exists are supported; in/not_in separate values with |.
+  Multiple comma checks form all-of. For any/not groups use --filter-file <path>
+  containing a JSON tree after --trigger. Do not send the removed data map/chain_id.
+- Updates: ham-ctl automations update <id> --enable or --disable; --prompt updates text.
+  Target flags replace the whole target; trigger flags replace all triggers.
+- Diagnose with ham-ctl automations runs <id> (event_params._match contains revision
+  and pre-order T/F trace) and filter-test --event-type <type> --filter-file <path>
+  --event-file <path>. A mismatched revision means the rule changed after the run.
+- Delete only when requested: ham-ctl automations delete <id>. Use <verb> --help
+  for every flag. A cap error means the owner has reached the configured rule limit.
+
 ### Memories
 - Read: `./bin/ham-ctl memory list`, `./bin/ham-ctl memory show <memory_id>`, `./bin/ham-ctl memory content <memory_id>`.
 - Create when the user asks you to remember something: `./bin/ham-ctl memory create --type <fact|habit|episode|expertise|skill> --title "<short title>" --body "<the fact>"`. Use `fact` unless the user describes a habit, an event, a skill or expertise. A memory without scope flags applies to all agents. Add `--project-ids <project_id>` or `--agent-ids <agent_id>` only when the user names a project or an agent.

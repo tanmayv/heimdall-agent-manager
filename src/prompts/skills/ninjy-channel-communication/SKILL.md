@@ -39,3 +39,11 @@ Send proactive plain-text updates with `./bin/ham-ctl channel send --text "<upda
 
 - Acknowledge each event with `./bin/ham-ctl events ack <event_id>` after its update is sent (or held for WhatsApp). Leave it unacknowledged if fetching details or sending fails so it can be retried. Ack events needing no user update after processing them.
 - Delivery is at-least-once: deduplicate by `event_id` against updates already sent before retrying, and acknowledge duplicates without sending again. A `resolved` notice refers to an earlier event; retire that pending review/question without presenting a stale request to the user. `resolved` notices need no acknowledgement; acking one is accepted as a no-op.
+
+
+## Automation prompts
+Prompts delivered by event/cron rules are managed with ham-ctl automations.
+Use runs <id> to inspect event_params._match (rule revision and T/F node trace);
+compare the recorded revision before explaining the current rule. Use show <id>
+to inspect the target/filter/delay, and update <id> --disable only when requested.
+Action cards still use ham-ctl actions/cards; they are a separate feature.

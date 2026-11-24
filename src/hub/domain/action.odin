@@ -30,6 +30,7 @@ Action :: struct {
 	enabled:                  bool,
 	min_interval_s:           int,
 	created_at, updated_at:   string,
+	created_by, updated_by:    string,
 }
 Action_Target_Rule :: struct {
 	position: int,
@@ -93,6 +94,8 @@ action_destroy :: proc(v: ^Action) {
 	delete(string(v.instance_strategy))
 	delete(string(v.placement_selector))
 	delete(string(v.last_spawned_instance_id))
+	delete(v.created_by)
+	delete(v.updated_by)
 	delete(string(v.created_at))
 	delete(string(v.updated_at))
 	v^ = {}
