@@ -176,6 +176,28 @@ test_auto_update_resolve_github_fallback :: proc(t: ^testing.T) {
 	testing.expect_value(t, version, "v999.0.0")
 }
 
+// T16d: a launch record left by a dead (stopped/failed) agent must not hold the
+// quiet window; a live one still does and its instance id is named in the log text.
+@(test)
+test_auto_update_quiet_ignores_dead_launch_records :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	dead, live := "inst_t16d_dead", "inst_t16d_live"
+	bridge_runtime_record_launch({agent_instance_id = dead})
+	bridge_runtime_record_launch({agent_instance_id = live})
+	defer { bridge_runtime_remove_launch(dead); bridge_runtime_remove_launch(live) }
+	bridge_runtime_set_status(dead, "failed", "idle")
+	bridge_runtime_set_status(live, "running", "idle")
+	testing.expect(t, !bridge_auto_update_quiet_with_host(false, auto_update_test_empty_host), "a live record blocks")
+	text := bridge_auto_update_busy_text()
+	testing.expect(t, strings.contains(text, live) && !strings.contains(text, dead), text)
+	testing.expect(t, strings.has_prefix(text, "1 agent launch(es)"), text)
+	bridge_runtime_set_status(live, "stopped", "idle")
+	testing.expect(t, bridge_auto_update_quiet_with_host(false, auto_update_test_empty_host), "dead records do not block")
+}
+
 @(test)
 test_auto_update_quiet_admission :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)

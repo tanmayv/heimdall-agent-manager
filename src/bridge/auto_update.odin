@@ -68,15 +68,18 @@ Bridge_Auto_Update_Busy :: enum {
 }
 bridge_auto_update_busy: Bridge_Auto_Update_Busy
 bridge_auto_update_busy_count: int
+// Instance ids behind Recorded_Launches (comma separated, heap-owned), for the log.
+bridge_auto_update_busy_ids: string
 
 bridge_auto_update_busy_text :: proc() -> string {
 	sync.mutex_lock(&bridge_auto_update_mutex)
 	busy, count := bridge_auto_update_busy, bridge_auto_update_busy_count
+	ids := strings.clone(bridge_auto_update_busy_ids, context.temp_allocator)
 	sync.mutex_unlock(&bridge_auto_update_mutex)
 	switch busy {
 	case .None:              return "agents are running"
 	case .Launch_Preparing:  return "an agent launch is being prepared"
-	case .Recorded_Launches: return fmt.tprintf("%d agent launch(es) recorded by this bridge", count)
+	case .Recorded_Launches: return fmt.tprintf("%d agent launch(es) recorded by this bridge: %s", count, ids)
 	case .Host_Unlisted:     return "cannot list the PTY host's agents"
 	case .Running_On_Host:   return fmt.tprintf("%d running agent(s) or shell session(s) on the PTY host", count)
 	}
@@ -213,11 +216,26 @@ bridge_auto_update_quiet_with_host :: proc(
 		bridge_auto_update_busy = .Launch_Preparing
 		return false
 	}
+	// A record whose instance is already stopped/failed is a dead agent's leftover
+	// (T16d): it must not hold the window. Anything else blocks, named in the log.
+	delete(bridge_auto_update_busy_ids, runtime.heap_allocator())
+	bridge_auto_update_busy_ids = ""
 	sync.mutex_lock(&bridge_runtime_mutex)
-	count := len(bridge_runtime_launches)
+	live_ids := make([dynamic]string, context.temp_allocator)
+	for launch in bridge_runtime_launches {
+		dead := false
+		for inst in bridge_runtime_instances {
+			if inst.agent_instance_id == launch.agent_instance_id {
+				dead = inst.runtime_status == "stopped" || inst.runtime_status == "failed"
+				break
+			}
+		}
+		if !dead do append(&live_ids, launch.agent_instance_id)
+	}
 	sync.mutex_unlock(&bridge_runtime_mutex)
-	if count != 0 {
-		bridge_auto_update_busy, bridge_auto_update_busy_count = .Recorded_Launches, count
+	if len(live_ids) != 0 {
+		bridge_auto_update_busy, bridge_auto_update_busy_count = .Recorded_Launches, len(live_ids)
+		bridge_auto_update_busy_ids = strings.clone(strings.join(live_ids[:], ", ", context.temp_allocator), runtime.heap_allocator())
 		return false
 	}
 	socket := pty_host_socket_path()
