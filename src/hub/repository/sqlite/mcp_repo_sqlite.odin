@@ -56,6 +56,9 @@ open_mcp_repository :: proc(impl: ^MCP_Repo_SQLite, path: string) -> (iface.MCP_
 }
 
 mcp_transaction_sqlite :: proc(ctx: rawptr, run: iface.MCP_Transaction_Proc, run_ctx: rawptr) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^MCP_Repo_SQLite)(ctx)
 	sync.mutex_lock(&impl.mutex); defer sync.mutex_unlock(&impl.mutex)
 	if !exec(&impl.conn, "BEGIN IMMEDIATE;") do return repo_err("failed to begin MCP transaction")
@@ -87,6 +90,9 @@ mcp_get_sqlite :: proc(ctx: rawptr, kind, id: string) -> (domain.MCP_Record, boo
 	return row, true, domain.Domain_Error{}
 }
 mcp_put_sqlite :: proc(ctx: rawptr, row: domain.MCP_Record) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	if !mcp_record_kind_ok(row.kind) || row.id == "" do return domain.domain_error(.Validation_Failed, "invalid MCP metadata kind")
 	data, err := json.marshal(row, allocator = context.temp_allocator)
 	if err != nil do return repo_err("failed to encode MCP metadata")
@@ -98,6 +104,9 @@ mcp_put_sqlite :: proc(ctx: rawptr, row: domain.MCP_Record) -> domain.Domain_Err
 	return {}
 }
 mcp_remove_sqlite :: proc(ctx: rawptr, kind, id: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	stmt, ok := prepare((^Conn)(ctx), fmt.tprintf("DELETE FROM %s WHERE kind = ? AND id = ?;",mcp_table(kind)))
 	if !ok do return repo_err("failed to prepare MCP metadata removal")
 	defer sqlite3_finalize(stmt)

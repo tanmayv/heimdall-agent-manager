@@ -32,8 +32,8 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 // the unlock. lockorder.assert_tx_mutex_allowed enforces it at begin.
 //
 // SQLite connection mutexes are held only for statements / short repository
-// operations, NEVER across an outer UoW: state_mutex holders also write SQLite.
-// A UoW may take state_mutex and then db_mutex, never db_mutex then state_mutex.
+// operations, NEVER across an outer UoW. Runtime persistence releases state_mutex
+// before DB work. A UoW may reserve state, never take state_mutex under db_mutex.
 // Bot multi-statement transactions join the tx_mutex gate before db_mutex via
 // tx_repository_enter/leave; no repository gate may be entered under state_mutex.
 //
@@ -80,6 +80,7 @@ Pending_After_Commit :: struct {
 }
 
 SQLite_Unit_Of_Work_Factory :: struct {
+	bots: Bot_Repo_SQLite,
 	conn: ^Conn,
 	repos: ^iface.Repositories,
 }
@@ -95,6 +96,7 @@ SQLite_Unit_Of_Work_Context :: struct {
 new_unit_of_work_factory :: proc(factory: ^SQLite_Unit_Of_Work_Factory, conn: ^Conn, repos: ^iface.Repositories) -> iface.Unit_Of_Work_Factory {
 	factory.conn = conn
 	factory.repos = repos
+	if repos != nil && repos.bots.bot_get_by_instance == nil do repos.bots = new_bot_repository(&factory.bots, conn)
 	return iface.Unit_Of_Work_Factory{ctx = rawptr(factory), begin = sqlite_uow_begin}
 }
 
@@ -294,16 +296,34 @@ outbox_uow_owns :: proc(conn: ^Conn) -> bool {
 // Short repository-owned transactions/savepoints share the UoW serialization
 // gate. Enter before taking db_mutex; leave after COMMIT/ROLLBACK and releasing
 // db_mutex. When already inside this threads UoW, its gate is already held.
-Repository_Tx_Guard :: struct {locked: bool, token: dbt.Lock_Token}
+Repository_Tx_Guard :: struct {locked, entered: bool, token: dbt.Lock_Token}
+
+// Repository entry points call other repository writers (for example identity
+// provisioning saves a user). Keep their outer guard across the whole operation
+// without trying to acquire the same non-recursive mutex again.
+@(thread_local)
+repository_tx_depth: int
 
 tx_repository_enter :: proc() -> Repository_Tx_Guard {
 	if sync.atomic_load(&tx_depth)>0 && sync.atomic_load(&tx_owner_thread)==sync.current_thread_id() do return {}
+	if repository_tx_depth > 0 {
+		repository_tx_depth += 1
+		return {entered=true}
+	}
 	lockorder.assert_tx_mutex_allowed()
-	return {locked=true, token=dbt.timed_lock(&tx_mutex, .Uow_Tx)}
+	token := dbt.timed_lock(&tx_mutex, .Uow_Tx)
+	repository_tx_depth = 1
+	return {locked=true, entered=true, token=token}
 }
 
 tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
-	if guard.locked do dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
+	if !guard.entered do return
+	assert(repository_tx_depth > 0)
+	repository_tx_depth -= 1
+	if guard.locked {
+		assert(repository_tx_depth == 0)
+		dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
+	}
 }
 
 // Every append-capable transaction is a UoW (outbox_prepare enforces this).

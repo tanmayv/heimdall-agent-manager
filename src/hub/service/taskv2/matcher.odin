@@ -44,7 +44,7 @@ match_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, tri
 		}
 		grant_work(svc, u, &ctx, task, trigger)
 	}
-	return reconcile_placement_in_uow(svc, u, chain)
+	return reconcile_placement_in_uow(svc, u, chain, ctx.grant_failures[:], true)
 }
 
 @(private = "package")
@@ -64,7 +64,14 @@ stage_live_work_lease_count :: proc(ctx: ^Match_Context, run_id: domain.Workflow
 
 // ---- context ------------------------------------------------------------------------
 
+Grant_Placement_Failure :: struct {
+ task_id: domain.Task_ID,
+ failure: Placement_Failure,
+}
+
 Match_Context :: struct {
+ grant_failures: [dynamic]Grant_Placement_Failure,
+
 	chain:     domain.Task_Chain,
 	tasks:     []domain.Task,
 	sorted:    []domain.Task,
@@ -81,7 +88,7 @@ Match_Context :: struct {
 
 @(private = "package")
 load_match_context :: proc(svc: ^Service, chain: domain.Task_Chain) -> (Match_Context, bool, domain.Domain_Error) {
-	ctx := Match_Context{chain = chain, now_ms = now_ms(svc.clock)}
+	ctx := Match_Context{chain = chain, now_ms = now_ms(svc.clock), grant_failures=make([dynamic]Grant_Placement_Failure,context.temp_allocator)}
 	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
 	if terr.code != .None do return ctx, false, terr
 	ctx.tasks = tasks
@@ -136,6 +143,7 @@ load_match_context :: proc(svc: ^Service, chain: domain.Task_Chain) -> (Match_Co
 
 @(private = "package")
 destroy_match_context :: proc(ctx: ^Match_Context) {
+	delete(ctx.grant_failures)
 	delete(ctx.sorted)
 	delete(ctx.leases)
 	delete(ctx.instances)
@@ -225,7 +233,7 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 			placement = placement, actor = hub_actor(), trigger = trigger,
 		})
 		if !gok {
-			fmt.eprintfln("[taskv2] match: work grant skipped task=%s inst=%s: %s", task.task_id, inst.agent_instance_id, gerr.message)
+			record_grant_placement_failure(ctx, task, fleet, placement, "work", "worker", gerr)
 			continue
 		}
 		append(&ctx.leases, lease)
@@ -274,7 +282,7 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 			placement = placement, actor = hub_actor(), trigger = trigger,
 		})
 		if !gok {
-			fmt.eprintfln("[taskv2] match: review grant skipped task=%s inst=%s: %s", task.task_id, inst.agent_instance_id, gerr.message)
+			for role in owed do record_grant_placement_failure(ctx, task, fleet, placement, "review", role, gerr)
 			continue
 		}
 		append(&ctx.leases, lease)
@@ -428,9 +436,8 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 	return jit_prepare(svc, u, ctx, fleet, placement, role)
 }
 
-// jit_prepare reserves + writes a new instance (no network: the launch is the
-// wake run[] entry after commit). The registry reservation is cancelled on
-// rollback (Effects.reservations).
+// jit_prepare creates a stopped instance. Only the subsequent grant opens
+// its generation and reserves launch quota; dispatch follows commit.
 @(private = "file")
 jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, placement: Placement, role: string) -> (domain.Agent_Instance, bool, string) {
 	if svc.agent_service == nil do return {}, false, "agent launch service is unavailable"
@@ -446,12 +453,11 @@ jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.T
 		chain_id = string(ctx.chain.chain_id), project_id = project_id,
 		member_role = "worker",
 	}
-	inst, generation, ok, err := agent.prepare_instance(svc.agent_service, auth, input)
+	inst, ok, err := agent.create_instance_stopped(svc.agent_service, auth, input)
 	if !ok {
 		fmt.eprintfln("[taskv2] match: JIT %s for agent %s on bridge %s failed: %s", role, fleet.agent_id, placement.bridge_id, err.message)
 		return {}, false, err.message
 	}
-	if u != nil do append(&u.effects.reservations, Jit_Reservation{bridge_id = inst.bridge_id, generation = generation, instance_id = inst.agent_instance_id})
 	effect_instance_changed(u, inst.agent_instance_id, "created")
 	append(&ctx.instances, inst)
 	return inst, true, ""
@@ -766,4 +772,14 @@ fleet_owns_task :: proc(ctx: ^Match_Context, task: domain.Task, agent_id: string
 		for inst in ctx.instances do if inst.agent_instance_id == claim.holder_instance_id && inst.agent_id == agent_id do return true
 	}
 	return false
+}
+
+
+// A refused launch is a placement diagnostic, never an infrastructure block.
+// Keep it in this matching pass and persist it with the existing snapshot.
+record_grant_placement_failure :: proc(ctx:^Match_Context, task:domain.Task, fleet:domain.Task_Chain_Fleet, placement:Placement, phase, role:string, err:domain.Domain_Error) {
+ failures:=make([dynamic]Placement_Failure,context.temp_allocator)
+ reason:=jsonx.extract_string(err.details_json,"code","launch_refused",true,context.temp_allocator)
+ append_placement_failure(&failures,ctx,task,fleet,placement,phase,role,reason,err.message,"grant")
+ for failure in failures do append(&ctx.grant_failures,Grant_Placement_Failure{task.task_id,failure})
 }

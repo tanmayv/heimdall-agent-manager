@@ -106,10 +106,8 @@ mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Han
     foreign_repo.get_conversation=proc(ctx:rawptr,id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error) {
       return {conversation_id="foreign_chat",owner_user_id="foreign_message_owner",agent_instance_id="inst_message_a"},true,{}
     }
-    foreign_repo.list_conversations=proc(ctx:rawptr,owner:domain.User_ID,limit:int,cursor:string)->([]domain.Chat_Conversation,domain.Domain_Error) {
-      rows:=make([]domain.Chat_Conversation,1,context.temp_allocator)
-      rows[0]={conversation_id="foreign_chat",owner_user_id="foreign_message_owner",agent_instance_id="inst_message_a"}
-      return rows,{}
+    foreign_repo.conversation_by_instance=proc(ctx:rawptr,owner:domain.User_ID,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error) {
+      return {conversation_id="foreign_chat",owner_user_id="foreign_message_owner",agent_instance_id="inst_message_a"},true,{}
     }
     g.content.content=&foreign_repo
     testing.expect(t,strings.contains(mcp_task_test_call(h,headers,"chains.message",args).body,"coordinator_unavailable"))

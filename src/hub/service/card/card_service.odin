@@ -321,6 +321,7 @@ Card_Service :: struct {
 	// service keeps the legacy list-time task projection instead.
 	attention_repo:     ^iface.Attention_Repository,
 	attention_notifier: contracts.Attention_Notifier,
+	// Projector UoW must begin before this mutex; effects follow outer commit.
 	projector_mutex:    sync.Mutex,
 	card_changed:       Card_Changed_Hook,
 	// REQ-2: agent.prompt ops announce their message after the accept commits.

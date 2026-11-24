@@ -631,19 +631,32 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 		include_debug=include_debug, 
 		limit=limit, 
 		cursor=cursor,
+		// The ACP agent's own read: bridge admission (legacy read_at) must not
+		// hide inputs it has not actually read. The bridge's input drain keeps
+		// the legacy filter so admission never loops.
+		acp_agent_unread=inst.runtime_transport == "acp" && !bridge_input && target_id == "",
 	}
 
 	rows, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
 	if err.code != .None do return respond_error(err, req.request_id)
 	
+	// In the ACP agent unread view every returned row is unread for the agent.
+	acp_unread_view := filter.acp_agent_unread && unread_only
 	unread_count_before := 0
-	for row in rows { if row.read_at == "" do unread_count_before += 1 }
+	for row in rows { if row.read_at == "" || acp_unread_view do unread_count_before += 1 }
+	legacy_unread := 0
+	was_legacy_unread := make([]bool, len(rows), context.temp_allocator)
+	for row, i in rows { if row.read_at == "" { legacy_unread += 1; was_legacy_unread[i] = true } }
 
 	marked_count := 0
 	through_message_id := ""
 	through_created_at := ""
-	
 	if mark_read && len(rows) > 0 && unread_count_before > 0 {
+		through_message_id = rows[len(rows)-1].message_id
+		through_created_at = rows[len(rows)-1].created_at
+	}
+
+	if mark_read && len(rows) > 0 && legacy_unread > 0 {
 		ids := make([dynamic]string)
 		defer delete(ids)
 		for row in rows { if row.read_at == "" do append(&ids, row.message_id) }
@@ -653,12 +666,25 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 		if marked_count > 0 {
 			for &row in rows { if row.read_at == "" do row.read_at = read_at }
 		}
-		through_message_id = rows[len(rows)-1].message_id
-		through_created_at = rows[len(rows)-1].created_at
 		// Notify the conversation owner (the human) that their agent read these
 		// messages, so the UI can show read receipts on the user's sent bubbles.
 		if marked_count > 0 {
 			publish_agent_messages_read(h, string(conv.owner_user_id), conv, ids[:], inst.agent_instance_id, read_at)
+		}
+	}
+	// An agent's own chat read is read evidence for ACP input (the bridge's
+	// input drain is admission only and never counts).
+	acp_read: []string
+	if mark_read && !bridge_input && target_id == "" do acp_read = acp_note_agent_read_rows(h, auth, inst, rows[:])
+	unread_count_after := unread_count_before - marked_count
+	if acp_unread_view {
+		// Count each row once: it stays unread unless the legacy mark or the
+		// ACP read evidence covered it.
+		unread_count_after = 0
+		for row, i in rows {
+			covered := was_legacy_unread[i] && marked_count > 0
+			for id in acp_read do if id == row.message_id do covered = true
+			if !covered do unread_count_after += 1
 		}
 	}
 
@@ -666,7 +692,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	mode_str := unread_only ? "inbox_unread" : "history"
 	
 	fmt.sbprintf(&b, "{{\"conversation\":{{\"conversation_id\":\"%s\",\"agent_instance_id\":\"%s\",\"unread_count_before\":%d,\"unread_count_after\":%d}},\"mode\":\"%s\",\"filters\":{{\"receiver_agent_instance_id\":\"%s\",\"unread_only\":%t,\"receiver_only\":%t,\"include_outgoing\":%t,\"include_debug\":%t,\"mark_read\":%t}},\"messages\":[",
-		conv.conversation_id, effective_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
+		conv.conversation_id, effective_instance_id, unread_count_before, unread_count_after, mode_str,
 		effective_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
 
 	next := ""

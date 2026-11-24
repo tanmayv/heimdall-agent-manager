@@ -19,7 +19,7 @@ test_transient_extension_upgrade_removes_populated_history :: proc(t: ^testing.T
     testing.expect(t, ok, err.message)
     testing.expect(t, migration_applied(&conn, "125_transient_extension_signals.sql"))
     testing.expect(t, migration_applied(&conn, "126_action_schedule_revision.sql"))
-    testing.expect(t, sqlite_object_exists(&conn, "action_schedule_revision"))
+    testing.expect(t, !sqlite_object_exists(&conn, "action_schedule_revision"))
     testing.expect(t, !sqlite_object_exists(&conn, "agent_extension_events"))
     testing.expect(t, !sqlite_object_exists(&conn, "agent_extension_events_instance_seq"))
     testing.expect(t, !sqlite_object_exists(&conn, "agent_extension_events_instance_agent"))

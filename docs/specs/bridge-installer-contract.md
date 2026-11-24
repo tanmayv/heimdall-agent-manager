@@ -81,7 +81,7 @@ Unless a row says otherwise: **no TTY needed** (stdin is `/dev/null` under `inst
 | S7a | **Busy**: lock held by a **live** setup/update process. | Nothing. | 6 | `[ERROR] Another setup or update of <service> is running (pid <pid>); try again when it finishes.` |
 | S8a | **Version skew, no `--version`, `--keep-version`**: S2 with installed ≠ the bundle (newer **or** older). The installer scripts pass `--keep-version` only when they resolved the release themselves (no `--version` and no `--bundle`, §7). | Treated as S2: **nothing changes**. Updates belong to the update path (today `ham-bridge update` / auto-update; after Phase 2 the supervisor). **Without** `--keep-version` setup installs the bundle's binaries (as S8b): `ham-bridge update`, auto-update and hub updates run the new bundle's `setup --hub H [--profile P] --headless` built by the *installed* binary (`src/lib/bridgesvc/uninstall.odin:266`), so this default keeps every existing update path working (user decision 2026-11-23). | 0 | S2 line, plus `(installed v<x>; this installer carried v<y>; updates are not done by the installer)`. |
 | S8b | **Version change** (any S2–S7 state): `--version X` newer than installed; or no `--version` and no `--keep-version` with a bundle that differs from `bin/`, newer **or older** (the update path, and the scripts' `--bundle` runs without a TAG, which pass neither flag to setup); or `--reinstall` (passed by `ham-bridge update`: whole transaction even for an identical bundle). A `--version X` given to setup must be this bundle's version, otherwise exit 2. | Pre-Phase 2 only: replace `bin/` with X through the existing transaction (today's behaviour; it is the documented `ham-bridge update --version` equivalent). Repairs from S3–S7 are done in the same run. | 0 / 1 | `Updated <service> v<old> → v<X>; connected.` |
-| S8c | **`ham-bridge setup` receives `--version X` and X is older than installed**: a direct `ham-bridge setup --version X`, or an install script given a concrete `--version X` / `-Version X` / `HEIMDALL_VERSION=X`, which it forwards to setup (§7). | Refuse unless `--allow-downgrade` is also passed (`REQ-CHAN-1`: no silent downgrade; headless cannot confirm). With it: as S8b. A `--bundle` alone carries no requested version and stays S8b (the desktop installers' path). **Limit:** through the scripts the refusal is made by the setup of the requested release, so it needs a release after v0.5.75 (the first with T2's S8c); releases up to v0.5.75 ignore `--version` and `--allow-downgrade` and are installed as S8b, silently. | 5 | `[ERROR] <service> runs v<old>, newer than requested v<X>; pass --allow-downgrade to downgrade.` |
+| S8c | **`ham-bridge setup` receives `--version X` and X is older than installed**: a direct `ham-bridge setup --version X`, or an install script given a concrete `--version X` / `-Version X` / `HEIMDALL_VERSION=X`, which it forwards to setup (§7). | Refuse unless `--allow-downgrade` is also passed (`REQ-CHAN-1`: no silent downgrade; headless cannot confirm). With it: as S8b. A `--bundle` alone carries no requested version and stays S8b (the desktop installers' path). **Limit:** through the scripts the refusal is made by the setup of the requested release, so it needs a release after v0.5.77 (v0.5.75–v0.5.77 were cut from main without T2, so the first with T2's S8c is the first release from this branch); releases up to v0.5.77 ignore `--version` and `--allow-downgrade` and are installed as S8b, silently. | 5 | `[ERROR] <service> runs v<old>, newer than requested v<X>; pass --allow-downgrade to downgrade.` |
 | S9 | **Rollback incomplete** (any row whose transaction failed and could not restore, `setup_cmd.odin:315-320`). | Stop; nothing further. | 7 | `ham-bridge setup FAILED at step "<step>"; rollback incomplete: <reason>.` |
 
 ### 3.1 "Hub changed" (T0 re-enroll trigger)
@@ -155,7 +155,7 @@ accepted by `install.ps1` because unknown arguments pass through to `ham-bridge`
 |---|---|---|---|
 | `--hub URL` (alias `--hub-url`) | `-Hub` (alias `-HubUrl`) | `HEIMDALL_HUB` | Hub API origin. **Required.** |
 | `--profile NAME` (alias `--name`) | `-Name` (alias `-Profile`) | `HEIMDALL_BRIDGE_NAME` | Profile name, `[a-z0-9][a-z0-9-]{0,30}`; default profile when empty. |
-| `--version TAG\|latest` | `-Version` | `HEIMDALL_VERSION` | Release to bootstrap from. Default `latest` (resolution: §5.1). A concrete TAG is also passed to `ham-bridge setup` as `--version TAG`, so an older TAG is refused (exit 5) without `--allow-downgrade` (TAGs after v0.5.75; older releases' setup ignores it, S8c). On an existing instance: §3 S8, §7. |
+| `--version TAG\|latest` | `-Version` | `HEIMDALL_VERSION` | Release to bootstrap from. Default `latest` (resolution: §5.1). A concrete TAG is also passed to `ham-bridge setup` as `--version TAG`, so an older TAG is refused (exit 5) without `--allow-downgrade` (TAGs after v0.5.77; older releases' setup ignores it, S8c). On an existing instance: §3 S8, §7. |
 | `--allow-downgrade` † | `-AllowDowngrade` † | — | Permit S8c (passed through to setup): install an explicit `--version` TAG older than the installed bridge. Deliberately no env var: a downgrade must be visible in the command. |
 | (automatic) `--keep-version` † | (automatic) † | — | Not a user option: the scripts pass it to `ham-bridge setup` only when they resolved the release themselves (no `--version`, no `--bundle`), so a plain re-run never changes a working instance's version (S8a, §7). `ham-bridge setup` without it installs the bundle (update path). |
 | `--bundle FILE --checksum-file FILE` | `-Bundle -ChecksumFile` | — | Use an already-downloaded bundle (desktop apps, air-gapped); verified first. An installed bridge is moved to the bundle's version (no `--keep-version`, §7). |
@@ -262,7 +262,7 @@ second update path.
   | Given | `--keep-version` | Effect on a healthy instance |
   |---|---|---|
   | nothing, or `--version latest` / `HEIMDALL_VERSION=latest` | passed | version **never** changed (S2, S8a) |
-  | `--version X` / `HEIMDALL_VERSION=X` | omitted | moved to a newer X (S8b); an older X is refused, exit 5, unless `--allow-downgrade` (S8c; X after v0.5.75, else moved to X) |
+  | `--version X` / `HEIMDALL_VERSION=X` | omitted | moved to a newer X (S8b); an older X is refused, exit 5, unless `--allow-downgrade` (S8c; X after v0.5.77, else moved to X) |
   | `--bundle FILE` (with or without a release) | omitted | moved to the bundle's version, newer or older (S8b); with a concrete TAG as well, the TAG must name the bundle (exit 2) and the row above applies |
 
   So a plain `curl | bash` / `irm | iex` re-run never changes a healthy bridge's version,
@@ -275,19 +275,19 @@ second update path.
   itself and never to `uninstall`. Setup then requires the TAG to equal the bundle's
   version (exit 2 otherwise) and applies S8b/S8c. `--allow-downgrade`/`-AllowDowngrade`
   passes through unchanged (user decision 2026-11-23, T3c). The refusal is made by the
-  requested release's setup: releases up to v0.5.75 predate T2, ignore the forwarded
+  requested release's setup: releases up to v0.5.77 predate T2, ignore the forwarded
   `--version` and are installed as S8b, so an older TAG of that age still downgrades
   silently (exit 0).
 
   | Given | `--version` to setup | Older than installed |
   |---|---|---|
   | nothing, `latest`, or `--bundle` alone | omitted | n/a (S8a, or S8b for a bundle) |
-  | `--version X` / `HEIMDALL_VERSION=X` (with or without `--bundle`) | `--version X` | X after v0.5.75: refused, exit 5 (S8c); installed with `--allow-downgrade` (S8b). X up to v0.5.75: installed (S8b), its setup ignores `--version` |
+  | `--version X` / `HEIMDALL_VERSION=X` (with or without `--bundle`) | `--version X` | X after v0.5.77: refused, exit 5 (S8c); installed with `--allow-downgrade` (S8b). X up to v0.5.77: installed (S8b), its setup ignores `--version` |
 - Repairs (S3, S4, S6, S7) keep the installed binaries unless `bin/` itself is missing or
   partial, or the run is one of the "moved to" rows above.
 - With `--version X` the script behaves as `ham-bridge update --version X` does today:
   the same setup transaction replaces `bin/` (S8b; an older X needs `--allow-downgrade`,
-  S8c, when X is a release after v0.5.75). This is
+  S8c, when X is a release after v0.5.77). This is
   today's path P5 (report §2.2), kept working until Phase 4 deletes it.
 
 **After Phase 2 (instance has a launcher, a supervisor and an ownership record):**

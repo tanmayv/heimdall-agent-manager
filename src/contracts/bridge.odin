@@ -32,6 +32,10 @@ BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION :: "heartbeat_metadata_omission"
 BRIDGE_RESYNC_REQUIRED_CAUSE :: "resync_required"
 
 // Loopback routes served by the bridge on :49323.
+// GET health keeps ok as loopback liveness and includes event_ledger:
+// {status: ready|full|checkpoint_pending|unavailable, entries: int, capacity: int}.
+// unavailable means on-disk state needs repair; checkpoint_pending retries the
+// known in-memory state atomically on the next ledger operation.
 ROUTE_BRIDGE_HEALTH :: "/bridge/health"
 ROUTE_BRIDGE_VALIDATE_PROJECT_PATH :: "/bridge/validate-project-path"
 

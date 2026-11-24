@@ -45,6 +45,7 @@ test_jetstream_real_server :: proc(t: ^testing.T) {
 	scenario_ack_reply_async(t)
 	scenario_delete_message(t)
 	scenario_schedule_fire_ttl(t)
+    scenario_long_pull_local_timeouts(t)
 	err := shutdown(5000)
 	testing.expectf(t, err.status == 0, "shutdown: %s", error_text(err))
 	testing.expectf(t, len(track.allocation_map) == 0, "Odin live allocations: %d", len(track.allocation_map))
@@ -774,4 +775,38 @@ test_delete_error_classification :: proc(t: ^testing.T) {
 	for c in cases {
 		testing.expect_value(t, ham_nats_delete_error_absent(c.status, c.code, c.description) != 0, c.absent)
 	}
+}
+
+scenario_long_pull_local_timeouts :: proc(t: ^testing.T) {
+    f := feature_start(t)
+    defer feature_destroy(&f)
+    testing.expect_value(t, consumer_add(f.conn, {stream = "FEATURE", durable = "long", filter_subjects = []string{"ev.>"}, ack_wait_ns = i64(time.Second), max_deliver = 10}).status, i32(0))
+    p, err := long_pull_bind(f.conn, "FEATURE", "long")
+    if !testing.expect_value(t, err.status, i32(0)) do return
+    defer long_pull_destroy(p)
+    // Local timeouts and a server heartbeat do not create additional requests.
+    requests := 0
+    for _ in 0..<8 {
+        msg, requested, e := long_pull_next(p, 1, 100)
+        if requested do requests += 1
+        testing.expect(t, msg == nil && e.status == 26)
+    }
+    testing.expect_value(t, requests, 1)
+    _, err = publish(f.conn, "ev.later", test_bytes("later"))
+    testing.expect_value(t, err.status, i32(0))
+    received := false
+    for _ in 0..<10 {
+        msg, requested, e := long_pull_next(p, 1, 100)
+        testing.expect(t, !requested)
+        if e.status == 26 do continue
+        testing.expect_value(t, e.status, i32(0))
+        if msg != nil {
+            testing.expect_value(t, string(message_data(msg)), "later")
+            testing.expect_value(t, ack_reply_async(f.conn, message_reply(msg)).status, i32(0))
+            message_destroy(msg)
+            received = true
+            break
+        }
+    }
+    testing.expect(t, received)
 }

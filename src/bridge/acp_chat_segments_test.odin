@@ -18,7 +18,9 @@ c4_chat_test :: proc(t:^testing.T,scenario:proc(t:^testing.T,f:^T4_Runtime_Test)
     defer {delete(bridge_local_token_records);bridge_local_token_records=records}
     ingest:=acp_events_ingest;keys:=acp_chat_keyring
     acp_events_ingest=t5_ingest;acp_chat_keyring=t5_keyring;sync.atomic_store(&t5_locked,false)
-    defer {acp_events_ingest=ingest;acp_chat_keyring=keys;sync.atomic_store(&t5_locked,false);t5_reset_events()}
+    // These scenarios pin the assistant-only outbox layout.
+    reports:=acp_delivery_reports_enabled;acp_delivery_reports_enabled=false
+    defer {acp_events_ingest=ingest;acp_chat_keyring=keys;sync.atomic_store(&t5_locked,false);t5_reset_events();acp_delivery_reports_enabled=reports}
     f:T4_Runtime_Test;c4_open(t,&f);defer t16_close(&f)
     scenario(t,&f)
 }

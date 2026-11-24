@@ -13,7 +13,7 @@ Content_Get_Message_Proc :: proc(ctx: rawptr, message_id: string) -> (domain.Cha
 Content_Update_Message_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, conversation_id, message_id, body, message_status, metadata_json: string) -> (domain.Chat_Message, bool, domain.Domain_Error)
 Content_List_Messages_Proc :: proc(ctx: rawptr, conversation_id: string, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error)
 Content_List_User_Visible_Messages_Proc :: proc(ctx: rawptr, conversation_id: string, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error)
-Content_List_Agent_Inbox_Messages_Proc :: proc(ctx: rawptr, conversation_id: string, owner_user_id: domain.User_ID, agent_instance_id: string, unread_only: bool, receiver_only: bool, include_outgoing: bool, include_debug: bool, limit: int, cursor: string, oldest_first: bool) -> ([]domain.Chat_Message, domain.Domain_Error)
+Content_List_Agent_Inbox_Messages_Proc :: proc(ctx: rawptr, conversation_id: string, owner_user_id: domain.User_ID, agent_instance_id: string, unread_only: bool, receiver_only: bool, include_outgoing: bool, include_debug: bool, limit: int, cursor: string, oldest_first: bool, acp_agent_unread: bool) -> ([]domain.Chat_Message, domain.Domain_Error)
 Content_Mark_Messages_Read_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, message_ids: []string, updated_at: string) -> (int, domain.Domain_Error)
 // Content_List_Unread_Incoming_IDs_Proc returns the ids of EVERY unread
 // agent_to_user message in a conversation (no page cap), for mark-read.
@@ -34,9 +34,23 @@ Content_Delete_Template_Proc :: proc(ctx: rawptr, template_id: string, owner_use
 
 Content_List_Conversation_Project_Links_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Conversation_Project_Link, domain.Domain_Error)
 
+// Newest-activity conversation bound to one instance, with summary fields.
+Content_Conversation_By_Instance_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, agent_instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error)
+
 Content_Repository :: struct {
+	conversation_by_instance: Content_Conversation_By_Instance_Proc,
+ action_conversation: proc(ctx:rawptr,owner:domain.User_ID,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error),
 	get_assistant_turn: Content_Get_Assistant_Turn_Proc,
 	save_assistant_turn: Content_Save_Assistant_Turn_Proc,
+	get_input_delivery: Content_Get_Input_Delivery_Proc,
+	save_input_delivery: Content_Save_Input_Delivery_Proc,
+	list_open_input_deliveries: Content_List_Open_Input_Deliveries_Proc,
+	get_send_now_batch: Content_Get_Send_Now_Batch_Proc,
+	find_send_now_batch: Content_Find_Send_Now_Batch_Proc,
+	save_send_now_batch: Content_Save_Send_Now_Batch_Proc,
+	get_input_runtime: Content_Get_Input_Runtime_Proc,
+	save_input_runtime: Content_Save_Input_Runtime_Proc,
+	set_message_delivery_flags: Content_Set_Message_Delivery_Flags_Proc,
 	ctx: rawptr,
 	// Atomically insert one answer only while source is the last visible row.
 	// A duplicate returns the original row with inserted=false, before freshness.
@@ -82,12 +96,13 @@ content_list_memories :: proc(r: ^Content_Repository, owner: domain.User_ID) -> 
 content_save_conversation :: proc(r: ^Content_Repository, c: domain.Chat_Conversation) -> (domain.Chat_Conversation, bool, domain.Domain_Error) { if r == nil || r.save_conversation == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_conversation(r.ctx, c) }
 content_get_conversation :: proc(r: ^Content_Repository, id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) { if r == nil || r.get_conversation == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_conversation(r.ctx, id) }
 content_list_conversations :: proc(r: ^Content_Repository, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error) { if r == nil || r.list_conversations == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_conversations(r.ctx, owner, limit, cursor) }
+content_conversation_by_instance :: proc(r: ^Content_Repository, owner: domain.User_ID, agent_instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) { if r == nil || r.conversation_by_instance == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.conversation_by_instance(r.ctx, owner, agent_instance_id) }
 content_save_message :: proc(r: ^Content_Repository, m: domain.Chat_Message) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.save_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_message(r.ctx, m) }
 content_get_message :: proc(r: ^Content_Repository, id: string) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.get_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_message(r.ctx, id) }
 content_update_message :: proc(r: ^Content_Repository, owner: domain.User_ID, cid, id, body, status, metadata_json: string) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.update_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.update_message(r.ctx, owner, cid, id, body, status, metadata_json) }
 content_list_messages :: proc(r: ^Content_Repository, id: string, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error) { if r == nil || r.list_messages == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_messages(r.ctx, id, owner, limit, cursor) }
 content_list_user_visible_messages :: proc(r: ^Content_Repository, id: string, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error) { if r == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); if r.list_user_visible_messages != nil do return r.list_user_visible_messages(r.ctx, id, owner, limit, cursor); if r.list_messages == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_messages(r.ctx, id, owner, limit, cursor) }
-content_list_agent_inbox_messages :: proc(r: ^Content_Repository, id: string, owner: domain.User_ID, agent_instance_id: string, unread_only, receiver_only, include_outgoing, include_debug: bool, limit: int, cursor: string, oldest_first: bool = false) -> ([]domain.Chat_Message, domain.Domain_Error) { if r == nil || r.list_agent_inbox_messages == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_agent_inbox_messages(r.ctx, id, owner, agent_instance_id, unread_only, receiver_only, include_outgoing, include_debug, limit, cursor, oldest_first) }
+content_list_agent_inbox_messages :: proc(r: ^Content_Repository, id: string, owner: domain.User_ID, agent_instance_id: string, unread_only, receiver_only, include_outgoing, include_debug: bool, limit: int, cursor: string, oldest_first: bool = false, acp_agent_unread: bool = false) -> ([]domain.Chat_Message, domain.Domain_Error) { if r == nil || r.list_agent_inbox_messages == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_agent_inbox_messages(r.ctx, id, owner, agent_instance_id, unread_only, receiver_only, include_outgoing, include_debug, limit, cursor, oldest_first, acp_agent_unread) }
 content_mark_messages_read :: proc(r: ^Content_Repository, owner: domain.User_ID, message_ids: []string, updated_at: string) -> (int, domain.Domain_Error) { if r == nil || r.mark_messages_read == nil do return 0, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.mark_messages_read(r.ctx, owner, message_ids, updated_at) }
 content_save_artifact :: proc(r: ^Content_Repository, a: domain.Artifact) -> (domain.Artifact, bool, domain.Domain_Error) { if r == nil || r.save_artifact == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_artifact(r.ctx, a) }
 content_get_artifact :: proc(r: ^Content_Repository, id: string) -> (domain.Artifact, bool, domain.Domain_Error) { if r == nil || r.get_artifact == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_artifact(r.ctx, id) }

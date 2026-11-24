@@ -138,3 +138,22 @@ test_start_success_before_command_result :: proc(t:^testing.T) {start_http_run(t
 test_start_success_when_command_result_is_lost :: proc(t:^testing.T) {start_http_run(t,start_success_http_scenario)}
 @(test)
 test_start_begin_handler_auth :: proc(t:^testing.T) {start_http_run(t,start_route_scenario)}
+
+
+fallback_start_success_scenario :: proc(t:^testing.T,c:^Coordinator_Wake_Fixture) {
+    f := c.f
+    testing.expect(t, sqlite.exec(&f.conn, "UPDATE agent_instances SET run_count=5,runtime_status='stopped' WHERE agent_instance_id='inst_wake';"))
+    launch, count, _, begun, err := agent_service.start_begin_for_bridge(&f.ag_svc,f.owner,f.bridge_pin,"inst_wake","fb_inst_wake_1")
+    testing.expect(t,begun,err.message)
+    testing.expect_value(t,count,6)
+    testing.expect(t,strings.contains(launch,`"run_count":6`))
+    req := Request{method="POST",path="/api/v1/agent-actions/start-success",body=`{"agent_instance_id":"inst_wake","params":{"run_count":6}}`,remote_addr="127.0.0.1:4444",headers={{name="Authorization",value=fmt.tprintf("Bearer %s",f.bridge_token)},{name="X-Heimdall-Instance-Token",value="hit_inst_wake"}}}
+    resp := agent_action_start_success_handler(&f.ah,req)
+    testing.expectf(t,resp.status==200,"%d %s",resp.status,resp.body)
+    row, found, rerr := iface.agent_get_instance(&f.ag_repo,"inst_wake")
+    testing.expect(t,found,rerr.message)
+    testing.expect_value(t,row.runtime_status,"running")
+    testing.expect_value(t,row.run_count,6)
+}
+@(test)
+test_fallback_start_success_is_accepted :: proc(t:^testing.T) {start_http_run(t,fallback_start_success_scenario)}

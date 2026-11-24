@@ -48,6 +48,8 @@ upsert_assistant_message :: proc(s: ^Content_Service, auth: contracts.Auth_Conte
     // Stop reasons are protocol identifiers, never arbitrary adapter error text.
     if len(input.stop_reason) > 128 do return {}, false, domain.domain_error(.Validation_Failed, "invalid stop reason")
     for ch in input.stop_reason do if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') do return {}, false, domain.domain_error(.Validation_Failed, "invalid stop reason")
+    if len(input.input_ids) > contracts.ACP_SEND_NOW_MAX_MEMBERS do return {}, false, domain.domain_error(.Validation_Failed, "too many assistant input ids")
+    for id in input.input_ids do if !acp_delivery_id_valid(id) do return {}, false, domain.domain_error(.Validation_Failed, "invalid assistant input id")
     if len(input.body) > domain.vault_armored_max_bytes(contracts.ACP_ASSISTANT_MAX_BYTES) do return {}, false, domain.domain_error(.Validation_Failed, "assistant_message_too_large")
     uow, begun, uerr := iface.unit_of_work_begin(s.uow_factory)
     if !begun do return {}, false, uerr
@@ -82,6 +84,8 @@ upsert_assistant_message :: proc(s: ^Content_Service, auth: contracts.Auth_Conte
         if _, collision, lookup_err := iface.content_get_message(local.content, input.message_id); collision || (lookup_err.code != .None && lookup_err.code != .Not_Found) do return {}, false, domain.domain_error(.Conflict, "assistant message identity already exists")
     }
     metadata, _ := json.marshal(struct{acp: struct{turn_id, launch_epoch: string, revision: i64, stop_reason: string}}{acp={input.turn_id,input.launch_epoch,input.revision,input.stop_reason}}, allocator=context.temp_allocator)
+    // Causal association: every user input this segment answers (a batch has several).
+    if len(input.input_ids) > 0 do metadata, _ = json.marshal(struct{acp: struct{turn_id, launch_epoch: string, revision: i64, stop_reason: string, input_ids: []string}}{acp={input.turn_id,input.launch_epoch,input.revision,input.stop_reason,input.input_ids}}, allocator=context.temp_allocator)
     now := platform.clock_now(s.clock)
     msg := result.message
     if !bound {

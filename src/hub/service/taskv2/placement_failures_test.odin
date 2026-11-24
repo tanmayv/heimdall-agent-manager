@@ -1,5 +1,8 @@
 package taskv2
 
+import agent "odin_test:hub/service/agent"
+import project "odin_test:hub/service/project"
+
 import "core:strings"
 import "core:fmt"
 import "core:os"
@@ -294,6 +297,9 @@ test_placement_snapshot_survives_database_and_engine_reload :: proc(t: ^testing.
 	if !testing.expect(t, reopen_ok, reopen_err.message) do return
 	fx.conn = reopened
 	fixture_wire(fx)
+	agents := agent.new_agent_service(&fx.agents, &fx.bridges, &fx.clock, &fx.ids)
+	fx.svc.agent_service = &agents
+	fx.svc.bridge_command_sink = project.Bridge_Command_Sink{send_runtime_command=proc(ctx:rawptr,cmd:project.Runtime_Command)->(bool,domain.Domain_Error){return true,{}}}
 	reloaded := get_task(fx, string(task.task_id))
 	after, found := get_facet(&fx.svc, reloaded, 0, FACET_PLACEMENT)
 	testing.expect(t, found && after.body_json == before.body_json && after.v == before.v, "durable identity survives new connection and service")

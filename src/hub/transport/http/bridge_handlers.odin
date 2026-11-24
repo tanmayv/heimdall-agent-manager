@@ -15,6 +15,7 @@ import "core:time"
 import "core:unicode/utf8"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import delivery "odin_test:hub/service/delivery"
 import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
@@ -39,6 +40,9 @@ import metrics "odin_test:lib/metrics"
 import bots "odin_test:hub/service/bots"
 
 Bridge_Handlers :: struct {
+	// Always wired in production; nil only for in-memory repository doubles.
+	uow_factory: ^iface.Unit_Of_Work_Factory,
+	delivery: ^delivery.Service,
 	bots: ^bots.Bots_Service,
 	entitlements: domain.Entitlement_Lookup,
 	auth: ^auth_service.Auth_Service,
@@ -50,8 +54,6 @@ Bridge_Handlers :: struct {
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
 	mcp_control: ^MCP_Control_Handlers,
-	actions: rawptr,
-	scheduled_prompts: rawptr,
 	// experiments gates explorer relays (domain.PROJECT_VCS_EXPERIMENT_KEY) and Actions
 	// bridge routes (domain.ACTIONS_EXPERIMENT_KEY) per owner (REQ-EXP-GATE-3).
 	experiments: ^iface.Experiment_Repository,
@@ -1779,33 +1781,19 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 		bridge_ws_domain_error(client, plan_err)
 		return
 	}
-	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, admitted_bridge.bridge_id, json_int(hello_text, "protocol_version", 1), validation_url, string(admitted_bridge.owner_user_id), bridge_connection_replaced_payload())
-	if !hello_ok {
-		bridge_metrics_connect_result(admitted_bridge.bridge_id, "limit" if hello_err.code == .Bridge_Busy else "hello_rejected")
-		_ = write_ws_text_frame(client, bridge_ws_error_payload(hello_err.message))
+	hello, bridge, connect_ok, err := bridge_admit_hello(h, admitted_bridge, token, hostname, platform_os, platform_arch, hello_text, version_str, commit_sha_str, build_timestamp_str, validation_url)
+	if !connect_ok {
+		bridge_metrics_connect_result(admitted_bridge.bridge_id, "limit" if err.code == .Bridge_Busy else "revoked" if err.code == .Bridge_Revoked else "hello_rejected" if err.code == .Validation_Failed else "connect_failed")
+		bridge_ws_domain_error(client, err)
 		return
 	}
 	connection := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, admitted_bridge.bridge_id, hello.generation)
-	if connection == nil do return
+	if connection == nil { domain.bridge_destroy(&bridge); return }
 	reader.control_context = rawptr(connection)
 	reader.control_writer = bridge_reader_write_pong
 	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, connection)
 	defer project_service.bridge_runtime_connection_quiesce(h.bridge_runtime_registry, connection)
 	defer project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, connection.bridge_id, hello.generation)
-	// Admission and quota checks precede the durable Online transition. State
-	// retirement also gates this write, so an older disconnect finishes first.
-	project_service.connection_state_lock(connection)
-	if sync.atomic_load(&connection.retired) { project_service.connection_state_unlock(connection); return }
-	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, platform_os, platform_arch, hello_text, version_str, commit_sha_str, build_timestamp_str)
-	// The hello's record is now the metadata authority for this connection; record the
-	// contract under the same lock so no heartbeat sees one without the other (plan T3).
-	if connect_ok do bridge_record_hello_metadata(connection, hello_text)
-	project_service.connection_state_unlock(connection)
-	if !connect_ok {
-		bridge_metrics_connect_result(admitted_bridge.bridge_id, "revoked" if err.code == .Bridge_Revoked else "connect_failed")
-		bridge_ws_domain_error(client, err)
-		return
-	}
 	defer domain.bridge_destroy(&bridge)
 	// Bind the session to the credential that opened it, for its whole lifetime:
 	// the reader closes it at expiry (unless renewed in-band with bridge_reauth) or
@@ -1887,6 +1875,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// crossed on_instance_terminal.
 	taskv2.on_bridge_hello(h.task_engine, bridge.bridge_id, hello_active)
 	if h.bots != nil do bots.bots_on_bridge_hello(h.bots, bridge.bridge_id)
+	if h.delivery != nil do delivery.on_bridge_online(h.delivery, bridge.bridge_id)
 	for s in hello_active do delete(s)
 	delete(hello_active)
 	// REQ-SHELL-3: deliver this bridge's OUTSTANDING KILL INTENTS. A kill accepted
@@ -1931,21 +1920,24 @@ BRIDGE_INSTANCE_STALE_MS :: 90_000
 // fans out resource_changed so the UI updates immediately.
 bridge_disconnect_persist :: proc(h: ^Bridge_Handlers, connection: ^project_service.Bridge_Runtime_Connection) -> (domain.Bridge, bool, []domain.Agent_Instance, bool) {
 	if connection == nil do return {}, false, nil, false
+	uow, opened, _ := bridge_persist_begin(h)
+	if !opened do return {}, false, nil, false
+	defer bridge_persist_rollback(&uow)
 	project_service.connection_state_lock(connection)
-	notify_bots := false
-	defer {
-		project_service.connection_state_unlock(connection)
-		// Bot transitions use their own mutex and SQLite; preserve the registry
-		// lock order by running the hook after releasing connection state.
-		if notify_bots && h.bots != nil do bots.bots_on_bridge_disconnect(h.bots, connection.bridge_id)
-	}
-	if sync.atomic_load(&connection.retired) do return {}, false, nil, false
+	retired := sync.atomic_load(&connection.retired)
+	project_service.connection_state_unlock(connection)
+	if retired do return {}, false, nil, false
 	bridge: domain.Bridge
 	changed := false
 	if h.bridges != nil { bridge, changed, _ = bridge_service.mark_bridge_offline(h.bridges, connection.bridge_id) }
 	cleared: []domain.Agent_Instance
 	if h.agents != nil { cleared = agent_service.mark_bridge_instances_unreachable(h.agents, connection.bridge_id) }
-	notify_bots = true
+	if committed, _ := bridge_persist_commit(&uow); !committed {
+		domain.bridge_destroy(&bridge)
+		domain.agent_instances_destroy(cleared)
+		return {}, false, nil, false
+	}
+	if h.bots != nil do bots.bots_on_bridge_disconnect(h.bots, connection.bridge_id)
 	return bridge, changed, cleared, true
 }
 
@@ -1997,6 +1989,7 @@ bridge_ws_disconnect :: proc(
 	// status summaries after its connection has started.
 	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != 0 do return
 	taskv2.on_bridge_placement_changed(h.task_engine)
+	if h.delivery != nil do delivery.on_bridge_offline(h.delivery, bridge_id)
 	if changed {
 		summary := bridge_status_summary_json(domain.bridge_status_string(bridge.status))
 		events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", summary)
@@ -2456,23 +2449,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		// Plan T2: inventory repair and absence reconciliation run only on a complete
 		// inventory; an absent or malformed one is counted and leaves instances alone.
 		reconciled, superseded, _ := bridge_reconcile_heartbeat_inventory(h, bridge_id, connection_generation, text)
-		schedules_version := 0
-		if h.actions != nil {
-			schedules_version = get_actions_bridge_version(h.actions, bridge_id)
-		} else if h.scheduled_prompts != nil {
-			schedules_version = get_scheduled_prompts_bridge_version(h.scheduled_prompts, bridge_id)
-		}
-		schedules_owner := ""
-		if h.bridges != nil {
-			if owner_bridge, owner_found, _ := iface.bridge_get_bridge(h.bridges.repo, bridge_id); owner_found {
-				schedules_owner = strings.clone(string(owner_bridge.owner_user_id), context.temp_allocator)
-				domain.bridge_destroy(&owner_bridge)
-			}
-		}
-		// REQ-EXP-GATE-4: the token folds in the owner's Actions eligibility, so a
-		// toggle immediately invalidates the bridge's cached schedule freshness.
-		epoch, revision := action_schedules_owner_token(h.actions, h.experiments, schedules_owner)
-		ack := bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version, epoch, revision)
+		ack := bridge_heartbeat_ack_payload(reconciled, superseded)
 		_ = write_ws_text_frame_locked(h, bridge_id, client, ack)
 		delete(ack)
 		if superseded != nil {
@@ -2552,6 +2529,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	case "session_projects_result", "auto_update_config_result", "provider_profile_op_result", "command_result", "project_path_validation_result", "provider_discovery_report", "provider_model_discovery_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_show_file_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "vcs_upload_result", "vcs_sync_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result", "shell_set_port_result", "bridge_unseal_result", "task_chain_search_result", "taskv2_merge_worktree_result", "context_window_op_result":
 		if ext_err := bridge_extension_frame(h, bridge_id, type, text); ext_err.code != .None do fmt.eprintln("extension command result:", ext_err.message)
 		command_id := json_string(text, "command_id")
+		if h.delivery != nil && type == "command_result" && strings.has_prefix(command_id, contracts.DELIVERY_ID_PREFIX) do delivery.on_command_result(h.delivery, bridge_id, command_id, text)
 		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
 		if h.bots != nil && type == "command_result" && strings.has_prefix(command_id, "cmd_bot_") {
 			status := jsonx.extract_string(text, "status", top_level_only = false, allocator = context.temp_allocator)
@@ -2833,6 +2811,9 @@ bridge_publish_status_frame_change :: proc(h: ^Bridge_Handlers, instance_id: str
 }
 
 bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string, launch_epoch: string = "", error_json: string = "", changed: ^bool = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	uow, opened, begin_err := bridge_persist_begin(h)
+	if !opened do return {}, false, begin_err
+	defer bridge_persist_rollback(&uow)
 	c := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, bridge_id, generation)
 	if c == nil do return {}, false, domain.domain_error(.Bridge_Offline, "stale bridge generation")
 	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, c)
@@ -2841,12 +2822,19 @@ bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, ge
 		project_service.connection_state_unlock(c)
 		return {}, false, domain.domain_error(.Bridge_Offline, "retired bridge generation")
 	}
-	// Lifecycle facts are collected under state_mutex and delivered after the
-	// unlock: the engine opens a unit of work (tx_mutex), and the allowed lock
-	// order is tx_mutex → state_mutex, never the reverse (review B1).
-	facts := make([dynamic]agent_service.Lifecycle_Fact, context.temp_allocator)
-	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = c.owner_id, launch_epoch = launch_epoch, error_json = error_json, facts = &facts, changed = changed)
+	// The retained connection owns this immutable owner-id snapshot.
+	owner_user_id := c.owner_id
+	// The UoW serializes the read/decision/save with hello admission and
+	// other status reports; no DB work is performed under state_mutex.
 	project_service.connection_state_unlock(c)
+	facts := make([dynamic]agent_service.Lifecycle_Fact, context.temp_allocator)
+	defer agent_service.lifecycle_facts_destroy(&facts)
+	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = owner_user_id, launch_epoch = launch_epoch, error_json = error_json, facts = &facts, changed = changed)
+	if !applied do return instance, applied, err
+	if committed, commit_err := bridge_persist_commit(&uow); !committed {
+		domain.agent_instance_destroy(&instance)
+		return {}, false, commit_err
+	}
 	agent_service.notify_facts(h.agents, facts[:])
 	if applied {
 		_, _, tracking_err := project_service.bridge_runtime_instance_apply(h.bridge_runtime_registry, bridge_id, generation, id, string(instance.owner_user_id), string(instance.runtime_status), string(instance.activity_status), seq, recover = true)
@@ -3037,6 +3025,7 @@ bridge_self_revoke_handler :: proc(ctx: rawptr, req: Request) -> Response {
 bridge_revoke_respond :: proc(h: ^Bridge_Handlers, auth_ctx: contracts.Auth_Context, bridge_id: string, req: Request) -> Response {
 	bridge, revoke_ok, err := bridge_service.revoke_bridge(h.bridges, auth_ctx, bridge_id)
 	if !revoke_ok do return respond_error(err, req.request_id)
+	if h.delivery != nil do delivery.on_bridge_deleted(h.delivery, bridge_id)
 	publish_bridge_changed(h.event_bus, bridge, "revoked")
 	// Passwordless vault: the revoked machine's directory identity gets a retirement
 	// HINT (no version, no log op). An approved browser that verifies the identity in
@@ -3435,15 +3424,10 @@ bridge_connection_replaced_payload :: proc() -> string {
 	return "{\"type\":\"connection_replaced\",\"protocol_version\":1,\"payload\":{\"reason\":\"newer_bridge_connection\"}}"
 }
 
-bridge_heartbeat_ack_payload :: proc(reconciled: int, superseded_instance_ids: []string = nil, schedules_version: int = 0, schedules_epoch := "", schedules_revision: i64 = -1) -> string {
+bridge_heartbeat_ack_payload :: proc(reconciled: int, superseded_instance_ids: []string = nil) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_heartbeat_ack\",\"protocol_version\":1,\"payload\":{\"reconciled_unreachable_count\":")
 	strings.write_string(&b, fmt.tprintf("%d", reconciled))
-	strings.write_string(&b, ",\"schedules_version\":")
-	strings.write_string(&b, fmt.tprintf("%d", schedules_version))
-	if schedules_epoch != "" && schedules_revision >= 0 {
-        strings.write_string(&b, fmt.tprintf(",\"schedules_epoch\":\"%s\",\"schedules_revision\":%d", schedules_epoch, schedules_revision))
-    }
     // H7: instance ids the reporting bridge must reap (relaunched on another
 	// bridge). The bridge invalidates their local tokens so the stale wrapper exits.
 	strings.write_string(&b, ",\"superseded_instance_ids\":[")
@@ -3481,27 +3465,23 @@ bridge_apply_vault_status_report :: proc(h: ^Bridge_Handlers, bridge_id, text: s
 	if !vault.wire_decode(text, &report) do return
 	value := report.vault_status
 	if value == "" do return
+	uow, opened, _ := bridge_persist_begin(h)
+	if !opened do return
+	defer bridge_persist_rollback(&uow)
 	c, current := bridge_runtime_state_enter(h, bridge_id, generation)
 	if !current do return
-	bridge, changed, _ := bridge_service.update_vault_status(h.bridges, bridge_id, value)
 	bridge_runtime_state_leave(h, c)
+	bridge, changed, _ := bridge_service.update_vault_status(h.bridges, bridge_id, value)
 	defer { b := bridge; domain.bridge_destroy(&b) }
+	if committed, _ := bridge_persist_commit(&uow); !committed do return
 	if !changed do return
 	summary := bridge_vault_status_summary_json(bridge.vault_status)
 	defer delete(summary)
 	events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "vault_status_changed", summary)
 }
 
-// bridge_runtime_state_enter is the retirement barrier for durable Bridge-row writes
-// made on behalf of one connection generation (plan T1), the same barrier
-// bridge_apply_validated_status uses for instance rows: hold the generation's
-// state_mutex and refuse once it is retired. A replacing hello retires the old
-// generation before its own durable connect write, which takes the same lock, so a
-// delayed frame from the old connection cannot land a liveness, metadata or vault
-// write after the new generation was admitted. ok=false means "stale generation:
-// write nothing". Generation 0 / no registry is a unit harness with no registered
-// connection, where there is nothing to fence against. Publish AFTER
-// bridge_runtime_state_leave: lock order is tx_mutex -> state_mutex, never reverse.
+// Snapshot barrier only: callers begin their persistence UoW first and release
+// state_mutex before database operations. See bridge_runtime_persist.odin.
 bridge_runtime_state_enter :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int) -> (^project_service.Bridge_Runtime_Connection, bool) {
 	if h.bridge_runtime_registry == nil || generation == 0 do return nil, true
 	c := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, bridge_id, generation)
@@ -3561,28 +3541,42 @@ bridge_record_hello_metadata :: proc(c: ^project_service.Bridge_Runtime_Connecti
 // Only a status or capability diff publishes; an ordinary beat is silent.
 bridge_apply_heartbeat_liveness :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, text: string) -> Heartbeat_Metadata_Result {
 	if h == nil || h.bridges == nil do return .Applied
+	uow, opened, _ := bridge_persist_begin(h)
+	if !opened do return .Resync_Required
+	defer bridge_persist_rollback(&uow)
 	c, current := bridge_runtime_state_enter(h, bridge_id, generation)
 	if !current do return .Stale
+	negotiated := c != nil && c.metadata_recorded && c.metadata_omission
+	recorded := c != nil && c.metadata_recorded
+	expected_features := ""
+	if c != nil {
+		expected_features = strings.clone(c.metadata_features, context.temp_allocator)
+		project_service.connection_state_unlock(c)
+	}
+	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, c)
 	bridge, moved, err := bridge_service.touch_runtime_liveness(h.bridges, bridge_id)
 	caps_changed := false
 	result := Heartbeat_Metadata_Result.Applied
 	if err.code == .None {
-		negotiated := c != nil && c.metadata_recorded && c.metadata_omission
 		legacy := !negotiated && strings.contains(text, "\"capabilities\"")
 		if legacy {
 			caps_err: domain.Domain_Error
 			caps_changed, caps_err = bridge_service.update_runtime_metadata(h.bridges, bridge_id, text)
 			// The beat's list is now this connection's expectation (a legacy Bridge
 			// may legitimately change it); a failed write is repaired by the next beat.
-			if caps_err.code == .None do project_service.bridge_runtime_connection_set_metadata_features(c, bridge_service.bridge_runtime_features_raw(text, context.temp_allocator))
-		} else if c != nil && c.metadata_recorded {
+			if caps_err.code == .None && c != nil {
+				project_service.connection_state_lock(c)
+				project_service.bridge_runtime_connection_set_metadata_features(c, bridge_service.bridge_runtime_features_raw(text, context.temp_allocator))
+				project_service.connection_state_unlock(c)
+			}
+		} else if recorded {
 			stored, found := bridge_service.bridge_stored_features_raw(bridge.capabilities_json, context.temp_allocator)
-			if !found || stored != c.metadata_features do result = .Resync_Required
+			if !found || stored != expected_features do result = .Resync_Required
 		}
 	}
-	bridge_runtime_state_leave(h, c)
 	if err.code != .None do return result
 	defer domain.bridge_destroy(&bridge)
+	if committed, _ := bridge_persist_commit(&uow); !committed do return .Resync_Required
 	if moved || caps_changed do publish_bridge_changed(h.event_bus, bridge, "capabilities_changed")
 	return result
 }
@@ -3597,11 +3591,20 @@ bridge_apply_features_update :: proc(h: ^Bridge_Handlers, bridge_id: string, gen
 	if h == nil || h.bridges == nil do return .Applied
 	features, found := jsonx.extract_raw_array(text, "features", true, context.temp_allocator, sort_keys = true)
 	if !found do return .Applied
+	uow, opened, _ := bridge_persist_begin(h)
+	if !opened do return .Resync_Required
+	defer bridge_persist_rollback(&uow)
 	c, current := bridge_runtime_state_enter(h, bridge_id, generation)
 	if !current do return .Stale
+	if c != nil do project_service.connection_state_unlock(c)
+	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, c)
 	changed, err := bridge_service.update_runtime_features(h.bridges, bridge_id, features)
-	if err.code == .None do project_service.bridge_runtime_connection_set_metadata_features(c, features)
-	bridge_runtime_state_leave(h, c)
+	if err.code == .None && c != nil {
+		project_service.connection_state_lock(c)
+		project_service.bridge_runtime_connection_set_metadata_features(c, features)
+		project_service.connection_state_unlock(c)
+	}
+	if committed, _ := bridge_persist_commit(&uow); !committed do return .Resync_Required
 	if err.code != .None || !changed do return .Applied
 	if bridge, ok, _ := iface.bridge_get_bridge(h.bridges.repo, bridge_id); ok {
 		publish_bridge_changed(h.event_bus, bridge, "capabilities_changed")

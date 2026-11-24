@@ -28,6 +28,8 @@ import sqlite "odin_test:hub/repository/sqlite"
 
 @(private = "file")
 Meta_Fixture :: struct {
+	uow_impl: sqlite.SQLite_Unit_Of_Work_Factory,
+	uow_factory: iface.Unit_Of_Work_Factory,
 	conn:           sqlite.Conn,
 	br_repo_sqlite: sqlite.Bridge_Repo_SQLite,
 	ag_repo_sqlite: sqlite.Agent_Repo_SQLite,
@@ -85,7 +87,8 @@ meta_fixture_open :: proc(t: ^testing.T) -> ^Meta_Fixture {
 	f.br_svc = bridge_service.new_bridge_service(&f.br_repo, &f.clock, &f.ids)
 	f.ag_svc = agent_service.new_agent_service(&f.ag_repo, &f.br_repo, &f.clock, &f.ids)
 	f.ag_svc.bridge_runtime_registry = &f.registry
-	f.bh = Bridge_Handlers{bridges = &f.br_svc, agents = &f.ag_svc, event_bus = &f.bus, bridge_runtime_registry = &f.registry}
+	f.uow_factory = sqlite.new_unit_of_work_factory(&f.uow_impl, &f.conn, nil)
+	f.bh = Bridge_Handlers{uow_factory=&f.uow_factory, bridges = &f.br_svc, agents = &f.ag_svc, event_bus = &f.bus, bridge_runtime_registry = &f.registry}
 	enrolled, e_ok, _ := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, bridge_service.Device_Enroll_Input{
 		owner_user_id = META_OWNER,
 		bridge_public_key = "04approved",
@@ -109,7 +112,7 @@ meta_fixture_close :: proc(f: ^Meta_Fixture) {
 }
 
 // meta_connect admits a new generation and runs its hello exactly as the WS upgrade
-// does: durable record and connection contract written under the state lock.
+// does: durable record outside state_mutex, contract snapshot under state_mutex.
 @(private = "file")
 meta_connect :: proc(t: ^testing.T, f: ^Meta_Fixture, hello: string) -> int {
 	_, gen, ok := project_service.bridge_runtime_registry_accept_live(&f.registry, f.bridge_id, false, "", META_OWNER)
@@ -125,10 +128,15 @@ meta_hello_on :: proc(t: ^testing.T, f: ^Meta_Fixture, gen: int, hello: string) 
 	if c == nil do return
 	defer project_service.bridge_runtime_connection_release(&f.registry, c)
 	context.allocator = context.temp_allocator // the hello handler's request scope
-	project_service.connection_state_lock(c)
+	uow, opened, _ := bridge_persist_begin(&f.bh)
+	testing.expect(t, opened)
+	defer bridge_persist_rollback(&uow)
 	row, ok, _ := bridge_service.bridge_runtime_connect(&f.br_svc, f.bridge_token, "meta-box", "linux", "amd64", hello)
+	project_service.connection_state_lock(c)
 	if ok do bridge_record_hello_metadata(c, hello)
 	project_service.connection_state_unlock(c)
+	committed, _ := bridge_persist_commit(&uow)
+	testing.expect(t, committed)
 	testing.expect(t, ok, "hello accepted")
 	domain.bridge_destroy(&row)
 }

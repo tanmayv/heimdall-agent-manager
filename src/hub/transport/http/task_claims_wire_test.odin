@@ -6,6 +6,7 @@ import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
+import project_service "odin_test:hub/service/project"
 import taskv2 "odin_test:hub/service/taskv2"
 import jsonx "odin_test:lib/jsonx"
 
@@ -69,6 +70,9 @@ test_explicit_claim_http_coordinator_actor_and_beneficiary_separate :: proc(t: ^
     uow_impl: sqlite.SQLite_Unit_Of_Work_Factory
     uow:=sqlite.new_unit_of_work_factory(&uow_impl,&f.conn,&repos)
     engine.uow_factory=&uow
+    // Wake grants now use the shared start-ticket service, even for a live target.
+    engine.agent_service = &f.ag_svc
+    engine.bridge_command_sink = project_service.Bridge_Command_Sink{send_runtime_command = proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) { return true, {} }}
     f.ah.task_engine = &engine
     chain, _, _ := iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
     chain.publish_state = .Published

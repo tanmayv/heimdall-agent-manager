@@ -337,12 +337,17 @@ start_reaper_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect_value(t,count,4)
 }
 start_create_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	// Creating a stopped row needs no launch capacity and mints no epoch.
+	h.registry.limits.active_instances = 1
+	h.registry.active_instances = 1
 	inst,ok,err:=create_instance_stopped(&h.service,start_test_auth(),{agent_id="agt",bridge_id="brg",provider="codex",model="gpt-6.1-sol"})
 	testing.expect(t,ok,err.message)
 	testing.expect_value(t,inst.run_count,0)
 	testing.expect_value(t,inst.runtime_status,"stopped")
 	testing.expect_value(t,inst.startup_status,"stopped")
-	testing.expect_value(t,h.registry.active_instances,0)
+	testing.expect_value(t,inst.launch_epoch,"")
+	testing.expect_value(t,h.registry.active_instances,1)
+	h.registry.active_instances = 0
 	_,found,cerr:=iface.content_get_conversation(&h.cr,inst.conversation_id)
 	testing.expect(t,found,cerr.message)
 	first,started,serr:=start_instance(&h.service,start_test_auth(),inst.agent_instance_id)
@@ -509,7 +514,7 @@ start_owned_scenario :: proc(t:^testing.T,h:^Start_Test) {
 		context.allocator=allocator
 		ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="owned"},allocator)
 		testing.expect_value(t,err.code,domain.Error_Code.None)
-		launch:=start_launch_json(&h.service,ticket,allocator)
+		launch:=start_launch_json(&h.service,ticket,allocator=allocator)
 		delete(launch,allocator)
 		start_cancel(&h.service,&ticket)
 		start_ticket_destroy(&ticket)
@@ -654,3 +659,27 @@ start_reconfigure_settle_scenario :: proc(t:^testing.T,h:^Start_Test) {
 }
 @(test)
 test_reconfigure_display_save_failure_settles_committed_start :: proc(t:^testing.T) {start_test_run(t,start_reconfigure_settle_scenario)}
+
+start_expected_generation_scenario :: proc(t:^testing.T,h:^Start_Test) {
+ selected:=start_test_row(t,h)
+ start_test_sql(t,h,"UPDATE agent_instances SET run_count=4,runtime_status='running';")
+ for policy in ([]Start_If_Live{.Keep,.Relaunch,.Refuse}) {
+  ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{expected=&selected,if_live=policy})
+  testing.expect_value(t,err.code,domain.Error_Code.Conflict)
+  testing.expect(t,strings.contains(err.details_json,"start_raced"),"stale selection is rejected before live policy")
+  start_ticket_destroy(&ticket)
+ }
+ testing.expect_value(t,start_test_row(t,h).run_count,4)
+ testing.expect_value(t,h.registry.active_instances,0)
+ // A caller with no snapshot keeps the established live policy.
+ kept,kerr:=start_begin(&h.service,start_test_auth(),"inst",{if_live=.Keep})
+ testing.expect_value(t,kerr.code,domain.Error_Code.None)
+ testing.expect(t,kept.kept_live)
+ start_settle(&h.service,&kept,true);start_ticket_destroy(&kept)
+ relaunched,rerr:=start_begin(&h.service,start_test_auth(),"inst",{if_live=.Relaunch})
+ testing.expect_value(t,rerr.code,domain.Error_Code.None)
+ testing.expect_value(t,relaunched.instance.run_count,5)
+ start_settle(&h.service,&relaunched,true);start_ticket_destroy(&relaunched)
+}
+@(test)
+test_start_expected_generation_precedes_live_policy :: proc(t:^testing.T) {start_test_run(t,start_expected_generation_scenario)}

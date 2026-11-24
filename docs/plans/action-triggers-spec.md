@@ -983,7 +983,7 @@ Pipeline_Delivery :: struct {
 	attempt:               int,
 	ack_reply:             string,
 	stream_sequence:       i64,
-	expires_at, created_at, forwarded_at, updated_at: string,
+	retry_at, expires_at, created_at, forwarded_at, updated_at: string,
 }
 pipeline_delivery_destroy    :: proc(d: ^Pipeline_Delivery)
 pipeline_deliveries_destroy  :: proc(rows: []Pipeline_Delivery)
@@ -1644,12 +1644,13 @@ Sink :: struct {
 	ctx:  rawptr,
 	kind: string,
 	// The delivery is final: d.state is done or failed. Called exactly once per delivery.
-	on_final:    proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery),
+	on_final:    proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> domain.Domain_Error,
 	// May d still be forwarded? nil = always. Example: the lease is still held and unconfirmed.
 	still_valid: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> bool,
 	// Try to place d on another machine. nil = this kind never moves. The flow calls delivery.route with
-	// round = d.round + 1 and excluded_bridges = d's list plus d.bridge_id. Returns true when it routed a replacement.
-	replace:     proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: Replace_Why) -> bool,
+	// round = d.round + 1 and excluded_bridges = d's list plus d.bridge_id. True + no error means it routed a replacement.
+	// False + no error means no placement. Any error (including delivery.route errors) aborts the whole UoW.
+	replace:     proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: Replace_Why) -> (bool, domain.Domain_Error),
 }
 
 Service :: struct { /* long-lived; heap; fields are an implementer choice */ }
@@ -1672,7 +1673,7 @@ route :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, input: Route_Input) -> (del
 
 // Closes the delivery as failed/bridge_offline when it is open and expires_at <= now. closed = true when it did.
 // Calls the kind's on_final inside uow.
-expire :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool)
+expire :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool, err: domain.Domain_Error)
 
 // Hooks. Each opens its own unit of work(s). None waits for a bridge answer.
 on_bridge_online  :: proc(s: ^Service, bridge_id: string)                          // after a successful hello
@@ -1753,6 +1754,8 @@ The limit exists because the bridge's dispatcher queues at most 32 lifecycle com
 5. If the send reports failure: make **no** JetStream call. The message stays pending and is redelivered after AckWait (60 s). The row stays `forwarded`; it is never moved back to `routed`, because a failed socket write may have sent part of the frame. The forwarder ends this pass without handling the rest of the batch (those messages are redelivered too) and, before its next pass, waits on its semaphore for at most 5 s. A failed send therefore costs one of the 8 attempts per minute at most, not one every few seconds, so a connection that is reported live while its writes fail cannot use up a delivery before the disconnect is noticed (risk V-K19).
 
 **Every transition acts on `changed`.** Load and `transition` always happen in one unit of work (units of work are serialised, so this costs nothing). `on_final`, `replace` and the JetStream answer run only when the transition changed the row. This is what makes "`on_final` is called exactly once per delivery" true. It applies to the gate, to `on_command_result`, to `expire`, to the offline rules and to the advisory handler.
+
+**Repository failures (T16 review correction).** A repository or replacement callback error aborts the entire unit of work, including any replacement row and outbox writes. Do not fall through to finalization or queue a JetStream answer. Redelivery can retry the operation. If a replacement was written but the original row's compare-and-set changed nothing, abort that unit of work too. `Sink.replace` must propagate errors from `delivery.route`; it must not turn an error into `false` with no error. This bool/error contract correction was approved by the coordinator during T16 review.
 
 The forwarder does not ack, nak or terminate a forwarded message by itself in any other case. The message stays pending until the answer arrives (6.11.5) or AckWait passes.
 
@@ -2368,7 +2371,7 @@ Plan :: struct {
 Route_Port :: struct {
 	ctx:    rawptr,
 	route:  proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, input: delivery.Route_Input) -> (delivery_id: string, err: domain.Domain_Error),
-	expire: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool),
+	expire: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, delivery_id: string) -> (closed: bool, err: domain.Domain_Error),
 }
 
 Router :: struct {
@@ -2459,7 +2462,7 @@ Agent_Port :: struct {
 	// Stores the prompt as a user_to_agent chat message with message_type "action", inside uow. Rows only.
 	persist_prompt: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, owner, conversation_id, body, metadata_json: string) -> (message_id: string, err: domain.Domain_Error),
 	// Marks one chat message read and records in its metadata that the prompt moved (6.13.5), inside uow. Rows only.
-	retire_prompt:  proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, owner, message_id, moved_to_instance_id: string),
+	retire_prompt:  proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, owner, message_id, moved_to_instance_id: string) -> domain.Domain_Error,
 }
 ```
 
@@ -2494,10 +2497,10 @@ Every call passes `Requirements.features = {contracts.BRIDGE_FEATURE_EVENT_PIPEL
 
 ```odin
 // src/hub/service/actions/router.odin — registered at wiring as the delivery.Sink of kind "prompt"
-on_delivery_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery)
-on_delivery_replace :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: delivery.Replace_Why) -> bool
+on_delivery_final :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery) -> domain.Domain_Error
+on_delivery_replace :: proc(ctx: rawptr, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, why: delivery.Replace_Why) -> (bool, domain.Domain_Error)
 // Closes the action's open run if its delivery has expired (6.8.4). Rows only.
-expire_open_run :: proc(r: ^Router, uow: ^iface.Unit_Of_Work, action_id: domain.Action_ID)
+expire_open_run :: proc(r: ^Router, uow: ^iface.Unit_Of_Work, action_id: domain.Action_ID) -> (bool, domain.Domain_Error)
 ```
 
 `on_delivery_final`: the run id is the text after `run:` in `d.ref`. Load the run. If it is not `routed`, or `run.delivery_id != d.delivery_id`, do nothing (the report is stale). Otherwise `run_transition` from `routed`:
@@ -2511,9 +2514,13 @@ Then `runs_prune(action, 200, now - 30 days)`. The sink does not call `drain_due
 
 The sink's `still_valid` is nil: a prompt delivery is valid until it expires.
 
+Coordinator rulings (T10): finalization and prompt retirement return Domain_Error; delivery.expire, Route_Port.expire and expire_open_run return (bool, Domain_Error), and matcher/history roll back on expiry errors. Options additionally clones/frees creds_file and ca_file from the relay configuration. New owner+agent+bridge instance and owner+instance conversation service/iface/SQLite lookups are used only by T10 adapters, with CREATE INDEX IF NOT EXISTS indexes; legacy capped methods remain unchanged. The pipeline propagates finalization errors from close_delivery; replacement propagates retirement errors. Both roll back the caller transaction, preventing terminal deliveries or partial replacements after failed run/metadata writes.
+
 #### 6.13.5 Placing a prompt again
 
 `on_delivery_replace` (called by the pipeline for a `routed` delivery on a dropped or downgraded bridge, and for a `fatal` answer):
+
+The declines below return `false, {}`. Any repository or routing error returns `false, err`, so the pipeline rolls back every write in this attempt (6.11.4); successful replacement returns `true, {}`.
 
 1. Load the run and the action. Return false when the run is not `routed` with this delivery, when the action is gone, or when `target_kind != "agent"`.
 2. Call the effect's `plan` with `exclude` = the bridges in `d.excluded_bridges_json` plus `d.bridge_id`. `plan.ok == false` → return false. (The "one named machine" rule of 6.13.3 does not apply here: the machine is in the exclude list.)
@@ -2538,7 +2545,7 @@ All routes need user auth and the `actions` experiment (6.15). Responses use the
 | `PATCH /api/v1/actions/{id}` | partial update | `{"data":Action}` |
 | `DELETE /api/v1/actions/{id}` | delete the action, its rules, triggers and runs; appends purge rows for its schedule triggers | `{"deleted":true}` |
 | `POST /api/v1/actions/{id}/enable`, `POST /api/v1/actions/{id}/disable` | set `enabled` | `{"data":Action}` |
-| `GET /api/v1/actions/{id}/runs?limit=<1..200, default 50>&before=<created_at>` | run history, newest first (T10) | `{"data":[Run]}` |
+| `GET /api/v1/actions/{id}/runs?limit=<1..200, default 50>&before=<created_at>&before_id=<run_id>` | run history, newest first; optional before_id breaks created_at ties, before alone excludes the entire timestamp (T10) | `{"data":[Run]}` |
 
 The router returns the first registered route that matches (`route_matches`, `src/hub/transport/http/router.odin:75`). Register `GET /api/v1/actions/trigger-types` **before** `GET /api/v1/actions/*`. There is no `/run` route and no `/api/v1/scheduled-prompts*` or `/api/v1/bridge/actions*` route.
 
@@ -2576,6 +2583,7 @@ The router returns the first registered route that matches (`route_matches`, `sr
 | `target.kind = "instance"` and the instance belongs to a bot (a row of `bots` names it as its instance) | `target_is_bot_instance`. A bot is targeted with kind `bot` (T19), so that its delivery goes through the bot path and the `bots` experiment is checked. This rule stays after T19 |
 | more than 16 triggers | `too_many_triggers` |
 | unknown trigger `kind` | `unknown_trigger_kind` |
+| changing `kind` on an existing trigger id through PATCH | `trigger_kind_immutable`; nothing is saved. To change kind, delete the old id and create a new trigger |
 | a config that `Trigger_Kind.compile` rejects | the kind's code, for example `invalid_cron`, `invalid_timezone`, `unknown_event_type`, `unknown_chain` |
 | a `schedule` trigger that would be effective while the support state is `Unsupported` | HTTP 409, `schedules_unsupported` |
 
@@ -3202,6 +3210,7 @@ After T9 and before T12 and T13 merge, the old CLI and UI call routes that no lo
 | `test_render_table` (`actions`) | every placeholder of 6.9; spaces inside braces; unknown placeholder left as written; a value that contains `{{…}}` is not expanded again |
 | `test_actions_api_crud` (`transport/http`) | create with two triggers and two rules; get returns the shape of 6.14; patch replaces triggers by id; enable and disable; delete; another owner gets 404 |
 | `test_actions_api_validation` (`transport/http`) | one case per row of the validation table in 6.14 |
+| `test_actions_patch_trigger_kind_immutable` (`transport/http`) | changing the kind of an existing trigger id returns 422 `trigger_kind_immutable`; no action, trigger or outbox changes are saved |
 | `test_actions_api_bot_target_refused_in_phase_1` (`transport/http`) | `target.kind = "bot"` → 422 `target_kind_unavailable` |
 | `test_actions_api_instance_target_of_bot_refused` (`transport/http`) | `target.kind = "instance"` with a bot's instance → 422 `target_is_bot_instance`; nothing is saved |
 | `test_actions_api_schedules_unsupported` (`transport/http`) | support `Unsupported`: a schedule trigger → 409 `schedules_unsupported`; an event trigger is accepted; `trigger-types` reports `schedules_supported: false` |
@@ -3473,7 +3482,7 @@ subject_matches :: proc(filter, subject: string) -> bool               // pure
 data_matches    :: proc(filter_json: string, data: json.Object) -> bool // pure
 
 // runtime.odin
-Options :: struct { nats_url: string, max_deliver: int } // cloned into the heap by start
+Options :: struct { nats_url, creds_file, ca_file: string, max_deliver: int } // cloned into the heap by start
 Runtime :: struct { svc: ^Service, router: Router, options: Options, thread: ^thread.Thread, stop_flag: i32 /* atomic */,
 	skipped_owner_mismatch, terminated: i64 /* atomic counters */ }
 start :: proc(r: ^Runtime, svc: ^Service, router: Router, options: Options) -> bool
@@ -4264,15 +4273,19 @@ Delivery_Port :: struct {
 5. `flush_wakes` (`src/hub/service/taskv2/wake.odin:146`): one `Start_Run_Entry` per ticket (`deliver = nudge` for `kept_live`, `launch` otherwise; `launch_json = start_launch_json(ticket, &lease)`), one `start_command_send` per bridge and chain, then `start_settle(t, sent)` and `start_ticket_destroy` per ticket. A failed send also calls `on_dispatch_failed`, as today. Its own ACP check moves into `start_begin` step 8.
 6. **Redelivery never opens a generation** (bridge hello, hub start, the grant-unconfirmed timer; review finding 3). `effect_wake_lease` outside a grant calls `agent.start_reuse(instance_id, lease_id)`, not `start_begin`. By then the bridge's status frames may have moved the row from `launching` to `starting` or `running` before the lease is confirmed; the reference still matches, so:
    - `ok` (the row is live and its `start_ref` is this lease): send the entry again with the **same generation and the same bytes** as the grant sent (`start_launch_json` of the reused ticket). Nothing is written. This is today's behaviour.
-   - `ended` (the row is `failed`, `stopped` or `unreachable`, or another start replaced the generation): send nothing. The child this lease started is gone; relaunching the same generation, as a blind resend does today, would be refused at start-success. The lease takes the existing unconfirmed-dispatch path, `on_dispatch_failed` (`src/hub/service/taskv2/dispatch.odin:178`), and the next grant opens a new generation through `start_begin`. **This is an intended behaviour change**, listed below.
+   - `ended` (the row is `failed`, `stopped` or `unreachable`, or another start replaced the generation): send nothing. The child this lease started is gone; relaunching the same generation, as a blind resend does today, would be refused at start-success. The lease takes the existing unconfirmed-dispatch path, `on_dispatch_failed` (`src/hub/service/taskv2/dispatch.odin:178`), and only after explicit recovery does the next grant open a new generation through `start_begin`. **This is an intended behaviour change**, listed below.
 7. `jit_prepare`: `create_instance_stopped`.
 8. Remove the allow-list entry.
 
 **Behaviour that MUST NOT change:** which instance is leased (v7-Q4; `src/hub/service/taskv2/matcher.odin` changes only in `jit_prepare`); batching per bridge and chain; the nudge of a live child; redelivery of an unconfirmed wake; lease confirmation by `run_count`; the `wake_agent` bytes an old bridge receives for a grant to an existing stopped instance.
 
-**Behaviour that changes, and is intended:** a just-created instance is launched with `run_count` 1, not 2 (F14 c); an explicit claim or transfer of a user-stopped instance clears the stop mark in the save that opens the generation (F14 a); a lease start now checks the plan, the live connection, the launch quota and ACP support, and a grant that fails them is refused instead of starting an agent (cases L6 to L9); a failed send marks the instance row `failed` (case L13); a redelivery for a lease whose child already failed or stopped no longer resends the old launch but fails the dispatch, so the next grant starts a new generation; a grant that loses the guarded save to a concurrent manual start fails with `start_raced` and is retried by the matcher.
+**Behaviour that changes, and is intended:** a just-created instance is launched with `run_count` 1, not 2 (F14 c); an explicit claim or transfer of a user-stopped instance clears the stop mark in the save that opens the generation (F14 a); a lease start now checks the plan, the live connection, the launch quota and ACP support, and a grant that fails them is refused instead of starting an agent (cases L6 to L9); a failed send marks the instance row `failed` (case L13); a redelivery for a lease whose child already failed or stopped no longer resends the old launch but fails the dispatch, so the next grant after explicit recovery starts a new generation; a grant that loses the guarded save to a concurrent manual start fails with `start_raced` and is retried by the matcher.
 
 **Non-goals.** No change to `pick_instance`, the lease state machine, the timers or the placement rules (T4). No pipeline transport (T20). No change to the stop list.
+
+**T25 implementation clarifications (approved during execution).** The existing durable-claim failure state machine is preserved (S-K11, requirements revision 2). A kept-live grant records `start_run_count` and `start_kept_live` on `lease_granted`, so redelivery can read-only nudge that exact live child without changing `start_ref`; a changed/dead generation takes the ended path. For a pre-T25 unconfirmed grant whose event lacks generation metadata, a live/pending row with empty `start_ref` and the same current holder claim is redelivered read-only across deploy/restart. This legacy exception preserves the upgrade window; it does not open a generation. Exact run-byte comparisons on hello, hub boot and timer redelivery pass without a runtime-facet launch snapshot.
+
+The real grant/manual-start race additionally requires the selected instance's `expected.run_count` check before the live policy in `agent/start_begin.odin`, with `expected` supplied by the grant. Guarded generation saves in `repository/sqlite/agent_repo_sqlite.odin` enter the existing transaction gate before the SQLite mutex, so a manual winner cannot join and be rolled back by another thread's grant transaction. Ordinary status saves retain their existing state-lock order. Grant refusals are tagged `source=grant` in the existing placement facet; non-matcher reconciles carry them forward without repeated attention notifications, while the next matching pass replaces them. Matching-pass-local refusals feed reconciliation in `matcher.odin` and `placement_failures.odin`; candidate selection and the failure state machine are unchanged. These file/scope extensions were approved by the coordinator and the user's “do whatever is simple and reliable” ruling.
 
 **Acceptance and tests** (package `taskv2` unless stated)
 
@@ -4291,7 +4304,7 @@ Delivery_Port :: struct {
 | `test_grant_refused_quota` | case L8: at the owner's limit the grant to an existing stopped instance fails with the quota error; one below the limit it consumes one reservation |
 | `test_grant_refused_acp_withdrawn` | case L9: no lease, no row change |
 | `test_grant_redelivery_reuses_generation` | hello, hub start and the timer each resend the same launch bytes; `run_count`, `launch_epoch` and `start_ref` are unchanged. Repeated with the row moved to `starting` and to `running` by status frames before the redelivery: the same result, and no new generation |
-| `test_grant_redelivery_after_child_failed` | the row is `failed` (and, in a second case, `unreachable`) when the redelivery runs: nothing is sent, the row is not written, `on_dispatch_failed` ran for the lease; the next grant carries `run_count + 1` |
+| `test_grant_redelivery_after_child_failed` | the row is `failed` (and, in a second case, `unreachable`) when the redelivery runs: nothing is sent, the row is not written, `on_dispatch_failed` ran for the lease (Backlog, waiting claim); after explicit repair/recovery the next grant carries `run_count + 1` |
 | `test_grant_race_with_manual_start` | `start_instance` and a grant for the same stopped instance from two threads, 100 rounds: exactly one generation is opened per round (`run_count` grows by 1), exactly one launch command is sent, the loser gets `start_raced` (or `already_running` when it read the row after the winner's commit), and no reservation is left over |
 | `test_lease_start_agent_entry` | a bridge with `start_agent_v1`: one `start_agent` per bridge and chain; the entry's `launch` carries the lease keys and the pack |
 | `test_wake_agent_bytes_unchanged` | a bridge without the feature: the command equals a golden value recorded from `origin/main` for a grant to a stopped existing instance |
@@ -4472,7 +4485,7 @@ Section 2 maps every decision to its sections and tasks. The tests are those of 
 | S-K8 | A hub that is down for more than 24 hours loses the schedule fires older than that (before S2: 14 days) | A stale fire would run its action a day late. The definitions are untouched and fire again at their next time. Named in section 11 |
 | S-K9 | A bridge whose clock differs from the hub's by more than about 9 minutes can forget a ledger entry too early and act twice on a redelivery | Only for a delivery redelivered at the very end of its life; the result is one extra notice or an `already_running` answer from start-begin, never a second generation. NTP keeps hosts far inside the margin |
 | S-K10 | The relay's wake hook sits in the commit path of every transaction | It is one flag test per commit and a non-blocking signal. A missed signal costs at most the 1 s fallback wait |
-| S-K11 | A redelivery for a lease whose child already failed no longer relaunches it; the lease waits for `on_dispatch_failed` and a new grant | Intended: the old relaunch reused a dead generation. **Assumption:** `on_dispatch_failed` returns the task to a state from which the matcher grants again; T25 verifies it first with `test_grant_redelivery_after_child_failed` and stops and reports if it does not |
+| S-K11 | A redelivery for a lease whose child already failed no longer relaunches it | **Settled (T25 requirements revision 2):** `on_dispatch_failed` deliberately blocks the task in Backlog and retains its waiting claim; it does not automatically redispatch. The unchanged `test_dispatch_exit_blocks_notifies_refunds_and_unblocks` passed on the pre-T25 code (1/1; shell `sh_0d21c6121d35115c54f06427ad3d0aba`). `test_grant_redelivery_after_child_failed` verifies no send or instance write for failed/unreachable rows, then a new generation only after explicit repair and recovery. Preserve the failure state machine |
 
 Risks K13 and K17 of the v6 spec no longer exist: the prompt and the claim share a transaction (K13), and the bridge decides busy or idle at the moment it types (K17). With amendment S2, K6 (the lease start changes) is back as S-K2, and K9 (the fallback start is not converged) is closed by T24.
 
@@ -4484,7 +4497,7 @@ Risks K13 and K17 of the v6 spec no longer exist: the prompt and the claim share
 | 2 | Splitting `relaunch_instance_locked` before its send leaves the ACP epoch and the transport freeze correct when the bridge, not the hub, sends the launch | **Settled by reading; proven by T22 tests** | The epoch is minted and the transport frozen inside the part that moves (`src/hub/service/agent/agent_service.odin:1147`, `src/hub/service/agent/agent_service.odin:1148`). Every epoch check compares against the row only: status frames (`src/hub/service/agent/agent_service.odin:1190`), the instance token (`src/hub/service/agent/agent_service.odin:563`). No check depends on the hub having sent `launch_agent`: the `cmd_launch_` id is generated (`src/hub/service/agent/agent_service.odin:1160`) and never stored or matched. One step is **not** in the moved part: `validate_frozen_runtime_transport` runs inside `send_frozen_instance_launch` (`src/hub/service/agent/agent_service.odin:424`); `start_begin` therefore calls it itself (6.12.2 step 8). Tests: `test_start_begin_acp_epoch`, `test_start_keeps_launch_bytes` |
 | 3 | The bridge's instance-status frame after a failed launch releases the reservation taken at start-begin | **Settled by reading, with a condition; proven by T22 tests** | A `failed` status frame is applied only when its epoch matches (`src/hub/service/agent/agent_service.odin:1190`) and its sequence advances (`src/hub/service/agent/agent_service.odin:1195`); then the registry drops the active count (`src/hub/service/project/runtime_registry.odin:659`). When the frame does not pass those checks, the reservation still cannot leak: it expires one minute after it was taken (`src/hub/service/project/runtime_registry.odin:673`, swept at `src/hub/service/project/runtime_registry.odin:622`) and is dropped on disconnect. Tests: `test_start_begin_failed_status_releases_reservation`, `test_start_begin_reservation_expires` |
 
-**Assumptions still open** (each names the task that verifies it first): `js_DeleteMsg` (6.3.5, T1); the conversation of a prepared instance (6.12.5, T22); the single column list of `agent_instances` (6.4.1, T22); finding F9 (T8); the old bridge's heartbeat handling (T14 step 5). Added by amendment S2: `validate_frozen_runtime_transport` reads only its argument (6.12.2, T22); `start_begin` joins an open unit of work, so a rolled-back grant restores the row (6.12.2, T25, `test_grant_rollback_cancels_ticket`); `on_dispatch_failed` leads to a new grant (T25, S-K11); the bridge has a periodic loop that can carry the stale-row retry (6.12.4, T24); one commit path in the SQLite layer (6.3.4, T1); `Nats-Schedule-TTL` on 2.14.7 (6.2.2, T1); the key names of the lease part of a launch object (6.12.6, T23).
+**Assumptions still open** (each names the task that verifies it first): `js_DeleteMsg` (6.3.5, T1); the conversation of a prepared instance (6.12.5, T22); the single column list of `agent_instances` (6.4.1, T22); finding F9 (T8); the old bridge's heartbeat handling (T14 step 5). Added by amendment S2: `validate_frozen_runtime_transport` reads only its argument (6.12.2, T22); `start_begin` joins an open unit of work, so a rolled-back grant restores the row (6.12.2, T25, `test_grant_rollback_cancels_ticket`); the bridge has a periodic loop that can carry the stale-row retry (6.12.4, T24); one commit path in the SQLite layer (6.3.4, T1); `Nats-Schedule-TTL` on 2.14.7 (6.2.2, T1); the key names of the lease part of a launch object (6.12.6, T23).
 
 ## 11. Open questions
 

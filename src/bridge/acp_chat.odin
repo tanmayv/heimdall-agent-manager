@@ -28,6 +28,9 @@ ACP_Chat_Durable :: struct {
     split_pending: bool,
     deferred_text: string,
     outbox: [dynamic]contracts.ACP_Assistant_Message_Input,
+    // User inputs the current segment answers; next_input_ids apply to the
+    // segment opened after an injected steer.
+    input_ids, next_input_ids: [dynamic]string,
 }
 ACP_Chat :: struct {
     r: ^ACP_Runtime,
@@ -60,7 +63,7 @@ acp_chat_can_process :: proc(data:rawptr) -> bool {
     unlocked:=acp_chat_vault_ready()
     acp_chat_vault_blocker(r,!unlocked)
     return unlocked && r.chat.d.deferred_text=="" &&
-        len(r.chat.d.outbox)<=ACP_CHAT_OUTBOX_ITEMS_MAX-2 &&
+        acp_chat_assistant_items(r.chat)<=ACP_CHAT_OUTBOX_ITEMS_MAX-2 &&
         acp_chat_bytes(r.chat)<=ACP_CHAT_OUTBOX_MAX-ACP_CHAT_FRAME_RESERVE
 }
 
@@ -137,6 +140,25 @@ acp_chat_vault_ready :: proc() -> bool {
     kr,ok:=acp_chat_keyring(); defer vault.keyring_wipe(&kr); return ok
 }
 
+// Delivery reports coalesce and stay small; only assistant rows count against
+// the item budget that pauses frame admission.
+acp_chat_assistant_items :: proc(chat:^ACP_Chat) -> int {
+    n:=0;for entry in chat.d.outbox do if entry.kind=="" do n+=1
+    return n
+}
+
+acp_chat_ids_replace :: proc(target:^[dynamic]string,ids:[]string) {
+    context.allocator=runtime.heap_allocator()
+    for id in target do delete(id)
+    clear(target)
+    for id in ids do append(target,strings.clone(id))
+}
+
+acp_chat_set_next_inputs :: proc(r:^ACP_Runtime,ids:[]string) {
+    if r.chat==nil do return
+    acp_chat_ids_replace(&r.chat.d.next_input_ids,ids)
+}
+
 acp_chat_bytes :: proc(chat:^ACP_Chat) -> int {
     total:=0;for entry in chat.d.outbox do total+=len(entry.body)
     return total
@@ -172,6 +194,10 @@ acp_chat_prompt_started :: proc(r:^ACP_Runtime,input_id:string) {
     acp_chat_reset_text(r.chat);d.remote_terminal=false
     acp_runtime_replace(&d.flushed_status,""); acp_runtime_replace(&d.status,"pending"); acp_runtime_replace(&d.stop_reason,"")
     d.revision=0;d.flushed_bytes=0;r.chat.last_flush=0
+    acp_chat_ids_replace(&d.input_ids,acp_delivery_members(r,input_id))
+    acp_chat_ids_replace(&d.next_input_ids,nil)
+    // Same checkpoint as the outgoing prompt RPC; ahead of any assistant text.
+    acp_delivery_prompt_started(r,input_id,d.turn_id)
 }
 
 // Segment zero retains the old wire turn ID, including when restoring a
@@ -207,6 +233,7 @@ acp_chat_continue :: proc(r:^ACP_Runtime,text:string) -> bool {
         acp_chat_reset_text(chat);d.remote_terminal=false;d.split_pending=false
         d.revision=0;d.flushed_bytes=0;chat.last_flush=0
         acp_runtime_replace(&d.flushed_status,"");acp_runtime_replace(&d.status,"pending")
+        if len(d.next_input_ids)>0 { acp_chat_ids_replace(&d.input_ids,d.next_input_ids[:]); acp_chat_ids_replace(&d.next_input_ids,nil) }
     }
     acp_chat_append_text(chat,text)
     return true
@@ -276,9 +303,11 @@ acp_chat_flush :: proc(r:^ACP_Runtime,final:bool,checkpoint:=true) -> bool {
     for entry,i in d.outbox do if entry.message_id==d.message_id do old=i
     required:=acp_chat_bytes(chat)+len(sealed)
     if old>=0 do required-=len(d.outbox[old].body)
-    if required>ACP_CHAT_OUTBOX_MAX || (old<0 && len(d.outbox)>=ACP_CHAT_OUTBOX_ITEMS_MAX) { delete(sealed); return false }
+    if required>ACP_CHAT_OUTBOX_MAX || (old<0 && acp_chat_assistant_items(chat)>=ACP_CHAT_OUTBOX_ITEMS_MAX) { delete(sealed); return false }
     d.revision+=1
-    entry:=contracts.ACP_Assistant_Message_Input{launch_epoch=strings.clone(r.epoch),turn_id=strings.clone(acp_chat_wire_turn(d)),message_id=strings.clone(d.message_id),revision=d.revision,body=sealed,message_status=strings.clone(d.status),stop_reason=strings.clone(d.stop_reason)}
+    ids:=make([]string,len(d.input_ids))
+    for id,i in d.input_ids do ids[i]=strings.clone(id)
+    entry:=contracts.ACP_Assistant_Message_Input{launch_epoch=strings.clone(r.epoch),turn_id=strings.clone(acp_chat_wire_turn(d)),message_id=strings.clone(d.message_id),revision=d.revision,body=sealed,message_status=strings.clone(d.status),stop_reason=strings.clone(d.stop_reason),input_ids=ids}
     if old>=0 { acp_chat_entry_delete(d.outbox[old]);d.outbox[old]=entry } else { append(&d.outbox,entry) }
     d.flushed_bytes=len(d.text);acp_runtime_replace(&d.flushed_status,d.status);chat.last_flush=now
     acp_runtime_replace(&r.saved_outbox,acp_event_json(chat.d))
@@ -287,6 +316,8 @@ acp_chat_flush :: proc(r:^ACP_Runtime,final:bool,checkpoint:=true) -> bool {
 
 acp_chat_entry_delete :: proc(entry:contracts.ACP_Assistant_Message_Input) {
     delete(entry.launch_epoch);delete(entry.turn_id);delete(entry.message_id);delete(entry.body);delete(entry.message_status);delete(entry.stop_reason)
+    for id in entry.input_ids do delete(id)
+    delete(entry.input_ids);delete(entry.kind)
 }
 
 acp_chat_prepare :: proc(r:^ACP_Runtime) -> bool {
@@ -301,9 +332,14 @@ acp_chat_prepare :: proc(r:^ACP_Runtime) -> bool {
     if len(d.text)>contracts.ACP_ASSISTANT_MAX_BYTES || len(d.deferred_text)>contracts.ACP_ASSISTANT_MAX_BYTES ||
         d.turn_bytes<len(d.text)+len(d.deferred_text) || d.turn_bytes>contracts.ACP_ASSISTANT_MAX_BYTES ||
         d.segment_index<0 || d.segment_index>d.turn_bytes || len(acp_chat_wire_turn(d))>256 || len(d.message_id)>256 ||
-        len(d.outbox)>ACP_CHAT_OUTBOX_ITEMS_MAX || acp_chat_bytes(chat)>ACP_CHAT_OUTBOX_MAX || d.revision<0 { acp_chat_destroy(r);return false }
+        len(d.outbox)>2*ACP_CHAT_OUTBOX_ITEMS_MAX || acp_chat_assistant_items(chat)>ACP_CHAT_OUTBOX_ITEMS_MAX || acp_chat_bytes(chat)>ACP_CHAT_OUTBOX_MAX || d.revision<0 ||
+        len(d.input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 || len(d.next_input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 { acp_chat_destroy(r);return false }
     for entry in d.outbox {
-        if entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || entry.turn_id=="" || len(entry.turn_id)>256 || (entry.message_status!="pending" && entry.message_status!="complete" && entry.message_status!="failed") { acp_chat_destroy(r);return false }
+        if entry.kind==contracts.ACP_OUTBOX_INPUT_STATE {
+            if entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || len(entry.body)>256*1024 { acp_chat_destroy(r);return false }
+            continue
+        }
+        if entry.kind!="" || entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || entry.turn_id=="" || len(entry.turn_id)>256 || len(entry.input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 || (entry.message_status!="pending" && entry.message_status!="complete" && entry.message_status!="failed") { acp_chat_destroy(r);return false }
     }
     owned:=d.text;d.text="";chat.text_buffer_ready=true
     acp_chat_append_text(chat,owned)
@@ -324,6 +360,9 @@ acp_chat_destroy :: proc(r:^ACP_Runtime) {
     if chat.text_buffer_ready { acp_chat_reset_text(chat);delete(chat.text_buffer) }
     else { if d.text!="" do crypto.zero_explicit(raw_data(d.text),len(d.text));delete(d.text) }
     for entry in d.outbox do acp_chat_entry_delete(entry)
+    for id in d.input_ids do delete(id)
+    for id in d.next_input_ids do delete(id)
+    delete(d.input_ids);delete(d.next_input_ids)
     if chat.vault_blocked do bridge_permission_remove(r.instance,chat.blocker_id)
     delete(chat.blocker_id);delete(d.outbox);delete(chat.publication);free(chat);r.chat=nil
 }
@@ -348,10 +387,28 @@ acp_chat_publication_result :: proc(reply:Bridge_Local_Relay_Result) -> ACP_Chat
     return .Retry
 }
 
-acp_chat_publish :: proc(chat:^ACP_Chat) -> ACP_Chat_Publication_Result {
-    reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","assistant-message"),"agent.chat.assistant_message",chat.publication,chat.r.rec,5000)
+// Routes one outbox entry: assistant revisions to assistant-message, delivery
+// reports (body = report JSON) to input-state. A rejected report is dropped
+// rather than failing the runtime: evidence must never stop the agent.
+acp_chat_publish_entry :: proc(publication:string,rec:Bridge_Local_Agent_Token_Record) -> ACP_Chat_Publication_Result {
+    obj:=acp_event_object(publication)
+    if acp_event_string(obj,"kind")==contracts.ACP_OUTBOX_INPUT_STATE {
+        reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","input-state"),"agent.chat.input_state",acp_event_string(obj,"body"),rec,5000)
+        defer delete(reply.body)
+        result:=acp_chat_publication_result(reply)
+        if result==.Rejected || result==.Terminal {
+            fmt.println("ACP delivery report rejected",reply.status)
+            return .Saved
+        }
+        return result
+    }
+    reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","assistant-message"),"agent.chat.assistant_message",publication,rec,5000)
     defer delete(reply.body)
-    result:=acp_chat_publication_result(reply)
+    return acp_chat_publication_result(reply)
+}
+
+acp_chat_publish :: proc(chat:^ACP_Chat) -> ACP_Chat_Publication_Result {
+    result:=acp_chat_publish_entry(chat.publication,chat.r.rec)
     switch result {
     case .Saved: acp_chat_call(chat,strings.concatenate({"chat_saved:",chat.publication},context.temp_allocator))
     case .Terminal: acp_chat_call(chat,strings.concatenate({"chat_terminal:",chat.publication},context.temp_allocator))

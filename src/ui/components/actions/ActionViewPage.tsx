@@ -87,11 +87,6 @@ export default function ActionViewPage({ actionId }: { actionId: string }) {
 
         <ActionDetailBody record={record} actionError={actionError} runNotice={runNotice} wide={wide} />
 
-        <div
-          aria-hidden="true"
-          className="md:hidden"
-          style={{ height: 'calc(3.5rem + max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)))' }}
-        />
       </div>
 
       <ActionDetailMobileActions record={record} onVerb={(verb) => void runVerb(verb)} />

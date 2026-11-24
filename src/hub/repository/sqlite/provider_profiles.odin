@@ -89,6 +89,9 @@ bridge_provider_profiles_reconcile_sqlite :: proc(
 	bridge_id: string,
 	profiles: []domain.Bridge_Provider_Profile,
 ) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return domain.domain_error(.Internal_Error, "profile repository unavailable")
 	// Hold SQLite's recursive connection mutex for the entire savepoint: readers

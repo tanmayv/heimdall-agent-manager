@@ -104,6 +104,8 @@ Bridge_Dispatch_Worker :: struct {
 }
 
 Bridge_Dispatch_Metrics :: struct {
+	take_attempts: u64,
+	waiting_workers: int,
 	accepted: u64,
 	rejected: u64,
 	completed: u64,
@@ -158,6 +160,8 @@ BRIDGE_DISPATCH_COST_LIMIT :: 256
 BRIDGE_DISPATCH_RECOVERY_COST_RESERVE :: 32
 
 bridge_dispatch_mu: sync.Mutex
+// Predicates and waits share the mutex. Ordering keys can span classes.
+bridge_dispatch_ready: [Bridge_Command_Class]sync.Cond
 bridge_dispatch_lifecycle: [dynamic]Bridge_Dispatch_Job
 bridge_dispatch_interactive: [dynamic]Bridge_Dispatch_Job
 bridge_dispatch_background: [dynamic]Bridge_Dispatch_Job
@@ -267,12 +271,14 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Recovery, key_kind = .LSP, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
 	case "shell_kill", "shell_signal", "shell_stream_detach":
 		return Bridge_Command_Spec{class = .Shell, priority = .Recovery, key_kind = .Shell, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2}, true
-	case "launch_agent", "launch_provider_test", "wake_agent":
+	case "start_agent", "launch_agent", "launch_provider_test", "wake_agent":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 30_000, cost_units = 8}, true
 	case "agent_pty_input", "agent_pty_resize":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 1}, true
 	case "bridge_unseal", "set_telemetry", "auto_update_config":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Bridge, queued = true, requires_id = true, timeout_ms = 5000, cost_units = 2}, true
+	case "event_deliver":
+		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = contracts.DELIVERY_HANDLER_BUDGET_MS, cost_units = 8, retry_safe = true}, true
 	case "bot_deliver":
 		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2, coalescible = false, retry_safe = true}, true
 	case "bot_delivery_report_ack":
@@ -289,7 +295,7 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
 		return Bridge_Command_Spec{class=.Interactive,priority=.Interactive,key_kind=.Bridge,queued=true,requires_id=true,timeout_ms=4000,cost_units=2},true
 	case "lsp_start":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .LSP, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 4}, true
-	case "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "task_status_changed_notify", "capture_agent_pane", "get_agent_pane":
+	case "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "task_status_changed_notify", "capture_agent_pane", "get_agent_pane", "acp_send_now_batch", "acp_inputs_read":
 		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2}, true
 	case "provider_discover":
 		return Bridge_Command_Spec{class = .Background, priority = .Background, key_kind = .Provider_Discovery, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 16, coalescible = true, retry_safe = true}, true
@@ -405,7 +411,12 @@ bridge_command_ordering_key :: proc(command_type, text: string) -> string {
 		return ""
 	}
 	switch command_type {
-	case "bot_deliver", "launch_agent", "launch_provider_test", "stop_agent", "agent_pty_input", "agent_pty_resize", "capture_agent_pane", "get_agent_pane", "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge":
+	case "start_agent":
+		id := jsonx.extract_string(text, "agent_instance_id", "", top_level_only=true)
+		defer delete(id)
+		if id != "" do return strings.concatenate({"agent:", id})
+		return strings.clone("agent-control")
+	case "event_deliver", "bot_deliver", "launch_agent", "launch_provider_test", "stop_agent", "agent_pty_input", "agent_pty_resize", "capture_agent_pane", "get_agent_pane", "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "acp_send_now_batch", "acp_inputs_read":
 		id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(id)
 		if id != "" do return strings.concatenate({"agent:", id})
@@ -510,6 +521,10 @@ bridge_wake_synth_counter: u64
 // wake_agent.command_id. ok=false means the caller must reject with
 // missing_command_id. The returned id is owned by the caller (context allocator).
 bridge_command_dispatch_resolve_id :: proc(command_type, text: string) -> (id: string, ok: bool) {
+	if command_type == "start_agent" {
+		id = jsonx.extract_string(text, "command_id", "", top_level_only=true)
+		return id, id != ""
+	}
 	id = extract_json_string(text, "command_id", "")
 	if id != "" do return id, true
 	delete(id)
@@ -616,15 +631,7 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 		cost_units = spec.cost_units,
 		mcp_large = mcp_large,
 	}
-	switch class {
-	case .Lifecycle: append(&bridge_dispatch_lifecycle, job)
-	case .Interactive: append(&bridge_dispatch_interactive, job)
-	case .Background: append(&bridge_dispatch_background, job)
-	case .Exclusive: append(&bridge_dispatch_exclusive, job)
-	case .General_IO: append(&bridge_dispatch_general_io, job)
-	case .Shell: append(&bridge_dispatch_shell, job)
-	case .Model_Discovery: append(&bridge_dispatch_model_discovery, job)
-	}
+	bridge_command_dispatch_enqueue_locked(job)
 	append(&bridge_dispatch_claims, Bridge_Dispatch_Claim{command_id = strings.clone(command_id, runtime.default_allocator()), state = .Queued})
 	if mcp_large {bridge_dispatch_mcp_large_bytes += owned_bytes} else {bridge_dispatch_owned_bytes += owned_bytes}
 	bridge_dispatch_queued_cost += spec.cost_units
@@ -637,7 +644,20 @@ bridge_command_dispatch :: proc(conn: ^ws.Connection, text: string, generation: 
 	return true
 }
 
-bridge_command_dispatch_take :: proc(class: Bridge_Command_Class) -> (Bridge_Dispatch_Job, bool) {
+bridge_command_dispatch_enqueue_locked :: proc(job: Bridge_Dispatch_Job) {
+	switch job.class {
+	case .Lifecycle: append(&bridge_dispatch_lifecycle, job)
+	case .Interactive: append(&bridge_dispatch_interactive, job)
+	case .Background: append(&bridge_dispatch_background, job)
+	case .Exclusive: append(&bridge_dispatch_exclusive, job)
+	case .General_IO: append(&bridge_dispatch_general_io, job)
+	case .Shell: append(&bridge_dispatch_shell, job)
+	case .Model_Discovery: append(&bridge_dispatch_model_discovery, job)
+	}
+	sync.cond_signal(&bridge_dispatch_ready[job.class])
+}
+
+bridge_command_dispatch_take :: proc(class: Bridge_Command_Class, wait := false) -> (Bridge_Dispatch_Job, bool) {
 	sync.mutex_lock(&bridge_dispatch_mu)
 	defer sync.mutex_unlock(&bridge_dispatch_mu)
 	queue: ^[dynamic]Bridge_Dispatch_Job
@@ -651,7 +671,15 @@ bridge_command_dispatch_take :: proc(class: Bridge_Command_Class) -> (Bridge_Dis
 	case .Model_Discovery: queue = &bridge_dispatch_model_discovery
 	}
 	if queue == nil do return Bridge_Dispatch_Job{}, false
+	bridge_dispatch_metrics.take_attempts += 1
 	job, ok := bridge_command_dispatch_take_queue_locked(queue)
+	for !ok && wait {
+		bridge_dispatch_metrics.waiting_workers += 1
+		sync.cond_wait(&bridge_dispatch_ready[class], &bridge_dispatch_mu)
+		bridge_dispatch_metrics.waiting_workers -= 1
+		bridge_dispatch_metrics.take_attempts += 1
+		job, ok = bridge_command_dispatch_take_queue_locked(queue)
+	}
 	if !ok do return job, false
 	if i := bridge_command_dispatch_claim_index_locked(job.command_id); i >= 0 do bridge_dispatch_claims[i].state = .Running
 	now_ns := time.to_unix_nanoseconds(time.now())
@@ -702,6 +730,11 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 			if key != job.ordering_key do continue
 			delete(key, runtime.default_allocator())
 			ordered_remove(&bridge_dispatch_active_keys, i)
+			// A key can block jobs in other classes as well as this worker's.
+			// Empty classes have no predicate change and need no wakeup.
+			for &ready, class in bridge_dispatch_ready {
+				if bridge_command_dispatch_queue_len_locked(class) > 0 do sync.cond_broadcast(&ready)
+			}
 			break
 		}
 	}
@@ -738,11 +771,8 @@ bridge_command_dispatch_finish :: proc(worker: ^Bridge_Dispatch_Worker, job: ^Br
 bridge_command_dispatch_worker :: proc(data: rawptr) {
 	worker := (^Bridge_Dispatch_Worker)(data)
 	for {
-		job, ok := bridge_command_dispatch_take(worker.class)
-		if !ok {
-			time.sleep(5 * time.Millisecond)
-			continue
-		}
+		job, ok := bridge_command_dispatch_take(worker.class, wait = true)
+		if !ok do continue
 		sync.mutex_lock(&bridge_dispatch_mu)
 		worker.current_generation = job.generation
 		worker.current_command_id = strings.clone(job.command_id, runtime.default_allocator())

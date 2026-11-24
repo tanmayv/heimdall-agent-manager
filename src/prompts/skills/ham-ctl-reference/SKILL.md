@@ -746,7 +746,7 @@ ham-ctl task cancel <task-id>
 
 Subscriptions belong to an agent instance. Coordinator defaults belong to the chain's coordinator instance and follow chain membership. Work-claim defaults belong to the claim holder, receive only that task's requirements changes and remain while the claim is waiting; they end when ownership ends or moves. Explicit watches belong to the instance that ran `events watch` and receive chain state, human review requests, human blocks, and work-finished events. `[events]` notices go only to the owning instance, never to another instance or chain, and are counted and rate-limited per instance. An idle-stopped instance, or one that crashed and is relaunched in place, keeps its subscriptions (a wake-worthy event can start it). When the instance is stopped by the user, or replaced (its roles move to another instance after it died), all of its subscriptions and pending events are deleted. Every new subscription, including the fresh ones after a restart, a coordinator reassignment or a claim transfer, starts at its creation: events from before it are never replayed.
 
-Delivery is at least once. Deduplicate by `event_id`, acknowledge after handling, and expect unacknowledged events again after five minutes. After ten attempts the hub republishes to `ev.dlq.<owner>…`. State events roll up to the latest state. Stale resolvable events are skipped; a previously delivered event later resolved or superseded produces a `resolved` notice with `resolved_event_id`. Notices need no acknowledgement. Events contain metadata, so fetch the current task when details are needed.
+Delivery is at least once. Deduplicate by `event_id`, acknowledge after handling, and expect unacknowledged events again after five minutes. After ten attempts the hub republishes to `ev.dlq.<owner>…`. State events roll up to the latest state. Stale resolvable events are skipped; a previously delivered event later resolved or superseded produces a `resolved` notice with `resolved_event_id`. `resolved` notices need no acknowledgement; acking one is accepted as a no-op. Events contain metadata, so fetch the current task when details are needed.
 
 Delivery metadata has a 14-day retention window matching the stream. The hub keeps the most recent 256 completed acknowledgement receipts per subscription for idempotent retries. Each subscription admits at most 4,096 delivery records; at capacity, pull leaves additional events queued until you acknowledge or resolve existing events. An acknowledgement outside the retained receipt window may return not found.
 
@@ -784,3 +784,44 @@ their existing instructions, and deduplicate follow-up against inbox events usin
 current task state. Other taskv2 triggers still use that path. The hub flag
 `--legacy-event-notices true|false` defaults to true and controls only catalog
 triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
+
+
+## hub actions — operator actions API v2
+
+These are hub/operator commands, authenticated with the operator's hub credentials.
+The owner's `actions` experiment must be enabled. Phase 1 supports agent and
+instance targets; bot targets require the later bot integration.
+
+```bash
+ham-ctl hub actions list
+ham-ctl hub actions show <action-id>
+ham-ctl hub actions create --prompt <text> --agent-id <id> [--name <text>] [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]... [--min-interval <seconds>] [--disabled] [--trigger <spec>]... [--trigger-json <json>]...
+ham-ctl hub actions create --prompt <text> --instance <id> [--trigger <spec>]...
+ham-ctl hub actions update <action-id> [--prompt <text>] [--name <text>] [--min-interval <seconds>] [--trigger <spec>]... [--trigger-json <json>]...
+ham-ctl hub actions enable <action-id>
+ham-ctl hub actions disable <action-id>
+ham-ctl hub actions delete <action-id>
+ham-ctl hub actions runs <action-id> [--limit <n>] [--before <created_at>] [--before-id <run_id>]
+```
+
+Each rule part is a value or `*`; omitted model means `*`. Rule order is flag
+order. Trigger specs are `cron:<5-field expr>[@<timezone>]` (last `@` splits the
+zone), `every:<seconds>`, `at:<RFC3339>` and
+`event:<event_type>[,chain=<id>][,<data key>=<value>]...`.
+`--trigger-json` takes a full trigger object, including `blackout_dates`,
+`active_from` and `active_until` in its config. Mixed repeated trigger flags keep
+their order. On update, any trigger flag replaces the whole trigger list; any
+target flag replaces the whole target, including rules. Omitted fields stay as-is.
+For stable history paging, pass the last row's `created_at` to `--before` and
+its run id to `--before-id`; a timestamp alone excludes all rows at that time.
+
+```bash
+ham-ctl hub actions create --prompt 'Review {{event.chain_id}}' --agent-id agt_1 --rule '*:claude' --trigger 'event:chain.state,state=completed'
+ham-ctl hub actions create --prompt 'Daily review' --instance inst_1 --trigger 'cron:0 9 * * 1-5@America/New_York'
+```
+
+There is no manual `run` verb. Read run history for waiting, deferred, routed,
+delivered, joined, skipped and failed outcomes, including reasons and delivery
+expiry. An action also starts an agent stopped by the user. Disable the action
+to prevent future action wakes. Machines must report `event_pipeline_v1`; old
+bridges remain visible with `missing_feature` but cannot run actions.

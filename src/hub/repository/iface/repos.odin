@@ -1,6 +1,8 @@
 package iface
 
 Repositories :: struct {
+	pipeline_deliveries: Pipeline_Delivery_Repository,
+	bots: Bot_Repository,
  event_subscriptions: Event_Subscription_Repository,
 	event_outbox: Event_Outbox_Repository,
 	users: User_Repository,
@@ -11,7 +13,6 @@ Repositories :: struct {
 	taskchains: Taskchain_Repository,
 	search: Search_Repository,
 	actions: Action_Repository,
-	scheduled_prompts: Scheduled_Prompt_Repository,
 	push_subscriptions: Push_Repository,
 	cards: Card_Repository,
 	issues: Issue_Repository,

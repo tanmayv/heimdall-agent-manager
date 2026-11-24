@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -161,7 +162,7 @@ test_wake_stale_failure_after_successful_launch_is_dropped :: proc(t: ^testing.T
 	bridge_agent_wake_reset()
 	defer bridge_agent_wake_reset()
 	id := "inst_wake_race"
-	bridge_agent_wake[id] = Bridge_Wake_State{last_wake_ms = 1_000}
+	bridge_agent_wake[strings.clone(id, runtime.heap_allocator())] = Bridge_Wake_State{last_wake_ms = 1_000}
 	in_flight_generation := bridge_agent_wake[id].generation
 
 	bridge_task_wake_note_launched(id, 1_500) // launch B succeeds first

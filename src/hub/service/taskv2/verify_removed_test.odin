@@ -104,6 +104,7 @@ test_d1_verify_waiting_task_gets_fresh_review_after_migration :: proc(t: ^testin
 	testing.expect_value(t, count_events(fx, "task_d1", "reviews_superseded"), 1)
 	testing.expect_value(t, get_task(fx, "task_d1").brief_json, d1.brief_json)
 
+	confirm_holder(fx, "inst_r1") // This migration test is not an unconfirmed-dispatch test.
 	// boot: one gate re-evaluation; nothing completes on the old approval
 	boot(&fx.svc)
 	testing.expect_value(t, get_task(fx, "task_d1").state, domain.Task_State.In_Review)

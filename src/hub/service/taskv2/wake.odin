@@ -1,15 +1,16 @@
 package taskv2
 
-import "core:fmt"
+import "core:strings"
+import jsonx "odin_test:lib/jsonx"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import agent "odin_test:hub/service/agent"
 import project "odin_test:hub/service/project"
-import provider_service "odin_test:hub/service/provider"
+
 
 // Wake delivery (plan §2.5 / §4). A UoW never talks to a bridge: it queues
-// run[]/stop[] entries on the Effects list and flush_wakes sends ONE wake_agent
+// run[]/stop[] entries on the Effects list and flush_wakes sends ONE start command
 // command per (bridge × chain) after COMMIT. For a LIVE holder the entry is a
 // nudge (deliver="nudge"): the bridge keeps the process, refreshes TASK.md and
 // tells the agent to run `lease next` (T8: no re-bootstrap per attempt or
@@ -21,71 +22,119 @@ import provider_service "odin_test:hub/service/provider"
 // agent.Wake_Agent_Run_Entry.deliver).
 WAKE_DELIVER_NUDGE :: "nudge"
 
-// effect_wake_lease queues the run[] entry that delivers `lease` to its holder:
-// the enriched descriptor the bridge needs for the agent-keyed bootstrap plus
-// lease_id and the context pack.
-effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task: domain.Task) {
-	if u == nil do return
-	inst, iok, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id)
-	if !iok do return
-	bridge_id := lease.bridge_id
-	if bridge_id == "" do bridge_id = inst.bridge_id
-	if bridge_id == "" {
-		fmt.eprintfln("[taskv2] wake: lease %s holder %s has no bridge; cannot deliver", lease.lease_id, lease.holder_instance_id)
-		return
-	}
-	chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
-	if !cok do return
-	agent_name := ""
-	permission_mode := domain.agent_instance_effective_permission_mode(inst)
-	if ag, aok, _ := iface.agent_get(svc.agents, inst.agent_id); aok {
-		agent_name = ag.name
-		permission_mode = domain.effective_permission_mode(inst.permission_mode, ag.permission_mode)
-	}
-	role := "worker"
-	if lease.kind == domain.LEASE_KIND_REVIEW do role = "reviewer"
-	provider, model := lease_launch_model(svc, Placement{bridge_id = bridge_id, provider = lease.provider, provider_profile=lease.provider_profile, model = lease.model}, inst)
-	append(&u.effects.owned_strings, provider, model)
-	etag:=""
-	if svc.agent_service!=nil && svc.agent_service.providers!=nil {
-		ps:=provider_service.Provider_Service{repo=svc.agent_service.providers}
-		etag,_=provider_service.catalog_etag(&ps)
-		append(&u.effects.owned_strings,etag)
-	}
-	entry := agent.Wake_Agent_Run_Entry{
-		effective_transport=inst.runtime_transport,catalog_etag=etag,launch_epoch=inst.launch_epoch,
-		run_count = inst.run_count,
-		agent_instance_id = inst.agent_instance_id,
-		task_id           = string(task.task_id),
-		role              = role,
-		provider          = provider,
-		provider_profile=domain.profile_effective_id(provider,lease.provider_profile),
-		model             = model,
-		agent_id          = inst.agent_id,
-		agent_name        = agent_name,
-		chain_id          = string(chain.chain_id),
-		chain_title       = chain.title,
-		coordinator_id    = chain.coordinator_agent_instance_id,
-		project_id        = string(inst.project_id),
-		project_path      = inst.project_path,
-		lease_id          = lease.lease_id,
-		pack_json         = build_pack_json(svc, chain, task, lease, inst),
-		permission_mode   = permission_mode,
-		// A live child keeps its process: the bridge nudges it to run
-		// `lease next` (grant_in_uow left its generation unchanged).
-		deliver           = WAKE_DELIVER_NUDGE if wake_reuses_live_child(inst, false) else "",
-	}
-	key := effects_key(&u.effects, bridge_id, string(chain.chain_id))
-	entries := u.effects.runs[key]
-	// A later entry for the same instance in one UoW replaces the earlier one.
-	replaced := false
-	for &e in entries {
-		if e.agent_instance_id == entry.agent_instance_id { e = entry; replaced = true }
-	}
-	if !replaced do append(&entries, entry)
-	u.effects.runs[key] = entries
-	// An instance we are about to (re)start must not also be in stop[].
-	remove_stop(u, key, entry.agent_instance_id)
+// Lease_Wake holds a complete command entry and its generation ticket.
+// A redelivery whose generation ended carries only a deferred dispatch failure.
+Lease_Wake :: struct {
+ agent_instance_id: string,
+ entry: agent.Start_Run_Entry,
+ ticket: ^agent.Start_Ticket,
+ failure: string,
+}
+
+// A grant supplies its ticket. Every other caller is a read-only redelivery;
+// it must never open another generation, even when the old child has ended.
+effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task: domain.Task, ticket: ^agent.Start_Ticket = nil) {
+ ticket := ticket
+ if u == nil || svc.agent_service == nil do return
+ if ticket == nil {
+  reused, ok, ended, err := agent.start_reuse(svc.agent_service, lease.holder_instance_id, lease.lease_id)
+  if !ok && err.code == .None {
+   // A kept-live grant intentionally leaves start_ref untouched. Its durable
+   // event binds the nudge to the exact child, without opening a generation.
+   current, found, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id)
+   if found {
+    held, has_claim, _ := iface.taskchain_get_lease_by_holder(svc.repo, lease.holder_instance_id)
+    if has_claim && held.lease_id == lease.lease_id && agent.runtime_expected_active(current.runtime_status) {
+     events, eerr := iface.taskchain_list_events_by_task(svc.repo, lease.task_id, lease.owner_user_id)
+     if eerr.code == .None {
+      for event in events {
+       if event.kind != EV_LEASE_GRANTED || jsonx.extract_string(event.payload_json,"lease_id","",true,context.temp_allocator) != lease.lease_id do continue
+       kept := jsonx.extract_bool(event.payload_json,"start_kept_live",false,true) && jsonx.extract_int(event.payload_json,"start_run_count",-1,true) == current.run_count
+       // Pre-T25 grants opened this generation without start_ref or event
+       // metadata. Preserve their pending wake across the deploy/restart.
+       legacy := !jsonx.has_key(event.payload_json,"start_run_count",true) && current.start_ref == "" &&
+        (instance_is_live(current) || instance_is_pending(current)) &&
+        held.confirmed_at == "" && held.delivery == domain.LEASE_DELIVERY_WAKE && held.phase == domain.LEASE_PHASE_ACTIVE &&
+        (current.current_task_id == "" || current.current_task_id == string(lease.task_id))
+       if kept || legacy {
+        reused = agent.Start_Ticket{instance=domain.agent_instance_clone(current),command_id=strings.concatenate({"sb_",lease.lease_id}),kept_live=kept || instance_is_live(current),reused=true}
+        reused.allocator = context.allocator
+        ok = true
+       }
+      }
+     }
+    }
+    domain.agent_instance_destroy(&current)
+   }
+  }
+  if !ok {
+   if ended || err.code != .None {
+    key := effects_key(&u.effects, lease.bridge_id, string(lease.chain_id))
+    runs := u.effects.runs[key]
+    detail := err.message
+    if detail == "" do detail = "lease start generation has ended"
+    detail = strings.clone(detail)
+    append(&u.effects.owned_strings, detail)
+    append(&runs, Lease_Wake{agent_instance_id=lease.holder_instance_id, entry={lease_id=lease.lease_id}, failure=detail})
+    u.effects.runs[key] = runs
+   }
+   return
+  }
+  validation := agent.validate_frozen_runtime_transport(svc.agent_service, reused.instance)
+  if validation.code != .None {
+   agent.start_ticket_destroy(&reused)
+   key := effects_key(&u.effects, lease.bridge_id, string(lease.chain_id))
+   runs := u.effects.runs[key]
+   detail := strings.clone(validation.message)
+   append(&u.effects.owned_strings,detail)
+   append(&runs,Lease_Wake{agent_instance_id=lease.holder_instance_id,entry={lease_id=lease.lease_id},failure=detail})
+   u.effects.runs[key]=runs
+   return
+  }
+  ticket = new(agent.Start_Ticket)
+  ticket^ = reused
+  append(&u.effects.tickets, ticket)
+ }
+ inst := ticket.instance
+ chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
+ if !cok {
+  key := effects_key(&u.effects, inst.bridge_id, string(lease.chain_id))
+  entries := u.effects.runs[key]
+  detail := strings.clone("lease chain lookup failed before dispatch")
+  append(&u.effects.owned_strings,detail)
+  append(&entries,Lease_Wake{agent_instance_id=inst.agent_instance_id,ticket=ticket,entry={lease_id=lease.lease_id},failure=detail})
+  u.effects.runs[key]=entries
+  return
+ }
+ role := "worker"
+ if lease.kind == domain.LEASE_KIND_REVIEW do role = "reviewer"
+ permission_mode := domain.agent_instance_effective_permission_mode(inst)
+ if ag, found, _ := iface.agent_get(svc.agents, inst.agent_id); found {
+  permission_mode = domain.effective_permission_mode(inst.permission_mode, ag.permission_mode)
+ }
+ pack := strings.clone(build_pack_json(svc, chain, task, lease, inst))
+ append(&u.effects.owned_strings, pack)
+ launch := agent.start_launch_json(svc.agent_service, ticket^, &agent.Start_Lease{
+  task_id=string(task.task_id), role=role, lease_id=lease.lease_id, pack_json=pack,
+  permission_mode=permission_mode,
+ })
+ append(&u.effects.owned_strings, launch)
+ entry := Lease_Wake{
+  agent_instance_id=inst.agent_instance_id, ticket=ticket,
+  entry={bridge_id=inst.bridge_id, deliver="nudge" if ticket.kept_live else "launch", launch_json=launch, lease_id=lease.lease_id},
+ }
+ key := effects_key(&u.effects, inst.bridge_id, string(chain.chain_id))
+ entries := u.effects.runs[key]
+ replaced := false
+ for &e in entries {
+  if e.agent_instance_id == entry.agent_instance_id {
+   if e.ticket != nil do agent.start_cancel(svc.agent_service, e.ticket)
+   e = entry; replaced = true
+  }
+ }
+ if !replaced do append(&entries, entry)
+ u.effects.runs[key] = entries
+ remove_stop(u, key, entry.agent_instance_id)
 }
 
 // effect_stop queues `instance_id` on the stop[] list of its bridge × chain.
@@ -140,41 +189,54 @@ Wake_Command :: struct {
 	body_json: string,
 }
 
-// flush_wakes sends one wake_agent command per (bridge × chain) for the
+// flush_wakes sends one start command per (bridge × chain) for the
 // runs/stops a committed UoW decided on. Called after COMMIT, never under the
 // tx mutex.
 flush_wakes :: proc(svc: ^Service, e: ^Effects) {
-	keys := make(map[string]bool, context.temp_allocator)
-	for k in e.runs do keys[k] = true
-	for k in e.stops do keys[k] = true
-	for key in keys {
-		bridge_id, chain_id := split_wake_key(key)
-		if bridge_id == "" do continue
-		runs := e.runs[key]
-		stops := e.stops[key]
-		// A reconnect can withdraw ACP support after the grant committed. Gate
-		// redelivery against the frozen instance, without resolving settings again.
-		ready_runs := make([dynamic]agent.Wake_Agent_Run_Entry, context.temp_allocator)
-		for run in runs {
-			if run.effective_transport == "acp" {
-				inst, found, read_err := iface.agent_get_instance(svc.agents, run.agent_instance_id)
-				if !found { on_dispatch_failed(svc, run.lease_id, read_err.message); continue }
-				validation_err := agent.validate_frozen_runtime_transport(svc.agent_service, inst)
-				domain.agent_instance_destroy(&inst)
-				if validation_err.code != .None { on_dispatch_failed(svc, run.lease_id, validation_err.message); continue }
-			}
-			append(&ready_runs, run)
-		}
-		runs = ready_runs
-		if len(runs) == 0 && len(stops) == 0 do continue
-		cmd_id := platform.generate_id(svc.ids, "cmd_")
-		body := agent.wake_agent_command_json(cmd_id, chain_id, runs[:], stops[:])
-		if svc.wake_observer != nil {
-			svc.wake_observer(svc.wake_observer_ctx, Wake_Command{bridge_id = bridge_id, chain_id = chain_id, body_json = body})
-		}
-		if sent, err := project.bridge_command_send_runtime(svc.bridge_command_sink, project.Runtime_Command{bridge_id = bridge_id, command_id = cmd_id, body_json = body}); !sent && svc.bridge_command_sink.send_runtime_command != nil {
-			fmt.eprintfln("[taskv2] wake_agent to bridge %s failed: %s", bridge_id, err.message)
-			for run in runs do on_dispatch_failed(svc, run.lease_id, err.message)
-		}
-	}
+ keys := make(map[string]bool, context.temp_allocator)
+ for k in e.runs do keys[k] = true
+ for k in e.stops do keys[k] = true
+ for key in keys {
+  bridge_id, chain_id := split_wake_key(key)
+  if bridge_id == "" do continue
+  wakes := e.runs[key]
+  runs := make([dynamic]agent.Start_Run_Entry, context.temp_allocator)
+  for wake in wakes {
+   if wake.failure != "" {
+    if wake.ticket != nil do agent.start_settle(svc.agent_service,wake.ticket,false)
+    on_dispatch_failed(svc, wake.entry.lease_id, wake.failure)
+    continue
+   }
+   append(&runs, wake.entry)
+  }
+  stops := e.stops[key]
+  if len(runs) == 0 && len(stops) == 0 do continue
+  cmd_id := platform.generate_id(svc.ids, "cmd_")
+  // Observe the exact selected wire form while retaining the caller allocator
+  // for all sends and settlement side effects.
+  dispatch := Wake_Dispatch{svc=svc}
+  sender := agent.Agent_Service{bridges=svc.bridges, bridge_command_sink={
+   ctx=&dispatch, send_runtime_command=proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) {
+    d := (^Wake_Dispatch)(ctx)
+    if d.svc.wake_observer != nil {
+     d.svc.wake_observer(d.svc.wake_observer_ctx, {bridge_id=cmd.bridge_id, chain_id=d.chain_id, body_json=cmd.body_json})
+    }
+    return project.bridge_command_send_runtime(d.svc.bridge_command_sink, cmd)
+   },
+  }}
+  dispatch.chain_id = chain_id
+  sent, err := agent.start_command_send(&sender, bridge_id, cmd_id, chain_id, runs[:], stops[:])
+  for wake in wakes {
+   if wake.ticket == nil || wake.failure != "" do continue
+   agent.start_settle(svc.agent_service, wake.ticket, sent)
+   if !sent do on_dispatch_failed(svc, wake.entry.lease_id, err.message)
+  }
+ }
+}
+
+Wake_Dispatch :: struct { svc: ^Service, chain_id: string }
+
+// Pending children await readiness; this is a read-only lifecycle predicate.
+instance_is_pending :: proc(inst: domain.Agent_Instance) -> bool {
+	return inst.runtime_status == "launching" || inst.runtime_status == "starting" || inst.runtime_status == "blocked"
 }

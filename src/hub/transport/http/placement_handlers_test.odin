@@ -12,7 +12,7 @@ import placement "odin_test:hub/service/placement"
 import project_service "odin_test:hub/service/project"
 import provider_service "odin_test:hub/service/provider"
 
-placement_endpoint_scenario :: proc(t: ^testing.T, feature: bool) {
+placement_endpoint_scenario :: proc(t: ^testing.T, feature: bool, query_feature := "x&feature=y") {
 	f := wire_setup(t, "placement"); defer wire_teardown(f)
 	pi: sqlite.Provider_Repo_SQLite
 	pr := sqlite.new_provider_repository(&pi, &f.conn)
@@ -46,7 +46,7 @@ placement_endpoint_scenario :: proc(t: ^testing.T, feature: bool) {
 		placement = &ps,
 	}
 	query := ""
-	if feature do query = "feature=x&feature=y"
+	if feature do query = strings.concatenate({"feature=", query_feature}, context.temp_allocator)
 	response := placement_candidates_handler(
 		&h,
 		{method = "GET", path = "/api/v1/placement/candidates", headers = f.user_headers, query = query},
@@ -89,14 +89,14 @@ placement_endpoint_scenario :: proc(t: ^testing.T, feature: bool) {
 	}
 	testing.expect(t, len(body.data.providers) > 0)
 }
-placement_endpoint_tracked :: proc(t: ^testing.T, feature: bool) {
+placement_endpoint_tracked :: proc(t: ^testing.T, feature: bool, query_feature := "x&feature=y") {
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator); defer mem.tracking_allocator_destroy(&track)
 	context.allocator = mem.tracking_allocator(&track)
 	arena: virtual.Arena
 	assert(virtual.arena_init_growing(&arena) == nil)
 	context.allocator = virtual.arena_allocator(&arena)
-	placement_endpoint_scenario(t, feature)
+	placement_endpoint_scenario(t, feature, query_feature)
 	virtual.arena_destroy(&arena)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }
@@ -104,3 +104,9 @@ placement_endpoint_tracked :: proc(t: ^testing.T, feature: bool) {
 test_placement_candidates_endpoint :: proc(t: ^testing.T) {placement_endpoint_tracked(t, false)}
 @(test)
 test_placement_candidates_feature_filter :: proc(t: ^testing.T) {placement_endpoint_tracked(t, true)}
+
+// T14: a legacy hello has no event pipeline capability.
+@(test)
+test_old_bridge_is_not_a_candidate :: proc(t: ^testing.T) {
+	placement_endpoint_tracked(t, true, "event_pipeline_v1")
+}

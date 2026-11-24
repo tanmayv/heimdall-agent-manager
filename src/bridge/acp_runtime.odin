@@ -27,6 +27,9 @@ ACP_Runtime_Durable :: struct {
     steering_input: ACP_Runtime_Input,
     batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
     codex: ACP_Codex_Durable,
+    // Delivery evidence sequence for this launch epoch (strictly increasing).
+    report_seq: i64,
+    send_now: ACP_Send_Now_Durable,
 }
 
 // T5 attaches telemetry/chat handling here. Hooks execute only on the instance
@@ -130,6 +133,7 @@ acp_runtime_close_child :: proc(r: ^ACP_Runtime) -> bool {
 acp_runtime_error :: proc(r: ^ACP_Runtime, reason: string, auth := false) {
     if r.d.stopped || r.d.error != "" do return
     current := acp_runtime_current(r)
+    acp_delivery_runtime_failed(r, reason)
     acp_runtime_replace(&r.d.error, reason)
     r.d.auth_required = auth; r.d.ready = false
     // Persist before closing the child or publishing failure. Result callbacks
@@ -223,6 +227,19 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
     if argument == "task_notices_ready" || argument == "task_notices_interrupt_ready" {
         return acp_runtime_notice_ready(r, argument == "task_notices_interrupt_ready")
     }
+    if strings.has_prefix(argument, "send_now_batch:") {
+        if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending do return false
+        req: ACP_Send_Now_Request
+        if json.unmarshal_string(argument[len("send_now_batch:"):], &req, allocator = context.temp_allocator) != nil do return false
+        return acp_send_now_apply(r, req)
+    }
+    if strings.has_prefix(argument, "inputs_read:") {
+        if !acp_runtime_current(r) || r.d.error != "" do return false
+        ids: []string
+        if json.unmarshal_string(argument[len("inputs_read:"):], &ids, allocator = context.temp_allocator) != nil || len(ids) > 100 do return false
+        if acp_delivery_inputs_read(r, ids) && !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return false }
+        return true
+    }
     if strings.has_prefix(argument, "task_notices:") {
         // The notice worker did the hub reads without holding ownership locks.
         // Only cheap local readiness is rechecked here: stdout and permissions
@@ -274,12 +291,14 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         return acp_pipe_io_child_exited(cast(^ACP_Pipe_IO)c.io.data)
     case "stop":
         if r.d.current_input!="" && acp_runtime_events.prompt_finished!=nil do acp_runtime_events.prompt_finished(r,r.d.current_input,`{"stopReason":"cancelled"}`,"")
+        if acp_send_now_active(r) { acp_send_now_set_state(r, "failed"); acp_delivery_report(r, nil, "failed", "agent_stopped") }
         r.d.stopped = true
         acp_runtime_driver(r).permissions_cancel(r)
         // Cancel is a notification and the original prompt owns the response.
         acp_runtime_driver(r).cancel(r)
         return acp_rpc_checkpoint(c)
     case "interrupt":
+        if acp_send_now_active(r) && !r.d.cancelling do acp_send_now_set_state(r, "cancelling")
         if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" do return false
         r.d.cancelling = true
         acp_runtime_driver(r).permissions_cancel(r)
@@ -324,6 +343,7 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     acp_inbox_input_delete(r.d.steering_input)
     for id in r.d.completed_inputs do delete(id); delete(r.d.completed_inputs)
     acp_codex_durable_delete(&r.d.codex)
+    acp_send_now_delete(&r.d.send_now)
     free(r)
 }
 

@@ -1,5 +1,6 @@
 import { acceptAssistantSnapshot, assistantRevision, upsertAssistantSnapshot } from '../acpChatStream';
 import { getExpectedUserId } from '../../utils/expectedUser';
+import { guardDesktopUpdateRequest } from '../../utils/desktopUpdatePreparation';
 import { vaultSendBlockFromState } from '../../utils/vaultSendGuard';
 import { noteLocalMessageSent, conversationOptionsRevision, expireConversationOptions } from '../conversationMessageEvents';
 import * as daemonApi from '../daemonApi';
@@ -8,6 +9,7 @@ import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { isVaultArmored, encryptVaultText, getActiveVaultKey } from '../../utils/vaultContent';
 import { decryptConversationRecord } from '../../utils/vaultChats';
 import type { QuestionSubmission } from '../../components/chat/multiQuestion';
+import { parseSendNowBatch, parseSendNowState, type SendNowBatch, type SendNowState } from '../../components/chat/acpDelivery';
 
 const GUIDE_AGENT_ID = 'guide@heimdall';
 
@@ -345,6 +347,53 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       // switching back to a conversation renders instantly (the page remounts per
       // conversationId). WS/`Chat` tag invalidation still refreshes on new messages.
       keepUnusedDataFor: 300,
+    }),
+    // ACP batch Send now (docs/acp-send-now.md): the latest batch and the runtime facts
+    // (transport, launch epoch, steering) after a reload. Refreshed by messages_delivery.
+    fetchSendNowState: build.query<SendNowState, { conversationId: string }>({
+      queryFn: async ({ conversationId }) => {
+        if (!conversationId) return { data: parseSendNowState(null) };
+        try {
+          const data = await cookieJsonFetch(`/chats/${encodeURIComponent(conversationId)}/send-now`);
+          return { data: parseSendNowState(data) };
+        } catch (error: any) {
+          return { error: customQueryError(error) as any };
+        }
+      },
+      providesTags: (_r, _e, { conversationId }) => [{ type: 'SendNow' as const, id: conversationId }],
+    }),
+    // One batch for every turn-held message in `messageIds` (the tray snapshot). Retry
+    // passes the failed batch's own request_id. A 503 still carries {outcome:"failed",
+    // batch}, so the body is read for every status; other errors keep the hub code.
+    sendNow: build.mutation<{ outcome: string; batch: SendNowBatch | null; httpStatus: number }, {
+      conversationId: string; requestId: string; launchEpoch: string; messageIds: string[];
+    }>({
+      queryFn: async ({ conversationId, requestId, launchEpoch, messageIds }) => {
+        try {
+          guardDesktopUpdateRequest('POST');
+          const res = await fetch(apiUrl(`/chats/${encodeURIComponent(conversationId)}/send-now`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ request_id: requestId, launch_epoch: launchEpoch, message_ids: messageIds }),
+          });
+          if (res.status === 503) {
+            const body = await res.clone().json().catch(() => null);
+            const data = body?.data ?? body;
+            if (data?.outcome) return { data: { outcome: String(data.outcome), batch: parseSendNowBatch(data.batch), httpStatus: 503 } };
+          }
+          if (!res.ok) throw await errorFromResponse(res);
+          const body = await res.json();
+          const data = body?.data ?? body;
+          return { data: { outcome: String(data?.outcome ?? ''), batch: parseSendNowBatch(data?.batch), httpStatus: res.status } };
+        } catch (error: any) {
+          return { error: customQueryError(error) as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'SendNow' as const, id: conversationId },
+        { type: 'Chat' as const, id: conversationId },
+      ],
     }),
     updateConversationTitle: build.mutation<any, { conversationId: string; title: string }>({
       queryFn: async ({ conversationId, title }, api) => {
@@ -883,6 +932,8 @@ export const {
   useFetchConversationMessagesQuery,
   useLazyFetchConversationMessagesQuery,
   useUpdateConversationTitleMutation,
+  useFetchSendNowStateQuery,
+  useSendNowMutation,
   useRequestPaneCaptureMutation,
   useSendConversationMessageMutation,
   useAnswerConversationQuestionsMutation,

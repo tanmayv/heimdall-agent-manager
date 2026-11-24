@@ -226,6 +226,7 @@ acp_events_prompt_finished :: proc(r: ^ACP_Runtime,input_id,result,error: string
 }
 
 acp_events_ready :: proc(r:^ACP_Runtime) {
+    acp_delivery_hello(r)
     if r.chat==nil || r.chat.d.session_announced || r.d.replay_only do return
     payload:=make(json.Object,allocator=context.temp_allocator)
     capabilities:=make(json.Array,allocator=context.temp_allocator)

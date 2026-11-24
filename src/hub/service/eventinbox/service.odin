@@ -13,6 +13,7 @@ import nats "odin_test:lib/nats"
 
 Service :: struct {
 	factory:     ^iface.Unit_Of_Work_Factory,
+	notice_dirty: Notice_Dirty,
 	counters: Counter_Registry,
 	notice_ctx: rawptr,
 	// Called outside a UoW. True means the existing notice/start path accepted it.
@@ -262,11 +263,16 @@ mark :: proc(s: ^Service, owner, instance: string, row: domain.Event_Delivery, r
 acknowledge :: proc(s: ^Service, owner, instance: string, ids: []string) -> domain.Domain_Error {
 	if owner == "" || instance == "" do return domain.domain_error(.Forbidden, "agent instance required")
 	if len(ids) == 0 || len(ids) > 100 do return domain.domain_error(.Validation_Failed, "ack requires 1..100 event ids")
-	rows, err := ack_snapshot(s, owner, instance, ids)
+	// Resolution notices have no delivery row and are already satisfied.
+	real_ids := make([dynamic]string)
+	defer delete(real_ids)
+	for id in ids do if !strings.has_prefix(id, "resolved:") do append(&real_ids, id)
+	if len(real_ids) == 0 do return {}
+	rows, err := ack_snapshot(s, owner, instance, real_ids[:])
 	if err.code != .None do return err
 	defer delivery_rows_destroy(rows)
 	// Validate the whole request before making any acknowledgement.
-	for id in ids {
+	for id in real_ids {
 		found := false
 		for row in rows do if row.event_id == id do found = true
 		if !found do return domain.domain_error(.Not_Found, "event delivery not found")
@@ -276,7 +282,7 @@ acknowledge :: proc(s: ^Service, owner, instance: string, ids: []string) -> doma
 	defer nats.destroy(conn)
 	for row in rows {
 		wanted := false
-		for id in ids do if id == row.event_id do wanted = true
+		for id in real_ids do if id == row.event_id do wanted = true
 		if !wanted || row.acknowledged do continue
 		if nats.ack_reply(conn, row.ack_reply, 1000).status != 0 do return unavailable()
 		if err = mark(s, owner, instance, row, false); err.code != .None do return err

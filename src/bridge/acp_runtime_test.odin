@@ -5,6 +5,7 @@ import contracts "odin_test:contracts"
 import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -105,6 +106,22 @@ t4_acp_bootstrap_replaces_chat_send_preserves_tasks :: proc(t: ^testing.T) {
     testing.expect(t, strings.contains(output, "TASK.md") && strings.contains(output, "MEMORY.md") && strings.contains(output, "heimdall-acp-bootstrap-v1"))
     d := bridge_bootstrap_descriptor_from_launch(`{"payload":{"agent_instance_id":"inst_t4","effective_transport":"acp"}}`)
     testing.expect_value(t, d.effective_transport, "acp")
+}
+
+// A template without the chat-send paragraph (e.g. a bot) must not free the
+// caller's body, which the caller frees afterwards (double free on launch).
+@(test)
+t4_acp_bootstrap_without_chat_send_keeps_caller_body :: proc(t: ^testing.T) {
+    track: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&track, context.allocator); defer mem.tracking_allocator_destroy(&track)
+    context.allocator = mem.tracking_allocator(&track)
+    input := strings.clone("# Bot bootstrap\nNo chat-send guidance here.\n")
+    output := bridge_bootstrap_acp_instructions(input)
+    delete(input)
+    testing.expect(t, strings.has_prefix(output, "# Bot bootstrap\nNo chat-send guidance here.\n"))
+    testing.expect(t, strings.contains(output, "heimdall-acp-bootstrap-v1"))
+    delete(output)
+    testing.expect_value(t, len(track.bad_free_array), 0)
 }
 
 T4_Runtime_Test :: struct { r: ^ACP_Runtime, f: ACP_Test }

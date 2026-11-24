@@ -80,7 +80,7 @@ test_dispatch_send_failure_and_confirmation_race :: proc(t: ^testing.T) {
 	blocked := get_task(fx, "task_dispatch_send")
 	testing.expect_value(t, blocked.state, domain.Task_State.Backlog)
 	testing.expect(t, strings.contains(blocked.blocked_on_json, "bridge write failed"), "send error visible")
-	fx.svc.bridge_command_sink = {}
+	fx.svc.bridge_command_sink = log.service.bridge_command_sink
 	_, answered, _ := task_answer(&fx.svc, blocked, Actor{kind = ACTOR_USER, id = "u1"}, "reconnected")
 	testing.expect(t, answered, "owner unblocks")
 	lease, held := lease_of(fx, "inst_w1")
@@ -104,7 +104,8 @@ test_dispatch_provider_override_empty_model_matches_catalog :: proc(t: ^testing.
 	pv_repo := sqlite.new_provider_repository(&pv_impl, &fx.conn)
 	_, _ = iface.bridge_provider_status_upsert(&pv_repo, domain.Bridge_Provider_Status{bridge_id = "br_1", provider = "codex", state = "present"})
 	_, _ = iface.bridge_provider_setting_upsert(&pv_repo, domain.Bridge_Provider_Setting{bridge_id = "br_1", provider = "codex", enabled = true})
-	ag_service := agent.Agent_Service{providers = &pv_repo}
+	ag_service := log.service
+	ag_service.providers = &pv_repo
 	fx.svc.agent_service = &ag_service
 	fleets, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, chain.chain_id, "u1")
 	fleets[0].provider = "codex"
@@ -138,7 +139,8 @@ test_dispatch_discovered_default_and_explicit_selection :: proc(t: ^testing.T) {
 	_,_=iface.bridge_provider_setting_upsert(&repo,{bridge_id="br_1",provider="codex",enabled=true})
 	err:=iface.bridge_provider_models_upsert(&repo,{bridge_id="br_1",provider="codex",has_snapshot=true,models_json=`[{"model_id":"new-discovered-launch-id","label":"New"}]`,models_source="codex_app_server",models_state="success",models_checked_at="now",models_attempted_at="now"})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
-	svc:=agent.Agent_Service{providers=&repo}
+	svc:=log.service
+	svc.providers=&repo
 	fx.svc.agent_service=&svc
 	selected,valid,validation_err:=agent.validate_provider_model_intersection(&svc,"br_1","codex","new-discovered-launch-id")
 	testing.expect(t,valid)

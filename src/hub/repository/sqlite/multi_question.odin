@@ -7,6 +7,9 @@ import domain "odin_test:hub/domain"
 // key gives exactly one durable answer under concurrent submit/retry. No separate
 // transaction on the shared connection, no check-then-write race, no migration.
 content_answer_question_sqlite :: proc(ctx: rawptr, source, answer: domain.Chat_Message) -> (domain.Chat_Message, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Content_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt
 	q := `INSERT INTO chat_messages

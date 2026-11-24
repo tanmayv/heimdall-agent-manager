@@ -1,6 +1,7 @@
 package eventinbox
 
 import "base:runtime"
+import retry "odin_test:hub/service/pipelineretry"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
@@ -14,6 +15,7 @@ import iface "odin_test:hub/repository/iface"
 import nats "odin_test:lib/nats"
 
 Runtime :: struct {
+	diagnostics: retry.State,
 	service:         ^Service,
 	worker:          ^thread.Thread,
 	stopping:        i32,
@@ -23,6 +25,7 @@ Runtime :: struct {
 	cache_allocator: mem.Allocator,
 	last_prune:      time.Tick,
 	notifications: map[string]Notification_State,
+	notice_reconcile: time.Tick,
 }
 Provisioned_Consumer :: struct {
 	key, fingerprint: string,
@@ -54,6 +57,7 @@ runtime_disconnect :: proc(r: ^Runtime) {
 	nats.pull_destroy(r.advisory); r.advisory = nil
 	nats.destroy(r.connection); r.connection = nil
 	clear_provisioned(r)
+	r.notice_reconcile = {}
 }
 runtime_entry :: proc(data: rawptr) {
 	r := (^Runtime)(data)
@@ -64,11 +68,19 @@ runtime_entry :: proc(data: rawptr) {
 	context.temp_allocator = context.allocator
 	defer runtime_disconnect(r)
 	defer clear_notifications(r)
+	defer clear_notice_dirty(r.service)
+	backoff:=time.Second
 	for sync.atomic_load(&r.stopping) == 0 {
 		ok := reconcile(r)
-		if !ok do runtime_disconnect(r)
+		if !ok {
+   runtime_disconnect(r)
+  } else {backoff=time.Second}
 		free_all(context.allocator)
 		delay := time.Second
+  if !ok {
+   delay=retry.jitter(backoff,u64(time.tick_now()._nsec))
+   backoff=min(backoff*2,5*time.Second)
+  }
 		for delay > 0 && sync.atomic_load(&r.stopping) == 0 {
 			chunk := min(delay, 50 * time.Millisecond)
 			time.sleep(chunk); delay -= chunk
@@ -80,9 +92,9 @@ runtime_entry :: proc(data: rawptr) {
 runtime_connect :: proc(r: ^Runtime) -> bool {
 	if r.connection != nil do return true
 	conn, err := nats.connect(r.service.options)
-	if err.status != 0 do return false
+	if err.status != 0 do return retry.failed(&r.diagnostics,"eventinbox",.Connect,err.status,err.jetstream)
 	r.connection = conn
-	if !prepare_advisories(conn) do return false
+	if !prepare_advisories(conn) do return retry.failed(&r.diagnostics,"eventinbox",.Stream)
 	err = nats.consumer_add(
 		conn,
 		{
@@ -92,9 +104,9 @@ runtime_connect :: proc(r: ^Runtime) -> bool {
 			max_deliver = 0x7fffffffffffffff,
 		},
 	)
-	if err.status != 0 do return false
+	if err.status != 0 do return retry.failed(&r.diagnostics,"eventinbox",.Consumer,err.status,err.jetstream)
 	pull, perr := nats.pull_bind(conn, ADVISORY_STREAM, ADVISORY_CONSUMER)
-	if perr.status != 0 do return false
+	if perr.status != 0 do return retry.failed(&r.diagnostics,"eventinbox",.Bind,perr.status,perr.jetstream)
 	r.advisory = pull
 	return true
 }
@@ -132,21 +144,21 @@ reconcile :: proc(r: ^Runtime) -> bool {
 	if !runtime_connect(r) do return false
 	s := r.service
 	uow, began, _ := iface.unit_of_work_begin(s.factory)
-	if !began do return false
+	if !began do return retry.failed(&r.diagnostics,"eventinbox",.Read)
 	repo := uow.repos.event_subscriptions
 	prune_due := r.last_prune._nsec == 0 || time.tick_since(r.last_prune) >= time.Minute
 	if prune_due {
 		before := platform.format_rfc3339_utc(time.time_add(time.now(), -14 * 24 * time.Hour))
-		if repo.prune(repo.ctx, before).code != .None {iface.unit_of_work_rollback(&uow); return false}
+		if repo.prune(repo.ctx, before).code != .None {iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
 	}
 	rows, err := repo.all(repo.ctx)
-	if err.code != .None {iface.unit_of_work_rollback(&uow); return false}
+	if err.code != .None {iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
 	deleted, derr := repo.deletions(repo.ctx)
-	if derr.code != .None {subscription_rows_destroy(rows); iface.unit_of_work_rollback(&uow); return false}
+	if derr.code != .None {subscription_rows_destroy(rows); iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
 	committed, _ := iface.unit_of_work_commit(&uow)
 	defer subscription_rows_destroy(rows)
 	defer {for name in deleted do delete(name); delete(deleted)}
-	if !committed do return false
+	if !committed do return retry.failed(&r.diagnostics,"eventinbox",.Commit)
 	if prune_due do r.last_prune = time.tick_now()
 	active := make(map[string]bool)
 	defer delete(active)
@@ -156,7 +168,7 @@ reconcile :: proc(r: ^Runtime) -> bool {
 		fingerprint := consumer_fingerprint(s, row)
 		if prior, found := r.provisioned[row.consumer_name]; found && prior.fingerprint == fingerprint do continue
 		live, provision_err := provision_consumer(s, r.connection, row)
-		if provision_err.code != .None do return false
+		if provision_err.code != .None do return retry.failed(&r.diagnostics,"eventinbox",.Consumer,i32(provision_err.code))
 		if live {
 			cache_provisioned(r, row.consumer_name, fingerprint)
 			// Share it with HTTP pulls, which then never provision this consumer.
@@ -172,23 +184,23 @@ reconcile :: proc(r: ^Runtime) -> bool {
 	}
 	for name in deleted {
 		nerr := nats.consumer_delete(r.connection, "HEIM_EVENTS", name)
-		if nerr.status != 0 && nerr.jetstream != JS_CONSUMER_NOT_FOUND do return false
+		if nerr.status != 0 && nerr.jetstream != JS_CONSUMER_NOT_FOUND do return retry.failed(&r.diagnostics,"eventinbox",.Consumer,nerr.status,nerr.jetstream)
 		forget_consumer(s, name)
 		forget_provisioned(r, name)
 		mark, began_mark, _ := iface.unit_of_work_begin(s.factory)
-		if !began_mark do return false
+		if !began_mark do return retry.failed(&r.diagnostics,"eventinbox",.Read)
 		mark_repo := mark.repos.event_subscriptions
-		if mark_repo.deleted(mark_repo.ctx, name).code != .None {iface.unit_of_work_rollback(&mark); return false}
+		if mark_repo.deleted(mark_repo.ctx, name).code != .None {iface.unit_of_work_rollback(&mark); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
 		marked, _ := iface.unit_of_work_commit(&mark)
-		if !marked do return false
+		if !marked do return retry.failed(&r.diagnostics,"eventinbox",.Commit)
 	}
-	if !notify_pending(r, rows, time.tick_now()) do return false
+	if !notify_pending(r, rows, time.tick_now()) do return retry.failed(&r.diagnostics,"eventinbox",.Reconcile)
 	return drain_advisories(r)
 }
 drain_advisories :: proc(r: ^Runtime) -> bool {
 	batch, err := nats.fetch(r.advisory, 20, 10)
 	if err.status == 26 do return true
-	if err.status != 0 do return false
+	if err.status != 0 do return retry.failed(&r.diagnostics,"eventinbox",.Advisory,err.status,err.jetstream)
 	defer nats.batch_destroy(batch)
 	for i in 0 ..< nats.batch_count(batch) {
 		advisory := nats.batch_message(batch, i)
@@ -200,23 +212,23 @@ drain_advisories :: proc(r: ^Runtime) -> bool {
 		defer {delete(input.stream); delete(input.consumer)}
 		if decode_err != nil || input.stream != "HEIM_EVENTS" || input.stream_seq == 0 {
 			fmt.eprintln("events: discarded malformed max-delivery advisory")
-			if nats.ack(advisory).status != 0 do return false
+			if ae:=nats.ack(advisory);ae.status!=0 do return retry.failed(&r.diagnostics,"eventinbox",.Advisory,ae.status,ae.jetstream)
 			continue
 		}
 		msg, get_err := nats.stream_get(r.connection, input.stream, input.stream_seq)
 		if get_err.status != 0 {
 			// A rolled-up state or expired original no longer needs a dead letter.
 			if get_err.jetstream == 10037 {
-				if nats.ack(advisory).status != 0 do return false
+				if ae:=nats.ack(advisory);ae.status!=0 do return retry.failed(&r.diagnostics,"eventinbox",.Advisory,ae.status,ae.jetstream)
 				continue
 			}
-			return false
+			return retry.failed(&r.diagnostics,"eventinbox",.Read,get_err.status,get_err.jetstream)
 		}
 		subject := nats.message_subject(msg)
 		if !strings.has_prefix(subject, "ev.") || strings.has_prefix(subject, "ev.dlq.") {
 			nats.message_destroy(msg)
 			fmt.eprintln("events: discarded max-delivery advisory with invalid original subject")
-			if nats.ack(advisory).status != 0 do return false
+			if ae:=nats.ack(advisory);ae.status!=0 do return retry.failed(&r.diagnostics,"eventinbox",.Advisory,ae.status,ae.jetstream)
 			continue
 		}
 		destination := fmt.tprintf("ev.dlq.%s", strings.trim_prefix(subject, "ev."))
@@ -229,8 +241,9 @@ drain_advisories :: proc(r: ^Runtime) -> bool {
 			[]nats.Header{{"Heimdall-Consumer", input.consumer}, {"Heimdall-Original-Subject", subject}},
 		)
 		nats.message_destroy(msg)
-		if pub_err.status != 0 do return false
-		if nats.ack(advisory).status != 0 do return false
+		if pub_err.status != 0 do return retry.failed(&r.diagnostics,"eventinbox",.Publish,pub_err.status,pub_err.jetstream)
+		published(r.service, destination)
+		if ae:=nats.ack(advisory);ae.status!=0 do return retry.failed(&r.diagnostics,"eventinbox",.Advisory,ae.status,ae.jetstream)
 	}
 	return true
 }

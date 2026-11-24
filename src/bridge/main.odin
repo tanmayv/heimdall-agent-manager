@@ -267,6 +267,7 @@ main :: proc() {
 	// Wake state must exist before the hub worker can run a launch, which
 	// records itself via bridge_task_wake_note_launched.
 	bridge_agent_wake_init()
+	bridge_event_ledger_load()
 	// Name the HTTPS client and its trust anchors once, so a host whose CA store
 	// was not found (embedded Mozilla fallback) is visible in the service log.
 	// (Locals, not inline calls: check-http-boundary.sh's library-path pattern
@@ -779,6 +780,10 @@ bridge_health_json :: proc() -> string {
 	strings.write_string(&b, fmt.tprintf("%d", bridge_config.chunk_bytes))
 	strings.write_string(&b, `,"large_payload_target_bytes":`)
 	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES))
+	ledger_health := bridge_event_ledger_health_json()
+	defer delete(ledger_health)
+	strings.write_string(&b, `,"event_ledger":`)
+	strings.write_string(&b, ledger_health)
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)
 }

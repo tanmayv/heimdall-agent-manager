@@ -17,7 +17,8 @@ another instance of the same agent has its own subscriptions and events.
 When the instance is stopped by the user, or replaced, its subscriptions and
 pending events end; a restart after a user stop starts fresh, with nothing
 from before. An idle stop, or a crash that is relaunched in place, keeps
-them. Acknowledge after handling.
+them. Acknowledge after handling. Resolved notices need no acknowledgement;
+acking one is accepted as a no-op.
 Unacknowledged events are redelivered after 5 minutes, up to 10 attempts.`
 print_help_events :: proc() {fmt.println(EVENTS_HELP)}
 ctl_events_params :: proc(verb: string, tokens, args: []string) -> (params, message: string) {
