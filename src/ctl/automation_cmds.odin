@@ -276,6 +276,7 @@ ctl_automation_check :: proc(pair:string)->(json.Value,bool) {
 // All methods go through the bridge's authenticated envelope relay.
 ctl_automation_call :: proc(tokens,args:[]string)->(string,string,bool) {
  verb:=pos(tokens,0)
+ if verb=="webhooks" do return ctl_webhook_call(tokens[1:],args)
  if verb=="" do verb="list"
  if !ctl_automation_flags_valid(verb,args) do return "","",false
  params:=ctl_action_object()
@@ -317,7 +318,10 @@ ctl_automation_call :: proc(tokens,args:[]string)->(string,string,bool) {
 }
 ctl_v2_automations :: proc(endpoint,token:string,tokens,args:[]string) {
  method,params,ok:=ctl_automation_call(tokens,args)
- if !ok {fmt.println(ctl_automation_help(pos(tokens,0)));return}
+ if !ok {
+  if pos(tokens,0)=="webhooks" {fmt.println(ctl_webhook_help(pos(tokens,1)))} else {fmt.println(ctl_automation_help(pos(tokens,0)))}
+  return
+ }
  ctl_agent_call(endpoint,token,method,params)
 }
 
@@ -371,7 +375,7 @@ Validate a JSON filter tree and evaluate a JSON sample event without emitting or
 Returns valid/matched, per-node T/F trace, and validation path/reason.
 Example: ham-ctl automations filter-test --event-type chain.state --filter-file rule.json --event-file sample.json`
  }
- return `ham-ctl automations <create|list|show|update|delete|runs|trigger-types|filter-test>
+ return `ham-ctl automations <create|list|show|update|delete|runs|trigger-types|filter-test|webhooks>
 Owner-scoped event and cron automations, authenticated through the local bridge.
 Use ham-ctl automations <verb> --help for flags and examples.
 Action cards use ham-ctl actions/cards.

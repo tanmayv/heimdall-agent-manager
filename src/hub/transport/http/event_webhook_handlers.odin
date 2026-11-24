@@ -84,6 +84,10 @@ event_webhook_limited :: proc()->Response {
  return response
 }
 event_webhook_receive_handler :: proc(ctx:rawptr,req:Request)->Response {
+ return event_webhook_receive(ctx,req)
+}
+// actor is supplied only by the owner-authenticated agent relay, never HTTP input.
+event_webhook_receive :: proc(ctx:rawptr,req:Request,actor:="")->Response {
  h:=(^Event_Webhook_Handlers)(ctx)
  safe:=event_webhook_redact(req)
  now:=i64(time.tick_since(time.Tick{}))/i64(time.Second)
@@ -98,7 +102,7 @@ event_webhook_receive_handler :: proc(ctx:rawptr,req:Request)->Response {
  }
  if !safe.hook_redacted && ascii_has_prefix_fold(authorization,"Bearer ") do token=strings.trim_space(authorization[len("Bearer "):])
  // Content type and shape are checked after auth so rejected calls share one 401.
- result,outcome:=webhooks.receive(h.service,path_part(safe.path,4),token,safe.body,header_value(safe.headers,"Idempotency-Key"),header_value(safe.headers,"Content-Type"),{ctx=h,admit=event_webhook_admit})
+ result,outcome:=webhooks.receive(h.service,path_part(safe.path,4),token,safe.body,header_value(safe.headers,"Idempotency-Key"),header_value(safe.headers,"Content-Type"),{ctx=h,admit=event_webhook_admit},actor)
  switch outcome {
  case .Unauthorized: event_webhook_bad_auth(h,ip,now);return event_webhook_unauthorized()
  case .Limited: return event_webhook_limited()

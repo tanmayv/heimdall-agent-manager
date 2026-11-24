@@ -11,3 +11,13 @@ Automation_Parameters :: struct {
  limit: Maybe(int),
  before, before_id: string,
 }
+
+// agent.automations.webhooks.<verb>. No caller-selected owner or URL.
+// test posts body through the same authenticated ingress as external callers.
+Webhook_Parameters :: struct {
+ id: string,
+ name: Maybe(string),
+ webhook_secret: string,
+ // Encoded JSON avoids interpreting payload keys as agent auth fields.
+ body: string,
+}

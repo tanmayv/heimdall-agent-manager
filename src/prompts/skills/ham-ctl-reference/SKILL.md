@@ -838,3 +838,41 @@ it to prevent future wakes. Bridges must report event_pipeline_v1.
 The hub default cap is 1000 automations per owner, configurable with
 HEIMDALL_AUTOMATION_MAX_PER_OWNER (positive integer); creation at the cap returns
 a clear conflict error. Deleted automations free capacity.
+
+## Agent webhook management
+
+Use the authenticated agent group, scoped to the instance owner:
+
+```bash
+ham-ctl automations webhooks create --name 'CI build'
+ham-ctl automations webhooks list
+ham-ctl automations webhooks show wh_1
+ham-ctl automations webhooks rotate wh_1
+ham-ctl automations webhooks disable wh_1
+ham-ctl automations webhooks enable wh_1
+ham-ctl automations webhooks test wh_1 --token whsec_example --body-file sample.json
+ham-ctl automations webhooks delete wh_1
+```
+
+Create and rotate return a token and both bearer/secret URLs **once**; save them securely. Rotation immediately
+invalidates the old token. List/show/enable/disable never return tokens or hashes.
+Foreign and unknown webhook IDs return not found. Use each verb's `--help` for
+flags and examples; global transport flags are `--bridge-endpoint` and `--agent-token`.
+
+`test` requires the current webhook `--token`, and accepts an optional JSON-object
+`--body-file` or inline `--data` (default `{}`). It POSTs through normal ingress, subject to the same
+enabled state, token checks, body/depth and rate limits. It emits a **real**
+`webhook.received` event and can fire automations; it is not a dry run.
+The relay marks samples with the agent-instance actor and `data._test=true`.
+To exclude them, add `{"not":{"field":"data._test","op":"eq","value":true}}`
+to the rule. This does **not** test public networking, proxies or TLS. For that:
+
+```bash
+curl -X POST <bearer_url> -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' -d '{"hello":"world"}'
+# Or use <secret_url> without the Authorization header.
+```
+
+External callers POST JSON to `/api/v1/hooks/<id>` with
+`Authorization: Bearer <webhook-token>`. Never embed the token in event filters,
+prompts or screenshots. Filters use `entity.id` for the webhook ID and `data.*`
+for submitted JSON fields.

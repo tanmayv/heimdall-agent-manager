@@ -105,7 +105,7 @@ Receive_Result :: enum { Accepted, Unauthorized, Limited, Invalid, Unsupported, 
 Receive :: struct {event_id:string,duplicate:bool}
 // The only ingress repository dependencies are webhook, experiment and outbox.
 // Authentication, duplicate lookup, version increment and append share one UoW.
-receive :: proc(s:^Service,id,token,body,key,content_type:string,admission:Admission)->(Receive,Receive_Result) {
+receive :: proc(s:^Service,id,token,body,key,content_type:string,admission:Admission,test_actor:="")->(Receive,Receive_Result) {
  u,ok,_:=iface.unit_of_work_begin(s.factory)
  if !ok do return {},.Failed
  defer if u.ctx!=nil do iface.unit_of_work_rollback(&u)
@@ -136,8 +136,10 @@ receive :: proc(s:^Service,id,token,body,key,content_type:string,admission:Admis
   if lookup_err.code!=.None do return {},.Failed
   if exists do return {event_id=strings.clone(event_id),duplicate=true},.Accepted
  }
+ actor:=test_actor
+ if actor=="" do actor=fmt.tprintf("webhook:%s",id)
  event_id,e=events.emit(&u.repos.event_outbox,s.clock,{owner=row.owner_user_id,type="webhook.received",class="occurrence",entity_kind="webhook",entity_id=id,
-  subject=fmt.tprintf("ev.%s.webhook.%s.received",row.owner_user_id,id),actor=fmt.tprintf("webhook:%s",id),data=body,event_id=event_id,append_if_absent=true})
+  subject=fmt.tprintf("ev.%s.webhook.%s.received",row.owner_user_id,id),actor=actor,data=body,event_id=event_id,append_if_absent=true})
  if e.code!=.None do return {},.Failed
  if e=u.repos.webhooks.record_received(u.repos.webhooks.ctx,id,platform.clock_now(s.clock));e.code!=.None do return {},.Failed
  committed,_:=iface.unit_of_work_commit(&u);u.ctx=nil

@@ -26,6 +26,7 @@ import jsonx "odin_test:lib/jsonx"
 Agent_Action_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
  automations: ^Action_Handlers,
+ webhooks: ^Event_Webhook_Handlers,
 	agents: ^agent_service.Agent_Service,
 	bridges: ^bridge_service.Bridge_Service,
 	content: ^content_service.Content_Service,

@@ -210,6 +210,22 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "task", "readiness")}
 
 	// ---- workflow (M3b) ---------------------------------------------------
+	case "agent.automations.webhooks.create":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "create")}
+	case "agent.automations.webhooks.list":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "list")}
+	case "agent.automations.webhooks.show":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "show")}
+	case "agent.automations.webhooks.rotate":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "rotate")}
+	case "agent.automations.webhooks.enable":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "enable")}
+	case "agent.automations.webhooks.disable":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "disable")}
+	case "agent.automations.webhooks.delete":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "delete")}
+	case "agent.automations.webhooks.test":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "test")}
 	case "agent.automations.list":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "list")}
 	case "agent.automations.create":
@@ -405,6 +421,14 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.artifact.create", "agent.artifact.list", "agent.artifact.show",
 	     "agent.artifact.content",
 	     // automations
+         "agent.automations.webhooks.create",
+         "agent.automations.webhooks.list",
+         "agent.automations.webhooks.show",
+         "agent.automations.webhooks.rotate",
+         "agent.automations.webhooks.enable",
+         "agent.automations.webhooks.disable",
+         "agent.automations.webhooks.delete",
+         "agent.automations.webhooks.test",
          "agent.automations.list",
          "agent.automations.create",
          "agent.automations.show",

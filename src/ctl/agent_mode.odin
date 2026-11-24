@@ -1843,7 +1843,13 @@ print_agent_help :: proc(cmd: []string) {
 		}
 	}
 	switch resource {
-	case "automations": fmt.println(ctl_automation_help(sub)); return
+	case "automations":
+  if sub=="webhooks" {
+   index:=2
+   if pos(cmd,0)=="agent" || pos(cmd,0)=="help" do index=3
+   fmt.println(ctl_webhook_help(pos(cmd,index)))
+  } else {fmt.println(ctl_automation_help(sub))}
+  return
 	case "bridge", "bridges": print_help_bridge(); return
 	case "agents": print_help_agents(); return
 	case "task-chain", "task-chains", "chain", "chains":
