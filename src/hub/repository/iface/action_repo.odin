@@ -4,7 +4,11 @@ import domain "odin_test:hub/domain"
 
 Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
 Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string }
+Action_Batch_Member :: struct {run_id, from_state: string}
 Action_Repository :: struct {
+ // Shared delivery write is atomic: every member must still be in its prepared state.
+ runs_route_batch: proc(ctx:rawptr,members:[]Action_Batch_Member,delivery_id,message_id,instance_id,started_at:string,rule_position:int)->domain.Domain_Error,
+ target_open_delivery: proc(ctx:rawptr,owner,instance_id:string)->(string,string,bool,domain.Domain_Error),
  rules_for_owner: proc(ctx:rawptr, owner:string)->([]Action_Rule_Row,domain.Domain_Error),
  triggers_for_owner: proc(ctx:rawptr, owner:string)->([]domain.Action_Trigger,domain.Domain_Error),
  runs_history: proc(ctx:rawptr, id:domain.Action_ID, limit:int, before,before_id:string)->([]Action_Run_History,domain.Domain_Error),

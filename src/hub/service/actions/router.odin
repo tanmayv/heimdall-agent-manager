@@ -124,6 +124,10 @@ on_delivery_final :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,d:domain.Pipeline_D
  return finish_run(r,uow,run,state,reason,platform.clock_now(r.clock))
 }
 prompt_plan :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude:[]string)->Plan {
+ return prompt_plan_with_rules(r,action,run,exclude,nil,false)
+}
+prompt_plan_with_rules :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude:[]string,loaded_rules:[]domain.Action_Target_Rule,rules_loaded:bool)->Plan {
+ rules:=loaded_rules
  owner:=string(action.owner_user_id)
  features:=[]string{contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1}
  req:=placement.Requirements{owner=owner,agent_id=string(action.target_agent_id),features=features,exclude=exclude}
@@ -141,12 +145,15 @@ prompt_plan :: proc(r:^Router,action:domain.Action,run:domain.Action_Run,exclude
   return instance_plan(r,owner,instance_id,req)
  }
  if action.target_kind!=domain.ACTION_TARGET_AGENT do return {reason="target_missing"}
- uow,opened,_:=iface.unit_of_work_begin(r.factory)
- if !opened do return {reason="delivery_failed"}
- rules,err:=uow.repos.actions.rules_list(uow.repos.actions.ctx,action.id)
- committed,_:=iface.unit_of_work_commit(&uow)
- defer domain.action_rules_destroy(rules)
- if !committed || err.code!=.None do return {reason="delivery_failed"}
+ defer if !rules_loaded do domain.action_rules_destroy(rules)
+ if !rules_loaded {
+  uow,opened,_:=iface.unit_of_work_begin(r.factory)
+  if !opened do return {reason="delivery_failed"}
+  err:domain.Domain_Error
+  rules,err=uow.repos.actions.rules_list(uow.repos.actions.ctx,action.id)
+  committed,_:=iface.unit_of_work_commit(&uow)
+  if !committed || err.code!=.None do return {reason="delivery_failed"}
+ }
  prules:=make([]placement.Rule,len(rules),context.temp_allocator)
  for rule,i in rules do prules[i]={position=rule.position,bridge_id=rule.bridge_id,provider=rule.provider,model=rule.model}
  selector:=action.placement_selector
@@ -215,13 +222,14 @@ prompt_metadata :: proc(repo:^iface.Action_Repository,action:domain.Action,run:d
  if e!=nil do return "",domain.domain_error(.Internal_Error,"cannot encode action metadata")
  return string(bytes),{}
 }
-route_prompt :: proc(r:^Router,uow:^iface.Unit_Of_Work,action:domain.Action,run:domain.Action_Run,plan:Plan,round:int,exclude:[]string)->(message_id,delivery_id:string,err:domain.Domain_Error) {
+route_prompt :: proc(r:^Router,uow:^iface.Unit_Of_Work,action:domain.Action,run:domain.Action_Run,plan:Plan,round:int,exclude:[]string,batch_body:string="",batch_metadata:string="",batch_notice_count:int=0)->(message_id,delivery_id:string,err:domain.Domain_Error) {
  repo:=&uow.repos.actions
  joined,e:=repo.run_joined_count(repo.ctx,run.run_id)
  if e.code!=.None do return "","",e
  body:=render(action.prompt_text,action,run,joined,context.temp_allocator)
  metadata,me:=prompt_metadata(repo,action,run,joined)
  if me.code!=.None do return "","",me
+ if batch_metadata!="" {body=batch_body; metadata=batch_metadata}
  message_id,err=r.agents.persist_prompt(r.agents.ctx,uow,string(action.owner_user_id),plan.conversation_id,body,metadata)
  if err.code!=.None do return
  if r.message_created.created!=nil {
@@ -248,7 +256,7 @@ route_prompt :: proc(r:^Router,uow:^iface.Unit_Of_Work,action:domain.Action,run:
  delivery_id,err=r.pipeline.route(r.pipeline.ctx,uow,{
   kind="prompt",owner_user_id=string(action.owner_user_id),bridge_id=plan.bridge_id,
   agent_instance_id=plan.instance_id,cause=cause,ref=fmt.tprintf("run:%s",run.run_id),
-  conversation_id=plan.conversation_id,message_id=message_id,notice_line="message",notice_count=joined+1,
+  conversation_id=plan.conversation_id,message_id=message_id,notice_line="message",notice_count=(batch_notice_count if batch_notice_count>0 else joined+1),
   lifetime=delivery.LIFETIME_PROMPT,round=round,excluded_bridges=exclude,
  })
  return
@@ -292,32 +300,30 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
  context.allocator=virtual.arena_allocator(&arena)
  context.temp_allocator=context.allocator
  seen:=make(map[string]bool)
+ prepared:=make([dynamic]Prepared_Run)
  for hint in hints {
+  if seen[hint.run_id] do continue
   uow,ok,_:=iface.unit_of_work_begin(r.factory)
   if !ok do return
   run,found,err:=uow.repos.actions.run_get(uow.repos.actions.ctx,hint.run_id)
   iface.unit_of_work_rollback(&uow)
   if err.code==.None && found && string(run.owner_user_id)==hint.owner && run.state==domain.ACTION_RUN_DEFERRED {
    seen[strings.clone(run.run_id)]=true
-   drain_run(r,run.run_id,true,hint.not_before)
+   drain_run(r,run.run_id,true,hint.not_before,&prepared)
   }
  }
  now:=platform.clock_now(r.clock)
- for {
-  uow,ok,_:=iface.unit_of_work_begin(r.factory)
-  if !ok do return
-  rows,err:=uow.repos.actions.runs_due(uow.repos.actions.ctx,now,32)
-  iface.unit_of_work_rollback(&uow)
-  if err.code!=.None do return
-  progress:=false
-  for row in rows {
-   if seen[row.run_id] do continue
-   seen[strings.clone(row.run_id)]=true
-   progress=true
-   drain_run(r,row.run_id,false)
-  }
-  if !progress do break
+ uow,ok,_:=iface.unit_of_work_begin(r.factory)
+ if !ok do return
+ rows,err:=uow.repos.actions.runs_due(uow.repos.actions.ctx,now,-1)
+ iface.unit_of_work_rollback(&uow)
+ if err.code!=.None do return
+ for row in rows {
+  if seen[row.run_id] do continue
+  seen[strings.clone(row.run_id)]=true
+  drain_run(r,row.run_id,false,"",&prepared)
  }
+ route_groups(r,prepared[:])
  if r.support.get!=nil && r.support.get(r.support.ctx)==2 {
   for {
    uow,ok,_:=iface.unit_of_work_begin(r.factory)
@@ -340,7 +346,7 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
   }
  }
 }
-drain_run :: proc(r:^Router,id:string,hinted:bool,hint_deadline:string="") {
+drain_run :: proc(r:^Router,id:string,hinted:bool,hint_deadline:string="",prepared:^[dynamic]Prepared_Run=nil) {
  uow,ok,_:=iface.unit_of_work_begin(r.factory)
  if !ok do return
  defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
@@ -447,36 +453,10 @@ drain_run :: proc(r:^Router,id:string,hinted:bool,hint_deadline:string="") {
  }
  committed,_:=iface.unit_of_work_commit(&uow); uow.ctx=nil
  if !committed do return
- plan:=EFFECTS[0].plan(r,action,run,nil)
- uow,ok,_=iface.unit_of_work_begin(r.factory)
- if !ok do return
- repo=&uow.repos.actions
- current,present,ce:=repo.run_get(repo.ctx,id)
- if ce.code!=.None || !present || current.state!=run.state do return
- if !plan.ok {
-  if e:=finish_run(r,&uow,current,domain.ACTION_RUN_FAILED,plan.reason,now); e.code!=.None do return
-  _,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
-  return
- }
- message,delivery_id,route_err:=route_prompt(r,&uow,action,current,plan,0,nil)
- if route_err.code!=.None {
-  reason:="delivery_failed"
-  if route_err.message=="bridge_too_old" do reason="bridge_too_old"
-  iface.unit_of_work_rollback(&uow); uow.ctx=nil
-  record_route_failure(r,id,run.state,reason)
-  return
- }
- next:=current
- next.state=domain.ACTION_RUN_ROUTED; next.started_at=platform.clock_now(r.clock)
- next.delivery_id=delivery_id; next.message_id=message; next.target_instance_id=plan.instance_id; next.rule_position=plan.rule_position
- changed,te:=repo.run_transition(repo.ctx,next,current.state)
- if te.code!=.None || !changed do return
- if plan.spawned {
-  if e:=repo.set_last_spawned(repo.ctx,action.id,plan.instance_id,next.started_at); e.code!=.None do return
- }
- committed,_=iface.unit_of_work_commit(&uow); uow.ctx=nil
- if committed && plan.stop_instance_id!="" && r.agents.stop!=nil do r.agents.stop(r.agents.ctx,string(action.owner_user_id),plan.stop_instance_id)
+ item:=Prepared_Run{action=action,run=run}
+ if prepared!=nil {append(prepared,item)} else {route_groups(r,[]Prepared_Run{item})}
 }
+
 record_route_failure :: proc(r:^Router,id,from,reason:string) {
  uow,ok,_:=iface.unit_of_work_begin(r.factory)
  if !ok do return
