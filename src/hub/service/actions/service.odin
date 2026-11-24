@@ -171,6 +171,12 @@ validate_target :: proc(s: ^Service, repos: ^iface.Repositories, owner: string, 
 			}
 			return e
 		}
+	case domain.ACTION_TARGET_BOT:
+		if !actions_gate_on(s.experiments, owner, "bots") do return detail_error("experiment_off")
+		if target.instance_strategy != "" && target.instance_strategy != domain.ACTION_INSTANCE_STRATEGY_REUSE do return detail_error("strategy_not_allowed")
+		bot, e := owned_bot(&repos.bots, owner, target.bot_id)
+		if e.code != .None do return e
+		_ = bot
 	case domain.ACTION_TARGET_INSTANCE:
 		inst, found, e := iface.agent_get_instance(&repos.agents, target.instance_id)
 		if e.code != .None do return e
@@ -422,4 +428,15 @@ trigger_types :: proc(s:^Service) -> Trigger_Types_View {
 		limits={max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
 			min_interval_s={min=domain.ACTION_MIN_INTERVAL_MIN_S,max=domain.ACTION_MIN_INTERVAL_MAX_S,default=domain.ACTION_MIN_INTERVAL_DEFAULT_S}},
 		trigger_kinds=kinds}
+}
+
+// Returned records belong to the caller; validation uses its scoped arena.
+owned_bot :: proc(repo: ^iface.Bot_Repository, owner, bot_id: string) -> (domain.Bot, domain.Domain_Error) {
+ bot: domain.Bot
+ found: bool
+ err: domain.Domain_Error
+ if bot_id == "" {bot, found, err = iface.bot_get_by_owner(repo, owner)} else {bot, found, err = iface.bot_get(repo, bot_id)}
+ if err.code != .None do return bot, err
+ if !found || bot.owner_user_id != owner do return bot, domain.domain_error(.Not_Found, "bot not found")
+ return bot, {}
 }

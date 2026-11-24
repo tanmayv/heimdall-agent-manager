@@ -16,6 +16,7 @@ Bot_Repo_SQLite :: struct {
 new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Repository {
 	impl.conn = conn
 	return iface.Bot_Repository {
+		action_activity = bot_action_activity_sqlite,
 		web_message_store = web_message_store_sqlite,
 		messages_page = messages_page_sqlite,
 		messages_by_ids = messages_by_ids_sqlite,
@@ -1649,4 +1650,21 @@ attachment_set_state_sqlite :: proc(ctx: rawptr, attachment_id: string, from, to
 	count, write_err := bot_repo_write(bot_repo_conn(ctx), "UPDATE channel_attachments SET state = ?, updated_at = ? WHERE attachment_id = ? AND state = ?;",
 		{domain.channel_attachment_state_text(to), updated_at, attachment_id, domain.channel_attachment_state_text(from)})
 	return count == 1, write_err
+}
+
+BOT_ACTION_ACTIVITY_SQL :: `SELECT EXISTS(
+ SELECT 1 FROM pipeline_deliveries WHERE agent_instance_id=?1 AND kind='prompt' AND state IN ('routed','forwarded','delivered')
+ ) OR EXISTS(
+ SELECT 1 FROM action_runs WHERE target_instance_id=?1 AND state='routed' AND started_at>=?2
+ );`
+
+// Both EXISTS branches use instance-prefixed partial indexes and stop at the first match.
+bot_action_activity_sqlite :: proc(ctx: rawptr, instance_id, routed_since: string) -> (bool, domain.Domain_Error) {
+ conn := bot_repo_conn(ctx)
+ if conn == nil do return false, bot_repo_error(conn)
+ stmt, err := bot_repo_prepare(conn, BOT_ACTION_ACTIVITY_SQL, []string{instance_id, routed_since})
+ if err.code != .None do return false, err
+ defer sqlite3_finalize(stmt)
+ if sqlite3_step(stmt) != SQLITE_ROW do return false, bot_repo_error(conn)
+ return sqlite3_column_int64(stmt, 0) != 0, {}
 }
