@@ -91,8 +91,19 @@ chain_still_valid :: proc(repos: ^iface.Repositories, run: domain.Action_Run, wo
  if err.code != .None do return false, "validity_unavailable"
  if !found || chain.owner_user_id != run.owner_user_id do return false, "superseded"
  if work {
-  text, _ := data["work_revision"].(string)
-  rev, valid := strconv.parse_i64(text)
+  // The catalog emits a JSON integer. Retain strings for matcher run snapshots,
+  // but never coerce floats or missing values into a matching revision.
+  rev: i64
+  valid: bool
+  #partial switch value in data["work_revision"] {
+  case json.Integer:
+   rev = i64(value)
+   valid = true
+  case string:
+   rev, valid = strconv.parse_i64(value)
+  case:
+   return false, "superseded"
+  }
   if !valid || rev != chain.work_revision do return false, "superseded"
  } else {
   state, _ := data["state"].(string)

@@ -1,6 +1,7 @@
 package actions
 
 import "core:testing"
+import "core:encoding/json"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
@@ -14,6 +15,30 @@ test_settle_real_chain_completion :: proc(t: ^testing.T) {
  action_test_case(t, settle_real_completion_scenario)
 }
 settle_real_completion_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
+ settle_real_producer_scenario(t, f, false, false)
+}
+@(test)
+test_settle_real_chain_completion_reopened :: proc(t: ^testing.T) {
+ action_test_case(t, settle_real_completion_reopened_scenario)
+}
+settle_real_completion_reopened_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
+ settle_real_producer_scenario(t, f, false, true)
+}
+@(test)
+test_settle_real_work_finished :: proc(t: ^testing.T) {
+ action_test_case(t, settle_real_work_finished_scenario)
+}
+settle_real_work_finished_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
+ settle_real_producer_scenario(t, f, true, false)
+}
+@(test)
+test_settle_real_work_finished_new_work :: proc(t: ^testing.T) {
+ action_test_case(t, settle_real_work_finished_new_work_scenario)
+}
+settle_real_work_finished_new_work_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
+ settle_real_producer_scenario(t, f, true, true)
+}
+settle_real_producer_scenario :: proc(t: ^testing.T, f: ^Action_Test, work, superseded: bool) {
  impl: sqlite.Taskchain_Repo_SQLite
  f.repos.taskchains = sqlite.new_taskchain_repository(&impl, &f.db)
  f.repos.taskchains.catalog = f.repos.event_outbox
@@ -24,35 +49,71 @@ settle_real_completion_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
   created_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:00:00Z",
  })
  if !testing.expect(t, saved, err.message) do return
- _, saved, err = iface.taskchain_save_task(repo, {
+ task, saved_task, task_err := iface.taskchain_save_task(repo, {
   task_id="done", chain_id=chain.chain_id, owner_user_id="owner",
-  title="Done", state=.Done, publish_state=.Published, brief_json="{}",
+  title="Done", state=.Ready if work else .Done, publish_state=.Published, brief_json="{}",
  })
- if !testing.expect(t, saved, err.message) do return
+ if !testing.expect(t, saved_task, task_err.message) do return
  chain, _, _ = iface.taskchain_get_chain(repo, chain.chain_id)
  trigger, _, _ := f.repos.actions.trigger_get(f.repos.actions.ctx, "trigger")
  trigger.delay_s = 10
- trigger.data_filter_json = `{"state":"completed"}`
+ typ := "chain.work_finished" if work else "chain.state"
+ trigger.event_type = typ
+ trigger.subject_filter = "ev.owner.chain.*.work_finished" if work else "ev.owner.chain.*.state"
+ trigger.data_filter_json = `{"outcome":"work_batch_finished"}` if work else `{"state":"completed"}`
  testing.expect_value(t, f.repos.actions.trigger_save(f.repos.actions.ctx, trigger).code, domain.Error_Code.None)
  svc := taskv2.Service{repo=repo, uow_factory=&f.factory, clock=&f.clock, ids=&f.ids}
- completed, ok, cerr := taskv2.work_chain_complete(&svc, "owner",
-  {kind=taskv2.ACTOR_USER, id="owner"}, chain.chain_id, chain.work_revision, "All work passed")
- if !testing.expect(t, ok, cerr.message) do return
+ if work {
+  // record_event is the production terminal-transition path: it invokes
+  // catalog_work_finished when the last task in the batch becomes terminal.
+  u, began, berr := taskv2.begin_uow(&svc)
+  if !testing.expect(t, began, berr.message) do return
+  _, _, recorded, rerr := taskv2.record_event(&svc, &u, task,
+   {kind=taskv2.ACTOR_USER, id="owner"}, taskv2.EV_CANCELLED, "{}")
+  committed, cerr := taskv2.end_uow(&svc, &u, recorded)
+  if !testing.expect(t, recorded, rerr.message) do return
+  if !testing.expect(t, committed, cerr.message) do return
+ } else {
+  completed, ok, cerr := taskv2.work_chain_complete(&svc, "owner",
+   {kind=taskv2.ACTOR_USER, id="owner"}, chain.chain_id, chain.work_revision, "All work passed")
+  if !testing.expect(t, ok, cerr.message) do return
+  testing.expect(t, completed.completed_at!="")
+ }
  stored, found, serr := iface.taskchain_get_chain(repo, chain.chain_id)
  testing.expect(t, found && serr.code==.None)
- testing.expect(t, stored.completed_at!="")
- testing.expect_value(t, completed.completed_at, stored.completed_at)
  uow, began, _ := iface.unit_of_work_begin(&f.factory)
  if !testing.expect(t, began) do return
- row, exists, rerr := uow.repos.event_outbox.next(uow.repos.event_outbox.ctx)
+ // The terminal path also emits task.state; consume actual outbox rows until
+ // the requested chain producer event, without synthesizing its data.
+ row: domain.Event_Outbox_Row
+ exists: bool
+ for {
+  var_err: domain.Domain_Error
+  row, exists, var_err = uow.repos.event_outbox.next(uow.repos.event_outbox.ctx)
+  if !exists || var_err.code!=.None { exists=false; break }
+  if jsonx.extract_string(row.envelope_json, "type", "", true, context.temp_allocator)==typ do break
+  testing.expect_value(t, uow.repos.event_outbox.mark_published(uow.repos.event_outbox.ctx, row.outbox_seq, "2026-11-23T00:00:00Z").code, domain.Error_Code.None)
+ }
  _, _ = iface.unit_of_work_commit(&uow)
- if !testing.expect(t, exists && rerr.code==.None) do return
- testing.expect_value(t, jsonx.extract_string(row.envelope_json, "type", "", true, context.temp_allocator), "chain.state")
+ if !testing.expect(t, exists, "real producer emitted expected chain event") do return
  data, _ := jsonx.extract_raw_object(row.envelope_json, "data", true, context.temp_allocator)
- testing.expect_value(t, jsonx.extract_string(data, "completed_at", "", true, context.temp_allocator), stored.completed_at)
- testing.expect_value(t, jsonx.extract_string(data, "updated_at", "", true, context.temp_allocator), stored.updated_at)
+ if work {
+  envelope := test_config(row.envelope_json)
+  fields, _ := envelope["data"].(json.Object)
+  revision, numeric := fields["work_revision"].(json.Integer)
+  testing.expect(t, numeric, "producer revision remains a JSON integer")
+  testing.expect_value(t, i64(revision), stored.work_revision)
+  // The matcher stringifies scalar data in run snapshots. Exercise numeric
+  // acceptance separately with the unchanged producer envelope as well.
+  valid, reason := chain_work_finished_still_valid(&f.repos,
+   {owner_user_id="owner", event_params_json=row.envelope_json})
+  testing.expect(t, valid && reason=="", "real numeric producer revision is current")
+ } else {
+  testing.expect_value(t, jsonx.extract_string(data, "completed_at", "", true, context.temp_allocator), stored.completed_at)
+  testing.expect_value(t, jsonx.extract_string(data, "updated_at", "", true, context.temp_allocator), stored.updated_at)
+ }
  testing.expect(t, handle_message(&f.runtime, {
-  subject=row.subject, owner="owner", event_type="chain.state",
+  subject=row.subject, owner="owner", event_type=typ,
   event_id=jsonx.extract_string(row.envelope_json, "event_id", "", true, context.temp_allocator),
   stream_time_ms=f.now_ms, stream_sequence=1, envelope=test_config(row.envelope_json),
  }))
@@ -60,9 +121,38 @@ settle_real_completion_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  if !testing.expect(t, pending_found) do return
  drain_run(&f.runtime.router, pending.run_id, true)
  testing.expect_value(t, f.routes, 0)
+ if superseded {
+  if work {
+   // Inserting new work advances the revision via the real SQLite trigger.
+   _, inserted, ierr := iface.taskchain_save_task(repo, {
+    task_id="new", chain_id=chain.chain_id, owner_user_id="owner",
+    title="New work", state=.Ready, publish_state=.Published, brief_json="{}",
+   })
+   testing.expect(t, inserted, ierr.message)
+   valid, reason := chain_work_finished_still_valid(&f.repos,
+    {owner_user_id="owner", event_params_json=row.envelope_json})
+   testing.expect(t, !valid && reason=="superseded", "new work supersedes numeric snapshot")
+  } else {
+   // Persist a reopened chain before the pending completion action fires.
+   stored.status=.Active
+   stored.completed_at=""
+   _, reopened, rerr := iface.taskchain_save_chain(repo, stored)
+   testing.expect(t, reopened, rerr.message)
+  }
+ }
  f.now_ms += 10_000
  drain_run(&f.runtime.router, pending.run_id, true)
- testing.expect_value(t, f.routes, 1)
- testing.expect_value(t, action_test_prompt_count(t, f), 1)
- action_test_expect(t, f, domain.ACTION_RUN_SKIPPED, 0)
+ if superseded {
+  testing.expect_value(t, f.routes, 0)
+  testing.expect_value(t, action_test_prompt_count(t, f), 0)
+  rows := action_test_rows(t, f)
+  if testing.expect_value(t, len(rows), 1) {
+   testing.expect_value(t, rows[0].state, domain.ACTION_RUN_SKIPPED)
+   testing.expect_value(t, rows[0].reason, "superseded")
+  }
+ } else {
+  testing.expect_value(t, f.routes, 1)
+  testing.expect_value(t, action_test_prompt_count(t, f), 1)
+  action_test_expect(t, f, domain.ACTION_RUN_SKIPPED, 0)
+ }
 }

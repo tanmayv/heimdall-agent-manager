@@ -158,6 +158,8 @@ settle_rate_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
 test_settle_work_revision_and_optional_callbacks :: proc(t: ^testing.T) { action_test_case(t,settle_work_scenario) }
 settle_work_scenario :: proc(t: ^testing.T, f: ^Action_Test) {
  settle_test_setup(t,f,5)
+ // Matcher string snapshots remain readable; producer integer coverage lives
+ // in chain_completion_test.odin and drives the actual work-finished emitter.
  f.chain_revision=7
  run:=domain.Action_Run{owner_user_id="owner",event_params_json=`{"chain_id":"chain1","data":{"work_revision":"7"}}`}
  valid,reason:=chain_work_finished_still_valid(&f.repos,run)
