@@ -316,6 +316,8 @@ router_retry_scenario :: proc(t:^testing.T,f:^Action_Test) {
  action_test_match(t,f,"two");action_test_match(t,f,"three")
  action_test_expect(t,f,domain.ACTION_RUN_JOINED,2)
  delivery.on_command_result(&f.pipeline,"bridge",fmt.tprintf("%s:1",run.delivery_id),`{"status":"succeeded","outcome":"notified"}`)
+ action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
+ ack_read(t,f,run)
  action_test_expect(t,f,domain.ACTION_RUN_DELIVERED,1);testing.expect_value(t,f.routes,1)
 }
 prune_delivered :: proc(t:^testing.T,f:^Action_Test) {
