@@ -10,13 +10,14 @@ import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
 import bots "odin_test:hub/service/bots"
 import provider_service "odin_test:hub/service/provider"
-import project_service "odin_test:hub/service/project"
+import placement "odin_test:hub/service/placement"
 
 Bot_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
 	bots: ^bots.Bots_Service,
 	experiments: ^iface.Experiment_Repository,
 	content: ^iface.Content_Repository,
+	cards: ^iface.Card_Repository,
 }
 
 bot_require_auth :: proc(h: ^Bot_Handlers, req: Request) -> (contracts.Auth_Context, bool, Response) {
@@ -121,7 +122,10 @@ bot_placement_options_handler :: proc(ctx: rawptr, req: Request) -> Response {
 			if duplicate do continue
 			append(&providers, Bot_Provider_Option{provider = strings.clone(view.catalog.provider, context.temp_allocator), label = strings.clone(view.catalog.display_name, context.temp_allocator), models = models[:]})
 		}
-		append(&options, Bot_Bridge_Option{bridge_id = b.bridge_id, label = b.label, online = b.status == .Online && h.bots.registry != nil && project_service.bridge_runtime_registry_has_live(h.bots.registry, b.bridge_id), bot_capable = bots.bots_bridge_capable(b), providers = providers[:]})
+		ps:=bots.bots_placement(h.bots)
+ online,_:=placement.bridge_eligible(&ps,b,{owner=auth.user_id})
+ capable,_:=placement.bridge_eligible(&ps,b,{owner=auth.user_id,features={"bot_deliver_v1","instance_reconfiguration_v1"}})
+ append(&options,Bot_Bridge_Option{bridge_id=b.bridge_id,label=b.label,online=online,bot_capable=capable,providers=providers[:]})
 	}
 	return respond_success_typed(struct {bridges: []Bot_Bridge_Option}{options[:]}, req.request_id, auth_ctx_server_time(req))
 }

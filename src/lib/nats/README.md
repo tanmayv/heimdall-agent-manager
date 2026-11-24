@@ -45,13 +45,13 @@ rejected. Timeouts are milliseconds; stream/consumer durations are nanoseconds.
    Reconnect buffering is disabled so outages produce errors rather than silently
    accumulating unconfirmed publishes. nats.c may reconnect internally.
 2. `stream_add`, `stream_update`, `stream_info` return copied state. Config selects
-   file storage and limits retention, supports multiple subjects, age, duplicate
+   file storage with limits (default) or work-queue retention, supports multiple subjects, age, duplicate
    window, replicas and rollup. Update replaces configuration; it is not a patch.
 3. `publish` waits for the JetStream PubAck and returns sequence plus duplicate
    flag (a C integer, nonzero means true). It supports arbitrary repeated headers.
    Its explicit message ID overrides an arbitrary `Nats-Msg-Id` header.
 4. `consumer_add` creates an explicit-ack durable pull consumer with one or several
-   subject filters, ack wait and maximum deliveries. `pull_bind` attaches to an
+   subject filters, ack wait, maximum deliveries, optional `max_ack_pending`, and\n   `deliver_new` (false preserves delivery of stored history). `pull_bind` attaches to an
    existing consumer; `pull_destroy` frees only the local subscription and preserves
    the durable consumer. `consumer_delete` removes the server consumer explicitly.
 5. `fetch` returns an owned batch, or nil on failure (including timeout). Messages,
@@ -79,3 +79,46 @@ redelivery, ack/term, multi-subject filters, dedupe, subject rollup, and TLS tru
 **Never call network operations from a SQLite transaction.** The transactional
 outbox relay will publish after commit; this low-level package does not import
 the repository or enforce its transaction guard.
+
+## Schedules and delivery protocol
+
+Scheduled definitions need **nats-server 2.14 or newer** for cron, @every and
+@at. Enable Stream_Config.allow_msg_schedules and allow_msg_ttl on the same
+stream that contains the definition and its target subject. These flags cannot
+be disabled after enabling them. An in-place stream_update preserves data and
+durable consumers. server_supports_schedules reads _nats.ver from stream
+configuration metadata and fails closed on errors or unreadable versions;
+version_at_least is the pure version predicate.
+
+stream_purge_subject rejects wildcards and returns the server's exact purged
+count, including zero for an empty subject. It uses the raw JetStream purge API:
+nats.c 3.13's js_PurgeStream discards that count. stream_delete_message deletes
+a stream sequence and returns deleted = false without error if it is absent.
+subject_token validates one tenant/identifier subject token.
+
+Metadata.timestamp_ns is the server stream timestamp in Unix nanoseconds.
+ack_reply_async, nak_reply_delay, in_progress_reply, and term_reply accept
+a persisted reply subject and perform plain protocol publishes without waiting
+for a response. NAK delays are supplied in milliseconds and encoded in
+nanoseconds (nonpositive means immediate). flush is an explicit server barrier;
+these asynchronous calls do not flush implicitly. The existing ack_reply
+continues to wait for confirmation. A delayed NAK retains its MaxAckPending
+slot; +WPI resets AckWait. Acknowledged or terminated work-queue messages leave
+the stream, while exhausted messages remain until deletion or expiry.
+
+Real-server scenarios cover schedule headers and time zones, past @at, TTL,
+purge counts, upgrades, delivery policy and timestamps, disjoint work-queue
+consumers, ack limits, delayed NAK, progress, termination, async acknowledgement,
+exhaustion advisories and repeated deletion. With the flake's nats-server
+2.14.7, Nats-Schedule-TTL: 2s expires the fire while Nats-TTL: never preserves
+the definition; the matcher does not need the fire-delete fallback.
+
+
+long_pull_bind/long_pull_next keep one 30-second server request alive across
+short local receive timeouts. A heartbeat or local timeout returns status 26
+without issuing another pull; a completed/expired request allows the next call
+to request up to its current limit. Only one thread may use the handle, and it
+must be destroyed before its connection while no receive is running. Messages
+are individually owned (message_destroy). Use reply-based acknowledgement and
+termination functions: these core subscription messages do not carry the nats.c
+JetStream subscription metadata required by ack(msg)/term(msg).

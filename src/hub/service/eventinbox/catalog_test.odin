@@ -40,7 +40,7 @@ catalog_scenario :: proc(t: ^testing.T) {
 		{"alice","chain_1","task.state"}, {"bob","chain_1","task.state"},
 		{"alice","chain_2","task.state"}, {"alice","chain_1","task.review_verdict"},
 	}) {
-		encoded,_ := json.marshal(struct{event_id,owner_user_id,chain_id,type:string}{fmt.tprintf("event_%d",i),row[0],row[1],row[2]})
+		encoded,_ := json.marshal(inbox_v2(fmt.tprintf("event_%d",i),row[2],row[0],row[1],"task_1"))
 		_, pe := nats.publish(conn,fmt.tprintf("ev.%s.chain.%s.task.task_1.%s",row[0],row[1],row[2]),encoded)
 		delete(encoded)
 		testing.expect_value(t,pe.status,i32(0))
@@ -77,7 +77,7 @@ catalog_scenario :: proc(t: ^testing.T) {
 	uow,began,_ := iface.unit_of_work_begin(&factory)
 	if !testing.expect(t,began) do return
 	for owner in ([]string{"alice","bob"}) {
-		testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=fmt.tprintf("sub_%s",owner),owner_user_id=owner,subscriber_agent_id="agt_1",chain_id="chain_1",source="explicit",consumer_name=fmt.tprintf("sub_%s",owner),filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
+		testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=fmt.tprintf("sub_%s",owner),owner_user_id=owner,subscriber_instance_id="agt_1",chain_id="chain_1",source="explicit",consumer_name=fmt.tprintf("sub_%s",owner),filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
 		testing.expect_value(t,repos.event_outbox.append(repos.event_outbox.ctx,{event_id=fmt.tprintf("pending_%s",owner),owner_user_id=owner,subject="ev.test",envelope_json="{}",headers_json="{}",created_at="now"}).code,domain.Error_Code.None)
 	}
 	committed,_ := iface.unit_of_work_commit(&uow)
@@ -138,7 +138,9 @@ catalog_scenario :: proc(t: ^testing.T) {
 	}
 	_,bad_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"partial":[`))
 	testing.expect_value(t,bad_err.status,i32(0))
-	_,good_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"owner_user_id":"alice","chain_id":"chain_1","type":"chain.state"}`))
+ _,old_publish_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"owner_user_id":"alice","chain_id":"chain_1","type":"chain.state"}`))
+ testing.expect_value(t,old_publish_err.status,i32(0))
+	_,good_err:=nats.publish(conn,"ev.alice.chain.chain_1.state",transmute([]byte)string(`{"owner_user_id":"alice","entity":{"kind":"chain","id":"chain_1"},"type":"chain.state"}`))
 	testing.expect_value(t,good_err.status,i32(0))
 	api_before,_,_:=nats.api_stats(conn)
 	sparse,sparse_err:=catalog_read(conn,"alice","chain_1",checkpoint)

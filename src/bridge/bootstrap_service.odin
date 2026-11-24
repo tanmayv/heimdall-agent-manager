@@ -101,17 +101,26 @@ bridge_bootstrap_write_skills :: proc(run_dir, provider, body: string) -> []stri
 	if skills_array, ok := bridge_provider_json_extract_array(body, "skills"); ok {
 		for obj in bridge_provider_json_top_level_objects(skills_array) {
 			name := bridge_provider_json_extract_string(obj, "name", "")
-			content := bridge_bootstrap_decrypt_owned(bridge_provider_json_extract_string(obj, "content", ""))
-			plain_name := bridge_decrypt_embedded_vault_tokens(name)
+			payload := bridge_provider_json_extract_string(obj, "content", "")
+			plain_name, content, valid := bridge_bootstrap_render_skill(name, payload)
+			delete(name); delete(payload)
+			if !valid do continue
 			path := bridge_bootstrap_skill_relative_path(provider, plain_name)
-			if bridge_bootstrap_write_skill_file(run_dir, path, content) do append(&written, path)
+			delete(plain_name)
+			if bridge_bootstrap_write_skill_file(run_dir, path, content) { append(&written, path) } else { delete(path) }
+			delete(content)
 		}
 	}
 	if len(written) == 0 {
 		skill_name := extract_json_string(body, "default_skill_name", "heimdall-ctl-communication")
 		skill_content := extract_json_string(body, "default_skill_content", "")
-		skill_path := bridge_bootstrap_skill_relative_path(provider, skill_name)
-		if bridge_bootstrap_write_skill_file(run_dir, skill_path, skill_content) do append(&written, skill_path)
+		plain_name, content, valid := bridge_bootstrap_render_skill(skill_name, skill_content)
+		delete(skill_name); delete(skill_content)
+		if valid {
+			skill_path := bridge_bootstrap_skill_relative_path(provider, plain_name)
+			if bridge_bootstrap_write_skill_file(run_dir, skill_path, content) { append(&written, skill_path) } else { delete(skill_path) }
+			delete(plain_name); delete(content)
+		}
 	}
 	return written[:]
 }
@@ -931,12 +940,12 @@ bridge_bootstrap_build_file_set :: proc(manifest_json: string, d: Bridge_Bootstr
 				bridge_bootstrap_free_file_set(files)
 				return nil, Bridge_Bootstrap_Result{ok = false, stage = "assemble", detail = "skill blob missing from cache"}
 			}
-			content = bridge_bootstrap_decrypt_owned(content)
-			// No locked marker for the name: it becomes a directory, and distinct
-			// ciphertext keeps distinct skills from colliding on one path.
-			plain_name := bridge_decrypt_embedded_vault_tokens(name)
+			plain_name, rendered, valid := bridge_bootstrap_render_skill(name, content)
+			delete(content); delete(name); delete(h)
+			if !valid do continue
+			content = rendered
 			path := bridge_bootstrap_skill_relative_path(provider, plain_name)
-			delete(plain_name); delete(name); delete(h)
+			delete(plain_name)
 			if strings.trim_space(path) == "" { delete(path); delete(content); continue }
 			append(&files, Bridge_Bootstrap_File{file_id = strings.clone(path), relative_path = path, kind = "SKILL", content = content, mode = 0o644})
 		}
@@ -1293,11 +1302,14 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 		if cache != nil {
 			got, found := bootstrap_cache_get(cache, h)
 			if !found { delete(name); delete(h); return false }
-			content = bridge_bootstrap_decrypt_owned(got)
+			content = got
 		}
-		plain_name := bridge_decrypt_embedded_vault_tokens(name)
+		plain_name, rendered, valid := bridge_bootstrap_render_skill(name, content)
+		delete(content); delete(name); delete(h)
+		if !valid do continue
+		content = rendered
 		path := bridge_bootstrap_skill_relative_path(provider, plain_name)
-		delete(plain_name); delete(name); delete(h)
+		delete(plain_name)
 		if strings.trim_space(path) == "" { delete(path); if content != "" do delete(content); continue }
 		// content is an owned clone from the cache; hand ownership to the file entry.
 		append(&files, Bridge_Bootstrap_File{file_id = strings.clone(path), relative_path = path, kind = "SKILL", content = content, mode = 0o644})

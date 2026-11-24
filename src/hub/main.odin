@@ -156,6 +156,7 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	// env first (below) and flags second (in the loop) keeps precedence uniform
 	// across all VAPID fields, including vapid_subject which carries a default.
 	apply_vapid_env(config)
+	apply_action_filter_env(config)
 	apply_telegram_env(config)
 	apply_whatsapp_env(config)
 	apply_paddle_env(config)
@@ -495,6 +496,7 @@ apply_coordinator_idle_env :: proc(config: ^app.Hub_Config) {
 
 // apply_telegram_env seeds	configuration before flags; secrets are never logged.
 apply_telegram_env :: proc(config: ^app.Hub_Config) {
+
 	if token := os.get_env_alloc("HEIMDALL_TELEGRAM_BOT_TOKEN", context.allocator); token != "" {
 		config.telegram_bot_token = token
 	} else if path := os.get_env_alloc("HEIMDALL_TELEGRAM_BOT_TOKEN_FILE", context.allocator); path != "" {
@@ -562,4 +564,13 @@ parse_nats_args :: proc(config: ^app.Hub_Config) {
 		if arg == "--nats-ca-file" do config.nats_ca_file = value
 		i += 1
 	}
+}
+
+apply_action_filter_env :: proc(config:^app.Hub_Config) {
+ if raw:=os.get_env_alloc("HEIMDALL_ACTION_FILTER_LIMITS_JSON",context.temp_allocator);raw!="" {
+  if !app.apply_action_filter_limits_json(config,raw) {
+   fmt.eprintln("HEIMDALL_ACTION_FILTER_LIMITS_JSON contains invalid filter limits")
+   os.exit(2)
+  }
+ }
 }

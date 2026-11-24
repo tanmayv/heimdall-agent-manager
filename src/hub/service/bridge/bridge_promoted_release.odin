@@ -10,6 +10,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import httpc "odin_test:lib/httpc"
+import "odin_test:lib/releaserepo"
 
 // A structured request seam keeps tests offline and the outbound HTTP boundary intact.
 Bridge_Catalog_Get :: #type proc(req: httpc.Request) -> (body: string, ok: bool, reason: string)
@@ -89,35 +90,75 @@ bridge_catalog_memo_get :: proc(memo: ^Bridge_Catalog_Memo, req: httpc.Request) 
 	return
 }
 
+// GitHub lists releases newest first, BRIDGE_CATALOG_PAGE_SIZE per page. The
+// stable reader and the choices reader request identical pages, so the refresh
+// memo fetches each page once. 100 per page would be ~3.6 MB, too close to the
+// request's 4 MiB response cap; 30 keeps every page well under it.
+BRIDGE_CATALOG_PAGE_SIZE :: 30
+// Defensive bound on pagination (3000 releases); hitting it is an error, never
+// a silently partial list.
+BRIDGE_CATALOG_MAX_PAGES :: 100
+
+bridge_catalog_releases_request :: proc(page: int) -> httpc.Request {
+	size := fmt.tprintf("%d", BRIDGE_CATALOG_PAGE_SIZE)
+	query := make([]httpc.Query_Param, 1 if page <= 1 else 2, context.temp_allocator)
+	query[0] = {"per_page", size}
+	if page > 1 do query[1] = {"page", fmt.tprintf("%d", page)}
+	return bridge_catalog_request("https://api.github.com", {"repos", releaserepo.OWNER, releaserepo.NAME, "releases"}, query)
+}
+
+// bridge_catalog_fetch_release resolves the newest promoted release that has a
+// verified artifact for target (or the pinned tag). It pages the release list
+// until a match or the last page: promoted releases can sit far below the first
+// page when many prereleases ship between promotions (report F9).
 bridge_catalog_fetch_release :: proc(memo: ^Bridge_Catalog_Memo, target, pin: string) -> (info: Bridge_Update_Info, reachable: bool) {
 	info.target, info.latest_source = target, "promoted"
-	req := bridge_catalog_request("https://api.github.com", {"repos", "tanmayv", "heimdall-agent-manager", "releases"}, {{"per_page", "30"}})
 	if pin != "" {
 		if !bridge_catalog_tag_valid(pin) {
 			info.fallback_reason = "invalid operator release tag"
 			return info, true
 		}
 		tag := pin if strings.has_prefix(pin, "v") else fmt.tprintf("v%s", pin)
-		req = bridge_catalog_request("https://api.github.com", {"repos", "tanmayv", "heimdall-agent-manager", "releases", "tags", tag})
-	}
-	doc, ok, reason := bridge_catalog_memo_get(memo, req)
-	if !ok {
-		info.fallback_reason = fmt.tprintf("cannot resolve promoted releases: %s", reason)
-		return info, false
-	}
-	releases: []Bridge_Catalog_Release
-	if pin == "" {
-		if err := json.unmarshal_string(doc, &releases, allocator = context.temp_allocator); err != nil {
-			info.fallback_reason = fmt.tprintf("release source returned an invalid release list: %v", err)
+		req := bridge_catalog_request("https://api.github.com", {"repos", releaserepo.OWNER, releaserepo.NAME, "releases", "tags", tag})
+		doc, ok, reason := bridge_catalog_memo_get(memo, req)
+		if !ok {
+			info.fallback_reason = fmt.tprintf("cannot resolve promoted releases: %s", reason)
 			return info, false
 		}
-	} else {
-		releases = make([]Bridge_Catalog_Release, 1, context.temp_allocator)
+		releases := make([]Bridge_Catalog_Release, 1, context.temp_allocator)
 		if json.unmarshal_string(doc, &releases[0], allocator = context.temp_allocator) != nil {
 			info.fallback_reason = "release source returned invalid release metadata"
 			return info, false
 		}
+		if found, failed := bridge_catalog_pick_release(memo, &info, releases, target, pin); found || failed do return info, !failed
+		info.warning = fmt.tprintf("Pinned release %s has no verified artifact for %s", pin, target)
+		return info, true
 	}
+	for page in 1..=BRIDGE_CATALOG_MAX_PAGES {
+		doc, ok, reason := bridge_catalog_memo_get(memo, bridge_catalog_releases_request(page))
+		if !ok {
+			info.fallback_reason = fmt.tprintf("cannot resolve promoted releases: %s", reason)
+			return info, false
+		}
+		releases: []Bridge_Catalog_Release
+		if err := json.unmarshal_string(doc, &releases, allocator = context.temp_allocator); err != nil {
+			info.fallback_reason = fmt.tprintf("release source returned an invalid release list: %v", err)
+			return info, false
+		}
+		if found, failed := bridge_catalog_pick_release(memo, &info, releases, target, ""); found || failed do return info, !failed
+		if len(releases) < BRIDGE_CATALOG_PAGE_SIZE {
+			info.warning = fmt.tprintf("No promoted release has a verified artifact for %s", target)
+			return info, true
+		}
+	}
+	info.fallback_reason = fmt.tprintf("release list exceeds %d pages", BRIDGE_CATALOG_MAX_PAGES)
+	return info, false
+}
+
+// bridge_catalog_pick_release fills info from the first qualifying release in
+// list order. failed reports a fetch error (info.fallback_reason is set).
+@(private)
+bridge_catalog_pick_release :: proc(memo: ^Bridge_Catalog_Memo, info: ^Bridge_Update_Info, releases: []Bridge_Catalog_Release, target, pin: string) -> (found, failed: bool) {
 	// GitHub lists newest promotions first, matching the desktop's latestRelease.
 	for release in releases {
 		if release.draft || (pin == "" && release.prerelease) || !bridge_catalog_tag_valid(release.tag_name) do continue
@@ -129,11 +170,11 @@ bridge_catalog_fetch_release :: proc(memo: ^Bridge_Catalog_Memo, target, pin: st
 			if asset.name == "SHA256SUMS" do has_sums = true
 		}
 		if !has_bundle || !has_sums do continue
-		path := []string{"tanmayv", "heimdall-agent-manager", "releases", "download", release.tag_name, "SHA256SUMS"}
+		path := []string{releaserepo.OWNER, releaserepo.NAME, "releases", "download", release.tag_name, "SHA256SUMS"}
 		sums, fetched, detail := bridge_catalog_memo_get(memo, bridge_catalog_request("https://github.com", path))
 		if !fetched {
 			info.fallback_reason = fmt.tprintf("cannot fetch SHA256SUMS for %s: %s", release.tag_name, detail)
-			return info, false
+			return false, true
 		}
 		digest := bridge_catalog_digest(sums, name)
 		if digest == "" do continue
@@ -144,14 +185,9 @@ bridge_catalog_fetch_release :: proc(memo: ^Bridge_Catalog_Memo, target, pin: st
 		info.latest_version = strings.trim_prefix(release.tag_name, "v")
 		info.download_url, info.sha256 = url, digest
 		info.artifact_available = true
-		return info, true
+		return true, false
 	}
-	if pin != "" {
-		info.warning = fmt.tprintf("Pinned release %s has no verified artifact for %s", pin, target)
-	} else {
-		info.warning = fmt.tprintf("No promoted release has a verified artifact for %s", target)
-	}
-	return info, true
+	return false, false
 }
 
 // BRIDGE_CATALOG_REFRESH_INTERVAL is how often the background refresher re-reads

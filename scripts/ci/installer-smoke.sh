@@ -8,10 +8,20 @@
 # `ham-bridge uninstall --purge`. The real run registers a user service, so it is
 # meant for CI runners and disposable VMs; enrollment needs an approver, so pass a
 # Hub that auto-approves or expect the run to wait at the enroll step.
+#
+# With HEIMDALL_E2E_HUB_BIN, HEIMDALL_E2E_BRIDGE_BIN (and HEIMDALL_E2E_NATS_BIN) it
+# runs the REQ-INSTALL-2 scenarios (tests/e2e/installer_scenarios_e2e.mjs): the real
+# install.sh with a bundle of those binaries against a throwaway local hub (fresh
+# install, no-op re-run, re-enroll after the credential is removed and after a
+# revoke, recovery from an interrupted install, uninstall), all without a TTY. It
+# registers a real user service under a random profile name; needs `npm ci`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 bash -n "$ROOT/scripts/install.sh"
 python3 "$ROOT/tests/test_installer_clean.py"
+if [ -n "${HEIMDALL_E2E_HUB_BIN:-}" ] && [ -n "${HEIMDALL_E2E_BRIDGE_BIN:-}" ]; then
+  (cd "$ROOT" && node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/installer_scenarios_e2e.mjs)
+fi
 [ -n "${INSTALL_SMOKE_HUB:-}" ] || { echo 'installer-smoke: hermetic checks passed (set INSTALL_SMOKE_HUB for the real install)'; exit 0; }
 
 home="$(mktemp -d "${TMPDIR:-/tmp}/heimdall-smoke-home.XXXXXX")"

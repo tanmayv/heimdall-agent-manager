@@ -16,6 +16,7 @@ Channel_Error_Kind :: enum {
 
 Channel_Error :: struct {
 	kind:           Channel_Error_Kind,
+	http_status:    int, // HTTP status when available; 0 for local/transport failures
 	retry_after_ms: i64, // set for Rate_Limited
 	provider_code:  int, // provider error code (Telegram error_code, Graph error.code); 0 if none
 	message:        string, // safe to log; never contains a token, a phone number or message text

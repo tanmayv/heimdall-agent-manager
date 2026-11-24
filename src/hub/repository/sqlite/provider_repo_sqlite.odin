@@ -33,6 +33,9 @@ new_provider_repository :: proc(impl: ^Provider_Repo_SQLite, conn: ^Conn) -> ifa
 }
 
 bridge_provider_status_upsert_sqlite :: proc(ctx: rawptr, value: domain.Bridge_Provider_Status) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt = nil
@@ -60,6 +63,9 @@ bridge_provider_status_list_sqlite :: proc(ctx: rawptr, bridge_id: string) -> ([
 }
 
 bridge_provider_setting_upsert_sqlite :: proc(ctx: rawptr, value: domain.Bridge_Provider_Setting) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt = nil
@@ -212,6 +218,9 @@ provider_catalog_etag_sqlite :: proc(ctx: rawptr) -> (string, domain.Domain_Erro
 }
 
 bridge_provider_models_upsert_sqlite :: proc(ctx: rawptr, v: domain.Bridge_Provider_Models) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt
@@ -260,6 +269,9 @@ get_provider_transport_sqlite :: proc(ctx: rawptr, bridge_id, provider: string) 
 }
 
 set_provider_transport_sqlite :: proc(ctx: rawptr, bridge_id, provider, transport, now: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
  impl := (^Provider_Repo_SQLite)(ctx)
  if !provider_repo_ready(impl) do return domain.domain_error(.Internal_Error, "sqlite repository is not open")
  // Materialize the canonical row using the same implicit enabled value as the

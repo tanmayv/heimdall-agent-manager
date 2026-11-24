@@ -5,7 +5,7 @@ import { useComposerAttachments } from '../chat/useComposerAttachments';
 import { VoiceRecorderPanel, useVoiceMessage } from '../chat/VoiceRecorderPanel';
 import { Alert, Badge, Button, Spinner, Text } from '@ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useDispatch } from 'react-redux';
+import { shallowEqual, useDispatch, useSelector } from 'react-redux';
 import {
   botsApi, useGetBotQuery, useGetUnifiedBotMessagesQuery, useSendBotWebMessageMutation,
   type BotView, type UnifiedBotMessage,
@@ -16,6 +16,8 @@ import { apiErrorText, queryErrorStatus } from '../../api/cookieFetch';
 
 
 import ChatMessageList from '../chat/ChatMessageList';
+import LiveToolActivity from '../extension/LiveToolActivity';
+import { navigateTo, shellViewHref } from '../shells/shellModel';
 import {
   MessageComposerActions, MessageComposerInput, useComposerDockInset, useComposerExpanded,
 } from '../chat/MessageComposer';
@@ -75,6 +77,10 @@ function BotChatView({ bot }: { bot: BotView }) {
   const isMobile = useIsMobile();
   const head = useGetUnifiedBotMessagesQuery({ limit: BOT_HISTORY_PAGE_SIZE });
   const [send] = useSendBotWebMessageMutation();
+  const { conversation_id: runtimeConversation, agent_instance_id: runtimeInstance } = bot.advanced;
+  const sendActionFeedback = useCallback(async (body: string) => {
+    await send({ text: body, idempotency_key: newIdempotencyKey() }).unwrap();
+  }, [send]);
   const { attachments: uploads, setAttachments: setUploads, uploadAttachment: upload, handlePaste } = useComposerAttachments({
     metadata: { originKind: 'bot_chat', originRef: bot.bot_id },
     namePrefix: 'bot-attachment',
@@ -91,6 +97,21 @@ function BotChatView({ bot }: { bot: BotView }) {
   const [older, setOlder] = useState<{ loading: boolean; error: string; pagesLoaded: number; endReached: boolean }>(
     { loading: false, error: '', pagesLoaded: 0, endReached: false });
   const loadingOlder = useRef(false);
+  const olderSubscriptions = useRef(new Set<() => void>());
+  const [olderCursors, setOlderCursors] = useState<string[]>([]);
+  const selectOlderPages = useMemo(() => {
+    const selectors = olderCursors.map(cursor => botsApi.endpoints.getUnifiedBotMessages.select(
+      { limit: BOT_HISTORY_PAGE_SIZE, cursor }));
+    return (state: Parameters<(typeof selectors)[number]>[0]) => selectors.map(select => select(state).data);
+  }, [olderCursors]);
+  const olderPages = useSelector(selectOlderPages, shallowEqual);
+  useEffect(() => {
+    const subscriptions = olderSubscriptions.current;
+    return () => {
+      for (const unsubscribe of subscriptions) unsubscribe();
+      subscriptions.clear();
+    };
+  }, []);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
   // The same dock/transcript synchronisation as the coordinator chat (REQ-FROST-1).
@@ -107,6 +128,33 @@ function BotChatView({ bot }: { bot: BotView }) {
   // into the accumulated history rather than replacing it.
   useEffect(() => { setKnown((current) => mergeBotMessages(current, head.currentData?.messages)); }, [head.currentData]);
 
+  useEffect(() => {
+    setKnown(current => olderPages.reduce((known, page) => mergeBotMessages(known, page?.messages), current));
+  }, [olderPages]);
+
+  const mergeReceiptPage = useCallback((messages: UnifiedBotMessage[]) => {
+    setKnown(current => {
+      const receipts = messages.flatMap(({ message_id, read_at }) => {
+        const previous = current.get(message_id);
+        return previous && !previous.read_at && read_at ? [{ ...previous, read_at }] : [];
+      });
+      return mergeBotMessages(current, receipts);
+    });
+  }, []);
+  const receiptBatches = useMemo(() => {
+    const covered = new Set(head.currentData?.messages.map(message => message.message_id));
+    for (const page of olderPages) {
+      for (const message of page?.messages ?? []) covered.add(message.message_id);
+    }
+    // A moving head can leave retained rows between two exclusive page ranges.
+    const ids = [...known.values()]
+      .filter(message => message.direction === 'inbound' && !message.read_at && !covered.has(message.message_id))
+      .map(message => message.message_id);
+    const batches: string[][] = [];
+    for (let start = 0; start < ids.length; start += 25) batches.push(ids.slice(start, start + 25));
+    return batches;
+  }, [head.currentData, known, olderPages]);
+
   const timeline = useMemo(() => botTimeline(known), [known]);
   const shownPending = useMemo(() => visiblePendingSends(pending, known), [pending, known]);
   const messages = useMemo(() => botChatMessages(timeline, shownPending, sentKeys), [timeline, shownPending, sentKeys]);
@@ -118,12 +166,19 @@ function BotChatView({ bot }: { bot: BotView }) {
     if (loadingOlder.current || !hasOlder || !cursor) return;
     loadingOlder.current = true;
     setOlder((o) => ({ ...o, loading: true, error: '' }));
+    // Subscribe from the start so invalidation also covers a page being loaded.
+    const query = dispatch(botsApi.endpoints.getUnifiedBotMessages.initiate(
+      { limit: BOT_HISTORY_PAGE_SIZE, cursor }, { forceRefetch: true }));
+    const unsubscribe = () => query.unsubscribe();
+    olderSubscriptions.current.add(unsubscribe);
     try {
-      const page = await dispatch(botsApi.endpoints.getUnifiedBotMessages.initiate(
-        { limit: BOT_HISTORY_PAGE_SIZE, cursor }, { subscribe: false, forceRefetch: true })).unwrap();
+      const page = await query.unwrap();
       setKnown((current) => mergeBotMessages(current, page.messages));
+      setOlderCursors(cursors => [...cursors, cursor]);
       setOlder((o) => ({ loading: false, error: '', pagesLoaded: o.pagesLoaded + 1, endReached: !page.next_cursor }));
     } catch (error) {
+      olderSubscriptions.current.delete(unsubscribe);
+      unsubscribe();
       setOlder((o) => ({ ...o, loading: false, error: botChatErrorText(queryErrorStatus(error), apiErrorText(error, 'Could not load older messages.')) }));
     } finally {
       loadingOlder.current = false;
@@ -186,6 +241,9 @@ function BotChatView({ bot }: { bot: BotView }) {
     : <p data-debug-id="bot-chat-empty" className="py-10 text-center text-sm text-muted">No messages yet. Say hello to {bot.display_name}.</p>;
 
   return <>
+    {receiptBatches.map(ids => (
+      <BotReceiptRefresh key={JSON.stringify(ids)} ids={ids} onMessages={mergeReceiptPage} />
+    ))}
     {older.error ? (
       <div data-debug-id="bot-chat-older-error-row" className="flex min-w-0 shrink-0 items-center justify-center gap-2 px-4 py-2">
         <p role="alert" data-debug-id="bot-chat-older-error" className="min-w-0 text-xs text-muted">{older.error}</p>
@@ -207,6 +265,7 @@ function BotChatView({ bot }: { bot: BotView }) {
         getDeliveryStatus={botDeliveryStatus}
         renderMessageMeta={renderMeta}
         renderMessageBody={renderBody}
+        onSendActionFeedback={sendActionFeedback}
         agentIsWorking={waiting && bot.status === 'working'}
         bottomInset={composerDockHeight}
         pinOnSend={isBotComposerSend}
@@ -214,7 +273,17 @@ function BotChatView({ bot }: { bot: BotView }) {
         emptyState={emptyState}
         wrapperClassName="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden"
         scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
-      />
+      >
+        {runtimeConversation && runtimeInstance ? (
+          <LiveToolActivity
+            key={JSON.stringify([runtimeConversation, runtimeInstance])}
+            conversationId={runtimeConversation}
+            instanceId={runtimeInstance}
+            members={[{ instanceId: runtimeInstance, displayName: bot.display_name }]}
+            onOpenShell={sessionId => navigateTo(shellViewHref(sessionId))}
+          />
+        ) : null}
+      </ChatMessageList>
       {/* The coordinator chat's floating composer dock (AgentChatPane, REQ-FROST-1/2). */}
       <FloatingComposerDock ref={composerDockRef} data-debug-id="bot-chat-composer-dock">
 
@@ -252,6 +321,14 @@ function BotChatView({ bot }: { bot: BotView }) {
       </FloatingComposerDock>
     </div>
   </>;
+}
+
+function BotReceiptRefresh({ ids, onMessages }: { ids: string[]; onMessages: (messages: UnifiedBotMessage[]) => void }) {
+  const { currentData } = botsApi.endpoints.getUnifiedBotMessagesById.useQuery(ids);
+  useEffect(() => {
+    if (currentData) onMessages(currentData.messages);
+  }, [currentData, onMessages]);
+  return null;
 }
 
 function ChannelBadge({ provider }: { provider: UnifiedBotMessage['provider'] }) {

@@ -59,6 +59,9 @@ task_list_by_state_sqlite :: proc(ctx: rawptr, state: domain.Task_State) -> ([]d
 // taskchain_take_boot_regate_sqlite deletes the taskv2_boot_regate marker row
 // (migration 129) and reports whether it was there.
 taskchain_take_boot_regate_sqlite :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "DELETE FROM taskv2_boot_regate WHERE singleton = 1 RETURNING reason;", "boot regate take")
 	if err.code != .None do return false, err
@@ -87,6 +90,9 @@ event_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Event {
 }
 
 task_event_append_sqlite :: proc(ctx: rawptr, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "INSERT INTO task_events (task_id, chain_id, owner_user_id, ts_ms, actor_kind, actor_id, kind, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING event_id;", "task event append")
 	if err.code != .None do return domain.Task_Event{}, false, err
@@ -173,6 +179,9 @@ attempt_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Attempt {
 }
 
 task_attempt_save_sqlite :: proc(ctx: rawptr, attempt: domain.Task_Attempt) -> (domain.Task_Attempt, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "INSERT INTO task_attempts (" + ATTEMPT_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, attempt_no) DO UPDATE SET ended_at=excluded.ended_at, holder_instance_id=excluded.holder_instance_id, outcome=excluded.outcome, counts_toward_budget=excluded.counts_toward_budget;", "task attempt save")
 	if err.code != .None do return domain.Task_Attempt{}, false, err
@@ -213,6 +222,9 @@ facet_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Attempt_Facet {
 }
 
 task_attempt_facet_save_sqlite :: proc(ctx: rawptr, facet: domain.Task_Attempt_Facet) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "INSERT INTO task_attempt_facets (" + FACET_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, attempt_no, kind) DO UPDATE SET v=excluded.v, body_json=excluded.body_json, writer=excluded.writer, written_at=excluded.written_at;", "task facet save")
 	if err.code != .None do return false, err
@@ -265,6 +277,9 @@ lease_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Lease {
 // against a double grant: a violation surfaces as Conflict, never as a silent
 // overwrite of another holder's lease.
 task_lease_save_sqlite :: proc(ctx: rawptr, input: domain.Task_Lease) -> (domain.Task_Lease, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	lease := input
 	if lease.phase == "" do lease.phase = domain.LEASE_PHASE_ACTIVE
 	impl := (^Taskchain_Repo_SQLite)(ctx)
@@ -326,6 +341,9 @@ task_lease_list_all_sqlite :: proc(ctx: rawptr) -> ([]domain.Task_Lease, domain.
 }
 
 task_lease_delete_sqlite :: proc(ctx: rawptr, lease_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "DELETE FROM task_leases WHERE lease_id = ?;", "lease delete")
 	if err.code != .None do return false, err
@@ -356,6 +374,9 @@ review_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Review {
 }
 
 task_review_save_sqlite :: proc(ctx: rawptr, review: domain.Task_Review) -> (domain.Task_Review, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "INSERT INTO task_reviews (" + REVIEW_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id, attempt_no, role, reviewer_agent_id) DO UPDATE SET reviewer_instance_id=excluded.reviewer_instance_id, verdict=excluded.verdict, findings_json=excluded.findings_json, created_at=excluded.created_at;", "task review save")
 	if err.code != .None do return domain.Task_Review{}, false, err
@@ -401,6 +422,9 @@ chain_summary_get_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, ow
 }
 
 chain_summary_save_sqlite :: proc(ctx: rawptr, summary: domain.Chain_Summary) -> (domain.Chain_Summary, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "INSERT INTO chain_summaries (chain_id, owner_user_id, body, line_count, version, updated_at, overflow_active, curated_body, curated_stored) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chain_id) DO UPDATE SET body=excluded.body, line_count=excluded.line_count, version=excluded.version, updated_at=excluded.updated_at, overflow_active=excluded.overflow_active, curated_body=excluded.curated_body, curated_stored=excluded.curated_stored;", "chain summary save")
 	if err.code != .None do return domain.Chain_Summary{}, false, err
@@ -428,6 +452,9 @@ workflow_definition_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Workflow_Def
 }
 
 workflow_definition_save_sqlite :: proc(ctx: rawptr, def: domain.Workflow_Definition) -> (domain.Workflow_Definition, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := prepare(impl, "INSERT INTO workflow_definitions (def_id, owner_user_id, name, version, body_json, created_at) VALUES (?, ?, ?, ?, ?, ?);", "workflow definition save")
 	if err.code != .None do return domain.Workflow_Definition{}, false, err

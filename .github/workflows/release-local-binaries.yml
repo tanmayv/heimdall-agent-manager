@@ -17,7 +17,7 @@ on:
         default: false
         type: boolean
       publish_release:
-        description: 'Create/update the GitHub Release after building artifacts'
+        description: 'Create and publish the GitHub Release after building (refused when the tag is already published)'
         required: true
         default: false
         type: boolean
@@ -26,7 +26,9 @@ on:
         # callers (absent from /releases, not merely excluded from
         # /releases/latest) and its assets are not publicly downloadable, so
         # scripts/install.sh cannot resolve or fetch it. Tick this only to
-        # stage a release you intend to publish by hand afterwards.
+        # stage a release you intend to publish by hand afterwards: the run
+        # leaves a draft whose assets it has verified. Publishing locks it
+        # (docs/release-signing.md, "Immutable releases").
         description: 'Create the GitHub Release as a draft'
         required: true
         default: false
@@ -53,6 +55,16 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # Releases are published on a separate PUBLIC repository (so this one can be
+  # private) and, during the migration window, on this repository too. Both
+  # go through scripts/release/publish-targets.sh; docs/release-signing.md
+  # lists the App credentials and the PUBLISH_SOURCE_RELEASES switch.
+  RELEASES_REPO: tanmayv/heimdall-releases
+  # Repository variable; `false` stops publishing to this repository. Anything
+  # else (including unset) keeps the dual publish.
+  PUBLISH_SOURCE_RELEASES: ${{ vars.PUBLISH_SOURCE_RELEASES == 'false' && 'false' || 'true' }}
 
 concurrency:
   group: release-local-binaries-${{ github.ref }}
@@ -82,18 +94,47 @@ jobs:
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
         run: echo "matrix=$(python3 scripts/release/local-build-matrix.py)" >> "$GITHUB_OUTPUT"
 
+      # Installation token for the releases repository only (contents: write).
+      # Same condition as the release job's `if`.
+      - name: Mint the releases-repository token
+        id: releases_token
+        if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASES_APP_ID }}
+          private-key: ${{ secrets.RELEASES_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: heimdall-releases
+          permission-contents: write
+
       - name: Resolve and commit release version
         id: prepare
         shell: bash
         env:
           REQUESTED_VERSION: ${{ inputs.version || '' }}
+          # Same condition as the release job's `if`.
+          PUBLISHING: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
         run: |
           set -euo pipefail
+          # A publishing run for an already published tag can only fail at the
+          # release job (published releases are immutable): fail now, before
+          # the version commit and the builds. The release job re-checks.
+          # Every target counts (releases repository and, while the switch is
+          # on, this one): a rebuild would not match what is already published.
+          refuse_published() {
+            if [ "$PUBLISHING" = "true" ]; then
+              scripts/release/publish-targets.sh check-unpublished "$1"
+            fi
+          }
 
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             version="$GITHUB_REF_NAME"
             clean_version="${version#v}"
             commit_sha="$GITHUB_SHA"
+            refuse_published "$version"
           else
             # Releases may have created tags after the selected branch was
             # last fetched. Refresh them before calculating the next patch.
@@ -125,6 +166,7 @@ jobs:
             fi
 
             version="v$clean_version"
+            refuse_published "$version"
             scripts/release/bump-version.sh --version-only "$clean_version"
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
@@ -211,24 +253,34 @@ jobs:
           fi
           # matrix.odin_attr_prefix is set in-file (termux-* only), not event data.
           odin="${{ matrix.odin_attr_prefix || 'release-' }}"
+          # T15 (Phase 1): the dormant launcher + supervisor ship in the linux/darwin
+          # bundles; not in termux (its own update path until a Termux engine exists, F8).
+          engine=()
+          if [ "$odin" = "release-" ]; then
+            engine=(.#release-ham-launcher .#release-ham-supervisor)
+          fi
           nix build \
             ".#${odin}ham-bridge" \
             ".#${odin}ham-ctl" \
             .#release-ham-pty-host \
+            "${engine[@]}" \
             --print-out-paths \
             --no-link | tee "$RUNNER_TEMP/nix-paths.txt"
           paths=()
           while IFS= read -r line; do
             [ -n "$line" ] && paths+=("$line")
           done < "$RUNNER_TEMP/nix-paths.txt"
-          if [ "${#paths[@]}" -ne 3 ]; then
-            echo "expected three Nix output paths, got ${#paths[@]}" >&2
+          want=$((3 + ${#engine[@]}))
+          if [ "${#paths[@]}" -ne "$want" ]; then
+            echo "expected $want Nix output paths, got ${#paths[@]}" >&2
             exit 1
           fi
           {
             echo "bridge=${paths[0]}"
             echo "ctl=${paths[1]}"
             echo "pty_host=${paths[2]}"
+            echo "launcher=${paths[3]:-}"
+            echo "supervisor=${paths[4]:-}"
           } >> "$GITHUB_OUTPUT"
 
       # REQ-SIGN-1: one Developer ID identity signs the standalone binaries
@@ -288,12 +340,24 @@ jobs:
             dist \
             "${{ steps.nix-build.outputs.bridge }}" \
             "${{ steps.nix-build.outputs.ctl }}" \
-            "${{ steps.nix-build.outputs.pty_host }}"
+            "${{ steps.nix-build.outputs.pty_host }}" \
+            ${{ steps.nix-build.outputs.launcher && format('"{0}" "{1}"', steps.nix-build.outputs.launcher, steps.nix-build.outputs.supervisor) || '' }}
           tar -tzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" | sort | tee "dist/heimdall-local-${{ matrix.target }}.contents.txt"
           case "$(uname -s)" in
             Darwin) shasum -a 256 "dist/heimdall-local-${{ matrix.target }}.tar.gz" > "dist/SHA256SUMS-${{ matrix.target }}.txt" ;;
             *) sha256sum "dist/heimdall-local-${{ matrix.target }}.tar.gz" > "dist/SHA256SUMS-${{ matrix.target }}.txt" ;;
           esac
+
+      # T8: bare binaries cannot be stapled; notarize them so Gatekeeper finds
+      # the ticket online. The tarball bytes (and SHA256SUMS) do not change.
+      - name: Notarize standalone binaries (macOS)
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: scripts/release/notarize-macos-binaries.sh "dist/heimdall-local-${{ matrix.target }}.tar.gz"
 
       - name: Upload target artifact
         uses: actions/upload-artifact@v4
@@ -353,7 +417,7 @@ jobs:
           # dynamic one, and exits non-zero rather than skipping when it can
           # prove neither -- so this step cannot pass without executing.
           echo "storeless mechanism: $(scripts/release/storeless-exec.sh select)"
-          for b in ham-bridge ham-ctl; do
+          for b in ham-bridge ham-ctl ham-launcher ham-supervisor; do
             echo "--- $b --version (storeless; init() checks the pinned libcurl) ---"
             out="$(scripts/release/storeless-exec.sh run "$work/bin/$b" --version)" || {
               echo "FAIL: $b could not execute without /nix/store" >&2; exit 1; }
@@ -412,15 +476,20 @@ jobs:
       - name: Verify release binaries are portable (macOS)
         if: ${{ startsWith(matrix.target, 'darwin-') }}
         shell: bash
+        env:
+          HEIMDALL_EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HEIMDALL_REQUIRE_NOTARIZED: '1'
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/portable-verify"
           rm -rf "$work"; mkdir -p "$work"
           tar -xzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" -C "$work"
+          # T8: Developer ID chain, hardened runtime, secure timestamp, stable
+          # identifiers, one team and notarization; repeated on a clean runner
+          # in verify-storeless.
+          python3 tests/test_macos_signature_verify.py
+          scripts/release/verify-macos-signatures.sh "$work/bin"
           for f in "$work"/bin/*; do
-            codesign --verify --strict --verbose=2 "$f"
-            codesign -d --verbose=4 "$f" 2>&1 | grep -q 'Authority=Developer ID Application:' || {
-              echo "FAIL: $f is not signed with Developer ID Application" >&2; exit 1; }
             if otool -L "$f" | grep -q '/nix/store'; then
               echo "FAIL: $f links a nix-store dylib" >&2
               exit 1
@@ -655,6 +724,20 @@ jobs:
           rustc --version
           scripts/windows/build.ps1 -OutDir dist/windows-bin -Odin $env:ODIN -Version "${{ needs.prepare.outputs.version }}" -CurlLibDir "$env:RUNNER_TEMP/libcurl-static/lib"
 
+      # T8 / REQ-SIGN-1: Authenticode signing is OFF by default (owner decision
+      # 2026-11-23: no certificate yet). Setting the repository variable
+      # WINDOWS_UPDATE_PUBLISHER_NAME turns it on for these binaries and the
+      # desktop installer together; WIN_CSC_LINK (base64 PFX) and
+      # WIN_CSC_KEY_PASSWORD are then required and missing ones fail closed.
+      # Signing precedes packaging so the zip and SHA256SUMS cover signed bytes.
+      - name: Sign Windows binaries (only when signing is configured)
+        if: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME != '' }}
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: scripts/release/sign-windows-binaries.ps1 -BinDir dist/windows-bin -Publisher "${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME }}"
+
       - name: Verify Windows binaries are self-contained and run
         shell: pwsh
         run: |
@@ -663,6 +746,8 @@ jobs:
           & dist/windows-bin/ham-bridge.exe --help; if ($LASTEXITCODE) { throw 'ham-bridge --help failed' }
           & dist/windows-bin/ham-ctl.exe --version; if ($LASTEXITCODE) { throw 'ham-ctl --version failed' }
           & dist/windows-bin/ham-pty-host.exe --help | Select-Object -First 3; if ($LASTEXITCODE) { throw 'ham-pty-host --help failed' }
+          & dist/windows-bin/ham-launcher.exe --version; if ($LASTEXITCODE) { throw 'ham-launcher --version failed' }
+          & dist/windows-bin/ham-supervisor.exe --version; if ($LASTEXITCODE) { throw 'ham-supervisor --version failed' }
           # Schannel + the Windows certificate store, with revocation best effort.
           $probe = (& dist/windows-bin/ham-bridge.exe --probe-hub https://github.com) -join "`n"
           if ($LASTEXITCODE) { throw "ham-bridge --probe-hub failed:`n$probe" }
@@ -790,16 +875,255 @@ jobs:
           "$work/bin/ham-bridge" --version
           "$work/bin/ham-ctl" --version
           "$work/bin/ham-pty-host" --help >/dev/null
+          # T15: the dormant launcher + supervisor run storeless too.
+          "$work/bin/ham-launcher" --version
+          "$work/bin/ham-supervisor" --version
           "$work/bin/ham-bridge" --probe-hub https://github.com
+
+      # T8: the build runner imported the signing keychain; prove the
+      # signatures and the online notarization ticket verify on a runner that
+      # never saw it, with the system trust store only (report §8.1).
+      - name: Checkout signature verifier (macOS)
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+          path: src
+          sparse-checkout: scripts/release/verify-macos-signatures.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Verify signatures on a clean runner (macOS)
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        env:
+          HEIMDALL_EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HEIMDALL_REQUIRE_NOTARIZED: '1'
+        run: |
+          set -euo pipefail
+          if security find-identity -v -p codesigning | grep -q 'Developer ID Application:'; then
+            echo "FAIL: this runner holds a signing identity; it is not clean" >&2
+            exit 1
+          fi
+          src/scripts/release/verify-macos-signatures.sh "dist/heimdall-local-${{ matrix.target }}.tar.gz"
+
+  # T8: check the Windows bundle's Authenticode state on a clean runner. With
+  # signing off (no WINDOWS_UPDATE_PUBLISHER_NAME) unsigned binaries pass with a
+  # SKIP line; with it on, every .exe must be Valid, timestamped and from that
+  # publisher.
+  verify-windows-signatures:
+    name: Verify Windows signatures on a clean runner
+    needs: [prepare, build-windows]
+    runs-on: windows-2022
+    steps:
+      - name: Checkout signature verifier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+          sparse-checkout: |
+            scripts/release/verify-windows-signatures.ps1
+            tests/windows/verify_windows_signatures_test.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download Windows bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: heimdall-local-windows-amd64-${{ needs.prepare.outputs.version }}
+          path: dist
+
+      - name: Test the verifier
+        if: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME == '' }}
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows/verify_windows_signatures_test.ps1 -Bundle dist/heimdall-local-windows-amd64.zip
+          if ($LASTEXITCODE) { throw 'verify-windows-signatures tests failed' }
+
+      - name: Verify the release bundle
+        shell: pwsh
+        env:
+          PUBLISHER: ${{ vars.WINDOWS_UPDATE_PUBLISHER_NAME }}
+        run: |
+          $a = @('-Path', 'dist/heimdall-local-windows-amd64.zip')
+          if ($env:PUBLISHER) { $a += @('-Required', '-Publisher', $env:PUBLISHER) }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify-windows-signatures.ps1 @a
+          if ($LASTEXITCODE) { throw 'Windows signature verification failed' }
+
+  # Signed release manifest (docs/release-signing.md). Runs on every release
+  # run, including unpublished dry runs, so a dry run proves the key and the
+  # pinned public keys before anything is published. This is the ONLY job that
+  # can read the signing key: the secret lives in the protected `release`
+  # environment (never a repository secret), whose deployment rules admit only
+  # main and v* tags, so pull-request builds cannot obtain it. Keep this job
+  # small: no write token, no third-party actions beyond checkout/artifacts.
+  manifest:
+    name: Sign release manifest
+    needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Download bridge bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          pattern: heimdall-local-*
+          merge-multiple: true
+
+      - name: Install minisign
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          minisign -v
+
+      - name: Generate and sign the manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
+          BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
+          # Two key slots, because secrets are write-only: rotation flips this
+          # environment variable instead of copying key material between them.
+          SIGNING_SLOT: ${{ vars.RELEASE_MINISIGN_SIGNING_SLOT || 'current' }}
+          CURRENT_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_SECRET_KEY }}
+          CURRENT_PASSWORD: ${{ secrets.RELEASE_MINISIGN_PASSWORD }}
+          NEXT_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_NEXT_SECRET_KEY }}
+          NEXT_PASSWORD: ${{ secrets.RELEASE_MINISIGN_NEXT_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SIGNING_SLOT" in
+            current) MINISIGN_SECRET_KEY="$CURRENT_SECRET_KEY"; MINISIGN_PASSWORD="$CURRENT_PASSWORD"; secret=RELEASE_MINISIGN_SECRET_KEY ;;
+            next) MINISIGN_SECRET_KEY="$NEXT_SECRET_KEY"; MINISIGN_PASSWORD="$NEXT_PASSWORD"; secret=RELEASE_MINISIGN_NEXT_SECRET_KEY ;;
+            *) echo "::error::RELEASE_MINISIGN_SIGNING_SLOT must be 'current' or 'next', not '$SIGNING_SLOT'"; exit 1 ;;
+          esac
+          unset CURRENT_SECRET_KEY CURRENT_PASSWORD NEXT_SECRET_KEY NEXT_PASSWORD
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::$secret is not set in the 'release' environment; see docs/release-signing.md"
+            exit 1
+          fi
+          echo "signing with the '$SIGNING_SLOT' key slot ($secret)"
+          manifest_tool=(python3 -I scripts/release/release-manifest.py)
+          staged=staged; out=manifest
+          mkdir -p "$staged" "$out"
+          # Same bundle set the release job requires; the manifest names the
+          # versioned asset files exactly as they are published.
+          targets=(darwin-arm64 linux-amd64 linux-arm64)
+          if [ "$BUILD_DARWIN_X64" = "true" ]; then targets+=(darwin-amd64); fi
+          asset_args=()
+          for target in "${targets[@]}"; do
+            src="bundles/heimdall-local-$target.tar.gz"
+            [ -f "$src" ] || { echo "missing bundle: $src" >&2; exit 1; }
+            cp "$src" "$staged/heimdall-local-$target-$VERSION.tar.gz"
+            asset_args+=(--asset "$target=$staged/heimdall-local-$target-$VERSION.tar.gz")
+          done
+          src=bundles/heimdall-local-windows-amd64.zip
+          [ -f "$src" ] || { echo "missing bundle: $src" >&2; exit 1; }
+          cp "$src" "$staged/heimdall-local-windows-amd64-$VERSION.zip"
+          asset_args+=(--asset "windows-amd64=$staged/heimdall-local-windows-amd64-$VERSION.zip")
+
+          # The key exists on disk only for this step, readable only by us.
+          key="$RUNNER_TEMP/release-minisign.key"
+          trap 'rm -f "$key"' EXIT
+          (umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
+          # A password-protected key reads its password from stdin; an
+          # unencrypted (-W) key ignores it.
+          sign() { printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" "$@" > /dev/null; }
+
+          # The key id goes INTO the signed manifest, and a minisign secret key
+          # stores it encrypted, so learn it from a throwaway signature.
+          printf 'key id probe\n' > "$RUNNER_TEMP/probe"
+          sign -m "$RUNNER_TEMP/probe" -t probe
+          key_id="$("${manifest_tool[@]}" key-id "$RUNNER_TEMP/probe.minisig")"
+          pinned=()
+          for pub in scripts/release/minisign/*.pub; do
+            [ -f "$pub" ] && pinned+=("$("${manifest_tool[@]}" key-id "$pub")")
+          done
+          if [[ " ${pinned[*]:-} " != *" $key_id "* ]]; then
+            echo "::error::signing key $key_id is not one of the pinned keys (${pinned[*]:-none}) in scripts/release/minisign/"
+            exit 1
+          fi
+
+          manifest="$out/heimdall-release-manifest.json"
+          "${manifest_tool[@]}" generate --tag "$VERSION" --commit "$RELEASE_COMMIT" \
+            --key-id "$key_id" "${asset_args[@]}" --out "$manifest"
+          sign -m "$manifest" -x "$manifest.minisig" \
+            -t "$("${manifest_tool[@]}" trusted-comment --manifest "$manifest")"
+          rm -f "$key"
+
+          "${manifest_tool[@]}" verify --manifest "$manifest" --signature "$manifest.minisig" --dist "$staged"
+
+          # Self-test: a single flipped bit in a published bundle must fail.
+          tampered="$RUNNER_TEMP/tampered"
+          mkdir -p "$tampered"
+          cp "$staged"/* "$tampered/"
+          victim="$tampered/heimdall-local-linux-amd64-$VERSION.tar.gz"
+          python3 -I -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[len(b)//2]^=1; open(p,"wb").write(b)' "$victim"
+          # Exit 1 alone is not enough: require the digest check as the reason,
+          # so a crash or an unrelated rejection cannot pass this test.
+          rc=0
+          "${manifest_tool[@]}" verify --manifest "$manifest" --signature "$manifest.minisig" --dist "$tampered" \
+            2> "$RUNNER_TEMP/tampered.err" || rc=$?
+          cat "$RUNNER_TEMP/tampered.err" >&2
+          if [ "$rc" -ne 1 ] || ! grep -q 'linux-amd64: sha256 mismatch' "$RUNNER_TEMP/tampered.err"; then
+            echo "::error::tampered bundle was not rejected for its digest (exit $rc)"; exit 1
+          fi
+          echo "tampered bundle rejected as expected"
+          {
+            echo "### Release manifest $VERSION (key $key_id)"
+            echo '```json'
+            python3 -m json.tool "$manifest"
+            echo '```'
+            echo '```'
+            cat "$manifest.minisig"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload signed manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ needs.prepare.outputs.version }}
+          path: |
+            manifest/heimdall-release-manifest.json
+            manifest/heimdall-release-manifest.json.minisig
+          if-no-files-found: error
+          retention-days: 30
 
   release:
     name: Publish GitHub Release
-    needs: [prepare, build, build-windows, verify-storeless]
+    needs: [prepare, build, build-windows, verify-storeless, verify-windows-signatures, manifest]
     runs-on: ubuntu-24.04
     if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+    # The workflow's concurrency group is per ref, but a tag push (refs/tags/vX)
+    # and a dispatch for vX (refs/heads/...) publish the same release: never
+    # let two release jobs for one version run at once.
+    concurrency:
+      group: release-publish-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: false
     permissions:
       contents: write
+      # actions/attest: OIDC identity + attestation store.
+      id-token: write
+      attestations: write
     steps:
+      - name: Mint the releases-repository token
+        id: releases_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASES_APP_ID }}
+          private-key: ${{ secrets.RELEASES_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: heimdall-releases
+          permission-contents: write
+
       - name: Checkout release metadata
         uses: actions/checkout@v4
         with:
@@ -848,7 +1172,7 @@ jobs:
             # List once; piping tar into `grep -q` races under pipefail
             # (grep exits on first match -> tar hits EPIPE -> false failure).
             tar -tzf "$tarball" > "$RUNNER_TEMP/$tarball.entries"
-            for entry in bin/ham-bridge bin/ham-ctl bin/ham-pty-host README.md LICENSE; do
+            for entry in bin/ham-bridge bin/ham-ctl bin/ham-pty-host bin/ham-launcher bin/ham-supervisor README.md LICENSE; do
               require_entry "$tarball" "$entry"
             done
             target="${tarball#heimdall-local-}"
@@ -861,7 +1185,7 @@ jobs:
           zip=heimdall-local-windows-amd64.zip
           require_file "$zip"
           unzip -Z1 "$zip" > "$RUNNER_TEMP/$zip.entries"
-          for entry in bin/ham-bridge.exe bin/ham-ctl.exe bin/ham-pty-host.exe README.md LICENSE METADATA.json; do
+          for entry in bin/ham-bridge.exe bin/ham-ctl.exe bin/ham-pty-host.exe bin/ham-launcher.exe bin/ham-supervisor.exe README.md LICENSE METADATA.json; do
             require_entry "$zip" "$entry"
           done
           # install.ps1 refuses absolute, drive-qualified, ".." and backslash names.
@@ -907,9 +1231,100 @@ jobs:
           python3 "$GITHUB_WORKSPACE/scripts/release/validate-desktop-updates.py" . --version "$clean" --platform windows --arch x64
           sha256sum Ninjy-*.dmg Ninjy-*.zip Ninjy-*.pkg Ninjy-*.AppImage Ninjy-*.deb Ninjy-*.exe >> SHA256SUMS
 
-      - name: Create or update GitHub Release
+      # Re-check the signed manifest against the exact files about to be
+      # uploaded (the manifest job signed copies of the same artifacts).
+      - name: Verify the signed release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          python3 -I scripts/release/release-manifest.py verify \
+            --manifest dist/heimdall-release-manifest.json \
+            --signature dist/heimdall-release-manifest.json.minisig \
+            --dist dist
+
+      # One list of release files feeds both the attestation and the upload.
+      - name: List release assets
+        id: assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The thin bootstraps ship as assets too; they are self-contained and
+          # resolve the newest promoted release, so any copy works.
+          cp scripts/install.sh scripts/install.ps1 dist/
+          shopt -s nullglob
+          list="$RUNNER_TEMP/release-assets.txt"
+          : > "$list"
+          for pattern in "dist/heimdall-local-*-$VERSION.tar.gz" "dist/heimdall-local-*-$VERSION.zip" \
+            'dist/Ninjy-*.dmg' 'dist/Ninjy-*.zip' 'dist/Ninjy-*.zip.blockmap' 'dist/Ninjy-*.pkg' \
+            'dist/Ninjy-*.AppImage' 'dist/Ninjy-*.deb' 'dist/Ninjy-*.exe' 'dist/Ninjy-*.exe.blockmap' \
+            dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml \
+            dist/SHA256SUMS dist/heimdall-release-manifest.json dist/heimdall-release-manifest.json.minisig \
+            dist/install.sh dist/install.ps1; do
+            # shellcheck disable=SC2206 # the pattern is meant to glob
+            matches=($pattern)
+            [ "${#matches[@]}" -gt 0 ] || { echo "no release file matches $pattern" >&2; exit 1; }
+            printf '%s\n' "${matches[@]}" >> "$list"
+          done
+          cat "$list"
+          {
+            echo 'paths<<EOF_RELEASE_ASSETS'
+            cat "$list"
+            echo 'EOF_RELEASE_ASSETS'
+          } >> "$GITHUB_OUTPUT"
+
+      # Published releases are immutable (report §6.5 item 3): a re-run on a
+      # published tag stops here, before attesting or writing anything, unless
+      # the published release already holds exactly these files. That is the
+      # "re-run failed jobs" case after one repository published and the other
+      # did not: the artifacts are the same, so the run may finish the rest.
+      - name: Refuse to modify a published release
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < "$RUNNER_TEMP/release-assets.txt"
+          scripts/release/publish-targets.sh check-unpublished "$VERSION" --allow-identical -- "${assets[@]}"
+
+      # SLSA build provenance for every published file, signed by this
+      # workflow's OIDC identity (gh attestation verify --signer-workflow).
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.assets.outputs.paths }}
+          create-storage-record: false
+
+      - name: Check the attestations
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          signer="$GITHUB_REPOSITORY/.github/workflows/release-local-binaries.yml"
+          for f in dist/heimdall-release-manifest.json "dist/heimdall-local-linux-amd64-$VERSION.tar.gz"; do
+            for attempt in 1 2 3; do
+              if gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" \
+                --source-ref "$GITHUB_REF" > /dev/null; then
+                echo "attestation verified: $f"; break
+              fi
+              [ "$attempt" -lt 3 ] || { echo "::error::no valid attestation for $f"; exit 1; }
+              sleep 10
+            done
+          done
+
+      - name: Create, verify and publish the GitHub Releases
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASES_TOKEN: ${{ steps.releases_token.outputs.token }}
           RELEASE_COMMIT: ${{ needs.prepare.outputs.commit_sha }}
           VERSION: ${{ needs.prepare.outputs.version }}
           BUILD_DARWIN_X64: ${{ github.event_name == 'workflow_dispatch' && inputs.build_darwin_x64 == true }}
@@ -942,6 +1357,7 @@ jobs:
           - Ninjy-${{ needs.prepare.outputs.clean_version }}-x86_64.AppImage / -arm64.AppImage, -amd64.deb / -arm64.deb (Linux app; App, Bridge, or both on first launch)
           - Ninjy-*.zip, latest.yml, latest-mac.yml, latest-linux*.yml and the Windows block map (desktop auto-update metadata)
           - SHA256SUMS
+          - heimdall-release-manifest.json + .minisig (minisign-signed manifest of the bridge bundles; docs/release-signing.md)
           - install.sh, install.ps1 (bootstraps: download + verify + ham-bridge setup)
           NOTES
           if [ "$BUILD_DARWIN_X64" = "true" ]; then
@@ -956,87 +1372,11 @@ jobs:
           if [ "${{ github.event_name == 'push' || inputs.prerelease }}" = "true" ]; then
             release_flags+=(--prerelease)
           fi
-          # The thin bootstraps ship as assets too; they are self-contained and
-          # resolve the newest promoted release, so any copy works.
-          cp scripts/install.sh scripts/install.ps1 dist/
-          # Every gh call goes through retry_transient: the release API has failed
-          # this job with a transient "HTTP 403: Resource not accessible by
-          # integration" despite contents: write (run 41329637092).
-          # shellcheck source=scripts/release/gh-retry.sh
-          source "$GITHUB_WORKSPACE/scripts/release/gh-retry.sh"
-          list_release_assets() {
-            gh release view "$VERSION" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/existing-release-assets.txt"
-          }
-          upload_release_assets() {
-            gh release upload "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1 --clobber
-          }
-          # Idempotent create: a retry first re-checks for the release, since a
-          # failed attempt may still have created it (gh creates a draft, then
-          # uploads, then publishes). Found -> fall through to upload + edit.
-          create_attempted=false
-          recovered_partial_create=false
-          create_release_if_missing() {
-            local rc=0
-            if [ "$create_attempted" = true ]; then
-              gh_release_exists "$VERSION" || rc=$?
-              case "$rc" in
-                0) echo "Release $VERSION exists after a failed create attempt; switching to upload + edit."
-                   recovered_partial_create=true
-                   return 0 ;;
-                1) ;;
-                *) return "$rc" ;;
-              esac
-            fi
-            create_attempted=true
-            gh release create "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/heimdall-local-*-"$VERSION".zip dist/Ninjy-*.dmg dist/Ninjy-*.zip dist/Ninjy-*.zip.blockmap dist/Ninjy-*.pkg dist/Ninjy-*.AppImage dist/Ninjy-*.deb dist/Ninjy-*.exe dist/Ninjy-*.exe.blockmap dist/latest.yml dist/latest-mac.yml dist/latest-linux.yml dist/latest-linux-arm64.yml dist/SHA256SUMS dist/install.sh dist/install.ps1 \
-              --title "$VERSION" \
-              --target "$RELEASE_COMMIT" \
-              --notes-file "$notes_file" \
-              "${release_flags[@]}"
-          }
-          exists_rc=0
-          retry_transient "Look up release $VERSION" gh_release_exists "$VERSION" || exists_rc=$?
-          case "$exists_rc" in
-            0) release_exists=true ;;
-            1) release_exists=false ;;
-            *) echo "Could not determine whether release $VERSION exists." >&2; exit 1 ;;
-          esac
-          if [ "$release_exists" = false ]; then
-            retry_transient "Create release $VERSION" create_release_if_missing || {
-              echo "Creating release $VERSION failed; see the attempts above." >&2; exit 1; }
-          fi
-          if [ "$release_exists" = true ] || [ "$recovered_partial_create" = true ]; then
-            if [ "$BUILD_DARWIN_X64" != "true" ]; then
-              # --clobber replaces matching names but leaves assets omitted by
-              # this run. Remove only this version's optional Intel macOS set;
-              # otherwise its old assets would outlive their checksum entries.
-              retry_transient "List assets of release $VERSION" list_release_assets
-              for asset in \
-                "heimdall-local-darwin-amd64-$VERSION.tar.gz" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.dmg.blockmap" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.zip.blockmap" \
-                "Ninjy-${{ needs.prepare.outputs.clean_version }}-x64.pkg"; do
-                if grep -Fxq "$asset" "$RUNNER_TEMP/existing-release-assets.txt"; then
-                  retry_transient "Delete stale asset $asset" gh_release_delete_asset_if_present "$VERSION" "$asset"
-                fi
-              done
-            fi
-            retry_transient "Upload assets to release $VERSION" upload_release_assets
-            edit_flags=(--notes-file "$notes_file")
-            if [ "$recovered_partial_create" = true ]; then
-              # Restore what the interrupted create would have set: gh leaves an
-              # interrupted create as a draft.
-              is_draft=false; is_prerelease=false
-              for flag in "${release_flags[@]}"; do
-                case "$flag" in
-                  --draft) is_draft=true ;;
-                  --prerelease) is_prerelease=true ;;
-                esac
-              done
-              edit_flags+=(--title "$VERSION" --target "$RELEASE_COMMIT" \
-                --draft="$is_draft" --prerelease="$is_prerelease")
-            fi
-            retry_transient "Update notes of release $VERSION" gh release edit "$VERSION" "${edit_flags[@]}"
-          fi
+          mapfile -t assets < "$RUNNER_TEMP/release-assets.txt"
+          # Per repository (releases repo first, then this one unless
+          # PUBLISH_SOURCE_RELEASES=false): draft -> upload -> verify digests
+          # -> publish. Refuses (exit 3, no write) when the tag is already
+          # published with different files; a published release with exactly
+          # these files is left alone; never uses --clobber.
+          scripts/release/publish-targets.sh publish --tag "$VERSION" --commit "$RELEASE_COMMIT" \
+            --notes-file "$notes_file" "${release_flags[@]}" -- "${assets[@]}"

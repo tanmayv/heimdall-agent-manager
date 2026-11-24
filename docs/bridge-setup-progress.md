@@ -71,8 +71,37 @@ place.
 
 ```bash
 ham-bridge setup --hub https://hub.example.com [--profile work] \
-  [--new-bridge | --reuse-bridge brg_...] [--reenroll] [--separate-account | --replace-other-account] [--headless] [--no-tray] [--json-progress]
+  [--new-bridge | --reuse-bridge brg_...] [--reenroll] [--separate-account | --replace-other-account] \
+  [--version V [--allow-downgrade]] [--keep-version] [--reinstall] [--headless] [--no-tray] [--json-progress]
 ```
+
+Setup is **idempotent** (state table: [specs/bridge-installer-contract.md](specs/bridge-installer-contract.md) §3).
+Right after `lock` it classifies the instance (`bridgesvc.classify_install`) and emits one
+`{"step":"detect","state":"ok","message":"<rows>"}` event, e.g. `S2 installed, enrolled and
+running` or `S4 enrollment invalid + S6 service missing or stopped`. Only what those rows
+need is done; every other step is reported `skipped`:
+
+- **Healthy** (S2): every step from `stage` to `start` is `skipped`, nothing is stopped or
+  written (not even the tray entry), and `verify` only waits, read-only, up to 45 s;
+  still not connected is a `warning`, not a failure (exit 0).
+- **Credential missing or refused** (S3/S4): binaries and data are kept; `enroll` runs with
+  `--reuse-bridge <id>` (the credential's, or the `credential_missing` marker's) whenever a
+  `needs-reenrollment.json` applies, without `--reenroll`, and the marker is removed after
+  success.
+- **Service missing or stopped** (S6): the service is re-registered/started, never re-enrolled.
+  `service` writes and registers the definition only when the rendered text differs or the
+  service is not registered (`unchanged` otherwise).
+- **Interrupted install** (S7): a dead owner's lock is broken, a leftover staging dir is
+  discarded, a missing `bin/` is installed from the bundle (never from `bin.bak*`).
+- **Binaries**: by default the bundle replaces installed binaries that differ from it (this is
+  how `ham-bridge update`, auto-update and hub updates install). `--keep-version` (passed by
+  `install.sh` / `install.ps1`) keeps them (S8a). `--version V` must name this bundle's
+  version and installs it; a downgrade needs `--allow-downgrade` (S8c, exit 5). `--reinstall`
+  (passed by `ham-bridge update`) runs the whole transaction even for an identical bundle.
+- **Not approved** (S1a): when enrollment is denied or expires, `enroll` is a `warning`, the
+  remaining steps are `skipped`, nothing is rolled back and the service is not started (exit 4).
+- Without a terminal (or with `--headless` / `--json-progress`) setup never prompts and
+  always passes `--headless` to `enroll`.
 
 `--separate-account` installs a second Ninjy account next to the one that owns the
 requested profile instead of replacing it (see
@@ -88,8 +117,8 @@ executable). Steps, in order:
 | `binaries` | stops the profile's PTY daemon if it hosts no agents (one `progress` event says whether it was stopped or kept for its agents), then `bin/` -> `bin.bak/`, staging -> `bin/` | `bin.bak/` restored |
 | `config` | writes `config.toml` only when missing, `hub-url`, `profile`; refuses a state dir of another hub | previous files restored |
 | `ports` | allocate / keep the profile's ports | previous `ports.json` restored |
-| `service` | renders the service file **on every run** and registers it (daemon-reload + enable / `schtasks /Create /F`) | previous file restored, re-registered |
-| `enroll` | runs `bin/ham-bridge enroll` unless already enrolled (`skipped`), passing `--replace-other-account` through; `--new-bridge`, `--reenroll` (re-pairs the credential's own bridge, e.g. after it was revoked; used by the desktop app's Re-enroll), or `--reuse-bridge` naming another bridge than the current credential's, forces it | kept (credential stays valid; a re-run reuses it) |
+| `service` | renders the service file and, when it differs or the service is not registered (always with `--reinstall` or a remediation), writes and registers it (daemon-reload + enable / `schtasks /Create /F`) | previous file restored, re-registered |
+| `enroll` | runs `bin/ham-bridge enroll` unless already enrolled with no applicable re-enroll marker (`skipped`), passing `--replace-other-account` through; `--new-bridge`, `--reenroll` (re-pairs the credential's own bridge, e.g. after it was revoked; used by the desktop app's Re-enroll), or `--reuse-bridge` naming another bridge than the current credential's, forces it | kept (credential stays valid; a re-run reuses it) |
 | `extensions` | copies the bundle's `share/heimdall/extensions` to `<data dir>/extensions` (previous copy kept as `extensions.bak`), then for every detected provider (claude, codex, antigravity) installs or repairs the Heimdall extension: a registration from another source, outdated, disabled/errored or half-installed (marketplace without plugin) is removed (`plugin uninstall`/`remove` + `marketplace remove`) and added again from the bundle, then verified; one `progress` event per provider. A provider still failing after self-heal is reported in the step message and does not roll back the install. `ham-bridge extensions sync [--data-dir D] [--source S] [--json-progress]` runs the same work after an update | bundle copy restored from `extensions.bak`; provider registrations are left as repaired |
 | `start` | restart if running, else start; on macOS a restart is `bootout` + `bootstrap` so launchd re-reads the re-rendered plist | service stopped |
 | `verify` | waits up to 45 s for `running && connected` (from the token-free status), counting only a `runtime-status.json` written after the (re)start by a process other than the replaced bridge | service stopped |
@@ -114,7 +143,11 @@ The plan per step and failure is `bridgesvc.remediation_plan`.
 
 Any other failure (`fatal`), or a known one that persists, rolls back every completed
 step in reverse order (the failed step first), and the previous install is started
-again if it was running. Exit status: `0` success, `1` failure.
+again if it was running. Exit status (contract §4): `0` done (incl. nothing to do), `1`
+failed and restored, `2` usage, `4` installed but not enrolled, `5` refused (profile of
+another hub, downgrade without `--allow-downgrade`, no free account profile), `6` busy
+(lock held by a live setup/update), `7` rollback incomplete. The last stdout line is the
+row's final line (also the `done` event's `message`), or `[ERROR] …` for 5/6.
 
 ### `--json-progress` protocol
 
@@ -126,13 +159,13 @@ must skip lines that do not parse as JSON objects.
 {"step":"ports","state":"start","pct":44,"message":"","log":"","attempt":1}
 {"step":"ports","state":"ok","pct":55,"message":"bridge 49325, endpoint 49326","log":"","attempt":1}
 {"step":"verify","state":"retry","pct":88,"message":"service is not running and port 49325 is held by another process; remediation: stopped the service, moved to ports 49327/49328, re-rendered and re-registered the service, started it again","log":"/home/u/.local/share/heimdall/bridges/heimdall-bridge-hub-example-com/logs/bridge.err.log","attempt":1,"failure":"port_in_use"}
-{"step":"setup","state":"done","pct":100,"message":"bridge installed, enrolled and running","log":"","attempt":0}
+{"step":"setup","state":"done","pct":100,"message":"Installed heimdall-bridge-hub-example-com v0.5.75, enrolled as brg_..., connected to https://hub.example.com.","log":"","attempt":0}
 ```
 
 | field | meaning |
 |---|---|
-| `step` | `lock`, `stage`, `binaries`, `config`, `ports`, `service`, `enroll`, `extensions`, `start`, `verify`, or `setup` for the final event |
-| `state` | `start`, `progress` (an informational line within a step, e.g. one provider's extension result), `ok`, `skipped`, `retry` (a remediation was attempted), `failed`, `rollback` (one step undone), `done` |
+| `step` | `lock`, `detect` (one `ok` event after `lock`), `stage`, `binaries`, `config`, `ports`, `service`, `enroll`, `extensions`, `start`, `verify`, or `setup` for the final event |
+| `state` | `start`, `progress` (an informational line within a step, e.g. one provider's extension result), `ok`, `skipped`, `warning` (S1a enrollment not completed; S2 not connected), `retry` (a remediation was attempted), `failed`, `rollback` (one step undone), `done` |
 | `pct` | overall progress 0-100 |
 | `message` | human-readable detail |
 | `log` | path of a log with details, or `""` |

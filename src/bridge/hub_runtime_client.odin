@@ -1,5 +1,7 @@
 package main
 
+import virtual "core:mem/virtual"
+
 import "base:runtime"
 import "core:crypto"
 import "core:crypto/hash"
@@ -226,6 +228,9 @@ Bridge_Tunnel_Data_Outgoing :: struct {
 bridge_tunnel_streams:      map[string]^Bridge_Tunnel_Stream
 bridge_tunnel_mu:           sync.Mutex
 bridge_tunnel_data_outgoing: [dynamic]Bridge_Tunnel_Data_Outgoing
+// Total len(json) of the frames queued in bridge_tunnel_data_outgoing; guarded by
+// bridge_runtime_mutex with the queue. Producers wait on it (REQ-VOICE-6).
+bridge_tunnel_data_outgoing_bytes: int
 // Queue of instance ids whose status changed on a BACKGROUND thread (e.g. the
 // pty-host events worker applying a ChildExited) and must be pushed to the hub
 // immediately, without waiting for the next 45s bridge_heartbeat. The hub runtime
@@ -250,7 +255,8 @@ bridge_hub_runtime_init :: proc() {
 	bridge_shell_exited_outgoing = make([dynamic]Bridge_Shell_Exited_Outgoing)
 	bridge_runtime_status_outgoing = make([dynamic]string)
 	bridge_tunnel_streams = make(map[string]^Bridge_Tunnel_Stream, runtime.heap_allocator())
-	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing)
+	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing, runtime.heap_allocator())
+	bridge_tunnel_data_outgoing_bytes = 0
 	bridge_proxy_init()
 	bridge_lsp_init()
 }
@@ -352,6 +358,8 @@ bridge_hub_runtime_worker :: proc() {
 		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
 		return
 	}
+	retry_worker := bridge_wake_retry_start()
+    defer bridge_wake_retry_stop(retry_worker)
 	notice_worker := bridge_task_notice_start()
 	defer bridge_task_notice_stop(notice_worker)
 	// Only log each distinct failure the FIRST time (and periodically) so a down
@@ -498,12 +506,10 @@ bridge_hub_runtime_worker :: proc() {
 			// REQ-REAP-SHELL-1: reconcile surviving shell sessions on pty-host
 			// against Hub's active shells list on reconnect to reap orphaned processes.
 			thread.run(bridge_shell_orphan_reconcile_now)
-			bridge_action_scheduler_connection_changed()
             sync.atomic_store(&bridge_hub_runtime_up, true)
 			acp_chat_hub_reconnected()
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(true)
 			bridge_hub_runtime_loop(&conn)
-			bridge_action_scheduler_connection_changed()
             sync.atomic_store(&bridge_hub_runtime_up, false)
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(false)
 			// NOT beside the PTY stream teardown, and not inside
@@ -598,14 +604,13 @@ bridge_hub_error_log_message :: proc(text: string) -> string {
 }
 
 // BRIDGE_HUB_HEARTBEAT_INTERVAL is the idle cadence of the bridge->hub
-// bridge_heartbeat digest. It is only a reconciliation/keepalive/schedules-version
+// bridge_heartbeat digest. It is only a reconciliation/keepalive
 // backstop: live instance status changes are pushed IMMEDIATELY as separate
 // agent_instance_status frames (see bridge_runtime_set_status callers), so the
 // hub and UI stay live regardless of this cadence. Kept comfortably below the
 // hub's 120s bridge-WS read deadline so a single delayed heartbeat never trips a
 // spurious disconnect, and below the 90s stale-reap window so reconciliation stays
-// timely. schedules_version rides the heartbeat ack, so this also bounds
-// scheduled-prompt pickup latency (~45s), which is fine for cron/interval work.
+// timely.
 //
 // That is the default; the hub's bridge_ready heartbeat_interval_seconds overrides
 // it (REQ-ERR-PROTO-B), clamped so a bad value can neither flood the hub nor let the
@@ -641,6 +646,7 @@ bridge_hub_apply_ready_settings :: proc(text: string) {
 	sync.atomic_store(&bridge_hub_diagnostics_frame_v1, extract_json_bool(text, "diagnostics_frame_v1", false))
 	// Absent on hubs that predate bridge_features_update (acp_runtime_probe.odin).
 	sync.atomic_store(&bridge_hub_features_update_supported, extract_json_bool(text, contracts.BRIDGE_READY_FEATURES_UPDATE, false))
+	sync.atomic_store(&bridge_hub_start_begin_supported, extract_json_bool(text, contracts.BRIDGE_READY_START_BEGIN, false))
 }
 
 // Per-connection heartbeat negotiation (minimal heartbeat plan §4.4, T4). Both start
@@ -652,6 +658,7 @@ bridge_hub_apply_ready_settings :: proc(text: string) {
 // metadata authority (it also requires our hello to list
 // contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION), so heartbeats may drop
 // capabilities/features.
+bridge_hub_start_begin_supported: bool
 bridge_hub_heartbeat_metadata_omission: bool
 // diagnostics_frame_v1: the hub accepts the separate bridge_diagnostics frame. Our
 // heartbeat drops its diagnostic members only once that frame is actually sent
@@ -669,6 +676,7 @@ bridge_hub_reset_heartbeat_negotiation :: proc() {
 	sync.atomic_store(&bridge_hub_heartbeat_metadata_omission, false)
 	sync.atomic_store(&bridge_hub_diagnostics_frame_v1, false)
 	sync.atomic_store(&bridge_hub_features_update_supported, false)
+	sync.atomic_store(&bridge_hub_start_begin_supported, false)
 }
 
 // Bridge_Heartbeat_Shape selects which optional member groups a heartbeat carries.
@@ -735,7 +743,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	reassemblies := make([dynamic]Hub_Command_Reassembly)
 	defer hub_command_reassemblies_free(&reassemblies)
 	// Send one heartbeat immediately on connect so the hub gets the initial
-	// instance digest + schedules_version handshake without waiting a full cycle.
+	// instance digest without waiting a full cycle.
 	last_heartbeat := bridge_hub_send_connect_heartbeat(conn)
 	// Plan T6: the connect-time diagnostics snapshot, collected off this thread and
 	// sent by bridge_diagnostics_tick once ready, then its own interval timer.
@@ -805,7 +813,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		// left records behind; that counts as "busy" for the sleep below, so a pane
 		// streaming faster than one budget per 25 ms is not throttled by the idle cadence.
 		pty_more := bridge_pty_stream_drain_outgoing(conn)
-		bridge_tunnel_data_drain_outgoing(conn)
+		// REQ-VOICE-6: byte-budgeted like the pty drain, and busy for the same reason.
+		tunnel_more := bridge_tunnel_data_drain_outgoing(conn)
 		bridge_lsp_drain_outgoing(conn)
 		// bridge_log relay: at most one frame per iteration, only after
 		// bridge_ready (this loop), gated by the telemetry switch inside.
@@ -816,6 +825,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		// Token snapshots held back by the 10 s interval go out once it passes.
 		_ = bridge_ext_token_enqueue_due(bridge_runtime_now_ms())
 		acp_chat_recovery_tick(bridge_runtime_now_ms())
+        bridge_wake_retry_tick(bridge_runtime_now_ms())
 		bridge_runtime_drain_status_pushes(conn)
 		bridge_blockers_drain_outgoing(conn)
 		bridge_credential_reauth_drain(conn)
@@ -836,7 +846,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		bridge_acp_runtime_probe_tick(now)
 		// Yield after a bounded burst. Idle connections retain the low-wake cadence;
 		// busy connections do not artificially process only 40 frames per second.
-		time.sleep(1 * time.Millisecond if inbound_count > 0 || pty_more else 25 * time.Millisecond)
+		time.sleep(1 * time.Millisecond if inbound_count > 0 || pty_more || tunnel_more else 25 * time.Millisecond)
 	}
 }
 
@@ -1030,11 +1040,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				bridge_runtime_remove_launch(id)
 			}
 		}
-		schedules_version := extract_json_int(text, "schedules_version", 0)
-		bridge_action_scheduler_notify_version(schedules_version)
-        schedules_epoch := extract_json_string(text, "schedules_epoch", "")
-        defer delete(schedules_epoch)
-        bridge_action_scheduler_notify_snapshot(schedules_epoch, i64(extract_json_int(text, "schedules_revision", -1)), bridge_runtime_now_ms())
+		return
+	}
+	if type == "event_deliver" {
+		bridge_event_deliver_handle(conn, text)
 		return
 	}
 	if type == "bot_deliver" {
@@ -1133,26 +1142,32 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = bridge_hub_send(conn, result)
 		return
 	}
+	if type == contracts.START_AGENT_FRAME {
+		bridge_hub_handle_start_agent(conn, text)
+		return
+	}
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_start_send_proc(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
-		_ = bridge_hub_send(conn, accepted)
-		ok, detail, launch_err := bridge_runtime_launch_agent(command_id, text, bridge_command_worker_deadline_ns(conn))
+		_ = bridge_start_send_proc(conn, accepted)
+		wrapped := bridge_start_wrap_launch(text)
+		defer delete(wrapped)
+		detail := ""
+		ok, launch_err := bridge_start_agent_apply_detail(conn, wrapped, bridge_command_worker_deadline_ns(conn), &detail)
+		defer delete(detail)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
-		st_json := bridge_instance_status_json(instance_id)
-		defer delete(st_json)
-		_ = bridge_hub_send(conn, st_json)
+		bridge_start_status_proc(conn, instance_id)
 		final := bridge_command_result_json(command_id, "succeeded", "starting") if ok else bridge_command_failed_json(command_id, bridge_error_wire(launch_err, detail), "failed")
 		defer delete(final)
 		if !ok do fmt.println("bridge launch_agent failed", detail, bridge_error_string(launch_err))
 		bridge_runtime_cache_command(command_id, final)
-		_ = bridge_hub_send(conn, final)
+		_ = bridge_start_send_proc(conn, final)
 		return
 	}
 	if type == "launch_provider_test" {
@@ -1187,7 +1202,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
 		expected_run := extract_json_int(text, "expected_run_count", -1)
-		ok, restored, stale := bridge_runtime_stop_generation(instance_id, extract_json_bool(text, "force", false), expected_run)
+		bot_idle := extract_json_string(text, "reason", "", context.temp_allocator) == "bot_idle"
+		stop := bridge_runtime_stop_idle_bot_unlocked if bot_idle else bridge_runtime_stop_agent_unlocked
+		ok, restored, stale := bridge_runtime_stop_generation(instance_id, extract_json_bool(text, "force", false), expected_run, stop)
 		defer delete(restored)
 		if stale {
 			final := bridge_command_failed_json(command_id, bridge_cause_wire_error("stale_generation", "stop targets a different process generation"), "")
@@ -1205,6 +1222,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(final)
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_hub_send(conn, final)
+		return
+	}
+	if type == contracts.ACP_SEND_NOW_BATCH_COMMAND || type == contracts.ACP_INPUTS_READ_COMMAND {
+		bridge_acp_delivery_command(conn, type, text)
 		return
 	}
 	if type == "notify_agent_message" {
@@ -2494,20 +2515,29 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 // no command_id and the hub fire-and-forgets the send, so there is normally nothing
 // to ack; we still ack if a command_id is ever present.
 bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
-	command_id := extract_json_string(text, "command_id", "")
-	payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
-	if !payload_ok {
-		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
-		return
-	}
+    saved_context := context
+    defer context = saved_context
+    arena: virtual.Arena
+    if virtual.arena_init_growing(&arena) != nil do return
+    defer virtual.arena_destroy(&arena)
+    context.allocator = virtual.arena_allocator(&arena)
+    context.temp_allocator = context.allocator
+    command_id := extract_json_string(text, "command_id", "")
+    payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
+    if !payload_ok {
+        context = saved_context
+        if command_id != "" {
+            result := bridge_command_result_json(command_id, "succeeded", "")
+            defer delete(result)
+            _ = bridge_start_send_proc(conn, result)
+        }
+        return
+    }
+    coordinator_ids := make(map[string]bool)
+    builder := strings.builder_make()
+    strings.write_string(&builder, "{\"payload\":{\"run\":[")
+    count := 0
 
-	// coordinator_ids collects any instance the hub (unexpectedly) marked coordinator
-	// in run[]; combined with the local launch-record role in the stop loop below it
-	// guarantees a coordinator can never be terminated by this path.
-	coordinator_ids := make(map[string]bool)
-	defer delete(coordinator_ids)
-
-	// RUN: start fresh, restart, or no-op each entry.
 	if run_arr, run_ok := bridge_provider_json_extract_array(payload, "run"); run_ok {
 		entries := bridge_provider_json_top_level_objects(run_arr)
 		defer { for e in entries do delete(e); delete(entries) }
@@ -2551,73 +2581,44 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			pack_json, _ := bridge_provider_json_extract_object(entry, "pack")
 			defer delete(pack_json)
 
-			// T8: a lease for an instance that is already running is delivered as
-			// a nudge (keep the process; refresh TASK.md; "run lease next"). When
-			// the child is not confirmed live, fall through to the launch paths.
 			deliver := extract_json_string(entry, "deliver", "")
-			defer delete(deliver)
-			if deliver == "nudge" && bridge_wake_nudge_live_child(instance_id, task_id, role, lease_id, run_count, pack_json) {
-				bridge_runtime_set_launch_role(instance_id, role)
-				fmt.println("bridge wake_agent: nudged live instance", instance_id, "to run lease next")
-				continue
-			}
-
-			if _, has := bridge_runtime_get_launch(instance_id); has {
-				// A launch record exists, but restart via the pty-host's remembered
-				// spec would reuse the ORIGINAL run_dir contents — including a stale
-				// CLAUDE.md written at first launch. Re-bootstrap instead: run the full
-				// launch path (deterministic run_dir, fresh token, current bootstrap
-				// template) so template updates take effect on each reconcile restart.
-				// bridge_runtime_launch_agent_pty_host already closes any registered
-				// instance before re-spawning, so no separate is_registered check.
-				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, lease_id, pack_json, permission_mode, run_count,provider_profile,effective_transport,catalog_etag,launch_epoch)
-				defer delete(command_json)
-				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn))
-				if ok {
-					bridge_runtime_set_launch_role(instance_id, role)
-					fmt.println("bridge wake_agent: re-bootstrapped and restarted instance", instance_id)
-				} else {
-					fmt.eprintln("bridge wake_agent: restart via re-bootstrap failed", instance_id, detail, bridge_error_string(launch_err))
-					bridge_wake_report_failed_status(conn, instance_id)
-					blog_error(.agent_launch_failed, blog_sym(.command_kind, .wake_agent), blog_sym(.stage, .materialize))
-				}
-			} else {
-				// No launch record: fresh full bootstrap via the standard launch path.
-				// The instance id MUST live inside a "payload" object (matching the hub
-				// launch_agent contract) so bridge_bootstrap_descriptor_from_launch can
-				// resolve it — a top-level-only id aborts the launch at validate. This
-				// mirrors the scheduler sched_wake synthetic launch.
-				syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, "", lease_id, pack_json, permission_mode, run_count,provider_profile,effective_transport,catalog_etag,launch_epoch)
-				defer delete(command_json)
-				ok, detail, launch_err := bridge_runtime_launch_agent(syn_command_id, command_json, bridge_command_worker_deadline_ns(conn))
-				if ok {
-					bridge_runtime_set_launch_role(instance_id, role)
-					fmt.println("bridge wake_agent: launched instance", instance_id)
-				} else {
-					fmt.eprintln("bridge wake_agent: launch failed", instance_id, detail, bridge_error_string(launch_err))
-					bridge_wake_report_failed_status(conn, instance_id)
-					blog_error(.agent_launch_failed, blog_sym(.command_kind, .wake_agent), blog_sym(.stage, .spawn))
-				}
-			}
-		}
-	}
-
-	// STOP: terminate each instance whose task is no longer actionable, honoring the
-	// coordinator exemption (defense in depth — the hub never emits coordinators).
-	if stop_ids, stop_ok := bridge_provider_json_extract_string_array(payload, "stop"); stop_ok {
-		defer delete(stop_ids)
-		for id in stop_ids {
-			if strings.trim_space(id) == "" do continue
-			if coordinator_ids[id] do continue
-			if launch, has := bridge_runtime_get_launch(id); has && launch.role == "coordinator" do continue
-			if bridge_runtime_stop_agent(id) do _ = bridge_ext_token_capture_final(id, bridge_agent_instance_run_count(id))
-			fmt.println("bridge wake_agent: stopped instance", id)
-		}
-	}
-
-	if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+            syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
+            if _, has := bridge_runtime_get_launch(instance_id); has {
+                syn_command_id = fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
+            } else { coordinator_display_name = "" }
+            launch := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path, coordinator_display_name, lease_id, pack_json, permission_mode, run_count, provider_profile, effective_transport, catalog_etag, launch_epoch)
+            if count > 0 do strings.write_byte(&builder, ',')
+            count += 1
+            strings.write_string(&builder, "{\"deliver\":\"")
+            strings.write_string(&builder, "nudge" if deliver == "nudge" else "launch")
+            strings.write_string(&builder, "\",\"launch\":")
+            strings.write_string(&builder, launch)
+            strings.write_byte(&builder, '}')
+        }
+    }
+    strings.write_string(&builder, "],\"stop\":[")
+    if stop_ids, has_stop := bridge_provider_json_extract_string_array(payload, "stop"); has_stop {
+        first := true
+        for id in stop_ids {
+            if coordinator_ids[id] do continue
+            if !first do strings.write_byte(&builder, ',')
+            first = false
+            strings.write_byte(&builder, '"')
+            bridge_runtime_write_json_string(&builder, id)
+            strings.write_byte(&builder, '"')
+        }
+    }
+    strings.write_string(&builder, "]}}")
+    adapted := strings.to_string(builder)
+    // The adapter arena owns only conversion text. The common apply and all
+    // side effects inherit the original dispatch context while it stays alive.
+    context = saved_context
+    _, _ = bridge_start_agent_apply(conn, adapted, bridge_command_worker_deadline_ns(conn))
+    if command_id != "" {
+        result := bridge_command_result_json(command_id, "succeeded", "")
+        defer delete(result)
+        _ = bridge_start_send_proc(conn, result)
+    }
 }
 
 // bridge_wake_nudge_live_child delivers a wake run[] entry to a child that is
@@ -2687,7 +2688,7 @@ bridge_wake_report_failed_status :: proc(conn: ^ws.Connection, instance_id: stri
 // the agent-keyed template bootstrap path rather than the header-only fallback
 // (REQ-37). Free-text fields (agent_name, chain_title) are JSON-escaped. Fields are
 // emitted unconditionally (empty is harmless) so the descriptor is deterministic.
-bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string, coordinator_display_name: string = "", lease_id: string = "", pack_json: string = "", permission_mode: string = "", run_count := 0,provider_profile:string = "", effective_transport: string = "pty", catalog_etag: string = "", launch_epoch: string = "") -> string {
+bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, model, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string, coordinator_display_name: string = "", lease_id: string = "", pack_json: string = "", permission_mode: string = "", run_count := 0,provider_profile:string = "", effective_transport: string = "pty", catalog_etag: string = "", launch_epoch: string = "", bot_idle_restart := false) -> string {
 	b := strings.builder_make()
 	write_field :: proc(b: ^strings.Builder, first: ^bool, key, val: string) {
 		if !first^ do strings.write_byte(b, ',')
@@ -2727,6 +2728,7 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 	write_field(&b, &first, "project_id", project_id)
 	write_field(&b, &first, "project_path", project_path)
 	strings.write_string(&b, ",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", run_count))
+	if bot_idle_restart do strings.write_string(&b, ",\"bot_idle_restart\":true")
 	// Task System v2 lease delivery (empty on non-lease wakes).
 	if lease_id != "" {
 		write_field(&b, &first, "lease_id", lease_id)
@@ -2746,14 +2748,18 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 // bridge_runtime_launch_agent launches (or confirms) the instance named in a
 // launch_agent command. On failure `err` carries the typed code + class so callers
 // decide retry/park/fail from the class, never from the `detail` text.
-bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0) -> (ok: bool, detail: string, err: Bridge_Error) {
-	if !bridge_auto_update_launch_enter() do return false, "bridge is applying an automatic update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
+bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0, bot_delivery := false) -> (ok: bool, detail: string, err: Bridge_Error) {
+	if !bridge_auto_update_launch_enter() do return false, "bridge is applying an update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
 	defer bridge_auto_update_launch_leave()
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
+	// Retained lifecycle, token and runtime records clone their identifiers.
+	// Failure reporting and lifecycle cleanup must run before this free.
+	defer delete(instance_id)
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id", bridge_error(.agent_launch_failed, .unsupported)
 	lifecycle := bridge_agent_lifecycle_enter(instance_id)
 	defer bridge_agent_lifecycle_leave(lifecycle)
-	defer if !ok do bridge_runtime_record_failure(instance_id, err)
+	launch_started := false
+	defer if !ok do bridge_runtime_record_failure(instance_id, err, launch_started)
 	launch_epoch := extract_json_string(command_json, "launch_epoch", "")
 	run_count, _ := bridge_provider_json_extract_int(command_json, "run_count")
 	defer delete(launch_epoch)
@@ -2761,16 +2767,6 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(instance_token)
 	requested_transport := extract_json_string(command_json, "effective_transport", "pty")
 	defer delete(requested_transport)
-	if requested_transport == "acp" {
-		if run_count > 0 && run_count < bridge_agent_instance_run_count(instance_id) do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
-		retry_provider := extract_json_string(command_json, "provider", "")
-        retry_profile := extract_json_string(command_json, "provider_profile", "")
-        defer { delete(retry_provider); delete(retry_profile) }
-        if handled, retry_ok := acp_runtime_retry_launch(instance_id, launch_epoch, run_count, retry_provider, retry_profile); handled {
-			if retry_ok do return true, "", {}
-			return false, "acp_pipe_lost", bridge_error(.agent_launch_failed, .denied)
-		}
-	}
 	if instance_token == "" {
 		instance_token = bridge_agent_instance_last_assertion(instance_id)
 		if instance_token == "" do instance_token = strings.concatenate({"hit_", instance_id})
@@ -2778,22 +2774,39 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	// Task wakes carry a persisted generation even without a migration epoch.
 	// A duplicate wake must preserve an already-live child and its local token;
 	// delayed commands must never replace a newer launch or undo its stop.
-	if run_count > 0 && launch_epoch == "" {
+	idle_restart := false
+	if run_count > 0 && ((launch_epoch == "" && requested_transport != "acp") || bot_delivery) {
 		current := bridge_agent_instance_run_count(instance_id)
 		if run_count < current do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
 		if run_count == current {
 			assertion := bridge_agent_instance_assertion(instance_id)
 			defer delete(assertion)
-			if assertion == "" do return false, "startup generation was revoked", bridge_error(.agent_launch_failed, .denied)
 			sync.mutex_lock(&bridge_runtime_mutex)
 			stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
 			sync.mutex_unlock(&bridge_runtime_mutex)
-			if stopped do return false, "startup generation was stopped", bridge_error(.agent_launch_failed, .denied)
-			socket, daemon_ok := bridge_pty_host_ensure_daemon()
-			if !daemon_ok do return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
-			confirmed, queried := bridge_startup_confirm_spawned(socket, instance_id, run_count)
-			if !queried do return false, "cannot confirm existing launch identity", bridge_error(.pty_host_unreachable)
-			if confirmed { bridge_task_wake_note_launched(instance_id); return true, "", {} }
+			idle_restart = bot_delivery && extract_json_bool(command_json, "bot_idle_restart", false) &&
+				bridge_agent_token_idle_restart_allowed(instance_id, run_count)
+			if !idle_restart {
+				if assertion == "" do return false, "startup generation was revoked", bridge_error(.agent_launch_failed, .denied)
+				if stopped do return false, "startup generation was stopped", bridge_error(.agent_launch_failed, .denied)
+			}
+			if !idle_restart && launch_epoch == "" && requested_transport != "acp" {
+				socket, daemon_ok := bridge_pty_host_ensure_daemon()
+				if !daemon_ok do return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
+				confirmed, queried := bridge_startup_confirm_spawned(socket, instance_id, run_count)
+				if !queried do return false, "cannot confirm existing launch identity", bridge_error(.pty_host_unreachable)
+				if confirmed { bridge_task_wake_note_launched(instance_id); return true, "", {} }
+			}
+		}
+	}
+	if requested_transport == "acp" && !idle_restart {
+		if run_count > 0 && run_count < bridge_agent_instance_run_count(instance_id) do return false, "superseded startup generation", bridge_error(.agent_launch_failed, .denied)
+		retry_provider := extract_json_string(command_json, "provider", "")
+        retry_profile := extract_json_string(command_json, "provider_profile", "")
+        defer { delete(retry_provider); delete(retry_profile) }
+        if handled, retry_ok := acp_runtime_retry_launch(instance_id, launch_epoch, run_count, retry_provider, retry_profile); handled {
+			if retry_ok do return true, "", {}
+			return false, "acp_pipe_lost", bridge_error(.agent_launch_failed, .denied)
 		}
 	}
 	if launch_epoch != "" {
@@ -2837,6 +2850,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable", bridge_error(.agent_launch_failed, .socket_dir)
 	bridge_runtime_set_status(instance_id, "starting", "active")
+	launch_started = true
 	// H7 restart-reap: invalidate ANY prior local tokens for this instance BEFORE
 	// issuing fresh ones. A superseded old runtime then fails its next liveness
 	// ping (its token is no longer valid). The freshly issued agent token below is
@@ -2899,7 +2913,8 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	pp,profile_error := profile_lookup(provider,provider_profile)
 	if profile_error != .None do return false,profile_error_code(profile_error),bridge_error(.agent_launch_failed,.unsupported)
 	if strings.trim_space(instance_id) == "" || !profile_has_model(&pp,provider,model) do return false,"invalid provider test request",bridge_error(.agent_launch_failed,.unsupported)
-	defer if !ok do bridge_runtime_record_failure(instance_id, err)
+	launch_started := false
+	defer if !ok do bridge_runtime_record_failure(instance_id, err, launch_started)
 	bridge_runtime_clear_stop_intent(instance_id)
 	run_dir := bridge_runtime_default_run_dir(instance_id)
 	defer delete(run_dir)
@@ -2907,6 +2922,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable", bridge_error(.agent_launch_failed, .socket_dir)
 	bridge_runtime_set_status(instance_id, "starting", "active")
+	launch_started = true
 	_ = bridge_agent_token_invalidate_instance(instance_id)
 	instance_token := strings.concatenate({"hit_", instance_id})
 	defer delete(instance_token)
@@ -2992,7 +3008,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	}
 	bridge_runtime_set_pty_process_alive(instance_id, true)
 	bridge_startup_spawned(instance_id, agent_token, pid)
-	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), project_path = strings.clone(strings.trim_space(project_path)), pane_id = fmt.tprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token), provider_sym = contracts.bridge_log_provider_sym(provider), launched_at_ns = time.tick_now()._nsec})
+	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), project_path = strings.clone(strings.trim_space(project_path)), pane_id = fmt.aprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token), provider_sym = contracts.bridge_log_provider_sym(provider), launched_at_ns = time.tick_now()._nsec})
 	// BR-3: ensure the event-subscription worker is running so this instance's
 	// ChildExited/StartupReady/StartupBlocked/ScreenChanged events flow to the hub
 	// status/activity surface without polling.
@@ -3013,6 +3029,14 @@ bridge_runtime_stop_agent :: proc(instance_id: string, force: bool = false) -> b
 }
 
 bridge_runtime_stop_agent_unlocked :: proc(instance_id: string, force: bool = false) -> bool {
+	return bridge_runtime_stop_agent_process(instance_id, force)
+}
+
+bridge_runtime_stop_idle_bot_unlocked :: proc(instance_id: string, force: bool = false) -> bool {
+	return bridge_runtime_stop_agent_process(instance_id, force, bot_idle = true)
+}
+
+bridge_runtime_stop_agent_process :: proc(instance_id: string, force: bool, bot_idle := false) -> bool {
 	if strings.trim_space(instance_id) == "" do return false
 	// Record the operator's intent to stop, so a late/duplicate wrapper signal that
 	// races the ~1s self-reap window cannot resurrect the instance back to
@@ -3043,7 +3067,7 @@ bridge_runtime_stop_agent_unlocked :: proc(instance_id: string, force: bool = fa
 	if registered && !bridge_pty_host_close(socket, instance_id) do return false
 
 	// Invalidate every local token for this instance (persisted to disk).
-	invalidated := bridge_agent_token_invalidate_instance(instance_id)
+	invalidated := bridge_agent_token_invalidate_instance(instance_id, bot_idle)
 	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated)
 	// Drop any in-memory launch record so we don't hold stale pane/token data.
 	bridge_runtime_remove_launch(instance_id)
@@ -3055,11 +3079,16 @@ bridge_runtime_ensure_local_endpoint :: proc() -> (string, bool) {
 	if bridge_config.local_endpoint_port == 0 do bridge_config.local_endpoint_port = 49324
 	local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
 	if !bridge_runtime_local_endpoint_started {
+		bridge_supervisor_control_mint()
 		bridge_runtime_local_endpoint_unix_started = bridge_local_endpoint_start_unix(local_config)
 		bridge_runtime_local_endpoint_loopback_started = bridge_local_endpoint_start_loopback(local_config)
 		bridge_runtime_local_endpoint_started = bridge_runtime_local_endpoint_unix_started || bridge_runtime_local_endpoint_loopback_started
 		if bridge_runtime_local_endpoint_started {
 			bridge_runtime_local_endpoint_descriptor = bridge_runtime_select_endpoint(local_config)
+			// The supervisor reaches the agent gate through this endpoint (supervisor_gate.odin).
+			if !bridge_supervisor_control_publish(bridge_config.local_endpoint_run_dir, bridge_runtime_local_endpoint_descriptor) {
+				fmt.println("bridge supervisor gate: cannot write", SUPERVISOR_CONTROL_FILE, "in", bridge_config.local_endpoint_run_dir)
+			}
 		}
 	}
 	if !bridge_runtime_local_endpoint_started do return "", false
@@ -3203,10 +3232,13 @@ bridge_runtime_update_launch_pane :: proc(instance_id, pane_id: string) {
 // no launch record exists for the instance yet.
 bridge_runtime_set_launch_role :: proc(instance_id, role: string) {
 	if strings.trim_space(instance_id) == "" || strings.trim_space(role) == "" do return
+	// The role survives the command's scratch arena, like the launch registry.
+	context.allocator = runtime.heap_allocator()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for i in 0..<len(bridge_runtime_launches) {
 		if bridge_runtime_launches[i].agent_instance_id == instance_id {
+			if bridge_runtime_launches[i].role == role do return
 			bridge_runtime_launches[i].role = strings.clone(role)
 			break
 		}
@@ -3217,13 +3249,17 @@ bridge_runtime_now_ms :: proc() -> i64 {
 	return bridge_now_unix_ms()
 }
 
-// bridge_runtime_record_failure attaches err to a "failed" instance so the next
-// agent_instance_status carries it. A no-op unless the instance is failed.
-bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error) {
+// A rejected new launch must not leave a booting snapshot after a pre-spawn
+// failure. Earlier stale/duplicate-command refusals did not begin a new launch
+// and must preserve the existing child (including one still starting).
+bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, launch_started := false) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for &inst in bridge_runtime_instances {
 		if inst.agent_instance_id != instance_id do continue
+		if launch_started && inst.runtime_status == "starting" {
+			bridge_runtime_set_status_locked(instance_id, "failed", "idle", bridge_runtime_now_ms(), true)
+		}
 		if inst.runtime_status == "failed" {
 			inst.last_error = err
 			inst.has_last_error = true
@@ -4336,6 +4372,9 @@ bridge_get_agent_pane_result_json :: proc(command_id: string, ok: bool, unchange
 // failures go through bridge_command_failed_json so they always carry a typed error.
 Bridge_Command_Runtime_Status :: struct {
 	runtime_status: string,
+	outcome: string `json:"outcome,omitempty"`,
+	class: string `json:"class,omitempty"`,
+	retry_after_ms: Maybe(i64) `json:"retry_after_ms,omitempty"`,
 	agent_instance_id: Maybe(string) `json:"agent_instance_id,omitempty"`,
 	expected_run_count: Maybe(int) `json:"expected_run_count,omitempty"`,
 }
@@ -4375,6 +4414,22 @@ bridge_command_result_wire :: proc(command_id, status, runtime_status: string) -
 	res.payload.status = status
 	if runtime_status != "" do res.payload.result = Bridge_Command_Runtime_Status{runtime_status = runtime_status}
 	return res
+}
+
+bridge_event_result_json :: proc(command_id, status, outcome, class: string, retry_after_ms: i64, cause, message: string) -> string {
+    res := bridge_command_result_wire(command_id, status, "")
+    res.ok = status == "succeeded"
+    result := Bridge_Command_Runtime_Status{outcome = outcome, class = class}
+    // Odin's omitempty does not omit integer zero. Absence asks for the hub schedule.
+    if class == "retry" && retry_after_ms > 0 do result.retry_after_ms = retry_after_ms
+    res.payload.result = result
+    if status == "failed" {
+        err := bridge_cause_wire_error(cause, message, retry_after_ms)
+        err.class = .retriable if class == "retry" else .fatal
+        res.error = contracts.wire_error_json_value(err)
+    }
+    out, _ := vault.wire_encode(res)
+    return out
 }
 
 bridge_command_result_json :: proc(command_id, status, runtime_status: string) -> string {
@@ -4613,7 +4668,7 @@ Bridge_Hello_Wire :: struct {
 // on every hello and on every legacy beat that carries features.
 // heartbeat_metadata_omission tells the hub this Bridge understands the bridge_ready
 // flag of the same name (contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION).
-BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1}
+BRIDGE_RUNTIME_FEATURES := [?]string{"capture_agent_pane", "get_agent_pane", "instance_reconfiguration_v1", "tool_stream_demand_v2", "mcp_transform_v1", contracts.BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION, contracts.BRIDGE_FEATURE_BOT_DELIVER_V1, contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1, contracts.BRIDGE_FEATURE_START_AGENT_V1, contracts.BRIDGE_FEATURE_DYNAMIC_SKILL_V2}
 bridge_runtime_features :: proc() -> []string {
 	features := make([dynamic]string, allocator = context.temp_allocator)
 	append(&features, ..BRIDGE_RUNTIME_FEATURES[:])
@@ -5040,7 +5095,7 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 			session_id    = session_id,
 			exit_code_set = false,
 			status        = status,
-			finished_at   = action_scheduler_format_rfc3339_utc(bridge_now_unix_ms()),
+			finished_at   = bridge_format_rfc3339_utc_ms(bridge_now_unix_ms()),
 			run_seq       = run_seq,
 		}
 		data, err := json.marshal(evt, allocator = context.allocator)
@@ -5053,7 +5108,7 @@ bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_
 		exit_code     = exit_code,
 		exit_code_set = exit_code_set,
 		status        = status,
-		finished_at   = action_scheduler_format_rfc3339_utc(bridge_now_unix_ms()),
+		finished_at   = bridge_format_rfc3339_utc_ms(bridge_now_unix_ms()),
 		run_seq       = run_seq,
 	}
 	data, err := json.marshal(evt, allocator = context.allocator)
@@ -5442,7 +5497,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	}
 
 	now_ms := bridge_now_unix_ms()
-	started_at := strings.clone(bridge_shell_authoritative_started_at(hub_started_at, action_scheduler_format_rfc3339_utc(now_ms)))
+	started_at := strings.clone(bridge_shell_authoritative_started_at(hub_started_at, bridge_format_rfc3339_utc_ms(now_ms)))
 	defer delete(started_at)
 
 	// THE MAP'S ALLOCATOR, explicitly: register below takes ownership of every string
@@ -6354,21 +6409,105 @@ bridge_hub_runtime_start :: proc() {
 
 // ---- T8: preview tunnel frame handlers (REQ-SH-CONTRACT §6) ----
 
-// bridge_tunnel_data_drain_outgoing flushes queued tunnel_data/tunnel_close WS frames.
-bridge_tunnel_data_drain_outgoing :: proc(conn: ^ws.Connection) {
+// ---- REQ-VOICE-6: flow control for the tunnel/proxy outgoing queue ----
+//
+// bridge_tunnel_data_outgoing carries preview responses (tunnel_data) and proxy
+// request bodies (proxy_data). Both used to be unbounded on BOTH sides:
+//
+//   - producers (bridge_proxy_serve_client reading a local upload, and
+//     bridge_tunnel_tcp_to_ws_worker reading a local server's response) appended
+//     every chunk with no limit, so a 60 MB upload became ~80 MB of queued base64;
+//   - the drain wrote the WHOLE queue in one go on the runtime loop, which is also
+//     the connection's only READER.
+//
+// While that drain ran the bridge read nothing from the hub. The hub's reader for
+// this bridge forwards each proxy_data as tunnel_data to the target bridge
+// synchronously — and when the target is THIS bridge (a process reaching a server on
+// its own host through the relay), that write backs up into a bridge that is not
+// reading, so the hub stops reading too and each side blocks writing to the other.
+// The first 5 s write deadline to fire ends it: the hub shuts the socket down, the
+// bridge sees EOF (hub_ws_closed reason=eof) and the upload hangs until the hub's
+// 120 s idle timeout.
+//
+// The fix keeps the loop reading: producers wait while the queue holds more than
+// BRIDGE_TUNNEL_OUTGOING_CAP_BYTES, and each loop tick sends at most
+// BRIDGE_TUNNEL_DRAIN_BUDGET_BYTES before going back to read. The budget is well
+// under what one tick reads (BRIDGE_HUB_INBOUND_BUDGET frames of up to 6000 payload
+// bytes the hub chunks to), so the bridge always consumes the hub's tunnel_data
+// faster than it produces proxy_data and the cycle cannot close.
+BRIDGE_TUNNEL_OUTGOING_CAP_BYTES  :: 1024 * 1024
+BRIDGE_TUNNEL_DRAIN_BUDGET_BYTES  :: 64 * 1024
+// How long a producer waits for room before giving up on its stream. The queue
+// only stays full when nothing is draining it (the hub connection is down).
+BRIDGE_TUNNEL_OUTGOING_STALL      :: 30 * time.Second
+
+Bridge_Tunnel_Room :: enum {
+	Ok,
+	Gone,    // the stream was torn down (or hub traffic stopped) while waiting
+	Stalled, // the queue did not drain within BRIDGE_TUNNEL_OUTGOING_STALL
+}
+
+// bridge_tunnel_outgoing_push appends one frame (ownership moves to the queue).
+// Never waits: close frames and other small control frames must always get out.
+bridge_tunnel_outgoing_push :: proc(frame_json: string) {
 	sync.mutex_lock(&bridge_runtime_mutex)
-	if len(bridge_tunnel_data_outgoing) == 0 {
-		sync.mutex_unlock(&bridge_runtime_mutex)
-		return
-	}
-	items := bridge_tunnel_data_outgoing[:]
-	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing, runtime.heap_allocator())
+	append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = frame_json})
+	bridge_tunnel_data_outgoing_bytes += len(frame_json)
 	sync.mutex_unlock(&bridge_runtime_mutex)
+}
+
+bridge_tunnel_outgoing_queued_bytes :: proc() -> int {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	return bridge_tunnel_data_outgoing_bytes
+}
+
+// bridge_tunnel_outgoing_wait_room blocks a DATA producer until the queue is under
+// its cap. `alive(id)` is polled so a stream torn down while waiting stops at once.
+// Must never be called from the runtime loop thread: that thread is the drain.
+bridge_tunnel_outgoing_wait_room :: proc(alive: proc(string) -> bool, id: string, stall := BRIDGE_TUNNEL_OUTGOING_STALL) -> Bridge_Tunnel_Room {
+	started := time.tick_now()
+	for bridge_tunnel_outgoing_queued_bytes() >= BRIDGE_TUNNEL_OUTGOING_CAP_BYTES {
+		if sync.atomic_load(&bridge_hub_traffic_stopped) || !alive(id) do return .Gone
+		if time.tick_since(started) >= stall do return .Stalled
+		time.sleep(1 * time.Millisecond)
+	}
+	return .Ok
+}
+
+// bridge_tunnel_outgoing_take removes the frames one drain may send: whole frames,
+// in order, until their bytes reach `budget` (always at least one). Returns them and
+// whether more remain queued.
+bridge_tunnel_outgoing_take :: proc(budget: int) -> (items: []Bridge_Tunnel_Data_Outgoing, more: bool) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	n := len(bridge_tunnel_data_outgoing)
+	if n == 0 do return nil, false
+	k, bytes := 0, 0
+	for k < n && (k == 0 || bytes < budget) {
+		bytes += len(bridge_tunnel_data_outgoing[k].json)
+		k += 1
+	}
+	items = make([]Bridge_Tunnel_Data_Outgoing, k, runtime.heap_allocator())
+	copy(items, bridge_tunnel_data_outgoing[:k])
+	remove_range(&bridge_tunnel_data_outgoing, 0, k)
+	bridge_tunnel_data_outgoing_bytes -= bytes
+	return items, len(bridge_tunnel_data_outgoing) > 0
+}
+
+// bridge_tunnel_data_drain_outgoing sends one budget's worth of queued
+// tunnel_*/proxy_* frames and reports whether more remain (the loop then skips its
+// idle sleep). See the REQ-VOICE-6 note above for why it must not send everything.
+bridge_tunnel_data_drain_outgoing :: proc(conn: ^ws.Connection) -> bool {
+	items, more := bridge_tunnel_outgoing_take(BRIDGE_TUNNEL_DRAIN_BUDGET_BYTES)
+	if items == nil do return false
 	for item in items {
 		_ = ws.send_text(conn, item.json)
-		delete(item.json)
+		// Every producer builds its frame on the heap allocator.
+		delete(item.json, runtime.heap_allocator())
 	}
-	delete(items)
+	delete(items, runtime.heap_allocator())
+	return more
 }
 
 // bridge_preview_dial_loopback connects to a preview server without ever leaving the
@@ -6551,9 +6690,13 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 		strings.write_string(&b, "\",\"last\":false}")
 		frame := strings.to_string(b)
 		delete(encoded)
-		sync.mutex_lock(&bridge_runtime_mutex)
-		append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = frame})
-		sync.mutex_unlock(&bridge_runtime_mutex)
+		// REQ-VOICE-6: wait for room rather than queueing a whole response. A
+		// stream torn down or stalled while waiting ends here like a closed socket.
+		if bridge_tunnel_outgoing_wait_room(bridge_tunnel_stream_registered, local_stream_id) != .Ok {
+			delete(frame, heap)
+			break
+		}
+		bridge_tunnel_outgoing_push(frame)
 	}
 
 	// TCP closed — enqueue tunnel_close to hub.
@@ -6562,9 +6705,7 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	bridge_runtime_write_json_string(&b2, local_stream_id)
 	strings.write_string(&b2, "\",\"reason\":\"connection_closed\"}")
 	close_frame := strings.to_string(b2)
-	sync.mutex_lock(&bridge_runtime_mutex)
-	append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = close_frame})
-	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_tunnel_outgoing_push(close_frame)
 
 	// Independent-key probe: whoever removes the map key owns the struct free.
 	// If !found, bridge_hub_handle_tunnel_close already removed+freed the struct —

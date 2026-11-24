@@ -30,7 +30,7 @@ live_bridge_cleanup :: proc() {
 stream_bridge_event :: proc(id, call: string, ending := false) {
     ev := contracts.Ext_Event{kind = .Tool_End if ending else .Tool_Start,
         session_id = "s1", tool_use_id = call, tool_name = "Bash",
-        ts = action_scheduler_format_rfc3339_utc(bridge_now_unix_ms()+1000)}
+        ts = bridge_format_rfc3339_utc_ms(bridge_now_unix_ms()+1000)}
     bridge_tool_live_event(Bridge_Local_Agent_Token_Record{agent_instance_id=id, role=.Agent}, ev,
         `{"tool":{"input":{"command":"echo example","ignored":"not retained"}},"payload":{}}`)
 }
@@ -279,7 +279,7 @@ test_codex_large_image_completion_reaches_live_inventory :: proc(t: ^testing.T) 
         if i == 1 do start["agent_id"] = json.String("nested-child")
         else do delete_key(&start, "agent_id")
         raw, _ := json.marshal(start)
-        mapped, err := ext.codex_map_hook(string(raw), action_scheduler_format_rfc3339_utc(now))
+        mapped, err := ext.codex_map_hook(string(raw), bridge_format_rfc3339_utc_ms(now))
         testing.expect_value(t, err, ext.Codex_Error.None)
         res := bridge_ext_ingest(Bridge_Local_Agent_Token_Record{agent_instance_id=target, role=.Agent},
             ext.event_params(mapped.events[:]), bridge_runtime_now_ms())
@@ -288,7 +288,7 @@ test_codex_large_image_completion_reaches_live_inventory :: proc(t: ^testing.T) 
     }
     testing.expect_value(t, len(bridge_tool_tracker.tool_live.entries[id].active), 2)
     raw, _ := json.marshal(end)
-    mapped, err := ext.codex_map_hook(string(raw), action_scheduler_format_rfc3339_utc(now+1000))
+    mapped, err := ext.codex_map_hook(string(raw), bridge_format_rfc3339_utc_ms(now+1000))
     testing.expect_value(t, err, ext.Codex_Error.None)
     testing.expect_value(t, len(mapped.events), 1)
     if len(mapped.events) != 1 do return
@@ -348,7 +348,7 @@ test_tool_stream_lease_expiry_drops_demand_and_pending_completion :: proc(t: ^te
 orphan_replay :: proc(t: ^testing.T, id, provider, raw: string, ts_ms: i64) {
     // RFC 3339 here has whole-second precision: callers space steps >= 1s apart.
     context.allocator = context.temp_allocator
-    ts := action_scheduler_format_rfc3339_utc(ts_ms)
+    ts := bridge_format_rfc3339_utc_ms(ts_ms)
     events: [dynamic]string
     switch provider {
     case "claude":

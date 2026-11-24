@@ -1,0 +1,92 @@
+name: Launcher
+# T10 (REQ-OS-1): build ham-launcher and run its tests (src/launcher/core) on
+# Linux, macOS and Windows. The tests run the real launcher loop in a child
+# process against a throwaway instance root with scripted fake supervisors
+# (docs/specs/bridge-supervisor-engine.md §7).
+on:
+  push:
+    # heimdall/** : task branches pushed for a CI run (workflow_dispatch only
+    # reaches workflows that already exist on the default branch).
+    branches: [main, 'heimdall/**']
+    paths:
+      - 'src/launcher/**'
+      - '.github/workflows/launcher.yml'
+  pull_request:
+    paths:
+      - 'src/launcher/**'
+      - '.github/workflows/launcher.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: launcher-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unix:
+    name: launcher (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build ham-launcher (flake-pinned Odin)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/heimdall-tests"
+          nix develop -c odin version
+          nix develop -c odin build src/launcher -collection:odin_test=src -vet -strict-style -out:"$HOME/.cache/heimdall-tests/ham-launcher"
+          "$HOME/.cache/heimdall-tests/ham-launcher" --version
+      - name: Test src/launcher/core
+        run: nix develop -c odin test src/launcher/core -collection:odin_test=src -vet -strict-style -out:"$HOME/.cache/heimdall-tests/launcher-core-test"
+
+  windows:
+    name: launcher (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          $odin = Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe'
+          & $odin version
+          "ODIN=$odin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Build ham-launcher
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'launcher-bin'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          & $env:ODIN build src/launcher -collection:odin_test=src -vet -strict-style "-out:$out\ham-launcher.exe"
+          if ($LASTEXITCODE) { throw "odin build failed ($LASTEXITCODE)" }
+          & "$out\ham-launcher.exe" --version
+          if ($LASTEXITCODE) { throw "ham-launcher --version failed ($LASTEXITCODE)" }
+      - name: Test src/launcher/core
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'launcher-bin'
+          $env:HAM_LAUNCHER_TEST_DIR = Join-Path $env:RUNNER_TEMP 'launcher-tests'
+          & $env:ODIN test src/launcher/core -collection:odin_test=src -vet -strict-style "-out:$out\launcher-core-test.exe"
+          if ($LASTEXITCODE) { throw "launcher tests failed ($LASTEXITCODE)" }

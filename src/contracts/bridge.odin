@@ -32,6 +32,10 @@ BRIDGE_FEATURE_HEARTBEAT_METADATA_OMISSION :: "heartbeat_metadata_omission"
 BRIDGE_RESYNC_REQUIRED_CAUSE :: "resync_required"
 
 // Loopback routes served by the bridge on :49323.
+// GET health keeps ok as loopback liveness and includes event_ledger:
+// {status: ready|full|checkpoint_pending|unavailable, entries: int, capacity: int}.
+// unavailable means on-disk state needs repair; checkpoint_pending retries the
+// known in-memory state atomically on the next ledger operation.
 ROUTE_BRIDGE_HEALTH :: "/bridge/health"
 ROUTE_BRIDGE_VALIDATE_PROJECT_PATH :: "/bridge/validate-project-path"
 
@@ -137,6 +141,16 @@ BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES_SOCAT :: 45000
 BRIDGE_WS_HUB_TO_BRIDGE_CHUNK_PAYLOAD_BYTES :: 6000
 BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES :: 10 * 1024 * 1024
 
+// ---- relay request-body limit (REQ-VOICE-6) -------------------------------
+// Largest request body the bridge->hub proxy relay (/proxy/<session_id>/... on a
+// bridge's local endpoint) carries. Both ends enforce it: the originating bridge
+// answers 413 before anything reaches the hub when Content-Length exceeds it, and
+// the hub refuses (413) and closes a proxy stream whose forwarded body bytes pass
+// it, which covers bridges that predate the check. Responses are not capped; they
+// stream. Documented in docs/architecture.md (Local proxy) and the ham-ctl-reference
+// skill (src/prompts/skills and .agents/skills).
+RELAY_MAX_REQUEST_BODY_BYTES :: 64 * 1024 * 1024
+
 // Advertise only after detecting compatible daemon piped hosting. Old Bridges
 // cannot safely ignore explicit ACP launch payloads.
 BRIDGE_FEATURE_ACP_RUNTIME :: "acp_runtime_v1"
@@ -152,3 +166,6 @@ BRIDGE_FEATURE_ACP_RUNTIME :: "acp_runtime_v1"
 // metadata authority).
 BRIDGE_FEATURES_UPDATE_FRAME_TYPE :: "bridge_features_update"
 BRIDGE_READY_FEATURES_UPDATE :: "features_update"
+
+// The connected Hub supports bridge-initiated run generation opening.
+BRIDGE_READY_START_BEGIN :: "start_begin"

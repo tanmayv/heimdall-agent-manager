@@ -2,12 +2,12 @@ package bridge
 
 import "base:runtime"
 import "core:encoding/json"
-import "core:fmt"
 import "core:strings"
 import "core:sync"
 import contracts "odin_test:contracts"
 import httpc "odin_test:lib/httpc"
 import domain "odin_test:hub/domain"
+import "odin_test:lib/releaserepo"
 
 // Metadata is refreshed in the background. SHA256SUMS is fetched only for a
 // selected candidate at POST time, avoiding one request per historical canary
@@ -24,11 +24,8 @@ bridge_catalog_fetch_choices :: proc(memo: ^Bridge_Catalog_Memo) -> ([]Bridge_Ca
 	stable := false
 	// GitHub's release list is paginated. Never replace a complete snapshot
 	// with a partial list after an error or the defensive page limit.
-	for page in 1..=100 {
-		query := []httpc.Query_Param{{"per_page", "30"}}
-		if page > 1 do query = []httpc.Query_Param{{"per_page", "30"}, {"page", fmt.tprintf("%d", page)}}
-		doc, ok, _ := bridge_catalog_memo_get(memo, bridge_catalog_request("https://api.github.com",
-			{"repos", "tanmayv", "heimdall-agent-manager", "releases"}, query))
+	for page in 1..=BRIDGE_CATALOG_MAX_PAGES {
+		doc, ok, _ := bridge_catalog_memo_get(memo, bridge_catalog_releases_request(page))
 		if !ok do return nil, false
 		releases: []Bridge_Catalog_Release
 		if json.unmarshal_string(doc, &releases, allocator = context.temp_allocator) != nil do return nil, false
@@ -52,7 +49,7 @@ bridge_catalog_fetch_choices :: proc(memo: ^Bridge_Catalog_Memo) -> ([]Bridge_Ca
 			}
 			append(&result, item)
 		}
-		if len(releases) < 30 do return result[:], true
+		if len(releases) < BRIDGE_CATALOG_PAGE_SIZE do return result[:], true
 	}
 	return nil, false
 }
@@ -121,7 +118,7 @@ resolve_bridge_selected_update :: proc(catalog: ^Bridge_Update_Catalog, bridge: 
 		if catalog == nil || catalog.release_get == nil do return info, true
 		memo := Bridge_Catalog_Memo{get = catalog.release_get}
 		name := bridge_catalog_bundle(info.target, choice.version)
-		path := []string{"tanmayv", "heimdall-agent-manager", "releases", "download", choice.version, "SHA256SUMS"}
+		path := []string{releaserepo.OWNER, releaserepo.NAME, "releases", "download", choice.version, "SHA256SUMS"}
 		sums, ok, reason := bridge_catalog_memo_get(&memo, bridge_catalog_request("https://github.com", path))
 		if !ok { info.fallback_reason = reason; return info, true }
 		info.sha256 = bridge_catalog_digest(sums, name)

@@ -1,6 +1,7 @@
 package http
 
 import "core:fmt"
+import "core:mem/virtual"
 import "core:os"
 import "core:net"
 import "core:thread"
@@ -927,4 +928,33 @@ test_context_window_relay_surfaces_bridge_errors :: proc(t: ^testing.T) {
 	testing.expect_value(t, response.status, 500)
 	testing.expect(t, strings.contains(response.body, "persist_failed"))
 	delete(response.body)
+}
+
+
+@(test)
+test_update_catalog_probe_status_codes :: proc(t: ^testing.T) {
+    arena: virtual.Arena
+    if !testing.expect_value(t, virtual.arena_init_growing(&arena), nil) do return
+    defer virtual.arena_destroy(&arena)
+    context.allocator = virtual.arena_allocator(&arena)
+    f := setup_update_test_fixture(t, "prune-probe")
+    defer teardown_update_test_fixture(f)
+    impl: sqlite.Experiment_Repo_SQLite
+    experiments := sqlite.new_experiment_repository(&impl, &f.conn)
+    f.bh.experiments = &experiments
+    req := Request{method = "GET", path = "/api/v1/bridge/update-catalog",
+        request_id = "prune-probe", remote_addr = "192.0.2.1:1234",
+        headers = {{name = "Authorization", value = fmt.tprintf("Bearer %s", f.bridge_token)}}}
+    for enabled in ([]bool{false, true}) {
+        saved, err := iface.experiment_set(&experiments, {owner_user_id = f.owner_user_id,
+            key = domain.ACTIONS_EXPERIMENT_KEY, enabled = enabled, updated_at = "2026-11-22T00:00:00Z"})
+        testing.expect(t, saved && err.code == .None)
+        response := bridge_auto_update_catalog_handler(rawptr(&f.bh), req)
+        testing.expectf(t, response.status >= 200 && response.status < 300,
+            "live token with actions=%v: %d %s", enabled, response.status, response.body)
+    }
+    count, revoked, err := iface.bridge_revoke_tokens_for_bridge(&f.br_repo, f.bridge_id, "2026-11-22T00:00:00Z")
+    testing.expect(t, revoked && count > 0 && err.code == .None)
+    response := bridge_auto_update_catalog_handler(rawptr(&f.bh), req)
+    testing.expectf(t, response.status == 401 || response.status == 403, "revoked token: %d %s", response.status, response.body)
 }

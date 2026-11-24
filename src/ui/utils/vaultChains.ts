@@ -59,12 +59,23 @@ export async function decryptChainRecord<T extends ChainPayload>(
     } catch {}
   }
 
+  // Flat chain lists can include the owning project label in either wire shape.
+  const projectLabels: Record<string, string> = {};
+  for (const field of ['project_name', 'projectName']) {
+    if (chain[field] && isVaultArmored(chain[field])) {
+      try {
+        projectLabels[field] = await decryptVaultText(chain[field], resolvedKey);
+      } catch {}
+    }
+  }
+
   const members = Array.isArray((chain as any).members)
     ? await decryptChainMembers((chain as any).members, resolvedKey)
     : (chain as any).members;
 
   return {
     ...chain,
+    ...projectLabels,
     title,
     description,
     descriptionPreview,

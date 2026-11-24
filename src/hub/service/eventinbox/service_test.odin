@@ -53,6 +53,7 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 		ack_wait = 60 * time.Millisecond,
 		max_deliver = 2,
 	}
+	defer provisioned_destroy(&service)
 	runtime := Runtime {
 		service = &service,
 	}
@@ -65,7 +66,7 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 	if !testing.expect(t, began) do return
 	testing.expect_value(
 		t,
-		repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = "sub_coord", owner_user_id = "alice", subscriber_agent_id = "agt_coord", chain_id = "chain_1", source = "role_default", filter_subjects = string(encoded), wake_policy = "catalog", consumer_name = "coord", created_at = "now"}).code,
+		repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = "sub_coord", owner_user_id = "alice", subscriber_instance_id = "agt_coord", chain_id = "chain_1", source = "role_default", filter_subjects = string(encoded), wake_policy = "catalog", consumer_name = "coord", created_at = "now"}).code,
 		domain.Error_Code.None,
 	)
 	committed, _ := iface.unit_of_work_commit(&uow)
@@ -106,6 +107,16 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 	testing.expect_value(t, watch(&service, "alice", "agt_bot", "chain_watch", true).code, domain.Error_Code.None)
 	testing.expect(t, reconcile(&runtime), "unprovision an unpulled watch")
 
+ _, old_err := nats.publish(conn, "ev.alice.chain.chain_1.task.task_1.review_verdict",
+  transmute([]byte)string(`{"event_id":"old_v1","type":"task.review_verdict","owner_user_id":"alice","chain_id":"chain_1","task_id":"task_1"}`))
+ testing.expect_value(t, old_err.status, i32(0))
+ old_events, old_read_err := next(&service, "alice", "agt_coord", 0, 20)
+ testing.expect_value(t, old_read_err.code, domain.Error_Code.None)
+ testing.expect_value(t, len(old_events), 0)
+ values_destroy(old_events)
+ old_consumer, old_state_err := nats.consumer_state(conn, "HEIM_EVENTS", "coord")
+ testing.expect_value(t, old_state_err.status, i32(0))
+ testing.expect_value(t, old_consumer.ack_pending, u64(0))
 	subject := "ev.alice.chain.chain_1.task.task_1.state"
 	for state, i in ([]string{"ready", "in_progress", "in_review", "done"}) {
 		inbox_test_publish(t, conn, subject, fmt.tprintf("state_%d", i), "task.state", "", 0, state, true)
@@ -119,16 +130,30 @@ inbox_delivery_scenario :: proc(t: ^testing.T) {
 		testing.expect_value(t, string(data["state"].(json.String)), "done")
 	}
 	values_destroy(events)
+	testing.expect_value(t, acknowledge(&service, "alice", "agt_coord", []string{"resolved:evt_notice"}).code, domain.Error_Code.None)
+	testing.expect_value(t, acknowledge(&service, "alice", "agt_coord", []string{"state_3", "resolved:evt_notice", "evt_unknown"}).code, domain.Error_Code.Not_Found)
+	rows, ack_snapshot_err := ack_snapshot(&service, "alice", "agt_coord", []string{"state_3"})
+	testing.expect_value(t, ack_snapshot_err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(rows), 1)
+	if len(rows) > 0 do testing.expect(t, !rows[0].acknowledged, "unknown real id leaves the mixed batch unacknowledged")
+	delivery_rows_destroy(rows)
+	testing.expect_value(
+		t,
+		acknowledge(&service, "alice", "agt_coord", []string{"resolved:evt_notice", "state_3"}).code,
+		domain.Error_Code.None,
+	)
+	rows, ack_snapshot_err = ack_snapshot(&service, "alice", "agt_coord", []string{"state_3"})
+	testing.expect_value(t, ack_snapshot_err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(rows), 1)
+	if len(rows) > 0 do testing.expect(t, rows[0].acknowledged, "mixed batch acknowledges the real delivery before any plain re-ack")
+	delivery_rows_destroy(rows)
 	testing.expect_value(
 		t,
 		acknowledge(&service, "alice", "agt_coord", []string{"state_3"}).code,
 		domain.Error_Code.None,
 	)
-	testing.expect_value(
-		t,
-		acknowledge(&service, "alice", "agt_coord", []string{"state_3"}).code,
-		domain.Error_Code.None,
-	)
+	// Wait beyond AckWait: the real event in the mixed batch must not redeliver.
+	time.sleep(80 * time.Millisecond)
 	// A truly empty long-poll waits for its bounded budget.
 	began_wait := time.tick_now()
 	empty, empty_err := next(&service, "alice", "agt_coord", 50 * time.Millisecond, 20)
@@ -315,13 +340,7 @@ inbox_test_publish :: proc(
 	state: string,
 	rollup: bool,
 ) {
-	envelope := struct {
-		event_id, type, owner_user_id, chain_id, task_id, topic_key: string,
-		topic_generation:                                            i64,
-		data:                                                        struct {
-			state: string,
-		},
-	}{id, typ, "alice", "chain_1", "task_1", topic, generation, {state}}
+	envelope := inbox_v2(id, typ, "alice", "chain_1", "task_1", topic, generation, state)
 	data, err := json.marshal(envelope)
 	if !testing.expect(t, err == nil) do return
 	defer delete(data)

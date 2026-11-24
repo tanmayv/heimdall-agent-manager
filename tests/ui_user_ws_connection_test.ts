@@ -278,7 +278,8 @@ test('catalog replay preserves the reconnect cursor and routes targeted invalida
     h.last().open();
     h.last().frame(ready('catalog-1'));
     h.last().frame({ ...ev('catalog-1', 1), type: 'catalog_replay', catalog_cursor: '123456789012345678', events: [
-      { type: 'task.state', task_id: 'task_missed', chain_id: 'chain_1' },
+      { type: 'task.state', entity: { kind: 'task', id: 'task_missed' }, data: { chain_id: 'chain_1' } },
+      { type: 'task.state', task_id: 'old_task', chain_id: 'chain_1' },
     ], cursor_expired: false, has_more: false });
     assert.equal(h.delivered.length, 1);
     assert.equal(h.delivered[0].resource, 'task');
@@ -304,7 +305,7 @@ test('catalog watermark advances cursor without another invalidation and pages a
     h.last().open();
     h.last().frame(ready('catalog-paced'));
     h.last().frame({ ...ev('catalog-paced', 1), type: 'catalog_replay', catalog_cursor: '5', events: [
-      { type: 'task.state', task_id: 'task_1', chain_id: 'chain_1' },
+      { type: 'task.state', entity: { kind: 'task', id: 'task_1' }, data: { chain_id: 'chain_1' } },
     ], has_more: true });
     assert.equal(h.last().sent.length, 0);
     await advance(299);

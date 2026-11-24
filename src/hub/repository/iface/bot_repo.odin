@@ -3,9 +3,13 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
+	// One indexed query for pending prompts or recently routed actions.
+	action_activity: proc(ctx: rawptr, instance_id, routed_since: string) -> (bool, domain.Domain_Error),
 	// Web intake atomically creates the local binding and deduplicates the message.
 	web_message_store: proc(ctx: rawptr, binding: domain.Channel_Binding, message: domain.Channel_Message, attachments: []domain.Channel_Attachment) -> (domain.Channel_Message, bool, domain.Domain_Error),
 	messages_page: proc(ctx: rawptr, owner, bot_id, before: string, limit: int) -> ([]domain.Channel_Message, domain.Domain_Error),
+
+	messages_by_ids: proc(ctx: rawptr, owner, bot_id: string, ids: []string) -> ([]domain.Channel_Message, domain.Domain_Error),
 
 	attachment_set_state: proc(ctx: rawptr, attachment_id: string, from, to: domain.Channel_Attachment_State, updated_at: string) -> (changed: bool, err: domain.Domain_Error),
 	attachment_store_artifact: proc(ctx: rawptr, attachment_id, artifact_id, updated_at: string) -> (artifact_id_now: string, err: domain.Domain_Error),
@@ -755,7 +759,17 @@ web_message_store :: proc(repo: ^Bot_Repository, binding: domain.Channel_Binding
 	if repo == nil || repo.web_message_store == nil do return {}, false, domain.domain_error(.Internal_Error, "bot repository is not configured")
 	return repo.web_message_store(repo.ctx, binding, message, attachments)
 }
+messages_by_ids :: proc(repo: ^Bot_Repository, owner, bot_id: string, ids: []string) -> ([]domain.Channel_Message, domain.Domain_Error) {
+	if repo == nil || repo.messages_by_ids == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
+	return repo.messages_by_ids(repo.ctx, owner, bot_id, ids)
+}
+
 messages_page :: proc(repo: ^Bot_Repository, owner, bot_id, before: string, limit: int) -> ([]domain.Channel_Message, domain.Domain_Error) {
 	if repo == nil || repo.messages_page == nil do return nil, domain.domain_error(.Internal_Error, "bot repository is not configured")
 	return repo.messages_page(repo.ctx, owner, bot_id, before, limit)
+}
+
+bot_action_activity :: proc(repo: ^Bot_Repository, instance_id, routed_since: string) -> (bool, domain.Domain_Error) {
+ if repo == nil || repo.action_activity == nil do return false, domain.domain_error(.Internal_Error, "bot action activity lookup is not configured")
+ return repo.action_activity(repo.ctx, instance_id, routed_since)
 }

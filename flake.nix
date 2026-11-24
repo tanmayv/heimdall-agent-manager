@@ -23,7 +23,7 @@
           import nixpkgs { inherit system; };
 
       # Keep appVersion in sync with src/contracts/protocol.odin APP_VERSION.
-      appVersion = "0.5.71";
+      appVersion = "0.5.85";
       npmDepsHash = "sha256-6bl8X0ksrbW/l2Yas7Tdxnr/FFgAxA/sX2hzNEWVdYs=";
 
       # Every Odin binary that links src/lib/httpc links the ONE libcurl pinned
@@ -407,6 +407,12 @@
           release-ham-bridge = mkReleaseOdinPackage pkgs odin "ham-bridge" "src/bridge";
           release-ham-ctl = mkReleaseOdinPackage pkgs odin "ham-ctl" "src/ctl";
           release-ham-pty-host = mkReleasePtyHost pkgs;
+          # T15 (Phase 1, report §7): the launcher and supervisor ship in every
+          # linux/darwin bundle (bin/ham-launcher, bin/ham-supervisor) but are NOT
+          # the service entry point yet (Phase 2 switches the service to the
+          # launcher). Same static recipe; no test defines.
+          release-ham-launcher = mkReleaseOdinPackage pkgs odin "ham-launcher" "src/launcher";
+          release-ham-supervisor = mkReleaseOdinPackage pkgs odin "ham-supervisor" "src/supervisor";
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           # T12: termux-arm64 bundle (musl-static Odin binaries; see
           # mkTermuxOdinPackage). Its pty host is release-ham-pty-host, already
@@ -452,6 +458,33 @@
               odin test src/hub/service/eventrelay -collection:odin_test=src -keep-executable -out:$out/bin/events-tests
               ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/events-tests"}
               odin test src/hub/repository/sqlite -collection:odin_test=src -define:ODIN_TEST_NAMES=test_event_outbox_transactions -out:$out/bin/outbox-tests
+            '';
+          };
+          actions-runtime = pkgs.stdenv.mkDerivation {
+            name = "check-actions-runtime";
+            TZDIR = "${pkgs.tzdata}/share/zoneinfo";
+            src = ./.;
+            nativeBuildInputs = [ (mkOdin pkgs) pkgs.nats-server ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
+            buildInputs = [ (hamNatsFor pkgs) pkgs.openssl pkgs.sqlite ];
+            dontConfigure = true;
+            dontInstall = true;
+            buildPhase = ''
+              mkdir -p $out/bin
+              odin test src/hub/service/actions -collection:odin_test=src -define:ODIN_TEST_THREADS=1 -keep-executable -out:$out/bin/actions-tests
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/actions-tests"}
+            '';
+          };
+          delivery-pipeline = pkgs.stdenv.mkDerivation {
+            name = "check-delivery-pipeline";
+            src = ./.;
+            nativeBuildInputs = [ (mkOdin pkgs) pkgs.nats-server ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.valgrind ];
+            buildInputs = [ (hamNatsFor pkgs) pkgs.openssl pkgs.sqlite ];
+            dontConfigure = true;
+            dontInstall = true;
+            buildPhase = ''
+              mkdir -p $out/bin
+              odin test src/hub/service/delivery -collection:odin_test=src -define:ODIN_TEST_THREADS=1 -keep-executable -out:$out/bin/delivery-tests
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/delivery-tests"}
             '';
           };
           hub-requires-nats = pkgs.runCommand "check-hub-requires-nats" {} ''

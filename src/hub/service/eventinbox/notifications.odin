@@ -1,6 +1,8 @@
 
 package eventinbox
 
+import "base:runtime"
+import "core:sync"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strconv"
@@ -16,11 +18,14 @@ Notification_State :: struct {
 	last_sent:     time.Tick,
 	last_rejected: time.Tick,
 	cursor:        u64,
+	fingerprint: string,
+	dirty: bool,
+	next_check: time.Tick,
 }
 clear_notifications :: proc(r: ^Runtime) {
 	if r.notifications == nil do return
 	context.allocator = r.cache_allocator
-	for _, state in r.notifications do delete(state.key)
+	for _, state in r.notifications {delete(state.key); delete(state.fingerprint)}
 	delete(r.notifications); r.notifications = nil
 }
 save_notification_state :: proc(r: ^Runtime, key: string, state: Notification_State) {
@@ -28,8 +33,59 @@ save_notification_state :: proc(r: ^Runtime, key: string, state: Notification_St
 	context.allocator = r.cache_allocator
 	if r.notifications == nil do r.notifications = make(map[string]Notification_State)
 	next := state
-	if prior, ok := r.notifications[key]; ok {next.key = prior.key} else {next.key = strings.clone(key)}
+	next.fingerprint = strings.clone(state.fingerprint)
+	if prior, ok := r.notifications[key]; ok {next.key = prior.key; delete(prior.fingerprint)} else {next.key = strings.clone(key)}
 	r.notifications[next.key] = next
+}
+// Relay callbacks may run concurrently with the inbox. Bound the dirty set;
+// overflow conservatively requests a full pass instead of retaining all chains.
+Notice_Dirty :: struct {
+	mutex: sync.Mutex,
+	chains: map[string]bool,
+	all: bool,
+}
+NOTICE_RECONCILE_INTERVAL :: 5 * time.Minute
+published :: proc(s: ^Service, subject: string) {
+	if s == nil || !strings.has_prefix(subject, "ev.") do return
+	parts := strings.split(subject, ".")
+	defer delete(parts)
+	offset := 1
+	if len(parts) > 1 && parts[1] == "dlq" do offset = 2
+	if len(parts) < offset+4 || parts[offset+1] != "chain" do return
+	key := fmt.tprintf("%s/%s", parts[offset], parts[offset+2])
+	context.allocator = runtime.heap_allocator()
+	sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
+	if s.notice_dirty.all do return
+	if len(s.notice_dirty.chains) >= 4096 {s.notice_dirty.all = true; return}
+	if s.notice_dirty.chains == nil do s.notice_dirty.chains = make(map[string]bool)
+	if key not_in s.notice_dirty.chains do s.notice_dirty.chains[strings.clone(key)] = true
+}
+take_notice_dirty :: proc(s: ^Service) -> (map[string]bool, bool) {
+	sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
+	chains, all := s.notice_dirty.chains, s.notice_dirty.all
+	s.notice_dirty.chains = nil; s.notice_dirty.all = false
+	return chains, all
+}
+destroy_notice_dirty :: proc(chains: map[string]bool) {
+	context.allocator = runtime.heap_allocator()
+	for key in chains do delete(key)
+	delete(chains)
+}
+clear_notice_dirty :: proc(s: ^Service) {
+	chains, _ := take_notice_dirty(s)
+	destroy_notice_dirty(chains)
+}
+notice_snapshots :: proc(s: ^Service) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error) {
+	uow, began, err := iface.unit_of_work_begin(s.factory)
+	if !began do return nil, err
+	rows, read_err := uow.repos.event_subscriptions.notice_snapshot(uow.repos.event_subscriptions.ctx)
+	if read_err.code != .None {iface.unit_of_work_rollback(&uow); return rows, read_err}
+	committed, commit_err := iface.unit_of_work_commit(&uow)
+	if !committed {
+		for &row in rows do domain.event_notice_snapshot_destroy(&row)
+		delete(rows); return nil, commit_err
+	}
+	return rows, {}
 }
 Notice_Candidate :: struct {
 	row:        domain.Event_Subscription, // borrowed for this pass
@@ -89,7 +145,7 @@ notice_due_snapshot :: proc(
 	rows, read_err := repo.due_deliveries(
 		repo.ctx,
 		row.owner_user_id,
-		row.subscriber_agent_id,
+		row.subscriber_instance_id,
 		row.subscription_id,
 		before,
 	)
@@ -110,7 +166,7 @@ notice_candidate :: proc(
 	obj, ok := value.(json.Object)
 	if !ok ||
 	   notice_string(obj, "owner_user_id") != row.owner_user_id ||
-	   notice_string(obj, "chain_id") != row.chain_id ||
+	   catalog_chain(obj) != row.chain_id ||
 	   notice_string(obj, "event_id") == "" ||
 	   notice_string(obj, "type") == "task.state" {
 		json.destroy_value(value); return
@@ -119,7 +175,7 @@ notice_candidate :: proc(
 	for prior in candidates^ {
 		prior_obj, _ := prior.value.(json.Object)
 		if prior.row.owner_user_id == row.owner_user_id &&
-		   prior.row.subscriber_agent_id == row.subscriber_agent_id &&
+		   prior.row.subscriber_instance_id == row.subscriber_instance_id &&
 		   notice_string(prior_obj, "event_id") == notice_string(obj, "event_id") {
 			json.destroy_value(value); return
 		}
@@ -136,12 +192,12 @@ notice_live :: proc(s: ^Service, candidate: Notice_Candidate) -> (bool, domain.D
 	uow, began, err := iface.unit_of_work_begin(s.factory)
 	if !began do return false, err
 	repo := uow.repos.event_subscriptions
-	live, read_err := repo.exists(repo.ctx, row.owner_user_id, row.subscriber_agent_id, row.subscription_id)
+	live, read_err := repo.exists(repo.ctx, row.owner_user_id, row.subscriber_instance_id, row.subscription_id)
 	if live && read_err.code == .None {
 		receipts, receipt_err := repo.deliveries(
 			repo.ctx,
 			row.owner_user_id,
-			row.subscriber_agent_id,
+			row.subscriber_instance_id,
 			[]string{notice_string(obj, "event_id")},
 		)
 		read_err = receipt_err
@@ -166,6 +222,19 @@ notice_live :: proc(s: ^Service, candidate: Notice_Candidate) -> (bool, domain.D
 notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time.Tick) -> bool {
 	s := r.service
 	if s.notice == nil do return true
+	snapshots, snapshot_err := notice_snapshots(s)
+	if snapshot_err.code != .None do return false
+	defer {for &snapshot in snapshots do domain.event_notice_snapshot_destroy(&snapshot); delete(snapshots)}
+	targets := make(map[string]domain.Event_Notice_Snapshot)
+	defer delete(targets)
+	for snapshot in snapshots do targets[snapshot.subscription_id] = snapshot
+	dirty, dirty_all := take_notice_dirty(s)
+	defer destroy_notice_dirty(dirty)
+	// A failed pass forces full recovery on the next attempt.
+	completed := false
+	defer if !completed do r.notice_reconcile = {}
+	full := dirty_all || r.notice_reconcile._nsec == 0 || now._nsec - r.notice_reconcile._nsec >= i64(NOTICE_RECONCILE_INTERVAL)
+	if full do r.notice_reconcile = now
 	candidates := make([dynamic]Notice_Candidate)
 	defer {
 		for candidate in candidates {json.destroy_value(candidate.value); delete(candidate.ack_reply)}
@@ -174,25 +243,66 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 	active := make(map[string]bool)
 	defer delete(active)
 	for row in rows {
-		subscriber_key := fmt.tprintf("agent:%s/%s", row.owner_user_id, row.subscriber_agent_id)
+		// Counts, cooldown and rate limit are per owning instance, over that
+		// instance's subscriptions only (REQ-EVP-4b).
+		subscriber_key := fmt.tprintf("instance:%s/%s", row.owner_user_id, row.subscriber_instance_id)
 		active[subscriber_key] = true
+		schedule_key := fmt.tprintf("schedule:%s", row.consumer_name)
+		active[schedule_key] = true
+		// Keep bounded-scan cursors alive while their consumer waits for its
+		// next deadline. Otherwise every skipped pass restarts stale history.
+		subjects: []string
+		if json.unmarshal(transmute([]byte)row.filter_subjects, &subjects) != nil do return false
+		defer filters_destroy(subjects)
+		for subject in subjects do active[fmt.tprintf("scan:%s/%s",row.consumer_name,subject)] = true
+		snapshot := targets[row.subscription_id]
+		target := snapshot.target
+		fingerprint := fmt.tprintf("%s/%s/%s/%s/%s/%s/%s/%s/%t/%s/%d/%s",
+			row.owner_user_id,row.subscriber_instance_id,row.filter_subjects,row.wake_policy,
+			target.instance_id,target.bridge_id,target.runtime_status,target.activity_status,
+			target.is_bot,target.stopped_by,snapshot.outstanding,snapshot.oldest_delivery)
+		fingerprint = fmt.tprintf("%s/%s/%s/%s",fingerprint,row.subscription_id,row.chain_id,row.created_at)
+		schedule, known := r.notifications[schedule_key]
+		changed := !known || schedule.fingerprint != fingerprint
+		signaled := full || dirty[fmt.tprintf("%s/%s",row.owner_user_id,row.chain_id)]
+		if changed || signaled {
+			schedule.dirty = true
+			schedule.fingerprint = fingerprint
+			save_notification_state(r, schedule_key, schedule)
+		}
+		if !schedule.dirty && now._nsec < schedule.next_check._nsec do continue
 		prior := r.notifications[subscriber_key]
 		if prior.last_sent._nsec != 0 && now._nsec - prior.last_sent._nsec < i64(30 * time.Second) do continue
 		if prior.last_rejected._nsec != 0 && now._nsec - prior.last_rejected._nsec < i64(5 * time.Second) do continue
-		target, target_err := notice_target_snapshot(s, row)
-		if target_err.code != .None do return false
 		eligible :=
 			target.instance_id != "" &&
 			target.stopped_by == "" &&
 			((target.runtime_status == "running" || target.runtime_status == "idle") &&
 						target.activity_status == "idle" ||
 					target.runtime_status == "stopped")
-		domain.event_notice_target_destroy(&target)
 		if !eligible do continue
 		state, state_err := nats.consumer_state(r.connection, "HEIM_EVENTS", row.consumer_name)
 		if state_err.status != 0 do return false
-		subjects: []string
-		if json.unmarshal(transmute([]byte)row.filter_subjects, &subjects) != nil do return false
+		schedule.dirty = false
+		delay := NOTICE_RECONCILE_INTERVAL
+		if state.pending > 0 do delay = 30 * time.Second
+		if state.ack_pending > 0 {
+			wait := s.ack_wait if s.ack_wait > 0 else 5 * time.Minute
+			recorded, valid := platform.parse_rfc3339_utc(snapshot.oldest_delivery)
+			if valid {
+				// SQL due_deliveries uses a strict comparison of whole-second
+				// timestamps; its first eligible instant is one second later.
+				remaining := time.diff(time.now(), time.time_add(recorded, wait + time.Second))
+				if remaining <= 0 do remaining = 30 * time.Second
+				delay = min(delay, remaining)
+			} else {
+				// A fetch may precede its SQL receipt; recover conservatively.
+				delay = min(delay, 30 * time.Second)
+			}
+		}
+		schedule.next_check = now
+		schedule.next_check._nsec += i64(delay)
+		save_notification_state(r, schedule_key, schedule)
 		for subject in subjects {
 			key := fmt.tprintf("scan:%s/%s", row.consumer_name, subject)
 			active[key] = true
@@ -204,9 +314,9 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 					msg, sequence, err := nats.stream_next(r.connection, "HEIM_EVENTS", subject, cursor)
 					if err.status == 13 {cursor = state.delivered + 1; break} 	// NATS_NOT_FOUND
 					if err.status !=
-					   0 {fmt.eprintln("events: pending snapshot", err, nats.error_text(err)); filters_destroy(subjects); return false}
+					   0 {fmt.eprintln("events: pending snapshot", err, nats.error_text(err)); return false}
 					if sequence <
-					   cursor {fmt.eprintln("events: invalid snapshot sequence", sequence, cursor); nats.message_destroy(msg); filters_destroy(subjects); return false}
+					   cursor {fmt.eprintln("events: invalid snapshot sequence", sequence, cursor); nats.message_destroy(msg); return false}
 					cursor = sequence + 1
 					notice_candidate(row, msg, sequence, false, &candidates)
 					nats.message_destroy(msg)
@@ -214,7 +324,6 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 			}
 			save_notification_state(r, key, {cursor = cursor})
 		}
-		filters_destroy(subjects)
 		if state.ack_pending > 0 {
 			due, due_err := notice_due_snapshot(s, row)
 			if due_err.code != .None do return false
@@ -257,7 +366,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 	defer delete(handled)
 	for candidate in candidates {
 		row := candidate.row
-		key := fmt.tprintf("agent:%s/%s", row.owner_user_id, row.subscriber_agent_id)
+		key := fmt.tprintf("instance:%s/%s", row.owner_user_id, row.subscriber_instance_id)
 		if handled[key] do continue
 		handled[key] = true
 		target, err := notice_target_snapshot(s, row)
@@ -265,7 +374,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		count := 0
 		worthy := false
 		for other in candidates {
-			if other.row.owner_user_id != row.owner_user_id || other.row.subscriber_agent_id != row.subscriber_agent_id do continue
+			if other.row.owner_user_id != row.owner_user_id || other.row.subscriber_instance_id != row.subscriber_instance_id do continue
 			current, found := current_states[other.row.consumer_name]
 			if !found do continue
 			if !other.redelivery && other.sequence <= current.delivered do continue
@@ -280,11 +389,20 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		idle :=
 			(target.runtime_status == "running" || target.runtime_status == "idle") && target.activity_status == "idle"
 		if count > 0 && target.instance_id != "" && target.stopped_by == "" && (idle || stopped && worthy) {
-			if s.notice(s.notice_ctx, row.owner_user_id, row.subscriber_agent_id, target, count, stopped) {
+			if s.notice(s.notice_ctx, row.owner_user_id, row.subscriber_instance_id, target, count, stopped) {
 				save_notification_state(r, key, {last_sent = now})
 				record_notice(s, row.owner_user_id, stopped)
 			} else {
 				save_notification_state(r, key, {last_rejected = now})
+				// A rejected dispatch retries after the existing five-second
+				// backoff, even if the pending scan's next deadline is later.
+				for subscription in rows {
+					if subscription.owner_user_id != row.owner_user_id || subscription.subscriber_instance_id != row.subscriber_instance_id do continue
+					schedule_key := fmt.tprintf("schedule:%s",subscription.consumer_name)
+					schedule := r.notifications[schedule_key]
+					schedule.dirty = true
+					save_notification_state(r,schedule_key,schedule)
+				}
 			}
 		}
 		domain.event_notice_target_destroy(&target)
@@ -297,7 +415,8 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 	for key in expired {
 		context.allocator = r.cache_allocator
 		state := r.notifications[key]
-		delete_key(&r.notifications, key); delete(state.key)
+		delete_key(&r.notifications, key); delete(state.key); delete(state.fingerprint)
 	}
+	completed = true
 	return true
 }

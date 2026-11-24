@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:mem"
 import virtual "core:mem/virtual"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -17,10 +18,19 @@ import taskv2 "odin_test:hub/service/taskv2"
 import nats "odin_test:lib/nats"
 import natstest "odin_test:lib/natstest"
 
+// nats.shutdown closes the NATS library process-wide, so a test that calls it
+// tears down the connections of NATS tests on other runner threads. Every test
+// in this package that touches NATS holds this lock for its whole run.
+@(private = "file")
+http_nats_test_mutex: sync.Mutex
+http_nats_test_lock :: proc() { sync.mutex_lock(&http_nats_test_mutex) }
+http_nats_test_unlock :: proc() { sync.mutex_unlock(&http_nats_test_mutex) }
+
 // Script a bot's authenticated create/message/pull/ack actions against the real
 // service and HTTP handlers, SQLite outbox relay and an isolated JetStream.
 @(test)
 test_bot_auto_watches_and_pulls_review_request :: proc(t: ^testing.T) {
+	http_nats_test_lock(); defer http_nats_test_unlock()
 	track: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
@@ -64,7 +74,7 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	}
 	// A normal worker (even one messaging a coordinator) gets no explicit watch.
 	coordinator_wake_expect(t, c, "started", 1)
-	rows, err := eventinbox.subscriptions(&inbox, string(f.owner), "agt_wire_tb2")
+	rows, err := eventinbox.subscriptions(&inbox, string(f.owner), string(f.instance_id))
 	testing.expect_value(t, err.code, domain.Error_Code.None)
 	for row in rows do testing.expect(t, row.source != "explicit")
 	eventinbox.subscription_rows_destroy(rows)
@@ -82,7 +92,7 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	// Creation installs the watch before any subsequent task can request review.
 	created, ok, cerr := taskchain.create_chain(&f.tc_svc, auth, {title = "Bot created"})
 	if !testing.expect(t, ok, cerr.message) do return
-	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), "agt_wire_tb2")
+	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), string(f.instance_id))
 	found := false
 	for row in rows {
 		if row.chain_id == string(created.chain_id) && row.source == "explicit" do found = true
@@ -108,7 +118,7 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	// messages is idempotent and never changes the existing consumer identity.
 	coordinator_wake_expect(t, c, "not_needed", 1)
 	coordinator_wake_expect(t, c, "not_needed", 1)
-	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), "agt_wire_tb2")
+	rows, err = eventinbox.subscriptions(&inbox, string(f.owner), string(f.instance_id))
 	watched := 0
 	for row in rows {
 		if row.source != "explicit" do continue
@@ -167,7 +177,9 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	wire: struct {
 		data: struct {
 			events: []struct {
-				event_id, type, chain_id, task_id: string,
+				event_id, type: string,
+				entity: struct {kind, id: string},
+				data: struct {chain_id: string},
 			},
 		},
 	}
@@ -176,8 +188,9 @@ bot_events_scenario :: proc(t: ^testing.T) {
 	if len(wire.data.events) != 1 do return
 	ev := wire.data.events[0]
 	testing.expect_value(t, ev.type, "task.review_requested_from_user")
-	testing.expect_value(t, ev.chain_id, string(f.chain_id))
-	testing.expect_value(t, ev.task_id, "task_bot_review")
+	testing.expect_value(t, ev.data.chain_id, string(f.chain_id))
+	testing.expect_value(t, ev.entity.kind, "task")
+	testing.expect_value(t, ev.entity.id, "task_bot_review")
 	body := strings.concatenate({`{"params":{"event_ids":["`, ev.event_id, `"]}}`})
 	resp = event_ack_handler(&handlers, wire_agent_request(f, "events", body))
 	testing.expectf(t, resp.status == 200, "%s", resp.body)

@@ -431,11 +431,13 @@ acp_codex_steering_result :: proc(data: rawptr,result: ACP_RPC_Result) {
     acp_runtime_replace(&r.d.codex.steering_turn_id,"")
     if injected {
         if r.d.phase=="prompt" do acp_chat_boundary(r)
+        acp_delivery_steer_injected(r,input)
         acp_inbox_remember(r,input.id); acp_inbox_input_delete(input)
     } else {
-        // A rejected steer was not injected. Retain input for the next turn.
-        acp_runtime_replace(&input.kind,"append_next_turn"); append(&r.d.queue,input)
+        // A rejected steer was not injected. Retain it at the FRONT for the
+        // next turn (FIFO) and never steer it again.
         if result.error.code==-32601 do r.d.steering_supported=false
+        acp_delivery_steer_rejected(r,input)
     }
     if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r,"acp_state_write_failed"); return }
     acp_runtime_drain(r)

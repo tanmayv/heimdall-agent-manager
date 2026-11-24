@@ -16,6 +16,19 @@ tx_test_db :: proc(t: ^testing.T, tag: string) -> (Conn, string, bool) {
 	return conn, db_path, true
 }
 
+// tx_mutex_released_soon: tx_mutex is process-wide and the test runner runs
+// other UoW tests on parallel threads, so a single try-lock right after our
+// commit can see another test's hold. Poll for a bounded time instead: a UoW
+// that leaked the mutex keeps it held forever and still fails the check.
+tx_mutex_released_soon :: proc(timeout := 5 * time.Second) -> bool {
+	start := time.tick_now()
+	for {
+		if tx_mutex_try_lock() do return true
+		if time.tick_since(start) >= timeout do return false
+		time.sleep(time.Millisecond)
+	}
+}
+
 Tx_Worker :: struct {
 	factory:   ^iface.Unit_Of_Work_Factory,
 	conn:      ^Conn,
@@ -73,7 +86,7 @@ test_tx_mutex_serializes_uow :: proc(t: ^testing.T) {
 	thread.join(th)
 	thread.destroy(th)
 	testing.expect(t, sync.atomic_load(&w.entered_ns) >= released_ns, "second begin entered only after the first commit")
-	testing.expect(t, tx_mutex_try_lock(), "mutex is free once every UoW is closed")
+	testing.expect(t, tx_mutex_released_soon(), "mutex is free once every UoW is closed")
 
 	// Both writes are durable (B's was not swallowed by A's transaction).
 	stmt: sqlite3_stmt
@@ -117,7 +130,7 @@ test_tx_uow_nested_savepoint :: proc(t: ^testing.T) {
 
 	outer_committed, _ := iface.unit_of_work_commit(&outer)
 	testing.expect(t, outer_committed, "outer commit ok")
-	testing.expect(t, tx_mutex_try_lock(), "mutex released at the outer commit")
+	testing.expect(t, tx_mutex_released_soon(), "mutex released at the outer commit")
 
 	count_of :: proc(conn: ^Conn, k: string) -> int {
 		stmt: sqlite3_stmt

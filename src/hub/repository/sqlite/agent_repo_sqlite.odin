@@ -13,10 +13,12 @@ Agent_Repo_SQLite :: struct {
 
 new_agent_repository :: proc(impl: ^Agent_Repo_SQLite, conn: ^Conn) -> iface.Agent_Repository {
 	impl.conn = conn
-	return iface.Agent_Repository{ctx = rawptr(impl), runtime_busy=agent_runtime_busy_sqlite, list_agent_refs=agent_catalog_agents, list_instance_refs=agent_catalog_instances, reconfiguration_begin = instance_reconfiguration_begin_sqlite, reconfiguration_get = instance_reconfiguration_get_sqlite, reconfiguration_advance = instance_reconfiguration_advance_sqlite, reconfiguration_list = instance_reconfiguration_list_sqlite, save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, get_instance = agent_get_instance_sqlite, delete_instance = agent_delete_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_instances_by_chain = agent_list_instances_by_chain_sqlite, list_tool_instances_by_chain = agent_list_tool_instances_by_chain_sqlite, get_tool_instance = agent_get_tool_instance_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite, update_token_usage = agent_update_token_usage_sqlite, add_token_totals = agent_add_token_totals_sqlite, touch_user_activity = agent_touch_user_activity_sqlite, get_user_activity = agent_get_user_activity_sqlite, set_stop_reason = agent_set_stop_reason_sqlite}
+	return iface.Agent_Repository{ctx = rawptr(impl), list_instances_filtered=agent_list_instances_filtered_sqlite, list_action_instances=agent_list_action_instances_sqlite, runtime_busy=agent_runtime_busy_sqlite, list_agent_refs=agent_catalog_agents, list_instance_refs=agent_catalog_instances, reconfiguration_begin = instance_reconfiguration_begin_sqlite, reconfiguration_get = instance_reconfiguration_get_sqlite, reconfiguration_advance = instance_reconfiguration_advance_sqlite, reconfiguration_list = instance_reconfiguration_list_sqlite, save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, save_instance_guarded = agent_save_instance_guarded_sqlite, get_instance = agent_get_instance_sqlite, delete_instance = agent_delete_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_instances_by_chain = agent_list_instances_by_chain_sqlite, list_tool_instances_by_chain = agent_list_tool_instances_by_chain_sqlite, get_tool_instance = agent_get_tool_instance_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite, update_token_usage = agent_update_token_usage_sqlite, add_token_totals = agent_add_token_totals_sqlite, touch_user_activity = agent_touch_user_activity_sqlite, get_user_activity = agent_get_user_activity_sqlite, set_stop_reason = agent_set_stop_reason_sqlite}
 }
 
 agent_delete_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM agent_instances WHERE agent_instance_id = ? AND kind = 'provider_test';"
@@ -31,6 +33,8 @@ agent_delete_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (bool,
 // returns the new value. The UPSERT persists across daemon restarts so per-run
 // default titles keep incrementing globally per agent.
 agent_next_title_counter_sqlite :: proc(ctx: rawptr, agent_id: string, owner_user_id: domain.User_ID, now: string) -> (int, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	if strings.trim_space(agent_id) == "" do return 0, false, domain.domain_error(.Validation_Failed, "agent_id is required for title counter")
 	up: sqlite3_stmt = nil
@@ -49,6 +53,8 @@ agent_next_title_counter_sqlite :: proc(ctx: rawptr, agent_id: string, owner_use
 }
 
 agent_save_sqlite :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO agents (agent_id, owner_user_id, name, slug, template_id, instructions, state, created_at, updated_at, permission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET name=excluded.name, slug=excluded.slug, template_id=excluded.template_id, instructions=excluded.instructions, state=excluded.state, updated_at=excluded.updated_at, permission_mode=excluded.permission_mode;"
@@ -94,6 +100,8 @@ agent_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, l
 }
 
 agent_save_support_sqlite :: proc(ctx: rawptr, support: domain.Agent_Bridge_Support) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO agent_bridge_support (agent_id, bridge_id, owner_user_id, enabled, priority, max_instances, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id, bridge_id) DO UPDATE SET enabled=excluded.enabled, priority=excluded.priority, max_instances=excluded.max_instances, updated_at=excluded.updated_at;"
@@ -128,6 +136,8 @@ agent_list_support_sqlite :: proc(ctx: rawptr, agent_id: string, owner_user_id: 
 }
 
 agent_delete_support_sqlite :: proc(ctx: rawptr, agent_id, bridge_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM agent_bridge_support WHERE agent_id = ? AND bridge_id = ? AND owner_user_id = ?;"
@@ -139,7 +149,24 @@ agent_delete_support_sqlite :: proc(ctx: rawptr, agent_id, bridge_id: string, ow
 }
 
 // A delayed status/ready save must not restore a superseded startup generation.
+@(private = "file")
+AGENT_INSTANCE_SAVE_SQL :: "INSERT INTO agent_instances (agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, permission_mode, provider_profile, runtime_transport, start_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_instance_id) DO UPDATE SET configuration_revision=agent_instances.configuration_revision + CASE WHEN agent_instances.provider_profile != excluded.provider_profile OR agent_instances.provider != excluded.provider OR agent_instances.model != excluded.model OR agent_instances.project_id != excluded.project_id OR agent_instances.project_path != excluded.project_path THEN 1 ELSE 0 END, start_ref=excluded.start_ref, display_name=excluded.display_name, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model, project_id=excluded.project_id, project_path=excluded.project_path, runtime_status=excluded.runtime_status, startup_status=excluded.startup_status, activity_status=excluded.activity_status, status_message=excluded.status_message, last_error_json=excluded.last_error_json, last_applied_seq=excluded.last_applied_seq, run_count=excluded.run_count, current_task_id=excluded.current_task_id, current_task_role=excluded.current_task_role, updated_at=excluded.updated_at, started_at=excluded.started_at, stopped_at=excluded.stopped_at, last_seen_at=excluded.last_seen_at, idle_since=excluded.idle_since, stopped_by=excluded.stopped_by, kind=excluded.kind, launch_epoch=CASE WHEN excluded.run_count>agent_instances.run_count THEN excluded.launch_epoch ELSE agent_instances.launch_epoch END, runtime_transport=CASE WHEN excluded.run_count>agent_instances.run_count THEN excluded.runtime_transport ELSE agent_instances.runtime_transport END, stop_reason=CASE WHEN excluded.run_count>agent_instances.run_count THEN '' ELSE agent_instances.stop_reason END WHERE agent_instances.configuration_revision=excluded.configuration_revision AND (agent_instances.launch_epoch=excluded.launch_epoch OR agent_instances.run_count<excluded.run_count) AND agent_instances.run_count<=excluded.run_count RETURNING configuration_revision, runtime_transport;"
+
+@(private = "file")
+AGENT_INSTANCE_SAVE_GUARDED_SQL :: "INSERT INTO agent_instances (agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, permission_mode, provider_profile, runtime_transport, start_ref) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM agent_instances WHERE agent_instance_id=?35 AND run_count=?36 AND launch_epoch=?37 AND configuration_revision=?38) ON CONFLICT(agent_instance_id) DO UPDATE SET configuration_revision=agent_instances.configuration_revision + CASE WHEN agent_instances.provider_profile != excluded.provider_profile OR agent_instances.provider != excluded.provider OR agent_instances.model != excluded.model OR agent_instances.project_id != excluded.project_id OR agent_instances.project_path != excluded.project_path THEN 1 ELSE 0 END, start_ref=excluded.start_ref, display_name=excluded.display_name, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model, project_id=excluded.project_id, project_path=excluded.project_path, runtime_status=excluded.runtime_status, startup_status=excluded.startup_status, activity_status=excluded.activity_status, status_message=excluded.status_message, last_error_json=excluded.last_error_json, last_applied_seq=excluded.last_applied_seq, run_count=excluded.run_count, current_task_id=excluded.current_task_id, current_task_role=excluded.current_task_role, updated_at=excluded.updated_at, started_at=excluded.started_at, stopped_at=excluded.stopped_at, last_seen_at=excluded.last_seen_at, idle_since=excluded.idle_since, stopped_by=excluded.stopped_by, kind=excluded.kind, launch_epoch=CASE WHEN excluded.run_count>agent_instances.run_count THEN excluded.launch_epoch ELSE agent_instances.launch_epoch END, runtime_transport=CASE WHEN excluded.run_count>agent_instances.run_count THEN excluded.runtime_transport ELSE agent_instances.runtime_transport END, stop_reason=CASE WHEN excluded.run_count>agent_instances.run_count THEN '' ELSE agent_instances.stop_reason END WHERE agent_instances.configuration_revision=excluded.configuration_revision  RETURNING configuration_revision, runtime_transport;"
+
 agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+ return agent_save_instance_sqlite_impl(ctx, instance)
+}
+
+agent_save_instance_guarded_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance, expect_run_count: int, expect_launch_epoch: string, expect_configuration_revision: int) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+ return agent_save_instance_sqlite_impl(ctx, instance, true, expect_run_count, expect_launch_epoch, expect_configuration_revision)
+}
+
+agent_save_instance_sqlite_impl :: proc(ctx: rawptr, instance: domain.Agent_Instance, guarded := false, expect_run_count := 0, expect_launch_epoch := "", expect_configuration_revision := 0) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	// Runtime callers snapshot under state_mutex and persist after unlocking.
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	// RETURNING keeps a write statement active at SQLITE_ROW. Keep step, column
 	// copies and finalization together so another thread cannot BEGIN/COMMIT
@@ -148,10 +175,18 @@ agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance)
 	sqlite3_mutex_enter(mutex)
 	defer sqlite3_mutex_leave(mutex)
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO agent_instances (agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, permission_mode, provider_profile, runtime_transport) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_instance_id) DO UPDATE SET configuration_revision=agent_instances.configuration_revision + CASE WHEN agent_instances.provider_profile != excluded.provider_profile OR agent_instances.provider != excluded.provider OR agent_instances.model != excluded.model OR agent_instances.project_id != excluded.project_id OR agent_instances.project_path != excluded.project_path THEN 1 ELSE 0 END, display_name=excluded.display_name, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model, project_id=excluded.project_id, project_path=excluded.project_path, runtime_status=excluded.runtime_status, startup_status=excluded.startup_status, activity_status=excluded.activity_status, status_message=excluded.status_message, last_error_json=excluded.last_error_json, last_applied_seq=excluded.last_applied_seq, run_count=excluded.run_count, current_task_id=excluded.current_task_id, current_task_role=excluded.current_task_role, updated_at=excluded.updated_at, started_at=excluded.started_at, stopped_at=excluded.stopped_at, last_seen_at=excluded.last_seen_at, idle_since=excluded.idle_since, stopped_by=excluded.stopped_by, kind=excluded.kind, launch_epoch=CASE WHEN excluded.run_count>agent_instances.run_count THEN excluded.launch_epoch ELSE agent_instances.launch_epoch END, runtime_transport=CASE WHEN excluded.run_count>agent_instances.run_count THEN excluded.runtime_transport ELSE agent_instances.runtime_transport END, stop_reason=CASE WHEN excluded.run_count>agent_instances.run_count THEN '' ELSE agent_instances.stop_reason END WHERE agent_instances.configuration_revision=excluded.configuration_revision AND (agent_instances.launch_epoch=excluded.launch_epoch OR agent_instances.run_count<excluded.run_count) AND agent_instances.run_count<=excluded.run_count RETURNING configuration_revision, runtime_transport;"
+ query := AGENT_INSTANCE_SAVE_SQL
+ // Guard the source as well as the update, so missing rows cannot be recreated.
+ if guarded do query = AGENT_INSTANCE_SAVE_GUARDED_SQL
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "failed to prepare instance save")
 	defer sqlite3_finalize(stmt)
 	bind_instance(stmt, instance)
+ if guarded {
+  bind_text(stmt,35,instance.agent_instance_id)
+  bind_text(stmt,36,i32_to_string(expect_run_count))
+  bind_text(stmt,37,expect_launch_epoch)
+  bind_text(stmt,38,i32_to_string(expect_configuration_revision))
+ }
 	// Heartbeats/status updates take the DO UPDATE branch, firing the
 	// agent_instances_fts AFTER UPDATE trigger which can hit SQLITE_CORRUPT on fts
 	// index drift (see fts_repair.odin) — that is what froze last_seen while the
@@ -159,7 +194,10 @@ agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance)
 	rc := step_write_healing(impl.conn, stmt)
 	if rc != SQLITE_ROW {
 		if rc == SQLITE_CORRUPT do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "agent instance save failed: search index drift (SQLITE_CORRUPT) — run the FTS reconcile/repair")
-		if rc == SQLITE_DONE do return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "agent instance generation changed")
+		if rc == SQLITE_DONE {
+   if guarded do return {},false,{}
+   return {},false,domain.domain_error(.Conflict, "agent instance generation changed")
+  }
         if rc & 0xff == SQLITE_BUSY || rc & 0xff == SQLITE_LOCKED {
             busy := domain.domain_error(.Bridge_Busy, "agent instance database busy")
             busy.details_json = `{"retry_after_ms":1000}`
@@ -179,9 +217,13 @@ agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance)
 }
 
 agent_get_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	// This lookup feeds authorization or runtime mutation decisions.
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason FROM agent_instances WHERE agent_instance_id = ?;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE agent_instance_id = ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "failed to prepare instance lookup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, instance_id)
@@ -193,8 +235,8 @@ agent_list_instances_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
-	if cursor != "" do query = "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
+	if cursor != "" do query = "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare instance list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
@@ -212,7 +254,7 @@ agent_list_instances_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.
 agent_list_instances_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason FROM agent_instances WHERE kind = 'agent' AND bridge_id = ? ORDER BY updated_at DESC;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE kind = 'agent' AND bridge_id = ? ORDER BY updated_at DESC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare bridge instance list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, bridge_id)
@@ -224,7 +266,7 @@ agent_list_instances_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) ->
 agent_list_instances_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, chain_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? AND chain_id = ? ORDER BY created_at DESC, agent_instance_id DESC;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE kind = 'agent' AND owner_user_id = ? AND chain_id = ? ORDER BY created_at DESC, agent_instance_id DESC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare chain instance list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
@@ -237,7 +279,7 @@ agent_list_instances_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id: domain.
 agent_list_active_runtime_instances_sqlite :: proc(ctx: rawptr) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason FROM agent_instances WHERE kind = 'agent' AND runtime_status IN ('running','idle','busy','launching','starting','stopping','blocked') ORDER BY last_seen_at ASC;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances WHERE kind = 'agent' AND runtime_status IN ('running','idle','busy','launching','starting','stopping','blocked') ORDER BY last_seen_at ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare active runtime instance list")
 	defer sqlite3_finalize(stmt)
 	out := make([dynamic]domain.Agent_Instance)
@@ -265,10 +307,11 @@ bind_instance :: proc(stmt: sqlite3_stmt, inst: domain.Agent_Instance) {
 	bind_text(stmt, 1, inst.agent_instance_id); bind_text(stmt, 2, string(inst.owner_user_id)); bind_text(stmt, 3, inst.agent_id); bind_text(stmt, 4, inst.bridge_id); bind_text(stmt, 5, inst.display_name); bind_text(stmt, 6, inst.provider); bind_text(stmt, 7, inst.model); bind_text(stmt, 8, string(inst.project_id)); bind_text(stmt, 9, inst.project_path); bind_text(stmt, 10, inst.chain_id); bind_text(stmt, 11, inst.conversation_id); bind_text(stmt, 12, inst.runtime_status); bind_text(stmt, 13, inst.startup_status); bind_text(stmt, 14, inst.activity_status); bind_text(stmt, 15, inst.status_message); bind_text(stmt, 16, i32_to_string(inst.last_applied_seq)); bind_text(stmt, 17, i32_to_string(inst.run_count)); bind_text(stmt, 18, inst.current_task_id); bind_text(stmt, 19, domain.current_task_role_string(inst.current_task_role)); bind_text(stmt, 20, inst.created_at); bind_text(stmt, 21, inst.updated_at); bind_text(stmt, 22, inst.started_at); bind_text(stmt, 23, inst.stopped_at); bind_text(stmt, 24, inst.last_seen_at); bind_text(stmt, 25, "agent" if inst.kind == "" else inst.kind); bind_text(stmt, 26, i32_to_string(inst.configuration_revision)); bind_text(stmt, 27, inst.launch_epoch); bind_text(stmt, 28, inst.last_error_json); bind_text(stmt, 29, inst.idle_since); bind_text(stmt, 30, inst.stopped_by); bind_text(stmt, 31, domain.agent_instance_permission_mode_normalize(inst.permission_mode))
 	bind_text(stmt,32,domain.profile_effective_id(inst.provider,inst.provider_profile))
 	bind_text(stmt,33,inst.runtime_transport if inst.runtime_transport!="" else "pty")
+	bind_text(stmt,34,inst.start_ref)
 }
 
 instance_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Agent_Instance {
-	inst := domain.Agent_Instance{runtime_transport=column_text(stmt,46),stop_reason=column_text(stmt,47),provider_profile=column_text(stmt,38),agent_instance_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), agent_id = column_text(stmt, 2), bridge_id = column_text(stmt, 3), display_name = column_text(stmt, 4), provider = column_text(stmt, 5), model = column_text(stmt, 6), project_id = domain.Project_ID(column_text(stmt, 7)), project_path = column_text(stmt, 8), chain_id = column_text(stmt, 9), conversation_id = column_text(stmt, 10), runtime_status = column_text(stmt, 11), startup_status = column_text(stmt, 12), activity_status = column_text(stmt, 13), status_message = column_text(stmt, 14), last_applied_seq = string_to_i32(column_text_unowned(stmt, 15)), run_count = string_to_i32(column_text_unowned(stmt, 16)), current_task_id = column_text(stmt, 17), current_task_role = domain.current_task_role_from_string(column_text_unowned(stmt, 18)), created_at = column_text(stmt, 19), updated_at = column_text(stmt, 20), started_at = column_text(stmt, 21), stopped_at = column_text(stmt, 22), last_seen_at = column_text(stmt, 23), kind = column_text(stmt, 24), configuration_revision = string_to_i32(column_text_unowned(stmt, 25)), launch_epoch = column_text(stmt, 26), last_error_json = column_text(stmt, 27), idle_since = column_text(stmt, 28), stopped_by = column_text(stmt, 29), provider_session_id = column_text(stmt, 30), provider_transcript_path = column_text(stmt, 31), extension_provider = column_text(stmt, 32), extension_version = column_text(stmt, 33), extension_capabilities = column_text(stmt, 34), extension_last_seen_at = column_text(stmt, 35), permission_mode = domain.agent_instance_permission_mode_normalize(column_text_unowned(stmt, 36)), agent_permission_mode = domain.agent_permission_mode_normalize(column_text_unowned(stmt, 37))}
+	inst := domain.Agent_Instance{start_ref=column_text(stmt,48),runtime_transport=column_text(stmt,46),stop_reason=column_text(stmt,47),provider_profile=column_text(stmt,38),agent_instance_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), agent_id = column_text(stmt, 2), bridge_id = column_text(stmt, 3), display_name = column_text(stmt, 4), provider = column_text(stmt, 5), model = column_text(stmt, 6), project_id = domain.Project_ID(column_text(stmt, 7)), project_path = column_text(stmt, 8), chain_id = column_text(stmt, 9), conversation_id = column_text(stmt, 10), runtime_status = column_text(stmt, 11), startup_status = column_text(stmt, 12), activity_status = column_text(stmt, 13), status_message = column_text(stmt, 14), last_applied_seq = string_to_i32(column_text_unowned(stmt, 15)), run_count = string_to_i32(column_text_unowned(stmt, 16)), current_task_id = column_text(stmt, 17), current_task_role = domain.current_task_role_from_string(column_text_unowned(stmt, 18)), created_at = column_text(stmt, 19), updated_at = column_text(stmt, 20), started_at = column_text(stmt, 21), stopped_at = column_text(stmt, 22), last_seen_at = column_text(stmt, 23), kind = column_text(stmt, 24), configuration_revision = string_to_i32(column_text_unowned(stmt, 25)), launch_epoch = column_text(stmt, 26), last_error_json = column_text(stmt, 27), idle_since = column_text(stmt, 28), stopped_by = column_text(stmt, 29), provider_session_id = column_text(stmt, 30), provider_transcript_path = column_text(stmt, 31), extension_provider = column_text(stmt, 32), extension_version = column_text(stmt, 33), extension_capabilities = column_text(stmt, 34), extension_last_seen_at = column_text(stmt, 35), permission_mode = domain.agent_instance_permission_mode_normalize(column_text_unowned(stmt, 36)), agent_permission_mode = domain.agent_permission_mode_normalize(column_text_unowned(stmt, 37))}
 	instance_token_columns_from_stmt(&inst, stmt, 39)
 	return inst
 }
@@ -293,6 +336,8 @@ instance_token_columns_from_stmt :: proc(inst: ^domain.Agent_Instance, stmt: sql
 // agent_touch_user_activity_sqlite: monotonic (RFC 3339 UTC stamps compare
 // lexically), so a late writer with an older stamp never moves it back.
 agent_touch_user_activity_sqlite :: proc(ctx: rawptr, instance_id, at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	if instance_id == "" || at == "" do return false, {}
 	stmt: sqlite3_stmt = nil
@@ -308,6 +353,8 @@ agent_touch_user_activity_sqlite :: proc(ctx: rawptr, instance_id, at: string) -
 // agent_set_stop_reason_sqlite records why the Hub stopped the instance. The
 // upsert clears it when the next run starts (run_count increases).
 agent_set_stop_reason_sqlite :: proc(ctx: rawptr, instance_id, reason: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "UPDATE agent_instances SET stop_reason = ?1 WHERE agent_instance_id = ?2;"
@@ -331,6 +378,8 @@ agent_get_user_activity_sqlite :: proc(ctx: rawptr, instance_id: string) -> (str
 }
 
 agent_update_token_usage_sqlite :: proc(ctx: rawptr, instance_id, bridge_id, usage_json, updated_at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	// An unchanged snapshot (status frames repeat it) is not rewritten, so
@@ -348,6 +397,8 @@ agent_update_token_usage_sqlite :: proc(ctx: rawptr, instance_id, bridge_id, usa
 // guard, so a replayed or retried final for an already-counted run is a no-op
 // and a run the hub never launched (beyond run_count) is refused.
 agent_add_token_totals_sqlite :: proc(ctx: rawptr, instance_id, bridge_id: string, run_count: int, context_tokens, est_tool_tokens, output_tokens: i64) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Agent_Repo_SQLite)(ctx)
 	if run_count <= 0 do return false, {}
 	stmt: sqlite3_stmt = nil
@@ -391,4 +442,78 @@ agent_list_tool_instances_by_chain_sqlite :: proc(ctx: rawptr, owner: domain.Use
     out := make([dynamic]domain.Agent_Instance)
     for sqlite3_step(stmt) == SQLITE_ROW do append(&out,agent_tool_instance_from_stmt(stmt))
     return out[:],{}
+}
+
+// Columns read by instance_from_stmt, shared by instance list queries.
+AGENT_INSTANCE_SELECT_SQL :: "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, model, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at, kind, configuration_revision, launch_epoch, last_error_json, idle_since, stopped_by, provider_session_id, provider_transcript_path, extension_provider, extension_version, extension_capabilities, extension_last_seen_at, permission_mode, (SELECT a.permission_mode FROM agents a WHERE a.agent_id = agent_instances.agent_id), provider_profile, token_usage_json, token_usage_updated_at, token_total_context_tokens, token_total_est_tool_tokens, token_total_output_tokens, token_runs_counted, COALESCE(token_totals_last_run, -1), runtime_transport, stop_reason, start_ref FROM agent_instances"
+ACTION_INSTANCE_LOOKUP_SQL :: AGENT_INSTANCE_SELECT_SQL + " WHERE kind = 'agent' AND owner_user_id = ? AND agent_id = ? AND bridge_id = ? ORDER BY created_at DESC, agent_instance_id DESC;"
+// Every filter is a WHERE term, so pages are exact for any owner size.
+// Owner plus agent_id/bridge_id seek action_instances_owner_agent_bridge;
+// other shapes search its owner prefix rather than scanning the table.
+agent_instances_filtered_sql :: proc(filter: iface.Agent_Instance_Filter, has_cursor: bool, allocator := context.temp_allocator) -> string {
+	b := strings.builder_make(allocator)
+	strings.write_string(&b, AGENT_INSTANCE_SELECT_SQL)
+	strings.write_string(&b, " WHERE kind = 'agent' AND owner_user_id = ?")
+	if filter.agent_id != "" do strings.write_string(&b, " AND agent_id = ?")
+	if filter.bridge_id != "" do strings.write_string(&b, " AND bridge_id = ?")
+	if filter.project_id != "" do strings.write_string(&b, " AND project_id = ?")
+	if len(filter.runtime_statuses) > 0 {
+		strings.write_string(&b, " AND runtime_status IN (")
+		for _, k in filter.runtime_statuses { if k > 0 do strings.write_byte(&b, ','); strings.write_byte(&b, '?') }
+		strings.write_byte(&b, ')')
+	}
+	if has_cursor do strings.write_string(&b, " AND created_at < ?")
+	strings.write_string(&b, " ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;")
+	return strings.to_string(b)
+}
+
+agent_list_instances_filtered_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, filter: iface.Agent_Instance_Filter, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	impl := (^Agent_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
+	query := agent_instances_filtered_sql(filter, cursor != "")
+	if sqlite3_prepare_v2(impl.conn.db, strings.clone_to_cstring(query, context.temp_allocator), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare filtered instance list")
+	defer sqlite3_finalize(stmt)
+	// Plain ? only, bound in the order agent_instances_filtered_sql writes them.
+	n := 1
+	bind_text(stmt, n, string(owner_user_id)); n += 1
+	if filter.agent_id != "" { bind_text(stmt, n, filter.agent_id); n += 1 }
+	if filter.bridge_id != "" { bind_text(stmt, n, filter.bridge_id); n += 1 }
+	if filter.project_id != "" { bind_text(stmt, n, filter.project_id); n += 1 }
+	for status in filter.runtime_statuses { bind_text(stmt, n, status); n += 1 }
+	if cursor != "" { bind_text(stmt, n, cursor); n += 1 }
+	bind_text(stmt, n, i32_to_string(effective_limit))
+	out := make([dynamic]domain.Agent_Instance)
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW {
+			for &row in out do domain.agent_instance_destroy(&row)
+			delete(out)
+			return nil, domain.domain_error(.Internal_Error, "failed filtered instance list")
+		}
+		append(&out, instance_from_stmt(stmt))
+	}
+	return out[:], domain.Domain_Error{}
+}
+
+agent_list_action_instances_sqlite :: proc(ctx: rawptr, owner:domain.User_ID, agent_id, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	impl := (^Agent_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := ACTION_INSTANCE_LOOKUP_SQL
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare bridge instance list")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(owner)); bind_text(stmt, 2, agent_id); bind_text(stmt, 3, bridge_id)
+	out := make([dynamic]domain.Agent_Instance)
+	for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do break
+  if rc!=SQLITE_ROW {
+   for &row in out do domain.agent_instance_destroy(&row)
+   delete(out)
+   return nil,domain.domain_error(.Internal_Error,"failed action instance lookup")
+  }
+  append(&out,instance_from_stmt(stmt))
+ }
+	return out[:], domain.Domain_Error{}
 }

@@ -684,15 +684,21 @@ MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_
 MIGRATION_221_EXTENSION_VERSION_SYNC :: #load("migrations/221_extension_version_sync_0_5_61.sql", string)
 
 MIGRATION_222_EXTENSION_VERSION_SYNC :: #load("migrations/222_extension_version_sync_0_5_62.sql", string)
+MIGRATION_PIPELINE_002_READ_ACK :: #load("migrations/pipeline_002_read_ack.sql", string)
+MIGRATION_PIPELINE_001_DELIVERIES :: #load("migrations/pipeline_001_deliveries.sql", string)
 MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
 
 MIGRATION_EVENTS_005_DELIVERY_RETENTION :: #load("migrations/events_005_delivery_retention.sql", string)
+MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS :: #load("migrations/events_006_instance_subscriptions.sql", string)
+MIGRATION_EVENTS_008_STATE_HEADS :: #load("migrations/events_008_state_heads.sql", string)
+MIGRATION_EVENTS_007_ENTITY_VERSIONS :: #load("migrations/events_007_entity_versions.sql", string)
 MIGRATION_EVENTS_004_DELIVERY :: #load("migrations/events_004_delivery.sql", string)
 MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions.sql", string)
 
 MIGRATION_EVENTS_002_TOPICS :: #load("migrations/events_002_topics.sql", string)
 
 MIGRATION_223_EXTENSION_VERSION_SYNC :: #load("migrations/223_extension_version_sync_0_5_63.sql", string)
+MIGRATION_BOTS_WEB_003_ACTION_REFS :: #load("migrations/bots_web_003_action_refs.sql", string)
 MIGRATION_BOTS_WEB_002_ATTACHMENTS :: #load("migrations/bots_web_002_attachments.sql", string)
 MIGRATION_BOTS_WEB_001_CHANNEL :: #load("migrations/bots_web_001_channel.sql", string)
 
@@ -722,6 +728,47 @@ MIGRATION_232_KIRO_ACP_PROVIDER :: #load("migrations/232_kiro_acp_provider.sql",
 MIGRATION_233_EXTENSION_VERSION_SYNC :: #load("migrations/233_extension_version_sync_0_5_71.sql", string)
 
 MIGRATION_234_CODEX_ACP_TRANSPORT :: #load("migrations/234_codex_acp_transport.sql", string)
+
+MIGRATION_235_EXTENSION_VERSION_SYNC :: #load("migrations/235_extension_version_sync_0_5_72.sql", string)
+
+MIGRATION_236_EXTENSION_VERSION_SYNC :: #load("migrations/236_extension_version_sync_0_5_73.sql", string)
+
+MIGRATION_AGENTS_001_START_REF :: #load("migrations/agents_001_start_ref.sql", string)
+
+MIGRATION_237_EXTENSION_VERSION_SYNC :: #load("migrations/237_extension_version_sync_0_5_74.sql", string)
+
+MIGRATION_ACTIONS_004_BOT_ACTIVITY :: #load("migrations/actions_004_bot_activity.sql", string)
+MIGRATION_ACTIONS_009_BATCH_HISTORY :: #load("migrations/actions_009_batch_history.sql", string)
+MIGRATION_ACTIONS_008_TARGET_BATCHES :: #load("migrations/actions_008_target_batches.sql", string)
+MIGRATION_ACTIONS_005_SETTLE :: #load("migrations/actions_005_settle.sql", string)
+MIGRATION_ACTIONS_007_FILTER_TREE :: #load("migrations/actions_007_filter_tree.sql", string)
+MIGRATION_ACTIONS_006_TEMPLATE_VARS :: #load("migrations/actions_006_template_vars.sql", string)
+MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE :: #load("migrations/actions_003_history_performance.sql", string)
+MIGRATION_ACTIONS_002_LOOKUP_INDEXES :: #load("migrations/actions_002_lookup_indexes.sql", string)
+MIGRATION_ACP_DELIVERY_001_INPUT_DELIVERIES :: #load("migrations/acp_delivery_001_input_deliveries.sql", string)
+MIGRATION_ACTIONS_001_RESET :: #load("migrations/actions_001_reset.sql", string)
+
+MIGRATION_238_EXTENSION_VERSION_SYNC :: #load("migrations/238_extension_version_sync_0_5_75.sql", string)
+
+MIGRATION_239_EXTENSION_VERSION_SYNC :: #load("migrations/239_extension_version_sync_0_5_76.sql", string)
+
+MIGRATION_240_EXTENSION_VERSION_SYNC :: #load("migrations/240_extension_version_sync_0_5_77.sql", string)
+
+MIGRATION_241_EXTENSION_VERSION_SYNC :: #load("migrations/241_extension_version_sync_0_5_78.sql", string)
+
+MIGRATION_242_EXTENSION_VERSION_SYNC :: #load("migrations/242_extension_version_sync_0_5_79.sql", string)
+
+MIGRATION_243_EXTENSION_VERSION_SYNC :: #load("migrations/243_extension_version_sync_0_5_80.sql", string)
+
+MIGRATION_244_EXTENSION_VERSION_SYNC :: #load("migrations/244_extension_version_sync_0_5_81.sql", string)
+
+MIGRATION_245_EXTENSION_VERSION_SYNC :: #load("migrations/245_extension_version_sync_0_5_82.sql", string)
+
+MIGRATION_246_EXTENSION_VERSION_SYNC :: #load("migrations/246_extension_version_sync_0_5_83.sql", string)
+
+MIGRATION_247_EXTENSION_VERSION_SYNC :: #load("migrations/247_extension_version_sync_0_5_84.sql", string)
+
+MIGRATION_248_EXTENSION_VERSION_SYNC :: #load("migrations/248_extension_version_sync_0_5_85.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -962,6 +1009,7 @@ migration_order :: [?]string {
 	"bots_web_001_channel.sql",
 	"226_extension_version_sync_0_5_65.sql",
 	"bots_web_002_attachments.sql",
+	"bots_web_003_action_refs.sql",
 	"coordinator_idle_001_user_activity.sql",
 	"coordinator_idle_002_stop_reason.sql",
 	"227_extension_version_sync_0_5_66.sql",
@@ -972,6 +1020,36 @@ migration_order :: [?]string {
 	"232_kiro_acp_provider.sql",
 	"233_extension_version_sync_0_5_71.sql",
 	"234_codex_acp_transport.sql",
+	"235_extension_version_sync_0_5_72.sql",
+	"236_extension_version_sync_0_5_73.sql",
+	"agents_001_start_ref.sql",
+	"events_006_instance_subscriptions.sql",
+	"events_007_entity_versions.sql",
+	"237_extension_version_sync_0_5_74.sql",
+	"pipeline_001_deliveries.sql",
+	"actions_001_reset.sql",
+	"actions_002_lookup_indexes.sql",
+	"actions_003_history_performance.sql",
+	"actions_004_bot_activity.sql",
+	"238_extension_version_sync_0_5_75.sql",
+	"239_extension_version_sync_0_5_76.sql",
+	"acp_delivery_001_input_deliveries.sql",
+	"240_extension_version_sync_0_5_77.sql",
+	"pipeline_002_read_ack.sql",
+	"actions_005_settle.sql",
+	"actions_006_template_vars.sql",
+	"241_extension_version_sync_0_5_78.sql",
+	"242_extension_version_sync_0_5_79.sql",
+	"243_extension_version_sync_0_5_80.sql",
+	"actions_008_target_batches.sql",
+	"events_008_state_heads.sql",
+	"actions_009_batch_history.sql",
+	"actions_007_filter_tree.sql",
+	"244_extension_version_sync_0_5_81.sql",
+	"245_extension_version_sync_0_5_82.sql",
+	"246_extension_version_sync_0_5_83.sql",
+	"247_extension_version_sync_0_5_84.sql",
+	"248_extension_version_sync_0_5_85.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1020,8 +1098,29 @@ run_migrations :: proc(
          continue
         }
 		if migration_applied(conn, name) do continue
+		// The reset commits atomically before its ledger entry. Its LAST index
+		// plus the absence of the old schema proves the exec-to-mark gap; do
+		// not reapply the destructive reset to already committed new rows.
+		if name == "actions_001_reset.sql" &&
+		   sqlite_object_exists(conn, "action_runs_due") &&
+		   !sqlite_object_exists(conn, "action_schedule_revision") &&
+		   !sqlite_object_exists(conn, "scheduled_prompts") &&
+		   table_column_exists(conn, "actions", "action_id") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 215 commits atomically; repair a crash before its ledger insert.
 		if name == "215_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "bots_web_003_action_refs.sql" && table_column_exists(conn, "channel_messages", "action_ids_json") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// events_006 commits atomically; its lifecycle trigger proves a commit that
+		// crashed before its ledger insert.
+		if name == "events_006_instance_subscriptions.sql" && sqlite_object_exists(conn, "event_bot_instance_replaced") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -1461,7 +1560,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1480,8 +1579,6 @@ run_migrations :: proc(
 	if !upgrade_current_task_and_priority_schema(conn) do return false, domain.domain_error(.Internal_Error, "current task + priority schema upgrade failed")
 	if !upgrade_title_tracking_schema(conn) do return false, domain.domain_error(.Internal_Error, "title tracking schema upgrade failed")
 	if !upgrade_agent_instance_display_name_schema(conn) do return false, domain.domain_error(.Internal_Error, "agent instance display_name schema upgrade failed")
-	if !upgrade_scheduled_prompts_schema(conn) do return false, domain.domain_error(.Internal_Error, "scheduled prompts schema upgrade failed")
-	if !upgrade_actions_schema(conn) do return false, domain.domain_error(.Internal_Error, "actions schema upgrade failed")
 	if !upgrade_push_subscriptions_schema(conn) do return false, domain.domain_error(.Internal_Error, "push subscriptions schema upgrade failed")
 	if !upgrade_memory_description_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory description schema upgrade failed")
 	if !upgrade_cards_schema(conn) do return false, domain.domain_error(.Internal_Error, "cards schema upgrade failed")
@@ -1504,6 +1601,29 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "248_extension_version_sync_0_5_85.sql" do return strings.clone(MIGRATION_248_EXTENSION_VERSION_SYNC)
+	if name == "247_extension_version_sync_0_5_84.sql" do return strings.clone(MIGRATION_247_EXTENSION_VERSION_SYNC)
+	if name == "246_extension_version_sync_0_5_83.sql" do return strings.clone(MIGRATION_246_EXTENSION_VERSION_SYNC)
+	if name == "245_extension_version_sync_0_5_82.sql" do return strings.clone(MIGRATION_245_EXTENSION_VERSION_SYNC)
+	if name == "244_extension_version_sync_0_5_81.sql" do return strings.clone(MIGRATION_244_EXTENSION_VERSION_SYNC)
+	if name == "243_extension_version_sync_0_5_80.sql" do return strings.clone(MIGRATION_243_EXTENSION_VERSION_SYNC)
+	if name == "242_extension_version_sync_0_5_79.sql" do return strings.clone(MIGRATION_242_EXTENSION_VERSION_SYNC)
+	if name == "241_extension_version_sync_0_5_78.sql" do return strings.clone(MIGRATION_241_EXTENSION_VERSION_SYNC)
+	if name == "240_extension_version_sync_0_5_77.sql" do return strings.clone(MIGRATION_240_EXTENSION_VERSION_SYNC)
+	if name == "239_extension_version_sync_0_5_76.sql" do return strings.clone(MIGRATION_239_EXTENSION_VERSION_SYNC)
+	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
+	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
+ if name == "actions_004_bot_activity.sql" do return strings.clone(MIGRATION_ACTIONS_004_BOT_ACTIVITY)
+ if name == "actions_007_filter_tree.sql" do return strings.clone(MIGRATION_ACTIONS_007_FILTER_TREE)
+ if name == "actions_006_template_vars.sql" do return strings.clone(MIGRATION_ACTIONS_006_TEMPLATE_VARS)
+ if name == "actions_009_batch_history.sql" do return strings.clone(MIGRATION_ACTIONS_009_BATCH_HISTORY)
+ if name == "actions_008_target_batches.sql" do return strings.clone(MIGRATION_ACTIONS_008_TARGET_BATCHES)
+ if name == "actions_005_settle.sql" do return strings.clone(MIGRATION_ACTIONS_005_SETTLE)
+ if name == "actions_003_history_performance.sql" do return strings.clone(MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE)
+ if name == "actions_002_lookup_indexes.sql" do return strings.clone(MIGRATION_ACTIONS_002_LOOKUP_INDEXES)
+ if name == "acp_delivery_001_input_deliveries.sql" do return strings.clone(MIGRATION_ACP_DELIVERY_001_INPUT_DELIVERIES)
+	if name == "237_extension_version_sync_0_5_74.sql" do return strings.clone(MIGRATION_237_EXTENSION_VERSION_SYNC)
+ if name == "agents_001_start_ref.sql" do return strings.clone(MIGRATION_AGENTS_001_START_REF)
 	if migrations_dir != "" {
 		path := strings.concatenate({migrations_dir, "/", name}, context.temp_allocator)
 		data, err := os.read_entire_file(path, context.allocator)
@@ -1511,6 +1631,8 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 			return string(data)
 		}
 	}
+	if name == "236_extension_version_sync_0_5_73.sql" do return strings.clone(MIGRATION_236_EXTENSION_VERSION_SYNC)
+	if name == "235_extension_version_sync_0_5_72.sql" do return strings.clone(MIGRATION_235_EXTENSION_VERSION_SYNC)
 	if name == "234_codex_acp_transport.sql" do return strings.clone(MIGRATION_234_CODEX_ACP_TRANSPORT)
 	if name == "233_extension_version_sync_0_5_71.sql" do return strings.clone(MIGRATION_233_EXTENSION_VERSION_SYNC)
 	if name == "232_kiro_acp_provider.sql" do return strings.clone(MIGRATION_232_KIRO_ACP_PROVIDER)
@@ -1524,6 +1646,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "224_copilot_acp_transport.sql" do return strings.clone(MIGRATION_224_COPILOT_ACP_TRANSPORT)
 	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
 	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
+	if name == "bots_web_003_action_refs.sql" do return strings.clone(MIGRATION_BOTS_WEB_003_ACTION_REFS)
 	if name == "bots_web_002_attachments.sql" do return strings.clone(MIGRATION_BOTS_WEB_002_ATTACHMENTS)
 	if name == "bots_web_001_channel.sql" do return strings.clone(MIGRATION_BOTS_WEB_001_CHANNEL)
 	if name == "whatsapp_001_invite_only.sql" do return strings.clone(MIGRATION_WHATSAPP_001_INVITE_ONLY)
@@ -1531,9 +1654,14 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "coordinator_idle_002_stop_reason.sql" do return strings.clone(MIGRATION_COORDINATOR_IDLE_002_STOP_REASON)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
+	if name == "events_008_state_heads.sql" do return strings.clone(MIGRATION_EVENTS_008_STATE_HEADS)
+ if name == "events_007_entity_versions.sql" do return strings.clone(MIGRATION_EVENTS_007_ENTITY_VERSIONS)
+	if name == "events_006_instance_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS)
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
 	if name == "events_003_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_003_SUBSCRIPTIONS)
 	if name == "events_002_topics.sql" do return strings.clone(MIGRATION_EVENTS_002_TOPICS)
+	if name == "pipeline_002_read_ack.sql" do return strings.clone(MIGRATION_PIPELINE_002_READ_ACK)
+	if name == "pipeline_001_deliveries.sql" do return strings.clone(MIGRATION_PIPELINE_001_DELIVERIES)
 	if name == "events_001_outbox.sql" do return strings.clone(MIGRATION_EVENTS_001_OUTBOX)
 	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)
 	if name == "219_extension_version_sync_0_5_59.sql" do return strings.clone(MIGRATION_219_EXTENSION_VERSION_SYNC)
@@ -2000,88 +2128,6 @@ upgrade_title_tracking_schema :: proc(conn: ^Conn) -> bool {
 
 upgrade_agent_instance_display_name_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "agent_instances", "display_name") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN display_name TEXT NOT NULL DEFAULT '';") do return false
-	return true
-}
-
-upgrade_scheduled_prompts_schema :: proc(conn: ^Conn) -> bool {
-	return exec(
-		conn,
-		`CREATE TABLE IF NOT EXISTS scheduled_prompts (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  target_instance_id TEXT NOT NULL,
-  prompt_text TEXT NOT NULL,
-  target_run_at TEXT NOT NULL,
-  interval TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  in_flight INTEGER NOT NULL DEFAULT 0,
-  leased_at TEXT NOT NULL DEFAULT '',
-  deleted_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);`,
-	)
-}
-
-upgrade_actions_schema :: proc(conn: ^Conn) -> bool {
-	if !exec(
-		conn,
-		`CREATE TABLE IF NOT EXISTS actions (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  target_instance_id TEXT NOT NULL,
-  prompt_text TEXT NOT NULL,
-  cron_expr TEXT NOT NULL DEFAULT '',
-  timezone TEXT NOT NULL DEFAULT 'UTC',
-  blackout_dates TEXT NOT NULL DEFAULT '[]',
-  active_from TEXT NOT NULL DEFAULT '',
-  active_until TEXT NOT NULL DEFAULT '',
-  target_run_at TEXT NOT NULL DEFAULT '',
-  interval TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  in_flight INTEGER NOT NULL DEFAULT 0,
-  leased_at TEXT NOT NULL DEFAULT '',
-  deleted_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target_instance_id);
-CREATE INDEX IF NOT EXISTS idx_actions_owner_run ON actions(owner_user_id, target_run_at);
-CREATE INDEX IF NOT EXISTS idx_actions_due ON actions(target_run_at) WHERE state = 'active' AND in_flight = 0 AND deleted_at = '';
-CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user_id ON actions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`,
-	) {
-		return false
-	}
-
-	if !table_column_exists(conn, "actions", "cron_expr") && !exec(conn, "ALTER TABLE actions ADD COLUMN cron_expr TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "timezone") && !exec(conn, "ALTER TABLE actions ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';") do return false
-	if !table_column_exists(conn, "actions", "blackout_dates") && !exec(conn, "ALTER TABLE actions ADD COLUMN blackout_dates TEXT NOT NULL DEFAULT '[]';") do return false
-	if !table_column_exists(conn, "actions", "active_from") && !exec(conn, "ALTER TABLE actions ADD COLUMN active_from TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "active_until") && !exec(conn, "ALTER TABLE actions ADD COLUMN active_until TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_agent_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_agent_id TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_bridge_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_bridge_id TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_provider") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_provider TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_model") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_model TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_project_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_project_id TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "instance_strategy") && !exec(conn, "ALTER TABLE actions ADD COLUMN instance_strategy TEXT NOT NULL DEFAULT 'reuse';") do return false
-	if !table_column_exists(conn, "actions", "last_spawned_instance_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN last_spawned_instance_id TEXT NOT NULL DEFAULT '';") do return false
-	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_actions_target_agent ON actions(target_agent_id);") do return false
-	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_actions_target_bridge ON actions(target_bridge_id);") do return false
-
-	if table_column_exists(conn, "scheduled_prompts", "id") {
-		exec(
-			conn,
-			`INSERT OR IGNORE INTO actions (
-  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
-  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
-)
-SELECT
-  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
-  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
-FROM scheduled_prompts;`,
-		)
-	}
 	return true
 }
 

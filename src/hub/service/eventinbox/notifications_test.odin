@@ -22,17 +22,17 @@ Notice_Recorder :: struct {
 }
 notification_record_dispatch :: proc(
 	ctx: rawptr,
-	owner, agent: string,
+	owner, instance: string,
 	target: domain.Event_Notice_Target,
 	count: int,
 	wake: bool,
 ) -> bool {
 	r := (^Notice_Recorder)(ctx)
 	testing.expect_value(r.t, owner, "alice")
-	testing.expect_value(r.t, agent, "agt_coord")
+	testing.expect_value(r.t, instance, "inst_coord")
 	testing.expect_value(r.t, target.instance_id, "inst_coord")
 	// Opens a real UoW here: notice delivery must be outside every transaction.
-	rows, err := subscriptions(r.service, owner, agent)
+	rows, err := subscriptions(r.service, owner, instance)
 	testing.expect_value(r.t, err.code, domain.Error_Code.None)
 	subscription_rows_destroy(rows)
 	r.attempts += 1
@@ -105,7 +105,7 @@ notification_scenario :: proc(t: ^testing.T) {
 			repos.event_subscriptions.put(repos.event_subscriptions.ctx, {
 				subscription_id     = id,
 				owner_user_id       = "alice",
-				subscriber_agent_id = "agt_coord",
+				subscriber_instance_id = "inst_coord",
 				chain_id            = "chain_1",
 				// Different sources avoid the scope uniqueness constraint.
 				source              = "role_default" if id == "sub_coord" else "explicit",
@@ -120,18 +120,18 @@ notification_scenario :: proc(t: ^testing.T) {
 	committed, _ := iface.unit_of_work_commit(&uow)
 	if !testing.expect(t, committed) do return
 	if !testing.expect(t, reconcile(&runtime)) do return
-	rows, err := subscriptions(&service, "alice", "agt_coord")
+	rows, err := subscriptions(&service, "alice", "inst_coord")
 	if !testing.expect_value(t, err.code, domain.Error_Code.None) do return
 	defer subscription_rows_destroy(rows)
 	for i in 0 ..< 20 do inbox_test_publish(t, conn, "ev.alice.chain.chain_1.task.task_1.review_verdict", fmt.tprintf("burst_%d", i), "task.review_verdict", "", 0, "", false)
 	now := time.tick_now()
-	testing.expect(t, notify_pending(&runtime, rows, now))
+	testing.expect(t, notify_pending_full(&runtime, rows, now))
 	testing.expect(t, recorder.nudges == 0, "busy agents are left alone")
 	testing.expect(
 		t,
 		sqlite.exec(&db, "UPDATE agent_instances SET activity_status='idle' WHERE agent_instance_id='inst_coord';"),
 	)
-	testing.expect(t, notify_pending(&runtime, rows, now))
+	testing.expect(t, notify_pending_full(&runtime, rows, now))
 	testing.expect_value(t, recorder.nudges, 1)
 	first_metrics,first_metrics_err:=metrics(&service,"alice")
 	testing.expect_value(t,first_metrics_err.code,domain.Error_Code.None)
@@ -139,21 +139,21 @@ notification_scenario :: proc(t: ^testing.T) {
 	testing.expect_value(t,first_metrics.wakes_sent,u64(0))
 	metrics_destroy(&first_metrics)
 	testing.expect(t, recorder.count == 20, "overlapping watches count each event once")
-	for _ in 0 ..< 20 do testing.expect(t, notify_pending(&runtime, rows, now))
+	for _ in 0 ..< 20 do testing.expect(t, notify_pending_full(&runtime, rows, now))
 	testing.expect(t, recorder.nudges == 1, "burst produces at most one line in 30 seconds")
 	observed, observed_err := nats.consumer_state(conn, "HEIM_EVENTS", "sub_coord")
 	testing.expect_value(t, observed_err.status, i32(0))
 	testing.expect(t, observed.delivered == u64(0), "notification observation never advances consumer")
 	testing.expect_value(t, observed.pending, u64(20))
 	testing.expect_value(t, observed.ack_pending, u64(0))
-	events, next_err := next(&service, "alice", "agt_coord", 0, 100)
+	events, next_err := next(&service, "alice", "inst_coord", 0, 100)
 	testing.expect_value(t, next_err.code, domain.Error_Code.None)
 	testing.expect_value(t, len(events), 20)
 	values_destroy(events)
 	// A stale observation taken before next must be rejected by the final SQL
 	// receipt check even if its consumer snapshot raced the pull.
 	stale_value, _ := json.parse_string(
-		`{"event_id":"burst_0","owner_user_id":"alice","chain_id":"chain_1","type":"task.review_verdict"}`,
+		`{"event_id":"burst_0","owner_user_id":"alice","entity":{"kind":"task","id":"task_1"},"data":{"chain_id":"chain_1"},"type":"task.review_verdict"}`,
 	)
 	stale_live, stale_err := notice_live(&service, Notice_Candidate{row = rows[0], value = stale_value})
 	testing.expect_value(t, stale_err.code, domain.Error_Code.None)
@@ -163,17 +163,17 @@ notification_scenario :: proc(t: ^testing.T) {
 	// 100; both overlapping consumers have therefore been scanned.
 	later := now
 	later._nsec += i64(31 * time.Second)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.nudges == 1, "pulled, unacked events do not remind before ack_wait")
 	testing.expect(t, sqlite.exec(&db, "UPDATE event_deliveries SET recorded_at='2000-01-01T00:00:00Z';"))
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.nudges == 2, "redelivery due after ack_wait becomes eligible")
 	ids := make([dynamic]string)
 	defer {for id in ids do delete(id); delete(ids)}
 	for i in 0 ..< 20 do append(&ids, fmt.aprintf("burst_%d", i))
-	testing.expect_value(t, acknowledge(&service, "alice", "agt_coord", ids[:]).code, domain.Error_Code.None)
+	testing.expect_value(t, acknowledge(&service, "alice", "inst_coord", ids[:]).code, domain.Error_Code.None)
 	later._nsec += i64(31 * time.Second)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.nudges == 2, "acknowledged events never remind")
 
 	testing.expect(
@@ -191,7 +191,7 @@ notification_scenario :: proc(t: ^testing.T) {
 		"ready",
 		true,
 	)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 0, "task.state never wakes")
 	topic := "task.task_1.review_request"
 	generation := inbox_test_open(t, &factory, topic, "resolved")
@@ -207,13 +207,13 @@ notification_scenario :: proc(t: ^testing.T) {
 		false,
 	)
 	inbox_test_resolve(t, &factory, topic)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 0, "resolved requests never wake")
 	testing.expect(
 		t,
 		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='running' WHERE agent_instance_id='inst_coord';"),
 	)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.nudges == 2, "resolved requests and task.state never nudge")
 	testing.expect(
 		t,
@@ -233,10 +233,13 @@ notification_scenario :: proc(t: ^testing.T) {
 	)
 	testing.expect(
 		t,
-		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed' WHERE agent_instance_id='inst_coord';"),
+		// A typed failure (held for recovery, not Dead). inst_coord holds no role
+		// in this fixture, so an untyped failure would count as superseded and
+		// end its subscriptions (EV2).
+		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='failed',last_error_json='{\"class\":\"fatal\"}' WHERE agent_instance_id='inst_coord';"),
 	)
 	attempts := recorder.attempts
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect_value(t, recorder.attempts, attempts)
 	testing.expect(t, recorder.wakes == 0, "failed instances require explicit recovery")
 	testing.expect(
@@ -244,21 +247,21 @@ notification_scenario :: proc(t: ^testing.T) {
 		sqlite.exec(&db, "UPDATE agent_instances SET runtime_status='stopped' WHERE agent_instance_id='inst_coord';"),
 	)
 	recorder.accept = false
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 0, "rejected sends do not increment success counters")
 	recorder.accept = true
 	attempts = recorder.attempts
 	before_backoff, _, _ := nats.api_stats(conn)
-	for _ in 0 ..< 5 do testing.expect(t, notify_pending(&runtime, rows, later))
+	for _ in 0 ..< 5 do testing.expect(t, notify_pending_full(&runtime, rows, later))
 	after_backoff, _, _ := nats.api_stats(conn)
 	testing.expect(t, after_backoff - before_backoff <= 1, "backoff skips consumer and stream reads")
 	testing.expect_value(t, recorder.attempts, attempts)
 	almost := later
 	almost._nsec += i64(5 * time.Second - time.Nanosecond)
-	testing.expect(t, notify_pending(&runtime, rows, almost))
+	testing.expect(t, notify_pending_full(&runtime, rows, almost))
 	testing.expect_value(t, recorder.attempts, attempts)
 	later._nsec += i64(5 * time.Second)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 1, "stopped coordinator wakes for live review")
 	result,metrics_err:=metrics(&service,"alice")
 	testing.expect_value(t,metrics_err.code,domain.Error_Code.None)
@@ -270,14 +273,14 @@ notification_scenario :: proc(t: ^testing.T) {
 	testing.expect_value(t,other_owner.nudges_sent,u64(0))
 	testing.expect_value(t,other_owner.wakes_sent,u64(0))
 	metrics_destroy(&other_owner)
-	for _ in 0 ..< 20 do testing.expect(t, notify_pending(&runtime, rows, later))
+	for _ in 0 ..< 20 do testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 1, "wake burst is coalesced too")
 	later._nsec += i64(31 * time.Second)
 	testing.expect(
 		t,
 		sqlite.exec(&db, "UPDATE agent_instances SET stopped_by='user' WHERE agent_instance_id='inst_coord';"),
 	)
-	testing.expect(t, notify_pending(&runtime, rows, later))
+	testing.expect(t, notify_pending_full(&runtime, rows, later))
 	testing.expect(t, recorder.wakes == 1, "preserve explicit user stops")
 
 	obj := make(json.Object)
@@ -289,4 +292,11 @@ notification_scenario :: proc(t: ^testing.T) {
 	defer delete(obj)
 	testing.expect(t, notice_wake_worthy(obj, true))
 	testing.expect(t, !notice_wake_worthy(obj, false), "chain completion wakes only bots")
+}
+
+// Fence scenarios explicitly request a reconciliation after direct external
+// writes; production uses the publish hook or the low-frequency fallback.
+notify_pending_full :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time.Tick) -> bool {
+    r.notice_reconcile = {}
+    return notify_pending(r, rows, now)
 }

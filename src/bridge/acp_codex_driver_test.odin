@@ -319,6 +319,7 @@ codex_driver_native_spawn_overrides_and_profile_shadow_home :: proc(t: ^testing.
     d:=contracts.ACP_CODEX_DESCRIPTOR
     args,built:=acp_provider_launch_argv(d,"","/profile/codex")
     testing.expect(t,built && args[0]=="/profile/codex" && args[1]=="app-server")
+    for arg in args do testing.expect(t,arg!="--no-daemon", "native PTY daemon bypass must not change ACP server argv")
     joined:=strings.join(args," ",context.temp_allocator)
     testing.expect(t,strings.contains(joined,"thread_unload_delay_secs=0") && strings.contains(joined,"features.hooks=false") && strings.contains(joined,"notify=[]"))
     testing.expect(t,strings.contains(joined,"plugins.heimdall@heimdall-codex.enabled=false"))

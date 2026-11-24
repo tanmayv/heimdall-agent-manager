@@ -6,6 +6,14 @@ on:
       - 'scripts/release/package-windows-bundle.ps1'
       - 'extensions/**'
       - 'tests/windows/**'
+      - 'tests/e2e/installer_scenarios_e2e.mjs'
+      - 'tests/e2e/hubOidc.mjs'
+      - 'tests/e2e/natsServer.mjs'
+      - 'tests/e2e/realHomeGuard.mjs'
+      - 'src/bridge/setup_cmd.odin'
+      - 'src/bridge/enroll_*.odin'
+      - 'src/bridge/uninstall_cmd.odin'
+      - 'src/lib/bridgesvc/**'
       - '.github/workflows/install-ps1.yml'
   pull_request:
     paths:
@@ -13,6 +21,14 @@ on:
       - 'scripts/release/package-windows-bundle.ps1'
       - 'extensions/**'
       - 'tests/windows/**'
+      - 'tests/e2e/installer_scenarios_e2e.mjs'
+      - 'tests/e2e/hubOidc.mjs'
+      - 'tests/e2e/natsServer.mjs'
+      - 'tests/e2e/realHomeGuard.mjs'
+      - 'src/bridge/setup_cmd.odin'
+      - 'src/bridge/enroll_*.odin'
+      - 'src/bridge/uninstall_cmd.odin'
+      - 'src/lib/bridgesvc/**'
       - '.github/workflows/install-ps1.yml'
   workflow_dispatch:
 permissions:
@@ -59,3 +75,81 @@ jobs:
       - name: Hermetic install / enroll / upgrade / uninstall test
         shell: pwsh
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows/install_ps1_test.ps1 -Engine ${{ matrix.engine }}
+
+  # REQ-INSTALL-2 on a real Windows runner: the real install.ps1 (Windows PowerShell
+  # 5.1, as `-File` and as the scriptblock one-liner), a bundle zip of the binaries
+  # built from this commit, a throwaway local hub and the real Task Scheduler.
+  # Scenarios as in install-sh.yml (tests/e2e/installer_scenarios_e2e.mjs).
+  scenarios:
+    name: Installer scenarios (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Install private-test NATS server
+        shell: pwsh
+        run: |
+          go install github.com/nats-io/nats-server/v2@v2.14.7
+          if ($LASTEXITCODE -ne 0) { throw 'NATS server build failed' }
+          "HEIMDALL_E2E_NATS_BIN=$(Join-Path (go env GOPATH) 'bin/nats-server.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          "ODIN=$(Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Cache the pinned static libcurl
+        id: curl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libcurl-static
+          key: libcurl-static-windows-x64-${{ hashFiles('nix/libcurl-pin.json', 'scripts/windows/build-libcurl.ps1') }}
+      - name: Build the pinned static libcurl
+        if: ${{ steps.curl-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: scripts/windows/build-libcurl.ps1 -OutDir "$env:RUNNER_TEMP/libcurl-static"
+      - name: Cache the pinned static NATS libraries
+        id: nats-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nats-static
+          key: nats-static-windows-x64-${{ hashFiles('nix/nats-windows-pin.json', 'scripts/windows/build-nats.ps1', 'src/lib/nats/adapter.c') }}
+      - name: Build pinned nats.c, OpenSSL and adapter
+        if: ${{ steps.nats-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: scripts/windows/build-nats.ps1 -OutDir "$env:RUNNER_TEMP/nats-static"
+      - name: Save validated static NATS libraries
+        if: ${{ steps.nats-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nats-static
+          key: ${{ steps.nats-cache.outputs.cache-primary-key }}
+      - name: Build ham-bridge, ham-pty-host and ham-hub
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'installer-bin'
+          scripts/windows/build.ps1 -OutDir $out -Odin $env:ODIN -Components ham-bridge,ham-hub,ham-pty-host -CurlLibDir "$env:RUNNER_TEMP/libcurl-static/lib" -NatsLibDir "$env:RUNNER_TEMP/nats-static/lib"
+          "HEIMDALL_E2E_HUB_BIN=$(Join-Path $out 'ham-hub.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "HEIMDALL_E2E_BRIDGE_BIN=$(Join-Path $out 'ham-bridge.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Installer scenarios (real install.ps1)
+        run: node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/installer_scenarios_e2e.mjs

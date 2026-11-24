@@ -33,7 +33,7 @@ subscription_transaction_scenario :: proc(t: ^testing.T) {
 	row := domain.Event_Subscription {
 		subscription_id     = "sub_1",
 		owner_user_id       = "alice",
-		subscriber_agent_id = "agt_1",
+		subscriber_instance_id = "inst_1",
 		chain_id            = "chain_1",
 		source              = "explicit",
 		filter_subjects     = "[\"ev.alice.chain.chain_1.state\"]",
@@ -48,7 +48,7 @@ subscription_transaction_scenario :: proc(t: ^testing.T) {
 	iface.unit_of_work_rollback(&uow)
 	uow, began, _ = iface.unit_of_work_begin(&factory)
 	if !testing.expect(t, began) do return
-	rows, err := repo.list(repo.ctx, "alice", "agt_1")
+	rows, err := repo.list(repo.ctx, "alice", "inst_1")
 	testing.expect(t, err.code == .None && len(rows) == 0, "rollback removes subscription")
 	delete(rows)
 	testing.expect_value(t, repo.put(repo.ctx, row).code, domain.Error_Code.None)
@@ -61,7 +61,7 @@ subscription_transaction_scenario :: proc(t: ^testing.T) {
 	uow, began, _ = iface.unit_of_work_begin(&factory)
 	if !testing.expect(t, began) do return
 	defer iface.unit_of_work_rollback(&uow)
-	rows, err = repo.list(repo.ctx, "alice", "agt_1")
+	rows, err = repo.list(repo.ctx, "alice", "inst_1")
 	testing.expect(t, err.code == .None && len(rows) == 1, "scope is idempotent")
 	if len(rows) == 1 {
 		testing.expect_value(t, rows[0].subscription_id, "sub_1")
@@ -70,20 +70,20 @@ subscription_transaction_scenario :: proc(t: ^testing.T) {
 	}
 	for &r in rows do domain.event_subscription_destroy(&r)
 	delete(rows)
-	rows, err = repo.list(repo.ctx, "mallory", "agt_1")
+	rows, err = repo.list(repo.ctx, "mallory", "inst_1")
 	testing.expect(t, err.code == .None && len(rows) == 0, "tenant isolation")
 	delete(rows)
-	rows, err = repo.list(repo.ctx, "alice", "agt_other")
-	testing.expect(t, err.code == .None && len(rows) == 0, "agent isolation")
+	rows, err = repo.list(repo.ctx, "alice", "inst_other")
+	testing.expect(t, err.code == .None && len(rows) == 0, "instance isolation")
 	delete(rows)
-	testing.expect_value(t, repo.remove(repo.ctx, "mallory", "agt_1", "sub_1").code, domain.Error_Code.None)
-	testing.expect_value(t, repo.remove(repo.ctx, "alice", "agt_other", "sub_1").code, domain.Error_Code.None)
-	rows, err = repo.list(repo.ctx, "alice", "agt_1")
+	testing.expect_value(t, repo.remove(repo.ctx, "mallory", "inst_1", "sub_1").code, domain.Error_Code.None)
+	testing.expect_value(t, repo.remove(repo.ctx, "alice", "inst_other", "sub_1").code, domain.Error_Code.None)
+	rows, err = repo.list(repo.ctx, "alice", "inst_1")
 	testing.expect(t, err.code == .None && len(rows) == 1, "foreign remove has no effect")
 	for &r in rows do domain.event_subscription_destroy(&r)
 	delete(rows)
-	testing.expect_value(t, repo.remove(repo.ctx, "alice", "agt_1", "sub_1").code, domain.Error_Code.None)
-	rows, err = repo.list(repo.ctx, "alice", "agt_1")
+	testing.expect_value(t, repo.remove(repo.ctx, "alice", "inst_1", "sub_1").code, domain.Error_Code.None)
+	rows, err = repo.list(repo.ctx, "alice", "inst_1")
 	testing.expect(t, err.code == .None && len(rows) == 0, "owner removes subscription")
 	delete(rows)
 }
@@ -133,12 +133,12 @@ role_subscription_scenario :: proc(t: ^testing.T) {
 			"INSERT INTO task_leases(lease_id,task_id,chain_id,owner_user_id,attempt_no,holder_instance_id,kind,granted_at,expires_at,hard_deadline_at,delivery) VALUES('lease','task','chain','alice',1,'inst_worker','work','now','','','wake');",
 		),
 	)
-	rows, err := repo.list(repo.ctx, "alice", "agt_coord")
+	rows, err := repo.list(repo.ctx, "alice", "inst_coord")
 	testing.expect(t, err.code == .None && len(rows) == 1, "membership creates coordinator scope")
 	if len(rows) > 0 do testing.expect(t, rows[0].task_id == "" && rows[0].source == "role_default")
 	for &row in rows do domain.event_subscription_destroy(&row)
 	delete(rows)
-	rows, err = repo.list(repo.ctx, "alice", "agt_worker")
+	rows, err = repo.list(repo.ctx, "alice", "inst_worker")
 	testing.expect(t, err.code == .None && len(rows) == 1, "grant creates exact worker task scope")
 	if len(rows) > 0 {
 		testing.expect_value(t, rows[0].task_id, "task")
@@ -162,7 +162,7 @@ role_subscription_scenario :: proc(t: ^testing.T) {
 			"INSERT INTO task_chain_members(chain_id,agent_instance_id,agent_id,owner_user_id,role,created_at) VALUES('chain','inst_coord','agt_coord','alice','coordinator','now') ON CONFLICT(chain_id,agent_instance_id) DO UPDATE SET role=excluded.role;",
 		),
 	)
-	rows, err = repo.list(repo.ctx, "alice", "agt_worker")
+	rows, err = repo.list(repo.ctx, "alice", "inst_worker")
 	testing.expect(t, err.code == .None && len(rows) == 1, "waiting retains durable ownership")
 	for &row in rows do domain.event_subscription_destroy(&row)
 	delete(rows)
@@ -190,7 +190,7 @@ role_subscription_scenario :: proc(t: ^testing.T) {
 	)
 	testing.expect_value(
 		t,
-		repo.put(repo.ctx, domain.Event_Subscription{subscription_id = "explicit", owner_user_id = "alice", subscriber_agent_id = "agt_coord", chain_id = "chain", source = "explicit", filter_subjects = "[]", wake_policy = "catalog", consumer_name = "explicit", created_at = "now"}).code,
+		repo.put(repo.ctx, domain.Event_Subscription{subscription_id = "explicit", owner_user_id = "alice", subscriber_instance_id = "inst_coord", chain_id = "chain", source = "explicit", filter_subjects = "[]", wake_policy = "catalog", consumer_name = "explicit", created_at = "now"}).code,
 		domain.Error_Code.None,
 	)
 	testing.expect(t, exec(&conn, "DELETE FROM task_leases WHERE lease_id='lease';"))

@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
+import virtual "core:mem/virtual"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -38,9 +39,15 @@ delivery_instance :: proc(ctx: rawptr, id: string) -> (domain.Agent_Instance, bo
 }
 delivery_save :: proc(ctx: rawptr, inst: domain.Agent_Instance) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	f := (^Delivery_Fixture)(ctx)
-	f.instance = placement_clone(inst)
+	context.allocator = f.owned
+    f.instance = placement_clone(inst)
 	f.instance.configuration_revision += 1
 	return placement_clone(f.instance), true, {}
+}
+delivery_save_guarded :: proc(ctx: rawptr, inst: domain.Agent_Instance, count: int, epoch: string, revision: int) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+    f := (^Delivery_Fixture)(ctx)
+    if f.instance.run_count != count || f.instance.launch_epoch != epoch || f.instance.configuration_revision != revision do return {}, false, {}
+    return delivery_save(ctx, inst)
 }
 delivery_agent :: proc(ctx: rawptr, id: string) -> (domain.Agent, bool, domain.Domain_Error) {
 	return placement_clone(domain.Agent{agent_id = "agt_a", owner_user_id = "alice", name = "bot", state = .Active}), true, {}
@@ -73,7 +80,7 @@ delivery_fixture :: proc(t: ^testing.T) -> ^Delivery_Fixture {
 	f.placement.bridges = f.placement.bridges[:1]
 	f.ms = bots_stamp_ms("2026-11-17T12:00:00Z")
 	f.pair.clock = {ctx = f, now = delivery_clock}
-	f.repo = {ctx = f, get_instance = delivery_instance, save_instance = delivery_save, get = delivery_agent,
+	f.repo = {ctx = f, get_instance = delivery_instance, save_instance = delivery_save, save_instance_guarded = delivery_save_guarded, get = delivery_agent,get_support=delivery_support,
 		reconfiguration_begin = delivery_op_begin, reconfiguration_list = delivery_ops, reconfiguration_get = delivery_op_get, reconfiguration_advance = delivery_op_advance}
 	f.instance = {agent_instance_id = "inst_a", agent_id = "agt_a", owner_user_id = "alice", bridge_id = "b1",
 		provider = "alpha", provider_profile = "alpha", model = "m1", runtime_status = "stopped", configuration_revision = 1}
@@ -652,14 +659,14 @@ delivery_op_begin :: proc(ctx: rawptr, op: domain.Instance_Reconfiguration) -> (
 	return placement_clone(op), true, {}
 }
 delivery_chain_save :: proc(ctx: rawptr, chain: domain.Task_Chain) -> (domain.Task_Chain, bool, domain.Domain_Error) {return placement_clone(chain), true, {}}
-delivery_conversation_list :: proc(ctx: rawptr, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error) {return nil, {}}
+delivery_conversation_by_instance :: proc(ctx: rawptr, owner: domain.User_ID, instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) {return {}, false, domain.domain_error(.Not_Found, "conversation not found")}
 delivery_conversation_save :: proc(ctx: rawptr, conv: domain.Chat_Conversation) -> (domain.Chat_Conversation, bool, domain.Domain_Error) {return placement_clone(conv), true, {}}
 
 @(test)
 test_dispatch_prepares_lazily_and_cancels_reservation :: proc(t: ^testing.T) {
 	f := delivery_fixture(t); defer delivery_destroy(f)
 	chains := iface.Taskchain_Repository{save_chain = delivery_chain_save}
-	content := iface.Content_Repository{list_conversations = delivery_conversation_list, save_conversation = delivery_conversation_save}
+	content := iface.Content_Repository{conversation_by_instance = delivery_conversation_by_instance, save_conversation = delivery_conversation_save}
 	f.agents.taskchains, f.agents.content = &chains, &content
 	_ = iface.bot_set_instance(&f.pair.repo, "bot_a", "", delivery_clock(f))
 	delivery_inbound(t, f)
@@ -668,6 +675,9 @@ test_dispatch_prepares_lazily_and_cancels_reservation :: proc(t: ^testing.T) {
 	delivery_attempt_expect(t, f, .Sent)
 	testing.expect(t, f.instance.agent_instance_id != "inst_a")
 	testing.expect(t, f.instance.conversation_id != "" && f.instance.chain_id != "")
+    testing.expect_value(t, f.instance.runtime_status, "stopped")
+    testing.expect_value(t, f.instance.startup_status, "stopped")
+    testing.expect_value(t, f.instance.run_count, 0)
 	bot, _, _ := iface.bot_get(&f.pair.repo, "bot_a"); defer domain.bot_destroy(&bot)
 	testing.expect_value(t, bot.agent_instance_id, f.instance.agent_instance_id)
 	connection := project_service.bridge_runtime_connection_acquire(&f.placement.registry, "b1", 0)
@@ -746,3 +756,59 @@ test_switch_snapshot_candidate_keeps_alias_identity :: proc(t: ^testing.T) {
 	testing.expect_value(t, repeated.model, "opus")
 	testing.expect_value(t, repeated.configuration_revision, changed.configuration_revision)
 }
+
+delivery_support :: proc(ctx:rawptr,a,b:string)->(domain.Agent_Bridge_Support,bool,domain.Domain_Error) {return {},false,{}}
+
+
+// T24: exercise the supervisor's real lazy creation and the bridge-side opening
+// on its bot_deliver frame. The fixture's bridge sink captures the wire bytes.
+bot_start_test_run :: proc(t: ^testing.T, first_generation: bool) {
+    track: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&track, context.allocator); defer mem.tracking_allocator_destroy(&track)
+    context.allocator = mem.tracking_allocator(&track)
+    {
+        arena: virtual.Arena
+        assert(virtual.arena_init_growing(&arena) == nil)
+        context.allocator = virtual.arena_allocator(&arena)
+        context.temp_allocator = context.allocator
+        defer virtual.arena_destroy(&arena)
+        f := delivery_fixture(t); defer delivery_destroy(f)
+        chains := iface.Taskchain_Repository{save_chain = delivery_chain_save}
+        content := iface.Content_Repository{conversation_by_instance = delivery_conversation_by_instance, save_conversation = delivery_conversation_save}
+        f.agents.taskchains, f.agents.content = &chains, &content
+        _ = iface.bot_set_instance(&f.pair.repo, "bot_a", "", delivery_clock(f))
+        delivery_inbound(t, f)
+        bots_supervisor_tick(&f.pair.service)
+        delivery_expect(t, f, .Dispatched)
+        testing.expect_value(t, f.instance.run_count, 0)
+        testing.expect_value(t, f.instance.runtime_status, "stopped")
+        testing.expect_value(t, f.instance.startup_status, "stopped")
+        testing.expect_value(t, f.instance.activity_status, "unknown")
+        testing.expect_value(t, f.instance.stopped_by, "")
+        connection := project_service.bridge_runtime_connection_acquire(&f.placement.registry, "b1", 0)
+        if testing.expect(t, connection != nil) {
+            project_service.connection_state_lock(connection)
+            _, reserved := connection.instances[f.instance.agent_instance_id]
+            project_service.connection_state_unlock(connection)
+            project_service.bridge_runtime_connection_release(&f.placement.registry, connection)
+            testing.expect(t, !reserved)
+        }
+        if first_generation && testing.expect_value(t, len(f.frames), 1) {
+            frame: contracts.Bot_Deliver_Wire
+            testing.expect(t, json.unmarshal_string(f.frames[0], &frame, allocator=context.temp_allocator) == nil)
+            launch, count, reused, ok, err := agent_service.start_begin_for_bridge(&f.agents, "alice", "b1", frame.agent_instance_id, fmt.tprintf("bot_%s", frame.attempt_id))
+            defer delete(launch)
+            testing.expect(t, ok, err.message)
+            testing.expect(t, !reused)
+            testing.expect_value(t, count, 1)
+            wire: struct {payload: struct {run_count: int}}
+            testing.expect(t, json.unmarshal_string(launch, &wire, allocator=context.temp_allocator) == nil)
+            testing.expectf(t, wire.payload.run_count == 1, "first bot launch: %s", launch)
+        }
+    }
+    testing.expect_value(t, len(track.allocation_map), 0)
+}
+@(test)
+test_bot_instance_created_stopped :: proc(t:^testing.T) {bot_start_test_run(t,false)}
+@(test)
+test_bot_first_generation_is_one :: proc(t:^testing.T) {bot_start_test_run(t,true)}

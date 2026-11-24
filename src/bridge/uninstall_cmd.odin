@@ -46,6 +46,10 @@ Bridge_Uninstall :: struct {
 	bridge_pid:    int,
 	leftovers:     [dynamic]string,
 	pty_sockets:   [dynamic]string,
+	// Earlier bridge ids of this profile whose secrets may still be here: recorded by
+	// a re-enrollment onto a new id (enroll_predecessor.odin), or named by a
+	// needs-reenrollment marker / runtime status that differs from the credential.
+	predecessors:  [dynamic]Bridge_Predecessor,
 }
 
 bridge_uninstall_command :: proc(args: []string) -> bool {
@@ -156,10 +160,43 @@ bridge_uninstall_snapshot :: proc(u: ^Bridge_Uninstall) {
 		}
 	}
 	if u.hub != "" do _ = bridge_keystore_set_hub(u.hub)
+	bridge_uninstall_collect_predecessors(u)
 	// Snapshot before Secrets removes identity records. Only this profile's run
 	// directory supplies candidates; never scan shared temporary socket directories.
 	bridge_uninstall_add_pty_identity(u, u.bridge_id)
 	bridge_profile_pty_sockets(l.data_dir, &u.pty_sockets)
+}
+
+// bridge_uninstall_collect_predecessors lists the profile's earlier bridge ids
+// (never the credential's own), once each.
+bridge_uninstall_collect_predecessors :: proc(u: ^Bridge_Uninstall) {
+	u.predecessors = make([dynamic]Bridge_Predecessor, context.temp_allocator)
+	add := proc(u: ^Bridge_Uninstall, p: Bridge_Predecessor) {
+		id := strings.trim_space(p.bridge_id)
+		if !keystore_bridge_id_is_enrolled(id) || id == u.bridge_id do return
+		hub := p.hub if strings.trim_space(p.hub) != "" else u.hub
+		for q in u.predecessors do if q.bridge_id == id && q.hub == hub do return
+		append(&u.predecessors, Bridge_Predecessor{bridge_id = id, hub = hub, token_file = p.token_file})
+	}
+	for p in bridge_predecessors_read(u.config_path) do add(u, p)
+	if m, ok := bridgesvc.read_reenroll_marker(u.layout.state_dir); ok do add(u, {bridge_id = m.bridge_id, hub = m.hub})
+	if rt, ok := bridgesvc.read_runtime_status(u.layout.state_dir); ok do add(u, {bridge_id = rt.bridge_id})
+}
+
+// bridge_uninstall_wipe_predecessors wipes each earlier bridge id under the hub it
+// was enrolled with, then binds the keystore to this profile's hub again.
+bridge_uninstall_wipe_predecessors :: proc(u: ^Bridge_Uninstall, still: ^[dynamic]string) -> (wiped: int) {
+	for p in u.predecessors {
+		if p.hub == "" || !bridge_keystore_set_hub(p.hub) {
+			append(still, fmt.tprintf("secrets of earlier bridge %s (unknown hub)", p.bridge_id))
+			continue
+		}
+		left := bridge_enroll_wipe_bridge(u.config_path, p.token_file, p.bridge_id)
+		append(still, ..left[:])
+		if len(left) == 0 do wiped += 1
+	}
+	if u.hub != "" do _ = bridge_keystore_set_hub(u.hub)
+	return
 }
 
 // bridge_profile_pty_sockets appends the PTY host sockets found in a profile's run
@@ -369,6 +406,7 @@ bridge_uninstall_secrets :: proc(u: ^Bridge_Uninstall) -> (bool, bridgesvc.Unins
 		for p in bridge_enroll_wipe_bridge(u.config_path, tf, u.bridge_id) do append(&still, p)
 		if existed do removed += 1
 	}
+	wiped_predecessors := bridge_uninstall_wipe_predecessors(u, &still)
 	if keystore_bridge_id_is_enrolled(u.bridge_id) && u.hub != "" {
 		if scope, ok := keystore_scope_name_for_hub(u.hub, u.bridge_id); ok {
 			if dir, dok := bridge_vault_bridge_dir(scope, context.temp_allocator); dok && os.exists(dir) {
@@ -381,8 +419,9 @@ bridge_uninstall_secrets :: proc(u: ^Bridge_Uninstall) -> (bool, bridgesvc.Unins
 		for p in still do append(&u.leftovers, p)
 		return false, .Busy, fmt.tprintf("could not delete: %s", strings.join(still[:], ", ", context.temp_allocator))
 	}
-	if u.bridge_id == "" do return true, .None, fmt.tprintf("%d credential file(s) removed (no enrolled bridge id: no keystore items)", removed)
-	return true, .None, fmt.tprintf("credentials, identity key, epoch floor and vault key of %s deleted", u.bridge_id)
+	earlier := fmt.tprintf("; and of %d earlier bridge(s) of this profile", wiped_predecessors) if wiped_predecessors > 0 else ""
+	if u.bridge_id == "" do return true, .None, fmt.tprintf("%d credential file(s) removed (no enrolled bridge id: no keystore items)%s", removed, earlier)
+	return true, .None, fmt.tprintf("credentials, identity key, epoch floor and vault key of %s deleted%s", u.bridge_id, earlier)
 }
 
 // bridge_uninstall_wait_stopped waits for the bridge process recorded in

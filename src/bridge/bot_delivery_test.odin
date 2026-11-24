@@ -128,7 +128,7 @@ bridge_bot_test_end :: proc(s: ^Bridge_Bot_Test) {
 	delete(s.switches)
 	delete(s.launch_id, runtime.heap_allocator())
 	bridge_bot_switch_proc = bridge_bot_switch_http
-	bridge_bot_launch_proc = bridge_bot_launch_via_descriptor
+	bridge_bot_launch_proc = bridge_bot_launch_via_start_begin
 	bridge_bot_snapshot_proc = bridge_runtime_instance_snapshot
 	bridge_bot_launch_record_proc = bridge_runtime_get_launch
 	bridge_bot_notice_proc = bridge_bot_deliver_notice
@@ -322,7 +322,9 @@ test_sticky_ignored_when_stopped_skipped_or_backed_off :: proc(t: ^testing.T) {
 		testing.expect_value(t, w.outcomes[0].provider, "p1")
 		if mode == 0 {
 			testing.expect_value(t, s.launches, 1)
-			testing.expect_value(t, s.launch_id, "botl_attempt_0")
+	// The launch seam receives the stable attempt ID; its legacy adapter builds
+	// botl_attempt_0, while start-begin sends ref=bot_attempt.
+	testing.expect_value(t, s.launch_id, "attempt")
 		}
 		bridge_bot_test_end(&s)
 	}

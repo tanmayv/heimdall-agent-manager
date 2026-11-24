@@ -101,13 +101,8 @@ bots_dispatch_locked :: proc(s: ^Bots_Service, bot: domain.Bot, d: domain.Bot_De
 	instance_id := bot.agent_instance_id
 	if instance_id == "" {
 		sync.mutex_unlock(&s.mutex)
-		inst, generation, prepared, prepare_err := agent_service.prepare_instance(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id},
+		inst, prepared, prepare_err := agent_service.create_instance_stopped(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id},
 			{agent_id = bot.agent_id, bridge_id = bridge_id, provider = candidate.provider, provider_profile = candidate.provider_profile, model = candidate.model, display_name = bot.display_name})
-		if prepared {
-			// bot_deliver performs launch locally. The prepare reservation must
-			// never remain charged while waiting on bridge worker acceptance.
-			project_service.bridge_runtime_instance_cancel_reservation(s.registry, inst.bridge_id, generation, inst.agent_instance_id)
-		}
 		sync.mutex_lock(&s.mutex)
 		if !prepared {
 			a.report_json = bots_reason_json("prepare_refused", prepare_err.message)
@@ -335,6 +330,11 @@ bots_idle_stop :: proc(s: ^Bots_Service, now: string, ms: i64) {
 		stop := !open && e.code == .None && recent_err.code == .None && found && inst_err.code == .None &&
 			agent_service.runtime_expected_active(inst.runtime_status) && stamp != "" && ms - bots_stamp_ms(stamp) > s.timers.bot_idle_stop_ms
 		sync.mutex_unlock(&s.mutex)
+		if stop {
+			cutoff := platform.format_rfc3339_utc(time.Time{_nsec = (ms - s.timers.bot_idle_stop_ms) * 1_000_000})
+			active, activity_err := iface.bot_action_activity(s.repo, bot.agent_instance_id, cutoff)
+			stop = !active && activity_err.code == .None
+		}
 		if stop do _, _, _ = agent_service.stop_instance(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id}, inst.agent_instance_id, {reason = "bot_idle"})
 	}
 }

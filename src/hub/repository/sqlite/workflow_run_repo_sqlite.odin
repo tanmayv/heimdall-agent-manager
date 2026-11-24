@@ -27,6 +27,9 @@ workflow_run_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Workflow_Run {
 }
 
 insert_workflow_run_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Run) -> (domain.Workflow_Run, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := workflow_run_prepare(impl, "INSERT INTO workflow_runs (run_id, chain_id, owner_user_id, title, definition_ref, spec_json, inputs_json, current_execution_no, request_id, request_hash, created_by_kind, created_by_id, created_at, updated_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", "workflow_run insert")
 	if err.code != .None do return domain.Workflow_Run{}, false, err
@@ -51,6 +54,9 @@ insert_workflow_run_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Run) -> 
 }
 
 update_workflow_run_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Run) -> (domain.Workflow_Run, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := workflow_run_prepare(impl, "UPDATE workflow_runs SET chain_id = ?, owner_user_id = ?, title = ?, definition_ref = ?, spec_json = ?, inputs_json = ?, current_execution_no = ?, request_id = ?, request_hash = ?, created_by_kind = ?, created_by_id = ?, created_at = ?, updated_at = ?, revision = ? WHERE run_id = ? AND owner_user_id = ? AND revision = ?;", "workflow_run update")
 	if err.code != .None do return domain.Workflow_Run{}, false, err
@@ -140,6 +146,9 @@ workflow_execution_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Workflow_Run_
 }
 
 insert_workflow_execution_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Run_Execution) -> (domain.Workflow_Run_Execution, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := workflow_run_prepare(impl, "INSERT INTO workflow_run_executions (run_id, execution_no, chain_id, owner_user_id, state, resolved_inputs_json, started_at, ended_at, failure_code, failure_detail, output_manifest_json, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", "workflow_execution insert")
 	if err.code != .None do return domain.Workflow_Run_Execution{}, false, err
@@ -161,6 +170,9 @@ insert_workflow_execution_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Ru
 }
 
 update_workflow_execution_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Run_Execution) -> (domain.Workflow_Run_Execution, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := workflow_run_prepare(impl, "UPDATE workflow_run_executions SET chain_id = ?, owner_user_id = ?, state = ?, resolved_inputs_json = ?, started_at = ?, ended_at = ?, failure_code = ?, failure_detail = ?, output_manifest_json = ?, revision = ? WHERE run_id = ? AND execution_no = ? AND owner_user_id = ? AND revision = ?;", "workflow_execution update")
 	if err.code != .None do return domain.Workflow_Run_Execution{}, false, err
@@ -229,6 +241,9 @@ workflow_stage_execution_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Workflo
 }
 
 insert_workflow_stage_execution_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Stage_Execution) -> (domain.Workflow_Stage_Execution, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := workflow_run_prepare(impl, "INSERT INTO workflow_stage_executions (run_id, execution_no, stage_key, chain_id, owner_user_id, item_count, expanded_at) VALUES (?, ?, ?, ?, ?, ?, ?);", "workflow_stage_execution insert")
 	if err.code != .None do return domain.Workflow_Stage_Execution{}, false, err
@@ -279,6 +294,9 @@ workflow_run_event_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Workflow_Run_
 }
 
 append_workflow_run_event_sqlite :: proc(ctx: rawptr, record: domain.Workflow_Run_Event) -> (domain.Workflow_Run_Event, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := workflow_run_prepare(impl, "INSERT INTO workflow_run_events (run_id, execution_no, chain_id, owner_user_id, ts_ms, actor_kind, actor_id, kind, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING event_id;", "workflow_run_event insert")
 	if err.code != .None do return domain.Workflow_Run_Event{}, false, err

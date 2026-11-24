@@ -25,8 +25,8 @@ Step :: enum {
 	Binaries, // copy bundle binaries into bin/, keeping bin.bak
 	Config, // write or migrate config.toml, hub-url, profile
 	Ports, // allocate / keep the profile's loopback ports
-	Service, // render (always re-render) the service file and register it
-	Enroll, // enroll unless already enrolled to this hub
+	Service, // render the service file; write and register it when it changed
+	Enroll, // enroll unless enrolled to this hub with no applicable re-enroll marker
 	Extensions, // copy the bundled provider extensions, install/repair them per provider
 	Start, // (re)start the service
 	Verify, // service running and the bridge reports connected
@@ -102,6 +102,10 @@ Step_Result :: struct {
 	failure: Failure,
 	message: string,
 	log:     string, // path of a log with details, optional
+	// halt (with ok = false): stop here WITHOUT rolling back. The step is reported as
+	// a warning, the remaining steps as skipped, and finish(ok = true) commits what
+	// ran (S1a: installed but not enrolled; the caller exits 4).
+	halt:    bool,
 }
 
 // Event is one --json-progress line.
@@ -125,6 +129,8 @@ Setup_Ops :: struct {
 	rollback_status: proc(data: rawptr) -> (ok: bool, message: string),
 	emit:      proc(data: rawptr, ev: Event),
 	finish:    proc(data: rawptr, ok: bool), // release the lock, drop staging
+	// Optional: the message of the final "done" event (the row's final line).
+	summary:   proc(data: rawptr) -> string,
 }
 
 MAX_REMEDIATIONS :: 2
@@ -154,6 +160,16 @@ run_setup :: proc(ops: Setup_Ops) -> (ok: bool, failed_step: Step) {
 				ops.emit(ops.data, Event{step = name, state = state, pct = step_pct(step, true), message = r.message, log = r.log, attempt = attempt})
 				break
 			}
+			if r.halt {
+				ops.emit(ops.data, Event{step = name, state = "warning", pct = step_pct(step, true), message = r.message, log = r.log, attempt = attempt})
+				for rest in Step {
+					if rest <= step do continue
+					ops.emit(ops.data, Event{step = STEP_NAMES[rest], state = "skipped", pct = step_pct(rest, true), message = "skipped", attempt = 1})
+				}
+				if ops.finish != nil do ops.finish(ops.data, true)
+				ops.emit(ops.data, Event{step = "setup", state = "done", pct = 100, message = setup_summary(ops, r.message)})
+				return true, step
+			}
 			remediable := r.failure != .Fatal && r.failure != .None
 			if remediable && attempt <= MAX_REMEDIATIONS {
 				fixed, how := ops.remediate(ops.data, step, r.failure)
@@ -182,8 +198,16 @@ run_setup :: proc(ops: Setup_Ops) -> (ok: bool, failed_step: Step) {
 		append(&completed, step)
 	}
 	if ops.finish != nil do ops.finish(ops.data, true)
-	ops.emit(ops.data, Event{step = "setup", state = "done", pct = 100, message = "bridge installed, enrolled and running"})
+	ops.emit(ops.data, Event{step = "setup", state = "done", pct = 100, message = setup_summary(ops, "bridge installed, enrolled and running")})
 	return true, .Verify
+}
+
+@(private = "file")
+setup_summary :: proc(ops: Setup_Ops, fallback: string) -> string {
+	if ops.summary != nil {
+		if m := ops.summary(ops.data); m != "" do return m
+	}
+	return fallback
 }
 
 // ---- install lock ----------------------------------------------------------

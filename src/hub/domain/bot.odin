@@ -67,6 +67,7 @@ Channel_Message :: struct {
 	send_state:                                     Channel_Send_State,
 	send_error:                                     string,
 	created_at, read_at, replied_at:                string,
+	action_ids_json: string,
 	attachment: Channel_Attachment,
 }
 
@@ -349,6 +350,7 @@ channel_message_destroy :: proc(value: ^Channel_Message) {
 	if len(value.created_at) > 0 do delete(value.created_at)
 	if len(value.read_at) > 0 do delete(value.read_at)
 	if len(value.replied_at) > 0 do delete(value.replied_at)
+	delete(value.action_ids_json)
 	channel_attachment_destroy(&value.attachment)
 	value^ = {}
 }

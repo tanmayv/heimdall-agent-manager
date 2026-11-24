@@ -34,7 +34,7 @@ export const SingleActionCard: React.FC<SingleActionCardProps> = ({
   const [localStatus, setLocalStatus] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const { data: cardData, isLoading: isCardLoading } = useGetCardQuery(
+  const { currentData: cardData, isLoading: isCardLoading, isError: isCardError } = useGetCardQuery(
     { cardId: actionId, id: actionId },
     { skip: !actionId || Boolean(initialCard) }
   );
@@ -73,31 +73,28 @@ export const SingleActionCard: React.FC<SingleActionCardProps> = ({
     }
   };
 
-  const handleApprove = async () => {
-    if (isResolved || isBusy) return;
+  const resolve = async (decision: 'approved' | 'rejected') => {
+    if (!card || isCardError || isResolved || isBusy) return;
     setActionError(null);
+    const approving = decision === 'approved';
+    const mutate = approving ? acceptCardMutation : discardCardMutation;
     try {
-      await acceptCardMutation({ cardId: actionId, id: actionId }).unwrap();
-      setLocalStatus('accepted');
-      const title = await resolveCardTitle(card?.title);
-      await sendFeedback(buildActionFeedback('approved', actionId, title));
-    } catch (err: any) {
-      setActionError(cardErrorText(err, 'Failed to approve action'));
+      await mutate({ cardId: actionId, id: actionId }).unwrap();
+    } catch (err) {
+      setActionError(cardErrorText(err, approving ? 'Failed to approve action' : 'Failed to reject action'));
+      return;
+    }
+    setLocalStatus(approving ? 'accepted' : 'rejected');
+    try {
+      const title = await resolveCardTitle(card.title);
+      await sendFeedback(buildActionFeedback(decision, actionId, title, approving ? undefined : comment));
+    } catch {
+      setActionError('Action resolved. Could not send feedback.');
     }
   };
 
-  const handleReject = async () => {
-    if (isResolved || isBusy) return;
-    setActionError(null);
-    try {
-      await discardCardMutation({ cardId: actionId, id: actionId }).unwrap();
-      setLocalStatus('rejected');
-      const title = await resolveCardTitle(card?.title);
-      await sendFeedback(buildActionFeedback('rejected', actionId, title, comment));
-    } catch (err: any) {
-      setActionError(cardErrorText(err, 'Failed to reject action'));
-    }
-  };
+  // A missing/deleted card should not fabricate an untitled pending action.
+  if (!card) return null;
 
   return (
     <div
@@ -130,13 +127,15 @@ export const SingleActionCard: React.FC<SingleActionCardProps> = ({
         <div className="text-xs text-muted">Loading…</div>
       ) : null}
 
+      {isCardError ? <div className="text-xs text-danger" role="alert">Action unavailable.</div> : null}
+
       {actionError ? (
-        <div className="text-xs text-danger rounded bg-danger/10 border border-danger/30 px-2 py-1">
+        <div role="alert" className="text-xs text-danger rounded bg-danger/10 border border-danger/30 px-2 py-1">
           {actionError}
         </div>
       ) : null}
 
-      {!isResolved && (
+      {card && !isCardError && !isResolved && (
         <div className="flex items-center gap-1.5">
           <input
             type="text"
@@ -150,7 +149,7 @@ export const SingleActionCard: React.FC<SingleActionCardProps> = ({
           <button
             type="button"
             data-debug-id={`action-card-reject-btn-${actionId}`}
-            onClick={handleReject}
+            onClick={() => void resolve('rejected')}
             disabled={isBusy}
             className="shrink-0 rounded-md border border-subtle bg-surface px-2.5 py-1 text-xs font-medium text-muted hover:text-danger hover:border-danger/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -159,7 +158,7 @@ export const SingleActionCard: React.FC<SingleActionCardProps> = ({
           <button
             type="button"
             data-debug-id={`action-card-approve-btn-${actionId}`}
-            onClick={handleApprove}
+            onClick={() => void resolve('approved')}
             disabled={isBusy}
             className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >

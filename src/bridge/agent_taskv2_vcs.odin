@@ -230,7 +230,7 @@ bridge_agent_lease_local_rpc :: proc(request_id, method: string, hub_path: []str
 	eff := bridge_taskv2_enrich_lease_params(method, params, rec)
 	defer delete(eff)
 	relay := bridge_local_relay_agent_envelope(hub_path, method, eff, rec)
-	if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
+	if !relay.ok do return bridge_local_relay_failure(request_id, "Hub relay failed", relay)
 	if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 	if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 	if method == "agent.lease.next" || method == "agent.lease.switch" || (method == "agent.lease.claim" && bridge_taskv2_claim_is_local(params, rec.agent_instance_id)) {

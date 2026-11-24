@@ -1,5 +1,7 @@
 package agent
 
+import placement "odin_test:hub/service/placement"
+
 import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
@@ -39,7 +41,7 @@ test_plan_launch_gate_reads_flag_and_reconfiguration_details :: proc(t: ^testing
 	repo := iface.Bridge_Repository{ctx = &f, get_bridge = launch_plan_get_bridge, count_active_by_owner = launch_plan_count}
 	service := Agent_Service{bridges = &repo, entitlements = {ctx = &f, lookup = launch_plan_lookup}}
 	bridge := domain.Bridge{bridge_id = "disabled", owner_user_id = domain.User_ID("alice"), plan_disabled_at = "old"}
-	refusal := require_launch_bridge_enabled(&service, bridge)
+	refusal := test_plan_eligibility_error(&service, bridge)
 	testing.expect_value(t, refusal.code, domain.Error_Code.Plan_Limit_Reached)
 	testing.expect(t, strings.contains(refusal.details_json, `"allowed":1`))
 	testing.expect(t, strings.contains(refusal.details_json, `"current":2`))
@@ -52,18 +54,26 @@ test_plan_launch_gate_reads_flag_and_reconfiguration_details :: proc(t: ^testing
 	testing.expect_value(t, reconfiguration_err.details_json, refusal.details_json)
 
 	f.lookup_failed = true
-	testing.expect_value(t, require_launch_bridge_enabled(&service, bridge).code, domain.Error_Code.Internal_Error)
+	testing.expect_value(t, test_plan_eligibility_error(&service, bridge).code, domain.Error_Code.Internal_Error)
 	f.lookup_failed = false
 
 	// The reaper cleared the stored flag: the stale caller row must not refuse, and
 	// an enabled bridge never consults billing.
 	f.disabled = false
 	f.lookups = 0
-	testing.expect(t, require_launch_bridge_enabled(&service, bridge).code == .None, "re-read the stored flag, not the caller's row")
-	testing.expect(t, require_launch_bridge_enabled(&service, domain.Bridge{bridge_id = "enabled", owner_user_id = domain.User_ID("alice")}).code == .None)
+	testing.expect(t, test_plan_eligibility_error(&service, bridge).code == .None, "re-read the stored flag, not the caller's row")
+	testing.expect(t, test_plan_eligibility_error(&service, domain.Bridge{bridge_id = "enabled", owner_user_id = domain.User_ID("alice")}).code == .None)
 	testing.expect_value(t, f.lookups, 0)
 
 	// A suspension recorded after the caller read its row still refuses the launch.
 	f.disabled = true
-	testing.expect_value(t, require_launch_bridge_enabled(&service, domain.Bridge{bridge_id = "enabled", owner_user_id = domain.User_ID("alice")}).code, domain.Error_Code.Plan_Limit_Reached)
+	testing.expect_value(t, test_plan_eligibility_error(&service, domain.Bridge{bridge_id = "enabled", owner_user_id = domain.User_ID("alice")}).code, domain.Error_Code.Plan_Limit_Reached)
+}
+
+test_plan_eligibility_error :: proc(service:^Agent_Service,b:domain.Bridge)->domain.Domain_Error {
+ ps:=agent_placement(service)
+ _,reason:=placement.bridge_eligible(&ps,b,{owner=string(b.owner_user_id)})
+ // These assertions isolate the plan decision from runtime connectivity.
+ if reason!=placement.REASON_PLAN_DISABLED do return {}
+ return placement.eligibility_error(&ps,b,reason)
 }

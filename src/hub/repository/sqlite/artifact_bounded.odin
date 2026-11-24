@@ -24,6 +24,9 @@ content_get_artifact_bounded_sqlite :: proc(ctx:rawptr,id:string,owner:domain.Us
 	return artifact_from_stmt(stmt),int(sqlite3_column_int64(stmt,22)),true,{}
 }
 content_update_artifact_metadata_sqlite :: proc(ctx:rawptr,id:string,owner:domain.User_ID,name,description,updated_at:string)->(bool,domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl:=(^Content_Repo_SQLite)(ctx)
 	q:="UPDATE artifacts SET name=CASE WHEN ?='' THEN name ELSE ? END,description=CASE WHEN ?='' THEN description ELSE ? END,updated_at=? WHERE artifact_id=? AND owner_user_id=? AND COALESCE(deleted_at,'')='';"
 	stmt:sqlite3_stmt

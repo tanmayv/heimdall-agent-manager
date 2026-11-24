@@ -26,6 +26,9 @@ Bridge_Local_Relay_Result :: struct {
 	status: int,
 	body: string,
 	ok: bool,
+	// err is the transport failure when ok is false (.None when the request was
+	// refused locally before sending); bridge_local_relay_failure names it.
+	err: httpc.Error,
 }
 
 Bridge_Wrapper_Push_Conn_Kind :: enum { TCP, Unix }
@@ -286,12 +289,22 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 }
 
 bridge_local_endpoint_handle_jsonl_line :: proc(line: string) -> string {
+	// The four request fields are owned here and freed on return: every handler answers
+	// synchronously and builds its response in a fresh buffer. (They used to leak on every
+	// local request; the supervisor's gate polls this endpoint every second while it waits.)
 	request_id := bridge_local_extract_json_string(line, "id", "")
+	defer bridge_local_free_extracted(request_id)
 	if bridge_local_extract_json_int(line, "v", 0) != 1 do return bridge_local_response_error(request_id, "bad_version", "local endpoint protocol version must be 1")
 	token := bridge_local_extract_json_string(line, "token", "")
+	defer bridge_local_free_extracted(token)
 	method := bridge_local_extract_json_string(line, "method", "")
-	params := bridge_local_extract_json_object(line, "params")
+	defer bridge_local_free_extracted(method)
+	params, params_owned := jsonx.extract_raw_object(line, "params", false)
+	defer if params_owned do delete(params)
+	if !params_owned do params = "{}"
 	if bridge_local_spoofable_params(params) do return bridge_local_response_error(request_id, "forbidden", "local callers cannot spoof owner, sender, instance, or Hub credentials")
+	// The supervisor's agent gate: its own control token, never an agent token.
+	if strings.has_prefix(method, "supervisor.") do return bridge_supervisor_control_handle(request_id, method, token)
 	rec, ok := bridge_agent_token_verify(token)
 	if !ok do return bridge_local_response_error(request_id, "unauthenticated", "local agent token is invalid or rotated")
 	if !bridge_local_method_allowed(method, rec.role) do return bridge_local_response_error(request_id, "forbidden", "method is not allowed for this local token role")
@@ -313,7 +326,8 @@ bridge_local_spoofable_params :: proc(params: string) -> bool {
 	// "sender_agent_instance_id"/"owner_user_id"/credentials, which stay blocked.
 	blocked := [?]string{"owner_user_id", "sender_agent_instance_id", "hub_url", "Authorization", "authorization", "hub_token", "bridge_token", "token", "access_token"}
 	for key in blocked {
-		if strings.contains(params, strings.concatenate({"\"", key, "\""})) do return true
+		// Temp: this runs on every local request (a heap copy here leaked 9 strings per call).
+		if strings.contains(params, strings.concatenate({"\"", key, "\""}, context.temp_allocator)) do return true
 	}
 	return false
 }
@@ -530,7 +544,7 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 	if method == "agent.rest.request" {
 		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 		relay := bridge_local_relay_rest_request(params, rec)
-		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub REST relay failed")
+		if !relay.ok do return bridge_local_relay_failure(request_id, "Hub REST relay failed", relay)
 		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 		return bridge_local_response_data(request_id, relay.body)
@@ -565,7 +579,7 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if !sync.atomic_load(&bridge_hub_runtime_up) do return bridge_local_response_error(request_id, "hub_unreachable", "Hub is unreachable; the request was not sent")
 		eff_params := bridge_agent_rewrite_params(method, params)
 		relay := bridge_local_relay_agent_envelope(route.path, method, eff_params, rec)
-		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
+		if !relay.ok do return bridge_local_relay_failure(request_id, "Hub relay failed", relay)
 		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 		if method == "agent.channel.read" do bridge_bot_note_read(rec.agent_instance_id, relay.body, bridge_runtime_now_ms())
 		if method == "agent.channel.send" do bridge_bot_note_reply(rec.agent_instance_id, bridge_runtime_now_ms())
@@ -578,7 +592,7 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		body := ""
 		if route.send_body { body = strings.trim_space(params); if body == "" do body = "{}" }
 		relay := bridge_local_relay_raw(route.http_method, route.path, route.query, body, rec)
-		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
+		if !relay.ok do return bridge_local_relay_failure(request_id, "Hub relay failed", relay)
 		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 		return bridge_local_response_data(request_id, relay.body)
@@ -592,11 +606,43 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 	return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"unknown or malformed agent method: ", method}))
 }
 
+// BRIDGE_EVENTS_LONG_POLL_STALL_MS is the stall guard for agent.events.next:
+// the hub may stay silent for the whole long poll (contracts: wait_ms <= 30 s)
+// plus its bounded overhead (eventinbox.NEXT_OVERHEAD_BUDGET, 2 s, plus at most
+// two NATS requests of 1 s already in flight: 34 s worst case), so 30 s + 15 s
+// margin. Every other relayed call keeps the 20 s DEFAULT_STALL_TIMEOUT_MS.
+BRIDGE_EVENTS_LONG_POLL_STALL_MS :: 30_000 + 15_000
+
+// bridge_agent_relay_stall_ms is the stall guard for one relayed agent method:
+// only long-poll methods may legitimately send no bytes for more than 20 s.
+bridge_agent_relay_stall_ms :: proc(method: string) -> int {
+	if method == "agent.events.next" do return BRIDGE_EVENTS_LONG_POLL_STALL_MS
+	return httpc.DEFAULT_STALL_TIMEOUT_MS
+}
+
+// bridge_local_relay_failure answers a relay that got no HTTP response. The
+// message names the transport cause (timed out, connect failed, ...) so an
+// agent can tell a slow hub from an unreachable one; the code stays
+// retryable_unavailable because the request may have been sent.
+bridge_local_relay_failure :: proc(request_id, prefix: string, relay: Bridge_Local_Relay_Result) -> string {
+	cause := "request was not sent (invalid relay parameters)"
+	if relay.err != .None do cause = httpc.error_string(relay.err)
+	return bridge_local_response_error(request_id, "retryable_unavailable", fmt.tprintf("%s: %s", prefix, cause))
+}
+
 // bridge_local_relay_agent_envelope wraps params in the agent-actions envelope
 // {method, agent_instance_id, params} and POSTs it, with AC-5 retry. params must
 // be a JSON object (or empty): it is parsed, never spliced, so an agent cannot
-// smuggle extra envelope keys into the request.
+// smuggle extra envelope keys into the request. The stall guard follows the
+// method (bridge_agent_relay_stall_ms), so every caller of a long-poll method
+// gets the longer guard. The signature is shared with test relay hooks.
 bridge_local_relay_agent_envelope :: proc(path: []string, method, params: string, rec: Bridge_Local_Agent_Token_Record, timeout_ms: int = httpc.LONG_TRANSFER_TIMEOUT_MS) -> Bridge_Local_Relay_Result {
+	return bridge_local_relay_agent_envelope_via(path, method, params, rec, timeout_ms, bridge_hub_http_send)
+}
+
+// bridge_local_relay_agent_envelope_via is the envelope relay over an
+// injectable transport (tests fake the hub with it).
+bridge_local_relay_agent_envelope_via :: proc(path: []string, method, params: string, rec: Bridge_Local_Agent_Token_Record, timeout_ms: int, fetch: Bridge_Hub_Fetch) -> Bridge_Local_Relay_Result {
 	envelope, valid := bridge_local_agent_relay_envelope(method, params, rec.agent_instance_id)
 	if !valid do return bridge_local_relay_invalid_params()
 	credential := bridge_credential_snapshot()
@@ -605,8 +651,8 @@ bridge_local_relay_agent_envelope :: proc(path: []string, method, params: string
 	resp, err := bridge_http_request_retry({
 		method = .POST, url = bridge_hub_url(), path = path, headers = headers[:],
 		body = httpc.json_body(envelope), timeout_ms = timeout_ms,
-		connect_timeout_ms = httpc.DEFAULT_TIMEOUT_MS, stall_timeout_ms = httpc.DEFAULT_STALL_TIMEOUT_MS,
-	})
+		connect_timeout_ms = httpc.DEFAULT_TIMEOUT_MS, stall_timeout_ms = bridge_agent_relay_stall_ms(method),
+	}, fetch = fetch)
 	defer httpc.response_destroy(&resp)
 	return bridge_local_relay_result(resp, err)
 }
@@ -661,7 +707,7 @@ bridge_local_relay_rest_request :: proc(params: string, rec: Bridge_Local_Agent_
 // bridge_local_relay_result copies what the local RPC answer needs (the body is
 // a heap clone owned by the caller, as before).
 bridge_local_relay_result :: proc(resp: httpc.Response, err: httpc.Error) -> Bridge_Local_Relay_Result {
-	if err != .None do return Bridge_Local_Relay_Result{status = 0, ok = false}
+	if err != .None do return Bridge_Local_Relay_Result{status = 0, ok = false, err = err}
 	return Bridge_Local_Relay_Result{status = resp.status, body = strings.clone(httpc.text(resp)), ok = true}
 }
 
@@ -725,6 +771,12 @@ bridge_local_response_error :: proc(id, code, message: string) -> string {
 	bridge_local_write_json_string(&b, message)
 	strings.write_string(&b, "\"}}")
 	return strings.to_string(b)
+}
+
+// bridge_local_free_extracted frees a bridge_local_extract_json_string result (an empty
+// result may be the unallocated fallback).
+bridge_local_free_extracted :: proc(s: string) {
+	if len(s) > 0 do delete(s)
 }
 
 bridge_local_extract_json_string :: proc(json, key, fallback: string, allocator := context.allocator) -> string {

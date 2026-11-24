@@ -216,11 +216,12 @@ acp_driver_acp_steering_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     input := r.d.steering_input; r.d.steering_input = {}; r.d.steering_pending = false
     if outcome == "injected" {
         if input.id!="" && r.d.phase=="prompt" do acp_chat_boundary(r)
+        acp_delivery_steer_injected(r, input)
         acp_inbox_remember(r, input.id); acp_inbox_input_delete(input)
     } else {
         if !result.ok do r.d.steering_supported = false
-        acp_runtime_replace(&input.kind, "append_next_turn")
-        append(&r.d.queue, input)
+        // Front reinsertion keeps FIFO; the input is never steered again.
+        acp_delivery_steer_rejected(r, input)
     }
     if !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return }
     acp_runtime_drain(r)
@@ -294,6 +295,7 @@ acp_driver_acp_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
        (d.steering_pending && !acp_inbox_input_valid(d.steering_input)) { return false }
     if d.batch_first_ms < 0 || d.batch_last_ms < d.batch_first_ms || d.last_notice_turn_ms < 0 do return false
     for id in d.completed_inputs do if id == "" || len(id) > 1024 do return false
+    if d.report_seq < 0 || !acp_send_now_valid(&d.send_now) do return false
     return true
 }
 

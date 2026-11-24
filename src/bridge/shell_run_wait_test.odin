@@ -72,7 +72,7 @@ test_spawn_direct_child_run :: proc(name, cmd, data_dir: string) -> (session_id:
 	if oerr != nil do return "", 0, false
 
 	started_ms := bridge_now_unix_ms()
-	start_time := strings.clone(action_scheduler_format_rfc3339_utc(started_ms))
+	start_time := strings.clone(bridge_format_rfc3339_utc_ms(started_ms))
 	defer delete(start_time)
 
 	command: []string

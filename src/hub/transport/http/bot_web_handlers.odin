@@ -49,7 +49,22 @@ Bot_History_Message :: struct {
 	body_purged: bool,
 	send_state, created_at, read_at, replied_at: string,
 	attachments: []Bot_Channel_Attachment_Wire,
+	metadata: json.Object `json:"metadata,omitempty"`,
 }
+bot_history_message_ids :: proc(raw: string) -> ([]string, bool) {
+	if len(raw) > 6000 do return nil, false
+	value, err := json.parse(raw, allocator = context.temp_allocator)
+	array, ok := value.(json.Array)
+	if err != nil || !ok || len(array) == 0 || len(array) > 25 do return nil, false
+	ids := make([]string, len(array), context.temp_allocator)
+	for item, i in array {
+		id, valid := item.(json.String)
+		if !valid || len(id) == 0 || len(id) > 200 do return nil, false
+		ids[i] = string(id)
+	}
+	return ids, true
+}
+
 bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bot_Handlers)(ctx)
 	auth, ok, refusal := bot_require_auth(h, req)
@@ -65,7 +80,17 @@ bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 	cursor := query_value(req.query, "cursor")
 	if len(cursor) > 200 do return respond_error(domain.domain_error(.Validation_Failed, "invalid history cursor"), req.request_id)
-	messages, list_err := iface.messages_page(h.bots.repo, auth.user_id, bot.bot_id, cursor, limit + 1)
+	messages: []domain.Channel_Message
+	list_err: domain.Domain_Error
+	if has_query_key(req.query, "message_ids") {
+		ids, valid := bot_history_message_ids(query_value(req.query, "message_ids"))
+		if !valid || has_query_key(req.query, "cursor") || has_query_key(req.query, "limit") {
+			return respond_error(domain.domain_error(.Validation_Failed, "message_ids requires an array of 1..25 IDs without pagination"), req.request_id)
+		}
+		messages, list_err = iface.messages_by_ids(h.bots.repo, auth.user_id, bot.bot_id, ids)
+	} else {
+		messages, list_err = iface.messages_page(h.bots.repo, auth.user_id, bot.bot_id, cursor, limit + 1)
+	}
 	defer {for &m in messages do domain.channel_message_destroy(&m); delete(messages)}
 	if list_err.code != .None do return respond_error(list_err, req.request_id)
 	ids := make([]string, min(limit, len(messages)), context.temp_allocator)
@@ -79,7 +104,21 @@ bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		defer domain.channel_binding_destroy(&binding)
 		if e.code != .None do return respond_error(e, req.request_id)
 		if !found || binding.owner_user_id != auth.user_id || binding.bot_id != bot.bot_id do return respond_error(domain.domain_error(.Internal_Error, "message binding missing"), req.request_id)
-		wire[i] = {m.message_id, m.binding_id, binding.provider, domain.channel_direction_text(m.direction), m.body, m.body_purged, domain.channel_send_state_text(m.send_state), m.created_at, m.read_at, m.replied_at, nil if m.body_purged else bot_channel_attachment_wires(attachments, m.message_id)}
+		metadata: json.Object
+		if binding.provider == domain.CHANNEL_PROVIDER_WEB && m.direction == .Outbound && !m.body_purged && m.action_ids_json != "" {
+			ids: []string
+			if json.unmarshal(transmute([]u8)m.action_ids_json, &ids, allocator = context.temp_allocator) == nil && len(ids) > 0 {
+				visible, card_err := bot_visible_action_ids(h.cards, domain.User_ID(auth.user_id), ids)
+				if card_err.code != .None do return respond_error(card_err, req.request_id)
+				if len(visible) > 0 {
+					values := make(json.Array, len(visible), context.temp_allocator)
+					for id, index in visible do values[index] = json.String(id)
+					metadata = make(json.Object, 1, context.temp_allocator)
+					metadata["action_ids"] = values
+				}
+			}
+		}
+		wire[i] = {m.message_id, m.binding_id, binding.provider, domain.channel_direction_text(m.direction), m.body, m.body_purged, domain.channel_send_state_text(m.send_state), m.created_at, m.read_at, m.replied_at, nil if m.body_purged else bot_channel_attachment_wires(attachments, m.message_id), metadata}
 	}
 	next := ""
 	if len(messages) > limit do next = messages[limit-1].message_id

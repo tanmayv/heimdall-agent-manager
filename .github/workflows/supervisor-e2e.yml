@@ -1,0 +1,161 @@
+name: Supervisor e2e
+# T13b + T15 (REQ-OS-1, report §7 Phase 1 exit): the real ham-launcher -> ham-supervisor
+# (test build) -> fake runtime against a fake GitHub on loopback (src/supervisor/e2e):
+# the main update scenario plus the cross-OS failure-injection suite (failing candidates,
+# failing rollback + repair, clean/unclean stops in probation, GitHub and hub offline,
+# >100 releases, mutable assets, two profiles, two OS users, Windows file-in-use and
+# antivirus delay). Coverage map: docs/specs/bridge-supervisor-t15-suite.md.
+# Linux, macOS and Windows.
+on:
+  push:
+    branches: [main, 'heimdall/**', 'ci/**']
+    paths:
+      - 'src/supervisor/**'
+      - 'src/launcher/**'
+      - 'src/lib/httpc/**'
+      - 'src/lib/local_socket/**'
+      - 'scripts/supervisor/**'
+      - '.github/workflows/supervisor-e2e.yml'
+  pull_request:
+    paths:
+      - 'src/supervisor/**'
+      - 'src/launcher/**'
+      - 'src/lib/httpc/**'
+      - 'src/lib/local_socket/**'
+      - 'scripts/supervisor/**'
+      - '.github/workflows/supervisor-e2e.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: supervisor-e2e-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unix:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # T15 two OS users on one hub: a second local account the test drives with
+      # `sudo -n -u` (the runner has passwordless sudo), and a directory both can use.
+      - name: second OS user
+        shell: bash
+        run: |
+          set -euo pipefail
+          user=heimdalle2e
+          if [ "$(uname -s)" = Darwin ]; then
+            sudo sysadminctl -addUser "$user" -password "$(openssl rand -hex 16)" 2>&1
+          else
+            sudo useradd --create-home "$user"
+          fi
+          id "$user"
+          shared=/tmp/heimdall-e2e-shared
+          mkdir -p "$shared"
+          chmod 0777 "$shared"
+          sudo -n -u "$user" true
+          { echo "HEIMDALL_E2E_OTHER_USER=$user"; echo "HEIMDALL_E2E_SHARED_DIR=$shared"; } >> "$GITHUB_ENV"
+      - name: build + run src/supervisor/e2e (flake-pinned Odin and libcurl)
+        shell: bash
+        run: nix develop -c scripts/supervisor/e2e.sh "$HOME/.cache/heimdall-tests/supervisor-e2e"
+
+  windows:
+    name: e2e (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      # Same pin as release-local-binaries.yml (windows job) and flake.nix.
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          $odin = Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe'
+          & $odin version
+          "ODIN=$odin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      # Same pinned static libcurl (Schannel) as the release build.
+      - name: Cache the pinned static libcurl
+        id: curl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libcurl-static
+          key: libcurl-static-windows-x64-${{ hashFiles('nix/libcurl-pin.json', 'scripts/windows/build-libcurl.ps1') }}
+      - name: Build the pinned static libcurl
+        if: ${{ steps.curl-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: scripts/windows/build-libcurl.ps1 -OutDir "$env:RUNNER_TEMP/libcurl-static"
+      # T15 two OS users on one hub: a second local account started with
+      # CreateProcessWithLogonW, and a directory everyone may use (inherited ACL).
+      - name: second OS user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $user = 'heimdalle2e'
+          $pw = 'He1!' + [guid]::NewGuid().ToString('N')
+          Write-Host "::add-mask::$pw"
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          New-LocalUser -Name $user -Password $sec -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group 'Users' -Member $user -ErrorAction SilentlyContinue
+          $sid = (Get-LocalUser $user).SID.Value
+          $shared = 'C:\heimdall-e2e-shared'
+          New-Item -ItemType Directory -Force $shared | Out-Null
+          & icacls $shared /grant '*S-1-1-0:(OI)(CI)F' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "icacls failed ($LASTEXITCODE)" }
+          Get-Service seclogon | Select-Object Status, StartType | Format-List
+          if ((Get-Service seclogon).StartType -eq 'Disabled') { Set-Service seclogon -StartupType Manual }
+          "HEIMDALL_E2E_OTHER_USER=$user", "HEIMDALL_E2E_OTHER_PASSWORD=$pw", "HEIMDALL_E2E_OTHER_SID=$sid", "HEIMDALL_E2E_SHARED_DIR=$shared" |
+            Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: build + run src/supervisor/e2e
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'supervisor-e2e'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $src = (Resolve-Path src).Path -replace '\\', '/'
+          $pin = Get-Content -Raw nix/libcurl-pin.json | ConvertFrom-Json
+          $key = (Get-Content src/supervisor/testdata/e2e-test-key.pub)[1].Trim()
+          $curlLib = ((Resolve-Path "$env:RUNNER_TEMP/libcurl-static/lib").Path) -replace '\\', '/'
+          function Build($pkg, $exe, [string[]]$extra) {
+            & $env:ODIN build $pkg "-collection:odin_test=$src" "-out:$out\$exe" @extra
+            if ($LASTEXITCODE -ne 0) { throw "odin build $pkg failed ($LASTEXITCODE)" }
+          }
+          Build src/launcher ham-launcher.exe @()
+          Build src/supervisor ham-supervisor.exe @("-define:HAM_CURL_VERSION=$($pin.curl.version)", '-define:HEIMDALL_SUPERVISOR_TEST=true', "-define:HEIMDALL_TEST_PINNED_KEY=$key", "-extra-linker-flags:/LIBPATH:$curlLib")
+          # A default build (release defines only) must not embed the e2e test key.
+          Build src/supervisor ham-supervisor-default.exe @("-define:HAM_CURL_VERSION=$($pin.curl.version)", "-extra-linker-flags:/LIBPATH:$curlLib")
+          function Contains($path) {
+            $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($path))
+            return $text.Contains($key)
+          }
+          if (Contains "$out\ham-supervisor-default.exe") { throw "a default ham-supervisor build contains the e2e test key" }
+          if (-not (Contains "$out\ham-supervisor.exe")) { throw "the test ham-supervisor build lacks the e2e test key (check is vacuous)" }
+          Write-Host "key check: default build has no test key; test build has it"
+          Build src/supervisor/testdata/fakebridge fakebridge.exe @('-vet', '-strict-style')
+          & "$out\ham-supervisor.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "ham-supervisor --version failed ($LASTEXITCODE)" }
+          $env:HEIMDALL_E2E_BIN_DIR = $out
+          & $env:ODIN test src/supervisor/e2e "-collection:odin_test=$src" -vet -strict-style -define:ODIN_TEST_THREADS=1 "-out:$out\supervisor-e2e.exe"
+          if ($LASTEXITCODE -ne 0) { throw "supervisor e2e failed ($LASTEXITCODE)" }

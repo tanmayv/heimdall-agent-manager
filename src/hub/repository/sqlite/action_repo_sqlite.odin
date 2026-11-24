@@ -1,384 +1,560 @@
 package sqlite
 
-import "core:c"
 import "core:fmt"
-import "core:sync"
 import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
-Action_Repo_SQLite :: struct {
-    conn: ^Conn,
-    snapshot_conn: Conn,
-    snapshot_mutex: sync.Mutex,
-}
-
-Scheduled_Prompt_Repo_SQLite :: Action_Repo_SQLite
+Action_Repo_SQLite :: struct { conn: ^Conn }
 
 new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.Action_Repository {
 	impl.conn = conn
-	return iface.Action_Repository{
-		ctx = rawptr(impl),
-        revision = action_revision_sqlite,
-        snapshot = action_snapshot_sqlite,
-		save = action_save_sqlite,
-		get = action_get_sqlite,
-		delete_action = action_delete_sqlite,
-		delete_prompt = action_delete_sqlite,
-		list = action_list_sqlite,
-		list_by_instance = action_list_by_instance_sqlite,
-		list_by_bridge = action_list_by_bridge_sqlite,
-		cas_lease = action_cas_lease_sqlite,
-		max_updated_at_for_bridge = action_max_updated_at_for_bridge_sqlite,
+	return {ctx = impl,
+ runs_for_delivery=actions_runs_for_delivery, runs_finish_delivery=actions_runs_finish_delivery, runs_release_parked=actions_runs_release_parked,
+ runs_route_batch=actions_runs_route_batch, target_open_delivery=actions_target_open_delivery,
+ rules_for_owner=actions_rules_for_owner, triggers_for_owner=actions_triggers_for_owner,
+ runs_history=actions_runs_history, runs_sweep=actions_runs_sweep,
+		save = actions_save,
+		get = actions_get,
+		list = actions_list,
+		delete_action = actions_delete_action,
+		set_last_spawned = actions_set_last_spawned,
+		rules_list = actions_rules_list,
+		rules_replace = actions_rules_replace,
+		trigger_save = actions_trigger_save,
+		trigger_get = actions_trigger_get,
+		trigger_delete = actions_trigger_delete,
+		triggers_list = actions_triggers_list,
+		triggers_match = actions_triggers_match,
+		triggers_effective = actions_triggers_effective,
+		run_insert = actions_run_insert,
+        run_settle_pending = actions_run_settle_pending,
+        run_settle_waiting = actions_run_settle_waiting,
+		run_get = actions_run_get,
+		run_open = actions_run_open,
+		runs_due = actions_runs_due,
+		runs_deferred = actions_runs_deferred,
+		run_transition = actions_run_transition,
+		run_last_started_at = actions_run_last_started_at,
+		run_joined_count = actions_run_joined_count,
+		runs_list = actions_runs_list,
+		runs_prune = actions_runs_prune,
 	}
 }
 
-action_from_stmt :: proc(stmt: sqlite3_stmt, offset := 0) -> domain.Action {
-	action: domain.Action
-	action.id = domain.Action_ID(column_text(stmt, offset + 0))
-	action.owner_user_id = domain.User_ID(column_text(stmt, offset + 1))
-	action.target_instance_id = domain.Agent_Instance_ID(column_text(stmt, offset + 2))
-	action.prompt_text = column_text(stmt, offset + 3)
-	action.cron_expr = column_text(stmt, offset + 4)
-	action.timezone = column_text(stmt, offset + 5)
-	if action.timezone == "" do action.timezone = "UTC"
-	action.blackout_dates = column_text(stmt, offset + 6)
-	if action.blackout_dates == "" do action.blackout_dates = "[]"
-	action.active_from = column_text(stmt, offset + 7)
-	action.active_until = column_text(stmt, offset + 8)
-	action.target_run_at = column_text(stmt, offset + 9)
-	action.interval = column_text(stmt, offset + 10)
-
-	state_str := column_text(stmt, offset + 11)
-	switch state_str {
-	case "in_flight": action.state = .In_Flight
-	case "completed": action.state = .Completed
-	case: action.state = .Active
-	}
-
-	action.in_flight = column_text(stmt, offset + 12) == "1"
-	action.leased_at = column_text(stmt, offset + 13)
-	action.deleted_at = column_text(stmt, offset + 14)
-	action.created_at = column_text(stmt, offset + 15)
-	action.updated_at = column_text(stmt, offset + 16)
-	action.target_agent_id = domain.Agent_ID(column_text(stmt, offset + 17))
-	action.target_bridge_id = domain.Bridge_ID(column_text(stmt, offset + 18))
-	action.target_provider = column_text(stmt, offset + 19)
-	action.target_model = column_text(stmt, offset + 20)
-	action.target_project_id = domain.Project_ID(column_text(stmt, offset + 21))
-	action.instance_strategy = column_text(stmt, offset + 22)
-	if action.instance_strategy == "" do action.instance_strategy = "reuse"
-	action.last_spawned_instance_id = domain.Agent_Instance_ID(column_text(stmt, offset + 23))
-	return action
-}
-
-action_save_sqlite :: proc(ctx: rawptr, action: domain.Action) -> (domain.Action, bool, domain.Domain_Error) {
+actions_prepare :: proc(ctx: rawptr, query: string, params: []string) -> (sqlite3_stmt, domain.Domain_Error) {
 	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return domain.Action{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
-	}
-	stmt: sqlite3_stmt = nil
-	query := `INSERT INTO actions (
-		id, owner_user_id, target_instance_id, prompt_text,
-		cron_expr, timezone, blackout_dates, active_from, active_until,
-		target_run_at, interval, state, in_flight, leased_at, deleted_at,
-		created_at, updated_at, target_agent_id, target_bridge_id,
-		target_provider, target_model, target_project_id,
-		instance_strategy, last_spawned_instance_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(id) DO UPDATE SET
-		target_instance_id=excluded.target_instance_id,
-		prompt_text=excluded.prompt_text,
-		cron_expr=excluded.cron_expr,
-		timezone=excluded.timezone,
-		blackout_dates=excluded.blackout_dates,
-		active_from=excluded.active_from,
-		active_until=excluded.active_until,
-		target_run_at=excluded.target_run_at,
-		interval=excluded.interval,
-		state=excluded.state,
-		in_flight=excluded.in_flight,
-		leased_at=excluded.leased_at,
-		deleted_at=excluded.deleted_at,
-		updated_at=excluded.updated_at,
-		target_agent_id=excluded.target_agent_id,
-		target_bridge_id=excluded.target_bridge_id,
-		target_provider=excluded.target_provider,
-		target_model=excluded.target_model,
-		target_project_id=excluded.target_project_id,
-		instance_strategy=excluded.instance_strategy,
-		last_spawned_instance_id=excluded.last_spawned_instance_id;`
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return domain.Action{}, false, domain.domain_error(.Internal_Error, "failed to prepare action save")
-	}
+	if impl == nil || impl.conn == nil || impl.conn.db == nil do return nil, domain.domain_error(.Internal_Error, "actions repository is not open")
+	stmt: sqlite3_stmt
+	if sqlite3_prepare_v2(impl.conn.db, strings.clone_to_cstring(query, context.temp_allocator), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "could not prepare actions query")
+	for value, i in params do bind_text(stmt, i + 1, value)
+	return stmt, {}
+}
+actions_write :: proc(ctx: rawptr, query: string, params: []string) -> (bool, domain.Domain_Error) {
+	stmt, err := actions_prepare(ctx, query, params)
+	if err.code != .None do return false, err
 	defer sqlite3_finalize(stmt)
-
-	state_str := "active"
-	switch action.state {
-	case .In_Flight: state_str = "in_flight"
-	case .Completed: state_str = "completed"
-	case .Active: state_str = "active"
-	}
-
-	tz := action.timezone
-	if tz == "" do tz = "UTC"
-
-	blackout := action.blackout_dates
-	if blackout == "" do blackout = "[]"
-
-	bind_text(stmt, 1, string(action.id))
-	bind_text(stmt, 2, string(action.owner_user_id))
-	bind_text(stmt, 3, string(action.target_instance_id))
-	bind_text(stmt, 4, action.prompt_text)
-	bind_text(stmt, 5, action.cron_expr)
-	bind_text(stmt, 6, tz)
-	bind_text(stmt, 7, blackout)
-	bind_text(stmt, 8, action.active_from)
-	bind_text(stmt, 9, action.active_until)
-	bind_text(stmt, 10, action.target_run_at)
-	bind_text(stmt, 11, action.interval)
-	bind_text(stmt, 12, state_str)
-	bind_text(stmt, 13, "1" if action.in_flight else "0")
-	bind_text(stmt, 14, action.leased_at)
-	bind_text(stmt, 15, action.deleted_at)
-	bind_text(stmt, 16, action.created_at)
-	bind_text(stmt, 17, action.updated_at)
-	bind_text(stmt, 18, string(action.target_agent_id))
-	bind_text(stmt, 19, string(action.target_bridge_id))
-	bind_text(stmt, 20, action.target_provider)
-	bind_text(stmt, 21, action.target_model)
-	bind_text(stmt, 22, string(action.target_project_id))
-	strategy := action.instance_strategy
-	if strategy == "" do strategy = "reuse"
-	bind_text(stmt, 23, strategy)
-	bind_text(stmt, 24, string(action.last_spawned_instance_id))
-
-	if rc := sqlite3_step(stmt); rc != SQLITE_DONE {
-        return {}, false, action_write_error(rc)
-    }
-	saved := action
-	saved.timezone = tz
-	saved.blackout_dates = blackout
-	saved.instance_strategy = strategy
-	return saved, true, domain.Domain_Error{}
+	rc := sqlite3_step(stmt)
+	if rc != SQLITE_DONE do return false, domain.domain_error(.Conflict if rc == SQLITE_CONSTRAINT else .Internal_Error, "could not write actions record")
+	return sqlite3_changes((^Action_Repo_SQLite)(ctx).conn.db) != 0, {}
 }
 
-action_get_sqlite :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action, bool, domain.Domain_Error) {
-	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return domain.Action{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+ACTIONS_ACTION_COLUMNS :: "action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at"
+actions_action_read :: proc(stmt: sqlite3_stmt) -> domain.Action {
+	return {
+		id = domain.Action_ID(column_text(stmt,0)),
+		owner_user_id = domain.User_ID(column_text(stmt,1)),
+		name = string(column_text(stmt,2)),
+		prompt_text = string(column_text(stmt,3)),
+		target_kind = string(column_text(stmt,4)),
+		target_agent_id = domain.Agent_ID(column_text(stmt,5)),
+		target_project_id = domain.Project_ID(column_text(stmt,6)),
+		target_instance_id = domain.Agent_Instance_ID(column_text(stmt,7)),
+		target_bot_id = string(column_text(stmt,8)),
+		instance_strategy = string(column_text(stmt,9)),
+		placement_selector = string(column_text(stmt,10)),
+		last_spawned_instance_id = domain.Agent_Instance_ID(column_text(stmt,11)),
+		enabled = sqlite3_column_int64(stmt,12) != 0,
+		min_interval_s = int(sqlite3_column_int64(stmt,13)),
+		created_at = string(column_text(stmt,14)),
+		updated_at = string(column_text(stmt,15)),
 	}
-	stmt: sqlite3_stmt = nil
-	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE id = ? AND deleted_at = '';"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return domain.Action{}, false, domain.domain_error(.Internal_Error, "failed to prepare action lookup")
-	}
+}
+
+actions_action_query :: proc(ctx: rawptr, query: string, params: []string) -> ([]domain.Action, domain.Domain_Error) {
+	stmt, err := actions_prepare(ctx, query, params)
+	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(id))
-	if sqlite3_step(stmt) != SQLITE_ROW {
-		return domain.Action{}, false, domain.domain_error(.Not_Found, "action not found")
+	rows: [dynamic]domain.Action
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW {
+			for &r in rows do domain.action_destroy(&r)
+			delete(rows)
+			return nil, domain.domain_error(.Internal_Error, "could not read actions records")
+		}
+		append(&rows, actions_action_read(stmt))
 	}
-	return action_from_stmt(stmt), true, domain.Domain_Error{}
+	result := make([]domain.Action, len(rows))
+	copy(result, rows[:])
+	delete(rows)
+	return result, {}
 }
 
-action_delete_sqlite :: proc(ctx: rawptr, id: domain.Action_ID) -> (bool, domain.Domain_Error) {
-	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+ACTIONS_TRIGGER_COLUMNS :: "trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s"
+actions_trigger_read :: proc(stmt: sqlite3_stmt) -> domain.Action_Trigger {
+	return {
+		trigger_id = string(column_text(stmt,0)),
+		action_id = domain.Action_ID(column_text(stmt,1)),
+		owner_user_id = domain.User_ID(column_text(stmt,2)),
+		kind = string(column_text(stmt,3)),
+		config_json = string(column_text(stmt,4)),
+		event_type = string(column_text(stmt,5)),
+		subject_filter = string(column_text(stmt,6)),
+		match_key = string(column_text(stmt,7)),
+		data_filter_json = string(column_text(stmt,8)),
+		enabled = sqlite3_column_int64(stmt,9) != 0,
+		rev = int(sqlite3_column_int64(stmt,10)),
+		created_at = string(column_text(stmt,11)),
+		updated_at = string(column_text(stmt,12)),
+        delay_s = int(sqlite3_column_int64(stmt,13)),
 	}
-	stmt: sqlite3_stmt = nil
-	query := "UPDATE actions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND deleted_at = '';"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return false, domain.domain_error(.Internal_Error, "failed to prepare action delete")
-	}
+}
+
+actions_trigger_query :: proc(ctx: rawptr, query: string, params: []string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
+	stmt, err := actions_prepare(ctx, query, params)
+	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(id))
-	step_rc, row_changes := step_changes(impl.conn.db, stmt)
-	if step_rc != SQLITE_DONE {
-		return false, domain.domain_error(.Internal_Error, "failed to delete action")
+	rows: [dynamic]domain.Action_Trigger
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW {
+			domain.action_triggers_destroy(rows[:])
+			return nil, domain.domain_error(.Internal_Error, "could not read actions records")
+		}
+		append(&rows, actions_trigger_read(stmt))
 	}
-	return row_changes > 0, domain.Domain_Error{}
+	result := make([]domain.Action_Trigger, len(rows))
+	copy(result, rows[:])
+	delete(rows)
+	return result, {}
 }
 
-action_list_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Action, domain.Domain_Error) {
-	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+ACTIONS_RUN_COLUMNS :: "run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending"
+actions_run_read :: proc(stmt: sqlite3_stmt) -> domain.Action_Run {
+	return {
+		run_id = string(column_text(stmt,0)),
+		action_id = domain.Action_ID(column_text(stmt,1)),
+		trigger_id = string(column_text(stmt,2)),
+		owner_user_id = domain.User_ID(column_text(stmt,3)),
+		occurrence_key = string(column_text(stmt,4)),
+		event_type = string(column_text(stmt,5)),
+		event_id = string(column_text(stmt,6)),
+		stream_sequence = i64(sqlite3_column_int64(stmt,7)),
+		event_params_json = string(column_text(stmt,8)),
+		state = string(column_text(stmt,9)),
+		not_before = string(column_text(stmt,10)),
+		joined_run_id = string(column_text(stmt,11)),
+		reason = string(column_text(stmt,12)),
+		rule_position = int(sqlite3_column_int64(stmt,13)),
+		target_instance_id = string(column_text(stmt,14)),
+		message_id = string(column_text(stmt,15)),
+		delivery_id = string(column_text(stmt,16)),
+		created_at = string(column_text(stmt,17)),
+		started_at = string(column_text(stmt,18)),
+		finished_at = string(column_text(stmt,19)),
+        delay_s = int(sqlite3_column_int64(stmt,20)),
+        settle_key = column_text(stmt,21),
+        settle_pending = sqlite3_column_int64(stmt,22) != 0,
 	}
-	stmt: sqlite3_stmt = nil
-	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE owner_user_id = ? AND deleted_at = '' ORDER BY target_run_at ASC;"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return nil, domain.domain_error(.Internal_Error, "failed to prepare action list")
-	}
+}
+
+actions_run_query :: proc(ctx: rawptr, query: string, params: []string) -> ([]domain.Action_Run, domain.Domain_Error) {
+	stmt, err := actions_prepare(ctx, query, params)
+	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(owner_user_id))
-
-	items := make([dynamic]domain.Action)
-	for sqlite3_step(stmt) == SQLITE_ROW {
-		append(&items, action_from_stmt(stmt))
+	rows: [dynamic]domain.Action_Run
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW {
+			domain.action_runs_destroy(rows[:])
+			return nil, domain.domain_error(.Internal_Error, "could not read actions records")
+		}
+		append(&rows, actions_run_read(stmt))
 	}
-	return items[:], domain.Domain_Error{}
+	result := make([]domain.Action_Run, len(rows))
+	copy(result, rows[:])
+	delete(rows)
+	return result, {}
 }
 
-action_list_by_instance_sqlite :: proc(ctx: rawptr, instance_id: domain.Agent_Instance_ID) -> ([]domain.Action, domain.Domain_Error) {
-	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+ACTIONS_RULE_COLUMNS :: "position,bridge_id,provider,model"
+actions_rule_read :: proc(stmt: sqlite3_stmt) -> domain.Action_Target_Rule {
+	return {
+		position = int(sqlite3_column_int64(stmt,0)),
+		bridge_id = string(column_text(stmt,1)),
+		provider = string(column_text(stmt,2)),
+		model = string(column_text(stmt,3)),
 	}
-	stmt: sqlite3_stmt = nil
-	query := "SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id FROM actions WHERE target_instance_id = ? AND deleted_at = '' ORDER BY target_run_at ASC;"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return nil, domain.domain_error(.Internal_Error, "failed to prepare action list by instance")
-	}
+}
+
+actions_rule_query :: proc(ctx: rawptr, query: string, params: []string) -> ([]domain.Action_Target_Rule, domain.Domain_Error) {
+	stmt, err := actions_prepare(ctx, query, params)
+	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(instance_id))
-
-	items := make([dynamic]domain.Action)
-	for sqlite3_step(stmt) == SQLITE_ROW {
-		append(&items, action_from_stmt(stmt))
+	rows: [dynamic]domain.Action_Target_Rule
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW {
+			domain.action_rules_destroy(rows[:])
+			return nil, domain.domain_error(.Internal_Error, "could not read actions records")
+		}
+		append(&rows, actions_rule_read(stmt))
 	}
-	return items[:], domain.Domain_Error{}
+	result := make([]domain.Action_Target_Rule, len(rows))
+	copy(result, rows[:])
+	delete(rows)
+	return result, {}
 }
 
-action_list_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: domain.Bridge_ID) -> ([]domain.Action, domain.Domain_Error) {
-	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+ACTIONS_SQL_SAVE :: "INSERT INTO actions(action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(action_id) DO UPDATE SET name=excluded.name,prompt_text=excluded.prompt_text,target_kind=excluded.target_kind,target_agent_id=excluded.target_agent_id,target_project_id=excluded.target_project_id,target_instance_id=excluded.target_instance_id,target_bot_id=excluded.target_bot_id,instance_strategy=excluded.instance_strategy,placement_selector=excluded.placement_selector,last_spawned_instance_id=excluded.last_spawned_instance_id,enabled=excluded.enabled,min_interval_s=excluded.min_interval_s,updated_at=excluded.updated_at;"
+
+actions_save :: proc(ctx: rawptr, v: domain.Action) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	_, err := actions_write(ctx,ACTIONS_SQL_SAVE,{string(v.id),string(v.owner_user_id),string(v.name),string(v.prompt_text),string(v.target_kind),string(v.target_agent_id),string(v.target_project_id),string(v.target_instance_id),string(v.target_bot_id),string(v.instance_strategy),string(v.placement_selector),string(v.last_spawned_instance_id),("1" if v.enabled else "0"),fmt.tprintf("%d",v.min_interval_s),string(v.created_at),string(v.updated_at)})
+	return err
+}
+
+ACTIONS_SQL_TRIGGER_SAVE :: "INSERT INTO action_triggers(trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(trigger_id) DO UPDATE SET kind=excluded.kind,config=excluded.config,event_type=excluded.event_type,subject_filter=excluded.subject_filter,match_key=excluded.match_key,data_filter=excluded.data_filter,enabled=excluded.enabled,rev=excluded.rev,updated_at=excluded.updated_at,delay_s=excluded.delay_s;"
+
+actions_trigger_save :: proc(ctx: rawptr, v: domain.Action_Trigger) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	_, err := actions_write(ctx,ACTIONS_SQL_TRIGGER_SAVE,{string(v.trigger_id),string(v.action_id),string(v.owner_user_id),string(v.kind),string(v.config_json),string(v.event_type),string(v.subject_filter),string(v.match_key),string(v.data_filter_json),("1" if v.enabled else "0"),fmt.tprintf("%d",v.rev),string(v.created_at),string(v.updated_at),fmt.tprintf("%d",v.delay_s)})
+	return err
+}
+
+ACTIONS_SQL_RUN_INSERT :: "INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23) ON CONFLICT(occurrence_key) DO NOTHING;"
+
+actions_run_insert :: proc(ctx: rawptr, v: domain.Action_Run) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_write(ctx,ACTIONS_SQL_RUN_INSERT,{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),fmt.tprintf("%d",v.delay_s),v.settle_key,("1" if v.settle_pending else "0")})
+}
+
+ACTIONS_SQL_GET :: "SELECT action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at FROM actions WHERE action_id=?1;"
+
+actions_get :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	rows, err := actions_action_query(ctx,ACTIONS_SQL_GET,{string(id)})
+	defer delete(rows)
+	if err.code != .None || len(rows)==0 do return {},false,err
+	return rows[0],true,{}
+}
+
+ACTIONS_SQL_TRIGGER_GET :: "SELECT trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s FROM action_triggers WHERE trigger_id=?1;"
+
+actions_trigger_get :: proc(ctx: rawptr, id: string) -> (domain.Action_Trigger, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	rows, err := actions_trigger_query(ctx,ACTIONS_SQL_TRIGGER_GET,{string(id)})
+	defer delete(rows)
+	if err.code != .None || len(rows)==0 do return {},false,err
+	return rows[0],true,{}
+}
+
+ACTIONS_SQL_RUN_GET :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE run_id=?1;"
+
+actions_run_get :: proc(ctx: rawptr, id: string) -> (domain.Action_Run, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	rows, err := actions_run_query(ctx,ACTIONS_SQL_RUN_GET,{string(id)})
+	defer delete(rows)
+	if err.code != .None || len(rows)==0 do return {},false,err
+	return rows[0],true,{}
+}
+
+ACTIONS_SQL_RUN_OPEN :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE action_id=?1 AND state IN ('queued','deferred','routed') AND settle_pending=0;"
+
+actions_run_open :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action_Run, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	rows, err := actions_run_query(ctx,ACTIONS_SQL_RUN_OPEN,{string(id)})
+	defer delete(rows)
+	if err.code != .None || len(rows)==0 do return {},false,err
+	return rows[0],true,{}
+}
+
+ACTIONS_SQL_LIST :: "SELECT action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at FROM actions WHERE owner_user_id=?1 ORDER BY created_at,action_id;"
+
+actions_list :: proc(ctx: rawptr, owner: domain.User_ID) -> ([]domain.Action, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_action_query(ctx,ACTIONS_SQL_LIST,{string(owner)})
+}
+
+ACTIONS_SQL_RULES_LIST :: "SELECT position,bridge_id,provider,model FROM action_target_rules WHERE action_id=?1 ORDER BY position;"
+
+actions_rules_list :: proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Action_Target_Rule, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_rule_query(ctx,ACTIONS_SQL_RULES_LIST,{string(id)})
+}
+
+ACTIONS_SQL_TRIGGERS_LIST :: "SELECT trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s FROM action_triggers WHERE action_id=?1 ORDER BY created_at,trigger_id;"
+
+actions_triggers_list :: proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Action_Trigger, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_LIST,{string(id)})
+}
+
+ACTIONS_SQL_TRIGGERS_MATCH :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.owner_user_id=?1 AND t.event_type=?2 AND (t.match_key=?3 OR t.match_key='') AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
+
+actions_triggers_match :: proc(ctx: rawptr, owner,event_type,subject: string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_MATCH,{owner,event_type,subject})
+}
+
+ACTIONS_SQL_TRIGGERS_EFFECTIVE :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.kind=?1 AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
+
+actions_triggers_effective :: proc(ctx: rawptr, kind: string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_EFFECTIVE,{kind})
+}
+
+ACTIONS_SQL_RUNS_DUE :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND (state='queued' OR not_before<=?1) ORDER BY created_at,run_id LIMIT ?2;"
+
+actions_runs_due :: proc(ctx: rawptr, now: string, limit: int) -> ([]domain.Action_Run, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_run_query(ctx,ACTIONS_SQL_RUNS_DUE,{now,fmt.tprintf("%d",limit)})
+}
+
+ACTIONS_SQL_RUNS_DEFERRED :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE state IN ('queued','deferred') AND state='deferred' AND target_instance_id='' ORDER BY created_at,run_id LIMIT ?1;"
+
+actions_runs_deferred :: proc(ctx: rawptr, limit: int) -> ([]domain.Action_Run, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_run_query(ctx,ACTIONS_SQL_RUNS_DEFERRED,{fmt.tprintf("%d",limit)})
+}
+
+ACTIONS_SQL_RUNS_LIST :: "SELECT run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,event_id,stream_sequence,event_params,state,not_before,joined_run_id,reason,rule_position,target_instance_id,message_id,delivery_id,created_at,started_at,finished_at,delay_s,settle_key,settle_pending FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3;"
+
+actions_runs_list :: proc(ctx: rawptr, id: domain.Action_ID, limit: int, before_created_at: string, before_id: string) -> ([]domain.Action_Run, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_run_query(ctx,ACTIONS_SQL_RUNS_LIST,{string(id),before_created_at,fmt.tprintf("%d",limit),before_id})
+}
+
+actions_set_last_spawned :: proc(ctx: rawptr, id: domain.Action_ID, instance_id, updated_at: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	_, err := actions_write(ctx, "UPDATE actions SET last_spawned_instance_id=?2,updated_at=?3 WHERE action_id=?1;", {string(id),instance_id,updated_at})
+	return err
+}
+actions_trigger_delete :: proc(ctx: rawptr, trigger_id: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	_, err := actions_write(ctx, "DELETE FROM action_triggers WHERE trigger_id=?1;", {trigger_id})
+	return err
+}
+// Savepoints keep multi-statement writes atomic for direct callers and UoWs.
+actions_delete_action :: proc(ctx: rawptr, id: domain.Action_ID) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	conn := (^Action_Repo_SQLite)(ctx).conn
+	if !exec(conn, "SAVEPOINT action_delete;") do return domain.domain_error(.Internal_Error, "could not begin action delete")
+	done := false
+	defer if !done {exec(conn, "ROLLBACK TO action_delete;"); exec(conn, "RELEASE action_delete;")}
+	queries := [?]string{"DELETE FROM action_runs WHERE action_id=?1;", "DELETE FROM action_triggers WHERE action_id=?1;", "DELETE FROM action_target_rules WHERE action_id=?1;", "DELETE FROM actions WHERE action_id=?1;"}
+	for query in queries {
+		_, err := actions_write(ctx, query, {string(id)})
+		if err.code != .None do return err
 	}
-	stmt: sqlite3_stmt = nil
-	query := `SELECT id, owner_user_id, target_instance_id, prompt_text, cron_expr, timezone, blackout_dates, active_from, active_until, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at, target_agent_id, target_bridge_id, target_provider, target_model, target_project_id, instance_strategy, last_spawned_instance_id
-		FROM actions
-		WHERE (target_bridge_id = ? OR target_instance_id IN (SELECT agent_instance_id FROM agent_instances WHERE bridge_id = ?))
-		  AND deleted_at = ''
-		ORDER BY target_run_at ASC;`
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return nil, domain.domain_error(.Internal_Error, "failed to prepare action list by bridge")
+	if !exec(conn, "RELEASE action_delete;") do return domain.domain_error(.Internal_Error, "could not finish action delete")
+	done = true
+	return {}
+}
+actions_rules_replace :: proc(ctx: rawptr, id: domain.Action_ID, rows: []domain.Action_Target_Rule) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	conn := (^Action_Repo_SQLite)(ctx).conn
+	if !exec(conn, "SAVEPOINT action_rules_replace;") do return domain.domain_error(.Internal_Error, "could not begin rules replace")
+	done := false
+	defer if !done {exec(conn, "ROLLBACK TO action_rules_replace;"); exec(conn, "RELEASE action_rules_replace;")}
+	_, err := actions_write(ctx, "DELETE FROM action_target_rules WHERE action_id=?1;", {string(id)})
+	if err.code != .None do return err
+	for row in rows {
+		_, err = actions_write(ctx, "INSERT INTO action_target_rules(action_id,position,bridge_id,provider,model) VALUES(?1,?2,?3,?4,?5);", {string(id),fmt.tprintf("%d",row.position),row.bridge_id,row.provider,row.model})
+		if err.code != .None do return err
 	}
+	if !exec(conn, "RELEASE action_rules_replace;") do return domain.domain_error(.Internal_Error, "could not finish rules replace")
+	done = true
+	return {}
+}
+
+actions_run_transition :: proc(ctx: rawptr, v: domain.Action_Run, from_state: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	return actions_write(ctx,"UPDATE action_runs SET trigger_id=?3,event_type=?6,event_id=?7,stream_sequence=?8,event_params=?9,state=?10,not_before=?11,joined_run_id=?12,reason=?13,rule_position=?14,target_instance_id=?15,message_id=?16,delivery_id=?17,started_at=?19,finished_at=?20,delay_s=?21,settle_key=?22,settle_pending=?23 WHERE run_id=?1 AND state=?24;",{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),fmt.tprintf("%d",v.delay_s),v.settle_key,("1" if v.settle_pending else "0"),from_state})
+}
+
+ACTIONS_SQL_RUN_LAST_STARTED_AT :: "SELECT started_at FROM action_runs WHERE action_id=?1 AND started_at<>'' ORDER BY created_at DESC,run_id DESC LIMIT 1;"
+
+actions_run_last_started_at :: proc(ctx: rawptr, id: domain.Action_ID) -> (string, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	stmt, err := actions_prepare(ctx, ACTIONS_SQL_RUN_LAST_STARTED_AT, {string(id)})
+	if err.code != .None do return "", err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(bridge_id))
-	bind_text(stmt, 2, string(bridge_id))
-
-	items := make([dynamic]domain.Action)
-	for sqlite3_step(stmt) == SQLITE_ROW {
-		append(&items, action_from_stmt(stmt))
-	}
-	return items[:], domain.Domain_Error{}
+	rc := sqlite3_step(stmt)
+	if rc == SQLITE_DONE do return "", {}
+	if rc != SQLITE_ROW do return "", domain.domain_error(.Internal_Error, "could not read run start")
+	return column_text(stmt, 0), {}
 }
-
-action_cas_lease_sqlite :: proc(ctx: rawptr, id: domain.Action_ID, leased_at: string, now: string) -> (bool, domain.Domain_Error) {
-	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
-	}
-	stmt: sqlite3_stmt = nil
-	query := "UPDATE actions SET in_flight = 1, leased_at = ?, state = 'in_flight', updated_at = ? WHERE id = ? AND in_flight = 0 AND target_run_at <= ? AND deleted_at = '';"
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return false, domain.domain_error(.Internal_Error, "failed to prepare action cas lease")
-	}
+actions_run_joined_count :: proc(ctx: rawptr, run_id: string) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	stmt, err := actions_prepare(ctx, "SELECT count(*) FROM action_runs WHERE joined_run_id=?1 AND state='joined';", {run_id})
+	if err.code != .None do return 0, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, leased_at)
-	bind_text(stmt, 2, leased_at)
-	bind_text(stmt, 3, string(id))
-	bind_text(stmt, 4, now)
-
-	step_rc, row_changes := step_changes(impl.conn.db, stmt)
-	if step_rc != SQLITE_DONE {
-		return false, action_write_error(step_rc)
-	}
-	return row_changes > 0, domain.Domain_Error{}
+	if sqlite3_step(stmt) != SQLITE_ROW do return 0, domain.domain_error(.Internal_Error, "could not count joined runs")
+	return int(sqlite3_column_int64(stmt, 0)), {}
 }
 
-action_max_updated_at_for_bridge_sqlite :: proc(ctx: rawptr, bridge_id: domain.Bridge_ID) -> (string, domain.Domain_Error) {
-	impl := (^Action_Repo_SQLite)(ctx)
-	if impl == nil || impl.conn == nil || impl.conn.db == nil {
-		return "", domain.domain_error(.Internal_Error, "sqlite repository is not open")
-	}
-	stmt: sqlite3_stmt = nil
-	query := `SELECT COALESCE(MAX(a.updated_at), '')
-		FROM actions a
-		LEFT JOIN agent_instances ai ON a.target_instance_id = ai.agent_instance_id
-		WHERE (ai.bridge_id = ? OR a.target_bridge_id = ?) AND a.deleted_at = '';`
-	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
-		return "", domain.domain_error(.Internal_Error, "failed to prepare action max updated_at lookup")
-	}
-	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(bridge_id))
-	bind_text(stmt, 2, string(bridge_id))
+ACTIONS_SQL_RUNS_PRUNE :: "DELETE FROM action_runs WHERE action_id=?1 AND state NOT IN ('queued','deferred','routed') AND (created_at<?2 OR run_id NOT IN (SELECT run_id FROM action_runs WHERE action_id=?1 ORDER BY created_at DESC,run_id DESC LIMIT ?3));"
 
-	if sqlite3_step(stmt) == SQLITE_ROW {
-		return column_text(stmt, 0), domain.Domain_Error{}
-	}
-	return "", domain.Domain_Error{}
+actions_runs_prune :: proc(ctx: rawptr, id: domain.Action_ID, keep: int, cutoff: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	_, err := actions_write(ctx, ACTIONS_SQL_RUNS_PRUNE, {string(id),cutoff,fmt.tprintf("%d",keep)})
+	return err
 }
 
-// One SQLite cursor on an exclusively owned read connection is one READ
-// transaction. Writers cannot join it or mutate its view between cursor steps.
-// The revision guard bypasses rows for unchanged validators. No registry/HTTP
-// mutex covers DB work; snapshot_mutex owns only this dedicated connection.
-action_snapshot_sqlite :: proc(ctx: rawptr, bridge_id: domain.Bridge_ID, known_revision: i64) -> (i64, []domain.Action, bool, domain.Domain_Error) {
-    impl := (^Action_Repo_SQLite)(ctx)
-    if impl == nil || impl.conn == nil || impl.conn.db == nil do return 0, nil, false, domain.domain_error(.Internal_Error, "action snapshot unavailable")
-    sync.mutex_lock(&impl.snapshot_mutex)
-    defer sync.mutex_unlock(&impl.snapshot_mutex)
-    conn := &impl.snapshot_conn
-    if conn.db == nil {
-        when ODIN_TEST {
-            // Hermetic :memory: fixtures have no second handle. Concurrent
-            // snapshot/write tests must use a file and the production reader.
-            conn = impl.conn
-        } else { return 0, nil, false, domain.domain_error(.Internal_Error, "action snapshot reader unavailable") }
-    }
-    stmt: sqlite3_stmt
-    query := `SELECT r.revision, a.id, a.owner_user_id, a.target_instance_id, a.prompt_text, a.cron_expr, a.timezone, a.blackout_dates, a.active_from, a.active_until, a.target_run_at, a.interval, a.state, a.in_flight, a.leased_at, a.deleted_at, a.created_at, a.updated_at, a.target_agent_id, a.target_bridge_id, a.target_provider, a.target_model, a.target_project_id, a.instance_strategy, a.last_spawned_instance_id
-        FROM action_schedule_revision r LEFT JOIN actions a
-        ON r.revision != ? AND a.deleted_at = '' AND
-        (a.target_bridge_id = ? OR a.target_instance_id IN (SELECT agent_instance_id FROM agent_instances WHERE bridge_id = ?))
-        WHERE r.singleton = 1 ORDER BY a.target_run_at;`
-    if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return 0, nil, false, domain.domain_error(.Internal_Error, "action snapshot prepare failed")
-    defer sqlite3_finalize(stmt)
-    sqlite3_bind_int64(stmt, 1, known_revision)
-    bind_text(stmt, 2, string(bridge_id)); bind_text(stmt, 3, string(bridge_id))
-    rows := make([dynamic]domain.Action)
-    revision: i64 = -1
-    for {
-        rc := sqlite3_step(stmt)
-        if rc == SQLITE_DONE do break
-        if rc != SQLITE_ROW do return 0, nil, false, domain.domain_error(.Internal_Error, "action snapshot interrupted")
-        revision = i64(sqlite3_column_int64(stmt, 0))
-        if column_text_unowned(stmt, 1) != "" do append(&rows, action_from_stmt(stmt, 1))
-    }
-    if revision < 0 do return 0, nil, false, domain.domain_error(.Internal_Error, "action revision missing")
-    return revision, rows[:], revision == known_revision, {}
+// Owner predicates are applied in SQL; child rows never cross owner boundaries.
+ACTIONS_SQL_RULES_OWNER :: "SELECT r.position,r.bridge_id,r.provider,r.model,r.action_id FROM action_target_rules r JOIN actions a ON a.action_id=r.action_id WHERE a.owner_user_id=?1 ORDER BY r.action_id,r.position;"
+actions_rules_for_owner :: proc(ctx:rawptr,owner:string)->([]iface.Action_Rule_Row,domain.Domain_Error) {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_RULES_OWNER,{owner})
+ if err.code!=.None do return nil,err
+ defer sqlite3_finalize(stmt)
+ rows:=make([dynamic]iface.Action_Rule_Row)
+ for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do return rows[:],{}
+  if rc!=SQLITE_ROW {
+   for row in rows {delete(row.action_id);delete(row.rule.bridge_id);delete(row.rule.provider);delete(row.rule.model)}
+   delete(rows)
+   return nil,domain.domain_error(.Internal_Error,"could not load action rules")
+  }
+  append(&rows,iface.Action_Rule_Row{column_text(stmt,4),actions_rule_read(stmt)})
+ }
+}
+ACTIONS_SQL_TRIGGERS_OWNER :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE a.owner_user_id=?1 ORDER BY t.action_id,t.created_at,t.trigger_id;"
+actions_triggers_for_owner :: proc(ctx:rawptr,owner:string)->([]domain.Action_Trigger,domain.Domain_Error) {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_OWNER,{owner})
+}
+// Materialize the page before grouping joined rows, then join delivery expiry once.
+ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),CASE WHEN p.state='routed' THEN coalesce(d.expires_at,'') ELSE '' END,coalesce(d.state,''),coalesce(d.outcome,''),CASE WHEN p.delivery_id='' THEN 0 ELSE (SELECT count(*) FROM action_runs b WHERE b.delivery_id=p.delivery_id AND b.delivery_id<>'') END FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
+actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,before_id:string)->([]iface.Action_Run_History,domain.Domain_Error) {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_HISTORY,{string(id),before,fmt.tprintf("%d",limit),before_id})
+ if err.code!=.None do return nil,err
+ defer sqlite3_finalize(stmt)
+ rows:=make([dynamic]iface.Action_Run_History)
+ for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do return rows[:],{}
+  if rc!=SQLITE_ROW {
+   for &row in rows {domain.action_run_destroy(&row.run);delete(row.delivery_expires_at);delete(row.delivery_state);delete(row.delivery_outcome)}
+   delete(rows)
+   return nil,domain.domain_error(.Internal_Error,"could not load action history")
+  }
+  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,23)),column_text(stmt,24),column_text(stmt,25),column_text(stmt,26),int(sqlite3_column_int64(stmt,27))})
+ }
+}
+ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND created_at<?1 ORDER BY created_at,run_id LIMIT ?2);"
+actions_runs_sweep :: proc(ctx:rawptr,cutoff:string,limit:int)->domain.Domain_Error {
+ guard:=tx_repository_enter(); defer tx_repository_leave(guard)
+ _,err:=actions_write(ctx,ACTIONS_SQL_SWEEP,{cutoff,fmt.tprintf("%d",clamp(limit,1,128))})
+ return err
 }
 
-action_revision_sqlite :: proc(ctx: rawptr) -> (i64, domain.Domain_Error) {
-    impl := (^Action_Repo_SQLite)(ctx)
-    if impl == nil || impl.conn == nil || impl.conn.db == nil do return 0, domain.domain_error(.Internal_Error, "action revision unavailable")
-    stmt: sqlite3_stmt
-    query := "SELECT revision FROM action_schedule_revision WHERE singleton = 1;"
-    if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return 0, domain.domain_error(.Internal_Error, "action revision prepare failed")
-    defer sqlite3_finalize(stmt)
-    if sqlite3_step(stmt) != SQLITE_ROW do return 0, domain.domain_error(.Internal_Error, "action revision missing")
-    return i64(sqlite3_column_int64(stmt, 0)), {}
+actions_run_settle_pending :: proc(ctx: rawptr, trigger_id, settle_key: string) -> (domain.Action_Run, bool, domain.Domain_Error) {
+ guard := tx_repository_enter(); defer tx_repository_leave(guard)
+ rows, err := actions_run_query(ctx, "SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE trigger_id=?1 AND settle_key=?2 AND state='deferred' AND settle_pending=1;", {trigger_id,settle_key})
+ defer delete(rows)
+ if err.code != .None || len(rows)==0 do return {},false,err
+ return rows[0],true,{}
 }
 
-open_action_snapshot_conn :: proc(impl: ^Action_Repo_SQLite, path: string) -> (bool, domain.Domain_Error) {
-    conn, ok, err := open(path)
-    if !ok do return false, err
-    if !exec(&conn, "PRAGMA busy_timeout=1000; PRAGMA query_only=ON;") {
-        close(&conn)
-        return false, domain.domain_error(.Internal_Error, "action snapshot reader configuration failed")
-    }
-    impl.snapshot_conn = conn
-    return true, {}
+
+actions_run_settle_waiting :: proc(ctx: rawptr, id: domain.Action_ID, now: string) -> (bool, domain.Domain_Error) {
+ guard := tx_repository_enter()
+ defer tx_repository_leave(guard)
+ stmt, err := actions_prepare(ctx, "SELECT EXISTS(SELECT 1 FROM action_runs WHERE action_id=?1 AND state='deferred' AND settle_pending=1 AND not_before<=?2);", {string(id),now})
+ if err.code != .None do return false, err
+ defer sqlite3_finalize(stmt)
+ if sqlite3_step(stmt) != SQLITE_ROW do return false, domain.domain_error(.Internal_Error,"could not read waiting settle runs")
+ return sqlite3_column_int64(stmt,0)!=0, {}
 }
 
-action_write_error :: proc(rc: c.int) -> domain.Domain_Error {
-    if rc & 0xff == SQLITE_BUSY || rc & 0xff == SQLITE_LOCKED {
-        err := domain.domain_error(.Bridge_Busy, "action database busy")
-        err.details_json = `{"retry_after_ms":1000}`
-        return err
-    }
-    if rc & 0xff == SQLITE_CONSTRAINT do return domain.domain_error(.Validation_Failed, "action constraint rejected")
-    return domain.domain_error(.Internal_Error, "action database write failed")
+// Membership and expected state travel together so one statement cannot route a
+// changed or missing member. The surrounding UoW rolls back on a short update.
+actions_runs_route_batch :: proc(ctx:rawptr,members:[]iface.Action_Batch_Member,delivery_id,message_id,instance_id,started_at:string,rule_position:int)->domain.Domain_Error {
+ guard:=tx_repository_enter()
+ defer tx_repository_leave(guard)
+ params:=make([dynamic]string,context.temp_allocator)
+ append(&params,delivery_id,message_id,instance_id,started_at,fmt.tprintf("%d",rule_position))
+ query:=strings.builder_make(context.temp_allocator)
+ strings.write_string(&query,"UPDATE action_runs SET state='routed',delivery_id=?1,message_id=?2,target_instance_id=?3,started_at=?4,rule_position=?5 WHERE ")
+ for member,i in members {
+  if i>0 do strings.write_string(&query," OR ")
+  strings.write_string(&query,fmt.tprintf("(run_id=?%d AND state=?%d)",6+i*2,7+i*2))
+  append(&params,member.run_id,member.from_state)
+ }
+ if len(members)==0 do return {}
+ _,err:=actions_write(ctx,strings.to_string(query),params[:])
+ if err.code!=.None do return err
+ if sqlite3_changes((^Action_Repo_SQLite)(ctx).conn.db)!=i32(len(members)) do return domain.domain_error(.Conflict,"action batch changed")
+ return {}
+}
+// Keep both predicates: IN enables the partial index; equality excludes completed runs.
+ACTIONS_SQL_TARGET_OPEN_DELIVERY :: "SELECT d.delivery_id,d.expires_at FROM action_runs r JOIN pipeline_deliveries d ON d.delivery_id=r.delivery_id WHERE r.owner_user_id=?1 AND r.target_instance_id=?2 AND r.state IN ('routed','delivered') AND r.state='routed' AND d.state IN ('routed','forwarded','delivered') ORDER BY d.created_at,d.delivery_id LIMIT 1;"
+actions_target_open_delivery :: proc(ctx:rawptr,owner,instance_id:string)->(string,string,bool,domain.Domain_Error) {
+ guard:=tx_repository_enter()
+ defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_TARGET_OPEN_DELIVERY,{owner,instance_id})
+ if err.code!=.None do return "","",false,err
+ defer sqlite3_finalize(stmt)
+ rc:=sqlite3_step(stmt)
+ if rc==SQLITE_DONE do return "","",false,{}
+ if rc!=SQLITE_ROW do return "","",false,domain.domain_error(.Internal_Error,"cannot read target delivery")
+ return column_text(stmt,0),column_text(stmt,1),true,{}
+}
+
+// Only routed members participate in finalization/replacement; terminal rows are history.
+actions_runs_for_delivery :: proc(ctx:rawptr,delivery_id:string)->([]domain.Action_Run,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ return actions_run_query(ctx,"SELECT "+ACTIONS_RUN_COLUMNS+" FROM action_runs WHERE delivery_id=?1 AND state='routed' ORDER BY created_at,run_id;",{delivery_id})
+}
+actions_runs_finish_delivery :: proc(ctx:rawptr,delivery_id,state,reason,now:string)->domain.Domain_Error {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ _,err:=actions_write(ctx,"UPDATE action_runs SET state=?2,reason=?3,finished_at=?4 WHERE delivery_id=?1 AND state='routed';",{delivery_id,state,reason,now})
+ return err
+}
+actions_runs_release_parked :: proc(ctx:rawptr,owner,instance_id,now:string)->(bool,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ if instance_id=="" do return false,{}
+ return actions_write(ctx,"UPDATE action_runs SET not_before=?3 WHERE owner_user_id=?1 AND target_instance_id=?2 AND state='deferred' AND target_instance_id<>'';",{owner,instance_id,now})
 }

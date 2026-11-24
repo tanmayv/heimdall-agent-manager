@@ -8,6 +8,10 @@ import "core:strings"
 // healthy credential or reading/repairing enrollment. Hold both until the journal
 // write is durable. In particular, journal load may normalize crash reservations.
 bridge_recovery_resume :: proc(cfg: Bridge_Config, config_path: string, refresh: bool) -> bool {
+    if !refresh {
+        fmt.println("nothing to resume: the action scheduler was removed")
+        return true
+    }
     config_lock, config_locked := bridge_config_lock(config_path)
     if !config_locked {
         fmt.eprintln("recovery resume refused: config is unavailable or a bridge/enrollment is running")
@@ -41,7 +45,7 @@ bridge_recovery_resume :: proc(cfg: Bridge_Config, config_path: string, refresh:
             return false
         }
     }
-    key := fmt.aprintf("refresh:%s:%s", cfg.daemon_url, strings.trim_space(cfg.daemon_id)) if refresh else bridge_action_scheduler_sync_key()
+    key := fmt.aprintf("refresh:%s:%s", cfg.daemon_url, strings.trim_space(cfg.daemon_id))
     defer delete(key)
     if !bridge_retry_operator_resume_sync(key, refresh) {
         fmt.eprintln("recovery resume refused: journal unavailable or operation in flight")

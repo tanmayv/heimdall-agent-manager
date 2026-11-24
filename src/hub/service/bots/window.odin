@@ -18,6 +18,8 @@ bots_window_closed :: proc(a: ^channel.Channel_Adapter, binding: domain.Channel_
 }
 
 // Provider calls happen under the dedicated re-engagement lock, never s.mutex.
+// Call only outside a UoW: this lock precedes the binding write gate, and
+// provider delivery (including its callback) belongs after transaction commit.
 bots_reengage :: proc(s: ^Bots_Service, binding_id: string) {
 	sync.mutex_lock(&s.reengage_mutex); defer sync.mutex_unlock(&s.reengage_mutex)
 	binding, found, err := iface.binding_get(s.repo, binding_id)

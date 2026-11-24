@@ -58,7 +58,14 @@ bridge_retry_journal_load :: proc(j: ^Bridge_Retry_Journal, path: string) -> boo
     if json.unmarshal(raw, &disk) != nil || disk.version != 1 || len(disk.receipts) > BRIDGE_RETRY_JOURNAL_CAP {
         j.failed = true; return false
     }
+    defer delete(disk.receipts)
     for r in disk.receipts {
+        // Obsolete scheduler operations must not hold an upgraded bridge in repair.
+        if strings.has_prefix(r.key, "sync:") || strings.has_prefix(r.key, "slot:") {
+            delete(r.key)
+            delete(r.target_instance_id)
+            continue
+        }
         b := r.budget
         if b.state < 0 || b.state > int(Bridge_Operation_State.Cancelled) ||
            b.code < 0 || b.code > int(max(contracts.Error_Code)) ||
@@ -88,7 +95,7 @@ bridge_retry_journal_load :: proc(j: ^Bridge_Retry_Journal, path: string) -> boo
         // Reservation survived a crash. Idempotent callers may consume only
         // remaining attempts; unsafe side effects use a terminal receipt instead.
         if b.state == .In_Flight {
-            if strings.has_prefix(r.key, "slot:") || strings.has_prefix(r.key, "refresh:") { b.state = .Waiting_Repair }
+            if strings.has_prefix(r.key, "refresh:") { b.state = .Waiting_Repair }
             else { b.state = .Backoff }
         }
     }
@@ -236,21 +243,6 @@ bridge_retry_reopen_retriable :: proc(key: string) -> bool {
     return true
 }
 
-bridge_retry_record_target :: proc(key, target: string) -> bool {
-    sync.mutex_lock(&bridge_retry_journal_mutex)
-    defer sync.mutex_unlock(&bridge_retry_journal_mutex)
-    for &r in bridge_retry_journal.receipts {
-        if r.key == key {
-            if r.budget.state != .In_Flight || (r.target_instance_id != "" && r.target_instance_id != target) do return false
-            delete(r.target_instance_id)
-            r.target_instance_id = strings.clone(target, runtime.heap_allocator())
-            if !bridge_retry_journal_flush_locked() { r.budget.state = .Waiting_Repair; return false }
-            return true
-        }
-    }
-    return false
-}
-
 bridge_retry_resume_pending_rotation :: proc(key: string, first_ms: i64) -> bool {
     sync.mutex_lock(&bridge_retry_journal_mutex)
     defer sync.mutex_unlock(&bridge_retry_journal_mutex)
@@ -276,9 +268,7 @@ bridge_recovery_status_json :: proc() -> string {
     groups := make(map[string]Bridge_Recovery_Status_Row, context.temp_allocator)
     for r in bridge_retry_journal.receipts {
         operation := "readiness"
-        if strings.has_prefix(r.key, "sync:") { operation = "sync" }
-        else if strings.has_prefix(r.key, "refresh:") { operation = "refresh" }
-        else if strings.has_prefix(r.key, "slot:") { operation = "slot" }
+        if strings.has_prefix(r.key, "refresh:") { operation = "refresh" }
         state := fmt.tprintf("%v", r.budget.state)
         code := contracts.error_code_string(r.budget.code)
         class := contracts.bridge_error_class_name(r.budget.class)
@@ -308,9 +298,7 @@ bridge_recovery_diagnostics_write :: proc(b: ^strings.Builder) {
     groups := make(map[string]Bridge_Recovery_Status_Row, context.temp_allocator)
     for r in bridge_retry_journal.receipts {
         operation := "readiness"
-        if strings.has_prefix(r.key, "sync:") { operation = "sync" }
-        else if strings.has_prefix(r.key, "refresh:") { operation = "refresh" }
-        else if strings.has_prefix(r.key, "slot:") { operation = "slot" }
+        if strings.has_prefix(r.key, "refresh:") { operation = "refresh" }
         state := fmt.tprintf("%v", r.budget.state)
         code := contracts.error_code_string(r.budget.code)
         class := contracts.bridge_error_class_name(r.budget.class)
@@ -335,9 +323,9 @@ bridge_recovery_diagnostics_write :: proc(b: ^strings.Builder) {
 }
 
 // Explicit local operator command only; ordinary reconnect/version/token events
-// never call this. Corrupt journals and unknown side-effect slots stay fenced.
+// never call this. Corrupt journals stay fenced.
 bridge_retry_operator_resume_sync :: proc(key: string, refresh := false) -> bool {
-    if !strings.has_prefix(key, "refresh:" if refresh else "sync:") do return false
+    if !refresh || !strings.has_prefix(key, "refresh:") do return false
     sync.mutex_lock(&bridge_retry_journal_mutex)
     defer sync.mutex_unlock(&bridge_retry_journal_mutex)
     b := bridge_retry_journal_get_locked(key)
@@ -345,16 +333,6 @@ bridge_retry_operator_resume_sync :: proc(key: string, refresh := false) -> bool
     b^ = {}
     return bridge_retry_journal_flush_locked()
 }
-bridge_retry_credential_repaired :: proc(key: string) {
-    sync.mutex_lock(&bridge_retry_journal_mutex)
-    defer sync.mutex_unlock(&bridge_retry_journal_mutex)
-    b := bridge_retry_journal_get_locked(key)
-    if strings.has_prefix(key, "sync:") && b != nil && b.state == .Waiting_Repair && b.code == .Unauthenticated && b.class == .recoverable {
-        b.state = .Backoff
-        if !bridge_retry_journal_flush_locked() do b.state = .Waiting_Repair
-    }
-}
-
 bridge_retry_cancel :: proc(key: string) {
     sync.mutex_lock(&bridge_retry_journal_mutex)
     defer sync.mutex_unlock(&bridge_retry_journal_mutex)

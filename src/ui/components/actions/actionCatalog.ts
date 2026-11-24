@@ -13,6 +13,7 @@
  * render blank when a lookup fails.
  */
 import React from 'react';
+import { useGetBotQuery } from '../../api/endpoints/bots';
 import { containsVaultArmored, maskVaultArmored } from '../../utils/vaultContent.ts';
 import { buildRouteHash } from '../../utils/appLocation';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
@@ -31,6 +32,8 @@ export interface CatalogEntry {
   id: string;
   label: string;
   sub?: string;
+  bridgeId?: string;
+  instanceId?: string;
   keywords?: string;
   /**
    * Where this record can be opened, when a route for it exists. Absent is a real
@@ -54,6 +57,7 @@ function sliceFrom(entries: CatalogEntry[], loading: boolean, failed: boolean): 
 }
 
 export interface ActionCatalog {
+  bots: CatalogSlice;
   instances: CatalogSlice;
   agents: CatalogSlice;
   bridges: CatalogSlice;
@@ -62,7 +66,9 @@ export interface ActionCatalog {
   loading: boolean;
 }
 
-export function useActionCatalog(): ActionCatalog {
+export function useActionCatalog(allowBots = false): ActionCatalog {
+  const botsQuery = useGetBotQuery(undefined, { skip: !allowBots });
+  const bots = React.useMemo(() => sliceFrom((botsQuery.data ? [botsQuery.data] : []).map((b: any) => ({ id: b.bot_id || b.id, label: b.display_name || b.bot_id || b.id, instanceId: b.advanced?.agent_instance_id })), botsQuery.isLoading, Boolean(botsQuery.error)), [botsQuery.data, botsQuery.isLoading, botsQuery.error]);
   const instancesQuery = useListAllAgentInstancesQuery();
   const agentsQuery = useListAgentIdentitiesQuery();
   const bridgesQuery = useListBridgesQuery();
@@ -84,6 +90,7 @@ export function useActionCatalog(): ActionCatalog {
           id,
           label,
           sub: status,
+          bridgeId: String(inst?.bridge_id || ''),
           keywords: [id, label, status].filter(Boolean).join(' '),
           href: chainId ? buildRouteHash(`/chains/${encodeURIComponent(chainId)}`, '') : undefined,
         };
@@ -169,6 +176,7 @@ export function useActionCatalog(): ActionCatalog {
 
   return React.useMemo(
     () => ({
+      bots,
       instances,
       agents,
       bridges,
@@ -179,7 +187,7 @@ export function useActionCatalog(): ActionCatalog {
         bridges.state === 'loading' ||
         projects.state === 'loading',
     }),
-    [instances, agents, bridges, projects],
+    [bots, instances, agents, bridges, projects],
   );
 }
 
@@ -188,14 +196,13 @@ export function useActionCatalog(): ActionCatalog {
  * or still-loading catalog degrades to something the user can at least copy.
  */
 export function targetLabel(
-  record: { target_instance_id?: string; target_agent_id?: string },
+  record: { target: import('../../api/endpoints/actions').ActionTarget },
   catalog: ActionCatalog,
 ): string {
-  const instanceId = String(record.target_instance_id || '').trim();
-  if (instanceId) return catalog.instances.byId.get(instanceId)?.label || instanceId;
-  const agentId = String(record.target_agent_id || '').trim();
-  if (agentId) return catalog.agents.byId.get(agentId)?.label || agentId;
-  return 'No target';
+  const t = record.target;
+  if (t.kind === 'instance') return catalog.instances.byId.get(t.instance_id)?.label || t.instance_id;
+  if (t.kind === 'agent') return catalog.agents.byId.get(t.agent_id)?.label || t.agent_id;
+  return catalog.bots.byId.get(t.bot_id)?.label || t.bot_id;
 }
 
 export function bridgeLabel(bridgeId: string | undefined, catalog: ActionCatalog): string {

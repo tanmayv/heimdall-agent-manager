@@ -48,7 +48,7 @@ reviewer_template :: proc() -> domain.Template { t, _ := domain.builtin_template
 soloist_template :: proc() -> domain.Template { t, _ := domain.builtin_template(domain.TEMPLATE_SOLOIST_ID); return t }
 empty_template :: proc() -> domain.Template { t, _ := domain.builtin_template(domain.TEMPLATE_EMPTY_ID); return t }
 
-Content_Service :: struct { uow_factory: ^iface.Unit_Of_Work_Factory, vault_directory: ^iface.Vault_Directory_Repository, agent_configuration_service: ^agent_service.Agent_Service, content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool, attention: ^contracts.Attention_Notifier, user_activity: User_Activity_Hook }
+Content_Service :: struct { messages_read: Messages_Read_Hook, uow_factory: ^iface.Unit_Of_Work_Factory, vault_directory: ^iface.Vault_Directory_Repository, agent_configuration_service: ^agent_service.Agent_Service, content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool, attention: ^contracts.Attention_Notifier, user_activity: User_Activity_Hook }
 Memory_Input :: struct { title,description,body,evidence,status,expires_at: string, proposed_by_instance_id,proposed_in_chain_id: string, agent_ids,template_ids,bridge_ids: []string, project_ids: []domain.Project_ID, type: domain.Memory_Type }
 Memory_Update_Input :: struct {
 	title:            string,
@@ -87,7 +87,9 @@ Chat_Input :: struct { agent_id,agent_instance_id,chain_id,title,initial_body,ar
 Message_Input :: struct { body,artifact_ids_json,message_type,metadata_json: string }
 Pane_Capture_Input :: struct { width, settle_ms, line_limit: int }
 Pane_Capture_Result_Input :: struct { command_id,pane_capture_request_id,conversation_id,message_id,agent_instance_id,output,error_code,message: string, ok,truncated: bool, width,line_count: int }
-Agent_Inbox_Filter :: struct { oldest_first: bool, agent_instance_id: string, unread_only: bool, receiver_only: bool, include_outgoing: bool, include_debug: bool, limit: int, cursor: string }
+// acp_agent_unread: the ACP agent's own read; unread also covers bridge-admitted
+// inputs without actual agent read evidence (see acp_input_deliveries).
+Agent_Inbox_Filter :: struct { oldest_first: bool, agent_instance_id: string, unread_only: bool, receiver_only: bool, include_outgoing: bool, include_debug: bool, limit: int, cursor: string, acp_agent_unread: bool }
 Artifact_Input :: struct { kind,name,description,content_type,content,mime,ext,sha256,origin_kind,origin_ref,filename,agent_id,agent_instance_id,chain_id,task_id: string, project_id: domain.Project_ID }
 // Template_Input carries a template create/update payload. The has_<field> flags
 // distinguish "absent from the PATCH body" from "explicitly set to empty"
@@ -234,14 +236,39 @@ update_conversation_title :: proc(s:^Content_Service, auth:contracts.Auth_Contex
 // token, sets the title, and stamps title_source="agent" so the activity-gated
 // nudge engine (T2) stops nudging this conversation.
 set_own_conversation_title :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id, title:string)->(domain.Chat_Conversation,bool,domain.Domain_Error){ if auth.kind!=.Instance_Token || auth.agent_instance_id=="" || auth.agent_instance_id!=instance_id do return {},false,domain.domain_error(.Forbidden,"instance token is required"); c,ok,err:=get_conversation_by_instance(s,auth,instance_id); if !ok do return {},false,err; return update_conversation_title(s,auth,c.conversation_id,title,"agent") }
-get_conversation_by_instance :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; rows,list_err:=iface.content_list_conversations(s.content,owner,512,""); if list_err.code!=.None do return {},false,list_err; for c in rows { if c.agent_instance_id==instance_id do return c,true,{} }; return {},false,domain.domain_error(.Not_Found,"conversation not found") }
+// Indexed owner+instance lookup; returns the most recently active conversation.
+get_conversation_by_instance :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; return iface.content_conversation_by_instance(s.content,owner,instance_id) }
 list_messages :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,limit:int,cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ c,ok,err:=get_conversation(s,auth,cid); if !ok do return nil,err; rows,list_err:=iface.content_list_messages(s.content,c.conversation_id,c.owner_user_id,limit,cursor); if list_err.code!=.None do return nil,list_err; repair_stale_pane_captures(s, rows); return rows,{} }
 list_user_visible_messages :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,limit:int,cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ c,ok,err:=get_conversation(s,auth,cid); if !ok do return nil,err; rows,list_err:=iface.content_list_user_visible_messages(s.content,c.conversation_id,c.owner_user_id,limit,cursor); if list_err.code!=.None do return nil,list_err; repair_stale_pane_captures(s, rows); return rows,{} }
-list_agent_inbox_messages :: proc(s:^Content_Service, auth:contracts.Auth_Context, filter: Agent_Inbox_Filter) -> ([]domain.Chat_Message,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return nil,err; c,conv_ok,conv_err:=get_conversation_by_instance(s,auth,filter.agent_instance_id); if !conv_ok do return nil,conv_err; limit := filter.limit; if limit <= 0 do limit = 50; if limit > 200 do limit = 200; rows,list_err:=iface.content_list_agent_inbox_messages(s.content,c.conversation_id,c.owner_user_id,filter.agent_instance_id,filter.unread_only,filter.receiver_only,filter.include_outgoing,filter.include_debug,limit,filter.cursor,filter.oldest_first); if list_err.code!=.None do return nil,list_err; repair_stale_pane_captures(s, rows); return rows,{} }
+list_agent_inbox_messages :: proc(s:^Content_Service, auth:contracts.Auth_Context, filter: Agent_Inbox_Filter) -> ([]domain.Chat_Message,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return nil,err; c,conv_ok,conv_err:=get_conversation_by_instance(s,auth,filter.agent_instance_id); if !conv_ok do return nil,conv_err; limit := filter.limit; if limit <= 0 do limit = 50; if limit > 200 do limit = 200; rows,list_err:=iface.content_list_agent_inbox_messages(s.content,c.conversation_id,c.owner_user_id,filter.agent_instance_id,filter.unread_only,filter.receiver_only,filter.include_outgoing,filter.include_debug,limit,filter.cursor,filter.oldest_first,filter.acp_agent_unread); if list_err.code!=.None do return nil,list_err; repair_stale_pane_captures(s, rows); return rows,{} }
 mark_messages_read_by_ids :: proc(s:^Content_Service, auth:contracts.Auth_Context, message_ids:[]string) -> (int,domain.Domain_Error){ n,_,err:=mark_messages_read_by_ids_at(s,auth,message_ids); return n,err }
 // mark_messages_read_by_ids_at also returns the read_at it wrote, so callers can
 // report the committed receipt instead of the pre-mark row (E4).
-mark_messages_read_by_ids_at :: proc(s:^Content_Service, auth:contracts.Auth_Context, message_ids:[]string) -> (int,string,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return 0,"",err; read_at:=platform.clock_now(s.clock); n,mark_err:=iface.content_mark_messages_read(s.content, owner, message_ids, read_at); return n,read_at,mark_err }
+mark_messages_read_by_ids_at :: proc(s:^Content_Service, auth:contracts.Auth_Context, message_ids:[]string) -> (int,string,domain.Domain_Error){
+ owner,ok,err:=ownership.owner_from_auth(auth)
+ if !ok do return 0,"",err
+ read_at:=platform.clock_now(s.clock)
+ n,mark_err:=mark_messages_read_at(s,owner,message_ids,read_at)
+ return n,read_at,mark_err
+}
+
+Messages_Read_Hook :: struct {
+ ctx: rawptr,
+ read: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner:domain.User_ID,ids:[]string)->domain.Domain_Error,
+}
+mark_messages_read_at :: proc(s:^Content_Service, owner:domain.User_ID, ids:[]string, at:string)->(int,domain.Domain_Error) {
+ if len(ids)==0 do return 0,{}
+ if s.messages_read.read==nil do return iface.content_mark_messages_read(s.content,owner,ids,at)
+ uow,ok,err:=iface.unit_of_work_begin(s.uow_factory)
+ if !ok do return 0,err
+ defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
+ n,mark_err:=iface.content_mark_messages_read(&uow.repos.content,owner,ids,at)
+ if mark_err.code!=.None do return 0,mark_err
+ if err=s.messages_read.read(s.messages_read.ctx,&uow,owner,ids);err.code!=.None do return 0,err
+ committed,ce:=iface.unit_of_work_commit(&uow);uow.ctx=nil
+ if !committed do return 0,ce
+ return n,{}
+}
 send_message :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,input:Message_Input)->(domain.Chat_Message,bool,domain.Domain_Error) {
  m,ok,err:=persist_user_message(s,auth,cid,input)
  if !ok do return {},false,err
@@ -396,7 +423,7 @@ mark_read_with_receipts :: proc(s:^Content_Service, auth:contracts.Auth_Context,
 		MARK_READ_BATCH :: 500
 		for start:=0; start<len(marked_ids); start+=MARK_READ_BATCH {
 			end:=min(start+MARK_READ_BATCH,len(marked_ids))
-			_,mark_err:=iface.content_mark_messages_read(s.content,owner,marked_ids[start:end],read_at)
+			_,mark_err:=mark_messages_read_at(s,owner,marked_ids[start:end],read_at)
 			if mark_err.code!=.None {
 				// Earlier batches did commit: let the projector re-read so the
 				// card matches what is actually still unread, then report.
@@ -571,9 +598,9 @@ conversation_instance_binding_valid :: proc(s:^Content_Service, owner:domain.Use
 	if inst.agent_id!=input.agent_id do return false,domain.domain_error(.Conflict,"conversation agent_id must match agent instance")
 	if input.chain_id!="" && inst.chain_id!=input.chain_id do return false,domain.domain_error(.Conflict,"conversation chain_id must match agent instance")
 	if string(input.project_id)!="" && inst.project_id!=input.project_id do return false,domain.domain_error(.Conflict,"conversation project_id must match agent instance")
-	existing,list_err:=iface.content_list_conversations(s.content,owner,256,"")
-	if list_err.code!=.None do return false,list_err
-	for c in existing { if c.agent_instance_id==input.agent_instance_id do return false,domain.domain_error(.Conflict,"agent instance already has a conversation") }
+	_,exists,lookup_err:=iface.content_conversation_by_instance(s.content,owner,input.agent_instance_id)
+	if exists do return false,domain.domain_error(.Conflict,"agent instance already has a conversation")
+	if lookup_err.code!=.Not_Found do return false,lookup_err
 	return true,{}
 }
 artifact_context_owned :: proc(s:^Content_Service, owner:domain.User_ID, input:Artifact_Input)->(bool,domain.Domain_Error){
@@ -691,3 +718,11 @@ notify_agent_message :: proc(s:^Content_Service,c:domain.Chat_Conversation,direc
 }
 notify_agent_message_checked :: proc(s:^Content_Service, c:domain.Chat_Conversation, direction,sender_instance_id,message_id:string, sender_display_name:string="")->(bool,domain.Domain_Error){ if s==nil || s.agents==nil || s.bridge_command_sink.send_runtime_command==nil do return false,domain.domain_error(.Bridge_Offline,"message delivery unavailable"); inst,ok,_:=iface.agent_get_instance(s.agents,c.agent_instance_id); if !ok || inst.bridge_id=="" do return false,domain.domain_error(.Bridge_Offline,"message delivery unavailable"); command_id:=platform.generate_id(s.ids,"cmd_"); sndr_dn:=sender_display_name; if sndr_dn=="" && sender_instance_id!="" && sender_instance_id!="user" { if sndr,sndr_ok,_:=iface.agent_get_instance(s.agents,sender_instance_id); sndr_ok do sndr_dn=sndr.display_name }; if sndr_dn=="" && sender_instance_id=="user" do sndr_dn="User"; b:=strings.builder_make(); strings.write_string(&b,"{\"type\":\"notify_agent_message\",\"command_id\":\""); content_json_write(&b,command_id); strings.write_string(&b,"\",\"bridge_id\":\""); content_json_write(&b,inst.bridge_id); strings.write_string(&b,"\",\"agent_instance_id\":\""); content_json_write(&b,c.agent_instance_id); strings.write_string(&b,"\",\"conversation_id\":\""); content_json_write(&b,c.conversation_id); strings.write_string(&b,"\",\"message_id\":\""); content_json_write(&b,message_id); strings.write_string(&b,"\",\"direction\":\""); content_json_write(&b,direction); strings.write_string(&b,"\",\"sender\":\""); content_json_write(&b,sender_instance_id); strings.write_string(&b,"\",\"sender_agent_instance_id\":\""); content_json_write(&b,sender_instance_id); if sndr_dn!="" { strings.write_string(&b,"\",\"sender_display_name\":\""); content_json_write(&b,sndr_dn) }; strings.write_string(&b,"\",\"unread_count\":"); strings.write_string(&b,fmt.tprintf("%d",c.unread_count)); strings.write_string(&b,"}"); return project_service.bridge_command_send_runtime(s.bridge_command_sink,project_service.Runtime_Command{bridge_id=inst.bridge_id,command_id=command_id,body_json=strings.to_string(b)}) }
 content_json_write :: proc(b:^strings.Builder, v:string){ contracts.write_json_string(b,v) }
+
+// Indexed lookup for action adapters; legacy conversation paging is unchanged.
+get_action_conversation :: proc(s:^Content_Service,auth:contracts.Auth_Context,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error) {
+ owner,ok,err:=ownership.owner_from_auth(auth)
+ if !ok do return {},false,err
+ if s.content.action_conversation==nil do return {},false,domain.domain_error(.Internal_Error,"action conversation lookup unavailable")
+ return s.content.action_conversation(s.content.ctx,owner,instance_id)
+}

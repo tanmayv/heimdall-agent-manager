@@ -35,7 +35,6 @@ Groups:
 - [fleet-management.md](fleet-management.md): per-chain, per-agent fleet launch settings and the `bridge_models` API field.
 - [multi-question-messages.md](multi-question-messages.md): version 1 multi-question message form and the agent CLI JSON format.
 - [html-bundle-artifacts.md](html-bundle-artifacts.md): publishing multi-page static HTML bundles as artifacts and viewing them in an isolated iframe.
-- [voice-messages.md](voice-messages.md): voice message flow, the user-provided speech service contract, Hub relay access and agent voice replies.
 - [quoted-context.md](quoted-context.md): the Quote feature that attaches selected message text to a coordinator message.
 
 ### Transport and streaming
@@ -66,10 +65,13 @@ Groups:
 
 - [INSTALL_ANALYSIS_AND_RECOVERY.md](INSTALL_ANALYSIS_AND_RECOVERY.md): bridge install, update and recovery built around the single `ham-bridge` binary.
 - [bridge-setup-progress.md](bridge-setup-progress.md): the `ham-bridge` `setup --json-progress`, `status --json` and `list --json` lifecycle CLI.
+- [specs/bridge-supervisor-engine.md](specs/bridge-supervisor-engine.md): bridge update engine spec (launcher, supervisor, journal, pointers, agent gate, crash recovery); spec for Phase 1, not implemented.
+- [specs/event-rules-v2.md](specs/event-rules-v2.md): Event rules v2 spec (envelope v2, filter operators, memory and webhook sources, per-target batched delivery); spec for review, not implemented.
 - [bridge-multi-account.md](bridge-multi-account.md): several accounts on one machine, each with its own bridge profile.
 - [bridge-retirement.md](bridge-retirement.md): how the bridge parks Hub traffic on sunset or credential revocation.
 - [provider-profiles.md](provider-profiles.md): provider profiles and isolated local homes.
 - [release-targets.md](release-targets.md): release workflow targets and the optional Intel macOS build.
+- [release-signing.md](release-signing.md): the minisign-signed release manifest, the protected signing key, and key rotation.
 
 ### Desktop app
 

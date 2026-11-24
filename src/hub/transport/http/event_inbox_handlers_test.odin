@@ -11,7 +11,7 @@ import nats "odin_test:lib/nats"
 import natstest "odin_test:lib/natstest"
 
 @(test)
-test_events_api_uses_authenticated_durable_identity :: proc(t: ^testing.T) {
+test_events_api_uses_authenticated_instance :: proc(t: ^testing.T) {
 	// Legacy auth fixture uses request-arena ownership. Inbox and NATS integration
 	// suites separately track and assert every owned allocation.
 	context.allocator = context.temp_allocator
@@ -34,17 +34,19 @@ test_events_api_uses_authenticated_durable_identity :: proc(t: ^testing.T) {
 	}
 	uow, began, _ := iface.unit_of_work_begin(&factory)
 	if !testing.expect(t, began) do return
+	// sub_other_instance belongs to another instance of the caller's own
+	// durable agent (agt_wire_tb2): it must be as invisible as a foreign tenant.
 	for identity, i in ([][2]string {
-			{string(f.owner), "agt_wire_tb2"},
-			{string(f.owner), "agt_other"},
-			{"other_owner", "agt_wire_tb2"},
+			{string(f.owner), string(f.instance_id)},
+			{string(f.owner), "inst_wire_twin"},
+			{"other_owner", string(f.instance_id)},
 		}) {
 		id := "sub_own"
-		if i == 1 do id = "sub_other_agent"
+		if i == 1 do id = "sub_other_instance"
 		if i == 2 do id = "sub_other_tenant"
 		testing.expect_value(
 			t,
-			repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = id, owner_user_id = identity[0], subscriber_agent_id = identity[1], chain_id = string(f.chain_id), source = "explicit", filter_subjects = "[]", consumer_name = id, wake_policy = "catalog", created_at = "now"}).code,
+			repos.event_subscriptions.put(repos.event_subscriptions.ctx, {subscription_id = id, owner_user_id = identity[0], subscriber_instance_id = identity[1], chain_id = string(f.chain_id), source = "explicit", filter_subjects = "[]", consumer_name = id, wake_policy = "catalog", created_at = "now"}).code,
 			domain.Error_Code.None,
 		)
 	}
@@ -63,8 +65,8 @@ test_events_api_uses_authenticated_durable_identity :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(resp.body, "sub_own"))
 	testing.expect(
 		t,
-		!strings.contains(resp.body, "sub_other_agent") && !strings.contains(resp.body, "sub_other_tenant"),
-		"body cannot select another identity",
+		!strings.contains(resp.body, "sub_other_instance") && !strings.contains(resp.body, "sub_other_tenant"),
+		"another instance of the same agent and another tenant are invisible",
 	)
 	unauth := event_subscriptions_handler(&handlers, {method = "POST", body = "{}"})
 	testing.expect_value(t, unauth.status, 401)
@@ -73,7 +75,7 @@ test_events_api_uses_authenticated_durable_identity :: proc(t: ^testing.T) {
 		wire_cookie_request(f, "POST", "/api/v1/agent-actions/events/subscriptions", "{}"),
 	)
 	testing.expect(t, human.status == 401 || human.status == 403, "user cookie is not an instance token")
-	// Unwatch is scoped to the token's durable identity even with injected ids.
+	// Unwatch is scoped to the token's instance even with injected ids.
 	unwatch_body := wire_body(
 		[]string{`{"params":{"chain_id":"`, string(f.chain_id), `","subscriber_agent_id":"agt_other"}}`},
 	)
@@ -84,10 +86,10 @@ test_events_api_uses_authenticated_durable_identity :: proc(t: ^testing.T) {
 	resp = event_unwatch_handler(&handlers, wire_agent_request(f, "events", clean_unwatch_body))
 	defer delete(clean_unwatch_body)
 	testing.expectf(t, resp.status == 200, "%s", resp.body)
-	others, err := eventinbox.subscriptions(&service, string(f.owner), "agt_other")
-	testing.expect(t, err.code == .None && len(others) == 1)
+	others, err := eventinbox.subscriptions(&service, string(f.owner), "inst_wire_twin")
+	testing.expect(t, err.code == .None && len(others) == 1, "the twin instance keeps its watch")
 	eventinbox.subscription_rows_destroy(others)
-	own, own_err := eventinbox.subscriptions(&service, string(f.owner), "agt_wire_tb2")
+	own, own_err := eventinbox.subscriptions(&service, string(f.owner), string(f.instance_id))
 	testing.expect(t, own_err.code == .None && len(own) == 1)
 	if len(own) > 0 do testing.expect_value(t, own[0].source, "role_default")
 	eventinbox.subscription_rows_destroy(own)
@@ -108,6 +110,7 @@ test_events_api_uses_authenticated_durable_identity :: proc(t: ^testing.T) {
 
 @(test)
 test_event_metrics_endpoint_owner_scope_and_auth :: proc(t: ^testing.T) {
+	http_nats_test_lock(); defer http_nats_test_unlock()
 	context.allocator=context.temp_allocator
 	f:=wire_setup(t,"event_metrics");defer wire_teardown(f)
 	server,started:=natstest.start();defer natstest.destroy(&server)
@@ -127,7 +130,7 @@ test_event_metrics_endpoint_owner_scope_and_auth :: proc(t: ^testing.T) {
 	uow,began,_:=iface.unit_of_work_begin(&factory)
 	if !testing.expect(t,began) do return
 	for identity in ([][2]string{{string(f.owner),"sub_visible"},{"bob","sub_secret"}}) {
-		testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=identity[1],owner_user_id=identity[0],subscriber_agent_id="agt_metrics",chain_id=string(f.chain_id),source="explicit",consumer_name=identity[1],filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
+		testing.expect_value(t,repos.event_subscriptions.put(repos.event_subscriptions.ctx,{subscription_id=identity[1],owner_user_id=identity[0],subscriber_instance_id="agt_metrics",chain_id=string(f.chain_id),source="explicit",consumer_name=identity[1],filter_subjects="[]",wake_policy="catalog",created_at="now"}).code,domain.Error_Code.None)
 	}
 	committed,_:=iface.unit_of_work_commit(&uow);testing.expect(t,committed)
 	response:=tracked_catalog_handler_request(t,event_metrics_handler,&h,wire_cookie_request(f,"GET","/api/v1/events/metrics",""))

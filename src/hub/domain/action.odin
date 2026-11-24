@@ -1,64 +1,154 @@
 package domain
 
-Action_State :: enum {
-	Active,
-	In_Flight,
-	Completed,
-}
-
-Action_Target_Mode :: enum {
-	Instance,
-	Agent,
-}
-
-Action :: struct {
-	id:                 Action_ID,
-	owner_user_id:      User_ID,
-	target_instance_id: Agent_Instance_ID,
-	prompt_text:        string,
-	// Schedule fields (nullable/optional):
-	cron_expr:          string, // 5-field standard cron, empty if run-only
-	timezone:           string, // IANA timezone, defaults to "UTC"
-	blackout_dates:     string, // JSON array of "YYYY-MM-DD" strings to skip
-	active_from:        string, // ISO timestamp window start
-	active_until:       string, // ISO timestamp window end
-	target_run_at:      string, // Next computed fire time (ISO timestamp UTC)
-	interval:           string, // Legacy interval or empty
-	state:              Action_State,
-	in_flight:          bool,
-	leased_at:          string,
-	deleted_at:         string,
-	created_at:         string,
-	updated_at:         string,
-	// Agent targeting fields (REQ-SCHED-1):
-	target_agent_id:    Agent_ID,
-	target_bridge_id:   Bridge_ID,
-	target_provider:    string,
-	target_model:        string,
-	target_project_id:  Project_ID,
-	// Instance strategy for durable agent-id targets (REQ-SCHED-2):
-	// "reuse" (default, legacy) reuses/wakes an existing instance of the agent-id;
-	// "fresh_per_run" mints a NEW instance on every fire and reaps the previous one.
-	instance_strategy:        string,
-	// The instance created by the previous fresh_per_run fire, tracked so the next
-	// fire can reap it once the new instance is ready. Empty for reuse actions.
-	last_spawned_instance_id: Agent_Instance_ID,
-}
-
-// Valid values for Action.instance_strategy.
+ACTION_TARGET_AGENT    :: "agent"
+ACTION_TARGET_INSTANCE :: "instance"
+ACTION_TARGET_BOT      :: "bot"
+ACTION_MAX_DELAY_S     :: 86400
+ACTION_MAX_TRIGGERS    :: 16
+ACTION_MAX_RULES       :: 16
+ACTION_MIN_INTERVAL_DEFAULT_S :: 30
+ACTION_MIN_INTERVAL_MIN_S     :: 5
+ACTION_MIN_INTERVAL_MAX_S     :: 86400
 ACTION_INSTANCE_STRATEGY_REUSE :: "reuse"
 ACTION_INSTANCE_STRATEGY_FRESH_PER_RUN :: "fresh_per_run"
-
-// action_instance_strategy_valid reports whether s is an accepted instance_strategy.
-// Empty is accepted (normalized to "reuse" at the boundary for backward compatibility).
 action_instance_strategy_valid :: proc(s: string) -> bool {
 	return s == "" || s == ACTION_INSTANCE_STRATEGY_REUSE || s == ACTION_INSTANCE_STRATEGY_FRESH_PER_RUN
 }
 
-action_target_mode :: proc(action: Action) -> Action_Target_Mode {
-	if action.target_instance_id != "" {
-		return .Instance
-	}
-	return .Agent
+Action :: struct {
+	id:                       Action_ID,
+	owner_user_id:            User_ID,
+	name, prompt_text:        string,
+	target_kind:              string,
+	target_agent_id:          Agent_ID,
+	target_project_id:        Project_ID,
+	target_instance_id:       Agent_Instance_ID,
+	target_bot_id:            string,
+	instance_strategy:        string,
+	placement_selector:       string,
+	last_spawned_instance_id: Agent_Instance_ID,
+	enabled:                  bool,
+	min_interval_s:           int,
+	created_at, updated_at:   string,
+}
+Action_Target_Rule :: struct {
+	position: int,
+	bridge_id, provider, model: string,
+}
+Action_Trigger :: struct {
+	trigger_id:             string,
+	action_id:              Action_ID,
+	owner_user_id:          User_ID,
+	kind:                   string,
+	delay_s:                int,
+	config_json:            string, // column config
+	event_type:             string,
+	subject_filter:         string,
+	match_key:              string,
+	data_filter_json:       string, // column data_filter
+	enabled:                bool,
+	rev:                    int,
+	created_at, updated_at: string,
+}
+Action_Run :: struct {
+	run_id:                             string,
+	action_id:                          Action_ID,
+	trigger_id:                         string,
+	owner_user_id:                      User_ID,
+	occurrence_key:                     string,
+	event_type, event_id:               string,
+	stream_sequence:                    i64,
+	delay_s:                            int, // snapshot: only these runs invoke still_valid
+	settle_key:                         string,
+	settle_pending:                     bool, // debounce phase, outside the action-level open slot
+	event_params_json:                  string,
+	state:                              string, // ACTION_RUN_* below
+	not_before, joined_run_id, reason:  string,
+	rule_position:                      int,
+	target_instance_id, message_id:     string,
+	delivery_id:                        string,
+	created_at, started_at, finished_at: string,
+}
+ACTION_RUN_QUEUED :: "queued"
+ACTION_RUN_DEFERRED :: "deferred"; ACTION_RUN_DELIVERED :: "delivered"
+ACTION_RUN_ROUTED :: "routed"
+// True for queued, deferred and routed.
+action_run_open :: proc(state: string) -> bool {
+	return state == ACTION_RUN_QUEUED || state == ACTION_RUN_DEFERRED || state == ACTION_RUN_ROUTED
+}
+ACTION_RUN_JOINED :: "joined"
+ACTION_RUN_SKIPPED  :: "skipped";  ACTION_RUN_FAILED    :: "failed"
+
+
+action_destroy :: proc(v: ^Action) {
+	delete(string(v.id))
+	delete(string(v.owner_user_id))
+	delete(string(v.name))
+	delete(string(v.prompt_text))
+	delete(string(v.target_kind))
+	delete(string(v.target_agent_id))
+	delete(string(v.target_project_id))
+	delete(string(v.target_instance_id))
+	delete(string(v.target_bot_id))
+	delete(string(v.instance_strategy))
+	delete(string(v.placement_selector))
+	delete(string(v.last_spawned_instance_id))
+	delete(string(v.created_at))
+	delete(string(v.updated_at))
+	v^ = {}
 }
 
+action_trigger_destroy :: proc(v: ^Action_Trigger) {
+	delete(string(v.trigger_id))
+	delete(string(v.action_id))
+	delete(string(v.owner_user_id))
+	delete(string(v.kind))
+	delete(string(v.config_json))
+	delete(string(v.event_type))
+	delete(string(v.subject_filter))
+	delete(string(v.match_key))
+	delete(string(v.data_filter_json))
+	delete(string(v.created_at))
+	delete(string(v.updated_at))
+	v^ = {}
+}
+
+action_run_destroy :: proc(v: ^Action_Run) {
+	delete(string(v.run_id))
+	delete(string(v.action_id))
+	delete(string(v.trigger_id))
+	delete(string(v.owner_user_id))
+	delete(string(v.occurrence_key))
+	delete(string(v.event_type))
+	delete(string(v.event_id))
+	delete(string(v.settle_key))
+	delete(string(v.event_params_json))
+	delete(string(v.state))
+	delete(string(v.not_before))
+	delete(string(v.joined_run_id))
+	delete(string(v.reason))
+	delete(string(v.target_instance_id))
+	delete(string(v.message_id))
+	delete(string(v.delivery_id))
+	delete(string(v.created_at))
+	delete(string(v.started_at))
+	delete(string(v.finished_at))
+	v^ = {}
+}
+
+action_triggers_destroy :: proc(rows: []Action_Trigger) {
+	for &row in rows do action_trigger_destroy(&row)
+	delete(rows)
+}
+
+action_runs_destroy :: proc(rows: []Action_Run) {
+	for &row in rows do action_run_destroy(&row)
+	delete(rows)
+}
+
+action_rules_destroy :: proc(rows: []Action_Target_Rule) {
+	for row in rows {
+		delete(row.bridge_id); delete(row.provider); delete(row.model)
+	}
+	delete(rows)
+}

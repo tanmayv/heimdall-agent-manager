@@ -103,7 +103,7 @@ acp_chat_recover_journal :: proc(path:string) -> bool {
     }
     if stale {
         for &entry in r.chat.d.outbox {
-            if entry.message_status=="failed" do continue
+            if entry.kind!="" || entry.message_status=="failed" do continue
             entry.revision+=1
             acp_runtime_replace(&entry.message_status,"failed")
             acp_runtime_replace(&entry.stop_reason,"acp_turn_interrupted")
@@ -118,13 +118,11 @@ acp_chat_recover_journal :: proc(path:string) -> bool {
     defer delete(rec.instance_token)
     for len(r.chat.d.outbox)>0 {
         entry:=r.chat.d.outbox[0]
-        reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","assistant-message"),"agent.chat.assistant_message",acp_event_json(entry),rec,5000)
-        outcome:=acp_chat_publication_result(reply)
+        outcome:=acp_chat_publish_entry(acp_event_json(entry),rec)
         success:=outcome==.Saved
         // A terminal row from an uncertain earlier completion already satisfies
         // finalization. It must never be changed back to failed/pending.
         terminal_conflict:=outcome==.Terminal
-        delete(reply.body)
         if !success && !terminal_conflict {
             if outcome==.Rejected {
                 r.chat.d.publication_failed=true

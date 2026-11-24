@@ -168,7 +168,7 @@ test_uow_wait_hold_outcomes :: proc(t: ^testing.T) {
 	testing.expect_value(t, metrics.gauge_value(dbt.tm.held[.Uow_Tx]), i64(0))
 	testing.expect_value(t, metrics.gauge_value(dbt.tm.waiters[.Uow_Tx]), i64(0))
 	testing.expect_value(t, uow_oldest_hold_ns(), i64(0))
-	testing.expect(t, tx_mutex_try_lock(), "tx_mutex released")
+	testing.expect(t, tx_mutex_released_soon(), "tx_mutex released")
 }
 
 @(test)

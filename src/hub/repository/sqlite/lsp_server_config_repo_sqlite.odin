@@ -39,6 +39,8 @@ lsp_server_config_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Lsp_Server_Con
 }
 
 lsp_server_config_upsert_sqlite :: proc(ctx: rawptr, cfg: domain.Lsp_Server_Config) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Lsp_Server_Config_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -116,6 +118,8 @@ lsp_server_config_list_by_bridge_sqlite :: proc(ctx: rawptr, owner_user_id, brid
 }
 
 lsp_server_config_delete_sqlite :: proc(ctx: rawptr, owner_user_id, config_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Lsp_Server_Config_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")

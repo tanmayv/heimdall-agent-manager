@@ -404,6 +404,13 @@ The Bridge relays over the WebSocket it already holds to the Hub; the Hub splice
 the Bridge that owns `<session_id>`, and that Bridge dials `127.0.0.1:<declared port>`.
 Method, path, query string and body are all forwarded.
 
+**Size limits.** Request bodies up to **64 MiB** (67,108,864 bytes) are streamed with
+bounded memory; the request must carry `Content-Length`. A larger `Content-Length` is
+refused at once with `413`, and a `Transfer-Encoding: chunked` body with `411`, before
+anything reaches the Hub. Responses have no size limit; they stream as the target sends
+them. Throughput is far below a direct connection (tens of MB take tens of seconds), so
+compress large payloads, such as audio, before sending them.
+
 Find the local endpoint port (TCP fallback; default `49324`) with
 `bridge list --scope configured` -> `{"local_endpoint_port": 49324}`. The unix socket
 path is in `$HEIMDALL_BRIDGE_ENDPOINT` (`unix:/path/to/bridge.sock`).
@@ -438,6 +445,9 @@ Refusals come back as JSON `{"error":"<reason>"}`:
 | 409 | `no_server_port` | no port declared — use `shell set-port` |
 | 403 | `cross_owner` | belongs to another user |
 | 503 | `unavailable` | Bridge cannot reach the Hub |
+| 413 | `request_body_too_large` | `Content-Length` over 64 MiB |
+| 411 | `request_body_chunked` | chunked request body; send `Content-Length` instead |
+| 504 | `upload_stalled` | the Bridge lost its Hub connection mid-upload (nothing drained for 30 s) |
 
 Any process on this host that can reach the local endpoint can use this path and acts
 with the Bridge owner's authority; it is disabled by `--no-local-proxy` or

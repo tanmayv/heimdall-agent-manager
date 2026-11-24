@@ -1,0 +1,112 @@
+name: Supervisor unit tests
+# Odin unit tests of the dormant bridge supervisor packages (src/supervisor/**,
+# docs/specs/bridge-supervisor-engine.md) on Linux, macOS and Windows (REQ-OS-1).
+# T15 extends this into the cross-OS failure-injection suite.
+on:
+  push:
+    # heimdall/** and ci/** : task and throwaway branches pushed for a CI run
+    # (workflow_dispatch only reaches workflows on the default branch).
+    branches: [main, 'heimdall/**', 'ci/**']
+    paths:
+      - 'src/supervisor/**'
+      # src/supervisor/engine reads pointers with the launcher's own code.
+      - 'src/launcher/core/**'
+      # src/supervisor/runtimectl dials the runtime with the shared socket library.
+      - 'src/lib/local_socket/**'
+      # T15: the "launcher is not the service entry point yet" guard.
+      - 'src/lib/bridgesvc/**'
+      - '.github/workflows/supervisor-unit.yml'
+  pull_request:
+    paths:
+      - 'src/supervisor/**'
+      # src/supervisor/engine reads pointers with the launcher's own code.
+      - 'src/launcher/core/**'
+      # src/supervisor/runtimectl dials the runtime with the shared socket library.
+      - 'src/lib/local_socket/**'
+      - 'src/lib/bridgesvc/**'
+      - '.github/workflows/supervisor-unit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: supervisor-unit-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # Packages under test; one `odin test` run each.
+  PACKAGES: src/supervisor/resolver src/supervisor/engine src/supervisor/procs src/supervisor/runtimectl src/supervisor/service
+jobs:
+  unix:
+    name: odin test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: odin test (flake-pinned Odin)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/heimdall-tests"
+          # src/supervisor/service installs test releases whose binaries are the fetch
+          # preflight helper (HEIMDALL_FETCH_FAKEVER, as in supervisor-fetch.yml).
+          nix develop -c odin build src/supervisor/fetch/testdata/fakever -vet -strict-style -out:"$HOME/.cache/heimdall-tests/fakever"
+          export HEIMDALL_FETCH_FAKEVER="$HOME/.cache/heimdall-tests/fakever"
+          for pkg in $PACKAGES; do
+            name="$(basename "$pkg")"
+            nix develop -c odin test "$pkg" -collection:odin_test=src -vet \
+              -out:"$HOME/.cache/heimdall-tests/supervisor-$name"
+          done
+          # T15: launcher + supervisor ship dormant; every rendered service still runs ham-bridge.
+          nix develop -c odin test src/lib/bridgesvc -collection:odin_test=src \
+            -define:ODIN_TEST_NAMES=bridgesvc.test_service_entry_point_is_still_ham_bridge \
+            -out:"$HOME/.cache/heimdall-tests/bridgesvc-entry-point"
+
+  windows:
+    name: odin test (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # Same pin as release-local-binaries.yml (windows job) and flake.nix.
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          $odin = Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe'
+          & $odin version
+          "ODIN=$odin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: odin test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fake = Join-Path $env:RUNNER_TEMP 'fakever.exe'
+          & $env:ODIN build src/supervisor/fetch/testdata/fakever -vet -strict-style "-out:$fake"
+          if ($LASTEXITCODE -ne 0) { throw "fakever build failed ($LASTEXITCODE)" }
+          $env:HEIMDALL_FETCH_FAKEVER = $fake
+          foreach ($pkg in $env:PACKAGES -split '\s+') {
+            if (-not $pkg) { continue }
+            $name = Split-Path $pkg -Leaf
+            & $env:ODIN test $pkg -collection:odin_test=src -vet "-out:$env:RUNNER_TEMP\supervisor-$name.exe"
+            if ($LASTEXITCODE -ne 0) { throw "odin test $pkg failed ($LASTEXITCODE)" }
+          }
+          # T15: launcher + supervisor ship dormant; every rendered service still runs ham-bridge.
+          & $env:ODIN test src/lib/bridgesvc -collection:odin_test=src -define:ODIN_TEST_NAMES=bridgesvc.test_service_entry_point_is_still_ham_bridge "-out:$env:RUNNER_TEMP\bridgesvc-entry-point.exe"
+          if ($LASTEXITCODE -ne 0) { throw "bridgesvc entry-point test failed ($LASTEXITCODE)" }

@@ -250,6 +250,10 @@ The bridge is a flat Odin package (`package main`, [src/bridge](../src/bridge));
   `agent_taskv2_vcs.odin`, `project_path_validation.odin`.
 - **Local proxy.** [local_proxy.odin](../src/bridge/local_proxy.odin) — `http://127.0.0.1:<port>/proxy/<session>/…`
   forwarded over the hub WebSocket to the bridge that owns the target shell session.
+  Request bodies stream with backpressure (the tunnel/proxy outgoing queue holds at most ~1 MiB and
+  each runtime-loop tick sends at most 64 KiB, so the loop keeps reading the hub); bodies over
+  `contracts.RELAY_MAX_REQUEST_BODY_BYTES` (64 MiB) get `413` from the bridge and, as a backstop, the hub
+  (`bridge_proxy_relay.odin`). Responses are not capped.
 - **Other.** `tray_*.odin` (desktop tray companion), `lsp_session.odin`, `tool_activity_live.odin`,
   `bridge_telemetry.odin`, `blog.odin` (bridge log push), `instance_lock_*.odin` (one bridge per profile).
 
@@ -282,13 +286,23 @@ The bridge is a flat Odin package (`package main`, [src/bridge](../src/bridge));
 
 ### 5.1 Agent launch and bootstrap
 
-1. A launch is requested (UI REST, MCP, or the task matcher). [agent_service.odin](../src/hub/service/agent/agent_service.odin)
-   `create_instance` → `prepare_instance` validates the provider/model and saves the instance;
-   `reserve_runtime_launch` and `send_instance_launch` send a `launch_agent` command to the owning bridge through
-   `service/bridge_runtime` (`send_runtime_command`). `restart_instance` reuses the path.
-2. On the bridge, `bridge_hub_handle_command` (`type == "launch_agent"`) acks, then calls `bridge_runtime_launch_agent` →
-   `bridge_runtime_launch_agent_pty_host` ([hub_runtime_client.odin](../src/bridge/hub_runtime_client.odin)). It issues an agent
-   token (`bridge_agent_token_issue`), ensures the local endpoint, and clean-slates the run dir.
+1. A launch is requested (UI REST, MCP, task matcher, or a bridge-initiated wake).
+   New instances are created stopped with generation 0 by `create_instance_stopped`.
+   [start_begin.odin](../src/hub/service/agent/start_begin.odin) opens every agent
+   generation: it checks the caller guard, provider/model, plan, live bridge connection,
+   transport and launch quota, then conditionally saves `launching` with `run_count + 1`.
+   Task grants and HTTP chain creation open tickets inside their transaction; commands
+   are sent only after commit, and rollback cancels reservations.
+2. Hub-initiated starts use `start_command_send`. A bridge advertising
+   `start_agent_v1` receives `start_agent`; older bridges receive `launch_agent`
+   for a plain start or `wake_agent` for a lease batch. On the bridge the common
+   `bridge_start_agent_apply` passes the complete launch object unchanged to
+   `bridge_runtime_launch_agent` → `bridge_runtime_launch_agent_pty_host`
+   ([hub_runtime_client.odin](../src/bridge/hub_runtime_client.odin)).
+   Bridge-initiated notice, pipeline and bot wakes first POST to
+   `/api/v1/bridge/agent-instances/<id>/start-begin` with a stable reference,
+   then pass the returned launch object to the same launcher. The launcher issues
+   an agent token, ensures the local endpoint, and clean-slates the run dir.
 3. Bootstrap files come from the hub: `bridge_bootstrap_fetch_and_materialize` ([bootstrap_service.odin](../src/bridge/bootstrap_service.odin))
    and `bridge_prespawn_materialize` ([bootstrap_prespawn.odin](../src/bridge/bootstrap_prespawn.odin)) fetch the manifest
    (hub handlers `bridge_instance_bootstrap_handler` / `bridge_agent_manifest_handler`, which honour `If-None-Match`)
@@ -321,6 +335,13 @@ Engine: [src/hub/service/taskv2](../src/hub/service/taskv2).
   resolution is in [placement.odin](../src/hub/service/taskv2/placement.odin). Leases: `grant_attempt_in_uow`, `heartbeat_in_uow`,
   `release_in_uow`, `expire_lease_in_uow` ([lease.odin](../src/hub/service/taskv2/lease.odin)). The agent-facing context pack is
   `build_pack_json` ([pack.odin](../src/hub/service/taskv2/pack.odin)) → `TASK.md`.
+- **Launch refusals.** A selected lease can still wait when the bridge's plan
+  disables launches (L6), the bridge lacks a live connection (L7), launch quota
+  is exhausted (L8), or pinned ACP transport support was withdrawn (L9).
+  These checks precede any generation write; reconnect/capacity changes let the
+  matcher retry, while plan and transport refusals require configuration repair.
+  See [lease launch refusals](reference/task-placement-failures.md#lease-launch-refusals-phase-s)
+  for reasons and recovery.
 - **Verbs.** `lease_next`, `lease_heartbeat` ([verbs.odin](../src/hub/service/taskv2/verbs.odin)); `lease_submit`, `lease_handoff`, `lease_block`,
   `lease_switch`, `review_post`, `user_review`, `task_reopen`, `task_hold`, `task_fetch` ([verbs_m2.odin](../src/hub/service/taskv2/verbs_m2.odin)).
   These are reached through `ham-ctl lease|review|task …` (see [src/ctl/taskv2_cmds.odin](../src/ctl/taskv2_cmds.odin)) and the MCP task tools.
@@ -351,10 +372,33 @@ Engine: [src/hub/service/taskv2](../src/hub/service/taskv2).
 3. On the bridge, `bridge_hub_handle_command` (`type == "notify_agent_message"`) calls `bridge_pty_host_deliver_to_agent`
    ([pty_host_runtime.odin](../src/bridge/pty_host_runtime.odin)), which types a one-line notice into the agent's PTY (bracketed paste, then Enter).
    The message body is *not* in the notice: the agent reads it with `ham-ctl chat read`.
-4. Task notifications use sibling commands (`notify_task_nudge`, `task_status_changed_notify`). Waking an idle or absent agent is `wake_agent`:
+4. Task notifications use sibling commands (`notify_task_nudge`, `task_status_changed_notify`). Lease dispatch uses `start_agent` (or `wake_agent` on a legacy bridge):
    the task engine's `effect_wake_lease` / `flush_wakes` ([wake.odin](../src/hub/service/taskv2/wake.odin)) batch wake entries per bridge/chain, and the
    bridge side is [agent_wake.odin](../src/bridge/agent_wake.odin) (`bridge_task_wake_if_needed`, with gating and backoff in `bridge_wake_gate`).
 5. Live UI updates ride the user WebSocket fed by `service/events` (`event_bus.odin`, `attention_debouncer.odin`).
+
+#### Agent start wire protocol
+
+`start_agent` has `protocol_version: 1`, a required `command_id`, a
+`chain_id`, and `payload.run` / `payload.stop`. Each run entry contains
+`deliver` (`launch` or `nudge`) and the complete `launch` object, including
+its own command ID, `run_count`, `launch_epoch`, provider and bootstrap fields.
+Lease entries also carry `task_id`, `role`, `lease_id`, `pack` and
+`permission_mode` in that object. A nudge refreshes task context and notifies
+a live child of the same generation; if absent, the common handler launches it.
+An instance cannot appear in both run and stop. An empty run is a pure stop.
+
+A single run with no stops also carries top-level `agent_instance_id` for
+per-instance dispatcher ordering; batches use chain ordering. The result is
+`succeeded` only if all entries succeed, otherwise `failed` with the first
+typed error. Per-instance status frames remain authoritative.
+
+The hello feature `start_agent_v1` controls the hub's wire choice. Both legacy
+command names remain supported by thin adapters to the same implementation:
+`launch_agent` wraps its unchanged body as one launch entry; `wake_agent`
+converts its legacy entries and retains its historical result semantics.
+Do not remove these names while old hubs or bridges remain. Deploy the hub
+before bridges so bridge-initiated wakes can use start-begin.
 
 ### 5.4 Provider catalog and model resolution
 

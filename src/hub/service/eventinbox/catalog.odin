@@ -87,7 +87,8 @@ catalog_read :: proc(conn: ^nats.Connection, owner, chain, cursor: string, limit
 			if decoded {
 				obj, object := value.(json.Object)
 				tenant, tenant_ok := obj["owner_user_id"].(json.String)
-				event_chain, chain_ok := obj["chain_id"].(json.String)
+				event_chain := catalog_chain(obj)
+                chain_ok := event_chain != ""
 				typ, type_ok := obj["type"].(json.String)
 				catalog := false
 				switch string(typ) {
@@ -116,4 +117,19 @@ catalog_decode :: proc(data: []byte) -> (json.Value, bool) {
 	defer json.destroy_value(value,allocator=mem.dynamic_arena_allocator(&arena))
 	if err!=nil do return nil,false
 	return json.clone_value(value),true
+}
+
+// Returns the parent chain only for a v2 chain/task entity.
+catalog_chain :: proc(obj: json.Object) -> string {
+ entity, _ := obj["entity"].(json.Object)
+ kind, _ := entity["kind"].(string)
+ id, _ := entity["id"].(string)
+ if id == "" do return ""
+ if kind == "chain" do return id
+ if kind == "task" {
+  data, _ := obj["data"].(json.Object)
+  chain, _ := data["chain_id"].(string)
+  return chain
+ }
+ return ""
 }

@@ -650,6 +650,13 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
     }
     return;
   }
+  // ACP delivery evidence (docs/acp-send-now.md): queued/delivered/read and batch state
+  // changed. Only the conversation's newest page and its Send now state refetch; no new
+  // message exists, so the sidebar, options and chain views stay as they are.
+  if (conversationId && payload.event === 'messages_delivery') {
+    queueInvalidation(dispatch, [{ type: 'Chat', id: conversationId }, { type: 'SendNow', id: conversationId }]);
+    return;
+  }
   dispatch(wsRefreshRequested(`chat_event:${agentId || payload.message_id || 'unknown'}`));
   // Cookie shell (the only mounted consumer): caches are keyed by conversation id.
   // messages_read patches in place; a new message refetches only that conversation's

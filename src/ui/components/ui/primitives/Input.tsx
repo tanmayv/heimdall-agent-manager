@@ -53,8 +53,8 @@ import type {
   Width,
 } from '../types';
 
-/** The text-entry `type`s this primitive owns. Non-text inputs are other primitives. */
-export type InputType = 'text' | 'search' | 'email' | 'password' | 'number' | 'tel' | 'url';
+/** Native text and date/time entry types styled by this primitive. */
+export type InputType = 'text' | 'search' | 'email' | 'password' | 'number' | 'tel' | 'url' | 'date' | 'datetime-local';
 
 const BASE =
   'block rounded-[var(--radius-md)] border bg-surface text-primary placeholder:text-faint ' +

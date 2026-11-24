@@ -7,6 +7,7 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import project "odin_test:hub/service/project"
+import agent "odin_test:hub/service/agent"
 import taskv2 "odin_test:hub/service/taskv2"
 
 @(test)
@@ -23,6 +24,23 @@ test_start_agent_card_failure_preserves_block_and_retry_dispatches :: proc(t: ^t
 	h.engine.uow_factory = &uow
 	h.engine.attention = &h.svc.attention_notifier
 	h.svc.uow_factory = &uow
+	// The card retries a real start_begin grant; supply its launch admission
+	// dependencies so this test reaches the post-commit send failure.
+	project_impl: sqlite.Project_Repo_SQLite
+	projects := sqlite.new_project_repository(&project_impl, &h.conn)
+	provider_impl: sqlite.Provider_Repo_SQLite
+	providers := sqlite.new_provider_repository(&provider_impl, &h.conn)
+	registry: project.Bridge_Runtime_Registry
+	defer project.bridge_runtime_registry_destroy(&registry)
+	success_sink := project.Bridge_Command_Sink{send_runtime_command = proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) { return true, {} }}
+	agents := agent.new_agent_service_with_runtime(&h.agents, &bridges, &projects, &h.content, &h.tasks, success_sink, &registry, &h.clock, &h.ids)
+	agents.providers = &providers
+	h.engine.agent_service = &agents
+	h.engine.bridge_command_sink = success_sink
+	_, _, _ = iface.agent_save(&h.agents, {agent_id="agt_anr", owner_user_id=PH_OWNER, name="Start card agent", slug="start-card-agent", template_id=domain.TEMPLATE_EMPTY_ID, state=.Active})
+	_, _, _ = project.bridge_runtime_registry_accept_live(&registry, "br_anr", false, "", string(PH_OWNER))
+	_, _ = iface.bridge_provider_status_upsert(&providers, {bridge_id="br_anr", provider="claude", state="present"})
+	_, _ = iface.bridge_provider_setting_upsert(&providers, {bridge_id="br_anr", provider="claude", enabled=true})
 	// Offline placement has its own card. Start agent is reserved for process
 	// failure/explicit-stop consent, separate from placement outages.
 	_, _, _ = iface.bridge_save_bridge(&bridges, domain.Bridge{bridge_id = "br_anr", owner_user_id = PH_OWNER, status = .Online})
@@ -50,9 +68,9 @@ test_start_agent_card_failure_preserves_block_and_retry_dispatches :: proc(t: ^t
 	testing.expect(t, !accepted && strings.contains(acc_err.message, "launch refused"), "post-commit launch error propagated")
 	c, _ = ph_card(t, &h, cid)
 	testing.expect(t, c.status == domain.CARD_STATUS_PENDING && strings.contains(c.rationale, "launch refused"), "new failure persists despite card accept error")
-	h.engine.bridge_command_sink = {}
+	h.engine.bridge_command_sink = success_sink
 	_, accepted, acc_err = accept_card(&h.svc, auth, cid)
-	testing.expect(t, accepted && acc_err.code == .None, "retry succeeds")
+	testing.expectf(t, accepted && acc_err.code == .None, "retry succeeds: %s %s", acc_err.message, acc_err.details_json)
 	fresh, _, _ := iface.taskchain_get_task(&h.tasks, task.task_id)
 	testing.expect(t, fresh.state == .In_Progress && fresh.blocked_on_json == "", "retry dispatched task")
 	c, _ = ph_card(t, &h, cid)

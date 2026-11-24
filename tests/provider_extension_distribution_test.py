@@ -87,7 +87,8 @@ class DistributionTests(unittest.TestCase):
 
     def package(self, target="linux-amd64"):
         outputs = []
-        for name in ("ham-bridge", "ham-ctl", "ham-pty-host"):
+        # T15: the dormant launcher + supervisor ship in the bundle too.
+        for name in ("ham-bridge", "ham-ctl", "ham-pty-host", "ham-launcher", "ham-supervisor"):
             output = self.root / ("output-" + name)
             self.write(output / "bin" / name, "#!/bin/sh\necho new\n", executable=True)
             outputs.append(output)
@@ -98,8 +99,11 @@ class DistributionTests(unittest.TestCase):
     def extract(self, archive, dest):
         dest.mkdir(parents=True)
         with tarfile.open(archive) as stream:
-            # Only our own fixture archives; retain relative hook symlinks.
-            stream.extractall(dest, filter="tar")
+            # The supervisor's extractor (src/supervisor/fetch) rejects links:
+            # the bundle must hold regular files and directories only.
+            links = [m.name for m in stream.getmembers() if not (m.isfile() or m.isdir())]
+            self.assertEqual(links, [], "bundle holds non-regular entries")
+            stream.extractall(dest, filter="data")
 
     def assert_assets(self, path):
         for item in (*MANIFESTS, *MARKETS, "antigravity/hooks/hooks.json",
@@ -107,9 +111,10 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual((path / item).read_bytes(), (self.repo / "extensions" / item).read_bytes())
             self.assertEqual((path / item).stat().st_mode & 0o777,
                              (self.repo / "extensions" / item).stat().st_mode & 0o777)
-        link = path / "antigravity/hooks.json"
-        self.assertTrue(link.is_symlink(), str(link))
-        self.assertEqual(os.readlink(link), "hooks/hooks.json")
+        # The repo's relative symlink is shipped dereferenced (cp -L).
+        hook = path / "antigravity/hooks.json"
+        self.assertTrue(hook.is_file() and not hook.is_symlink(), str(hook))
+        self.assertEqual(hook.read_bytes(), (self.repo / "extensions/antigravity/hooks/hooks.json").read_bytes())
 
     def test_release_archive_ships_extensions_and_no_update_scripts(self):
         # Updates and extension refreshes run inside ham-bridge (update / setup /
@@ -120,6 +125,11 @@ class DistributionTests(unittest.TestCase):
         self.assert_assets(dest / "share/heimdall/extensions")
         self.assertFalse((dest / "scripts").exists())
         self.assertTrue((dest / "bin/ham-bridge").is_file())
+        # T15 (Phase 1): the launcher and supervisor are in the bundle, dormant.
+        self.assertTrue((dest / "bin/ham-launcher").is_file())
+        self.assertTrue((dest / "bin/ham-supervisor").is_file())
+        meta = (dest / "METADATA.json").read_text()
+        self.assertIn('"ham-launcher", "ham-supervisor"', meta)
 
     def git(self, *args):
         result = subprocess.run(["git", "-C", str(self.repo), *map(str, args)],

@@ -27,9 +27,11 @@ auto_watch_bot :: proc(s: ^Service, owner, instance, chain, coordinator: string)
 	agent, aerr := repo.bot_agent(repo.ctx, owner, instance)
 	if aerr.code != .None do return aerr
 	defer delete(agent)
+	// The watch belongs to the bot's own instance (REQ-EVP-1); the canonical
+	// binding only authorizes it.
 	if agent != "" {
 		if chain != "" {
-			if werr := watch(s, owner, agent, chain, false); werr.code != .None do return werr
+			if werr := watch(s, owner, instance, chain, false); werr.code != .None do return werr
 		} else if coordinator != "" {
 			chains, cerr := iface.taskchain_list_chains_by_coordinator(
 				&uow.repos.taskchains,
@@ -39,7 +41,7 @@ auto_watch_bot :: proc(s: ^Service, owner, instance, chain, coordinator: string)
 			if cerr.code != .None do return cerr
 			defer delete(chains)
 			for row in chains {
-				if werr := watch(s, owner, agent, string(row.chain_id), false); werr.code != .None do return werr
+				if werr := watch(s, owner, instance, string(row.chain_id), false); werr.code != .None do return werr
 			}
 		}
 	}

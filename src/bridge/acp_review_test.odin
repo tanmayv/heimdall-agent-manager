@@ -183,6 +183,7 @@ t5_publish_relay :: proc(path:[]string,method,params:string,rec:Bridge_Local_Age
 @(test)
 t5_acp_small_chunks_use_growing_wiped_buffer_and_publish_errors_are_bounded :: proc(t:^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    reports:=acp_delivery_reports_enabled;acp_delivery_reports_enabled=false;defer acp_delivery_reports_enabled=reports
     previous_records:=bridge_local_token_records
     bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
     defer {delete(bridge_local_token_records);bridge_local_token_records=previous_records}

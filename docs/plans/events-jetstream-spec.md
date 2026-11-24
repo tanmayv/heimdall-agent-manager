@@ -21,7 +21,7 @@ Integration branch: `feat/events` (off `main` v0.5.60). Earlier design: comments
 | D1 | NATS JetStream is the queue engine. **NATS is required** for every deployment, self-hosting included. There is no SQLite fallback. |
 | D2 | **Transactional outbox.** Events are written to `event_outbox` in the same SQLite transaction as the state change. A relay publishes them to JetStream. |
 | D3 | **Only the hub talks to NATS.** Bridges and agents use `ham-ctl events …` through the hub API and never get NATS credentials. |
-| D4 | Subscriptions belong to durable identities (`agt_…`), not instances. A restarted or relaunched instance resumes where its identity left off. |
+| D4 | ~~Subscriptions belong to durable identities (`agt_…`), not instances.~~ **Superseded by EV2 (`task_18ea486c2a0d5ff2`, migration `events_006_instance_subscriptions.sql`):** subscriptions belong to an agent instance (`subscriber_instance_id`). Notices, counts, the 30 s rate limit and `events next/ack/subscriptions` are per instance with no fallback to another instance or chain. A user stop, or replacement (the instance is Dead, i.e. terminated or failed without a typed error, AND holds no role any more), deletes the instance's subscriptions, consumers and deliveries (E3); an idle-stopped instance, or a crashed one relaunched in place, keeps them and can be woken. A new subscription's consumer starts at its `created_at` (DeliverByStartTime), so it never replays retained history. |
 | D5 | **Pull plus nudge, never push-typing.** Agents pull with `ham-ctl events next` and ack. The terminal gets at most one coalesced nudge line, and only when the agent is idle. |
 | D6 | **Events carry no end-to-end-encrypted content** (vault rule). The envelope holds ids, enums and versions only. Consumers render their own wording. |
 | D7 | Start with the **minimal catalog in section 4**. Other `[taskv2]` triggers stay on the old path and move over later, one at a time. |
@@ -60,10 +60,40 @@ taskv2 state change ──same tx──▶ event_outbox ──relay──▶ Jet
 ### 3.2 Stream
 
 `HEIM_EVENTS`:
-- file storage, limits retention, `max_age` 14 days, `duplicate_window` 2 minutes;
-- `allow_rollup_hdrs: true`, `allow_direct: true` for subject-filtered replay, replicas 1 by default.
+- subjects `ev.>` and `sched.def.>`; file storage, limits retention, `max_age` 14 days, `duplicate_window` 2 minutes;
+- `allow_rollup_hdrs: true`, `allow_direct: true` for subject-filtered replay, replicas 1 by default;
+- `allow_msg_schedules: true`, `allow_msg_ttl: true` (forward-only; never remove these flags).
 
-The hub creates or updates the stream idempotently at boot.
+The hub creates or updates the stream idempotently at boot. Schedule support needs
+nats-server 2.14 or newer. `sched.def.<trigger_id>` definitions target
+`ev.<owner>.sched.<trigger_id>`; one-shot deferrals use
+`sched.def.defer.<action_id>` and target `ev.<owner>.action.<action_id>.resume`.
+Trigger definitions use `Nats-TTL: never` and set `Nats-Schedule-TTL: 24h`
+to give each fire a `Nats-TTL: 24h` lifetime.
+The durable pull consumer `hub_action_matcher` handles schedules and event triggers.
+Reconcile runs on connect and preserves unchanged definitions, including their
+stream sequence and interval phase. An older hub cannot bring its relay up after
+the stream upgrade; restore SQLite and JetStream backups together to roll back.
+
+#### Delivery commands (phase 1 actions)
+
+`HEIM_DELIVER` is a separate file-backed work-queue stream on `dlv.>`, with
+24-hour maximum age, 2-minute duplicate window, one replica and direct reads.
+Subjects are `dlv.<owner>.<bridge_id>.<kind>`. Each capable bridge has a durable
+pull consumer named `brg_<bridge_id>`, filtered to `dlv.*.<bridge_id>.>`, with explicit acknowledgements.
+Only the hub connects to NATS and forwards commands over the bridge WebSocket;
+bridges never connect to the broker. The bridge's persistent delivery ledger
+suppresses duplicate effects across retries/restarts. Actions require
+`event_pipeline_v1`; rollout upgrades the hub before bridges.
+
+Package `delivery` owns the separate `HEIM_DELIVER_ADVISORIES` stream on
+`$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.HEIM_DELIVER.>` and consumer
+`hub_delivery_dlq`. It must not share the event inbox advisory consumer.
+
+Deliveries are **commands**, not event envelopes: D6 applies to `HEIM_EVENTS`
+events, not to deliveries. Event envelopes still contain only ids, enums and
+versions. See [the action contracts](action-triggers-spec.md#611-the-delivery-pipeline-t16-t17).
+
 
 ### 3.3 Hub config and startup (REQ-EVA-9)
 
@@ -82,7 +112,7 @@ The hub creates or updates the stream idempotently at boot.
 
 ### 3.4 Subscriptions (REQ-EVA-2)
 
-- **Table:** `event_subscriptions(subscription_id, owner_user_id, subscriber_agent_id, chain_id, task_id NULL, source role_default|explicit, filter_subjects, wake_policy, consumer_name, created_at)`.
+- **Table** (EV2 adds `subscriber_instance_id`, the owning key; `subscriber_agent_id` is informational): `event_subscriptions(subscription_id, owner_user_id, subscriber_agent_id, chain_id, task_id NULL, source role_default|explicit, filter_subjects, wake_policy, consumer_name, created_at)`.
 - Each row maps 1:1 to a durable JetStream pull consumer.
 - **Role defaults** are created and removed automatically by the hub:
   - coordinator: on chain membership;

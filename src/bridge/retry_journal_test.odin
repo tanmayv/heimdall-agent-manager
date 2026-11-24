@@ -59,7 +59,6 @@ retry_journal_disk_reservations_and_unsafe_crash_fence :: proc(t: ^testing.T) {
     j := Bridge_Retry_Journal{version = 1, loaded = true}
     defer delete(j.receipts)
     append(&j.receipts, Bridge_Retry_Receipt{key = "ready:launch", budget = {}})
-    append(&j.receipts, Bridge_Retry_Receipt{key = "slot:action:time", budget = {}})
     append(&j.receipts, Bridge_Retry_Receipt{key = "refresh:family", budget = {}})
     for &r in j.receipts do testing.expect(t, bridge_operation_reserve(&r.budget, 1000))
     testing.expect(t, bridge_retry_journal_save(&j, path))
@@ -68,7 +67,6 @@ retry_journal_disk_reservations_and_unsafe_crash_fence :: proc(t: ^testing.T) {
     testing.expect_value(t, restored.receipts[0].budget.attempts, 1)
     testing.expect_value(t, restored.receipts[0].budget.state, Bridge_Operation_State.Backoff)
     testing.expect_value(t, restored.receipts[1].budget.state, Bridge_Operation_State.Waiting_Repair)
-    testing.expect_value(t, restored.receipts[2].budget.state, Bridge_Operation_State.Waiting_Repair)
     testing.expect(t, !restored.receipts[0].budget.clock_started)
     testing.expect(t, !bridge_operation_reserve(&restored.receipts[0].budget, 999))
     testing.expect(t, os.write_entire_file_from_string(path, "{bad") == nil)

@@ -48,6 +48,9 @@ Hub_Proxy_Stream :: struct {
 	stream_id:        string,
 	origin_bridge_id: string,
 	target_bridge_id: string,
+	// Request-body bytes forwarded so far, against contracts.RELAY_MAX_REQUEST_BODY_BYTES
+	// (REQ-VOICE-6). Guarded by hub_proxy_mu.
+	body_bytes:       int,
 }
 
 hub_proxy_streams: map[string]^Hub_Proxy_Stream
@@ -253,7 +256,45 @@ bridge_proxy_handle_data :: proc(h: ^Bridge_Handlers, origin_bridge_id, text: st
 	decoded, err := base64.decode(data_b64)
 	defer delete(decoded)
 	if err != nil || len(decoded) == 0 do return
+
+	// REQ-VOICE-6: the hub's own copy of the relay body limit. A current bridge
+	// refuses an oversized Content-Length before proxy_open, so this trips only for a
+	// bridge that predates that check (or lies about the length): answer 413 and end
+	// the stream rather than relaying an unbounded body.
+	if bridge_proxy_body_over_limit(key, len(decoded)) {
+		bridge_proxy_refuse_oversized_body(h, origin_bridge_id, proxy_id, key)
+		return
+	}
 	bridge_proxy_send_tunnel_bytes(h, target_bridge_id, stream_id, decoded)
+}
+
+// bridge_proxy_body_over_limit adds n forwarded body bytes to the stream's count and
+// reports whether that passes the relay limit. An unknown key is not over.
+bridge_proxy_body_over_limit :: proc(key: string, n: int) -> bool {
+	sync.mutex_lock(&hub_proxy_mu)
+	defer sync.mutex_unlock(&hub_proxy_mu)
+	rec, ok := hub_proxy_streams[key]
+	if !ok do return false
+	rec.body_bytes += n
+	return rec.body_bytes > contracts.RELAY_MAX_REQUEST_BODY_BYTES
+}
+
+// bridge_proxy_refuse_oversized_body ends a stream whose body passed the limit. The
+// 413 and proxy_close go to the origin FIRST, so the caller reads a status rather
+// than the bare close the relay worker sends when the target leg closes.
+bridge_proxy_refuse_oversized_body :: proc(h: ^Bridge_Handlers, origin_bridge_id, proxy_id, key: string) {
+	rec, removed := bridge_proxy_take(key)
+	if !removed do return
+	bridge_proxy_send_refusal(h, origin_bridge_id, proxy_id, "request_body_too_large")
+	close_json := _preview_tunnel_close_json(rec.stream_id, "request_body_too_large")
+	project_service.bridge_command_send_runtime(
+		h.shell_sessions.bridge_command_sink,
+		project_service.Runtime_Command{bridge_id = rec.target_bridge_id, body_json = close_json},
+	)
+	delete(close_json)
+	// Wakes the relay worker, which finishes the stream (it finds the key gone).
+	shell_session_svc.shell_session_tunnel_close_stream(h.shell_sessions, rec.stream_id)
+	bridge_proxy_free_record(rec)
 }
 
 // bridge_proxy_handle_close tears the target leg down when the originating side ends.
@@ -486,6 +527,8 @@ bridge_proxy_send_refusal :: proc(h: ^Bridge_Handlers, origin_bridge_id, proxy_i
 	// note there about this switch's 403 default.
 	case "session_not_running", "no_server_port", "session_ambiguous": status = 409
 	case "unavailable":           status = 503
+	// REQ-VOICE-6: a body past contracts.RELAY_MAX_REQUEST_BODY_BYTES.
+	case "request_body_too_large": status = 413
 	}
 	b := strings.builder_make()
 	defer strings.builder_destroy(&b)
@@ -494,7 +537,7 @@ bridge_proxy_send_refusal :: proc(h: ^Bridge_Handlers, origin_bridge_id, proxy_i
 	strings.write_string(&b, "HTTP/1.1 ")
 	strings.write_int(&b, status)
 	strings.write_string(&b, " ")
-	strings.write_string(&b, status == 404 ? "Not Found" : status == 409 ? "Conflict" : status == 503 ? "Service Unavailable" : "Forbidden")
+	strings.write_string(&b, bridge_proxy_status_text(status))
 	strings.write_string(&b, "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ")
 	strings.write_int(&b, len(body))
 	strings.write_string(&b, "\r\n\r\n")
@@ -514,6 +557,16 @@ bridge_proxy_send_refusal :: proc(h: ^Bridge_Handlers, origin_bridge_id, proxy_i
 		project_service.Runtime_Command{bridge_id = origin_bridge_id, body_json = close_frame},
 	)
 	delete(close_frame)
+}
+
+bridge_proxy_status_text :: proc(status: int) -> string {
+	switch status {
+	case 404: return "Not Found"
+	case 409: return "Conflict"
+	case 413: return "Content Too Large"
+	case 503: return "Service Unavailable"
+	}
+	return "Forbidden"
 }
 
 bridge_proxy_data_json :: proc(proxy_id: string, payload: []byte) -> string {

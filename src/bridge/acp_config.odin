@@ -43,8 +43,9 @@ acp_bootstrap_communication :: "Messages and answers arrive in session prompts. 
 acp_bootstrap_original_communication :: "Messages from the user arrive through Heimdall, NOT your terminal. Read them with\n`./bin/ham-ctl chat read`; ALWAYS reply with\n`./bin/ham-ctl chat send --to user --body \"<your reply>\"`. Text you print to\nthe terminal is never delivered to the user. Load the `heimdall-ctl-communication` skill\nfor the full messaging workflow (agent-to-agent messages)."
 
 bridge_bootstrap_acp_instructions :: proc(body: string) -> string {
-    rendered, _ := strings.replace_all(body, acp_bootstrap_original_communication, acp_bootstrap_communication)
-    defer delete(rendered)
+    // replace_all returns `body` itself when nothing matched; the caller owns it.
+    rendered, allocated := strings.replace_all(body, acp_bootstrap_original_communication, acp_bootstrap_communication)
+    defer if allocated do delete(rendered)
     // This marker identifies the exact locally generated bootstrap used by the
     // conservative embedded-resource fallback for adapter 0.108.0.
     return strings.concatenate({rendered, "\n\n<!-- heimdall-acp-bootstrap-v1 -->\n", acp_bootstrap_communication, "\n"})

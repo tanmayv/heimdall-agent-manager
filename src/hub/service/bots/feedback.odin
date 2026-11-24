@@ -1,18 +1,38 @@
 package bots
 
 import "core:fmt"
-import "core:log"
+import "core:os"
 import "core:sync"
 import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
+import channel "odin_test:hub/service/channel"
 
-BOT_QUEUED_REACTION :: "⏳"
 BOT_READ_REACTION :: "👀"
 // Stop admitting calls after four seconds. Telegram bounds each admitted call
 // to one second, keeping feedback below the bridge relay's 20-second stall.
 BOT_READ_REACTION_BUDGET :: 4 * time.Second
+
+// Exact provider reaction strings (Telegram rejects the WhatsApp hourglass).
+BOT_QUEUED_REACTIONS := [?]struct {provider, emoji: string}{
+	{"telegram", "✍"},
+	{"whatsapp", "⏳"},
+}
+
+bots_queued_reaction :: proc(provider: string) -> string {
+	for reaction in BOT_QUEUED_REACTIONS {
+		if reaction.provider == provider do return reaction.emoji
+	}
+	return ""
+}
+
+// Channel_Error.message is adapter-sanitized; never include message/chat IDs,
+// inbound text, credentials, or raw provider responses in feedback diagnostics.
+bots_feedback_error :: proc(provider, operation: string, err: channel.Channel_Error, output: ^os.File = os.stderr) {
+	fmt.fprintf(output, "bots: feedback failed provider=%s operation=%s kind=%v http_status=%d provider_code=%d description=%s\n",
+		provider, operation, err.kind, err.http_status, err.provider_code, err.message)
+}
 
 // Serializing selection and mark_read makes the unread snapshot authoritative
 // across concurrent agent reads. The repository commits before feedback begins.
@@ -53,13 +73,14 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 		}
 		if e := iface.messages_mark_read(s.repo, bot_id, ids[:], platform.clock_now(s.clock)); e.code != .None do return nil, 0, e
 	}
+	if len(newly_read) > 0 do bots_publish_changed(s, binding.owner_user_id, bot_id)
 	if len(newly_read) > 0 && bots_gate_on(s.experiments, binding.owner_user_id) {
 		a := bots_adapter(s, binding.provider)
 		started := time.tick_now()
 		skip_reactions := false
 		if a != nil && a.mark_read != nil {
 			if err := a.mark_read(a.ctx, binding.external_chat_id, newly_read[len(newly_read)-1].external_message_id); err.kind != .None {
-				log.warn(fmt.tprintf("bots: mark read failed kind=%v", err.kind))
+				bots_feedback_error(binding.provider, "mark_read", err)
 				skip_reactions = err.kind == .Transient || err.kind == .Aborted || err.kind == .Rate_Limited
 			}
 		}
@@ -67,7 +88,7 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 			for m in newly_read {
 				if time.tick_since(started) >= BOT_READ_REACTION_BUDGET do break
 				if err := a.react(a.ctx, binding.external_chat_id, m.external_message_id, BOT_READ_REACTION); err.kind != .None {
-					log.warn(fmt.tprintf("bots: react failed kind=%v", err.kind))
+					bots_feedback_error(binding.provider, "read_reaction", err)
 					// A provider outage must not multiply latency by the read limit.
 					if err.kind == .Transient || err.kind == .Aborted || err.kind == .Rate_Limited do break
 				}
@@ -80,7 +101,7 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 
 // Fresh rows are borrowed from the committed intake batch. No provider I/O runs
 // under the service mutex or the delivery transaction, and retries are silent.
-bots_queued_feedback :: proc(s: ^Bots_Service, fresh: []domain.Channel_Message) {
+bots_queued_feedback :: proc(s: ^Bots_Service, fresh: []domain.Channel_Message, feedback_output: ^os.File = os.stderr) {
 	started := time.tick_now()
 	for m in fresh {
 		if time.tick_since(started) >= BOT_READ_REACTION_BUDGET do break
@@ -88,9 +109,10 @@ bots_queued_feedback :: proc(s: ^Bots_Service, fresh: []domain.Channel_Message) 
 		defer domain.channel_binding_destroy(&binding)
 		if err.code != .None || !found || binding.state != .Active || !bots_gate_on(s.experiments, binding.owner_user_id) do continue
 		a := bots_adapter(s, binding.provider)
-		if a == nil || a.react == nil do continue
-		if e := a.react(a.ctx, binding.external_chat_id, m.external_message_id, BOT_QUEUED_REACTION); e.kind != .None {
-			log.warn(fmt.tprintf("bots: queued reaction failed kind=%v", e.kind))
+		emoji := bots_queued_reaction(binding.provider)
+		if a == nil || a.react == nil || emoji == "" do continue
+		if e := a.react(a.ctx, binding.external_chat_id, m.external_message_id, emoji); e.kind != .None {
+			bots_feedback_error(binding.provider, "queued_reaction", e, feedback_output)
 			if e.kind == .Transient || e.kind == .Aborted || e.kind == .Rate_Limited do break
 		}
 	}

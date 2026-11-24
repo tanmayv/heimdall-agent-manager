@@ -52,6 +52,9 @@ FTS_INDEX_TABLES := [?]Fts_Index{
 // reconcile); when false it rebuilds every existing index (used to self-heal after
 // a corruption is observed). Returns the number of indexes rebuilt.
 repair_fts_indexes :: proc(conn: ^Conn, only_drifted := false) -> (rebuilt: int, ok: bool, err: domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	if conn == nil || conn.db == nil do return 0, false, domain.domain_error(.Internal_Error, "database connection is not open")
 	if !fts5_available(conn) do return 0, true, domain.Domain_Error{}
 	tx_start := time.tick_now()
@@ -130,6 +133,9 @@ scalar_count :: proc(conn: ^Conn, query: string) -> (int, bool) {
 // `loc` is forwarded so both steps (and the retry) are charged to the caller's
 // telemetry site, not to this helper.
 step_write_healing :: proc(conn: ^Conn, stmt: sqlite3_stmt, loc := #caller_location) -> c.int {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	rc := sqlite3_step(stmt, loc)
 	if rc == SQLITE_CORRUPT {
 		repair_fts_indexes(conn) // full re-sync; the retry surfaces any residual failure

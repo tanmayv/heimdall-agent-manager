@@ -158,7 +158,7 @@ agent_search_local_hit_value :: proc(hit: Task_Chain_Search_Hit, allocator := co
 bridge_agent_search_rpc :: proc(request_id, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
 	if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 	relay := bridge_local_relay_agent_envelope(route_path("api", "v1", "agent-actions", "search"), "agent.search", params, rec)
-	if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
+	if !relay.ok do return bridge_local_relay_failure(request_id, "Hub relay failed", relay)
 	if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 	if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 

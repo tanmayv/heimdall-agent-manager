@@ -1,219 +1,80 @@
 import { heimdallApi } from '../heimdallApi';
 import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
-export type ActionState = 'active' | 'in_flight' | 'completed';
-
-// REQ-SCHED-2: how the scheduler provides the instance for a durable agent-id
-// target. 'reuse' keeps a single instance alive across runs; 'fresh_per_run'
-// launches a new instance each run (stopping the previous). Only meaningful when
-// targeting an agent-id (not an explicit instance). Mirrors the backend
-// action.instance_strategy field (default 'reuse').
 export type ActionInstanceStrategy = 'reuse' | 'fresh_per_run';
+export type PlacementRule = { bridge_id: string; provider: string; model: string };
+export type ActionTarget =
+  | { kind: 'agent'; agent_id: string; project_id?: string; instance_strategy: ActionInstanceStrategy; selector: string; rules: PlacementRule[]; last_spawned_instance_id?: string }
+  | { kind: 'instance'; instance_id: string }
+  | { kind: 'bot'; bot_id: string };
+export type ScheduleConfig = { mode: 'cron' | 'interval' | 'once'; cron_expr?: string; timezone?: string; interval_s?: number; run_at?: string; blackout_dates?: string[]; active_from?: string; active_until?: string };
+export type FilterScalar = string | number | boolean;
+export type FilterNode = { all: FilterNode[] } | { any: FilterNode[] } | { not: FilterNode } | { field: string; op: 'eq' | 'ne' | 'in' | 'not_in' | 'exists' | 'prefix'; value: FilterScalar | FilterScalar[] };
+export type FilterLimits = { max_depth: number; max_checks: number; max_nodes: number; max_children: number; max_values: number; max_value_bytes: number; max_field_bytes: number; max_path_segments: number; max_segment_bytes: number; max_bytes: number };
+export type MatchTrace = { rev: number; nodes: string };
+export type FilterTestResult = { valid: boolean; matched: boolean; nodes: string; path: string; reason: string };
+export type EventConfig = { event_type: string; entity_id?: string; filter?: FilterNode | Record<string, never> };
+export type ActionTrigger = ({ kind: 'schedule'; config: ScheduleConfig } | { kind: 'event'; config: EventConfig }) & { id?: string; enabled: boolean; delay_s?: number; rev?: number; next_fire_at?: string; created_at?: string; updated_at?: string };
+export type Action = { id: string; owner_user_id: string; name: string; prompt_text: string; enabled: boolean; min_interval_s: number; target: ActionTarget; triggers: ActionTrigger[]; created_at: string; updated_at: string };
+export type CreateActionInput = Pick<Action, 'prompt_text' | 'target'> & Partial<Pick<Action, 'name' | 'enabled' | 'min_interval_s' | 'triggers'>>;
+export type PatchActionInput = Partial<CreateActionInput>;
+export type TriggerEvent = { event_type: string; label: string; scope: string; no_delay: boolean; free_data_paths: boolean; fields: { field: string; operators: string[]; values: string[] }[]; presets: { id: string; label: string; filter: FilterNode }[] };
+export type TriggerTypes = { target_kinds: ActionTarget['kind'][]; schedules_supported: boolean; limits: { filter: FilterLimits; max_triggers: number; max_rules: number; min_interval_s: { min: number; max: number; default: number } }; trigger_kinds: { kind: string; label: string; modes?: ScheduleConfig['mode'][]; events?: TriggerEvent[] }[] };
+export type PlacementCandidates = { candidates: { bridge_id: string; provider: string; provider_profile: string; model: string; rank: number }[]; bridges: { bridge_id: string; label: string; eligible: boolean; reason: string }[]; providers: { provider: string; label: string; models: string[] }[] };
+export type ActionRun = { id: string; trigger_id: string; event_type: string; event_id: string; state: 'queued' | 'deferred' | 'routed' | 'delivered' | 'joined' | 'skipped' | 'failed'; reason: string; not_before: string; joined_run_id: string; joined_count: number; batch_size: number; rule_position: number; target_instance_id: string; message_id: string; delivery_id: string; delivery_expires_at: string; delivery_state?: string; delivery_outcome?: string; created_at: string; started_at: string; finished_at: string };
 
-export type Action = {
-  id: string;
-  owner_user_id: string;
-  target_instance_id?: string;
-  target_agent_id?: string;
-  target_bridge_id?: string;
-  target_provider?: string;
-  target_model?: string;
-  target_project_id?: string;
-  instance_strategy?: ActionInstanceStrategy;
-  /** Set by a `fresh_per_run` action: the instance the previous fire minted. */
-  last_spawned_instance_id?: string;
-  prompt_text: string;
-  cron_expr?: string;
-  timezone?: string;
-  blackout_dates?: string[] | string;
-  active_from?: string;
-  active_until?: string;
-  target_run_at?: string;
-  interval?: string;
-  state: ActionState;
-  in_flight: boolean;
-  leased_at?: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type CreateActionInput = {
-  target_instance_id?: string;
-  target_agent_id?: string;
-  target_bridge_id?: string;
-  target_provider?: string;
-  target_model?: string;
-  target_project_id?: string;
-  instance_strategy?: ActionInstanceStrategy;
-  prompt_text: string;
-  cron_expr?: string;
-  timezone?: string;
-  blackout_dates?: string[] | string;
-  active_from?: string;
-  active_until?: string;
-  target_run_at?: string;
-  interval?: string;
-};
-
-/**
- * What PATCH actually accepts. `patch_action_handler`
- * (`src/hub/transport/http/action_handlers.odin:388-470`) reads no `target_*` key at
- * all, so an action's target is immutable once created — the fields were listed here
- * before, and sending them looked like it worked while the server silently dropped
- * them. `instance_strategy` IS patchable and stays.
- */
-export type PatchActionInput = {
-  instance_strategy?: ActionInstanceStrategy;
-  prompt_text?: string;
-  cron_expr?: string;
-  timezone?: string;
-  blackout_dates?: string[] | string;
-  active_from?: string;
-  active_until?: string;
-  target_run_at?: string;
-  interval?: string;
-  state?: ActionState;
-};
-
-export function parseBlackoutDates(blackoutDates?: string[] | string | null): string[] {
-  if (!blackoutDates) return [];
-  if (Array.isArray(blackoutDates)) return blackoutDates;
-  try {
-    const parsed = JSON.parse(blackoutDates);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_err) {
-    return [];
-  }
+function apiError(error: any): any {
+  return { status: error?.status || 'CUSTOM_ERROR', error: String(error?.message || error), data: { code: error?.code, details: error?.details } };
 }
-
-function normalizePayload<T extends { blackout_dates?: string[] | string }>(input: T): any {
-  const result: any = { ...input };
-  if (result.blackout_dates !== undefined) {
-    if (Array.isArray(result.blackout_dates)) {
-      result.blackout_dates = JSON.stringify(result.blackout_dates);
-    } else if (typeof result.blackout_dates === 'string' && !result.blackout_dates.startsWith('[')) {
-      result.blackout_dates = JSON.stringify([result.blackout_dates]);
-    }
-  }
-  return result;
+async function request<T>(path: string, method?: string, body?: unknown) {
+  try { return { data: await (method ? cookieMutation(path, method, body) : cookieJsonFetch(path)) as T }; }
+  catch (error) { return { error: apiError(error) }; }
 }
-
+const path = (id: string) => '/actions/' + encodeURIComponent(id);
+const tags = (id: string) => [{ type: 'Action' as const, id }, { type: 'Actions' as const, id: 'LIST' }];
 export const actionsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listActions: build.query<{ actions: Action[] }, void>({
-      queryFn: async () => {
-        try {
-          const data = await cookieJsonFetch('/actions');
-          const actions: Action[] = Array.isArray(data)
-            ? data
-            : (Array.isArray(data?.data) ? data.data : (data?.actions || []));
-          return { data: { actions } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      providesTags: (result) => [
-        { type: 'Actions' as const, id: 'LIST' },
-        ...((result?.actions || []).map((action) => ({ type: 'Action' as const, id: action.id }))),
-      ],
+      queryFn: async () => { const result = await request<Action[]>('/actions'); return result.error ? { error: result.error } : { data: { actions: Array.isArray(result.data) ? result.data : (Array.isArray((result.data as any)?.actions) ? (result.data as any).actions : []) } }; },
+      providesTags: result => [{ type: 'Actions', id: 'LIST' }, ...(result?.actions || []).map(a => ({ type: 'Action' as const, id: a.id }))],
     }),
-
     fetchAction: build.query<{ action: Action | null }, { id: string }>({
-      queryFn: async ({ id }) => {
-        if (!id) return { data: { action: null } };
-        try {
-          const data = await cookieJsonFetch(`/actions/${encodeURIComponent(id)}`);
-          const action = data?.data || data?.action || data || null;
-          return { data: { action } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      providesTags: (_result, _error, { id }) => [{ type: 'Action' as const, id }],
+      queryFn: async ({ id }) => { const result = await request<Action>(path(id)); return result.error ? { error: result.error } : { data: { action: result.data! } }; },
+      providesTags: (_r, _e, { id }) => [{ type: 'Action', id }],
     }),
-
     createAction: build.mutation<{ action: Action }, CreateActionInput>({
-      queryFn: async (payload) => {
-        try {
-          const body = normalizePayload(payload);
-          const data = await cookieMutation('/actions', 'POST', body);
-          const action = data?.data || data?.action || data;
-          return { data: { action } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: [{ type: 'Actions' as const, id: 'LIST' }],
+      queryFn: async body => { const result = await request<Action>('/actions', 'POST', body); return result.error ? { error: result.error } : { data: { action: result.data! } }; },
+      invalidatesTags: [{ type: 'Actions', id: 'LIST' }],
     }),
-
     patchAction: build.mutation<{ action: Action }, { id: string } & PatchActionInput>({
-      queryFn: async ({ id, ...payload }) => {
-        try {
-          const body = normalizePayload(payload);
-          const data = await cookieMutation(`/actions/${encodeURIComponent(id)}`, 'PATCH', body);
-          const action = data?.data || data?.action || data;
-          return { data: { action } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { id }) => [
-        { type: 'Actions' as const, id: 'LIST' },
-        { type: 'Action' as const, id },
-      ],
+      queryFn: async ({ id, ...body }) => { const result = await request<Action>(path(id), 'PATCH', body); return result.error ? { error: result.error } : { data: { action: result.data! } }; },
+      invalidatesTags: (_r, _e, { id }) => tags(id),
     }),
-
     deleteAction: build.mutation<{ deleted: boolean }, { id: string }>({
-      queryFn: async ({ id }) => {
-        try {
-          const data = await cookieMutation(`/actions/${encodeURIComponent(id)}`, 'DELETE');
-          return { data: { deleted: Boolean(data?.deleted ?? true) } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { id }) => [
-        { type: 'Actions' as const, id: 'LIST' },
-        { type: 'Action' as const, id },
-      ],
+      queryFn: ({ id }) => request(path(id), 'DELETE'),
+      invalidatesTags: (_r, _e, { id }) => tags(id),
     }),
-
-    runAction: build.mutation<any, { id: string }>({
-      queryFn: async ({ id }) => {
-        try {
-          const data = await cookieMutation(`/actions/${encodeURIComponent(id)}/run`, 'POST');
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { id }) => [
-        { type: 'Action' as const, id },
-        { type: 'Actions' as const, id: 'LIST' },
-      ],
+    actionTriggerTypes: build.query<TriggerTypes, void>({
+      queryFn: () => request('/actions/trigger-types'),
     }),
-
+    testActionFilter: build.mutation<FilterTestResult, { event_type: string; filter?: FilterNode | Record<string, never>; event: Record<string, unknown> }>({
+      queryFn: body => request('/actions/filter-test', 'POST', body),
+    }),
+    actionPlacementCandidates: build.query<PlacementCandidates, { agent_id: string }>({
+      queryFn: ({ agent_id }) => request('/placement/candidates?' + new URLSearchParams({ agent_id, feature: 'event_pipeline_v1' })),
+    }),
+    actionRuns: build.query<ActionRun[], { id: string; before?: string; before_id?: string; limit?: number }>({
+      queryFn: ({ id, before, before_id, limit = 50 }) => { const params = new URLSearchParams({ limit: String(limit) }); if (before) params.set('before', before); if (before_id) params.set('before_id', before_id); return request(path(id) + '/runs?' + params); },
+      providesTags: (_r, _e, { id }) => [{ type: 'Action', id }],
+    }),
+    setActionEnabled: build.mutation<{ action: Action }, { id: string; enabled: boolean }>({
+      queryFn: async ({ id, enabled }) => { const result = await request<Action>(path(id) + (enabled ? '/enable' : '/disable'), 'POST'); return result.error ? { error: result.error } : { data: { action: result.data! } }; },
+      invalidatesTags: (_r, _e, { id }) => tags(id),
+    }),
     listAllAgentInstances: build.query<any, void>({
-      queryFn: async () => {
-        try {
-          const data = await cookieJsonFetch('/agent-instances?limit=200');
-          const instances = Array.isArray(data) ? data : (data?.instances || []);
-          return { data: { instances } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      providesTags: [{ type: 'AgentInstances' as const, id: 'ALL' }],
+      queryFn: async () => { const result = await request<any>('/agent-instances?limit=200'); return result.error ? { error: result.error } : { data: { instances: Array.isArray(result.data) ? result.data : result.data?.instances || [] } }; },
+      providesTags: [{ type: 'AgentInstances', id: 'ALL' }],
     }),
   }),
 });
-
-export const {
-  useListActionsQuery,
-  useFetchActionQuery,
-  useCreateActionMutation,
-  usePatchActionMutation,
-  useDeleteActionMutation,
-  useRunActionMutation,
-  useListAllAgentInstancesQuery,
-} = actionsApi;
+export const { useListActionsQuery, useFetchActionQuery, useCreateActionMutation, usePatchActionMutation, useDeleteActionMutation, useActionTriggerTypesQuery, useTestActionFilterMutation, useActionPlacementCandidatesQuery, useActionRunsQuery, useLazyActionRunsQuery, useSetActionEnabledMutation, useListAllAgentInstancesQuery } = actionsApi;

@@ -1,5 +1,7 @@
 package domain
 
+import "core:strings"
+
 Agent_State :: enum {
 	Active,
 	Archived,
@@ -111,6 +113,8 @@ Agent_Instance :: struct {
 	run_count: int,
 	configuration_revision: int,
 	launch_epoch: string,
+	// Cause of the current generation; empty for manual starts.
+	start_ref: string,
 	// current_task_id is the single task this instance is actively focused on
 	// (either working or reviewing). Empty when the instance has no current task.
 	current_task_id: string,
@@ -206,6 +210,7 @@ agent_instance_destroy :: proc(inst: ^Agent_Instance) {
 	if len(inst.status_message) > 0 do delete(inst.status_message)
 	if len(inst.last_error_json) > 0 do delete(inst.last_error_json)
 	if len(inst.launch_epoch) > 0 do delete(inst.launch_epoch)
+	if len(inst.start_ref) > 0 do delete(inst.start_ref)
 	if len(inst.current_task_id) > 0 do delete(inst.current_task_id)
 	if len(inst.created_at) > 0 do delete(inst.created_at)
 	if len(inst.updated_at) > 0 do delete(inst.updated_at)
@@ -231,4 +236,48 @@ agent_instances_destroy :: proc(instances: []Agent_Instance) {
 		agent_instance_destroy(&inst)
 	}
 	delete(instances)
+}
+
+// Clone the owned text fields; normalized permission modes remain static literals.
+agent_instance_clone :: proc(inst: Agent_Instance) -> Agent_Instance {
+	out := inst
+	out.runtime_transport = strings.clone(inst.runtime_transport)
+	out.agent_instance_id = strings.clone(inst.agent_instance_id)
+	out.agent_id = strings.clone(inst.agent_id)
+	out.bridge_id = strings.clone(inst.bridge_id)
+	out.display_name = strings.clone(inst.display_name)
+	out.provider_profile = strings.clone(inst.provider_profile)
+	out.provider = strings.clone(inst.provider)
+	out.model = strings.clone(inst.model)
+	out.kind = strings.clone(inst.kind)
+	out.project_path = strings.clone(inst.project_path)
+	out.chain_id = strings.clone(inst.chain_id)
+	out.conversation_id = strings.clone(inst.conversation_id)
+	out.runtime_status = strings.clone(inst.runtime_status)
+	out.startup_status = strings.clone(inst.startup_status)
+	out.activity_status = strings.clone(inst.activity_status)
+	out.status_message = strings.clone(inst.status_message)
+	out.last_error_json = strings.clone(inst.last_error_json)
+	out.launch_epoch = strings.clone(inst.launch_epoch)
+	out.start_ref = strings.clone(inst.start_ref)
+	out.current_task_id = strings.clone(inst.current_task_id)
+	out.created_at = strings.clone(inst.created_at)
+	out.updated_at = strings.clone(inst.updated_at)
+	out.started_at = strings.clone(inst.started_at)
+	out.stopped_at = strings.clone(inst.stopped_at)
+	out.last_seen_at = strings.clone(inst.last_seen_at)
+	out.idle_since = strings.clone(inst.idle_since)
+	out.stopped_by = strings.clone(inst.stopped_by)
+	out.stop_reason = strings.clone(inst.stop_reason)
+	out.provider_session_id = strings.clone(inst.provider_session_id)
+	out.provider_transcript_path = strings.clone(inst.provider_transcript_path)
+	out.extension_provider = strings.clone(inst.extension_provider)
+	out.extension_version = strings.clone(inst.extension_version)
+	out.extension_capabilities = strings.clone(inst.extension_capabilities)
+	out.extension_last_seen_at = strings.clone(inst.extension_last_seen_at)
+	out.token_usage_json = strings.clone(inst.token_usage_json)
+	out.token_usage_updated_at = strings.clone(inst.token_usage_updated_at)
+	out.owner_user_id = User_ID(strings.clone(string(inst.owner_user_id)))
+	out.project_id = Project_ID(strings.clone(string(inst.project_id)))
+	return out
 }

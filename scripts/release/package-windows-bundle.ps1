@@ -1,9 +1,10 @@
 # Packages the windows-amd64 release bundle: <OutDir>/heimdall-local-windows-amd64.zip
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/package-windows-bundle.ps1 `
-#     -BinDir <dir with ham-bridge.exe ham-ctl.exe ham-pty-host.exe> -Version v0.4.9 -OutDir dist
+#     -BinDir <dir with ham-bridge.exe ham-ctl.exe ham-pty-host.exe ham-launcher.exe ham-supervisor.exe> -Version v0.4.9 -OutDir dist
 #
-# Zip root: bin/ham-bridge.exe, bin/ham-ctl.exe, bin/ham-pty-host.exe,
+# Zip root: bin/ham-bridge.exe, bin/ham-ctl.exe, bin/ham-pty-host.exe, bin/ham-launcher.exe,
+# bin/ham-supervisor.exe (dormant, T15),
 # share/heimdall/extensions/**,
 # README.md, LICENSE, METADATA.json (the Linux/macOS tarball's extensions layout).
 # Entry names always use forward slashes (Windows PowerShell 5.1's
@@ -22,7 +23,8 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if ($Target -ne 'windows-amd64') { throw "unsupported Windows release target: $Target" }
 
 $entries = [ordered]@{}
-foreach ($exe in @('ham-bridge.exe', 'ham-ctl.exe', 'ham-pty-host.exe')) {
+# T15: ham-launcher.exe and ham-supervisor.exe ship dormant (not the service entry point).
+foreach ($exe in @('ham-bridge.exe', 'ham-ctl.exe', 'ham-pty-host.exe', 'ham-launcher.exe', 'ham-supervisor.exe')) {
   $p = Join-Path $BinDir $exe
   if (-not (Test-Path -PathType Leaf $p)) { throw "missing required release input: $p" }
   $entries["bin/$exe"] = $p

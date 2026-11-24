@@ -11,7 +11,9 @@ const childProcess = require('child_process');
 // Linux, macOS and Windows. All host mutation stays in Electron's main process;
 // the renderer receives structured status/progress and asks for explicit actions.
 
-const RELEASES_URL = 'https://api.github.com/repos/tanmayv/heimdall-agent-manager/releases?per_page=30';
+// The newest promoted release as one object. Never a page of the release list:
+// with many prereleases between promotions the promoted one falls off it (F9).
+const LATEST_RELEASE_URL = 'https://api.github.com/repos/tanmayv/heimdall-agent-manager/releases/latest';
 const RELEASE_DOWNLOAD_BASE = 'https://github.com/tanmayv/heimdall-agent-manager/releases/download';
 const PROFILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const SERVICE_PATTERN = /^heimdall-bridge-[a-z0-9-]+(?:_[a-z0-9][a-z0-9-]{0,30})?$/;
@@ -313,9 +315,11 @@ function compareVersions(a: string, b: string): number {
 }
 
 // latestRelease picks the newest promoted (not draft, not prerelease) release
-// that ships this machine's bundle (the bootstraps apply the same rule).
-function latestRelease(releases: any[], target: string, platform: Platform = process.platform): string {
-  for (const release of Array.isArray(releases) ? releases : []) {
+// that ships this machine's bundle (the bootstraps apply the same rule). It takes
+// the /releases/latest object or a list.
+function latestRelease(releases: any, target: string, platform: Platform = process.platform): string {
+  const list = Array.isArray(releases) ? releases : (releases && typeof releases === 'object' ? [releases] : []);
+  for (const release of list) {
     if (release?.draft || release?.prerelease) continue;
     const tag = String(release?.tag_name || '');
     if (!VERSION_PATTERN.test(tag)) continue;
@@ -343,7 +347,7 @@ async function prepareBinary(
   let olderRelease = '';
   try {
     emit({ step: 'download', state: 'start', pct: 0, message: 'Looking up the latest Bridge release…' });
-    const version = options.version || latestRelease(await (await fetchWithTimeout(fetchImpl, RELEASES_URL, controller.signal)).json(), target, platform);
+    const version = options.version || latestRelease(await (await fetchWithTimeout(fetchImpl, LATEST_RELEASE_URL, controller.signal)).json(), target, platform);
     if (!version) throw new Error(`No published Bridge release for ${target}.`);
     // Never install a Bridge older than the one bundled with this app: the
     // promoted release can lag the app (an app from a pre-release), and an older

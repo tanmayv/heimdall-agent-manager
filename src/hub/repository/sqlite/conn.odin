@@ -74,6 +74,9 @@ foreign sqlite3_lib {
 }
 
 Conn :: struct {
+	// Wired before producers start, cleared after they stop.
+	outbox_after_commit_ctx: rawptr,
+	outbox_after_commit: proc(ctx: rawptr),
 	db: sqlite3,
 	path: string,
 }

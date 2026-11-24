@@ -27,6 +27,7 @@ package main
 // The feature is ENABLED BY DEFAULT (user decision) and disabled by
 // --no-local-proxy / [bridge] local_proxy_enabled=false.
 
+import contracts "odin_test:contracts"
 import local_socket "odin_test:lib/local_socket"
 import "base:runtime"
 import base64 "core:encoding/base64"
@@ -82,6 +83,10 @@ Bridge_Proxy_Request :: struct {
 	query:        string,
 	header_block: string, // raw "Name: Value\r\n..." bytes, no trailing blank line
 	content_len:  int,
+	// Transfer-Encoding: chunked. The relay forwards exactly Content-Length bytes and
+	// does not decode chunked framing, so such a request is refused (411) up front
+	// rather than forwarded without its body and left to hang (REQ-VOICE-6).
+	chunked:      bool,
 	ok:           bool,
 }
 
@@ -132,6 +137,7 @@ bridge_proxy_parse_request :: proc(head: string, allocator := context.allocator)
 
 	// Content-Length drives how much body to read; absent means no body.
 	content_len := 0
+	chunked := false
 	for line in strings.split_lines_iterator(&header_block) {
 		colon := strings.index_byte(line, ':')
 		if colon < 0 do continue
@@ -141,6 +147,10 @@ bridge_proxy_parse_request :: proc(head: string, allocator := context.allocator)
 			if n, parsed := strconv.parse_int(strings.trim_space(line[colon + 1:])); parsed && n > 0 {
 				content_len = n
 			}
+		} else if name == "transfer-encoding" {
+			value := strings.to_lower(line[colon + 1:], allocator)
+			defer delete(value, allocator)
+			if strings.contains(value, "chunked") do chunked = true
 		}
 	}
 	// split_lines_iterator consumes header_block; recompute it for the caller.
@@ -154,6 +164,7 @@ bridge_proxy_parse_request :: proc(head: string, allocator := context.allocator)
 	req.query = strings.clone(query, allocator)
 	req.header_block = strings.clone(header_block, allocator)
 	req.content_len = content_len
+	req.chunked = chunked
 	req.ok = true
 	return req
 }
@@ -217,14 +228,13 @@ bridge_proxy_close_frame :: proc(proxy_id, reason: string) -> string {
 // Reuses the tunnel_* outgoing queue: it is a queue of pre-built frame JSON with no
 // tunnel-specific behaviour, and it is already drained by the runtime loop on every
 // tick, so proxy frames need no second drain site and cannot race a different writer.
+// It never waits; request-body data waits for room first (bridge_proxy_serve_client).
 bridge_proxy_enqueue :: proc(frame_json: string) {
 	if sync.atomic_load(&bridge_hub_traffic_stopped) {
 		delete(frame_json, runtime.heap_allocator())
 		return
 	}
-	sync.mutex_lock(&bridge_runtime_mutex)
-	append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = frame_json})
-	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_tunnel_outgoing_push(frame_json)
 }
 
 // bridge_proxy_send_to_client writes response bytes to the originating local socket.
@@ -390,8 +400,17 @@ bridge_proxy_serve_client :: proc(
 		bridge_proxy_write_local_error(kind, tcp, unix, 400, "bad proxy request line")
 		return "", false
 	}
+	// REQ-VOICE-6: refuse what the relay will not carry BEFORE anything reaches the
+	// hub, so the caller gets a clear status at once instead of a hang.
+	if refusal := bridge_proxy_body_refusal(req); refusal.status != 0 {
+		bridge_proxy_refuse_body(kind, tcp, unix, recv_more, recv_ctx, refusal.status, refusal.message)
+		return "", false
+	}
 
+	// The table and the caller get their own clones; this one is freed here (it
+	// used to leak on every proxied request).
 	proxy_id := bridge_proxy_new_id()
+	defer delete(proxy_id, heap)
 
 	stream := new(Bridge_Proxy_Stream, heap)
 	stream.proxy_id = strings.clone(proxy_id, heap)
@@ -416,8 +435,29 @@ bridge_proxy_serve_client :: proc(
 			sent = len(chunk)
 			bridge_proxy_enqueue(bridge_proxy_data_frame(proxy_id, chunk, sent >= req.content_len))
 		}
-		buf: [8192]byte
+		// 32 KB reads, the tunnel worker's size: ~43 KB frames, under the WS frame cap.
+		buf: [32768]byte
 		for sent < req.content_len {
+			// REQ-VOICE-6: backpressure. Wait for the runtime loop to drain before
+			// reading more, so an upload never queues more than the cap in memory
+			// (see the note at BRIDGE_TUNNEL_OUTGOING_CAP_BYTES).
+			switch bridge_tunnel_outgoing_wait_room(bridge_proxy_stream_registered, proxy_id) {
+			case .Ok:
+			case .Gone:
+				// The hub already answered and closed the stream (a refusal, or the
+				// target went away); its response is on the way to the client. Stop
+				// forwarding; the caller's watch loop sees the stream gone and closes.
+				return strings.clone(proxy_id, heap), true
+			case .Stalled:
+				// Nothing is draining the queue: the hub connection is down. Tear the
+				// stream down and tell the caller instead of leaving it hanging.
+				if stream, removed := bridge_proxy_take(proxy_id); removed {
+					bridge_proxy_enqueue(bridge_proxy_close_frame(proxy_id, "upload_stalled"))
+					bridge_proxy_free(stream)
+					bridge_proxy_write_local_error(kind, tcp, unix, 504, "upload_stalled")
+				}
+				return "", false
+			}
 			n := recv_more(recv_ctx, buf[:])
 			if n <= 0 do break
 			take := n
@@ -430,6 +470,58 @@ bridge_proxy_serve_client :: proc(
 	return strings.clone(proxy_id, heap), true
 }
 
+Bridge_Proxy_Body_Refusal :: struct {
+	status:  int,
+	message: string,
+}
+
+// bridge_proxy_body_refusal decides whether the relay refuses a request because of its
+// body (status 0 = carry it). Pure, so the limits are unit-testable without sockets.
+// The reasons go out as {"error":"<reason>"}, the hub refusals' vocabulary.
+bridge_proxy_body_refusal :: proc(req: Bridge_Proxy_Request) -> Bridge_Proxy_Body_Refusal {
+	if req.chunked {
+		return {411, "request_body_chunked"}
+	}
+	if req.content_len > contracts.RELAY_MAX_REQUEST_BODY_BYTES {
+		return {413, "request_body_too_large"}
+	}
+	return {}
+}
+
+// BRIDGE_PROXY_REFUSAL_DRAIN bounds how long a refused upload is read and discarded
+// after the error response is written.
+BRIDGE_PROXY_REFUSAL_DRAIN :: 2 * time.Second
+
+// bridge_proxy_refuse_body answers a request the relay will not carry, then reads
+// and discards whatever of the body the caller is still sending, for a bounded time.
+// Closing with unread bytes in the receive buffer makes the kernel send RST, and an
+// RST can destroy the error response before the caller reads it — so a fast 413
+// would surface as "connection reset" instead. The caller closes the socket after.
+bridge_proxy_refuse_body :: proc(
+	kind: Bridge_Wrapper_Push_Conn_Kind,
+	tcp: net.TCP_Socket,
+	unix: local_socket.Socket,
+	recv_more: proc(rawptr, []byte) -> int,
+	recv_ctx: rawptr,
+	status: int,
+	message: string,
+) {
+	bridge_proxy_write_local_error(kind, tcp, unix, status, message)
+	switch kind {
+	case .TCP:
+		_ = net.shutdown(tcp, .Send)
+		_ = net.set_option(tcp, .Receive_Timeout, 200 * time.Millisecond)
+	case .Unix:
+		_ = local_socket.shutdown(unix, .Write)
+		_ = local_socket.set_recv_timeout(unix, 200 * time.Millisecond)
+	}
+	started := time.tick_now()
+	buf: [32768]byte
+	for time.tick_since(started) < BRIDGE_PROXY_REFUSAL_DRAIN {
+		if recv_more(recv_ctx, buf[:]) <= 0 do break
+	}
+}
+
 // bridge_proxy_write_local_error answers the local caller directly. Used only for
 // requests the bridge rejects before anything reaches the hub.
 bridge_proxy_write_local_error :: proc(kind: Bridge_Wrapper_Push_Conn_Kind, tcp: net.TCP_Socket, unix: local_socket.Socket, status: int, message: string) {
@@ -439,7 +531,7 @@ bridge_proxy_write_local_error :: proc(kind: Bridge_Wrapper_Push_Conn_Kind, tcp:
 	strings.write_string(&b, "HTTP/1.1 ")
 	strings.write_int(&b, status)
 	strings.write_string(&b, " ")
-	strings.write_string(&b, status == 400 ? "Bad Request" : "Forbidden")
+	strings.write_string(&b, bridge_proxy_status_text(status))
 	strings.write_string(&b, "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ")
 	body := strings.concatenate({"{\"error\":\"", message, "\"}"}, heap)
 	defer delete(body, heap)
@@ -453,6 +545,16 @@ bridge_proxy_write_local_error :: proc(kind: Bridge_Wrapper_Push_Conn_Kind, tcp:
 	case .Unix:
 		_ = local_socket.send(unix, payload)
 	}
+}
+
+bridge_proxy_status_text :: proc(status: int) -> string {
+	switch status {
+	case 400: return "Bad Request"
+	case 411: return "Length Required"
+	case 413: return "Content Too Large"
+	case 504: return "Gateway Timeout"
+	}
+	return "Forbidden"
 }
 
 // bridge_proxy_seq disambiguates ids allocated within the same nanosecond. The hub's

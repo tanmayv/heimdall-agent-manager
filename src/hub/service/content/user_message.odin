@@ -24,6 +24,7 @@ persist_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:
 	if !written do return {},false,werr
 	c.last_message_preview=input.body;c.last_message_at=now;c.updated_at=now
 	if _,updated,uerr:=iface.content_save_conversation(s.content,c);!updated do return {},false,uerr
+	acp_delivery_record_sent(s,c,saved)
 	return saved,true,{}
 }
 

@@ -295,6 +295,7 @@ export default function ChatMessageList({
   onLoadOlder,
   onScroll: onScrollProp,
   onReply,
+  onSendActionFeedback,
   onAnswerQuestions,
   renderMessageTop,
   renderMessageBody,
@@ -326,6 +327,7 @@ export default function ChatMessageList({
   onLoadOlder?: () => void;
   onScroll?: (event: UIEvent<HTMLDivElement>) => void;
   onReply?: (reply: string) => void;
+  onSendActionFeedback?: (body: string) => Promise<void>;
   onAnswerQuestions?: (sourceMessageId: string, submission: QuestionSubmission) => Promise<unknown>;
   renderMessageTop?: (args: { message: ChatMessage; index: number; messages: ChatMessage[] }) => React.ReactNode;
   /** `reveal` is set for an agent reply that arrived live (replyMotion.ts); pass it to Markdown. */
@@ -1141,7 +1143,7 @@ export default function ChatMessageList({
                   {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
                   <div data-chat-body="" className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-subtle bg-surface-raised px-[14px] py-[10px] text-primary' : 'w-full text-primary'}`}>
                     {renderMessageBody ? renderMessageBody({ message, onReply: reply, reveal }) : <DefaultMessageBody body={message.body} reveal={reveal} />}
-                    <ChatActionCard message={message} conversationId={conversationKey} onReply={reply} />
+                    <ChatActionCard message={message} conversationId={conversationKey} onReply={reply} onSendFeedback={onSendActionFeedback} />
                     {questionGroup && !message.isUser ? <MultiQuestionForm
                       key={`${conversationKey}-${message.messageId}`} group={questionGroup}
                       eligible={eligible && Boolean(onAnswerQuestions)} answered={Boolean(message.questionAnswer)} vaultKey={activeKey}

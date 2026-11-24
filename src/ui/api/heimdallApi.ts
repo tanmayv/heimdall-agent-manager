@@ -10,6 +10,8 @@ export const HEIMDALL_TAG_TYPES = [
   'Chain',
   'ChainList',
   'Chat',
+  // ACP batch Send now state per conversation (GET /chats/{cid}/send-now).
+  'SendNow',
   'GuideChat',
   'CoordinatorChat',
   'ConversationSummaries',

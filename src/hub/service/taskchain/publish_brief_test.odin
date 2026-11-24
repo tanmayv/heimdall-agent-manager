@@ -61,8 +61,8 @@ test_publish_rejects_review_role_without_fleet_row :: proc(t: ^testing.T) {
 	testing.expect(t, pok2, fmt.tprintf("chain publish: %s %s", perr2.message, perr2.details_json))
 	// a task created on the LIVE chain is published at once → validated at create
 	long_goal := strings.repeat("g", taskv2.BRIEF_GOAL_MAX + 1, context.temp_allocator)
-	_, ok4, e4 := create_task(&svc, auth, Create_Task_Input{chain_id = chain.chain_id, title = "long", brief_json = fmt.tprintf(`{{"goal":"%s","acceptance":["a"]}}`, long_goal)})
-	testing.expect(t, !ok4 && e4.code == .Validation_Failed && strings.contains(e4.details_json, `"goal"`), "goal > 2k refused on a live chain")
+	_, ok4, e4 := create_task(&svc, auth, Create_Task_Input{chain_id = chain.chain_id, title = "long", brief_json = strings.concatenate({`{"goal":"`, long_goal, `","acceptance":["a"]}`}, context.temp_allocator)})
+	testing.expect(t, !ok4 && e4.code == .Validation_Failed && strings.contains(e4.details_json, `"goal"`), fmt.tprintf("goal > 2k refused on a live chain: ok=%v error=%v", ok4, e4))
 	_, ok5, e5 := create_task(&svc, auth, Create_Task_Input{chain_id = chain.chain_id, title = "bare live", description = "no brief"})
 	testing.expect(t, !ok5 && e5.code == .Validation_Failed && strings.contains(e5.details_json, `"acceptance"`), "bare task refused on a live chain")
 	// Engine-managed gates are exempt from the brief validator. Gate rows are

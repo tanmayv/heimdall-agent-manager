@@ -1,8 +1,13 @@
 package app
 
 import "core:fmt"
+import "core:encoding/json"
+import contracts "odin_test:contracts"
+import "base:runtime"
+import actions_service "odin_test:hub/service/actions"
 import eventinbox "odin_test:hub/service/eventinbox"
 import eventrelay "odin_test:hub/service/eventrelay"
+import delivery "odin_test:hub/service/delivery"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -24,6 +29,7 @@ import device_auth_service "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
+import placement "odin_test:hub/service/placement"
 import provider_service "odin_test:hub/service/provider"
 import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
@@ -38,7 +44,15 @@ import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
 App_Graph :: struct {
+	actions: actions_service.Service,
+ action_router: actions_service.Router,
+ action_runtime: actions_service.Runtime,
+ placement: placement.Service,
+ placement_handlers: http.Placement_Handlers,
 	event_relay: eventrelay.Service,
+	delivery: ^delivery.Service,
+	delivery_commands: project_service.Bridge_Command_Sink,
+	sqlite_pipeline_deliveries: sqlite.Pipeline_Delivery_Repo_SQLite,
 	event_inbox: eventinbox.Service,
 	event_inbox_runtime: eventinbox.Runtime,
 	event_inbox_handlers: http.Event_Inbox_Handlers,
@@ -80,7 +94,6 @@ App_Graph :: struct {
 	sqlite_search: sqlite.Search_Repo_SQLite,
 	search_skills: []sqlite.Skill_Doc,
 	sqlite_actions: sqlite.Action_Repo_SQLite,
-	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
 	sqlite_cards: sqlite.Card_Repo_SQLite,
 	sqlite_attention: sqlite.Attention_Repo_SQLite,
@@ -141,7 +154,6 @@ App_Graph :: struct {
 	push_handlers: http.Push_Handlers,
 	agent_action_handlers: http.Agent_Action_Handlers,
 	action_handlers: http.Action_Handlers,
-	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
 	cards: card_service.Card_Service,
 	shell_session_repo: iface.Shell_Session_Repository,
 	experiment_repo: iface.Experiment_Repository,
@@ -161,8 +173,6 @@ App_Graph :: struct {
 	card_handlers: http.Card_Handlers,
 	issues: issue_service.Issue_Service,
 	issue_handlers: http.Issue_Handlers,
-	action_mutex: sync.Mutex,
-	action_bridge_versions: map[string]int,
 	router: http.Router,
 }
 
@@ -252,6 +262,7 @@ service_message_created :: proc(ctx: rawptr, m: domain.Chat_Message) {
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
+ if !actions_service.filter_limits_valid(actions_service.filter_limits(config.action_filter_limits)) do return false,"invalid action filter limits"
 	if strings.trim_space(config.nats_url) == "" do return false, "--nats-url / HEIMDALL_NATS_URL is required"
 	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
 		live_bridges = config.runtime_max_live_bridges,
@@ -354,10 +365,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db, graph.search_skills)
 	graph.repos.actions = sqlite.new_action_repository(&graph.sqlite_actions, &graph.db)
-    if config.database_path != ":memory:" {
-        if ok, err := sqlite.open_action_snapshot_conn(&graph.sqlite_actions, config.database_path); !ok do return false, err.message
-    }
-	graph.repos.scheduled_prompts = graph.repos.actions
+
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
 	graph.repos.attention = sqlite.new_attention_repository(&graph.sqlite_attention, &graph.db)
@@ -388,10 +396,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		if ok, err := configure_mcp_delegation(graph); !ok do return false, err
 	}
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
+	graph.repos.pipeline_deliveries = sqlite.new_pipeline_delivery_repository(&graph.sqlite_pipeline_deliveries, &graph.db)
+	graph.db.outbox_after_commit_ctx = &graph.event_relay
+	graph.db.outbox_after_commit = proc(ctx: rawptr) {eventrelay.wake((^eventrelay.Service)(ctx))}
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.users.on_agent_seeded = users_on_agent_seeded
 	graph.users.on_agent_seeded_ctx = rawptr(graph)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
+	graph.delivery_commands = bridge_command_sink
+	graph.delivery = delivery.new_service(&graph.uow_factory, &graph.repos.bridges, &graph.bridge_runtime_registry, &graph.delivery_commands, &graph.clock, &graph.ids, {url=config.nats_url, creds_file=config.nats_creds_file, ca_file=config.nats_ca_file, timeout_ms=1000})
 	graph.bridges = bridge_service.new_bridge_service_with_runtime(&graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
 	// REQ-IMPL-3 / audit F6: revocation must terminate the bridge's LIVE control
 	// WebSocket, not merely flip a DB row. The registry owns the socket; the bridge
@@ -582,6 +595,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		bridge_runtime_registry = &graph.bridge_runtime_registry,
 	}
 	graph.bridge_handlers = http.Bridge_Handlers{
+		uow_factory = &graph.uow_factory,
+		delivery = graph.delivery,
 		mcp_control = &graph.mcp_control_handlers,
 		entitlements = billing_service.entitlement_lookup(&graph.billing),
 		auth = &graph.auth,
@@ -624,23 +639,26 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth, push = &graph.push, public_app_origin = config.public_app_origin, ui_origin = config.ui_origin, vault = &graph.vault_directory, event_bus = &graph.event_bus, pairing_hub_origins = config.pairing_hub_origin_list, bridges = &graph.bridges}
 	graph.vault_directory_handlers = http.Vault_Directory_Handlers{auth = &graph.auth, vault = &graph.vault_directory, device_auth = &graph.device_auth, bridges = &graph.bridges, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
-	graph.action_bridge_versions = make(map[string]int)
-	graph.action_handlers = http.Action_Handlers{
-		auth = &graph.auth,
-		agents = &graph.agents,
-		bridges = &graph.bridges,
-		content = &graph.content,
-		repo = &graph.repos.actions,
-		clock = &graph.clock,
-		ids = &graph.ids,
-		mutex = &graph.action_mutex,
-		bridge_versions = &graph.action_bridge_versions,
-		event_bus = &graph.event_bus,
-		experiments = &graph.experiment_repo,
+	graph.actions = actions_service.Service{
+  filter_limits=actions_service.filter_limits(config.action_filter_limits),
+		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,
+		experiments=&graph.experiment_repo,clock=&graph.clock,ids=&graph.ids,
+		support={ctx=rawptr(&graph.event_relay),get=action_schedule_support},
+		target_kinds=make([]string,3,runtime.heap_allocator()),
 	}
-	graph.scheduled_prompt_handlers = graph.action_handlers
-	graph.bridge_handlers.actions = rawptr(&graph.action_handlers)
-	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.action_handlers)
+	graph.actions.target_kinds[0]="agent"
+	graph.actions.target_kinds[1]="instance"
+	graph.actions.target_kinds[2]="bot"
+	graph.action_router=actions_service.Router{
+ factory=&graph.uow_factory,experiments=&graph.experiment_repo,placement=&graph.placement,
+ clock=&graph.clock,ids=&graph.ids,support=graph.actions.support,
+ message_created={ctx=graph,created=service_message_created},
+ agents={ctx=graph,find=action_agent_find,create=action_agent_create,stop=action_agent_stop,instance=action_agent_instance,persist_prompt=action_persist_prompt,retire_prompt=action_retire_prompt},
+ pipeline={ctx=graph.delivery,route=action_route_delivery,expire=action_expire_delivery,unread=action_unread_delivery},
+ }
+ graph.content.messages_read={ctx=graph.delivery,read=delivery_messages_read}
+ delivery.register_sink(graph.delivery,{kind="prompt",ctx=&graph.action_router,on_final=actions_service.on_delivery_final,replace=actions_service.on_delivery_replace})
+ graph.action_handlers = http.Action_Handlers{auth=&graph.auth,service=&graph.actions,router=&graph.action_router,experiments=&graph.experiment_repo}
 	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)
 	graph.cards = card_service.new_card_service(
 		&graph.repos.cards,
@@ -673,7 +691,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.providers.uow_factory = &graph.uow_factory
 	graph.providers.bridges = &graph.repos.bridges
 	graph.bot_command_sink = bridge_command_sink
-	graph.bots = bots_service.Bots_Service{ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.placement=placement.new_service(&graph.repos.bridges,&graph.repos.agents,&graph.providers,&graph.bridge_runtime_registry,billing_service.entitlement_lookup(&graph.billing))
+ graph.placement_handlers={auth=&graph.auth,placement=&graph.placement}
+	graph.bots = bots_service.Bots_Service{placement=&graph.placement,ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
 	if config.telegram_bot_token != "" {
 		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
@@ -704,7 +724,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.user_handlers.catalog = &graph.event_inbox
 	graph.event_inbox_handlers = http.Event_Inbox_Handlers{agent_actions = &graph.agent_action_handlers, inbox = &graph.event_inbox}
 	graph.bot_agent_handlers = http.Bot_Agent_Handlers{agent_actions = &graph.agent_action_handlers, bots = &graph.bots, experiments = &graph.experiment_repo}
-	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo, content = &graph.repos.content}
+	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo, content = &graph.repos.content, cards = &graph.repos.cards}
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.agent_action_handlers.providers = &graph.providers
@@ -724,16 +744,27 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	} else {
 		fmt.println("ham-hub web push send disabled (no VAPID keypair configured); subscription endpoints remain active")
 	}
+	graph.event_relay.published_ctx = &graph.event_inbox
+	graph.event_relay.published = proc(ctx: rawptr, subject: string) {
+		eventinbox.published((^eventinbox.Service)(ctx), subject)
+	}
 	eventinbox.start(&graph.event_inbox_runtime, &graph.event_inbox)
 	eventrelay.start(&graph.event_relay, &graph.uow_factory, {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000})
+	if !delivery.start(graph.delivery) do return false, "failed to start delivery pipeline"
+ if !actions_service.start(&graph.action_runtime,&graph.actions,graph.action_router,{nats_url=config.nats_url,creds_file=config.nats_creds_file,ca_file=config.nats_ca_file,max_deliver=int(graph.event_inbox.max_deliver)}) do return false,"failed to start actions runtime"
 	return true, ""
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	eventrelay.stop(&graph.event_relay)
 	eventinbox.stop(&graph.event_inbox_runtime)
 	eventinbox.counters_destroy(&graph.event_inbox)
-	eventrelay.stop(&graph.event_relay)
+	actions_service.stop(&graph.action_runtime)
+	delivery.stop(graph.delivery)
+	graph.delivery = nil
 	bots_service.bots_runtime_stop(&graph.bots_runtime)
+	delete(graph.actions.target_kinds,runtime.heap_allocator())
+	placement.service_destroy(&graph.placement)
 	bots_service.bots_service_destroy(&graph.bots)
 	channel.telegram_destroy(&graph.telegram)
 	channel.whatsapp_destroy(&graph.whatsapp)
@@ -749,9 +780,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	shell_session_svc.shell_session_service_free(&graph.shell_session_service)
 	agent_service.tool_live_destroy(&graph.agents.tool_live)
 	device_auth_service.grant_store_free(&graph.device_auth_store)
-	delete(graph.action_bridge_versions)
 	billing_service.service_free(&graph.billing)
-	sqlite.close(&graph.sqlite_actions.snapshot_conn)
 	sqlite.close_billing_repository(&graph.sqlite_billing)
 	sqlite.close(&graph.sqlite_bridge_commit.conn)
 	if graph.config.mcp_oauth_spike || graph.config.mcp_oauth_key_file != "" do mcp_service.free(&graph.mcp_spike)
@@ -859,6 +888,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/chats/*/messages/*/answers", rawptr(&graph.content_handlers), http.answer_chat_questions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats/*/pane-capture", rawptr(&graph.content_handlers), http.pane_capture_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats/*/read", rawptr(&graph.content_handlers), http.read_chat_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/chats/*/send-now", rawptr(&graph.content_handlers), http.get_send_now_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/chats/*/send-now", rawptr(&graph.content_handlers), http.send_now_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/artifacts", rawptr(&graph.content_handlers), http.list_artifacts_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/artifacts", rawptr(&graph.content_handlers), http.create_artifact_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/artifacts/*/content", rawptr(&graph.content_handlers), http.artifact_content_handler)
@@ -904,6 +935,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
+	http.router_add(&graph.router,"GET","/api/v1/placement/candidates",rawptr(&graph.placement_handlers),http.placement_candidates_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement/options", rawptr(&graph.bot_handlers), http.bot_placement_options_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/deliveries", rawptr(&graph.bot_handlers), http.bot_deliveries_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bots/me/channels/telegram/pairing", rawptr(&graph.bot_handlers), http.bot_pairing_handler)
@@ -1070,6 +1102,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/fetch", rawptr(&graph.agent_action_handlers), http.agent_action_chat_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/read", rawptr(&graph.agent_action_handlers), http.agent_action_chat_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/assistant-message", rawptr(&graph.agent_action_handlers), http.agent_action_chat_assistant_message_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/input-state", rawptr(&graph.agent_action_handlers), http.agent_action_chat_input_state_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/conversation/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_conversation_set_title_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_title_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-description", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_description_handler)
@@ -1133,6 +1166,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	// Enrollment is browser-approved only; see the /api/v1/device/* routes.
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/bridge-ws", rawptr(&graph.bridge_handlers), http.bridge_ws_upgrade_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/agent-instances/*/bootstrap", rawptr(&graph.bridge_handlers), http.bridge_instance_bootstrap_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridge/agent-instances/*/start-begin", rawptr(&graph.bridge_handlers), http.bridge_instance_start_begin_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/agents/*/bootstrap-manifest", rawptr(&graph.bridge_handlers), http.bridge_agent_manifest_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/blobs/*", rawptr(&graph.bridge_handlers), http.bridge_blob_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/blobs", rawptr(&graph.bridge_handlers), http.bridge_blobs_handler)
@@ -1166,22 +1200,15 @@ register_routes :: proc(graph: ^App_Graph) {
 	// Actions API
 	http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions", rawptr(&graph.action_handlers), http.create_action_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/actions/trigger-types", rawptr(&graph.action_handlers), http.action_trigger_types_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/actions/filter-test", rawptr(&graph.action_handlers), http.action_filter_test_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/actions/*/enable", rawptr(&graph.action_handlers), http.enable_action_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/actions/*/disable", rawptr(&graph.action_handlers), http.disable_action_handler)
+	http.router_add(&graph.router,"GET","/api/v1/actions/*/runs",rawptr(&graph.action_handlers),http.list_action_runs_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.get_action_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.patch_action_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.delete_action_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/actions/*/run", rawptr(&graph.action_handlers), http.run_action_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridge/actions", rawptr(&graph.action_handlers), http.bridge_list_actions_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridge/actions/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_action_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/bot-attempts/*/switch", rawptr(&graph.bridge_handlers), http.bot_bridge_switch_handler)
-
-	// Scheduled Prompts backward compatibility
-	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.list_scheduled_prompts_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.create_scheduled_prompt_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.get_scheduled_prompt_handler)
-	http.router_add(&graph.router, "PATCH", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.patch_scheduled_prompt_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.delete_scheduled_prompt_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridge/scheduled-prompts", rawptr(&graph.action_handlers), http.bridge_list_scheduled_prompts_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridge/scheduled-prompts/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_scheduled_prompt_handler)
 
 	// Cards API
 	http.router_add(&graph.router, "GET", "/api/v1/attention", rawptr(&graph.card_handlers), http.attention_handler)
@@ -1356,21 +1383,22 @@ read_secret_file :: proc(path: string) -> (string, bool) {
 // notice and guarded agent start paths, always outside a SQLite transaction.
 event_inbox_notice :: proc(
 	ctx: rawptr,
-	owner, agent: string,
+	owner, instance: string,
 	target: domain.Event_Notice_Target,
 	count: int,
 	wake: bool,
 ) -> bool {
 	graph := (^App_Graph)(ctx)
+	// Only the subscription's own instance is ever notified (REQ-EVP-4a).
+	if target.instance_id != instance do return false
 	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, target.instance_id)
 	defer domain.agent_instance_destroy(&inst)
-	if !found || string(inst.owner_user_id) != owner || inst.agent_id != agent || inst.stopped_by != "" do return false
+	if !found || string(inst.owner_user_id) != owner || inst.stopped_by != "" do return false
 	if wake {
 		if inst.runtime_status != "stopped" do return false
 		guard := Event_Inbox_Wake_Guard {
 			graph       = graph,
 			owner       = owner,
-			agent       = agent,
 			instance_id = inst.agent_instance_id,
 		}
 		_, started, _ := agent_service.start_instance(
@@ -1400,15 +1428,110 @@ event_inbox_notice :: proc(
 // mutex as stop_instance. An automatic event wake must never clear a user stop
 // that arrived after the inbox's earlier snapshot.
 Event_Inbox_Wake_Guard :: struct {
-	graph:                     ^App_Graph,
-	owner, agent, instance_id: string,
+	graph:              ^App_Graph,
+	owner, instance_id: string,
 }
 event_inbox_wake_guard :: proc(ctx: rawptr) -> domain.Domain_Error {
 	guard := (^Event_Inbox_Wake_Guard)(ctx)
 	inst, found, err := iface.agent_get_instance(&guard.graph.repos.agents, guard.instance_id)
 	defer domain.agent_instance_destroy(&inst)
 	if err.code != .None do return err
-	if !found || string(inst.owner_user_id) != guard.owner || inst.agent_id != guard.agent do return domain.domain_error(.Not_Found, "event wake instance no longer belongs to subscriber")
+	if !found || string(inst.owner_user_id) != guard.owner do return domain.domain_error(.Not_Found, "event wake instance no longer belongs to subscriber")
 	if inst.stopped_by != "" || inst.runtime_status != "stopped" do return domain.domain_error(.Conflict, "event wake requires a stopped instance without an explicit stop")
 	return {}
+}
+
+action_schedule_support :: proc(ctx:rawptr) -> int {
+	return int(eventrelay.schedule_support((^eventrelay.Service)(ctx)))
+}
+
+
+action_agent_find :: proc(ctx:rawptr,owner,agent_id,project_id,prefer_instance:string,c:placement.Candidate)->(string,string,bool) {
+ graph:=(^App_Graph)(ctx)
+ context.allocator=context.temp_allocator
+ auth:=contracts.Auth_Context{kind=.Internal_User,user_id=owner}
+ rows,err:=agent_service.list_action_instances(&graph.agents,auth,agent_id,c.bridge_id)
+ if err.code!=.None do return "","",false
+ chosen:domain.Agent_Instance
+ found:=false
+ for inst in rows {
+  if string(inst.project_id)!=project_id || (c.provider!=placement.ANY && inst.provider!=c.provider) || (c.model!=placement.ANY && inst.model!=c.model && inst.model!=c.resolved_model) do continue
+  if !found || inst.created_at>chosen.created_at || (inst.created_at==chosen.created_at && inst.agent_instance_id>chosen.agent_instance_id) {
+   chosen=inst; found=true
+  }
+  if inst.agent_instance_id==prefer_instance {chosen=inst;found=true;break}
+ }
+ if !found do return "","",false
+ conversation,exists,e:=content_service.get_action_conversation(&graph.content,auth,chosen.agent_instance_id)
+ if !exists || e.code!=.None do return "","",false
+ return chosen.agent_instance_id,conversation.conversation_id,true
+}
+action_agent_create :: proc(ctx:rawptr,owner,agent_id,project_id:string,c:placement.Candidate)->(string,string,domain.Domain_Error) {
+ graph:=(^App_Graph)(ctx)
+ context.allocator=context.temp_allocator
+ inst,ok,err:=agent_service.create_instance_stopped(&graph.agents,{kind=.Internal_User,user_id=owner},
+  {agent_id=agent_id,project_id=domain.Project_ID(project_id),bridge_id=c.bridge_id,provider=c.provider,provider_profile=c.provider_profile,model=c.model})
+ if !ok {
+  if err.code==.None do err=domain.domain_error(.Internal_Error,"instance creation refused")
+  return "","",err
+ }
+ return inst.agent_instance_id,inst.conversation_id,{}
+}
+action_agent_stop :: proc(ctx:rawptr,owner,instance_id:string) {
+ graph:=(^App_Graph)(ctx)
+ context.allocator=context.temp_allocator
+ _,ok,err:=agent_service.stop_instance(&graph.agents,{kind=.Internal_User,user_id=owner},instance_id,{reason="action_fresh_per_run"})
+ if !ok do fmt.eprintf("action stop %s: %s\n",instance_id,err.message)
+}
+action_agent_instance :: proc(ctx:rawptr,owner,instance_id:string)->(string,string,string,bool) {
+ graph:=(^App_Graph)(ctx)
+ context.allocator=context.temp_allocator
+ auth:=contracts.Auth_Context{kind=.Internal_User,user_id=owner}
+ inst,found,err:=agent_service.get_instance(&graph.agents,auth,instance_id)
+ if !found || err.code!=.None do return "","","",false
+ conversation,exists,e:=content_service.get_action_conversation(&graph.content,auth,instance_id)
+ if !exists || e.code!=.None do return "","","",false
+ return inst.agent_id,inst.bridge_id,conversation.conversation_id,true
+}
+action_persist_prompt :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,conversation_id,body,metadata_json:string)->(string,domain.Domain_Error) {
+ graph:=(^App_Graph)(ctx)
+ context.allocator=context.temp_allocator
+ message,ok,err:=content_service.persist_user_message(&graph.content,{kind=.Internal_User,user_id=owner},conversation_id,
+  {body=body,message_type="action",metadata_json=metadata_json})
+ if !ok && err.code==.None do return "",domain.domain_error(.Internal_Error,"prompt storage refused")
+ return message.message_id,err
+}
+action_retire_prompt :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,message_id,moved_to_instance_id:string)->domain.Domain_Error {
+ graph:=(^App_Graph)(ctx)
+ context.allocator=context.temp_allocator
+ repo:=&uow.repos.content
+ message,found,err:=iface.content_get_message(repo,message_id)
+ if err.code!=.None do return err
+ if !found || string(message.owner_user_id)!=owner do return domain.domain_error(.Not_Found,"prompt not found")
+ value:json.Value
+ if json.unmarshal(transmute([]u8)message.metadata_json,&value,allocator=context.temp_allocator)!=nil do return domain.domain_error(.Internal_Error,"invalid prompt metadata")
+ metadata,valid:=value.(json.Object)
+ if !valid do return domain.domain_error(.Internal_Error,"invalid prompt metadata")
+ metadata["moved_to_instance_id"]=moved_to_instance_id
+ encoded,e:=json.marshal(metadata,allocator=context.temp_allocator)
+ if e!=nil do return domain.domain_error(.Internal_Error,"cannot encode moved prompt")
+ _,updated,update_err:=iface.content_update_message(repo,domain.User_ID(owner),message.conversation_id,message_id,message.body,message.message_status,string(encoded))
+ if update_err.code!=.None do return update_err
+ if !updated do return domain.domain_error(.Conflict,"prompt metadata not updated")
+ ids:=[1]string{message_id}
+ _,mark_err:=iface.content_mark_messages_read(repo,domain.User_ID(owner),ids[:],platform.clock_now(&graph.clock))
+ return mark_err
+}
+action_route_delivery :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,input:delivery.Route_Input)->(string,domain.Domain_Error) {
+ return delivery.route((^delivery.Service)(ctx),uow,input)
+}
+action_expire_delivery :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,id:string)->(bool,domain.Domain_Error) {
+ return delivery.expire((^delivery.Service)(ctx),uow,id)
+}
+
+action_unread_delivery :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner,id:string)->domain.Domain_Error {
+ return delivery.on_unread((^delivery.Service)(ctx),uow,owner,id)
+}
+delivery_messages_read :: proc(ctx:rawptr,uow:^iface.Unit_Of_Work,owner:domain.User_ID,ids:[]string)->domain.Domain_Error {
+ return delivery.on_messages_read((^delivery.Service)(ctx),uow,owner,ids)
 }

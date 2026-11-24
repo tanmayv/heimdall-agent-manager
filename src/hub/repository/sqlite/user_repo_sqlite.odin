@@ -36,6 +36,8 @@ user_get_by_id_sqlite :: proc(ctx: rawptr, user_id: domain.User_ID) -> (domain.U
 }
 
 user_save_sqlite :: proc(ctx: rawptr, user: domain.User) -> (domain.User, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^User_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.User{}, false, domain.domain_error(.Internal_Error, "sqlite user repository is not open")

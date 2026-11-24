@@ -7,6 +7,28 @@ HTTPS, so they can live on different machines, networks, and operating systems.
 
 ---
 
+## Upgrade order: hub, then bridges
+
+For the action pipeline and Phase S start convergence, upgrade the hub first,
+verify its health and the bridge start-begin endpoint, then upgrade bridges.
+Bridge-initiated notice and bot wakes need that endpoint to obtain a valid
+generation; an older hub cannot supply it. Keep the previous bridge binary
+available until staging checks pass.
+
+The hub negotiates `start_agent_v1` from each bridge's hello: updated bridges
+receive `start_agent`, while older bridges continue to receive `launch_agent`
+and `wake_agent`. The legacy adapters remain supported, so a mixed bridge
+fleet is expected during rollout. The command negotiation alone does not remove
+the hub-first requirement for bridge-initiated starts.
+
+Validate manual Start/Restart, task worker/reviewer launch and confirmation,
+quota refusal/recovery, notice fallback after a lost process, and a stopped bot
+receiving a web message. Also exercise reconnect with a stale live row and an
+unconfirmed task grant. The Phase S checklist is
+[the T26 E2E list](docs/plans/action-triggers-spec.md#t26-phase-s-integration-and-e2e-amendment-s2).
+Deploy to Mundus through the release change request; Brolabs requires the user's
+explicit approval after staging evidence.
+
 ## Part 1 — Hub and UI (one device, internet/VPN-accessible)
 
 The hub is the central control plane. It exposes a REST/WebSocket API that bridges,
@@ -270,9 +292,29 @@ In `nix-homelab-config` or any NixOS flake:
 
 ### NATS JetStream (required)
 
-Every hub requires NATS with JetStream enabled; there is no SQLite queue fallback.
+Every hub requires **nats-server 2.14 or newer** with JetStream enabled; there is no SQLite queue fallback.
 Only the hub connects to NATS. Bridges and agents use the hub API and do not need
 NATS access or credentials. Keep the broker on loopback for a single-host deployment.
+
+#### Actions rollout and rollback
+
+Upgrade the **hub first, then bridges**. Actions require a bridge that reports
+`event_pipeline_v1`; until a bridge is updated it cannot run actions. Old bridges
+can keep their existing connection and ordinary task/message paths.
+
+This release is **forward-only** (C2): the hub adds `sched.def.>` and enables
+`allow_msg_schedules` and `allow_msg_ttl` on `HEIM_EVENTS`. Those flags cannot be
+removed. An older hub cannot bring its event relay up against the upgraded stream;
+an older NATS server loses schedule support. Do not downgrade either in place.
+Before upgrading, back up SQLite and snapshot the JetStream store consistently.
+Rollback requires restoring both snapshots with the matching previous binaries.
+The action schema reset discards existing actions and run history (R1); recreate
+wanted actions after the upgrade. There is no data backfill.
+
+An action starts its target even when you stopped that agent yourself. **Disable
+the action to stop future action wakes.** Stopping the agent alone is not an off
+switch. Schedule and event triggers, placement rules and run history are available
+behind the owner's `actions` experiment.
 
 #### Authentication and hub settings
 
@@ -375,7 +417,7 @@ docker run -d --name heimdall-nats --restart unless-stopped \
   -v heimdall-nats:/data \
   -v /etc/heimdall/nats-server.conf:/etc/nats/server.conf:ro \
   -v /etc/heimdall/nats-auth.conf:/etc/nats/auth.conf:ro \
-  nats:2.11 --config /etc/nats/server.conf
+  nats:2.14.7 --config /etc/nats/server.conf
 ```
 
 Ensure the volume and mounted auth fragment are accessible to the image's NATS
@@ -849,6 +891,26 @@ Hubs before OIDC-only authenticated browsers with forward-auth identity headers
    non-editable usernames). New users are created only with `HAM_AUTO_PROVISION_USERS=true`.
 7. **User tokens**: migration 135 deletes all `hut_` tokens; `ham-ctl` user mode and the
    Electron app cannot sign in until they gain OIDC support. Bridges are unaffected.
+
+#### Actions rollout and rollback
+
+Upgrade the **hub first, then bridges**. Actions require a bridge that reports
+`event_pipeline_v1`; until a bridge is updated it cannot run actions. Old bridges
+can keep their existing connection and ordinary task/message paths.
+
+This release is **forward-only** (C2): the hub adds `sched.def.>` and enables
+`allow_msg_schedules` and `allow_msg_ttl` on `HEIM_EVENTS`. Those flags cannot be
+removed. An older hub cannot bring its event relay up against the upgraded stream;
+an older NATS server loses schedule support. Do not downgrade either in place.
+Before upgrading, back up SQLite and snapshot the JetStream store consistently.
+Rollback requires restoring both snapshots with the matching previous binaries.
+The action schema reset discards existing actions and run history (R1); recreate
+wanted actions after the upgrade. There is no data backfill.
+
+An action starts its target even when you stopped that agent yourself. **Disable
+the action to stop future action wakes.** Stopping the agent alone is not an off
+switch. Schedule and event triggers, placement rules and run history are available
+behind the owner's `actions` experiment.
 
 ## Part 2 — Bridge (one per agent-running device)
 
@@ -1403,6 +1465,12 @@ named `heimdall-bridge` is created and started automatically.
 
 ### 2.11 Bridge self-update
 
+**Event-ledger upgrades and rollback:** before changing bridge binaries, read
+[Event ledger operations](docs/event-ledger-operations.md). A bridge that has
+written the v2 ledger must use a v2-compatible binary, including during rollback;
+a v1-only binary treats that file as corrupt and erases the deduplication history.
+
+
 Every update, hub-initiated or local, runs the **new** release's `ham-bridge update`.
 There is no separate update script: setup's transaction is the update.
 
@@ -1686,3 +1754,16 @@ kept and shown in Settings > Bots, and delivered when the user writes again.
 
 `HEIMDALL_WHATSAPP_API_BASE` overrides the default `https://graph.facebook.com`
 (tests point it at a fake server); `--whatsapp-api-base <url>` overrides that.
+
+## Action filter limits
+
+`HEIMDALL_ACTION_FILTER_LIMITS_JSON` overrides condition-tree limits hub-wide.
+For example, `{"max_depth":4,"max_checks":8,"max_nodes":16,"max_bytes":4096}`.
+Unspecified values retain the defaults. Unknown keys, non-integers, nonpositive
+values and values outside the supported bounds stop startup. The effective values
+are returned in `limits.filter` by `GET /api/v1/actions/trigger-types`.
+Overrides validate new saves; lowering them does not disable stored rules.
+
+The keys are `max_depth`, `max_checks`, `max_nodes`, `max_children`, `max_values`,
+`max_value_bytes`, `max_field_bytes`, `max_path_segments`, `max_segment_bytes` and
+`max_bytes`. Defaults are 4, 16, 24, 16, 32, 256, 128, 4, 64 and 4096 respectively.

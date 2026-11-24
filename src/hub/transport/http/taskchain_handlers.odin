@@ -1413,14 +1413,14 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 	}
 	if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
-	chain, inst, generation, prep_err := create_chain_with_prepared_coordinator(h, auth_ctx, chain_input, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"), provider_profile = json_string(req.body, "provider_profile"), model = json_string(req.body, "model"), project_id = domain.Project_ID(json_string(req.body, "project_id"))})
+	chain, ticket, prep_err := create_chain_with_prepared_coordinator(h, auth_ctx, chain_input, agent_service.Create_Instance_Input{agent_id = coord_agent_id, bridge_id = json_string(req.body, "bridge_id"), provider = json_string(req.body, "provider"), provider_profile = json_string(req.body, "provider_profile"), model = json_string(req.body, "model"), project_id = domain.Project_ID(json_string(req.body, "project_id"))})
 	if prep_err.code != .None do return respond_error(prep_err, req.request_id)
-	// The launch is network I/O, so it runs only after the chain, instance and
-	// membership rows are committed (no network I/O inside a SQLite tx).
-	if sent, send_err := agent_service.send_instance_launch(h.agents, inst); !sent {
-		project_service.bridge_runtime_instance_cancel_reservation(h.agents.bridge_runtime_registry, inst.bridge_id, generation, inst.agent_instance_id)
+	defer agent_service.start_ticket_destroy(&ticket)
+	// The start ticket was opened in the UOW; network I/O is post-commit.
+	if send_err := taskchain_send_prepared_coordinator(h, &ticket); send_err.code != .None {
 		return respond_error(send_err, req.request_id)
 	}
+	inst := ticket.instance
 	publish_instance_created(h.event_bus, inst)
 	updated, update_ok, update_err := taskchain_service.update_chain_coordinator(h.taskchains, auth_ctx, chain.chain_id, inst.agent_instance_id)
 	if !update_ok do return respond_error(update_err, req.request_id)
@@ -1430,40 +1430,50 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
-// create_chain_with_prepared_coordinator writes the chain row and prepares its
-// coordinator (validation, runtime reservation, instance, conversation and
-// coordinator membership) in ONE unit of work, so any launch-validation failure
-// (missing provider/model, unknown model, bad agent or bridge, offline bridge,
-// bad project) rolls the chain back and leaves no orphan draft chain. Nothing
-// here touches the network; the caller sends the launch after the commit and
-// must cancel the returned reservation generation if it gives up.
-create_chain_with_prepared_coordinator :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, chain_input: taskchain_service.Create_Chain_Input, inst_input: agent_service.Create_Instance_Input) -> (chain: domain.Task_Chain, inst: domain.Agent_Instance, generation: int, err: domain.Domain_Error) {
-	if h.taskchains == nil || h.taskchains.uow_factory == nil do return {}, {}, 0, domain.domain_error(.Internal_Error, "unit of work is not configured")
+// Atomically create the chain, stopped coordinator and its first start ticket.
+// The caller owns the committed ticket and must send/settle it after commit.
+create_chain_with_prepared_coordinator :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, chain_input: taskchain_service.Create_Chain_Input, inst_input: agent_service.Create_Instance_Input) -> (chain: domain.Task_Chain, ticket: agent_service.Start_Ticket, err: domain.Domain_Error) {
+	if h.taskchains == nil || h.taskchains.uow_factory == nil do return {}, {}, domain.domain_error(.Internal_Error, "unit of work is not configured")
 	uow, began, begin_err := iface.unit_of_work_begin(h.taskchains.uow_factory)
-	if !began do return {}, {}, 0, begin_err
+	if !began do return {}, {}, begin_err
 	finished := false
-	defer if !finished do iface.unit_of_work_rollback(&uow)
+	keep_ticket := false
+	defer {
+		if !finished do iface.unit_of_work_rollback(&uow)
+		if !keep_ticket {
+			agent_service.start_cancel(h.agents, &ticket)
+			agent_service.start_ticket_destroy(&ticket)
+		}
+	}
 	created: bool
 	chain, created, err = taskchain_service.create_chain(h.taskchains, auth_ctx, chain_input)
 	if !created {
 		if err.code == .None do err = domain.domain_error(.Internal_Error, "task chain was not created")
-		return {}, {}, 0, err
+		return {}, {}, err
 	}
 	input := inst_input
 	input.chain_id = string(chain.chain_id)
-	prepared: bool
-	inst, generation, prepared, err = agent_service.prepare_instance(h.agents, auth_ctx, input)
-	if !prepared {
-		if err.code == .None do err = domain.domain_error(.Internal_Error, "coordinator instance was not prepared")
-		return {}, {}, 0, err
-	}
+	inst, prepared, prepare_err := agent_service.create_instance_stopped(h.agents, auth_ctx, input)
+	if !prepared do return {}, {}, prepare_err
+	ticket, err = agent_service.start_begin(h.agents, auth_ctx, inst.agent_instance_id, {if_live=.Refuse})
+	domain.agent_instance_destroy(&inst)
+	if err.code != .None do return {}, ticket, err
 	committed, commit_err := iface.unit_of_work_commit(&uow)
+	// SQLite consumes the UOW even on commit failure; never roll it back twice.
 	finished = true
-	if !committed {
-		project_service.bridge_runtime_instance_cancel_reservation(h.agents.bridge_runtime_registry, inst.bridge_id, generation, inst.agent_instance_id)
-		return {}, {}, 0, commit_err
-	}
-	return chain, inst, generation, {}
+	if !committed do return {}, ticket, commit_err
+	keep_ticket = true
+	return chain, ticket, {}
+}
+
+// Common command negotiation preserves launch_agent for older bridges.
+taskchain_send_prepared_coordinator :: proc(h: ^Taskchain_Handlers, ticket: ^agent_service.Start_Ticket) -> domain.Domain_Error {
+	body := agent_service.start_launch_json(h.agents, ticket^)
+	defer delete(body)
+	entry := agent_service.Start_Run_Entry{bridge_id=ticket.instance.bridge_id, deliver=contracts.START_DELIVER_LAUNCH, launch_json=body}
+	sent, err := agent_service.start_command_send(h.agents, ticket.instance.bridge_id, ticket.command_id, ticket.instance.chain_id, {entry}, nil)
+	agent_service.start_settle(h.agents, ticket, sent)
+	return err
 }
 
 // chain_patch_title_source records who renamed a chain so the chain-scoped title

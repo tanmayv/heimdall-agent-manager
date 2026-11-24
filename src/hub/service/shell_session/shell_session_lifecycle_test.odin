@@ -1184,18 +1184,17 @@ c5_save_conversation :: proc(ctx: rawptr, conv: domain.Chat_Conversation) -> (do
 	return conv, true, domain.Domain_Error{}
 }
 
-// c5_list_conversations backs content_service.get_conversation_by_instance, which is
-// how shell_session_create resolves a run's conversation from the caller's TOKEN
-// rather than from the request body. Both conversations are returned, unordered as far
-// as the caller is concerned, so a create that picked the wrong one would be visible.
+// c5_conversation_by_instance backs content_service.get_conversation_by_instance, which
+// is how shell_session_create resolves a run's conversation from the caller's TOKEN
+// rather than from the request body. The store holds conversations for both runs, so a
+// create that looked up the wrong instance would be visible.
 @(private = "file")
-c5_list_conversations :: proc(ctx: rawptr, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error) {
+c5_conversation_by_instance :: proc(ctx: rawptr, owner: domain.User_ID, instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) {
 	c := (^Content5)(ctx)
-	out := make([dynamic]domain.Chat_Conversation, context.temp_allocator)
 	for _, conv in c.conversations {
-		if conv.owner_user_id == owner do append(&out, conv)
+		if conv.owner_user_id == owner && conv.agent_instance_id == instance_id do return conv, true, domain.Domain_Error{}
 	}
-	return out[:], domain.Domain_Error{}
+	return {}, false, domain.domain_error(.Not_Found, "conversation not found")
 }
 
 @(private = "file")
@@ -1303,7 +1302,7 @@ fx5_make :: proc(fx: ^Fx5) {
 		ctx                = rawptr(&fx.content),
 		get_conversation   = c5_get_conversation,
 		save_conversation  = c5_save_conversation,
-		list_conversations = c5_list_conversations,
+		conversation_by_instance = c5_conversation_by_instance,
 		save_message       = c5_save_message,
 	}
 	fx.ids = platform.real_id_generator()

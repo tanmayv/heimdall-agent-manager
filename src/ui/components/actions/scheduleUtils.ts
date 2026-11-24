@@ -444,3 +444,25 @@ export function calculateNextRuns(
 
   return results;
 }
+
+
+/** One compact pill per trigger; no client-side scheduling. */
+export function triggerSummary(trigger: import('../../api/endpoints/actions').ActionTrigger): string {
+  if (trigger.kind === 'event') {
+    const config = trigger.config;
+    const filter = config.filter;
+    const checks = filter && 'all' in filter ? filter.all : filter && 'field' in filter ? [filter] : [];
+    if (config.event_type === 'chain.state' && checks.some(n => 'field' in n && n.field === 'data.state' && n.op === 'eq' && n.value === 'completed')) return 'Task chain completed';
+    return config.event_type + (checks.length ? ' · ' + checks.map(n => 'field' in n ? n.field + ' ' + n.op + ' ' + String(n.value) : 'condition group').join(', ') : '');
+  }
+  const c = trigger.config;
+  if (c.mode === 'interval') {
+    const n = c.interval_s || 0;
+    return 'every ' + (n % 3600 === 0 ? n / 3600 + ' h' : n % 60 === 0 ? n / 60 + ' min' : n + ' s');
+  }
+  if (c.mode === 'once') {
+    const date = new Date(c.run_at || '');
+    return 'once ' + (Number.isFinite(date.getTime()) ? formatInTimeZone(date, 'UTC') + ' UTC' : c.run_at || '');
+  }
+  return (c.cron_expr || '') + ' · ' + (c.timezone || 'UTC').split('/').pop()!.replaceAll('_', ' ');
+}

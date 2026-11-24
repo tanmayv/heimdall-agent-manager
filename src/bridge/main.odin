@@ -115,7 +115,7 @@ main :: proc() {
 		return
 	}
 	if len(os.args) > 1 && os.args[1] == "setup" {
-		if !bridge_setup_command(os.args) do os.exit(1)
+		if code := bridge_setup_command(os.args); code != 0 do os.exit(code)
 		return
 	}
 	if len(os.args) > 1 && os.args[1] == "update" {
@@ -160,7 +160,11 @@ main :: proc() {
 	// credential is read: a committed one must start with its new credential, a
 	// rolled-back one must not leave its staging behind.
     resume_sunset := len(os.args) > 2 && os.args[1] == "recovery" && os.args[2] == "resume-sunset"
-    recovery_command := resume_sunset || (len(os.args) > 2 && os.args[1] == "recovery" && (os.args[2] == "resume-sync" || os.args[2] == "resume-refresh"))
+    if len(os.args) > 2 && os.args[1] == "recovery" && os.args[2] == "resume-sync" {
+        _ = bridge_recovery_resume({}, "", false)
+        return
+    }
+    recovery_command := resume_sunset || (len(os.args) > 2 && os.args[1] == "recovery" && os.args[2] == "resume-refresh")
     bridge_hub_traffic_config_path = cfg_lib.config_path_from_args(os.args)
     if resume_sunset {
         cfg := bridge_config_from_args(os.args)
@@ -263,6 +267,7 @@ main :: proc() {
 	// Wake state must exist before the hub worker can run a launch, which
 	// records itself via bridge_task_wake_note_launched.
 	bridge_agent_wake_init()
+	bridge_event_ledger_load()
 	// Name the HTTPS client and its trust anchors once, so a host whose CA store
 	// was not found (embedded Mozilla fallback) is visible in the service log.
 	// (Locals, not inline calls: check-http-boundary.sh's library-path pattern
@@ -277,7 +282,6 @@ main :: proc() {
 	bridge_credential_refresh_start(bridge_config.credential_file)
 	bridge_hub_runtime_start()
 	bridge_task_chain_search_start()
-	bridge_action_scheduler_start()
 	bridge_auto_update_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	_ = run_bridge_server(bridge_config)
@@ -294,7 +298,7 @@ print_usage :: proc() {
 	fmt.println("recovery: ham-bridge recovery resume-sunset --config PATH  (offline; stop service first; resume a temporary sunset after rollback)")
 	fmt.println("service: ham-bridge service start|stop|restart|status [--hub URL [--profile P] | --service NAME] [--json]")
 	fmt.println("status:  ham-bridge status [--json] [--hub URL [--profile P] | --service NAME]   (installed/enrolled/running/connected/vault/version; no token needed)")
-	fmt.println("setup:   ham-bridge setup --hub URL [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--headless] [--json-progress]   (transactional install from this bundle; see docs/bridge-setup-progress.md)")
+	fmt.println("setup:   ham-bridge setup --hub URL [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--version V [--allow-downgrade]] [--keep-version] [--headless] [--json-progress]   (idempotent, transactional install from this bundle; exit codes and states: docs/specs/bridge-installer-contract.md)")
 	fmt.println("list:    ham-bridge list [--json]   (every bridge profile of this OS user)")
 	fmt.println("vault:  ham-bridge vault prune [--config PATH [--bridge-token-file PATH] [--remove]] [--remove-scope BRIDGE_ID --hub URL]   (list / prune vault state of bridges whose hub rejects them; never silent)")
 	fmt.println("probe:  ham-bridge --probe-hub https://hub.example.com   (GET /api/v1/health through the bridge's own TLS transport; exit 0/1)")
@@ -776,6 +780,10 @@ bridge_health_json :: proc() -> string {
 	strings.write_string(&b, fmt.tprintf("%d", bridge_config.chunk_bytes))
 	strings.write_string(&b, `,"large_payload_target_bytes":`)
 	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES))
+	ledger_health := bridge_event_ledger_health_json()
+	defer delete(ledger_health)
+	strings.write_string(&b, `,"event_ledger":`)
+	strings.write_string(&b, ledger_health)
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)
 }

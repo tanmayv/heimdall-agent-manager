@@ -35,4 +35,13 @@ test_bridge_exe_in_bin_dir_accepts_linked_home :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, bridge_exe_in_bin_dir(exe, bridgesvc.pjoin(link_home, "u", "bin")))
 	testing.expect(t, !bridge_exe_in_bin_dir(bridgesvc.pjoin(other_bin, "ham-bridge"), bridgesvc.pjoin(link_home, "u", "bin")))
+	// Fedora Atomic's link is relative (/home -> var/home).
+	rel_home := bridgesvc.pjoin(root, "home-rel")
+	if err := os.symlink(bridgesvc.pjoin("var", "home"), rel_home); err == nil {
+		testing.expect(t, bridge_exe_in_bin_dir(exe, bridgesvc.pjoin(rel_home, "u", "bin")))
+	} else {
+		fmt.eprintfln("relative symlink unavailable here (%v); skipping that case", err)
+	}
+	// A trailing separator on the layout's bin_dir does not matter either.
+	testing.expect(t, bridge_exe_in_bin_dir(exe, fmt.tprintf("%s/", bridgesvc.pjoin(link_home, "u", "bin"))))
 }

@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { configureStore } from '@reduxjs/toolkit';
+import { FakeToolSocket, snapshot } from './helpers/toolStreamHarness.ts';
+import toolActivity from '../src/ui/store/toolActivitySlice.ts';
 
 // react-dom decides once, at import, whether a DOM exists; without one it ignores
 // `input` events and controlled textareas never see typing. Install a DOM first.
@@ -21,12 +23,12 @@ const model = await import('../src/ui/components/bots/botChatModel.ts');
 const { SidebarBot, BOT_CHAT_ROUTE } = await import('../src/ui/components/shell/SidebarBot.tsx');
 const { default: BotChatPage } = await import('../src/ui/components/bots/BotChatPage.tsx');
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
-const { handleUserWsEvent } = await import('../src/ui/api/wsInvalidation.ts');
+const { handleUserWsEvent, resyncAfterReconnect } = await import('../src/ui/api/wsInvalidation.ts');
 const { default: vault } = await import('../src/ui/store/vaultSlice.ts');
 const { default: auxPanes } = await import('../src/ui/store/auxPanesSlice.ts');
 
 type Msg = { message_id: string; binding_id: string; provider: 'telegram' | 'whatsapp' | 'web'; direction: string; body: string;
-  attachments?: any[]; body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string };
+  metadata?: { action_ids: string[] }; attachments?: any[]; body_purged: boolean; send_state: string; created_at: string; read_at: string; replied_at: string };
 
 function bot(overrides: Record<string, unknown> = {}) {
   return { bot_id: 'bot_a', display_name: 'Ninjy bot', status: 'ready', status_detail: '',
@@ -48,6 +50,7 @@ function hub(initial: Msg[] = []) {
     enabled: true as boolean,
     bot: bot() as any,
     messages: [...initial],
+    cards: new Map<string, string>(),
     sendStatus: 0,
     uploadStatus: 0,
     uploads: [] as any[],
@@ -69,10 +72,12 @@ function hub(initial: Msg[] = []) {
 async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', run: (h: any) => Promise<void>, width = 1280) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.test/', pretendToBeVisual: true });
   Object.defineProperty(dom.window, 'innerWidth', { value: width, configurable: true });
+  const sockets: FakeToolSocket[] = [];
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node,
     FileReader: dom.window.FileReader, navigator: dom.window.navigator, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window), IS_REACT_ACT_ENVIRONMENT: true,
     // The shared composer and list size themselves with ResizeObserver; jsdom has none.
+    WebSocket: class extends FakeToolSocket { constructor(url: string) { super(url); sockets.push(this); } },
     ResizeObserver: class { observe() {} unobserve() {} disconnect() {} } })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -97,10 +102,21 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
       const artifact = state.uploads.find(a => path === '/artifacts/' + a.artifact_id);
       return Response.json({ data: artifact ?? { artifact_id: path.split('/').pop(), name: 'existing.txt', kind: 'file', mime: 'application/pdf' } });
     }
+    const [, cardId, operation] = path.match(/^\/cards\/([^/]+)(?:\/(accept|discard))?$/) ?? [];
+    if (cardId) {
+      if (!state.cards.has(cardId)) return Response.json({ error: { message: 'Card unavailable' } }, { status: 404 });
+      if (operation) state.cards.set(cardId, operation === 'accept' ? 'accepted' : 'discarded');
+      return Response.json({ data: { card_id: cardId, status: state.cards.get(cardId), title: 'Confirm change', operations: [] } });
+    }
     if (path === '/me/experiments') return Response.json({ data: { experiments: [{ key: 'bots', enabled: state.enabled }] } });
     if (!state.enabled && path.startsWith('/bots/')) return Response.json({ error: { code: 'forbidden', message: 'Experiment off' } }, { status: 403 });
     if (path === '/bots/me') return state.bot ? Response.json({ data: state.bot }) : Response.json({ error: { code: 'not_found', message: 'No bot' } }, { status: 404 });
     if (path === '/bots/me/messages') {
+      const ids = url.searchParams.get('message_ids');
+      if (ids) {
+        const requested = new Set<string>(JSON.parse(ids));
+        return Response.json({ data: { messages: state.messages.filter(message => requested.has(message.message_id)), next_cursor: '' } });
+      }
       const page = state.page(Number(url.searchParams.get('limit') || 50), url.searchParams.get('cursor') || '');
       return page ? Response.json({ data: page }) : Response.json({ error: { code: 'bad_request', message: 'Bad cursor' } }, { status: 400 });
     }
@@ -115,7 +131,7 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
     }
     throw new Error('Unexpected request: ' + method + ' ' + path);
   }) as typeof fetch;
-  const store = configureStore({ reducer: { auxPanes, vault, [heimdallApi.reducerPath]: heimdallApi.reducer },
+  const store = configureStore({ reducer: { auxPanes, vault, toolActivity, [heimdallApi.reducerPath]: heimdallApi.reducer },
     middleware: (g) => g({ serializableCheck: false }).concat(heimdallApi.middleware), enhancers: (g) => g({ autoBatch: false }) });
   const root = createRoot(dom.window.document.getElementById('root')!);
   const doc = dom.window.document;
@@ -140,10 +156,11 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
   try {
     await act(async () => root.render(React.createElement(Provider, { store, children: element })));
     await settle(); await settle();
-    await run({ dom, doc, store, requests, get, all, click, settle, type, rows });
+    await run({ dom, doc, store, requests, get, all, click, settle, type, rows, sockets });
   } finally {
     state.holdSend?.release?.();
     await act(async () => root.unmount());
+    assert.ok(sockets.every(socket => socket.readyState === 3));
     store.dispatch(heimdallApi.util.resetApiState());
     globalThis.fetch = previousFetch;
     dom.window.close();
@@ -161,6 +178,8 @@ test('model: merge keeps rows a refreshed head pushed out and orders oldest firs
   const refreshed = model.mergeBotMessages(first, [msg(4), msg(3, { read_at: 'later' })] as any);
   assert.deepEqual(model.botTimeline(refreshed).map((m) => m.message_id), ['bmsg_0002', 'bmsg_0003', 'bmsg_0004']);
   assert.equal(refreshed.get('bmsg_0003')!.read_at, 'later');
+  assert.equal(model.mergeBotMessages(refreshed, [msg(3, { read_at: '' })] as any), refreshed,
+    'a delayed unread snapshot preserves the read timestamp and row identity');
   const tie = model.botTimeline(model.mergeBotMessages(empty, [msg(1, { message_id: 'b' }), msg(1, { message_id: 'a' })] as any));
   assert.deepEqual(tie.map((m) => m.message_id), ['a', 'b'], 'equal timestamps order by message id like the hub');
 });
@@ -249,7 +268,9 @@ test('chat: missing bot explains how to create one', async () => {
 });
 
 test('chat: unified history renders channel labels oldest-first and pages older messages', async () => {
-  const state = hub(Array.from({ length: 120 }, (_, i) => msg(i + 1, { provider: (['telegram', 'whatsapp', 'web'] as const)[i % 3] })));
+  const state = hub(Array.from({ length: 120 }, (_, i) => msg(i + 1, { provider: (['telegram', 'whatsapp', 'web'] as const)[i % 3], ...(i === 1 || i === 21 ? { read_at: '', replied_at: '' } : {}) })));
+  const displaced = state.messages[70];
+  Object.assign(displaced, { direction: 'inbound', read_at: '', replied_at: '' });
   state.messages.push(msg(200, { message_id: 'bmsg_purged', body_purged: true, body: '', created_at: '2026-11-20T07:00:00Z' }));
   await fixture(state, 'chat', async (h) => {
     assert.equal(h.get('bot-chat-title')!.textContent, 'Ninjy bot');
@@ -280,6 +301,33 @@ test('chat: unified history renders channel labels oldest-first and pages older 
     assert.equal(rows[0].id, 'bot-chat-message-bmsg_purged');
     assert.match(rows[0].text!, /removed by retention/);
     assert.equal(h.get('bot-chat-load-older'), null, 'end of history');
+
+    const status = (n: string) => h.rows().find((row: any) => row.id === 'bot-chat-message-bmsg_' + n)?.state;
+    assert.equal(status('0002'), '✓ Queued');
+    assert.equal(status('0022'), '✓ Queued');
+    for (const message of state.messages) {
+      if (message.message_id === 'bmsg_0002' || message.message_id === 'bmsg_0022') {
+        message.read_at = '2026-11-20T09:00:00Z';
+      }
+    }
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0002'), '✓✓ Read');
+    assert.equal(status('0022'), '✓✓ Read');
+    assert.equal(h.requests.filter((r: any) => r.path === '/bots/me/messages' && r.search.includes('cursor=')).length, 4);
+
+    state.messages.push(msg(122, { read_at: '', replied_at: '' }));
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0122'), '✓ Queued');
+    assert.equal(status('0071'), '✓ Queued', 'the displaced row stays visible');
+    assert.ok(h.requests.some((r: any) => new URLSearchParams(r.search).get('message_ids') === '["bmsg_0071"]'));
+
+    displaced.read_at = '2026-11-20T09:01:00Z';
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    assert.equal(status('0071'), '✓✓ Read', 'a retained row between page ranges still receives its receipt');
+    assert.equal(status('0122'), '✓ Queued');
   });
 });
 
@@ -317,9 +365,16 @@ test('chat: send shows the message immediately, the reply arrives live via bot_c
     assert.equal(h.get('bot-chat-scroll')!.querySelector('[data-chat-pin-row="true"] [data-chat-body]')!.textContent, 'Book a table',
       'the stored row keeps the send key, so the pin survives the ack');
 
-    // The bot replies; the hub publishes bot_changed and the view refreshes live.
     const inbound = state.messages[state.messages.length - 1];
-    inbound.read_at = inbound.replied_at = '2026-11-20T09:30:05Z';
+    inbound.read_at = '2026-11-20T09:30:05Z';
+    await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
+    await h.settle(); await h.settle();
+    rows = h.rows();
+    assert.equal(rows[rows.length - 1].state, '✓✓ Read');
+    assert.equal(rows[rows.length - 1].text, 'Book a table');
+    assert.equal(inbound.replied_at, '');
+
+    inbound.replied_at = '2026-11-20T09:30:06Z';
     state.messages.push(msg(9001, { message_id: 'bmsg_reply', provider: 'web', direction: 'outbound', body: 'Done — **7pm**', created_at: '2026-11-20T09:30:06Z' }));
     state.bot = bot({ status: 'ready' });
     await act(async () => handleUserWsEvent(h.store.dispatch, { type: 'bot_changed', payload: { bot_id: 'bot_a' } }));
@@ -558,4 +613,84 @@ test('bot and agent timestamps share the same formatter for today, older dates a
   for (const value of [0, NaN, Date.now(), Date.UTC(2020, 0, 1)]) {
     assert.deepEqual(model.formatBotChatTimestamp(value), formatMessageTimestamp(value));
   }
+});
+
+
+test('chat: live tools follow the authorized runtime after reconnect refresh', async () => {
+  const state = hub([msg(1)]);
+  await fixture(state, 'chat', async h => {
+    assert.equal(h.sockets.length, 0, 'an instance without an authorized conversation cannot subscribe');
+    state.bot = { ...state.bot, advanced: { ...state.bot.advanced, conversation_id: 'chat_bot_runtime' } };
+    await act(async () => resyncAfterReconnect(h.store.dispatch));
+    await h.settle();
+    const first = h.sockets[0] as FakeToolSocket;
+    first.open();
+    assert.deepEqual(first.sent[0].instance_ids, ['inst_bot']);
+    await act(async () => first.state(snapshot('inst_bot')));
+    assert.ok(h.get('live-tools-shell-sh_inst_bot'));
+    assert.equal(first.sent[0].views[0].conversation_id, 'chat_bot_runtime');
+    const tail = h.get('live-tool-activity');
+    assert.ok(tail.parentElement === h.get('bot-chat-messages-container'));
+    assert.equal(tail.nextElementSibling?.getAttribute('data-debug-id'), 'bot-chat-pin-turn-spacer');
+    await act(async () => first.state(snapshot('inst_bot', 2, {
+      active: [],
+      completed_since_last: [{
+        ...snapshot('inst_bot').active[0],
+        status: 'completed', duration_ms: 750, completed_at_ms: 750,
+      }],
+    }), false));
+    assert.equal(h.get('live-tools-shell-sh_inst_bot'), null);
+    assert.ok(tail.querySelector('[aria-label="Succeeded"]'));
+
+    state.bot = { ...state.bot, advanced: { ...state.bot.advanced, conversation_id: 'chat_new', agent_instance_id: 'inst_new' } };
+    await act(async () => resyncAfterReconnect(h.store.dispatch));
+    await h.settle();
+    assert.equal(first.readyState, 3);
+    assert.equal(h.get('live-tools-shell-sh_inst_bot'), null);
+    const next = h.sockets.at(-1) as FakeToolSocket;
+    next.open();
+    assert.deepEqual(next.sent[0].instance_ids, ['inst_new']);
+    assert.equal(next.sent[0].views[0].conversation_id, 'chat_new');
+    await act(async () => next.state(snapshot('inst_new')));
+    assert.ok(h.get('live-tools-shell-sh_inst_new'));
+  });
+});
+
+test('chat: stored web actions approve and reject through web intake', async () => {
+  const actions = (...action_ids: string[]) => ({ action_ids });
+  const state = hub([
+    msg(1, { provider: 'web', metadata: actions('approve', 'reject', 'resolved', 'missing', 'feedback_failure') }),
+    msg(3, { provider: 'web', body_purged: true, metadata: actions('purged') }),
+    msg(5, { provider: 'telegram', metadata: actions('other_channel') }),
+  ]);
+  state.cards.set('approve', 'pending').set('reject', 'pending').set('resolved', 'accepted').set('feedback_failure', 'pending');
+  await fixture(state, 'chat', async h => {
+    assert.equal(h.get('action-card-purged'), null);
+    assert.equal(h.get('action-card-other_channel'), null);
+    assert.equal(h.get('action-card-approve-btn-resolved'), null);
+    assert.equal(h.get('action-card-approve-btn-missing'), null);
+    await h.click('action-card-approve-btn-approve');
+    const input = h.get('action-card-comment-input-reject');
+    const setter = Object.getOwnPropertyDescriptor(h.dom.window.HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'Needs review');
+      input.dispatchEvent(new h.dom.window.Event('input', { bubbles: true }));
+    });
+    await h.click('action-card-reject-btn-reject');
+    assert.equal(h.get('action-card-status-approve').textContent, 'accepted');
+    assert.equal(h.get('action-card-status-reject').textContent, 'rejected');
+    const posts = h.requests.filter((request: any) => request.method === 'POST');
+    assert.deepEqual(posts.map((request: any) => request.path), [
+      '/cards/approve/accept', '/bots/me/channels/web/messages',
+      '/cards/reject/discard', '/bots/me/channels/web/messages',
+    ]);
+    assert.match(posts[1].body.text, /Action approve .* was approved by user/);
+    assert.match(posts[3].body.text, /Action reject .* was rejected by user: Needs review/);
+
+    state.sendStatus = 503;
+    await h.click('action-card-approve-btn-feedback_failure');
+    assert.equal(h.get('action-card-status-feedback_failure').textContent, 'accepted');
+    assert.equal(h.get('action-card-approve-btn-feedback_failure'), null);
+    assert.match(h.get('action-card-feedback_failure').textContent, /Could not send feedback/);
+  });
 });

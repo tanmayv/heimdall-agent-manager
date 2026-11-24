@@ -1,6 +1,7 @@
 package taskv2
 
 import "core:fmt"
+import "core:encoding/json"
 import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -35,7 +36,23 @@ catalog_expect :: proc(t: ^testing.T, fx: ^Fixture, typ, class, topic: string) {
 	testing.expect_value(t, jsonx.extract_string(env, "type", "", true, context.temp_allocator), typ)
 	testing.expect_value(t, jsonx.extract_string(env, "class", "", true, context.temp_allocator), class)
 	testing.expect_value(t, jsonx.extract_string(env, "owner_user_id", "", true, context.temp_allocator), "u1")
-	testing.expect_value(t, jsonx.extract_string(env, "chain_id", "", true, context.temp_allocator), "catalog_chain")
+ value: json.Value
+ testing.expect_value(t, json.unmarshal(transmute([]u8)env, &value), nil)
+ defer json.destroy_value(value)
+ obj, _ := value.(json.Object)
+ wire_entity, _ := obj["entity"].(json.Object)
+ kind, _ := wire_entity["kind"].(string)
+ id, _ := wire_entity["id"].(string)
+ is_chain := typ == "chain.state" || typ == "chain.work_finished"
+ testing.expect_value(t, kind, "chain" if is_chain else "task")
+ testing.expect_value(t, id, "catalog_chain" if is_chain else "catalog_task")
+ _, old_chain := obj["chain_id"]; _, old_task := obj["task_id"]
+ testing.expect(t, !old_chain && !old_task)
+ if !is_chain {
+  data, _ := obj["data"].(json.Object)
+  parent, _ := data["chain_id"].(string)
+  testing.expect_value(t, parent, "catalog_chain")
+ }
 	testing.expect(t, jsonx.extract_int(env, "entity_version", 0, true) > 0, "nonzero entity version")
 	testing.expect(t, jsonx.extract_string(env, "event_id", "", true, context.temp_allocator) != "", "minted event id")
 	testing.expect(t, jsonx.extract_string(env, "occurred_at", "", true, context.temp_allocator) != "", "timestamp")
@@ -95,12 +112,14 @@ test_catalog_task_state :: proc(t: ^testing.T) {
 test_catalog_chain_state :: proc(t: ^testing.T) {
 	fx, chain, _ := catalog_fixture(t); defer fixture_close(fx)
 	u, _, _ := begin_uow(&fx.svc)
-	after := chain; after.status = .Completed
+	after := chain; after.status = .Completed; after.completed_at="2026-11-23T00:00:00Z"; after.updated_at=after.completed_at
 	testing.expect_value(t, catalog_chain_state(&fx.repo, &fx.clock, chain, after).code, domain.Error_Code.None)
 	testing.expect_value(t, catalog_chain_state(&fx.repo, &fx.clock, after, after).code, domain.Error_Code.None)
 	_, _ = end_uow(&fx.svc, &u, true)
 	testing.expect_value(t, catalog_count(fx, "chain.state"), 1)
 	catalog_expect(t, fx, "chain.state", "state", "")
+ testing.expect_value(t, scalar_text(fx, "SELECT json_extract(envelope_json,'$.data.completed_at') FROM event_outbox WHERE json_extract(envelope_json,'$.type')='chain.state';"), after.completed_at)
+ testing.expect_value(t, scalar_text(fx, "SELECT json_extract(envelope_json,'$.data.updated_at') FROM event_outbox WHERE json_extract(envelope_json,'$.type')='chain.state';"), after.updated_at)
 }
 
 @(test)
@@ -290,6 +309,7 @@ test_catalog_work_finished :: proc(t: ^testing.T) {
 	task = catalog_record(t, fx, task, EV_SUBMITTED, "{}")
 	testing.expect_value(t, catalog_count(fx, "chain.work_finished"), 1)
 	catalog_expect(t, fx, "chain.work_finished", "occurrence", "")
+ testing.expect_value(t, scalar_int(fx, "SELECT json_extract(envelope_json,'$.data.work_revision') FROM event_outbox WHERE json_extract(envelope_json,'$.type')='chain.work_finished';"), scalar_int(fx, "SELECT work_revision FROM task_chains WHERE chain_id='catalog_chain';"))
 	u, _, _ := begin_uow(&fx.svc)
 	_, _, ok, _ := refold_task(&fx.svc, &u, task); _, _ = end_uow(&fx.svc, &u, ok)
 	testing.expect_value(t, catalog_count(fx, "chain.work_finished"), 1)
@@ -342,9 +362,11 @@ test_catalog_real_jetstream_rollup :: proc(t: ^testing.T) {
 		options = {url = server.url, timeout_ms = 1000},
 	}
 	defer nats.destroy(relay.connection)
-	for _ in 0 ..< 2 {
-		ok, published := eventrelay.step(&relay); testing.expect(t, ok && published, "relay publishes catalog row")
-	}
+	// One step drains the outbox in batches of RELAY_BATCH, so both rows go out
+	// together and a second step finds nothing left to publish.
+	ok, published := eventrelay.step(&relay); testing.expect(t, ok && published, "relay publishes catalog rows")
+	ok, published = eventrelay.step(&relay); testing.expect(t, ok && !published, "relay drained catalog rows in one step")
+	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM event_outbox WHERE published_at IS NULL;"), 0)
 	state, serr := nats.stream_info(relay.connection, "HEIM_EVENTS")
 	testing.expect_value(t, serr.status, i32(0))
 	testing.expect_value(t, state.messages, u64(1))
@@ -375,4 +397,20 @@ test_catalog_real_jetstream_rollup :: proc(t: ^testing.T) {
 	testing.expect_value(t, rollup, "sub")
 	id, _ := nats.message_header(msg, "Nats-Msg-Id")
 	testing.expect_value(t, id, jsonx.extract_string(env, "event_id", "", true, context.temp_allocator))
+}
+
+@(test)
+test_v2_catalog_golden :: proc(t: ^testing.T) {
+ fx, chain, _ := catalog_fixture(t)
+ defer fixture_close(fx)
+ catalog_expect(t, fx, "task.state", "state", "")
+ u, began, err := begin_uow(&fx.svc)
+ if !testing.expect(t, began, err.message) do return
+ after := chain
+ after.status = .Completed
+ after.completed_at = "2026-11-24T00:00:00Z"
+ after.updated_at = after.completed_at
+ testing.expect_value(t, catalog_chain_state(&fx.repo, &fx.clock, chain, after).code, domain.Error_Code.None)
+ _, _ = end_uow(&fx.svc, &u, true)
+ catalog_expect(t, fx, "chain.state", "state", "")
 }

@@ -1,33 +1,3 @@
-/**
- * ActionListPage — `/actions`.
- * ------------------------------------------------------------------
- * Inherits the shape from AgentListPage/ProjectListPage. What differs, and why:
- *
- *  1. **No infinite scroll, and no `useInfiniteList`.** `GET /api/v1/actions`
- *     returns the whole list — no limit, no cursor, no has_more, no count
- *     (`action_handlers.odin:216`). REQ-UI-6 is WAIVED for this resource by user
- *     ruling. `useInfiniteList`'s own doc excludes "a list small enough to load
- *     whole", so using it here would be misusing it, not reusing it.
- *
- *     The happy consequence: **REQ-UI-5 is exactly true here.** Tabs, filters and
- *     search all read the same already-loaded array, so "a query disregards
- *     filters" is a property of one `useMemo` rather than a promise about two
- *     different endpoints. Per Amendment 7 the explanatory banner is gone; the
- *     visible signals are the inert Filters control and no tab selected.
- *
- *  2. **Tabs are Scheduled | On demand, not states.** `in_flight` lasts as long as
- *     one dispatch, so a state tab would move rows out from under a reader. State
- *     is a filter instead.
- *
- *  3. **Filters are client-side** (state / project / bridge), single-select per
- *     Amendment 8, with their options derived from the loaded rows plus the
- *     catalog — so all three catalog states are real here and are rendered.
- *
- *  4. **Delete, not archive**, and it is permanent to the UI. Bulk offers Delete
- *     ONLY: bulk Run now would mint instances across N rows on one mis-click with
- *     nothing to undo it, and a bulk verb should be one you can afford to fire by
- *     accident.
- */
 import React from 'react';
 import {
   ActionButton,
@@ -61,10 +31,9 @@ import { isVaultArmored } from '../../utils/vaultContent.ts';
 import {
   useDeleteActionMutation,
   useListActionsQuery,
-  useRunActionMutation,
   type Action,
 } from '../../api/endpoints/actions';
-import { bridgeLabel, catalogNote, projectLabel, useActionCatalog, type ActionCatalog } from './actionCatalog';
+import { bridgeLabel, catalogNote, projectLabel, useActionCatalog, type ActionCatalog, targetLabel } from './actionCatalog';
 import {
   ACTION_TABS,
   EMPTY_LIST_URL_STATE,
@@ -118,17 +87,11 @@ function searchableText(row: Action, catalog: ActionCatalog): string {
   return [
     row.prompt_text && !isVaultArmored(row.prompt_text) ? row.prompt_text : '',
     row.id,
-    row.cron_expr,
+    row.name,
     scheduleLabel(row),
-    row.timezone,
-    row.target_instance_id ? catalog.instances.byId.get(row.target_instance_id)?.label : '',
-    row.target_instance_id,
-    row.target_agent_id ? catalog.agents.byId.get(row.target_agent_id)?.label : '',
-    row.target_agent_id,
-    bridgeLabel(row.target_bridge_id, catalog),
-    projectLabel(row.target_project_id, catalog),
-    row.target_provider,
-    row.target_model,
+    targetLabel(row, catalog),
+    JSON.stringify(row.target),
+
   ]
     .filter(Boolean)
     .join(' ')
@@ -148,13 +111,14 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   const twoPane = viewport === 'desktop';
   const searchRef = React.useRef<HTMLInputElement | null>(null);
 
-  const catalog = useActionCatalog();
+  const listQuery = useListActionsQuery();
+  const catalog = useActionCatalog(Boolean(listQuery.data?.actions.some(action => action.target.kind === 'bot')));
 
   /* ---------------- URL state ---------------- */
   const [urlState, setUrlState] = React.useState<ActionListUrlState>(() =>
     parseActionListUrl(getRouteSearch()),
   );
-  const tab: ActionTab = urlState.tab || 'scheduled';
+  const tab: ActionTab = urlState.tab || 'all';
   const searching = Boolean(urlState.q);
   const filtersActive = hasActiveFilters(urlState);
 
@@ -178,7 +142,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   }, [queryInput, urlState, applyUrlState]);
 
   /* ---------------- The one data path ---------------- */
-  const listQuery = useListActionsQuery();
+
   const allRows: Action[] = React.useMemo(
     () => (listQuery.data?.actions || []) as Action[],
     [listQuery.data],
@@ -205,8 +169,8 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
     return allRows.filter((row) => {
       if (!matchesTab(row, tab)) return false;
       if (urlState.state && actionState(row) !== urlState.state) return false;
-      if (urlState.project && String(row.target_project_id || '') !== urlState.project) return false;
-      if (urlState.bridge && String(row.target_bridge_id || '') !== urlState.bridge) return false;
+      if (urlState.project && (row.target.kind === 'agent' ? row.target.project_id || '' : '') !== urlState.project) return false;
+      if (urlState.bridge && !(row.target.kind === 'agent' && row.target.rules.some(r => r.bridge_id === urlState.bridge))) return false;
       return true;
     });
   }, [allRows, catalog, searching, tab, urlState.bridge, urlState.project, urlState.q, urlState.state]);
@@ -214,14 +178,14 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   /* Filter options come from the rows actually loaded, so a filter can never offer a
      value that matches nothing. */
   const projectOptions = React.useMemo(() => {
-    const ids = new Set(allRows.map((row) => String(row.target_project_id || '')).filter(Boolean));
+    const ids = new Set(allRows.map((row) => (row.target.kind === 'agent' ? row.target.project_id || '' : '')).filter(Boolean));
     return Array.from(ids)
       .map((id) => ({ id, label: projectLabel(id, catalog) }))
       .sort((l, r) => l.label.localeCompare(r.label));
   }, [allRows, catalog]);
 
   const bridgeOptions = React.useMemo(() => {
-    const ids = new Set(allRows.map((row) => String(row.target_bridge_id || '')).filter(Boolean));
+    const ids = new Set(allRows.flatMap((row) => row.target.kind === 'agent' ? row.target.rules.map(r => r.bridge_id).filter(id => id !== '*') : []).filter(Boolean));
     return Array.from(ids)
       .map((id) => ({ id, label: bridgeLabel(id, catalog) }))
       .sort((l, r) => l.label.localeCompare(r.label));
@@ -266,27 +230,6 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   const [busyRow, setBusyRow] = React.useState('');
 
   const [deleteAction] = useDeleteActionMutation();
-  const [runAction] = useRunActionMutation();
-
-  const runOne = React.useCallback(
-    async (row: Action) => {
-      setBusyRow(row.id);
-      try {
-        await runAction({ id: row.id }).unwrap();
-        pushToast({
-          tone: 'success',
-          title: 'Run requested',
-          message: 'The dispatch happens on the bridge. The row shows as in flight once the lease is taken.',
-        });
-      } catch (err) {
-        pushToast({ tone: 'danger', title: "Couldn't run this action", message: actionErrorText(err) });
-      } finally {
-        setBusyRow('');
-      }
-    },
-    [pushToast, runAction],
-  );
-
   const runBulkDelete = React.useCallback(
     async (ids: string[]) => {
       setBulkBusy(true);
@@ -398,8 +341,8 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
         <EmptyState
           data-debug-id="action-empty-on-demand"
           icon="zap"
-          title="Nothing on demand"
-          description="Every action you have runs on its own schedule. An action with no schedule waits here until you run it."
+          title="No matching triggers"
+          description="Choose another trigger filter to see other actions."
         />
       );
     }
@@ -408,7 +351,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
         data-debug-id="action-empty-first-run"
         icon="clock"
         title="No actions yet"
-        description="An action is a prompt Ninjy sends to an agent — on a schedule, or whenever you run it."
+        description="An action sends a prompt when a schedule or event trigger matches."
         action={<Button variant="primary" onClick={() => navigateTo(actionNewHref())}>New action</Button>}
       />
     );
@@ -481,10 +424,6 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
                 if (verb === 'edit') {
                   rememberRow(target.id);
                   navigateTo(actionEditHref(target.id));
-                  return;
-                }
-                if (verb === 'run') {
-                  void runOne(target);
                   return;
                 }
                 setConfirm({ ids: [target.id] });
@@ -736,7 +675,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   );
 
   const headerDescription =
-    'An action is a prompt Ninjy sends to an agent — on a cron schedule, or whenever you run it.';
+    'An action sends a prompt when a schedule or event trigger matches.';
 
   return (
     <ResourceContainer

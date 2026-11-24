@@ -32,8 +32,8 @@ import dbt "odin_test:hub/platform/dbtelemetry"
 // the unlock. lockorder.assert_tx_mutex_allowed enforces it at begin.
 //
 // SQLite connection mutexes are held only for statements / short repository
-// operations, NEVER across an outer UoW: state_mutex holders also write SQLite.
-// A UoW may take state_mutex and then db_mutex, never db_mutex then state_mutex.
+// operations, NEVER across an outer UoW. Runtime persistence releases state_mutex
+// before DB work. A UoW may reserve state, never take state_mutex under db_mutex.
 // Bot multi-statement transactions join the tx_mutex gate before db_mutex via
 // tx_repository_enter/leave; no repository gate may be entered under state_mutex.
 //
@@ -55,6 +55,9 @@ tx_owner_thread: int
 tx_depth: int
 @(private = "file")
 tx_outbox_conn: ^Conn
+// Shallowest savepoint with an outbox append; -1 means no surviving append.
+@(private = "file")
+tx_outbox_mark_depth: int = -1
 // tx_after_commit: hooks registered by nested units of work, run by the
 // outermost commit AFTER the mutex is released. Only the owner thread touches
 // it while the transaction is open. `depth` lets a nested rollback drop the
@@ -77,6 +80,7 @@ Pending_After_Commit :: struct {
 }
 
 SQLite_Unit_Of_Work_Factory :: struct {
+	bots: Bot_Repo_SQLite,
 	conn: ^Conn,
 	repos: ^iface.Repositories,
 }
@@ -92,6 +96,7 @@ SQLite_Unit_Of_Work_Context :: struct {
 new_unit_of_work_factory :: proc(factory: ^SQLite_Unit_Of_Work_Factory, conn: ^Conn, repos: ^iface.Repositories) -> iface.Unit_Of_Work_Factory {
 	factory.conn = conn
 	factory.repos = repos
+	if repos != nil && repos.bots.bot_get_by_instance == nil do repos.bots = new_bot_repository(&factory.bots, conn)
 	return iface.Unit_Of_Work_Factory{ctx = rawptr(factory), begin = sqlite_uow_begin}
 }
 
@@ -121,6 +126,7 @@ sqlite_uow_begin :: proc(ctx: rawptr) -> (iface.Unit_Of_Work, bool, domain.Domai
 		return iface.Unit_Of_Work{}, false, domain.domain_error(.Internal_Error, "failed to begin transaction")
 	}
 	sync.atomic_store(&tx_owner_thread, me)
+	tx_outbox_mark_depth = -1
 	tx_outbox_conn = factory.conn
 	sync.atomic_store(&tx_depth, 1)
 	uow_ctx := new(SQLite_Unit_Of_Work_Context)
@@ -144,6 +150,7 @@ sqlite_uow_after_commit :: proc(ctx: rawptr, hook: iface.After_Commit_Hook) -> b
 // rolled-back savepoint takes its hooks with it).
 @(private = "file")
 drop_after_commit_from :: proc(depth: int) {
+	if tx_outbox_mark_depth >= depth do tx_outbox_mark_depth = -1
 	for i := 0; i < len(tx_after_commit); i += 1 {
 		if tx_after_commit[i].depth >= depth {
 			hook:=tx_after_commit[i].hook
@@ -177,6 +184,7 @@ sqlite_uow_commit :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
 			exec(uow_ctx.conn, sp.rollback)
 			drop_after_commit_from(uow_ctx.depth)
 		}
+		if ok && tx_outbox_mark_depth >= uow_ctx.depth do tx_outbox_mark_depth = uow_ctx.depth - 1
 		sync.atomic_store(&tx_depth, uow_ctx.depth)
 		free(uow_ctx)
 		if !ok do return false, domain.domain_error(.Internal_Error, "failed to release nested savepoint")
@@ -190,6 +198,9 @@ sqlite_uow_commit :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
 		exec(uow_ctx.conn, "ROLLBACK;")
 		drop_after_commit_from(0)
 	}
+	wake_outbox := ok && tx_outbox_mark_depth >= 0
+	outbox_hook, outbox_ctx := uow_ctx_conn.outbox_after_commit, uow_ctx_conn.outbox_after_commit_ctx
+	tx_outbox_mark_depth = -1
 	free(uow_ctx)
 	// Take the deferred hooks out before releasing the mutex (the next owner
 	// may register its own), run them after.
@@ -198,6 +209,7 @@ sqlite_uow_commit :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
 	sync.atomic_store(&tx_depth, 0)
 	sync.atomic_store(&tx_owner_thread, 0)
 	tx_unlock(uow_ctx_conn, .Commit if ok else .Commit_Failed)
+	if wake_outbox && outbox_hook != nil do outbox_hook(outbox_ctx)
 	if ok {
 		for h in hooks do if h.hook.run != nil do h.hook.run(h.hook.ctx)
 	}
@@ -284,14 +296,39 @@ outbox_uow_owns :: proc(conn: ^Conn) -> bool {
 // Short repository-owned transactions/savepoints share the UoW serialization
 // gate. Enter before taking db_mutex; leave after COMMIT/ROLLBACK and releasing
 // db_mutex. When already inside this threads UoW, its gate is already held.
-Repository_Tx_Guard :: struct {locked: bool, token: dbt.Lock_Token}
+Repository_Tx_Guard :: struct {locked, entered: bool, token: dbt.Lock_Token}
+
+// Repository entry points call other repository writers (for example identity
+// provisioning saves a user). Keep their outer guard across the whole operation
+// without trying to acquire the same non-recursive mutex again.
+@(thread_local)
+repository_tx_depth: int
 
 tx_repository_enter :: proc() -> Repository_Tx_Guard {
 	if sync.atomic_load(&tx_depth)>0 && sync.atomic_load(&tx_owner_thread)==sync.current_thread_id() do return {}
+	if repository_tx_depth > 0 {
+		repository_tx_depth += 1
+		return {entered=true}
+	}
 	lockorder.assert_tx_mutex_allowed()
-	return {locked=true, token=dbt.timed_lock(&tx_mutex, .Uow_Tx)}
+	token := dbt.timed_lock(&tx_mutex, .Uow_Tx)
+	repository_tx_depth = 1
+	return {locked=true, entered=true, token=token}
 }
 
 tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
-	if guard.locked do dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
+	if !guard.entered do return
+	assert(repository_tx_depth > 0)
+	repository_tx_depth -= 1
+	if guard.locked {
+		assert(repository_tx_depth == 0)
+		dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
+	}
+}
+
+// Every append-capable transaction is a UoW (outbox_prepare enforces this).
+// Repository-owned COMMIT paths cannot append rows through this repository.
+outbox_mark_appended :: proc() {
+	depth := sync.atomic_load(&tx_depth) - 1
+	if tx_outbox_mark_depth < 0 || depth < tx_outbox_mark_depth do tx_outbox_mark_depth = depth
 }

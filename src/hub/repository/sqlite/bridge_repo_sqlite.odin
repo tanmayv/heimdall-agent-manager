@@ -76,6 +76,8 @@ new_bridge_repository :: proc(impl: ^Bridge_Repo_SQLite, conn: ^Conn) -> iface.B
 
 
 bridge_save_bridge_sqlite :: proc(ctx: rawptr, bridge: domain.Bridge) -> (domain.Bridge, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO bridges (bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_message, update_progress, update_error, telemetry_enabled, vault_status, enrollment_pending_until, plan_disabled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(bridge_id) DO UPDATE SET label=excluded.label, label_is_user_customized=excluded.label_is_user_customized, machine_hostname=excluded.machine_hostname, machine_os=excluded.machine_os, machine_arch=excluded.machine_arch, capabilities_json=excluded.capabilities_json, hub_url=excluded.hub_url, status=excluded.status, bridge_token_hash=excluded.bridge_token_hash, updated_at=excluded.updated_at, last_seen_at=excluded.last_seen_at, revoked_at=excluded.revoked_at, version=excluded.version, commit_sha=excluded.commit_sha, build_timestamp=excluded.build_timestamp, update_status=excluded.update_status, update_message=excluded.update_message, update_progress=excluded.update_progress, update_error=excluded.update_error, telemetry_enabled=excluded.telemetry_enabled, vault_status=excluded.vault_status, enrollment_pending_until=excluded.enrollment_pending_until;"
@@ -91,6 +93,8 @@ bridge_save_bridge_sqlite :: proc(ctx: rawptr, bridge: domain.Bridge) -> (domain
 // its own columns plus updated_at, and the WHERE clause carries the fence, so a revoked
 // row is never resurrected and a concurrent writer's columns are never reverted.
 bridge_update_runtime_sqlite :: proc(ctx: rawptr, kind: iface.Bridge_Runtime_Write, bridge_id, now, value, expected: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	query: string
 	switch kind {
@@ -121,6 +125,10 @@ bridge_get_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) -> (domain.Brid
 
 
 bridge_get_by_column :: proc(ctx: rawptr, column, value: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+	// This lookup feeds authorization or runtime mutation decisions.
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := fmt.tprintf("SELECT bridge_id, owner_user_id, label, label_is_user_customized, machine_hostname, machine_os, machine_arch, capabilities_json, hub_url, status, bridge_token_hash, created_at, updated_at, last_seen_at, revoked_at, version, commit_sha, build_timestamp, update_status, update_message, update_progress, update_error, telemetry_enabled, vault_status, enrollment_pending_until, plan_disabled_at FROM bridges WHERE %s = ?;", column)
@@ -173,6 +181,8 @@ bridge_list_pending_sqlite :: proc(ctx: rawptr) -> ([]domain.Bridge, domain.Doma
 // no caller can reach an enrolled bridge through this path: revocation of an enrolled
 // bridge stays the soft revoke_bridge, which keeps the row for audit.
 bridge_delete_pending_sqlite :: proc(ctx: rawptr, bridge_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM bridges WHERE bridge_id = ? AND enrollment_pending_until != '';"
