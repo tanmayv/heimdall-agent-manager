@@ -401,7 +401,11 @@ test_mcp_events_wait_replays_disconnected_catalog :: proc(t: ^testing.T) {
 	baseline,be:=eventinbox.catalog_replay(&inbox,f.state.vector.request.owner,"chain_fixture","")
 	testing.expect(t,be.code==.None)
 	defer eventinbox.catalog_page_destroy(&baseline)
-	envelope,_:=json.marshal(struct{event_id,owner_user_id,chain_id,task_id,type:string}{"evt_missed",f.state.vector.request.owner,"chain_fixture","task_fixture","task.review_verdict"})
+	envelope,_:=json.marshal(struct {
+		event_id,owner_user_id,type:string,
+		entity:struct {kind,id:string},
+		data:struct {chain_id:string},
+	}{"evt_missed",f.state.vector.request.owner,"task.review_verdict",{"task","task_fixture"},{"chain_fixture"}})
 	_,err=nats.publish(conn,fmt.tprintf("ev.%s.chain.chain_fixture.task.task_fixture.task.review_verdict",f.state.vector.request.owner),envelope)
 	testing.expect_value(t,err.status,i32(0))
 	call:=fmt.tprintf(`{{"jsonrpc":"2.0","id":71,"method":"tools/call","params":{{"name":"events.wait","arguments":{{"chain_id":"chain_fixture","catalog_cursor":"%s","timeout_ms":1}}}}}}`,baseline.catalog_cursor)
