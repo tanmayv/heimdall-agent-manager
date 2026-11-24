@@ -19,8 +19,9 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import httpc "odin_test:lib/httpc"
+import "odin_test:lib/releaserepo"
 
-BRIDGE_RELEASE_REPO :: "tanmayv/heimdall-agent-manager"
+BRIDGE_RELEASE_REPO :: releaserepo.REPO
 BRIDGE_RELEASE_SUMS :: "SHA256SUMS"
 // The newest promoted (non-draft, non-prerelease) release as a single object.
 // Never a page of the release list: with many prereleases between promotions

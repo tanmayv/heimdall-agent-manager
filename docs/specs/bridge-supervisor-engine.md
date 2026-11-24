@@ -1082,7 +1082,7 @@ Implemented by `src/supervisor/resolver` (resolution, §13.2 rules 1–6, §13.3
 `no_candidate`) also fails the resolution with `resolve_incomplete`.
 
 Source: only `api.github.com` metadata and GitHub release asset downloads for
-`tanmayv/heimdall-agent-manager` (REQ-SRC-1). The hub never supplies a version, URL, digest
+`tanmayv/heimdall-releases` (REQ-SRC-1; the public releases repo, see src/lib/releaserepo). The hub never supplies a version, URL, digest
 or list.
 
 | Channel | Candidate |

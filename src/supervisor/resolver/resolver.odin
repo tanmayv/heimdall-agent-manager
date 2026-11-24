@@ -40,8 +40,9 @@ import "core:encoding/json"
 import "core:mem"
 import "core:strconv"
 import "core:strings"
+import "odin_test:lib/releaserepo"
 
-REPO :: "tanmayv/heimdall-agent-manager"
+REPO :: releaserepo.REPO
 API_BASE :: "https://api.github.com/repos/" + REPO
 LATEST_URL :: API_BASE + "/releases/latest"
 LIST_URL :: API_BASE + "/releases?per_page=100"

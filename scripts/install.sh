@@ -15,7 +15,7 @@
 # Self-contained: it makes no assumption about where it was fetched from
 # (install.ninjy.ai, a release asset or main), never reads stdin and needs no
 # TTY. Runs under bash 3.2 (macOS /bin/bash) and later.
-REPO=tanmayv/heimdall-agent-manager
+REPO=tanmayv/heimdall-releases
 usage() {
   cat <<'HELP'
 Usage: install.sh --hub URL [--profile NAME] [--version TAG|latest]

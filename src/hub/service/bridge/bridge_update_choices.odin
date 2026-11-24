@@ -7,6 +7,7 @@ import "core:sync"
 import contracts "odin_test:contracts"
 import httpc "odin_test:lib/httpc"
 import domain "odin_test:hub/domain"
+import "odin_test:lib/releaserepo"
 
 // Metadata is refreshed in the background. SHA256SUMS is fetched only for a
 // selected candidate at POST time, avoiding one request per historical canary
@@ -117,7 +118,7 @@ resolve_bridge_selected_update :: proc(catalog: ^Bridge_Update_Catalog, bridge: 
 		if catalog == nil || catalog.release_get == nil do return info, true
 		memo := Bridge_Catalog_Memo{get = catalog.release_get}
 		name := bridge_catalog_bundle(info.target, choice.version)
-		path := []string{"tanmayv", "heimdall-agent-manager", "releases", "download", choice.version, "SHA256SUMS"}
+		path := []string{releaserepo.OWNER, releaserepo.NAME, "releases", "download", choice.version, "SHA256SUMS"}
 		sums, ok, reason := bridge_catalog_memo_get(&memo, bridge_catalog_request("https://github.com", path))
 		if !ok { info.fallback_reason = reason; return info, true }
 		info.sha256 = bridge_catalog_digest(sums, name)

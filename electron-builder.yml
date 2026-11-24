@@ -18,7 +18,7 @@ asar: true
 publish:
   provider: github
   owner: tanmayv
-  repo: heimdall-agent-manager
+  repo: heimdall-releases
 mac:
   # dmg for people, zip for electron-updater (it cannot update from a dmg, F14).
   # The App/Bridge/both .pkg is assembled from the signed .app by

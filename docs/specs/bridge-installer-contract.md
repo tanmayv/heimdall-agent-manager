@@ -26,7 +26,7 @@ $env:HEIMDALL_HUB = 'https://hub.example.com'; irm https://install.ninjy.ai/ps1 
 
 The same two files are also attached to every release as assets
 (`.github/workflows/release-local-binaries.yml`, copy step ~`:961`), so a pinned copy can
-be fetched from `https://github.com/tanmayv/heimdall-agent-manager/releases/download/<tag>/install.sh`.
+be fetched from `https://github.com/tanmayv/heimdall-releases/releases/download/<tag>/install.sh`.
 
 The command is safe to run any number of times. Every run ends in one of the states
 in §3 and exits with one of the codes in §4.
@@ -175,7 +175,7 @@ The installer resolves only **stable** (`latest`, the default) or an explicit
 business (design report §6.4, T11).
 
 `latest` = the release returned by
-`GET /repos/tanmayv/heimdall-agent-manager/releases/latest`, exactly as design report §6.4
+`GET /repos/tanmayv/heimdall-releases/releases/latest`, exactly as design report §6.4
 defines stable ("the most recent non-prerelease, non-draft release"; what is stable is
 chosen by promoting with `.github/workflows/promote-release.yml`). It is **never inferred
 from a list page**, which also removes the first-30 limit (report F9,
