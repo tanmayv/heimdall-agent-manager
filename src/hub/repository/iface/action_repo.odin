@@ -6,6 +6,8 @@ Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
 Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string, batch_size: int }
 Action_Batch_Member :: struct {run_id, from_state: string}
 Action_Repository :: struct {
+ expired_prompt_deliveries:proc(ctx:rawptr,now:string,limit:int)->([]string,domain.Domain_Error),
+ trigger_retire:proc(ctx:rawptr,id:string,rev:int,now:string)->(bool,domain.Domain_Error),
  triggers_effective_owner: proc(ctx:rawptr,owner:string)->([]domain.Action_Trigger,domain.Domain_Error),
  // Immediate match: atomically join the action's open run or queue a new one.
  run_enqueue: proc(ctx:rawptr,r:domain.Action_Run)->(bool,domain.Domain_Error),
@@ -35,9 +37,6 @@ Action_Repository :: struct {
 	trigger_get:    proc(ctx: rawptr, trigger_id: string) -> (domain.Action_Trigger, bool, domain.Domain_Error),
 	trigger_delete: proc(ctx: rawptr, trigger_id: string) -> domain.Domain_Error,
 	triggers_list:  proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Action_Trigger, domain.Domain_Error), // ordered by created_at, trigger_id
-	// Enabled triggers of enabled actions for one owner and event type whose match_key is `subject` or '',
-	// ordered by created_at, trigger_id. Two index reads on action_triggers_match (6.16, Q3). S2.
-	triggers_match: proc(ctx: rawptr, owner, event_type, subject: string) -> ([]domain.Action_Trigger, domain.Domain_Error),
 	// Enabled triggers of one kind whose action is enabled, across all owners (reconcile).
 	triggers_effective: proc(ctx: rawptr, kind: string) -> ([]domain.Action_Trigger, domain.Domain_Error),
 	// runs

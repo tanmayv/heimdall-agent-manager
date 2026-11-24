@@ -5,6 +5,7 @@ import "core:thread"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import delivery "odin_test:hub/service/delivery"
@@ -329,22 +330,26 @@ prune_delivered :: proc(t:^testing.T,f:^Action_Test) {
  for i in 0..<210 {
   action_test_match(t,f,fmt.tprintf("finish%d",i));drain_due(&f.runtime.router);action_test_done(t,f);f.now_ms+=31000
  }
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
 }
 prune_skipped :: proc(t:^testing.T,f:^Action_Test) {
  f.flag_off=true
  for i in 0..<210 {action_test_match(t,f,fmt.tprintf("skip%d",i));drain_due(&f.runtime.router);f.now_ms+=1000}
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
 }
 prune_stale :: proc(t:^testing.T,f:^Action_Test) {
  action_test_schedule(t,f,`{"mode":"interval","interval_s":60}`)
  for i in 0..<210 {action_test_fire(t,f,fmt.tprintf("stale%d",i),"0");f.now_ms+=1000}
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
 }
 prune_joined :: proc(t:^testing.T,f:^Action_Test) {
  action_test_first(t,f);f.now_ms+=1000
  action_test_match(t,f,"deferred");drain_due(&f.runtime.router)
  for i in 0..<210 {action_test_match(t,f,fmt.tprintf("join%d",i));f.now_ms+=1}
+ testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
  testing.expect_value(t,len(action_test_rows(t,f)),200)
  action_test_expect(t,f,domain.ACTION_RUN_DEFERRED,1)
 }

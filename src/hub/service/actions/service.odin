@@ -401,10 +401,12 @@ write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, c
 	}
 	result, read_err := load_view(repo, owner, string(v.action.id))
 	if read_err.code != .None do return {}, read_err
+ // Publish while tx_mutex still excludes the matcher. A failed commit may
+ // cause an extra reload, but can never expose a committed edit with an old epoch.
+ sync.atomic_add(&s.rule_epoch,1)
 	committed, commit_err := iface.unit_of_work_commit(&uow)
 	uow.ctx = nil
 	if !committed { action_view_destroy(&result); return {}, commit_err }
-	sync.atomic_add(&s.rule_epoch,1)
 	return result, {}
 }
 delete_action :: proc(s: ^Service, owner, action_id: string) -> domain.Domain_Error {
@@ -424,9 +426,9 @@ delete_action :: proc(s: ^Service, owner, action_id: string) -> domain.Domain_Er
 		}
 	}
 	if e := uow.repos.actions.delete_action(uow.repos.actions.ctx, v.action.id); e.code != .None do return e
-	committed, commit_err := iface.unit_of_work_commit(&uow)
+ sync.atomic_add(&s.rule_epoch,1)
+	_, commit_err := iface.unit_of_work_commit(&uow)
 	uow.ctx = nil
- if committed do sync.atomic_add(&s.rule_epoch,1)
 	return commit_err
 }
 

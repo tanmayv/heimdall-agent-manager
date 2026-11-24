@@ -10,6 +10,8 @@ action_test_fire :: proc(t:^testing.T,f:^Action_Test,id,rev:string) {
   trigger_rev=rev,schedule_next=id,stream_time_ms=f.now_ms,envelope=test_config(`{"type":"schedule.fired","data":{}}`)}))
 }
 action_test_schedule :: proc(t:^testing.T,f:^Action_Test,config:string) {
+ // This fixture writes below the service; invalidate its cached rules explicitly.
+ defer rule_index_clear(&f.runtime.rule_index)
  testing.expect_value(t,f.repos.actions.trigger_save(f.repos.actions.ctx,{trigger_id="schedule",action_id="action",owner_user_id="owner",
   kind="schedule",config_json=config,event_type="schedule.fired",subject_filter="ev.owner.sched.schedule",match_key="ev.owner.sched.schedule",data_filter_json="{}",
   enabled=true,rev=1,created_at="2026-01-01T00:00:00Z",updated_at="2026-01-01T00:00:00Z"}).code,domain.Error_Code.None)

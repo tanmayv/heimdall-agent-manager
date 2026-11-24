@@ -25,7 +25,8 @@ new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.A
 		trigger_get = actions_trigger_get,
 		trigger_delete = actions_trigger_delete,
 		triggers_list = actions_triggers_list,
-		triggers_match = actions_triggers_match,
+  trigger_retire = actions_trigger_retire,
+  expired_prompt_deliveries=actions_expired_prompt_deliveries,
   triggers_effective_owner = actions_triggers_effective_owner,
   run_enqueue = actions_run_enqueue,
 		triggers_effective = actions_triggers_effective,
@@ -234,6 +235,12 @@ actions_save :: proc(ctx: rawptr, v: domain.Action) -> domain.Domain_Error {
 	return err
 }
 
+// Retirement cannot overwrite a rule edited since the cache was loaded.
+actions_trigger_retire :: proc(ctx:rawptr,id:string,rev:int,now:string)->(bool,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ return actions_write(ctx,"UPDATE action_triggers SET enabled=0,rev=rev+1,updated_at=?3 WHERE trigger_id=?1 AND rev=?2 AND enabled=1;",{id,fmt.tprintf("%d",rev),now})
+}
+
 ACTIONS_SQL_TRIGGER_SAVE :: "INSERT INTO action_triggers(trigger_id,action_id,owner_user_id,kind,config,event_type,subject_filter,match_key,data_filter,enabled,rev,created_at,updated_at,delay_s) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(trigger_id) DO UPDATE SET kind=excluded.kind,config=excluded.config,event_type=excluded.event_type,subject_filter=excluded.subject_filter,match_key=excluded.match_key,data_filter=excluded.data_filter,enabled=excluded.enabled,rev=excluded.rev,updated_at=excluded.updated_at,delay_s=excluded.delay_s;"
 
 actions_trigger_save :: proc(ctx: rawptr, v: domain.Action_Trigger) -> domain.Domain_Error {
@@ -329,14 +336,6 @@ actions_triggers_list :: proc(ctx: rawptr, id: domain.Action_ID) -> ([]domain.Ac
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_LIST,{string(id)})
-}
-
-ACTIONS_SQL_TRIGGERS_MATCH :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.owner_user_id=?1 AND t.event_type=?2 AND (t.match_key=?3 OR t.match_key='') AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
-
-actions_triggers_match :: proc(ctx: rawptr, owner,event_type,subject: string) -> ([]domain.Action_Trigger, domain.Domain_Error) {
-	guard := tx_repository_enter()
-	defer tx_repository_leave(guard)
-	return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_MATCH,{owner,event_type,subject})
 }
 
 ACTIONS_SQL_TRIGGERS_EFFECTIVE :: "SELECT t.trigger_id,t.action_id,t.owner_user_id,t.kind,t.config,t.event_type,t.subject_filter,t.match_key,t.data_filter,t.enabled,t.rev,t.created_at,t.updated_at,t.delay_s FROM action_triggers t JOIN actions a ON a.action_id=t.action_id WHERE t.kind=?1 AND t.enabled=1 AND a.enabled=1 ORDER BY t.created_at,t.trigger_id;"
@@ -506,7 +505,7 @@ actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,bef
   append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,23)),column_text(stmt,24),column_text(stmt,25),column_text(stmt,26),int(sqlite3_column_int64(stmt,27))})
  }
 }
-ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND created_at<?1 ORDER BY created_at,run_id LIMIT ?2);"
+ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND (created_at<?1 OR run_id NOT IN (SELECT recent.run_id FROM action_runs recent WHERE recent.action_id=action_runs.action_id ORDER BY recent.created_at DESC,recent.run_id DESC LIMIT 200)) ORDER BY created_at,run_id LIMIT ?2);"
 actions_runs_sweep :: proc(ctx:rawptr,cutoff:string,limit:int)->domain.Domain_Error {
  guard:=tx_repository_enter(); defer tx_repository_leave(guard)
  _,err:=actions_write(ctx,ACTIONS_SQL_SWEEP,{cutoff,fmt.tprintf("%d",clamp(limit,1,128))})
@@ -580,4 +579,25 @@ actions_runs_release_parked :: proc(ctx:rawptr,owner,instance_id,now:string)->(b
  guard:=tx_repository_enter();defer tx_repository_leave(guard)
  if instance_id=="" do return false,{}
  return actions_write(ctx,"UPDATE action_runs SET not_before=?3 WHERE owner_user_id=?1 AND target_instance_id=?2 AND state='deferred' AND target_instance_id<>'';",{owner,instance_id,now})
+}
+
+
+// Include awaiting-read (delivered) prompts; the generic transport expiry query
+// intentionally handles only routed/forwarded deliveries.
+actions_expired_prompt_deliveries :: proc(ctx:rawptr,now:string,limit:int)->([]string,domain.Domain_Error) {
+ guard:=tx_repository_enter();defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,"SELECT d.delivery_id FROM pipeline_deliveries d WHERE d.kind='prompt' AND d.state IN ('routed','forwarded','delivered') AND d.expires_at<=?1 AND EXISTS (SELECT 1 FROM action_runs r WHERE r.delivery_id=d.delivery_id AND r.state='routed') ORDER BY d.expires_at,d.delivery_id LIMIT ?2;",{now,fmt.tprintf("%d",clamp(limit,1,128))})
+ if err.code!=.None do return nil,err
+ defer sqlite3_finalize(stmt)
+ rows: [dynamic]string
+ for {
+  rc:=sqlite3_step(stmt)
+  if rc==SQLITE_DONE do return rows[:],{}
+  if rc!=SQLITE_ROW {
+   for row in rows do delete(row)
+   delete(rows)
+   return nil,domain.domain_error(.Internal_Error,"could not load expired action deliveries")
+  }
+  append(&rows,column_text(stmt,0))
+ }
 }

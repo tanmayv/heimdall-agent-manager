@@ -139,6 +139,8 @@ action_test_case :: proc(t:^testing.T,scenario:proc(^testing.T,^Action_Test)) {
  testing.expect_value(t,len(track.allocation_map),0)
 }
 action_test_seed :: proc(t:^testing.T,f:^Action_Test,id,trigger,owner:string) {
+ // This fixture writes below the service; invalidate its cached rules explicitly.
+ defer rule_index_clear(&f.runtime.rule_index)
  repo:=&f.repos.actions
  testing.expect_value(t,repo.save(repo.ctx,{id=domain.Action_ID(id),owner_user_id=domain.User_ID(owner),name="Action",prompt_text="event {{event.id}} {{run.joined_count}}",
   enabled=true,instance_strategy="reuse",placement_selector="first",target_kind=domain.ACTION_TARGET_INSTANCE,target_instance_id="instance",min_interval_s=30,created_at="2026-01-01T00:00:00Z"}).code,domain.Error_Code.None)
@@ -218,7 +220,9 @@ matcher_one_schedule :: proc(t:^testing.T,f:^Action_Test) {
   other.subject_filter=fmt.tprintf("ev.owner.sched.%s",other.trigger_id);other.match_key=other.subject_filter
   testing.expect_value(t,f.repos.actions.trigger_save(f.repos.actions.ctx,other).code,domain.Error_Code.None)
  }
- rows,err:=f.repos.actions.triggers_match(f.repos.actions.ctx,"owner","schedule.fired","ev.owner.sched.schedule")
- testing.expect(t,err.code==.None && len(rows)==1 && rows[0].trigger_id=="schedule")
+ cached,err:=rule_index_owner(&f.runtime,&f.repos.actions,"owner")
+ bucket:=cached.events["schedule.fired"]
+ rows:=bucket.exact["ev.owner.sched.schedule"]
+ testing.expect(t,err.code==.None && len(rows)==1 && cached.rules[rows[0]].trigger.trigger_id=="schedule")
  action_test_fire(t,f,"one","1");testing.expect_value(t,len(action_test_rows(t,f)),1)
 }

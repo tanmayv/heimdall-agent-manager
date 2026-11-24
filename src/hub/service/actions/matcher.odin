@@ -151,16 +151,18 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
    before := trigger
    after := trigger
    after.enabled=false; after.rev+=1; after.updated_at=now
-   if e := repo.trigger_save(repo.ctx, after); e.code != .None do return false
+   changed,e:=repo.trigger_retire(repo.ctx,trigger.trigger_id,trigger.rev,now)
+   if e.code!=.None do return false
+   if !changed {rule_index_clear(&r.rule_index);return false}
    if kind.on_change != nil {
     sc := Sync_Context{outbox=&uow.repos.event_outbox, clock=r.svc.clock, ids=r.svc.ids}
     if e := kind.on_change(&sc, &before, &after); e.code != .None do return false
    }
   }
  }
+ if retired do sync.atomic_add(&r.svc.rule_epoch,1)
  committed, _ := iface.unit_of_work_commit(&uow)
  uow.ctx=nil
- if committed && retired do sync.atomic_add(&r.svc.rule_epoch,1)
  return committed
 }
 

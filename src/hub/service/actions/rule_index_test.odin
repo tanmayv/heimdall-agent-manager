@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:mem/virtual"
 import "core:sync"
+import "core:strings"
 import "core:testing"
 import "core:time"
 import domain "odin_test:hub/domain"
@@ -106,6 +107,9 @@ compiled_index_invalidation :: proc(t:^testing.T,f:^Action_Test) {
  action_test_expect(t,f,domain.ACTION_RUN_JOINED,2)
  testing.expect_value(t,delete_action(f.runtime.svc,"owner","action").code,domain.Error_Code.None)
  action_test_match(t,f,"action-deleted")
+ rows=action_test_rows(t,f)
+ testing.expect_value(t,len(rows),0)
+ domain.action_runs_destroy(rows)
 }
 
 
@@ -145,4 +149,54 @@ compiled_index_schedule :: proc(t:^testing.T,f:^Action_Test) {
  rows:=action_test_rows(t,f)
  defer domain.action_runs_destroy(rows)
  testing.expect_value(t,len(rows),2)
+}
+
+@(test)
+test_compiled_rule_index_retire_cas_preserves_edit :: proc(t:^testing.T) {action_test_case(t,compiled_retire_cas)}
+compiled_retire_cas :: proc(t:^testing.T,f:^Action_Test) {
+ action_test_schedule(t,f,`{"mode":"once","run_at":"2026-11-23T00:00:00Z"}`)
+ // Load rev 1, then bypass the service to simulate an invalidation failure.
+ _,e:=rule_index_owner(&f.runtime,&f.repos.actions,"owner")
+ testing.expect_value(t,e.code,domain.Error_Code.None)
+ trigger,_,_:=f.repos.actions.trigger_get(f.repos.actions.ctx,"schedule")
+ defer domain.action_trigger_destroy(&trigger)
+ trigger.rev=2
+ delete(trigger.config_json)
+ trigger.config_json=strings.clone(`{"mode":"interval","interval_s":120}`)
+ testing.expect_value(t,f.repos.actions.trigger_save(f.repos.actions.ctx,trigger).code,domain.Error_Code.None)
+ view:=Event_View{subject="ev.owner.sched.schedule",owner="owner",event_type="schedule.fired",event_id="old",trigger_rev="1",schedule_next="once",stream_time_ms=f.now_ms,envelope=test_config(`{"type":"schedule.fired","data":{}}`)}
+ testing.expect(t,!handle_message(&f.runtime,view))
+ testing.expect(t,handle_message(&f.runtime,view))
+ stored,found,err:=f.repos.actions.trigger_get(f.repos.actions.ctx,"schedule")
+ defer domain.action_trigger_destroy(&stored)
+ testing.expect(t,found && err.code==.None && stored.enabled && stored.rev==2)
+ testing.expect_value(t,stored.config_json,trigger.config_json)
+ action_test_expect(t,f,domain.ACTION_RUN_SKIPPED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_QUEUED,0)
+}
+
+@(test)
+test_compiled_rule_index_history_cap_sweep :: proc(t:^testing.T) {action_test_case(t,compiled_history_sweep)}
+compiled_history_sweep :: proc(t:^testing.T,f:^Action_Test) {
+ testing.expect(t,sqlite.exec(&f.db,"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<330) INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,state,created_at) SELECT 'skip-'||x,'action','trigger','owner','skip-'||x,'chain.state','skipped','2026-11-23T00:00:00Z' FROM n;"))
+ for want in ([]int{202,200}) {
+  testing.expect_value(t,sweep_history(f.runtime.svc,time.Time{_nsec=f.now_ms*1_000_000}).code,domain.Error_Code.None)
+  rows:=action_test_rows(t,f)
+  testing.expect_value(t,len(rows),want)
+  domain.action_runs_destroy(rows)
+ }
+}
+@(test)
+test_compiled_rule_index_idle_expiry_drain :: proc(t:^testing.T) {action_test_case(t,compiled_idle_expiry)}
+compiled_idle_expiry :: proc(t:^testing.T,f:^Action_Test) {
+ run:=ack_prompt(t,f)
+ ack_succeed(f,run)
+ delivery,found,err:=action_test_delivery(f,run.delivery_id)
+ defer domain.pipeline_delivery_destroy(&delivery)
+ testing.expect(t,found && err.code==.None)
+ f.now_ms,_=schedule_time(delivery.expires_at)
+ // No later event and no queued work: the periodic drain still closes it.
+ drain_due(&f.runtime.router)
+ ack_assert(t,f,run,"failed","","not_read")
+ action_test_expect(t,f,domain.ACTION_RUN_FAILED,1)
 }

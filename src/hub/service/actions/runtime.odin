@@ -85,6 +85,7 @@ runtime_entry :: proc(data:rawptr) {
  for sync.atomic_load(&r.stop_flag)==0 {
   if last_sweep._nsec==0 || time.tick_since(last_sweep)>=time.Minute {
    rule_index_clear(&r.rule_index)
+   drain_due(&r.router) // Periodic expiry also runs without new events or queued work.
    if err:=sweep_history(r.svc,time.now());err.code!=.None do _=retry.failed(&retention_diagnostics,"actions",.Retention,i32(err.code))
    last_sweep=time.tick_now()
   }

@@ -330,6 +330,7 @@ drain_due :: proc(r:^Router,hints:[]Resume_Hint=nil) {
  defer virtual.arena_destroy(&arena)
  context.allocator=virtual.arena_allocator(&arena)
  context.temp_allocator=context.allocator
+ if e:=expire_prompt_deliveries(r);e.code!=.None do return
  seen:=make(map[string]bool)
  prepared:=make([dynamic]Prepared_Run)
  for hint in hints {
@@ -540,4 +541,22 @@ instance_plan :: proc(r:^Router,owner,instance_id:string,req:placement.Requireme
    if !placement.bridge_has_feature(b,contracts.BRIDGE_FEATURE_EVENT_PIPELINE_V1) do return {reason="bridge_too_old"}
   }
   return {ok=true,bridge_id=bridge,instance_id=instance_id,conversation_id=conversation,rule_position=-1}
+}
+
+
+// One bounded pass per drain, including when no queued work exists. Expiring a
+// shared prompt finalizes all its members and releases parked work atomically.
+expire_prompt_deliveries :: proc(r:^Router)->domain.Domain_Error {
+ if r.pipeline.expire==nil do return {}
+ uow,ok,err:=iface.unit_of_work_begin(r.factory)
+ if !ok do return err
+ defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
+ ids,e:=uow.repos.actions.expired_prompt_deliveries(uow.repos.actions.ctx,platform.clock_now(r.clock),128)
+ defer {for id in ids do delete(id);delete(ids)}
+ if e.code!=.None do return e
+ for id in ids {
+  if _,e:=r.pipeline.expire(r.pipeline.ctx,&uow,id);e.code!=.None do return e
+ }
+ _,err=iface.unit_of_work_commit(&uow);uow.ctx=nil
+ return err
 }
