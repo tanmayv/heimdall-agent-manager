@@ -364,3 +364,60 @@ test_event_subscription_instance_migration_cleans_legacy_rows :: proc(t: ^testin
 	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions WHERE subscriber_instance_id='inst_old';"), i64(0))
 	testing.expect_value(t, instance_sub_scalar(&conn, "SELECT COUNT(*) FROM event_subscriptions;"), i64(2))
 }
+
+@(test)
+test_event_notice_snapshot_matches_scoped_targets_and_receipt_clocks :: proc(t: ^testing.T) {
+	conn, opened, _ := open(":memory:")
+	if !testing.expect(t, opened) do return
+	defer close(&conn)
+	migrated, _ := run_migrations(&conn)
+	if !testing.expect(t, migrated) do return
+	impl: Event_Subscription_Repo_SQLite
+	repo := new_event_subscription_repository(&impl, &conn)
+	repos := iface.Repositories{event_subscriptions=repo}
+	factory_impl: SQLite_Unit_Of_Work_Factory
+	factory := new_unit_of_work_factory(&factory_impl,&conn,&repos)
+	_, outside_err := repo.notice_snapshot(repo.ctx)
+	testing.expect_value(t,outside_err.code,domain.Error_Code.Internal_Error)
+	uow, began, _ := iface.unit_of_work_begin(&factory)
+	if !testing.expect(t,began) do return
+	defer iface.unit_of_work_rollback(&uow)
+	testing.expect(t,instance_sub_add_instance(&conn,"inst_a","shared_agent"))
+	testing.expect(t,instance_sub_add_instance(&conn,"inst_b","shared_agent"))
+	testing.expect(t,exec(&conn,"INSERT INTO bots(bot_id,owner_user_id,agent_id,agent_instance_id,created_at,updated_at) VALUES('bot','alice','shared_agent','inst_b','now','now');"))
+	for spec in ([][3]string{
+		{"a","alice","inst_a"},{"b","alice","inst_b"},
+		{"foreign","bob","inst_a"},{"missing","alice","missing"},
+	}) {
+		testing.expect_value(t,repo.put(repo.ctx,{
+			subscription_id=spec[0],owner_user_id=spec[1],subscriber_instance_id=spec[2],
+			chain_id=spec[0],source="explicit",filter_subjects="[]",consumer_name=spec[0],created_at="now",
+		}).code,domain.Error_Code.None)
+	}
+	for id in ([]string{"first","second","acked"}) {
+		testing.expect_value(t,repo.delivered(repo.ctx,"alice","inst_a",{
+			subscription_id="a",event_id=id,ack_reply=id,
+		}).code,domain.Error_Code.None)
+	}
+	testing.expect(t,exec(&conn,"UPDATE event_deliveries SET recorded_at='2026-01-02T00:00:00Z'; UPDATE event_deliveries SET recorded_at='2026-01-01T00:00:00Z' WHERE event_id='first'; UPDATE event_deliveries SET acknowledged=1,recorded_at='2000-01-01T00:00:00Z' WHERE event_id='acked';"))
+	rows, err := repo.notice_snapshot(repo.ctx)
+	testing.expect_value(t,err.code,domain.Error_Code.None)
+	defer {for &row in rows do domain.event_notice_snapshot_destroy(&row); delete(rows)}
+	testing.expect_value(t,len(rows),4)
+	for row in rows {
+		switch row.subscription_id {
+		case "a":
+			testing.expect_value(t,row.target.instance_id,"inst_a")
+			testing.expect(t,!row.target.is_bot,"bot status belongs to the instance, not its shared agent")
+			testing.expect_value(t,row.outstanding,i64(2))
+			testing.expect_value(t,row.oldest_delivery,"2026-01-01T00:00:00Z")
+		case "b":
+			testing.expect_value(t,row.target.instance_id,"inst_b")
+			testing.expect(t,row.target.is_bot)
+			testing.expect_value(t,row.outstanding,i64(0))
+		case "foreign","missing":
+			testing.expect_value(t,row.target.instance_id,"")
+			testing.expect(t,!row.target.is_bot)
+		}
+	}
+}

@@ -14,6 +14,8 @@ import auth "odin_test:hub/service/auth"
 import vault "odin_test:lib/vault"
 import tc "odin_test:hub/service/taskchain"
 import tv2 "odin_test:hub/service/taskv2"
+import agent "odin_test:hub/service/agent"
+import project "odin_test:hub/service/project"
 import vd "odin_test:hub/service/vault_directory"
 import http "odin_test:hub/transport/http"
 import contracts "odin_test:contracts"
@@ -233,7 +235,16 @@ mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Ha
 	g.repos.agents=sqlite.new_agent_repository(&g.sqlite_agents,&g.db)
 	g.repos.bridges=sqlite.new_bridge_repository(&g.sqlite_bridges,&g.db)
 	g.provider_repo=sqlite.new_provider_repository(&g.sqlite_providers,&g.db)
-	g.agents.agents=&g.repos.agents;g.agents.bridges=&g.repos.bridges;g.agents.providers=&g.provider_repo
+	// Lease grants now use start_begin, including transport validation and live
+	// connection/quota admission when a fleet change requires a relaunch.
+	g.repos.projects=sqlite.new_project_repository(&g.sqlite_projects,&g.db)
+	g.repos.content=sqlite.new_content_repository(&g.sqlite_content,&g.db)
+	sink:=project.Bridge_Command_Sink{send_runtime_command=proc(ctx:rawptr,cmd:project.Runtime_Command)->(bool,domain.Domain_Error){return true,{}}}
+	g.agents=agent.new_agent_service_with_runtime(&g.repos.agents,&g.repos.bridges,&g.repos.projects,&g.repos.content,&g.repos.taskchains,sink,&g.bridge_runtime_registry,&g.clock,&g.ids)
+	g.agents.providers=&g.provider_repo
+	defer project.bridge_runtime_registry_destroy(&g.bridge_runtime_registry)
+	g.task_engine.agent_service=&g.agents
+	g.task_engine.bridge_command_sink=sink
 	g.taskchains.agents=&g.repos.agents;g.taskchains.agent_service=&g.agents
 	g.task_engine.agents=&g.repos.agents;g.task_engine.bridges=&g.repos.bridges
 	owner:=domain.User_ID(view.owner)
@@ -247,6 +258,10 @@ mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Ha
 		status:=domain.Bridge_Status.Online;if bridge=="brg_placement_offline" do status=.Offline
 		_,saved,_:=iface.bridge_save_bridge(&g.repos.bridges,{bridge_id=bridge,owner_user_id=owner,label=bridge,status=status,created_at=now,updated_at=now})
 		testing.expect(t,saved)
+		if status==.Online {
+			_,_,live:=project.bridge_runtime_registry_accept_live(&g.bridge_runtime_registry,bridge,false,"",view.owner)
+			testing.expect(t,live)
+		}
 		status_ok,_:=iface.bridge_provider_status_upsert(&g.provider_repo,{bridge_id=bridge,provider="codex",state="present",checked_at=now})
 		setting_ok,_:=iface.bridge_provider_setting_upsert(&g.provider_repo,{bridge_id=bridge,provider="codex",enabled=true,updated_at=now})
 		testing.expect(t,status_ok && setting_ok)
@@ -341,6 +356,15 @@ mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Ha
 	testing.expect(t,leased_a && leased_b && string(lease_a.task_id)==string(second_id) && string(lease_b.task_id)==string(id))
 	testing.expect(t,lease_a.provider=="claude" && lease_a.model==second_model && lease_b.provider=="codex" && lease_b.model==model)
 	testing.expect(t,second["state"].(json.String)=="in_progress" && second["publish_state"].(json.String)=="published")
+	// The unchanged live child is nudged without a generation; changing A's
+	// provider opens exactly one generation through start_begin.
+	instance_a,found_a,err_a:=iface.agent_get_instance(&g.repos.agents,"inst_placement_a")
+	instance_b,found_b,err_b:=iface.agent_get_instance(&g.repos.agents,"inst_placement_b")
+	defer domain.agent_instance_destroy(&instance_a)
+	defer domain.agent_instance_destroy(&instance_b)
+	testing.expect(t,found_a && found_b && err_a.code==.None && err_b.code==.None)
+	testing.expect(t,instance_a.provider=="claude" && instance_a.model==second_model && instance_a.run_count==1 && instance_a.start_ref==lease_a.lease_id)
+	testing.expect(t,instance_b.provider=="codex" && instance_b.model==model && instance_b.run_count==0 && instance_b.start_ref=="")
 	mcp_task_test_outcomes(t,g,h,headers,view,lease_b.task_id)
 }
 

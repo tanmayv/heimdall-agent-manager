@@ -122,7 +122,7 @@ test_current_upgrade_from_v0441_native_preserves_ledger_and_data :: proc(t: ^tes
         testing.expect(t, read_ok && native_ledger_matches_registry(current, registry[:]), "ledger equals unique current registry")
         testing.expect_value(t, native_migration_text(&conn, "SELECT subject FROM user_external_identities WHERE user_id='upgrade-owner';"), "subject")
         testing.expect_value(t, native_migration_text(&conn, "SELECT nonce FROM vault_request_nonces WHERE user_id='upgrade-owner';"), "nonce")
-        testing.expect(t, table_column_exists(&conn, "action_schedule_revision", "revision"))
+        testing.expect(t, !sqlite_object_exists(&conn, "action_schedule_revision"))
         testing.expect(t, !sqlite_object_exists(&conn, "agent_extension_events_instance_agent"))
     }
 }

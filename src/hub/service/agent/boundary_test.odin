@@ -11,9 +11,8 @@ import "core:testing"
 start_boundary_allowed :: proc(path, procedure:string)->bool {
 	if strings.has_suffix(path,"/agent/start_begin.odin") do return true
 	if strings.has_suffix(path,"/agent/agent_service.odin") {
-		return procedure=="prepare_instance" || procedure=="create_provider_test_instance" || procedure=="reserve_runtime_launch"
+		return procedure=="create_provider_test_instance" || procedure=="reserve_runtime_launch"
 	}
-	if strings.has_suffix(path,"/taskv2/lease.odin") do return true // T25 replaces this writer.
 	if strings.has_suffix(path,"/agent/instance_reconfiguration.odin") && procedure=="reconfiguration_launch_destination" do return true // Stop/move recovery.
 	return false
 }

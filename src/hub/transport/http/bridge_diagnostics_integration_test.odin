@@ -39,6 +39,8 @@ DIAG_BEAT_CORE :: `{"type":"bridge_heartbeat","protocol_version":1,"vault_status
 
 @(private = "file")
 Diag_Fixture :: struct {
+	uow_impl: sqlite.SQLite_Unit_Of_Work_Factory,
+	uow_factory: iface.Unit_Of_Work_Factory,
 	conn:           sqlite.Conn,
 	br_repo_sqlite: sqlite.Bridge_Repo_SQLite,
 	ag_repo_sqlite: sqlite.Agent_Repo_SQLite,
@@ -73,7 +75,8 @@ diag_fixture_open :: proc(t: ^testing.T) -> ^Diag_Fixture {
 	f.br_svc = bridge_service.new_bridge_service(&f.br_repo, &f.clock, &f.ids)
 	f.ag_svc = agent_service.new_agent_service(&f.ag_repo, &f.br_repo, &f.clock, &f.ids)
 	f.ag_svc.bridge_runtime_registry = &f.registry
-	f.bh = Bridge_Handlers{bridges = &f.br_svc, agents = &f.ag_svc, event_bus = &f.bus, bridge_runtime_registry = &f.registry}
+	f.uow_factory = sqlite.new_unit_of_work_factory(&f.uow_impl, &f.conn, nil)
+	f.bh = Bridge_Handlers{uow_factory=&f.uow_factory, bridges = &f.br_svc, agents = &f.ag_svc, event_bus = &f.bus, bridge_runtime_registry = &f.registry}
 	enrolled, e_ok, _ := bridge_service.enroll_bridge_from_device_grant(&f.br_svc, bridge_service.Device_Enroll_Input{
 		owner_user_id = DIAG_OWNER, bridge_public_key = "04diag", bridge_key_fingerprint = "aaaa bbbb cccc dddd",
 		machine_hostname = "diag-box", os_user = "tanmay",
@@ -134,20 +137,14 @@ diag_hello :: proc(features: string) -> string {
 // diag_connect admits a generation and runs its hello as the WS upgrade does.
 @(private = "file")
 diag_connect :: proc(t: ^testing.T, f: ^Diag_Fixture, hello: string) -> int {
-	_, gen, ok := project_service.bridge_runtime_registry_accept_live(&f.registry, f.bridge_id, false, "", DIAG_OWNER)
-	testing.expect(t, ok, "generation admitted")
-	c := project_service.bridge_runtime_connection_acquire(&f.registry, f.bridge_id, gen)
-	testing.expect(t, c != nil, "connection acquired")
-	if c == nil do return gen
-	defer project_service.bridge_runtime_connection_release(&f.registry, c)
-	context.allocator = context.temp_allocator // the hello handler's request scope
-	project_service.connection_state_lock(c)
-	row, hello_ok, _ := bridge_service.bridge_runtime_connect(&f.br_svc, f.bridge_token, "diag-box", "linux", "amd64", hello)
-	if hello_ok do bridge_record_hello_metadata(c, hello)
-	project_service.connection_state_unlock(c)
-	testing.expect(t, hello_ok, "hello accepted")
+	admitted, found, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+	testing.expect(t, found)
+	defer domain.bridge_destroy(&admitted)
+	context.allocator = context.temp_allocator // the hello handler request scope
+	result, row, ok, err := bridge_admit_hello(&f.bh, admitted, f.bridge_token, "diag-box", "linux", "amd64", hello, "", "", "", "")
+	testing.expect(t, ok, err.message)
 	domain.bridge_destroy(&row)
-	return gen
+	return result.generation
 }
 
 // A snapshot in the exact member order and number formats bridge_diagnostics.odin

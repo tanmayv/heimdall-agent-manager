@@ -112,3 +112,13 @@ consumers, ack limits, delayed NAK, progress, termination, async acknowledgement
 exhaustion advisories and repeated deletion. With the flake's nats-server
 2.14.7, Nats-Schedule-TTL: 2s expires the fire while Nats-TTL: never preserves
 the definition; the matcher does not need the fire-delete fallback.
+
+
+long_pull_bind/long_pull_next keep one 30-second server request alive across
+short local receive timeouts. A heartbeat or local timeout returns status 26
+without issuing another pull; a completed/expired request allows the next call
+to request up to its current limit. Only one thread may use the handle, and it
+must be destroyed before its connection while no receive is running. Messages
+are individually owned (message_destroy). Use reply-based acknowledgement and
+termination functions: these core subscription messages do not carry the nats.c
+JetStream subscription metadata required by ack(msg)/term(msg).

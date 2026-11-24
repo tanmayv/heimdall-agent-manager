@@ -9,6 +9,7 @@ import React, {
   type FormEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -36,7 +37,21 @@ import {
   useSendConversationMessageMutation,
   useAnswerConversationQuestionsMutation,
   useMarkConversationReadMutation,
+  useFetchSendNowStateQuery,
+  useSendNowMutation,
 } from '../../api/endpoints/chats';
+import { QueuedMessages } from '../chat/QueuedMessages';
+import {
+  acpDeliveryLabel,
+  newSendNowRequestId,
+  orderTranscript,
+  parseAcpDelivery,
+  placementFor,
+  sendNowErrorText,
+  sendNowTooltip,
+  trayView,
+  type SendNowBatch,
+} from '../chat/acpDelivery';
 import {
   useFetchAgentInstanceQuery,
   useFetchAgentIdentityQuery,
@@ -94,7 +109,8 @@ import { VaultText, useDecryptedText } from '../vault/VaultText';
 import { resolveRenameTarget } from './renameTarget';
 import { decryptPaneCaptureBody } from '../../utils/vaultChats';
 import { VAULT_LOCKED_MARKER } from '../../utils/vaultCrypto';
-import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
+import { actionMessageContext } from '../actions/actionModel';
+import { actionRunTime } from '../chat/actionRunTime';
 import { useActionsAccess } from '../actions/useActionsAccess';
 import { TaskChainSelectorModal } from '../chains/TaskChainSelectorModal';
 import { useIsMobile } from '../shell/responsive';
@@ -523,34 +539,6 @@ function parseMessageMetadata(message: Message): any {
   }
 }
 
-function scheduleContextFromMetadata(metadata: any): {
-  summary: string;
-  triggeredAt: string;
-} {
-  const meta = metadata && typeof metadata === 'object' ? metadata : {};
-  const cronExpr = String(meta.cron_expr ?? meta.cronExpr ?? meta.cron ?? '').trim();
-  const timezone = String(meta.timezone ?? meta.time_zone ?? meta.tz ?? '').trim();
-
-  let summary = '';
-  if (cronExpr) {
-    const described = describeCron(cronExpr);
-    summary = timezone ? `${described} (${timezone})` : described;
-  }
-
-  let triggeredAt = '';
-  const rawTrigger = String(
-    meta.target_run_at ?? meta.targetRunAt ?? meta.triggered_at ?? meta.triggeredAt ?? '',
-  ).trim();
-  if (rawTrigger) {
-    const date = new Date(rawTrigger);
-    if (!Number.isNaN(date.getTime())) {
-      triggeredAt = `${formatInTimeZone(date, timezone)} (${timeZoneLabel(date, timezone)})`;
-    }
-  }
-
-  return { summary, triggeredAt };
-}
-
 function capModels(cap: BridgeCapability | undefined): string[] {
   if (!cap) return [];
   return Array.isArray(cap.models) ? cap.models.filter(Boolean) : [];
@@ -642,6 +630,8 @@ function deliveryStatusFor(message: ChatMessage): ChatDeliveryStatus {
       label: message.deliveryError || 'Delivery failed',
       tone: 'text-danger',
     };
+  // ACP rows: the Hub's delivery status. Their legacy read_at is bridge admission, not Read.
+  if (message.acpDelivery) return acpDeliveryLabel(message.acpDelivery);
   if (message.readUnixMs > 0) return { glyph: '✓✓', label: 'Read', tone: 'text-success' };
   if (message.deliveredUnixMs > 0)
     return { glyph: '✓', label: 'Delivered', tone: 'text-muted' };
@@ -706,6 +696,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string, keyF
           isLatestMessage: (message as any).is_latest_message === true,
           optionsRevision: (message as any).optionsRevision,
           questionAnswer: (message as any).question_answer,
+          acpDelivery: isUser ? parseAcpDelivery((message as any).acp_delivery) : null,
         } satisfies ChatMessage,
       };
     })
@@ -1433,10 +1424,114 @@ export function AgentChatPane({
     [activeVaultKey, chatMessages],
   );
 
-  const transcriptMessages = useMemo(
-    () => groupTranscriptMessages(chatMessages),
-    [chatMessages],
+  // ACP delivery (docs/acp-send-now.md). User messages the agent has not received yet
+  // wait above the composer (QueuedMessages); only delivered/read rows (and failures)
+  // are in the transcript, placed causally. PTY/non-ACP conversations are unchanged.
+  const acpConversation = instance?.runtime_transport === 'acp';
+  const hasAcpDelivery = useMemo(() => chatMessages.some((m) => m.acpDelivery), [chatMessages]);
+  const sendNowQuery = useFetchSendNowStateQuery({ conversationId }, { skip: !conversationId || !(acpConversation || hasAcpDelivery) });
+  const [sendNowRequest] = useSendNowMutation();
+  const aboveComposerMessages = useMemo(
+    () => (acpConversation || hasAcpDelivery ? chatMessages.filter((m) => placementFor(m, acpConversation) !== 'transcript') : []),
+    [acpConversation, chatMessages, hasAcpDelivery],
   );
+  const transcriptSource = useMemo(
+    () => (acpConversation || hasAcpDelivery
+      ? orderTranscript(chatMessages.filter((m) => placementFor(m, acpConversation) === 'transcript'))
+      : chatMessages),
+    [acpConversation, chatMessages, hasAcpDelivery],
+  );
+  const transcriptMessages = useMemo(
+    () => groupTranscriptMessages(transcriptSource),
+    [transcriptSource],
+  );
+
+  // Send now: one batch for the turn-held snapshot. Between the click and the Send now
+  // state refetch that follows it, the clicked snapshot (then the POST's own batch) is
+  // shown, so the button never flashes back to Send now. Retry reuses the request_id.
+  const [sendNowLocal, setSendNowLocal] = useState<{
+    conversationId: string; batch: SendNowBatch; settledAt: number;
+  } | null>(null);
+  const [sendNowError, setSendNowError] = useState<{ conversationId: string; text: string } | null>(null);
+  const serverBatch = sendNowQuery.data?.batch ?? null;
+  const localBatch = sendNowLocal && sendNowLocal.conversationId === conversationId
+    && (!sendNowLocal.settledAt || (sendNowQuery.fulfilledTimeStamp ?? 0) < sendNowLocal.settledAt)
+    ? sendNowLocal.batch : null;
+  useEffect(() => {
+    if (sendNowLocal && sendNowLocal.settledAt && !localBatch) setSendNowLocal(null);
+  }, [localBatch, sendNowLocal]);
+  const queuedView = useMemo(
+    () => trayView(aboveComposerMessages, acpConversation, localBatch ?? serverBatch),
+    [aboveComposerMessages, acpConversation, localBatch, serverBatch],
+  );
+  const sendNowLocalError = sendNowError && sendNowError.conversationId === conversationId ? sendNowError.text : '';
+  useEffect(() => {
+    if (sendNowLocalError && queuedView.waiting.length === 0 && queuedView.batch.length === 0) setSendNowError(null);
+  }, [queuedView.batch.length, queuedView.waiting.length, sendNowLocalError]);
+  const postSendNow = useCallback(async (batch: SendNowBatch) => {
+    if (!conversationId) return;
+    const target = conversationId;
+    setSendNowError(null);
+    setSendNowLocal({ conversationId: target, batch: { ...batch, state: 'pending', error: '' }, settledAt: 0 });
+    try {
+      const result = await sendNowRequest({
+        conversationId: target, requestId: batch.requestId, launchEpoch: batch.launchEpoch, messageIds: batch.messageIds,
+      }).unwrap();
+      setSendNowLocal((current) => (current?.batch.requestId === batch.requestId
+        ? { ...current, batch: result.batch ?? { ...batch, state: result.outcome || 'empty' }, settledAt: Date.now() }
+        : current));
+    } catch (err: any) {
+      setSendNowLocal((current) => (current?.batch.requestId === batch.requestId ? null : current));
+      const stale = Number(err?.originalStatus ?? err?.status) === 409 || /stale launch epoch/i.test(String(err?.error || ''));
+      setSendNowError({ conversationId: target, text: stale ? sendNowErrorText('stale_epoch') : sendNowErrorText('') });
+      void sendNowQuery.refetch?.();
+    }
+  }, [conversationId, sendNowQuery, sendNowRequest]);
+  const handleSendNow = useCallback((messageIds: string[]) => {
+    if (!messageIds.length) return;
+    void postSendNow({
+      batchId: '', requestId: newSendNowRequestId(), attempt: 0, state: 'pending', error: '', messageIds,
+      launchEpoch: sendNowQuery.data?.launchEpoch || String((instance as any)?.launch_epoch || ''),
+    });
+  }, [instance, postSendNow, sendNowQuery.data?.launchEpoch]);
+  const handleSendNowRetry = useCallback(() => {
+    const batch = localBatch ?? serverBatch;
+    if (batch && batch.state === 'failed') void postSendNow(batch);
+  }, [localBatch, postSendNow, serverBatch]);
+
+  // REQ-PIN-1 for delivery: a message this mount showed above the composer plays the
+  // send animation once, from its own bubble, when it enters the transcript. Keys are
+  // recorded after commit and dropped once the row is in the transcript (ChatMessageList's
+  // layout effect, a child, runs first), so a refetch, remount or reload never replays it.
+  const queuedBubbleEls = useRef(new Map<string, HTMLElement>());
+  const queuedBubbleRef = useCallback((key: string, el: HTMLElement | null) => {
+    if (el) queuedBubbleEls.current.set(key, el);
+    else if (queuedBubbleEls.current.get(key)?.isConnected === false) queuedBubbleEls.current.delete(key);
+  }, []);
+  const seenAboveRef = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    for (const m of aboveComposerMessages) seenAboveRef.current.add(m.key);
+  }, [aboveComposerMessages]);
+  useLayoutEffect(() => {
+    const seen = seenAboveRef.current;
+    if (!seen.size) return;
+    for (const m of transcriptSource) {
+      if (!seen.has(m.key)) continue;
+      seen.delete(m.key);
+      queuedBubbleEls.current.delete(m.key);
+    }
+  }, [transcriptSource]);
+  const pinOnSend = useCallback(
+    (message: ChatMessage) => isOptimisticSend(message) || seenAboveRef.current.has(message.key),
+    [],
+  );
+  const lastTranscriptKey = transcriptMessages[transcriptMessages.length - 1]?.key ?? '';
+  const pinOriginRef = useMemo<React.RefObject<HTMLElement | null>>(() => ({
+    get current() {
+      const bubble = queuedBubbleEls.current.get(lastTranscriptKey);
+      return bubble && bubble.isConnected ? bubble : textareaRef.current;
+    },
+  }), [lastTranscriptKey]);
   const liveChain = chainDetailQuery.data?.chain;
   const isChainCoordinator = Boolean(chainId) && (
     String(liveChain?.coordinatorAgentInstanceId || liveChain?.coordinator_agent_instance_id || '') === agentInstanceId ||
@@ -2135,28 +2230,23 @@ export function AgentChatPane({
       );
     }
     if (message.messageType === 'action') {
-      const { summary, triggeredAt } = scheduleContextFromMetadata(message.metadata);
+      const fireTime = actionRunTime(message.metadata);
+      const context = actionMessageContext(message.metadata);
+      const eventRun = context.eventType && context.eventType !== 'schedule.fired';
       return (
         <div
           data-debug-id={`conversation-action-message-${message.messageId}`}
-          className="rounded-2xl border border-warning/30 border-l-2 border-l-warning bg-warning-soft p-3"
+          className="rounded-xl border border-subtle bg-surface px-3 py-2 text-sm text-primary"
         >
-          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption uppercase tracking-wide text-warning">
-            <span className="inline-flex items-center gap-1.5 font-semibold text-warning">
-              <Icon name="clock" size={13} title="Scheduled action" />
-              Scheduled action
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted">
+            <span className="inline-flex items-center gap-1.5">
+              <Icon name="clock" size={13} title={eventRun ? "Event action" : "Scheduled action"} />
+              {context.actionName ? <VaultText value={context.actionName} as="span" /> : (eventRun ? context.eventType : "Scheduled action")}
             </span>
-            {summary ? (
-              <span className="normal-case tracking-normal text-muted">
-                <VaultText value={summary} as="span" />
-              </span>
-            ) : null}
+            {fireTime.label ? <time dateTime={fireTime.timestamp} title={fireTime.timestamp}>· {fireTime.label}</time> : null}
+            {context.joinedCount > 0 ? <span>+{context.joinedCount} merged</span> : null}
+            {context.movedTo ? <a className="underline underline-offset-2 hover:text-primary" data-debug-id={`conversation-action-moved-${message.messageId}`} href={buildConversationHash([context.movedTo])}>Moved to another machine</a> : null}
           </div>
-          {triggeredAt ? (
-            <div className="mb-2 text-caption text-faint">
-              Ran on schedule: {triggeredAt}
-            </div>
-          ) : null}
           <ThreadMessageBody body={message.body} />
           {message.artifactIds && message.artifactIds.length > 0 && (
             <div className="mt-2 flex max-w-full flex-wrap gap-2">
@@ -3359,8 +3449,8 @@ export function AgentChatPane({
           getDeliveryStatus={deliveryStatusFor}
           agentActivity={<AgentActivityBubbles key={agentInstanceId} instanceId={agentInstanceId} isWorking={isWorking} isResponding={hasPendingAcpResponse(chatMessages)} />}
           bottomInset={composerDockHeight}
-          pinOnSend={isOptimisticSend}
-          pinOriginRef={textareaRef}
+          pinOnSend={pinOnSend}
+          pinOriginRef={pinOriginRef}
           renderMessageBody={({ message, reveal }) => renderConversationMessageBody(message, reveal)}
           wrapperClassName="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden"
           scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 py-3 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
@@ -3423,6 +3513,23 @@ export function AgentChatPane({
           />
         </ChatMessageList>
         <FloatingComposerDock ref={composerDockRef} data-debug-id="conversation-thread-composer-dock">
+          {aboveComposerMessages.length ? (
+            // Same gutter and width as the composer form, so the bubble text lines up
+            // with the composer text (the send animation's origin).
+            <div className="mx-auto w-full max-w-[calc(56rem+1.5rem)] px-3 pt-2">
+              <div className="mx-auto w-full max-w-4xl">
+                <QueuedMessages
+                  view={queuedView}
+                  tooltip={sendNowTooltip(sendNowQuery.data?.steeringSupported ?? null)}
+                  localError={sendNowLocalError}
+                  onSendNow={handleSendNow}
+                  onRetry={handleSendNowRetry}
+                  renderBody={(message) => renderConversationMessageBody(message)}
+                  bubbleRef={queuedBubbleRef}
+                />
+              </div>
+            </div>
+          ) : null}
           {trayNotice ? (
             <div className="pointer-events-none mb-2 flex justify-center px-3">
               <div

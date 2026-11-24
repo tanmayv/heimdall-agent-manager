@@ -1,4 +1,5 @@
 import { containsVaultArmored, isVaultArmored } from '../../utils/vaultContent.ts';
+import type { AcpDelivery } from './acpDelivery.ts';
 
 export type ChatMessage = {
   key: string;
@@ -19,6 +20,8 @@ export type ChatMessage = {
   isLatestMessage?: boolean;
   optionsRevision?: number;
   questionAnswer?: { answer_message_id: string; answered_at: string } | null;
+  /** ACP user rows only (docs/acp-send-now.md); absent for PTY, agent and legacy rows. */
+  acpDelivery?: AcpDelivery | null;
 };
 
 export function messageOptionsEligible(message: {
@@ -90,6 +93,10 @@ export function extractMessageActionIds(message: { metadata?: any; metadata_json
     }
   }
   if (!meta) return [];
+  // Automation runs use action_id for the scheduled/event action, not an
+  // approval card. Only explicit card collections may accompany a run.
+  const isActionRun = Boolean(meta.run_id || meta.runId || meta.event_type || meta.eventType);
+  if (isActionRun && !meta.action_ids && !meta.actions) return [];
   const raw = meta.action_ids ?? meta.actions ?? meta.actionId ?? meta.action_id;
   if (Array.isArray(raw)) {
     return raw.map((a: any) => String(a).trim()).filter((s: string) => s !== '');

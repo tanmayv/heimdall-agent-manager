@@ -235,7 +235,9 @@ t5_acp_vault_lock_backpressures_frames_and_resumes :: proc(t:^testing.T) {
 
 @(test)
 t5_acp_chat_snapshots_retry_cap_and_sealed_journal :: proc(t:^testing.T) {
+    // Pins the assistant-only outbox layout (reports covered in acp_send_now_test).
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    reports:=acp_delivery_reports_enabled;acp_delivery_reports_enabled=false;defer acp_delivery_reports_enabled=reports
     previous_records:=bridge_local_token_records
     bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
     defer { delete(bridge_local_token_records);bridge_local_token_records=previous_records }
@@ -292,7 +294,9 @@ t5_recovery_relay :: proc(path:[]string,method,params:string,rec:Bridge_Local_Ag
 
 @(test)
 t5_acp_detached_finalization_retries_durably_after_token_invalidation :: proc(t:^testing.T) {
+    // Pins the assistant-only outbox layout (reports covered in acp_send_now_test).
     sync.mutex_lock(&bridge_test_config_mutex);defer sync.mutex_unlock(&bridge_test_config_mutex)
+    reports:=acp_delivery_reports_enabled;acp_delivery_reports_enabled=false;defer acp_delivery_reports_enabled=reports
     previous_records:=bridge_local_token_records;previous_owners:=acp_runtimes
     bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
     acp_runtimes=make(map[string]^ACP_Runtime,allocator=runtime.heap_allocator())

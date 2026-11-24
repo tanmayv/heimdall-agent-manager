@@ -60,6 +60,8 @@ issue_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Issue {
 }
 
 issue_save_sqlite :: proc(ctx: rawptr, issue: domain.Issue) -> (domain.Issue, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Issue{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -94,6 +96,10 @@ issue_save_sqlite :: proc(ctx: rawptr, issue: domain.Issue) -> (domain.Issue, bo
 }
 
 issue_get_sqlite :: proc(ctx: rawptr, issue_id: domain.Issue_ID, owner_user_id: domain.User_ID) -> (domain.Issue, bool, domain.Domain_Error) {
+	// Mutation services use this row to decide updates, comments and votes.
+	// Do not act on another threads uncommitted issue.
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Issue{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -211,6 +217,8 @@ issue_list_sqlite :: proc(ctx: rawptr, filter: domain.Issue_Filter) -> ([]domain
 }
 
 issue_update_sqlite :: proc(ctx: rawptr, issue: domain.Issue) -> (domain.Issue, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Issue{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -247,6 +255,8 @@ issue_update_sqlite :: proc(ctx: rawptr, issue: domain.Issue) -> (domain.Issue, 
 }
 
 issue_delete_sqlite :: proc(ctx: rawptr, issue_id: domain.Issue_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -283,6 +293,8 @@ issue_comment_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Issue_Comment {
 }
 
 issue_comment_save_sqlite :: proc(ctx: rawptr, comment: domain.Issue_Comment) -> (domain.Issue_Comment, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Issue_Comment{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -337,6 +349,8 @@ issue_comment_list_sqlite :: proc(ctx: rawptr, issue_id: domain.Issue_ID, owner_
 }
 
 issue_comment_delete_sqlite :: proc(ctx: rawptr, comment_id: domain.Issue_Comment_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -370,6 +384,8 @@ issue_vote_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Issue_Vote {
 }
 
 issue_vote_save_sqlite :: proc(ctx: rawptr, vote: domain.Issue_Vote) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -401,6 +417,8 @@ issue_vote_save_sqlite :: proc(ctx: rawptr, vote: domain.Issue_Vote) -> (bool, d
 }
 
 issue_vote_remove_sqlite :: proc(ctx: rawptr, issue_id: domain.Issue_ID, voter_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Issue_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")

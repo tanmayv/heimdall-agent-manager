@@ -46,6 +46,8 @@ user_resolve_external_sqlite :: proc(
 	bool,
 	domain.Domain_Error,
 ) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^User_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil do return {}, false, domain.domain_error(.Internal_Error, "identity repository unavailable")
 	if linked, read_ok := external_identity_lookup(impl.conn, issuer, subject); read_ok && linked != "" {
@@ -121,6 +123,8 @@ user_resolve_external_sqlite :: proc(
 // already linked or the identity belongs to another user; re-linking the same
 // pair is a no-op success.
 user_link_external_sqlite :: proc(conn: ^Conn, user_id, issuer, subject, now: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	if conn == nil || conn.db == nil do return false, domain.domain_error(.Internal_Error, "identity repository unavailable")
 	if user_id == "" || issuer == "" || subject == "" do return false, domain.domain_error(.Validation_Failed, "--user, --issuer and --subject are required")
 	if !exec(conn, "BEGIN IMMEDIATE;") do return false, domain.domain_error(.Internal_Error, "identity transaction failed")
@@ -156,6 +160,8 @@ user_link_external_sqlite :: proc(conn: ^Conn, user_id, issuer, subject, now: st
 // user_unlink_external_sqlite removes the user's external identity link (only
 // the one for `issuer` when given). Returns the number of links removed.
 user_unlink_external_sqlite :: proc(conn: ^Conn, user_id, issuer: string) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	if conn == nil || conn.db == nil do return 0, domain.domain_error(.Internal_Error, "identity repository unavailable")
 	if user_id == "" do return 0, domain.domain_error(.Validation_Failed, "--user is required")
 	stmt: sqlite3_stmt
@@ -170,6 +176,8 @@ user_unlink_external_sqlite :: proc(conn: ^Conn, user_id, issuer: string) -> (in
 
 // user_set_status_sqlite activates/disables a user (operator CLI).
 user_set_status_sqlite :: proc(conn: ^Conn, user_id: string, active: bool, now: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	if conn == nil || conn.db == nil do return false, domain.domain_error(.Internal_Error, "user repository unavailable")
 	stmt: sqlite3_stmt
 	query := "UPDATE users SET status=?, updated_at=? WHERE user_id=?;"

@@ -23,6 +23,9 @@ work_dependency_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Work_Dependency 
 }
 
 insert_work_dependency_sqlite :: proc(ctx: rawptr, record: domain.Work_Dependency) -> (domain.Work_Dependency, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := mixed_work_prepare(impl, "INSERT INTO work_dependencies (dependency_id, chain_id, owner_user_id, dependent_kind, dependent_id, prerequisite_kind, prerequisite_id, created_by_kind, created_by_id, created_at, removed_at, removed_by_kind, removed_by_id, removal_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", "work_dependency insert")
 	if err.code != .None do return domain.Work_Dependency{}, false, err
@@ -78,6 +81,9 @@ work_input_receipt_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Work_Input_Re
 }
 
 insert_work_input_receipt_sqlite :: proc(ctx: rawptr, record: domain.Work_Input_Receipt) -> (domain.Work_Input_Receipt, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := mixed_work_prepare(impl, "INSERT INTO work_input_receipts (receipt_id, chain_id, owner_user_id, dependent_kind, dependent_id, dependent_generation, prerequisite_kind, prerequisite_id, prerequisite_generation, output_manifest_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", "work_input_receipt insert")
 	if err.code != .None do return domain.Work_Input_Receipt{}, false, err
@@ -151,6 +157,9 @@ work_scope_decision_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Work_Scope_D
 }
 
 append_work_scope_decision_sqlite :: proc(ctx: rawptr, record: domain.Work_Scope_Decision) -> (domain.Work_Scope_Decision, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := mixed_work_prepare(impl, "INSERT INTO work_scope_decisions (chain_id, owner_user_id, item_kind, item_id, action, reason, actor_kind, actor_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING decision_id;", "work_scope_decision insert")
 	if err.code != .None do return domain.Work_Scope_Decision{}, false, err
@@ -188,6 +197,9 @@ list_work_scope_decisions_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chai
 }
 
 remove_work_dependency_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, dependency_id: string, removed_at: string, actor_kind: string, actor_id: string, reason: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := mixed_work_prepare(impl, "UPDATE work_dependencies SET removed_at = ?, removed_by_kind = ?, removed_by_id = ?, removal_reason = ? WHERE chain_id = ? AND owner_user_id = ? AND dependency_id = ? AND removed_at = '';", "dependency removal")
 	if err.code != .None do return false, err
@@ -214,6 +226,9 @@ mixed_work_prepare :: proc(impl: ^Taskchain_Repo_SQLite, query: string, what: st
 }
 
 complete_work_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, expected_revision: i64, summary, completed_at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt, err := mixed_work_prepare(impl, "UPDATE task_chains SET status='completed', completion_summary=?, completed_at=?, updated_at=?, work_revision=work_revision+1 WHERE chain_id=? AND owner_user_id=? AND status='active' AND publish_state='published' AND work_revision=?;", "complete work chain")
 	if err.code != .None do return false, err

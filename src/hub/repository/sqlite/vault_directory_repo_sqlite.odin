@@ -70,6 +70,9 @@ new_vault_directory_repository :: proc(impl: ^Vault_Directory_Repo_SQLite, conn:
 }
 
 vault_consume_request_nonce_sqlite :: proc(ctx: rawptr, user_id, device_id, nonce: string, now_ms, expires_ms: i64) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)
@@ -311,6 +314,9 @@ insert_log_on :: proc(conn: ^Conn, e: domain.Vault_Log_Entry) -> bool {
 // vault_mark_retired_sqlite sets the retirement hint. It never touches the version,
 // the log or the device status (see iface.Vault_Mark_Retired_Proc).
 vault_mark_retired_sqlite :: proc(ctx: rawptr, user_id, device_id, bridge_id, now: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)
@@ -383,6 +389,9 @@ current_version_on :: proc(conn: ^Conn, user_id: string) -> i64 {
 // ── Writes ──────────────────────────────────────────────────────────────────
 
 vault_register_pending_sqlite :: proc(ctx: rawptr, device: domain.Vault_Device, now: string) -> (domain.Vault_Device, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	if device.status != .Pending || device.pair_lookup == "" || device.pair_key_mac == "" || device.pair_salt == "" || device.pair_hub_origin == "" || device.register_statement == "" || device.code_expires_at == "" {
 		return {}, domain.domain_error(.Validation_Failed, "a registered device must be pending with a pairing lookup")
@@ -463,6 +472,9 @@ vault_register_pending_sqlite :: proc(ctx: rawptr, device: domain.Vault_Device, 
 }
 
 vault_delete_pending_sqlite :: proc(ctx: rawptr, user_id, device_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)
@@ -482,6 +494,9 @@ vault_delete_pending_sqlite :: proc(ctx: rawptr, user_id, device_id: string) -> 
 VAULT_LAST_SEEN_THROTTLE_SECONDS :: 3600
 
 vault_touch_last_seen_sqlite :: proc(ctx: rawptr, user_id, device_id, now: string) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)
@@ -533,6 +548,9 @@ upsert_wrap_on :: proc(conn: ^Conn, w: domain.Vault_Wrap_Row) -> bool {
 }
 
 vault_create_genesis_sqlite :: proc(ctx: rawptr, g: domain.Vault_Genesis) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)
@@ -591,6 +609,9 @@ vault_create_genesis_sqlite :: proc(ctx: rawptr, g: domain.Vault_Genesis) -> dom
 vault_commit_test_hook: proc(user_id: string)
 
 vault_commit_sqlite :: proc(ctx: rawptr, cm: domain.Vault_Directory_Commit) -> (i64, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	if cm.user_id == "" || cm.now == "" || cm.expected_version < 1 do return 0, domain.domain_error(.Validation_Failed, "user_id, now and expected_version are required")
 	// The hub never advances the directory without a signed log op.
@@ -735,6 +756,9 @@ vault_get_reset_sqlite :: proc(ctx: rawptr, user_id: string) -> (domain.Vault_Re
 }
 
 vault_schedule_reset_sqlite :: proc(ctx: rawptr, r: domain.Vault_Reset) -> (domain.Vault_Reset, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)
@@ -767,6 +791,9 @@ vault_schedule_reset_sqlite :: proc(ctx: rawptr, r: domain.Vault_Reset) -> (doma
 }
 
 vault_cancel_reset_sqlite :: proc(ctx: rawptr, user_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)
@@ -806,6 +833,9 @@ VAULT_RESET_DELETES :: [6]string{
 }
 
 vault_execute_reset_sqlite :: proc(ctx: rawptr, user_id, now: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Vault_Directory_Repo_SQLite)(ctx)
 	lock_tok := dbt.timed_lock(&impl.mutex, .Vault)
 	defer dbt.timed_unlock(&impl.mutex, .Vault, lock_tok)

@@ -22,6 +22,9 @@ import iface "odin_test:hub/repository/iface"
 BRIDGE_TOKEN_COLUMNS :: "token_id, bridge_id, kind, token_hash, family_id, generation, scope, issued_at, expires_at, family_expires_at, rotated_at, revoked_at, rotation_request_hash, first_used_at, regrant_claim"
 
 bridge_save_token_sqlite :: proc(ctx: rawptr, token: domain.Bridge_Token) -> (domain.Bridge_Token, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	// The UPDATE half intentionally touches ONLY the two lifecycle stamps and
@@ -59,6 +62,10 @@ bridge_save_token_sqlite :: proc(ctx: rawptr, token: domain.Bridge_Token) -> (do
 }
 
 bridge_get_token_sqlite :: proc(ctx: rawptr, token_id: string) -> (domain.Bridge_Token, bool, domain.Domain_Error) {
+	// This lookup feeds authorization or runtime mutation decisions.
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "SELECT " + BRIDGE_TOKEN_COLUMNS + " FROM bridge_tokens WHERE token_id = ?;"
@@ -80,6 +87,10 @@ bridge_get_token_sqlite :: proc(ctx: rawptr, token_id: string) -> (domain.Bridge
 // path compares a presented token against the newest generation and a stable order
 // is what makes "newest" mean one thing.
 bridge_list_tokens_by_family_sqlite :: proc(ctx: rawptr, family_id: string) -> ([]domain.Bridge_Token, domain.Domain_Error) {
+	// This lookup feeds authorization or runtime mutation decisions.
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "SELECT " + BRIDGE_TOKEN_COLUMNS + " FROM bridge_tokens WHERE family_id = ? ORDER BY generation ASC, kind ASC;"
@@ -111,6 +122,9 @@ bridge_list_tokens_by_family_sqlite :: proc(ctx: rawptr, family_id: string) -> (
 // than re-stamping a new timestamp over the original revocation time, which is the
 // value an audit actually wants.
 bridge_revoke_token_family_sqlite :: proc(ctx: rawptr, family_id, revoked_at: string) -> (int, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if family_id == "" || revoked_at == "" do return 0, false, domain.domain_error(.Validation_Failed, "family_id and revoked_at are required")
 	if impl.commit != nil {
@@ -153,6 +167,9 @@ bridge_revoke_token_family_on :: proc(conn: ^Conn, family_id, revoked_at: string
 // is atomic with the commit's promote: whichever takes the write lock first wins,
 // and a promoted family matches 0 rows here.
 bridge_revoke_token_family_in_scope_sqlite :: proc(ctx: rawptr, family_id, scope, revoked_at: string) -> (int, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if family_id == "" || scope == "" || revoked_at == "" do return 0, false, domain.domain_error(.Validation_Failed, "family_id, scope and revoked_at are required")
 	stmt: sqlite3_stmt = nil
@@ -172,6 +189,9 @@ bridge_revoke_token_family_in_scope_sqlite :: proc(ctx: rawptr, family_id, scope
 // families from an earlier enrollment of the same machine. Keyed on bridge_id, so a
 // different bridge of the same owner is untouched by construction.
 bridge_revoke_tokens_for_bridge_sqlite :: proc(ctx: rawptr, bridge_id, revoked_at: string) -> (int, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if bridge_id == "" || revoked_at == "" do return 0, false, domain.domain_error(.Validation_Failed, "bridge_id and revoked_at are required")
 	if impl.commit != nil {
@@ -217,6 +237,9 @@ bridge_revoke_tokens_for_bridge_on :: proc(conn: ^Conn, bridge_id, revoked_at: s
 // bridge_mark_token_used_sqlite stamps an access token's first authentication.
 // `AND first_used_at = ''` keeps the first stamp and makes repeats no-ops.
 bridge_mark_token_used_sqlite :: proc(ctx: rawptr, token_id, used_at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if token_id == "" || used_at == "" do return false, domain.domain_error(.Validation_Failed, "token_id and used_at are required")
 	stmt: sqlite3_stmt = nil
@@ -243,6 +266,9 @@ bridge_regrant_test_hook: proc(spent_token_id: string) -> bool
 // Runs on the dedicated commit connection (see Bridge_Enroll_Commit_Conn: a BEGIN on
 // the shared connection would let other requests' statements join it).
 bridge_regrant_atomic_sqlite :: proc(ctx: rawptr, input: iface.Bridge_Regrant_Input) -> (iface.Bridge_Regrant_Outcome, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if input.spent_token_id == "" || input.family_id == "" || input.claim == "" || input.now == "" {
 		return .Failed, domain.domain_error(.Validation_Failed, "spent_token_id, family_id, claim and now are required")
@@ -333,6 +359,9 @@ bridge_insert_token_on :: proc(conn: ^Conn, token: domain.Bridge_Token) -> bool 
 // the reuse signal — so the race resolves into the detection path instead of minting
 // two live generations from one token.
 bridge_mark_token_rotated_sqlite :: proc(ctx: rawptr, token_id, rotated_at, request_hash: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if token_id == "" || rotated_at == "" do return false, domain.domain_error(.Validation_Failed, "token_id and rotated_at are required")
 	stmt: sqlite3_stmt = nil
@@ -364,6 +393,9 @@ bridge_mark_token_rotated_sqlite :: proc(ctx: rawptr, token_id, rotated_at, requ
 // BEGIN IMMEDIATE takes the write lock up front, as billing_repo_sqlite does, so a
 // concurrent sweep cannot revoke the family between the read and the write.
 bridge_commit_enrollment_sqlite :: proc(ctx: rawptr, bridge_id, family_id, from_scope, to_scope: string, attach: bool, now: string) -> (iface.Enrollment_Commit_Outcome, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Bridge_Repo_SQLite)(ctx)
 	if bridge_id == "" || family_id == "" || from_scope == "" || to_scope == "" || now == "" {
 		return .Not_Pending, false, domain.domain_error(.Validation_Failed, "bridge_id, family_id, scopes and now are required")

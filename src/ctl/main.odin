@@ -140,7 +140,7 @@ main :: proc() {
 		return
 	}
 
-	if cmd[0] == "actions" || cmd[0] == "action" || cmd[0] == "scheduled-prompts" || cmd[0] == "scheduled-prompt" {
+	if cmd[0] == "actions" || cmd[0] == "action" {
 		url := hub_user_mode_url(os.args)
 		tok := hub_user_mode_token(os.args)
 		if url == "" || tok == "" {

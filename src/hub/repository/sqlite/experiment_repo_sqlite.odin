@@ -22,6 +22,8 @@ new_experiment_repository :: proc(impl: ^Experiment_Repo_SQLite, conn: ^Conn) ->
 // experiment_set_sqlite upserts a flag for (owner_user_id, key). A row already
 // present for that pair is updated in place; a new pair is inserted.
 experiment_set_sqlite :: proc(ctx: rawptr, exp: domain.Experiment) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Experiment_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")

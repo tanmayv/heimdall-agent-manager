@@ -156,7 +156,7 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		}
 	}
 	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
-	if reset, reset_err := reset_idle_agent_instances(svc, task.owner_user_id, task.chain_id, agent_id, bridge_id, true); !reset {
+	if reset, reset_err := reset_idle_agent_instances(svc, task.owner_user_id, task.chain_id, agent_id, bridge_id, true, task.task_id); !reset {
 		_, _ = end_uow(svc, &u, false)
 		return false, reset_err
 	}
@@ -226,12 +226,23 @@ start_solo_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task:
 
 // A fleet edit retries infrastructure failures using its new launch selection.
 // Instances holding another lease and deliberate user stops remain protected.
-reset_idle_agent_instances :: proc(svc: ^Service, owner: domain.User_ID, chain_id: domain.Task_Chain_ID, agent_id: string, bridge_id := "", clear_user_stop := false) -> (bool, domain.Domain_Error) {
+reset_idle_agent_instances :: proc(svc: ^Service, owner: domain.User_ID, chain_id: domain.Task_Chain_ID, agent_id: string, bridge_id := "", clear_user_stop := false, recovery_task_id: domain.Task_ID = "") -> (bool, domain.Domain_Error) {
 	instances, ierr := iface.agent_list_instances_by_chain(svc.agents, owner, string(chain_id))
 	if ierr.code != .None do return false, ierr
+	// Only explicit recovery may reset this task's retained waiting holder.
+	// When responsibility is retained, leave other warm instances alone too.
+	retained := false
+	if clear_user_stop && recovery_task_id != "" {
+		claims, err := iface.taskchain_list_leases_by_task(svc.repo, recovery_task_id)
+		if err.code != .None do return false, err
+		for claim in claims do if claim.phase == domain.LEASE_PHASE_WAITING { retained = true; break }
+	}
 	for inst in instances {
 		if inst.agent_id != agent_id || (bridge_id != "" && inst.bridge_id != bridge_id) do continue
-		if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held do continue
+		claim, held, claim_err := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id)
+		if claim_err.code != .None && claim_err.code != .Not_Found do return false, claim_err
+		own_waiting := clear_user_stop && recovery_task_id != "" && held && claim.task_id == recovery_task_id && claim.phase == domain.LEASE_PHASE_WAITING
+		if (held && !own_waiting) || (retained && !own_waiting) do continue
 		if instance_is_live(inst) || instance_is_pending(inst) do continue
 		if !clear_user_stop && inst.stopped_by != "" do continue
 		next := inst

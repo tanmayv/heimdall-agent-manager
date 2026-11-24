@@ -684,6 +684,7 @@ MIGRATION_220_EXTENSION_VERSION_SYNC :: #load("migrations/220_extension_version_
 MIGRATION_221_EXTENSION_VERSION_SYNC :: #load("migrations/221_extension_version_sync_0_5_61.sql", string)
 
 MIGRATION_222_EXTENSION_VERSION_SYNC :: #load("migrations/222_extension_version_sync_0_5_62.sql", string)
+MIGRATION_PIPELINE_001_DELIVERIES :: #load("migrations/pipeline_001_deliveries.sql", string)
 MIGRATION_EVENTS_001_OUTBOX :: #load("migrations/events_001_outbox.sql", string)
 
 MIGRATION_EVENTS_005_DELIVERY_RETENTION :: #load("migrations/events_005_delivery_retention.sql", string)
@@ -732,6 +733,17 @@ MIGRATION_236_EXTENSION_VERSION_SYNC :: #load("migrations/236_extension_version_
 MIGRATION_AGENTS_001_START_REF :: #load("migrations/agents_001_start_ref.sql", string)
 
 MIGRATION_237_EXTENSION_VERSION_SYNC :: #load("migrations/237_extension_version_sync_0_5_74.sql", string)
+
+MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE :: #load("migrations/actions_003_history_performance.sql", string)
+MIGRATION_ACTIONS_002_LOOKUP_INDEXES :: #load("migrations/actions_002_lookup_indexes.sql", string)
+MIGRATION_ACP_DELIVERY_001_INPUT_DELIVERIES :: #load("migrations/acp_delivery_001_input_deliveries.sql", string)
+MIGRATION_ACTIONS_001_RESET :: #load("migrations/actions_001_reset.sql", string)
+
+MIGRATION_238_EXTENSION_VERSION_SYNC :: #load("migrations/238_extension_version_sync_0_5_75.sql", string)
+
+MIGRATION_239_EXTENSION_VERSION_SYNC :: #load("migrations/239_extension_version_sync_0_5_76.sql", string)
+
+MIGRATION_240_EXTENSION_VERSION_SYNC :: #load("migrations/240_extension_version_sync_0_5_77.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -988,6 +1000,14 @@ migration_order :: [?]string {
 	"agents_001_start_ref.sql",
 	"events_006_instance_subscriptions.sql",
 	"237_extension_version_sync_0_5_74.sql",
+	"pipeline_001_deliveries.sql",
+	"actions_001_reset.sql",
+	"actions_002_lookup_indexes.sql",
+	"actions_003_history_performance.sql",
+	"238_extension_version_sync_0_5_75.sql",
+	"239_extension_version_sync_0_5_76.sql",
+	"acp_delivery_001_input_deliveries.sql",
+	"240_extension_version_sync_0_5_77.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1036,6 +1056,17 @@ run_migrations :: proc(
          continue
         }
 		if migration_applied(conn, name) do continue
+		// The reset commits atomically before its ledger entry. Its LAST index
+		// plus the absence of the old schema proves the exec-to-mark gap; do
+		// not reapply the destructive reset to already committed new rows.
+		if name == "actions_001_reset.sql" &&
+		   sqlite_object_exists(conn, "action_runs_due") &&
+		   !sqlite_object_exists(conn, "action_schedule_revision") &&
+		   !sqlite_object_exists(conn, "scheduled_prompts") &&
+		   table_column_exists(conn, "actions", "action_id") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 215 commits atomically; repair a crash before its ledger insert.
 		if name == "215_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
 			mark_migration_applied(conn, name)
@@ -1487,7 +1518,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1506,8 +1537,6 @@ run_migrations :: proc(
 	if !upgrade_current_task_and_priority_schema(conn) do return false, domain.domain_error(.Internal_Error, "current task + priority schema upgrade failed")
 	if !upgrade_title_tracking_schema(conn) do return false, domain.domain_error(.Internal_Error, "title tracking schema upgrade failed")
 	if !upgrade_agent_instance_display_name_schema(conn) do return false, domain.domain_error(.Internal_Error, "agent instance display_name schema upgrade failed")
-	if !upgrade_scheduled_prompts_schema(conn) do return false, domain.domain_error(.Internal_Error, "scheduled prompts schema upgrade failed")
-	if !upgrade_actions_schema(conn) do return false, domain.domain_error(.Internal_Error, "actions schema upgrade failed")
 	if !upgrade_push_subscriptions_schema(conn) do return false, domain.domain_error(.Internal_Error, "push subscriptions schema upgrade failed")
 	if !upgrade_memory_description_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory description schema upgrade failed")
 	if !upgrade_cards_schema(conn) do return false, domain.domain_error(.Internal_Error, "cards schema upgrade failed")
@@ -1530,6 +1559,13 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "240_extension_version_sync_0_5_77.sql" do return strings.clone(MIGRATION_240_EXTENSION_VERSION_SYNC)
+	if name == "239_extension_version_sync_0_5_76.sql" do return strings.clone(MIGRATION_239_EXTENSION_VERSION_SYNC)
+	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
+	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
+ if name == "actions_003_history_performance.sql" do return strings.clone(MIGRATION_ACTIONS_003_HISTORY_PERFORMANCE)
+ if name == "actions_002_lookup_indexes.sql" do return strings.clone(MIGRATION_ACTIONS_002_LOOKUP_INDEXES)
+ if name == "acp_delivery_001_input_deliveries.sql" do return strings.clone(MIGRATION_ACP_DELIVERY_001_INPUT_DELIVERIES)
 	if name == "237_extension_version_sync_0_5_74.sql" do return strings.clone(MIGRATION_237_EXTENSION_VERSION_SYNC)
  if name == "agents_001_start_ref.sql" do return strings.clone(MIGRATION_AGENTS_001_START_REF)
 	if migrations_dir != "" {
@@ -1566,6 +1602,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
 	if name == "events_003_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_003_SUBSCRIPTIONS)
 	if name == "events_002_topics.sql" do return strings.clone(MIGRATION_EVENTS_002_TOPICS)
+	if name == "pipeline_001_deliveries.sql" do return strings.clone(MIGRATION_PIPELINE_001_DELIVERIES)
 	if name == "events_001_outbox.sql" do return strings.clone(MIGRATION_EVENTS_001_OUTBOX)
 	if name == "220_extension_version_sync_0_5_60.sql" do return strings.clone(MIGRATION_220_EXTENSION_VERSION_SYNC)
 	if name == "219_extension_version_sync_0_5_59.sql" do return strings.clone(MIGRATION_219_EXTENSION_VERSION_SYNC)
@@ -2032,88 +2069,6 @@ upgrade_title_tracking_schema :: proc(conn: ^Conn) -> bool {
 
 upgrade_agent_instance_display_name_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "agent_instances", "display_name") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN display_name TEXT NOT NULL DEFAULT '';") do return false
-	return true
-}
-
-upgrade_scheduled_prompts_schema :: proc(conn: ^Conn) -> bool {
-	return exec(
-		conn,
-		`CREATE TABLE IF NOT EXISTS scheduled_prompts (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  target_instance_id TEXT NOT NULL,
-  prompt_text TEXT NOT NULL,
-  target_run_at TEXT NOT NULL,
-  interval TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  in_flight INTEGER NOT NULL DEFAULT 0,
-  leased_at TEXT NOT NULL DEFAULT '',
-  deleted_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);`,
-	)
-}
-
-upgrade_actions_schema :: proc(conn: ^Conn) -> bool {
-	if !exec(
-		conn,
-		`CREATE TABLE IF NOT EXISTS actions (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  target_instance_id TEXT NOT NULL,
-  prompt_text TEXT NOT NULL,
-  cron_expr TEXT NOT NULL DEFAULT '',
-  timezone TEXT NOT NULL DEFAULT 'UTC',
-  blackout_dates TEXT NOT NULL DEFAULT '[]',
-  active_from TEXT NOT NULL DEFAULT '',
-  active_until TEXT NOT NULL DEFAULT '',
-  target_run_at TEXT NOT NULL DEFAULT '',
-  interval TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  in_flight INTEGER NOT NULL DEFAULT 0,
-  leased_at TEXT NOT NULL DEFAULT '',
-  deleted_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target_instance_id);
-CREATE INDEX IF NOT EXISTS idx_actions_owner_run ON actions(owner_user_id, target_run_at);
-CREATE INDEX IF NOT EXISTS idx_actions_due ON actions(target_run_at) WHERE state = 'active' AND in_flight = 0 AND deleted_at = '';
-CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user_id ON actions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`,
-	) {
-		return false
-	}
-
-	if !table_column_exists(conn, "actions", "cron_expr") && !exec(conn, "ALTER TABLE actions ADD COLUMN cron_expr TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "timezone") && !exec(conn, "ALTER TABLE actions ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';") do return false
-	if !table_column_exists(conn, "actions", "blackout_dates") && !exec(conn, "ALTER TABLE actions ADD COLUMN blackout_dates TEXT NOT NULL DEFAULT '[]';") do return false
-	if !table_column_exists(conn, "actions", "active_from") && !exec(conn, "ALTER TABLE actions ADD COLUMN active_from TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "active_until") && !exec(conn, "ALTER TABLE actions ADD COLUMN active_until TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_agent_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_agent_id TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_bridge_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_bridge_id TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_provider") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_provider TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_model") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_model TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "target_project_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_project_id TEXT NOT NULL DEFAULT '';") do return false
-	if !table_column_exists(conn, "actions", "instance_strategy") && !exec(conn, "ALTER TABLE actions ADD COLUMN instance_strategy TEXT NOT NULL DEFAULT 'reuse';") do return false
-	if !table_column_exists(conn, "actions", "last_spawned_instance_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN last_spawned_instance_id TEXT NOT NULL DEFAULT '';") do return false
-	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_actions_target_agent ON actions(target_agent_id);") do return false
-	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_actions_target_bridge ON actions(target_bridge_id);") do return false
-
-	if table_column_exists(conn, "scheduled_prompts", "id") {
-		exec(
-			conn,
-			`INSERT OR IGNORE INTO actions (
-  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
-  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
-)
-SELECT
-  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
-  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
-FROM scheduled_prompts;`,
-		)
-	}
 	return true
 }
 

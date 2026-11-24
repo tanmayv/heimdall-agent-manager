@@ -31,7 +31,7 @@ Send proactive plain-text updates with `./bin/ham-ctl channel send --text "<upda
 | `task.review_requested_from_user` | Include task title and ID, and direct the user to its review in Ninjy. Leave the verdict to the user. |
 | `task.blocked_on_human` | Include the actual question fetched from the task. Leave the event pending if the fetch fails. |
 | `chain.work_finished` | Report the finished batch or failed workflow. Wait for confirmed chain completion before stopping agents. |
-| `resolved` | Retire the earlier request. Acknowledge without sending the stale question or review request. |
+| `resolved` | Retire the earlier request without sending the stale question or review request. `resolved` notices need no acknowledgement; acking one is accepted as a no-op. |
 
 - Acknowledge each event with `./bin/ham-ctl events ack <event_id>` after its update is sent (or held for WhatsApp). Leave it unacknowledged if fetching details or sending fails so it can be retried. Ack events needing no user update after processing them.
-- Delivery is at-least-once: deduplicate by `event_id` against updates already sent before retrying, and acknowledge duplicates without sending again. A `resolved` notice refers to an earlier event; retire that pending review/question and acknowledge it, without presenting a stale request to the user.
+- Delivery is at-least-once: deduplicate by `event_id` against updates already sent before retrying, and acknowledge duplicates without sending again. A `resolved` notice refers to an earlier event; retire that pending review/question without presenting a stale request to the user. `resolved` notices need no acknowledgement; acking one is accepted as a no-op.

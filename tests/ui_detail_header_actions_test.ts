@@ -78,12 +78,13 @@ test('agents: Archive / Unarchive are buttons beside Edit, with no "…" menu', 
 
 /* Actions and Memory --------------------------------------------------- */
 
-test('actions: Run now and Delete are buttons beside Edit, with no "…" menu', async () => {
+test('actions: Delete is beside Edit with no Run control and no "…" menu', async () => {
   const { ActionDetailActions } = await import('../src/ui/components/actions/ActionDetail.tsx');
   const html = await render((React) =>
-    React.createElement(ActionDetailActions, { record: { id: 'act_1', prompt_text: 'Nightly report', state: 'active' } as any, busy: '', onVerb: () => {} }),
+    React.createElement(ActionDetailActions, { record: { id: 'act_1', name: 'Nightly report', prompt_text: 'Nightly report', enabled: true, min_interval_s: 30, target: { kind: 'instance', instance_id: 'inst_1' }, triggers: [] } as any, busy: '', onVerb: () => {} }),
   );
-  assert.match(html, button('action-view-run', 'Run now'));
+  assert.match(html, button('action-view-edit', 'Edit'));
+  assert.doesNotMatch(html, /action-view-run|Run now/);
   assert.match(html, button('action-view-delete', 'Delete'));
   assert.doesNotMatch(html, NO_MENU);
 });

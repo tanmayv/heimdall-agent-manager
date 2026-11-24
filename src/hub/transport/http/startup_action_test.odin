@@ -142,6 +142,20 @@ startup_task_wake_replacement_has_fresh_receipt_and_confirms_lease :: proc(t: ^t
 	uow_impl: sqlite.SQLite_Unit_Of_Work_Factory
 	uow := sqlite.new_unit_of_work_factory(&uow_impl, &f.conn, &repos)
 	engine.uow_factory = &uow
+	// A replacement goes through start_begin: configure the same launch inputs
+	// as production rather than bypassing provider and live-bridge admission.
+	provider_impl: sqlite.Provider_Repo_SQLite
+	providers := sqlite.new_provider_repository(&provider_impl, &f.conn)
+	registry: project_service.Bridge_Runtime_Registry
+	defer project_service.bridge_runtime_registry_destroy(&registry)
+	f.ag_svc.providers = &providers
+	f.ag_svc.bridge_runtime_registry = &registry
+	engine.agent_service = &f.ag_svc
+	engine.bridge_command_sink = project_service.Bridge_Command_Sink{send_runtime_command = proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) { return true, {} }}
+	_, _, _ = project_service.bridge_runtime_registry_accept_live(&registry, f.bridge_pin, false, "", string(f.owner))
+	_, _ = iface.bridge_provider_status_upsert(&providers, {bridge_id = f.bridge_pin, provider = "claude", state = "present"})
+	_, _ = iface.bridge_provider_setting_upsert(&providers, {bridge_id = f.bridge_pin, provider = "claude", enabled = true})
+	_, _, _ = iface.agent_save(&f.ag_repo, domain.Agent{agent_id = "agt_wire_tb2", owner_user_id = f.owner, name = "Startup worker", state = .Active})
 	Counts :: struct { hooks, wakes, runs: int, generation: int, engine: ^taskv2.Service }
 	counts := Counts{engine = &engine}
 	f.ag_svc.hooks = agent_service.Lifecycle_Hooks{ctx = &counts, on_start_success = proc(ctx: rawptr, inst: domain.Agent_Instance) {
@@ -191,6 +205,8 @@ startup_task_wake_replacement_has_fresh_receipt_and_confirms_lease :: proc(t: ^t
 		stopped.runtime_status = "stopped"
 		_, _, _ = iface.agent_save_instance(&f.ag_repo, stopped)
 	}
+	// save_instance advances configuration metadata; grant the current snapshot.
+	inst, _, _ = iface.agent_get_instance(&f.ag_repo, f.instance_id)
 	u, begun, begin_err := taskv2.begin_uow(&engine)
 	if !testing.expect(t, begun, begin_err.message) do return
 	lease, granted, grant_err := taskv2.grant_in_uow(&engine, &u, taskv2.Grant_Request{chain = chain, task = task, instance = inst, kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_WAKE, placement = taskv2.Placement{bridge_id = f.bridge_pin, provider = inst.provider, model = inst.model}, actor = taskv2.hub_actor()})

@@ -163,8 +163,9 @@ trigger_label :: proc(t: Trigger) -> string {
 // Effects collects the side effects a UoW decided on; they run after COMMIT.
 Effects :: struct {
  fenced_stops: [dynamic]Fenced_Stop,
+ tickets: [dynamic]^agent.Start_Ticket,
 	// wake runs/stops keyed by bridge id (see wake.odin, M1).
-	runs:        map[string][dynamic]agent.Wake_Agent_Run_Entry,
+	runs:        map[string][dynamic]Lease_Wake,
 	stops:       map[string][dynamic]string,
 	// resource_changed publishes: (owner, resource, id, change)
 	publishes:   [dynamic]Publish_Effect,
@@ -272,7 +273,7 @@ Uow :: struct {
 // without a uow_factory (tests) gets a no-op transaction.
 begin_uow :: proc(svc: ^Service) -> (Uow, bool, domain.Domain_Error) {
 	u := Uow{}
-	u.effects.runs = make(map[string][dynamic]agent.Wake_Agent_Run_Entry)
+	u.effects.runs = make(map[string][dynamic]Lease_Wake)
 	u.effects.stops = make(map[string][dynamic]string)
 	u.effects.publishes = make([dynamic]Publish_Effect)
 	u.effects.changed_chains = make([dynamic]Changed_Chain)
@@ -338,6 +339,7 @@ Deferred_Effects :: struct {
 // Move a successfully released savepoint's effects into its parent. Payloads
 // and owned map keys transfer with the arrays; only source containers are freed.
 move_effects :: proc(dst, src: ^Effects) {
+ append(&dst.tickets, ..src.tickets[:]); delete(src.tickets)
  append(&dst.fenced_stops,..src.fenced_stops[:]);delete(src.fenced_stops)
 	for key, entries in src.runs {
 		current := dst.runs[key]
@@ -406,6 +408,7 @@ deferred_effects_discard :: proc(ctx:rawptr) {
 @(private = "package")
 cancel_reservations :: proc(svc: ^Service, e: ^Effects) {
 	if svc.agent_service == nil do return
+	for ticket in e.tickets do agent.start_cancel(svc.agent_service, ticket)
 	for r in e.reservations {
 		project.bridge_runtime_instance_cancel_reservation(svc.agent_service.bridge_runtime_registry, r.bridge_id, r.generation, r.instance_id)
 	}
@@ -413,6 +416,8 @@ cancel_reservations :: proc(svc: ^Service, e: ^Effects) {
 
 @(private = "package")
 destroy_effects :: proc(e: ^Effects) {
+ for ticket in e.tickets { agent.start_ticket_destroy(ticket); free(ticket) }
+ delete(e.tickets)
  delete(e.fenced_stops)
 	for _, entries in e.runs do delete(entries)
 	delete(e.runs)

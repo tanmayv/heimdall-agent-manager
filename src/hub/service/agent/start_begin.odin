@@ -84,6 +84,10 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	if req.ref != "" && inst.start_ref == req.ref && runtime_expected_active(inst.runtime_status) {
 		return start_ticket_for_row(service, inst, req.ref, false, true), {}
 	}
+	if req.expected != nil {
+		e := req.expected
+		if inst.run_count != e.run_count || inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id do return {}, domain.domain_error(.Conflict, "instance changed before runtime action", `{"code":"start_raced"}`)
+	}
 	if runtime_expected_active(inst.runtime_status) {
 		switch req.if_live {
 		case .Refuse:
@@ -96,10 +100,7 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 		}
 	}
 	if idle, idle_err := reconfiguration_require_idle(service, instance_id); !idle do return {}, idle_err
-	if req.expected != nil {
-		e := req.expected
-		if inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id do return {}, domain.domain_error(.Conflict, "instance configuration changed before runtime action")
-	}
+
 	next := inst
 	if req.provider != "" {
 		if next.provider != req.provider do next.provider_profile = req.provider
@@ -165,8 +166,7 @@ start_reuse :: proc(service: ^Agent_Service, instance_id, ref: string, allocator
 	return {}, false, true, {}
 }
 
-// T23 adds the optional Start_Lease argument and changes the sender, per rev 2.
-start_launch_json :: proc(service: ^Agent_Service, t: Start_Ticket, allocator := context.allocator) -> string {
+start_launch_json :: proc(service: ^Agent_Service, t: Start_Ticket, lease: ^Start_Lease = nil, allocator := context.allocator) -> string {
 	saved_context := context
 	defer context = saved_context
 	arena: virtual.Arena
@@ -174,7 +174,7 @@ start_launch_json :: proc(service: ^Agent_Service, t: Start_Ticket, allocator :=
 	defer virtual.arena_destroy(&arena)
 	context.allocator = virtual.arena_allocator(&arena)
 	context.temp_allocator = context.allocator
-	text := launch_command_json_full(service, t.command_id, t.instance)
+	text := launch_command_json_full(service, t.command_id, t.instance, lease)
 	return strings.clone(text, allocator)
 }
 
@@ -205,7 +205,8 @@ start_send :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_E
 	sent := false
 	if err.code == .None {
 		body := start_launch_json(service, t^)
-		sent, err = project_service.bridge_command_send_runtime(service.bridge_command_sink, {bridge_id=t.instance.bridge_id,command_id=t.command_id,body_json=body})
+		entry := Start_Run_Entry{bridge_id=t.instance.bridge_id,deliver=contracts.START_DELIVER_LAUNCH,launch_json=body}
+		sent, err = start_command_send(service, t.instance.bridge_id, t.command_id, t.instance.chain_id, {entry}, nil)
 		delete(body)
 	}
 	if !sent {
@@ -253,27 +254,12 @@ create_instance_stopped :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	defer virtual.arena_destroy(&arena)
 	context.allocator = virtual.arena_allocator(&arena)
 	context.temp_allocator = context.allocator
-	prepared, generation, prepared_ok, prepare_err := prepare_instance(service, auth, input, default_title_override)
+	prepared, _, prepared_ok, prepare_err := prepare_instance(service, auth, input, default_title_override)
+	context.allocator = allocator
 	if !prepared_ok {
-		prepare_err.message = strings.clone(prepare_err.message, allocator)
-		prepare_err.details_json = strings.clone(prepare_err.details_json, allocator)
+		prepare_err.message = strings.clone(prepare_err.message)
+		prepare_err.details_json = strings.clone(prepare_err.details_json)
 		return {}, false, prepare_err
 	}
-	project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, prepared.bridge_id, generation, prepared.agent_instance_id)
-	prepared.runtime_status = "stopped"
-	prepared.startup_status = "stopped"
-	prepared.activity_status = "unknown"
-	prepared.stopped_by = ""
-	prepared.run_count = 0
-	// Creation has no prior generation. Reset through the repository's creation
-	// path inside the caller's UOW (prepare_instance remains for bots and leases).
-	saved, updated, save_err := iface.agent_save_instance_guarded(service.agents, prepared, 1, prepared.launch_epoch, prepared.configuration_revision)
-	context.allocator = allocator
-	if save_err.code != .None {
-		save_err.message = strings.clone(save_err.message)
-		save_err.details_json = strings.clone(save_err.details_json)
-		return {}, false, save_err
-	}
-	if !updated do return {}, false, domain.domain_error(.Conflict, "instance changed during creation")
-	return domain.agent_instance_clone(saved), true, {}
+	return domain.agent_instance_clone(prepared), true, {}
 }

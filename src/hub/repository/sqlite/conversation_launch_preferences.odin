@@ -14,6 +14,9 @@ launch_preferences_get_sqlite :: proc(ctx: rawptr, owner: string) -> (string, do
  return column_text(stmt, 0), {}
 }
 launch_preferences_save_sqlite :: proc(ctx: rawptr, owner, payload: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
  impl := (^User_Repo_SQLite)(ctx)
  query := "INSERT INTO user_conversation_launch_preferences (owner_user_id,payload_json) VALUES (?,?) ON CONFLICT(owner_user_id) DO UPDATE SET payload_json=excluded.payload_json,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now');"
  stmt: sqlite3_stmt

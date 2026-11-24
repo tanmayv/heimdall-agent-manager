@@ -2,6 +2,7 @@ package agent
 
 import "base:runtime"
 import "core:fmt"
+import "core:encoding/json"
 import base64 "core:encoding/base64"
 import "core:strings"
 import "core:sync"
@@ -335,12 +336,9 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
  return start_instance(service, auth, inst.agent_instance_id)
 }
 
-// prepare_instance is create_instance WITHOUT the network send: it validates,
-// reserves runtime capacity, writes the instance row, conversation and chain
-// membership, and returns the row plus the registry generation of the
-// reservation. The caller either sends the launch (send_instance_launch) or
-// delivers the instance through a wake_agent run[] entry after its own commit
-// (Task System v2 JIT grants), and must cancel the reservation if it gives up.
+// prepare_instance validates and creates a stopped instance, conversation and
+// membership. It never opens a generation or reserves launch quota; only
+// create_instance_stopped calls it. The legacy generation result is always zero.
 prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input, default_title_override:string="") -> (inst: domain.Agent_Instance, generation: int, ok: bool, err: domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return domain.Agent_Instance{}, 0, false, owner_err
@@ -381,13 +379,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	conversation_id := platform.generate_id(service.ids, "chat_")
 	display_name := strings.trim_space(input.display_name)
 	if display_name == "" do display_name = default_title
-	instance := domain.Agent_Instance{runtime_transport=transport,launch_epoch=runtime_launch_epoch(service,transport),agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
-	admitted: bool
-	quota_err: domain.Domain_Error
-	generation, admitted, quota_err = reserve_runtime_launch(service, instance)
-	if !admitted do return {}, 0, false, quota_err
-	prepared := false
-	defer if !prepared do project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, instance.bridge_id, generation, instance.agent_instance_id)
+	instance := domain.Agent_Instance{runtime_transport=transport,agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "stopped", startup_status = "stopped", activity_status = "unknown", last_applied_seq = 0, run_count = 0, created_at = now, updated_at = now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, instance)
 	if !saved_ok do return domain.Agent_Instance{}, 0, false, save_err
 	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved, default_title)
@@ -406,8 +398,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 			update_private_chain_coordinator(service, saved)
 		}
 	}
-	prepared = true
-	return saved, generation, true, domain.Domain_Error{}
+	return saved, 0, true, domain.Domain_Error{}
 }
 
 // send_instance_launch pushes the launch_agent command for a prepared instance.
@@ -420,8 +411,10 @@ send_instance_launch :: proc(service: ^Agent_Service, saved: domain.Agent_Instan
 // Bridge, but settings must never replace the persisted launch snapshot.
 send_frozen_instance_launch :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
 	if err:=validate_frozen_runtime_transport(service,inst);err.code!=.None do return false,err
-	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, inst)}
-	return project_service.bridge_command_send_runtime(service.bridge_command_sink, command)
+	body := start_launch_json(service, {instance=inst, command_id=command_id})
+	defer delete(body)
+	entry := Start_Run_Entry{bridge_id=inst.bridge_id, deliver=contracts.START_DELIVER_LAUNCH, launch_json=body}
+	return start_command_send(service, inst.bridge_id, command_id, inst.chain_id, {entry}, nil)
 }
 
 launch_agent :: create_instance
@@ -491,29 +484,18 @@ list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, li
 	return list_instances_filtered(service, auth, List_Instances_Filter{}, limit, cursor)
 }
 
+// Filters run in SQL (owner-scoped, indexed), so results are exact past any page size.
 list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, filter: List_Instances_Filter, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	has_filter := filter.agent_id != "" || filter.bridge_id != "" || filter.runtime_status != "" || filter.project_id != ""
-	fetch_limit := limit if !has_filter else max(limit * 10, 500)
-	instances, list_err := iface.agent_list_instances_by_owner(service.agents, owner, fetch_limit, cursor)
-	if list_err.code != .None do return nil, list_err
-	out := make([dynamic]domain.Agent_Instance)
-	for inst in instances {
-		if filter.agent_id != "" && inst.agent_id != filter.agent_id do continue
-		if filter.bridge_id != "" && inst.bridge_id != filter.bridge_id do continue
-		if filter.project_id != "" && string(inst.project_id) != filter.project_id do continue
-		if filter.runtime_status != "" {
-			if filter.runtime_status == "live" || filter.runtime_status == "active" {
-				if !runtime_expected_active(inst.runtime_status) do continue
-			} else if inst.runtime_status != filter.runtime_status {
-				continue
-			}
-		}
-		append(&out, inst)
-		if len(out) >= limit do break
+	repo_filter := iface.Agent_Instance_Filter{agent_id = filter.agent_id, bridge_id = filter.bridge_id, project_id = filter.project_id}
+	single := [1]string{filter.runtime_status}
+	if filter.runtime_status == "live" || filter.runtime_status == "active" {
+		repo_filter.runtime_statuses = RUNTIME_EXPECTED_ACTIVE_STATUSES[:]
+	} else if filter.runtime_status != "" {
+		repo_filter.runtime_statuses = single[:]
 	}
-	return out[:], domain.Domain_Error{}
+	return iface.agent_list_instances_filtered(service.agents, owner, repo_filter, limit, cursor)
 }
 
 active_instance_count_for_bridge :: proc(service: ^Agent_Service, bridge_id: string) -> int {
@@ -595,34 +577,20 @@ mark_instance_start_success_locked :: proc(service: ^Agent_Service, auth: contra
 	return saved, saved_ok, save_err
 }
 
+// Keep sealed fields separate: plaintext substitution into hub-generated YAML
+// can invalidate its syntax. The bridge owns decryption and serialization.
 bootstrap_skill_file_content :: proc(m: domain.Memory, name: string) -> string {
-	body := m.body
-	if strings.index(body, "\\n") >= 0 {
-		replaced, _ := strings.replace_all(body, "\\n", "\n")
-		body = replaced
+	payload := contracts.Dynamic_Skill_Blob{
+		format = contracts.DYNAMIC_SKILL_FORMAT, memory_id = m.memory_id,
+		name = name, title = m.title, description = m.description, body = m.body,
 	}
-	trimmed := strings.trim_space(body)
-	if strings.has_prefix(trimmed, "---\n") || strings.has_prefix(trimmed, "---\r\n") do return trimmed
-	content := strings.builder_make()
-	strings.write_string(&content, "---\nname: "); strings.write_string(&content, name)
-	strings.write_string(&content, "\ndescription: ")
-	if strings.trim_space(m.description) != "" {
-		strings.write_string(&content, m.description)
-	} else if strings.trim_space(m.title) != "" {
-		strings.write_string(&content, m.title)
-	} else {
-		strings.write_string(&content, name)
-	}
-	strings.write_string(&content, "\nheimdall_managed: true\n---\n\n# ")
-	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
-	strings.write_string(&content, "\n\n")
-	strings.write_string(&content, body)
-	return strings.to_string(content)
+	encoded, _ := json.marshal(payload)
+	return string(encoded)
 }
 
 bootstrap_skill_name :: proc(m: domain.Memory) -> string {
-	if name := bootstrap_skill_frontmatter_value(m.body, "name"); name != "" do return bootstrap_safe_slug(name)
-	if slug := bootstrap_safe_slug(m.title); slug != "" do return slug
+	// memory_id is a unique, short public identity, independent of ciphertext,
+	// title edits, vault key rotation, and identical-title memories.
 	return bootstrap_safe_slug(m.memory_id)
 }
 
@@ -1496,15 +1464,15 @@ resolve_instance_chain :: proc(service: ^Agent_Service, owner: domain.User_ID, c
 
 ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, default_title: string = "") -> (domain.Chat_Conversation, bool, domain.Domain_Error) {
 	if service.content == nil do return domain.Chat_Conversation{}, false, domain.domain_error(.Internal_Error, "content repository is not configured")
-	existing, list_err := iface.content_list_conversations(service.content, inst.owner_user_id, 512, "")
-	if list_err.code != .None do return domain.Chat_Conversation{}, false, list_err
-	for c in existing {
-		if c.agent_instance_id == inst.agent_instance_id {
-			if c.agent_id != inst.agent_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation agent binding is inconsistent")
-			if c.chain_id != inst.chain_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation chain binding is inconsistent")
-			if inst.conversation_id != "" && c.conversation_id != inst.conversation_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation identity is inconsistent")
-			return c, true, domain.Domain_Error{}
-		}
+	// Indexed owner+instance lookup: a capped owner-wide page missed older
+	// conversations and created a duplicate for the same instance.
+	c, found, lookup_err := iface.content_conversation_by_instance(service.content, inst.owner_user_id, inst.agent_instance_id)
+	if !found && lookup_err.code != .Not_Found do return domain.Chat_Conversation{}, false, lookup_err
+	if found {
+		if c.agent_id != inst.agent_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation agent binding is inconsistent")
+		if c.chain_id != inst.chain_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation chain binding is inconsistent")
+		if inst.conversation_id != "" && c.conversation_id != inst.conversation_id do return domain.Chat_Conversation{}, false, domain.domain_error(.Conflict, "conversation identity is inconsistent")
+		return c, true, domain.Domain_Error{}
 	}
 	now := platform.clock_now(service.clock)
 	conv_id := inst.conversation_id; if conv_id == "" do conv_id = platform.generate_id(service.ids, "chat_")
@@ -1647,8 +1615,12 @@ runtime_expected_active :: proc(runtime_status: string) -> bool {
 	// "blocked" is active-but-not-ready: the wrapper is alive (still heartbeating),
 	// so the instance counts as live and must not be reaped, but its startup_status
 	// projects to startup_blocked rather than ready.
-	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping" || runtime_status == "blocked"
+	for status in RUNTIME_EXPECTED_ACTIVE_STATUSES do if runtime_status == status do return true
+	return false
 }
+
+// Statuses runtime_expected_active accepts; list_instances_filtered sends them to SQL.
+RUNTIME_EXPECTED_ACTIVE_STATUSES := [?]string{"launching", "starting", "running", "idle", "busy", "stopping", "blocked"}
 
 string_slice_contains :: proc(values: []string, needle: string) -> bool {
 	for value in values { if strings.trim_space(value) == needle do return true }
@@ -1666,7 +1638,7 @@ launch_command_json :: proc(command_id: string, inst: domain.Agent_Instance) -> 
 // locally — WITHOUT the bridge querying hub chains/agents tables. When `service`
 // is nil (or lookups fail) the descriptor fields degrade to empty strings and the
 // role defaults to "worker"; the routing fields are always present.
-launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance) -> string {
+launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance, lease: ^Start_Lease = nil) -> string {
 	role := "worker"
 	coordinator_id := ""
 	chain_title := ""
@@ -1688,10 +1660,17 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 			}
 		}
 	}
+	if lease != nil {
+		role = lease.role
+		if lease.permission_mode != "" do permission_mode = lease.permission_mode
+	}
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"launch_agent\",\"protocol_version\":1,\"message_id\":\""); write_service_json_string(&b, strings.concatenate({"msg_", command_id}))
 	strings.write_string(&b, "\",\"command_id\":\""); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"payload\":{\"agent_instance_id\":\""); write_service_json_string(&b, inst.agent_instance_id)
+	if lease != nil {
+		strings.write_string(&b, "\",\"task_id\":\""); write_service_json_string(&b, lease.task_id)
+	}
 	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, inst.agent_id)
 	strings.write_string(&b, "\",\"agent_name\":\""); write_service_json_string(&b, agent_name)
 	strings.write_string(&b, "\",\"display_name\":\""); write_service_json_string(&b, inst.display_name)
@@ -1713,7 +1692,16 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	token := instance_assertion_token(inst); defer delete(token)
 	strings.write_string(&b, "\",\"instance_token\":\""); write_service_json_string(&b, token)
 	strings.write_string(&b, "\",\"bootstrap_url\":\"/api/v1/bridge/agent-instances/"); write_service_json_string(&b, inst.agent_instance_id)
-	strings.write_string(&b, "/bootstrap\"}}")
+	strings.write_string(&b, "/bootstrap\"")
+	if lease != nil {
+		if lease.lease_id != "" {
+			strings.write_string(&b, ",\"lease_id\":\""); write_service_json_string(&b, lease.lease_id); strings.write_byte(&b, '"')
+		}
+		if strings.has_prefix(strings.trim_space(lease.pack_json), "{") {
+			strings.write_string(&b, ",\"pack\":"); strings.write_string(&b, strings.trim_space(lease.pack_json))
+		}
+	}
+	strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }
 
@@ -2041,9 +2029,24 @@ bootstrap_template_identity_fields :: proc(service: ^Agent_Service, agent: domai
 	return tmpl.persona, tmpl.instructions
 }
 
-render_skill :: proc(m: domain.Memory) -> (string, string) {
+bootstrap_bridge_structured_skills :: proc(service: ^Agent_Service, bridge_id: string) -> bool {
+	if service == nil || service.bridges == nil do return false
+	bridge, ok, _ := iface.bridge_get_bridge(service.bridges, bridge_id)
+	if !ok do return false
+	defer domain.bridge_destroy(&bridge)
+	return placement.bridge_has_feature(bridge, contracts.BRIDGE_FEATURE_DYNAMIC_SKILL_V2)
+}
+
+render_skill :: proc(m: domain.Memory, structured := true) -> (string, string) {
 	name := bootstrap_skill_name(m)
-	content := bootstrap_skill_file_content(m, name)
+	content: string
+	if structured {
+		content = bootstrap_skill_file_content(m, name)
+	} else {
+		// Old bridges decrypt embedded body tokens but cannot serialize YAML.
+		// Keep all frontmatter independent of encrypted or arbitrary user fields.
+		content = fmt.aprintf("---\nname: %s\ndescription: %s\nheimdall_managed: true\n---\n\n%s", name, name, m.body)
+	}
 	return name, content
 }
 
@@ -2180,12 +2183,13 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	// STATIC_SKILLS is generated by tools/gen_static_skills from
 	// src/prompts/skills/<slug>/SKILL.md (see static_skills_gen.odin).
 	bootstrap_append_static_skills(&skills_list)
+	structured := bootstrap_bridge_structured_skills(service, bridge_id)
 	if service != nil && service.content != nil {
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
 			for m in memories {
 				if !bootstrap_memory_applies(m, service, owner, inst) || m.type != .Skill do continue
-				name, content := render_skill(m)
+				name, content := render_skill(m, structured)
 				skill_hash := bootstrap_fragment_hash(content)
 				hub_fragment_cache_put(skill_hash, content)
 				append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
@@ -2388,7 +2392,9 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 	is_coordinator := norm_role == "coordinator"
 
 	current_epoch := bootcache.content_epoch()
-	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project, bridge_id)
+	capability_key := strings.concatenate({bridge_id, "|dynamic_skill_v2"}) if bootstrap_bridge_structured_skills(service, bridge_id) else strings.clone(bridge_id)
+	defer delete(capability_key)
+	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project, capability_key)
 	defer delete(key)
 
 	sync.mutex_lock(&global_bootstrap_manifest_cache.lock)
@@ -2477,12 +2483,13 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	// BT-6: the SAME static skill set goes to every agent (no role gating),
 	// generated by tools/gen_static_skills from src/prompts/skills/.
 	bootstrap_append_static_skills(&skills_list)
+	structured := bootstrap_bridge_structured_skills(service, bridge_id)
 	if service != nil && service.content != nil {
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
 			for m in memories {
 				if !bootstrap_memory_applies_agent(m, agent, owner, domain.Project_ID(project_id), bridge_id) || m.type != .Skill do continue
-				name, content := render_skill(m)
+				name, content := render_skill(m, structured)
 				skill_hash := bootstrap_fragment_hash(content)
 				hub_fragment_cache_put(skill_hash, content)
 				append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
@@ -2634,4 +2641,12 @@ agent_launchable :: proc(ps:^placement.Service,agent_id,bridge_id,provider,model
  canonical:=model
  if resolved.model!=model do canonical=strings.clone(resolved.model,context.temp_allocator)
  return {provider=provider,model=canonical},true,{}
+}
+
+// Action routing reads only this owner/agent/bridge partition, with no page cap.
+list_action_instances :: proc(service:^Agent_Service,auth:contracts.Auth_Context,agent_id,bridge_id:string)->([]domain.Agent_Instance,domain.Domain_Error) {
+ owner,ok,err:=ownership.owner_from_auth(auth)
+ if !ok do return nil,err
+ if service.agents.list_action_instances==nil do return nil,domain.domain_error(.Internal_Error,"action instance lookup unavailable")
+ return service.agents.list_action_instances(service.agents.ctx,owner,agent_id,bridge_id)
 }

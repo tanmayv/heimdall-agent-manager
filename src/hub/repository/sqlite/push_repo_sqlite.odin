@@ -37,6 +37,8 @@ push_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Push_Subscription {
 // original owner. The persisted id (the pre-existing one on conflict) is read
 // back so callers always learn the row's real id.
 push_upsert_by_endpoint_sqlite :: proc(ctx: rawptr, sub: domain.Push_Subscription) -> (domain.Push_Subscription, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Push_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Push_Subscription{}, false, domain.domain_error(.Internal_Error, "sqlite push repository is not open")
@@ -116,6 +118,8 @@ push_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) ->
 // Scoping the delete to the owner prevents one user from unsubscribing another
 // user's endpoint. It returns true when a row was actually removed.
 push_delete_by_endpoint_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, endpoint: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Push_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite push repository is not open")
@@ -139,6 +143,8 @@ push_delete_by_endpoint_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_I
 // path used when a push endpoint reports 404/410 Gone (WP-SEND); it is not
 // owner-scoped because the caller already resolved the row from a send failure.
 push_delete_by_id_sqlite :: proc(ctx: rawptr, id: domain.Push_Subscription_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
 	impl := (^Push_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite push repository is not open")

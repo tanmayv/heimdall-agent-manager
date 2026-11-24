@@ -161,6 +161,9 @@ taskchain_list_chains_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain
 }
 
 taskchain_save_chain_sqlite :: proc(ctx: rawptr, chain: domain.Task_Chain) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO task_chains (chain_id, owner_user_id, title, description, publish_state, status, kind, coordinator_agent_instance_id, defaults_json, created_at, updated_at, published_at, completed_at, last_activity_at, last_title_nudge_at, title_source, is_pinned, pinned_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chain_id) DO UPDATE SET title=excluded.title, description=excluded.description, publish_state=excluded.publish_state, status=excluded.status, kind=excluded.kind, coordinator_agent_instance_id=excluded.coordinator_agent_instance_id, defaults_json=excluded.defaults_json, updated_at=excluded.updated_at, published_at=excluded.published_at, completed_at=excluded.completed_at, last_activity_at=excluded.last_activity_at, last_title_nudge_at=excluded.last_title_nudge_at, title_source=excluded.title_source, is_pinned=excluded.is_pinned, pinned_at=excluded.pinned_at;"
@@ -172,6 +175,9 @@ taskchain_save_chain_sqlite :: proc(ctx: rawptr, chain: domain.Task_Chain) -> (d
 }
 
 task_save_sqlite :: proc(ctx: rawptr, task: domain.Task) -> (domain.Task, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO tasks (task_id, chain_id, owner_user_id, title, description, publish_state, state, kind, priority, attempt_no, brief_json, blocked_on_json, requires_user_approval, ready_since, bridge_id, stage_key, stage_index, generated_by_json, created_at, updated_at, published_at, started_at, completed_at, workflow_run_id, workflow_execution_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET title=excluded.title, description=excluded.description, publish_state=excluded.publish_state, state=excluded.state, kind=excluded.kind, priority=excluded.priority, attempt_no=excluded.attempt_no, brief_json=excluded.brief_json, blocked_on_json=excluded.blocked_on_json, requires_user_approval=excluded.requires_user_approval, ready_since=excluded.ready_since, bridge_id=excluded.bridge_id, stage_key=excluded.stage_key, stage_index=excluded.stage_index, generated_by_json=excluded.generated_by_json, workflow_run_id=excluded.workflow_run_id, workflow_execution_no=excluded.workflow_execution_no, updated_at=excluded.updated_at, published_at=excluded.published_at, started_at=excluded.started_at, completed_at=excluded.completed_at;"
@@ -214,6 +220,9 @@ task_list_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, o
 }
 
 task_comment_save_sqlite :: proc(ctx: rawptr, comment: domain.Task_Comment) -> (domain.Task_Comment, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO task_comments (comment_id, task_id, chain_id, owner_user_id, author_agent_instance_id, body, created_at, updated_at, delegated_client_id, delegated_grant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(comment_id) DO UPDATE SET body=excluded.body, updated_at=excluded.updated_at;"
@@ -333,6 +342,9 @@ task_comment_list_recent_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, ow
 }
 
 taskchain_save_member_sqlite :: proc(ctx: rawptr, member: domain.Task_Chain_Member) -> (domain.Task_Chain_Member, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO task_chain_members (chain_id, agent_instance_id, agent_id, owner_user_id, role, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(chain_id, agent_instance_id) DO UPDATE SET role=excluded.role, agent_id=excluded.agent_id;"
@@ -344,6 +356,9 @@ taskchain_save_member_sqlite :: proc(ctx: rawptr, member: domain.Task_Chain_Memb
 }
 
 taskchain_remove_member_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_instance_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM task_chain_members WHERE chain_id = ? AND agent_instance_id = ? AND owner_user_id = ?;"
@@ -382,6 +397,9 @@ taskchain_list_chains_by_coordinator_sqlite :: proc(ctx: rawptr, agent_instance_
 }
 
 taskchain_save_dependency_sqlite :: proc(ctx: rawptr, dep: domain.Task_Dependency) -> (domain.Task_Dependency, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO task_dependencies (task_id, depends_on_task_id, chain_id, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(task_id, depends_on_task_id) DO NOTHING;"
@@ -393,6 +411,9 @@ taskchain_save_dependency_sqlite :: proc(ctx: rawptr, dep: domain.Task_Dependenc
 }
 
 taskchain_remove_dependency_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, depends_on_task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ? AND owner_user_id = ?;"
@@ -416,6 +437,9 @@ taskchain_list_dependencies_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domai
 }
 
 taskchain_save_directory_sqlite :: proc(ctx: rawptr, dir: domain.Task_Chain_Directory) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO task_chain_directories (directory_id, chain_id, owner_user_id, path, bridge_id, vcs_kind, vcs_info_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(directory_id) DO UPDATE SET path=excluded.path, bridge_id=excluded.bridge_id, vcs_kind=excluded.vcs_kind, vcs_info_json=excluded.vcs_info_json, updated_at=excluded.updated_at;"
@@ -461,6 +485,9 @@ taskchain_list_directories_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain
 }
 
 taskchain_remove_directory_sqlite :: proc(ctx: rawptr, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM task_chain_directories WHERE directory_id = ? AND chain_id = ? AND owner_user_id = ?;"
@@ -500,6 +527,9 @@ fleet_roles_or_default :: proc(roles_json: string) -> string {
 }
 
 taskchain_upsert_fleet_sqlite :: proc(ctx: rawptr, fleet: domain.Task_Chain_Fleet) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO task_chain_fleets (task_chain_id, agent_id, capacity, min_warm, idle_ttl_seconds, provider, model, created_at, updated_at, bridge_models_json, roles_json, bridge_id, paused_roles_json, provider_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_chain_id, agent_id) DO UPDATE SET capacity=excluded.capacity, min_warm=excluded.min_warm, idle_ttl_seconds=excluded.idle_ttl_seconds, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model, updated_at=excluded.updated_at, bridge_models_json=excluded.bridge_models_json, roles_json=excluded.roles_json, bridge_id=excluded.bridge_id, paused_roles_json=excluded.paused_roles_json;"
@@ -523,6 +553,9 @@ taskchain_upsert_fleet_sqlite :: proc(ctx: rawptr, fleet: domain.Task_Chain_Flee
 }
 
 taskchain_ensure_fleet_sqlite :: proc(ctx: rawptr, fleet: domain.Task_Chain_Fleet) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "INSERT INTO task_chain_fleets (task_chain_id, agent_id, capacity, min_warm, idle_ttl_seconds, provider, model, created_at, updated_at, bridge_models_json, roles_json, bridge_id, paused_roles_json, provider_profile) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_chain_id, agent_id) DO NOTHING;"
@@ -560,6 +593,9 @@ taskchain_list_fleets_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task
 }
 
 taskchain_delete_fleet_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM task_chain_fleets WHERE task_chain_id = ? AND agent_id = ? AND task_chain_id IN (SELECT chain_id FROM task_chains WHERE chain_id = ? AND (owner_user_id = ? OR ? = ''));"

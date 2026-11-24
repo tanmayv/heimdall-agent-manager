@@ -104,6 +104,9 @@ bind_card_insert :: proc(stmt: sqlite3_stmt, card: domain.Card) {
 }
 
 card_create_sqlite :: proc(ctx: rawptr, card: domain.Card) -> (domain.Card, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Card_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Card{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -186,6 +189,9 @@ card_list_by_project_sqlite :: proc(ctx: rawptr, project_id: domain.Project_ID) 
 }
 
 card_update_status_sqlite :: proc(ctx: rawptr, id: domain.Card_ID, status: string, updated_at: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Card_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -208,6 +214,9 @@ card_update_status_sqlite :: proc(ctx: rawptr, id: domain.Card_ID, status: strin
 }
 
 card_update_sqlite :: proc(ctx: rawptr, card: domain.Card) -> (domain.Card, bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Card_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return domain.Card{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -261,6 +270,9 @@ bind_card_update_fields :: proc(stmt: sqlite3_stmt, n: domain.Card) {
 }
 
 card_delete_sqlite :: proc(ctx: rawptr, id: domain.Card_ID) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
 	impl := (^Card_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
