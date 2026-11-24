@@ -3,7 +3,7 @@ package iface
 import domain "odin_test:hub/domain"
 
 Action_Rule_Row :: struct { action_id: string, rule: domain.Action_Target_Rule }
-Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at: string }
+Action_Run_History :: struct { run: domain.Action_Run, joined_count: int, delivery_expires_at, delivery_state, delivery_outcome: string }
 Action_Repository :: struct {
  rules_for_owner: proc(ctx:rawptr, owner:string)->([]Action_Rule_Row,domain.Domain_Error),
  triggers_for_owner: proc(ctx:rawptr, owner:string)->([]domain.Action_Trigger,domain.Domain_Error),

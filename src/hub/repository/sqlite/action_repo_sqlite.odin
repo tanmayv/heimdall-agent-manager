@@ -457,7 +457,7 @@ actions_triggers_for_owner :: proc(ctx:rawptr,owner:string)->([]domain.Action_Tr
  return actions_trigger_query(ctx,ACTIONS_SQL_TRIGGERS_OWNER,{owner})
 }
 // Materialize the page before grouping joined rows, then join delivery expiry once.
-ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),coalesce(d.expires_at,'') FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON p.state='routed' AND d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
+ACTIONS_SQL_HISTORY :: "WITH page AS (SELECT " + ACTIONS_RUN_COLUMNS + " FROM action_runs WHERE action_id=?1 AND (?2='' OR created_at<?2 OR (?4!='' AND created_at=?2 AND run_id<?4)) ORDER BY created_at DESC,run_id DESC LIMIT ?3), counts AS (SELECT j.joined_run_id,count(*) AS n FROM page p CROSS JOIN action_runs j ON p.run_id=j.joined_run_id WHERE j.state='joined' GROUP BY j.joined_run_id) SELECT p.*,coalesce(c.n,0),CASE WHEN p.state='routed' THEN coalesce(d.expires_at,'') ELSE '' END,coalesce(d.state,''),coalesce(d.outcome,'') FROM page p LEFT JOIN counts c ON c.joined_run_id=p.run_id LEFT JOIN pipeline_deliveries d ON d.delivery_id=p.delivery_id ORDER BY p.created_at DESC,p.run_id DESC;"
 actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,before_id:string)->([]iface.Action_Run_History,domain.Domain_Error) {
  guard:=tx_repository_enter(); defer tx_repository_leave(guard)
  stmt,err:=actions_prepare(ctx,ACTIONS_SQL_HISTORY,{string(id),before,fmt.tprintf("%d",limit),before_id})
@@ -468,11 +468,11 @@ actions_runs_history :: proc(ctx:rawptr,id:domain.Action_ID,limit:int,before,bef
   rc:=sqlite3_step(stmt)
   if rc==SQLITE_DONE do return rows[:],{}
   if rc!=SQLITE_ROW {
-   for &row in rows {domain.action_run_destroy(&row.run);delete(row.delivery_expires_at)}
+   for &row in rows {domain.action_run_destroy(&row.run);delete(row.delivery_expires_at);delete(row.delivery_state);delete(row.delivery_outcome)}
    delete(rows)
    return nil,domain.domain_error(.Internal_Error,"could not load action history")
   }
-  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,20)),column_text(stmt,21)})
+  append(&rows,iface.Action_Run_History{actions_run_read(stmt),int(sqlite3_column_int64(stmt,20)),column_text(stmt,21),column_text(stmt,22),column_text(stmt,23)})
  }
 }
 ACTIONS_SQL_SWEEP :: "DELETE FROM action_runs WHERE run_id IN (SELECT run_id FROM action_runs WHERE state NOT IN ('queued','deferred','routed') AND created_at<?1 ORDER BY created_at,run_id LIMIT ?2);"

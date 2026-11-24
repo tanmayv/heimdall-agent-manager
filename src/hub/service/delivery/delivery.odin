@@ -17,6 +17,8 @@ import jsonx "odin_test:lib/jsonx"
 import nats "odin_test:lib/nats"
 
 LIFETIME_PROMPT :: time.Hour
+UNREAD_TIMEOUT :: 30 * time.Minute
+UNREAD_EXPIRY_GRACE :: 5 * time.Minute
 LIFETIME_NOTICE :: 5 * time.Minute
 LIFETIME_FLOW :: 24 * time.Hour
 STREAM :: "HEIM_DELIVER"
@@ -252,11 +254,21 @@ close_delivery :: proc(
 	domain.Domain_Error,
 ) {
 	if !domain.pipeline_delivery_open(d.state) do return false, {}
+	return finalize_delivery(s, uow, d, state, reason, outcome)
+}
+
+// Awaiting-read deliveries are finalized only by read receipts or the scheduled
+// unread event. Retry, offline, advisory and replacement callers use close_delivery.
+finalize_delivery :: proc(s: ^Service, uow: ^iface.Unit_Of_Work, d: domain.Pipeline_Delivery, state, reason, outcome: string) -> (bool, domain.Domain_Error) {
+	if !domain.pipeline_delivery_open(d.state) && d.state != domain.DELIVERY_DELIVERED do return false, {}
 	next := d
 	next.state = state; next.reason = reason; next.outcome = outcome; next.updated_at = platform.clock_now(s.clock)
 	repo := &uow.repos.pipeline_deliveries
 	changed, err := repo.transition(repo.ctx, next, d.state)
 	if err.code != .None || !changed do return false, err
+	if d.state == domain.DELIVERY_DELIVERED {
+		if err := unread_schedule(s, uow, d, true); err.code != .None do return false, err
+	}
 	sink := find_sink(s, d.kind)
 	if sink.on_final != nil {
 		if err := sink.on_final(sink.ctx, uow, next); err.code != .None do return false, err
@@ -274,6 +286,10 @@ expire :: proc(s:^Service,uow:^iface.Unit_Of_Work,delivery_id:string)->(bool,dom
  defer domain.pipeline_delivery_destroy(&d)
  if err.code!=.None do return false,err
  if !found || d.expires_at>platform.clock_now(s.clock) do return false,{}
+ if d.state == domain.DELIVERY_DELIVERED {
+  err := on_unread(s,uow,d.owner_user_id,d.delivery_id)
+  return err.code == .None,err
+ }
  return close_delivery(s,uow,d,domain.DELIVERY_FAILED,"bridge_offline","")
 }
 

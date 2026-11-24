@@ -199,6 +199,7 @@ list_action_runs_handler :: proc(ctx:rawptr,req:Request)->Response {
   obj["joined_count"]=json.Integer(row.joined_count);obj["rule_position"]=json.Integer(run.rule_position)
   obj["target_instance_id"]=run.target_instance_id;obj["message_id"]=run.message_id;obj["delivery_id"]=run.delivery_id
   obj["delivery_expires_at"]=row.delivery_expires_at
+  obj["delivery_state"]=row.delivery_state;obj["delivery_outcome"]=row.delivery_outcome
   obj["created_at"]=run.created_at;obj["started_at"]=run.started_at;obj["finished_at"]=run.finished_at
   values[i]=obj
  }
