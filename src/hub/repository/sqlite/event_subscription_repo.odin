@@ -1,11 +1,14 @@
 package sqlite
 
 import "core:encoding/json"
+import "core:sync"
+import "core:fmt"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
 Event_Subscription_Repo_SQLite :: struct {
 	conn: ^Conn,
+ queries: u64, // Counts prepared subscription queries for scaling regressions.
 }
 
 new_event_subscription_repository :: proc(
@@ -15,6 +18,9 @@ new_event_subscription_repository :: proc(
 	impl.conn = conn
 	return {
 		ctx = impl,
+ changes = subscription_changes,
+ chain_rows = subscription_chain_rows,
+ chain_snapshot = subscription_chain_snapshot,
 		bot_agent = subscription_bot_agent,
 		owns_chain = subscription_owns_chain,
 		all = subscription_all,
@@ -44,6 +50,7 @@ subscription_prepare :: proc(ctx: rawptr, query: cstring) -> (sqlite3_stmt, doma
 	if impl == nil || impl.conn == nil || impl.conn.db == nil || !outbox_uow_owns(impl.conn) {
 		return nil, domain.domain_error(.Internal_Error, "event subscriptions require a unit of work")
 	}
+	sync.atomic_add(&impl.queries, 1)
 	stmt: sqlite3_stmt
 	if sqlite3_prepare_v2(impl.conn.db, query, -1, &stmt, nil) != SQLITE_OK {
 		return nil, domain.domain_error(.Internal_Error, "failed to prepare event subscription query")
@@ -78,14 +85,14 @@ subscription_list :: proc(ctx: rawptr, owner, instance: string) -> ([]domain.Eve
 subscription_all :: proc(ctx: rawptr) -> ([]domain.Event_Subscription, domain.Domain_Error) {
 	return subscription_query(ctx, "", "")
 }
-subscription_query :: proc(ctx: rawptr, owner, instance: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
-	stmt, err := subscription_prepare(
-		ctx,
-		"SELECT subscription_id,owner_user_id,subscriber_agent_id,chain_id,COALESCE(task_id,''),source,filter_subjects,wake_policy,consumer_name,created_at,subscriber_instance_id FROM event_subscriptions WHERE (?='' OR owner_user_id=?) AND (?='' OR subscriber_instance_id=?) ORDER BY subscription_id;",
-	)
+subscription_query :: proc(ctx: rawptr, owner, instance: string, chain: string = "") -> ([]domain.Event_Subscription, domain.Domain_Error) {
+
+ query: cstring = "SELECT subscription_id,owner_user_id,subscriber_agent_id,chain_id,COALESCE(task_id,''),source,filter_subjects,wake_policy,consumer_name,created_at,subscriber_instance_id FROM event_subscriptions WHERE (?1='' OR owner_user_id=?1) AND (?2='' OR subscriber_instance_id=?2) ORDER BY subscription_id;"
+ if chain != "" do query = "SELECT subscription_id,owner_user_id,subscriber_agent_id,chain_id,COALESCE(task_id,''),source,filter_subjects,wake_policy,consumer_name,created_at,subscriber_instance_id FROM event_subscriptions WHERE owner_user_id=?1 AND chain_id=?3 ORDER BY subscription_id;"
+ stmt, err := subscription_prepare(ctx, query)
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, owner); bind_text(stmt, 2, owner); bind_text(stmt, 3, instance); bind_text(stmt, 4, instance)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, instance); if chain!="" do bind_text(stmt, 3, chain)
 	rows := make([dynamic]domain.Event_Subscription)
 	for {
 		rc := sqlite3_step(stmt)
@@ -439,18 +446,40 @@ subscription_by_owner :: proc(ctx: rawptr, owner: string) -> ([]domain.Event_Sub
 // Batch the preliminary target and redelivery clock reads. The final
 // subscription/receipt/topic and target authorization fences remain separate.
 subscription_notice_snapshot :: proc(ctx: rawptr) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error) {
-	stmt, err := subscription_prepare(ctx, `WITH outstanding AS (
+	return subscription_snapshot_query(ctx, "", "")
+}
+subscription_chain_snapshot :: proc(ctx: rawptr, owner, chain: string) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error) {
+ return subscription_snapshot_query(ctx, owner, chain)
+}
+subscription_snapshot_query :: proc(ctx: rawptr, owner, chain: string) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error) {
+ query := `WITH outstanding AS (
  SELECT subscription_id,MIN(recorded_at) oldest,COUNT(*) total
- FROM event_deliveries WHERE acknowledged=0 GROUP BY subscription_id)
+ FROM event_deliveries WHERE acknowledged=0 AND subscription_id IN
+ (SELECT subscription_id FROM event_subscriptions WHERE (?1='' OR owner_user_id=?1) AND (?2='' OR chain_id=?2))
+ GROUP BY subscription_id)
  SELECT s.subscription_id,COALESCE(ai.agent_instance_id,''),COALESCE(ai.bridge_id,''),
  COALESCE(ai.runtime_status,''),COALESCE(ai.activity_status,''),COALESCE(ai.stopped_by,''),
  EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=s.owner_user_id AND b.agent_instance_id=ai.agent_instance_id),
  COALESCE(d.oldest,''),COALESCE(d.total,0)
  FROM event_subscriptions s LEFT JOIN agent_instances ai
  ON ai.agent_instance_id=s.subscriber_instance_id AND ai.owner_user_id=s.owner_user_id AND ai.kind='agent'
- LEFT JOIN outstanding d ON d.subscription_id=s.subscription_id ORDER BY s.subscription_id;`)
+ LEFT JOIN outstanding d ON d.subscription_id=s.subscription_id WHERE (?1='' OR s.owner_user_id=?1) AND (?2='' OR s.chain_id=?2) ORDER BY s.subscription_id;`
+ if owner!="" do query = `WITH outstanding AS (
+ SELECT subscription_id,MIN(recorded_at) oldest,COUNT(*) total
+ FROM event_deliveries WHERE acknowledged=0 AND subscription_id IN
+ (SELECT subscription_id FROM event_subscriptions WHERE owner_user_id=?1 AND chain_id=?2)
+ GROUP BY subscription_id)
+ SELECT s.subscription_id,COALESCE(ai.agent_instance_id,''),COALESCE(ai.bridge_id,''),
+ COALESCE(ai.runtime_status,''),COALESCE(ai.activity_status,''),COALESCE(ai.stopped_by,''),
+ EXISTS(SELECT 1 FROM bots b WHERE b.owner_user_id=s.owner_user_id AND b.agent_instance_id=ai.agent_instance_id),
+ COALESCE(d.oldest,''),COALESCE(d.total,0)
+ FROM event_subscriptions s LEFT JOIN agent_instances ai
+ ON ai.agent_instance_id=s.subscriber_instance_id AND ai.owner_user_id=s.owner_user_id AND ai.kind='agent'
+ LEFT JOIN outstanding d ON d.subscription_id=s.subscription_id WHERE s.owner_user_id=?1 AND s.chain_id=?2 ORDER BY s.subscription_id;`
+ stmt, err := subscription_prepare(ctx, fmt.ctprintf("%s",query))
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
+ bind_text(stmt, 1, owner); bind_text(stmt, 2, chain)
 	rows := make([dynamic]domain.Event_Notice_Snapshot)
 	for {
 		step := sqlite3_step(stmt)
@@ -468,4 +497,25 @@ subscription_notice_snapshot :: proc(ctx: rawptr) -> ([]domain.Event_Notice_Snap
 			oldest_delivery=column_text(stmt,7), outstanding=sqlite3_column_int64(stmt,8),
 		})
 	}
+}
+
+subscription_chain_rows :: proc(ctx: rawptr, owner, chain: string) -> ([]domain.Event_Subscription, domain.Domain_Error) {
+ return subscription_query(ctx, owner, "", chain)
+}
+subscription_changes :: proc(ctx: rawptr, after: i64) -> ([]domain.Event_Inbox_Change, domain.Domain_Error) {
+ stmt, err := subscription_prepare(ctx, "SELECT owner_user_id,chain_id,revision FROM event_inbox_changes WHERE revision>? ORDER BY revision;")
+ if err.code != .None do return nil, err
+ defer sqlite3_finalize(stmt)
+ sqlite3_bind_int64(stmt, 1, after)
+ rows := make([dynamic]domain.Event_Inbox_Change)
+ for {
+  rc := sqlite3_step(stmt)
+  if rc == SQLITE_DONE do return rows[:], {}
+  if rc != SQLITE_ROW {
+   for row in rows {delete(row.owner_user_id); delete(row.chain_id)}
+   delete(rows)
+   return nil, domain.domain_error(.Internal_Error, "failed to read inbox invalidations")
+  }
+  append(&rows, domain.Event_Inbox_Change{column_text(stmt,0),column_text(stmt,1),sqlite3_column_int64(stmt,2)})
+ }
 }

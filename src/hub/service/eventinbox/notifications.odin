@@ -55,10 +55,12 @@ published :: proc(s: ^Service, subject: string) {
 	key := fmt.tprintf("%s/%s", parts[offset], parts[offset+2])
 	context.allocator = runtime.heap_allocator()
 	sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
-	if s.notice_dirty.all do return
-	if len(s.notice_dirty.chains) >= 4096 {s.notice_dirty.all = true; return}
+	if s.interest_ready && !s.watched_scopes[key] do return
+ if s.notice_dirty.all {wake(s); return}
+	if len(s.notice_dirty.chains) >= 4096 {s.notice_dirty.all = true; wake(s); return}
 	if s.notice_dirty.chains == nil do s.notice_dirty.chains = make(map[string]bool)
 	if key not_in s.notice_dirty.chains do s.notice_dirty.chains[strings.clone(key)] = true
+ wake(s)
 }
 take_notice_dirty :: proc(s: ^Service) -> (map[string]bool, bool) {
 	sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
@@ -74,6 +76,10 @@ destroy_notice_dirty :: proc(chains: map[string]bool) {
 clear_notice_dirty :: proc(s: ^Service) {
 	chains, _ := take_notice_dirty(s)
 	destroy_notice_dirty(chains)
+ context.allocator = runtime.heap_allocator()
+ sync.mutex_lock(&s.notice_dirty.mutex); defer sync.mutex_unlock(&s.notice_dirty.mutex)
+ for key in s.watched_scopes do delete(key)
+ delete(s.watched_scopes); s.watched_scopes=nil; s.interest_ready=false
 }
 notice_snapshots :: proc(s: ^Service) -> ([]domain.Event_Notice_Snapshot, domain.Domain_Error) {
 	uow, began, err := iface.unit_of_work_begin(s.factory)
@@ -219,12 +225,14 @@ notice_live :: proc(s: ^Service, candidate: Notice_Candidate) -> (bool, domain.D
 	if !committed do return false, commit_err
 	return live, {}
 }
-notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time.Tick) -> bool {
+notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time.Tick, cached: bool = false) -> bool {
 	s := r.service
 	if s.notice == nil do return true
-	snapshots, snapshot_err := notice_snapshots(s)
+	snapshots: []domain.Event_Notice_Snapshot
+ snapshot_err: domain.Domain_Error
+ if cached {snapshots = cached_notice_snapshots(r)} else {snapshots, snapshot_err = notice_snapshots(s)}
 	if snapshot_err.code != .None do return false
-	defer {for &snapshot in snapshots do domain.event_notice_snapshot_destroy(&snapshot); delete(snapshots)}
+	defer {if !cached {for &snapshot in snapshots do domain.event_notice_snapshot_destroy(&snapshot)}; delete(snapshots)}
 	targets := make(map[string]domain.Event_Notice_Snapshot)
 	defer delete(targets)
 	for snapshot in snapshots do targets[snapshot.subscription_id] = snapshot
@@ -233,7 +241,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 	// A failed pass forces full recovery on the next attempt.
 	completed := false
 	defer if !completed do r.notice_reconcile = {}
-	full := dirty_all || r.notice_reconcile._nsec == 0 || now._nsec - r.notice_reconcile._nsec >= i64(NOTICE_RECONCILE_INTERVAL)
+	full := dirty_all || r.notice_reconcile._nsec == 0 || now._nsec - r.notice_reconcile._nsec >= i64(reconcile_interval(s))
 	if full do r.notice_reconcile = now
 	candidates := make([dynamic]Notice_Candidate)
 	defer {
@@ -284,7 +292,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		state, state_err := nats.consumer_state(r.connection, "HEIM_EVENTS", row.consumer_name)
 		if state_err.status != 0 do return false
 		schedule.dirty = false
-		delay := NOTICE_RECONCILE_INTERVAL
+		delay := reconcile_interval(s)
 		if state.pending > 0 do delay = 30 * time.Second
 		if state.ack_pending > 0 {
 			wait := s.ack_wait if s.ack_wait > 0 else 5 * time.Minute

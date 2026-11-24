@@ -1,6 +1,7 @@
 package sqlite
 
 import "core:c"
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -71,11 +72,14 @@ foreign sqlite3_lib {
 	sqlite3_libversion :: proc() -> cstring ---
 	sqlite3_db_status :: proc(db: sqlite3, op: c.int, pCur: ^c.int, pHiwtr: ^c.int, resetFlg: c.int) -> c.int ---
 	sqlite3_free :: proc(p: rawptr) ---
+ sqlite3_update_hook :: proc(db: sqlite3, callback: proc "c" (rawptr, c.int, cstring, cstring, i64), data: rawptr) -> rawptr ---
 }
 
 Conn :: struct {
 	// Wired before producers start, cleared after they stop.
-	outbox_after_commit_ctx: rawptr,
+	inbox_after_commit_ctx: rawptr,
+ inbox_after_commit: proc(ctx: rawptr),
+ outbox_after_commit_ctx: rawptr,
 	outbox_after_commit: proc(ctx: rawptr),
 	db: sqlite3,
 	path: string,
@@ -185,4 +189,24 @@ path_dir :: proc(path: string) -> string {
 	}
 	if idx <= 0 do return ""
 	return path[:idx]
+}
+
+// Install once before request workers start. SQLite invokes the hook under the
+// transaction lock; only record a bit here. Dispatch occurs after commit/unlock.
+install_inbox_notifications :: proc(conn: ^Conn, data: rawptr, callback: proc(ctx: rawptr)) {
+ conn.inbox_after_commit_ctx = data
+ conn.inbox_after_commit = callback
+ sqlite3_update_hook(conn.db, proc "c" (data: rawptr, operation: c.int, database, table: cstring, rowid: i64) {
+  context = runtime.default_context()
+  if string(table) == "event_inbox_changes" {
+   conn := (^Conn)(data)
+   if outbox_uow_owns(conn) {
+    inbox_mark_changed()
+   } else if conn.inbox_after_commit != nil {
+    // Autocommit repository writes have no UoW callback. Only signal a
+    // condition here; a reader waits on SQLite until this statement finishes.
+    conn.inbox_after_commit(conn.inbox_after_commit_ctx)
+   }
+  }
+ }, conn)
 }

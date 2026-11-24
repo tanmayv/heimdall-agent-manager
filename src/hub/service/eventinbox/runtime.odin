@@ -10,6 +10,7 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
+import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
 import nats "odin_test:lib/nats"
@@ -26,6 +27,11 @@ Runtime :: struct {
 	last_prune:      time.Tick,
 	notifications: map[string]Notification_State,
 	notice_reconcile: time.Tick,
+ subscriptions_ready: bool,
+ subscription_revision: i64,
+ subscription_reconcile: time.Tick,
+ subscription_cache: map[string]Cached_Chain,
+
 }
 Provisioned_Consumer :: struct {
 	key, fingerprint: string,
@@ -48,6 +54,7 @@ start :: proc(r: ^Runtime, s: ^Service) {
 stop :: proc(r: ^Runtime) {
 	if r.worker == nil do return
 	sync.atomic_store(&r.stopping, 1)
+ wake(r.service)
 	thread.join(r.worker); thread.destroy(r.worker); r.worker = nil
 	context.allocator = runtime.heap_allocator()
 	delete(r.service.options.url); delete(r.service.options.creds_file); delete(r.service.options.ca_file)
@@ -58,6 +65,7 @@ runtime_disconnect :: proc(r: ^Runtime) {
 	nats.destroy(r.connection); r.connection = nil
 	clear_provisioned(r)
 	r.notice_reconcile = {}
+ clear_subscription_cache(r)
 }
 runtime_entry :: proc(data: rawptr) {
 	r := (^Runtime)(data)
@@ -69,23 +77,21 @@ runtime_entry :: proc(data: rawptr) {
 	defer runtime_disconnect(r)
 	defer clear_notifications(r)
 	defer clear_notice_dirty(r.service)
-	backoff:=time.Second
-	for sync.atomic_load(&r.stopping) == 0 {
-		ok := reconcile(r)
-		if !ok {
-   runtime_disconnect(r)
-  } else {backoff=time.Second}
-		free_all(context.allocator)
-		delay := time.Second
+
+ backoff := time.Second
+ for sync.atomic_load(&r.stopping) == 0 {
+  consume_wake(r.service)
+  ok := reconcile(r)
+  if !ok {runtime_disconnect(r)} else {backoff=time.Second}
+  free_all(context.allocator)
+  delay := runtime_wait_delay(r, time.tick_now())
   if !ok {
    delay=retry.jitter(backoff,u64(time.tick_now()._nsec))
    backoff=min(backoff*2,5*time.Second)
   }
-		for delay > 0 && sync.atomic_load(&r.stopping) == 0 {
-			chunk := min(delay, 50 * time.Millisecond)
-			time.sleep(chunk); delay -= chunk
-		}
-	}
+  wait_for_wake(r, delay)
+ }
+
 }
 // Persist advisories in their own stream before any pull consumer is created.
 // A core subscription alone could lose max-delivery notices across hub restarts.
@@ -141,7 +147,8 @@ forget_provisioned :: proc(r: ^Runtime, name: string) {
 	}
 }
 reconcile :: proc(r: ^Runtime) -> bool {
-	if !runtime_connect(r) do return false
+	if r.cache_allocator.procedure == nil do r.cache_allocator = runtime.heap_allocator()
+ if !runtime_connect(r) do return false
 	s := r.service
 	uow, began, _ := iface.unit_of_work_begin(s.factory)
 	if !began do return retry.failed(&r.diagnostics,"eventinbox",.Read)
@@ -151,12 +158,16 @@ reconcile :: proc(r: ^Runtime) -> bool {
 		before := platform.format_rfc3339_utc(time.time_add(time.now(), -14 * 24 * time.Hour))
 		if repo.prune(repo.ctx, before).code != .None {iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
 	}
-	rows, err := repo.all(repo.ctx)
+	if !refresh_subscription_cache(r, repo, time.tick_now()) {
+ iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)
+ }
+ rows := cached_subscription_rows(r)
+ err := domain.Domain_Error{}
 	if err.code != .None {iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
 	deleted, derr := repo.deletions(repo.ctx)
-	if derr.code != .None {subscription_rows_destroy(rows); iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
+	if derr.code != .None {delete(rows); iface.unit_of_work_rollback(&uow); return retry.failed(&r.diagnostics,"eventinbox",.Read)}
 	committed, _ := iface.unit_of_work_commit(&uow)
-	defer subscription_rows_destroy(rows)
+	defer delete(rows)
 	defer {for name in deleted do delete(name); delete(deleted)}
 	if !committed do return retry.failed(&r.diagnostics,"eventinbox",.Commit)
 	if prune_due do r.last_prune = time.tick_now()
@@ -194,7 +205,7 @@ reconcile :: proc(r: ^Runtime) -> bool {
 		marked, _ := iface.unit_of_work_commit(&mark)
 		if !marked do return retry.failed(&r.diagnostics,"eventinbox",.Commit)
 	}
-	if !notify_pending(r, rows, time.tick_now()) do return retry.failed(&r.diagnostics,"eventinbox",.Reconcile)
+	if !notify_pending(r, rows, time.tick_now(), true) do return retry.failed(&r.diagnostics,"eventinbox",.Reconcile)
 	return drain_advisories(r)
 }
 drain_advisories :: proc(r: ^Runtime) -> bool {
@@ -264,4 +275,55 @@ prepare_advisories :: proc(conn: ^nats.Connection) -> bool {
 		if err.status != 0 do return false
 	}
 	return true
+}
+
+// A coalesced condition prevents lost wakeups between reconcile and waiting.
+// Callbacks perform no database/NATS work and run only after commit/publication.
+wake :: proc(s: ^Service) {
+ if s == nil do return
+ sync.mutex_lock(&s.wake_mutex)
+ s.wake_pending = true
+ sync.cond_signal(&s.wake_cond)
+ sync.mutex_unlock(&s.wake_mutex)
+}
+consume_wake :: proc(s: ^Service) {
+ sync.mutex_lock(&s.wake_mutex)
+ s.wake_pending = false
+ sync.mutex_unlock(&s.wake_mutex)
+}
+wait_for_wake :: proc(r: ^Runtime, delay: time.Duration) {
+ s := r.service
+ started := time.tick_now()
+ sync.mutex_lock(&s.wake_mutex); defer sync.mutex_unlock(&s.wake_mutex)
+ for !s.wake_pending && sync.atomic_load(&r.stopping)==0 {
+  left := delay-time.tick_since(started)
+  if left <= 0 do return
+  _ = sync.cond_wait_with_timeout(&s.wake_cond,&s.wake_mutex,left)
+ }
+}
+reconcile_interval :: proc(s: ^Service) -> time.Duration {
+ return s.reconcile_interval if s.reconcile_interval > 0 else NOTICE_RECONCILE_INTERVAL
+}
+runtime_wait_delay :: proc(r: ^Runtime, now: time.Tick) -> time.Duration {
+ interval := reconcile_interval(r.service)
+ deadline := r.subscription_reconcile._nsec+i64(interval)
+ if deadline <= now._nsec do return 0
+ // Ignore deadlines on ineligible targets: their committed activity change
+ // wakes us. Pending eligible work waits for its cooldown/ack deadline.
+ for _, chain in r.subscription_cache {
+  for row in chain.rows {
+   target: domain.Event_Notice_Target
+   for snapshot in chain.snapshots do if snapshot.subscription_id==row.subscription_id {target=snapshot.target; break}
+   if target.instance_id=="" || target.stopped_by!="" do continue
+   if !(target.runtime_status=="stopped" || (target.runtime_status=="running" || target.runtime_status=="idle") && target.activity_status=="idle") do continue
+   schedule, found := r.notifications[fmt.tprintf("schedule:%s",row.consumer_name)]
+   if !found do continue
+   due := schedule.next_check._nsec
+   if schedule.dirty do due=now._nsec
+   prior := r.notifications[fmt.tprintf("instance:%s/%s",row.owner_user_id,row.subscriber_instance_id)]
+   due=max(due,prior.last_sent._nsec+i64(30*time.Second),prior.last_rejected._nsec+i64(5*time.Second))
+   if due > 0 do deadline=min(deadline,due)
+  }
+ }
+ return time.Duration(max(0,deadline-now._nsec))
 }

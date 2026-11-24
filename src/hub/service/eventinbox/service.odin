@@ -14,6 +14,13 @@ import nats "odin_test:lib/nats"
 Service :: struct {
 	factory:     ^iface.Unit_Of_Work_Factory,
 	notice_dirty: Notice_Dirty,
+ wake_mutex: sync.Mutex,
+ wake_cond: sync.Cond,
+ wake_pending: bool,
+ watched_scopes: map[string]bool,
+ interest_ready: bool,
+ reconcile_interval: time.Duration, // Zero uses five minutes.
+
 	counters: Counter_Registry,
 	notice_ctx: rawptr,
 	// Called outside a UoW. True means the existing notice/start path accepted it.

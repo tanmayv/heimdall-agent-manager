@@ -55,3 +55,21 @@ that supports the v2 reader (or backport that reader first). Keep the current
 ledger through rollback; restoring a pre-upgrade backup omits newer effects and
 also loses deduplication. The installer snapshots binaries, not a safe historical
 replacement for live effect records.
+
+
+## Inbox scheduling and subscription retirement
+
+The inbox runtime waits for subscription changes, catalog publications for watched
+scopes, agent activity changes, and the earliest cooldown or redelivery deadline.
+It makes no subscription queries or JetStream API calls while idle between wakes.
+A slow safety reconciliation recovers missed signals and external database edits;
+its default is 300 seconds. Configure it with
+`HEIMDALL_EVENT_INBOX_RECONCILE_SECONDS` or
+`--event-inbox-reconcile-seconds` (1–86400 seconds).
+
+Migration `events_009_incremental_inbox.sql` retires automatic subscriptions on
+completed, cancelled, and archived chains, including existing rows. Explicit
+watches survive completion and cancellation; archiving removes them. Every
+retirement queues a durable JetStream consumer deletion, retried on reconnect.
+Reopening a chain recreates current role defaults, starting from the reopen time;
+it does not recreate explicit watches removed by archiving.

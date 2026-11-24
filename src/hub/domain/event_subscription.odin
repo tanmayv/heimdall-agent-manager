@@ -56,3 +56,9 @@ event_notice_snapshot_destroy :: proc(row: ^Event_Notice_Snapshot) {
 	event_notice_target_destroy(&row.target)
 	row^ = {}
 }
+
+// Owned chain invalidation returned in increasing revision order.
+Event_Inbox_Change :: struct {
+ owner_user_id, chain_id: string,
+ revision: i64,
+}

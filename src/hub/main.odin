@@ -376,7 +376,12 @@ parse_args :: proc(config: ^app.Hub_Config) {
 // later override these). It runs before the users/tokens subcommands so they see
 // whether OIDC is configured. No issuer, endpoint or audience is hard-coded.
 apply_oidc_env :: proc(config: ^app.Hub_Config) {
-	if v := os.get_env_alloc("HEIMDALL_NATS_URL", context.allocator); v != "" do config.nats_url = v
+	if v := os.get_env_alloc("HEIMDALL_EVENT_INBOX_RECONCILE_SECONDS", context.temp_allocator); v != "" {
+  parsed,ok:=strconv.parse_int(v)
+  if !ok || parsed<1 || parsed>86400 {fmt.eprintln("HEIMDALL_EVENT_INBOX_RECONCILE_SECONDS requires 1..86400"); os.exit(2)}
+  config.event_inbox_reconcile_seconds=int(parsed)
+ }
+ if v := os.get_env_alloc("HEIMDALL_NATS_URL", context.allocator); v != "" do config.nats_url = v
 	if v := os.get_env_alloc("HEIMDALL_NATS_CREDS_FILE", context.allocator); v != "" do config.nats_creds_file = v
 	if v := os.get_env_alloc("HEIMDALL_NATS_CA_FILE", context.allocator); v != "" do config.nats_ca_file = v
 	if v := os.get_env_alloc("HAM_OIDC_ISSUER", context.allocator); v != "" do config.oidc_issuer = v
@@ -546,7 +551,15 @@ apply_whatsapp_env :: proc(config: ^app.Hub_Config) {
 parse_nats_args :: proc(config: ^app.Hub_Config) {
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
-		if arg == "--legacy-event-notices" {
+		if arg == "--event-inbox-reconcile-seconds" {
+   if i+1>=len(os.args) {fmt.eprintln(arg,"requires 1..86400"); os.exit(2)}
+   parsed,ok:=strconv.parse_int(os.args[i+1])
+   if !ok || parsed<1 || parsed>86400 {fmt.eprintln(arg,"requires 1..86400"); os.exit(2)}
+   config.event_inbox_reconcile_seconds=int(parsed)
+   i+=1
+   continue
+  }
+  if arg == "--legacy-event-notices" {
 			if i + 1 >= len(os.args) { fmt.eprintln(arg, "requires true or false"); os.exit(2) }
 			value, ok := app.parse_bool_setting(os.args[i + 1])
 			if !ok { fmt.eprintln(arg, "requires true or false"); os.exit(2) }
