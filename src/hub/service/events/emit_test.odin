@@ -51,13 +51,13 @@ test_v2_neutral_emit_owns_temporary_allocations :: proc(t: ^testing.T) {
 }
 
 emit_test_head :: proc(ctx: rawptr, owner, kind, id, event_type, event_id: string, version: i64) -> domain.Domain_Error {
- f := (^Emit_Test)(ctx)
- testing.expect_value(f.t,owner,"owner")
- testing.expect_value(f.t,kind,"memory")
- testing.expect_value(f.t,id,"m1")
- testing.expect_value(f.t,event_type,"memory.state")
- testing.expect_value(f.t,event_id,"evt")
- testing.expect_value(f.t,version,i64(7))
- f.headed=true
- return {}
+	f := (^Emit_Test)(ctx)
+	testing.expect_value(f.t, owner, "owner")
+	testing.expect_value(f.t, kind, "memory")
+	testing.expect_value(f.t, id, "m1")
+	testing.expect_value(f.t, event_type, "memory.state")
+	testing.expect_value(f.t, event_id, "evt")
+	testing.expect_value(f.t, version, i64(7))
+	f.headed=true
+	return {}
 }

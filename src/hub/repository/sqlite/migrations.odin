@@ -1625,7 +1625,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "coordinator_idle_002_stop_reason.sql" do return strings.clone(MIGRATION_COORDINATOR_IDLE_002_STOP_REASON)
 	if name == "221_extension_version_sync_0_5_61.sql" do return strings.clone(MIGRATION_221_EXTENSION_VERSION_SYNC)
 	if name == "events_005_delivery_retention.sql" do return strings.clone(MIGRATION_EVENTS_005_DELIVERY_RETENTION)
- if name == "events_008_state_heads.sql" do return strings.clone(MIGRATION_EVENTS_008_STATE_HEADS)
+	if name == "events_008_state_heads.sql" do return strings.clone(MIGRATION_EVENTS_008_STATE_HEADS)
  if name == "events_007_entity_versions.sql" do return strings.clone(MIGRATION_EVENTS_007_ENTITY_VERSIONS)
 	if name == "events_006_instance_subscriptions.sql" do return strings.clone(MIGRATION_EVENTS_006_INSTANCE_SUBSCRIPTIONS)
 	if name == "events_004_delivery.sql" do return strings.clone(MIGRATION_EVENTS_004_DELIVERY)
