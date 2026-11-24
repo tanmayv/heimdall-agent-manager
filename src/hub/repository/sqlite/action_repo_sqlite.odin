@@ -582,11 +582,12 @@ actions_runs_release_parked :: proc(ctx:rawptr,owner,instance_id,now:string)->(b
 }
 
 
+ACTIONS_SQL_EXPIRED_PROMPTS :: "SELECT d.delivery_id FROM pipeline_deliveries d WHERE d.kind='prompt' AND d.state IN ('routed','forwarded','delivered') AND d.expires_at<=?1 AND EXISTS (SELECT 1 FROM action_runs r WHERE r.delivery_id=d.delivery_id AND r.state='routed') ORDER BY d.expires_at,d.delivery_id LIMIT ?2;"
 // Include awaiting-read (delivered) prompts; the generic transport expiry query
 // intentionally handles only routed/forwarded deliveries.
 actions_expired_prompt_deliveries :: proc(ctx:rawptr,now:string,limit:int)->([]string,domain.Domain_Error) {
  guard:=tx_repository_enter();defer tx_repository_leave(guard)
- stmt,err:=actions_prepare(ctx,"SELECT d.delivery_id FROM pipeline_deliveries d WHERE d.kind='prompt' AND d.state IN ('routed','forwarded','delivered') AND d.expires_at<=?1 AND EXISTS (SELECT 1 FROM action_runs r WHERE r.delivery_id=d.delivery_id AND r.state='routed') ORDER BY d.expires_at,d.delivery_id LIMIT ?2;",{now,fmt.tprintf("%d",clamp(limit,1,128))})
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_EXPIRED_PROMPTS,{now,fmt.tprintf("%d",clamp(limit,1,128))})
  if err.code!=.None do return nil,err
  defer sqlite3_finalize(stmt)
  rows: [dynamic]string

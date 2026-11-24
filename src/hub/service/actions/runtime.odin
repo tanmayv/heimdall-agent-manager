@@ -122,6 +122,8 @@ runtime_entry :: proc(data:rawptr) {
   rule_index_sync(r)
   hints:=make([dynamic]Resume_Hint)
   count:=nats.batch_count(batch)
+  batch_ready:=true
+  if count>0 {batch_ready=expire_prompt_deliveries(&r.router).code==.None}
   for i in 0..<count {
    msg:=nats.batch_message(batch,i)
    view,valid,poison:=runtime_event_view(msg)
@@ -131,7 +133,7 @@ runtime_entry :: proc(data:rawptr) {
     continue
    }
    if !valid {_=nats.ack(msg); continue}
-   if handle_message(r,view) {
+   if batch_ready && handle_message(r,view,false) {
     _=nats.ack(msg)
     if view.event_type=="action.resume" {
      data,_:=view.envelope["data"].(json.Object)

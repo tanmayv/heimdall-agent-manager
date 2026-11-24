@@ -148,3 +148,19 @@ actions_index_plans :: proc(t: ^testing.T, repo: iface.Action_Repository, conn: 
 		sqlite3_finalize(stmt)
 	}
 }
+
+@(test)
+test_actions_prompt_expiry_uses_index :: proc(t:^testing.T) {actions_repo_test(t,actions_prompt_expiry_plan)}
+actions_prompt_expiry_plan :: proc(t:^testing.T,repo:iface.Action_Repository,conn:^Conn) {
+ stmt:sqlite3_stmt
+ sql:="EXPLAIN QUERY PLAN "+ACTIONS_SQL_EXPIRED_PROMPTS
+ if !testing.expect_value(t,sqlite3_prepare_v2(conn.db,strings.clone_to_cstring(sql,context.temp_allocator),-1,&stmt,nil),SQLITE_OK) do return
+ defer sqlite3_finalize(stmt)
+ uses_index:=false
+ for sqlite3_step(stmt)==SQLITE_ROW {
+  detail:=column_text_unowned(stmt,3)
+  if strings.contains(detail,"pipeline_deliveries_action_prompt_expiry") do uses_index=true
+  testing.expect(t,!strings.contains(detail,"SCAN d"),detail)
+ }
+ testing.expect(t,uses_index,"expiry sweep must use the partial prompt deadline index")
+}

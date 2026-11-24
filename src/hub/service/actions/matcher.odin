@@ -65,7 +65,9 @@ event_params :: proc(msg: Event_View, rev:int, nodes:string) -> string {
  encoded, _ := json.marshal(params, allocator=context.temp_allocator)
  return string(encoded)
 }
-handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
+// Direct callers represent a one-event batch. The NATS runtime sweeps once
+// before its whole fetched batch and disables this wrapper for each member.
+handle_message :: proc(r: ^Runtime, msg: Event_View, sweep_before_match:=true) -> (acked: bool) {
  tokens := strings.split(msg.subject, ".", context.temp_allocator)
  if len(tokens) < 3 || tokens[0] != "ev" || tokens[1] == "" || tokens[1] == "dlq" do return true
  owner := tokens[1]
@@ -80,6 +82,7 @@ handle_message :: proc(r: ^Runtime, msg: Event_View) -> (acked: bool) {
  if (strings.has_prefix(msg.event_type, "chain.") || strings.has_prefix(msg.event_type, "task.")) {
   if _, present := msg.envelope["entity"].(json.Object); !present do return true
  }
+ if sweep_before_match {if e:=expire_prompt_deliveries(&r.router);e.code!=.None do return false}
  uow, ok, _ := iface.unit_of_work_begin(r.svc.factory)
  if !ok do return false
  defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)

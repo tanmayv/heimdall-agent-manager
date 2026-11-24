@@ -23,15 +23,18 @@ compiled_index_warm :: proc(t:^testing.T,f:^Action_Test) {
  perf_trace(rawptr(f.db.db),1,perf_count,&count)
  action_test_match(t,f,"cold")
  perf_trace(rawptr(f.db.db),0,nil,nil)
- testing.expect_value(t,count,1)
+ testing.expect_value(t,count,2) // One expiry sweep + one owner trigger load.
  count=0
  perf_trace(rawptr(f.db.db),1,perf_count,&count)
  started:=time.tick_now()
  action_test_match(t,f,"warm")
  elapsed:=time.tick_since(started)
  perf_trace(rawptr(f.db.db),0,nil,nil)
- testing.expect_value(t,count,0)
- fmt.printf("F2 300 matching rules warm event: %v (0 SELECT statements)\n",elapsed)
+ testing.expect_value(t,count,1) // Only the indexed expiry sweep; zero trigger reads.
+ fmt.printf("F2 300 matching rules warm event: %v (0 trigger SELECTs, 1 expiry SELECT)\n",elapsed)
+ started=time.tick_now()
+ testing.expect_value(t,expire_prompt_deliveries(&f.runtime.router).code,domain.Error_Code.None)
+ fmt.printf("F2 no-op indexed expiry sweep: %v (1 query per batch)\n",time.tick_since(started))
  // Measure just the compiled evaluator independently of insert/storage cost.
  owner:=f.runtime.rule_index.owners["owner"]
  envelope:=test_config(`{"data":{"state":"completed"}}`)
@@ -199,4 +202,21 @@ compiled_idle_expiry :: proc(t:^testing.T,f:^Action_Test) {
  drain_due(&f.runtime.router)
  ack_assert(t,f,run,"failed","","not_read")
  action_test_expect(t,f,domain.ACTION_RUN_FAILED,1)
+}
+
+@(test)
+test_compiled_rule_index_read_after_deadline_before_sweep :: proc(t:^testing.T) {action_test_case(t,compiled_read_before_sweep)}
+compiled_read_before_sweep :: proc(t:^testing.T,f:^Action_Test) {
+ run:=ack_prompt(t,f);ack_succeed(f,run)
+ delivery,_,_:=action_test_delivery(f,run.delivery_id)
+ defer domain.pipeline_delivery_destroy(&delivery)
+ f.now_ms,_=schedule_time(delivery.expires_at)
+ ack_read(t,f,run)
+ action_test_match(t,f,"after-read")
+ ack_assert(t,f,run,"done","read","")
+ action_test_expect(t,f,domain.ACTION_RUN_DELIVERED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_QUEUED,1)
+ action_test_expect(t,f,domain.ACTION_RUN_FAILED,0)
+ drain_due(&f.runtime.router)
+ action_test_expect(t,f,domain.ACTION_RUN_ROUTED,1)
 }
