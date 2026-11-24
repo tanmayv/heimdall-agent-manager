@@ -18,6 +18,10 @@ import taskv2 "odin_test:hub/service/taskv2"
 // notify it (exactly as wiring.odin does).
 Projector_Harness :: struct {
 	path:           string,
+	outbox_impl: sqlite.Event_Outbox_Repo_SQLite,
+	repos: iface.Repositories,
+	factory_impl: sqlite.SQLite_Unit_Of_Work_Factory,
+	factory: iface.Unit_Of_Work_Factory,
 	conn:           sqlite.Conn,
 	card_impl:      sqlite.Card_Repo_SQLite,
 	attention_impl: sqlite.Attention_Repo_SQLite,
@@ -60,6 +64,9 @@ ph_open :: proc(t: ^testing.T, h: ^Projector_Harness, name: string) {
 	h.engine = taskv2.Service{repo = &h.tasks, agents = &h.agents, clock = &h.clock, ids = &h.ids}
 	h.taskchains.engine = &h.engine
 	h.content_svc = content_service.Content_Service{content = &h.content, agents = &h.agents, clock = &h.clock, ids = &h.ids}
+	h.repos = {content=h.content, agents=h.agents, event_outbox=sqlite.new_event_outbox_repository(&h.outbox_impl, &h.conn)}
+	h.factory = sqlite.new_unit_of_work_factory(&h.factory_impl, &h.conn, &h.repos)
+	h.content_svc.uow_factory = &h.factory
 	h.svc = new_card_service(cards = &h.cards, projects = nil, taskchains = &h.taskchains, content = &h.content_svc, clock = &h.clock, ids = &h.ids)
 	init_attention(&h.svc, &h.attention)
 	h.svc.card_changed = Card_Changed_Hook{ctx = rawptr(h), changed = proc(ctx: rawptr, owner, kind: string) {
