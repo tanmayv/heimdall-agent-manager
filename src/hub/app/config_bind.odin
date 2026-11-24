@@ -1,6 +1,8 @@
 package app
 
 import "core:strings"
+import "core:encoding/json"
+import actions "odin_test:hub/service/actions"
 import bots "odin_test:hub/service/bots"
 import "core:strconv"
 import "core:net"
@@ -8,6 +10,7 @@ import vault "odin_test:lib/vault"
 import auth_service "odin_test:hub/service/auth"
 
 Hub_Config :: struct {
+ action_filter_limits:actions.Filter_Limits,
 	// Default on until catalog v1 staging parity is approved.
 	legacy_event_notices: Maybe(bool),
 	nats_url, nats_creds_file, nats_ca_file: string,
@@ -158,6 +161,7 @@ default_config :: proc() -> Hub_Config {
 	cidrs := make([]string, 1)
 	cidrs[0] = "127.0.0.1/32"
 	return Hub_Config{
+  action_filter_limits=actions.FILTER_DEFAULT_LIMITS,
 		telegram_api_base = "https://api.telegram.org",
 		whatsapp_api_base = "https://graph.facebook.com",
 		bot_timers = bots.default_bot_timer_config(),
@@ -494,4 +498,36 @@ parse_idle_seconds :: proc(value: string) -> (int, bool) {
 	parsed, ok := strconv.parse_int(strings.trim_space(value))
 	if !ok || parsed < 0 do return 0, false
 	return int(parsed), true
+}
+
+// One JSON object keeps all filter defaults and their bounds in one place.
+// Unknown keys, fractional values and invalid bounds fail before startup.
+apply_action_filter_limits_json :: proc(config:^Hub_Config,raw:string)->bool {
+ value:json.Value
+ if json.unmarshal_string(raw,&value)!=nil do return false
+ defer json.destroy_value(value)
+ obj,ok:=value.(json.Object)
+ if !ok do return false
+ l:=actions.filter_limits(config.action_filter_limits)
+ for key,item in obj {
+  number,valid:=item.(json.Integer)
+  if !valid || number<1 || number>1048576 do return false
+  n:=int(number)
+  switch key {
+  case "max_depth": l.max_depth=n
+  case "max_checks": l.max_checks=n
+  case "max_nodes": l.max_nodes=n
+  case "max_children": l.max_children=n
+  case "max_values": l.max_values=n
+  case "max_value_bytes": l.max_value_bytes=n
+  case "max_field_bytes": l.max_field_bytes=n
+  case "max_path_segments": l.max_path_segments=n
+  case "max_segment_bytes": l.max_segment_bytes=n
+  case "max_bytes": l.max_bytes=n
+  case: return false
+  }
+ }
+ if !actions.filter_limits_valid(l) do return false
+ config.action_filter_limits=l
+ return true
 }

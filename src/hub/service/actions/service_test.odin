@@ -186,7 +186,7 @@ service_match_keys :: proc(t:^testing.T,s:^Service,db:^sqlite.Conn) {
 	input:=test_input()
 	input.triggers=[]Trigger_Input{
 		{kind="schedule",config=test_config("{\"mode\":\"interval\",\"interval_s\":60}")},
-		{kind="event",config=test_config("{\"event_type\":\"chain.state\",\"chain_id\":\"chain_first\"}")},
+		{kind="event",config=test_config("{\"event_type\":\"chain.state\",\"entity_id\":\"chain_first\"}")},
 		{kind="event",config=test_config("{\"event_type\":\"chain.work_finished\"}")},
 	}
 	v,err:=create(s,"owner",input)
@@ -198,7 +198,7 @@ service_match_keys :: proc(t:^testing.T,s:^Service,db:^sqlite.Conn) {
 		if trigger.event_type=="chain.work_finished" do testing.expect_value(t,trigger.match_key,"")
 		if trigger.event_type=="chain.state" {
 			testing.expect_value(t,trigger.match_key,"ev.owner.chain.chain_first.state")
-			updated,update_err:=update(s,"owner",string(v.action.id),{triggers=[]Trigger_Input{{id=trigger.trigger_id,kind="event",config=test_config("{\"event_type\":\"chain.state\",\"chain_id\":\"chain_second\"}")}}})
+			updated,update_err:=update(s,"owner",string(v.action.id),{triggers=[]Trigger_Input{{id=trigger.trigger_id,kind="event",config=test_config("{\"event_type\":\"chain.state\",\"entity_id\":\"chain_second\"}")}}})
 			defer action_view_destroy(&updated)
 			if !testing.expect_value(t,update_err.code,domain.Error_Code.None) do return
 			if !testing.expect_value(t,len(updated.triggers),1) do return
@@ -214,9 +214,9 @@ service_foreign_chain :: proc(t:^testing.T,s:^Service,db:^sqlite.Conn) {
 	_,saved,save_err:=iface.taskchain_save_chain(&s.repos.taskchains,domain.Task_Chain{chain_id="chain_foreign",owner_user_id="other",title="Other",kind=domain.CHAIN_KIND_MIXED_WORK,status=.Active})
 	testing.expect(t,saved && save_err.code==.None)
 	input:=test_input()
-	input.triggers=[]Trigger_Input{{kind="event",config=test_config("{\"event_type\":\"chain.state\",\"chain_id\":\"chain_foreign\"}")}}
+	input.triggers=[]Trigger_Input{{kind="event",config=test_config("{\"event_type\":\"chain.state\",\"entity_id\":\"chain_foreign\"}")}}
 	v,err:=create(s,"owner",input)
 	defer action_view_destroy(&v)
-	testing.expect(t,strings.contains(err.details_json,"unknown_chain"),err.details_json)
+	testing.expect(t,strings.contains(err.details_json,"unknown_entity"),err.details_json)
 	expect_pending(t,s,0)
 }

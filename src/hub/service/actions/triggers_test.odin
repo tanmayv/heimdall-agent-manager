@@ -62,11 +62,11 @@ schedule_compile_cases :: proc(t:^testing.T) {
 test_event_compile_table :: proc(t:^testing.T) {actions_track(t,event_compile_cases)}
 event_compile_cases :: proc(t:^testing.T) {
 	service_case(t,service_foreign_chain)
-	compile_case(t,"event","{\"event_type\":\"chain.state\",\"data\":{\"state\":\"completed\"}}","","ev.owner.chain.*.state")
-	compile_case(t,"event","{\"event_type\":\"chain.work_finished\",\"chain_id\":\"chain_a\",\"data\":{\"outcome\":\"done\"}}","","ev.owner.chain.chain_a.work_finished")
+	compile_case(t,"event","{\"event_type\":\"chain.state\",\"filter\":{\"all\":[{\"field\":\"data.state\",\"op\":\"eq\",\"value\":\"completed\"}]}}","","ev.owner.chain.*.state")
+	compile_case(t,"event","{\"event_type\":\"chain.work_finished\",\"entity_id\":\"chain_a\",\"filter\":{\"all\":[{\"field\":\"data.outcome\",\"op\":\"eq\",\"value\":\"done\"}]}}","","ev.owner.chain.chain_a.work_finished")
 	compile_case(t,"event","{\"event_type\":\"unknown\"}","unknown_event_type","")
-	compile_case(t,"event","{\"event_type\":\"chain.state\",\"data\":{\"wrong\":\"x\"}}","invalid_data_filter","")
-	compile_case(t,"event","{\"event_type\":\"chain.state\",\"chain_id\":\"a.b\"}","unknown_chain","")
+	compile_case(t,"event","{\"event_type\":\"chain.state\",\"filter\":{\"all\":[{\"field\":\"data.wrong\",\"op\":\"eq\",\"value\":\"x\"}]}}","unknown_field","")
+	compile_case(t,"event","{\"event_type\":\"chain.state\",\"entity_id\":\"a.b\"}","unknown_entity","")
 	compile_case(t,"event","{\"event_type\":\"chain.state\",\"extra\":true}","invalid_config","")
 }
 @(test)

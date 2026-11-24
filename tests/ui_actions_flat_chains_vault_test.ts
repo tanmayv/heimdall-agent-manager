@@ -39,7 +39,7 @@ for (const wrapped of [false, true]) {
       assert.equal(rows[0].title, title, 'wire data stays encrypted');
       if (wrapped) assert.equal(result.total, 2);
       const html = renderToStaticMarkup(React.createElement(Provider, { store, children: React.createElement(EventTriggerEditor, {
-        value: { event_type: 'chain.state', chain_id: 'chain_secret', data: {} }, events: [], onChange() {}, debugId: 'test-event',
+        value: { event_type: 'chain.state', entity_id: 'chain_secret', filter: {} }, events: [], onChange() {}, debugId: 'test-event',
       }) }));
       assert.match(html, /Release automation/);
       assert.doesNotMatch(html, /vault:v2:/);

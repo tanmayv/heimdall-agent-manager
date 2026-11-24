@@ -262,6 +262,7 @@ service_message_created :: proc(ctx: rawptr, m: domain.Chat_Message) {
 }
 
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
+ if !actions_service.filter_limits_valid(actions_service.filter_limits(config.action_filter_limits)) do return false,"invalid action filter limits"
 	if strings.trim_space(config.nats_url) == "" do return false, "--nats-url / HEIMDALL_NATS_URL is required"
 	graph.bridge_runtime_registry.limits = project_service.Runtime_Registry_Limits{
 		live_bridges = config.runtime_max_live_bridges,
@@ -639,6 +640,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.vault_directory_handlers = http.Vault_Directory_Handlers{auth = &graph.auth, vault = &graph.vault_directory, device_auth = &graph.device_auth, bridges = &graph.bridges, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
 	graph.actions = actions_service.Service{
+  filter_limits=actions_service.filter_limits(config.action_filter_limits),
 		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,
 		experiments=&graph.experiment_repo,clock=&graph.clock,ids=&graph.ids,
 		support={ctx=rawptr(&graph.event_relay),get=action_schedule_support},
@@ -1199,6 +1201,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions", rawptr(&graph.action_handlers), http.create_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/actions/trigger-types", rawptr(&graph.action_handlers), http.action_trigger_types_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/actions/filter-test", rawptr(&graph.action_handlers), http.action_filter_test_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions/*/enable", rawptr(&graph.action_handlers), http.enable_action_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions/*/disable", rawptr(&graph.action_handlers), http.disable_action_handler)
 	http.router_add(&graph.router,"GET","/api/v1/actions/*/runs",rawptr(&graph.action_handlers),http.list_action_runs_handler)

@@ -238,9 +238,9 @@ action_api_validation :: proc(t:^testing.T,f:^Action_API_Fixture) {
 		{"[{\"kind\":\"schedule\",\"config\":{\"mode\":\"cron\",\"cron_expr\":\"bad\"}}]","invalid_cron"},
 		{"[{\"kind\":\"schedule\",\"config\":{\"mode\":\"cron\",\"cron_expr\":\"0 0 * * *\",\"timezone\":\"Bad/Zone\"}}]","invalid_timezone"},
 		{"[{\"kind\":\"event\",\"config\":{\"event_type\":\"other\"}}]","unknown_event_type"},
-		{"[{\"kind\":\"event\",\"config\":{\"event_type\":\"chain.state\",\"chain_id\":\"chain_foreign_api\"}}]","unknown_chain"},
-		{"[{\"kind\":\"event\",\"config\":{\"event_type\":\"chain.state\",\"chain_id\":\"missing\"}}]","unknown_chain"},
-		{"[{\"kind\":\"event\",\"config\":{\"event_type\":\"chain.state\",\"data\":{\"bad\":\"value\"}}}]","invalid_data_filter"},
+		{"[{\"kind\":\"event\",\"config\":{\"event_type\":\"chain.state\",\"entity_id\":\"chain_foreign_api\"}}]","unknown_entity"},
+		{"[{\"kind\":\"event\",\"config\":{\"event_type\":\"chain.state\",\"entity_id\":\"missing\"}}]","unknown_entity"},
+		{"[{\"kind\":\"event\",\"config\":{\"event_type\":\"chain.state\",\"filter\":{\"all\":[{\"field\":\"data.bad\",\"op\":\"eq\",\"value\":\"value\"}]}}}]","unknown_field"},
 	}
 	for c in trigger_cases {
 		response:=create_action_handler(&f.handlers,action_api_request(f,"POST","/api/v1/actions",action_api_base_body(f,c.triggers)))
