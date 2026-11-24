@@ -117,7 +117,7 @@ test('REQ-AU: updater delivery retains NSIS/version identity and enables publish
   assert.match(updaterSource, /updater\.autoInstallOnAppQuit = false/);
   assert.match(updaterMainSource, /updater\.quitAndInstall\(false, true\)/);
   assert.match(mainSource, /desktopUpdates = installDesktopUpdates/);
-  assert.match(builderSource, /publish:\s+[\s\S]*provider: github[\s\S]*repo: heimdall-agent-manager/);
+  assert.match(builderSource, /publish:\s+[\s\S]*provider: github[\s\S]*owner: tanmayv[\s\S]*repo: heimdall-releases/);
   assert.match(builderSource, /verifyUpdateCodeSignature: true/);
   assert.match(releaseWorkflowSource, /WIN_CSC_LINK/);
   assert.match(releaseWorkflowSource, /desktop-dist\/latest\.yml/);
