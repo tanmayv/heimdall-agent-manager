@@ -496,8 +496,9 @@ workflow_proposal_run_in_uow :: proc(svc: ^Service, u: ^Uow, chain_in: domain.Ta
  if chain.published_at == "" do chain.published_at = platform.clock_now(svc.clock)
  chain.defaults_json = set_chain_proposal_json(chain.defaults_json, "")
  chain.updated_at = platform.clock_now(svc.clock)
- if _, ok, err := iface.taskchain_save_chain(svc.repo, chain); !ok do return {}, false, err
- if err := catalog_chain_state(svc.repo, svc.clock, chain_in, chain); err.code != .None do return {}, false, err
+ saved, saved_ok, save_err := iface.taskchain_save_chain(svc.repo, chain)
+ if !saved_ok do return {}, false, save_err
+ if err := catalog_chain_state(svc.repo, svc.clock, chain_in, saved); err.code != .None do return {}, false, err
  _, ok, err := workflow_run_in_uow(svc, u, chain.owner_user_id, actor, Workflow_Run_Input{
   chain_id = string(chain.chain_id), ref = ref, inputs_json = inputs, request_id = platform.generate_id(svc.ids, "proposal_"),
  })

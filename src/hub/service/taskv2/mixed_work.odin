@@ -443,10 +443,11 @@ work_chain_complete_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID
 	if lerr.code != .None do return {}, false, lerr
 	if len(leases) != 0 do return {}, false, domain.domain_error(.Conflict, "chain still has live leases")
 	if completed, err := iface.taskchain_complete_work_chain(svc.repo, chain_id, owner, expected_revision, summary, platform.clock_now(svc.clock)); !completed do return {}, false, err
-	completed_chain := chain
-	completed_chain.status = .Completed
-	if err := catalog_chain_state(svc.repo, svc.clock, chain, completed_chain); err.code != .None do return {}, false, err
-	fresh, _, _ := iface.taskchain_get_chain(svc.repo, chain_id)
+	// Completion assigns timestamps in storage; emit that persisted row.
+	fresh, found, ferr := iface.taskchain_get_chain(svc.repo, chain_id)
+	if ferr.code != .None do return {}, false, ferr
+	if !found do return {}, false, domain.domain_error(.Not_Found, "completed chain not found")
+	if err := catalog_chain_state(svc.repo, svc.clock, chain, fresh); err.code != .None do return {}, false, err
 	effect_publish_chain(u, chain_id, owner, "completed")
 	return fresh, true, domain.Domain_Error{}
 }
