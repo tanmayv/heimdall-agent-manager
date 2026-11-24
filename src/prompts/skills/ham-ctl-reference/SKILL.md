@@ -786,42 +786,55 @@ current task state. Other taskv2 triggers still use that path. The hub flag
 triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
 
 
-## hub actions — operator actions API v2
+## automations — event and cron rules
 
-These are hub/operator commands, authenticated with the operator's hub credentials.
-The owner's `actions` experiment must be enabled. Phase 1 supports agent and
-instance targets; bot targets require the later bot integration.
-
-```bash
-ham-ctl hub actions list
-ham-ctl hub actions show <action-id>
-ham-ctl hub actions create --prompt <text> --agent-id <id> [--name <text>] [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]... [--min-interval <seconds>] [--disabled] [--trigger <spec>]... [--trigger-json <json>]...
-ham-ctl hub actions create --prompt <text> --instance <id> [--trigger <spec>]...
-ham-ctl hub actions update <action-id> [--prompt <text>] [--name <text>] [--min-interval <seconds>] [--trigger <spec>]... [--trigger-json <json>]...
-ham-ctl hub actions enable <action-id>
-ham-ctl hub actions disable <action-id>
-ham-ctl hub actions delete <action-id>
-ham-ctl hub actions runs <action-id> [--limit <n>] [--before <created_at>] [--before-id <run_id>]
-```
-
-Each rule part is a value or `*`; omitted model means `*`. Rule order is flag
-order. Trigger specs are `cron:<5-field expr>[@<timezone>]` (last `@` splits the
-zone), `every:<seconds>`, `at:<RFC3339>` and
-`event:<event_type>[,chain=<id>][,<data key>=<value>]...`.
-`--trigger-json` takes a full trigger object, including `blackout_dates`,
-`active_from` and `active_until` in its config. Mixed repeated trigger flags keep
-their order. On update, any trigger flag replaces the whole trigger list; any
-target flag replaces the whole target, including rules. Omitted fields stay as-is.
-For stable history paging, pass the last row's `created_at` to `--before` and
-its run id to `--before-id`; a timestamp alone excludes all rows at that time.
+Agent-authenticated through the local bridge. Owner and created_by/updated_by come
+from the calling instance; request fields cannot choose another owner or actor.
+The owner's actions experiment must be enabled; bot targets also require bots.
 
 ```bash
-ham-ctl hub actions create --prompt 'Review {{event.entity.id}}' --agent-id agt_1 --rule '*:claude' --trigger 'event:chain.state,state=completed'
-ham-ctl hub actions create --prompt 'Daily review' --instance inst_1 --trigger 'cron:0 9 * * 1-5@America/New_York'
+ham-ctl automations create --prompt <text> --bot <id> [--name <text>] [--min-interval <seconds>] [--disabled] [--trigger <spec>]...
+ham-ctl automations create --prompt <text> --instance <id> [--trigger <spec>]...
+ham-ctl automations create --prompt <text> --agent-id <id> [--project <id>] [--instance-strategy reuse|fresh_per_run] [--rule <bridge>:<provider>[:<model>]]...
+ham-ctl automations list
+ham-ctl automations show <id>
+ham-ctl automations update <id> [--enable|--disable] [--prompt <text>] [--name <text>] [--min-interval <seconds>] [target flags] [trigger flags]
+ham-ctl automations delete <id>
+ham-ctl automations runs <id> [--limit <1..200>] [--before <created_at>] [--before-id <run_id>]
+ham-ctl automations trigger-types
+ham-ctl automations filter-test --event-type <type> --filter-file <path> --event-file <path>
+ham-ctl automations <verb> --help
 ```
 
-There is no manual `run` verb. Read run history for waiting, deferred, routed,
-delivered, joined, skipped and failed outcomes, including reasons and delivery
-expiry. An action also starts an agent stopped by the user. Disable the action
-to prevent future action wakes. Machines must report `event_pipeline_v1`; old
-bridges remain visible with `missing_feature` but cannot run actions.
+Use --target bot without --bot to select your bot. Each placement rule part is
+a value or *; omitted model means *. Repeat --rule in placement order.
+Triggers: cron:<5-field expression>@<IANA timezone> (UTC if omitted),
+event:<type>[,<field>=<op>:<value>]..., every:<seconds>, at:<RFC3339>.
+--trigger-json accepts a full trigger object. --entity <id>, --delay <seconds|Ns|Nm|Nh>,
+--filter <field>=<op>:<value> and --filter-file <path> apply to the preceding trigger;
+filters and entity apply to events. Delay zero disables delay; maximum 24 hours.
+Tree JSON supports all/any/not and field/op/value checks. Shorthand supports
+eq/ne string values, in/not_in pipe-separated strings, exists:true/false.
+Bare fields mean data.<field>; bare values mean eq. Comma checks form all-of.
+Choose a tree file instead of shorthand on a trigger.
+
+Any target flag replaces the whole target (including rules); any trigger flag
+replaces the whole trigger list. Omitted fields stay unchanged.
+Run history includes event_params._match with revision and pre-order T/F nodes;
+overlay only when the current trigger revision matches, otherwise the rule was edited.
+Use both --before and --before-id from the last row for stable pagination.
+trigger-types reports fields/operators/values and effective filter limits.
+filter-test validates/evaluates a sample JSON event without emitting or storing it.
+
+```bash
+ham-ctl automations create --prompt 'Review {{event.entity.id}}' --bot bot_1 --trigger 'event:chain.state,state=in:completed|cancelled' --entity chain_1 --delay 30
+ham-ctl automations create --prompt 'Daily review' --instance inst_1 --trigger 'cron:0 9 * * 1-5@Asia/Kolkata'
+ham-ctl automations update act_1 --trigger event:chain.state --filter-file rule.json
+```
+
+No manual run verb. Action cards remain ham-ctl actions/cards; the old hub-user
+actions command is removed. An automation can wake a user-stopped agent; disable
+it to prevent future wakes. Bridges must report event_pipeline_v1.
+The hub default cap is 1000 automations per owner, configurable with
+HEIMDALL_AUTOMATION_MAX_PER_OWNER (positive integer); creation at the cap returns
+a clear conflict error. Deleted automations free capacity.

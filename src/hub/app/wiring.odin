@@ -638,9 +638,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.push_handlers = http.Push_Handlers{auth = &graph.auth, push = &graph.push, vapid_public_key = config.vapid_public_key}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth, push = &graph.push, public_app_origin = config.public_app_origin, ui_origin = config.ui_origin, vault = &graph.vault_directory, event_bus = &graph.event_bus, pairing_hub_origins = config.pairing_hub_origin_list, bridges = &graph.bridges}
 	graph.vault_directory_handlers = http.Vault_Directory_Handlers{auth = &graph.auth, vault = &graph.vault_directory, device_auth = &graph.device_auth, bridges = &graph.bridges, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
-	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
+	graph.agent_action_handlers = http.Agent_Action_Handlers{automations = &graph.action_handlers, auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin, task_engine = &graph.task_engine}
 	graph.actions = actions_service.Service{
   filter_limits=actions_service.filter_limits(config.action_filter_limits),
+ max_per_owner=config.automation_max_per_owner,
 		factory=&graph.uow_factory,repos=&graph.repos,placement=&graph.placement,
 		experiments=&graph.experiment_repo,clock=&graph.clock,ids=&graph.ids,
 		support={ctx=rawptr(&graph.event_relay),get=action_schedule_support},
@@ -1201,6 +1202,14 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions", rawptr(&graph.action_handlers), http.create_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/actions/trigger-types", rawptr(&graph.action_handlers), http.action_trigger_types_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/list", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/create", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/show", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/update", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/delete", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/runs", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/trigger-types", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/filter-test", rawptr(&graph.agent_action_handlers), http.agent_automation_handler)
  http.router_add(&graph.router, "POST", "/api/v1/actions/filter-test", rawptr(&graph.action_handlers), http.action_filter_test_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions/*/enable", rawptr(&graph.action_handlers), http.enable_action_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/actions/*/disable", rawptr(&graph.action_handlers), http.disable_action_handler)

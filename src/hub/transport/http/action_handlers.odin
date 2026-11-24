@@ -102,6 +102,7 @@ action_view_json :: proc(s:^actions.Service,v:actions.Action_View) -> json.Objec
 	obj["min_interval_s"]=json.Integer(a.min_interval_s)
 	obj["target"]=target;obj["triggers"]=triggers
 	obj["created_at"]=a.created_at;obj["updated_at"]=a.updated_at
+ obj["created_by"]=a.created_by;obj["updated_by"]=a.updated_by
 	return obj
 }
 list_actions_handler :: proc(ctx:rawptr,req:Request) -> Response {
@@ -181,14 +182,20 @@ list_action_runs_handler :: proc(ctx:rawptr,req:Request)->Response {
  h:=(^Action_Handlers)(ctx)
  owner,ok,response:=action_route_auth(h,req)
  if !ok do return response
+ return action_runs_response(h,req,owner,path_part(req.path,4),req.query)
+}
+action_runs_response :: proc(h:^Action_Handlers,req:Request,owner,id,query:string)->Response {
  limit:=50
- if text:=query_value(req.query,"limit"); text!="" {
+ if text:=query_value(query,"limit"); text!="" {
   n,valid:=strconv.parse_int(text)
   if !valid || n<1 || n>200 do return action_error(domain.domain_error(.Validation_Failed,"limit must be 1..200"),req.request_id)
   limit=n
  }
+ return action_runs_page(h,req,owner,id,limit,query_value(query,"before"),query_value(query,"before_id"))
+}
+action_runs_page :: proc(h:^Action_Handlers,req:Request,owner,id:string,limit:int,before,before_id:string)->Response {
  if h.router==nil do return action_error(domain.domain_error(.Internal_Error,"actions router unavailable"),req.request_id)
- rows,err:=actions.list_runs(h.router,owner,path_part(req.path,4),limit,query_value(req.query,"before"),query_value(req.query,"before_id"))
+ rows,err:=actions.list_runs(h.router,owner,id,limit,before,before_id)
  defer actions.run_views_destroy(rows)
  if err.code!=.None do return action_error(err,req.request_id)
  values:=make(json.Array,len(rows),context.temp_allocator)
@@ -198,6 +205,7 @@ list_action_runs_handler :: proc(ctx:rawptr,req:Request)->Response {
   obj["id"]=run.run_id; obj["trigger_id"]=run.trigger_id;obj["event_type"]=run.event_type
   obj["event_id"]=run.event_id;obj["state"]=run.state;obj["reason"]=run.reason
   obj["not_before"]=run.not_before;obj["joined_run_id"]=run.joined_run_id
+  obj["event_params"]=json_value_or_null(run.event_params_json)
   obj["batch_size"]=json.Integer(row.batch_size)
   obj["joined_count"]=json.Integer(row.joined_count);obj["rule_position"]=json.Integer(run.rule_position)
   obj["target_instance_id"]=run.target_instance_id;obj["message_id"]=run.message_id;obj["delivery_id"]=run.delivery_id

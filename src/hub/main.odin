@@ -567,6 +567,12 @@ parse_nats_args :: proc(config: ^app.Hub_Config) {
 }
 
 apply_action_filter_env :: proc(config:^app.Hub_Config) {
+ if raw:=os.get_env_alloc("HEIMDALL_AUTOMATION_MAX_PER_OWNER",context.temp_allocator);raw!="" {
+  n,ok:=strconv.parse_int(raw)
+  if !ok || n<1 {fmt.eprintln("HEIMDALL_AUTOMATION_MAX_PER_OWNER must be a positive integer");os.exit(2)}
+  config.automation_max_per_owner=n
+ }
+
  if raw:=os.get_env_alloc("HEIMDALL_ACTION_FILTER_LIMITS_JSON",context.temp_allocator);raw!="" {
   if !app.apply_action_filter_limits_json(config,raw) {
    fmt.eprintln("HEIMDALL_ACTION_FILTER_LIMITS_JSON contains invalid filter limits")

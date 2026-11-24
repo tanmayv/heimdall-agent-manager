@@ -42,6 +42,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 		return
 	}
 	switch resource {
+	case "automations": ctl_v2_automations(endpoint, token, rest, args); return
 	case "context":       ctl_agentmode_context(endpoint, token, args); return
 	case "start-success": ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return
 	case "bridge":        ctl_v2_bridge(endpoint, token, rest, args); return
@@ -1842,6 +1843,7 @@ print_agent_help :: proc(cmd: []string) {
 		}
 	}
 	switch resource {
+	case "automations": fmt.println(ctl_automation_help(sub)); return
 	case "bridge", "bridges": print_help_bridge(); return
 	case "agents": print_help_agents(); return
 	case "task-chain", "task-chains", "chain", "chains":
@@ -1891,6 +1893,7 @@ print_help_overview :: proc() {
 	fmt.println("  chat        Read your inbox / send to the user or another agent")
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
+	fmt.println("  automations Event/cron prompts: create, list, show, update, delete, runs, trigger-types, filter-test")
 	fmt.println("  action      Action cards (create, list, show, accept, discard)")
 	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
 	fmt.println("  shell       Manage PTY/shell sessions on the Bridge host (start/kill/signal/restart/list/log/capture)")
@@ -1912,6 +1915,7 @@ print_help_overview :: proc() {
 	fmt.println("  ham-ctl agents start   inst_123")
 	fmt.println("  ham-ctl agents stop    inst_123 --reason \"done for now\"")
 	fmt.println("  ham-ctl agents restart inst_123")
+	fmt.println("  ham-ctl automations --help             Event/cron rules for your owner (actions/cards are action cards)")
 	fmt.println("  ham-ctl workflow templates")
 	fmt.println("  ham-ctl workflow run fix_flaky_tests --input target=src/auth")
 	fmt.println("  ham-ctl lease next")

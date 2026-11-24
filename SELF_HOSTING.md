@@ -1767,3 +1767,12 @@ Overrides validate new saves; lowering them does not disable stored rules.
 The keys are `max_depth`, `max_checks`, `max_nodes`, `max_children`, `max_values`,
 `max_value_bytes`, `max_field_bytes`, `max_path_segments`, `max_segment_bytes` and
 `max_bytes`. Defaults are 4, 16, 24, 16, 32, 256, 128, 4, 64 and 4096 respectively.
+
+
+### Automation owner limit
+
+HEIMDALL_AUTOMATION_MAX_PER_OWNER sets the maximum saved event/cron automations
+per owner (positive integer, default 1000). The hub rejects creation at the limit
+with a conflict error; disabling a rule keeps it counted and deleting frees a slot.
+Agent-authenticated ham-ctl automations manages only the calling instance owner's
+rules. trigger-types reports the effective max_automations_per_owner.

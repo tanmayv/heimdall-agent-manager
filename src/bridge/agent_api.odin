@@ -210,6 +210,22 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "task", "readiness")}
 
 	// ---- workflow (M3b) ---------------------------------------------------
+	case "agent.automations.list":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "list")}
+	case "agent.automations.create":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "create")}
+	case "agent.automations.show":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "show")}
+	case "agent.automations.update":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "update")}
+	case "agent.automations.delete":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "delete")}
+	case "agent.automations.runs":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "runs")}
+	case "agent.automations.trigger-types":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "trigger-types")}
+	case "agent.automations.filter-test":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "filter-test")}
 	case "agent.workflow.templates":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "workflow", "templates")}
 	case "agent.workflow.runs":
@@ -388,6 +404,15 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.search",
 	     "agent.artifact.create", "agent.artifact.list", "agent.artifact.show",
 	     "agent.artifact.content",
+	     // automations
+         "agent.automations.list",
+         "agent.automations.create",
+         "agent.automations.show",
+         "agent.automations.update",
+         "agent.automations.delete",
+         "agent.automations.runs",
+         "agent.automations.trigger-types",
+         "agent.automations.filter-test",
 	     // cards
 	     "agent.cards.create", "agent.cards.list", "agent.cards.show",
 	     "agent.cards.discard", "agent.cards.accept",

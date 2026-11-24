@@ -10,9 +10,11 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import placement "odin_test:hub/service/placement"
 
+DEFAULT_MAX_PER_OWNER :: 1000
 Schedule_Support_Port :: struct { ctx: rawptr, get: proc(ctx: rawptr) -> int }
 Service :: struct {
  filter_limits: Filter_Limits,
+ max_per_owner: int, // Zero selects DEFAULT_MAX_PER_OWNER.
 	factory: ^iface.Unit_Of_Work_Factory,
 	repos: ^iface.Repositories,
 	placement: ^placement.Service,
@@ -242,16 +244,16 @@ apply_target :: proc(a: ^domain.Action, t: Target_Input) {
 	replace_string(&a.placement_selector, t.selector if t.selector != "" else "first")
 	replace_string(cast(^string)&a.last_spawned_instance_id, "")
 }
-create :: proc(s: ^Service, owner: string, in_: Action_Input) -> (Action_View, domain.Domain_Error) {
-	return write_action(s, owner, "", in_, true)
+create :: proc(s: ^Service, owner: string, in_: Action_Input, actor: string = "") -> (Action_View, domain.Domain_Error) {
+	return write_action(s, owner, "", in_, true, actor)
 }
-update :: proc(s: ^Service, owner, action_id: string, in_: Action_Input) -> (Action_View, domain.Domain_Error) {
-	return write_action(s, owner, action_id, in_, false)
+update :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, actor: string = "") -> (Action_View, domain.Domain_Error) {
+	return write_action(s, owner, action_id, in_, false, actor)
 }
 set_enabled :: proc(s: ^Service, owner, action_id: string, enabled: bool) -> (Action_View, domain.Domain_Error) {
 	return update(s, owner, action_id, Action_Input{enabled=enabled})
 }
-write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, creating: bool) -> (Action_View, domain.Domain_Error) {
+write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, creating: bool, actor: string) -> (Action_View, domain.Domain_Error) {
 	uow, ok, begin_err := iface.unit_of_work_begin(s.factory)
 	if !ok do return {}, begin_err
 	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
@@ -262,12 +264,22 @@ write_action :: proc(s: ^Service, owner, action_id: string, in_: Action_Input, c
 		if err.code != .None do return {}, err
 		v = loaded
 	} else {
+  rows, count_err := repo.list(repo.ctx, domain.User_ID(owner))
+  count := len(rows)
+  for &row in rows do domain.action_destroy(&row)
+  delete(rows)
+  if count_err.code != .None do return {}, count_err
+  limit := s.max_per_owner
+  if limit <= 0 do limit = DEFAULT_MAX_PER_OWNER
+  if count >= limit do return {}, domain.domain_error(.Conflict, "automation limit reached for this owner")
 		v.action = {id=domain.Action_ID(strings.clone(platform.generate_id(s.ids, "act_"))),
 			owner_user_id=domain.User_ID(strings.clone(owner)), enabled=true,
 			min_interval_s=domain.ACTION_MIN_INTERVAL_DEFAULT_S,
 			created_at=strings.clone(platform.clock_now(s.clock))}
 	}
 	defer action_view_destroy(&v)
+	if creating do replace_string(&v.action.created_by, actor)
+ replace_string(&v.action.updated_by, actor)
 	old_enabled := v.action.enabled
 	if value, present := in_.name.?; present do replace_string(&v.action.name, value)
 	if value, present := in_.prompt_text.?; present do replace_string(&v.action.prompt_text, value)
@@ -418,7 +430,7 @@ Trigger_Types_View :: struct {
 	target_kinds: []string,
 	schedules_supported: bool,
 	limits: struct {
-		max_triggers, max_rules: int,
+		max_triggers, max_rules, max_automations_per_owner: int,
   filter: Filter_Limits,
 		min_interval_s: struct {min,max,default:int},
 	},
@@ -470,7 +482,7 @@ trigger_types :: proc(s:^Service) -> Trigger_Types_View {
 		}
 	}
 	return {target_kinds=s.target_kinds,schedules_supported=schedule_supported(s),
-		limits={filter=filter_limits(s.filter_limits),max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
+		limits={max_automations_per_owner=(s.max_per_owner if s.max_per_owner>0 else DEFAULT_MAX_PER_OWNER),filter=filter_limits(s.filter_limits),max_triggers=domain.ACTION_MAX_TRIGGERS,max_rules=domain.ACTION_MAX_RULES,
 			min_interval_s={min=domain.ACTION_MIN_INTERVAL_MIN_S,max=domain.ACTION_MIN_INTERVAL_MAX_S,default=domain.ACTION_MIN_INTERVAL_DEFAULT_S}},
 		trigger_kinds=kinds}
 }

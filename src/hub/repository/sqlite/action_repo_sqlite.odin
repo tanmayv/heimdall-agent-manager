@@ -59,7 +59,7 @@ actions_write :: proc(ctx: rawptr, query: string, params: []string) -> (bool, do
 	return sqlite3_changes((^Action_Repo_SQLite)(ctx).conn.db) != 0, {}
 }
 
-ACTIONS_ACTION_COLUMNS :: "action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at"
+ACTIONS_ACTION_COLUMNS :: "action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at,created_by,updated_by"
 actions_action_read :: proc(stmt: sqlite3_stmt) -> domain.Action {
 	return {
 		id = domain.Action_ID(column_text(stmt,0)),
@@ -78,6 +78,8 @@ actions_action_read :: proc(stmt: sqlite3_stmt) -> domain.Action {
 		min_interval_s = int(sqlite3_column_int64(stmt,13)),
 		created_at = string(column_text(stmt,14)),
 		updated_at = string(column_text(stmt,15)),
+		created_by = column_text(stmt,16),
+		updated_by = column_text(stmt,17),
 	}
 }
 
@@ -221,12 +223,12 @@ actions_rule_query :: proc(ctx: rawptr, query: string, params: []string) -> ([]d
 	return result, {}
 }
 
-ACTIONS_SQL_SAVE :: "INSERT INTO actions(action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(action_id) DO UPDATE SET name=excluded.name,prompt_text=excluded.prompt_text,target_kind=excluded.target_kind,target_agent_id=excluded.target_agent_id,target_project_id=excluded.target_project_id,target_instance_id=excluded.target_instance_id,target_bot_id=excluded.target_bot_id,instance_strategy=excluded.instance_strategy,placement_selector=excluded.placement_selector,last_spawned_instance_id=excluded.last_spawned_instance_id,enabled=excluded.enabled,min_interval_s=excluded.min_interval_s,updated_at=excluded.updated_at;"
+ACTIONS_SQL_SAVE :: "INSERT INTO actions(action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at,created_by,updated_by) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18) ON CONFLICT(action_id) DO UPDATE SET name=excluded.name,prompt_text=excluded.prompt_text,target_kind=excluded.target_kind,target_agent_id=excluded.target_agent_id,target_project_id=excluded.target_project_id,target_instance_id=excluded.target_instance_id,target_bot_id=excluded.target_bot_id,instance_strategy=excluded.instance_strategy,placement_selector=excluded.placement_selector,last_spawned_instance_id=excluded.last_spawned_instance_id,enabled=excluded.enabled,min_interval_s=excluded.min_interval_s,updated_at=excluded.updated_at,updated_by=excluded.updated_by;"
 
 actions_save :: proc(ctx: rawptr, v: domain.Action) -> domain.Domain_Error {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
-	_, err := actions_write(ctx,ACTIONS_SQL_SAVE,{string(v.id),string(v.owner_user_id),string(v.name),string(v.prompt_text),string(v.target_kind),string(v.target_agent_id),string(v.target_project_id),string(v.target_instance_id),string(v.target_bot_id),string(v.instance_strategy),string(v.placement_selector),string(v.last_spawned_instance_id),("1" if v.enabled else "0"),fmt.tprintf("%d",v.min_interval_s),string(v.created_at),string(v.updated_at)})
+	_, err := actions_write(ctx,ACTIONS_SQL_SAVE,{string(v.id),string(v.owner_user_id),string(v.name),string(v.prompt_text),string(v.target_kind),string(v.target_agent_id),string(v.target_project_id),string(v.target_instance_id),string(v.target_bot_id),string(v.instance_strategy),string(v.placement_selector),string(v.last_spawned_instance_id),("1" if v.enabled else "0"),fmt.tprintf("%d",v.min_interval_s),string(v.created_at),string(v.updated_at),v.created_by,v.updated_by})
 	return err
 }
 
@@ -247,7 +249,7 @@ actions_run_insert :: proc(ctx: rawptr, v: domain.Action_Run) -> (bool, domain.D
 	return actions_write(ctx,ACTIONS_SQL_RUN_INSERT,{string(v.run_id),string(v.action_id),string(v.trigger_id),string(v.owner_user_id),string(v.occurrence_key),string(v.event_type),string(v.event_id),fmt.tprintf("%d",v.stream_sequence),string(v.event_params_json),string(v.state),string(v.not_before),string(v.joined_run_id),string(v.reason),fmt.tprintf("%d",v.rule_position),string(v.target_instance_id),string(v.message_id),string(v.delivery_id),string(v.created_at),string(v.started_at),string(v.finished_at),fmt.tprintf("%d",v.delay_s),v.settle_key,("1" if v.settle_pending else "0")})
 }
 
-ACTIONS_SQL_GET :: "SELECT action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at FROM actions WHERE action_id=?1;"
+ACTIONS_SQL_GET :: "SELECT " + ACTIONS_ACTION_COLUMNS + " FROM actions WHERE action_id=?1;"
 
 actions_get :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action, bool, domain.Domain_Error) {
 	guard := tx_repository_enter()
@@ -291,7 +293,7 @@ actions_run_open :: proc(ctx: rawptr, id: domain.Action_ID) -> (domain.Action_Ru
 	return rows[0],true,{}
 }
 
-ACTIONS_SQL_LIST :: "SELECT action_id,owner_user_id,name,prompt_text,target_kind,target_agent_id,target_project_id,target_instance_id,target_bot_id,instance_strategy,placement_selector,last_spawned_instance_id,enabled,min_interval_s,created_at,updated_at FROM actions WHERE owner_user_id=?1 ORDER BY created_at,action_id;"
+ACTIONS_SQL_LIST :: "SELECT " + ACTIONS_ACTION_COLUMNS + " FROM actions WHERE owner_user_id=?1 ORDER BY created_at,action_id;"
 
 actions_list :: proc(ctx: rawptr, owner: domain.User_ID) -> ([]domain.Action, domain.Domain_Error) {
 	guard := tx_repository_enter()
