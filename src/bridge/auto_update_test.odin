@@ -225,8 +225,108 @@ test_auto_update_quiet_preserved_pty_agent :: proc(t: ^testing.T) {
 	testing.expect(t, !bridge_auto_update_quiet_with_host(true, proc(socket: string) -> (Pty_Host_Reply, bool) {
 		return {}, false
 	}), "failed PTY listing prevents update admission")
+	testing.expect_value(t, bridge_auto_update_busy, Bridge_Auto_Update_Busy.Host_Unlisted)
 	testing.expect(t, bridge_auto_update_launch_enter(), "busy or unavailable host must not reserve admission")
 	bridge_auto_update_launch_leave()
+}
+
+// T16b: the PTY host keeps exited agents and `ham-ctl shell` runs registered
+// (alive = false) until they are closed. dawnstar listed two exited shell runs,
+// riverwood three exited agents, and neither bridge ever found a quiet window.
+@(test)
+test_auto_update_quiet_ignores_exited_pty_entries :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	defer {
+		sync.mutex_lock(&bridge_auto_update_mutex)
+		bridge_auto_update_reserved_until = 0
+		sync.mutex_unlock(&bridge_auto_update_mutex)
+	}
+	exited :: proc(socket: string) -> (Pty_Host_Reply, bool) {
+		reply := Pty_Host_Reply{kind = .Agent_List}
+		reply.agents = make([]Pty_Host_Agent_Info, 3)
+		reply.agents[0] = {instance_id = strings.clone("sh_72984ce9a102bdc903cb78f104b3bc41"), program = strings.clone("sh"), alive = false, has_exit_code = true}
+		reply.agents[1] = {instance_id = strings.clone("inst_exited_sigterm"), alive = false, has_exit_code = true, exit_code = 143}
+		reply.agents[2] = {instance_id = strings.clone("inst_exited_error"), alive = false, has_exit_code = true, exit_code = 1}
+		return reply, true
+	}
+	testing.expect(t, bridge_auto_update_quiet_with_host(false, exited), "exited PTY entries leave the bridge quiet")
+	mixed :: proc(socket: string) -> (Pty_Host_Reply, bool) {
+		reply := Pty_Host_Reply{kind = .Agent_List}
+		reply.agents = make([]Pty_Host_Agent_Info, 3)
+		reply.agents[0] = {instance_id = strings.clone("inst_exited"), alive = false, has_exit_code = true}
+		reply.agents[1] = {instance_id = strings.clone("inst_running"), alive = true}
+		reply.agents[2] = {instance_id = strings.clone("sh_running"), alive = true}
+		return reply, true
+	}
+	testing.expect(t, !bridge_auto_update_quiet_with_host(false, mixed), "a running PTY entry still prevents update admission")
+	testing.expect_value(t, bridge_auto_update_busy, Bridge_Auto_Update_Busy.Running_On_Host)
+	testing.expect_value(t, bridge_auto_update_busy_count, 2)
+	testing.expect_value(t, bridge_auto_update_busy_text(), "2 running agent(s) or shell session(s) on the PTY host")
+}
+
+auto_test_log: [dynamic]string
+
+auto_test_log_sink :: proc(line: string) {
+	append(&auto_test_log, strings.clone(line, context.temp_allocator))
+}
+
+auto_test_log_count :: proc(prefix: string) -> int {
+	n := 0
+	for line in auto_test_log do if strings.has_prefix(line, prefix) do n += 1
+	return n
+}
+
+// Each check outcome is logged; the 30 s wait for a quiet window is logged once
+// per change, not on every tick.
+@(test)
+test_auto_update_tick_logs_outcomes :: proc(t: ^testing.T) {
+	sync.mutex_lock(&auto_test_mutex)
+	defer sync.mutex_unlock(&auto_test_mutex)
+	auto_test_log = make([dynamic]string, context.temp_allocator)
+	bridge_auto_update_log_sink = auto_test_log_sink
+	defer bridge_auto_update_log_sink = nil
+	bridge_auto_update_clear_wait()
+	defer bridge_auto_update_clear_wait()
+	dir, path, config := auto_test_fixture(t, "[bridge]\n", 0)
+	defer os.remove_all(dir)
+	auto_test_spawns = 0
+	auto_test_version = contracts.APP_VERSION
+	auto_test_busy, auto_test_busy_during_lookup = true, false
+	quiet: i64
+	bridge_auto_update_tick("profile-a", config, path, &quiet, 1000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("first check scheduled (next check in "), 1)
+	now := bridge_auto_update_read(path).next_check_ms
+	for i in 0..<5 do bridge_auto_update_tick("profile-a", config, path, &quiet, now + i64(i) * 30_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check due; waiting for a quiet window: "), 1)
+	auto_test_busy = false
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now + 150_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now + 180_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check due; no agents running"), 1)
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now + 210_001, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check: up to date ("), 1)
+	// Lookup failure.
+	auto_test_version = ""
+	now = bridge_auto_update_read(path).next_check_ms
+	quiet = now - 60_000
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("check failed: could not look up the latest release (failures 1; "), 1)
+	// Newer release: the updater is started.
+	auto_test_version = "v999.0.0"
+	now = bridge_auto_update_read(path).next_check_ms
+	quiet = now - 60_000
+	bridge_auto_update_tick("profile-a", config, path, &quiet, now, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_spawns, 1)
+	testing.expect_value(t, auto_test_log_count(fmt.tprintf("check: updating %s -> v999.0.0", contracts.APP_VERSION)), 1)
+	// Turned off: logged once, however many ticks.
+	testing.expect(t, os.write_entire_file(config, transmute([]byte)string("[bridge]\nauto_update_enabled = false\n")) == nil)
+	for i in 0..<3 do bridge_auto_update_tick("profile-a", config, path, &quiet, now + i64(i) * 30_000, auto_test_resolve, auto_test_spawn, auto_test_quiet)
+	testing.expect_value(t, auto_test_log_count("automatic updates are turned off"), 1)
+	testing.expect_value(t, bridge_auto_update_due_text(0, 5), "first check not scheduled yet")
+	testing.expect_value(t, bridge_auto_update_due_text(1000, 1000 + 3 * 60_000), "check overdue by 3 min")
+	testing.expect_value(t, bridge_auto_update_due_text(1000 + 60_001, 1000), "next check in 2 min")
 }
 
 // ---- REQ-AUP-3..6: forcing an update that stays overdue ----

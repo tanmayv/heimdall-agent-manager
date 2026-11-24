@@ -54,6 +54,54 @@ Bridge_Auto_Update_Force_Hooks :: struct {
 bridge_auto_update_mutex: sync.Mutex
 bridge_auto_update_launches: int
 bridge_auto_update_reserved_until: i64
+// Why the last quiet check failed (set under bridge_auto_update_mutex), for the log.
+Bridge_Auto_Update_Busy :: enum {
+	None,
+	Launch_Preparing,
+	Recorded_Launches,
+	Host_Unlisted,
+	Running_On_Host,
+}
+bridge_auto_update_busy: Bridge_Auto_Update_Busy
+bridge_auto_update_busy_count: int
+
+bridge_auto_update_busy_text :: proc() -> string {
+	sync.mutex_lock(&bridge_auto_update_mutex)
+	busy, count := bridge_auto_update_busy, bridge_auto_update_busy_count
+	sync.mutex_unlock(&bridge_auto_update_mutex)
+	switch busy {
+	case .None:              return "agents are running"
+	case .Launch_Preparing:  return "an agent launch is being prepared"
+	case .Recorded_Launches: return fmt.tprintf("%d agent launch(es) recorded by this bridge", count)
+	case .Host_Unlisted:     return "cannot list the PTY host's agents"
+	case .Running_On_Host:   return fmt.tprintf("%d running agent(s) or shell session(s) on the PTY host", count)
+	}
+	return ""
+}
+
+// Worker log lines. A due check repeats every 30 s while it waits for a quiet
+// window, so the waiting line is logged only when its text changes; every other
+// outcome is logged as it happens. Tests swap the sink.
+bridge_auto_update_log_sink: proc(line: string)
+bridge_auto_update_last_wait: string
+
+bridge_auto_update_log :: proc(format: string, args: ..any) {
+	line := fmt.tprintf(format, ..args)
+	if bridge_auto_update_log_sink != nil do bridge_auto_update_log_sink(line)
+	else do fmt.eprintfln("bridge auto-update: %s", line)
+}
+
+bridge_auto_update_log_wait :: proc(line: string) {
+	if line == bridge_auto_update_last_wait do return
+	delete(bridge_auto_update_last_wait, runtime.heap_allocator())
+	bridge_auto_update_last_wait = strings.clone(line, runtime.heap_allocator())
+	bridge_auto_update_log("%s", line)
+}
+
+bridge_auto_update_clear_wait :: proc() {
+	delete(bridge_auto_update_last_wait, runtime.heap_allocator())
+	bridge_auto_update_last_wait = ""
+}
 
 bridge_auto_update_delay :: proc(failures: int, entropy: u64) -> i64 {
 	return bridge_backoff_delay_ms({base_ms = BRIDGE_AUTO_UPDATE_INTERVAL, max_ms = BRIDGE_AUTO_UPDATE_INTERVAL * 16, jitter_pct = 10}, max(1, failures), entropy)
@@ -144,30 +192,64 @@ bridge_auto_update_quiet :: proc(reserve := false) -> bool {
 
 // The PTY host survives bridge restarts; the current process launch map does not.
 // Inspect the own-profile socket without starting or replacing its daemon.
+// Only RUNNING PTY entries count: the daemon keeps an exited agent or shell
+// session registered (alive = false, with its exit code) until it is closed, and
+// counting those kept a bridge from ever finding a quiet window (T16b: dawnstar's
+// two exited `ham-ctl shell` runs, riverwood's three exited agents).
 bridge_auto_update_quiet_with_host :: proc(
 	reserve := false,
 	list: proc(socket: string) -> (Pty_Host_Reply, bool) = bridge_pty_host_list,
 ) -> bool {
 	sync.mutex_lock(&bridge_auto_update_mutex)
 	defer sync.mutex_unlock(&bridge_auto_update_mutex)
-	if bridge_auto_update_launches > 0 do return false
+	bridge_auto_update_busy, bridge_auto_update_busy_count = .None, 0
+	if bridge_auto_update_launches > 0 {
+		bridge_auto_update_busy = .Launch_Preparing
+		return false
+	}
 	sync.mutex_lock(&bridge_runtime_mutex)
 	count := len(bridge_runtime_launches)
 	sync.mutex_unlock(&bridge_runtime_mutex)
-	if count != 0 do return false
+	if count != 0 {
+		bridge_auto_update_busy, bridge_auto_update_busy_count = .Recorded_Launches, count
+		return false
+	}
 	socket := pty_host_socket_path()
 	defer delete(socket)
 	reply, ok := list(socket)
-	if !ok do return false // unavailable live state cannot authorize a restart
+	if !ok {
+		// Unavailable live state cannot authorize a restart.
+		bridge_auto_update_busy = .Host_Unlisted
+		return false
+	}
 	defer pty_host_reply_delete(reply)
-	if len(reply.agents) != 0 do return false
+	if running := pty_host_running_agent_count(reply.agents); running != 0 {
+		bridge_auto_update_busy, bridge_auto_update_busy_count = .Running_On_Host, running
+		return false
+	}
 	if reserve do bridge_auto_update_reserved_until = bridge_runtime_now_ms() + 30 * 60_000
 	return true
 }
 
 bridge_auto_update_start :: proc() {
-	_, refusal := bridge_update_via_ham_bridge(contracts.APP_VERSION)
-	if refusal == "" do thread.run(bridge_auto_update_worker)
+	service, refusal := bridge_update_via_ham_bridge(contracts.APP_VERSION)
+	if refusal != "" {
+		bridge_auto_update_log("worker not started: %s", refusal)
+		return
+	}
+	path := bridge_auto_update_state_path(service)
+	state := bridge_auto_update_read(path)
+	enabled := bridge_auto_update_enabled(cfg_lib.config_path_from_args(os.args))
+	bridge_auto_update_log("worker started for %s (version %s, %s, state %s, %s)", service, contracts.APP_VERSION,
+		"enabled" if enabled else "disabled by config", path, bridge_auto_update_due_text(state.next_check_ms, bridge_runtime_now_ms()))
+	thread.run(bridge_auto_update_worker)
+}
+
+// bridge_auto_update_due_text describes when the next check is due, for the log.
+bridge_auto_update_due_text :: proc(next_check_ms, now: i64) -> string {
+	if next_check_ms == 0 do return "first check not scheduled yet"
+	if now >= next_check_ms do return fmt.tprintf("check overdue by %d min", (now - next_check_ms) / 60_000)
+	return fmt.tprintf("next check in %d min", (next_check_ms - now + 59_999) / 60_000)
 }
 
 bridge_auto_update_worker :: proc() {
@@ -198,13 +280,16 @@ bridge_auto_update_tick :: proc(
 	bridge_auto_update_report_forced(path, &state, hooks)
 	if !bridge_auto_update_enabled(config) {
 		quiet_since^ = 0
+		bridge_auto_update_log_wait("automatic updates are turned off in the config; not checking")
 		bridge_auto_update_cancel_force(path, &state, hooks, "automatic updates were turned off")
 	} else if state.next_check_ms == 0 {
 		state.next_check_ms = now + bridge_auto_update_delay(0, rand.uint64())
 		_ = bridge_auto_update_write(path, state)
+		bridge_auto_update_log("first check scheduled (%s)", bridge_auto_update_due_text(state.next_check_ms, now))
 	} else if now >= state.next_check_ms {
 		if !quiet(false) {
 			quiet_since^ = 0
+			bridge_auto_update_log_wait(fmt.tprintf("check due; waiting for a quiet window: %s", bridge_auto_update_busy_text()))
 			// REQ-AUP-3: still preferring quiet, but not forever.
 			max_defer := bridge_auto_update_max_defer_ms(config)
 			if max_defer > 0 && now >= state.next_check_ms + max_defer {
@@ -218,12 +303,15 @@ bridge_auto_update_tick :: proc(
 			}
 		} else if quiet_since^ == 0 {
 			quiet_since^ = now
+			bridge_auto_update_log_wait("check due; no agents running, checking once quiet for 60 s")
 		} else if now - quiet_since^ >= BRIDGE_AUTO_UPDATE_QUIET_MS {
+			bridge_auto_update_clear_wait()
 			version := resolve()
 			newer := bridge_auto_update_newer(version, contracts.APP_VERSION)
 			// Network lookup can take a while. If an agent started in that time,
 			// wait for another quiet window without counting an update failure.
 			if newer && (!bridge_auto_update_enabled(config) || !quiet(true)) {
+				bridge_auto_update_log("check: %s is available, but an agent started (or updates were turned off) during the lookup; waiting for another quiet window", version)
 				delete(version)
 				quiet_since^ = 0
 				return
@@ -240,9 +328,21 @@ bridge_auto_update_tick :: proc(
 			state.pending_version = strings.clone(version, context.temp_allocator) if newer else ""
 			if newer && announced != "" do state.forced_version = state.pending_version
 			persisted := bridge_auto_update_write(path, state)
+			next := bridge_auto_update_due_text(state.next_check_ms, now)
+			switch {
+			case version == "":
+				bridge_auto_update_log("check failed: could not look up the latest release (failures %d; %s)", state.failures, next)
+			case !newer:
+				bridge_auto_update_log("check: up to date (%s, latest %s; %s)", contracts.APP_VERSION, version, next)
+			case !persisted:
+				bridge_auto_update_log("check: %s is available, but the state file %s cannot be written; not updating", version, path)
+			}
 			if persisted && newer && bridge_auto_update_enabled(config) {
 				exe, _ := os.get_executable_path(context.temp_allocator)
-				if !spawn({exe, "update", "--version", version, "--service", service, "--auto-worker"}) {
+				if spawn({exe, "update", "--version", version, "--service", service, "--auto-worker"}) {
+					bridge_auto_update_log("check: updating %s -> %s (detached ham-bridge update --auto-worker)", contracts.APP_VERSION, version)
+				} else {
+					bridge_auto_update_log("check: %s is available, but ham-bridge update could not be started (failures %d; %s)", version, state.failures, next)
 					bridge_auto_update_release_admission()
 				}
 			} else if newer {
@@ -288,6 +388,9 @@ bridge_auto_update_force_step :: proc(
 			else do state.failures = 0
 			state.next_check_ms = now + bridge_auto_update_delay(state.failures, rand.uint64())
 			_ = bridge_auto_update_write(path, state^)
+			bridge_auto_update_clear_wait()
+			if version == "" do bridge_auto_update_log("overdue check failed: could not look up the latest release (failures %d; %s)", state.failures, bridge_auto_update_due_text(state.next_check_ms, now))
+			else do bridge_auto_update_log("overdue check: up to date (%s, latest %s; %s)", contracts.APP_VERSION, version, bridge_auto_update_due_text(state.next_check_ms, now))
 			return
 		}
 		state.force_at_ms = now + BRIDGE_AUTO_UPDATE_FORCE_NOTICE_MS
@@ -377,7 +480,7 @@ bridge_auto_update_host_agent_count :: proc() -> int {
 	reply, ok := bridge_pty_host_list(socket)
 	if !ok do return 0
 	defer pty_host_reply_delete(reply)
-	return len(reply.agents)
+	return pty_host_running_agent_count(reply.agents) // exited entries have nothing to stop
 }
 
 // bridge_auto_update_reserve_forced closes launch admission for the forced
