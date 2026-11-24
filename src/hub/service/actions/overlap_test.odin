@@ -93,7 +93,8 @@ overlap_two_actions :: proc(t:^testing.T,f:^Action_Test) {
  first,found,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
  second,found2,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action2")
  testing.expect(t,found && found2 && first.state==domain.ACTION_RUN_ROUTED && second.state==domain.ACTION_RUN_ROUTED)
- testing.expect_value(t,f.routes,2)
+ testing.expect_value(t,f.routes,1)
+ testing.expect_value(t,first.delivery_id,second.delivery_id)
 }
 overlap_old_event :: proc(t:^testing.T,f:^Action_Test) {
  trigger,_,_:=f.repos.actions.trigger_get(f.repos.actions.ctx,"trigger")

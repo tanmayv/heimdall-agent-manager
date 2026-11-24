@@ -10,6 +10,7 @@ Action_Repo_SQLite :: struct { conn: ^Conn }
 new_action_repository :: proc(impl: ^Action_Repo_SQLite, conn: ^Conn) -> iface.Action_Repository {
 	impl.conn = conn
 	return {ctx = impl,
+ runs_route_batch=actions_runs_route_batch, target_open_delivery=actions_target_open_delivery,
  rules_for_owner=actions_rules_for_owner, triggers_for_owner=actions_triggers_for_owner,
  runs_history=actions_runs_history, runs_sweep=actions_runs_sweep,
 		save = actions_save,
@@ -505,4 +506,38 @@ actions_run_settle_waiting :: proc(ctx: rawptr, id: domain.Action_ID, now: strin
  defer sqlite3_finalize(stmt)
  if sqlite3_step(stmt) != SQLITE_ROW do return false, domain.domain_error(.Internal_Error,"could not read waiting settle runs")
  return sqlite3_column_int64(stmt,0)!=0, {}
+}
+
+// Membership and expected state travel together so one statement cannot route a
+// changed or missing member. The surrounding UoW rolls back on a short update.
+actions_runs_route_batch :: proc(ctx:rawptr,members:[]iface.Action_Batch_Member,delivery_id,message_id,instance_id,started_at:string,rule_position:int)->domain.Domain_Error {
+ guard:=tx_repository_enter()
+ defer tx_repository_leave(guard)
+ params:=make([dynamic]string,context.temp_allocator)
+ append(&params,delivery_id,message_id,instance_id,started_at,fmt.tprintf("%d",rule_position))
+ query:=strings.builder_make(context.temp_allocator)
+ strings.write_string(&query,"UPDATE action_runs SET state='routed',delivery_id=?1,message_id=?2,target_instance_id=?3,started_at=?4,rule_position=?5 WHERE ")
+ for member,i in members {
+  if i>0 do strings.write_string(&query," OR ")
+  strings.write_string(&query,fmt.tprintf("(run_id=?%d AND state=?%d)",6+i*2,7+i*2))
+  append(&params,member.run_id,member.from_state)
+ }
+ if len(members)==0 do return {}
+ _,err:=actions_write(ctx,strings.to_string(query),params[:])
+ if err.code!=.None do return err
+ if sqlite3_changes((^Action_Repo_SQLite)(ctx).conn.db)!=i32(len(members)) do return domain.domain_error(.Conflict,"action batch changed")
+ return {}
+}
+// Keep both predicates: IN enables the partial index; equality excludes completed runs.
+ACTIONS_SQL_TARGET_OPEN_DELIVERY :: "SELECT d.delivery_id,d.expires_at FROM action_runs r JOIN pipeline_deliveries d ON d.delivery_id=r.delivery_id WHERE r.owner_user_id=?1 AND r.target_instance_id=?2 AND r.state IN ('routed','delivered') AND r.state='routed' AND d.state IN ('routed','forwarded') ORDER BY d.created_at,d.delivery_id LIMIT 1;"
+actions_target_open_delivery :: proc(ctx:rawptr,owner,instance_id:string)->(string,string,bool,domain.Domain_Error) {
+ guard:=tx_repository_enter()
+ defer tx_repository_leave(guard)
+ stmt,err:=actions_prepare(ctx,ACTIONS_SQL_TARGET_OPEN_DELIVERY,{owner,instance_id})
+ if err.code!=.None do return "","",false,err
+ defer sqlite3_finalize(stmt)
+ rc:=sqlite3_step(stmt)
+ if rc==SQLITE_DONE do return "","",false,{}
+ if rc!=SQLITE_ROW do return "","",false,domain.domain_error(.Internal_Error,"cannot read target delivery")
+ return column_text(stmt,0),column_text(stmt,1),true,{}
 }
