@@ -17,6 +17,12 @@ test('v7 delivery failure reasons have exact wording', () => {
   });
 });
 
+test('prompt delivery distinguishes awaiting read, read, and unread timeout', () => {
+  assert.equal(runRowText({ ...base, state: 'routed', delivery_state: 'delivered' }), 'Delivered (awaiting read)');
+  assert.equal(runRowText({ ...base, state: 'delivered', delivery_state: 'done', delivery_outcome: 'read' }), 'Delivered (read)');
+  assert.equal(runRowText({ ...base, state: 'failed', reason: 'not_read' }), 'The agent did not read the prompt');
+});
+
 test('Load more sends both fields from the last rendered run', async () => {
   const { JSDOM } = await import('jsdom');
   const React = await import('react');

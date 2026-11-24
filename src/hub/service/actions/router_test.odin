@@ -70,7 +70,7 @@ router_metadata_scenario :: proc(t:^testing.T,f:^Action_Test) {
  testing.expect_value(t,f.last_cause,"event")
 }
 router_final_scenario :: proc(t:^testing.T,f:^Action_Test) {
- for outcome in ([]string{"started","notified"}) {
+ for outcome in ([]string{"started","notified","read"}) {
   action_test_match(t,f,outcome);drain_due(&f.runtime.router)
   run,_,_:=f.repos.actions.run_open(f.repos.actions.ctx,"action")
   uow,ok,_:=iface.unit_of_work_begin(&f.factory);assert(ok)
@@ -84,7 +84,7 @@ router_final_scenario :: proc(t:^testing.T,f:^Action_Test) {
 }
 router_final_mapping :: proc(t:^testing.T,f:^Action_Test) {
  cases:=[?]struct{reason,want:string}{
- {"bridge_offline","bridge_offline"},{"no_answer","no_answer"},{"bridge_too_old","bridge_too_old"},{"target_missing","target_missing"},
+ {"not_read","not_read"},{"bridge_offline","bridge_offline"},{"no_answer","no_answer"},{"bridge_too_old","bridge_too_old"},{"target_missing","target_missing"},
  {"quota_exceeded","start_failed"},{"provider_unavailable","start_failed"},{"launch_failed","start_failed"},{"ledger_full","start_failed"},{"invalid_payload","start_failed"}}
  for c in cases {
   action_test_match(t,f,c.reason);drain_due(&f.runtime.router)

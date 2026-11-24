@@ -16,6 +16,7 @@ new_pipeline_delivery_repository :: proc(
 		ctx = impl,
 		insert = pipeline_insert,
 		get = pipeline_get,
+		awaiting_read = pipeline_awaiting_read,
 		transition = pipeline_transition,
 		open_for_bridge = pipeline_open_for_bridge,
 		open_by_ref = pipeline_open_by_ref,
@@ -28,6 +29,7 @@ new_pipeline_delivery_repository :: proc(
 // Export production SQL so query-plan tests exercise exactly these statements.
 PIPELINE_COLUMNS :: "delivery_id,owner_user_id,kind,bridge_id,agent_instance_id,ref,message_id,state,outcome,reason,round,excluded_bridges,attempt,ack_reply,stream_sequence,retry_at,expires_at,created_at,forwarded_at,updated_at"
 PIPELINE_GET_SQL :: "SELECT " + PIPELINE_COLUMNS + " FROM pipeline_deliveries WHERE delivery_id=?1;"
+PIPELINE_AWAITING_READ_SQL :: "SELECT " + PIPELINE_COLUMNS + " FROM pipeline_deliveries WHERE message_id=?1 AND kind='prompt' AND state='delivered';"
 PIPELINE_OPEN_REF_SQL ::
 	"SELECT " +
 	PIPELINE_COLUMNS +
@@ -153,6 +155,14 @@ pipeline_find :: proc(
 
 pipeline_get :: proc(ctx: rawptr, key: string) -> (domain.Pipeline_Delivery, bool, domain.Domain_Error) {
 	return pipeline_find(ctx, PIPELINE_GET_SQL, key)
+}
+
+pipeline_awaiting_read :: proc(ctx: rawptr, message_id: string) -> ([]domain.Pipeline_Delivery, domain.Domain_Error) {
+	stmt, err := pipeline_prepare(ctx, PIPELINE_AWAITING_READ_SQL)
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, message_id)
+	return pipeline_collect(stmt)
 }
 
 pipeline_open_by_ref :: proc(ctx: rawptr, key: string) -> (domain.Pipeline_Delivery, bool, domain.Domain_Error) {

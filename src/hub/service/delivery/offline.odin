@@ -18,6 +18,7 @@ try_replace :: proc(
 	bool,
 	domain.Domain_Error,
 ) {
+	if !domain.pipeline_delivery_open(d.state) do return false, {}
 	if d.round >= domain.DELIVERY_MAX_ROUNDS - 1 do return false, {}
 	sink := find_sink(s, d.kind)
 	if sink.replace == nil do return false, {}
