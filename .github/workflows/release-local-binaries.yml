@@ -227,24 +227,34 @@ jobs:
           fi
           # matrix.odin_attr_prefix is set in-file (termux-* only), not event data.
           odin="${{ matrix.odin_attr_prefix || 'release-' }}"
+          # T15 (Phase 1): the dormant launcher + supervisor ship in the linux/darwin
+          # bundles; not in termux (its own update path until a Termux engine exists, F8).
+          engine=()
+          if [ "$odin" = "release-" ]; then
+            engine=(.#release-ham-launcher .#release-ham-supervisor)
+          fi
           nix build \
             ".#${odin}ham-bridge" \
             ".#${odin}ham-ctl" \
             .#release-ham-pty-host \
+            "${engine[@]}" \
             --print-out-paths \
             --no-link | tee "$RUNNER_TEMP/nix-paths.txt"
           paths=()
           while IFS= read -r line; do
             [ -n "$line" ] && paths+=("$line")
           done < "$RUNNER_TEMP/nix-paths.txt"
-          if [ "${#paths[@]}" -ne 3 ]; then
-            echo "expected three Nix output paths, got ${#paths[@]}" >&2
+          want=$((3 + ${#engine[@]}))
+          if [ "${#paths[@]}" -ne "$want" ]; then
+            echo "expected $want Nix output paths, got ${#paths[@]}" >&2
             exit 1
           fi
           {
             echo "bridge=${paths[0]}"
             echo "ctl=${paths[1]}"
             echo "pty_host=${paths[2]}"
+            echo "launcher=${paths[3]:-}"
+            echo "supervisor=${paths[4]:-}"
           } >> "$GITHUB_OUTPUT"
 
       # REQ-SIGN-1: one Developer ID identity signs the standalone binaries
@@ -304,7 +314,8 @@ jobs:
             dist \
             "${{ steps.nix-build.outputs.bridge }}" \
             "${{ steps.nix-build.outputs.ctl }}" \
-            "${{ steps.nix-build.outputs.pty_host }}"
+            "${{ steps.nix-build.outputs.pty_host }}" \
+            ${{ steps.nix-build.outputs.launcher && format('"{0}" "{1}"', steps.nix-build.outputs.launcher, steps.nix-build.outputs.supervisor) || '' }}
           tar -tzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" | sort | tee "dist/heimdall-local-${{ matrix.target }}.contents.txt"
           case "$(uname -s)" in
             Darwin) shasum -a 256 "dist/heimdall-local-${{ matrix.target }}.tar.gz" > "dist/SHA256SUMS-${{ matrix.target }}.txt" ;;
@@ -380,7 +391,7 @@ jobs:
           # dynamic one, and exits non-zero rather than skipping when it can
           # prove neither -- so this step cannot pass without executing.
           echo "storeless mechanism: $(scripts/release/storeless-exec.sh select)"
-          for b in ham-bridge ham-ctl; do
+          for b in ham-bridge ham-ctl ham-launcher ham-supervisor; do
             echo "--- $b --version (storeless; init() checks the pinned libcurl) ---"
             out="$(scripts/release/storeless-exec.sh run "$work/bin/$b" --version)" || {
               echo "FAIL: $b could not execute without /nix/store" >&2; exit 1; }
@@ -709,6 +720,8 @@ jobs:
           & dist/windows-bin/ham-bridge.exe --help; if ($LASTEXITCODE) { throw 'ham-bridge --help failed' }
           & dist/windows-bin/ham-ctl.exe --version; if ($LASTEXITCODE) { throw 'ham-ctl --version failed' }
           & dist/windows-bin/ham-pty-host.exe --help | Select-Object -First 3; if ($LASTEXITCODE) { throw 'ham-pty-host --help failed' }
+          & dist/windows-bin/ham-launcher.exe --version; if ($LASTEXITCODE) { throw 'ham-launcher --version failed' }
+          & dist/windows-bin/ham-supervisor.exe --version; if ($LASTEXITCODE) { throw 'ham-supervisor --version failed' }
           # Schannel + the Windows certificate store, with revocation best effort.
           $probe = (& dist/windows-bin/ham-bridge.exe --probe-hub https://github.com) -join "`n"
           if ($LASTEXITCODE) { throw "ham-bridge --probe-hub failed:`n$probe" }
@@ -836,6 +849,9 @@ jobs:
           "$work/bin/ham-bridge" --version
           "$work/bin/ham-ctl" --version
           "$work/bin/ham-pty-host" --help >/dev/null
+          # T15: the dormant launcher + supervisor run storeless too.
+          "$work/bin/ham-launcher" --version
+          "$work/bin/ham-supervisor" --version
           "$work/bin/ham-bridge" --probe-hub https://github.com
 
       # T8: the build runner imported the signing keychain; prove the
@@ -1120,7 +1136,7 @@ jobs:
             # List once; piping tar into `grep -q` races under pipefail
             # (grep exits on first match -> tar hits EPIPE -> false failure).
             tar -tzf "$tarball" > "$RUNNER_TEMP/$tarball.entries"
-            for entry in bin/ham-bridge bin/ham-ctl bin/ham-pty-host README.md LICENSE; do
+            for entry in bin/ham-bridge bin/ham-ctl bin/ham-pty-host bin/ham-launcher bin/ham-supervisor README.md LICENSE; do
               require_entry "$tarball" "$entry"
             done
             target="${tarball#heimdall-local-}"
@@ -1133,7 +1149,7 @@ jobs:
           zip=heimdall-local-windows-amd64.zip
           require_file "$zip"
           unzip -Z1 "$zip" > "$RUNNER_TEMP/$zip.entries"
-          for entry in bin/ham-bridge.exe bin/ham-ctl.exe bin/ham-pty-host.exe README.md LICENSE METADATA.json; do
+          for entry in bin/ham-bridge.exe bin/ham-ctl.exe bin/ham-pty-host.exe bin/ham-launcher.exe bin/ham-supervisor.exe README.md LICENSE METADATA.json; do
             require_entry "$zip" "$entry"
           done
           # install.ps1 refuses absolute, drive-qualified, ".." and backslash names.

@@ -9,9 +9,21 @@
 //                        sessions.end. pty_sessions = files in <data>/fake-sessions/ (a
 //                        test drops a file there for a "live PTY session").
 //
-// bin/behaviour.txt next to the exe: "good" (default) or "crash" (exits 3 s after start,
-// before probation can pass). Every start appends "<pid> <tree> <behaviour> <parent pid> <start_time>" to
+// Behaviour: <data>/fake-behaviour/<tree> if it exists (a test can turn an installed
+// tree bad later, e.g. to make a rollback fail), else bin/behaviour.txt next to the exe:
+//   "good" (default)
+//   "crash"    exits 3 s after start, before probation can pass
+//   "noready"  never writes the control file (the runtime never becomes ready)
+//   "unhealthy" ready, then stops answering 3 s after start (keeps running)
+// Every start appends "<pid> <tree> <behaviour> <parent pid> <start_time>" to
 // <data>/fake-starts.log (the parent is the supervisor).
+//
+// Hub: every second the runtime writes <state>/runtime-status.json {pid, connected,
+// updated_at} (state = the directory of --config), connected = <data>/fake-hub-up exists
+// and <data>/fake-hub-down/<tree> does not (a release that cannot reach the hub).
+//
+//   --hold <seconds>     a straggler: sleeps, keeping its executable (and so its release
+//                        tree) in use (Windows file-in-use tests), then exits 0.
 package fakebridge
 
 import "core:encoding/json"
@@ -44,22 +56,35 @@ main :: proc() {
 		fmt.printfln("ham-bridge %s", read_trim(next_to_exe("test-version.txt")))
 		return
 	}
-	run_dir, data_dir := "", ""
+	if len(args) > 1 && args[0] == "--hold" {
+		secs := 0
+		for c in transmute([]byte)args[1] do if c >= '0' && c <= '9' do secs = secs * 10 + int(c - '0')
+		time.sleep(time.Duration(secs) * time.Second)
+		return
+	}
+	run_dir, data_dir, config := "", "", ""
 	for i := 0; i + 1 < len(args); i += 1 {
 		switch args[i] {
 		case "--local-run-dir":
 			run_dir = args[i + 1]
 		case "--data-dir":
 			data_dir = args[i + 1]
+		case "--config":
+			config = args[i + 1]
 		}
 	}
 	if run_dir == "" || data_dir == "" {
 		fmt.eprintln("fakebridge: --local-run-dir and --data-dir required")
 		os.exit(2)
 	}
-	behaviour := strings.clone(read_trim(next_to_exe("behaviour.txt"))) // outlives the per-loop temp reset
 	exe, _ := os.get_executable_path(context.temp_allocator)
-	tree := os.base(os.dir(os.dir(exe)))
+	tree := strings.clone(os.base(os.dir(os.dir(exe))))
+	behaviour := read_trim(join(join(data_dir, "fake-behaviour"), tree))
+	if behaviour == "" do behaviour = read_trim(next_to_exe("behaviour.txt"))
+	behaviour = strings.clone(behaviour) // outlives the per-loop temp reset
+	status_path := join(os.dir(config), "runtime-status.json") if config != "" else ""
+	hub_flag := join(data_dir, "fake-hub-up")
+	hub_blocked := join(join(data_dir, "fake-hub-down"), tree)
 	if f, err := os.open(join(data_dir, "fake-starts.log"), {.Write, .Create, .Append}, os.Permissions_Default_File); err == nil {
 		me, _ := procs.self()
 		fmt.fprintfln(f, "%d %s %s %d %d", os.get_pid(), tree, behaviour, os.get_ppid(), me.start_time)
@@ -73,15 +98,30 @@ main :: proc() {
 	token := fmt.aprintf("tok%d%d", os.get_pid(), time.time_to_unix_nano(time.now()))
 	control := fmt.tprintf(`{{"v":1,"endpoint":"tcp:127.0.0.1:%d","token":"%s","pid":%d}}`, ep.port, token, os.get_pid())
 	_ = os.make_directory_all(run_dir)
-	tmp := join(run_dir, "supervisor-control.json.tmp")
-	_ = os.write_entire_file(tmp, transmute([]byte)control)
-	_ = os.rename(tmp, join(run_dir, "supervisor-control.json"))
+	if behaviour != "noready" {
+		tmp := join(run_dir, "supervisor-control.json.tmp")
+		_ = os.write_entire_file(tmp, transmute([]byte)control)
+		_ = os.rename(tmp, join(run_dir, "supervisor-control.json"))
+	}
 
 	started := time.tick_now()
+	last_status: time.Tick
 	admission := "open"
 	for {
 		free_all(context.temp_allocator)
 		if behaviour == "crash" && time.tick_since(started) > 3 * time.Second do os.exit(9)
+		if behaviour == "unhealthy" && time.tick_since(started) > 3 * time.Second {
+			net.close(sock)
+			for {
+				time.sleep(time.Second)
+			}
+		}
+		if status_path != "" && (last_status == {} || time.tick_since(last_status) >= time.Second) {
+			last_status = time.tick_now()
+			st := fmt.tprintf(`{{"pid":%d,"connected":%v,"updated_at":%d}}`, os.get_pid(), os.exists(hub_flag) && !os.exists(hub_blocked), time.time_to_unix(time.now()))
+			stmp := strings.concatenate({status_path, ".tmp"}, context.temp_allocator)
+			if os.write_entire_file(stmp, transmute([]byte)st) == nil do _ = os.rename(stmp, status_path)
+		}
 		c, _, aerr := net.accept_tcp(sock)
 		if aerr != nil {
 			time.sleep(20 * time.Millisecond)

@@ -48,6 +48,20 @@ run_supervisor :: proc(a: Run_Args) -> int {
 		first_check = env_int("HEIMDALL_SUPERVISOR_TEST_FIRST_CHECK_S", -1)
 	}
 
+	// T15 failure injection, test builds only: bin/supervisor-behaviour.txt next to the exe
+	// makes this supervisor a failing candidate (spec §18, §7.2):
+	//   "noready"  never writes READY (the launcher's T_ready fallback)
+	//   "exit78"   exits 78 two seconds after READY, during probation
+	test_behaviour := ""
+	when TEST_BUILD {
+		test_behaviour = test_supervisor_behaviour()
+		if test_behaviour == "noready" {
+			stderr_log("test behaviour noready: never READY")
+			for !stop_requested_flag() do time.sleep(LOOP_INTERVAL)
+			return EXIT_STOP
+		}
+	}
+
 	h: Host_Ctx
 	h.log = stderr_log
 	h.stop_flag = stop_requested_flag
@@ -89,6 +103,11 @@ run_supervisor :: proc(a: Run_Args) -> int {
 		if !write_ready(a.ready_fd, line) do stderr_log("cannot write READY")
 	}
 	stderr_log(fmt.tprintf("running %s (%v)", a.launched, a.mode))
+	if test_behaviour == "exit78" {
+		time.sleep(2 * time.Second)
+		stderr_log("test behaviour exit78: exiting 78 during probation")
+		return EXIT_REFUSE
+	}
 
 	for {
 		free_all(context.temp_allocator)
@@ -109,6 +128,16 @@ run_supervisor :: proc(a: Run_Args) -> int {
 		return EXIT_FATAL
 	}
 	return EXIT_STOP
+}
+
+// test_supervisor_behaviour: bin/supervisor-behaviour.txt next to the executable (test
+// builds only; "" when absent).
+test_supervisor_behaviour :: proc() -> string {
+	exe, err := os.get_executable_path(context.temp_allocator)
+	if err != nil do return ""
+	data, rerr := os.read_entire_file(engine.join(os.dir(exe), "supervisor-behaviour.txt"), context.temp_allocator)
+	if rerr != nil do return ""
+	return strings.trim_space(string(data))
 }
 
 env_int :: proc(name: string, def: i64) -> i64 {

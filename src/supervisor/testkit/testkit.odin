@@ -241,6 +241,7 @@ Release :: struct {
 	signature: string,
 	sha256:    string,
 	tree:      string, // <ver>-<d12>
+	stub:      bool, // listed only; no bytes served (github_publish_stub)
 }
 
 // make_release builds and signs a release (heap-allocated; free with release_destroy).

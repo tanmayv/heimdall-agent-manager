@@ -407,6 +407,12 @@
           release-ham-bridge = mkReleaseOdinPackage pkgs odin "ham-bridge" "src/bridge";
           release-ham-ctl = mkReleaseOdinPackage pkgs odin "ham-ctl" "src/ctl";
           release-ham-pty-host = mkReleasePtyHost pkgs;
+          # T15 (Phase 1, report §7): the launcher and supervisor ship in every
+          # linux/darwin bundle (bin/ham-launcher, bin/ham-supervisor) but are NOT
+          # the service entry point yet (Phase 2 switches the service to the
+          # launcher). Same static recipe; no test defines.
+          release-ham-launcher = mkReleaseOdinPackage pkgs odin "ham-launcher" "src/launcher";
+          release-ham-supervisor = mkReleaseOdinPackage pkgs odin "ham-supervisor" "src/supervisor";
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           # T12: termux-arm64 bundle (musl-static Odin binaries; see
           # mkTermuxOdinPackage). Its pty host is release-ham-pty-host, already

@@ -53,6 +53,8 @@ expected_identifier() {
     ham-bridge) echo works.earendil.heimdall.bridge ;;
     ham-ctl) echo works.earendil.heimdall.ctl ;;
     ham-pty-host) echo works.earendil.heimdall.pty-host ;;
+    ham-launcher) echo works.earendil.heimdall.launcher ;;
+    ham-supervisor) echo works.earendil.heimdall.supervisor ;;
     *) echo "works.earendil.heimdall.$(printf '%s' "$1" | tr -cs 'A-Za-z0-9.-' '-')" ;;
   esac
 }

@@ -87,7 +87,8 @@ class DistributionTests(unittest.TestCase):
 
     def package(self, target="linux-amd64"):
         outputs = []
-        for name in ("ham-bridge", "ham-ctl", "ham-pty-host"):
+        # T15: the dormant launcher + supervisor ship in the bundle too.
+        for name in ("ham-bridge", "ham-ctl", "ham-pty-host", "ham-launcher", "ham-supervisor"):
             output = self.root / ("output-" + name)
             self.write(output / "bin" / name, "#!/bin/sh\necho new\n", executable=True)
             outputs.append(output)
@@ -124,6 +125,11 @@ class DistributionTests(unittest.TestCase):
         self.assert_assets(dest / "share/heimdall/extensions")
         self.assertFalse((dest / "scripts").exists())
         self.assertTrue((dest / "bin/ham-bridge").is_file())
+        # T15 (Phase 1): the launcher and supervisor are in the bundle, dormant.
+        self.assertTrue((dest / "bin/ham-launcher").is_file())
+        self.assertTrue((dest / "bin/ham-supervisor").is_file())
+        meta = (dest / "METADATA.json").read_text()
+        self.assertIn('"ham-launcher", "ham-supervisor"', meta)
 
     def git(self, *args):
         result = subprocess.run(["git", "-C", str(self.repo), *map(str, args)],

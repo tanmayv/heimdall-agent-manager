@@ -154,6 +154,13 @@ repair :: proc(ro: Repair_Options) -> int {
 	if to.tree == C {
 		// The bundle is the intact running tree: nothing to switch; the service starts it.
 		_ = engine.journal(&e, terminal(op, "noop", "", "up_to_date"))
+		if lt, ok := e.last_settled.?; ok && lt.state == "rollback_failed" && (lt.from.tree == C || lt.to.tree == C) {
+			// J25 holds: only a real pointer switch ends rollback_failed, so say so instead
+			// of letting "exit 0" read as "repaired" (T13b review note, T15).
+			rlog(ro, "noop up_to_date: %s is intact and already current; the instance is STILL in rollback_failed (op %s) and will not start its runtime. Repair with a bundle of another release, or of this release once its tree is damaged, to switch and clear it.", C, lt.op_id)
+		} else {
+			rlog(ro, "noop up_to_date: %s is intact and already current; nothing to repair", C)
+		}
 		return REPAIR_EXIT_OK
 	}
 	op = next_state(op, "verified")

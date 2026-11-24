@@ -13,6 +13,8 @@ on:
       - 'src/launcher/core/**'
       # src/supervisor/runtimectl dials the runtime with the shared socket library.
       - 'src/lib/local_socket/**'
+      # T15: the "launcher is not the service entry point yet" guard.
+      - 'src/lib/bridgesvc/**'
       - '.github/workflows/supervisor-unit.yml'
   pull_request:
     paths:
@@ -21,6 +23,7 @@ on:
       - 'src/launcher/core/**'
       # src/supervisor/runtimectl dials the runtime with the shared socket library.
       - 'src/lib/local_socket/**'
+      - 'src/lib/bridgesvc/**'
       - '.github/workflows/supervisor-unit.yml'
   workflow_dispatch:
 permissions:
@@ -62,6 +65,10 @@ jobs:
             nix develop -c odin test "$pkg" -collection:odin_test=src -vet \
               -out:"$HOME/.cache/heimdall-tests/supervisor-$name"
           done
+          # T15: launcher + supervisor ship dormant; every rendered service still runs ham-bridge.
+          nix develop -c odin test src/lib/bridgesvc -collection:odin_test=src \
+            -define:ODIN_TEST_NAMES=bridgesvc.test_service_entry_point_is_still_ham_bridge \
+            -out:"$HOME/.cache/heimdall-tests/bridgesvc-entry-point"
 
   windows:
     name: odin test (windows-latest)
@@ -100,3 +107,6 @@ jobs:
             & $env:ODIN test $pkg -collection:odin_test=src -vet "-out:$env:RUNNER_TEMP\supervisor-$name.exe"
             if ($LASTEXITCODE -ne 0) { throw "odin test $pkg failed ($LASTEXITCODE)" }
           }
+          # T15: launcher + supervisor ship dormant; every rendered service still runs ham-bridge.
+          & $env:ODIN test src/lib/bridgesvc -collection:odin_test=src -define:ODIN_TEST_NAMES=bridgesvc.test_service_entry_point_is_still_ham_bridge "-out:$env:RUNNER_TEMP\bridgesvc-entry-point.exe"
+          if ($LASTEXITCODE -ne 0) { throw "bridgesvc entry-point test failed ($LASTEXITCODE)" }

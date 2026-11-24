@@ -18,7 +18,7 @@ function Check([bool]$Condition, [string]$Message) {
 try {
   if (-not $Bundle) {
     $bin = Join-Path $root 'fake-bin'; New-Item -ItemType Directory $bin | Out-Null
-    foreach ($name in @('ham-bridge.exe', 'ham-ctl.exe', 'ham-pty-host.exe')) {
+    foreach ($name in @('ham-bridge.exe', 'ham-ctl.exe', 'ham-pty-host.exe', 'ham-launcher.exe', 'ham-supervisor.exe')) {
       [IO.File]::WriteAllBytes((Join-Path $bin $name), [byte[]]@(0x4d, 0x5a, 0, 0))
     }
     & (Join-Path $repo 'scripts/release/package-windows-bundle.ps1') -BinDir $bin -Version vtest -OutDir $root

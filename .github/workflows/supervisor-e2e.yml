@@ -1,8 +1,11 @@
 name: Supervisor e2e
-# T13b (REQ-OS-1): the real ham-launcher -> ham-supervisor (test build) -> fake runtime
-# against a fake GitHub on loopback (src/supervisor/e2e): first install via `repair`,
-# timer update that waits on a live session, commit, bad release rolled back + pinned,
-# orphan reap after a hard kill, graceful stop. Linux, macOS and Windows.
+# T13b + T15 (REQ-OS-1, report §7 Phase 1 exit): the real ham-launcher -> ham-supervisor
+# (test build) -> fake runtime against a fake GitHub on loopback (src/supervisor/e2e):
+# the main update scenario plus the cross-OS failure-injection suite (failing candidates,
+# failing rollback + repair, clean/unclean stops in probation, GitHub and hub offline,
+# >100 releases, mutable assets, two profiles, two OS users, Windows file-in-use and
+# antivirus delay). Coverage map: docs/specs/bridge-supervisor-t15-suite.md.
+# Linux, macOS and Windows.
 on:
   push:
     branches: [main, 'heimdall/**', 'ci/**']
@@ -35,7 +38,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +47,24 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+      # T15 two OS users on one hub: a second local account the test drives with
+      # `sudo -n -u` (the runner has passwordless sudo), and a directory both can use.
+      - name: second OS user
+        shell: bash
+        run: |
+          set -euo pipefail
+          user=heimdalle2e
+          if [ "$(uname -s)" = Darwin ]; then
+            sudo sysadminctl -addUser "$user" -password "$(openssl rand -hex 16)" 2>&1
+          else
+            sudo useradd --create-home "$user"
+          fi
+          id "$user"
+          shared=/tmp/heimdall-e2e-shared
+          mkdir -p "$shared"
+          chmod 0777 "$shared"
+          sudo -n -u "$user" true
+          { echo "HEIMDALL_E2E_OTHER_USER=$user"; echo "HEIMDALL_E2E_SHARED_DIR=$shared"; } >> "$GITHUB_ENV"
       - name: build + run src/supervisor/e2e (flake-pinned Odin and libcurl)
         shell: bash
         run: nix develop -c scripts/supervisor/e2e.sh "$HOME/.cache/heimdall-tests/supervisor-e2e"
@@ -51,7 +72,7 @@ jobs:
   windows:
     name: e2e (windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     env:
       # Same pin as release-local-binaries.yml (windows job) and flake.nix.
       ODIN_TAG: dev-2026-09
@@ -86,6 +107,27 @@ jobs:
         if: ${{ steps.curl-cache.outputs.cache-hit != 'true' }}
         shell: pwsh
         run: scripts/windows/build-libcurl.ps1 -OutDir "$env:RUNNER_TEMP/libcurl-static"
+      # T15 two OS users on one hub: a second local account started with
+      # CreateProcessWithLogonW, and a directory everyone may use (inherited ACL).
+      - name: second OS user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $user = 'heimdalle2e'
+          $pw = 'He1!' + [guid]::NewGuid().ToString('N')
+          Write-Host "::add-mask::$pw"
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          New-LocalUser -Name $user -Password $sec -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group 'Users' -Member $user -ErrorAction SilentlyContinue
+          $sid = (Get-LocalUser $user).SID.Value
+          $shared = 'C:\heimdall-e2e-shared'
+          New-Item -ItemType Directory -Force $shared | Out-Null
+          & icacls $shared /grant '*S-1-1-0:(OI)(CI)F' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "icacls failed ($LASTEXITCODE)" }
+          Get-Service seclogon | Select-Object Status, StartType | Format-List
+          if ((Get-Service seclogon).StartType -eq 'Disabled') { Set-Service seclogon -StartupType Manual }
+          "HEIMDALL_E2E_OTHER_USER=$user", "HEIMDALL_E2E_OTHER_PASSWORD=$pw", "HEIMDALL_E2E_OTHER_SID=$sid", "HEIMDALL_E2E_SHARED_DIR=$shared" |
+            Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: build + run src/supervisor/e2e
         shell: pwsh
         run: |

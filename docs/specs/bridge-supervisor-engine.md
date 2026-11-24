@@ -1228,6 +1228,8 @@ Service definitions are written once by `ham-bridge setup` (Phase 2) and point a
 
 ## 18. Test obligations (T15 checklist)
 
+Coverage (which test covers each item below, on which runners): `docs/specs/bridge-supervisor-t15-suite.md`.
+
 Every row of §6.3 (J0–J35) is a failure-injection point: kill the supervisor (and, where
 noted, simulate power loss by dropping unsynced writes in a fake filesystem layer) at the
 step, restart, and assert the recovery outcome. Plus the report §7 Phase 1 list: failing

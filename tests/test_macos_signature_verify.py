@@ -19,6 +19,8 @@ IDS = {
     "ham-bridge": "works.earendil.heimdall.bridge",
     "ham-ctl": "works.earendil.heimdall.ctl",
     "ham-pty-host": "works.earendil.heimdall.pty-host",
+    "ham-launcher": "works.earendil.heimdall.launcher",
+    "ham-supervisor": "works.earendil.heimdall.supervisor",
 }
 
 FAKE = textwrap.dedent(r'''
@@ -58,7 +60,7 @@ def details(name, team="ABCDE12345", flags="0x10000(runtime)", timestamp=True,
 
 
 class Fixture:
-    def __init__(self, names=("ham-bridge", "ham-ctl", "ham-pty-host")):
+    def __init__(self, names=("ham-bridge", "ham-ctl", "ham-pty-host", "ham-launcher", "ham-supervisor")):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.bin = root / "bin"
@@ -96,7 +98,7 @@ def test_valid_bundle_passes_dir_and_tarball():
     fx = Fixture()
     r = fx.run()
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "verified 3 Developer ID" in r.stdout
+    assert "verified 5 Developer ID" in r.stdout
     tgz = Path(fx.tmp.name) / "b.tar.gz"
     with tarfile.open(tgz, "w:gz") as t:
         t.add(fx.bin, arcname="bin")
