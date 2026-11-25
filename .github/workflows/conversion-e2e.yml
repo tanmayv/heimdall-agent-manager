@@ -113,6 +113,7 @@ jobs:
       - name: Conversion e2e (real v0.5.77 and v0.5.86)
         env:
           HEIMDALL_E2E_SERVICE: '1'
+          HEIMDALL_E2E_CONV_PHASE: P5
         run: node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/conversion_e2e.mjs
 
   windows:
@@ -204,6 +205,7 @@ jobs:
         shell: pwsh
         env:
           HEIMDALL_E2E_SERVICE: '1'
+          HEIMDALL_E2E_CONV_PHASE: P5
         run: |
           node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/conversion_e2e.mjs
           if ($LASTEXITCODE) { throw "conversion e2e failed ($LASTEXITCODE)" }
