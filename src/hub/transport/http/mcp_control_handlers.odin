@@ -31,6 +31,7 @@ MCP_Control_Handlers :: struct {
 	mutate_task:mcp.Control_Task_Mutate_Proc,
 	mutate_catalog:mcp.Catalog_Mutate_Proc,
 	runtime:mcp.Runtime_Proc,
+	fleet:mcp.Fleet_Proc,
 	mutate_resource:mcp.Resource_Mutate_Proc,
 	// Optional approved enrolled-bridge transport. It receives no client token.
 	bridge_ctx:rawptr,
@@ -71,6 +72,7 @@ mcp_id_ok :: proc(id:json.Value)->bool {
 	return false
 }
 mcp_arguments :: proc(name:string,value:json.Value)->(mcp.Control_Arguments,bool) {
+	if mcp.fleet_tool(name) do return mcp_fleet_arguments(name,value)
 	if name=="chains.message" do return mcp_message_arguments(value)
 	if mcp.resource_tool(name) do return mcp_resource_arguments(name,value)
 	if mcp.runtime_tool(name) do return mcp_runtime_arguments(name,value)
@@ -249,6 +251,14 @@ mcp_control_handler :: proc(ctx:rawptr,req:Request)->(response:Response) {
 	handle,admitted:=mcp.request_begin(&h.requests,key,string(encoded_id))
 	if !admitted do return mcp_tool_result(id,"busy: request is already active or capacity is exhausted",true)
 	defer mcp.request_end(&h.requests,handle)
+	if mcp.fleet_tool(string(name)) {
+		if h.fleet==nil do return mcp_tool_result(id,"request_failed",true)
+		cancellation:=MCP_Runtime_Cancellation{h=h,handle=handle,started=started}
+		result,code:=h.fleet(h.create_ctx,raw,view,string(name),args.fleet,&cancellation,mcp_runtime_cancelled)
+		if code=="invalid_token" do return mcp_unauthorized(h)
+		if code!="" do return mcp_tool_result(id,code,true)
+		return mcp_tool_result(id,result,false)
+	}
 	if mcp.resource_write(string(name)) do return mcp_resource_write_call(h,id,raw,view,string(name),args.resource,handle,started)
 	if mcp.runtime_tool(string(name)) {
 		if h.runtime==nil do return mcp_tool_result(id,"request_failed",true)

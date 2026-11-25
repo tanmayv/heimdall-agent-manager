@@ -25,6 +25,25 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 ---
 
 ## bridge — discover bridges and their providers
+
+Shared bridge runtime policy applies to task coordinators/workers/reviewers
+across chains. It does not change staffing, placement or review gates.
+
+- `bridge fleet show|defaults|overrides <bridge-id>` — complete revisioned settings.
+- `bridge fleet apply <bridge-id> --draft-file <file>` — complete JSON object with
+  `request_id`, `expected_revision`, `default_runtime` and full `overrides`.
+  Saves atomically, then restarts changed running task agents, including claim
+  holders. Reuse the identical ID/draft after an ambiguous response.
+- `bridge fleet status <bridge-id> <application-id>` — durable per-target outcomes;
+  saved settings and acknowledged runtime readiness are separate.
+- `bridge fleet retry <bridge-id> <application-id>` — retry eligible failures with
+  stable native keys; ready targets are skipped.
+
+MCP parity: `fleet.read`/`fleet.status` require `mcp:instances:read`;
+`fleet.apply`/`fleet.retry` require `mcp:instances:control`. Fleet Apply supports
+active-task holders, preserving claims and review gates. Existing idle guards
+for unrelated instance tools remain. Live grant/scope/cancellation checks apply
+before new native work and recovery. See `docs/fleet-management.md`.
 - `bridge list [--scope hub|configured|all]` — bridges you can target. Default `all` =
   Hub-registered + locally-configured peers + this host (self).
 - `bridge providers --bridge <id>` — that bridge's providers and their models: `providers[].provider` (with `enabled`) and `providers[].models[].model_id`. These are the `--provider` / `--model` values a launch accepts. Without `--bridge` it returns the bridge list only (no providers or models); use `bridge list` to find bridge ids.

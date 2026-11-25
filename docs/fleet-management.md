@@ -114,7 +114,7 @@ the instance's actual provider/profile/model for inline and wake claims. They
 do not swallow arbitrary conflicts or storage errors. The marker setter itself
 continues refusing excluded-to-chain promotion.
 
-## Integration seam for F2
+## Apply, status and retry (REQ-FLEET-3, 4, 6, 7)
 
 Wire shapes live in `src/contracts/fleet_settings.odin` with the TypeScript mirror
 in `src/ui/api/fleetSettings.ts`. `Fleet_Settings_Draft` has
@@ -128,12 +128,109 @@ control boundary. Bridge repository snapshot reads return owned data; destroy
 with `domain.fleet_settings_destroy`. Resolver runtime strings are owned; destroy
 with `domain.fleet_runtime_destroy`.
 
-F2 must run validation and snapshot save in the same existing Hub unit of work
-as durable application/request/target records, then perform restart side effects
-after commit. It owns composite Apply/status endpoints, request deduplication,
-all-page target enumeration, lifecycle capability checks, retry/readiness status,
-WebSocket events and CLI/MCP parity. F1 performs no live restarts and adds no
-settings HTTP routes. F3 owns live Home Fleet UI and old drawer retirement.
+`fleet_application.Service` validates and saves the settings, canonical request
+and complete target snapshot in one existing Hub unit of work. Migration
+`252_fleet_applications.sql` stores these applications, including their target
+outcomes and private public-grant binding. Lifecycle work starts after commit.
+The bridge instance query is unpaginated and deduplicated; native active-operation
+reconciliation also has no first-page cap.
+
+| Operation | REST | CLI / MCP |
+| --- | --- | --- |
+| Read complete settings | `GET /api/v1/bridges/{id}/launch-defaults` or `/agent-overrides` | `bridge fleet show` / `defaults` / `overrides`; `fleet.read` |
+| Apply | `POST /api/v1/bridges/{id}/fleet/apply` | `bridge fleet apply`; `fleet.apply` |
+| Status | `GET /api/v1/bridges/{id}/fleet/applications/{application_id}` | `bridge fleet status`; `fleet.status` |
+| Retry | `POST /api/v1/bridges/{id}/fleet/applications/{application_id}/retry` | `bridge fleet retry`; `fleet.retry` |
+
+Both read seams return the same complete revisioned `Fleet_Settings` snapshot,
+so a caller cannot combine defaults and overrides from different revisions.
+Apply takes the following complete object. Unknown fields, including nested
+runtime and override fields, are rejected. Omitted `provider_profile` uses the
+provider's normal default profile.
+
+```json
+{
+  "request_id": "stable-client-request-id",
+  "expected_revision": 0,
+  "default_runtime": {"provider": "codex", "provider_profile": "codex", "model": "selected-model"},
+  "overrides": []
+}
+```
+
+```bash
+ham-ctl bridge fleet show brg_example
+ham-ctl bridge fleet apply brg_example --draft-file draft.json
+ham-ctl bridge fleet status brg_example fleet_apply_example
+ham-ctl bridge fleet retry brg_example fleet_apply_example
+```
+
+The response is a `Fleet_Application`, HTTP 202 for Apply/retry: `application_id`,
+`request_id`, committed `settings_revision`, application `revision`,
+`settings_saved`, `cancelled`, timestamps, `state` and `targets`. Each target
+captures instance/agent/project/claim IDs, source configuration revision and
+launch epoch, actual `before` and `desired` tuples, stable native `operation_key`,
+`state`, `error_code`, `error_message` and `retryable`. Application states are
+`pending`, `restarting`, `ready`, `partial_failure`; targets use `pending`,
+`restarting`, `ready`, `failed`. Settings can be saved while restarts fail.
+
+Replaying an identical request returns the original application without another
+restart, even after the settings revision advances. Canonical comparison
+normalizes default profile IDs and override order. Reusing the ID for different
+contents returns 409 `fleet_request_conflict`. A new request with a stale expected
+revision returns 409 before saving anything. Foreign resources return 404;
+unavailable explicit selections return 422 `fleet_selection_unavailable`.
+
+Only changed, currently running chain agents on the selected bridge become
+targets. Stopped, failed, unreachable, user-stopped and non-task instances are
+excluded. An unchanged actual tuple needs no restart, including a semantic
+no-op. Removing an override compares the running process against the inherited
+default. Target acceptance rechecks settings revision, scope, ownership,
+project, claim identity, configuration revision, launch epoch and stop intent.
+Newer settings or a changed target fail closed. Offline bridges, missing native
+capabilities, conflicting operations and native recovery failures remain visible
+as typed target failures. Retry retains operation keys and skips ready targets;
+nonretryable changed targets require a fresh Apply after inspection.
+
+The shared service calls existing durable instance reconfiguration. It sends the
+existing stop and launch commands and observes the acknowledged destination epoch
+and startup readiness before reporting `ready`. Command acceptance is insufficient.
+Hub recovery resumes pending fan-out or observes existing native operations;
+read/status requests never start work. A late native readiness acknowledgement
+can resolve a previously reported recoverable failure.
+
+Native launch uses the committed instance row, including its incremented run
+count. An existing claim keeps its ID, attempt, worktree, permission mode and
+review gate. A lifecycle hook rebuilds its normal context pack with the actual
+destination tuple; the complete launch frame is frozen durably for byte-identical
+redelivery. Claim retention applies only to the matching durable Fleet target,
+claim and source/destination generation. Ordinary unrelated failures and user
+stops keep their existing cleanup. F3 owns the live Home Fleet UI and old drawer
+retirement.
+
+Owner WebSocket `resource_changed` hints use `bridge_fleet_settings` (bridge ID,
+summary bridge ID/revision) after a changed settings commit and
+`bridge_fleet_application` (application ID and public application summary) after
+application progress. Consumers refresh affected Fleet/effective-placement and
+instance state; no startup-triggered settings fetch is added.
+
+### MCP amendment, 2026-11-25
+
+F2 requirements revision 2 records user decision `msg_18eb444acf28d7e7`. The
+original delegated instance-control idle restriction remains in effect for
+unrelated tools. The four Fleet tools use this same service and request/target
+deduplication. `fleet.read` and `fleet.status` require `mcp:instances:read`;
+`fleet.apply` and `fleet.retry` require the existing `mcp:instances:control`.
+Fleet Apply explicitly supports eligible active-task holders, preserving their
+claims/context/review gates, without a new capability or consent gate.
+
+Owner, live signed grant, scope, delegation/directory binding and request
+cancellation are checked at application acceptance and before each new native
+target acceptance, including after remote preflight. Recovery revalidates the
+persisted public grant binding before new work; raw OAuth tokens are never
+stored. Cancellation after policy commit leaves `settings_saved=true` and marks
+the application cancelled, preventing new target work. Already accepted native
+operations continue through their existing idempotent lifecycle. Revocation
+does not undo a policy commit or duplicate accepted operations.
 
 The existing chain fleet HTTP/CLI/MCP surfaces are compatibility controls during
 this transition. They cannot override managed runtime policy. The old

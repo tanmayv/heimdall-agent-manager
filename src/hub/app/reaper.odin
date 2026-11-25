@@ -6,6 +6,7 @@ import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import agent_service "odin_test:hub/service/agent"
+import fleet_application "odin_test:hub/service/fleet_application"
 import auth_service "odin_test:hub/service/auth"
 import events "odin_test:hub/service/events"
 import http "odin_test:hub/transport/http"
@@ -118,6 +119,7 @@ reaper_loop :: proc(graph: ^App_Graph) {
 		reaper_sweep_pending_enrollments(graph)
 		// REQ-2: startup recovery for reconfigurations left mid-flight by a restart.
 		agent_service.reconcile_active_reconfigurations(&graph.agents)
+		fleet_application.reconcile(&graph.fleet)
 	})
 	for {
 		time.sleep(time.Duration(interval) * time.Second)
@@ -251,6 +253,7 @@ reaper_sweep_once :: proc(graph: ^App_Graph) {
 	// REQ-2: reconfiguration progress and confirmation timeouts advance here (and
 	// on bridge transitions), so they complete with no client polling the GET.
 	agent_service.reconcile_active_reconfigurations(&graph.agents)
+	fleet_application.reconcile(&graph.fleet)
 
 	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
 	agent_service.notify_instances_terminal(&graph.agents, reaped)
