@@ -49,13 +49,13 @@ export function ActionDetailBody({ record, actionError, runNotice: _notice, wide
     <Panel className="p-4"><h3>Prompt</h3><pre className="whitespace-pre-wrap">{record.prompt_text}</pre><CopyButton value={record.prompt_text} label="Copy prompt" debugId="action-copy-prompt" /></Panel>
     <Panel className="p-4"><h3>Triggers</h3><Toggle aria-label="Action enabled" data-debug-id="action-detail-enabled" checked={record.enabled} disabled={enabledState.isLoading} onChange={enabled => void setEnabled({ id: record.id, enabled }).unwrap().catch(() => {})} />
       {enabledState.error ? <Alert tone="danger" title="Couldn't change enabled state">{actionErrorText(enabledState.error)}</Alert> : null}
-      {!record.triggers.length ? <p>No trigger</p> : record.triggers.map((t, i) => <p key={t.id || i}><Badge>{triggerSummary(t)}</Badge> · {t.enabled ? 'Enabled' : 'Disabled'}{t.next_fire_at ? ' · Next fire ' + t.next_fire_at : ''}</p>)}
+      {!record.triggers.length ? <p>No trigger</p> : record.triggers.map((t, i) => <p key={t.id || i}><Badge className="action-detail-trigger-summary">{triggerSummary(t)}</Badge> · {t.enabled ? 'Enabled' : 'Disabled'}{t.next_fire_at ? ' · Next fire ' + t.next_fire_at : ''}</p>)}
     </Panel>
     <Panel className="p-4"><h3>Target</h3><p>{targetLabel(record, catalog)}</p>
       {target.kind === 'agent' ? <><p>{target.instance_strategy} · {target.project_id || 'No project'}</p>{!target.rules.length ? <p>Anywhere (the hub picks the first available machine)</p> : <ol>{target.rules.map((r, i) => <li key={i}>{i + 1}. {r.bridge_id === '*' ? 'Any machine' : bridgeLabel(r.bridge_id, catalog)} · {r.provider === '*' ? 'Any provider' : r.provider} · {r.model === '*' ? 'Any model' : r.model}</li>)}</ol>}</> : null}
       <p>An action also starts an agent that you stopped. Disable the action to stop that.</p>
     </Panel>
-    <Panel className="p-4"><h3>Runs</h3><RunHistory key={record.id} actionId={record.id} catalog={catalog} /></Panel>
+    <Panel className="p-4"><h3>Runs</h3><RunHistory key={record.id} actionId={record.id} catalog={catalog} triggers={record.triggers} /></Panel>
   </div>;
 }
 export function ActionDetailMobileActions(_props: { record: Action; onVerb: (verb: ActionVerb) => void }) { return null; }

@@ -1,0 +1,7 @@
+.run-trace { margin-block: var(--space-3); overflow-wrap: anywhere; }
+.run-trace > summary { cursor: pointer; padding-block: var(--space-3); min-height: calc(var(--space-8) + var(--space-3)); }
+.run-trace > summary:focus-visible { outline: var(--border-width-strong) solid var(--color-focus-ring); outline-offset: var(--space-0-5); }
+.run-recorded-values dl { display: flex; flex-direction: column; gap: var(--space-3); }
+.run-recorded-values dd { margin: 0; }
+
+.action-detail-trigger-summary[class] { white-space: normal; overflow-wrap: anywhere; max-width: 100%; line-height: var(--text-label-leading); }
