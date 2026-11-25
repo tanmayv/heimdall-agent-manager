@@ -7,7 +7,7 @@ const localAdapter: HomeLayoutAdapter = {
 };
 export function useHomeLayout(userId: string, adapter: HomeLayoutAdapter = localAdapter) {
   const [snapshot, setSnapshot] = useState<HomeLayoutSnapshot>({ layout: defaultHomeLayout(), status: 'loading' });
-  const session = useRef<HomeLayoutSession>();
+  const session = useRef<HomeLayoutSession | undefined>(undefined);
   useEffect(() => {
     const next = new HomeLayoutSession(adapter, userId, setSnapshot);
     session.current = next;
