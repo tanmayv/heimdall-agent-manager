@@ -11,6 +11,8 @@ import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const agents = await import('../src/ui/api/endpoints/agents.ts');
+const { buildRuntimePayload } = await import('../src/ui/api/runtimePayload.ts');
+const { chatEndpoints } = await import('../src/ui/api/endpoints/chats.ts');
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const read = (rel: string) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
 
@@ -30,9 +32,36 @@ function installCapturingFetch() {
   return { calls, restore: () => { (globalThis as any).fetch = previous; } };
 }
 
+test('runtime payload distinguishes omitted and cleared project', () => {
+  assert.deepEqual(buildRuntimePayload({}), {});
+  assert.deepEqual(buildRuntimePayload({ projectId: undefined }), {});
+  assert.deepEqual(buildRuntimePayload({ projectId: '' }), { project_id: '' });
+});
+
+for (const projectId of [undefined, '', 'proj_a']) {
+  test(`instance and conversation runtime scope: project=${String(projectId)}`, async () => {
+    const fetch = installCapturingFetch();
+    const store = await makeVaultStore();
+    const selection = { provider: 'claude', providerProfile: 'work', model: 'opus', bridgeId: 'brg_a', projectId, chainId: 'chain_a' };
+    const expected = { provider: 'claude', provider_profile: 'work', model: 'opus', bridge_id: 'brg_a', chain_id: 'chain_a', ...(projectId !== undefined ? { project_id: projectId } : {}) };
+    try {
+      await store.dispatch(agents.agentsApi.endpoints.createAgentInstance.initiate({ agentId: 'agt_a', displayName: 'Worker', ...selection })).unwrap();
+      await store.dispatch(chatEndpoints.endpoints.createLaunchConversation.initiate({ agentId: 'agt_a', ...selection, body: 'hello', artifactIds: ['art_a'] })).unwrap();
+      const instance = fetch.calls.find(c => c.key.endsWith('/agent-instances') && c.key.startsWith('POST'));
+      const chat = fetch.calls.find(c => c.key.endsWith('/chats') && c.key.startsWith('POST'));
+      assert.deepEqual(instance?.body, { agent_id: 'agt_a', ...expected, display_name: 'Worker' });
+      assert.deepEqual(chat?.body, { agent_id: 'agt_a', ...expected, initial_message: { body: 'hello' }, artifact_ids: ['art_a'] });
+      assert.equal(fetch.calls.filter(c => c.key.endsWith('/agent-instances/inst_new')).length, 1);
+    } finally {
+      store.dispatch(heimdallApi.util.resetApiState());
+      fetch.restore();
+    }
+  });
+}
+
 for (const [name, run] of [
-  ['launchAgentInstance', (store: any) => store.dispatch(agents.agentsApi.endpoints.launchAgentInstance.initiate({ agentId: 'agt_a', bridgeId: 'brg_a', provider: 'claude', providerProfile: 'claude-work', model: 'opus', projectId: 'proj_a' }))],
-  ['createAgentInstanceInChain', (store: any) => store.dispatch(agents.agentsApi.endpoints.createAgentInstanceInChain.initiate({ agentId: 'agt_a', chainId: 'chain_a', provider: 'claude', providerProfile: 'claude-work', model: 'opus' }))],
+  ['createAgentInstance', (store: any) => store.dispatch(agents.agentsApi.endpoints.createAgentInstance.initiate({ agentId: 'agt_a', bridgeId: 'brg_a', provider: 'claude', providerProfile: 'claude-work', model: 'opus', projectId: 'proj_a' }))],
+  ['createAgentInstance with chain', (store: any) => store.dispatch(agents.agentsApi.endpoints.createAgentInstance.initiate({ agentId: 'agt_a', chainId: 'chain_a', provider: 'claude', providerProfile: 'claude-work', model: 'opus' }))],
 ] as const) {
   test(`${name} sends provider (driver) and provider_profile separately`, async () => {
     const fetch = installCapturingFetch();

@@ -6,10 +6,9 @@ import { analytics, type Analytics } from './analytics';
 // Endpoints whose success means the Hub accepted an agent launch/start.
 const AGENT_START_ENDPOINTS = new Set([
   'createLaunchConversation',
-  'launchAgentInstance',
+  'createAgentInstance',
   'startAgentInstance',
   'startAgent',
-  'createAgentInstanceInChain',
 ]);
 
 /** Same rule as the Bridges panel (components/settings/BridgesPanel.tsx). */

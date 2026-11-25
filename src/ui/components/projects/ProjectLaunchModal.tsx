@@ -11,7 +11,7 @@ import {
   useListAgentIdentitiesQuery,
   useListAgentInstancesQuery,
   useStartAgentInstanceMutation,
-  useLaunchAgentInstanceMutation,
+  useCreateAgentInstanceMutation,
 } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 
@@ -77,7 +77,7 @@ export default function ProjectLaunchModal({
 
   // Mutations
   const [startAgentInstance] = useStartAgentInstanceMutation();
-  const [launchAgentInstance] = useLaunchAgentInstanceMutation();
+  const [createAgentInstance] = useCreateAgentInstanceMutation();
 
   // Queries
   const projectId = project?.projectId || '';
@@ -342,7 +342,7 @@ export default function ProjectLaunchModal({
       for (const agentId of ids) {
         // The POST /agent-instances response carries the new instance id at the
         // top level; capture the first one so we can navigate to it afterwards.
-        const result: any = await launchAgentInstance({ agentId, projectId, bridgeId: selectedBridgeId }).unwrap();
+        const result: any = await createAgentInstance({ agentId, projectId, bridgeId: selectedBridgeId }).unwrap();
         const newId = String(result?.agent_instance_id || result?.agentInstanceId || '').trim();
         if (newId && !firstLaunchedId) firstLaunchedId = newId;
       }

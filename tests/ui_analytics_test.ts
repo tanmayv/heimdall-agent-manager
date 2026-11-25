@@ -213,6 +213,7 @@ test('funnel milestones fire once per user at the Hub success points with non-co
   observeMilestones(analytics, fulfilled('createTaskChain', { title: 'Secret plan', description: 'do the thing', kind: 'mixed_work' }), {});
   observeMilestones(analytics, fulfilled('createTaskChain', { title: 'Second', kind: 'team_work' }), {});
   observeMilestones(analytics, { ...fulfilled('createLaunchConversation', { agentId: 'agt_1', provider: 'claude', body: 'hello prompt' }), type: 'heimdallApi/executeMutation/rejected' }, {});
+  observeMilestones(analytics, fulfilled('createAgentInstance', { agentId: 'agt_1', provider: 'claude' }), {});
   observeMilestones(analytics, fulfilled('createLaunchConversation', { agentId: 'agt_1', provider: 'claude', body: 'hello prompt' }), {});
   observeMilestones(analytics, fulfilled('startAgentInstance', { instanceId: 'inst_2' }), {});
   await flush();
@@ -224,7 +225,7 @@ test('funnel milestones fire once per user at the Hub success points with non-co
     ['bridge_connected', { bridge_count: 2, online_count: 1 }],
     ['provider_configured', { provider: 'claude', provider_count: 2 }],
     ['first_chain_created', { chain_kind: 'mixed_work' }],
-    ['first_agent_started', { via: 'createLaunchConversation', provider: 'claude' }],
+    ['first_agent_started', { via: 'createAgentInstance', provider: 'claude' }],
   ]);
   const payloads = JSON.stringify(calls);
   for (const secret of ['Secret plan', 'do the thing', 'hello prompt', 'My secret profile']) assert.ok(!payloads.includes(secret), secret);

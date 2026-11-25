@@ -1,3 +1,4 @@
+import { buildRuntimePayload, type CreateAgentInstanceArgs } from '../runtimePayload';
 import * as daemonApi from '../daemonApi';
 import { applyAgentRuntimeEvent, loadKnownAgents, mapAgent, mergeKnownAndLiveAgents, storeKnownAgents, upsertKnownAgentRecord } from '../agentCatalog';
 import { apiErrorText, cookieMutation, cookieJsonFetch, cookieJsonFetchEnvelope, customQueryError } from '../cookieFetch';
@@ -415,40 +416,6 @@ export const agentsApi = heimdallApi.injectEndpoints({
         { type: 'Agents' as const, id: agentInstanceId },
       ],
     }),
-    // UI-8: Add agent to chain via the rewrite API (POST /api/v1/agent-instances
-    // with existing chain_id). Hydrates a fresh AgentInstance into the chain and
-    // creates its 1:1 conversation; never attaches an unrelated live instance.
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; bridgeId?: string; provider?: string; providerProfile?: string; model?: string; projectId?: string; displayName?: string; templateId?: string }>({
-      // Launch a new instance of a durable agent, bound to a chain. Uses the cookie
-      // path (POST /agent-instances) like launchAgentInstance, so it works in the
-      // session-cookie shell. The previous token-based path required a
-      // session.clientToken that the cookie shell never has, so "Launch new" from
-      // the Add-Member dialog always failed with "Missing agentId/chainId" even
-      // with an agent selected. The hub create endpoint reads `provider` (driver)
-      // and `provider_profile` (profile id) as separate fields.
-      queryFn: async ({ agentId, chainId, bridgeId, provider, providerProfile, model, projectId, displayName, templateId }) => {
-        if (!agentId || !chainId) return { data: { ok: false, message: 'Choose an agent identity to launch.' } };
-        try {
-          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-          const payload: any = { agent_id: agentId, chain_id: chainId };
-          if (bridgeId) payload.bridge_id = bridgeId;
-          if (provider) payload.provider = provider;
-          if (providerProfile) payload.provider_profile = providerProfile;
-          if (model) payload.model = model;
-          if (projectId) payload.project_id = projectId;
-          if (displayName) payload.display_name = displayName;
-          if (templateId) payload.template_id = templateId;
-          const data = await cookieMutation('/agent-instances', 'POST', payload);
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { chainId }) => [
-        { type: 'ChainTasks' as const, id: chainId },
-      ],
-    }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; instructions?: string; favorite?: boolean; permissionMode?: AgentPermissionMode }>({
       queryFn: async (arg) => {
@@ -539,23 +506,25 @@ export const agentsApi = heimdallApi.injectEndpoints({
       keepUnusedDataFor: 300,
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; providerProfile?: string; model?: string; projectId?: string }>({
-      queryFn: async ({ agentId, bridgeId, provider, providerProfile, model, projectId }) => {
+    createAgentInstance: build.mutation<any, CreateAgentInstanceArgs>({
+      queryFn: async ({ agentId, displayName, ...runtime }) => {
         try {
-          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-          const payload: any = { agent_id: agentId };
-          if (bridgeId) payload.bridge_id = bridgeId;
-          if (provider) payload.provider = provider;
-          if (providerProfile) payload.provider_profile = providerProfile;
-          if (model) payload.model = model;
-          if (projectId) payload.project_id = projectId;
+          const payload = {
+            agent_id: agentId,
+            ...buildRuntimePayload(runtime),
+            ...(displayName !== undefined ? { display_name: displayName } : {}),
+          };
           const data = await cookieMutation('/agent-instances', 'POST', payload);
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
-      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
+      invalidatesTags: (_result, _error, { agentId, chainId }) => [
+        { type: 'Agents' as const, id: agentId },
+        { type: 'AgentInstances' as const, id: agentId },
+        ...(chainId ? [{ type: 'ChainTasks' as const, id: chainId }] : []),
+      ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     stopAgentInstance: build.mutation<any, { agentId: string; instanceId: string; force?: boolean }>({
@@ -864,7 +833,7 @@ export const {
   useUnarchiveAgentIdentityMutation,
   useListAgentInstancesQuery,
   useFetchAgentInstanceQuery,
-  useLaunchAgentInstanceMutation,
+  useCreateAgentInstanceMutation,
   useStopAgentInstanceMutation,
   useRestartAgentInstanceMutation,
   useStartAgentInstanceMutation,
