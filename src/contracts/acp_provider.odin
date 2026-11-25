@@ -28,6 +28,7 @@ ACP_Provider_Descriptor :: struct {
     system_os: []string,
     cli_version_prefix: string,
     cli_version_bare: bool,
+    discover_models_via_acp: bool, // opt in after a metadata-only session probe is verified
     // System only. agent_default_model is the catalog model id that keeps the
     // agent's own default model (no session/set_config_option). With
     // bootstrap_resource_link, an agent that does not advertise embeddedContext
@@ -78,7 +79,7 @@ ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
 ACP_KIRO_DESCRIPTOR :: ACP_Provider_Descriptor{
     protocol = .ACP, provider = "kiro", id = "kiro-acp", display_name = "Kiro", revision = 1, launch = .System,
     pkg = {"kiro-cli", "3.5.0", ""}, system_os = {"linux", "darwin"},
-    command = "kiro-cli", args = {"acp", "--agent-engine", "v3"},
+    discover_models_via_acp = true, command = "kiro-cli", args = {"acp", "--agent-engine", "v3"},
     protocol_version = 1,
     cli_command = "kiro-cli", cli_version_prefix = "kiro-cli ",
     agent_default_model = "default", bootstrap_resource_link = true,
@@ -107,7 +108,7 @@ ACP_OPENCODE_DESCRIPTOR :: ACP_Provider_Descriptor{
     protocol = .ACP, provider = "opencode", id = "opencode-acp", display_name = "OpenCode", revision = 1, launch = .System,
     pkg = {"opencode", "1.19.6", ""}, system_os = {"linux", "darwin", "windows"},
     command = "opencode", args = {"acp"}, protocol_version = 1,
-    cli_command = "opencode", cli_version_bare = true,
+    cli_command = "opencode", cli_version_bare = true, discover_models_via_acp = true,
     agent_default_model = "default", bootstrap_filename = "AGENTS.md",
     auth_guidance = "Run opencode auth login on the bridge host in the selected provider profile, or configure a local backend in OpenCode, then restart this instance.",
     permission_policy = .Once_Only, model_category = "model",
@@ -135,6 +136,7 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
        strings.contains_any(d.bootstrap_filename, "/\\") || strings.contains(d.bootstrap_filename, "..") ||
        d.auth_guidance == "" || d.model_category == "" { return false }
     if d.protocol != .ACP && d.protocol != .Codex_App_Server do return false
+    if d.discover_models_via_acp && (d.protocol != .ACP || d.launch != .System) do return false
     switch d.launch {
     case .Adapter, .Native:
         if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||
