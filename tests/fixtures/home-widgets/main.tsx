@@ -25,14 +25,17 @@ setExpectedUserId('home-visual-fixture');
 for (const bridge of fixtureFleet) {
   sessionStorage.removeItem(`heimdall:fleet:home-visual-fixture:${bridge.id}`);
 }
-if (fleetState === 'applying' || fleetState === 'partial-failure') {
+if (fleetState === 'applying' || fleetState === 'partial-failure' || fleetState === 'status-error') {
   sessionStorage.setItem('heimdall:fleet:home-visual-fixture:mock-bridge-0', JSON.stringify({ applicationId: 'fixture-application' }));
 }
 const nativeFetch = window.fetch.bind(window);
+const fixtureRequests: { path: string; method: string }[] = [];
+(window as any).__fleetFixtureRequests = fixtureRequests;
 window.fetch = async (input, init) => {
   const url = new URL(String(input instanceof Request ? input.url : input), location.href);
   if (!url.pathname.startsWith('/api/v1/')) return nativeFetch(input, init);
   const path = url.pathname;
+  fixtureRequests.push({ path, method: init?.method || (input instanceof Request ? input.method : 'GET') });
   const bridge = fixtureFleet.find((b) => path.includes('/' + b.id + '/')) || fixtureFleet[0];
   let data: any;
   if (path === '/api/v1/task-chains') data = [0, 1, 2].flatMap((page) => chainsFixture(page).chains);
@@ -46,6 +49,7 @@ window.fetch = async (input, init) => {
   else if (path.endsWith('/provider-status')) data = { providers: MOCK_PROVIDERS.map((p) => ({ provider: p.id, profile_id: p.id, display_name: p.label, enabled: true, state: 'present', catalog_state: 'active', models: p.models.map((m) => ({ model_id: m, state: 'active' })) })) };
   else if (path.endsWith('/launch-defaults')) data = { bridge_id: bridge.id, revision: 1, default_runtime: { provider: bridge.provider, provider_profile: bridge.provider, model: bridge.model }, overrides: bridge.overrides.map((o) => ({ agent_id: o.id, runtime: { provider: o.provider, provider_profile: o.provider, model: o.model } })) };
   else if (path.endsWith('/preview')) data = { bridge_id: bridge.id, expected_revision: JSON.parse(String(init?.body)).expected_revision, affected_instances: 3 };
+  else if (path.includes('/applications/') && fleetState === 'status-error') return new Response(JSON.stringify({ error: { message: 'Controlled result refresh failure. Your saved settings are retained.' } }), { status: 503 });
   else if (path.includes('/applications/')) data = {
     application_id: 'fixture-application', bridge_id: bridge.id, settings_revision: 1, revision: 1, settings_saved: true, cancelled: false,
     state: fleetState === 'applying' ? 'restarting' : 'partial_failure',
