@@ -117,6 +117,9 @@ async function touch(selector) {
 }
 await call('Page.enable'); await call('Runtime.enable'); await call('Page.bringToFront');
 await call('Emulation.setFocusEmulationEnabled', { enabled: true });
+// Each width mounts a fresh HomeLayoutSession. Reset its backing store before
+// application scripts load, so a version loaded by Home is never deleted later.
+await call('Page.addScriptToEvaluateOnNewDocument', { source: 'localStorage.clear();' });
 try {
   for (const width of [320, 390, 767, 768, 1440]) {
     const narrow = width < 768, report = { width, checks: [], files: [] };
@@ -129,7 +132,8 @@ try {
       await wait(100);
     }
     assert.ok(ready, 'fixture loaded'); await wait(500);
-    await evaluate('localStorage.clear()');
+    assert.equal(await evaluate("localStorage.getItem('heimdall:home-layout:home-visual-fixture')"), null, 'layout storage reset before fixture mount');
+    report.checks.push('isolated layout storage before mount');
     const base = 'home-fleet-default-mock-bridge-0';
     await click(base + '-provider'); report.defaultChoice = await inspect(narrow, 'default provider');
     report.files.push(await screenshot(`sheets-${width}-provider`));
