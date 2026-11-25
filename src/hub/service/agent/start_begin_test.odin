@@ -480,6 +480,10 @@ start_success_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect(t,ok,serr.message)
 	testing.expect_value(t,running.runtime_status,"running")
 	testing.expect_value(t,running.run_count,4)
+	testing.expect_value(t,start_send(&h.service,&ticket).code,domain.Error_Code.None)
+	testing.expect_value(t,len(h.commands),1)
+	testing.expect_value(t,h.registry.active_instances,1)
+	testing.expect_value(t,start_test_row(t,h).run_count,4)
 	start_settle(&h.service,&ticket,true)
 	testing.expect_value(t,start_test_row(t,h).runtime_status,"running")
 	start_ticket_destroy(&ticket)
@@ -700,3 +704,122 @@ start_action_bot_scenario :: proc(t:^testing.T,h:^Start_Test) {
 }
 @(test)
 test_action_start_wakes_user_stopped_bot :: proc(t:^testing.T) {start_test_run(t,start_action_bot_scenario)}
+
+start_rollover_after_user_stop_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='running';")
+	selected := start_test_row(t,h)
+	_, stopped, stop_err := stop_instance(&h.service,start_test_auth(),"inst",{reason="user_requested"})
+	testing.expect(t,stopped,stop_err.message)
+	before := start_test_row(t,h)
+	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
+	_, restarted, err := restart_instance(&h.service,auth,"inst")
+	testing.expect(t,!restarted,"delayed self restart cannot undo user stop")
+	testing.expect_value(t,err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,start_test_row(t,h).run_count,before.run_count)
+	testing.expect_value(t,start_test_row(t,h).stopped_by,"user")
+	testing.expect_value(t,h.registry.active_instances,0)
+	testing.expect_value(t,len(h.commands),1) // Only the stop, no launch.
+	// The same stop also invalidates an earlier fleet selection snapshot.
+	_, _, stale, stale_err := start(&h.service,start_test_auth(),"inst",{if_live=.Relaunch,expected=&selected})
+	testing.expect(t,!stale)
+	testing.expect_value(t,stale_err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,start_test_row(t,h).run_count,before.run_count)
+	testing.expect_value(t,len(h.commands),1)
+	// A new explicit user intent may still restart the stopped instance.
+	manual, manual_ok, manual_err := restart_instance(&h.service,start_test_auth(),"inst")
+	testing.expect(t,manual_ok,manual_err.message)
+	testing.expect_value(t,manual.run_count,before.run_count+1)
+	testing.expect_value(t,manual.stopped_by,"")
+	testing.expect_value(t,start_test_row(t,h).stop_reason,"")
+	testing.expect_value(t,len(h.commands),2)
+}
+
+@(test)
+test_rollover_after_user_stop_is_refused :: proc(t:^testing.T) {start_test_run(t,start_rollover_after_user_stop_scenario)}
+
+start_rollover_duplicate_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='running';")
+	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
+	inst, ok, err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	testing.expect(t,ok,err.message)
+	testing.expect_value(t,inst.run_count,4)
+	testing.expect_value(t,len(h.commands),1)
+	testing.expect_value(t,h.registry.active_instances,1)
+	_, again, duplicate_err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	testing.expect(t,!again)
+	testing.expect_value(t,duplicate_err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,start_test_row(t,h).run_count,4)
+	testing.expect_value(t,len(h.commands),1)
+	testing.expect_value(t,h.registry.active_instances,1)
+}
+
+start_rollover_failed_send_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='running';")
+	h.fail_send=true
+	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
+	_, ok, err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	testing.expect(t,!ok)
+	testing.expect_value(t,err.code,domain.Error_Code.Bridge_Offline)
+	testing.expect_value(t,start_test_row(t,h).run_count,4)
+	testing.expect_value(t,start_test_row(t,h).runtime_status,"failed")
+	testing.expect_value(t,h.registry.active_instances,0)
+	h.fail_send=false
+	_, again, retry_err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	testing.expect(t,!again,"ambiguous failed restart is never retried as a new generation")
+	testing.expect_value(t,retry_err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,len(h.commands),1)
+	testing.expect_value(t,h.registry.active_instances,0)
+}
+
+start_rollover_reconfiguration_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	start_test_sql(t,h,`UPDATE bridges SET capabilities_json='{"features":["instance_reconfiguration_v1"]}'; UPDATE agent_instances SET runtime_status='running';`)
+	// A real durable operation admitted first fences rollover without changing
+	// its destination or opening another launch generation.
+	op, accepted, err := begin_instance_reconfiguration(&h.service,start_test_auth(),"inst",{bridge_id="brg",provider="codex",provider_profile="codex",model="gpt-6.1-sol",permission_mode="ask",idempotency_key="configuration",expected_revision=0})
+	testing.expect(t,accepted,err.message)
+	testing.expect_value(t,op.destination.permission_mode,"ask")
+	before := start_test_row(t,h)
+	commands, reservations := len(h.commands), h.registry.active_instances
+	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
+	_, restarted, restart_err := restart_instance(&h.service,auth,"inst",{expected_run_count=before.run_count})
+	testing.expect(t,!restarted)
+	testing.expect_value(t,restart_err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,start_test_row(t,h).run_count,before.run_count)
+	testing.expect_value(t,start_test_row(t,h).configuration_revision,before.configuration_revision)
+	testing.expect_value(t,start_test_row(t,h).provider_profile,before.provider_profile)
+	testing.expect_value(t,len(h.commands),commands)
+	testing.expect_value(t,h.registry.active_instances,reservations)
+	stored, found, read_err := iface.instance_reconfiguration_get(&h.ar,"owner","inst","configuration")
+	testing.expect(t,found,read_err.message)
+	testing.expect_value(t,stored.operation_id,op.operation_id)
+	testing.expect_value(t,stored.destination.permission_mode,"ask")
+}
+
+start_rollover_before_reconfiguration_scenario :: proc(t:^testing.T,h:^Start_Test) {
+	start_test_sql(t,h,`UPDATE bridges SET capabilities_json='{"features":["instance_reconfiguration_v1"]}'; UPDATE agent_instances SET runtime_status='running';`)
+	auth := contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
+	inst, restarted, err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	testing.expect(t,restarted,err.message)
+	op, accepted, config_err := begin_instance_reconfiguration(&h.service,start_test_auth(),"inst",{bridge_id="brg",provider="codex",provider_profile="codex",model="gpt-6.1-sol",permission_mode="ask",idempotency_key="configuration",expected_revision=inst.configuration_revision})
+	testing.expect(t,accepted,config_err.message)
+	testing.expect_value(t,op.source.bridge_id,"brg")
+	testing.expect_value(t,op.destination.permission_mode,"ask")
+	testing.expect_value(t,start_test_row(t,h).run_count,4)
+	commands := len(h.commands)
+	_, duplicate, duplicate_err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
+	testing.expect(t,!duplicate)
+	testing.expect_value(t,duplicate_err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,len(h.commands),commands)
+	// Reconfiguration owns subsequent stop/commit/start; rollover never retries.
+	testing.expect_value(t,start_test_row(t,h).configuration_revision,inst.configuration_revision)
+	testing.expect_value(t,h.registry.active_instances,0)
+}
+
+@(test)
+test_rollover_duplicate_restart_has_one_generation :: proc(t:^testing.T) {start_test_run(t,start_rollover_duplicate_scenario)}
+@(test)
+test_rollover_failed_restart_releases_reservation :: proc(t:^testing.T) {start_test_run(t,start_rollover_failed_send_scenario)}
+@(test)
+test_reconfiguration_before_rollover_preserves_destination :: proc(t:^testing.T) {start_test_run(t,start_rollover_reconfiguration_scenario)}
+@(test)
+test_rollover_before_reconfiguration_preserves_operation :: proc(t:^testing.T) {start_test_run(t,start_rollover_before_reconfiguration_scenario)}

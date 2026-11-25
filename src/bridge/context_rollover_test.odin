@@ -21,6 +21,7 @@ Roll_Recorder :: struct {
 	notices:    [dynamic]string, // "<instance>|<sender>"
 	persists:   [dynamic]string, // "<instance>|<request_id>|<body>|<metadata>"
 	restarts:   [dynamic]string,
+	restart_generations: [dynamic]int,
 	alerts:     [dynamic]string, // "<instance>|<coordinator>|<text>"
 	idles:      [dynamic]string, // "<instance>|<source>"
 	persist_ok: bool,
@@ -47,7 +48,8 @@ roll_begin :: proc() {
 			if !roll_rec.persist_ok do return Bridge_Local_Relay_Result{ok = true, status = 503, body = `{"error":"down"}`}
 			return Bridge_Local_Relay_Result{ok = true, status = 201, body = `{"accepted":true,"created":true,"message_id":"msg_pctx_1","message_type":"previous_context"}`}
 		},
-		restart = proc(id: string) -> bool {
+		restart = proc(id: string, run_count: int) -> bool {
+			append(&roll_rec.restart_generations, run_count)
 			append(&roll_rec.restarts, strings.clone(id, context.temp_allocator)); return roll_rec.restart_ok
 		},
 		report_idle = proc(id, source: string) {
@@ -66,6 +68,7 @@ roll_end :: proc(ids: ..string) {
 	bridge_rollover_sync_effects = false
 	delete(roll_rec.requests); delete(roll_rec.notices); delete(roll_rec.persists)
 	delete(roll_rec.restarts); delete(roll_rec.alerts); delete(roll_rec.idles)
+	delete(roll_rec.restart_generations)
 	roll_rec = {}
 	sync.mutex_unlock(&roll_test_mutex)
 }
@@ -728,4 +731,55 @@ test_rollover_cycle_and_action_ownership_outlive_request_allocator :: proc(t: ^t
 	testing.expect(t, strings.has_prefix(cycle, "rollover_"))
 	bridge_rollover_end_persist(id, cycle, true, 3)
 	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Restarting)
+}
+
+@(test)
+test_rollover_restart_action_keeps_original_generation :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_generation"
+	defer roll_end(id)
+	roll_event(id,90,true,1)
+	// Seed the launch snapshot; delayed side effects must carry this generation,
+	// rather than looking up a possibly replaced process when executing.
+	sync.mutex_lock(&bridge_rollover_mutex)
+	for &s in bridge_rollover_states do if s.agent_instance_id==id do s.run_count=7
+	sync.mutex_unlock(&bridge_rollover_mutex)
+	cycle, _, _, _ := bridge_rollover_begin_persist(id,2)
+	defer delete(cycle,bridge_rollover_heap())
+	bridge_rollover_end_persist(id,cycle,true,3)
+	actions := bridge_rollover_decide_event(id,90,true,80,200_000,4)
+	sync.mutex_lock(&bridge_rollover_mutex)
+	for &s in bridge_rollover_states do if s.agent_instance_id==id do s.run_count=8
+	sync.mutex_unlock(&bridge_rollover_mutex)
+	bridge_rollover_run(actions)
+	testing.expect_value(t,len(roll_rec.restarts),1)
+	testing.expect_value(t,roll_rec.restart_generations[0],7)
+	roll_event(id,90,true,5)
+	testing.expect_value(t,len(roll_rec.restarts),1)
+	// Acceptance alone does not complete rollover readiness.
+	testing.expect_value(t,bridge_rollover_phase_of(id),Bridge_Rollover_Phase.Restarting)
+}
+
+@(test)
+test_rollover_refused_stop_fence_releases_notices_without_retry :: proc(t: ^testing.T) {
+	roll_begin()
+	id := "inst_test_roll_stop_fence"
+	defer roll_end(id)
+	roll_event(id,90,true,1)
+	testing.expect(t,bridge_rollover_queue_notice(id,"User"))
+	cycle, _, _, _ := bridge_rollover_begin_persist(id,2)
+	defer delete(cycle,bridge_rollover_heap())
+	bridge_rollover_end_persist(id,cycle,true,3)
+	actions := bridge_rollover_decide_event(id,90,true,80,200_000,4)
+	// Hub completion/user-stop wins after the action was queued.
+	roll_rec.restart_ok=false
+	bridge_rollover_run(actions)
+	testing.expect_value(t,len(roll_rec.restarts),1)
+	testing.expect_value(t,len(roll_rec.alerts),1)
+	testing.expect_value(t,len(roll_rec.notices),1)
+	testing.expect_value(t,bridge_rollover_phase_of(id),Bridge_Rollover_Phase.Normal)
+	bridge_rollover_on_start_success(id)
+	roll_tick(5)
+	testing.expect_value(t,len(roll_rec.restarts),1)
+	testing.expect_value(t,bridge_rollover_launch_prompt_line(id),"")
 }

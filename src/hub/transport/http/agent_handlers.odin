@@ -341,7 +341,7 @@ restart_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// check keep the same-owner boundary.
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
-	inst, restarted, err := agent_service.restart_instance(h.agents, auth_ctx, path_part(req.path, 4))
+	inst, restarted, err := agent_service.restart_instance(h.agents, auth_ctx, path_part(req.path, 4), {expected_run_count=json_int(req.body, "expected_run_count", -1)})
 	if !restarted do return respond_error(err, req.request_id)
 	publish_instance_changed(h.event_bus, inst, "status_changed")
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)

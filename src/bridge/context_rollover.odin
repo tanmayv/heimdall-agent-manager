@@ -66,6 +66,7 @@ Bridge_Rollover_State :: struct {
 	coordinator_id:    string,
 	phase:             Bridge_Rollover_Phase,
 	cycle_id:          string, // heap-owned CSPRNG identity, stable across retries
+	run_count:         int, // launch generation that requested this rollover
 	notice_deadline_ms: i64, // absolute bound, unaffected by persistence retries
 	notices_released:  bool, // stalled rollover no longer withholds message wakes
 	attempts:          int, // requests typed in the current rollover (max 2)
@@ -95,6 +96,7 @@ Bridge_Rollover_Action :: struct {
 	text:        string, // request text, alert text or notice sender
 	coordinator: string, // Alert only
 	cycle_id:    string, // fences delayed requests/restarts and their callbacks
+	run_count:   int,
 }
 
 // Side effects, replaceable by tests. Nil members use the real implementation.
@@ -102,7 +104,7 @@ Bridge_Rollover_Effects :: struct {
 	deliver_line:   proc(instance_id, text: string) -> bool,
 	deliver_notice: proc(instance_id, sender: string) -> bool,
 	persist:        proc(rec: Bridge_Local_Agent_Token_Record, request_id, body, metadata: string) -> Bridge_Local_Relay_Result,
-	restart:        proc(instance_id: string) -> bool,
+	restart:        proc(instance_id: string, run_count: int) -> bool,
 	alert:          proc(instance_id, coordinator_id, text: string),
 	report_idle:    proc(instance_id, source: string),
 }
@@ -242,6 +244,7 @@ bridge_rollover_decide_event :: proc(instance_id: string, context_pct: i64, idle
 	context.allocator = bridge_rollover_heap()
 	actions := make([dynamic]Bridge_Rollover_Action)
 	if strings.trim_space(instance_id) == "" do return actions
+	run_count := bridge_agent_instance_run_count(instance_id)
 	sync.mutex_lock(&bridge_rollover_mutex)
 	defer sync.mutex_unlock(&bridge_rollover_mutex)
 	s := bridge_rollover_state_locked(instance_id, create = context_pct >= i64(rollover_pct))
@@ -262,6 +265,7 @@ bridge_rollover_decide_event :: proc(instance_id: string, context_pct: i64, idle
 		}
 		delete(s.cycle_id)
 		s.cycle_id = cycle_id
+		s.run_count = run_count
 		s.notices_released = false
 		s.notice_deadline_ms = now + 2 * BRIDGE_ROLLOVER_REQUEST_TIMEOUT_MS
 		s.attempts = 1
@@ -272,7 +276,7 @@ bridge_rollover_decide_event :: proc(instance_id: string, context_pct: i64, idle
 			s.restart_requested = true
 			s.stall_alerted = false
 			s.phase_at_ms = now
-			append(&actions, Bridge_Rollover_Action{kind = .Restart, instance_id = strings.clone(s.agent_instance_id), cycle_id = strings.clone(s.cycle_id)})
+			append(&actions, Bridge_Rollover_Action{kind = .Restart, instance_id = strings.clone(s.agent_instance_id), cycle_id = strings.clone(s.cycle_id), run_count=s.run_count})
 		}
 	}
 	return actions
@@ -580,7 +584,7 @@ bridge_rollover_execute :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 			if !deliver(a.instance_id, a.text) do fmt.println("bridge context rollover: request delivery failed", a.instance_id)
 		case .Restart:
 			restart := bridge_rollover_effects.restart if bridge_rollover_effects.restart != nil else bridge_rollover_restart_default
-			ok := restart(a.instance_id)
+			ok := restart(a.instance_id, a.run_count)
 			if !ok do fmt.println("bridge context rollover: hub restart refused", a.instance_id)
 			follow := bridge_rollover_decide_restart_result(a.instance_id, a.cycle_id, ok, bridge_runtime_now_ms())
 			bridge_rollover_execute(follow)
@@ -644,14 +648,16 @@ bridge_rollover_persist_default :: proc(rec: Bridge_Local_Agent_Token_Record, re
 	return bridge_local_relay_agent_envelope(route.path, "agent.chat.previous_context", strings.to_string(b), rec)
 }
 
-bridge_rollover_restart_default :: proc(instance_id: string) -> bool {
+bridge_rollover_restart_default :: proc(instance_id: string, run_count: int) -> bool {
 	rec, ok := bridge_rollover_rec_for(instance_id)
 	if !ok do return false
 	defer delete(rec.instance_token)
 	if !sync.atomic_load(&bridge_hub_runtime_up) do return false
 	route := bridge_agent_route("agent.agents.instance_restart", fmt.tprintf(`{{"agent_instance_id":"%s"}}`, instance_id))
 	if route.kind != .Raw do return false
-	relay := bridge_local_relay_raw(route.http_method, route.path, route.query, "{}", rec)
+	if run_count <= 0 || rec.run_count != run_count do return false
+	body := fmt.tprintf(`{"expected_run_count":%d}`, run_count)
+	relay := bridge_local_relay_raw(route.http_method, route.path, route.query, body, rec)
 	return relay.ok && relay.status >= 200 && relay.status < 300
 }
 

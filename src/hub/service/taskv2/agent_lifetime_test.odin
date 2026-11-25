@@ -10,6 +10,8 @@ import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import jsonx "odin_test:lib/jsonx"
+import agent "odin_test:hub/service/agent"
+import project "odin_test:hub/service/project"
 
 // wake_log_run_entry returns the last run[] entry naming `inst` (raw JSON
 // object text), or "" when no wake ran it.
@@ -63,6 +65,126 @@ expect_nudged :: proc(t: ^testing.T, log: ^Wake_Log, inst: string, run_count: in
 run_count_of :: proc(fx: ^Fixture, inst: string) -> int {
 	cur, _, _ := iface.agent_get_instance(&fx.agents, inst)
 	return cur.run_count
+}
+
+@(private = "file")
+lifetime_record_runtime :: proc(ctx: rawptr, command: project.Runtime_Command) -> (bool, domain.Domain_Error) {
+	wake_log_observe(ctx,{bridge_id=command.bridge_id,body_json=command.body_json})
+	return true, {}
+}
+
+@(test)
+test_completion_fences_delayed_rollover_before_bridge_stop :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t,"life6_completion")
+	defer lease_fixture_close(fx,log)
+	if !ok do return
+	chain := seed_live_chain(t,fx,"chain_life6_completion")
+	seed_fleet(fx,chain,"agt_w")
+	seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
+	_ = publish_task(t,fx,chain,"task_1")
+	lease, held := lease_of(fx,"inst_w1")
+	if !testing.expect(t,held) do return
+	generation := run_count_of(fx,"inst_w1")
+	wake_log_reset(log)
+	submit_via_release(t,fx,lease)
+	testing.expect_value(t,get_task(fx,"task_1").state,domain.Task_State.Done)
+	testing.expect(t,wake_log_has_stop(log,"inst_w1"))
+	testing.expect(t,!wake_log_has_run(log,"inst_w1"))
+	_, still_held := lease_of(fx,"inst_w1")
+	testing.expect(t,!still_held)
+	// No bridge status callback: completion itself must fence the old process.
+	inst, _, _ := iface.agent_get_instance(&fx.agents,"inst_w1")
+	testing.expect_value(t,inst.runtime_status,"idle")
+	testing.expect_value(t,inst.stop_reason,"task_completed")
+	reservations, commands := log.registry.active_instances, len(log.cmds)
+	log.service.bridge_command_sink={ctx=log,send_runtime_command=lifetime_record_runtime}
+	_, restarted, err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",{expected_run_count=generation})
+	testing.expect(t,!restarted)
+	testing.expect_value(t,err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
+	testing.expect_value(t,log.registry.active_instances,reservations)
+	testing.expect_value(t,len(log.cmds),commands)
+	// A late live report cannot erase the committed stop intent either.
+	inst.runtime_status="idle"
+	_, _, _ = iface.agent_save_instance(&fx.agents,inst)
+	_, late_restart, late_err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",{expected_run_count=generation})
+	testing.expect(t,!late_restart)
+	testing.expect_value(t,late_err.code,domain.Error_Code.Conflict)
+	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
+	testing.expect_value(t,log.registry.active_instances,reservations)
+	testing.expect_value(t,len(log.cmds),commands)
+	// Preserve the existing warm-grant policy when subsequent work arrives.
+	wake_log_reset(log)
+	_ = publish_task(t,fx,chain,"task_2")
+	new_lease, regranted := lease_of(fx,"inst_w1")
+	testing.expect(t,regranted && new_lease.task_id=="task_2")
+	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
+	fresh, _, _ := iface.agent_get_instance(&fx.agents,"inst_w1")
+	testing.expect_value(t,fresh.stop_reason,"")
+	expect_nudged(t,log,"inst_w1",generation,"new work supersedes completed task stop")
+}
+
+@(test)
+test_waiting_responsibility_survives_rollover :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t,"life6_waiting")
+	defer lease_fixture_close(fx,log)
+	if !ok do return
+	chain := seed_live_chain(t,fx,"chain_life6_waiting")
+	seed_fleet(fx,chain,"agt_w")
+	seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
+	_ = publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	confirm_holder(fx,"inst_w1")
+	_, submitted, submit_err := lease_submit(&fx.svc,inst_auth("inst_w1"),{summary="ready",vcs_json=`{"head":"h1","dirty":false}`})
+	if !testing.expect(t,submitted,submit_err.message) do return
+	before, held := lease_of(fx,"inst_w1")
+	if !testing.expect(t,held) do return
+	testing.expect_value(t,before.phase,"waiting")
+	inst, _, _ := iface.agent_get_instance(&fx.agents,"inst_w1")
+	wake_log_reset(log)
+	log.service.bridge_command_sink={ctx=log,send_runtime_command=lifetime_record_runtime}
+	restarted, accepted, err := agent.restart_instance(&log.service,inst_auth("inst_w1"),"inst_w1",{expected_run_count=inst.run_count})
+	testing.expect(t,accepted,err.message)
+	testing.expect_value(t,restarted.run_count,inst.run_count+1)
+	testing.expect_value(t,restarted.conversation_id,inst.conversation_id)
+	after, still_held := lease_of(fx,"inst_w1")
+	testing.expect(t,still_held)
+	testing.expect_value(t,after.lease_id,before.lease_id)
+	testing.expect_value(t,after.phase,"waiting")
+	testing.expect_value(t,after.task_id,before.task_id)
+	testing.expect_value(t,log.registry.active_instances,1)
+	testing.expect_value(t,len(log.cmds),1)
+	if len(log.cmds)==1 do testing.expect(t,strings.contains(log.cmds[0].body_json,fmt.tprintf(`"run_count":%d`,inst.run_count+1)))
+	testing.expect(t,!wake_log_has_stop(log,"inst_w1"))
+}
+
+@(test)
+test_completion_stop_intent_failure_rolls_back_task_and_lease :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t,"life6_stop_write")
+	defer lease_fixture_close(fx,log)
+	if !ok do return
+	chain := seed_live_chain(t,fx,"chain_life6_stop_write")
+	seed_fleet(fx,chain,"agt_w")
+	seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
+	_ = publish_task(t,fx,chain,"task_1")
+	confirm_holder(fx,"inst_w1")
+	before, held := lease_of(fx,"inst_w1")
+	if !testing.expect(t,held) do return
+	generation := run_count_of(fx,"inst_w1")
+	fx.agents.set_stop_reason=proc(_: rawptr, _, _: string) -> (bool, domain.Domain_Error) {
+		return false,domain.domain_error(.Internal_Error,"injected stop intent write failure")
+	}
+	wake_log_reset(log)
+	_, submitted, err := lease_submit(&fx.svc,inst_auth("inst_w1"),{summary="done",vcs_json=`{"head":"h1","dirty":false}`})
+	testing.expect(t,!submitted)
+	testing.expect_value(t,err.code,domain.Error_Code.Internal_Error)
+	testing.expect_value(t,get_task(fx,"task_1").state,domain.Task_State.In_Progress)
+	after, still_held := lease_of(fx,"inst_w1")
+	testing.expect(t,still_held)
+	testing.expect_value(t,after.lease_id,before.lease_id)
+	testing.expect_value(t,after.phase,before.phase)
+	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
+	testing.expect_value(t,len(log.cmds),0)
+	testing.expect_value(t,log.registry.active_instances,0)
 }
 
 // Submit, request_changes, re-submit and the re-review never stop or relaunch
