@@ -398,7 +398,7 @@ test_backup_files_never_include_credentials_or_bin :: proc(t: ^testing.T) {
 		files := convert_backup_files(host, l)
 		testing.expect(t, len(files) >= 6)
 		for p in files {
-			testing.expectf(t, !is_credential_name(pdir_base(p)), "%v: credential in backup list: %s", target, p)
+			testing.expectf(t, !is_credential_name(pbase(p)), "%v: credential in backup list: %s", target, p)
 			testing.expectf(t, !strings.has_suffix(p, "/ham-bridge") && !strings.has_suffix(p, "/ham-bridge.exe"), "%v: binary in backup: %s", target, p)
 		}
 		has_ctl := false
@@ -407,12 +407,6 @@ test_backup_files_never_include_credentials_or_bin :: proc(t: ^testing.T) {
 	}
 	for name in ([]string{"bridge-token", "bridge-token.bak", "identity_key", "epoch_floor", "keystore.json"}) do testing.expect(t, is_credential_name(name))
 	for name in ([]string{"config.toml", "ports.json", "hub-url"}) do testing.expect(t, !is_credential_name(name))
-}
-
-@(private = "file")
-pdir_base :: proc(p: string) -> string {
-	i := strings.last_index_any(p, "/\\")
-	return p[i + 1:] if i >= 0 else p
 }
 
 @(test)

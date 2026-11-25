@@ -106,6 +106,9 @@ Step_Result :: struct {
 	// a warning, the remaining steps as skipped, and finish(ok = true) commits what
 	// ran (S1a: installed but not enrolled; the caller exits 4).
 	halt:    bool,
+	// finished (with ok = true): this step did the whole setup (the conversion
+	// transaction runs inside Lock); the remaining steps are reported as skipped.
+	finished: bool,
 }
 
 // Event is one --json-progress line.
@@ -155,6 +158,16 @@ run_setup :: proc(ops: Setup_Ops) -> (ok: bool, failed_step: Step) {
 		attempt := 1
 		for {
 			r := ops.run(ops.data, step)
+			if r.ok && r.finished {
+				ops.emit(ops.data, Event{step = name, state = "ok", pct = step_pct(step, true), message = r.message, log = r.log, attempt = attempt})
+				for rest in Step {
+					if rest <= step do continue
+					ops.emit(ops.data, Event{step = STEP_NAMES[rest], state = "skipped", pct = step_pct(rest, true), message = "skipped", attempt = 1})
+				}
+				if ops.finish != nil do ops.finish(ops.data, true)
+				ops.emit(ops.data, Event{step = "setup", state = "done", pct = 100, message = setup_summary(ops, r.message)})
+				return true, .Verify
+			}
 			if r.ok {
 				state := "skipped" if r.message == "skipped" else "ok"
 				ops.emit(ops.data, Event{step = name, state = state, pct = step_pct(step, true), message = r.message, log = r.log, attempt = attempt})

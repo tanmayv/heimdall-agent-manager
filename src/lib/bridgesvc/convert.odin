@@ -23,6 +23,7 @@ import "core:os"
 import "core:strings"
 
 CONVERSION_FILE :: "conversion.json"
+UPDATE_FILE_NAME :: "update.json" // the supervisor's settings (service.UPDATE_FILE)
 CONVERSION_SCHEMA :: 1
 CONVERT_BACKUP_PREFIX :: ".convert-"
 CONVERT_NOW_REQUEST :: "convert-now.request"
@@ -242,6 +243,9 @@ Convert_Result :: struct {
 	rollback_message: string,
 	finalize_warning: string, // C9 failed after the commit: rolled forward later
 	cancelled:       bool,
+	// halted: a step asked to stop WITHOUT rolling back (greenfield S1a: installed but not
+	// enrolled, exit 4). Nothing after it ran; the layout stays installed, not started.
+	halted:          bool,
 }
 
 // run_conversion runs the forward steps from `first`, skipping steps rec already lists
@@ -273,6 +277,11 @@ run_conversion :: proc(ops: Convert_Ops, rec: ^Conversion_Record, first := Conve
 				ops.emit(ops.data, Event{step = name, state = state, pct = convert_pct(step, true), message = r.message, log = r.log, attempt = 1})
 				continue
 			}
+		}
+		if r.halt {
+			ops.emit(ops.data, Event{step = name, state = "warning", pct = convert_pct(step, true), message = r.message, attempt = 1})
+			res.halted, res.failed_step, res.message = true, step, r.message
+			return
 		}
 		if step == .Finalize {
 			// Committed: never roll back. finalize_conversion is idempotent and is run

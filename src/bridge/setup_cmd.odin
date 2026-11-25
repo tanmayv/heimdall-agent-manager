@@ -73,6 +73,12 @@ Bridge_Setup :: struct {
 	service_action: string, // "registered" when the service definition was (re)written
 	not_enrolled:   string, // S1a: why enrollment did not complete (exit 4)
 	not_connected:  bool, // S2: running but not connected after the wait (warning)
+	// Conversion (docs/specs/bridge-supervisor-conversion.md): non-nil while the legacy ->
+	// supervisor transaction runs inside the Lock step.
+	conv:           ^Convert_State,
+	enroll_exe:     string, // enroll with this ham-bridge instead of bin/'s (the new tree's)
+	conv_recovered: bool, // S10a: an interrupted conversion was recovered in this run
+	fail_line:      string, // replaces the generic "FAILED at step" line (conversion rollback)
 }
 
 BRIDGE_SETUP_USAGE :: "usage: ham-bridge setup --hub <url> [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--separate-account | --replace-other-account] [--version V [--allow-downgrade]] [--keep-version] [--reinstall] [--headless] [--no-tray] [--json-progress]"
@@ -146,6 +152,7 @@ bridge_setup_command :: proc(args: []string) -> int {
 	if !done && !s.json_progress {
 		switch {
 		case s.refusal != "": fmt.printfln("[ERROR] %s", s.refusal)
+		case s.fail_line != "": fmt.println(s.fail_line)
 		case s.rollback_failed: fmt.printfln("ham-bridge setup FAILED at step %q; rollback incomplete: %s.", bridgesvc.STEP_NAMES[failed], s.rollback_message)
 		case: fmt.printfln("ham-bridge setup FAILED at step %q; the previous install was restored%s.", bridgesvc.STEP_NAMES[failed], " and restarted" if s.was_running && s.stopped_for_setup else "")
 		}
@@ -389,6 +396,10 @@ bridge_setup_gather_facts :: proc(s: ^Bridge_Setup) -> bridgesvc.Install_Facts {
 			}
 		}
 	}
+	f.supervisor_managed = bridge_convert_supervisor_managed(s.host, l)
+	f.legacy = !f.supervisor_managed && !os.is_file(bridgesvc.pjoin(l.data_dir, "instance.json")) && !os.is_dir(bridgesvc.pjoin(l.data_dir, bridgesvc.LAUNCHER_DIR)) && (f.service_registered || f.bin_present)
+	f.bundle_capable = s.copy_binaries && s.host.os != .Termux && bridge_convert_bundle_capable(s.host, s.bundle_dir)
+	f.conversion_record = os.exists(bridgesvc.conversion_path(l))
 	f.requested_version = strings.trim_space(option_value(s.args, "--version", ""))
 	f.keep_version = has_flag(s.args, bridgesvc.KEEP_VERSION_FLAG)
 	f.allow_downgrade = has_flag(s.args, bridgesvc.ALLOW_DOWNGRADE_FLAG)
@@ -405,7 +416,8 @@ bridge_setup_gather_facts :: proc(s: ^Bridge_Setup) -> bridgesvc.Install_Facts {
 bridge_setup_enroll_argv :: proc(s: ^Bridge_Setup, token: string) -> []string {
 	l := s.layout
 	argv := make([dynamic]string, context.temp_allocator)
-	append(&argv, bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge")), "enroll", "--hub", s.profile.hub_url,
+	exe := s.enroll_exe if s.enroll_exe != "" else bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge"))
+	append(&argv, exe, "enroll", "--hub", s.profile.hub_url,
 		"--config", bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE), "--bridge-token-file", token)
 	if has_flag(s.args, "--headless") || !bridge_stdin_is_terminal(s.args) do append(&argv, "--headless")
 	if has_flag(s.args, "--new-bridge") do append(&argv, "--new-bridge")
@@ -533,6 +545,18 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			s.refusal = fmt.tprintf("Profile %s belongs to hub %s, not %s; pass --profile <name> to install a separate profile.", l.service_name, bridge_setup_saved_hub(s), s.profile.hub_url)
 			return ownership
 		}
+		// S10a: a conversion a crash or a kill left behind is rolled forward or back
+		// before anything is classified (spec §6.3).
+		if os.exists(bridgesvc.conversion_path(l)) {
+			note, recovered := bridge_convert_recover(s)
+			if !recovered {
+				s.exit_code = bridgesvc.EXIT_ROLLBACK_INCOMPLETE
+				bridge_setup_rollback_fail(s, note)
+				return {failure = .Fatal, message = note}
+			}
+			append(&s.recovered, note)
+			s.conv, s.conv_recovered = nil, true
+		}
 		s.facts = bridge_setup_gather_facts(s)
 		s.plan = bridgesvc.classify_install(s.facts)
 		if s.plan.refuse {
@@ -540,7 +564,13 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			s.refusal = fmt.tprintf("%s %s", l.service_name, s.plan.message)
 			return {failure = .Fatal, message = s.plan.message}
 		}
+		if s.conv_recovered do s.plan.rows += {.S10a_Recovered}
 		bridge_setup_emit(s, bridgesvc.Event{step = "detect", state = "ok", pct = bridgesvc.step_pct(.Lock, false), message = bridgesvc.install_rows_label(s.plan.rows), attempt = 1})
+		if s.plan.convert {
+			s.conv = bridge_convert_new_state()
+			bridge_convert_install_signal_handlers()
+			return bridge_convert_run(s)
+		}
 		return {ok = true}
 
 	case .Stage:
