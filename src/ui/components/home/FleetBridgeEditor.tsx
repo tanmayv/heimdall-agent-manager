@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react';
-import { Button, Icon, IconButton, Select, StatusPill, Text } from '@ui';
+import { Button, Icon, IconButton, StatusPill, Text } from '@ui';
+import { HomeSelect as Select } from './HomeSelect';
 import { usePreviewBridgeFleetQuery, type FleetApplication, type FleetApplyInput, type FleetRuntime, type FleetSettings } from '../../api/endpoints/bridgeFleet';
 import { apiErrorText } from '../../api/cookieFetch';
 import { getRouteSearch } from '../../utils/appLocation';
@@ -118,7 +119,7 @@ export function FleetBridgeEditor({ bridge, settings, catalog, agents, initially
           <Text as="span" role="body-sm" tone="muted">{bridge.os} · {draft.overrides.length ? `${draft.overrides.length} overrides` : 'no overrides'}</Text>
         </span>
       </Button>
-      <div className="home-fleet-defaults"><Text role="caption" tone="muted">Default</Text><ProviderModel id={`home-fleet-default-${bridge.id}`} label={`${bridge.label} default`} runtime={draft.default_runtime} catalog={catalog} disabled={disabled} onChange={(default_runtime) => change({ ...draft, default_runtime })} /></div>
+      <div className="home-fleet-defaults"><Text role="caption" tone="muted">Default</Text><ProviderModel key={String(expanded)} id={`home-fleet-default-${bridge.id}`} label={`${bridge.label} default`} runtime={draft.default_runtime} catalog={catalog} disabled={disabled} onChange={(default_runtime) => change({ ...draft, default_runtime })} /></div>
     </div>
     <div ref={panel} id={panelId} role="region" aria-labelledby={`${panelId}-toggle`} aria-hidden={!expanded} className="home-fleet-body" data-expanded={expanded} data-debug-id={`home-fleet-body-${bridge.id}`}>
       <div className="home-fleet-body-content">

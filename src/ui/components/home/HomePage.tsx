@@ -67,6 +67,13 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
   const hidden = definitions.filter((definition) => layout.widgets.find((item) => item.id === definition.id)?.hidden);
   const endDrag = () => { dragSource.current = null; setDragging(null); setTarget(null); };
   useEffect(() => { endDrag(); setAddOpen(false); }, [editing, mobile]);
+  useEffect(() => {
+    if (!addOpen || !mobile) return;
+    const button = addTriggerRef.current;
+    return () => queueMicrotask(() => {
+      if (!button?.isConnected) document.querySelector<HTMLButtonElement>('[data-debug-id="home-layout-edit"]')?.focus({ preventScroll: true });
+    });
+  }, [addOpen, mobile]);
   useLayoutEffect(() => {
     const button = reorderFocus.current;
     reorderFocus.current = null;
@@ -80,7 +87,7 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
     edit((value) => moveHomeWidget(value, id, to, mobile));
     announce(`${HOME_WIDGETS.find((item) => item.id === id)!.name} moved to position ${visible.findIndex((item) => item.id === to) + 1} of ${visible.length}.`);
   };
-  const addRows = definitions.map((item) => <Menu.CheckboxItem key={item.id} checked={!layout.widgets.find((widget) => widget.id === item.id)?.hidden}
+  const addRows = definitions.map((item) => <Menu.CheckboxItem key={item.id} keepOpen={mobile} checked={!layout.widgets.find((widget) => widget.id === item.id)?.hidden}
       description={item.description} data-debug-id={`home-layout-toggle-${item.id}`}
       onClick={() => edit((value) => setWidgetHidden(value, item.id, !value.widgets.find((widget) => widget.id === item.id)!.hidden))}>
       {item.name}
@@ -91,7 +98,7 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
     {addTrigger}
     <Drawer open={addOpen} onOpenChange={setAddOpen} side="bottom" variant="sheet" title="Home widgets"
       hideHeader aria-label="Home widgets" autoFocus={false} returnFocusRef={addTriggerRef} data-debug-id="home-layout-add-sheet">
-      <Menu.Panel label="Home widgets" onClose={() => setAddOpen(false)} variant="sheet" autoFocus={addOpen}
+      <Menu.Panel key={String(addOpen)} label="Home widgets" onClose={() => setAddOpen(false)} variant="sheet" autoFocus={addOpen}
         data-debug-id="home-layout-add-options" className="home-add-sheet-options px-2 pb-4 pt-1">
         {addRows}
       </Menu.Panel>

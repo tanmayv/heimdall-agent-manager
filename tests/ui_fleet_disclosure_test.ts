@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 
-test('Fleet disclosure keeps a complete inert body, drafts/errors/results and independent route focus', async () => {
+for (const mobile of [false, true]) test(`Fleet disclosure keeps drafts/errors/results and route focus with ${mobile ? 'mobile sheets' : 'desktop popups'}`, async () => {
   const { JSDOM } = await import('jsdom');
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost/' });
   const win = dom.window as any;
-  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  win.matchMedia = () => ({ matches: mobile, addEventListener() {}, removeEventListener() {} });
   win.HTMLElement.prototype.scrollIntoView = function () {};
   win.CSS = { escape: (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, (char: string) => String.fromCharCode(92) + char) };
   const keys = ['window', 'document', 'HTMLElement', 'Node', 'KeyboardEvent', 'MouseEvent', 'localStorage', 'CSS'] as const;
@@ -27,7 +27,7 @@ test('Fleet disclosure keeps a complete inert body, drafts/errors/results and in
   const runtime = { provider: 'codex', model: 'm1' };
   const settings = { bridge_id: 'b1', revision: 1, default_runtime: runtime, overrides: [{ agent_id: 'a', runtime }] };
   const bridge = { id: 'b1', label: 'First', os: 'Linux', agents: 1, online: true, provider: 'codex', model: 'm1', overrides: [] };
-  const catalog = [{ provider: 'codex', models: ['m1', 'm2'] }];
+  const catalog = [{ provider: 'codex', models: ['m1', 'm2'] }, { provider: 'codex', profile_id: 'second-account', label: 'Codex second account', models: ['x1', 'x2'] }];
   const agents = [{ agent_id: 'a', name: 'Worker' }, { agent_id: 'b', name: 'Reviewer' }];
   let applies = 0;
   let retries = 0;
@@ -64,7 +64,7 @@ test('Fleet disclosure keeps a complete inert body, drafts/errors/results and in
     // A programmatic collapse while a portalled Select is open clears that popup,
     // returns focus, and keeps its edited value in the parent draft.
     await click('home-fleet-override-b1-b-model');
-    get('home-fleet-override-b1-b-model').focus();
+    if (!mobile) get('home-fleet-override-b1-b-model').focus();
     assert.ok(win.document.querySelector('[role="listbox"]'));
     await click('home-fleet-expand-b1');
     assert.equal(win.document.activeElement, get('home-fleet-expand-b1'));
@@ -95,6 +95,28 @@ test('Fleet disclosure keeps a complete inert body, drafts/errors/results and in
     assert.equal(get('home-fleet-expand-b2').getAttribute('aria-expanded'), 'false');
     await click('home-fleet-expand-b1');
     assert.equal(get('home-fleet-expand-b1').getAttribute('aria-expanded'), 'false', 'route focus does not lock the disclosure open');
+    // Every field category shares sheet presentation, profile identity and draft-only changes.
+    const choose = async (id: string, label: string) => {
+      await click(id);
+      assert.equal(!!win.document.querySelector('[role="dialog"][aria-modal="true"]'), mobile);
+      const list = win.document.querySelector('[role="listbox"]');
+      if (mobile) assert.equal(win.document.activeElement, list);
+      await act(async () => ([...list.querySelectorAll('[role="option"]')].find((o: any) => o.textContent === label) as HTMLElement).click());
+      await act(async () => { win.document.querySelector('[role="dialog"]')?.dispatchEvent(new win.Event('animationend', { bubbles: true })); });
+    };
+    await choose('home-fleet-default-b1-provider', 'Codex second account');
+    assert.match(get('home-fleet-default-b1-model').textContent!, /x1/, 'provider/profile change resets model');
+    await choose('home-fleet-default-b1-model', 'x2');
+    await click('home-fleet-expand-b1');
+    await choose('home-fleet-override-b1-b-provider', 'Codex second account');
+    await choose('home-fleet-override-b1-b-model', 'x2');
+    await choose('home-fleet-override-b1-a-agent', 'Worker');
+    assert.equal(applies, 1, 'choices never Apply implicitly');
+    await click('home-fleet-default-b1-model');
+    await click('home-fleet-expand-b1');
+    assert.equal(win.document.querySelector('[role="listbox"]'), null, 'collapse clears default as well as override choices');
+    assert.equal(win.document.body.style.overflow, '');
+    assert.match(get('home-fleet-default-b1-model').textContent!, /x2/, 'collapse keeps selected draft');
   } finally {
     await act(async () => root.unmount());
     store.dispatch(heimdallApi.util.resetApiState());
