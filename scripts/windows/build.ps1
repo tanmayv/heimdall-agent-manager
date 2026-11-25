@@ -36,6 +36,8 @@ param(
   [string]$CurlLibDir = '',
   [string]$NatsLibDir = '',
   [string]$Version = '',
+  # Extra odin flags for every Odin component (the conversion CI's test defines, P2-7).
+  [string[]]$ExtraOdinFlags = @(),
   [string[]]$Components = @('ham-bridge', 'ham-ctl', 'ham-pty-host', 'ham-launcher', 'ham-supervisor')
 )
 $ErrorActionPreference = 'Stop'
@@ -87,6 +89,7 @@ try {
     $srcRoot = (Join-Path $repo 'src') -replace '\\', '/'
     $pin = Get-Content -Raw (Join-Path $repo 'nix\libcurl-pin.json') | ConvertFrom-Json
     $defines += "-define:HAM_CURL_VERSION=$($pin.curl.version)"
+    $defines += $ExtraOdinFlags
     if (-not $CurlLibDir) {
       $curlOut = Join-Path $work 'libcurl'
       & (Join-Path $PSScriptRoot 'build-libcurl.ps1') -OutDir $curlOut # throws on failure
