@@ -204,9 +204,9 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   isDefaultConversations: true,
 };
 const NAV_ROUTES: ShellRoute[] = [
-  // '+ New conversation' opens the start-conversation page. Conversations and
+  // '+ New' opens the conversation/shell composer. Conversations and
   // Task Chains are no longer sidebar destinations (their routes still work).
-  { path: '/new', label: 'New conversation', icon: 'plus', description: 'Start a new conversation', group: 'primary' },
+  { path: '/new', label: 'New', icon: 'plus', description: 'Start a new conversation', group: 'primary' },
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts sent to your agents', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: 'bot', description: 'Agent identities and sessions', group: 'primary' },

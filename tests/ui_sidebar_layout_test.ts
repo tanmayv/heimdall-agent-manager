@@ -26,8 +26,8 @@ const source = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shell/App
 const chatSource = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/workbench/AgentChatPane.tsx'), 'utf8');
 const navBlock = source.slice(source.indexOf('const NAV_ROUTES'), source.indexOf('];', source.indexOf('const NAV_ROUTES')));
 
-test('primary nav: "+ New conversation" replaces Home; Conversations and Task Chains are gone', () => {
-  assert.match(navBlock, /path: '\/new', label: 'New conversation', icon: 'plus'/);
+test('primary nav: "+ New" replaces Home; Conversations and Task Chains are gone', () => {
+  assert.match(navBlock, /path: '\/new', label: 'New', icon: 'plus'/);
   assert.doesNotMatch(navBlock, /label: 'Home'/);
   assert.doesNotMatch(navBlock, /path: '\/conversations'/);
   assert.doesNotMatch(navBlock, /path: '\/chains'/);
