@@ -174,38 +174,6 @@ export async function setAgentDefault({ daemonUrl, clientToken, use, agentId }: 
   });
 }
 
-export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
-  const data = await requestJson(joinUrl(daemonUrl, '/agents/providers'));
-  return data.providers ?? [];
-}
-
-export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, model }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; model?: string }) {
-  const body: any = {
-    template_id: templateId || '',
-    project_id: sanitizeProjectId(projectId),
-    alias: alias || displayName || '',
-    display_name: displayName || alias || '',
-    agent_instance_id: agentInstanceId || '',
-    model: model || '',
-    agent_id: agentId || '',
-  };
-  if (provider !== undefined) {
-    body.agent = provider || '';
-    body.provider_profile = provider || '';
-  }
-  if (model !== undefined) body.model = model || '';
-  if (agentInstanceId) body.agent_instance_id = agentInstanceId;
-  if (agentId) body.agent_id = agentId;
-  // Explicit runtime restart project override (incl. clearing to none) so the
-  // backend applies an empty project verbatim instead of preserving the stored one.
-  if (projectIdSet) body.project_id_set = true;
-  return requestJson(joinUrl(daemonUrl, '/agents/start'), {
-    method: 'POST',
-    body,
-    timeoutMs: 10000,
-  });
-}
-
 export async function showAgent({ daemonUrl, agentRecordId, agentInstanceId }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string }) {
   return requestJson(joinUrl(daemonUrl, '/agents/show'), {
     method: 'POST',
@@ -252,15 +220,6 @@ export async function validateProjectBridgePath({ daemonUrl, clientToken, projec
   return requestJson(joinUrl(daemonUrl, `/api/v1/projects/${encodeURIComponent(projectId)}/bridge-paths/${encodeURIComponent(bridgeId)}/validate`), {
     method: 'POST',
     headers: { Authorization: `Bearer ${clientToken}` },
-  });
-}
-
-export async function stopAgent({ daemonUrl, agentInstanceId, timeInSec }: { daemonUrl: string; agentInstanceId: string; timeInSec?: number }) {
-  const body: any = { agent_instance_id: agentInstanceId };
-  if (timeInSec !== undefined) body.time_in_sec = timeInSec;
-  return requestJson(joinUrl(daemonUrl, '/agents/stop'), {
-    method: 'POST',
-    body,
   });
 }
 

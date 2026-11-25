@@ -9,7 +9,6 @@ const AGENT_START_ENDPOINTS = new Set([
   'createLaunchConversation',
   'createAgentInstance',
   'startAgentInstance',
-  'startAgent',
 ]);
 
 /** Same rule as the Bridges panel (components/settings/BridgesPanel.tsx). */

@@ -125,17 +125,6 @@ export const settingsApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { templateId }) => [{ type: 'AgentTemplate' as const, id: templateId }],
     }),
-    fetchSettingsCatalog: build.query<any, { scope?: string } | void>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.daemonUrl) return { templates: [], providers: [] };
-        const [templates, providers] = await Promise.all([
-          daemonApi.listAgentTemplates({ daemonUrl: session.daemonUrl }).catch(() => []),
-          daemonApi.listAgentProviders({ daemonUrl: session.daemonUrl }).catch(() => []),
-        ]);
-        return { templates, providers };
-      }),
-      providesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }, { type: 'Preferences' as const, id: 'CATALOG' }],
-    }),
     fetchExperiments: build.query<{ flags: ExperimentFlag[] }, void>({
       queryFn: async () => {
         try {

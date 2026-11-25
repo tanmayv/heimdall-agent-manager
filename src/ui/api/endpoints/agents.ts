@@ -418,24 +418,6 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
       },
     }),
-    startAgent: build.mutation<any, { agentInstanceId: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; model?: string }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, model }, { session }) => {
-        if (!session?.daemonUrl || !agentInstanceId) return { ok: false, message: 'Missing agent' };
-        return daemonApi.startAgent({ daemonUrl: session.daemonUrl, agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, model });
-      }),
-      invalidatesTags: (_result, _error, { agentInstanceId }) => [
-        { type: 'Agents' as const, id: agentInstanceId },
-      ],
-    }),
-    stopAgent: build.mutation<any, { agentInstanceId: string; timeInSec?: number }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, timeInSec }, { session }) => {
-        if (!session?.daemonUrl || !agentInstanceId) return { ok: false, message: 'Missing agent' };
-        return daemonApi.stopAgent({ daemonUrl: session.daemonUrl, agentInstanceId, timeInSec });
-      }),
-      invalidatesTags: (_result, _error, { agentInstanceId }) => [
-        { type: 'Agents' as const, id: agentInstanceId },
-      ],
-    }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; instructions?: string; favorite?: boolean; permissionMode?: AgentPermissionMode }>({
       queryFn: async (arg) => {
@@ -635,22 +617,6 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       // The instance itself changes later and announces it (agent_instance/config_changed).
       invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
-    }),
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; model?: string; bridgeId?: string }>({
-      queryFn: async ({ instanceId, provider, model, bridgeId }) => {
-        try {
-          // Legacy PATCH supports provider/model only. Location changes use the
-          // explicit durable reconfiguration operation endpoint above.
-          const body: Record<string, string> = { provider: provider || '', model: model || '' };
-          if (bridgeId) body.bridge_id = bridgeId;
-          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}`, 'PATCH', body);
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
     getAgentPane: build.query<AgentPaneResult, GetAgentPaneArgs>({
       queryFn: async ({ agentInstanceId, sinceHash, width = 80, lineLimit = 120 }) => {

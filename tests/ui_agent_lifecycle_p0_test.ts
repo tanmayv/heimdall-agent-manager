@@ -133,3 +133,29 @@ test('migrated lifecycle surfaces use the shared hook and retain inline failure 
     assert.match(read('src/ui/components/' + rel), /role="alert"/);
   }
 });
+
+test('retired lifecycle/provider exports and routes stay unused', async () => {
+  const { default: ts } = await import('typescript');
+  const retired = new Set([
+    'startAgent', 'stopAgent', 'listAgentProviders', 'fetchSettingsCatalog',
+    'reconfigureAgentInstance', 'useFetchSettingsCatalogQuery',
+    'useReconfigureAgentInstanceMutation',
+  ]);
+  const root = path.join(REPO_ROOT, 'src');
+  for (const entry of fs.readdirSync(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const filename = path.join(entry.parentPath, entry.name);
+    const source = fs.readFileSync(filename, 'utf8');
+    assert.doesNotMatch(source, /\/agents\/(?:start|stop|providers)\b/, filename);
+    if (!/\.tsx?$/.test(filename)) continue;
+    // Scan identifiers so an unrelated view name string is not a retired API use.
+    const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, source);
+    for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+      if (token === ts.SyntaxKind.Identifier) {
+        assert.equal(retired.has(scanner.getTokenText()), false, `${filename}: ${scanner.getTokenText()}`);
+      }
+    }
+  }
+  assert.doesNotMatch(read('src/hub/app/wiring.odin'), /"PATCH", "\/api\/v1\/agent-instances\/\*"/);
+  assert.doesNotMatch(read('src/hub/transport/http/agent_handlers.odin'), /\b(?:patch_agent_instance_handler|reconfigure_input_from_body)\b/);
+});
