@@ -108,7 +108,6 @@
   .home-header { gap: var(--space-4); align-items: flex-start; }
   .home-header-actions { flex-wrap: wrap; width: 100%; }
   .home-header-actions > * { min-height: 44px; }
-  .home-header-actions > button { padding-left: 0; margin-right: auto; }
   .home-widget-heading-actions { gap: var(--space-2); }
   .home-widget-heading-actions a { display: inline-flex; align-items: center; min-height: 44px; }
   .home-chain-title-row { flex-wrap: wrap; }
@@ -135,8 +134,6 @@
 @media (max-width: 767px) {
   .home-header-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .home-header-actions > a { padding-left: var(--space-2); padding-right: var(--space-2); }
-  .home-header-actions > button { order: 3; grid-column: 1 / -1; justify-self: end; margin: 0; padding: var(--space-2) var(--space-3); }
-  .home-uptime { order: 1; } .home-chains { order: 2; } .home-fleet { order: 3; }
   .home-fleet-bridge-toggle > svg { order: 2; margin-left: auto; }
   .home-fleet-bridge-toggle { width: 100%; flex-basis: 100%; }
   .home-fleet-override { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -155,3 +152,69 @@
   .home-fleet-defaults [role="combobox"] { position: relative; height: 36px; min-height: 36px; }
   .home-fleet-defaults [role="combobox"]::after { content: ''; position: absolute; inset: -4px 0; }
 }
+
+/* Layout controls use the same title slot in every widget. */
+.home-edit-actions { display: inline-flex; align-items: center; gap: var(--space-2); }
+.home-edit-actions button { min-height: 40px; white-space: nowrap; }
+.home-widget-slot { min-width: 0; border-radius: var(--radius-lg); container-type: inline-size; }
+.home-widget-slot > section { width: 100%; min-width: 0; }
+.home-dashboard[data-home-editing="true"] .home-widget-slot {
+  outline: 1px dashed var(--color-border-strong); outline-offset: 6px;
+}
+.home-widget-title { display: flex; align-items: center; gap: var(--space-1); min-width: 0; flex-shrink: 0; }
+.home-widget-title h2 { white-space: nowrap; }
+.home-widget-title .home-layout-handle, .home-widget-title .home-layout-remove {
+  width: 24px; height: 24px; min-width: 24px; min-height: 24px; padding: 0;
+}
+.home-layout-handle { cursor: grab; }
+.home-layout-handle:active { cursor: grabbing; }
+.home-dashboard[data-home-editing="true"] .home-widget-slot.is-dragging { opacity: .4; }
+.home-dashboard[data-home-editing="true"] .home-widget-slot.is-drop-target {
+  outline: 2px dashed var(--color-accent);
+}
+.home-layout-menu { max-width: min(360px, calc(100vw - 32px)); }
+.home-add-menu { width: 350px; }
+.home-add-menu button { white-space: normal; }
+.home-add-tile {
+  border: 1px dashed var(--color-border-strong); border-radius: var(--radius-lg);
+  min-height: 160px; padding: var(--space-5); display: flex; flex-direction: column;
+  align-items: flex-start; justify-content: center; gap: var(--space-2);
+}
+.home-add-tile-buttons { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.home-layout-empty { margin-bottom: var(--space-6); }
+.home-layout-feedback { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; margin-bottom: var(--space-5); }
+@container (max-width: 650px) {
+  .home-fleet-bridge-header, .home-activity-header { flex-wrap: wrap; }
+  .home-fleet-defaults { margin-left: 0; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.4fr); width: 100%; }
+  .home-fleet-override { grid-template-columns: minmax(0, 1fr) 28px; }
+  .home-fleet-override > div { grid-column: 1; }
+  .home-fleet-override > button { grid-column: 2; grid-row: 1 / 4; }
+  .home-fleet-overrides { padding-left: var(--space-4); }
+  .home-activity-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .home-metric-switch { max-width: 100%; overflow-x: auto; }
+}
+@media (max-width: 1079px) {
+  .home-widget-grid > .home-widget-slot, .home-widget-grid > .home-add-tile { grid-column: 1 / -1 !important; }
+}
+@media (max-width: 767px) {
+  .home-slot-activity { display: none; }
+  .home-header-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3) var(--space-2); }
+  .home-edit-actions { grid-column: 1 / -1; grid-row: 2; justify-content: flex-end; }
+  .home-header-actions > a { min-height: 44px; padding-left: var(--space-2); padding-right: var(--space-2); }
+  .home-edit-actions button, .home-layout-menu button, .home-add-tile button, .home-layout-empty button, .home-layout-feedback button { min-height: 44px; }
+  .home-widget-title .home-layout-handle, .home-widget-title .home-layout-remove { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
+  .home-widget-heading { gap: var(--space-1); flex-wrap: wrap; }
+  .home-widget-title { gap: 0; }
+  .home-widget-slot .home-fleet-defaults { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
+  .home-widget-slot .home-fleet-defaults > .text-caption { grid-column: 1 / -1; }
+  .home-widget-slot .home-fleet-overrides { padding: var(--space-3); }
+  .home-widget-slot .home-fleet-override { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .home-widget-slot .home-fleet-override > div:first-child { grid-column: 1; grid-row: 1; }
+  .home-widget-slot .home-fleet-override > button { grid-column: 2; grid-row: 1; }
+  .home-widget-slot .home-fleet-override > div:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .home-widget-slot .home-fleet-override > div:nth-child(3) { grid-column: 2; grid-row: 2; }
+  .home-widget-slot .home-fleet-defaults [role="combobox"] { height: 44px; min-height: 44px; }
+  .home-widget-slot .home-fleet-defaults [role="combobox"]::after { content: none; }
+}
+
+.home-widget-slot:focus-within { position: relative; z-index: 1; }

@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Button, Text } from '@ui';
+import { WidgetTitle } from './WidgetLayoutChrome';
 import { useGetHomeActivityQuery } from '../../api/endpoints/home';
 import { loadMockActivity } from './homeWidgetFixtures';
 import { ACTIVITY_METRICS, activityLevel, dateFromKey, type ActivityData, type ActivityMetric, type WidgetResource } from './widgetData';
@@ -24,7 +25,7 @@ export function ActivityWidget({ resource: supplied, load }: ActivityWidgetProps
   const format = (key: string) => dateFromKey(key).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   return <section data-debug-id="home-widget-activity" className="home-activity home-card" aria-labelledby="home-activity-title">
     <header className="home-activity-header">
-      <div><Text as="h2" id="home-activity-title" role="heading">Activity</Text><Text role="body-sm" tone="muted">{selected.label} per day, last 12 months</Text></div>
+      <div><WidgetTitle><Text as="h2" id="home-activity-title" role="heading">Activity</Text></WidgetTitle><Text role="body-sm" tone="muted">{selected.label} per day, last 12 months</Text></div>
       <div className="home-metric-switch" role="group" aria-label="Activity metric">{ACTIVITY_METRICS.map((item) =>
         <Button key={item.id} size="sm" variant="ghost" aria-pressed={metric === item.id} data-debug-id={`home-activity-metric-${item.id.replace(/_/g, '-')}`} onClick={() => { setMetric(item.id); setHovered(null); }}>{item.label}</Button>)}</div>
     </header>

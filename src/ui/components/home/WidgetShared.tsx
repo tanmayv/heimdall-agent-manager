@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Button, Text } from '@ui';
+import { WidgetTitle } from './WidgetLayoutChrome';
 import type { WidgetLoader, WidgetResource } from './widgetData';
 
 export function useWidgetData<T>(loader: WidgetLoader<T>, supplied?: WidgetResource<T>) {
@@ -26,7 +27,7 @@ export function WidgetState({ status, name, message, onRetry }: { status: 'loadi
 }
 
 export function WidgetHeading({ id, title, children }: { id: string; title: string; children?: ReactNode }) {
-  return <header className="home-widget-heading"><Text as="h2" id={id} role="heading">{title}</Text><div className="home-widget-heading-actions">{children}</div></header>;
+  return <header className="home-widget-heading"><WidgetTitle><Text as="h2" id={id} role="heading">{title}</Text></WidgetTitle><div className="home-widget-heading-actions">{children}</div></header>;
 }
 
 export function WidgetStat({ label, value, detail }: { label: string; value: ReactNode; detail?: string }) {
