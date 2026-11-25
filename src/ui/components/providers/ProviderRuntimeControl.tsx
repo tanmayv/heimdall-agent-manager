@@ -99,7 +99,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
   const acpReason = acpDisabledReason(setup.acp_runtime_supported, status.acp_adapter);
   const installable = status.transports.includes('acp') && (!status.acp_adapter || ['missing', 'outdated', 'error', 'not_checked'].includes(status.acp_adapter.state));
   const failed = command?.status === 'failed' || command?.status === 'cancelled';
-  const system = acpSystemRuntime(status.acp_adapter);
+  const system = provider === 'opencode' || acpSystemRuntime(status.acp_adapter);
   return (
     <div className="min-w-0 space-y-2 rounded-lg border border-subtle p-3">
       <div className="flex flex-wrap items-center gap-3">
