@@ -34,15 +34,33 @@ test_bot_template_channel_and_events :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_bot_template_persona_is_chief_of_staff :: proc(t: ^testing.T) {
+	bot, ok := builtin_template(TEMPLATE_BOT_ID)
+	testing.expect(t, ok)
+	testing.expect(t, strings.contains(bot.persona, "chief of staff"))
+	testing.expect(t, strings.contains(bot.persona, "single point of contact"))
+	testing.expect(t, strings.contains(bot.persona, "own the outcome"))
+}
+
+@(test)
 test_bot_template_delegation_consent_and_cleanup :: proc(t: ^testing.T) {
 	bot, ok := builtin_template(TEMPLATE_BOT_ID)
 	testing.expect(t, ok)
 	for contract in ([]string{
 		"ninjy-bot-operations",
-		"Handle simple work yourself",
+		"**Do it**",
 		"Delegate complex work",
 		"Find an existing matching chain",
 		"From the user via chat:",
+		"Quote the user's exact words and label everything else as your reading.",
+		"**Yours**",
+		"**Defer**",
+		"Lead every report with the outcome",
+		"“Needs you:”",
+		"at most one follow-up",
+		"Do not poll.",
+		"corrects you the same way twice",
+		"Never approve or reject memory proposals.",
 		"ask before restarting it",
 		"Confirm the new chain's title, project and coordinator by name and ID.",
 		"A clear go-ahead in the user's next reply",
