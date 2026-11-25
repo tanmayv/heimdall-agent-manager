@@ -99,13 +99,32 @@ t4_acp_config_exact_grouped_selection_and_modes :: proc(t: ^testing.T) {
 @(test)
 t4_acp_bootstrap_replaces_chat_send_preserves_tasks :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
-    input := strings.concatenate({"TASK.md\nMEMORY.md\n", acp_bootstrap_original_communication}); defer delete(input)
+    input := strings.concatenate({"TASK.md\nMEMORY.md\n", acp_bootstrap_communication_marker, " ...\nALWAYS reply with `chat send`.\n\nNext section\n"}); defer delete(input)
     output := bridge_bootstrap_acp_instructions(input); defer delete(output)
     testing.expect(t, strings.contains(output, "session prompts") && strings.contains(output, "natural assistant text"))
     testing.expect(t, !strings.contains(output, "ALWAYS reply with"))
-    testing.expect(t, strings.contains(output, "TASK.md") && strings.contains(output, "MEMORY.md") && strings.contains(output, "heimdall-acp-bootstrap-v1"))
+    testing.expect(t, strings.contains(output, "TASK.md") && strings.contains(output, "MEMORY.md") && strings.contains(output, "heimdall-acp-bootstrap-v1") && strings.contains(output, "Next section"))
     d := bridge_bootstrap_descriptor_from_launch(`{"payload":{"agent_instance_id":"inst_t4","effective_transport":"acp"}}`)
     testing.expect_value(t, d.effective_transport, "acp")
+}
+
+// Guard: render the REAL bootstrap frame, not the replace constant. T4 reworded
+// the paragraph in bootstrap_agents.md and the exact-string replace silently
+// stopped matching; this fails if the frame and the replace ever drift again.
+@(test)
+t7_acp_bootstrap_real_frame_drops_pty_reply_rule :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    frame := string(#load("../prompts/bootstrap_agents.md", string))
+    testing.expect(t, strings.contains(frame, "ALWAYS reply with"), "frame no longer holds the PTY rule; update this test")
+    output := bridge_bootstrap_acp_instructions(frame)
+    testing.expect(t, !strings.contains(output, "ALWAYS reply with"), "PTY reply rule survived ACP rewrite")
+    testing.expect(t, !strings.contains(output, "chat send --to user --body \"<your reply>\""))
+    testing.expect(t, strings.contains(output, "Your natural assistant text reaches user chat automatically"))
+    testing.expect(t, strings.contains(output, "Do not echo ordinary answers with chat send"))
+    // Rewrite stops at the paragraph: following sections stay intact.
+    testing.expect(t, strings.contains(output, "### Response format: ALWAYS use Markdown (REQUIRED)"))
+    testing.expect(t, strings.contains(output, "## Communicating with the user (REQUIRED)"))
+    testing.expect_value(t, strings.count(output, "Your natural assistant text reaches user chat automatically"), 2) // inline + v1 trailer
 }
 
 // A template without the chat-send paragraph (e.g. a bot) must not free the
