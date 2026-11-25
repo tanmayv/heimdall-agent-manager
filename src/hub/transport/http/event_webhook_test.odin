@@ -331,3 +331,26 @@ webhook_credential_dedupe_scenario :: proc(t:^testing.T,api:^Action_API_Fixture)
  testing.expect_value(t,e.code,domain.Error_Code.None)
  testing.expect_value(t,row.dedupe_header,"Idempotency-Key")
 }
+
+@(test)
+test_event_webhook_rate_limit_socket_response :: proc(t:^testing.T) {action_api_test(t,webhook_rate_limit_socket_scenario)}
+webhook_rate_limit_socket_scenario :: proc(t:^testing.T,api:^Action_API_Fixture) {
+ impl:sqlite.Event_Webhook_Repo_SQLite
+ f:=event_webhook_test_setup(api,&impl);event_webhook_test_bind(&f)
+ defer event_webhook_limiter_destroy(&f.h.limiter)
+ id,token:=event_webhook_test_create(t,&f)
+ f.service.limits=webhooks.DEFAULT_LIMITS
+ f.service.limits.per_webhook_per_minute=1
+ router:=new_router();defer router_free(&router)
+ router_add(&router,"POST","/api/v1/hooks/*/*",&f.h,event_webhook_receive_handler)
+ raw:=fmt.tprintf("POST /api/v1/hooks/%s/%s HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n%s",id,token,"{}")
+ accepted:=event_webhook_socket_request(t,&router,raw)
+ defer delete(accepted)
+ testing.expect(t,strings.has_prefix(accepted,"HTTP/1.1 202"),accepted)
+ limited:=event_webhook_socket_request(t,&router,raw)
+ defer delete(limited)
+ testing.expect(t,strings.has_prefix(limited,"HTTP/1.1 429"),limited)
+ testing.expect(t,strings.contains(limited,"Retry-After: 60\r\n"),limited)
+ testing.expect(t,strings.contains(limited,`{"error":"rate_limited"}`),limited)
+ testing.expect(t,!strings.contains(limited,token))
+}

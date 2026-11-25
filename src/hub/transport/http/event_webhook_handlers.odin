@@ -80,7 +80,9 @@ event_webhook_status :: proc(status:int,body:string)->Response {
 event_webhook_unauthorized :: proc()->Response {return event_webhook_status(401,`{"error":"unauthorized"}`)}
 event_webhook_limited :: proc()->Response {
  response:=event_webhook_status(429,`{"error":"rate_limited"}`)
- response.headers=[]contracts.HTTP_Header{{name="Retry-After",value="60"}}
+ // The response outlives this frame; keep the header slice in request memory.
+ response.headers=make([]contracts.HTTP_Header,1,context.temp_allocator)
+ response.headers[0]={name="Retry-After",value="60"}
  return response
 }
 event_webhook_header :: proc(ctx:rawptr,name:string)->string {
