@@ -1,0 +1,209 @@
+name: Conversion e2e
+# P2-7 (REQ-CONV-1..5, REQ-OS-1; docs/specs/bridge-supervisor-conversion.md §13): REAL released legacy
+# bridges (v0.5.77, v0.5.86) installed against a throwaway hub with the OS service manager, then
+# converted to the supervisor by a branch build of the first supervisor release (test build, served by
+# tools/conversion_release_server): auto-update, newest legacy, failure injection at every step,
+# abrupt exit at C4 and C8, the Q3 agent gate, a hub-started update and the next update as an
+# install_version intent, and the installer re-run. Linux, macOS, Windows. Coverage map:
+# docs/specs/bridge-supervisor-conversion-ci.md. Uses the runner's real home (CI only).
+on:
+  push:
+    branches: [main, 'heimdall/**', 'ci/**']
+    paths:
+      - 'src/bridge/**'
+      - 'src/lib/bridgesvc/**'
+      - 'src/supervisor/**'
+      - 'src/launcher/**'
+      - 'tools/conversion_release_server/**'
+      - 'tests/e2e/conversion_e2e.mjs'
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - 'scripts/supervisor/conversion-build.sh'
+      - 'scripts/windows/build.ps1'
+      - '.github/workflows/conversion-e2e.yml'
+  pull_request:
+    paths:
+      - 'src/bridge/**'
+      - 'src/lib/bridgesvc/**'
+      - 'src/supervisor/**'
+      - 'src/launcher/**'
+      - 'tools/conversion_release_server/**'
+      - 'tests/e2e/conversion_e2e.mjs'
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - 'scripts/supervisor/conversion-build.sh'
+      - 'scripts/windows/build.ps1'
+      - '.github/workflows/conversion-e2e.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: conversion-e2e-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unix:
+    name: conversion (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start a systemd --user manager (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The runner is not a login session: linger starts user@UID so
+          # `systemctl --user` (which ham-bridge setup/uninstall drive) has a bus.
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          uid="$(id -u)"
+          for _ in $(seq 1 30); do [ -S "/run/user/$uid/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user is-system-running || true
+          # A user service inherits the manager's environment, not this job's.
+          # The PTY socket fallback must resolve identically in the service and
+          # the test client; otherwise the client probes a healthy daemon in
+          # RUNNER_TEMP while systemd started it under /tmp.
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user set-environment "TMPDIR=$RUNNER_TEMP"
+          manager_tmp="$(XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user show-environment | sed -n 's/^TMPDIR=//p')"
+          test "$manager_tmp" = "$RUNNER_TEMP"
+          echo "Service scratch directory: $manager_tmp"
+      - name: Unlocked default keychain (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # ham-bridge keeps its vault keyring in the default keychain
+          # (SecKeychainAddGenericPassword with no keychain). A desktop login has an
+          # unlocked login keychain; the runner's may be locked, which blocks or
+          # fails that call, so give the run its own unlocked default keychain.
+          set -euo pipefail
+          kc="$RUNNER_TEMP/e2e.keychain-db"
+          security create-keychain -p e2e "$kc"
+          security set-keychain-settings "$kc"
+          security unlock-keychain -p e2e "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -d user -s "$kc"
+      - name: Build hub, NATS and the conversion bundle (test build, version 0.9.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          nats="$(nix build --inputs-from . nixpkgs#nats-server --print-out-paths --no-link)"
+          echo "HEIMDALL_E2E_NATS_BIN=$nats/bin/nats-server" >> "$GITHUB_ENV"
+          hub="$(nix build .#ham-hub --print-out-paths --no-link)"
+          echo "HEIMDALL_E2E_HUB_BIN=$hub/bin/ham-hub" >> "$GITHUB_ENV"
+          out="$RUNNER_TEMP/conversion-build"
+          nix develop -c scripts/supervisor/conversion-build.sh "$out" 0.9.0
+          echo "HEIMDALL_E2E_CONV_DIR=$out" >> "$GITHUB_ENV"
+      - name: Conversion e2e (real v0.5.77 and v0.5.86)
+        env:
+          HEIMDALL_E2E_SERVICE: '1'
+        run: node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/conversion_e2e.mjs
+
+  windows:
+    name: conversion (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Install private-test NATS server
+        shell: pwsh
+        run: |
+          go install github.com/nats-io/nats-server/v2@v2.14.7
+          if ($LASTEXITCODE -ne 0) { throw 'NATS server build failed' }
+          "HEIMDALL_E2E_NATS_BIN=$(Join-Path (go env GOPATH) 'bin/nats-server.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          "ODIN=$(Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Cache the pinned static libcurl
+        id: curl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libcurl-static
+          key: libcurl-static-windows-x64-${{ hashFiles('nix/libcurl-pin.json', 'scripts/windows/build-libcurl.ps1') }}
+      - name: Build the pinned static libcurl
+        if: ${{ steps.curl-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: scripts/windows/build-libcurl.ps1 -OutDir "$env:RUNNER_TEMP/libcurl-static"
+      - name: Windows hub dependency isolation
+        shell: pwsh
+        run: scripts/windows/test-build-nats.ps1
+      - name: Cache the pinned static NATS libraries
+        id: nats-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nats-static
+          key: nats-static-windows-x64-${{ hashFiles('nix/nats-windows-pin.json', 'scripts/windows/build-nats.ps1', 'src/lib/nats/adapter.c') }}
+      - name: Build pinned nats.c, OpenSSL and adapter
+        if: ${{ steps.nats-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: scripts/windows/build-nats.ps1 -OutDir "$env:RUNNER_TEMP/nats-static"
+      - name: Save validated static NATS libraries
+        if: ${{ steps.nats-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nats-static
+          key: ${{ steps.nats-cache.outputs.cache-primary-key }}
+      - name: Build the conversion bundle (test build, version 0.9.0) and the hub
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $conv = Join-Path $env:RUNNER_TEMP 'conversion-build'
+          $key = (Get-Content src/supervisor/testdata/e2e-test-key.pub)[1].Trim()
+          scripts/windows/build.ps1 -OutDir (Join-Path $conv 'bundle\bin') -Odin $env:ODIN -Components ham-bridge,ham-ctl,ham-pty-host,ham-launcher,ham-supervisor -Version 0.9.0 -CurlLibDir "$env:RUNNER_TEMP/libcurl-static/lib" -ExtraOdinFlags '-define:HEIMDALL_SUPERVISOR_TEST=true',"-define:HEIMDALL_TEST_PINNED_KEY=$key"
+          if ($LASTEXITCODE) { throw "bundle build failed ($LASTEXITCODE)" }
+          $hubOut = Join-Path $env:RUNNER_TEMP 'e2e-bin'
+          scripts/windows/build.ps1 -OutDir $hubOut -Odin $env:ODIN -Components ham-hub -CurlLibDir "$env:RUNNER_TEMP/libcurl-static/lib" -NatsLibDir "$env:RUNNER_TEMP/nats-static/lib"
+          if ($LASTEXITCODE) { throw "hub build failed ($LASTEXITCODE)" }
+          $tools = Join-Path $conv 'tools'
+          New-Item -ItemType Directory -Force $tools | Out-Null
+          $src = (Resolve-Path src).Path -replace '\\', '/'
+          & $env:ODIN build tools/conversion_release_server "-collection:odin_test=$src" -vet -strict-style "-out:$tools\conversion_release_server.exe"
+          if ($LASTEXITCODE) { throw "release server build failed ($LASTEXITCODE)" }
+          "HEIMDALL_E2E_HUB_BIN=$(Join-Path $hubOut 'ham-hub.exe')" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "HEIMDALL_E2E_CONV_DIR=$conv" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Conversion e2e (real v0.5.77 and v0.5.86)
+        shell: pwsh
+        env:
+          HEIMDALL_E2E_SERVICE: '1'
+        run: |
+          node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/conversion_e2e.mjs
+          if ($LASTEXITCODE) { throw "conversion e2e failed ($LASTEXITCODE)" }
