@@ -133,7 +133,10 @@ scenario_exact_start_time :: proc(t: ^testing.T) {
 	conn := test_connect(t, srv.url)
 	if conn == nil do return
 	defer destroy(conn)
+	setup_tick := time.tick_now()
 	_, err := stream_add(conn, {name = "TIMES", subjects = []string{"ev.>"}, replicas = 1})
+	fmt.printf("exact_start_time stream_add: status=%d elapsed_ns=%d request_timeout_ms=500 now_ns=%d server=%s\n",
+		err.status, i64(time.tick_since(setup_tick)), time.to_unix_nanoseconds(time.now()), srv.url)
 	if !testing.expect_value(t, err.status, i32(0)) do return
 	target, pub_err := publish(conn, "ev.target", test_bytes("target"), "target")
 	if !testing.expect_value(t, pub_err.status, i32(0)) do return
@@ -885,7 +888,11 @@ scenario_schedule_fire_ttl :: proc(t: ^testing.T) {
 	meta, err := message_metadata(batch_message(b, 0))
 	if !testing.expect_value(t, err.status, i32(0)) do return
 	time.sleep(time.Second)
+	get_tick := time.tick_now()
 	msg, me := stream_get(f.conn, "FEATURE", meta.stream_sequence)
+	fmt.printf("schedule_fire_ttl stream_get: status=%d elapsed_ns=%d request_timeout_ms=500 sequence=%d stored_ns=%d now_ns=%d server=%s\n",
+		me.status, i64(time.tick_since(get_tick)), meta.stream_sequence, meta.timestamp_ns,
+		time.to_unix_nanoseconds(time.now()), f.srv.url)
 	message_destroy(msg); testing.expect_value(t, me.status, i32(0))
 	time.sleep(3 * time.Second)
 	old, old_err := stream_get(f.conn, "FEATURE", meta.stream_sequence)
