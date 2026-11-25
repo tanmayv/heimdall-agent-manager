@@ -499,12 +499,11 @@ export const agentsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: (result, _error, arg) => {
+      providesTags: (_result, _error, arg) => {
         const opts = (arg && typeof arg === 'object') ? arg : undefined;
         return [
           { type: 'AgentInstances' as const, id: 'ALL_LISTS' },
           ...(!opts?.agentId && !opts?.projectId ? [{ type: 'AgentInstances' as const, id: 'LIST' }] : []),
-          ...(result?.instances || []).map((row: any) => ({ type: 'AgentInstances' as const, id: row.agent_instance_id })),
           ...(opts?.agentId ? [{ type: 'AgentInstances' as const, id: opts.agentId }] : []),
           ...(opts?.projectId ? [{ type: 'AgentInstances' as const, id: `PROJECT:${opts.projectId}` }] : []),
         ];

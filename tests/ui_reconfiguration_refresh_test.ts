@@ -246,6 +246,26 @@ test('lifecycle acceptance refreshes scoped lists and chain without agentId; WS 
     await settle(INVALIDATION_COALESCE_MS + 60);
     assert.equal(agents.agentsApi.endpoints.listAgentInstances.select(undefined)(store.getState()).data?.instances[0].runtime_status, 'running');
     assert.deepEqual(hits, ['GET /api/v1/task-chains/chain_a'], 'status patches lists; only affected chain projection refetches');
+    const largeLists = [
+      store.dispatch(agents.agentsApi.endpoints.listAgentInstances.initiate({ agentId: 'agt_a', limit: 1000 })),
+      store.dispatch(agents.agentsApi.endpoints.listAgentInstances.initiate({ projectId: 'proj_a', limit: 1000 })),
+    ];
+    subs.push(...largeLists);
+    await Promise.all(largeLists);
+    hits.length = 0;
+    for (let i = 0; i < 20; i++) {
+      handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'inst_a', change: 'status_changed', summary: { ...instance, runtime_status: 'running', activity_status: i % 2 ? 'idle' : 'busy', updated_at: `2026-11-26T00:01:${String(i).padStart(2, '0')}Z` } });
+    }
+    await settle(INVALIDATION_COALESCE_MS + 60);
+    assert.deepEqual(hits, [], 'activity-only transitions patch caches without any chain or large-list requests');
+    hits.length = 0;
+    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'inst_a', change: 'status_changed', summary: { ...instance, runtime_status: 'failed', updated_at: '2026-11-26T00:02:00Z' } });
+    await settle(INVALIDATION_COALESCE_MS + 60);
+    assert.deepEqual(hits.sort(), ['GET /api/v1/agent-instances/inst_a', 'GET /api/v1/task-chains/chain_a'], 'failure refreshes detail and runtime projection, never large lists');
+    for (const arg of [{ agentId: 'agt_a', limit: 1000 }, { projectId: 'proj_a', limit: 1000 }]) {
+      assert.equal(agents.agentsApi.endpoints.listAgentInstances.select(arg)(store.getState()).data?.instances[0].runtime_status, 'failed', 'large-list runtime is patched without refetch');
+    }
+
   } finally {
     resetQueuedInvalidations();
     subs.forEach(sub => sub.unsubscribe());
