@@ -1,3 +1,4 @@
+import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 /**
  * AgentListPage — `/agents`.
  * ------------------------------------------------------------------
@@ -61,8 +62,6 @@ import {
   useArchiveAgentIdentityMutation,
   useUnarchiveAgentIdentityMutation,
   useListAgentInstancesQuery,
-  useStopAgentInstanceMutation,
-  useRestartAgentInstanceMutation,
   type AgentHit,
   type AgentRecord,
 } from '../../api/endpoints/agents';
@@ -361,35 +360,17 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     [applyUrlState, urlState],
   );
 
-  const [restartAgentInstance] = useRestartAgentInstanceMutation();
-  const [stopAgentInstance] = useStopAgentInstanceMutation();
-  const [rowActionBusy, setRowActionBusy] = React.useState<Record<string, 'restart' | 'stop' | ''>>({});
+  const lifecycle = useAgentLifecycle({ toast: pushToast });
 
   const handleRowRestart = async (e: React.MouseEvent, agentId: string, instanceId: string) => {
     e.stopPropagation();
-    setRowActionBusy((prev) => ({ ...prev, [instanceId]: 'restart' }));
-    try {
-      await restartAgentInstance({ agentId, instanceId }).unwrap();
-      pushToast({ tone: 'success', title: 'Restart initiated' });
-    } catch (err: any) {
-      pushToast({ tone: 'danger', title: "Couldn't restart instance", message: agentErrorText(err) });
-    } finally {
-      setRowActionBusy((prev) => ({ ...prev, [instanceId]: '' }));
-    }
+    await lifecycle.restart({ agentId, instanceId });
   };
 
   const handleRowStop = async (e: React.MouseEvent, agentId: string, instanceId: string) => {
     e.stopPropagation();
-    setRowActionBusy((prev) => ({ ...prev, [instanceId]: 'stop' }));
-    try {
-      await stopAgentInstance({ agentId, instanceId }).unwrap();
-      pushToast({ tone: 'success', title: 'Instance stopped' });
-      void liveInstancesQuery.refetch();
-    } catch (err: any) {
-      pushToast({ tone: 'danger', title: "Couldn't stop instance", message: agentErrorText(err) });
-    } finally {
-      setRowActionBusy((prev) => ({ ...prev, [instanceId]: '' }));
-    }
+    const result = await lifecycle.stop({ agentId, instanceId });
+    if (result.status !== 'failed') void liveInstancesQuery.refetch();
   };
 
   /* ---------------- Keyboard ---------------- */
@@ -720,8 +701,8 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
               const chName = chainMap.get(chId) || chId;
               const timestamp = String(inst.started_at || inst.startedAt || inst.last_seen_at || inst.lastSeenAt || '');
               const isSelected = instId === activeInstanceId;
-              const isRestartBusy = rowActionBusy[instId] === 'restart';
-              const isStopBusy = rowActionBusy[instId] === 'stop';
+              const isRestartBusy = lifecycle.isPending('restart', instId);
+              const isStopBusy = lifecycle.isPending('stop', instId);
 
               const rTone: Tone = (status.toLowerCase() === 'running' || status.toLowerCase() === 'ready')
                 ? 'success'
@@ -759,6 +740,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
                           size="sm"
                           variant="secondary"
                           loading={isRestartBusy}
+                          disabled={isRestartBusy || isStopBusy}
                           data-debug-id={`live-instance-row-restart-${instId}`}
                           onClick={(e) => handleRowRestart(e, agtId, instId)}
                         >
@@ -768,6 +750,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
                           size="sm"
                           variant="danger"
                           loading={isStopBusy}
+                          disabled={isRestartBusy || isStopBusy}
                           data-debug-id={`live-instance-row-stop-${instId}`}
                           onClick={(e) => handleRowStop(e, agtId, instId)}
                         >

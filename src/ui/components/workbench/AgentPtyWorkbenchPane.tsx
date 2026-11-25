@@ -1,11 +1,7 @@
-import React, { Suspense, useCallback, useMemo, useState } from 'react';
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
+import React, { Suspense, useCallback, useMemo } from 'react';
 import {
   useFetchAgentInstanceQuery,
-  useStartInstanceMutation,
-  useStopAgentInstanceMutation,
-  useRestartAgentInstanceMutation,
-  isAlreadyRunningError,
-  lifecycleErrorMessage,
 } from '../../api/endpoints/agents';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import { useAuxTabActions, type AuxTabAction } from '../auxiliary/auxTabActions';
@@ -36,11 +32,10 @@ export function AgentPtyWorkbenchPane({
   const { data: liveData } = useGetAgentsLiveQuery();
 
   const instance = instanceData?.instance;
-  const [startInstance] = useStartInstanceMutation();
-  const [stopInstance] = useStopAgentInstanceMutation();
-  const [restartInstance] = useRestartAgentInstanceMutation();
-  const [actionBusy, setActionBusy] = useState<'start' | 'stop' | 'restart' | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [result, setResult] = React.useState<LifecycleResult | null>(null);
+  const { start, stop, restart, isPending } = useAgentLifecycle({ inline: setResult });
+  const actionBusy = isPending();
+  const actionError = result?.status === 'failed' ? result.message : null;
 
   const liveAgent = useMemo(() => {
     const allLive = (liveData || []).flatMap((p) =>
@@ -54,27 +49,15 @@ export function AgentPtyWorkbenchPane({
   ).toLowerCase();
   const agentId = String(instance?.agent_id || instance?.agentId || '');
   const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
-  const isStarting = actionBusy === 'start' || rawStatus === 'starting';
+  const isStarting = isPending('start') || rawStatus === 'starting';
 
   const run = useCallback(
     async (kind: 'start' | 'stop' | 'restart') => {
       if (!agentInstanceId || actionBusy) return;
-      setActionBusy(kind);
-      setActionError(null);
-      try {
-        if (kind === 'start') await startInstance({ instanceId: agentInstanceId, agentId }).unwrap();
-        else if (kind === 'stop') await stopInstance({ instanceId: agentInstanceId, agentId }).unwrap();
-        else await restartInstance({ instanceId: agentInstanceId, agentId }).unwrap();
-        refetch();
-      } catch (err) {
-        // 409 already_running on start means the desired state holds.
-        if (kind === 'start' && isAlreadyRunningError(err)) refetch();
-        else setActionError(lifecycleErrorMessage(err, `Failed to ${kind} agent`));
-      } finally {
-        setActionBusy(null);
-      }
+      const result = await ({ start, stop, restart })[kind]({ instanceId: agentInstanceId, agentId });
+      if (result.status !== 'failed') refetch();
     },
-    [actionBusy, agentId, agentInstanceId, refetch, restartInstance, startInstance, stopInstance],
+    [actionBusy, agentId, agentInstanceId, refetch, restart, start, stop],
   );
 
   const actions: AuxTabAction[] = isStopped

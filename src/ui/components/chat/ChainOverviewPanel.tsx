@@ -1,3 +1,4 @@
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
@@ -29,12 +30,7 @@ import {
 import { useListArtifactsQuery } from '../../api/endpoints/artifacts';
 import { usePaneVisible, visiblePollInterval } from '../workbench/paneVisibility';
 import {
-  useStartInstanceMutation,
-  useStopAgentInstanceMutation,
-  useRestartAgentInstanceMutation,
   useListAgentIdentitiesQuery,
-  isAlreadyRunningError,
-  lifecycleErrorMessage,
 } from '../../api/endpoints/agents';
 import { formatFleetRoleName } from '../tasks/FleetManagementDrawer';
 import ArtifactViewer from '../ArtifactViewer';
@@ -390,15 +386,11 @@ export default function ChainOverviewPanel({
     { skip: !projectVcsEnabled || !projectId, pollingInterval: slowPoll }
   );
 
-  const [startInstanceMutation] = useStartInstanceMutation();
-  const [stopInstanceMutation] = useStopAgentInstanceMutation();
-  const [restartInstanceMutation] = useRestartAgentInstanceMutation();
+  const [lifecycleResult, setLifecycleResult] = useState<LifecycleResult | null>(null);
+  const { start, stop, restart, isPending } = useAgentLifecycle({ inline: setLifecycleResult });
+  const lifecycleError = lifecycleResult?.status === 'failed' ? lifecycleResult.message : null;
 
   // Local interaction state
-  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
-  const [startingInstanceId, setStartingInstanceId] = useState<string | null>(null);
-  const [stoppingInstanceId, setStoppingInstanceId] = useState<string | null>(null);
-  const [restartingInstanceId, setRestartingInstanceId] = useState<string | null>(null);
   const [activeArtifactId, setActiveArtifactId] = useState<string>('');
   const [expandedAttentionTaskId, setExpandedAttentionTaskId] = useState<string | null>(null);
 
@@ -499,63 +491,26 @@ export default function ChainOverviewPanel({
     [names, resolveAgentName],
   );
 
-  // Handle start agent instance
   const handleStartAgent = useCallback(
     async (instanceId: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      try {
-        setLifecycleError(null);
-        setStartingInstanceId(instanceId);
-        await startInstanceMutation(instanceId).unwrap();
-        refetchChain();
-      } catch (err) {
-        // 409 already_running means the desired state holds: treat as success.
-        if (isAlreadyRunningError(err)) {
-          refetchChain();
-        } else {
-          setLifecycleError(lifecycleErrorMessage(err, 'Failed to start agent'));
-        }
-      } finally {
-        setStartingInstanceId(null);
-      }
-    },
-    [startInstanceMutation, refetchChain]
+      const result = await start(instanceId);
+      if (result.status !== 'failed') refetchChain();
+    }, [start, refetchChain]
   );
-
-  // Handle stop agent instance
   const handleStopAgent = useCallback(
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      try {
-        setLifecycleError(null);
-        setStoppingInstanceId(instanceId);
-        await stopInstanceMutation({ instanceId, agentId: agentId || '' }).unwrap();
-        refetchChain();
-      } catch (err) {
-        setLifecycleError(lifecycleErrorMessage(err, 'Failed to stop agent'));
-      } finally {
-        setStoppingInstanceId(null);
-      }
-    },
-    [stopInstanceMutation, refetchChain]
+      const result = await stop({ instanceId, agentId: agentId || '' });
+      if (result.status !== 'failed') refetchChain();
+    }, [stop, refetchChain]
   );
-
-  // Handle restart agent instance
   const handleRestartAgent = useCallback(
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      try {
-        setLifecycleError(null);
-        setRestartingInstanceId(instanceId);
-        await restartInstanceMutation({ instanceId, agentId }).unwrap();
-        refetchChain();
-      } catch (err) {
-        setLifecycleError(lifecycleErrorMessage(err, 'Failed to restart agent'));
-      } finally {
-        setRestartingInstanceId(null);
-      }
-    },
-    [restartInstanceMutation, refetchChain]
+      const result = await restart({ instanceId, agentId });
+      if (result.status !== 'failed') refetchChain();
+    }, [restart, refetchChain]
   );
 
   // Open the agent's chat (the aux host opens a sub-agent tab) or navigate to it.
@@ -624,9 +579,9 @@ export default function ChainOverviewPanel({
                 const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
                 const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
                 const isRunning = rawStatus === 'running' || rawStatus === 'idle' || rawStatus === 'ready';
-                const isStarting = startingInstanceId === instId || rawStatus === 'starting';
-                const isStopping = stoppingInstanceId === instId;
-                const isRestarting = restartingInstanceId === instId;
+                const isStarting = isPending('start', instId) || rawStatus === 'starting';
+                const isStopping = isPending('stop', instId);
+                const isRestarting = isPending('restart', instId);
                 const currentTask = memberCurrentTaskMap.get(instId);
                 const isSelected = Boolean(agentInstanceId && instId === agentInstanceId);
 

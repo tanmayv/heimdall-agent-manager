@@ -1,3 +1,4 @@
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 /**
  * AgentDetail — the agent view's guts, rendered as a full page AND as the
  * two-pane right-hand pane. Modeled after ProjectDetail.
@@ -44,8 +45,6 @@ import {
   useFetchAgentIdentityQuery,
   useListAgentInstancesQuery,
   useFetchAgentInstanceQuery,
-  useStopAgentInstanceMutation,
-  useRestartAgentInstanceMutation,
   type AgentRecord,
 } from '../../api/endpoints/agents';
 import { useListProjectsQuery } from '../../api/endpoints/projects';
@@ -557,32 +556,17 @@ export function LiveInstanceDetailPane({
   const agentRecord = agentIdentityQuery.data?.agent ? normalizeAgent(agentIdentityQuery.data.agent) : null;
   const agentDisplayName = agentRecord?.name || agentId;
 
-  const [restartInstance, { isLoading: isRestarting }] = useRestartAgentInstanceMutation();
-  const [stopInstance, { isLoading: isStopping }] = useStopAgentInstanceMutation();
-  const [actionError, setActionError] = React.useState('');
-  const [actionSuccess, setActionSuccess] = React.useState('');
+  const [lifecycleFeedback, setLifecycleFeedback] = React.useState<LifecycleResult | null>(null);
+  const lifecycle = useAgentLifecycle({ inline: setLifecycleFeedback });
+  const isRestarting = lifecycle.isPending('restart');
+  const isStopping = lifecycle.isPending('stop');
+  const actionError = lifecycleFeedback?.status === 'failed' ? lifecycleFeedback.message : '';
+  const actionSuccess = lifecycleFeedback && lifecycleFeedback.status !== 'failed' ? lifecycleFeedback.message : '';
 
-  const handleRestart = async () => {
-    setActionError('');
-    setActionSuccess('');
-    try {
-      await restartInstance({ agentId, instanceId }).unwrap();
-      setActionSuccess('Restart initiated successfully.');
-    } catch (err: any) {
-      setActionError(agentErrorText(err, "Couldn't restart this instance."));
-    }
-  };
-
+  const handleRestart = async () => { await lifecycle.restart({ agentId, instanceId }); };
   const handleStop = async () => {
-    setActionError('');
-    setActionSuccess('');
-    try {
-      await stopInstance({ agentId, instanceId }).unwrap();
-      setActionSuccess('Instance stopped.');
-      onStopped?.();
-    } catch (err: any) {
-      setActionError(agentErrorText(err, "Couldn't stop this instance."));
-    }
+    const result = await lifecycle.stop({ agentId, instanceId });
+    if (result.status !== 'failed') onStopped?.();
   };
 
   if (instanceQuery.isLoading && !inst) {

@@ -81,8 +81,8 @@ for (const [name, run] of [
 
 test('isAlreadyRunningError recognises already_running only, not every 409', () => {
   assert.equal(agents.isAlreadyRunningError({ originalStatus: 409, details: { code: 'already_running' } }), true);
-  assert.equal(agents.isAlreadyRunningError({ data: { error: { message: 'already_running' } } }), true);
-  assert.equal(agents.isAlreadyRunningError({ error: 'Agent already running' }), true);
+  assert.equal(agents.isAlreadyRunningError({ data: { error: { message: 'already_running' } } }), false);
+  assert.equal(agents.isAlreadyRunningError({ error: 'Agent already running' }), false);
   // start_raced is also a 409 but is a real failure.
   assert.equal(agents.isAlreadyRunningError({ originalStatus: 409, details: { code: 'start_raced' }, error: 'instance changed before runtime action' }), false);
   assert.equal(agents.isAlreadyRunningError({ status: 409 }), false);
@@ -120,22 +120,16 @@ for (const [code, message, expected] of [
   });
 }
 
-test('AgentChatPane Start uses /start, not /restart', () => {
-  const src = read('src/ui/components/workbench/AgentChatPane.tsx');
-  assert.match(src, /if \(needsStart\) await startInstance\(/);
-  assert.doesNotMatch(src, /if \(needsStart\) await restartInstance\(/);
-});
-
-test('lifecycle actions unwrap results and surface errors instead of swallowing them', () => {
-  for (const rel of ['src/ui/components/chat/ChainOverviewPanel.tsx', 'src/ui/components/workbench/AgentPtyWorkbenchPane.tsx']) {
-    const src = read(rel);
-    for (const m of ['startInstance', 'stopInstance', 'restartInstance']) {
-      const re = new RegExp(`await ${m}(?:Mutation)?\\(.*?\\)(\\.unwrap\\(\\))?`, 'g');
-      const hits = [...src.matchAll(re)];
-      assert.ok(hits.length > 0, `${rel} calls ${m}`);
-      for (const h of hits) assert.ok(h[1], `${rel}: ${h[0]} must be unwrapped`);
-    }
-    assert.match(src, /role="alert"/, `${rel} renders lifecycle failures`);
-    assert.doesNotMatch(src, /console\.error\('Failed to (start|stop|restart) agent/);
+test('migrated lifecycle surfaces use the shared hook and retain inline failure regions', () => {
+  for (const rel of [
+    'agents/AgentListPage.tsx', 'agents/AgentDetail.tsx', 'workbench/AgentChatPane.tsx',
+    'chat/ChainOverviewPanel.tsx', 'workbench/AgentPtyWorkbenchPane.tsx', 'projects/ProjectLaunchModal.tsx',
+  ]) {
+    const src = read('src/ui/components/' + rel);
+    assert.match(src, /useAgentLifecycle/);
+    assert.doesNotMatch(src, /use(?:StartInstance|StartAgentInstance|StopAgentInstance|RestartAgentInstance|CreateAgentInstance|ApplyInstanceConfiguration|RetryInstanceConfiguration)Mutation/);
+  }
+  for (const rel of ['chat/ChainOverviewPanel.tsx', 'workbench/AgentPtyWorkbenchPane.tsx']) {
+    assert.match(read('src/ui/components/' + rel), /role="alert"/);
   }
 });

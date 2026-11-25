@@ -95,10 +95,7 @@ const IDENTITY_MAX_PAGES = 40;
  */
 export function isAlreadyRunningError(err: any): boolean {
   if (!err) return false;
-  const code = err.details?.code || err.code || err.data?.error?.details?.code || err.data?.error?.code;
-  if (code) return code === 'already_running';
-  const text = String(err.data?.error?.message || err.error || err.message || '').toLowerCase();
-  return text.includes('already_running') || text.includes('already running');
+  return (err.details?.code || err.data?.error?.details?.code) === 'already_running';
 }
 
 /** Human-readable text for a failed RTK mutation result/error. */
@@ -608,7 +605,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations/retry`, 'POST', body);
           return { data: normalizeInstanceReconfiguration(data) };
-        } catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+        } catch (error: any) { return { error: customQueryError(error) as any }; }
       },
       // The instance itself changes later and announces it (agent_instance/config_changed).
       invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
@@ -618,7 +615,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations`, 'POST', body);
           return { data: normalizeInstanceReconfiguration(data) };
-        } catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+        } catch (error: any) { return { error: customQueryError(error) as any }; }
       },
       // The instance itself changes later and announces it (agent_instance/config_changed).
       invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],

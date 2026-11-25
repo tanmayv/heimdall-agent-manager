@@ -1,3 +1,4 @@
+import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 import { FloatingComposerDock, FloatingComposerForm, FloatingComposerCard } from '../chat/FloatingComposerDock';
 import { PlainMessageBody } from '../chat/PlainMessageBody';
 import { formatMessageTimestamp } from '../chat/formatMessageTimestamp';
@@ -55,15 +56,9 @@ import {
 import {
   useFetchAgentInstanceQuery,
   useFetchAgentIdentityQuery,
-  useApplyInstanceConfigurationMutation,
-  useRetryInstanceConfigurationMutation,
   useListInstanceReconfigurationsQuery,
   type InstanceReconfiguration,
   reconfigurationSettled,
-  useRestartAgentInstanceMutation,
-  useStartInstanceMutation,
-  useStopAgentInstanceMutation,
-  isAlreadyRunningError,
 } from '../../api/endpoints/agents';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
@@ -787,12 +782,18 @@ export function AgentChatPane({
   const [sendMessage] = useSendConversationMessageMutation();
   const [answerQuestions] = useAnswerConversationQuestionsMutation();
   const [markRead] = useMarkConversationReadMutation();
-  const [reconfigureInstance, reconfigureState] = useApplyInstanceConfigurationMutation();
-  const [retryConfiguration, retryConfigurationState] =
-    useRetryInstanceConfigurationMutation();
-  const [restartInstance, restartState] = useRestartAgentInstanceMutation();
-  const [startInstance, startState] = useStartInstanceMutation();
-  const [stopInstance, stopState] = useStopAgentInstanceMutation();
+  const configurationIntent = useRef<{ signature: string; key: string } | null>(null);
+  function configurationIntentKey(request: object) {
+    const signature = JSON.stringify(request);
+    if (configurationIntent.current?.signature !== signature) {
+      configurationIntent.current = {
+        signature,
+        key: globalThis.crypto?.randomUUID?.() || `apply-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      };
+    }
+    return configurationIntent.current.key;
+  }
+  const lifecycle = useAgentLifecycle({ inline: result => { if (result) setReconfigStatus(result.message); } });
 
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
   const agentInstanceId = String(
@@ -1547,11 +1548,9 @@ export function AgentChatPane({
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy =
     operationInFlight ||
-    retryConfigurationState.isLoading ||
-    reconfigureState.isLoading ||
-    restartState.isLoading ||
-    startState.isLoading ||
-    stopState.isLoading;
+    lifecycle.isPending('retry') ||
+    lifecycle.isPending('reconfigure') ||
+    lifecycle.isPending();
   // Composer "Bypass permissions" toggle: the catalog descriptor for the
   // instance's provider comes from the bridge provider-status (only fetched
   // while the settings panel is open).
@@ -2300,19 +2299,9 @@ export function AgentChatPane({
     if (!agentId || !agentInstanceId || runtimeActionBusy) return;
     setStatusMenuOpen(false);
     setReconfigStatus(needsStart ? 'Starting…' : 'Stopping…');
-    try {
-      // A stopped instance is started (POST /start); /restart is only for live ones.
-      if (needsStart) await startInstance({ agentId, instanceId: agentInstanceId }).unwrap();
-      else await stopInstance({ agentId, instanceId: agentInstanceId }).unwrap();
-      setReconfigStatus(needsStart ? 'Start requested.' : 'Stop requested.');
-    } catch (err: any) {
-      // 409 already_running: the instance is up, which is what Start wanted.
-      if (needsStart && isAlreadyRunningError(err)) {
-        setReconfigStatus('Already running.');
-        return;
-      }
-      setReconfigStatus(errMsg(err, needsStart ? 'Start failed' : 'Stop failed'));
-    }
+    await (needsStart
+      ? lifecycle.start({ agentId, instanceId: agentInstanceId })
+      : lifecycle.stop({ agentId, instanceId: agentInstanceId }));
   }
 
   async function applyReconfigure() {
@@ -2320,17 +2309,13 @@ export function AgentChatPane({
       return;
     if (operation?.phase === 'recovery_required') {
       setReconfigStatus('Retrying configuration change…');
-      try {
-        const retried = await retryConfiguration({
-          instanceId: agentInstanceId,
-          idempotency_key: operation.idempotency_key,
-          expected_operation_revision: operation.revision,
-        }).unwrap();
-        setAcceptedOperation(retried);
-        setReconfigStatus('');
-      } catch (error: any) {
-        setReconfigStatus(errMsg(error, 'Recovery retry failed'));
-      }
+      const result = await lifecycle.retry({
+        instanceId: agentInstanceId,
+        idempotency_key: operation.idempotency_key,
+        expected_operation_revision: operation.revision,
+      });
+      if (result.status === 'accepted') setAcceptedOperation(result.data);
+      if (result.status === 'accepted') setReconfigStatus('');
       return;
     }
     const nextProvider = provider || providerOptions[0] || '';
@@ -2343,46 +2328,36 @@ export function AgentChatPane({
     setReconfigStatus(
       `Applying configuration on ${bridgeLabel || instanceBridgeId || 'this bridge'}…`,
     );
-    try {
-      const applied = await reconfigureInstance({
-        instanceId: agentInstanceId,
-        bridge_id: destinationBridgeId,
-        project_id: destinationProjectId,
-        provider: nextProvider,
-        provider_profile: effectiveProfile,
-        model: nextModel,
+    const result = await lifecycle.reconfigure({
+      instanceId: agentInstanceId,
+      bridge_id: destinationBridgeId,
+      project_id: destinationProjectId,
+      provider: nextProvider,
+      provider_profile: effectiveProfile,
+      model: nextModel,
+      expected_revision: Number(instance?.configuration_revision || 0),
+      idempotency_key: configurationIntentKey({
+        instanceId: agentInstanceId, bridge_id: destinationBridgeId, project_id: destinationProjectId,
+        provider: nextProvider, provider_profile: effectiveProfile, model: nextModel,
         expected_revision: Number(instance?.configuration_revision || 0),
-        idempotency_key:
-          globalThis.crypto?.randomUUID?.() ||
-          `apply-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      }).unwrap();
-      setAcceptedOperation(applied);
-      setReconfigStatus('');
-    } catch (err: any) {
-      setReconfigStatus(errMsg(err, 'Configuration change failed'));
-    }
+      }),
+    });
+    if (result.status === 'accepted') setAcceptedOperation(result.data);
+    if (result.status === 'accepted') setReconfigStatus('');
   }
 
   async function togglePermissionBypass(bypass: boolean) {
     if (!agentInstanceId || !instance || runtimeActionBusy) return;
     setRuntimeMenuOpen(false);
-    setReconfigStatus(
-      bypass ? 'Restarting with permissions bypassed…' : 'Restarting with permission approvals…',
+    setReconfigStatus(bypass ? 'Requesting permission bypass…' : 'Requesting permission approvals…');
+    const request = permissionToggleRequest(
+      { ...instance, agent_instance_id: agentInstanceId }, bypass, '',
     );
-    try {
-      const applied = await reconfigureInstance(
-        permissionToggleRequest(
-          { ...instance, agent_instance_id: agentInstanceId },
-          bypass,
-          globalThis.crypto?.randomUUID?.() ||
-            `perm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        ),
-      ).unwrap();
-      setAcceptedOperation(applied);
-      setReconfigStatus('');
-    } catch (err: any) {
-      setReconfigStatus(errMsg(err, 'Permission mode change failed'));
-    }
+    const result = await lifecycle.reconfigure({
+      ...request, idempotency_key: configurationIntentKey(request),
+    });
+    if (result.status === 'accepted') setAcceptedOperation(result.data);
+    if (result.status === 'accepted') setReconfigStatus('');
   }
 
   async function forceStopRuntime() {
@@ -2390,24 +2365,16 @@ export function AgentChatPane({
       !agentId ||
       !agentInstanceId ||
       (needsStart && !operationBlocksInput) ||
-      stopState.isLoading ||
-      reconfigureState.isLoading ||
-      retryConfigurationState.isLoading
+      lifecycle.isPending('stop') ||
+      lifecycle.isPending('reconfigure') ||
+      lifecycle.isPending('retry')
     )
       return;
     setReconfigStatus('Force stopping…');
-    try {
-      await stopInstance({
-        agentId,
-        instanceId: agentInstanceId,
-        force: true,
-      }).unwrap();
-      setReconfigStatus(
-        'Force stop requested. Waiting for confirmed termination…',
-      );
-    } catch (err: any) {
-      setReconfigStatus(errMsg(err, 'Force stop failed'));
-    }
+    const result = await lifecycle.stop({
+      agentId, instanceId: agentInstanceId, force: true,
+    });
+    if (result.status === 'accepted') setReconfigStatus('Force stop requested. Waiting for confirmed termination…');
   }
 
   function resetRuntimeConfiguration() {
@@ -2480,9 +2447,9 @@ export function AgentChatPane({
             disabled={
               !agentInstanceId ||
               (needsStart && !operationBlocksInput) ||
-              stopState.isLoading ||
-              reconfigureState.isLoading ||
-              retryConfigurationState.isLoading ||
+              lifecycle.isPending('stop') ||
+              lifecycle.isPending('reconfigure') ||
+              lifecycle.isPending('retry') ||
               instanceBridge?.runtime_connected !== true
             }
             onClick={() => void forceStopRuntime()}
@@ -2858,9 +2825,9 @@ export function AgentChatPane({
                     type="button"
                     data-debug-id="conversation-recovery-force-stop-btn"
                     disabled={
-                      stopState.isLoading ||
-                      reconfigureState.isLoading ||
-                      retryConfigurationState.isLoading ||
+                      lifecycle.isPending('stop') ||
+                      lifecycle.isPending('reconfigure') ||
+                      lifecycle.isPending('retry') ||
                       instanceBridge?.runtime_connected !== true
                     }
                     onClick={() => void forceStopRuntime()}
