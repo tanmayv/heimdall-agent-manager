@@ -191,6 +191,14 @@ capabilities, conflicting operations and native recovery failures remain visible
 as typed target failures. Retry retains operation keys and skips ready targets;
 nonretryable changed targets require a fresh Apply after inspection.
 
+An explicit native launch retry may issue new command/message IDs so an earlier
+failed delivery can be retried. It retains the native operation key, launch epoch,
+instance/configuration/run generation, runtime destination, claim/worktree and
+review gates, and never repeats an acknowledged source stop. Redelivery of one
+accepted command instead reuses its persisted frame byte-for-byte. These are
+separate guarantees; whole-command equality across two explicit delivery IDs is
+not required.
+
 The shared service calls existing durable instance reconfiguration. It sends the
 existing stop and launch commands and observes the acknowledged destination epoch
 and startup readiness before reporting `ready`. Command acceptance is insufficient.

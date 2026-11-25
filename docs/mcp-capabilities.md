@@ -342,6 +342,11 @@ are rejected. Reuse the identical request ID and complete draft after an
 ambiguous Apply response; changed arguments conflict. Retry continues the
 original application/native keys and skips successful targets.
 
+Explicit launch retry can use fresh command/message IDs while preserving native
+operation/epoch, runtime generation, claim/worktree and review gates. Redelivery
+of the same accepted command is byte-frozen. An acknowledged source stop is
+never repeated by a destination launch retry.
+
 Fleet Apply is explicitly authorized to restart eligible **active-task holders**
 with `mcp:instances:control`; it preserves claim, context/worktree and review
 gates. It does not require a task hold or another capability. It only targets

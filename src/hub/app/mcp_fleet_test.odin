@@ -73,6 +73,8 @@ mcp_fleet_lifecycle_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_H
 	sink.fail=true
 	op,op_found,_:=iface.instance_reconfiguration_get(&g.repos.agents,view.owner,i.agent_instance_id,target.operation_key)
 	if !testing.expect(t,op_found) do return
+	initial_operation_id:=strings.clone(op.operation_id,context.temp_allocator)
+	initial_stop_command_id:=strings.clone(op.stop_command_id,context.temp_allocator)
 	agent.apply_reconfiguration_command_result(&g.agents,b.bridge_id,op.stop_command_id,`{"status":"succeeded"}`)
 	domain.instance_reconfiguration_destroy(&op)
 	fleet.reconcile(&g.fleet)
@@ -90,9 +92,24 @@ mcp_fleet_lifecycle_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_H
 	sink.fail=false
 	retried:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"fleet.retry",status_args))
 	if !testing.expect(t,retried!=nil && len(sink.commands)==3) do return
-	testing.expect(t,retried["state"].(json.String)=="restarting" && sink.commands[2].body_json==launch,"retry reuses frozen destination launch and never repeats the stop")
+	testing.expect_value(t,string(retried["state"].(json.String)),"restarting")
+	// Explicit native retry uses fresh delivery IDs while keeping the accepted
+	// operation and runtime generation. All other launch bytes must stay equal.
+	first_id,retry_id:=sink.commands[1].command_id,sink.commands[2].command_id
+	testing.expect(t,first_id!=retry_id && strings.has_prefix(retry_id,"cmd_reconfig_launch_retry_"))
+	normalized_launch,_:=strings.replace_all(launch,first_id,retry_id,context.temp_allocator)
+	testing.expect(t,sink.commands[2].body_json==normalized_launch,"explicit retry changes only command/message IDs, preserving the entire runtime/claim/worktree payload")
+	op,_,_=iface.instance_reconfiguration_get(&g.repos.agents,view.owner,i.agent_instance_id,target.operation_key)
+	testing.expect(t,op.operation_id==initial_operation_id && op.idempotency_key==target.operation_key && op.launch_epoch==after.launch_epoch && op.expected_revision==i.configuration_revision && op.source_stopped && op.stop_command_id==initial_stop_command_id)
+	domain.instance_reconfiguration_destroy(&op)
+	retry_inst,_,_:=iface.agent_get_instance(&g.repos.agents,i.agent_instance_id)
+	testing.expect(t,retry_inst.agent_instance_id==after.agent_instance_id && retry_inst.configuration_revision==after.configuration_revision && retry_inst.run_count==after.run_count && retry_inst.launch_epoch==after.launch_epoch && retry_inst.provider==after.provider && retry_inst.provider_profile==after.provider_profile && retry_inst.model==after.model && retry_inst.conversation_id==after.conversation_id && retry_inst.permission_mode==after.permission_mode)
+	// A redelivery of this accepted retry command is a different operation from
+	// requesting another retry: it must reuse the persisted frame byte-for-byte.
+	agent.reconcile_instance_reconfigurations(&g.agents,b.bridge_id)
+	testing.expect(t,len(sink.commands)==4 && sink.commands[3].command_id==retry_id && sink.commands[3].body_json==sink.commands[2].body_json,"same-command redelivery is byte-frozen and does not repeat the acknowledged source stop")
 	dup:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"fleet.apply",draft))
-	testing.expect(t,dup!=nil && dup["application_id"].(json.String)==app_id && len(sink.commands)==3)
+	testing.expect(t,dup!=nil && dup["application_id"].(json.String)==app_id && len(sink.commands)==4)
 	op,_,_=iface.instance_reconfiguration_get(&g.repos.agents,view.owner,i.agent_instance_id,target.operation_key)
 	testing.expect(t,op.launch_epoch==after.launch_epoch && op.expected_revision==i.configuration_revision)
 	domain.instance_reconfiguration_destroy(&op)
@@ -100,16 +117,16 @@ mcp_fleet_lifecycle_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_H
 	_,_,_=iface.agent_save_instance(&g.repos.agents,after)
 	agent.reconcile_active_reconfigurations(&g.agents);fleet.reconcile(&g.fleet)
 	status=mcp_task_test_output(t,mcp_task_test_call(h,headers,"fleet.status",status_args))
-	testing.expect(t,status!=nil && status["state"].(json.String)=="ready" && len(sink.commands)==3)
+	testing.expect(t,status!=nil && status["state"].(json.String)=="ready" && len(sink.commands)==4)
 	_=mcp_task_test_output(t,mcp_task_test_call(h,headers,"fleet.retry",status_args))
-	testing.expect_value(t,len(sink.commands),3)
+	testing.expect_value(t,len(sink.commands),4)
 	current,stillheld,_=iface.taskchain_get_lease_by_holder(&g.repos.taskchains,i.agent_instance_id)
 	testing.expect(t,stillheld && current.lease_id==before.lease_id && current.attempt_no==before.attempt_no && current.provider=="claude" && current.model==model)
 	task_after,_,_:=iface.taskchain_get_task(&g.repos.taskchains,before.task_id)
 	testing.expect(t,task_after.requires_user_approval && task_after.brief_json==task.brief_json && task_after.state==task.state)
 	untouched,_,_:=iface.agent_get_instance(&g.repos.agents,other.agent_instance_id)
 	testing.expect(t,untouched.configuration_revision==other.configuration_revision && untouched.launch_epoch==other.launch_epoch && untouched.model==other.model,"second bridge remains isolated")
-	testing.expect(t,!sink.inside_transaction && len(sink.commands)==3,"only native stop/start/retry commands; no Fleet startup settings request")
+	testing.expect(t,!sink.inside_transaction && len(sink.commands)==4,"only native stop/start/retry/redelivery commands; no Fleet startup settings request")
 }
 mcp_fleet_cancel_after_save :: proc(ctx:rawptr)->bool {n:=(^int)(ctx);n^+=1;return n^>=3}
 mcp_fleet_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View,raw:string) {
