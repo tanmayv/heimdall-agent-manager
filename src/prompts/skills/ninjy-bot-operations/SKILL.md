@@ -5,7 +5,7 @@ description: Use as the Ninjy bot for chain delegation and cleanup, project, mem
 
 # Ninjy bot operations
 
-Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “Run a command”). Act only on requests the user writes in chat.
+Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “Run a command”). Act only on requests the user writes in chat. Channel replies, history and chain-event updates: `ninjy-channel-communication`.
 
 ## How to work
 1. Work out what the user wants and which chain, project, memory, agent or server they mean. Then decide:
@@ -41,24 +41,11 @@ Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “R
 - Reply with the chain title and say the message was sent.
 
 ### Automations (event and cron actions)
-- When the user requests a recurring or event-driven prompt, use ham-ctl automations.
-  These commands act for your instance owner. Action cards use actions/cards separately.
-- Discover existing rules with ham-ctl automations list and show <id>, and discover
-  supported fields, operators and limits with ham-ctl automations trigger-types.
-- Create: ham-ctl automations create --prompt "<text>" --target bot --trigger "cron:0 9 * * 1-5@Asia/Kolkata".
-  Use the user's timezone; ask if it is unknown. Explicit --bot <id>, --instance <id>
-  or --agent-id <id> select another owned target.
-- Events: --trigger "event:chain.state,state=eq:completed" --entity <chain_id> --delay 30.
-  eq/ne/in/not_in/exists are supported; in/not_in separate values with |.
-  Multiple comma checks form all-of. For any/not groups use --filter-file <path>
-  containing a JSON tree after --trigger. Do not send the removed data map/chain_id.
-- Updates: ham-ctl automations update <id> --enable or --disable; --prompt updates text.
-  Target flags replace the whole target; trigger flags replace all triggers.
-- Diagnose with ham-ctl automations runs <id> (event_params._match contains revision
-  and pre-order T/F trace) and filter-test --event-type <type> --filter-file <path>
-  --event-file <path>. A mismatched revision means the rule changed after the run.
-- Delete only when requested: ham-ctl automations delete <id>. Use <verb> --help
-  for every flag. A cap error means the owner has reached the configured rule limit.
+- When the user requests a recurring or event-driven prompt, use `ham-ctl automations`. These commands act for your instance owner. Action cards use actions/cards separately. Syntax, trigger specs, filters, `runs`, `filter-test`, updates and limits are in `ham-ctl-reference` under “automations — event and cron rules”; webhooks are in its “Agent webhook management”.
+- Look at existing rules first with `ham-ctl automations list` and `show <id>`.
+- Bot default: `ham-ctl automations create --prompt "<text>" --target bot --trigger "cron:0 9 * * 1-5@Asia/Kolkata"`. Use the user's timezone; ask if it is unknown. Explicit `--bot <id>`, `--instance <id>` or `--agent-id <id>` select another owned target.
+- Event example: `--trigger "event:chain.state,state=eq:completed" --entity <chain_id> --delay 30`. Do not send the removed data map/chain_id.
+- Delete only when requested: `ham-ctl automations delete <id>`.
 
 ### Daily brief
 - Only when the user asks for a daily or morning brief. Never create it unprompted.
@@ -96,6 +83,7 @@ Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “R
 - Start a server: `./bin/ham-ctl shell serve --cmd '<command>' --cwd <path> --port <port> --bridge <bridge_id> --label "<short label>"`. Use the command and port the user gave, or the project's usual dev command; ask if you do not know them.
 - The answer has a `preview_url`. Send it to the user exactly as returned, with one line: "Open it where you are signed in to Ninjy; the first time on a new browser it asks you to sign in." Never build a preview link yourself and never send a localhost address.
 - See running servers: `./bin/ham-ctl shell list`. Stop one when the user asks: `./bin/ham-ctl shell kill <session_id>`.
+- Session kinds, flags and limits are in `shell-sessions`; how a preview behaves and how to fix a blank one is in `heimdall-preview-setup`.
 
 ### Run a command
 Approval rules (present the command, standing approval, deletes/overwrites/stops/reboots/force-pushes) are in “Run a command” in CLAUDE.md/AGENTS.md. Before running, say: "I'm about to run `<command>` in <path> on <machine>." (a numbered list for several, each with path and machine), then ask "Go ahead?" and stop. For a standing approval, repeat the scope back in one line, e.g. "OK: I'll run git commands on any machine without asking."
@@ -105,46 +93,7 @@ Approval rules (present the command, standing approval, deletes/overwrites/stops
 - Reply with the exit status and at most the last 20 lines of output, shortened to fit one chat message. Never send output that looks like a secret; omit sensitive output and say it was omitted.
 
 ### When work is done
-Follow “When work is done” in CLAUDE.md/AGENTS.md (stop eligible agents with `./bin/ham-ctl agents stop <agent_instance_id> --reason chain_work_done`). To ask a coordinator to finish: `./bin/ham-ctl chat send --to <coordinator_agent_instance_id> --body "The work is done; please complete the chain and tell me when it is completed."`. Do not complete or archive another agent's chain yourself.
-
-## Agent webhook management
-
-Use the authenticated agent group, scoped to the instance owner:
-
-```bash
-ham-ctl automations webhooks create --name 'CI build'
-ham-ctl automations webhooks list
-ham-ctl automations webhooks show wh_1
-ham-ctl automations webhooks rotate wh_1
-ham-ctl automations webhooks disable wh_1
-ham-ctl automations webhooks enable wh_1
-ham-ctl automations webhooks test wh_1 --token-file webhook.secret --body-file sample.json
-ham-ctl automations webhooks delete wh_1
-```
-
-Create and rotate return a token and both bearer/secret URLs **once**; save them securely. Rotation immediately
-invalidates the old token. List/show/enable/disable never return tokens or hashes.
-Foreign and unknown webhook IDs return not found. Use each verb's `--help` for
-flags and examples; global transport flags are `--bridge-endpoint` and `--agent-token`.
-
-`test` requires the current webhook token. Prefer `--token-file <path>`
-(whitespace trimmed) to keep the secret out of argv and transcripts; `--token`
-also accepts it inline. A disabled owned webhook returns a clear conflict.
-Relay failed-auth limits are keyed by authenticated owner, separate from public
-IP limits; global and per-webhook limits still apply. It accepts a JSON-object
-`--body-file` or inline `--data` (default `{}`). It POSTs through normal ingress, subject to the same
-enabled state, token checks, body/depth and rate limits. It emits a **real**
-`webhook.received` event and can fire automations; it is not a dry run.
-The relay marks samples with the agent-instance actor and `data._test=true`.
-To exclude them, add `{"not":{"field":"data._test","op":"eq","value":true}}`
-to the rule. This does **not** test public networking, proxies or TLS. For that:
-
-```bash
-curl -X POST <bearer_url> -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' -d '{"hello":"world"}'
-# Or use <secret_url> without the Authorization header.
-```
-
-External callers POST JSON to `/api/v1/hooks/<id>` with
-`Authorization: Bearer <webhook-token>`. Never embed the token in event filters,
-prompts or screenshots. Filters use `entity.id` for the webhook ID and `data.*`
-for submitted JSON fields.
+- Verify completion first: a completed chain event, or `./bin/ham-ctl task-chain show <chain_id>` showing the chain completed. Check status when the user asks about the chain.
+- If the coordinator reports finished work while the chain is still open, ask it to finish: `./bin/ham-ctl chat send --to <coordinator_agent_instance_id> --body "The work is done; please complete the chain and tell me when it is completed."`. Do not complete or archive another agent's chain yourself.
+- Once the chain is completed, stop its eligible agents without asking. List `./bin/ham-ctl agents instance list --live`, keep instances with that `chain_id` and an empty `current_task_id`, and exclude your own instance. For each run `./bin/ham-ctl agents stop <agent_instance_id> --reason chain_work_done`. Leave busy agents running (a `chain.work_finished` event is not completion: wait for the chain to be completed before stopping anyone).
+- Send one plain-text update with the chain title and ID, the coordinator's one-line result if available, and which instances you stopped. On a duplicate completion event, check the earlier update before sending again.
