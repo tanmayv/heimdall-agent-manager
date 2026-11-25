@@ -6,6 +6,7 @@ type MarkdownProps = {
   source: string;
   className?: string;
   compact?: boolean;
+  variant?: 'conversation';
   copyAll?: boolean;
   onTextSelectionChange?: (selection: MarkdownTextSelection | null) => void;
   /** Word-by-word reveal of a live reply (chat/streamReveal.ts). Omit to render instantly. */
@@ -15,12 +16,13 @@ type MarkdownProps = {
 
 export { renderMarkdown } from './MarkdownBody';
 
-export default function Markdown({ source, className, compact, copyAll = true, onTextSelectionChange, reveal, 'data-debug-id': dataDebugId }: MarkdownProps) {
+export default function Markdown({ source, className, compact, variant, copyAll = true, onTextSelectionChange, reveal, 'data-debug-id': dataDebugId }: MarkdownProps) {
   return (
     <MarkdownBody
       source={source}
       className={className}
       compact={compact}
+      variant={variant}
       copyAll={copyAll}
       data-debug-id={dataDebugId}
       onArtifactClick={openArtifactPage}

@@ -197,12 +197,22 @@ async function ensureLang(hl: HighlighterCore, lang: string): Promise<boolean> {
 // Highlight `code` for `lang`, returning Shiki's <pre class="shiki">…</pre> HTML.
 // Returns null on any failure or when the language is unsupported, so the caller
 // can fall back to a plain, un-highlighted <pre>.
-export async function highlightCode(code: string, lang: string, themeId?: string): Promise<string | null> {
+export async function highlightCode(code: string, lang: string, themeId?: string | { light: string; dark: string }): Promise<string | null> {
   const rawLang = String(lang || '').trim().toLowerCase();
   if (!rawLang) return null;
   const language = languageForFile(`file.${rawLang}`) || rawLang;
   try {
     const hl = await getHighlighter();
+    if (typeof themeId === 'object') {
+      const themes = themeId;
+      const ready = await Promise.all([
+        ensureTheme(hl, themes.light),
+        ensureTheme(hl, themes.dark),
+        ensureLang(hl, language),
+      ]);
+      if (!ready.every(Boolean)) return null;
+      return hl.codeToHtml(code, { lang: language, themes, defaultColor: false, structure: 'classic' });
+    }
     const shikiTheme = getActiveShikiTheme(themeId);
     await ensureTheme(hl, shikiTheme);
     if (!(await ensureLang(hl, language))) return null;

@@ -1,7 +1,7 @@
 @import '@xterm/xterm/css/xterm.css';
 @import './tokens.css';
 
-/* Design system: page titles, section headings and agent replies are set in the serif. */
+/* Design system: page titles and section headings are set in the serif. */
 .text-display,
 .text-headline,
 .text-headline-sm,
@@ -1028,6 +1028,95 @@ body {
   font-size: 12px;
   padding: 0.75rem;
   overflow-x: auto;
+}
+
+/* Conversation transcript styling. Compact Markdown is also used outside chat. */
+.markdown.conversation-markdown {
+  font-family: var(--font-body);
+}
+
+.conversation-markdown .markdown-table {
+  border: 0;
+  border-radius: 0;
+}
+
+.conversation-markdown .markdown-table > :first-child {
+  justify-content: flex-end;
+  border: 0;
+  background: transparent;
+  padding: 0 0 0.25rem;
+}
+
+.conversation-markdown .markdown-table > :first-child > span {
+  display: none;
+}
+
+.conversation-markdown .markdown-table :is(table, thead) {
+  background: transparent;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.conversation-markdown .markdown-table :is(th, td) {
+  padding: 0.625rem 1rem;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: normal;
+}
+
+.conversation-markdown .markdown-table th {
+  font-weight: 700;
+}
+
+.conversation-markdown .markdown-table tr > :first-child {
+  padding-inline-start: 0;
+}
+
+.conversation-markdown .markdown-table tr > :last-child {
+  padding-inline-end: 0;
+}
+
+.conversation-markdown .markdown-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.conversation-markdown [data-code-block] {
+  border-radius: var(--fd-radius-lg);
+  background: color-mix(in oklab, var(--color-surface-raised) 22%, var(--color-surface));
+}
+
+.conversation-markdown [data-code-block] > :first-child {
+  border: 0;
+  padding: 0.75rem 1rem 0;
+}
+
+.conversation-markdown [data-code-block] > :first-child > span {
+  font-family: inherit;
+}
+
+.conversation-markdown [data-code-block] pre {
+  padding: 0.75rem 1rem 1rem;
+  font: 0.875em/1.6 var(--font-mono);
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.conversation-markdown [data-code-block] :is(pre.shiki, pre.shiki span) {
+  color: var(--shiki-dark, inherit);
+}
+
+:is([data-theme="catppuccin-latte"], [data-theme="tokyo-night-day"])
+  .conversation-markdown [data-code-block] :is(pre.shiki, pre.shiki span) {
+  color: var(--shiki-light, inherit);
+}
+
+.conversation-markdown code:not(pre code) {
+  border-radius: var(--fd-radius-sm);
+  background: var(--color-neutral-soft);
+  padding: 0.1rem 0.3rem;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-weight: 400;
 }
 
 /* Sidebar update badge: a glowing pulse around the border while it shows the
