@@ -165,7 +165,9 @@ async function scenario(tag, oldBin, { setupExit, profile, jsonProgress }) {
     if (jsonProgress) wantArgv.push('--json-progress');
     eq(rec && rec.argv, wantArgv, `${label}: setup argv is update_setup_argv's`);
     check(rec && rec.argv.includes('--reinstall') === !NO_REINSTALL.has(tag), `${label}: --reinstall ${NO_REINSTALL.has(tag) ? 'absent (S8b shape)' : 'present'}`);
-    eq(rec && [rec.stdin_tty, rec.stdout_tty, rec.stderr_tty], [false, false, false], `${label}: setup has no terminal`);
+    // Windows: the detached stdin is the NUL device, which Odin's is_terminal reports as a
+    // character device (CI run 45567272116), so only stdout/stderr are meaningful there.
+    eq(rec && (WIN ? [rec.stdout_tty, rec.stderr_tty] : [rec.stdin_tty, rec.stdout_tty, rec.stderr_tty]), WIN ? [false, false] : [false, false, false], `${label}: setup has no terminal`);
     check(fs.existsSync(path.join(home, '.heimdall-auto-update.lock')), `${label}: the user-wide auto-update lock file exists while setup runs`);
 
     // The worker holds the lock for as long as setup runs: a second automatic worker is refused.
