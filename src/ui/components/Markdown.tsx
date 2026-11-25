@@ -1,6 +1,4 @@
-import { useState } from 'react';
-import { useSelector } from 'react-redux';
-import ArtifactViewer from './ArtifactViewer';
+import { openArtifactPage } from '../utils/artifactPage';
 import MarkdownBody, { type MarkdownTextSelection } from './MarkdownBody';
 import type { StreamRevealOptions } from './chat/streamReveal';
 
@@ -17,36 +15,17 @@ type MarkdownProps = {
 
 export { renderMarkdown } from './MarkdownBody';
 
-function canUseAmbientApiAuth(): boolean {
-  if (typeof window === 'undefined') return false;
-  return window.location.protocol === 'http:' || window.location.protocol === 'https:';
-}
-
-function artifactViewerSession(session: any) {
-  if (canUseAmbientApiAuth()) return { daemonUrl: '', clientToken: 'v1' };
-  return { daemonUrl: String(session?.daemonUrl || ''), clientToken: String(session?.clientToken || '') };
-}
-
 export default function Markdown({ source, className, compact, copyAll = true, onTextSelectionChange, reveal, 'data-debug-id': dataDebugId }: MarkdownProps) {
-  const session = useSelector((state: any) => state.chat?.session || {});
-  const viewerSession = artifactViewerSession(session);
-  const [activeArtifactId, setActiveArtifactId] = useState('');
-
   return (
-    <>
-      <MarkdownBody
-        source={source}
-        className={className}
-        compact={compact}
-        copyAll={copyAll}
-        data-debug-id={dataDebugId}
-        onArtifactClick={setActiveArtifactId}
-        onTextSelectionChange={onTextSelectionChange}
-        reveal={reveal}
-      />
-      {activeArtifactId && viewerSession.clientToken ? (
-        <ArtifactViewer artifactId={activeArtifactId} daemonUrl={viewerSession.daemonUrl} clientToken={viewerSession.clientToken} onClose={() => setActiveArtifactId('')} />
-      ) : null}
-    </>
+    <MarkdownBody
+      source={source}
+      className={className}
+      compact={compact}
+      copyAll={copyAll}
+      data-debug-id={dataDebugId}
+      onArtifactClick={openArtifactPage}
+      onTextSelectionChange={onTextSelectionChange}
+      reveal={reveal}
+    />
   );
 }

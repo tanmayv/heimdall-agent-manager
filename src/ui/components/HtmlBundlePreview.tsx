@@ -168,25 +168,26 @@ export default function HtmlBundlePreview({ blob, locked, lockReason = 'locked' 
       <div data-debug-id="artifact-viewer-html-bundle-error" data-error-code={status.code} className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">
         <div className="font-medium">{ERROR_TITLES[status.code] || ERROR_TITLES.malformed}</div>
         <div className="mt-1 break-words">{status.message}</div>
-        <div className="mt-1 text-xs">Use Download to inspect the ZIP.</div>
       </div>
     );
   }
 
   return (
     <div data-debug-id="artifact-viewer-html-bundle" className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="text-xs uppercase tracking-wide text-faint">Page</label>
-        <Select
-          data-debug-id="artifact-viewer-html-bundle-page-select"
-          value={location.page}
-          onChange={(next) => navigate({ page: String(next), fragment: '' })}
-        >
-          {status.bundle.pages.map((page) => (
-            <option key={page} value={page}>{page === status.bundle.entry ? `${page} (entry)` : page}</option>
-          ))}
-        </Select>
-      </div>
+      {status.bundle.pages.length > 1 && (
+        <div className="px-3 pt-3">
+          <Select
+            data-debug-id="artifact-viewer-html-bundle-page-select"
+            aria-label="Bundle page"
+            value={location.page}
+            onChange={(next) => navigate({ page: String(next), fragment: '' })}
+          >
+            {status.bundle.pages.map((page) => (
+              <option key={page} value={page}>{page === status.bundle.entry ? `${page} (entry)` : page}</option>
+            ))}
+          </Select>
+        </div>
+      )}
       {compiled?.error ? (
         <div data-debug-id="artifact-viewer-html-bundle-page-error" className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">{compiled.error}</div>
       ) : null}
@@ -218,7 +219,7 @@ export default function HtmlBundlePreview({ blob, locked, lockReason = 'locked' 
         allow=""
         srcDoc={compiled?.html || ''}
         onLoad={handleLoad}
-        className="h-[calc(var(--app-viewport-height)*0.65)] w-full rounded-2xl border border-subtle bg-white"
+        className="h-[calc(var(--app-viewport-height)*0.65)] w-full border-0 bg-white"
       />
     </div>
   );

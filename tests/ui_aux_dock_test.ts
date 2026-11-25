@@ -5,12 +5,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
+import { zip } from './helpers/zipFixture.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const auxDockSource = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/auxiliary/AuxDock.tsx'), 'utf8');
 const launcherSource = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/auxiliary/AuxNewTabLauncher.tsx'), 'utf8');
 const tabContentSource = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/auxiliary/AuxTabContent.tsx'), 'utf8');
-const artifactViewerSource = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/ArtifactViewer.tsx'), 'utf8');
 
 test('mobile aux sheet stays above fixed shell chrome while it transitions', () => {
   // REQ-VIEWPORT-ORIGIN-1: the sheet is the visible region (origin + height), not `inset-0`.
@@ -32,8 +32,6 @@ test('new tab launcher searches safe titles and requires explicit bridge choice 
 
 test('artifact tabs use embedded viewer content without a nested fullscreen shell', () => {
   assert.match(tabContentSource, /case 'artifact':[\s\S]*<ArtifactViewer[\s\S]*embedded=\{true\}/);
-  assert.match(artifactViewerSource, /data-debug-id=\{embedded \? 'artifact-viewer-embedded-shell'/);
-  assert.match(artifactViewerSource, /embedded\s*\? 'flex h-full min-h-0 w-full flex-col bg-canvas'/);
 });
 
 async function withDom<T>(fn: (dom: any) => Promise<T>): Promise<T> {
@@ -127,8 +125,162 @@ async function makeStore() {
       [heimdallApi.reducerPath]: heimdallApi.reducer,
     },
     middleware: (g: any) => g({ serializableCheck: false, immutableCheck: false }).concat(heimdallApi.middleware),
+    enhancers: (getDefaultEnhancers) => getDefaultEnhancers({ autoBatch: false }),
   });
 }
+
+test('artifact viewer shows a page header with back and icon actions, and no header in aux mode', async (t) => {
+  await withDom(async (dom) => {
+    const { createRoot } = await import('react-dom/client');
+    const { Provider } = await import('react-redux');
+    const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+    const { default: ArtifactViewer } = await import('../src/ui/components/ArtifactViewer.tsx');
+    const { artifactIdFromPath, closeArtifactPage, handleArtifactPageLink, openArtifactPage } = await import('../src/ui/utils/artifactPage.ts');
+    const fixtures = [
+      { id: 'art_markdown', name: 'Notes.md', kind: 'markdown', mime: 'text/markdown', body: '## Rendered notes', selector: '[data-debug-id="artifact-viewer-content"] h2' },
+      { id: 'art_image', name: 'Diagram.png', kind: 'image', mime: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6XH2ioAAAAASUVORK5CYII=', 'base64'), selector: '[data-debug-id="artifact-viewer-image-preview"]' },
+      { id: 'art_html', name: 'Site', kind: 'html-bundle', mime: 'application/zip', body: zip([
+        { name: 'heimdall-artifact.json', data: '{"format_version":1,"entrypoint":"index.html"}' },
+        { name: 'index.html', data: '<h2>Rendered site</h2>' },
+      ]), selector: '[data-debug-id="artifact-viewer-html-bundle-frame"]' },
+    ];
+    const oldParser = Object.getOwnPropertyDescriptor(globalThis, 'DOMParser');
+    Object.defineProperty(globalThis, 'DOMParser', { value: dom.window.DOMParser, configurable: true });
+    // jsdom loads srcDoc iframes as about:blank. Supply the browser's expected
+    // about:srcdoc document identity so the navigation guard does not remount it forever.
+    const frameDocument = dom.window.document.implementation.createHTMLDocument();
+    Object.defineProperty(frameDocument, 'URL', { value: 'about:srcdoc' });
+    Object.defineProperty(dom.window.HTMLIFrameElement.prototype, 'contentDocument', {
+      configurable: true,
+      get: () => frameDocument,
+    });
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input), 'http://localhost');
+      const fixture = fixtures.find(({ id }) => url.pathname.split('/').includes(id));
+      assert.ok(fixture, `unexpected fetch: ${url.pathname}`);
+      if (url.pathname.endsWith('/content')) {
+        return new Response(fixture.body, { headers: { 'Content-Type': fixture.mime } });
+      }
+      assert.ok(url.pathname.endsWith(fixture.id), `unexpected artifact route: ${url.pathname}`);
+      return Response.json({ artifact: {
+        artifact_id: fixture.id, name: fixture.name, kind: fixture.kind, mime: fixture.mime,
+        link: `artifact://${fixture.id}`, description: 'Metadata that must not appear', size_bytes: 400,
+        current_version_no: 3,
+      } });
+    };
+    const copies: string[] = [];
+    Object.defineProperty(dom.window.navigator, 'clipboard', { value: { writeText: async (link: string) => { copies.push(link); } } });
+    const downloads: Array<{ href: string; filename: string }> = [];
+    const downloadSpy = t.mock.method(dom.window.HTMLAnchorElement.prototype, 'click', function (this: HTMLAnchorElement) {
+      downloads.push({ href: this.href, filename: this.download });
+    });
+    const onClose = t.mock.fn();
+    const store = await makeStore();
+    const root = createRoot(dom.window.document.getElementById('root')!);
+    const q = (selector: string) => dom.window.document.querySelector(selector);
+
+    try {
+      for (const fixture of fixtures) {
+        for (const embedded of [false, true]) {
+          const props = { key: fixture.id, artifactId: fixture.id, daemonUrl: '', clientToken: 'v1', embedded, onClose };
+          await React.act(async () => root.render(React.createElement(Provider, { store }, React.createElement(ArtifactViewer, props))));
+          const selector = fixture.selector;
+          for (let attempt = 0; !q(selector) && attempt < 8; attempt += 1) {
+            await React.act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+          }
+          const preview = q(selector);
+          assert.ok(preview, `${fixture.kind} preview must render (embedded=${embedded})`);
+          if (fixture.kind === 'markdown') assert.equal(preview.textContent, 'Rendered notes');
+          if (fixture.kind === 'image') {
+            assert.equal(preview.getAttribute('alt'), fixture.name);
+            assert.match(preview.getAttribute('src') ?? '', /^blob:/);
+          }
+          if (fixture.kind === 'html-bundle') {
+            assert.match(preview.getAttribute('srcdoc') || '', /Rendered site/);
+            assert.equal(preview.getAttribute('sandbox'), 'allow-same-origin');
+            assert.equal(q('[data-debug-id="artifact-viewer-html-bundle-page-select"]'), null);
+          }
+          const shell = q('[data-debug-id="artifact-viewer"]');
+          const header = shell?.querySelector('header');
+          assert.doesNotMatch(shell?.textContent ?? '', /Metadata that must not appear|Head v3/);
+          if (embedded) {
+            assert.equal(header, null);
+            assert.equal(q('[role="dialog"]'), null);
+            assert.equal(q('[data-debug-id="artifact-viewer-copy-link-btn"]'), null);
+            assert.equal(q('[data-debug-id="artifact-viewer-download-btn"]'), null);
+            continue;
+          }
+          assert.equal(header?.textContent, fixture.name);
+          assert.equal(q('[role="dialog"]'), null);
+          assert.ok(q('[data-debug-id="artifact-viewer-page-shell"]'));
+          const buttons = Array.from(header?.querySelectorAll('button') ?? []);
+          assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')), ['Back', 'Copy artifact link', 'Download artifact']);
+          assert.ok(buttons.every((button) => button.querySelector('svg')));
+          await React.act(async () => {
+            buttons[1].click();
+            buttons[2].click();
+          });
+          assert.equal(copies.at(-1), `artifact://${fixture.id}`);
+          assert.match(downloads.at(-1)?.href ?? '', /^blob:/);
+          assert.equal(downloads.at(-1)?.filename, fixture.kind === 'html-bundle' ? 'Site.zip' : fixture.name);
+        }
+      }
+      await React.act(async () => root.render(React.createElement(Provider, { store }, React.createElement(ArtifactViewer, {
+        artifactId: 'art_image', daemonUrl: '', clientToken: 'v1', onClose,
+      }))));
+      await React.act(async () => { dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' })); });
+      assert.equal(onClose.mock.callCount(), 1);
+      const { history, location } = dom.window;
+      const backButton = () => q('[data-debug-id="artifact-viewer-back-btn"]') as HTMLButtonElement;
+      const previous = '#/conversations/agent_1?msg=msg_1';
+      history.replaceState(null, '', previous);
+      const lengthBeforeOpen = history.length;
+      openArtifactPage('art_image');
+      assert.equal(history.length, lengthBeforeOpen + 1);
+      assert.equal(artifactIdFromPath(location.hash.slice(1)), 'art_image');
+      const traverse = (action: () => void) => new Promise<void>((resolve) => {
+        dom.window.addEventListener('popstate', () => resolve(), { once: true });
+        action();
+      });
+      await traverse(() => history.back());
+      assert.equal(location.hash, previous);
+      await traverse(() => history.forward());
+      assert.equal(location.hash, '#/library/artifacts/art_image');
+
+      await React.act(async () => root.render(React.createElement(Provider, { store }, React.createElement(ArtifactViewer, {
+        artifactId: 'art_image', daemonUrl: '', clientToken: 'v1', onClose: closeArtifactPage,
+      }))));
+      await traverse(() => backButton().click());
+      assert.equal(location.hash, previous);
+
+      const link = dom.window.document.createElement('a');
+      link.href = '#/library/artifacts/art_image';
+      dom.window.document.body.appendChild(link);
+      dom.window.document.addEventListener('click', handleArtifactPageLink, { once: true });
+      link.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+      assert.equal(location.hash, '#/library/artifacts/art_image');
+      await traverse(() => backButton().click());
+      assert.equal(location.hash, previous);
+      link.remove();
+
+      // A direct URL has no in-app back entry. Back falls back to the library
+      // without creating another history entry or leaving the application.
+      history.replaceState(null, '', '#/library/artifacts/art_image');
+      const lengthBeforeClose = history.length;
+      backButton().click();
+      assert.equal(location.hash, '#/library');
+      assert.equal(history.length, lengthBeforeClose);
+
+      assert.equal(downloadSpy.mock.callCount(), fixtures.length);
+    } finally {
+      await React.act(async () => root.unmount());
+      store.dispatch(heimdallApi.util.resetApiState());
+      downloadSpy.mock.restore();
+      if (oldParser) Object.defineProperty(globalThis, 'DOMParser', oldParser);
+      else Reflect.deleteProperty(globalThis, 'DOMParser');
+    }
+  });
+});
 
 const CTX = {
   agentInstanceId: 'agent-a',
