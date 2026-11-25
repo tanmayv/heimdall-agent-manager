@@ -41,7 +41,7 @@ real_net :: proc(ctx: ^Net_Ctx) -> service.Net {
 
 rewrite_url :: proc(url: string) -> string {
 	when service.TEST_BUILD {
-		origin := os.get_env(TEST_ORIGIN_ENV, context.temp_allocator)
+		origin := service.test_env(TEST_ORIGIN_ENV)
 		if origin != "" {
 			for len(origin) > 0 && origin[len(origin) - 1] == '/' do origin = origin[:len(origin) - 1]
 			if has_prefix(url, API_PREFIX) do return fmt.tprintf("%s/api/%s", origin, url[len(API_PREFIX):])

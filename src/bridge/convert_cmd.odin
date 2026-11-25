@@ -269,7 +269,7 @@ bridge_convert_gate_wait :: proc(s: ^Bridge_Setup) -> bool {
 // shortens it so CI can reach the forced path (P2-7); a release build ignores the variable.
 bridge_convert_gate_seconds :: proc() -> i64 {
 	when service.TEST_BUILD {
-		if n, ok := strconv.parse_i64(os.get_env(BRIDGE_CONVERT_TEST_GATE_ENV, context.temp_allocator)); ok && n > 0 do return n
+		if n, ok := strconv.parse_i64(service.test_env(BRIDGE_CONVERT_TEST_GATE_ENV)); ok && n > 0 do return n
 	}
 	return bridgesvc.CONVERT_GATE_WAIT_SECONDS
 }
@@ -366,7 +366,7 @@ bridge_convert_pins :: proc() -> []fetch.Public_Key {
 
 bridge_convert_rewrite_url :: proc(url: string) -> string {
 	when service.TEST_BUILD {
-		origin := os.get_env(BRIDGE_CONVERT_TEST_ORIGIN_ENV, context.temp_allocator)
+		origin := service.test_env(BRIDGE_CONVERT_TEST_ORIGIN_ENV)
 		if origin != "" {
 			for len(origin) > 0 && origin[len(origin) - 1] == '/' do origin = origin[:len(origin) - 1]
 			if strings.has_prefix(url, "https://github.com/") do return fmt.tprintf("%s/gh/%s", origin, url[len("https://github.com/"):])
@@ -1156,11 +1156,11 @@ bridge_convert_record_from_disk :: proc(s: ^Bridge_Setup) -> Conversion_Record {
 when service.TEST_BUILD {
 	bridge_convert_test_inject :: proc(step: bridgesvc.Convert_Step, r: bridgesvc.Step_Result) -> bridgesvc.Step_Result {
 		name := bridgesvc.CONVERT_STEP_NAMES[step]
-		if os.get_env(BRIDGE_CONVERT_TEST_KILL_ENV, context.temp_allocator) == name {
+		if service.test_env(BRIDGE_CONVERT_TEST_KILL_ENV) == name {
 			fmt.eprintfln("ham-bridge setup: test hook: abrupt exit after %s", name)
 			os.exit(137)
 		}
-		if os.get_env(BRIDGE_CONVERT_TEST_FAIL_ENV, context.temp_allocator) == name {
+		if service.test_env(BRIDGE_CONVERT_TEST_FAIL_ENV) == name {
 			return {failure = .Fatal, message = fmt.tprintf("test hook: injected failure after %s", name)}
 		}
 		return r
