@@ -133,6 +133,9 @@ try {
     }
     assert.ok(ready, 'fixture loaded'); await wait(500);
     assert.equal(await evaluate("localStorage.getItem('heimdall:home-layout:home-visual-fixture')"), null, 'layout storage reset before fixture mount');
+    assert.equal(await evaluate(`!!${el('home-layout-slot-chains')} && !${el('home-layout-add-chains')}`), true, 'initial widget is visible');
+    assert.equal(await evaluate(`${el('home-layout-edit')}.getAttribute('aria-pressed')`), 'false', 'initial layout editing is closed');
+    await clean();
     report.checks.push('isolated layout storage before mount');
     const base = 'home-fleet-default-mock-bridge-0';
     await click(base + '-provider'); report.defaultChoice = await inspect(narrow, 'default provider');
