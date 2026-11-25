@@ -204,8 +204,8 @@ review gate. A lifecycle hook rebuilds its normal context pack with the actual
 destination tuple; the complete launch frame is frozen durably for byte-identical
 redelivery. Claim retention applies only to the matching durable Fleet target,
 claim and source/destination generation. Ordinary unrelated failures and user
-stops keep their existing cleanup. F3 owns the live Home Fleet UI and old drawer
-retirement.
+stops keep their existing cleanup. Home Fleet uses this service; the old drawer
+has been retired.
 
 Owner WebSocket `resource_changed` hints use `bridge_fleet_settings` (bridge ID,
 summary bridge ID/revision) after a changed settings commit and
@@ -287,3 +287,8 @@ availability validation, multiple chains/bridges, bridge pins, default/override/
 legacy/catalog precedence, manual/task promotion and non-task exclusions. Existing
 suites run only through the chain's designated Test Runner; task comments and
 handoffs record the exact committed SHA, commands and results.
+
+The [integrated verification map](fleet-management-verification.md) ties each
+requirement to executable coverage and records the retained compatibility
+boundaries, browser evidence and limits. Synthetic transports prove Hub command
+ordering and persistence; they do not prove physical provider execution.

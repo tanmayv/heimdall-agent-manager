@@ -457,13 +457,14 @@ export function changedFleetEntries(
 }
 
 // ---------------------------------------------------------------------------
-// Restart confirmation (REQ-RS-3 / REQ-RS-4)
+// Legacy restart compatibility helpers (REQ-RS-3 / REQ-RS-4)
 //
-// A provider/model edit only takes effect for instances launched AFTER the change;
-// live instances keep the old values until they restart. The drawer therefore asks
-// the user, before any PUT, whether the affected roles' live instances should be
-// relaunched now (the hub's PUT restart_live_instances flag) — and the decision of
-// WHICH roles are affected is pure and lives here so `node --test` can drive it.
+// These pure helpers retain tests for the legacy chain PUT contract. The old
+// drawer is retired; no production UI imports its restart decision/apply helpers.
+// Home Fleet uses fleetDraft and bridgeFleet's shared Apply/status/retry contract,
+// which restarts changed running task agents directly without this confirmation.
+// Keep the catalog/effective-placement/role helpers in this module: Home Fleet,
+// task cards and Review Roles still use them. See docs/fleet-management.md.
 // ---------------------------------------------------------------------------
 
 export interface FleetRestartFailure {

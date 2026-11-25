@@ -32,7 +32,8 @@ Groups:
 - [reference/task-placement-recovery.md](reference/task-placement-recovery.md): the `task_placement` attention cards and recovery APIs built on placement-failure snapshots (REQ-PLACE-2/3).
 - [plans/task-system-v2.md](plans/task-system-v2.md): Task System v2 specification and implementation status; the current task engine.
 - [task-coordinator-controls.md](task-coordinator-controls.md): non-expiring task claims, cancellation and safe ownership transfer.
-- [fleet-management.md](fleet-management.md): per-chain, per-agent fleet launch settings and the `bridge_models` API field.
+- [fleet-management.md](fleet-management.md): shared bridge runtime defaults/agent overrides, Apply/preview/status/retry, Home Fleet and chain staffing compatibility.
+- [fleet-management-verification.md](fleet-management-verification.md): integrated Fleet requirement coverage, removal audit and verification limits.
 - [multi-question-messages.md](multi-question-messages.md): version 1 multi-question message form and the agent CLI JSON format.
 - [html-bundle-artifacts.md](html-bundle-artifacts.md): publishing multi-page static HTML bundles as artifacts and viewing them in an isolated iframe.
 - [quoted-context.md](quoted-context.md): the Quote feature that attaches selected message text to a coordinator message.

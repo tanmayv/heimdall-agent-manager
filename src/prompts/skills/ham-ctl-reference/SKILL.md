@@ -174,6 +174,14 @@ Any authenticated agent of the chain owner may configure, inspect, pause/resume 
 
 Configure and inspect agent concurrency caps and placement (fleets) for a task chain. Fleets allow tasks to be assigned to durable agent types (`agt_...`) instead of individual instances (`inst_...`). Heimdall dynamically routes or provisions worker and reviewer instances to satisfy fleet capacity and placement rules.
 
+Runtime selection belongs to shared bridge Fleet (`bridge fleet …`, above).
+After a bridge's first Apply, omit `--provider`, `--model` and `--bridge-models`
+from chain staffing updates. Legacy runtime changes/clears return
+`fleet_runtime_managed`; capacity, roles, pause and bridge placement still work
+and preserve audit runtime fields. Legacy flags below remain compatibility
+controls for unconfigured bridges. Listing legacy fields is not the effective
+runtime policy on a configured bridge.
+
 - `task-chain fleet list [<chain-id>]` — list fleet capacities, placement (`roles`, `bridge_id`, `provider`, `model`, `bridge_models`), and live active worker counts for a chain (defaults to current chain if omitted).
 - `task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--min-warm <M>] [--idle-ttl <seconds>] [--roles worker,reviewer] [--bridge <bridge_id>] [--provider <p>] [--model <m>] [--bridge-models <json>] [--bridge-models-file <path>]` — configure fleet capacity and placement for an agent class on the chain.
 
@@ -210,7 +218,7 @@ Fields:
 - `min_warm`: Minimum warm standby instances to maintain.
 - `idle_ttl_seconds`: Time before idle instances are stopped or decommissioned.
 - `roles`: Allowed lease roles for this fleet row (`["worker"]`, `["reviewer"]`, or `["worker", "reviewer"]`).
-- `bridge_id`, `provider`, `model`, `bridge_models`: Optional placement and model overrides.
+- `bridge_id`: Optional chain staffing placement. `provider`, `model`, `bridge_models`: Legacy runtime audit/fallback values, authoritative only until that bridge's first shared Apply.
 
 #### Command examples
 ```bash

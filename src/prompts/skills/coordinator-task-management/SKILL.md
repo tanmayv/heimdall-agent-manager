@@ -116,8 +116,10 @@ leases while current work continues. Fleet deletion is exposed by
 ./bin/ham-ctl task-chain fleet list [<chain-id>]
 ./bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \
   --capacity 2 --roles worker,reviewer [--min-warm 1] [--idle-ttl 300] \
-  [--bridge brg_main] [--provider claude --model claude-sonnet-5-5]
+  [--bridge brg_main]
 ```
+- Runtime defaults and durable-agent overrides are shared across chains per bridge. Use Home Fleet or `bridge fleet show|apply|status|retry` (see `ham-ctl-reference`). Apply restarts changed running task agents, including active claim holders, while preserving claims/workdirs/review gates. Read status for acknowledged readiness; saved settings alone do not prove ready.
+- On a bridge that has completed its first Apply, omit runtime fields from chain staffing writes; attempts to change/clear legacy provider/profile/model or `bridge_models` return `fleet_runtime_managed`. Staffing/placement-only updates preserve legacy audit fields. Legacy runtime flags remain usable only on unconfigured bridges. Future launches resolve shared policy locally in the Hub with no additional Fleet startup network read.
 - Roles: `worker`, `reviewer`, or a custom review role (`security`, `perf`, …). A brief's `review_roles` asks every agent holding that role to review. Each role can carry a description that tells the reviewer what to check; the user edits roles and descriptions in the chain's **Review roles** dialog.
 - Reviewers named on one task (`brief.reviewers` / `--reviewer`) review that task only.
 - Each agent's bridge comes from: the task's bridge pin, then its fleet row's bridge, then the chain's first directory, then your own bridge.
