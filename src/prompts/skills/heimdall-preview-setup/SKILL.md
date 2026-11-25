@@ -1,6 +1,6 @@
 ---
 name: heimdall-preview-setup
-description: Show a web app or API running on localhost to the user through Heimdall's preview (`shell serve --port`, the hub-returned `preview_url`, path-prefix rules, frontend and backend on different machines, blank-preview fixes). Load before you share, or when the user asks to see, click through or test, anything you started locally. Never send a localhost URL.
+description: How to share a web app or API you are running on localhost (dev server, prod build, backend) with the user through Heimdall, so they can open it in the Heimdall preview sidebar or on their phone: `ham-ctl shell serve --port`, presenting the hub-returned `preview_url` verbatim, making apps work under the preview path prefix, frontend and backend on different machines, and troubleshooting blank or stopped previews. Load whenever you want the user to see, click through or test something you started locally. Never send a localhost URL.
 ---
 
 # Share a local web app through Heimdall
@@ -43,9 +43,9 @@ The Hub strips the session prefix and does **not** rewrite HTML, so the process 
 For a backend in the same app/session, use document-relative URLs, ideally with the API behind the frontend server (dev-server proxy, framework rewrite, BFF or SSR handler) so the browser still calls a relative path. For a real remote API called directly by the browser, configure CORS for the actual public origin (`https://<preview-host>` in preview-origin mode, `https://<hub-host>` in legacy mode), with credential settings only if the API needs them.
 
 ### Backend on machine A, frontend on machine B, viewed on a phone
-Start two port-declared sessions owned by the same Heimdall user: `sidA` (backend, bridge A) and `sidB` (frontend, bridge B). Give the user `sidB`'s `preview_url` verbatim. Session ids are not service-discovered and not added to the process environment: start the callee first and inject `sidA` into the frontend at runtime (env var, config file, generated markup), or start the caller and bind its port later with `shell set-port`. Choose one pattern:
+Start two port-declared sessions owned by the same Heimdall user: `sidA` (backend, bridge A) and `sidB` (frontend, bridge B). Give the user `sidB`'s `preview_url` verbatim. A session id does not exist until `shell start` returns, and it is not service-discovered or added to the process environment: start the callee first and inject `sidA` into the frontend at runtime (env var, config file, generated markup), or start the caller and bind its port later with `shell set-port`. Choose one pattern:
 
-1. **Browser to backend:** call `/p/<sidA>/api/...` (legacy: `/api/v1/preview/<sidA>/api/...`). Same-origin, no CORS, carries the preview-origin cookie where applicable, owner-checked by the Hub. A relative form also works because every preview has the shape `<prefix>/<sid>/`, with no host, port or Hub name in the page:
+1. **Browser to backend:** call `/p/<sidA>/api/...` (legacy: `/api/v1/preview/<sidA>/api/...`). Same-origin, so no CORS headers and no preflight is triggered; carries the preview-origin cookie where applicable, owner-checked by the Hub. A relative form also works because every preview has the shape `<prefix>/<sid>/`, with no host, port or Hub name in the page:
    ```js
    // page served at <hub>/api/v1/preview/<FE_SESSION>/
    const api = (p) => new URL(`../${BACKEND_SESSION}/${p}`, location.href).toString();

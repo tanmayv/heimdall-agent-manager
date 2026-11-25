@@ -48,13 +48,13 @@ ham-ctl shell background <session_id>
 - `shell capture <session_id>`: snapshot of the current terminal screen.
 - `shell signal <session_id> --signal <int>`: send a POSIX signal (2 = SIGINT).
 - `shell restart <session_id>`: stop then start; returns `{session_id, pid, status}`.
-- `shell set-port <session_id> --port <n> | --clear`: declare (or clear) the port of a session that is ALREADY running (for example you opened an interactive terminal, then started a server in it). Effective immediately, no restart. `--port 0` and `--clear` are the same. Refused with 409 on a session that has exited, 404 on one you do not own. Returns the updated session.
+- `shell set-port <session_id> --port <n> | --clear`: declare (or clear) the port of a session that is ALREADY running (for example you opened an interactive terminal, then started a server in it). Effective immediately on both access paths (the preview and the Bridge-local proxy), with no restart. `--port 0` and `--clear` are the same. Refused with 409 on a session that has exited, 404 on one you do not own. Returns the updated session.
 
 ## What the user sees
 A session shows two surfaces, both live: **stdout** (any session, no port needed; the user sees it in the session pane, you read the same stream with `shell log`) and, for a session with a declared port, a **preview** in the browser, tunnelled so no inbound port is opened. To hand the user a web UI, follow `heimdall-preview-setup`.
 
 ## Calling a server session from this host
-A `server` session with a declared port is reachable through the Bridge's local endpoint, with no inbound port and no user token:
+A `server` session with a declared port is reachable through the Bridge's local endpoint, with no inbound port, no user token and no browser session:
 ```
 http://127.0.0.1:<local_endpoint_port>/proxy/<session_id>/<path>
 ```
@@ -76,8 +76,8 @@ The target must be `status=running`, have a declared port and be owned by you; a
 | 409 | `no_server_port` | no port declared: use `shell set-port` |
 | 403 | `cross_owner` | belongs to another user |
 | 503 | `unavailable` | Bridge cannot reach the Hub |
-| 413 | `request_body_too_large` | `Content-Length` over 64 MiB |
-| 411 | `request_body_chunked` | chunked request body; send `Content-Length` instead |
+| 413 | `request_body_too_large` | `Content-Length` over 64 MiB (refused at once, before anything reaches the Hub) |
+| 411 | `request_body_chunked` | chunked request body (also refused before anything reaches the Hub); send `Content-Length` instead |
 | 504 | `upload_stalled` | the Bridge lost its Hub connection mid-upload (nothing drained for 30 s) |
 
 Any process on this host that can reach the local endpoint can use this path and acts with the Bridge owner's authority; it is disabled by `--no-local-proxy` or `[bridge] local_proxy_enabled=false`.

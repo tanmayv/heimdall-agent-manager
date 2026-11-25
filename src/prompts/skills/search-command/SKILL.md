@@ -1,6 +1,6 @@
 ---
 name: search-command
-description: Search the Hub by text for conversations, tasks, comments, chains, memories, artifacts, agents and skills, with parent filters, negation and paging, via `ham-ctl search` or the `agent.search` RPC. Load before searching the Hub, or when authoring tasks that need prior context.
+description: How to search the Hub for text matches and non-matches — the `ham-ctl search` CLI and the `agent.search` RPC, with scopes, typed parent-id filters, negation/exclusion, previews and cursor paging — across conversations, tasks, comments, chains, memories, artifacts, agents and skills. Load before searching the Hub, or when authoring tasks that need prior context.
 ---
 
 # Searching the Hub
@@ -18,16 +18,17 @@ Two surfaces run the SAME engine (identical scoping and result shape):
 |---|---|---|
 | `<query>` | `query` | text to match |
 | `--scope csv` | `scopes` (CSV or array) | scopes to search, default all: `conversation,agent,agent_instance,task-chain,task,comment,project,artifact,memory,skill` |
-| `--task-ids` `--chain-ids` `--project-ids` `--conversation-ids` | `task_ids` `chain_ids` `project_ids` `conversation_ids` | KEEP only rows under the named parent (CSV; RPC accepts a JSON string array or a CSV string) |
-| `--not-in-task-ids` `--not-in-chain-ids` `--not-in-project-ids` `--not-in-conversation-ids` | `not_in_task_ids` `not_in_chain_ids` `not_in_project_ids` `not_in_conversation_ids` | DROP rows under the named parent |
+| `--task-ids` `--chain-ids` `--project-ids` `--conversation-ids` | `task_ids` `chain_ids` `project_ids` `conversation_ids` | KEEP only rows under the named parent, owner-AND-ed (CSV; RPC accepts a JSON string array or a CSV string) |
+| `--not-in-task-ids` `--not-in-chain-ids` `--not-in-project-ids` `--not-in-conversation-ids` | `not_in_task_ids` `not_in_chain_ids` `not_in_project_ids` `not_in_conversation_ids` | DROP rows under the named parent (also owner-AND-ed) |
 | `--exclude text` | `exclude` | drop hits whose matched text contains this substring |
 | `--limit n` | `limit` | page size (server-clamped) |
-| `--cursor` / `--json` | `cursor` | page forward with `next_cursor` while `has_more` is true |
+| `--cursor` | `cursor` | page forward with the returned `next_cursor` while `has_more` is true |
+| `--json` | (none) | CLI only: print the raw first-page envelope (with `next_cursor` / `has_more`) instead of auto-paging |
 
 There is NO `--scope-ids` / `scope_ids`: use the typed per-parent filters.
 
 - CLI usage: `ham-ctl search <query> [--scope csv] [typed id filters] [--exclude text] [--limit n] [--json]`. Auth: `--hub-url` + `--user-token` (or `HAM_HUB_URL` / `HAM_HUB_USER_TOKEN`). Human mode auto-pages and aggregates; `--json` prints the raw first-page envelope (with `next_cursor` / `has_more`) for scripted paging.
-- RPC: `{"method": "agent.search", "params": {"query": "memory leak", "scopes": "task,comment,memory", "task_ids": ["task_1"], "chain_ids": "chain_123", "not_in_chain_ids": ["chain_9"], "exclude": "retry", "limit": 50, "cursor": ""}}`. Omit or leave empty the fields you do not need.
+- RPC: `{"method": "agent.search", "params": {"query": "memory leak", "scopes": "task,comment,memory", "task_ids": ["task_1"], "chain_ids": "chain_123", "not_in_chain_ids": ["chain_9"], "exclude": "retry", "limit": 50, "cursor": ""}}`. Omit or leave empty the fields you do not need: the handler reads each missing key as empty (`agent_action_csv_field` in `src/hub/transport/http/agent_action_handlers.odin` falls back to empty), and `ham-ctl` itself sends only the non-empty ones (`src/ctl/agent_mode.odin`).
 
 ## Examples (CLI; the RPC takes the same values)
 ```bash

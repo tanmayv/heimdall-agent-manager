@@ -1,11 +1,11 @@
 ---
 name: artifact-authoring
-description: Deliver a report, image or static HTML site to the user as an artifact and link it as `artifact://<id>`: choose the format, write it, upload with `ham-ctl artifact create`, verify, deliver. Load when the user asks for a document, report, image or page, or when a result is too long or too visual for a chat message.
+description: How to produce a deliverable the user will read or view in Heimdall (a report, a diagram or screenshot, a multi-page static site) as an artifact: choose Markdown vs image vs html-bundle, write it well, upload with `ham-ctl artifact create`, verify the upload, and deliver it in chat or a task comment as an `artifact://<id>` link. Load when the user asks for a document, report, image or page, or when a result is too long or too visual for a chat message.
 ---
 
 # Author artifacts for the user
 
-An artifact is a file stored in the Hub (sealed with your vault key) that the user opens in the **Artifact Viewer**. Use one when a result is too long, too structured or too visual for a chat message, or when the user asks for a document, image or page. Bundle format and viewer rules: `docs/html-bundle-artifacts.md` in the Heimdall repository.
+An artifact is a file stored in the Hub (sealed with your vault key) that the user opens in the **Artifact Viewer**. Use one when a result is too long, too structured or too visual for a chat message, or when the user asks for a document, image or page. Exact flags: `ham-ctl artifact --help` or the `ham-ctl-reference` skill. Bundle format and viewer rules: `docs/html-bundle-artifacts.md` in the Heimdall repository.
 
 ## 1. Choose the format
 
@@ -69,7 +69,7 @@ ham-ctl artifact create --name release-notes --kind html-bundle --directory ./si
 
 - `artifact create --name <n> [--kind <k>] (--content <text> | --file <path> | --stdin)` makes a single-file artifact. For `html-bundle` give exactly one of `--directory` or `--file` (a ZIP holding the site at its root). Never use `--content` for large or binary payloads; use `--file`.
 - Optional context flags: `--task <id>`, `--chain <id>`, `--project <id>`, `--description <t>`. The JSON reply carries `data.artifact_id` (`art_…`); keep it.
-- Content is capped at 15 MiB (15,728,640 bytes of file or text before encryption; ham-ctl checks before sealing). MCP `artifacts.create`/`get` carry at most 64 KiB of text inline; use `ham-ctl artifact create --file` for anything larger.
+- Content is capped at 15 MiB (15,728,640 bytes of file or text before encryption; ham-ctl checks before sealing; encryption and base64 overhead are budgeted separately). MCP `artifacts.create`/`get` carry at most 64 KiB of text inline; use `ham-ctl artifact create --file` for anything larger.
 - Read back: `artifact list [--kind <k>] [--project <id>] [--task <id>] [--chain <id>] [--limit <n>]`, `artifact show <id> [--with-content]`, `artifact content <id>`, `artifact download <id> --dir <dir>`.
 
 ## 4. Verify before you deliver

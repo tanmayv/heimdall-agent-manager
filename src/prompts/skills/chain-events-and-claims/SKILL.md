@@ -21,7 +21,7 @@ On an `[events]` nudge, pull the durable inbox:
 - Deduplicate by `event_id`: delivery is at least once, and unacked events return after five minutes. After ten attempts the hub republishes to `ev.dlq.<owner>…`.
 - Acknowledge only after handling or recording the required follow-up durably (`1..100` ids per `events ack`).
 - A `resolved` notice (with `resolved_event_id`) closes an earlier request: do not repeat the resolved action. It needs no acknowledgement (acking it is a no-op). Stale resolvable events are skipped and state events roll up to the latest state.
-- Drain further batches as needed. `events next [--wait 30s] [--limit 20]` waits `0s` by default (maximum `30s`, seconds or milliseconds; limit `1..100`).
+- Drain further batches as needed. `events next --wait 30s` is available when waiting for work. `events next [--wait 30s] [--limit 20]` waits `0s` by default (maximum `30s`, seconds or milliseconds; limit `1..100`).
 - Catalog events use v2: `entity.kind` and `entity.id` identify the entity; task events carry the parent in `data.chain_id`. There are no top-level `chain_id` or `task_id` fields.
 
 What each role does with an event:
@@ -29,7 +29,7 @@ What each role does with an event:
 - **Workers** refresh with `lease next`, read `TASK.md`, reconcile requirements and acknowledge the exact revision (below). Event acknowledgement does not acknowledge requirements. Only work claims subscribe to requirements-change events.
 - **Reviewers** learn about mid-review changes from the `[taskv2]` checkpoint nudge (enabled regardless of the legacy-notice flag) and `lease next`. They refresh their pack and checkpoint with `lease handoff` rather than posting a stale verdict.
 
-During migration, existing `[taskv2]` notices remain enabled. Handle them with their existing instructions (`coordinator-task-management` §5) and deduplicate follow-up against inbox events using current task state. Other taskv2 triggers still use that path. The hub flag `--legacy-event-notices true|false` defaults to true and controls only catalog triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
+During migration, existing `[taskv2]` notices remain enabled. Handle them with their existing instructions (coordinators: `coordinator-task-management` §5 "React to `[taskv2]` notifications"; workers and reviewers: `worker-task-management` §9 "Requirements changed while you work or review" and "Events, claims, transfer and cancel") and deduplicate follow-up against inbox events using current task state. Other taskv2 triggers still use that path. The hub flag `--legacy-event-notices true|false` defaults to true and controls only catalog triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
 
 ## Subscriptions, watches and limits
 
@@ -70,7 +70,7 @@ ham-ctl task cancel <task-id>
 - A coordinator can name an eligible instance, including itself when its own durable identity matches. Context goes to that instance; assigning another instance does not overwrite the coordinator's task context.
 - Claims never silently replace another holder; use explicit transfer. The old writer is fenced immediately; replacement execution waits for the exact process stop receipt. Offline cleanup remains `stop_pending`.
 - Any agent instance of the task's owner may cancel it, without chain membership or coordinator role (cross-owner tasks are refused). Cancellation preserves history and revokes work/review ownership; it can finish while process cleanup is pending, and late callbacks cannot revive the task.
-- No prior inspection or manual generation/request ID is needed: the CLI supplies request identity and a default audit reason. Use `--reason` to explain intent; explicit request IDs and generation checks serve advanced callers.
+- No prior inspection or manual generation/request ID is needed: the CLI supplies request identity and a default audit reason. Use `--reason` to explain intent; optional explicit request IDs and generation checks serve advanced callers.
 - `task hold`, `task release`, `task unblock` and `task recheck` keep their established meanings; `task release` clears a hold.
 - `lease next` refreshes current responsibility. Stay with a waiting task rather than pulling unrelated work. `lease heartbeat` only reports progress or acknowledges requirements; it does not renew ownership.
 - `409 lease_lost` on any command: stop at once and touch nothing; the hub re-wakes you with a fresh pack if needed.

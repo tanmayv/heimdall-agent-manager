@@ -27,8 +27,10 @@ The curator and other agents that emit cards over the RPC send:
 - `provider`: `"curator_llm"`.
 - `confidence`: 0.0 to 1.0.
 - `source_refs`: JSON array of the exact entity IDs used as evidence, for example `["mem_123", "mem_456", "cmt_789"]` (`task_...`, `cmt_...`, `mem_...`, `chain_...`, `chat_...`, `agt_...`).
-- `guard`: precondition object, see Guards.
+- `guard`: precondition object, see Guards (full form, or `{"expires_at": "..."}` alone).
 - `operations`: JSON array of typed operation objects.
+
+**Two shapes, both as sourced.** The CLI example above puts operation parameters under `"args"` (`ham-ctl action create --operations`). The RPC/REST payload (`agent.cards.create`, `POST /api/v1/cards`) and the examples under Operation labels and Operation catalog use flat operation objects (`"memory_id": …` beside `"op"` and `"label"`). Use the shape of the surface you call.
 
 ## Operation labels
 Every operation object MUST carry a top-level `"label"`: a concise, plain-English summary shown in the user dashboard and in `ham-ctl cards show`. The user must understand what will happen without reading raw parameters.
@@ -53,19 +55,19 @@ Every operation object MUST carry a top-level `"label"`: a concise, plain-Englis
 - `project.update`: `project_id`, `name`, `description`
 - `agent.prompt`: `instance_id`, `prompt`
 
-Common card types and the operations they use:
-- **Memory consolidation:** one atomic card, `memory.delete` for each duplicate plus one `memory.create` for the synthesized memory.
-- **Stale memory archival:** `memory.delete` or `memory.archive`, with rationale citing newer activity.
-- **Memory re-scoping:** `memory.update` with corrected scope arrays (`agent_ids`, `project_ids`, `template_ids`, `bridge_ids`), for example a repository build rule scoped globally instead of to `project_id`.
-- **Chain status sync:** `task_chain.set_status` with `status: "completed"` when every task is validated and merged but the chain is still `active`.
-- **Project metadata:** `project.update` for description, conventions or guidelines.
-- **Agent prompt refinement:** `agent.prompt`.
+Common card types, what to detect and the operations they use:
+- **Memory consolidation:** detect duplicate or fragmented memories covering the same topic. One atomic card, `memory.delete` for each duplicate plus one `memory.create` for the single synthesized, comprehensive memory.
+- **Stale memory archival:** detect outdated instructions, obsolete tool versions or superseded conventions. `memory.delete` or `memory.archive`, with rationale citing newer activity.
+- **Memory re-scoping:** detect memories assigned to inappropriate scopes, for example a repository build rule scoped globally instead of to `project_id`, or an agent-specific habit attached to a project. `memory.update` with corrected scope arrays (`agent_ids`, `project_ids`, `template_ids`, `bridge_ids`).
+- **Chain status sync:** detect completed chains where every task is validated and merged but the chain is still `active`; `task_chain.set_status` with `status: "completed"`.
+- **Project metadata:** `project.update` for description, conventions or guidelines, based on accumulated tasks.
+- **Agent identity and prompt optimization:** `agent.prompt` for prompt refinement or durable agent configuration adjustments.
 
 ## Guards
-A guard stops a card from applying against stale state. Give:
+A guard stops a card from applying against stale state. The curator template allows two forms: the full state guard below, or an expiry alone, `{"expires_at": "<ISO timestamp>"}`. The full form carries:
 - `target_type`: `"memory"`, `"task"`, `"task_chain"` or `"agent"`;
 - `target_id`;
 - `field_conditions`: the expected current values, for example `{"status": "active"}`;
-- optionally `expires_at` (ISO timestamp).
+- optionally `expires_at` (ISO timestamp, the TTL).
 
 Example: `{"target_type": "memory", "target_id": "mem_123", "field_conditions": {"status": "active"}}`. If live state diverges from the guard, Heimdall discards the card safely instead of applying a stale mutation.

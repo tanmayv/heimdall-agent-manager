@@ -1,6 +1,6 @@
 ---
 name: memory-management-workflow
-description: Propose and read durable Heimdall memories with `ham-ctl memory`, and pick the right scope and type. Load before proposing a memory or when deciding where long-term knowledge belongs.
+description: How an agent proposes and reads durable Heimdall memories with ham-ctl and picks the right scope and type: the four scope dimensions (agent, project, bridge, template) plus global, the memory types, the propose→human-approve workflow (agents propose; approval is a human/operator action, not an agent verb), and the `memory propose|list|show|content` commands. Load when creating, scoping or reviewing durable long-term agent knowledge.
 ---
 
 # Heimdall memory management

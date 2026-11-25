@@ -1,6 +1,6 @@
 ---
 name: coordinator-task-management
-description: How a task-chain COORDINATOR (or soloist) runs a chain with ham-ctl — choose tickets or workflow runs, propose and publish tasks with complete briefs, set the fleet and review roles, curate the chain summary, react to `[taskv2]` notices, record user verdicts (`review post --on-behalf-of user`), amend or replace tasks, and close the chain. Load whenever you coordinate a chain.
+description: How a task-chain COORDINATOR (or soloist) runs a chain with ham-ctl — choose tickets or workflow runs, propose and publish tasks with complete briefs, set the fleet and review roles, curate the chain summary, react to `[taskv2]` notices (`blocked_on human`, `budget_exhausted`, `oscillation`, `ready_unclaimed`, `review_requested_from_user`, `merge_conflict`, `gate_rejected`, `work_batch_finished`, `workflow_complete`, …), record user verdicts (`review post --on-behalf-of user`), amend or replace tasks, and close the chain. Covers Solo mode, where the coordinator also does the work. Load whenever you coordinate a chain.
 ---
 
 # Coordinator task management (Tickets)
@@ -68,13 +68,13 @@ EOF
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
 - Without `--auto-approve` the proposal waits for an explicit decision. Existing work continues.
 - Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
-- Single-task publication requires an already published chain; unpublish is unsupported.
+- Same-owner agents may publish chains and ordinary draft tasks. Single-task publication requires an already published chain; unpublish is unsupported.
 - Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
 
 **A good brief** is self-contained: a goal a newcomer can act on and checkable acceptance items (the hub requires only a non-empty goal and at least one acceptance item). Also state limits (scope, files not to touch), a stop condition and the approval scope: which external or destructive actions the user has approved, if any. Do not prescribe a verification command: the worker chooses and reports checks, and reviewers judge correctness from the diff and that evidence. Add `inputs` (`output:<task>`, `<path>@<rev>`) only for context beyond what dependencies already bring: a task automatically receives the handoff of every task it waits for.
 
 ## 3. Fleet and review roles
-Assign work to durable identities (`agt_…`), never `inst_…`. Referenced durable agents and bridges must belong to the owner, and capacity, role and placement checks still apply. `fleet pause`/`resume` stop/start new leases while current work continues. Fleet deletion is `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; no fleet delete CLI verb exists.
+Assign work to durable identities (`agt_…`), never `inst_…`. Same-owner agents may list/configure, pause/resume or delete fleets; referenced durable agents and bridges must belong to that owner, and capacity, role and placement checks still apply. `fleet pause`/`resume` stop/start new leases while current work continues. Fleet deletion is `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; no fleet delete CLI verb exists.
 ```bash
 ./bin/ham-ctl task-chain fleet list [<chain-id>]
 ./bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \

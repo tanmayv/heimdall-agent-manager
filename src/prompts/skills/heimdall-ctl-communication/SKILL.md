@@ -1,6 +1,6 @@
 ---
 name: heimdall-ctl-communication
-description: Chat with the user and other agents through Heimdall with `chat read|send`, including grouped questions, quick-reply options and when those controls expire. Load before asking the user a question, replying to the user, or messaging another agent.
+description: How an agent communicates through Heimdall with ham-ctl — signal readiness at startup (start-success), read your inbox and message history (`chat read`), send to the user or another agent (`chat send --to`), ask grouped questions or quick-reply options (and when those controls expire), and keep user-facing chat separate from technical task comments. Load when communicating through Heimdall: replying to the user, asking the user a question, coordinating agent-to-agent, or reacting to a new-message notification.
 ---
 
 # Heimdall CLI communication
@@ -51,11 +51,11 @@ Once you are initialized and ready to work, run `./bin/ham-ctl start-success` (i
   ]
 }
 ```
-- Limits: `version` must be `1`; 1–12 questions, each with `id`, nonempty `text` and 1–12 `options` (`id`, nonempty `label`). `selection_mode` is optional: `single` (default) takes one selection, `multiple` one or more. IDs are at most 64 ASCII letters, digits, `_` or `-`; question IDs are unique in the group, option IDs unique within a question. Question text is at most 8192 bytes, option labels 2048 bytes, the whole file 256 KiB. Unknown fields are rejected.
+- Limits: `version` must be `1`; 1–12 questions, each with `id`, nonempty `text` and 1–12 `options` (`id`, nonempty `label`). `selection_mode` is optional: `single` (default) takes one selection, `multiple` one or more. IDs are stable, nonempty, at most 64 ASCII letters, digits, `_` or `-`; question IDs are unique in the group, option IDs unique within a question. Question text is at most 8192 bytes, option labels 2048 bytes, the whole file 256 KiB. Unknown fields are rejected.
 - Put plaintext in the file: the CLI validates it and vault-encrypts body, `text` and `label` (it fails closed).
 - Every question also offers a typed custom answer **instead of** selections; do not add an "Other" option or a custom-label field. Every question requires an answer: selecting an option only updates the draft, and the user submits the whole group once.
 - **One simple choice**: `--options "Option A,Option B"` (or repeated `--option`) gives quick-reply chips. Never combine flat options with `--questions-file`; grouped questions are user-only. `--actions` may accompany a group only for unrelated operations.
-- **Last-message-only rule**: flat options and grouped-question controls work only while their message is the **LAST durable user-visible message** in that agent conversation. Any newer user or agent message expires them (the content stays readable); agent-to-agent messages do not count. Freshness follows durable insertion order, not timestamps or pagination. Put all related questions in one message and send no follow-ups while waiting for answers.
+- **Last-message-only rule**: flat options and grouped-question controls work only while their message is the **LAST durable user-visible message** in that agent conversation. Any newer user or agent message expires them (the content stays readable); agent-to-agent messages do not count. Freshness follows durable insertion order, independent of timestamps, history pagination or synthetic UI rows. Put all related questions in one message and send no follow-ups while waiting for answers.
 - **Task approval is not a question.** Use the task review UI, or record the user's explicit verdict with `review post --on-behalf-of user`. It needs no action card. Never treat an answer selection or silence as approval.
 
 ### Delivered answers
@@ -77,7 +77,7 @@ Once you are initialized and ready to work, run `./bin/ham-ctl start-success` (i
 }
 ```
 - Each question appears exactly once. A custom answer has nonempty `custom_text` and omitted or empty `option_ids`; mixing text and selections is invalid. A `multiple` answer lists several `option_ids`. The CLI decrypts `text`, `label` and `custom_text` as well as the body; the summary wording is illustrative.
-- The Hub records one answer per source and delivers one inbox message. A retry with the same `idempotency_key` replays success; a different key after success returns `question_answered` (409); a source superseded by a newer visible message returns `question_stale` (409). Preserve drafts on errors.
+- The Hub records one answer per source and delivers one inbox message. On the wire the summary body and custom text are vault-encrypted. A retry with the same `idempotency_key` replays success without a second delivery; a different key after success returns `question_answered` (409); a source superseded by a newer visible message returns `question_stale` (409). Preserve drafts on errors.
 
 ## 5. Chat vs task comments
 - **Task comments** (`ham-ctl task comment <task-id> --body "..."`): permanent, auditable engineering log on the task: technical progress, test output, diff summaries, review handoffs.
