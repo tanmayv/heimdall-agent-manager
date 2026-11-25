@@ -11,7 +11,7 @@ function SecretValue({ label, value, id }: { label: string; value: string; id: s
     try { await navigator.clipboard.writeText(value); setNotice('Copied'); }
     catch { setNotice('Could not copy. Select the value and copy it manually.'); }
   }
-  return <div className="webhook-secret-value"><FormField label={label}><Input aria-label={label} data-debug-id={'webhook-' + id} value={value} className="text-code" readOnly /></FormField><Button variant="secondary" data-debug-id={'webhook-copy-' + id} onClick={() => void copy()}>Copy {label === 'Token' ? 'token' : label === 'Header URL' ? 'header URL' : 'secret URL'}</Button><span role="status" className="webhook-copy-notice">{notice}</span></div>;
+  return <div className="webhook-secret-value"><FormField label={label}><Input aria-label={label} data-debug-id={'webhook-' + id} value={value} className="text-code" onChange={() => {}} readOnly /></FormField><Button variant="secondary" data-debug-id={'webhook-copy-' + id} onClick={() => void copy()}>Copy {label === 'Token' ? 'token' : label === 'Header URL' ? 'header URL' : 'secret URL'}</Button><span role="status" className="webhook-copy-notice">{notice}</span></div>;
 }
 export function WebhookSecretNotice({ secret, onDismiss }: { secret: WebhookSecret; onDismiss: () => void }) {
   const url = apiAbsoluteUrl('/api/v1/hooks/' + encodeURIComponent(secret.webhook.webhook_id));
