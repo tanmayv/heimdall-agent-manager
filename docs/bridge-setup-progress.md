@@ -164,7 +164,7 @@ must skip lines that do not parse as JSON objects.
 
 | field | meaning |
 |---|---|
-| `step` | `lock`, `detect` (one `ok` event after `lock`), `stage`, `binaries`, `config`, `ports`, `service`, `enroll`, `extensions`, `start`, `verify`, or `setup` for the final event |
+| `step` | `lock`, `detect` (one `ok` event after `lock`), the conversion ids `convert_gate`, `convert_fetch`, `convert_backup`, `convert_quiesce`, `convert_tree`, `convert_commit`, `convert_finalize` (a legacy or fresh instance converted to / installed as the supervisor layout, below), `stage`, `binaries`, `config`, `ports`, `service`, `enroll`, `extensions`, `start`, `verify`, or `setup` for the final event |
 | `state` | `start`, `progress` (an informational line within a step, e.g. one provider's extension result), `ok`, `skipped`, `warning` (S1a enrollment not completed; S2 not connected), `retry` (a remediation was attempted), `failed`, `rollback` (one step undone), `done` |
 | `pct` | overall progress 0-100 |
 | `message` | human-readable detail |
@@ -364,3 +364,30 @@ no update script any more (`apply-bridge-update.{sh,ps1}` were removed): a bridg
 is not a bridgesvc profile install, or a hub downgrade, is refused before anything is
 downloaded, and bridges installed before this release are reinstalled once with
 `curl -fsSL install.ninjy.ai | bash` (Windows: `irm install.ninjy.ai/ps1 | iex`).
+
+## Conversion to the supervisor layout (S10 and greenfield S1)
+
+A setup run of a supervisor-capable bundle on a legacy instance (row S10) or on a machine with
+nothing installed (greenfield) runs the conversion transaction of
+`docs/specs/bridge-supervisor-conversion.md` inside the `lock` step. Electron still sees the
+`lock` step and the final `setup`/`done` event; between them these step ids appear, mapped onto
+the spec's C1-C9:
+
+| step id | spec | does | on failure |
+|---|---|---|---|
+| `convert_gate` | C1 | Q3 agent gate: a timer-started run waits up to 2 h for agents (the countdown arrives as `progress` events with `force_at`, `remaining_s`, `agents`; also in `<state>/conversion-status.json`); any other caller interrupts at once. `ham-bridge setup --convert-now` skips the wait; `--convert-gate wait\|now` forces either mode | nothing was changed |
+| `convert_fetch` | C2 | verifies the signed release manifest and downloads the archive | exit 1, `[ERROR] Conversion of <service> refused: <code>; the previous install was not touched.` |
+| `convert_backup` | C3 | copies the service definition, config, hub-url, profile, ports.json and the ham-ctl wrapper (never credentials) | undone |
+| `convert_quiesce` | C4 | starts the rescuer, stops the old bridge and PTY daemon, snapshots the state stores | undone |
+| `convert_tree` | C5 | `instance.json`, `ham-supervisor repair`, `launcher/`, `update.json` | undone |
+| `service`, `enroll`, `extensions` | C6, C6b, C6c | launcher service definition; enrollment and extensions as before | undone |
+| `start` | C7 | starts the service | undone |
+| `convert_commit` | C8 | waits for the supervisor journal `op_convert_<txn>` `committed` (one `progress` event per journal state) and the hub connection | undone |
+| `convert_finalize` | C9 | idempotent tail (Linux KillMode flip, Windows old task removed, cleanup); a failure is a `warning`, never a rollback | warning |
+
+Any failure from `convert_gate` to `convert_commit` rolls back (`rollback` events name R1-R6),
+restores the service definition, settings and state stores, deletes everything the transaction
+created, restarts the old bridge and ends with `ham-bridge setup FAILED at step "<id>"; the
+previous install was restored[ and restarted].` (exit 1), or exit 7 `rollback incomplete` with
+the backup kept. A crashed or killed setup leaves `<data>/conversion.json`; the rescuer
+(`ham-bridge convert-rescue`) or the next setup run recovers it (spec §6.3, §6.4).

@@ -286,8 +286,13 @@ ctl_wrapper_path :: proc(host: Host, l: Layout) -> string {
 // render_ctl_wrapper: bin/ham-ctl with this profile's config and, unless the
 // caller set one, this profile's local endpoint (the service env's value).
 render_ctl_wrapper :: proc(host: Host, l: Layout, in_: Render_Input) -> string {
+	return render_ctl_wrapper_for_tree(host, l, in_, pjoin(l.bin_dir, exe_name(host, "ham-ctl")))
+}
+
+// render_ctl_wrapper_for_tree: the wrapper exec'ing `ctl` (a converted instance points it
+// into the active release tree, conversion spec §8.3).
+render_ctl_wrapper_for_tree :: proc(host: Host, l: Layout, in_: Render_Input, ctl: string) -> string {
 	endpoint := fmt.tprintf("tcp:127.0.0.1:%d", in_.endpoint_port)
-	ctl := pjoin(l.bin_dir, exe_name(host, "ham-ctl"))
 	config := pjoin(l.state_dir, CONFIG_FILE)
 	b := strings.builder_make(context.temp_allocator)
 	if host.os == .Windows {

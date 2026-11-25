@@ -118,6 +118,10 @@ main :: proc() {
 		if code := bridge_setup_command(os.args); code != 0 do os.exit(code)
 		return
 	}
+	if len(os.args) > 1 && os.args[1] == "convert-rescue" {
+		if code := bridge_convert_rescue_command(os.args); code != 0 do os.exit(code)
+		return
+	}
 	if len(os.args) > 1 && os.args[1] == "update" {
 		if !bridge_update_command(os.args) do os.exit(1)
 		return

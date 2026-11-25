@@ -29,6 +29,7 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import contracts "odin_test:contracts"
+import lc "odin_test:launcher/core"
 import bridgesvc "odin_test:lib/bridgesvc"
 
 // Binaries a release bundle carries next to ham-bridge; only ham-bridge is required.
@@ -73,9 +74,15 @@ Bridge_Setup :: struct {
 	service_action: string, // "registered" when the service definition was (re)written
 	not_enrolled:   string, // S1a: why enrollment did not complete (exit 4)
 	not_connected:  bool, // S2: running but not connected after the wait (warning)
+	// Conversion (docs/specs/bridge-supervisor-conversion.md): non-nil while the legacy ->
+	// supervisor transaction runs inside the Lock step.
+	conv:           ^Convert_State,
+	enroll_exe:     string, // enroll with this ham-bridge instead of bin/'s (the new tree's)
+	conv_recovered: bool, // S10a: an interrupted conversion was recovered in this run
+	fail_line:      string, // replaces the generic "FAILED at step" line (conversion rollback)
 }
 
-BRIDGE_SETUP_USAGE :: "usage: ham-bridge setup --hub <url> [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--separate-account | --replace-other-account] [--version V [--allow-downgrade]] [--keep-version] [--reinstall] [--headless] [--no-tray] [--json-progress]"
+BRIDGE_SETUP_USAGE :: "usage: ham-bridge setup --hub <url> [--profile P] [--new-bridge | --reuse-bridge BRIDGE_ID] [--reenroll] [--separate-account | --replace-other-account] [--version V [--allow-downgrade]] [--keep-version] [--reinstall] [--convert-gate wait|now] [--convert-now] [--headless] [--no-tray] [--json-progress]"
 
 // bridge_setup_command returns the process exit code (contract §4).
 bridge_setup_command :: proc(args: []string) -> int {
@@ -108,6 +115,17 @@ bridge_setup_command :: proc(args: []string) -> int {
 		if separate != profile.profile {
 			profile, _ = bridgesvc.profile_from(hub, separate, context.temp_allocator)
 			if !has_flag(args, "--json-progress") do fmt.printfln("Installing this Ninjy account as a separate profile %q (service %s); the existing one is left as is.", separate, profile.service_name)
+		}
+	}
+	if has_flag(args, "--convert-now") {
+		// "Update now" for a conversion waiting on agents (spec §9.2 item 5): leave the
+		// request for the gate; when a live setup holds the lock, that is all there is to do.
+		layout := bridgesvc.layout_for(host, profile.service_name)
+		request := fmt.tprintf(`{{"requested_at":%d}}`, time.to_unix_seconds(time.now()))
+		_ = bridge_convert_write_file(bridgesvc.convert_now_path(layout), request)
+		if owner, _, locked := bridgesvc.lock_read(bridgesvc.pjoin(layout.state_dir, bridgesvc.LOCK_FILE)); locked && bridge_os_pid_alive(owner) {
+			fmt.println("asked the running conversion to proceed now")
+			return bridgesvc.EXIT_OK
 		}
 	}
 	s := Bridge_Setup {
@@ -146,6 +164,7 @@ bridge_setup_command :: proc(args: []string) -> int {
 	if !done && !s.json_progress {
 		switch {
 		case s.refusal != "": fmt.printfln("[ERROR] %s", s.refusal)
+		case s.fail_line != "": fmt.println(s.fail_line)
 		case s.rollback_failed: fmt.printfln("ham-bridge setup FAILED at step %q; rollback incomplete: %s.", bridgesvc.STEP_NAMES[failed], s.rollback_message)
 		case: fmt.printfln("ham-bridge setup FAILED at step %q; the previous install was restored%s.", bridgesvc.STEP_NAMES[failed], " and restarted" if s.was_running && s.stopped_for_setup else "")
 		}
@@ -331,7 +350,15 @@ bridge_setup_render_input :: proc(s: ^Bridge_Setup) -> bridgesvc.Render_Input {
 		name, _ := os.lookup_env("USERNAME", context.temp_allocator)
 		windows_user = bridge_setup_windows_user(domain, name)
 	}
-	return {hub = s.profile.hub_url, profile = s.profile.profile, path_env = path, termux_version = tv, windows_user = windows_user, bridge_port = s.ports[0], endpoint_port = s.ports[1]}
+	in_ := bridgesvc.Render_Input{hub = s.profile.hub_url, profile = s.profile.profile, path_env = path, termux_version = tv, windows_user = windows_user, bridge_port = s.ports[0], endpoint_port = s.ports[1]}
+	if s.facts.supervisor_managed {
+		// A converted instance (setup repairing enrollment, config or the service) keeps
+		// the launcher service definition; never re-render the legacy one over it.
+		in_.converted = true
+		if rec, reason := lc.read_instance_record(s.layout.data_dir, context.temp_allocator); reason == "" do in_.instance_id = rec.instance_id
+		if s.host.os == .Windows do in_.windows_sid = bridge_convert_windows_sid()
+	}
+	return in_
 }
 
 // ---- steps -------------------------------------------------------------------
@@ -389,6 +416,10 @@ bridge_setup_gather_facts :: proc(s: ^Bridge_Setup) -> bridgesvc.Install_Facts {
 			}
 		}
 	}
+	f.supervisor_managed = bridge_convert_supervisor_managed(s.host, l)
+	f.legacy = !f.supervisor_managed && !os.is_file(bridgesvc.pjoin(l.data_dir, "instance.json")) && !os.is_dir(bridgesvc.pjoin(l.data_dir, bridgesvc.LAUNCHER_DIR)) && (f.service_registered || f.bin_present)
+	f.bundle_capable = s.copy_binaries && s.host.os != .Termux && bridge_convert_bundle_capable(s.host, s.bundle_dir)
+	f.conversion_record = os.exists(bridgesvc.conversion_path(l))
 	f.requested_version = strings.trim_space(option_value(s.args, "--version", ""))
 	f.keep_version = has_flag(s.args, bridgesvc.KEEP_VERSION_FLAG)
 	f.allow_downgrade = has_flag(s.args, bridgesvc.ALLOW_DOWNGRADE_FLAG)
@@ -405,7 +436,8 @@ bridge_setup_gather_facts :: proc(s: ^Bridge_Setup) -> bridgesvc.Install_Facts {
 bridge_setup_enroll_argv :: proc(s: ^Bridge_Setup, token: string) -> []string {
 	l := s.layout
 	argv := make([dynamic]string, context.temp_allocator)
-	append(&argv, bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge")), "enroll", "--hub", s.profile.hub_url,
+	exe := s.enroll_exe if s.enroll_exe != "" else bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge"))
+	append(&argv, exe, "enroll", "--hub", s.profile.hub_url,
 		"--config", bridgesvc.pjoin(l.state_dir, bridgesvc.CONFIG_FILE), "--bridge-token-file", token)
 	if has_flag(s.args, "--headless") || !bridge_stdin_is_terminal(s.args) do append(&argv, "--headless")
 	if has_flag(s.args, "--new-bridge") do append(&argv, "--new-bridge")
@@ -464,7 +496,13 @@ bridge_setup_final_state :: proc(s: ^Bridge_Setup) -> Bridge_Setup_Final {
 bridge_setup_final_line :: proc(p: bridgesvc.Install_Plan, f: bridgesvc.Install_Facts, o: Bridge_Setup_Final) -> string {
 	version := bridgesvc.normalize_version(f.bundle_version if p.replace_binaries || f.installed_version == "" else f.installed_version)
 	prefix := ""
-	if len(o.recovered) > 0 do prefix = fmt.tprintf("Recovered an interrupted install of %s: %s; ", o.service, strings.join(o.recovered, ", ", context.temp_allocator))
+	if len(o.recovered) > 0 {
+		kind := "conversion" if .S10a_Recovered in p.rows else "install"
+		prefix = fmt.tprintf("Recovered an interrupted %s of %s: %s; ", kind, o.service, strings.join(o.recovered, ", ", context.temp_allocator))
+	}
+	if .S10_Convert in p.rows && o.not_enrolled == "" {
+		return fmt.tprintf("%sConverted %s v%s → v%s to the supervisor; connected.", prefix, o.service, bridgesvc.normalize_version(f.installed_version) if f.installed_version != "" else "?", version)
+	}
 	if o.not_enrolled != "" {
 		return fmt.tprintf("%sInstalled %s v%s but not enrolled: %s. Run the same command again to enroll.", prefix, o.service, version, o.not_enrolled)
 	}
@@ -533,6 +571,18 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			s.refusal = fmt.tprintf("Profile %s belongs to hub %s, not %s; pass --profile <name> to install a separate profile.", l.service_name, bridge_setup_saved_hub(s), s.profile.hub_url)
 			return ownership
 		}
+		// S10a: a conversion a crash or a kill left behind is rolled forward or back
+		// before anything is classified (spec §6.3).
+		if os.exists(bridgesvc.conversion_path(l)) {
+			note, recovered := bridge_convert_recover(s)
+			if !recovered {
+				s.exit_code = bridgesvc.EXIT_ROLLBACK_INCOMPLETE
+				bridge_setup_rollback_fail(s, note)
+				return {failure = .Fatal, message = note}
+			}
+			append(&s.recovered, note)
+			s.conv, s.conv_recovered = nil, true
+		}
 		s.facts = bridge_setup_gather_facts(s)
 		s.plan = bridgesvc.classify_install(s.facts)
 		if s.plan.refuse {
@@ -540,7 +590,13 @@ bridge_setup_run :: proc(data: rawptr, step: bridgesvc.Step) -> bridgesvc.Step_R
 			s.refusal = fmt.tprintf("%s %s", l.service_name, s.plan.message)
 			return {failure = .Fatal, message = s.plan.message}
 		}
+		if s.conv_recovered do s.plan.rows += {.S10a_Recovered}
 		bridge_setup_emit(s, bridgesvc.Event{step = "detect", state = "ok", pct = bridgesvc.step_pct(.Lock, false), message = bridgesvc.install_rows_label(s.plan.rows), attempt = 1})
+		if s.plan.convert {
+			s.conv = bridge_convert_new_state()
+			bridge_convert_install_signal_handlers()
+			return bridge_convert_run(s)
+		}
 		return {ok = true}
 
 	case .Stage:
@@ -741,6 +797,7 @@ bridge_setup_start :: proc(s: ^Bridge_Setup) -> bridgesvc.Step_Result {
 	s.restart_at = time.to_unix_seconds(time.now())
 	action: bridgesvc.Action = .Restart if bridge_service_running(s.host, l) else .Start
 	ok, out := bridge_service_action(s.host, l.service_name, action)
+	if s.facts.supervisor_managed && s.host.os == .Windows do ok, out = bridge_convert_service_start_real(s)
 	if !ok do return {failure = .Stale_Service, message = fmt.tprintf("service %s failed: %s", bridgesvc.backend_name(l.backend), out)}
 	return {ok = true}
 }
@@ -770,6 +827,14 @@ bridge_setup_service_unchanged :: proc(host: bridgesvc.Host, l: bridgesvc.Layout
 // is left alone: no write, no daemon-reload, no schtasks /Create (S3/S4 repairs).
 bridge_setup_register :: proc(s: ^Bridge_Setup, force: bool) -> bridgesvc.Step_Result {
 	l := s.layout
+	if s.facts.supervisor_managed {
+		rec := Conversion_Record{instance_id = bridge_setup_render_input(s).instance_id}
+		rec.to_tree, _ = lc.read_pointer(l.data_dir, lc.POINTER_CURRENT)
+		if !force && s.facts.service_registered && (l.backend == .Systemd || l.backend == .Launchd) && bridge_setup_file_is(l.service_file, bridgesvc.render_service_file(s.host, l, bridge_setup_render_input(s))) {
+			return {ok = true, message = fmt.tprintf("%s unchanged", bridgesvc.backend_name(l.backend))}
+		}
+		return bridge_convert_register_real(s, rec, false)
+	}
 	in_ := bridge_setup_render_input(s)
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "logs"))
 	_ = os.make_directory_all(bridgesvc.pjoin(l.data_dir, "run"))
