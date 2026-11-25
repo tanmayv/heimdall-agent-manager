@@ -300,3 +300,49 @@ test_shared_fleet_excluded_bot_action_claims_ignore_conflicting_fleet_runtime ::
 		}
 	}
 }
+
+@(test)
+test_shared_fleet_unavailable_policy_preserves_structural_diagnosis :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "shared_diagnosis")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "shared_diagnosis")
+	seed_fleet(fx, chain, "agt_w", bridge_id="br_1")
+	seed_bridge(fx, "br_2"); seed_directory(fx, chain, "other_workspace", "br_2")
+	s := agent.fleet_service(&log.service)
+	snapshot, _, se := fleet.save(&s, "u1", "br_1", {default_runtime={"claude","claude","claude-sonnet-5-5"}})
+	if !testing.expect_value(t, se.code, domain.Error_Code.None) do return
+	domain.fleet_settings_destroy(snapshot)
+	_, _ = iface.bridge_provider_setting_upsert(log.service.providers, {bridge_id="br_1",provider="claude",enabled=false})
+	ctx, loaded, ce := load_match_context(&fx.svc, chain)
+	if !testing.expect(t, loaded && ce.code == .None) do return
+	defer destroy_match_context(&ctx)
+	f := domain.Task_Chain_Fleet{agent_id="agt_w",bridge_id="br_1"}
+	p, resolved := resolve_placement(&ctx, {}, f, true)
+	testing.expect(t, resolved && p.bridge_id == "br_1" && p.directory_id == "" && p.provider == "claude" && p.model == "claude-sonnet-5-5", "raw shared policy and bridge placement survive unavailable provider")
+	set_bridge_status(fx, "br_1", false)
+	reason, _ := placement_problem(&fx.svc, &ctx, p, resolved, "agt_w")
+	testing.expect_value(t, reason, "bridge_offline")
+	set_bridge_status(fx, "br_1", true)
+	_, _, _ = iface.agent_save_support(&fx.agents, {agent_id="agt_w",bridge_id="br_1",owner_user_id="u1",enabled=false})
+	reason, _ = placement_problem(&fx.svc, &ctx, p, resolved, "agt_w")
+	testing.expect_value(t, reason, "bridge_ineligible")
+	_, _, _ = iface.agent_save_support(&fx.agents, {agent_id="agt_w",bridge_id="br_1",owner_user_id="u1",enabled=true})
+	reason, _ = placement_problem(&fx.svc, &ctx, p, resolved, "agt_w")
+	testing.expect_value(t, reason, "workspace_missing")
+	// Once structural placement is valid, explicit unavailable policy must fail.
+	dirs := ctx.dirs
+	ctx.dirs = nil
+	defer ctx.dirs = dirs
+	reason, _ = placement_problem(&fx.svc, &ctx, p, resolved, "agt_w")
+	testing.expect_value(t, reason, "provider_ineligible")
+	// Storage errors retain placement facts and surface after structural checks.
+	p.runtime_error = domain.domain_error(.Internal_Error, "settings read failed")
+	message: string
+	reason, message = placement_problem(&fx.svc, &ctx, p, resolved, "agt_w")
+	testing.expect(t, reason == "provider_ineligible" && message == "settings read failed")
+	_, _ = iface.bridge_provider_setting_upsert(log.service.providers, {bridge_id="br_1",provider="claude",enabled=true})
+	p.runtime_error = {}
+	reason, _ = placement_problem(&fx.svc, &ctx, p, resolved, "agt_w")
+	testing.expect_value(t, reason, "")
+}

@@ -32,7 +32,6 @@ Placement_Failure :: struct {
 
 // Match dispatch and diagnosis share this check. Queue checks belong BEFORE it.
 placement_problem :: proc(svc: ^Service, ctx: ^Match_Context, placement: Placement, resolved: bool, agent_id := "") -> (string, string) {
-	if placement.runtime_error.code != .None do return "provider_ineligible", placement.runtime_error.message
 	if !resolved do return "placement_missing", "no bridge placement can be resolved"
 	bridge, found, err := iface.bridge_get_bridge(svc.bridges, placement.bridge_id)
 	if err.code != .None || !found do return "bridge_missing", "placement bridge is missing"
@@ -46,6 +45,7 @@ placement_problem :: proc(svc: ^Service, ctx: ^Match_Context, placement: Placeme
 		}
 	}
 	if len(ctx.dirs) > 0 && placement.directory_id == "" do return "workspace_missing", "no chain workspace is mapped on the placement bridge"
+	if placement.runtime_error.code != .None do return "provider_ineligible", placement.runtime_error.message
 	if svc.agent_service != nil && svc.agent_service.providers != nil {
 		provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model, placement.provider_profile)
 		defer delete(provider)

@@ -57,6 +57,15 @@ precedence is unchanged. Review placement keeps its existing pin semantics.
 Effective displays report `agent_override`, `bridge_default`, legacy `fleet` or
 `bridge_override`, or `catalog_default` as the source.
 
+Placement uses `resolve(..., catalog_fallback=false)` to select authoritative
+runtime policy while retaining bridge/directory facts. Bridge ownership,
+liveness, agent support and workspace diagnosis precede provider availability
+or settings-read errors. Catalog availability is checked at the existing
+eligibility/launch stages, so transient availability does not change placement
+configuration fingerprints. Existing unconfigured live-child reuse integrations
+without a provider repository keep their no-launch behavior; any real new launch
+still requires the normal provider/profile/model validation.
+
 An inline claim promotes eligible task scope without replacing its running
 process. Its lease, context-pack placement (including `provider_profile`) and
 grant history record the actual instance tuple, even when the saved policy

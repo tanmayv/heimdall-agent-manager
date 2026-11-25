@@ -18,7 +18,7 @@ Resolved :: struct {
 }
 
 // Shared, local-only read. Every returned string is owned by the caller.
-resolve :: proc(s: ^Service, owner: domain.User_ID, bridge_id, agent_id: string, legacy: domain.Fleet_Runtime) -> (Resolved, domain.Domain_Error) {
+resolve :: proc(s: ^Service, owner: domain.User_ID, bridge_id, agent_id: string, legacy: domain.Fleet_Runtime, catalog_fallback := true) -> (Resolved, domain.Domain_Error) {
 	snapshot, err := iface.fleet_settings_get(s.bridges, owner, bridge_id)
 	if err.code != .None do return {}, err
 	defer domain.fleet_settings_destroy(snapshot)
@@ -27,6 +27,14 @@ resolve :: proc(s: ^Service, owner: domain.User_ID, bridge_id, agent_id: string,
 	if snapshot.revision > 0 {
 		r, source = snapshot.default_runtime, "bridge_default"
 		for o in snapshot.overrides do if o.agent_id == agent_id {r, source = o.runtime, "agent_override"; break}
+	}
+	// Placement selects policy before bridge/workspace eligibility. Keep catalog
+	// availability out of its configuration fingerprint and structural diagnosis.
+	// Legacy integrations without catalog wiring may still keep a live child;
+	// the existing real-start validation remains mandatory before any spawn.
+	if !catalog_fallback || (snapshot.revision == 0 && s.providers == nil) {
+		r.provider_profile = domain.profile_effective_id(r.provider, r.provider_profile)
+		return {domain.fleet_runtime_clone(r), source, snapshot.revision}, {}
 	}
 	if r.provider == "" || r.model == "" {
 		// Partial explicit legacy choices constrain catalog fallback, never erase

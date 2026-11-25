@@ -30,5 +30,7 @@ CREATE TABLE IF NOT EXISTS instance_fleet_scope (
     scope TEXT NOT NULL CHECK(scope IN ('chain','manual','excluded'))
 );
 CREATE INDEX IF NOT EXISTS idx_fleet_bots_instance ON bots(agent_instance_id);
-CREATE INDEX IF NOT EXISTS idx_fleet_actions_instance ON action_runs(target_instance_id);
+-- Scope's nonempty-target probe has its own partial index. A generic target
+-- index displaces action_runs_instance_routed on the selective delivery path.
+CREATE INDEX IF NOT EXISTS idx_fleet_actions_instance ON action_runs(target_instance_id) WHERE target_instance_id != '';
 CREATE INDEX IF NOT EXISTS idx_fleet_members_instance ON task_chain_members(agent_instance_id, owner_user_id, chain_id);

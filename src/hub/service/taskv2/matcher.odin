@@ -177,14 +177,16 @@ resolve_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.
 	if bridge_id == "" do return Placement{}, false
 	provider, model := fleet_model_on_bridge(fleet, bridge_id)
 	profile := fleet_profile_on_bridge(fleet, bridge_id)
+	runtime_error: domain.Domain_Error
 	if ctx.service != nil && ctx.service.agent_service != nil {
 		s := agent.fleet_service(ctx.service.agent_service)
-		r, err := fleet_settings.resolve(&s, ctx.chain.owner_user_id, bridge_id, fleet.agent_id, fleet_settings.legacy_runtime(fleet, bridge_id))
-		if err.code != .None do return Placement{bridge_id = bridge_id, runtime_error = err}, false
-		provider, profile, model = strings.clone(r.runtime.provider, context.temp_allocator), strings.clone(r.runtime.provider_profile, context.temp_allocator), strings.clone(r.runtime.model, context.temp_allocator)
+		r, err := fleet_settings.resolve(&s, ctx.chain.owner_user_id, bridge_id, fleet.agent_id, fleet_settings.legacy_runtime(fleet, bridge_id), catalog_fallback = false)
+		runtime_error = err
+		if err.code == .None do provider, profile, model = strings.clone(r.runtime.provider, context.temp_allocator), strings.clone(r.runtime.provider_profile, context.temp_allocator), strings.clone(r.runtime.model, context.temp_allocator)
 		domain.fleet_runtime_destroy(r.runtime)
 	}
 	return Placement{
+		runtime_error = runtime_error,
 		bridge_id    = bridge_id,
 		directory_id = resolve_directory_for_bridge(ctx.dirs, bridge_id),
 		provider_profile=profile,
