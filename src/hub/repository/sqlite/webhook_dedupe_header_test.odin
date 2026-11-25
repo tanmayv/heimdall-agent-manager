@@ -34,3 +34,35 @@ test_webhook_dedupe_header_upgrade :: proc(t:^testing.T) {
  testing.expect_value(t,saved.dedupe_header,"Svix-Id")
  testing.expect_value(t,saved.token_hash,"hash")
 }
+
+@(test)
+test_webhook_dedupe_header_crash_repair :: proc(t:^testing.T) {
+ conn,ok,_:=open(":memory:")
+ if !testing.expect(t,ok) do return
+ defer close(&conn)
+ migrated,_:=run_migrations(&conn,stop_before="webhooks_002_dedupe_header.sql")
+ if !testing.expect(t,migrated) do return
+ testing.expect(t,exec(&conn,"INSERT INTO event_webhooks(webhook_id,owner_user_id,token_hash,created_at,updated_at) VALUES('wh_crash','owner','hash','then','then');"))
+ // Simulate a process dying after DDL but before the separate ledger insert.
+ testing.expect(t,exec(&conn,MIGRATION_WEBHOOKS_002_DEDUPE_HEADER))
+ e:domain.Domain_Error
+ migrated,e=run_migrations(&conn)
+ testing.expect(t,migrated && e.code==.None,"repair the applied column without repeating ALTER")
+ testing.expect(t,table_column_exists(&conn,"event_webhooks","dedupe_header"))
+ // Reentry must remain safe once the repair records the migration.
+ migrated,e=run_migrations(&conn)
+ testing.expect(t,migrated && e.code==.None)
+ impl:Event_Webhook_Repo_SQLite
+ repo:=new_event_webhook_repository(&impl,&conn)
+ repos:iface.Repositories
+ factory_impl:SQLite_Unit_Of_Work_Factory
+ factory:=new_unit_of_work_factory(&factory_impl,&conn,&repos)
+ u,began,_:=iface.unit_of_work_begin(&factory)
+ if !testing.expect(t,began) do return
+ defer iface.unit_of_work_rollback(&u)
+ row,found,re:=repo.get(repo.ctx,"wh_crash")
+ defer domain.event_webhook_destroy(&row)
+ testing.expect(t,found && re.code==.None)
+ testing.expect_value(t,row.dedupe_header,"Idempotency-Key")
+ testing.expect_value(t,row.token_hash,"hash")
+}

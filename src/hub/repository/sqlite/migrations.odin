@@ -1127,6 +1127,11 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		// Repair a crash after ALTER TABLE but before the migration ledger write.
+		if name == "webhooks_002_dedupe_header.sql" && table_column_exists(conn, "event_webhooks", "dedupe_header") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		if name == "bots_web_003_action_refs.sql" && table_column_exists(conn, "channel_messages", "action_ids_json") {
 			mark_migration_applied(conn, name)
 			continue
