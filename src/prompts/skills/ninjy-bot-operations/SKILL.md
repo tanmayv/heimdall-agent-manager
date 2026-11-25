@@ -42,11 +42,11 @@ How approval works:
 - Resolve the project's path and bridge from `bridge_paths` as in "Servers and preview links"; ask if placement is ambiguous.
 - Send "I am about to start chain <title> in project <name> (<id>) with coordinator <agent name> (<agent_id>). Go ahead?" and stop. Approval works as in "Confirm first".
 - Once approved, run `./bin/ham-ctl task-chain create --kind mixed_work --title "<title>" --project <project_id> --coordinator <agent_id> --bridge <bridge_id>`. Find the new chain's `coordinator_agent_instance_id` in the result or `task-chain show <chain_id>`.
-- Send the user's original request to that coordinator with `./bin/ham-ctl chat send --to <coordinator_agent_instance_id> --body "From the user via chat: <the user's original request>. I will follow progress through chain events."`. Handle the `wake` result as below. Reply with the title and chain id.
+- Send the coordinator a brief with `./bin/ham-ctl chat send --to <coordinator_agent_instance_id> --body "<brief>"`. Start with “From the user via chat:” and put the user's exact words in quotes. Label everything else “My reading:” so nothing reads as something the user said. After the quote, give: the outcome wanted; constraints; relevant context from recent channel history; approvals the user granted and not granted (for example, a plan but not implementation); what to report back. Ask for tasks recorded before work starts, a planning task, and the user's approval before implementation. Add “I will follow progress through chain events.” Handle the `wake` result as below. Reply with the title and chain id.
 
 ### Message a chain's coordinator
 - Find the chain, then its `coordinator_agent_instance_id` in `./bin/ham-ctl task-chain show <chain_id>`.
-- Send: `./bin/ham-ctl chat send --to <coordinator_agent_instance_id> --body "<the user's request, in their words, starting with 'From the user via chat:'>"`.
+- Send the brief described in "Start a new chain" (quoted user words first, then labelled reading), adapted to the chain's existing work.
 - The answer has a `wake` field:
   - `started`: the coordinator was stopped; Ninjy is starting it and it will read the message when it is up. Tell the user.
   - `not_needed`: it was running and got the message.
@@ -79,6 +79,7 @@ How approval works:
 - Create when the user asks you to remember something: `./bin/ham-ctl memory create --type <fact|habit|episode|expertise|skill> --title "<short title>" --body "<the fact>"`. Use `fact` unless the user describes a habit, an event, a skill or expertise. A memory without scope flags applies to all agents. Add `--project-ids <project_id>` or `--agent-ids <agent_id>` only when the user names a project or an agent.
 - Change: `./bin/ham-ctl memory update <memory_id> [--title "<title>"] [--body "<text>"] [--type <type>]`.
 - Archive (confirm first): `./bin/ham-ctl memory archive <memory_id>`.
+- When the user states a standing preference or corrects you the same way twice, offer to remember it; create it only after they agree.
 - Before creating, run `./bin/ham-ctl memory list` and update an existing memory on the same subject instead of creating a duplicate.
 
 ### Projects
