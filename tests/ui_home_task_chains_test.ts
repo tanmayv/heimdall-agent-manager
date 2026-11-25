@@ -51,7 +51,7 @@ async function withWidget(run: (h: any) => Promise<void>) {
   };
   const get = (id: string) => win.document.querySelector(`[data-debug-id="${id}"]`) as HTMLElement;
   const text = () => get('home-widget-chains').textContent || '';
-  const settle = async () => {
+  const settle = async (complete: () => boolean = () => true) => {
     // List completion mounts card queries in the next React commit. Wait for
     // those actual query/render states, rather than one timed act boundary.
     let stable = 0;
@@ -59,7 +59,7 @@ async function withWidget(run: (h: any) => Promise<void>) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
       const pending = Object.entries(hStoreQueries()).some(([key, value]: any) => /^(fetchHomeTaskChains|fetchTaskChainDetail|getHomeFleet)\(/.test(key) && value?.status === 'pending');
       const loading = !get('home-widget-chains') || /Loading (ticket progress|task chains)/.test(text());
-      stable = !pending && !loading ? stable + 1 : 0;
+      stable = !pending && !loading && complete() ? stable + 1 : 0;
       if (stable >= 2) return;
     }
     assert.fail('Widget queries did not settle: ' + text());
@@ -182,10 +182,21 @@ test('Live widget: task WS updates progress/attention, coalesces list bursts and
     h.state.delayTasks = true;
     for (let i = 0; i < 10; i++) await h.event({ type: 'resource_changed', resource: 'task', resource_id: 'a-3', change: 'updated', summary: { chain_id: 'a' } });
     await h.act(async () => h.ws.flushQueuedInvalidations()); await h.settle();
-    assert.match(h.get('home-chain-open-a').closest('article').textContent, /Needs review/);
     assert.equal(h.requests.filter((r: any) => r.path.endsWith('/tasks/a-3')).length, 1);
+    assert.equal(h.tasksApi.endpoints.fetchChainTaskDetail.select({ chainId: 'a', taskId: 'a-3' })(h.store.getState()).status, 'pending');
+    // RTK's existing delayed invalidation holds list refreshes while this task
+    // request is intentionally blocked. Release it before expecting attention.
     h.state.delayTasks = false;
-    await h.act(async () => h.releases.shift()()); await h.settle();
+    await h.act(async () => h.releases.shift()());
+    await h.settle(() => {
+      const state = h.store.getState();
+      const task = h.tasksApi.endpoints.fetchChainTaskDetail.select({ chainId: 'a', taskId: 'a-3' })(state);
+      const list = h.tasksApi.endpoints.fetchHomeTaskChains.select()(state);
+      return task.status === 'fulfilled' && list.status === 'fulfilled' && list.data?.chains.find((chain: any) => chain.chainId === 'a')?.hasUserValidation;
+    });
+    assert.equal(h.tasksApi.endpoints.fetchChainTaskDetail.select({ chainId: 'a', taskId: 'a-3' })(h.store.getState()).status, 'fulfilled');
+    assert.equal(h.tasksApi.endpoints.fetchHomeTaskChains.select()(h.store.getState()).status, 'fulfilled');
+    assert.match(h.get('home-chain-open-a').closest('article').textContent, /Needs review/);
     assert.equal(h.requests.filter((r: any) => r.path.endsWith('/tasks/a-3')).length, 2);
     assert.match(h.get('home-chain-open-a').closest('article').textContent, /3 of 3 tickets done/);
     assert.equal(h.requests.filter((r: any) => /task-chains\/[^/?]+$/.test(r.path)).length, initialDetails);
