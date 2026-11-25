@@ -32,6 +32,7 @@ Placement_Failure :: struct {
 
 // Match dispatch and diagnosis share this check. Queue checks belong BEFORE it.
 placement_problem :: proc(svc: ^Service, ctx: ^Match_Context, placement: Placement, resolved: bool, agent_id := "") -> (string, string) {
+	if placement.runtime_error.code != .None do return "provider_ineligible", placement.runtime_error.message
 	if !resolved do return "placement_missing", "no bridge placement can be resolved"
 	bridge, found, err := iface.bridge_get_bridge(svc.bridges, placement.bridge_id)
 	if err.code != .None || !found do return "bridge_missing", "placement bridge is missing"

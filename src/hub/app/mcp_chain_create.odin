@@ -42,6 +42,7 @@ mcp_create_chain :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,args:mcp.Con
 	// instance and conversation, like POST /task-chains. The chain keeps the caller
 	// title. A sealed agent name yields "<token> #<n>"; MCP readers open embedded tokens.
 	inst,prepared,perr:=agent.create_instance_stopped(&g.agents,principal,{
+		fleet_scope="chain",
 		agent_id=args.coordinator_agent_id,bridge_id=args.bridge_id,project_id=domain.Project_ID(args.project_id),chain_id=string(chain.chain_id),
 		provider=provider,provider_profile=args.provider_profile,model=model,
 		member_role="coordinator",

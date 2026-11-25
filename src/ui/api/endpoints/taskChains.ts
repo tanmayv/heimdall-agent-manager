@@ -74,12 +74,14 @@ export interface ChainReviewRole {
 }
 
 export interface EffectivePlacement {
+  provider_profile?: string;
+  runtime_error?: string;
   bridge_id: string;
   /** task_pin | fleet | chain_directory | coordinator | none */
   bridge_source: string;
   provider: string;
   model: string;
-  /** fleet | bridge_override | catalog_default | none */
+  /** agent_override | bridge_default | fleet | bridge_override | catalog_default | none */
   model_source: string;
 }
 

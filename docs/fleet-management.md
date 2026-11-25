@@ -1,37 +1,134 @@
-REQ-FLEET-BRIDGE-MODELS-1: Fleet launch settings are stored per chain and agent identity.
-GET `/task-chains/{chainId}/fleets` and PUT
-`/task-chains/{chainId}/fleets/{agentId}` include `bridge_models`, an object keyed
-by bridge ID with explicit `{ "provider": "...", "model": "..." }` values.
-PUT replaces this object when supplied; omitting it preserves existing bridge
-selections. An empty object clears the bridge selections. Each selection must
-refer to an owner-controlled bridge and an active model of a provider enabled
-and present on that bridge.
+# Shared bridge Fleet settings
 
-REQ-FLEET-PLACEMENT-1: Ticket JIT provisioning uses the ticket's bridge pin, then the fleet row bridge_id, then the chain directory bridge, then coordinator bridge.
-It selects that bridge's saved fleet settings before the role-wide provider/model. Missing
-role-wide values resolve in catalog rank/ID order against active providers and
-models available on the selected bridge. Explicit unavailable values fail rather
-than silently selecting a replacement.
+The Hub owns task-agent runtime policy in SQLite. A bridge has one complete,
+owner-scoped, versioned snapshot: a provider/profile/model default and overrides
+keyed by durable `agent_id`. It applies across chains on that bridge. Bridge
+placement, task pins, roles, review requirements, capacity and pause remain chain
+or task controls. Updating runtime policy does not change those controls.
 
-REQ-FLEET-DISPLAY-1: The fleet drawer displays concrete launch settings for each bridge and current
-live instance settings for the agent identity on that bridge. Apply persists
-bridge selections independently. Confirmed restarts resolve each instance's own
-bridge selection and skip instances already using those settings. New-instance
-only applies leave existing runtimes on their current settings.
+## Persistence and transition (REQ-FLEET-2, 4, 5, 6, 9)
 
-Migration `076_fleet_bridge_models.sql` adds the durable JSON column with an empty
-object default, preserving existing role-wide fleet settings.
+`251_shared_fleet_settings.sql` adds `bridge_fleet_settings`,
+`bridge_fleet_agent_overrides` and `instance_fleet_scope`. Migration imports no
+legacy chain values and triggers no process operations. A missing settings row
+means revision zero and an unconfigured bridge.
 
-Validation (2026-10-11):
+The first successful snapshot save establishes shared authority at revision 1.
+Every later changed snapshot increments its revision; a semantic no-op retains
+the revision. Overrides are a complete replacement, unique per bridge and durable
+agent. Removing the last override restores inheritance. Reordering overrides is
+a no-op. Provider profile IDs survive every read/write/resolution path. Deleting
+an agent with an override advances the containing snapshot revision.
 
-- REQ-FLEET-RECONCILE-1 and REQ-FLEET-BRIDGE-MODELS-1: `odin test src/hub/service/taskchain -collection:odin_test=src -extra-linker-flags:-L/home/linuxbrew/.linuxbrew/lib -define:ODIN_TEST_NAMES=taskchain.test_fleet_reconcile_resolves_bridge_models_without_manual_configuration -out:/tmp/fleet-regression` — exit 0. Reconcile binds an instance without edits; a second reconcile uses the saved bridge model. Omitted settings preserve the bridge map; invalid models are rejected.
-- REQ-FLEET-BRIDGE-MODELS-1: `odin test src/hub/repository/sqlite -collection:odin_test=src -extra-linker-flags:-L/home/linuxbrew/.linuxbrew/lib -define:ODIN_TEST_NAMES=sqlite.test_taskchain_fleet_sqlite_lifecycle -out:/tmp/fleet-repo-tests` — exit 0, migration and storage round trip.
-- REQ-FLEET-BRIDGE-MODELS-1: `odin test src/hub/transport/http -collection:odin_test=src -extra-linker-flags:-L/home/linuxbrew/.linuxbrew/lib -define:ODIN_TEST_NAMES=http.test_fleet_bridge_models_wire_roundtrip,http.test_write_fleet_json,http.test_write_fleet_json_omitted_provider_model_empty -out:/tmp/fleet-http-tests` — exit 0, three tests, including parsing serialized fleet JSON.
-- REQ-FLEET-DISPLAY-1 and REQ-FLEET-BRIDGE-MODELS-1: `node tests/fleetSelection.test.ts` — exit 0, 19 tests covering resolved settings, bridge resolution, independent bridge edits, and preserving unrendered selections.
-- All three requirements: `npm run build`, direct `odin build src/hub -collection:odin_test=src -extra-linker-flags:-L/home/linuxbrew/.linuxbrew/lib -out:/tmp/ham-hub-fleet`, and `git diff --check` — exit 0. Nix is unavailable; no Nix package build or live UI interaction was performed.
+`fleet_settings.save` validates the full default and override draft before calling
+the atomic repository save. It validates owner-controlled bridge/agents, active
+agents, actual recorded profile enablement/presence, effective models and agent
+bridge support. Invalid explicit choices return 422 with details code
+`fleet_selection_unavailable`; they never silently select another runtime.
+Foreign or absent resources return 404. A stale expected revision returns 409
+with `fleet_revision_conflict`. No failed snapshot write partially replaces the
+default or overrides.
 
-The broader taskchain suite has five existing failures (38 tests, 33 passing).
-`node tests/ui_fleet_actions_test.ts` has three existing capability-payload
-failures (56 tests, 53 passing). The same failure names and assertions reproduced
-from an unchanged `git archive HEAD src tests` checkout under
-`/tmp/heimdall-fleet-baseline`. Logs are under `/tmp/fleet-*.log`.
+Legacy chain fleet rows remain intact for audit and for bridges which have never
+been configured. On a managed bridge, changing a legacy runtime selection returns
+409 with `fleet_runtime_managed`, directing the caller to Home Fleet. Root runtime
+changes are refused when they could affect a managed bridge; per-bridge changes
+on unconfigured bridges remain valid. Staffing/placement-only updates continue
+to work and preserve existing legacy runtime fields. Fresh role rows need no
+runtime selection. Roles, capacity, pause and required review gates retain their
+existing contracts.
+
+## Local runtime resolution
+
+`src/hub/service/fleet_settings` is the shared policy resolver:
+
+1. Bridge-agent override.
+2. Bridge default.
+3. Legacy chain fleet bridge selection, then its root selection, only on an
+   unconfigured bridge.
+4. Validated catalog order when legacy values are missing. Partial explicit
+   legacy choices constrain fallback; unavailable explicit values are preserved
+   for typed launch validation, never substituted.
+
+The matcher, placement diagnosis/recovery, lease grant, trusted coordinator
+creation, subsequent starts/retries and effective placement displays use this
+policy. Task bridge pin → fleet bridge → chain directory → coordinator bridge
+precedence is unchanged. Review placement keeps its existing pin semantics.
+Effective displays report `agent_override`, `bridge_default`, legacy `fleet` or
+`bridge_override`, or `catalog_default` as the source.
+
+All policy reads are indexed SQLite reads inside existing Hub orchestration.
+There are **zero new Fleet-settings HTTP/RPC calls on startup or restart**, no
+agent-side settings fetch, no startup-triggered UI refetch and no new cache.
+The Hub passes provider/profile/model through existing launch commands; bootstrap
+traffic and frozen command redelivery remain unchanged. A committed snapshot is
+observed on the next real launch, not by rewriting an already committed launch
+command or restarting an instance during migration.
+
+## Task-agent scope
+
+`kind` remains `agent`. The separate `instance_fleet_scope` table records trusted
+participation without changing owner/bridge/chain/live-instance enumeration:
+
+| Scope | Meaning |
+| --- | --- |
+| `chain` | Trusted task coordinator/JIT creation or explicit task responsibility |
+| `manual` | Plain conversation; binding a chain alone does not opt it in |
+| `excluded` | Bot/action or another explicitly non-task origin; cannot promote |
+| no row | Unknown legacy provenance; classified conservatively |
+
+`iface.fleet_scope_get` is the one local classifier for existing starts and F2
+Apply target enumeration. Unknown legacy instances require normal agent kind,
+same-owner task-role membership on their chain, and persisted task/workflow/claim
+or explicit fleet/directory evidence. An empty private `mixed_work` chain and
+coordinator membership alone are insufficient. Known bot/action bindings and
+provider-test/non-agent kinds are excluded even if they have chain bindings.
+
+Only trusted server paths write scope. Generic launch JSON cannot select it.
+Plain conversation creation records `manual`; explicit task coordinator creation
+and JIT workers/reviewers record `chain`. Explicit coordinator assignment or a
+successful task claim may promote a manual instance. Failed grants roll back the
+promotion with their native unit of work. Instances with the same durable agent
+identity retain independent provenance. Unknown/ambiguous targets stay outside
+Apply fan-out.
+
+Excluded bot/action origins retain existing orchestration and eligible claim
+permissions. Those callers inspect the explicit `Excluded` classifier result and
+skip promotion/shared runtime resolution while preserving legacy runtime. They
+do not swallow arbitrary conflicts or storage errors. The marker setter itself
+continues refusing excluded-to-chain promotion.
+
+## Integration seam for F2
+
+Wire shapes live in `src/contracts/fleet_settings.odin` with the TypeScript mirror
+in `src/ui/api/fleetSettings.ts`. `Fleet_Settings_Draft` has
+`expected_revision`, `default_runtime`, and the complete `overrides` array. Reads
+return `Fleet_Settings` with `bridge_id` and `revision`.
+
+`fleet_settings.Service` receives existing bridge, agent and provider repository
+interfaces. `validate`, `save`, `resolve`, `legacy_runtime` and
+`iface.fleet_scope_get` are available without a new settings RPC or process
+control boundary. Bridge repository snapshot reads return owned data; destroy
+with `domain.fleet_settings_destroy`. Resolver runtime strings are owned; destroy
+with `domain.fleet_runtime_destroy`.
+
+F2 must run validation and snapshot save in the same existing Hub unit of work
+as durable application/request/target records, then perform restart side effects
+after commit. It owns composite Apply/status endpoints, request deduplication,
+all-page target enumeration, lifecycle capability checks, retry/readiness status,
+WebSocket events and CLI/MCP parity. F1 performs no live restarts and adds no
+settings HTTP routes. F3 owns live Home Fleet UI and old drawer retirement.
+
+The existing chain fleet HTTP/CLI/MCP surfaces are compatibility controls during
+this transition. They cannot override managed runtime policy. The old
+per-chain drawer's separate Apply/restart behavior is retired by F3; it is not
+the new shared Apply contract.
+
+## Verification
+
+Focused tests are beside repository, matcher/launch and taskchain code. Coverage
+includes owner isolation, atomic revisioned snapshots, no-op/removal, actual
+availability validation, multiple chains/bridges, bridge pins, default/override/
+legacy/catalog precedence, manual/task promotion and non-task exclusions. Existing
+suites run only through the chain's designated Test Runner; task comments and
+handoffs record the exact committed SHA, commands and results.

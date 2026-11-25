@@ -21,6 +21,7 @@ import jsonx "odin_test:lib/jsonx"
 // directory on that bridge (first by created_at), or "" when the chain has no
 // directory there — it carries the ≤ 1 live work lease per directory rule.
 Placement :: struct {
+	runtime_error: domain.Domain_Error,
 	provider_profile:string,
 	bridge_id:    string,
 	directory_id: string,
@@ -76,6 +77,7 @@ grant_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request) -> (domain.Task
 
 @(private = "file")
 grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stopping: bool) -> (domain.Task_Lease, bool, domain.Domain_Error) {
+	req := req
 	task := req.task
 	if task.workflow_run_id != "" {
 		wf, ok, err := workflow_context(svc, task.workflow_run_id, task.owner_user_id)
@@ -85,6 +87,22 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 		}
 	}
 	inst := req.instance
+	scope, scope_err := iface.fleet_scope_classify(svc.bridges, inst)
+	if scope_err.code != .None do return {}, false, scope_err
+	if scope != .Excluded {
+		if e := iface.fleet_scope_set(svc.bridges, inst, "chain"); e.code != .None do return {}, false, e
+	}
+	if svc.agent_service != nil && scope != .Excluded {
+		runtime, e := agent.chain_fleet_runtime(svc.agent_service, req.chain.owner_user_id, string(req.chain.chain_id), req.placement.bridge_id, inst.agent_id, {req.placement.provider, req.placement.provider_profile, req.placement.model})
+		if e.code != .None do return {}, false, e
+		defer domain.fleet_runtime_destroy(runtime)
+		req.placement.provider, req.placement.provider_profile, req.placement.model = strings.clone(runtime.provider, context.temp_allocator), strings.clone(runtime.provider_profile, context.temp_allocator), strings.clone(runtime.model, context.temp_allocator)
+	}
+	if svc.agent_service != nil && scope == .Excluded {
+		legacy, e := agent.chain_legacy_runtime(svc.agent_service, req.chain.owner_user_id, string(req.chain.chain_id), req.placement.bridge_id, inst.agent_id, {inst.provider, inst.provider_profile, inst.model})
+		if e.code != .None do return {}, false, e
+		req.placement.provider, req.placement.provider_profile, req.placement.model = legacy.provider, legacy.provider_profile, legacy.model
+	}
 	// A candidate selected before a competing start must not overwrite it.
 	latest, exists, latest_err := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
 	if !exists do return {}, false, latest_err

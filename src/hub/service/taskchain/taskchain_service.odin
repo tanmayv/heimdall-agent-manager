@@ -1,6 +1,7 @@
 package taskchain
 
 import provider_service "odin_test:hub/service/provider"
+import fleet_settings "odin_test:hub/service/fleet_settings"
 
 import "core:fmt"
 import "core:log"
@@ -531,6 +532,7 @@ create_chain_impl :: proc(
 	// stamp the derived mirror column. An instance creator defaults to coordinator;
 	// a user-token creator may name one via coordinator_agent_id.
 	if coordinator_id != "" && !strings.has_prefix(coordinator_id, "agt_") {
+		if e := promote_task_instance(service, owner, coordinator_id); e.code != .None do return {}, false, e
 		member := domain.Task_Chain_Member {
 			chain_id          = saved_chain.chain_id,
 			agent_instance_id = coordinator_id,
@@ -578,6 +580,7 @@ update_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		// mirror. A non-empty target must belong to this chain (same-owner+membership).
 		if input.coordinator_agent_instance_id != "" {
 			if same, same_err := agent_instance_same_chain(service, input.coordinator_agent_instance_id, chain); !same do return domain.Task_Chain{}, false, same_err
+			if e := promote_task_instance(service, chain.owner_user_id, input.coordinator_agent_instance_id); e.code != .None do return {}, false, e
 		}
 		chain = set_chain_coordinator(service, chain, input.coordinator_agent_instance_id)
 		// MEM-6 #9: notify the newly-designated coordinator.
@@ -1723,6 +1726,7 @@ update_chain_coordinator :: proc(service: ^Taskchain_Service, auth: contracts.Au
 	}
 	if coordinator_agent_instance_id != "" {
 		if same, same_err := agent_instance_same_chain(service, coordinator_agent_instance_id, chain); !same do return domain.Task_Chain{}, false, same_err
+		if e := promote_task_instance(service, chain.owner_user_id, coordinator_agent_instance_id); e.code != .None do return {}, false, e
 	}
 	// Change the coordinator through the SINGLE canonical source (members table);
 	// set_chain_coordinator demotes the old coordinator, promotes the target, and
@@ -1919,6 +1923,7 @@ remove_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 // --- Fleet Management (REQ-FLEET-SCHEMA-1, REQ-FLEET-API-CLI-1, Task System v2 §4a) ---
 
 Upsert_Fleet_Input :: struct {
+	has_runtime: bool,
 	provider_profile: string,
 	has_provider_profile:bool,
 	bridge_models_json: string,
@@ -1952,6 +1957,7 @@ implicit_solo_worker :: proc(service: ^Taskchain_Service, chain: domain.Task_Cha
 }
 
 upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Upsert_Fleet_Input) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
+	input := input
 	trimmed_agent := strings.trim_space(input.agent_id)
 	if trimmed_agent == "" do return domain.Task_Chain_Fleet{}, domain.domain_error(.Validation_Failed, "agent_id is required")
 	chain, ok, err := get_chain_for_owner_write(service, auth, input.chain_id)
@@ -1977,6 +1983,24 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 	defer delete(prior)
 	existing := domain.Task_Chain_Fleet{roles_json = domain.FLEET_ROLES_DEFAULT_JSON}
 	for row in prior { if row.agent_id == trimmed_agent { existing = row; break } }
+	if service.agent_service != nil {
+		s := agent.fleet_service(service.agent_service)
+		candidate := existing
+		candidate.provider, candidate.provider_profile, candidate.model = input.provider, input.provider_profile, input.model
+		if input.provider_profile == "" && !input.has_provider_profile && input.provider == existing.provider do candidate.provider_profile = existing.provider_profile
+		if input.bridge_models_json != "" do candidate.bridge_models_json = input.bridge_models_json
+		// Omitted runtime fields on a staffing-only call preserve legacy audit
+		// data after the bridge transitions to shared authority.
+		if !input.has_runtime && !input.has_provider_profile && input.provider == "" && input.model == "" {
+			managed, e := fleet_settings.owner_has_managed_bridge(&s, chain.owner_user_id)
+			if e.code != .None do return {}, e
+			if managed {
+				input.provider, input.provider_profile, input.model = existing.provider, existing.provider_profile, existing.model
+				candidate.provider, candidate.provider_profile, candidate.model = existing.provider, existing.provider_profile, existing.model
+			}
+		}
+		if e := fleet_settings.guard_legacy_write(&s, chain.owner_user_id, existing, candidate); e.code != .None do return {}, e
+	}
 	bridge_models := input.bridge_models_json
 	if bridge_models == "" {
 		bridge_models = existing.bridge_models_json
@@ -2192,6 +2216,7 @@ resolve_fleet_launch_model :: proc(service: ^Taskchain_Service, bridge_id, provi
 // the UI shows real values instead of "inherit" / "default". Strings are
 // temp-allocated.
 Effective_Placement :: struct {
+	runtime_error: string `json:"runtime_error,omitempty"`,
 	provider_profile:string `json:"provider_profile"`,
 	bridge_id:     string `json:"bridge_id"`,
 	// task_pin | fleet | chain_directory | coordinator | none
@@ -2227,6 +2252,20 @@ effective_placement :: proc(service: ^Taskchain_Service, chain: domain.Task_Chai
 		}
 	}
 	if out.bridge_id == "" do return out
+	if service.agent_service != nil {
+		s := agent.fleet_service(service.agent_service)
+		r, err := fleet_settings.resolve(&s, chain.owner_user_id, out.bridge_id, fleet.agent_id, fleet_settings.legacy_runtime(fleet, out.bridge_id))
+		if err.code != .None {out.runtime_error = err.message; return out}
+		defer domain.fleet_runtime_destroy(r.runtime)
+		out.provider, out.provider_profile, out.model = strings.clone(r.runtime.provider, context.temp_allocator), strings.clone(r.runtime.provider_profile, context.temp_allocator), strings.clone(r.runtime.model, context.temp_allocator)
+		out.model_source = r.source
+		// Preserve legacy source labels for clients until their Fleet migration.
+		if r.source == "legacy" {
+			out.model_source = "fleet"
+			if r.runtime.provider != fleet.provider || r.runtime.model != fleet.model do out.model_source = "bridge_override"
+		}
+		return out
+	}
 	provider, model := fleet_model_on_bridge(fleet, out.bridge_id)
 	out.provider_profile=domain.profile_effective_id(provider,fleet_profile_on_bridge(fleet,out.bridge_id))
 	if provider != "" && model != "" {

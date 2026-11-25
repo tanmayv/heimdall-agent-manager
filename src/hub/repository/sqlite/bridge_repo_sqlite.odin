@@ -41,6 +41,10 @@ open_bridge_enroll_commit_conn :: proc(c: ^Bridge_Enroll_Commit_Conn, path: stri
 new_bridge_repository :: proc(impl: ^Bridge_Repo_SQLite, conn: ^Conn) -> iface.Bridge_Repository {
 	impl.conn = conn
 	return iface.Bridge_Repository{
+		fleet_settings_get = fleet_settings_get_sqlite,
+		fleet_settings_save = fleet_settings_save_sqlite,
+		fleet_scope_get = fleet_scope_get_sqlite,
+		fleet_scope_set = fleet_scope_set_sqlite,
 		ctx = rawptr(impl),
 		save_bridge = bridge_save_bridge_sqlite,
 		update_runtime = bridge_update_runtime_sqlite,

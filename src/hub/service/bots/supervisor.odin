@@ -102,7 +102,7 @@ bots_dispatch_locked :: proc(s: ^Bots_Service, bot: domain.Bot, d: domain.Bot_De
 	if instance_id == "" {
 		sync.mutex_unlock(&s.mutex)
 		inst, prepared, prepare_err := agent_service.create_instance_stopped(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id},
-			{agent_id = bot.agent_id, bridge_id = bridge_id, provider = candidate.provider, provider_profile = candidate.provider_profile, model = candidate.model, display_name = bot.display_name})
+			{fleet_scope = "excluded", agent_id = bot.agent_id, bridge_id = bridge_id, provider = candidate.provider, provider_profile = candidate.provider_profile, model = candidate.model, display_name = bot.display_name})
 		sync.mutex_lock(&s.mutex)
 		if !prepared {
 			a.report_json = bots_reason_json("prepare_refused", prepare_err.message)

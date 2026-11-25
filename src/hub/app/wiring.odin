@@ -1511,7 +1511,7 @@ action_agent_create :: proc(ctx:rawptr,owner,agent_id,project_id:string,c:placem
  graph:=(^App_Graph)(ctx)
  context.allocator=context.temp_allocator
  inst,ok,err:=agent_service.create_instance_stopped(&graph.agents,{kind=.Internal_User,user_id=owner},
-  {agent_id=agent_id,project_id=domain.Project_ID(project_id),bridge_id=c.bridge_id,provider=c.provider,provider_profile=c.provider_profile,model=c.model})
+  {fleet_scope="excluded",agent_id=agent_id,project_id=domain.Project_ID(project_id),bridge_id=c.bridge_id,provider=c.provider,provider_profile=c.provider_profile,model=c.model})
  if !ok {
   if err.code==.None do err=domain.domain_error(.Internal_Error,"instance creation refused")
   return "","",err
