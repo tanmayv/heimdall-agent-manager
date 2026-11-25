@@ -5,6 +5,7 @@ import './helpers/vaultEndpointHarness.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { launcherIntentFromSearch, resolveShellRoute } from '../src/ui/components/shell/shellRouting.ts';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,8 +26,8 @@ const source = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/shell/App
 const chatSource = fs.readFileSync(path.join(REPO_ROOT, 'src/ui/components/workbench/AgentChatPane.tsx'), 'utf8');
 const navBlock = source.slice(source.indexOf('const NAV_ROUTES'), source.indexOf('];', source.indexOf('const NAV_ROUTES')));
 
-test('primary nav: "+ New conversation" replaces Home; Conversations and Task Chains are gone', () => {
-  assert.match(navBlock, /path: '\/home', label: 'New conversation', icon: 'plus'/);
+test('primary nav: "+ New" replaces Home; Conversations and Task Chains are gone', () => {
+  assert.match(navBlock, /path: '\/new', label: 'New', icon: 'plus'/);
   assert.doesNotMatch(navBlock, /label: 'Home'/);
   assert.doesNotMatch(navBlock, /path: '\/conversations'/);
   assert.doesNotMatch(navBlock, /path: '\/chains'/);
@@ -166,4 +167,22 @@ test('T14: list/detail pages start right under the top spacer and run down to th
   assert.match(css, /@media \(min-width: 640px\)[^}]*--ps-pad-top: var\(--space-3\);/);
   assert.doesNotMatch(css, /--ps-pad-y/, 'the old shared top/bottom pad is gone');
   assert.doesNotMatch(css, /var\(--space-8\)/, 'no 32px tail under the banded body');
+});
+
+test('home is the dashboard; launch bookmarks still select the composer and its mode', () => {
+  for (const path of ['/home', '/home/', '/', '', '/cards', '/index.html']) {
+    assert.equal(resolveShellRoute(path, ''), '/home', path);
+    for (const intent of ['agent', 'shell']) {
+      const search = '?intent=' + intent + '&request=123';
+      assert.equal(resolveShellRoute(path, search), '/new', path + search);
+      assert.equal(launcherIntentFromSearch(search), intent);
+    }
+    assert.equal(resolveShellRoute(path, '?intent=unknown'), '/home');
+  }
+  assert.equal(resolveShellRoute('/new/', '?intent=shell'), '/new');
+  assert.equal(resolveShellRoute('/conversations/new', '?intent=shell'), '/conversations/new');
+  assert.equal(resolveShellRoute('/c/inst_1', '?msg=message_1'), '/conversations/inst_1');
+  assert.equal(launcherIntentFromSearch('intent=agent'), 'agent');
+  assert.equal(launcherIntentFromSearch('?intent=conversation'), undefined);
+  assert.equal(launcherIntentFromSearch(''), undefined);
 });

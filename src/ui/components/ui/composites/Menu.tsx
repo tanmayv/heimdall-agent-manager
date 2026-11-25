@@ -487,7 +487,7 @@ export const MenuItem: React.FC<MenuItemProps> = ({
     <button
       {...rest}
       type="button"
-      role="menuitem"
+      role={rest.role ?? "menuitem"}
       tabIndex={-1}
       aria-disabled={disabled || undefined}
       disabled={disabled}
@@ -503,6 +503,15 @@ export const MenuItem: React.FC<MenuItemProps> = ({
     </button>
   );
 };
+
+export interface MenuCheckboxItemProps extends Omit<MenuItemProps, 'danger'> {
+  checked: boolean;
+}
+/** Independent toggle in an action menu, with the same keyboard and focus behavior. */
+export const MenuCheckboxItem: React.FC<MenuCheckboxItemProps> = ({ checked, trailing, ...props }) => (
+  <MenuItem {...props} role="menuitemcheckbox" aria-checked={checked}
+    trailing={<>{trailing}<Icon name={checked ? 'check' : 'plus'} size="sm" /></>} />
+);
 
 export interface MenuRadioItemProps extends Omit<MenuItemProps, 'danger'> {
   /** Whether this is the current choice (`aria-checked`). */
@@ -589,6 +598,7 @@ export const MenuSeparator: React.FC = () => (
 interface MenuComponent extends React.FC<MenuProps> {
   Item: typeof MenuItem;
   RadioItem: typeof MenuRadioItem;
+  CheckboxItem: typeof MenuCheckboxItem;
   Label: typeof MenuLabel;
   Separator: typeof MenuSeparator;
   Panel: typeof MenuPanel;
@@ -596,6 +606,7 @@ interface MenuComponent extends React.FC<MenuProps> {
 export const Menu = MenuRoot as MenuComponent;
 Menu.Item = MenuItem;
 Menu.RadioItem = MenuRadioItem;
+Menu.CheckboxItem = MenuCheckboxItem;
 Menu.Label = MenuLabel;
 Menu.Separator = MenuSeparator;
 Menu.Panel = MenuPanel;

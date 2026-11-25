@@ -2,6 +2,7 @@ import { useGetBotQuery } from '../../api/endpoints/bots';
 import { filterBotConversations } from '../settings/botsView';
 import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
 import AccountSwitcher from './AccountSwitcher';
+import { launcherIntentFromSearch, resolveShellRoute } from './shellRouting';
 import { SidebarTaskChains } from './SidebarTaskChains';
 import { BOT_CHAT_ROUTE, SidebarBot } from './SidebarBot';
 import {
@@ -203,9 +204,9 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   isDefaultConversations: true,
 };
 const NAV_ROUTES: ShellRoute[] = [
-  // '+ New conversation' opens the start-conversation page. Conversations and
+  // '+ New' opens the conversation/shell composer. Conversations and
   // Task Chains are no longer sidebar destinations (their routes still work).
-  { path: '/home', label: 'New conversation', icon: 'plus', description: 'Start a new conversation', group: 'primary' },
+  { path: '/new', label: 'New', icon: 'plus', description: 'Start a new conversation', group: 'primary' },
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts sent to your agents', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: 'bot', description: 'Agent identities and sessions', group: 'primary' },
@@ -215,13 +216,7 @@ const NAV_ROUTES: ShellRoute[] = [
 ];
 
 function routeFromLocation(): string {
-  let path = getRoutePathname();
-  if (path.length > 1 && path.endsWith('/')) {
-    path = path.slice(0, -1);
-  }
-  if (!path || path === '/' || path === '/index.html' || path === '/cards' || path.includes('/preview/') || path.includes('/proxy/')) return '/home';
-  if (path.startsWith('/c/')) return `/conversations/${path.slice('/c/'.length)}`;
-  return path;
+  return resolveShellRoute(getRoutePathname(), getRouteSearch());
 }
 
 // Deep-link focus target for a conversation message: parse `?msg=<message_id>` from
@@ -242,12 +237,8 @@ function routeSearchFromLocation(): string {
   return getRouteSearch();
 }
 
-function launcherIntentFromSearch(search: string): LauncherIntent | undefined {
-  const intent = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search).get('intent');
-  return intent === 'agent' || intent === 'shell' ? intent : undefined;
-}
-
 function isRouteActive(currentPath: string, itemPath: string): boolean {
+  if (itemPath === '/new') return currentPath === '/new' || currentPath === '/conversations/new';
   if (itemPath === '/home') return currentPath === '/home' || currentPath.startsWith('/home/') || currentPath === '/cards' || currentPath.startsWith('/cards/');
   if (itemPath === '/cards') return currentPath === '/cards' || currentPath.startsWith('/cards/') || currentPath === '/home' || currentPath.startsWith('/home/');
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
@@ -277,7 +268,7 @@ function parseChainRoute(path: string): { chainId: string; taskId?: string } {
 function routeTitle(path: string): string {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Home';
   if (path === BOT_CHAT_ROUTE) return 'Bot';
-  if (path === '/conversations/new') return 'New conversation';
+  if (path === '/new' || path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
   if (path === '/actions/new') return 'New action';
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Edit action';
@@ -321,7 +312,7 @@ function routeTitle(path: string): string {
 function routeDescription(path: string): string {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Recent task chains, issues, and action items.';
   if (path === BOT_CHAT_ROUTE) return 'Your bot: one conversation across Telegram, WhatsApp and the web.';
-  if (path === '/conversations/new') return 'Choose a favorite agent and project, then send a message to start a conversation.';
+  if (path === '/new' || path === '/conversations/new') return 'Choose a favorite agent and project, then send a message to start a conversation.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Update the prompt or schedule for this action.';
@@ -366,7 +357,7 @@ function decodeSegment(value: string): string {
 function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = []): BreadcrumbCrumb[] {
   if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return [{ label: 'Home' }];
   if (path === BOT_CHAT_ROUTE) return [{ label: 'Bot' }];
-  if (path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
+  if (path === '/new' || path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
   if (path.startsWith('/conversations/')) {
     // Conversation routes render the Workspace, whose panes carry their own
     // breadcrumbs (a chain pane shows the chain title), so this trail is only a
@@ -1128,7 +1119,7 @@ function RouteOutlet({
   const lspFlagPending = isLspRoute && experimentsQuery.data === undefined && !experimentsQuery.isError;
   const isMappedRoute = useMemo(() => {
     return [
-      '/home', '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/issues',
+      '/home', '/new', '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/issues',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/c/') ||
       path === BOT_CHAT_ROUTE ||
@@ -1255,8 +1246,8 @@ function RouteOutlet({
         ) : path === '/device/add' ? (
           // The one approval surface for new browsers and bridges.
           <DeviceApprovalPage />
-        ) : path === '/conversations/new' ? (
-          <NewConversationPage key={routeSearch || 'default'} launchIntent={launcherIntentFromSearch(routeSearch || '')} />
+        ) : path === '/new' || path === '/conversations/new' ? (
+          <NewConversationPage key={routeSearch || 'default'} launchIntent={launcherIntentFromSearch(routeSearch || '') || (path === '/new' ? 'agent' : undefined)} />
         ) : path === '/settings' || path === '/settings/bridges' ? (
           <BridgesPanel />
         ) : path === '/settings/appearance' ? (
@@ -1731,7 +1722,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
 
   const openNewLauncher = (intent: LauncherIntent) => {
     const search = new URLSearchParams({ intent, request: String(Date.now()) });
-    window.location.hash = buildRouteHash('/conversations/new', search.toString());
+    window.location.hash = buildRouteHash('/new', search.toString());
   };
 
   const openWorkspaceResource = (resourceId: string) => {
@@ -1808,7 +1799,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   const handlePaletteAction = (actionId: string) => {
     switch (actionId) {
       case 'new-conversation':
-        handlePaletteNavigate('/conversations/new');
+        handlePaletteNavigate('/new');
         break;
       case 'new-agent':
         handlePaletteNavigate('/agents/new');

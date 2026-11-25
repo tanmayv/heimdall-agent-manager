@@ -231,12 +231,12 @@ test('sidebar: no bot yet renders nothing', async () => {
   await fixture(state, 'sidebar', async (h) => { assert.equal(h.get('sidebar-bot'), null); });
 });
 
-test('sidebar: shows display name, running state and connected channels, and opens the chat', async () => {
+test('sidebar: shows display name and bridge/provider placement with accessible running state, and opens the chat', async () => {
   const state = hub();
   await fixture(state, 'sidebar', async (h) => {
     assert.equal(h.get('sidebar-bot-name')!.textContent, 'Ninjy bot');
-    assert.match(h.get('sidebar-bot-status')!.textContent!, /Running/);
-    assert.equal(h.get('sidebar-bot-channels')!.textContent, 'Web · Telegram');
+    assert.match(h.get('sidebar-bot-status')!.textContent!, /Running on/);
+    assert.equal(h.get('sidebar-bot-placement')!.textContent, 'Laptop · Claude Code');
     assert.equal(h.get('sidebar-bot-status')!.querySelector('[role="img"]')!.getAttribute('aria-label'), 'Ready');
     const row = h.get('sidebar-bot-row') as HTMLAnchorElement;
     assert.equal(row.getAttribute('href'), '#' + BOT_CHAT_ROUTE);
@@ -246,7 +246,7 @@ test('sidebar: shows display name, running state and connected channels, and ope
   state.bot = bot({ status: 'sleeping', telegram: { configured: true, bot_username: '', binding: null } });
   await fixture(state, 'sidebar', async (h) => {
     assert.match(h.get('sidebar-bot-status')!.textContent!, /Stopped/);
-    assert.equal(h.get('sidebar-bot-channels')!.textContent, 'Web');
+    assert.equal(h.get('sidebar-bot-placement')!.textContent, 'Laptop · Claude Code');
   });
 });
 
