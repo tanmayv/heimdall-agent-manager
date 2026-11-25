@@ -80,6 +80,7 @@ class CheckFailed extends Error {}
 const expect = (cond, msg) => { if (!cond) throw new CheckFailed(msg); console.log(`    ok - ${msg}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function step(name, fn) {
+  if (process.env.HEIMDALL_E2E_CONV_PHASE && !name.startsWith(process.env.HEIMDALL_E2E_CONV_PHASE + ' ')) return;
   const phase = name.split(' ')[0];
   if (ONLY.length && !ONLY.includes(phase)) return;
   console.log(`\n== ${name}`);
@@ -460,6 +461,15 @@ async function main() {
       r = spawnSync('powershell.exe', ps, { env, encoding: 'utf8', timeout: 900_000 });
     } else {
       r = spawnSync('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, encoding: 'utf8', timeout: 900_000, input: '' });
+    }
+    if (r.status !== 0) {
+      const states = lastOp(L5).map(({ state, sub, error, note }) => ({ state, sub, error, note }));
+      console.log('    P5 journal transitions:', JSON.stringify(states));
+      for (const dir of [L5.data, L5.state, path.join(L5.data, 'logs')]) {
+        if (fs.existsSync(dir)) console.log('    P5 files:', dir, fs.readdirSync(dir).join(', '));
+      }
+      const status = readJson(path.join(L5.state, 'runtime-status.json'));
+      console.log('    P5 runtime status:', JSON.stringify(status && { pid: status.pid, connected: status.connected, updated_at: status.updated_at }));
     }
     expect(r.status === 0, `the installer re-run exits 0 (exit ${r.status})\n${r.stdout}${r.stderr}`);
     await assertConverted(acct, L5, 'P5');
