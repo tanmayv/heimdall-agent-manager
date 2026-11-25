@@ -5,6 +5,9 @@
 pkgs.stdenv.mkDerivation {
   pname = "heimdall-nats";
   inherit (pkgs.libnats-c) version src;
+  # Keep nanosecond place value before nats.c trims trailing fractional zeros.
+  patches = [ ./patches/nats-encode-time-utc-leading-zeros.patch ];
+  patchFlags = [ "-p1" "--fuzz=0" ];
   nativeBuildInputs = [ pkgs.cmake ];
   buildInputs = [ pkgs.openssl ];
   cmakeFlags = [

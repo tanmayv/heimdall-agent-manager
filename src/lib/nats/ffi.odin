@@ -11,6 +11,8 @@ when ODIN_OS == .Windows {
 }
 @(private)
 foreign client {
+    // Private inspection seam: exercise the encoder in the actual linked client.
+    nats_EncodeTimeUTC :: proc(buf: [^]u8, size: c.size_t, timestamp_ns: i64) -> i32 ---
  ham_nats_core_subscribe :: proc(out: ^^Core_Subscription, conn: ^Connection, subject: cstring) -> i32 ---
  natsSubscription_NextMsg :: proc(out: ^^Message, sub: ^Core_Subscription, timeout_ms: i64) -> i32 ---
  natsSubscription_Unsubscribe :: proc(sub: ^Core_Subscription) -> i32 ---
