@@ -11,7 +11,7 @@ function SecretValue({ label, value, id }: { label: string; value: string; id: s
     try { await navigator.clipboard.writeText(value); setNotice('Copied'); }
     catch { setNotice('Could not copy. Select the value and copy it manually.'); }
   }
-  return <div className="webhook-secret-value"><FormField label={label}><Input aria-label={label} data-debug-id={'webhook-' + id} value={value} className="text-code" readOnly /></FormField><Button variant="secondary" data-debug-id={'webhook-copy-' + id} onClick={() => void copy()}>Copy {label.toLowerCase()}</Button><span role="status" className="webhook-copy-notice">{notice}</span></div>;
+  return <div className="webhook-secret-value"><FormField label={label}><Input aria-label={label} data-debug-id={'webhook-' + id} value={value} className="text-code" readOnly /></FormField><Button variant="secondary" data-debug-id={'webhook-copy-' + id} onClick={() => void copy()}>Copy {label === 'Token' ? 'token' : label === 'Header URL' ? 'header URL' : 'secret URL'}</Button><span role="status" className="webhook-copy-notice">{notice}</span></div>;
 }
 export function WebhookSecretNotice({ secret, onDismiss }: { secret: WebhookSecret; onDismiss: () => void }) {
   const url = apiAbsoluteUrl('/api/v1/hooks/' + encodeURIComponent(secret.webhook.webhook_id));
@@ -67,7 +67,7 @@ export default function WebhooksSection() {
     <div ref={secretRef} tabIndex={-1} className="webhook-secret-focus">{secret ? <WebhookSecretNotice secret={secret} onDismiss={() => { if (!window.confirm('Have you saved these credentials? They cannot be shown again.')) return; setSecret(null); requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-debug-id="webhook-name"]')?.focus()); }} /> : null}</div>
     <form className="webhook-create" onSubmit={event => { event.preventDefault(); if (name.trim() && !busy && !secret) void mutate(() => createWebhook(name.trim())); }}>
       <FormField label="Webhook name" hint="For example, Release notifications. Creating a webhook does not send a prompt."><Input data-debug-id="webhook-name" aria-label="Webhook name" value={name} onChange={setName} disabled={busy || Boolean(secret)} /></FormField>
-      <Button type="submit" variant="secondary" data-debug-id="webhook-create" disabled={!name.trim() || busy || Boolean(secret)}>Create webhook</Button>
+      <Button type="submit" variant="primary" data-debug-id="webhook-create" disabled={!name.trim() || busy || Boolean(secret)}>Create webhook</Button>
     </form>
     {rows.map(row => <Panel key={row.webhook_id} className="webhook-row">
       <Text as="h3" role="title">{row.name || 'Unnamed webhook'}</Text><StatusPill className="self-start" tone={row.enabled ? 'success' : 'neutral'}>{row.enabled ? 'Enabled' : 'Disabled'}</StatusPill>

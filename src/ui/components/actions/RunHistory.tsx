@@ -15,7 +15,9 @@ export const RUN_REASON_TEXT: Record<string, string> = {
   stale_rev: 'Trigger has changed', outside_window: 'Outside the active window', blackout: 'Blackout date',
 };
 export function runRowText(run: ActionRun, machine = 'machine') {
-  const text = run.state === 'queued' ? 'Waiting'
+  const batch = run.batch_size > 1 && (run.state === 'delivered' || run.delivery_state === 'delivered');
+  const text = batch ? 'Delivered with ' + (run.batch_size - 1) + (run.batch_size === 2 ? ' other action' : ' other actions') + (run.delivery_outcome === 'read' ? ' (read)' : run.state === 'routed' ? ' (awaiting read)' : '')
+    : run.state === 'queued' ? 'Waiting'
     : run.state === 'deferred' && run.target_instance_id ? 'Waiting for the agent to read the previous prompt'
     : run.state === 'deferred' ? 'Deferred until ' + run.not_before
     : run.state === 'routed' && run.delivery_state === 'delivered' ? 'Delivered (awaiting read)'
@@ -23,7 +25,7 @@ export function runRowText(run: ActionRun, machine = 'machine') {
     : run.state === 'delivered' ? (run.delivery_outcome === 'read' ? 'Delivered (read)' : 'Delivered')
     : run.state === 'joined' ? 'Merged into ' + run.joined_run_id.slice(0, 12)
     : RUN_REASON_TEXT[run.reason] || run.reason || run.state;
-  return text + (run.batch_size > 1 && (run.state === 'delivered' || run.delivery_state === 'delivered') ? ' · delivered with ' + (run.batch_size - 1) + ' other actions' : '') + (run.joined_count > 0 ? ' · +' + run.joined_count + ' merged' : '');
+  return text + (run.joined_count > 0 ? ' · +' + run.joined_count + ' merged' : '');
 }
 export function runTargetLabel(run: Pick<ActionRun, 'target_instance_id'>, catalog: ActionCatalog) {
   const instanceId = run.target_instance_id;
@@ -39,7 +41,7 @@ export function RunMatch({ run, triggers }: { run: ActionRun; triggers: ActionTr
   if (trigger?.kind === 'event' && trigger.rev === trace.rev) {
     return <ConditionTree value={trigger.config.filter || {}} trace={trace.nodes} seen={snapshot} debugId={'action-run-trace-' + run.id} />;
   }
-  return <div className="run-recorded-values"><Text role="body-sm">Rule edited since this run</Text><Text role="body-sm" tone="muted">Only recorded values are shown.</Text><dl>{recordedValues(snapshot).map(([path, value]) => <div key={path}><dt><Text as="span" role="code-sm">{path}</Text></dt><dd><Text role="code-sm">{value}</Text></dd></div>)}</dl></div>;
+  return <div className="run-recorded-values"><Text role="label">Rule edited since this run</Text><Text role="body-sm" tone="muted">Only recorded values are shown.</Text><dl>{recordedValues(snapshot).map(([path, value]) => <div key={path}><dt><Text as="span" role="code-sm">{path}</Text></dt><dd><Text role="code-sm">{value}</Text></dd></div>)}</dl></div>;
 }
 export default function RunHistory({ actionId, catalog, triggers = [] }: { actionId: string; catalog: ActionCatalog; triggers?: ActionTrigger[] }) {
   const [fetchRuns, query] = useLazyActionRunsQuery();

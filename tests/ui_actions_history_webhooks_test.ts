@@ -86,7 +86,7 @@ test('history overlays full true/false trace, shows seen and missing values, and
   assert.match(edited, /opened/);
   assert.doesNotMatch(edited, /role="tree"/);
   assert.match(renderToStaticMarkup(React.createElement(RunMatch, { run, triggers: [] })), /Rule edited since/);
-  assert.match(runRowText({ ...run, state: 'delivered', batch_size: 3 }), /delivered with 2 other actions/);
+  assert.match(runRowText({ ...run, state: 'delivered', batch_size: 3 }), /Delivered with 2 other actions/);
   assert.equal(runRowText({ ...run, state: 'deferred', target_instance_id: 'inst' }), 'Waiting for the agent to read the previous prompt');
 });
 
@@ -101,4 +101,18 @@ test('seen values distinguish missing, omitted, truncated and unrecorded paths',
   assert.equal(seenValue({ _omitted: [], _omitted_count: 3, data: {} }, 'data.absent'), 'missing or value not recorded');
   assert.match(seenValue({ data: { title: 'partial…[truncated 3000 bytes]' } }, 'data.title'), /truncated 3000 bytes/);
   assert.deepEqual(recordedValues({ _match: { rev: 1, nodes: 'T' }, data: { _custom: 2 }, _omitted: ['data.repo'] }), [['data._custom', '2'], ['data.repo', 'value not recorded (snapshot limit)']]);
+});
+
+test('unevaluated nodes have a neutral label and no failure icon', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const ConditionTree = (await import('../src/ui/components/actions/ConditionTree.tsx')).default;
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(renderToStaticMarkup(React.createElement(ConditionTree, {
+    value: { any: [{ field: 'actor', op: 'eq', value: 'hub' }, { field: 'class', op: 'eq', value: 'state' }] },
+    trace: 'TT', debugId: 'unevaluated',
+  })));
+  const node = dom.window.document.querySelector('[data-tree-path="/any/1"]')!;
+  assert.match(node.textContent!, /Not evaluated/);
+  assert.equal(node.querySelectorAll('svg').length, 0, 'unevaluated leaf has no check or failure icon');
+  dom.window.close();
 });

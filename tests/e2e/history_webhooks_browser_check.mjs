@@ -15,8 +15,14 @@ try {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('http://127.0.0.1:' + server.httpServer.address().port + '/tests/fixtures/history-webhooks.html');
     const q = id => page.locator('[data-debug-id="' + id + '"]');
-    await page.getByRole('tree').waitFor();
-    assert.equal(await page.getByRole('treeitem').count(), 7);
+    await q('action-run-expand-review').waitFor();
+    assert.equal(await page.locator('details[open]').count(), 0, 'real Runs rows start closed');
+    await page.screenshot({ path: evidence + '/history-closed-' + width + '.png', fullPage: true });
+    await q('action-run-expand-review').focus();
+    await page.keyboard.press('Enter');
+    await q('action-run-expand-edited').click();
+    await page.getByRole('tree').first().waitFor();
+    assert.equal(await page.locator('details[open]').getByRole('treeitem').count(), 7);
     assert.ok(await page.getByText('saw: "docs-site"', { exact: true }).count());
     assert.ok(await page.getByText('Rule edited since this run', { exact: true }).count());
     const root = q('action-run-trace-review-node-root');
@@ -26,7 +32,7 @@ try {
     assert.equal(await page.evaluate(() => document.activeElement.matches(':focus-visible')), true);
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('ArrowLeft');
-    assert.equal(await page.getByRole('treeitem').count(), 5);
+    assert.equal(await page.locator('details[open]').getByRole('treeitem').count(), 5);
     await page.keyboard.press('ArrowRight');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, width + ': fits viewport');
     await page.screenshot({ path: evidence + '/history-' + width + '.png', fullPage: true });
