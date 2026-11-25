@@ -33,7 +33,7 @@ mcp_catalog_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,
 	catalog:struct {result:struct {tools:[]struct {name:string}}}
 	if !testing.expect(t,json.unmarshal_string(listed.body,&catalog,.JSON,context.temp_allocator)==nil) do return
 	visible:=make(map[string]bool,context.temp_allocator);for tool in catalog.result.tools do visible[tool.name]=true
-	expected_tools := []string{"chains.list","chains.get","events.wait","tasks.list","tasks.get","tasks.create","tasks.update","tasks.comment","tasks.control","chains.configure","agents.list","agents.get","agents.create","agents.update","agents.archive","bridges.list","providers.list","instances.list","instances.get","instances.operations"}
+	expected_tools := []string{"chains.list","chains.get","events.wait","tasks.list","tasks.get","tasks.create","tasks.update","tasks.comment","tasks.control","chains.configure","agents.list","agents.get","agents.create","agents.update","agents.archive","bridges.list","providers.list","instances.list","instances.get","instances.operations","fleet.read","fleet.status"}
 	testing.expect_value(t,len(catalog.result.tools),len(expected_tools))
 	for tool in expected_tools do testing.expect(t,visible[tool],tool)
 	testing.expect(t,!visible["instances.start"] && !visible["agents.delete"] && !visible["messages.send"] && !visible["chains.message"])

@@ -42,6 +42,10 @@ new_bridge_repository :: proc(impl: ^Bridge_Repo_SQLite, conn: ^Conn) -> iface.B
 	impl.conn = conn
 	return iface.Bridge_Repository{
 		fleet_settings_get = fleet_settings_get_sqlite,
+		fleet_application_get = fleet_application_get_sqlite,
+		fleet_application_put = fleet_application_put_sqlite,
+		fleet_application_list = fleet_application_list_sqlite,
+		fleet_application_operation = fleet_application_operation_sqlite,
 		fleet_settings_save = fleet_settings_save_sqlite,
 		fleet_scope_get = fleet_scope_get_sqlite,
 		fleet_scope_set = fleet_scope_set_sqlite,

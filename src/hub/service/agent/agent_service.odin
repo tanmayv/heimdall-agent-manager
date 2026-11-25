@@ -62,6 +62,9 @@ Lifecycle_Hooks :: struct {
 	on_terminal:      proc(ctx: rawptr, instance_id: string),
 	on_activity:      proc(ctx: rawptr, instance_id, activity_status: string),
 	on_start_success: proc(ctx: rawptr, inst: domain.Agent_Instance),
+	// Returned strings are owned by the caller. Existing task holders keep their
+	// context through the native reconfiguration launch, without bootstrap RPCs.
+	launch_context: proc(ctx: rawptr, inst: domain.Agent_Instance) -> (Start_Lease, bool, domain.Domain_Error),
 	// on_user_stopped: a person stopped the instance (stopped_by is already
 	// persisted). The engine releases its lease without spending an attempt and
 	// hands the task to another instance — BEFORE the stop is sent, so the later

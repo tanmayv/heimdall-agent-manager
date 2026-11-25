@@ -89,6 +89,25 @@ For each application:
 
 Every new read endpoint gets `ham-ctl` read parity per the original specification. Mutation parity must use the same Apply service and deduplication rules rather than reimplementing restart fan-out in CLI/MCP clients.
 
+### Approved amendment: MCP active-task Fleet Apply (2026-11-25)
+
+User decision `msg_18eb444acf28d7e7`, recorded as F2 requirements revision 2,
+explicitly aligns MCP Fleet Apply with native Apply: restart eligible running
+chain agents even while they hold task leases. The earlier delegated native
+instance-control idle constraint continues for unrelated tools; Fleet Apply is
+the approved exception. `fleet.read`/`fleet.status` use existing
+`mcp:instances:read`; `fleet.apply`/`fleet.retry` use existing
+`mcp:instances:control`. No new capability or consent gate is required.
+
+All four tools share the native Fleet service and durable request/target keys.
+Preserve claims, attempts, context packs, worktrees, permission mode and required
+reviews. Recheck owner/live grant/scope/cancellation at application and native
+per-target acceptance, including after preflight. Recovery must honor grant
+revocation before accepting new work without persisting raw OAuth tokens;
+already accepted native operations remain idempotent. This amendment records
+the scope decision explicitly rather than treating it as implicit in the
+original approved plan.
+
 ## User interface
 
 Retain Home Fleet's approved bridge cards, expandable agent overrides, typography, colors and responsive behavior. Replace mocks only for Fleet; Activity/Uptime and unrelated widgets remain in their current phase.

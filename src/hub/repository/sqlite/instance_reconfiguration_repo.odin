@@ -97,6 +97,10 @@ instance_reconfiguration_advance_impl :: proc(ctx: rawptr, op: domain.Instance_R
 	confirmed_recovery_stop := old.phase == .Recovery_Required && old.failure_code == "force_stopping" && op.phase == .Failed && op.failure_code == "recovery_stopped"
 	stop_retry := recovery_stop || old.phase == .Recovery_Required && op.phase == .Stopping && !old.source_stopped && !old.destination_committed
 	launch_retry := old.phase == .Recovery_Required && op.phase == .Launching && old.destination_committed
+	if old.source_launch_epoch != op.source_launch_epoch || old.source_run_count != op.source_run_count do return {},false,domain.domain_error(.Conflict,"source generation is immutable")
+	freeze_frame := old.phase==.Launching && op.phase==.Launching && old.launch_json=="" && op.launch_json!=""
+	if old.launch_json!=op.launch_json && !freeze_frame && !(launch_retry && op.launch_json=="") do return {},false,domain.domain_error(.Conflict,"launch frame is immutable outside retry")
+	if old.phase==.Launching && op.phase==.Launching && !freeze_frame do return {},false,domain.domain_error(.Conflict,"only initial frame freeze may retain launching phase")
 	if (old.stop_command_id != op.stop_command_id && !stop_retry) || (old.launch_command_id != op.launch_command_id && !launch_retry) do return {}, false, domain.domain_error(.Conflict, "command ids can change only on a reconciled retry")
 	if !domain.instance_reconfiguration_transition_allowed(old.phase, op.phase) do return {}, false, domain.domain_error(.Conflict, "invalid reconfiguration phase transition")
 	if (old.source_stopped && !op.source_stopped) || (old.destination_committed && !op.destination_committed) || (op.destination_committed && !op.source_stopped) || (op.phase == .Source_Stopped && !op.source_stopped) || (op.phase == .Launching && !op.destination_committed) || (op.phase == .Ready && !op.destination_committed) || (op.phase == .Failed && op.destination_committed && !confirmed_recovery_stop) {
@@ -120,6 +124,9 @@ instance_reconfiguration_advance_impl :: proc(ctx: rawptr, op: domain.Instance_R
 instance_reconfiguration_list_sqlite :: proc(ctx: rawptr, owner, instance_id: string, active_only: bool) -> ([]domain.Instance_Reconfiguration, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	query := "SELECT payload_json FROM instance_reconfigurations WHERE (?='' OR owner_user_id=?) AND (?='' OR agent_instance_id=?) AND (?='0' OR blocks_input=1) ORDER BY created_at DESC, operation_id DESC LIMIT 128;"
+	// Reconciliation must see every accepted operation, even when more than 128
+	// targets are waiting on acknowledgements. Only terminal UI history is capped.
+	if active_only do query = "SELECT payload_json FROM instance_reconfigurations WHERE (?='' OR owner_user_id=?) AND (?='' OR agent_instance_id=?) AND (?='0' OR blocks_input=1) ORDER BY created_at DESC, operation_id DESC;"
 	stmt: sqlite3_stmt
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed reconfiguration list")
 	defer sqlite3_finalize(stmt)
