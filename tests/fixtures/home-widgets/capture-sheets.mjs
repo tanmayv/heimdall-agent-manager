@@ -34,7 +34,7 @@ const evaluate = async expression => {
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sel = id => `[data-debug-id="${id}"]`;
 const el = id => `document.querySelector(${JSON.stringify(sel(id))})`;
-const click = async id => { await evaluate(`${el(id)}.click()`); await wait(350); };
+const click = async id => { await evaluate(`${el(id)}.focus({preventScroll:true}); ${el(id)}.click()`); await wait(350); };
 const key = async (key, code, virtualKey) => {
   await call('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: virtualKey, ...(key === 'Enter' ? { text: '\r' } : {}) });
   await call('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: virtualKey });
@@ -103,8 +103,11 @@ try {
     const base = 'home-fleet-default-mock-bridge-0';
     await click(base + '-provider'); report.defaultChoice = await inspect(narrow, 'default provider');
     report.files.push(await screenshot(`sheets-${width}-provider`));
+    if (!narrow) assert.equal(await evaluate('document.activeElement.dataset.debugId'), base + '-provider', 'desktop keyboard owner is the trigger');
     await key('End', 'End', 35); await key('Enter', 'Enter', 13);
-    assert.match(await evaluate(`${el(base + '-provider')}.textContent`), /Second Codex profile/);
+    // Custom labels require the user's unlocked vault. This isolated fixture
+    // intentionally exercises the canonical profile-id fallback instead.
+    assert.equal(await evaluate(`${el(base + '-provider')}.textContent`), 'second-profile');
     assert.match(await evaluate(`${el(base + '-model')}.textContent`), /profile-model-0/, 'profile identity resets model');
     await click(base + '-model'); await inspect(narrow, 'default model');
     if (narrow) await touch('[role=listbox] [role=option]:last-child'); else await choose('profile-model-39');
