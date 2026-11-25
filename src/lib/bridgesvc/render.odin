@@ -5,6 +5,8 @@ package bridgesvc
 // and install.ps1 New-TaskXml produce, so `ham-bridge setup` re-rendering over an
 // installer-made service is a no-op apart from fixes. setup re-renders on every run.
 
+import "core:crypto/sha2"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:slice"
 import "core:strings"
@@ -20,6 +22,27 @@ Render_Input :: struct {
 	windows_user:  string,
 	bridge_port:   int,
 	endpoint_port: int,
+	// Converted layout (conversion spec §7, §8.1, §10; engine §17): the service starts
+	// <data>/launcher/ham-launcher instead of bin/ham-bridge. The zero value renders the
+	// legacy layout byte-for-byte, so unconverted instances never change.
+	converted:     bool,
+	// converted only: C6 variant (conversion spec §10.1). While setup runs, the unit keeps
+	// KillMode=process: setup and the legacy worker live in the unit's cgroup and a
+	// control-group stop would kill the transaction. C9 renders with converting=false.
+	converting:    bool,
+	// converted only, Windows: the task name hash input (conversion spec §10.3).
+	instance_id:   string,
+	windows_sid:   string,
+}
+
+// Launcher entry point and file names of the converted layout.
+LAUNCHER_DIR      :: "launcher"
+LAUNCHER_STOP_REQUEST :: "launcher-stop.request" // under <data>/supervisor (engine §7.3)
+LAUNCHER_STOP_EVENT_PREFIX :: `Local\heimdall-launcher-stop-` // engine §7.3
+LAUNCHD_EXIT_TIMEOUT :: 40 // conversion spec §10.2
+
+launcher_path :: proc(host: Host, l: Layout) -> string {
+	return pjoin(l.data_dir, LAUNCHER_DIR, exe_name(host, "ham-launcher"))
 }
 
 exe_name :: proc(host: Host, base: string) -> string {
@@ -29,6 +52,12 @@ exe_name :: proc(host: Host, base: string) -> string {
 // service_args: the bridge command line every backend runs (temp-allocated).
 service_args :: proc(host: Host, l: Layout, in_: Render_Input) -> []string {
 	a := make([dynamic]string, context.temp_allocator)
+	if in_.converted {
+		// Conversion spec §7: --state-root is the profile's state dir (config.toml,
+		// bridge-token, ports.json), the value the supervisor reads them from.
+		append(&a, launcher_path(host, l), "--instance-root", l.data_dir, "--state-root", l.state_dir)
+		return a[:]
+	}
 	append(&a, pjoin(l.bin_dir, exe_name(host, "ham-bridge")), "--hub", in_.hub,
 		"--config", pjoin(l.state_dir, CONFIG_FILE), "--bridge-token-file", pjoin(l.state_dir, TOKEN_FILE),
 		"--data-dir", l.data_dir, "--bind-host", "127.0.0.1", "--port", fmt.tprintf("%d", in_.bridge_port),
@@ -46,6 +75,17 @@ service_env :: proc(host: Host, l: Layout, in_: Render_Input) -> []string {
 	case:           service_env_name = strings.concatenate({l.service_name, ".service"}, context.temp_allocator)
 	}
 	e := make([dynamic]string, context.temp_allocator)
+	if in_.converted {
+		// Conversion spec §8.1: nothing points into the legacy bin/. The supervisor sets
+		// PATH (prepended), HEIMDALL_HAM_PTY_HOST_BIN and HEIMDALL_HAM_CTL_BIN per tree.
+		if p := path_without(in_.path_env, l.bin_dir, sep); p != "" {
+			append(&e, strings.concatenate({"PATH=", p}, context.temp_allocator))
+		}
+		append(&e, "HEIMDALL_BRIDGE_PTY_HOST=true",
+			fmt.tprintf("HEIMDALL_BRIDGE_ENDPOINT=tcp:127.0.0.1:%d", in_.endpoint_port),
+			strings.concatenate({"HEIMDALL_BRIDGE_SERVICE_NAME=", service_env_name}, context.temp_allocator))
+		return e[:]
+	}
 	path := l.bin_dir if in_.path_env == "" else strings.concatenate({l.bin_dir, sep, in_.path_env}, context.temp_allocator)
 	append(&e, strings.concatenate({"PATH=", path}, context.temp_allocator),
 		strings.concatenate({"HEIMDALL_HAM_PTY_HOST_BIN=", pjoin(l.bin_dir, exe_name(host, "ham-pty-host"))}, context.temp_allocator),
@@ -57,6 +97,62 @@ service_env :: proc(host: Host, l: Layout, in_: Render_Input) -> []string {
 		fmt.tprintf("HEIMDALL_BRIDGE_ENDPOINT=tcp:127.0.0.1:%d", in_.endpoint_port),
 		strings.concatenate({"HEIMDALL_BRIDGE_SERVICE_NAME=", service_env_name}, context.temp_allocator))
 	return e[:]
+}
+
+// path_without drops every segment equal to `dir` (slash and case-insensitive on
+// trailing separators) from a PATH value and empty segments (temp-allocated).
+path_without :: proc(path, dir, sep: string) -> string {
+	want := strings.trim_right(dir, "/\\")
+	out := make([dynamic]string, context.temp_allocator)
+	rest := path
+	for len(rest) > 0 {
+		seg: string
+		if i := strings.index(rest, sep); i >= 0 {
+			seg, rest = rest[:i], rest[i + len(sep):]
+		} else {
+			seg, rest = rest, ""
+		}
+		if seg == "" || strings.trim_right(seg, "/\\") == want do continue
+		append(&out, seg)
+	}
+	return strings.join(out[:], sep, context.temp_allocator)
+}
+
+// windows_task_name is the converted instance's task: "<service>-<h12>", h12 = first 12
+// lowercase hex of SHA-256("heimdall-task-v1" 0x00 <SID> 0x00 <instance_id>) (conversion
+// spec §10.3, engine §17). No leading backslash; the TN argument adds it.
+windows_task_name :: proc(service_name, sid, instance_id: string) -> string {
+	ctx: sha2.Context_256
+	sha2.init_256(&ctx)
+	sha2.update(&ctx, transmute([]byte)string("heimdall-task-v1"))
+	zero := [1]byte{0}
+	sha2.update(&ctx, zero[:])
+	sha2.update(&ctx, transmute([]byte)sid)
+	sha2.update(&ctx, zero[:])
+	sha2.update(&ctx, transmute([]byte)instance_id)
+	digest: [32]byte
+	sha2.final(&ctx, digest[:])
+	h := hex.encode(digest[:6], context.temp_allocator)
+	return strings.concatenate({service_name, "-", string(h)}, context.temp_allocator)
+}
+
+// Windows converted-layout file names (conversion spec §10.3). They sit beside the
+// legacy run.cmd/run.vbs/task.xml, which stay for rollback.
+windows_launcher_cmd_path :: proc(l: Layout) -> string {return pjoin(l.data_dir, "run-launcher.cmd")}
+windows_launcher_vbs_path :: proc(l: Layout) -> string {return pjoin(l.data_dir, "run-launcher.vbs")}
+windows_launcher_task_xml_path :: proc(l: Layout) -> string {return pjoin(l.data_dir, "task-launcher.xml")}
+
+// windows_stop_event_name: the launcher's graceful-stop event (engine §7.3).
+windows_stop_event_name :: proc(instance_id: string) -> string {
+	return strings.concatenate({LAUNCHER_STOP_EVENT_PREFIX, instance_id}, context.temp_allocator)
+}
+
+// launcher_stop_request_path / render_launcher_stop_request: the any-session stop
+// request (engine §7.3). The caller writes it with temp file + rename.
+launcher_stop_request_path :: proc(l: Layout) -> string {return pjoin(l.data_dir, "supervisor", LAUNCHER_STOP_REQUEST)}
+
+render_launcher_stop_request :: proc(instance_id: string, requested_at: i64) -> string {
+	return strings.concatenate({`{"instance_id":"`, instance_id, `","requested_at":`, fmt.tprintf("%d", requested_at), "}"}, context.temp_allocator)
 }
 
 xml_escape :: proc(s: string) -> string {
@@ -114,17 +210,22 @@ render_service_file :: proc(host: Host, l: Layout, in_: Render_Input) -> string 
 		}
 		strings.write_byte(&b, '\n')
 		for e in env do fmt.sbprintf(&b, "Environment=%s\n", systemd_exec_quote(e))
-		strings.write_string(&b, "Restart=on-failure\nRestartSec=5\nKillMode=process\n\n[Install]\nWantedBy=default.target\n")
+		kill_mode := "process" if !in_.converted || in_.converting else "control-group"
+		fmt.sbprintf(&b, "Restart=on-failure\nRestartSec=5\nKillMode=%s\n\n[Install]\nWantedBy=default.target\n", kill_mode)
 	case .Launchd:
 		sorted := slice.clone(env, context.temp_allocator)
 		sort_strings(sorted)
 		strings.write_string(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n")
-		strings.write_string(&b, "<plist version=\"1.0\">\n<dict>\n\t<key>AbandonProcessGroup</key>\n\t<true/>\n\t<key>EnvironmentVariables</key>\n\t<dict>\n")
+		fmt.sbprintf(&b, "<plist version=\"1.0\">\n<dict>\n\t<key>AbandonProcessGroup</key>\n\t<%s/>\n", "false" if in_.converted else "true")
+		strings.write_string(&b, "\t<key>EnvironmentVariables</key>\n\t<dict>\n")
 		for e in sorted {
 			eq := strings.index_byte(e, '=')
 			fmt.sbprintf(&b, "\t\t<key>%s</key>\n\t\t<string>%s</string>\n", e[:eq], xml_escape(e[eq + 1:]))
 		}
-		strings.write_string(&b, "\t</dict>\n\t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n")
+		strings.write_string(&b, "\t</dict>\n")
+		// Keys stay alphabetical, as in the legacy plist.
+		if in_.converted do fmt.sbprintf(&b, "\t<key>ExitTimeOut</key>\n\t<integer>%d</integer>\n", LAUNCHD_EXIT_TIMEOUT)
+		strings.write_string(&b, "\t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n")
 		fmt.sbprintf(&b, "\t<key>Label</key>\n\t<string>%s</string>\n\t<key>ProgramArguments</key>\n\t<array>\n", xml_escape(l.service_name))
 		for a in args do fmt.sbprintf(&b, "\t\t<string>%s</string>\n", xml_escape(a))
 		strings.write_string(&b, "\t</array>\n\t<key>RunAtLoad</key>\n\t<true/>\n")
@@ -153,7 +254,8 @@ render_service_file :: proc(host: Host, l: Layout, in_: Render_Input) -> string 
 		fmt.sbprintf(&b, "  <Principals><Principal id=\"Author\">%s<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n", user_id)
 		strings.write_string(&b, "  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings>\n")
 		strings.write_string(&b, "  <Actions Context=\"Author\"><Exec>\n    <Command>wscript.exe</Command>\n")
-		fmt.sbprintf(&b, "    <Arguments>//B //NoLogo \"%s\"</Arguments>\n", xml_escape(windows_launcher_path(l)))
+		vbs := windows_launcher_vbs_path(l) if in_.converted else windows_launcher_path(l)
+		fmt.sbprintf(&b, "    <Arguments>//B //NoLogo \"%s\"</Arguments>\n", xml_escape(vbs))
 		strings.write_string(&b, "  </Exec></Actions>\n</Task>\n")
 	}
 	return strings.to_string(b)
@@ -226,6 +328,15 @@ render_windows_run_cmd :: proc(host: Host, l: Layout, in_: Render_Input) -> stri
 windows_launcher_path :: proc(l: Layout) -> string {return pjoin(l.data_dir, "run.vbs")}
 
 render_windows_launcher :: proc(l: Layout) -> string {
-	path, _ := strings.replace_all(windows_run_cmd_path(l), "\"", "\"\"", context.temp_allocator)
+	return render_windows_launcher_for(windows_run_cmd_path(l))
+}
+
+// render_windows_launcher_converted: run-launcher.vbs, running run-launcher.cmd.
+render_windows_launcher_converted :: proc(l: Layout) -> string {
+	return render_windows_launcher_for(windows_launcher_cmd_path(l))
+}
+
+render_windows_launcher_for :: proc(cmd_path: string) -> string {
+	path, _ := strings.replace_all(cmd_path, "\"", "\"\"", context.temp_allocator)
 	return fmt.tprintf("Option Explicit\r\nDim shell, result\r\nSet shell = CreateObject(\"WScript.Shell\")\r\nresult = shell.Run(\"cmd.exe /d /s /c \"\"\"\"%s\"\"\"\"\", 0, True)\r\nWScript.Quit result\r\n", path)
 }
