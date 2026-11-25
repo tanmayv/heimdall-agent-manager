@@ -30,6 +30,7 @@ Scope is set by FOUR id-list dimensions on `memory propose`; there is NO `--scop
 Template is a scope (`--template`), not a type.
 
 ## Propose, review, approve
+- Every proposal needs a descriptive title, a type, an actionable body and concrete evidence. Read existing memories first to avoid duplicates; never store secrets.
 - Agents propose with `ham-ctl memory propose`; the memory is `pending`.
 - Approval is a HUMAN/operator action; there is no agent `memory approve` verb. A human approves in Settings -> Memory, via `ham-ctl hub memories approve <id>` (hub/user token), or by accepting a Curator action card (`memory.approve`, see `action-cards`). Approval makes it `active`; proposals can also be edited or rejected.
 - You only propose and read (`propose`, `list`, `show`, `content`); you cannot approve your own or others' memories. System memories (`owner_user_id = 'system'`) are read-only.

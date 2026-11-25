@@ -71,3 +71,9 @@ A guard stops a card from applying against stale state. The curator template all
 - optionally `expires_at` (ISO timestamp, the TTL).
 
 Example: `{"target_type": "memory", "target_id": "mem_123", "field_conditions": {"status": "active"}}`. If live state diverges from the guard, Heimdall discards the card safely instead of applying a stale mutation.
+
+## Confidence criteria for curator cards
+Score each card 0.0 to 1.0 on this matrix; emit only High and solid Medium cards.
+- **High (>= 0.80)**: direct textual duplication, identical memory titles or bodies, unambiguous chain completion (all tasks validated), or conflicting guidelines with an explicit newer resolution. Emit the card promptly.
+- **Medium (0.60 to 0.79)**: plausible consolidation opportunities, minor scope misalignments or inferred stale entries. Emit the card with a thorough rationale and explicit evidence citations.
+- **Low (< 0.60)**: ambiguous requirements, subjective style preferences or unconfirmed activity. Do not emit a card; wait for further activity or clearer evidence.
