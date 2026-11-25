@@ -48,7 +48,8 @@ test_fleet_integration_migration_registry_matches_disk_and_embedded_tail :: proc
 		embedded := migration_sql(name, "")
 		testing.expectf(t, len(embedded) > 0 && embedded == string(disk), "%s embeds the exact SQL file bytes", name)
 	}
-	tail := migration_order[len(migration_order)-4:]
+	order := migration_order
+	tail := order[len(order)-4:]
 	for name, i in ([4]string{FMI_REMOTE[1], FMI_REMOTE[2], FMI_SETTINGS, FMI_APPLICATIONS}) {
 		testing.expect_value(t, tail[i], name)
 	}
