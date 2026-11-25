@@ -42,13 +42,21 @@ const expectState = async (expression, message) => {
 };
 const sel = id => `[data-debug-id="${id}"]`;
 const el = id => `document.querySelector(${JSON.stringify(sel(id))})`;
-// Ordinary interactions use native pointer input, including scroll and focus.
-const click = async id => {
-  const point = await evaluate(`(() => { const e=${el(id)}; if (!e) throw new Error('Missing control: ' + ${JSON.stringify(id)}); e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+// Let scrolling paint before measuring native input coordinates, then prove the
+// visible hit target is the intended control. Never retry a dispatched action.
+const pointerTarget = async selector => {
+  const state = await evaluate(`(async () => { const e=document.querySelector(${JSON.stringify(selector)}); if (!e) throw new Error('Missing control: ' + ${JSON.stringify(selector)}); e.scrollIntoView({block:'center',behavior:'instant'}); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, hit=document.elementFromPoint(x,y); return {x,y,hit:e.contains(hit),width:r.width,height:r.height,disabled:e.matches(':disabled')}; })()`);
+  assert.ok(state.width > 0 && state.height > 0 && !state.disabled && state.hit, `visible enabled pointer target: ${selector}`);
+  return { x: state.x, y: state.y };
+};
+const clickSelector = async selector => {
+  const point = await pointerTarget(selector);
+  await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
   await call('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
   await call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
   await wait(350);
 };
+const click = id => clickSelector(sel(id));
 // Deliberate parent-driven cleanup while a modal blocks background pointer input.
 const activate = async id => { await evaluate(`${el(id)}.click()`); await wait(350); };
 const expand = async target => {
@@ -95,11 +103,12 @@ async function inspect(narrow, label) {
   return state;
 }
 async function choose(label) {
-  await evaluate(`[...document.querySelectorAll('[role=listbox] [role=option]')].find(o => o.textContent === ${JSON.stringify(label)}).click()`);
-  await wait(350);
+  const id = await evaluate(`[...document.querySelectorAll('[role=listbox] [role=option]')].find(o => o.textContent === ${JSON.stringify(label)})?.id`);
+  assert.ok(id, `choice exists: ${label}`);
+  await clickSelector(`[id=${JSON.stringify(id)}]`);
 }
 async function touch(selector) {
-  const point = await evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); e.scrollIntoView({block:'nearest'}); const r=e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+  const point = await pointerTarget(selector);
   await call('Emulation.setTouchEmulationEnabled', { enabled: true });
   await call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
   await call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
@@ -158,6 +167,7 @@ try {
       report.files.push(await screenshot(`sheets-${width}-actions`));
     }
     await click('home-layout-menu-remove-chains'); await clean();
+    await expectState(`!${el('home-layout-slot-chains')} && !!${el('home-layout-add-chains')}`, 'remove action hides widget and exposes re-add control');
     if (narrow) assert.equal(await evaluate('document.activeElement.dataset.debugId'), 'home-layout-edit');
     await click('home-layout-add-chains');
     await click('home-layout-add-menu');
