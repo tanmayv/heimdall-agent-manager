@@ -594,6 +594,13 @@ file is **dead data**: nothing reads it (§12.2). Setup therefore:
   the legacy updater wants for its backoff);
 - Phase 4 deletes it.
 
+Verified against the real released updaters by `tests/e2e/legacy_updater_compat_e2e.mjs`
+(`.github/workflows/legacy-updater-compat.yml`, Linux/macOS/Windows): v0.5.77 writes only
+`pending_version` (cleared), `failures` and `next_check_ms` (no `last_result`, no log line:
+those arrived with T16c); later builds add `last_result`. Neither writes anything else, and
+`tests/e2e/legacy_updater_compat_e2e.mjs` shows the lock (§11.1) is held until the worker
+exits and a second automatic worker is refused meanwhile.
+
 ### 11.3 Settings carried over
 
 The user's legacy auto-update preference becomes the supervisor's: C5(e) writes

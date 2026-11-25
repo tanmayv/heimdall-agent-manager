@@ -1,0 +1,109 @@
+name: Legacy updater compatibility
+# P2-6 (REQ-CONV-3, REQ-OS-1): the REAL released v0.5.77 and newest legacy
+# `ham-bridge update --auto-worker` run against a stub new bundle on Linux, macOS and
+# Windows (tests/e2e/legacy_updater_compat_e2e.mjs): the argv, the user-wide lock,
+# the stdio, the wait-for-setup and the late auto-update.json write the first
+# supervisor release's setup must live with (docs/specs/bridge-supervisor-conversion.md
+# §1, §11). Nothing is converted and no service manager is touched; HOME is throwaway.
+on:
+  push:
+    # heimdall/** : task branches pushed for a CI run (workflow_dispatch only
+    # reaches workflows that already exist on the default branch).
+    branches: [main, 'heimdall/**']
+    paths:
+      - 'tools/legacy_update_stub/**'
+      - 'tests/e2e/legacy_updater_compat_e2e.mjs'
+      - 'tests/e2e/realHomeGuard.mjs'
+      - 'src/lib/bridgesvc/uninstall.odin'
+      - 'src/bridge/update_cmd.odin'
+      - '.github/workflows/legacy-updater-compat.yml'
+  pull_request:
+    paths:
+      - 'tools/legacy_update_stub/**'
+      - 'tests/e2e/legacy_updater_compat_e2e.mjs'
+      - 'tests/e2e/realHomeGuard.mjs'
+      - 'src/lib/bridgesvc/uninstall.odin'
+      - 'src/bridge/update_cmd.odin'
+      - '.github/workflows/legacy-updater-compat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: legacy-updater-compat-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unix:
+    name: legacy updater (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the stub bundle binary (flake-pinned Odin)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/heimdall-tests"
+          nix develop -c odin build tools/legacy_update_stub -vet -strict-style -out:"$HOME/.cache/heimdall-tests/legacy_update_stub"
+          "$HOME/.cache/heimdall-tests/legacy_update_stub" --version
+      - name: Real v0.5.77 and v0.5.86 updaters against the stub
+        run: |
+          set -euo pipefail
+          export HEIMDALL_E2E_STUB_BIN="$HOME/.cache/heimdall-tests/legacy_update_stub"
+          node tests/e2e/legacy_updater_compat_e2e.mjs
+
+  windows:
+    name: legacy updater (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      ODIN_TAG: dev-2026-09
+      ODIN_ZIP_SHA256: 8ed8abd95b82e0af1eb7e86cb75f380fd8bde104947721817b35929f5fc19388
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install Odin (pinned, SHA-256 verified)
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'odin.zip'
+          Invoke-WebRequest "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_TAG/odin-windows-amd64-$env:ODIN_TAG.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($got -ne $env:ODIN_ZIP_SHA256) { throw "Odin zip SHA-256 mismatch: $got" }
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'odin')
+          $odin = Join-Path $env:RUNNER_TEMP 'odin\dist\odin.exe'
+          & $odin version
+          "ODIN=$odin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Build the stub bundle binary
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'stub-bin'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          & $env:ODIN build tools/legacy_update_stub -vet -strict-style "-out:$out\legacy_update_stub.exe"
+          if ($LASTEXITCODE) { throw "odin build failed ($LASTEXITCODE)" }
+          & "$out\legacy_update_stub.exe" --version
+          if ($LASTEXITCODE) { throw "stub --version failed ($LASTEXITCODE)" }
+      - name: Real v0.5.77 and v0.5.86 updaters against the stub
+        shell: pwsh
+        run: |
+          $env:HEIMDALL_E2E_STUB_BIN = Join-Path $env:RUNNER_TEMP 'stub-bin\legacy_update_stub.exe'
+          node tests/e2e/legacy_updater_compat_e2e.mjs
+          if ($LASTEXITCODE) { throw "legacy updater compatibility failed ($LASTEXITCODE)" }
