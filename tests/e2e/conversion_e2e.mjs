@@ -461,6 +461,42 @@ async function main() {
       const ps = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO_ROOT, 'scripts', 'install.ps1'), '-Hub', hub.base, '-Profile', L5.name, '-Bundle', RELEASE.assetPath, '-ChecksumFile', RELEASE.sumsPath];
       const env = { ...ENV }; delete env.PSModulePath;
       r = spawnSync('powershell.exe', ps, { env, encoding: 'utf8', timeout: 900_000 });
+    } else if (MAC) {
+      // Observe the managed runtime before rollback can remove its process records.
+      const child = spawn('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, stdio: ['ignore', 'pipe', 'pipe'] });
+      const seen = new Set();
+      const observe = () => {
+        const root = L5.data;
+        const procs = readJson(path.join(root, 'supervisor', 'procs.json'));
+        const runtime = readJson(path.join(L5.state, 'runtime-status.json'));
+        const control = readJson(path.join(root, 'run', 'supervisor-control.json'));
+        let logBytes = null;
+        try { logBytes = fs.statSync(path.join(root, 'logs', 'runtime.log')).size; } catch {}
+        const summary = JSON.stringify({
+          processes: (procs?.procs || []).map(({ role, pid }) => ({ role, pid })),
+          runtimePid: runtime?.pid, connected: runtime?.connected,
+          controlPid: control?.pid, logBytes,
+        });
+        if (!seen.has(summary)) {
+          seen.add(summary);
+          console.log('    P5 startup sample:', summary);
+        }
+      };
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      const interval = setInterval(observe, 500);
+      const timeout = setTimeout(() => child.kill(), 900_000);
+      try {
+        const status = await new Promise((resolve, reject) => {
+          child.once('close', resolve);
+          child.once('error', reject);
+        });
+        r = { status, stdout, stderr };
+      } finally {
+        clearInterval(interval);
+        clearTimeout(timeout);
+      }
     } else {
       r = spawnSync('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, encoding: 'utf8', timeout: 900_000, input: '' });
     }
