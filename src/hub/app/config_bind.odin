@@ -13,6 +13,9 @@ Hub_Config :: struct {
  action_filter_limits:actions.Filter_Limits,
 	// Default on until catalog v1 staging parity is approved.
 	legacy_event_notices: Maybe(bool),
+	// Update channel this hub gives its supervisor-managed bridges: "stable" (default) or
+	// "fast". HEIMDALL_BRIDGE_UPDATE_CHANNEL / --bridge-update-channel; "" = stable.
+	bridge_update_channel: string,
 	nats_url, nats_creds_file, nats_ca_file: string,
 	telegram_bot_token:                     string, // secret; never logged
 	telegram_api_base:                      string,
@@ -442,6 +445,15 @@ check_legacy_auth_mode :: proc(value: string, present: bool) -> (bool, string) {
 }
 
 // parse_bool_setting accepts exactly true/false (case-insensitive).
+// normalize_bridge_update_channel: "" -> "stable"; only "stable" and "fast" are valid.
+normalize_bridge_update_channel :: proc(value: string) -> (channel: string, ok: bool) {
+	switch strings.to_lower(strings.trim_space(value), context.temp_allocator) {
+	case "", "stable": return "stable", true
+	case "fast": return "fast", true
+	}
+	return "", false
+}
+
 parse_bool_setting :: proc(value: string) -> (bool, bool) {
 	normalized := strings.to_lower(strings.trim_space(value), context.temp_allocator)
 	if normalized == "true" do return true, true

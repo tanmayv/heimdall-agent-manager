@@ -167,7 +167,8 @@ gather_status :: proc(host: Host, name: string, now: time.Time, since: i64 = 0, 
 	s.profile = read_first_line(pjoin(l.state_dir, PROFILE_FILE))
 	if s.hub == "" do s.hub = hub_from_config(pjoin(l.state_dir, CONFIG_FILE))
 	switch l.backend {
-	case .Schtasks, .None: s.installed = os.exists(pjoin(l.bin_dir, "ham-bridge.exe"))
+	// A converted instance keeps no bin/: its launcher stands for the install.
+	case .Schtasks, .None: s.installed = os.exists(pjoin(l.bin_dir, "ham-bridge.exe")) || os.exists(launcher_path(host, l))
 	case .Systemd, .Launchd, .Runit: s.installed = os.exists(l.service_file)
 	}
 	cred := read_first_line(pjoin(l.state_dir, TOKEN_FILE))

@@ -647,6 +647,11 @@ bridge_hub_apply_ready_settings :: proc(text: string) {
 	// Absent on hubs that predate bridge_features_update (acp_runtime_probe.odin).
 	sync.atomic_store(&bridge_hub_features_update_supported, extract_json_bool(text, contracts.BRIDGE_READY_FEATURES_UPDATE, false))
 	sync.atomic_store(&bridge_hub_start_begin_supported, extract_json_bool(text, contracts.BRIDGE_READY_START_BEGIN, false))
+	// The hub's bridge update channel (stable | fast); absent on hubs that predate it.
+	// Only a supervisor-managed instance follows it (supervisor_runtime.odin).
+	channel := extract_json_string(text, "update_channel", "")
+	defer delete(channel)
+	bridge_hub_apply_update_channel(channel)
 }
 
 // Per-connection heartbeat negotiation (minimal heartbeat plan §4.4, T4). Both start
@@ -1781,6 +1786,11 @@ bridge_exe_in_bin_dir :: proc(exe, bin_dir: string) -> bool {
 bridge_update_via_ham_bridge :: proc(target_version: string, allow_downgrade: bool = false) -> (service: string, refusal: string) {
 	host := bridge_service_host()
 	name, registered := bridge_enroll_service_for(host, os.args)
+	// A converted instance is updated by the supervisor only (conversion spec §12.2): the
+	// legacy path is off on purpose, not because the running exe left bin/.
+	if registered && strings.has_prefix(name, bridgesvc.SERVICE_PREFIX) && bridge_convert_supervisor_managed(host, bridgesvc.layout_for(host, name)) {
+		return "", BRIDGE_LEGACY_UPDATE_OFF
+	}
 	exe, _ := os.get_executable_path(context.temp_allocator)
 	if !registered || !strings.has_prefix(name, bridgesvc.SERVICE_PREFIX) || !bridge_exe_in_bin_dir(exe, bridgesvc.layout_for(host, name).bin_dir) {
 		return "", fmt.tprintf("this bridge is not a ham-bridge profile install, so it cannot apply updates; reinstall it once with %s", BRIDGE_REINSTALL_HINT)
@@ -1790,6 +1800,8 @@ bridge_update_via_ham_bridge :: proc(target_version: string, allow_downgrade: bo
 	}
 	return name, ""
 }
+
+BRIDGE_LEGACY_UPDATE_OFF :: "legacy auto-update is off: the supervisor manages updates"
 
 // BRIDGE_REINSTALL_HINT names the headless installers (scripts/install.sh, .ps1).
 // The host is its own literal: scripts/check-http-boundary.sh reads a single
@@ -1849,6 +1861,7 @@ bridge_hub_handle_update_command :: proc(conn: ^ws.Connection, text: string) {
 	}
 
 	target_version := extract_json_string(text, "target_version", "")
+	if handled := bridge_hub_route_update_to_supervisor(conn, command_id, target_version); handled do return
 	download_url := extract_json_string(text, "download_url", "")
 	sha256 := extract_json_string(text, "sha256", "")
 	force := bridge_local_extract_json_bool(text, "force", false)
@@ -1985,6 +1998,44 @@ bridge_update_handoff_argv :: proc(current_exe, staged, current_version, target_
 	args := make([dynamic]string, context.temp_allocator)
 	append(&args, updater, "update", "--bundle", bridgesvc.pdir(staged), "--service", service, "--detach")
 	return args[:]
+}
+
+// bridge_hub_route_update_to_supervisor: on a supervisor-managed instance a hub-started update
+// is an install_version intent (update_now without a version), user-started, so it interrupts at
+// once (conversion spec §12.3). The command was already acknowledged `accepted`; the outcome
+// follows the supervisor's journal and the bridge restarting, not this reply. handled = false on
+// a legacy instance (the unchanged ham-bridge update path).
+bridge_hub_route_update_to_supervisor :: proc(conn: ^ws.Connection, command_id, target_version: string) -> (handled: bool) {
+	_, l, managed, ok := bridge_own_layout()
+	if !ok || !managed do return false
+	now := time.to_unix_seconds(time.now())
+	op_id, err := bridge_supervisor_update_intent(l, command_id, target_version, "hub:update", now)
+	if err != "" {
+		fmt.println("bridge update failed:", err)
+		progress := bridge_update_progress_json(command_id, bridge_config.daemon_id, "failed", 0, err)
+		defer delete(progress)
+		if conn != nil do _ = bridge_hub_send(conn, progress)
+		if command_id != "" {
+			final := bridge_command_failed_json(command_id, bridge_error_wire(bridge_error(.update_apply_failed), err))
+			defer delete(final)
+			bridge_runtime_cache_command(command_id, final)
+			if conn != nil do _ = bridge_hub_send(conn, final)
+		}
+		return true
+	}
+	fmt.printfln("bridge update: handed %s to the supervisor as %s", target_version, op_id)
+	if conn != nil {
+		progress := bridge_update_progress_json(command_id, bridge_config.daemon_id, "preparing", 10, fmt.tprintf("Handed to the supervisor (%s)", op_id))
+		defer delete(progress)
+		_ = bridge_hub_send(conn, progress)
+	}
+	if command_id != "" {
+		final := bridge_command_result_json(command_id, "succeeded", "supervisor_queued")
+		defer delete(final)
+		bridge_runtime_cache_command(command_id, final)
+		if conn != nil do _ = bridge_hub_send(conn, final)
+	}
+	return true
 }
 
 bridge_runtime_apply_update :: proc(

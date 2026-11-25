@@ -396,3 +396,20 @@ test_path_key_resolves_linked_directory :: proc(t: ^testing.T) {
 	missing := pjoin(root, "missing", "bin")
 	testing.expect_value(t, path_key(missing), path_key(missing))
 }
+
+// A supervisor-managed Windows instance runs under "<service>-<h12>", not "\<service>"
+// (conversion spec §10.3, §12.1); the legacy name stays when no task name is set.
+@(test)
+test_service_argv_uses_the_managed_task_name :: proc(t: ^testing.T) {
+	host := Host{os = .Windows, local_appdata = "C:\\Users\\u\\AppData\\Local", appdata = "C:\\Users\\u\\AppData\\Roaming", home = "C:\\Users\\u"}
+	l := layout_for(host, "heimdall-bridge-hub")
+	testing.expect_value(t, service_argv(host, l, .Start)[3], "\\heimdall-bridge-hub")
+	l.task_name = windows_task_name(l.service_name, "S-1-5-21-1", "ins_0123456789abcdef0123456789abcdef")
+	testing.expect(t, strings.has_prefix(l.task_name, "heimdall-bridge-hub-"))
+	for action in Action {
+		argv := service_argv(host, l, action)
+		testing.expect_value(t, argv[3], strings.concatenate({"\\", l.task_name}, context.temp_allocator))
+	}
+	testing.expect(t, strings.contains(windows_task_state_argv(l)[len(windows_task_state_argv(l)) - 1], l.task_name))
+	testing.expect_value(t, tree_bin_path(host, l, "0.6.0-abc", "ham-bridge"), pjoin(l.data_dir, "releases", "0.6.0-abc", "bin", "ham-bridge.exe"))
+}

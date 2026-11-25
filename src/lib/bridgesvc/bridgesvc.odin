@@ -86,6 +86,20 @@ Layout :: struct {
 	data_dir:     string,
 	bin_dir:      string,
 	service_file: string, // unit / plist / runit run file; "" for a Scheduled Task
+	// Windows only: the Scheduled Task of a supervisor-managed (converted) instance,
+	// "<service>-<h12>" (windows_task_name). "" = the legacy task named service_name.
+	task_name:    string,
+}
+
+// task_or_service is the Scheduled Task name (without the leading backslash).
+task_or_service :: proc(l: Layout) -> string {
+	return l.task_name if l.task_name != "" else l.service_name
+}
+
+// tree_bin_path is <data>/releases/<tree>/bin/<exe> of a supervisor-managed instance
+// (conversion spec §12.1, `active_tree_bin`); tree is the name `current`/`previous` names.
+tree_bin_path :: proc(host: Host, l: Layout, tree, base: string) -> string {
+	return pjoin(l.data_dir, "releases", tree, "bin", exe_name(host, base))
 }
 
 backend_for :: proc(target: Target_OS) -> Backend {
@@ -254,7 +268,7 @@ service_argv :: proc(host: Host, l: Layout, action: Action) -> []string {
 		case .Status:  append(&a, "launchctl", "print", target)
 		}
 	case .Schtasks:
-		tn := strings.concatenate({"\\", l.service_name}, context.temp_allocator)
+		tn := strings.concatenate({"\\", task_or_service(l)}, context.temp_allocator)
 		switch action {
 		case .Start:   append(&a, "schtasks", "/Run", "/TN", tn)
 		case .Stop:    append(&a, "schtasks", "/End", "/TN", tn)
@@ -274,7 +288,7 @@ service_argv :: proc(host: Host, l: Layout, action: Action) -> []string {
 // unlike `schtasks /Query`, whose Status column is localized.
 windows_task_state_argv :: proc(l: Layout) -> []string {
 	// --service names are only prefix-checked: keep them inside the quoted literal.
-	quoted, _ := strings.replace_all(l.service_name, "'", "''", context.temp_allocator)
+	quoted, _ := strings.replace_all(task_or_service(l), "'", "''", context.temp_allocator)
 	a := make([dynamic]string, context.temp_allocator)
 	append(&a, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", fmt.tprintf("(Get-ScheduledTask -TaskPath '\\' -TaskName '%s').State", quoted))
 	return a[:]

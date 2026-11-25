@@ -598,7 +598,8 @@ file is **dead data**: nothing reads it (§12.2). Setup therefore:
 
 The user's legacy auto-update preference becomes the supervisor's: C5(e) writes
 `<state>/update.json` (`Settings`, `src/supervisor/service/settings.odin`) with
-`channel: "stable"`, `auto_update` = the legacy `[bridge] auto_update_enabled` of `config.toml`
+`channel: "stable"` (conversion always writes stable first; the hub's channel then arrives as a
+`set_channel` intent, §12.4), `auto_update` = the legacy `[bridge] auto_update_enabled` of `config.toml`
 (default true), `revision: 1`, `actor: "conversion"`, `last_op: "op_convert_<txn>"`. A legacy opt-out
 (`auto_update_enabled = false`) is thus kept. `auto_update_max_defer_hours` has no supervisor
 equivalent (the supervisor's wait is the fixed 2 h of engine §12) and is dropped.
@@ -612,8 +613,16 @@ equivalent (the supervisor's wait is the fixed 2 h of engine §12) and is droppe
   the active tree's `releases/<T>/bin/ham-bridge[.exe]`, where `T` is `current` (readlink on
   POSIX, `current.json` on Windows) **and** the tree equals the supervisor's own launch tree
   (a mid-activation window may legitimately show the previous tree: the check accepts `current`
-  or `previous`). A helper `bridgesvc.active_tree_bin(layout)` is added; the comparison stays
-  path-normalised (`path_key`).
+  or `previous`). Implemented as `bridge_runtime_images` (`src/bridge/supervisor_runtime.odin`,
+  `current`/`previous` read with the launcher's `read_pointer`) over the pure
+  `bridgesvc.tree_bin_path`; the comparison stays path-normalised (`path_key`).
+- **Windows task name.** The converted instance runs under `<service>-<h12>`
+  (`windows_task_name`), not `\<service>`. `Layout.task_name` carries it
+  (`bridgesvc.task_or_service`, used by `service_argv` and `windows_task_state_argv`);
+  `bridge_managed_layout` fills it for a `supervisor_managed` instance, so `status`, `start`,
+  `stop`, `restart` and the "registered" check address the live task. `stop` writes the
+  launcher stop request first (§10.3), then falls back to ending the verified Bridge.
+  `installed` accepts the launcher where `bin/ham-bridge.exe` is gone.
 - **`status`** reads `runtime-status.json` as today, and appends the supervisor facts from
   `<state>/supervisor-status.json` and the journal head (engine §3): `running v<ver> tree
   <T>`, update state, `force_at` countdown.
@@ -657,14 +666,32 @@ The hub's update command (today `bridge_update_via_ham_bridge(target_version, al
    "created_at":now,"actor":"hub:<user_id>"}`; an update without a version is `update_now`.
    `allow_downgrade=true` is simply `install_version` (explicit; engine §13.2 rule 3 and §11.3
    decide);
-3. acknowledges the hub command as `accepted` with the `op_id`, as the uninstall path does
-   (`hub_runtime_client.odin:1827`); the outcome follows the journal (the supervisor's status
-   channel), not a synchronous reply;
+3. acknowledges the hub command as `accepted` (already sent on receipt), reports progress
+   `preparing` naming the `op_id` and a final `succeeded` with `runtime_status: supervisor_queued`;
+   the outcome follows the journal, not a synchronous reply. Implemented in
+   `bridge_hub_route_update_to_supervisor` (`hub_runtime_client.odin`), before the legacy
+   `download_url`/`sha256` handling, which a managed bridge never uses (REQ-SRC-1);
 4. is idempotent on the hub's `command_id` (the `op_id` is derived from it, engine §10:
    re-sending is a no-op).
 
 `install_version` is user-started: it interrupts at once (engine §12), so the hub's "update
 now" semantic is preserved and a timer-style 2 h wait never applies to it.
+
+### 12.4 The hub's update channel (Mundus fast, brolabs stable)
+
+Each hub has one bridge update channel, `stable` (default) or `fast`: `HEIMDALL_BRIDGE_UPDATE_CHANNEL`
+or `--bridge-update-channel` (flag wins; any other value exits 2), i.e. a nix module sets the
+service environment. The hub puts it in every runtime `bridge_ready` as `payload.update_channel`
+(`bridge_ready_payload`, `bridge_hub_update_channel`; the enrol-only socket and hubs that predate it
+omit it). A `supervisor_managed` bridge compares it with `<state>/update.json` on every
+connect (`bridge_hub_apply_ready_settings` → `bridge_supervisor_channel_intent`) and, when
+different, drops the intent `op_hubchan_<channel>_<update.json revision>`, `action: set_channel`,
+`actor: hub:channel` (the supervisor applies it as J27). A channel change on the hub is a hub restart,
+hence a reconnect, hence the intent; a legacy bridge ignores the field (it has no channel).
+The op id carries the stored revision: a repeat before it is applied replaces the same file, and a
+later push of the other channel is a new intent. `set_channel` never installs: **fast → stable keeps the
+installed tree** and `update_now` never downgrades (engine §13.2), so only a newer stable release
+moves the bridge. Hub wins on each reconnect over a local `set_channel`.
 
 ## 13. Test obligations (for P2-7; reviewer checklist)
 

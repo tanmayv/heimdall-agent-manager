@@ -1841,7 +1841,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	// Cache the owner's switch on the connection BEFORE bridge_ready goes out: a
 	// bridge may flush its bridge_log ring in the very next frame.
 	project_service.bridge_runtime_registry_set_telemetry_enabled(h.bridge_runtime_registry, bridge.bridge_id, bridge.telemetry_enabled != "disabled")
-	_ = write_ws_text_frame_locked(h, bridge.bridge_id, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing, catalog_etag, bridge.telemetry_enabled != "disabled", BRIDGE_HUB_HEARTBEAT_METADATA_OMISSION, BRIDGE_HUB_DIAGNOSTICS_FRAME_V1))
+	_ = write_ws_text_frame_locked(h, bridge.bridge_id, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing, catalog_etag, bridge.telemetry_enabled != "disabled", BRIDGE_HUB_HEARTBEAT_METADATA_OMISSION, BRIDGE_HUB_DIAGNOSTICS_FRAME_V1, bridge_hub_update_channel))
 	// REQ-ENR-1: the disconnect path publishes offline; this is its counterpart, so
 	// the UI learns a bridge came (back) online — e.g. right after enrollment commit
 	// and service restart. The enroll-only socket returned long before this point.
@@ -3347,7 +3347,13 @@ BRIDGE_HUB_HEARTBEAT_METADATA_OMISSION :: true
 // this hub accepts bridge_diagnostics (plan §4.3/§4.4); old Bridges ignore it, and a
 // Bridge that sees it may move its diagnostics out of the heartbeat. The enroll-only
 // socket, which never heartbeats, leaves both false.
-bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool, catalog_etag: string = "", heartbeat_stats := true, heartbeat_metadata_omission := false, diagnostics_frame_v1 := false) -> string {
+// bridge_hub_update_channel: the update channel this hub gives its supervisor-managed bridges
+// ("stable" | "fast"), set from Hub_Config at startup and sent in every runtime bridge_ready.
+// The bridge turns it into a set_channel intent when its update.json differs; legacy bridges
+// ignore the field.
+bridge_hub_update_channel: string = "stable"
+
+bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool, catalog_etag: string = "", heartbeat_stats := true, heartbeat_metadata_omission := false, diagnostics_frame_v1 := false, update_channel := "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_ready\",\"protocol_version\":1,\"payload\":{\"bridge_id\":\"")
 	write_handler_json_string(&b, bridge_id)
@@ -3367,6 +3373,11 @@ bridge_ready_payload :: proc(bridge_id: string, generation: int, replaced: bool,
 	// This hub bounds the session by its credential and accepts in-band
 	// bridge_reauth after a refresh (bridge_ws_try_reauth).
 	strings.write_string(&b, ",\"credential_reauth\":true")
+	if update_channel != "" {
+		strings.write_string(&b, ",\"update_channel\":\"")
+		write_handler_json_string(&b, update_channel)
+		strings.write_string(&b, "\"")
+	}
 	// This hub applies bridge_features_update (bridge_apply_features_update).
 	strings.write_string(&b, ",\"" + contracts.BRIDGE_READY_FEATURES_UPDATE + "\":true")
 	strings.write_string(&b, ",\"" + contracts.BRIDGE_READY_START_BEGIN + "\":true")

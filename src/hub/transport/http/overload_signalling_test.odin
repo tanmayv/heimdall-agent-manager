@@ -1,5 +1,6 @@
 package http
 
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
@@ -99,4 +100,18 @@ test_fs_command_timeout_matches_bridge_cap :: proc(t: ^testing.T) {
 	for command_type in ([]string{"fs_list_dir", "fs_stat", "fs_read_file", "agent_run_dir_list"}) {
 		testing.expect_value(t, fs_command_timeout_ms(command_type), 10_000)
 	}
+}
+
+// The hub's bridge update channel rides in bridge_ready only when set; a legacy bridge ignores it.
+@(test)
+test_bridge_ready_payload_update_channel :: proc(t: ^testing.T) {
+	plain := bridge_ready_payload("brg_x", 1, false, "etag")
+	defer delete(plain)
+	testing.expect(t, !strings.contains(plain, "update_channel"), "absent unless the hub sets one")
+	for channel in ([]string{"stable", "fast"}) {
+		ready := bridge_ready_payload("brg_x", 1, false, "etag", true, false, false, channel)
+		defer delete(ready)
+		testing.expect(t, strings.contains(ready, fmt.tprintf(`"update_channel":"%s"`, channel)), ready)
+	}
+	testing.expect_value(t, bridge_hub_update_channel, "stable") // default
 }

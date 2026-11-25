@@ -20,6 +20,7 @@ import contracts "odin_test:contracts"
 import bridgesvc "odin_test:lib/bridgesvc"
 import httpc "odin_test:lib/httpc"
 import ws "odin_test:lib/ws"
+import "odin_test:supervisor/service"
 
 BRIDGE_AUTO_UPDATE_INTERVAL :: i64(6 * 60 * 60 * 1000)
 BRIDGE_AUTO_UPDATE_QUIET_MS :: i64(60_000)
@@ -259,7 +260,9 @@ bridge_auto_update_quiet_with_host :: proc(
 bridge_auto_update_start :: proc() {
 	service, refusal := bridge_update_via_ham_bridge(contracts.APP_VERSION)
 	if refusal != "" {
-		bridge_auto_update_log("worker not started: %s", refusal)
+		// A converted instance: explicit and logged once, not an accident of the exe path.
+		if refusal == BRIDGE_LEGACY_UPDATE_OFF do bridge_auto_update_log("%s", BRIDGE_LEGACY_UPDATE_OFF)
+		else do bridge_auto_update_log("worker not started: %s", refusal)
 		return
 	}
 	path := bridge_auto_update_state_path(service)
@@ -597,6 +600,20 @@ bridge_auto_update_config_text :: proc(text: string, enabled: bool) -> string {
 bridge_auto_update_handle_config :: proc(conn: ^ws.Connection, text: string) {
 	id := extract_json_string(text, "command_id", "")
 	defer delete(id)
+	if _, l, managed, found := bridge_own_layout(); found && managed {
+		// The supervisor's update.json is the setting; config.toml is ignored (spec §12.2).
+		enabled := service.read_settings(l.state_dir).auto_update
+		ok := true
+		if extract_json_bool(text, "write", false) {
+			enabled = extract_json_bool(text, "enabled", true)
+			now := time.to_unix_seconds(time.now())
+			it := service.Intent{op_id = bridge_hub_op_id(id, now), actor = "hub:auto-update", action = "set_auto_update", auto_update = enabled}
+			ok = bridge_supervisor_submit(l, it, now) == ""
+		}
+		data, _ := json.marshal(struct {type, command_id: string, ok, enabled: bool}{"auto_update_config_result", id, ok, enabled}, allocator = context.temp_allocator)
+		_ = bridge_hub_send(conn, string(data))
+		return
+	}
 	path := cfg_lib.expand_home(cfg_lib.config_path_from_args(os.args))
 	ok := true
 	if extract_json_bool(text, "write", false) {

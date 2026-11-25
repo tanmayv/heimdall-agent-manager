@@ -165,3 +165,15 @@ test_coordinator_idle_config_defaults_and_parse :: proc(t: ^testing.T) {
 		testing.expectf(t, ok == c.ok && got == c.want, "parse_idle_seconds(%q) = %d, %v", c.raw, got, ok)
 	}
 }
+
+@(test)
+test_normalize_bridge_update_channel :: proc(t: ^testing.T) {
+	cases := [?]struct{ in_, out: string, ok: bool }{
+		{"", "stable", true}, {"stable", "stable", true}, {" Fast ", "fast", true}, {"FAST", "fast", true},
+		{"nightly", "", false}, {"latest", "", false},
+	}
+	for c in cases {
+		got, ok := normalize_bridge_update_channel(c.in_)
+		testing.expectf(t, ok == c.ok && got == c.out, "%q -> %q %v", c.in_, got, ok)
+	}
+}

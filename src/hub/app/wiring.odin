@@ -445,6 +445,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.taskchains.catalog = graph.repos.event_outbox
 	graph.task_engine = taskv2.new_service(&graph.repos.taskchains, &graph.repos.agents, &graph.repos.bridges, &graph.clock, &graph.ids)
 	graph.task_engine.legacy_event_notices = config.legacy_event_notices
+	http.bridge_hub_update_channel, _ = normalize_bridge_update_channel(config.bridge_update_channel)
 	graph.task_engine.coordinator_idle_completed_seconds = config.coordinator_idle_completed_seconds
 	graph.task_engine.coordinator_idle_seconds = config.coordinator_idle_seconds
 	graph.task_engine.content = &graph.repos.content

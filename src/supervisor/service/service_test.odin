@@ -792,3 +792,45 @@ test_rollback_failed_stays_sticky_in_service :: proc(t: ^testing.T) {
 	run(&w, 30)
 	testing.expect_value(t, len(w.starts), starts)
 }
+
+// The bridge's sender (submit_intent) writes what the supervisor accepts: the hub's channel
+// reaches update.json (the resolver channel of ops.odin) with the hub actor, a fast -> stable
+// push changes only the setting (no install, no restart: never a downgrade by itself), and a
+// replayed intent id applies once.
+@(test)
+test_submit_intent_set_channel_follows_hub_channel :: proc(t: ^testing.T) {
+	defer free_all(context.temp_allocator)
+	w: World
+	if !world_init(&w, t) do return
+	defer world_destroy(&w)
+	_ = install_first(&w, "v0.6.0")
+	starts := len(w.starts)
+	push :: proc(w: ^World, op_id, channel: string) -> string {
+		return submit_intent(w.data, Intent{op_id = op_id, instance_id = TEST_ID, action = "set_channel", channel = channel, actor = "hub:channel", created_at = w.clock, expires_at = w.clock + 3600})
+	}
+	testing.expect_value(t, push(&w, "op_hubchan_fast_0", "fast"), "")
+	testing.expect_value(t, push(&w, "op_hubchan_fast_0", "fast"), "") // idempotent per op id
+	run(&w, 10, proc(w: ^World) -> bool {return committed(w, "op_hubchan_fast_0")})
+	st, _, _ := op_state(&w, "op_hubchan_fast_0")
+	testing.expect_value(t, st, "applied")
+	got := read_settings(w.state)
+	testing.expect_value(t, got.channel, "fast")
+	testing.expect_value(t, got.revision, 1)
+	testing.expect_value(t, got.actor, "hub:channel")
+	testing.expect(t, inbox_empty(&w))
+
+	testing.expect_value(t, push(&w, "op_hubchan_stable_1", "stable"), "")
+	run(&w, 10, proc(w: ^World) -> bool {return committed(w, "op_hubchan_stable_1")})
+	testing.expect_value(t, read_settings(w.state).channel, "stable")
+	testing.expect_value(t, len(w.starts), starts) // nothing restarted by a channel change
+	cur, _ := lc.read_pointer(w.data, lc.POINTER_CURRENT)
+	testing.expect(t, strings.has_prefix(cur, "0.6.0"), "still on the installed tree")
+
+	// encode/parse round trip of every field a sender sets.
+	it := Intent{op_id = "op_rt", instance_id = TEST_ID, action = "install_version", version = "v0.6.1", actor = "hub:update", created_at = w.clock, expires_at = w.clock + 60}
+	back, status, schema_ok := parse_intent(transmute([]byte)encode_intent(it))
+	testing.expect(t, status == .Ok && schema_ok)
+	testing.expect_value(t, back.version, "v0.6.1")
+	testing.expect_value(t, validate_intent(back, schema_ok, TEST_ID, w.clock), "")
+	testing.expect_value(t, submit_intent(w.data, Intent{op_id = "bad id"}), "invalid op_id")
+}

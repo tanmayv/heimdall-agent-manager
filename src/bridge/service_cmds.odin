@@ -99,17 +99,23 @@ bridge_service_runtime_pid :: proc(host: bridgesvc.Host, l: bridgesvc.Layout) ->
 	rt, read_ok := bridgesvc.read_runtime_status(l.state_dir)
 	if !read_ok || !bridge_os_pid_alive(rt.pid) do return 0
 	started, image, image_known := bridge_os_process_lstart_and_command(rt.pid)
-	expected := bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(host, "ham-bridge"))
-	if host.os != .Windows {
-		// ps supplies a command line, rather than the Windows executable path.
-		// Match the complete expected path before considering its arguments.
-		if image == expected || strings.has_prefix(image, strings.concatenate({expected, " "}, context.temp_allocator)) || strings.has_prefix(image, fmt.tprintf("\"%s\" ", expected)) {
-			image = expected
-		} else {
-			image_known = false
+	// Legacy: bin/ham-bridge. Supervisor-managed: releases/<current|previous>/bin/ham-bridge
+	// (conversion spec §12.1); the first image the process matches wins.
+	raw_image := image
+	for expected in bridge_runtime_images(host, l) {
+		image = raw_image
+		known := image_known
+		if host.os != .Windows {
+			// ps supplies a command line, rather than the Windows executable path.
+			// Match the complete expected path before considering its arguments.
+			if image == expected || strings.has_prefix(image, strings.concatenate({expected, " "}, context.temp_allocator)) || strings.has_prefix(image, fmt.tprintf("\"%s\" ", expected)) {
+				image = expected
+			} else {
+				known = false
+			}
 		}
+		if bridge_service_runtime_matches(rt, os.get_pid(), started, image, expected, known) do return rt.pid
 	}
-	if bridge_service_runtime_matches(rt, os.get_pid(), started, image, expected, image_known) do return rt.pid
 	return 0
 }
 
@@ -124,7 +130,8 @@ bridge_service_wait_stopped :: proc(host: bridgesvc.Host, l: bridgesvc.Layout, o
 
 // bridge_service_running asks the supervisor, with a verified Windows runtime
 // fallback when the task launcher has already exited.
-bridge_service_running :: proc(host: bridgesvc.Host, l: bridgesvc.Layout) -> bool {
+bridge_service_running :: proc(host: bridgesvc.Host, layout: bridgesvc.Layout) -> bool {
+	l := bridge_managed_layout(host, layout)
 	if l.backend == .Schtasks {
 		ok, out := bridge_service_exec(bridgesvc.windows_task_state_argv(l))
 		return (ok && out == "Running") || bridge_service_runtime_pid(host, l) > 0
@@ -143,7 +150,7 @@ bridge_service_running :: proc(host: bridgesvc.Host, l: bridgesvc.Layout) -> boo
 // bridge_service_action runs start/stop/restart for a resolved service. Windows
 // has no restart verb: End, then Run. launchd restarts reload the plist.
 bridge_service_action :: proc(host: bridgesvc.Host, name: string, action: bridgesvc.Action) -> (ok: bool, msg: string) {
-	l := bridgesvc.layout_for(host, name)
+	l := bridge_managed_layout(host, bridgesvc.layout_for(host, name))
 	argv := bridgesvc.service_argv(host, l, action)
 	if argv == nil do return false, "no supported service manager on this platform"
 	if l.backend == .Launchd && action == .Restart do return bridge_launchd_reload(host, l)
@@ -153,9 +160,21 @@ bridge_service_action :: proc(host: bridgesvc.Host, name: string, action: bridge
 			// Stop only the verified Bridge, not the task's descendant tree: its
 			// PTY daemon hosts live sessions that must survive an update.
 			rt, read_ok := bridgesvc.read_runtime_status(l.state_dir)
-			expected := bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(host, "ham-bridge"))
 			if !read_ok || rt.pid != old_pid do return false, "Bridge process changed while stopping; retry the operation"
-			if !bridge_os_stop_service_process(old_pid, rt.updated_at, expected) && bridge_os_pid_alive(old_pid) do return false, "could not stop this profile's verified Bridge process"
+			if l.task_name != "" {
+				// Supervisor-managed: ask the launcher to stop (any session, conversion spec
+				// §10.3); the verified Bridge is ended below only if it does not.
+				bridge_managed_request_stop(l)
+				if stopped, _ := bridge_service_wait_stopped(host, l, old_pid); stopped do return true, "service and Bridge process stopped"
+			}
+			stopped_ok := false
+			for expected in bridge_runtime_images(host, l) {
+				if bridge_os_stop_service_process(old_pid, rt.updated_at, expected) {
+					stopped_ok = true
+					break
+				}
+			}
+			if !stopped_ok && bridge_os_pid_alive(old_pid) do return false, "could not stop this profile's verified Bridge process"
 		} else {
 			ok, msg = bridge_service_exec(bridgesvc.service_argv(host, l, .Stop))
 			if !ok {
@@ -201,7 +220,7 @@ bridge_launchd_reload :: proc(host: bridgesvc.Host, l: bridgesvc.Layout) -> (ok:
 // since / stale_pid: see bridgesvc.gather_status (setup's Verify after a restart).
 bridge_service_status :: proc(host: bridgesvc.Host, name: string, since: i64 = 0, stale_pid := 0) -> bridgesvc.Status {
 	s := bridgesvc.gather_status(host, name, time.now(), since, stale_pid)
-	l := bridgesvc.layout_for(host, name)
+	l := bridge_managed_layout(host, bridgesvc.layout_for(host, name))
 	if s.installed do s.running = bridge_service_running(host, l)
 	if !s.running do s.connected = false
 	s.state = bridgesvc.status_state(s)
@@ -373,7 +392,7 @@ bridge_enroll_service_for :: proc(host: bridgesvc.Host, args: []string) -> (name
 
 // bridge_service_registered: the supervisor knows this service.
 bridge_service_registered :: proc(host: bridgesvc.Host, name: string) -> bool {
-	l := bridgesvc.layout_for(host, name)
+	l := bridge_managed_layout(host, bridgesvc.layout_for(host, name))
 	if l.backend == .Schtasks {
 		ok, _ := bridge_service_exec(bridgesvc.service_argv(host, l, .Status))
 		return ok

@@ -36,6 +36,7 @@ bridge_update_command :: proc(args: []string) -> bool {
 		return false
 	}
 	l := bridgesvc.layout_for(host, name)
+	if bridge_convert_supervisor_managed(host, l) do return bridge_update_managed(args, l, bundle, version)
 	automatic := has_flag(args, "--auto-worker")
 	automatic_success := false
 	auto_lock := bridge_auto_update_lock_path()
@@ -144,4 +145,25 @@ bridge_update_command :: proc(args: []string) -> bool {
 	result := bridge_setup_exec_inherit(argv)
 	automatic_success = result
 	return result
+}
+
+// bridge_update_managed: `ham-bridge update` on a supervisor-managed instance (conversion spec
+// §12.2). The legacy worker exits 0 at once: no lock, no auto-update.json, no download. A user
+// update becomes an intent for the supervisor, which installs from GitHub only.
+bridge_update_managed :: proc(args: []string, l: bridgesvc.Layout, bundle, version: string) -> bool {
+	if has_flag(args, "--auto-worker") {
+		fmt.println("ham-bridge update: managed by the supervisor")
+		return true
+	}
+	if bundle != "" {
+		fmt.eprintln("ham-bridge update: the supervisor installs from GitHub only; use ham-bridge setup --bundle")
+		return false
+	}
+	op_id, err := bridge_supervisor_update_intent(l, fmt.tprintf("cli%d", os.get_pid()), version, "cli", time.to_unix_seconds(time.now()))
+	if err != "" {
+		fmt.eprintfln("ham-bridge update: %s", err)
+		return false
+	}
+	fmt.printfln("ham-bridge update: handed to the supervisor as %s; it installs %s and restarts the Bridge", op_id, version)
+	return true
 }

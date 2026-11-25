@@ -5,7 +5,10 @@ package service
 // and validates one intent; inbox.odin scans the directory and applies them.
 
 import "core:encoding/json"
+import "core:fmt"
+import "core:os"
 import "core:strings"
+import "../engine"
 import "../resolver"
 
 INTENT_SCHEMA :: 1
@@ -206,4 +209,51 @@ journal_action :: proc(action: string) -> string {
 // journal_actor: same for the actor (a rejected intent may carry anything).
 journal_actor :: proc(actor: string) -> string {
 	return actor if valid_actor(actor) || actor == "timer" || actor == "supervisor" else "invalid"
+}
+
+// ---- Senders ----------------------------------------------------------------------------
+
+// encode_intent renders the canonical intent file (§10): the field order and spelling the
+// parser accepts, only the fields the action uses.
+encode_intent :: proc(it: Intent) -> string {
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, `{"is":1,"op_id":`)
+	json_str(&b, it.op_id)
+	strings.write_string(&b, `,"instance_id":`)
+	json_str(&b, it.instance_id)
+	strings.write_string(&b, `,"action":`)
+	json_str(&b, it.action)
+	if it.channel != "" {
+		strings.write_string(&b, `,"channel":`)
+		json_str(&b, it.channel)
+	}
+	if it.version != "" {
+		strings.write_string(&b, `,"version":`)
+		json_str(&b, it.version)
+	}
+	if v, ok := it.auto_update.?; ok {
+		strings.write_string(&b, `,"auto_update":`)
+		strings.write_string(&b, "true" if v else "false")
+	}
+	strings.write_string(&b, `,"actor":`)
+	json_str(&b, it.actor)
+	fmt.sbprintf(&b, `,"expires_at":%d,"created_at":%d}`, it.expires_at, it.created_at)
+	return strings.to_string(b)
+}
+
+// submit_intent drops `it` into <data_root>/supervisor/intents/inbox/<op_id>.json
+// (write .tmp, fsync, rename; engine.replace_durable). Idempotent per op_id: a second call
+// replaces the not yet handled file with identical content, and one already handled is
+// answered by the supervisor's op index (§10). Returns "" or the failure.
+submit_intent :: proc(data_root: string, it: Intent) -> string {
+	if !valid_op_id(it.op_id) do return "invalid op_id"
+	dir := engine.join(data_root, "supervisor", INBOX_DIR)
+	if err := os.make_directory_all(dir, engine.PRIVATE_DIR_PERMS); err != nil && !os.is_dir(dir) {
+		return fmt.tprintf("cannot create %s: %v", dir, err)
+	}
+	data := encode_intent(it)
+	if err := engine.replace_durable(nil, engine.DEFAULT_RETRY, engine.join(dir, strings.concatenate({it.op_id, ".json"}, context.temp_allocator)), transmute([]byte)data, it.op_id, engine.PRIVATE_FILE_PERMS); err != nil {
+		return fmt.tprintf("cannot write intent: %s", engine.error_detail(err))
+	}
+	return ""
 }

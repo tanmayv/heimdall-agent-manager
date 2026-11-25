@@ -161,6 +161,7 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	apply_whatsapp_env(config)
 	apply_paddle_env(config)
 	apply_coordinator_idle_env(config)
+	apply_bridge_update_channel(config)
 
 	// public_app_origin resolves default -> env -> flag, same shape as the above.
 	//
@@ -477,6 +478,22 @@ apply_paddle_env :: proc(config: ^app.Hub_Config) {
 		parsed, ok := strconv.parse_int(v)
 		config.paddle_past_due_grace_seconds = int(parsed) if ok && parsed >= 0 else -1
 	}
+}
+
+// apply_bridge_update_channel: HEIMDALL_BRIDGE_UPDATE_CHANNEL, then --bridge-update-channel
+// (stable | fast, default stable). An unknown value fails loudly: a typo must not leave a
+// fleet on a channel nobody chose.
+apply_bridge_update_channel :: proc(config: ^app.Hub_Config) {
+	value := os.get_env_alloc("HEIMDALL_BRIDGE_UPDATE_CHANNEL", context.temp_allocator)
+	source := "HEIMDALL_BRIDGE_UPDATE_CHANNEL"
+	for i := 1; i + 1 < len(os.args); i += 1 {
+		if os.args[i] == "--bridge-update-channel" {
+			value, source = os.args[i + 1], "--bridge-update-channel"
+		}
+	}
+	channel, ok := app.normalize_bridge_update_channel(value)
+	if !ok { fmt.eprintln(source, "must be stable or fast"); os.exit(2) }
+	config.bridge_update_channel = strings.clone(channel)
 }
 
 // apply_coordinator_idle_env: the coordinator idle-stop timers resolve

@@ -869,7 +869,7 @@ N+1 builds):
 | `update_now` | Resolve per channel and install if newer; **user-started** (interrupts, D6). Timer ticks create the same op with `actor: timer`. |
 | `install_version` | Install exactly `version` (explicit; downgrade allowed only here, §13.2). User-started. |
 | `rollback_to_previous` | Activate `previous` (no download; the tree is re-checked against `tree.json` sizes; the newer tree is pinned, J28). User-started. |
-| `set_channel` | Write `update.json` with `revision+1`; acknowledged in the journal; no install (report §6.4 "fast → stable"). |
+| `set_channel` | Write `update.json` with `revision+1`; acknowledged in the journal; no install (report §6.4 "fast → stable"). Senders: `cli`, `app:*`, and the bridge on behalf of its hub (`actor: hub:channel`, op id `op_hubchan_<channel>_<revision>`; conversion spec §12.4): the hub's update channel (`stable` default, `fast`) follows each connect. A fast → stable change keeps the installed tree; only a newer stable release moves it (§13.2 never downgrades). |
 | `set_auto_update` | Toggle the timer in `update.json`. |
 | `cancel` | Cancel the active op if it is before `activating/gate_closed`. Optional field `target_op_id`: if present and not the active op → rejected `op_mismatch`. No active op → rejected `nothing_to_cancel`. Active op at or past `gate_closed` → rejected `past_point_of_no_return`. Lifecycle and crash outcome: J35. |
 | `retry_failed` | Remove the pin for `version` so the timer may try it again. |

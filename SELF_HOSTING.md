@@ -1701,6 +1701,16 @@ cannot restart.
 
 See [Provider profiles and isolated local homes](docs/provider-profiles.md) for per-bridge account configuration, redacted secret editing, storage/trust boundaries, and the end-to-end isolation smoke.
 
+### Bridge update channel
+
+Bridges managed by the update supervisor follow their hub's update channel: `stable` (default;
+the newest non-prerelease) or `fast` (the highest SemVer). Set it with
+`HEIMDALL_BRIDGE_UPDATE_CHANNEL=fast` (or `--bridge-update-channel fast`, which wins; a Nix
+service module sets the environment). The hub sends it to each bridge on connect, so a change
+takes effect when the hub restarts and its bridges reconnect. Moving from `fast` to `stable` never
+downgrades a bridge; it waits for the next stable release. Bridges not yet converted to the
+supervisor ignore it.
+
 ### Telegram bot configuration
 
 Bots remain off until a user enables the `bots` experiment. Configure the shared
