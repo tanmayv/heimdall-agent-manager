@@ -61,7 +61,9 @@ import {
   type InstanceReconfiguration,
   reconfigurationSettled,
   useRestartAgentInstanceMutation,
+  useStartInstanceMutation,
   useStopAgentInstanceMutation,
+  isAlreadyRunningError,
 } from '../../api/endpoints/agents';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
@@ -789,6 +791,7 @@ export function AgentChatPane({
   const [retryConfiguration, retryConfigurationState] =
     useRetryInstanceConfigurationMutation();
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
+  const [startInstance, startState] = useStartInstanceMutation();
   const [stopInstance, stopState] = useStopAgentInstanceMutation();
 
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
@@ -1547,6 +1550,7 @@ export function AgentChatPane({
     retryConfigurationState.isLoading ||
     reconfigureState.isLoading ||
     restartState.isLoading ||
+    startState.isLoading ||
     stopState.isLoading;
   // Composer "Bypass permissions" toggle: the catalog descriptor for the
   // instance's provider comes from the bridge provider-status (only fetched
@@ -2297,10 +2301,16 @@ export function AgentChatPane({
     setStatusMenuOpen(false);
     setReconfigStatus(needsStart ? 'Starting…' : 'Stopping…');
     try {
-      if (needsStart) await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
+      // A stopped instance is started (POST /start); /restart is only for live ones.
+      if (needsStart) await startInstance({ agentId, instanceId: agentInstanceId }).unwrap();
       else await stopInstance({ agentId, instanceId: agentInstanceId }).unwrap();
       setReconfigStatus(needsStart ? 'Start requested.' : 'Stop requested.');
     } catch (err: any) {
+      // 409 already_running: the instance is up, which is what Start wanted.
+      if (needsStart && isAlreadyRunningError(err)) {
+        setReconfigStatus('Already running.');
+        return;
+      }
       setReconfigStatus(errMsg(err, needsStart ? 'Start failed' : 'Stop failed'));
     }
   }

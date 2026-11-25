@@ -33,6 +33,8 @@ import {
   useStopAgentInstanceMutation,
   useRestartAgentInstanceMutation,
   useListAgentIdentitiesQuery,
+  isAlreadyRunningError,
+  lifecycleErrorMessage,
 } from '../../api/endpoints/agents';
 import { formatFleetRoleName } from '../tasks/FleetManagementDrawer';
 import ArtifactViewer from '../ArtifactViewer';
@@ -393,6 +395,7 @@ export default function ChainOverviewPanel({
   const [restartInstanceMutation] = useRestartAgentInstanceMutation();
 
   // Local interaction state
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
   const [startingInstanceId, setStartingInstanceId] = useState<string | null>(null);
   const [stoppingInstanceId, setStoppingInstanceId] = useState<string | null>(null);
   const [restartingInstanceId, setRestartingInstanceId] = useState<string | null>(null);
@@ -501,11 +504,17 @@ export default function ChainOverviewPanel({
     async (instanceId: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
       try {
+        setLifecycleError(null);
         setStartingInstanceId(instanceId);
-        await startInstanceMutation(instanceId);
+        await startInstanceMutation(instanceId).unwrap();
         refetchChain();
       } catch (err) {
-        console.error('Failed to start agent:', err);
+        // 409 already_running means the desired state holds: treat as success.
+        if (isAlreadyRunningError(err)) {
+          refetchChain();
+        } else {
+          setLifecycleError(lifecycleErrorMessage(err, 'Failed to start agent'));
+        }
       } finally {
         setStartingInstanceId(null);
       }
@@ -518,11 +527,12 @@ export default function ChainOverviewPanel({
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
       try {
+        setLifecycleError(null);
         setStoppingInstanceId(instanceId);
-        await stopInstanceMutation({ instanceId, agentId: agentId || '' });
+        await stopInstanceMutation({ instanceId, agentId: agentId || '' }).unwrap();
         refetchChain();
       } catch (err) {
-        console.error('Failed to stop agent:', err);
+        setLifecycleError(lifecycleErrorMessage(err, 'Failed to stop agent'));
       } finally {
         setStoppingInstanceId(null);
       }
@@ -535,11 +545,12 @@ export default function ChainOverviewPanel({
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
       try {
+        setLifecycleError(null);
         setRestartingInstanceId(instanceId);
-        await restartInstanceMutation({ instanceId, agentId });
+        await restartInstanceMutation({ instanceId, agentId }).unwrap();
         refetchChain();
       } catch (err) {
-        console.error('Failed to restart agent:', err);
+        setLifecycleError(lifecycleErrorMessage(err, 'Failed to restart agent'));
       } finally {
         setRestartingInstanceId(null);
       }
@@ -569,6 +580,12 @@ export default function ChainOverviewPanel({
         <div className="flex items-center justify-center py-8 text-xs text-muted gap-2">
           <Spinner size="sm" /> Loading chain overview…
         </div>
+      )}
+
+      {lifecycleError && (
+        <p role="alert" data-debug-id="chain-overview-lifecycle-error" className="text-xs text-danger">
+          {lifecycleError}
+        </p>
       )}
 
       {/* SECTION 1: Chain Agents */}

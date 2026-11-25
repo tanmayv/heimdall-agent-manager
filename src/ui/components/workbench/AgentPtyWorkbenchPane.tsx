@@ -4,6 +4,8 @@ import {
   useStartInstanceMutation,
   useStopAgentInstanceMutation,
   useRestartAgentInstanceMutation,
+  isAlreadyRunningError,
+  lifecycleErrorMessage,
 } from '../../api/endpoints/agents';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import { useAuxTabActions, type AuxTabAction } from '../auxiliary/auxTabActions';
@@ -38,6 +40,7 @@ export function AgentPtyWorkbenchPane({
   const [stopInstance] = useStopAgentInstanceMutation();
   const [restartInstance] = useRestartAgentInstanceMutation();
   const [actionBusy, setActionBusy] = useState<'start' | 'stop' | 'restart' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const liveAgent = useMemo(() => {
     const allLive = (liveData || []).flatMap((p) =>
@@ -57,11 +60,16 @@ export function AgentPtyWorkbenchPane({
     async (kind: 'start' | 'stop' | 'restart') => {
       if (!agentInstanceId || actionBusy) return;
       setActionBusy(kind);
+      setActionError(null);
       try {
-        if (kind === 'start') await startInstance(agentInstanceId);
-        else if (kind === 'stop') await stopInstance({ instanceId: agentInstanceId, agentId });
-        else await restartInstance({ instanceId: agentInstanceId, agentId });
+        if (kind === 'start') await startInstance({ instanceId: agentInstanceId, agentId }).unwrap();
+        else if (kind === 'stop') await stopInstance({ instanceId: agentInstanceId, agentId }).unwrap();
+        else await restartInstance({ instanceId: agentInstanceId, agentId }).unwrap();
         refetch();
+      } catch (err) {
+        // 409 already_running on start means the desired state holds.
+        if (kind === 'start' && isAlreadyRunningError(err)) refetch();
+        else setActionError(lifecycleErrorMessage(err, `Failed to ${kind} agent`));
       } finally {
         setActionBusy(null);
       }
@@ -82,6 +90,11 @@ export function AgentPtyWorkbenchPane({
       data-debug-id={`workbench-agent-pty-pane-${agentInstanceId}`}
       className="relative flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-surface text-primary"
     >
+      {actionError && (
+        <p role="alert" data-debug-id={`workbench-agent-pty-error-${agentInstanceId}`} className="shrink-0 px-3 py-1 text-xs text-danger">
+          {actionError}
+        </p>
+      )}
       <Suspense fallback={null}>
         <AgentPaneComposerPanel
           agentInstanceId={agentInstanceId}
