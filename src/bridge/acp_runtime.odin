@@ -155,6 +155,9 @@ acp_runtime_error :: proc(r: ^ACP_Runtime, reason: string, auth := false) {
         acp_runtime_close_child(r)
         bridge_runtime_set_pty_process_alive(r.instance, false)
         bridge_runtime_set_status(r.instance, "failed", "idle")
+        // The child is gone: a dead agent must not keep a launch record (it would
+        // hold the auto-update quiet window forever, T16d). A relaunch records anew.
+        bridge_runtime_remove_launch(r.instance)
     }
 }
 
