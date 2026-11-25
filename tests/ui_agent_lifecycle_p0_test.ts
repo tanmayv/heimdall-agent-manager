@@ -50,13 +50,46 @@ for (const [name, run] of [
   });
 }
 
-test('isAlreadyRunningError recognises 409 / already_running only', () => {
-  assert.equal(agents.isAlreadyRunningError({ status: 409 }), true);
+test('isAlreadyRunningError recognises already_running only, not every 409', () => {
+  assert.equal(agents.isAlreadyRunningError({ originalStatus: 409, details: { code: 'already_running' } }), true);
   assert.equal(agents.isAlreadyRunningError({ data: { error: { message: 'already_running' } } }), true);
   assert.equal(agents.isAlreadyRunningError({ error: 'Agent already running' }), true);
+  // start_raced is also a 409 but is a real failure.
+  assert.equal(agents.isAlreadyRunningError({ originalStatus: 409, details: { code: 'start_raced' }, error: 'instance changed before runtime action' }), false);
+  assert.equal(agents.isAlreadyRunningError({ status: 409 }), false);
   assert.equal(agents.isAlreadyRunningError({ status: 500, error: 'boom' }), false);
   assert.equal(agents.isAlreadyRunningError(undefined), false);
 });
+
+// Drive the real startAgentInstance mutation against hub-shaped 409 bodies so the
+// classification is checked on the error RTK actually hands the panes.
+for (const [code, message, expected] of [
+  ['already_running', 'instance inst_a is already running (runtime_status=running)', true],
+  ['start_raced', 'instance changed before runtime action', false],
+] as const) {
+  test(`start mutation 409 ${code} -> isAlreadyRunningError=${expected}`, async () => {
+    const previous = (globalThis as any).fetch;
+    (globalThis as any).fetch = async () => {
+      const body = { error: { code: 'conflict', message, details: { code } } };
+      return {
+        ok: false, status: 409,
+        headers: { get: (h: string) => (h.toLowerCase() === 'content-type' ? 'application/json' : null) },
+        text: async () => JSON.stringify(body), json: async () => body,
+      } as any;
+    };
+    const store = await makeVaultStore();
+    try {
+      const result: any = await store.dispatch(agents.agentsApi.endpoints.startAgentInstance.initiate({ instanceId: 'inst_a' }));
+      assert.ok(result.error, 'start rejected');
+      assert.equal(result.error.originalStatus, 409);
+      assert.equal(agents.isAlreadyRunningError(result.error), expected);
+      assert.equal(agents.lifecycleErrorMessage(result.error, 'x'), message);
+    } finally {
+      store.dispatch(heimdallApi.util.resetApiState());
+      (globalThis as any).fetch = previous;
+    }
+  });
+}
 
 test('AgentChatPane Start uses /start, not /restart', () => {
   const src = read('src/ui/components/workbench/AgentChatPane.tsx');

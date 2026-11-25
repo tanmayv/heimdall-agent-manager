@@ -87,10 +87,17 @@ function agentTagId(agent: any, fallback = '') {
 const IDENTITY_PAGE_SIZE = 200;
 const IDENTITY_MAX_PAGES = 40;
 
-/** True when a start failed only because the instance is already running (hub 409 already_running). */
+/**
+ * True when a start failed only because the instance is already running. The hub
+ * answers 409 with details.code=already_running; other 409s (e.g. start_raced)
+ * are real failures, so the HTTP status alone is not enough.
+ */
 export function isAlreadyRunningError(err: any): boolean {
-  const text = String(err?.data?.error?.message || err?.data?.error || err?.error || err?.message || '').toLowerCase();
-  return err?.status === 409 || err?.data?.status === 409 || text.includes('already_running') || text.includes('already running');
+  if (!err) return false;
+  const code = err.details?.code || err.code || err.data?.error?.details?.code || err.data?.error?.code;
+  if (code) return code === 'already_running';
+  const text = String(err.data?.error?.message || err.error || err.message || '').toLowerCase();
+  return text.includes('already_running') || text.includes('already running');
 }
 
 /** Human-readable text for a failed RTK mutation result/error. */
@@ -557,7 +564,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/stop`, 'POST', { force, reason: force ? 'user_force_stop' : 'user_requested' });
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
       invalidatesTags: (_result, _error, { agentId, instanceId }) => [
@@ -573,7 +580,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/restart`, 'POST', {});
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
       invalidatesTags: (_result, _error, { agentId, instanceId }) => [
@@ -588,7 +595,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/start`, 'POST', {});
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
       invalidatesTags: (_result, _error, { agentId, instanceId }) => [
