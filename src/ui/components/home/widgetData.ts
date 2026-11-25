@@ -53,7 +53,7 @@ export interface UptimeData { connected: number; total: number; uptimePercent: n
 export interface FleetOverride { id: string; agent: string; provider: string; provider_profile?: string; model: string }
 export interface FleetBridge { id: string; label: string; os: string; agents: number; online: boolean; provider: string; provider_profile?: string; model: string; overrides: FleetOverride[]; availableAgents?: { agent_id: string; name: string }[]; catalog?: import('../tasks/fleetSelection').FleetProviderCapability[] }
 export function activeWidgetChains(chains: ChainListItem[]): ChainListItem[] {
-  return chains.filter((chain) => ['active', 'running', 'needs_review', 'in_review'].includes(chain.status.toLowerCase()))
+  return chains.filter((chain) => chain.status.toLowerCase() === 'active')
     .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0) || a.chainId.localeCompare(b.chainId));
 }
 export function chainWidgetPage(chains: ChainListItem[], page: number) {

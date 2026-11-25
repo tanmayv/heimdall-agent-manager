@@ -10,14 +10,14 @@ import ActivityWidget from '../../../src/ui/components/home/ActivityWidget';
 import TaskChainsWidget from '../../../src/ui/components/home/TaskChainsWidget';
 import UptimeWidget from '../../../src/ui/components/home/UptimeWidget';
 import FleetWidget from '../../../src/ui/components/home/FleetWidget';
-import { fleetFixture, mockActivity, MOCK_PROVIDERS } from '../../../src/ui/components/home/homeWidgetFixtures';
+import { fleetFixture, mockActivity, MOCK_PROVIDERS, chainsFixture, chainDetailFixture } from '../../../src/ui/components/home/homeWidgetFixtures';
 import { summarizeActivity, fleetFromWire } from '../../../src/ui/components/home/widgetData';
 import { setExpectedUserId } from '../../../src/ui/utils/expectedUser';
 import '../../../src/ui/styles.css';
 
 const store = configureStore({ reducer: { vault, [heimdallApi.reducerPath]: heimdallApi.reducer }, middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(heimdallApi.middleware) });
 const params = new URLSearchParams(location.search);
-// Isolated API boundary: screenshots exercise the production Fleet UI without
+// Isolated API boundary: screenshots exercise the production Fleet/chain UI without
 // contacting a Hub or restarting a live instance.
 const fixtureFleet = fleetFromWire(fleetFixture());
 const fleetState = params.get('fleet-state') || 'normal';
@@ -35,7 +35,13 @@ window.fetch = async (input, init) => {
   const path = url.pathname;
   const bridge = fixtureFleet.find((b) => path.includes('/' + b.id + '/')) || fixtureFleet[0];
   let data: any;
-  if (path === '/api/v1/bridges') data = fleetFixture().bridges;
+  if (path === '/api/v1/task-chains') data = [0, 1, 2].flatMap((page) => chainsFixture(page).chains);
+  else if (path.startsWith('/api/v1/task-chains/')) {
+    const id = decodeURIComponent(path.split('/')[4]);
+    const detail = chainDetailFixture(id);
+    data = { ...detail, members: detail.members.map((member) => ({ ...member, agent_instance_id: 'fixture-coordinator-' + id })), tasks: detail.tasks.map((task, i) => ({ ...task, task_id: id + '-task-' + i, chain_id: id })) };
+  }
+  else if (path === '/api/v1/bridges') data = fleetFixture().bridges;
   else if (path === '/api/v1/agents') data = [...new Map(fixtureFleet.flatMap((b) => b.availableAgents || []).map((a) => [a.agent_id, { ...a, state: 'active' }])).values()];
   else if (path.endsWith('/provider-status')) data = { providers: MOCK_PROVIDERS.map((p) => ({ provider: p.id, profile_id: p.id, display_name: p.label, enabled: true, state: 'present', catalog_state: 'active', models: p.models.map((m) => ({ model_id: m, state: 'active' })) })) };
   else if (path.endsWith('/launch-defaults')) data = { bridge_id: bridge.id, revision: 1, default_runtime: { provider: bridge.provider, provider_profile: bridge.provider, model: bridge.model }, overrides: bridge.overrides.map((o) => ({ agent_id: o.id, runtime: { provider: o.provider, provider_profile: o.provider, model: o.model } })) };

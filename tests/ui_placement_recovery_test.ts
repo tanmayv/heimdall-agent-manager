@@ -114,7 +114,7 @@ async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
     if (url.pathname.endsWith('/review-roles')) return json([{ name: 'security', description: 'Review security', holders: ['agt_failed'], open_task_count: 1 }]);
     if (url.pathname.endsWith('/bridge-support')) return json({ entries: [] });
     if (url.pathname.endsWith('/fleets')) return json(opts.fleets || fleets);
-    if (url.pathname.endsWith('/task-chains/chain_recovery')) return json({ task_chain_id: 'chain_recovery', tasks: [currentTask, { ...currentTask, task_id: 'task_other', title: 'Other queued ticket' }] });
+    if (url.pathname.endsWith('/task-chains/chain_recovery')) return json({ chain_id: 'chain_recovery', members: [], tasks: [currentTask, { ...currentTask, task_id: 'task_other', title: 'Other queued ticket' }] });
     if (url.pathname.endsWith('/tasks/task_recovery')) return json(currentTask);
     return json({});
   };

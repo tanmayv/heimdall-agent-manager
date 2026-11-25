@@ -115,6 +115,28 @@ try {
       const screenshot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: state !== 'add-sheet', clip: { x: 0, y: 0, width, height: state === 'add-sheet' ? height : Math.max(height, geometry.height), scale: 1 } });
       await fs.writeFile(file, Buffer.from(screenshot.data, 'base64'));
       reports.push({ width, state, file, geometry });
+      if (state === 'normal') {
+        const link = 'home-chain-open-mock-chain-0';
+        const href = '#/conversations/chain:mock-chain-0';
+        assert.equal(await evaluate(`document.querySelector('[data-debug-id="${link}"]').getAttribute('href')`), href);
+        const rect = await evaluate(`(() => { const el = document.querySelector('[data-debug-id="${link}"]'); el.scrollIntoView({block:'center'}); const r = el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+        await call('Input.dispatchMouseEvent', {type:'mousePressed', ...rect, button:'left', clickCount:1});
+        await call('Input.dispatchMouseEvent', {type:'mouseReleased', ...rect, button:'left', clickCount:1});
+        assert.equal(await evaluate('location.hash'), href);
+        await evaluate(`history.replaceState(null, '', location.pathname + location.search); document.querySelector('[data-debug-id="${link}"]').focus()`);
+        await key('Enter', 'Enter', 13);
+        assert.equal(await evaluate('location.hash'), href);
+        await evaluate(`history.replaceState(null, '', location.pathname + location.search)`);
+        const beforeTabs = new Set((await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).map(tab => tab.id));
+        await call('Input.dispatchMouseEvent', {type:'mousePressed', ...rect, button:'left', modifiers:2, clickCount:1});
+        await call('Input.dispatchMouseEvent', {type:'mouseReleased', ...rect, button:'left', modifiers:2, clickCount:1});
+        await wait(400);
+        const opened = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(tab => !beforeTabs.has(tab.id) && tab.url.endsWith(href));
+        assert.ok(opened, 'Ctrl+click opens the chain-addressed destination in another tab');
+        await call('Target.closeTarget', {targetId:opened.id});
+        await call('Page.bringToFront');
+        reports.at(-1).chainNavigation = { mouse: 'PASS', keyboard: 'PASS', nativeNewTab: 'PASS', href, boundary: 'isolated Home fixture; shell conversation routing covered by integration tests' };
+      }
       if (state === 'add-sheet') {
         await key('Escape', 'Escape', 27);
         assert.equal(await evaluate('document.activeElement.dataset.debugId'), 'home-layout-add-menu');

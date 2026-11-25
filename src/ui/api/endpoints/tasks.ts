@@ -402,6 +402,7 @@ export function normalizeTaskChainDetail(data: any) {
       model: m.model || '',
       bridgeId: m.bridge_id || m.bridgeId || '',
       bridge_id: m.bridge_id || m.bridgeId || '',
+      bridgeLabel: m.bridge_label || '',
       createdAt: m.created_at,
     })),
     tasks,
@@ -722,6 +723,12 @@ export const tasksApi = heimdallApi.injectEndpoints({
         try {
           const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}`);
           let data = unwrapData(raw);
+          if (!data || typeof data !== 'object' || Array.isArray(data)
+            || typeof (data.chain_id ?? data.chainId) !== 'string' || !(data.chain_id ?? data.chainId).trim()
+            || (data.tasks != null && !Array.isArray(data.tasks))
+            || (data.members != null && !Array.isArray(data.members))) {
+            throw new Error('Invalid task chain detail response');
+          }
           const state: any = api?.getState?.();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
           const activeKey = getActiveVaultKey();
@@ -737,7 +744,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
               chain.tasks = await decryptTaskList(chain.tasks, activeKey);
             }
           }
-          return { data: { chain } };
+          // Partial detail consumers may still resolve a coordinator, but Home
+          // must not interpret omitted collections as confirmed empty snapshots.
+          const hasCompleteSnapshot = Array.isArray(data.tasks) && Array.isArray(data.members);
+          return { data: { chain, hasCompleteSnapshot } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
