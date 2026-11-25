@@ -1,6 +1,6 @@
 ---
 name: coordinator-task-management
-description: How a task-chain COORDINATOR runs a chain of tickets with ham-ctl — choose tickets or workflow runs within one mixed-work chain, propose and publish tasks with complete briefs (`task-chain propose|decide|publish`, `task create`), run workflows (`ham-ctl workflow …`), set up the fleet and review roles (`task-chain fleet set`), curate the chain summary so learnings reach every agent, react to `[taskv2]` notifications (blocked_on human, budget_exhausted, oscillation, ready_unclaimed, review_requested_from_user, merge_conflict, gate_rejected, work_batch_finished, workflow_complete, …), record user verdicts (`review post --on-behalf-of user`), and close the chain. Covers Solo mode, where the coordinator also does the work. Load whenever you coordinate a chain.
+description: How a task-chain COORDINATOR (or soloist) runs a chain with ham-ctl — choose tickets or workflow runs, propose and publish tasks with complete briefs, set the fleet and review roles, curate the chain summary, react to `[taskv2]` notices, record user verdicts (`review post --on-behalf-of user`), amend or replace tasks, and close the chain. Load whenever you coordinate a chain.
 ---
 
 # Coordinator task management (Tickets)
@@ -68,13 +68,13 @@ EOF
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
 - Without `--auto-approve` the proposal waits for an explicit decision. Existing work continues.
 - Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
-- Same-owner agents may publish chains and ordinary draft tasks. Single-task publication requires an already published chain; unpublish is unsupported.
+- Single-task publication requires an already published chain; unpublish is unsupported.
 - Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
 
 **A good brief** is self-contained: a goal a newcomer can act on and checkable acceptance items (the hub requires only a non-empty goal and at least one acceptance item). Also state limits (scope, files not to touch), a stop condition and the approval scope: which external or destructive actions the user has approved, if any. Do not prescribe a verification command: the worker chooses and reports checks, and reviewers judge correctness from the diff and that evidence. Add `inputs` (`output:<task>`, `<path>@<rev>`) only for context beyond what dependencies already bring: a task automatically receives the handoff of every task it waits for.
 
 ## 3. Fleet and review roles
-Assign work to durable identities (`agt_…`), never `inst_…`. Same-owner agents may list/configure, pause/resume or delete fleets; referenced durable agents and bridges must belong to that owner, and capacity, role and placement checks still apply. `fleet pause`/`resume` stop/start new leases while current work continues. Fleet deletion is `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; no fleet delete CLI verb exists.
+Assign work to durable identities (`agt_…`), never `inst_…`. Referenced durable agents and bridges must belong to the owner, and capacity, role and placement checks still apply. `fleet pause`/`resume` stop/start new leases while current work continues. Fleet deletion is `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; no fleet delete CLI verb exists.
 ```bash
 ./bin/ham-ctl task-chain fleet list [<chain-id>]
 ./bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \
@@ -161,7 +161,6 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 ## 8. Solo mode
 The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
 - You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Claims never lapse with time; runtime loss retains ownership while recovery is pending.
-- Submit and block retain waiting ownership; refresh `lease next` and stay with the task until completion or explicit release.
 - New tasks default to `requires_user_approval`; the user reviews from their attention deck. To opt a task out: `task update <id> --no-require-user-approval`.
 - You never review your own work (`403 solo_self_review`).
 - `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
@@ -178,37 +177,18 @@ Use a native requirement amendment when the user changes acceptance details or c
   --expected-requirements-revision <n> --reason "<what changed and why>"
 ```
 
-Repeated acceptance flags replace the list; include every item that should remain. A revision conflict requires a fresh read and deliberate reconciliation, not a blind retry. In the UI use **Change requirements** (goal, acceptance, reason) and inspect the task's revision, read status and **Requirement changes** history. MCP clients use `tasks.get` then `tasks.update` with `expected_revision`, `reason` and an idempotent `request_id`; consult the CLI reference and MCP documentation for the distinct concurrency fields.
+Decide first whether the objective and deliverable are still the same; a comment alone does not update requirements or wake the worker, and the chain design and acceptance criteria must stay consistent with the amendment. Repeated acceptance flags replace the list; include every item that should remain. A revision conflict requires a fresh read and deliberate reconciliation, not a blind retry. In the UI use **Change requirements** (goal, acceptance, reason) and inspect the task's revision, read status and **Requirement changes** history. MCP clients use `tasks.get` then `tasks.update` with `expected_revision`, `reason` and an idempotent `request_id`; consult the CLI reference and MCP documentation for the distinct concurrency fields.
 
-Native delivery prompts active workers to refresh `lease next`, read the new `TASK.md`, and acknowledge the exact revision on their own lease; do not acknowledge for them. An edit after submission invalidates stale review evidence: reviewers checkpoint and worker rework must be submitted before current approval. Comments preserve discussion but do not wake agents or change their brief. Preserve existing review gates.
+Native delivery prompts active workers to refresh `lease next`, read the new `TASK.md`, and acknowledge the exact revision on their own lease (`chain-events-and-claims` "Requirement revisions: acknowledging on your own claim"); do not acknowledge for them. An edit after submission invalidates stale review evidence: reviewers checkpoint and worker rework must be submitted before current approval. Comments preserve discussion but do not wake agents or change their brief. Preserve existing review gates.
 
 For a significant change to objective, deliverable or approach that invalidates the plan or review basis:
 
 1. Record the decision on the original task: rationale, old/new scope, retained work and original task disposition.
 2. Create a self-contained replacement task linked to the original, with current acceptance and required approvals; record the replacement ID on the original.
-3. Checkpoint active work before redirecting it. In solo mode, `lease switch <replacement-id> --summary "..."` preserves progress. Explicitly rewire future dependencies and keep terminal/workflow lifecycle restrictions. A reference link preserves provenance; a dependency should exist only when the new task actually requires successful completion of the old one.
+3. Checkpoint active work before redirecting it. In solo mode, `lease switch <replacement-id> --summary "..."` preserves progress. Explicitly rewire future dependencies. Terminal tasks need an explicit reopen for further work, and workflow-managed stage identities stay under workflow lifecycle controls. A reference link preserves provenance; a dependency should exist only when the new task actually requires successful completion of the old one.
 
 Do not overwrite the original into an unrelated assignment or treat the scope change as approval of unfinished work.
 
-## Durable claims, cancellation and transfer
+## Events, claims, transfer and cancel
 
-Claims do not expire or need renewal. Active ownership permits execution; waiting ownership retains task, role and owner through review and blocking. Submission and verdicts retain responsibility until completion or explicit release.
-
-```bash
-ham-ctl lease <task-id>
-ham-ctl lease <task-id> --instance <instance-id>
-ham-ctl lease transfer <task-id> --instance <instance-id>
-ham-ctl task cancel <task-id>
-```
-
-- A plain claim requests work for the calling instance. Its durable agent ID must match the assignee or an eligible reviewer; the server derives the role from current task state. Repeating a claim returns existing responsibility.
-- A coordinator can name an eligible instance, including itself when its own durable identity matches. Context goes to that instance; assigning another instance does not overwrite the coordinator's task context.
-- Claims never silently replace another holder; use explicit transfer. The old writer is fenced immediately; replacement execution waits for the exact process stop receipt. Offline cleanup remains `stop_pending`.
-- Any agent instance of the task's owner may cancel it, without chain membership or coordinator role (cross-owner tasks are refused). Cancellation preserves history and revokes work/review ownership; it can finish while process cleanup is pending, and late callbacks cannot revive the task.
-- No prior inspection or manual generation/request ID is needed: the CLI supplies request identity and a default audit reason. Use `--reason` to explain intent; explicit request IDs and generation checks serve advanced callers.
-- `task hold`, `task release`, `task unblock` and `task recheck` keep their established meanings; `task release` clears a hold.
-- `lease next` refreshes current responsibility. Stay with a waiting task rather than pulling unrelated work. `lease heartbeat` only reports progress or acknowledges requirements; it does not renew ownership.
-
-## Event inbox and migration notices
-
-The full rules are in the section of this name in your bootstrap file (`CLAUDE.md` / `AGENTS.md`). Coordinators handle review requests, human blocks, merge conflicts and finished batches with the §5 controls and the required user gates (§6).
+Event inbox mechanics (`[events]` nudges, `events next` / `events ack`, deduplication, migration of `[taskv2]` notices) and durable claims, `lease transfer` and `task cancel` are in `chain-events-and-claims`: "Event inbox and migration notices" and "Durable claims, cancellation and transfer". Coordinators handle review requests, human blocks, merge conflicts and finished batches with the §5 controls and the required user gates (§6).
