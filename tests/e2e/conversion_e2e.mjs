@@ -474,6 +474,14 @@ async function main() {
       for (const dir of [L5.data, L5.state, path.join(L5.data, 'logs')]) {
         if (fs.existsSync(dir)) console.log('    P5 files:', dir, fs.readdirSync(dir).join(', '));
       }
+      for (const file of ['runtime.log', 'bridge.err.log']) {
+        const logPath = path.join(L5.data, 'logs', file);
+        if (!fs.existsSync(logPath)) continue;
+        const log = fs.readFileSync(logPath, 'utf8');
+        // Print known diagnostic markers only, never the log's credential-bearing values.
+        const markers = log.match(/SecKeychain\w*|errSec\w+|keychain|vault|supervisor-control|permission denied|address already in use|file name too long|no such file|connection refused|timed out|panic/gi) || [];
+        console.log('    P5 log markers:', file, Buffer.byteLength(log), JSON.stringify(markers.slice(-60)));
+      }
       const status = readJson(path.join(L5.state, 'runtime-status.json'));
       console.log('    P5 runtime status:', JSON.stringify(status && { pid: status.pid, connected: status.connected, updated_at: status.updated_at }));
     }
