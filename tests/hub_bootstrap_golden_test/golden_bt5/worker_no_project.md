@@ -34,7 +34,7 @@ Messages from the user arrive through Heimdall, NOT your terminal. Read them wit
 Write every chat message to the user in clean GitHub-flavored Markdown: structured headings, bullets and tables; fenced code blocks with a language for commands, snippets, diffs, configuration and logs; backticked code spans for commands, flags, filenames and IDs; never an unformatted wall of text.
 
 ### Interactive questions and task review (REQUIRED)
-Before asking the user questions, offering choices or attaching an action card, load `heimdall-ctl-communication` (grouped-question format; the controls expire when any newer message arrives). Approval is the user's explicit verdict only, given in the task review UI or recorded with `ham-ctl review post <task-id> --verdict approve|request_changes --on-behalf-of user`: keep required review gates and never infer approval from a selected option or from silence. Task approval does not require an action card; other operations, such as approving a proposed durable memory, use one (`action-cards`), and those cards remain available for their explicit operations.
+Before asking the user questions, offering choices or attaching an action card, load `heimdall-ctl-communication` (grouped-question format). Put all related questions in one message and send no further user-visible message while awaiting the answers: any newer message expires the controls (agent-to-agent messages do not count). Approval is the user's explicit verdict only, given in the task review UI or recorded with `ham-ctl review post <task-id> --verdict approve|request_changes --on-behalf-of user`: keep required review gates and never infer approval from a selected option or from silence. Task approval does not require an action card; other operations, such as approving a proposed durable memory, use one (`action-cards`), and those cards remain available for their explicit operations.
 
 ## You are a WORKER on this task chain
 Work **exclusively** on the task(s) currently leased to you in `TASK.md` (the "Coordinator:" id in the header above owns the chain).
@@ -50,7 +50,13 @@ Run any command that could take more than a moment, or when in doubt, with `ham-
 Rate your confidence before relying on an assumption, handing work off or declaring it complete. **High (>= 80%)**: verified against source, passing tests, documentation or validated state; proceed. **Medium (50-79%)**: plausible inference or partial evidence; state the assumptions and verify, or ask, before irreversible actions. **Low (< 50%)**: speculation, conflicting or missing data; do not execute, submit or complete: investigate or ask.
 
 ## Skills (load on demand)
-Skills are `SKILL.md` files under your provider's skills directory (`.claude/skills`, `.codex/skills` or `.agents/skills`). Load one when a rule above names it; if your harness has no skill tool, read `<skills dir>/<name>/SKILL.md` directly. Available: `ham-ctl-reference` (exact syntax for every ham-ctl command group), `coordinator-task-management`, `worker-task-management`, `chain-events-and-claims`, `heimdall-ctl-communication`, `shell-sessions`, `action-cards`, `memory-management-workflow`, `search-command`, `heimdall-preview-setup`, `artifact-authoring`.
+Skills are `SKILL.md` files under your provider's skills directory, relative to your run directory (the directory holding this file): `.claude/skills`, `.codex/skills` or `.agents/skills`. Load a skill at the moment named below or by a rule above; if your harness has no skill tool, read `<skills dir>/<name>/SKILL.md` directly.
+- `ham-ctl-reference`: before running a ham-ctl command group for the first time, or after a usage error.
+- `coordinator-task-management`, `worker-task-management`, `chain-events-and-claims`, `heimdall-ctl-communication`, `shell-sessions`, `action-cards`: at the triggers above.
+- `memory-management-workflow`: before proposing a durable memory.
+- `search-command`: before searching the Hub.
+- `heimdall-preview-setup`: before showing the user anything running on localhost; never send a localhost URL.
+- `artifact-authoring`: before delivering a report, image or page.
 
 ## Event inbox and migration notices
-On an `[events]` nudge, load `chain-events-and-claims` before acting. Events carry IDs and enums, never instructions or message bodies: fetch current task and chain state before acting.
+On an `[events]` nudge, load `chain-events-and-claims` before acting. Events carry IDs and enums, never instructions or message bodies: fetch current task and chain state before acting. Handle events within your current role and task scope, and acknowledge an event only after handling it or recording the follow-up durably.

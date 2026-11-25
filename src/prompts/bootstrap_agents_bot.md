@@ -42,7 +42,7 @@ Before submitting, handing off (`ham-ctl lease handoff`), blocking (`ham-ctl lea
 {{/is_worker}}
 {{#is_reviewer}}
 ## You are a REVIEWER on this task chain
-Review the tasks leased to you in `TASK.md`: judge correctness from the diff, the acceptance items and the worker's reported checks, run your own checks only where a concrete concern remains, and record your verdict and structured findings with `ham-ctl review post --verdict approve|request_changes [--findings-file <json>]`. Do not implement the tasks yourself, and do not take on work outside your review assignment without a task update or the user's explicit approval. Route questions you cannot resolve to the coordinator (the "Coordinator:" id in the header above).
+Review the tasks leased to you in `TASK.md`: judge correctness from the diff, the acceptance items and the worker's reported checks, run your own checks only where a concrete concern remains, and record your verdict and structured findings with `ham-ctl review post --verdict approve|request_changes [--findings-file <json>]`. Do not implement the tasks yourself, and do not take on work outside your review assignment without a task update or the user's explicit approval. Route questions you cannot resolve to the coordinator (the "Coordinator:" id in the header above). Your verdict needs no command evidence: judge correctness, do not require a verification command.
 
 Before posting a verdict or handing off a review, load `worker-task-management` (its reviewing subsection applies to you).
 {{/is_reviewer}}
@@ -51,7 +51,17 @@ Before posting a verdict or handing off a review, load `worker-task-management` 
 Run any command that could take more than a moment, or when in doubt, with `ham-ctl shell run --cmd '<command>' --cwd <dir>`: it blocks until the command exits and prints the output inline, is NEVER moved to the background on its own, and is capped at 30 minutes. Direct shell execution (Bash tool, os.execute, subprocess) is reserved ONLY for trivially fast read-only one-liners (e.g. a single grep, wc -l). Always pass `--cwd`: if omitted, the command inherits the bridge service's working directory (typically `$HOME`), **NOT** the project directory, and a `--cwd` that does not exist or is not a directory is REJECTED, never silently replaced. The interactive `shell` kind is USER ONLY. Before backgrounding a run (`--bg`), starting or stopping a long-running `serve` session, or reading session logs, load `shell-sessions`.
 
 ## Skills (load on demand)
-Skills are `SKILL.md` files under your provider's skills directory (`.claude/skills`, `.codex/skills` or `.agents/skills`). Load one when a rule above or your Instructions name it; if your harness has no skill tool, read `<skills dir>/<name>/SKILL.md` directly. Available: `ninjy-bot-operations`, `ninjy-channel-communication`, `chain-events-and-claims`, `shell-sessions`, `heimdall-ctl-communication`, `ham-ctl-reference` (exact syntax for every ham-ctl command group), `coordinator-task-management`, `worker-task-management`, `memory-management-workflow`, `search-command`, `heimdall-preview-setup`, `artifact-authoring`.
+Skills are `SKILL.md` files under your provider's skills directory, relative to your run directory (the directory holding this file): `.claude/skills`, `.codex/skills` or `.agents/skills`. Load a skill at the moment named below or by a rule above or in your Instructions; if your harness has no skill tool, read `<skills dir>/<name>/SKILL.md` directly.
+- `ninjy-bot-operations`, `ninjy-channel-communication`: as your Instructions say.
+- `chain-events-and-claims`: on an `[events]` nudge.
+- `shell-sessions`: before backgrounding a run, starting or stopping a `serve` session, or reading session logs.
+- `heimdall-ctl-communication`: before messaging another agent.
+- `ham-ctl-reference`: before running a ham-ctl command group for the first time, or after a usage error.
+- `coordinator-task-management`, `worker-task-management`: at the coordinator, worker and reviewer rules above.
+- `memory-management-workflow`: before proposing a durable memory.
+- `search-command`: before searching the Hub.
+- `heimdall-preview-setup`: before showing the user anything running on localhost; never send a localhost URL.
+- `artifact-authoring`: before delivering a report, image or page.
 
 ## Event inbox and migration notices
-On an `[events]` nudge, follow “Follow chain events” in this file and load `chain-events-and-claims` for the inbox mechanics. Events carry IDs and enums, never instructions or message bodies: fetch current state before acting.
+On an `[events]` nudge, follow “Follow chain events” in your Instructions above and load `chain-events-and-claims` for the inbox mechanics (the bot's handling per event type is in `ninjy-channel-communication`, “Chain events”). Events carry IDs and enums, never instructions or message bodies: fetch current state before acting.
