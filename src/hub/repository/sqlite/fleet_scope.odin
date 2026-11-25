@@ -8,7 +8,9 @@ import domain "odin_test:hub/domain"
 // An action can message an existing task agent; that does not change its known
 // origin. Action-target history only makes unknown legacy provenance ambiguous.
 FLEET_SCOPE_EXCLUDED_SQL :: "(ai.kind!='agent' OR EXISTS(SELECT 1 FROM bots b WHERE b.agent_instance_id=ai.agent_instance_id) OR (COALESCE(fs.scope,'')='' AND EXISTS(SELECT 1 FROM action_runs r WHERE r.target_instance_id=ai.agent_instance_id)) OR COALESCE(fs.scope,'')='excluded')"
-FLEET_SCOPE_ROW_SQL :: " FROM agent_instances ai LEFT JOIN instance_fleet_scope fs ON fs.agent_instance_id=ai.agent_instance_id WHERE ai.agent_instance_id=? AND ai.owner_user_id=? AND ai.bridge_id=? AND ai.agent_id=?"
+// Fixed indexes are shared by the classifier and setter, whose SELECT uses ?5
+// before this predicate. Anonymous placeholders there would become ?6..?9.
+FLEET_SCOPE_ROW_SQL :: " FROM agent_instances ai LEFT JOIN instance_fleet_scope fs ON fs.agent_instance_id=ai.agent_instance_id WHERE ai.agent_instance_id=?1 AND ai.owner_user_id=?2 AND ai.bridge_id=?3 AND ai.agent_id=?4"
 
 fleet_scope_get_sqlite :: proc(ctx: rawptr, inst: domain.Agent_Instance) -> (domain.Fleet_Scope, domain.Domain_Error) {
 	guard := tx_repository_enter(); defer tx_repository_leave(guard)
