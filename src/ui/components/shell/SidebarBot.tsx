@@ -5,7 +5,7 @@ import { buildRouteHash } from '../../utils/appLocation';
 import { navigateToHash } from '../../utils/conversationUrl';
 import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
 import { resolveBotStatusLabel } from '../settings/botsView';
-import { connectedBotChannels, isBotRunning } from '../bots/botChatModel';
+import { isBotRunning } from '../bots/botChatModel';
 
 export const BOT_CHAT_ROUTE = '/bot';
 
@@ -27,7 +27,9 @@ export function SidebarBot({ currentPath, onNavigate }: SidebarBotProps) {
   const bot = enabled ? query.currentData : undefined;
   if (!bot) return null;
   const running = isBotRunning(bot.status);
-  const channels = connectedBotChannels(bot).join(' · ');
+  const bridge = bot.advanced.bridge_label || bot.advanced.bridge_id || 'No bridge';
+  const provider = ({ claude: 'Claude Code', codex: 'Codex' } as Record<string, string>)[bot.advanced.provider]
+    || bot.advanced.provider || 'No provider';
   const active = currentPath === BOT_CHAT_ROUTE;
   const open = (event: React.MouseEvent<HTMLAnchorElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -47,9 +49,8 @@ export function SidebarBot({ currentPath, onNavigate }: SidebarBotProps) {
           <span data-debug-id="sidebar-bot-status" className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
             <StatusDot size="sm" tone={running ? 'success' : 'neutral'} pulse={bot.status === 'working' || bot.status === 'starting'}
               label={resolveBotStatusLabel(bot.status)} />
-            <span className="shrink-0">{running ? 'Running' : 'Stopped'}</span>
-            <span aria-hidden="true">·</span>
-            <span data-debug-id="sidebar-bot-channels" className="min-w-0 truncate">{channels}</span>
+            <span className="sr-only">{running ? 'Running on ' : 'Stopped on '}</span>
+            <span data-debug-id="sidebar-bot-placement" className="min-w-0 truncate">{bridge} · {provider}</span>
           </span>
         </span>
       </a>
