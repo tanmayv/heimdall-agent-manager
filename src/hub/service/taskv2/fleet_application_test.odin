@@ -6,6 +6,7 @@ import "core:testing"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import sqlite "odin_test:hub/repository/sqlite"
 import agent "odin_test:hub/service/agent"
 import fleet "odin_test:hub/service/fleet_application"
 import project "odin_test:hub/service/project"
@@ -22,11 +23,19 @@ fleet_probe_close :: proc(p:^Fleet_Probe) {
 	for c in p.commands {delete(c.bridge_id);delete(c.command_id);delete(c.body_json)}
 	delete(p.commands)
 }
-fleet_test_service :: proc(fx:^Fixture,log:^Wake_Log,p:^Fleet_Probe)->fleet.Service {
+fleet_test_service :: proc(t:^testing.T,fx:^Fixture,log:^Wake_Log,p:^Fleet_Probe)->(fleet.Service,bool) {
+	// Unlike legacy task fixture tables, application receipts reference users.
+	// Use the real owner repository; never weaken the production foreign key.
+	impl:sqlite.User_Repo_SQLite
+	users:=sqlite.new_user_repository(&impl,&fx.conn)
+	_,saved,se:=iface.user_save(&users,{user_id="u1",name="Fleet fixture owner",status=.Active})
+	if !testing.expectf(t,saved && se.code==.None,"Fleet fixture user save: %v %s",se.code,se.message) do return {},false
+	owner,found,oe:=iface.user_get_by_id(&users,"u1")
+	if !testing.expectf(t,found && oe.code==.None && owner.user_id=="u1","Fleet fixture owner lookup: %v %s",oe.code,oe.message) do return {},false
 	p.fx=fx
 	log.service.bridge_command_sink={ctx=p,send_runtime_command=fleet_probe_send}
 	log.service.hooks={ctx=&fx.svc,on_terminal=proc(ctx:rawptr,id:string){on_instance_terminal((^Service)(ctx),id)},launch_context=proc(ctx:rawptr,i:domain.Agent_Instance)->(agent.Start_Lease,bool,domain.Domain_Error){return reconfiguration_launch_context((^Service)(ctx),i)}}
-	return {settings=agent.fleet_service(&log.service),agents=&log.service,factory=&fx.uow,clock=&fx.clock,ids=&fx.ids}
+	return {settings=agent.fleet_service(&log.service),agents=&log.service,factory=&fx.uow,clock=&fx.clock,ids=&fx.ids},true
 }
 fleet_feature_bridge :: proc(fx:^Fixture,id:string) {
 	b,_,_:=iface.bridge_get_bridge(&fx.bridges,id)
@@ -53,10 +62,11 @@ fleet_test_ready :: proc(t:^testing.T,fx:^Fixture,log:^Wake_Log,target:domain.Fl
 test_fleet_apply_atomic_rollback_validation_and_idempotency :: proc(t:^testing.T) {
 	fx,log,ok:=lease_fixture(t,"fleet_atomic");defer lease_fixture_close(fx,log);if !ok do return
 	chain:=seed_live_chain(t,fx,"fleet_atomic");seed_fleet(fx,chain,"agt_w")
-	p:Fleet_Probe;defer fleet_probe_close(&p);s:=fleet_test_service(fx,log,&p)
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
 	outer,begun,_:=iface.unit_of_work_begin(&fx.uow);if !testing.expect(t,begun) do return
 	r,accepted,e:=fleet_test_apply(&s,"rolled_back")
-	testing.expect(t,accepted && e.code==.None && len(p.commands)==0,"nested acceptance cannot send effects before outer COMMIT")
+	if !testing.expectf(t,accepted && e.code==.None,"nested Fleet Apply acceptance: %v %s",e.code,e.message) {iface.unit_of_work_rollback(&outer);return}
+	testing.expect(t,len(p.commands)==0,"nested acceptance cannot send effects before outer COMMIT")
 	domain.fleet_application_record_destroy(&r)
 	iface.unit_of_work_rollback(&outer)
 	snapshot,se:=iface.fleet_settings_get(&fx.bridges,"u1","br_1")
@@ -69,7 +79,7 @@ test_fleet_apply_atomic_rollback_validation_and_idempotency :: proc(t:^testing.T
 	_,accepted,e=fleet.apply(&s,{user_id="u1"},"br_1",{request_id="invalid",default_runtime={"claude","missing","bad"}})
 	testing.expect(t,!accepted && e.code==.Unprocessable_Entity && len(p.commands)==0)
 	r,accepted,e=fleet_test_apply(&s,"once")
-	if !testing.expect(t,accepted && e.code==.None) do return
+	if !testing.expectf(t,accepted && e.code==.None,"Fleet Apply acceptance: %v %s",e.code,e.message) do return
 	defer domain.fleet_application_record_destroy(&r)
 	// Capability failures are saved separately from successfully committed policy.
 	testing.expect(t,r.application.settings_saved && r.application.state=="partial_failure" && len(p.commands)==0)
@@ -99,7 +109,7 @@ test_fleet_apply_all_instances_scope_and_duplicate_recovery :: proc(t:^testing.T
 		i:=seed_instance(fx,chain,state,"agt_w","br_1",state);_=iface.fleet_scope_set(&fx.bridges,i,"chain")
 	}
 	seed_bridge(fx,"br_2");_=seed_instance(fx,chain,"different_bridge","agt_w","br_2","running")
-	p:Fleet_Probe;defer fleet_probe_close(&p);s:=fleet_test_service(fx,log,&p)
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
 	r,accepted,e:=fleet_test_apply(&s,"many")
 	if !testing.expect(t,accepted && e.code==.None,e.message) do return
 	defer domain.fleet_application_record_destroy(&r)
@@ -108,7 +118,7 @@ test_fleet_apply_all_instances_scope_and_duplicate_recovery :: proc(t:^testing.T
 	testing.expect(t,!p.under_tx && r.application.state=="restarting")
 	for target in r.application.targets do testing.expect_value(t,target.state,"restarting")
 	// Reconstructing the service (Hub recovery) observes existing native intents.
-	recovered:=fleet_test_service(fx,log,&p)
+	recovered,rok:=fleet_test_service(t,fx,log,&p);if !rok do return
 	fleet.reconcile(&recovered)
 	testing.expect(t,len(p.commands)==132,"no duplicate stop dispatch on app recovery")
 	active, ae := iface.instance_reconfiguration_list(&fx.agents,"","",true)
@@ -141,7 +151,7 @@ test_fleet_apply_active_claim_pack_generation_and_ready :: proc(t:^testing.T) {
 	before,_,_:=iface.agent_get_instance(&fx.agents,i.agent_instance_id)
 	defer domain.agent_instance_destroy(&before)
 	fleet_feature_bridge(fx,"br_1")
-	p:Fleet_Probe;defer fleet_probe_close(&p);s:=fleet_test_service(fx,log,&p)
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
 	r,accepted,e:=fleet_test_apply(&s,"claim")
 	if !testing.expect(t,accepted && e.code==.None && len(r.application.targets)==1,e.message) do return
 	defer domain.fleet_application_record_destroy(&r)
@@ -186,7 +196,7 @@ test_fleet_apply_override_removal_and_capability_retry :: proc(t:^testing.T) {
 	coord,_,_:=iface.agent_get_instance(&fx.agents,"inst_coord");_=iface.fleet_scope_set(&fx.bridges,coord,"manual")
 	i:=seed_instance(fx,chain,"fleet_override_holder","agt_w","br_1","running")
 	_=iface.fleet_scope_set(&fx.bridges,i,"chain")
-	p:Fleet_Probe;defer fleet_probe_close(&p);s:=fleet_test_service(fx,log,&p)
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
 	overrides:=[]domain.Fleet_Agent_Override{{agent_id="agt_w",runtime={"claude","claude","claude-opus-5-5"}}}
 	r,accepted,e:=fleet.apply(&s,{user_id="u1"},"br_1",{request_id="override",default_runtime={"claude","claude","claude-sonnet-5-5"},overrides=overrides})
 	if !testing.expect(t,accepted && e.code==.None,e.message) do return
