@@ -781,6 +781,8 @@ MIGRATION_252_EXTENSION_VERSION_SYNC :: #load("migrations/252_extension_version_
 MIGRATION_253_SHARED_FLEET_SETTINGS :: #load("migrations/253_shared_fleet_settings.sql", string)
 MIGRATION_254_FLEET_APPLICATIONS :: #load("migrations/254_fleet_applications.sql", string)
 
+MIGRATION_255_EXTENSION_VERSION_SYNC :: #load("migrations/255_extension_version_sync_0_5_89.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1072,6 +1074,7 @@ migration_order :: [?]string {
 	"252_extension_version_sync_0_5_88.sql",
 	"253_shared_fleet_settings.sql",
 	"254_fleet_applications.sql",
+	"255_extension_version_sync_0_5_89.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1628,6 +1631,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "255_extension_version_sync_0_5_89.sql" do return strings.clone(MIGRATION_255_EXTENSION_VERSION_SYNC)
 	if name == "252_extension_version_sync_0_5_88.sql" do return strings.clone(MIGRATION_252_EXTENSION_VERSION_SYNC)
 	if name == "250_extension_version_sync_0_5_87.sql" do return strings.clone(MIGRATION_250_EXTENSION_VERSION_SYNC)
 	if name == "253_shared_fleet_settings.sql" do return strings.clone(MIGRATION_253_SHARED_FLEET_SETTINGS)
