@@ -11,7 +11,7 @@ import '../../src/ui/styles.css';
 for (const element of [document.documentElement, document.body, document.getElementById('root')!]) {
   Object.assign(element.style, { height: 'auto', maxHeight: 'none', overflow: 'visible', position: 'static' });
 }
-const row = { webhook_id: 'wh_ci', name: 'CI events', enabled: true, last_received_at: '' };
+const row = { webhook_id: 'wh_ci', name: 'CI events', dedupe_header: 'Idempotency-Key', enabled: true, last_received_at: '' };
 const triggers: any = [{ id: 'tr', kind: 'event', rev: 7, enabled: true, config: { event_type: 'webhook.received', filter: { all: [
   { field: 'data.action', op: 'in', value: ['opened', 'reopened'] },
   { any: [{ field: 'data.repo.name', op: 'prefix', value: 'heimdall-' }, { field: 'data.labels.urgent', op: 'exists', value: true }] },

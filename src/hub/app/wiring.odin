@@ -1227,6 +1227,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/actions", rawptr(&graph.action_handlers), http.create_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/actions/trigger-types", rawptr(&graph.action_handlers), http.action_trigger_types_handler)
  http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/webhooks/create", rawptr(&graph.agent_action_handlers), http.agent_webhook_handler)
+ http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/webhooks/update", rawptr(&graph.agent_action_handlers), http.agent_webhook_handler)
  http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/webhooks/list", rawptr(&graph.agent_action_handlers), http.agent_webhook_handler)
  http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/webhooks/show", rawptr(&graph.agent_action_handlers), http.agent_webhook_handler)
  http.router_add(&graph.router, "POST", "/api/v1/agent-actions/automations/webhooks/rotate", rawptr(&graph.agent_action_handlers), http.agent_webhook_handler)

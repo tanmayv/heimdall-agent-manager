@@ -209,6 +209,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "task", "readiness")}
 
 	// ---- workflow (M3b) ---------------------------------------------------
+	case "agent.automations.webhooks.update":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "update")}
 	case "agent.automations.webhooks.create":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "automations", "webhooks", "create")}
 	case "agent.automations.webhooks.list":
@@ -423,6 +425,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.artifact.create", "agent.artifact.list", "agent.artifact.show",
 	     "agent.artifact.content",
 	     // automations
+         "agent.automations.webhooks.update",
          "agent.automations.webhooks.create",
          "agent.automations.webhooks.list",
          "agent.automations.webhooks.show",

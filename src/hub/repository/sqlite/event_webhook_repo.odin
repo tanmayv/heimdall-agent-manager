@@ -23,10 +23,10 @@ event_webhook_prepare :: proc(ctx:rawptr,sql:cstring)->(sqlite3_stmt,domain.Doma
 event_webhook_row :: proc(stmt:sqlite3_stmt)->domain.Event_Webhook {
  return {webhook_id=column_text(stmt,0),owner_user_id=column_text(stmt,1),name=column_text(stmt,2),
  token_hash=column_text(stmt,3),enabled=sqlite3_column_int64(stmt,4)!=0,
- created_at=column_text(stmt,5),updated_at=column_text(stmt,6),last_received_at=column_text(stmt,7)}
+ created_at=column_text(stmt,5),updated_at=column_text(stmt,6),last_received_at=column_text(stmt,7),dedupe_header=column_text(stmt,8)}
 }
 event_webhook_get :: proc(ctx:rawptr,id:string)->(domain.Event_Webhook,bool,domain.Domain_Error) {
- stmt,e:=event_webhook_prepare(ctx,"SELECT webhook_id,owner_user_id,name,token_hash,enabled,created_at,updated_at,last_received_at FROM event_webhooks WHERE webhook_id=?;")
+ stmt,e:=event_webhook_prepare(ctx,"SELECT webhook_id,owner_user_id,name,token_hash,enabled,created_at,updated_at,last_received_at,dedupe_header FROM event_webhooks WHERE webhook_id=?;")
  if e.code!=.None do return {},false,e
  defer sqlite3_finalize(stmt)
  bind_text(stmt,1,id)
@@ -36,7 +36,7 @@ event_webhook_get :: proc(ctx:rawptr,id:string)->(domain.Event_Webhook,bool,doma
  return event_webhook_row(stmt),true,{}
 }
 event_webhook_list :: proc(ctx:rawptr,owner:string)->([]domain.Event_Webhook,domain.Domain_Error) {
- stmt,e:=event_webhook_prepare(ctx,"SELECT webhook_id,owner_user_id,name,token_hash,enabled,created_at,updated_at,last_received_at FROM event_webhooks WHERE owner_user_id=? ORDER BY webhook_id;")
+ stmt,e:=event_webhook_prepare(ctx,"SELECT webhook_id,owner_user_id,name,token_hash,enabled,created_at,updated_at,last_received_at,dedupe_header FROM event_webhooks WHERE owner_user_id=? ORDER BY webhook_id;")
  if e.code!=.None do return nil,e
  defer sqlite3_finalize(stmt)
  bind_text(stmt,1,owner)
@@ -49,12 +49,12 @@ event_webhook_list :: proc(ctx:rawptr,owner:string)->([]domain.Event_Webhook,dom
  }
 }
 event_webhook_save :: proc(ctx:rawptr,row:domain.Event_Webhook)->domain.Domain_Error {
- stmt,e:=event_webhook_prepare(ctx,"INSERT INTO event_webhooks(webhook_id,owner_user_id,name,token_hash,enabled,created_at,updated_at,last_received_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(webhook_id) DO UPDATE SET name=excluded.name,token_hash=excluded.token_hash,enabled=excluded.enabled,updated_at=excluded.updated_at,last_received_at=excluded.last_received_at;")
+ stmt,e:=event_webhook_prepare(ctx,"INSERT INTO event_webhooks(webhook_id,owner_user_id,name,token_hash,enabled,created_at,updated_at,last_received_at,dedupe_header) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(webhook_id) DO UPDATE SET name=excluded.name,token_hash=excluded.token_hash,enabled=excluded.enabled,updated_at=excluded.updated_at,last_received_at=excluded.last_received_at,dedupe_header=excluded.dedupe_header;")
  if e.code!=.None do return e
  defer sqlite3_finalize(stmt)
  bind_text(stmt,1,row.webhook_id);bind_text(stmt,2,row.owner_user_id);bind_text(stmt,3,row.name);bind_text(stmt,4,row.token_hash)
  sqlite3_bind_int(stmt,5,1 if row.enabled else 0)
- bind_text(stmt,6,row.created_at);bind_text(stmt,7,row.updated_at);bind_text(stmt,8,row.last_received_at)
+ bind_text(stmt,6,row.created_at);bind_text(stmt,7,row.updated_at);bind_text(stmt,8,row.last_received_at);bind_text(stmt,9,row.dedupe_header)
  if sqlite3_step(stmt)!=SQLITE_DONE do return domain.domain_error(.Internal_Error,"could not save webhook")
  return {}
 }

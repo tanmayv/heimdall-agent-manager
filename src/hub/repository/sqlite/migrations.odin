@@ -1059,6 +1059,7 @@ migration_order :: [?]string {
 	"actions_010_agent_automation_audit.sql",
 	"actions_011_prompt_expiry.sql",
 	"webhooks_001.sql",
+ "webhooks_002_dedupe_header.sql",
 	"248_extension_version_sync_0_5_85.sql",
 	"249_extension_version_sync_0_5_86.sql",
 	"250_extension_version_sync_0_5_87.sql",
@@ -1627,6 +1628,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "239_extension_version_sync_0_5_76.sql" do return strings.clone(MIGRATION_239_EXTENSION_VERSION_SYNC)
 	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
  if name == "actions_011_prompt_expiry.sql" do return strings.clone(MIGRATION_ACTIONS_011_PROMPT_EXPIRY)
+	if name == "webhooks_002_dedupe_header.sql" do return strings.clone(MIGRATION_WEBHOOKS_002_DEDUPE_HEADER)
 	if name == "webhooks_001.sql" do return strings.clone(MIGRATION_WEBHOOKS_001)
 	if name == "actions_010_agent_automation_audit.sql" do return strings.clone(MIGRATION_ACTIONS_010_AGENT_AUTOMATION_AUDIT)
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
@@ -2487,3 +2489,5 @@ upgrade_memory_action_expiry_schema :: proc(conn: ^Conn) -> bool {
 MIGRATION_EVENTS_009_INCREMENTAL_INBOX :: #load("migrations/events_009_incremental_inbox.sql", string)
 
 MIGRATION_WEBHOOKS_001 :: #load("migrations/webhooks_001.sql",string)
+
+MIGRATION_WEBHOOKS_002_DEDUPE_HEADER :: #load("migrations/webhooks_002_dedupe_header.sql",string)

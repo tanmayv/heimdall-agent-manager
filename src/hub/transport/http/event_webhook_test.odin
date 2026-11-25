@@ -257,3 +257,54 @@ event_webhook_socket_request :: proc(t:^testing.T,router:^Router,raw:string)->st
  n,_:=net.recv_tcp(client,buffer[:])
  return strings.clone(string(buffer[:max(0,n)]))
 }
+
+@(test)
+test_event_webhook_configured_dedupe_header :: proc(t:^testing.T) {action_api_test(t,webhook_configured_dedupe_scenario)}
+webhook_configured_dedupe_scenario :: proc(t:^testing.T,api:^Action_API_Fixture) {
+ impl:sqlite.Event_Webhook_Repo_SQLite
+ f:=event_webhook_test_setup(api,&impl);event_webhook_test_bind(&f)
+ defer event_webhook_limiter_destroy(&f.h.limiter)
+ id,token:=event_webhook_test_create(t,&f)
+ path:=fmt.tprintf("/api/v1/webhooks/%s",id)
+ view:=action_api_data(t,event_webhook_crud_handler(&f.h,action_api_request(api,"GET",path,"")))
+ testing.expect_value(t,view["dedupe_header"].(string),"Idempotency-Key")
+ patched:=action_api_data(t,event_webhook_crud_handler(&f.h,action_api_request(api,"PATCH",path,`{"dedupe_header":"X-GitHub-Delivery"}`)))
+ testing.expect_value(t,patched["dedupe_header"].(string),"X-GitHub-Delivery")
+ // Selecting the header is case insensitive; old Idempotency-Key must be ignored.
+ request:=event_webhook_test_request(id,token,key="old-header")
+ headers:=make([dynamic]contracts.HTTP_Header,context.temp_allocator)
+ append(&headers,..request.headers)
+ append(&headers,contracts.HTTP_Header{name="x-github-delivery",value="delivery-1"})
+ request.headers=headers[:]
+ before:=action_api_backlog(t,api)
+ first:=action_api_data(t,event_webhook_test_send(&f,request),202)
+ again:=action_api_data(t,event_webhook_test_send(&f,request),202)
+ testing.expect(t,again["duplicate"].(bool))
+ testing.expect_value(t,first["event_id"].(string),again["event_id"].(string))
+ testing.expect_value(t,action_api_backlog(t,api),before+1)
+ missing:=event_webhook_test_request(id,token,key="old-header")
+ testing.expect_value(t,event_webhook_test_send(&f,missing).status,202)
+ testing.expect_value(t,event_webhook_test_send(&f,missing).status,202)
+ testing.expect_value(t,action_api_backlog(t,api),before+3)
+ request.headers[len(request.headers)-1].value=strings.repeat("x",129,context.temp_allocator)
+ testing.expect_value(t,event_webhook_test_send(&f,request).status,400)
+ bad_auth:=request
+ bad_auth.headers=[]contracts.HTTP_Header{{name="Authorization",value="Bearer wrong"},{name="X-GitHub-Delivery",value=strings.repeat("x",129,context.temp_allocator)}}
+ testing.expect_value(t,event_webhook_test_send(&f,bad_auth).status,401)
+ for name in ([]string{"","bad name","bad:header","é",strings.repeat("x",65,context.temp_allocator)}) {
+  body,_:=json.marshal(struct{dedupe_header:string}{name},allocator=context.temp_allocator)
+  rejected:=event_webhook_crud_handler(&f.h,action_api_request(api,"PATCH",path,string(body)))
+  testing.expect_value(t,rejected.status,422)
+  testing.expect(t,strings.contains(rejected.body,"dedupe_header"))
+ }
+ nonstring:=event_webhook_crud_handler(&f.h,action_api_request(api,"PATCH",path,`{"dedupe_header":null}`))
+ testing.expect_value(t,nonstring.status,400)
+ row,e:=webhooks.get(&f.service,string(api.wire.owner),id)
+ testing.expect_value(t,e.code,domain.Error_Code.None)
+ testing.expect_value(t,row.dedupe_header,"X-GitHub-Delivery")
+ domain.event_webhook_destroy(&row)
+ created:=action_api_data(t,event_webhook_crud_handler(&f.h,action_api_request(api,"POST","/api/v1/webhooks",`{"dedupe_header":"Svix-Id"}`)),201)
+ testing.expect_value(t,created["webhook"].(json.Object)["dedupe_header"].(string),"Svix-Id")
+ updated:=action_api_data(t,agent_webhook_test_call(&f,"update",strings.concatenate({`{"id":"`,id,`","dedupe_header":"X-Request-Id"}`},context.temp_allocator)))
+ testing.expect_value(t,updated["dedupe_header"].(string),"X-Request-Id")
+}

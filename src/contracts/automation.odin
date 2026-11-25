@@ -17,6 +17,7 @@ Automation_Parameters :: struct {
 Webhook_Parameters :: struct {
  id: string,
  name: Maybe(string),
+ dedupe_header: Maybe(string),
  webhook_secret: string,
  // Encoded JSON avoids interpreting payload keys as agent auth fields.
  body: string,
