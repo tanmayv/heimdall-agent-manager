@@ -10,12 +10,47 @@ import ActivityWidget from '../../../src/ui/components/home/ActivityWidget';
 import TaskChainsWidget from '../../../src/ui/components/home/TaskChainsWidget';
 import UptimeWidget from '../../../src/ui/components/home/UptimeWidget';
 import FleetWidget from '../../../src/ui/components/home/FleetWidget';
-import { mockActivity } from '../../../src/ui/components/home/homeWidgetFixtures';
-import { summarizeActivity } from '../../../src/ui/components/home/widgetData';
+import { fleetFixture, mockActivity, MOCK_PROVIDERS } from '../../../src/ui/components/home/homeWidgetFixtures';
+import { summarizeActivity, fleetFromWire } from '../../../src/ui/components/home/widgetData';
+import { setExpectedUserId } from '../../../src/ui/utils/expectedUser';
 import '../../../src/ui/styles.css';
 
 const store = configureStore({ reducer: { vault, [heimdallApi.reducerPath]: heimdallApi.reducer }, middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(heimdallApi.middleware) });
 const params = new URLSearchParams(location.search);
+// Isolated API boundary: screenshots exercise the production Fleet UI without
+// contacting a Hub or restarting a live instance.
+const fixtureFleet = fleetFromWire(fleetFixture());
+const fleetState = params.get('fleet-state') || 'normal';
+setExpectedUserId('home-visual-fixture');
+for (const bridge of fixtureFleet) {
+  sessionStorage.removeItem(`heimdall:fleet:home-visual-fixture:${bridge.id}`);
+}
+if (fleetState === 'applying' || fleetState === 'partial-failure') {
+  sessionStorage.setItem('heimdall:fleet:home-visual-fixture:mock-bridge-0', JSON.stringify({ applicationId: 'fixture-application' }));
+}
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (input, init) => {
+  const url = new URL(String(input instanceof Request ? input.url : input), location.href);
+  if (!url.pathname.startsWith('/api/v1/')) return nativeFetch(input, init);
+  const path = url.pathname;
+  const bridge = fixtureFleet.find((b) => path.includes('/' + b.id + '/')) || fixtureFleet[0];
+  let data: any;
+  if (path === '/api/v1/bridges') data = fleetFixture().bridges;
+  else if (path === '/api/v1/agents') data = [...new Map(fixtureFleet.flatMap((b) => b.availableAgents || []).map((a) => [a.agent_id, { ...a, state: 'active' }])).values()];
+  else if (path.endsWith('/provider-status')) data = { providers: MOCK_PROVIDERS.map((p) => ({ provider: p.id, profile_id: p.id, display_name: p.label, enabled: true, state: 'present', catalog_state: 'active', models: p.models.map((m) => ({ model_id: m, state: 'active' })) })) };
+  else if (path.endsWith('/launch-defaults')) data = { bridge_id: bridge.id, revision: 1, default_runtime: { provider: bridge.provider, provider_profile: bridge.provider, model: bridge.model }, overrides: bridge.overrides.map((o) => ({ agent_id: o.id, runtime: { provider: o.provider, provider_profile: o.provider, model: o.model } })) };
+  else if (path.endsWith('/preview')) data = { bridge_id: bridge.id, expected_revision: JSON.parse(String(init?.body)).expected_revision, affected_instances: 3 };
+  else if (path.includes('/applications/')) data = {
+    application_id: 'fixture-application', bridge_id: bridge.id, settings_revision: 1, revision: 1, settings_saved: true, cancelled: false,
+    state: fleetState === 'applying' ? 'restarting' : 'partial_failure',
+    targets: ['mock-worker', 'mock-reviewer', 'mock-planner'].map((id, index) => ({
+      agent_id: id, agent_instance_id: 'fixture-' + id, state: fleetState === 'applying' ? 'restarting' : index === 2 ? 'failed' : 'ready',
+      error_message: fleetState === 'partial-failure' && index === 2 ? 'Bridge disconnected before restart. Retry when it reconnects.' : '', retryable: true,
+    })),
+  };
+  else return new Response(JSON.stringify({ error: { message: 'Fixture route unavailable' } }), { status: 404 });
+  return new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+};
 const zero = mockActivity('tasks_completed');
 zero.days.forEach((day) => { day.value = 0; });
 zero.summary = summarizeActivity(zero.days, 'counter');

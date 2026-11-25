@@ -75,6 +75,14 @@
 .home-fleet .home-widget-heading-actions { flex: 1; }
 .home-fleet .home-widget-heading-actions a { margin-left: auto; }
 .home-fleet-description { margin-bottom: var(--space-3); }
+.home-fleet-footer, .home-fleet-result { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); overflow-wrap: anywhere; }
+.home-fleet-apply { width: 100%; display: flex; align-items: center; gap: var(--space-3); }
+.home-fleet-apply > .text-caption { flex: 1; }
+@media (max-width: 767px) {
+  .home-fleet-apply { flex-wrap: wrap; }
+  .home-fleet-apply > .text-caption { flex-basis: 100%; }
+  .home-fleet-footer button, .home-fleet-result button { min-height: 44px; }
+}
 .home-fleet-bridge + .home-fleet-bridge { border-top: 1px solid var(--color-border-subtle); }
 .home-fleet-bridge-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-4); }
 .home-fleet .home-fleet-bridge-toggle { flex: 1; justify-content: flex-start; min-width: 0; padding: var(--space-1) 0; gap: var(--space-3); text-align: left; }

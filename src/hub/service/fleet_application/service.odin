@@ -38,6 +38,50 @@ read_application :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id, i
 	return iface.fleet_application_get(s.settings.bridges, owner, bridge_id, id)
 }
 
+// One classifier for preview and Apply. Results borrow the instance/snapshot
+// strings and have no operation IDs, persistence or lifecycle effects.
+select_targets :: proc(settings: ^fleet.Service, owner: domain.User_ID, bridge_id: string, snapshot: domain.Fleet_Settings, instances: []domain.Agent_Instance) -> ([]domain.Fleet_Application_Target, domain.Domain_Error) {
+	targets := make([dynamic]domain.Fleet_Application_Target, context.temp_allocator)
+	seen := make(map[string]bool, context.temp_allocator)
+	for inst in instances {
+		if inst.owner_user_id != owner || inst.bridge_id != bridge_id || inst.runtime_status != "running" || inst.stopped_by == "user" || seen[inst.agent_instance_id] do continue
+		seen[inst.agent_instance_id] = true
+		included, scope_err := iface.fleet_scope_get(settings.bridges, inst)
+		if scope_err.code != .None do return nil, scope_err
+		if !included do continue
+		desired := snapshot.default_runtime
+		for o in snapshot.overrides do if o.agent_id == inst.agent_id {desired = o.runtime; break}
+		actual := domain.Fleet_Runtime{inst.provider, inst.provider_profile, inst.model}
+		if domain.fleet_runtime_equal(actual, desired) do continue
+		append(&targets, domain.Fleet_Application_Target{agent_instance_id=inst.agent_instance_id,agent_id=inst.agent_id,configuration_revision=inst.configuration_revision,run_count=inst.run_count,launch_epoch=inst.launch_epoch,project_id=string(inst.project_id),before=actual,desired=desired,state="pending"})
+	}
+	return targets[:], {}
+}
+
+preview :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, draft: domain.Fleet_Settings_Draft) -> (contracts.Fleet_Preview, domain.Domain_Error) {
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return {}, err
+	if draft.expected_revision < 0 do return {}, domain.domain_error(.Validation_Failed, "nonnegative expected_revision is required")
+	u, begun, ue := iface.unit_of_work_begin(s.factory)
+	if !begun do return {}, ue
+	// Always roll back: even semantic no-ops must not write or publish.
+	defer iface.unit_of_work_rollback(&u)
+	settings := s.settings
+	if u.repos != nil {settings.bridges = &u.repos.bridges; settings.agents = &u.repos.agents}
+	if e := fleet.validate(&settings, owner, bridge_id, draft); e.code != .None do return {}, e
+	current, ce := iface.fleet_settings_get(settings.bridges, owner, bridge_id)
+	if ce.code != .None do return {}, ce
+	defer domain.fleet_settings_destroy(current)
+	if current.revision != draft.expected_revision do return {}, domain.domain_error(.Conflict, "Fleet settings revision changed", `{"code":"fleet_revision_conflict"}`)
+	instances, ie := iface.agent_list_instances_by_bridge(settings.agents, bridge_id)
+	if ie.code != .None do return {}, ie
+	defer {for &inst in instances do domain.agent_instance_destroy(&inst); delete(instances)}
+	snapshot := domain.Fleet_Settings{bridge_id=bridge_id,default_runtime=draft.default_runtime,overrides=draft.overrides}
+	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances)
+	if te.code != .None do return {}, te
+	return {bridge_id, draft.expected_revision, len(targets)}, {}
+}
+
 canonical_request :: proc(input: domain.Fleet_Apply_Input) -> string {
 	next := input
 	next.default_runtime.provider_profile = domain.profile_effective_id(next.default_runtime.provider, next.default_runtime.provider_profile)
@@ -83,28 +127,20 @@ apply :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, inpu
 	instances, ie := iface.agent_list_instances_by_bridge(settings.agents, bridge_id)
 	if ie.code != .None do return {}, false, ie
 	defer {for &inst in instances do domain.agent_instance_destroy(&inst); delete(instances)}
-	targets := make([dynamic]domain.Fleet_Application_Target, context.temp_allocator)
-	seen := make(map[string]bool, context.temp_allocator)
-	for inst in instances {
-		if inst.owner_user_id != owner || inst.bridge_id != bridge_id || inst.runtime_status != "running" || inst.stopped_by == "user" || seen[inst.agent_instance_id] do continue
-		seen[inst.agent_instance_id] = true
-		included, scope_err := iface.fleet_scope_get(settings.bridges, inst)
-		if scope_err.code != .None do return {}, false, scope_err
-		if !included do continue
-		desired := snapshot.default_runtime
-		for o in snapshot.overrides do if o.agent_id == inst.agent_id {desired = o.runtime; break}
-		actual := domain.Fleet_Runtime{inst.provider, inst.provider_profile, inst.model}
-		if domain.fleet_runtime_equal(actual, desired) do continue
+	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances)
+	if te.code != .None do return {}, false, te
+	for &target in targets {
 		lease_id := ""
 		if s.agents.taskchains != nil {
-			lease, held, le := iface.taskchain_get_lease_by_holder(s.agents.taskchains, inst.agent_instance_id)
+			lease, held, le := iface.taskchain_get_lease_by_holder(s.agents.taskchains, target.agent_instance_id)
 			if held do lease_id = lease.lease_id
 			if !held && le.code != .None && le.code != .Not_Found do return {}, false, le
 		}
-		append(&targets, domain.Fleet_Application_Target{agent_instance_id=inst.agent_instance_id,agent_id=inst.agent_id,configuration_revision=inst.configuration_revision,run_count=inst.run_count,launch_epoch=inst.launch_epoch,project_id=string(inst.project_id),lease_id=lease_id,before=actual,desired=desired,operation_key=platform.generate_id(s.ids,"fleet_target_"),state="pending"})
+		target.lease_id = lease_id
+		target.operation_key = platform.generate_id(s.ids,"fleet_target_")
 	}
 	now := platform.clock_now(s.clock)
-	a := domain.Fleet_Application{application_id=platform.generate_id(s.ids,"fleet_apply_"),bridge_id=bridge_id,request_id=input.request_id,settings_revision=snapshot.revision,revision=1,settings_saved=true,state="pending" if len(targets)>0 else "ready",created_at=now,updated_at=now,targets=targets[:]}
+	a := domain.Fleet_Application{application_id=platform.generate_id(s.ids,"fleet_apply_"),bridge_id=bridge_id,request_id=input.request_id,settings_revision=snapshot.revision,revision=1,settings_saved=true,state="pending" if len(targets)>0 else "ready",created_at=now,updated_at=now,targets=targets}
 	record := domain.Fleet_Application_Record{owner_user_id=owner,request_json=canonical,authority_json=authorization.binding,application=a}
 	if saved, e := iface.fleet_application_put(settings.bridges, record, 0); !saved do return {}, false, e
 	hook := new(After_Apply)

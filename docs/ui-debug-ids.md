@@ -120,9 +120,32 @@ All of the following element types must have `data-debug-id`:
 `-refresh`, `-select`, `-scope`, `-affected`, `-confirmation`, `-review`,
 `-apply`, `-cancel`, `-error`, `-configuration`, `-affected-list`, and
 `-affected-<taskId>`. Selects have associated labels and
-target-specific accessible names. `fleet-drawer-recovery-role` identifies the
-failed role context in the native fleet editor. Attachment removal in
+target-specific accessible names. The `-runtime` link focuses the failed bridge
+and durable agent in Home Fleet. Attachment removal in
 `AttentionComposer` uses `<debugId>-remove-<localId>`.
+
+### Home Fleet and chain staffing
+
+Home Fleet uses `home-fleet-bridge-${bridgeId}`, `home-fleet-expand-${bridgeId}`,
+`home-fleet-default-${bridgeId}-provider` / `-model`,
+`home-fleet-add-override-${bridgeId}`,
+`home-fleet-override-${bridgeId}-${agentId}-agent` / `-provider` / `-model`,
+and `home-fleet-remove-${bridgeId}-${agentId}`. Bridge footer controls use
+`home-fleet-apply-${bridgeId}`, `home-fleet-reset-${bridgeId}`,
+`home-fleet-preview-retry-${bridgeId}`, `home-fleet-scope-${bridgeId}`,
+`home-fleet-conflict-${bridgeId}`, `home-fleet-error-${bridgeId}`,
+`home-fleet-result-${bridgeId}`, `home-fleet-status-refresh-${bridgeId}`,
+`home-fleet-retry-${bridgeId}`, and `home-fleet-target-${instanceId}`.
+
+The retired drawer's board actions are replaced by `task-board-staffing-btn`,
+`ticket-board-staffing-btn` and `ticket-board-home-fleet`.
+Chain staffing uses `chain-staffing-agent`, `chain-staffing-add-worker`,
+`chain-staffing-refresh`, `chain-staffing-home-fleet`, `chain-staffing-close`,
+`chain-staffing-error`, and per-agent `chain-staffing-row-${agentId}`,
+`chain-staffing-capacity-${agentId}`, `chain-staffing-warm-${agentId}`,
+`chain-staffing-ttl-${agentId}`, `chain-staffing-save-${agentId}`,
+`chain-staffing-pause-${agentId}`, `chain-staffing-remove-${agentId}`,
+`chain-staffing-bridge-${agentId}`.
 
 ### Shared component: SearchableSelect
 

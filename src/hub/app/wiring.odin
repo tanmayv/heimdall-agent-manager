@@ -886,6 +886,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/launch-defaults", rawptr(&graph.fleet_handlers), http.fleet_settings_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/agent-overrides", rawptr(&graph.fleet_handlers), http.fleet_settings_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fleet/apply", rawptr(&graph.fleet_handlers), http.fleet_apply_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fleet/preview", rawptr(&graph.fleet_handlers), http.fleet_preview_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/fleet/applications/*", rawptr(&graph.fleet_handlers), http.fleet_application_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fleet/applications/*/retry", rawptr(&graph.fleet_handlers), http.fleet_retry_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/lsp-servers/resolve", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_resolve_handler)

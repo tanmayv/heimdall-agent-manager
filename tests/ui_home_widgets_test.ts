@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
+import './ui_bridge_fleet_test.ts';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 import {
   activeWidgetChains, activityLevel, chainProgress, chainWidgetPage, summarizeActivity, activityFromWire, uptimeFromWire, fleetFromWire,
@@ -95,7 +96,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     let edits = 0;
     await render(React.createElement(React.Fragment, null,
       React.createElement(HomeHeader, { editing: false, onEdit: () => edits++ }),
-      React.createElement(ActivityWidget), React.createElement(UptimeWidget), React.createElement(FleetWidget), React.createElement(TaskChainsWidget),
+      React.createElement(ActivityWidget), React.createElement(UptimeWidget), React.createElement(FleetWidget, { resource: { status: 'ready', data: fleetFromWire(fleetFixture()) } }), React.createElement(TaskChainsWidget),
     ));
     assert.equal(get('home-new-shell').getAttribute('href'), '#/new?intent=shell');
     assert.equal(get('home-new-conversation').getAttribute('href'), '#/new?intent=agent');
@@ -116,7 +117,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     assert.equal(doc.querySelectorAll('.home-uptime-bar').length, 90);
     const fleet = get('home-widget-fleet');
     assert.equal(fleet.querySelectorAll('.home-fleet-override').length, 2);
-    await click('home-fleet-remove-mock-worker');
+    await click('home-fleet-remove-mock-bridge-0-mock-worker');
     assert.equal(fleet.querySelectorAll('.home-fleet-override').length, 1);
     await click('home-fleet-add-override-mock-bridge-0');
     assert.equal(fleet.querySelectorAll('.home-fleet-override').length, 2);

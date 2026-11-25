@@ -38,3 +38,19 @@ test_fleet_http_mcp_draft_contract_and_scope :: proc(t: ^testing.T) {
 		testing.expect(t, mcp.scope_allows_tool(control,tool) && !mcp.scope_allows_tool(read,tool))
 	}
 }
+
+@(test)
+test_fleet_preview_strict_complete_draft_contract :: proc(t: ^testing.T) {
+	for raw, index in ([]string{
+		`{"expected_revision":0,"default_runtime":{"provider":"codex","model":"m"},"overrides":[]}`,
+		`{"expected_revision":0,"default_runtime":{"provider":"codex","model":"m"},"overrides":[],"restart":true}`,
+		`{"expected_revision":-1,"default_runtime":{"provider":"codex","model":"m"},"overrides":[]}`,
+		`{"expected_revision":0,"default_runtime":{"provider":"codex","model":"m"},"overrides":null}`,
+		`{"expected_revision":0,"default_runtime":{"provider":"codex","model":"m","extra":1},"overrides":[]}`,
+		`{"expected_revision":0,"default_runtime":{"provider":"codex","model":"m"}}`,
+	}) {
+		value, e := json.parse_string(raw,.JSON,parse_integers=true,allocator=context.temp_allocator)
+		_, ok := fleet.parse_preview(value)
+		testing.expect(t,e==nil && ok==(index==0),raw)
+	}
+}

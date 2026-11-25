@@ -28,7 +28,6 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 
 const SELECT_PATH = 'src/ui/components/ui/primitives/Select.tsx';
-const FLEET_DRAWER_PATH = 'src/ui/components/tasks/FleetManagementDrawer.tsx';
 
 function readSource(relPath: string): string {
   const abs = path.join(REPO_ROOT, relPath);

@@ -4,6 +4,18 @@ import "core:encoding/json"
 import "core:strings"
 import domain "odin_test:hub/domain"
 
+parse_preview :: proc(value: json.Value) -> (domain.Fleet_Settings_Draft, bool) {
+	o, object := value.(json.Object)
+	if !object || len(o) != 3 do return {}, false
+	// Reuse the strict full-draft parser; this literal is never persisted or used
+	// to allocate an application. Unknown fields still fail closed.
+	copy := make(json.Object, context.temp_allocator)
+	for key, v in o do copy[key] = v
+	copy["request_id"] = json.String("preview")
+	input, valid := parse_apply(copy)
+	return {input.expected_revision, input.default_runtime, input.overrides}, valid
+}
+
 // HTTP, MCP and the CLI's REST transport share one strict draft contract.
 parse_apply :: proc(value: json.Value) -> (domain.Fleet_Apply_Input, bool) {
 	o, object := value.(json.Object)

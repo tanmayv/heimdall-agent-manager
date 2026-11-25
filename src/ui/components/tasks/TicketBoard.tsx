@@ -47,7 +47,7 @@ export interface TicketBoardProps {
   onOpenAgent: (instanceId: string, name: string) => void;
   onEditTicket: (taskId: string, field: TaskEditField) => void;
   onNewTask?: () => void;
-  onOpenFleetDrawer?: () => void;
+  onOpenStaffing?: () => void;
   onOpenReviewRoles?: () => void;
   /** Shown in the board menu while the chain is a draft. */
   onPublishChain?: () => void;
@@ -108,7 +108,7 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
   onOpenAgent,
   onEditTicket,
   onNewTask,
-  onOpenFleetDrawer,
+  onOpenStaffing,
   onOpenReviewRoles,
   onPublishChain,
   publishingChain = false,
@@ -133,7 +133,7 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
 
   const menuItems = [
     ...(onOpenReviewRoles ? [{ label: 'Review roles', onClick: onOpenReviewRoles, debugId: 'task-board-review-roles-btn' }] : []),
-    ...(onOpenFleetDrawer ? [{ label: 'Manage fleet', onClick: onOpenFleetDrawer, debugId: 'task-board-fleet-btn' }] : []),
+    ...(onOpenStaffing ? [{ label: 'Chain staffing', onClick: onOpenStaffing, debugId: 'task-board-staffing-btn' }] : []),
     ...(onPublishChain ? [{ label: 'Publish chain', onClick: onPublishChain, debugId: 'task-board-publish-chain-btn' }] : []),
   ];
 
@@ -216,7 +216,7 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
 
       {masked && <VaultLockedBanner debugId="ticket-board-vault-locked" />}
 
-      <TicketFleetTable machines={machines} now={now} isMobile={isMobile} onManageFleet={onOpenFleetDrawer} onOpenTicket={(id) => onOpenTicket(id)} onOpenAgent={onOpenAgent} />
+      <TicketFleetTable machines={machines} now={now} isMobile={isMobile} onOpenStaffing={onOpenStaffing} onOpenTicket={(id) => onOpenTicket(id)} onOpenAgent={onOpenAgent} />
 
       {workSlot}
       {hasWorkflowRuns && tasks.length > 0 && <Text role="overline" tone="faint">Tickets {tasks.length}</Text>}

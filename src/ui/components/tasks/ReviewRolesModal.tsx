@@ -67,8 +67,6 @@ export const ReviewRolesModal: React.FC<ReviewRolesModalProps> = ({ chainId, ope
         capacity: row?.capacity || 1,
         minWarm: row?.min_warm,
         idleTtlSeconds: row?.idle_ttl_seconds,
-        provider: row?.provider || '',
-        model: row?.model || '',
         bridgeId: row?.bridge_id ?? '',
         roles: roles.length ? roles : ['named-reviewer'],
       }).unwrap();

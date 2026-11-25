@@ -14,7 +14,7 @@ import { WorkflowPipelineView } from '../tasks/WorkflowPipelineView';
 import { useFetchChainWorkflowRunsQuery } from '../../api/endpoints/workflowRuns';
 import { CreateTaskModal } from '../tasks/CreateTaskModal';
 import { TaskBoardSkeleton } from '../tasks/TaskBoardSkeleton';
-import { FleetManagementDrawer } from '../tasks/FleetManagementDrawer';
+import { ChainStaffingModal } from '../tasks/ChainStaffingModal';
 import { ReviewRolesModal } from '../tasks/ReviewRolesModal';
 import { useOpenAgentChat } from '../auxiliary/openAgentChatContext';
 import { useFetchAgentInstanceQuery, useFetchAgentIdentityQuery, useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
@@ -111,7 +111,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // Without an aux pane the ticket opens in place; a deep link opens it too.
   const [inlineTicket, setInlineTicket] = useState<{ taskId: string; focus?: TicketOpenFocus } | null>(focusTaskId && !onOpenTicket ? { taskId: focusTaskId } : null);
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
-  const [showFleetDrawer, setShowFleetDrawer] = useState(false);
+  const [showStaffing, setShowStaffing] = useState(false);
   const [showReviewRoles, setShowReviewRoles] = useState(false);
   const [editing, setEditing] = useState<{ taskId: string; field: TaskEditField } | null>(null);
   const [publishChain, publishChainState] = usePublishTaskChainMutation();
@@ -262,7 +262,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             onOpenAgent={openAgent}
             onEditTicket={editTicket}
             onNewTask={() => setShowNewTaskModal(true)}
-            onOpenFleetDrawer={() => setShowFleetDrawer(true)}
+            onOpenStaffing={() => setShowStaffing(true)}
             onOpenReviewRoles={() => setShowReviewRoles(true)}
             onPublishChain={chainIsDraft ? handlePublishChain : undefined}
             publishingChain={publishChainState.isLoading}
@@ -307,12 +307,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
       <ReviewRolesModal chainId={chainId} open={showReviewRoles} onClose={() => setShowReviewRoles(false)} names={names} />
 
-      {/* Fleet Management Drawer */}
-      <FleetManagementDrawer
-        chainId={chainId}
-        isOpen={showFleetDrawer}
-        onClose={() => setShowFleetDrawer(false)}
-      />
+      <ChainStaffingModal chainId={chainId} open={showStaffing} onClose={() => setShowStaffing(false)} />
     </div>
   );
 };

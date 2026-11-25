@@ -55,8 +55,8 @@ const reports = [];
 try {
   for (const width of widths) {
     await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
-    for (const state of width < 768 ? ['normal', 'edit', 'add-sheet', 'reordered', 'expanded', 'empty'] : ['normal', 'edit', 'expanded', 'empty']) {
-      await call('Page.navigate', { url: origin + '/tests/fixtures/home-widgets/index.html' + (state === 'empty' ? '?empty' : '') });
+    for (const state of width < 768 ? ['normal', 'edit', 'add-sheet', 'reordered', 'expanded', 'draft', 'applying', 'partial-failure', 'empty'] : ['normal', 'edit', 'expanded', 'draft', 'applying', 'partial-failure', 'empty']) {
+      await call('Page.navigate', { url: origin + '/tests/fixtures/home-widgets/index.html' + (state === 'empty' ? '?empty' : '?fleet-state=' + state) });
       await settle();
       await evaluate('localStorage.clear()');
       await call('Page.reload');
@@ -64,7 +64,13 @@ try {
       if (state !== 'empty') {
         // Production Fleet initially expands its first bridge. Normal/edit captures show it collapsed.
         await evaluate(`document.querySelectorAll('[data-debug-id^="home-fleet-expand-"][aria-expanded="true"]').forEach((button) => button.click())`);
-        if (state === 'expanded') await click('home-fleet-expand-mock-bridge-0');
+        if (['expanded', 'draft', 'applying', 'partial-failure'].includes(state)) await click('home-fleet-expand-mock-bridge-0');
+        if (state === 'draft') {
+          await click('home-fleet-default-mock-bridge-0-provider');
+          await evaluate(`[...document.querySelectorAll('[role="option"]')].find((node) => node.textContent === 'Codex').click()`);
+          await wait(150);
+          assert.equal(await evaluate(`document.querySelector('[data-debug-id="home-fleet-apply-mock-bridge-0"]').disabled`), false);
+        }
       }
       if (['edit', 'add-sheet', 'reordered'].includes(state)) await click('home-layout-edit');
       if (state === 'add-sheet') {

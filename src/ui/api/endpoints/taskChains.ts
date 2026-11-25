@@ -253,7 +253,9 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
         bridge_models,
       }) => {
         try {
-          const body: any = { capacity, provider: provider ?? '', model: model ?? '' };
+          const body: any = { capacity };
+          if (provider !== undefined) body.provider = provider;
+          if (model !== undefined) body.model = model;
           if (provider_profile !== undefined) body.provider_profile = provider_profile;
           const resolvedBridgeModels = bridgeModels ?? bridge_models;
           if (resolvedBridgeModels !== undefined) body.bridge_models = resolvedBridgeModels;
@@ -284,6 +286,13 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
+    setTaskChainStaffingPaused: build.mutation<TaskChainFleet, { chainId: string; agentId: string; paused: boolean; roles?: string[] }>({
+      queryFn: async ({ chainId, agentId, paused, roles }) => {
+        try { return { data: normalizeFleet(await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/fleets/${encodeURIComponent(agentId)}/${paused ? 'pause' : 'resume'}`, 'POST', roles ? { roles } : {})) }; }
+        catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+      },
+      invalidatesTags: (_r, _e, { chainId }) => [{ type: 'TaskChainFleets', id: chainId }, { type: 'Attention', id: 'ALL' }],
+    }),
     deleteTaskChainFleet: build.mutation<{ deleted: boolean; removed?: boolean }, { chainId: string; agentId: string }>({
       queryFn: async ({ chainId, agentId }) => {
         try {

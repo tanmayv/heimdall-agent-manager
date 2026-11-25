@@ -23,6 +23,13 @@ Fleet_Settings_Draft :: struct {
 	overrides: []Fleet_Agent_Override `json:"overrides"`,
 }
 
+// Point-in-time draft preview. No targets are reserved and no policy is saved.
+Fleet_Preview :: struct {
+	bridge_id: string `json:"bridge_id"`,
+	expected_revision: i64 `json:"expected_revision"`,
+	affected_instances: int `json:"affected_instances"`,
+}
+
 // Typed details codes on Conflict / Unprocessable_Entity responses.
 FLEET_REVISION_CONFLICT :: "fleet_revision_conflict"
 FLEET_RUNTIME_MANAGED :: "fleet_runtime_managed"

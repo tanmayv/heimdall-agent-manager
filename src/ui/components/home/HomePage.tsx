@@ -7,6 +7,7 @@ import ActivityWidget from './ActivityWidget';
 import TaskChainsWidget from './TaskChainsWidget';
 import UptimeWidget from './UptimeWidget';
 import FleetWidget from './FleetWidget';
+import { getRouteSearch } from '../../utils/appLocation';
 import { HOME_WIDGETS, visibleHomeWidgets, moveHomeWidget, packHomeRows, setWidgetHidden, type HomeLayoutAdapter, type HomeWidgetId } from './homeLayout';
 import { useHomeLayout } from './useHomeLayout';
 import { WidgetLayoutContext } from './WidgetLayoutChrome';
@@ -59,7 +60,10 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
   const addTriggerRef = useRef<HTMLButtonElement>(null);
   const reorderFocus = useRef<HTMLButtonElement | null>(null);
   const definitions = HOME_WIDGETS.filter((item) => !mobile || item.id !== 'activity');
-  const visible = visibleHomeWidgets(layout, mobile);
+  // Recovery links must work even when Fleet was removed from the saved layout.
+  // Reveal it for this route without rewriting the user's layout preference.
+  const requestedFleet = new URLSearchParams(getRouteSearch()).get('widget') === 'fleet';
+  const visible = visibleHomeWidgets(requestedFleet ? setWidgetHidden(layout, 'fleet', false) : layout, mobile);
   const hidden = definitions.filter((definition) => layout.widgets.find((item) => item.id === definition.id)?.hidden);
   const endDrag = () => { dragSource.current = null; setDragging(null); setTarget(null); };
   useEffect(() => { endDrag(); setAddOpen(false); }, [editing, mobile]);

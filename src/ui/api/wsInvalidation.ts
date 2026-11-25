@@ -1006,6 +1006,20 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
   dispatch(wsRefreshRequested(`resource_changed:${resource}:${resourceId}`));
 
   switch (resource) {
+    case 'bridge_fleet_settings': {
+      const bridgeId = String(summary.bridge_id || resourceId);
+      queueInvalidation(dispatch, [
+        { type: 'BridgeFleetSettings', id: bridgeId },
+        { type: 'TaskChainFleets' },
+      ]);
+      return;
+    }
+    case 'bridge_fleet_application':
+      queueInvalidation(dispatch, [
+        { type: 'BridgeFleetApplication', id: resourceId },
+        { type: 'AgentInstances', id: 'LIST' },
+      ]);
+      return;
     case 'task': {
       const change = String(payload.change || '');
       // A facet write names (task, attempt, kind): refetch that facet only, not the

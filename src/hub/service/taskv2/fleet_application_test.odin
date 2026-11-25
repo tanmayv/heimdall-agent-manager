@@ -98,6 +98,44 @@ test_fleet_apply_atomic_rollback_validation_and_idempotency :: proc(t:^testing.T
 }
 
 @(test)
+test_fleet_preview_validation_runtime_and_override_removal :: proc(t:^testing.T) {
+	fx,log,ok:=lease_fixture(t,"fleet_preview");defer lease_fixture_close(fx,log);if !ok do return
+	chain:=seed_live_chain(t,fx,"fleet_preview")
+	coord,_,_:=iface.agent_get_instance(&fx.agents,"inst_coord")
+	_=iface.fleet_scope_set(&fx.bridges,coord,"manual");domain.agent_instance_destroy(&coord)
+	i:=seed_instance(fx,chain,"preview_worker","agt_w","br_1","running")
+	_=iface.fleet_scope_set(&fx.bridges,i,"chain")
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
+	draft:=domain.Fleet_Settings_Draft{default_runtime={"claude","","claude-opus-5-5"}}
+	a,e:=fleet.preview(&s,{user_id="u1"},"br_1",draft)
+	testing.expect(t,e.code==.None && a.affected_instances==0,"default-profile normalization compares actual runtime")
+	draft.default_runtime.model="claude-sonnet-5-5"
+	a,e=fleet.preview(&s,{user_id="u1"},"br_1",draft)
+	testing.expect(t,e.code==.None && a.affected_instances==1)
+	draft.overrides={{agent_id="agt_w",runtime={"claude","claude","claude-opus-5-5"}}}
+	a,e=fleet.preview(&s,{user_id="u1"},"br_1",draft)
+	testing.expect(t,e.code==.None && a.affected_instances==0,"override preserves matching process")
+	draft.overrides=nil
+	a,e=fleet.preview(&s,{user_id="u1"},"br_1",draft)
+	testing.expect(t,e.code==.None && a.affected_instances==1,"removing override restores inherited default")
+	_,e=fleet.preview(&s,{user_id="foreign"},"br_1",draft)
+	testing.expect_value(t,e.code,domain.Error_Code.Not_Found)
+	draft.expected_revision=1
+	_,e=fleet.preview(&s,{user_id="u1"},"br_1",draft)
+	testing.expect_value(t,e.code,domain.Error_Code.Conflict)
+	draft.expected_revision=0;draft.default_runtime.provider_profile="missing"
+	_,e=fleet.preview(&s,{user_id="u1"},"br_1",draft)
+	testing.expect_value(t,e.code,domain.Error_Code.Unprocessable_Entity)
+	draft.default_runtime.provider_profile="claude"
+	draft.overrides={{agent_id="agt_w",runtime=draft.default_runtime},{agent_id="agt_w",runtime=draft.default_runtime}}
+	_,e=fleet.preview(&s,{user_id="u1"},"br_1",draft)
+	testing.expect_value(t,e.code,domain.Error_Code.Unprocessable_Entity)
+	snapshot,_:=iface.fleet_settings_get(&fx.bridges,"u1","br_1")
+	testing.expect(t,snapshot.revision==0 && len(p.commands)==0)
+	domain.fleet_settings_destroy(snapshot)
+}
+
+@(test)
 test_fleet_apply_all_instances_scope_and_duplicate_recovery :: proc(t:^testing.T) {
 	fx,log,ok:=lease_fixture(t,"fleet_pages");defer lease_fixture_close(fx,log);if !ok do return
 	chain:=seed_live_chain(t,fx,"fleet_pages");fleet_feature_bridge(fx,"br_1")
@@ -114,10 +152,19 @@ test_fleet_apply_all_instances_scope_and_duplicate_recovery :: proc(t:^testing.T
 	}
 	seed_bridge(fx,"br_2");_=seed_instance(fx,chain,"different_bridge","agt_w","br_2","running")
 	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
+	preview, pre := fleet.preview(&s,{user_id="u1"},"br_1",{default_runtime={"claude","claude","claude-sonnet-5-5"}})
+	testing.expect(t,pre.code==.None && preview.affected_instances==132 && preview.expected_revision==0, "preview includes all pages and shares Apply scope exclusions")
+	snapshot, se := iface.fleet_settings_get(&fx.bridges,"u1","br_1")
+	testing.expect(t,se.code==.None && snapshot.revision==0 && len(p.commands)==0,"preview never saves settings or sends lifecycle commands")
+	domain.fleet_settings_destroy(snapshot)
+	operations, oe := iface.instance_reconfiguration_list(&fx.agents,"","",true)
+	testing.expect(t,oe.code==.None && len(operations)==0,"preview allocates no native operation")
+	for &op in operations do domain.instance_reconfiguration_destroy(&op)
+	delete(operations)
 	r,accepted,e:=fleet_test_apply(&s,"many")
 	if !testing.expect(t,accepted && e.code==.None,e.message) do return
 	defer domain.fleet_application_record_destroy(&r)
-	testing.expect_value(t,len(r.application.targets),132)
+	testing.expect_value(t,len(r.application.targets),preview.affected_instances)
 	testing.expect_value(t,len(p.commands),132)
 	testing.expect(t,!p.under_tx && r.application.state=="restarting")
 	for target in r.application.targets do testing.expect_value(t,target.state,"restarting")

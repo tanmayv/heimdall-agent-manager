@@ -237,6 +237,48 @@ this transition. They cannot override managed runtime policy. The old
 per-chain drawer's separate Apply/restart behavior is retired by F3; it is not
 the new shared Apply contract.
 
+## Home Fleet
+
+Home Fleet reads each bridge's complete settings snapshot from
+`GET /bridges/{id}/launch-defaults`, the existing provider-status catalog and
+durable owner agent identities. Provider profiles and override agents keep their
+IDs even when labels are identical. Activity, Uptime and Task chains retain
+their separate data sources.
+
+`POST /bridges/{id}/fleet/preview` accepts the complete
+`Fleet_Settings_Draft` (`expected_revision`, `default_runtime`, `overrides`).
+It returns `{bridge_id, expected_revision, affected_instances}`. Preview and Apply
+share the authoritative target classifier, including scope exclusions, actual
+runtime comparison and profile normalization. Preview validates owner, revision
+and selections inside a rolled-back UOW; it saves nothing, creates no durable
+IDs, publishes no events and sends no lifecycle commands. Counts are a
+point-in-time observation; Apply takes and validates its own snapshot.
+
+Each bridge has an independent draft, Apply and Reset. Unknown, failed and
+loading previews never appear as zero, and only the response for the current
+complete draft enables Apply. Conflict responses keep the draft; Reset loads
+the latest saved snapshot. Apply directly saves and restarts eligible changed
+running chain agents across chains. There is no second restart confirmation.
+Saved settings and individual pending/ready/failed results are shown separately.
+Failed retryable targets use the original application's retry endpoint.
+
+The browser keeps the pending request and application ID in account-scoped tab
+session storage. A lost response replays the identical request, and reloading
+resumes the durable application status. Storage is optional; server request keys
+remain authoritative. The existing user WebSocket invalidates bridge-specific
+settings/application queries. Agent startup and application readiness do not
+refetch settings or preview. Counts can be refreshed explicitly; no Home polling
+is added.
+
+The per-chain runtime drawer is retired. Chain staffing retains holder capacity,
+warm count, idle TTL, pause/resume and bridge placement. Review Roles retains
+review membership and requirements. Staffing writes omit runtime fields so
+managed bridge settings cannot be cleared accidentally. Placement recovery
+opens the relevant bridge/agent in Home Fleet for runtime errors, Review Roles
+for role requirements, and chain staffing for worker/named-holder setup.
+Recovery links reveal a hidden Fleet widget for that route without rewriting the
+saved Home layout. Runtime changes never replace task assignees or reviewers.
+
 ## Verification
 
 Focused tests are beside repository, matcher/launch and taskchain code. Coverage

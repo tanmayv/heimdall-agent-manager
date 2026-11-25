@@ -4,7 +4,8 @@
 // DELIBERATELY DEPENDENCY-FREE leaf module (following repository conventions, see
 // src/ui/search/scopedSearchLogic.ts) so `node --test` can exercise the Fleet
 // Management drawer's provider/model draft + change-detection logic directly,
-// without a bundler or DOM. FleetManagementDrawer.tsx consumes these helpers.
+// without a bundler or DOM. Legacy compatibility APIs retain these helpers;
+// Home Fleet uses stable bridge snapshots and durable application outcomes.
 //
 // Semantics: provider/model are per-fleet-role strings where '' means "inherit"
 // (the bridge/agent defaults), matching the hub contract where fleet JSON always

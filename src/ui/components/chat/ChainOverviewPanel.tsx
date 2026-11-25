@@ -34,7 +34,7 @@ import {
   useRestartAgentInstanceMutation,
   useListAgentIdentitiesQuery,
 } from '../../api/endpoints/agents';
-import { formatFleetRoleName } from '../tasks/FleetManagementDrawer';
+import { formatFleetRoleName } from '../tasks/fleetNames';
 import ArtifactViewer from '../ArtifactViewer';
 import { ChainTokenUsageSection } from '../taskchain/ChainTokenUsage';
 import { HolderName } from '../tasks/HolderName';

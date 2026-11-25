@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { Button, Icon, StatusDot, StatusPill, Text } from '@ui';
 import { TicketAgentAvatar } from './TicketAgentAvatar';
+import { fleetFocusHref } from '../home/fleetDraft';
 import { FLEET_STATE_LABELS, FLEET_STATE_TONE, fleetSummary, formatAgo, formatDuration, type FleetMachine, type FleetSlot } from './ticketModel';
 
 export interface TicketFleetTableProps {
   machines: FleetMachine[];
   now: number;
   isMobile?: boolean;
-  onManageFleet?: () => void;
+  onOpenStaffing?: () => void;
   /** A working, reviewing or waiting slot opens the ticket it owns. */
   onOpenTicket: (taskId: string) => void;
   /** Coordinator, idle and blocked slots open the agent's conversation in Main. */
@@ -19,7 +20,7 @@ export interface TicketFleetTableProps {
  * agent slot (avatar, role, what it is working on, how long, state pill), and
  * one collapsed row per offline machine.
  */
-export const TicketFleetTable: React.FC<TicketFleetTableProps> = ({ machines, now, isMobile = false, onManageFleet, onOpenTicket, onOpenAgent }) => {
+export const TicketFleetTable: React.FC<TicketFleetTableProps> = ({ machines, now, isMobile = false, onOpenStaffing, onOpenTicket, onOpenAgent }) => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const summary = fleetSummary(machines);
   return (
@@ -33,9 +34,10 @@ export const TicketFleetTable: React.FC<TicketFleetTableProps> = ({ machines, no
             </Text>
           )}
         </span>
-        {onManageFleet && (
-          <Button size="sm" variant="ghost" onClick={onManageFleet} data-debug-id="ticket-board-manage-fleet-btn">
-            Manage fleet
+        <a href={fleetFocusHref()} data-debug-id="ticket-board-home-fleet" className="text-accent text-xs">Home Fleet</a>
+        {onOpenStaffing && (
+          <Button size="sm" variant="ghost" onClick={onOpenStaffing} data-debug-id="ticket-board-staffing-btn">
+            Chain staffing
           </Button>
         )}
       </div>
