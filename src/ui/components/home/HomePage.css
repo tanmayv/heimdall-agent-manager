@@ -14,7 +14,7 @@
 .home-widget-heading-actions a { white-space: nowrap; }
 .home-widget-state { display: flex; flex-direction: column; gap: var(--space-3); align-items: center; justify-content: center; background: var(--color-canvas); border-radius: var(--radius-lg); min-height: 180px; padding: var(--space-6); text-align: center; }
 .home-widget-stat { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
-.home-stat-value { font-weight: var(--text-display-weight); }
+.home-stat-value { font-weight: var(--text-heading-weight); }
 .home-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-width: 0; }
 .home-legend { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .home-legend > span { display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap; }
@@ -77,13 +77,13 @@
 .home-fleet-description { margin-bottom: var(--space-3); }
 .home-fleet-bridge + .home-fleet-bridge { border-top: 1px solid var(--color-border-subtle); }
 .home-fleet-bridge-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-4); }
-.home-fleet-bridge-toggle { flex: 1; justify-content: flex-start; min-width: 0; padding: var(--space-1) 0; gap: var(--space-3); text-align: left; }
+.home-fleet .home-fleet-bridge-toggle { flex: 1; justify-content: flex-start; min-width: 0; padding: var(--space-1) 0; gap: var(--space-3); text-align: left; }
 .home-fleet-bridge-info { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .home-fleet-name { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; min-width: 0; }
 .home-fleet-name .text-code-sm { overflow-wrap: anywhere; }
 .home-fleet-bridge-info > .text-body-sm { font-weight: var(--text-body-sm-weight); }
 .home-device-icon { display: flex; align-items: center; justify-content: center; background: var(--color-border-subtle); border-radius: var(--radius-lg); width: 36px; height: 36px; flex-shrink: 0; color: var(--color-text-muted); }
-.home-fleet-defaults { display: grid; grid-template-columns: auto 108px 160px; gap: var(--space-2); align-items: center; min-width: 0; }
+.home-fleet-defaults { display: grid; grid-template-columns: auto 120px 160px; gap: var(--space-2); align-items: center; min-width: 0; }
 .home-fleet-defaults button, .home-fleet-override [role="combobox"] { height: 28px; background: var(--color-border-subtle); border: 0; }
 .home-model-select { font-family: var(--font-mono); }
 .home-model-select button { font-size: var(--text-code-sm-size); }

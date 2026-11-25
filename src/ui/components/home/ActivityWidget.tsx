@@ -21,7 +21,7 @@ export function ActivityWidget({ resource: supplied, load }: ActivityWidgetProps
   const selected = ACTIVITY_METRICS.find((item) => item.id === metric)!;
   const data = resource.status === 'ready' ? resource.data : undefined;
   const day = data?.days.find((item) => item.date === hovered) || data?.days.filter((item) => !item.future).slice(-1)[0];
-  const format = (key: string) => dateFromKey(key).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const format = (key: string) => dateFromKey(key).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   return <section data-debug-id="home-widget-activity" className="home-activity home-card" aria-labelledby="home-activity-title">
     <header className="home-activity-header">
       <div><Text as="h2" id="home-activity-title" role="heading">Activity</Text><Text role="body-sm" tone="muted">{selected.label} per day, last 12 months</Text></div>
@@ -50,7 +50,7 @@ export function ActivityWidget({ resource: supplied, load }: ActivityWidgetProps
         {data!.days.map((item, index) => {
           const date = dateFromKey(item.date);
           return <g key={item.date}>
-            {date.getDate() <= 7 && date.getDay() === 0 && <text x={32 + Math.floor(index / 7) * 15} y="14" className="home-chart-label">{date.toLocaleDateString(undefined, { month: 'short' })}</text>}
+            {date.getDate() <= 7 && date.getDay() === 0 && <text x={32 + Math.floor(index / 7) * 15} y="14" className="home-chart-label">{date.toLocaleDateString('en-GB', { month: 'short' })}</text>}
             <rect x={32 + Math.floor(index / 7) * 15} y={22 + index % 7 * 15} width="12" height="12" rx="3"
               className={`home-heat-cell home-heat-level-${activityLevel(item.value, data!.levels)}`} opacity={item.future ? 0 : 1}
               onMouseEnter={() => !item.future && setHovered(item.date)}><title>{format(item.date)}: {item.future ? 'Future day' : `${item.value} ${selected.unit}`}</title></rect>

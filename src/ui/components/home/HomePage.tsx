@@ -14,7 +14,7 @@ export interface HomePageProps {
 }
 export function HomeHeader({ editing, onEdit, today = new Date() }: { editing: boolean; onEdit: () => void; today?: Date }) {
   return <header className="home-header">
-    <div><Text role="overline" tone="muted">{today.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })}</Text><Text as="h1" role="display">Here’s where the fleet stands</Text></div>
+    <div><Text role="overline" tone="muted">{today.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })}</Text><Text as="h1" role="display">Here’s where the fleet stands</Text></div>
     <div className="home-header-actions">
       <Button variant="ghost" leading={<Icon name="pencil" size="sm" />} aria-pressed={editing} data-debug-id="home-layout-edit" onClick={onEdit}>{editing ? 'Done' : 'Edit'}</Button>
       <ButtonLink href="#/new?intent=shell" variant="secondary" leading={<Icon name="terminal" size="sm" />} data-debug-id="home-new-shell">New shell</ButtonLink>

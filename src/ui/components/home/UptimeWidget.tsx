@@ -5,7 +5,7 @@ import { dateFromKey, type UptimeData, type UptimeDay, type WidgetLoader, type W
 import { Legend, useWidgetData, WidgetHeading, WidgetStat, WidgetState } from './WidgetShared';
 
 export function uptimeDayLabel(day: UptimeDay): string {
-  const date = dateFromKey(day.date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const date = dateFromKey(day.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   const minutes = Math.round(day.downSeconds / 60);
   const duration = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
   return `${date}: ${day.state === 'none' ? 'Not enrolled yet' : day.state === 'up' ? 'Up all day' : `Down ${duration}`}`;
