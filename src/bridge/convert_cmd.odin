@@ -42,6 +42,12 @@ BRIDGE_CONVERT_DOWNLOAD_TIMEOUT_MS :: 30 * 60_000
 BRIDGE_CONVERT_STALL_MS :: 60_000
 BRIDGE_CONVERT_MAX_BUNDLE :: i64(1) << 30
 BRIDGE_CONVERT_TEST_ORIGIN_ENV :: "HEIMDALL_SUPERVISOR_TEST_ORIGIN"
+BRIDGE_CONVERT_TEST_GATE_ENV :: "HEIMDALL_CONVERT_GATE_SECONDS"
+// Test builds only (P2-7): HEIMDALL_CONVERT_FAIL_AFTER=C<n> fails that step after its effects
+// (rollback must undo them); HEIMDALL_CONVERT_KILL_AFTER=C<n> makes setup exit abruptly there
+// (no rollback code runs; recovery is the rescuer / next run / finalize_conversion).
+BRIDGE_CONVERT_TEST_FAIL_ENV :: "HEIMDALL_CONVERT_FAIL_AFTER"
+BRIDGE_CONVERT_TEST_KILL_ENV :: "HEIMDALL_CONVERT_KILL_AFTER"
 
 // Test builds only (-define:HEIMDALL_SUPERVISOR_TEST=true): one extra trusted signing key,
 // as ham-supervisor's TEST_PINNED_KEY. A release build has neither define.
@@ -259,6 +265,15 @@ bridge_convert_gate_wait :: proc(s: ^Bridge_Setup) -> bool {
 	return s.conv.seams.parent_is_worker(s)
 }
 
+// bridge_convert_gate_seconds is the Q3 wait (2 h). Test builds only: HEIMDALL_CONVERT_GATE_SECONDS
+// shortens it so CI can reach the forced path (P2-7); a release build ignores the variable.
+bridge_convert_gate_seconds :: proc() -> i64 {
+	when service.TEST_BUILD {
+		if n, ok := strconv.parse_i64(os.get_env(BRIDGE_CONVERT_TEST_GATE_ENV, context.temp_allocator)); ok && n > 0 do return n
+	}
+	return bridgesvc.CONVERT_GATE_WAIT_SECONDS
+}
+
 bridge_convert_status_write :: proc(s: ^Bridge_Setup, st: bridgesvc.Gate_Status) {
 	data, err := json.marshal(st, {spec = .JSON}, context.temp_allocator)
 	if err == nil do _ = bridge_convert_write_file(bridgesvc.convert_status_path(s.layout), string(data))
@@ -299,7 +314,7 @@ bridge_convert_gate :: proc(s: ^Bridge_Setup, rec: ^Conversion_Record) -> bridge
 		return {ok = true, message = "agents (if any) are stopped now"}
 	}
 	force_at := bridge_convert_persisted_force_at(s.layout, start)
-	if force_at == 0 do force_at = start + bridgesvc.CONVERT_GATE_WAIT_SECONDS
+	if force_at == 0 do force_at = start + bridge_convert_gate_seconds()
 	rec.force_at = force_at
 	last_count, last_emit := -2, i64(0)
 	for {
@@ -987,6 +1002,9 @@ bridge_convert_remove_extras :: proc(path: string, wanted: map[string]bool, remo
 bridge_convert_run_step :: proc(data: rawptr, step: bridgesvc.Convert_Step, rec: ^Conversion_Record) -> bridgesvc.Step_Result {
 	s := (^Bridge_Setup)(data)
 	r := bridge_convert_run_step_inner(s, step, rec)
+	when service.TEST_BUILD {
+		if r.ok do r = bridge_convert_test_inject(step, r)
+	}
 	if r.ok && s.conv.fail_after != nil {
 		if msg := s.conv.fail_after(s, step); msg != "" do return {failure = .Fatal, message = msg}
 	}
@@ -1132,4 +1150,19 @@ bridge_convert_record_from_disk :: proc(s: ^Bridge_Setup) -> Conversion_Record {
 	if r, ok := lc.read_instance_record(l.data_dir, context.temp_allocator); ok == "" do rec.instance_id = r.instance_id
 	if rec.txn == "" do rec.txn = bridgesvc.new_txn_id()
 	return rec
+}
+
+// bridge_convert_test_inject: the real-process failure hooks (see BRIDGE_CONVERT_TEST_FAIL_ENV).
+when service.TEST_BUILD {
+	bridge_convert_test_inject :: proc(step: bridgesvc.Convert_Step, r: bridgesvc.Step_Result) -> bridgesvc.Step_Result {
+		name := bridgesvc.CONVERT_STEP_NAMES[step]
+		if os.get_env(BRIDGE_CONVERT_TEST_KILL_ENV, context.temp_allocator) == name {
+			fmt.eprintfln("ham-bridge setup: test hook: abrupt exit after %s", name)
+			os.exit(137)
+		}
+		if os.get_env(BRIDGE_CONVERT_TEST_FAIL_ENV, context.temp_allocator) == name {
+			return {failure = .Fatal, message = fmt.tprintf("test hook: injected failure after %s", name)}
+		}
+		return r
+	}
 }
