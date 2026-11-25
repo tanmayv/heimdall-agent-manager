@@ -56,7 +56,10 @@ function normalizeTask(task: any) {
     chainId: task.chain_id || '',
     title: task.title || '',
     priority: task.priority || 'normal',
-    status: task.status || 'pending',
+    // Tickets carry canonical state. Preserve it when merging into a normalized
+    // detail task, or an old state wins over this event's legacy status.
+    ...(task.state ? { state: String(task.state) } : {}),
+    status: task.status || task.state || 'pending',
     assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
     reviewerAgentInstanceId: task.reviewer_agent_instance_id || '',
     coordinatorAgentInstanceId: task.coordinator_agent_instance_id || '',
