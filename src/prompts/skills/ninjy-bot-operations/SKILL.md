@@ -26,7 +26,7 @@ Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “R
 - Work out the project and title. Use `./bin/ham-ctl projects list` and `./bin/ham-ctl projects show <project_id>`; if the project is ambiguous, list up to five candidates as "name (id)" and ask which one. Ask for a title if it is missing.
 - Run `./bin/ham-ctl agents list`. If the user names a coordinator, use that agent. Otherwise, if exactly one agent has `template_id` equal to `tmpl_coordinator`, use it. If several or none match, ask which agent should coordinate, listing up to five agents as "name (id)". Never invent a default.
 - Resolve the project's path and bridge from `bridge_paths` as in "Servers and preview links"; ask if placement is ambiguous.
-- Send "I am about to start chain <title> in project <name> (<id>) with coordinator <agent name> (<agent_id>). Go ahead?" and stop. Approval works as in "Confirm first".
+- Send "I am about to start chain <title> in project <name> (<id>) with coordinator <agent name> (<agent_id>). Go ahead?" and stop. Approval works as in “Confirm first” in CLAUDE.md/AGENTS.md.
 - Once approved, run `./bin/ham-ctl task-chain create --kind mixed_work --title "<title>" --project <project_id> --coordinator <agent_id> --bridge <bridge_id>`. Find the new chain's `coordinator_agent_instance_id` in the result or `task-chain show <chain_id>`.
 - Send the coordinator a brief with `./bin/ham-ctl chat send --to <coordinator_agent_instance_id> --body "<brief>"`. Start with “From the user via chat:” and put the user's exact words in quotes. Label everything else “My reading:” so nothing reads as something the user said. After the quote, give: the outcome wanted; constraints; relevant context from recent channel history; approvals the user granted and not granted (for example, a plan but not implementation); what to report back. Ask for tasks recorded before work starts, a planning task, and the user's approval before implementation. Add “I will follow progress through chain events.” Handle the `wake` result as below. Reply with the title and chain id.
 
@@ -98,7 +98,7 @@ Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “R
 - See running servers: `./bin/ham-ctl shell list`. Stop one when the user asks: `./bin/ham-ctl shell kill <session_id>`.
 
 ### Run a command
-Approval rules (present the command, standing approval, deletes/overwrites/stops/reboots/force-pushes) are in “Run a command” in CLAUDE.md/AGENTS.md.
+Approval rules (present the command, standing approval, deletes/overwrites/stops/reboots/force-pushes) are in “Run a command” in CLAUDE.md/AGENTS.md. Before running, say: "I'm about to run `<command>` in <path> on <machine>." (a numbered list for several, each with path and machine), then ask "Go ahead?" and stop. For a standing approval, repeat the scope back in one line, e.g. "OK: I'll run git commands on any machine without asking."
 - Commands can run on any of the user's machines. Find it with `./bin/ham-ctl bridge list`: match the user's words against each bridge's `label` or `machine_hostname` and use its `bridge_id`; its `status` must be `online`. If the user names no machine, ask which one, listing the online ones by label.
 - For project work, take the path and bridge from `./bin/ham-ctl projects show <project_id>` `bridge_paths`, as for servers. Otherwise use the path the user gave, or `~`. Ask if the path, machine or command is unclear.
 - Run with `./bin/ham-ctl shell run --cmd '<command>' --cwd <path> --bridge <bridge_id>` in the foreground, without `--bg`.
