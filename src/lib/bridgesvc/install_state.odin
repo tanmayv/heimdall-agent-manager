@@ -53,6 +53,8 @@ Install_Row :: enum {
 	S8a_Version_Kept, // --keep-version and the bundle is another version
 	S8b_Version_Change, // binaries replaced by the bundle's (update / --version)
 	S8c_Downgrade_Refused,
+	S10_Convert, // legacy instance + supervisor-capable bundle: convert (conversion spec §2)
+	S10a_Recovered, // an interrupted conversion was recovered before classification
 }
 Install_Rows :: bit_set[Install_Row]
 
@@ -66,6 +68,8 @@ INSTALL_ROW_LABELS := [Install_Row]string {
 	.S8a_Version_Kept      = "S8a version kept",
 	.S8b_Version_Change    = "S8b version change",
 	.S8c_Downgrade_Refused = "S8c downgrade refused",
+	.S10_Convert           = "S10 legacy instance, converting to the supervisor",
+	.S10a_Recovered        = "S10a interrupted conversion recovered",
 }
 
 // Install_Facts is everything classify_install needs, read after Lock.
@@ -90,6 +94,11 @@ Install_Facts :: struct {
 	reenroll:           bool, // --reenroll
 	new_bridge:         bool, // --new-bridge
 	reuse_bridge:       string, // --reuse-bridge
+	// Conversion (docs/specs/bridge-supervisor-conversion.md §2).
+	legacy:             bool, // no valid instance.json, no launcher/, and a service or bin/ham-bridge
+	supervisor_managed: bool, // valid instance.json and launcher/ham-launcher present
+	bundle_capable:     bool, // bundle ships the engine binaries and a verified manifest (§3.1)
+	conversion_record:  bool, // <data>/conversion.json exists (recovered before classify)
 }
 
 Install_Plan :: struct {
@@ -107,6 +116,11 @@ Install_Plan :: struct {
 	clear_marker:     bool, // remove needs-reenrollment.json once enrolled
 	reenroll_reason:  string,
 	extensions:       bool, // copy and sync provider extensions
+	// Convert (S10) or install the supervisor layout directly (greenfield, S1 with a
+	// capable bundle). setup then runs the conversion transaction instead of the
+	// Stage/Binaries pair; enrollment and extensions still follow the rows below.
+	convert:          bool,
+	greenfield:       bool, // with convert: nothing was installed
 	refuse:           bool,
 	exit_code:        int, // with refuse
 	message:          string, // with refuse
@@ -181,9 +195,27 @@ classify_install :: proc(f: Install_Facts) -> Install_Plan {
 		return p
 	}
 
+	// S10c: a supervisor-managed instance cannot be replaced by a bundle without an engine.
+	if f.supervisor_managed && !f.bundle_capable && f.copy_binaries {
+		p.refuse, p.exit_code = true, EXIT_REFUSED
+		p.message = fmt.tprintf("is supervisor-managed; v%s has no supervisor and cannot be installed over it.", bundle)
+		return p
+	}
+
 	// Binaries.
-	if f.copy_binaries {
+	if f.copy_binaries && f.supervisor_managed {
+		// After conversion setup never touches releases/ or swaps files (contract §7):
+		// only enrollment, config, ports and service repairs run.
+	} else if f.copy_binaries {
 		switch {
+		case fresh && f.bundle_capable:
+			// Greenfield (C3 of the conversion spec): the supervisor layout directly.
+			p.convert, p.greenfield = true, true
+		case f.legacy && f.bundle_capable:
+			// S10: converts whatever the version policy would have said (it overrides
+			// --keep-version, S8a and --reinstall; the S8c refusal above already ran).
+			p.convert = true
+			p.rows += {.S10_Convert}
 		case fresh:
 			p.replace_binaries = true
 		case !f.bin_present:
@@ -218,8 +250,9 @@ classify_install :: proc(f: Install_Facts) -> Install_Plan {
 	// updates, often detached with nobody watching) keeps the pre-T2 contract: a
 	// re-enroll marker never starts an enrollment there; only an instance with no
 	// credential enrolls, and a failed enrollment rolls back (enroll_rolls_back).
-	marker := f.marker_present && !f.reinstall
-	p.enroll_rolls_back = f.reinstall
+	converting := p.convert && !p.greenfield
+	marker := f.marker_present && !f.reinstall && !converting
+	p.enroll_rolls_back = f.reinstall || converting
 	switch {
 	case f.bridge_id == "":
 		p.enroll = true
@@ -255,8 +288,8 @@ classify_install :: proc(f: Install_Facts) -> Install_Plan {
 	if !fresh && f.bin_present && (!f.config_present || !f.ports_present) do p.rows += {.S7_Partial}
 
 	p.reinstall = f.reinstall
-	p.extensions = fresh || p.replace_binaries || f.reinstall
-	p.noop = !f.reinstall && !p.replace_binaries && !p.enroll && f.service_registered && f.running && f.bin_present && f.config_present && f.ports_present && !f.staging_left
+	p.extensions = fresh || p.replace_binaries || f.reinstall || p.convert
+	p.noop = !p.convert && !f.reinstall && !p.replace_binaries && !p.enroll && f.service_registered && f.running && f.bin_present && f.config_present && f.ports_present && !f.staging_left
 	if p.noop do p.rows += {.S2_Healthy}
 	return p
 }
