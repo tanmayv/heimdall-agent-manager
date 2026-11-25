@@ -29,7 +29,7 @@ export function ChainStaffingModal({ chainId, open, onClose, focusRole = 'worker
     update({ chainId, agentId: row.agent_id, capacity: row.capacity, minWarm: row.min_warm, idleTtlSeconds: row.idle_ttl_seconds, ...patch }).unwrap();
   const agents: any[] = identities.data?.agents || [];
   const failed = rows.isError || identities.isError || bridges.isError;
-  return <Modal open={open} onOpenChange={(next) => !next && onClose()} title="Chain staffing" size="md">
+  return <Modal open={open} onOpenChange={(next) => !next && onClose()} title="Chain staffing" size="md" data-debug-id="chain-staffing-modal">
     <ModalBody className="space-y-4">
       <Text role="body-sm" tone="muted">Staffing and bridge placement affect future grants in this chain. Existing leases and required reviews stay in place.</Text>
       <a href={fleetFocusHref()} data-debug-id="chain-staffing-home-fleet" onClick={onClose} className="text-accent underline">Runtime defaults and overrides in Home Fleet</a>

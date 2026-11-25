@@ -197,12 +197,14 @@ await step('board menu: Review roles opens and Esc closes it', async () => {
   await visible('ticket-board-view');
 });
 
-await step('board menu: Manage fleet opens the fleet drawer; Done closes it', async () => {
+await step('board menu: Chain staffing opens and Close returns to the board', async () => {
   await S('ticket-board-menu-btn').click();
-  await S('task-board-fleet-btn').click();
-  await visible('fleet-management-drawer');
-  await S('fleet-drawer-done-btn').click();
-  await gone('fleet-management-drawer');
+  await S('task-board-staffing-btn').click();
+  await visible('chain-staffing-modal');
+  assert.match(await page.locator('[role="dialog"]').first().innerText(), /future grants.*Existing leases and required reviews stay/s);
+  await S('chain-staffing-close').click();
+  await gone('chain-staffing-modal');
+  await visible('ticket-board-view');
 });
 
 let t4 = '';

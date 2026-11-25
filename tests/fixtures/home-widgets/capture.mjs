@@ -56,11 +56,13 @@ try {
   for (const width of widths) {
     await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
     for (const state of width < 768 ? ['normal', 'edit', 'add-sheet', 'reordered', 'expanded', 'draft', 'applying', 'partial-failure', 'empty'] : ['normal', 'edit', 'expanded', 'draft', 'applying', 'partial-failure', 'empty']) {
+      await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await call('Page.navigate', { url: origin + '/tests/fixtures/home-widgets/index.html' + (state === 'empty' ? '?empty' : '?fleet-state=' + state) });
       await settle();
       await evaluate('localStorage.clear()');
       await call('Page.reload');
       await settle();
+      await evaluate('window.scrollTo(0, 0)');
       if (state !== 'empty') {
         // Production Fleet initially expands its first bridge. Normal/edit captures show it collapsed.
         await evaluate(`document.querySelectorAll('[data-debug-id^="home-fleet-expand-"][aria-expanded="true"]').forEach((button) => button.click())`);
@@ -75,7 +77,7 @@ try {
       if (['edit', 'add-sheet', 'reordered'].includes(state)) await click('home-layout-edit');
       if (state === 'add-sheet') {
         await click('home-layout-add-menu');
-        await wait(350);
+        await evaluate(`Promise.all([...document.querySelector('[data-debug-id="home-layout-add-sheet"]').parentElement.getAnimations({subtree:true})].filter(a => a.effect.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})))`);
         const sheet = await evaluate(`(() => {
           const sheet = document.querySelector('[data-debug-id="home-layout-add-sheet"]');
           const rect = sheet.getBoundingClientRect();
@@ -84,7 +86,7 @@ try {
             rows: [...sheet.querySelectorAll('[role="menuitemcheckbox"]')].map(el => ({id: el.dataset.debugId, height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width,
               checked: el.getAttribute('aria-checked'), feedback: el.matches(':hover,:focus-visible'), background: getComputedStyle(el).backgroundColor})) };
         })()`);
-        assert.ok(sheet.x >= 0 && sheet.right <= width && sheet.y >= 0 && sheet.bottom <= height + 1, 'sheet inside visible viewport');
+        assert.ok(sheet.x >= 0 && sheet.right <= width && sheet.y >= 0 && sheet.bottom <= height + 1, 'sheet inside visible viewport: ' + JSON.stringify(sheet));
         assert.ok(sheet.height <= height * .8 + 1, 'sheet caps visible height');
         assert.equal(sheet.focused, true);
         assert.equal(sheet.rows.length, 3);

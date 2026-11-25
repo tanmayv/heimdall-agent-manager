@@ -14,13 +14,35 @@ test('Fleet drafts preserve profile and durable agent identity, canonical overri
   assert.deepEqual(fleetApplyInput({ ...draft, overrides: [] }, 'request'), { request_id: 'request', expected_revision: 4, default_runtime: runtime, overrides: [] });
 });
 
+test('Chain staffing mutations omit runtime policy and preserve explicit legacy clears', async () => {
+  const { taskChainsApi } = await import('../src/ui/api/endpoints/taskChains.ts');
+  const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+  const store = await makeVaultStore();
+  const oldFetch = globalThis.fetch;
+  const requests: { path: string; body: any }[] = [];
+  globalThis.fetch = async (input: any, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body || '{}'));
+    requests.push({ path: String(input), body });
+    return new Response(JSON.stringify({ data: { agent_id: 'a', capacity: body.capacity || 2, roles: body.roles || ['worker'] } }), { status: 200 });
+  };
+  try {
+    await store.dispatch(taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', agentId: 'a', capacity: 2, roles: ['worker', 'security'], minWarm: 1, idleTtlSeconds: 600, bridgeId: 'b' })).unwrap();
+    assert.deepEqual(requests[0].body, { capacity: 2, roles: ['worker', 'security'], min_warm: 1, idle_ttl_seconds: 600, bridge_id: 'b' });
+    await store.dispatch(taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', agentId: 'a', capacity: 2, provider: '', model: '' })).unwrap();
+    assert.deepEqual(requests[1].body, { capacity: 2, provider: '', model: '' });
+    await store.dispatch(taskChainsApi.endpoints.setTaskChainStaffingPaused.initiate({ chainId: 'chain', agentId: 'a', paused: false, roles: ['worker'] })).unwrap();
+    assert.match(requests[2].path, /\/fleets\/a\/resume$/);
+    assert.deepEqual(requests[2].body, { roles: ['worker'] });
+  } finally { store.dispatch(heimdallApi.util.resetApiState()); globalThis.fetch = oldFetch; }
+});
+
 test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, retry and scoped WS freshness', async () => {
   const { JSDOM } = await import('jsdom');
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost/' });
   const win = dom.window as any;
   win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   win.HTMLElement.prototype.scrollIntoView = function () {};
-  win.CSS = { escape: (value: string) => value };
+  win.CSS = { escape: (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, (char: string) => String.fromCharCode(92) + char) };
   const keys = ['window', 'document', 'HTMLElement', 'Node', 'KeyboardEvent', 'MouseEvent', 'localStorage', 'CSS'] as const;
   const saved = new Map(keys.map((key) => [key, (globalThis as any)[key]]));
   const savedFetch = globalThis.fetch;
@@ -41,6 +63,7 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     calls.push({ path, body });
     if (path === '/api/v1/bridges') return response([{ bridge_id: 'b1', label: 'First bridge', status: 'online', machine_os: 'Linux' }, { bridge_id: 'b2', label: 'Unavailable bridge', status: 'offline' }]);
     if (path === '/api/v1/agents') return response([{ agent_id: 'a', name: 'Same name', state: 'active' }, { agent_id: 'b', name: 'Same name', state: 'active' }]);
+    if (path.endsWith('/fleets')) return response([]);
     if (path.includes('/b2/')) return new Response(JSON.stringify({ error: { message: 'Bridge choices unavailable' } }), { status: 503 });
     if (path.endsWith('/provider-status')) return response({ providers: [{ provider: 'codex', profile_id: 'work', label: 'Work', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'm1', state: 'active' }, { model_id: 'm2', state: 'active' }] }] });
     if (path.endsWith('/launch-defaults')) return response(settings);
@@ -73,7 +96,8 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
   const { Provider } = await import('react-redux');
   const { FleetWidget } = await import('../src/ui/components/home/FleetWidget.tsx');
   const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
-  const { handleUserWsEvent } = await import('../src/ui/api/wsInvalidation.ts');
+  const { handleUserWsEvent, flushQueuedInvalidations, resetQueuedInvalidations } = await import('../src/ui/api/wsInvalidation.ts');
+  const { taskChainsApi } = await import('../src/ui/api/endpoints/taskChains.ts');
   const store = await makeVaultStore();
   const root = createRoot(win.document.getElementById('root'));
   const get = (id: string) => win.document.querySelector('[data-debug-id="' + id + '"]') as HTMLElement;
@@ -129,11 +153,24 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     assert.equal(countCalls('/launch-defaults'), reads);
     assert.equal(countCalls('/fleet/preview'), previewReads, 'startup causes no Fleet reads');
     application = { ...application, revision: 3, state: 'ready', targets: application.targets.map((t: any) => ({ ...t, state: 'ready' })) };
-    await act(async () => handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge_fleet_application', resource_id: 'app', summary: application }, {}));
+    await act(async () => {
+      handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge_fleet_application', resource_id: 'app', summary: application }, {});
+      flushQueuedInvalidations();
+    });
     await settle();
     assert.match(get('home-fleet-result-b1').textContent!, /All affected agents ready/);
     assert.equal(countCalls('/launch-defaults'), reads, 'application progress does not reload settings');
     assert.equal(countCalls('/fleet/preview'), previewReads, 'ready event does not refetch preview');
+    const chains = ['chain-one', 'chain-two'].map((chainId) => store.dispatch(taskChainsApi.endpoints.getTaskChainFleets.initiate({ chainId })));
+    await act(async () => { await Promise.all(chains); });
+    const fleetReads = countCalls('/fleets');
+    await act(async () => {
+      handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge_fleet_settings', resource_id: 'b1', summary: { bridge_id: 'b1', revision: 3 } }, {});
+      flushQueuedInvalidations();
+    });
+    await settle();
+    assert.equal(countCalls('/fleets'), fleetReads + 2, 'settings refresh all chain-keyed effective placements');
+    chains.forEach((query) => query.unsubscribe());
     // Same display labels remain distinct stable IDs, with duplicates omitted.
     await click('home-fleet-add-override-b1');
     const agentControl = get('home-fleet-override-b1-b-agent');
@@ -148,6 +185,7 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     for (const p of previews) p.resolve(response({ bridge_id: 'b1', expected_revision: 1, affected_instances: 0 }));
     await act(async () => root.unmount());
     store.dispatch(heimdallApi.util.resetApiState());
+    resetQueuedInvalidations();
     dom.window.close();
     for (const [key, value] of saved) (globalThis as any)[key] = value;
     globalThis.fetch = savedFetch;

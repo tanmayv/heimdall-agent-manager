@@ -168,7 +168,10 @@ test('listBridges is one plain request; provider status is per bridge and only w
 
     const providers = store.dispatch(bridgeSupportApi.endpoints.listBridgeProviders.initiate({ bridgeId: 'b2' }));
     const res = await providers;
-    assert.deepEqual(normalizeBridgeCapabilities(res.data), [{ provider: 'claude', models: ['m1'] }]);
+    assert.deepEqual(normalizeBridgeCapabilities(res.data), [{
+      provider: 'claude', models: ['m1'], transports: ['pty'],
+      default_transport: 'pty', transport: null, effective_transport: 'pty', acp_adapter: null,
+    }]);
     assert.deepEqual(net.hits.filter((h) => h.includes('provider-status')), ['GET /api/v1/bridges/b2/provider-status']);
     providers.unsubscribe();
   } finally { net.restore(); }

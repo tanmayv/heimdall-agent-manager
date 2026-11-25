@@ -1010,8 +1010,10 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
       const bridgeId = String(summary.bridge_id || resourceId);
       queueInvalidation(dispatch, [
         { type: 'BridgeFleetSettings', id: bridgeId },
-        { type: 'TaskChainFleets' },
       ]);
+      // Effective runtime is present in every chain's fleet rows. The queue
+      // accepts item IDs only; use RTK's broad tag form to refresh all such rows.
+      dispatch(heimdallApi.util.invalidateTags(['TaskChainFleets']));
       return;
     }
     case 'bridge_fleet_application':

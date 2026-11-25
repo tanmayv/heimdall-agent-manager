@@ -43,7 +43,7 @@ window.fetch = async (input, init) => {
   else if (path.includes('/applications/')) data = {
     application_id: 'fixture-application', bridge_id: bridge.id, settings_revision: 1, revision: 1, settings_saved: true, cancelled: false,
     state: fleetState === 'applying' ? 'restarting' : 'partial_failure',
-    targets: ['mock-worker', 'mock-reviewer', 'mock-planner'].map((id, index) => ({
+    targets: ['mock-worker', 'mock-reviewer', 'mock-coordinator'].map((id, index) => ({
       agent_id: id, agent_instance_id: 'fixture-' + id, state: fleetState === 'applying' ? 'restarting' : index === 2 ? 'failed' : 'ready',
       error_message: fleetState === 'partial-failure' && index === 2 ? 'Bridge disconnected before restart. Retry when it reconnects.' : '', retryable: true,
     })),

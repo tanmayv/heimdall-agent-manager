@@ -196,7 +196,7 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
       {error ? <a data-debug-id={`${prefix}-configuration`} href={`#/chains/${encodeURIComponent(chainId)}`} onClick={onOpenConfiguration} className="text-accent underline">Open chain workspace and runtime configuration</a> : null}
       {notice ? <p role="status">{notice}</p> : null}
       {fleetOpen ? <ChainStaffingModal chainId={chainId} open onClose={() => setFleetOpen(false)} focusRole={worker ? 'worker' : 'reviewer'} /> : null}
-      {reviewRolesOpen ? <ReviewRolesModal chainId={chainId} open onClose={() => setReviewRolesOpen(false)} /> : null}
+      {reviewRolesOpen ? <ReviewRolesModal chainId={chainId} open focusRole={f.role} onClose={() => setReviewRolesOpen(false)} /> : null}
     </section>
   );
 }
