@@ -1058,10 +1058,16 @@ body {
 }
 
 .conversation-markdown .markdown-table :is(th, td) {
+  min-width: 8ch;
   padding: 0.625rem 1rem;
   vertical-align: top;
   white-space: normal;
+}
+
+/* Keep long identifiers intact so excess table width reaches the scroll wrapper. */
+.conversation-markdown .markdown-table :is(th, td, a, code) {
   overflow-wrap: normal;
+  word-break: normal;
 }
 
 .conversation-markdown .markdown-table th {
@@ -1105,8 +1111,7 @@ body {
   color: var(--shiki-dark, inherit);
 }
 
-:is([data-theme="catppuccin-latte"], [data-theme="tokyo-night-day"])
-  .conversation-markdown [data-code-block] :is(pre.shiki, pre.shiki span) {
+[data-appearance="light"] .conversation-markdown [data-code-block] :is(pre.shiki, pre.shiki span) {
   color: var(--shiki-light, inherit);
 }
 

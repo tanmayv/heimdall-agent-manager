@@ -201,6 +201,7 @@ export default function MarkdownBody({ source, className, compact, variant, copy
     if (containers.length === 0) return undefined;
 
     let cancelled = false;
+    // Keep chat syntax colors consistent across app themes to match the chat reference.
     const activeTheme = variant === 'conversation'
       ? { light: 'catppuccin-latte', dark: 'catppuccin-mocha' }
       : getActiveShikiTheme();
