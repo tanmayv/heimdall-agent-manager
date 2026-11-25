@@ -20,8 +20,8 @@ bridge_convert_new_state :: proc() -> ^Convert_State {
 
 bridge_convert_real_seams :: proc() -> Convert_Seams {
 	return Convert_Seams {
-		now               = proc() -> i64 {return time.to_unix_seconds(time.now())},
-		sleep_ms          = proc(ms: int) {time.sleep(time.Duration(ms) * time.Millisecond)},
+		now               = proc(s: ^Bridge_Setup) -> i64 {return time.to_unix_seconds(time.now())},
+		sleep_ms          = proc(s: ^Bridge_Setup, ms: int) {time.sleep(time.Duration(ms) * time.Millisecond)},
 		agent_count       = bridge_convert_agent_count_real,
 		parent_is_worker  = bridge_convert_parent_is_worker_real,
 		fetch             = bridge_convert_fetch_real,

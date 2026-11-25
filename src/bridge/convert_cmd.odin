@@ -62,8 +62,8 @@ Convert_Release :: struct {
 // Convert_Seams are the OS-touching calls. Zero fields use the real implementation
 // (bridge_convert_seams); tests replace them.
 Convert_Seams :: struct {
-	now:               proc() -> i64,
-	sleep_ms:          proc(ms: int),
+	now:               proc(s: ^Bridge_Setup) -> i64,
+	sleep_ms:          proc(s: ^Bridge_Setup, ms: int),
 	// Agents on this profile's PTY daemon(s); -1 = a daemon did not answer (busy).
 	agent_count:       proc(s: ^Bridge_Setup) -> int,
 	// True when the parent process is this service's legacy `update --auto-worker` (§9.1).
@@ -103,19 +103,23 @@ Convert_State :: struct {
 	forced:       bool, // the gate ran out: stop agents
 	gate_started: i64,
 	logged:       [dynamic]string, // diagnostics for the final message
+	// Test-only failure injection: called after a step's side effects succeeded; a
+	// non-empty return fails the step (so rollback must undo those effects). nil in setup.
+	fail_after:   proc(s: ^Bridge_Setup, step: bridgesvc.Convert_Step) -> string,
+	test_user:    rawptr, // test fakes' world
 	update_json_existed: bool,
 }
 
 // ---- small helpers ----------------------------------------------------------------
 
 bridge_convert_now_unix :: proc(s: ^Bridge_Setup) -> i64 {
-	if s.conv != nil && s.conv.seams.now != nil do return s.conv.seams.now()
+	if s.conv != nil && s.conv.seams.now != nil do return s.conv.seams.now(s)
 	return time.to_unix_seconds(time.now())
 }
 
 bridge_convert_sleep :: proc(s: ^Bridge_Setup, ms: int) {
 	if s.conv != nil && s.conv.seams.sleep_ms != nil {
-		s.conv.seams.sleep_ms(ms)
+		s.conv.seams.sleep_ms(s, ms)
 		return
 	}
 	time.sleep(time.Duration(ms) * time.Millisecond)
@@ -177,7 +181,9 @@ bridge_convert_backup_index_path :: proc(dir: string) -> string {return bridgesv
 bridge_convert_read_backup_index :: proc(dir: string) -> (idx: Backup_Index, ok: bool) {
 	data, err := os.read_entire_file_from_path(bridge_convert_backup_index_path(dir), context.temp_allocator)
 	if err != nil do return {}, false
-	return idx, json.unmarshal(data, &idx, .JSON, context.temp_allocator) == nil
+	// Unmarshal first: a return list evaluates `idx` before the call fills it.
+	parsed := json.unmarshal(data, &idx, .JSON, context.temp_allocator) == nil
+	return idx, parsed
 }
 
 // ---- C0 helpers: facts, recovery, init --------------------------------------------------
@@ -584,6 +590,7 @@ bridge_convert_tree :: proc(s: ^Bridge_Setup, rec: ^Conversion_Record) -> bridge
 	tree, ok := lc.read_pointer(l.data_dir, lc.POINTER_CURRENT)
 	if !ok || tree == "" do return {failure = .Fatal, message = "repair did not set the current pointer"}
 	rec.to_tree = strings.clone(tree, context.temp_allocator)
+	s.enroll_exe = bridgesvc.pjoin(l.data_dir, "releases", tree, lc.TREE_BIN_DIR, bridgesvc.exe_name(s.host, "ham-bridge"))
 	// (c) the setup that converts is the setup that was signed.
 	tree_bridge := bridgesvc.pjoin(l.data_dir, "releases", tree, lc.TREE_BIN_DIR, bridgesvc.exe_name(s.host, "ham-bridge"))
 	if mine := c.seams.self_sha256(s); mine == "" || mine != bridge_convert_file_sha256(tree_bridge) {
@@ -634,7 +641,10 @@ bridge_convert_render_input :: proc(s: ^Bridge_Setup, rec: Conversion_Record, co
 }
 
 bridge_convert_cutover :: proc(s: ^Bridge_Setup, rec: ^Conversion_Record) -> bridgesvc.Step_Result {
-	if ports, ok := bridgesvc.read_ports(s.layout.state_dir); ok do s.ports = ports
+	// Greenfield has no legacy files: config.toml, hub-url, profile and ports.json are
+	// written here (kept as they are for a conversion), backed up as "did not exist".
+	if r := bridge_setup_run(s, .Config); !r.ok do return r
+	if r := bridge_setup_run(s, .Ports); !r.ok do return r
 	return s.conv.seams.register(s, rec^, rec.mode != bridgesvc.CONVERT_MODE_GREENFIELD)
 }
 
@@ -831,6 +841,7 @@ bridge_convert_rollback :: proc(data: rawptr, step: bridgesvc.Rollback_Step, rec
 			}
 		}
 		if ok2, m := bridge_convert_restore_state(l, backup, rec.txn); !ok2 do return false, m
+		bridge_extensions_restore(l.data_dir)
 		return true, "restored"
 	case .Remove_Layout:
 		// Keep the supervisor's journal for diagnosis (one, the older is deleted).
@@ -968,6 +979,14 @@ bridge_convert_remove_extras :: proc(path: string, wanted: map[string]bool, remo
 
 bridge_convert_run_step :: proc(data: rawptr, step: bridgesvc.Convert_Step, rec: ^Conversion_Record) -> bridgesvc.Step_Result {
 	s := (^Bridge_Setup)(data)
+	r := bridge_convert_run_step_inner(s, step, rec)
+	if r.ok && s.conv.fail_after != nil {
+		if msg := s.conv.fail_after(s, step); msg != "" do return {failure = .Fatal, message = msg}
+	}
+	return r
+}
+
+bridge_convert_run_step_inner :: proc(s: ^Bridge_Setup, step: bridgesvc.Convert_Step, rec: ^Conversion_Record) -> bridgesvc.Step_Result {
 	c := s.conv
 	switch step {
 	case .Gate: return bridge_convert_gate(s, rec)
@@ -1042,6 +1061,13 @@ bridge_convert_result :: proc(s: ^Bridge_Setup, res: bridgesvc.Convert_Result) -
 	case res.ok:
 		if res.finalize_warning != "" do append(&s.recovered, fmt.tprintf("C9 will finish at the next start (%s)", res.finalize_warning))
 		return {ok = true, finished = true, message = fmt.tprintf("converted to v%s", c.rec.to_version)}
+	case res.halted:
+		// Greenfield S1a: installed, not enrolled, not started (exit 4 on a re-run path).
+		s.not_enrolled = "enrollment was not approved or did not complete"
+		_ = os.remove_all(bridgesvc.convert_download_dir(s.layout, c.rec.txn))
+		_ = os.remove_all(bridgesvc.convert_backup_dir(s.layout, c.rec.txn))
+		_ = os.remove(bridgesvc.conversion_path(s.layout))
+		return {halt = true, message = fmt.tprintf("not enrolled: %s", s.not_enrolled)}
 	case res.rollback_failed:
 		bridge_setup_rollback_fail(s, res.rollback_message)
 		s.fail_line = fmt.tprintf("ham-bridge setup FAILED at step %q; rollback incomplete: %s.", bridgesvc.CONVERT_STEP_EVENT[res.failed_step], res.rollback_message)

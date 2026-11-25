@@ -270,7 +270,8 @@ run_conversion :: proc(ops: Convert_Ops, rec: ^Conversion_Record, first := Conve
 		if r.ok || (step == .Gate && r.message == "skipped") {
 			rec.state = "done"
 			rec.done = append_done(rec.done, step)
-			if !ops.persist(ops.data, rec^) && step != .Finalize {
+			// C9 removes conversion.json itself; writing it again would resurrect it.
+			if step != .Finalize && !ops.persist(ops.data, rec^) {
 				r = Step_Result{failure = .Fatal, message = "cannot write conversion.json"}
 			} else {
 				state := "skipped" if r.message == "skipped" else "ok"
