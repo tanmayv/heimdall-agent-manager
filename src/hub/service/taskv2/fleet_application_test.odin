@@ -15,7 +15,7 @@ fleet_probe_send :: proc(ctx:rawptr,cmd:project.Runtime_Command)->(bool,domain.D
 	p:=(^Fleet_Probe)(ctx)
 	u,ok,_:=iface.unit_of_work_begin(&p.fx.uow)
 	if ok {p.under_tx=p.under_tx || u.nested;iface.unit_of_work_rollback(&u)}
-	append(&p.commands,{bridge_id=strings.clone(cmd.bridge_id),command_id=strings.clone(cmd.command_id),body_json=strings.clone(cmd.body_json)})
+	append(&p.commands,project.Runtime_Command{bridge_id=strings.clone(cmd.bridge_id),command_id=strings.clone(cmd.command_id),body_json=strings.clone(cmd.body_json)})
 	return true,{}
 }
 fleet_probe_close :: proc(p:^Fleet_Probe) {
