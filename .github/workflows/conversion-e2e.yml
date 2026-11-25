@@ -114,7 +114,17 @@ jobs:
         env:
           HEIMDALL_E2E_SERVICE: '1'
           HEIMDALL_E2E_CONV_PHASE: P5
+          HEIMDALL_E2E_P5_DIAGNOSTICS: ${{ runner.temp }}/p5-diagnostics
+          HEIMDALL_E2E_P5_PUBLIC_KEY: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUF3YUFWNm9FR2JyaHMyQncza1lwSQpoUVd5THltU2NyQ1pxR29wMmtpSjczMlBKdnJYUFFSV1VMWExsT2prR252am9RWjM1RW5Sd3p4N0lvOFJHNnM2ClRCKzBqTkpwMUI3dE9uMHNIYVJOOU1kTFFYbUZGSlhVMW9tWVRPS3dQc3VFQlRxRGVGRkpQdlJFVUx2QUFwWk4KMmR2bk44RnVrUkNySXlkZndwOU5sNENqeWM3QUZsa0VyU0Z3UWhJUFN2eFMyT0tOM1BORlJCeXpxMVlTTTE4bwpTc1F4bXp2bDJydGtlRC95VFpIRzJwVWRrT3F0MjNKWm1PbmQ3RDZwK0dpNnV3disrU00wSk5YckZLVGJwMTZRCkdiOHVaTHVKY0JPV3NFNUhpelNTY3RTNFlFclppSEFTdzZRWkV2dzlzWUwxN3hjNVhZY243eGRPbGQ2eUphMi8KTFFUaTlKQmE0eVVOSmN3TUI2MlFYdS9HSWQwc1FqdFo3R3ZJdkRtUE9EUTJXZUJnMEFnaFVDTmJIOXFHVE5yRApXa2JRYlJQY2xoYTZDeGpVOUR0ektycHJhNWo2YmFSVVM0dXJFUE5HSllHUHVmalY2RGJxU1g1OXQ2eUl3b253CmFaeUxpRmNSU2YrZHJjTC9QaW5OMjNSYStSWU8rUk9vckx5blZpY3lFTzBMQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
         run: node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/conversion_e2e.mjs
+
+      - name: Upload encrypted P5 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p5-diagnostics-${{ runner.os }}
+          path: ${{ runner.temp }}/p5-diagnostics/
+          retention-days: 3
 
   windows:
     name: conversion (windows-2022)
@@ -206,6 +216,15 @@ jobs:
         env:
           HEIMDALL_E2E_SERVICE: '1'
           HEIMDALL_E2E_CONV_PHASE: P5
+          HEIMDALL_E2E_P5_DIAGNOSTICS: ${{ runner.temp }}/p5-diagnostics
+          HEIMDALL_E2E_P5_PUBLIC_KEY: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUF3YUFWNm9FR2JyaHMyQncza1lwSQpoUVd5THltU2NyQ1pxR29wMmtpSjczMlBKdnJYUFFSV1VMWExsT2prR252am9RWjM1RW5Sd3p4N0lvOFJHNnM2ClRCKzBqTkpwMUI3dE9uMHNIYVJOOU1kTFFYbUZGSlhVMW9tWVRPS3dQc3VFQlRxRGVGRkpQdlJFVUx2QUFwWk4KMmR2bk44RnVrUkNySXlkZndwOU5sNENqeWM3QUZsa0VyU0Z3UWhJUFN2eFMyT0tOM1BORlJCeXpxMVlTTTE4bwpTc1F4bXp2bDJydGtlRC95VFpIRzJwVWRrT3F0MjNKWm1PbmQ3RDZwK0dpNnV3disrU00wSk5YckZLVGJwMTZRCkdiOHVaTHVKY0JPV3NFNUhpelNTY3RTNFlFclppSEFTdzZRWkV2dzlzWUwxN3hjNVhZY243eGRPbGQ2eUphMi8KTFFUaTlKQmE0eVVOSmN3TUI2MlFYdS9HSWQwc1FqdFo3R3ZJdkRtUE9EUTJXZUJnMEFnaFVDTmJIOXFHVE5yRApXa2JRYlJQY2xoYTZDeGpVOUR0ektycHJhNWo2YmFSVVM0dXJFUE5HSllHUHVmalY2RGJxU1g1OXQ2eUl3b253CmFaeUxpRmNSU2YrZHJjTC9QaW5OMjNSYStSWU8rUk9vckx5blZpY3lFTzBMQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
         run: |
           node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/conversion_e2e.mjs
           if ($LASTEXITCODE) { throw "conversion e2e failed ($LASTEXITCODE)" }
+      - name: Upload encrypted P5 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p5-diagnostics-${{ runner.os }}
+          path: ${{ runner.temp }}/p5-diagnostics/
+          retention-days: 3
