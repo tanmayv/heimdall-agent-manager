@@ -306,7 +306,7 @@ const snapshot = (L) => ({
 });
 const runtimePid = (L) => readJson(path.join(L.state, 'runtime-status.json'))?.pid || 0;
 const lastOp = (L) => {
-  try { const lines = fs.readFileSync(path.join(L.data, 'ops.jsonl'), 'utf8').trim().split('\n'); return lines.map((l) => JSON.parse(l)); } catch { return []; }
+  try { const lines = fs.readFileSync(path.join(L.data, 'supervisor', 'journal', 'ops.jsonl'), 'utf8').trim().split('\n'); return lines.map((l) => JSON.parse(l)); } catch { return []; }
 };
 
 async function assertConverted(acct, L, what) {
@@ -315,7 +315,7 @@ async function assertConverted(acct, L, what) {
   expect(kg?.committed_op?.startsWith('op_convert_'), `${what}: known-good.json is committed by ${kg?.committed_op}`);
   expect(fs.readdirSync(path.join(L.data, 'releases')).some((t) => t === kg.tree), `${what}: releases/${kg.tree} exists`);
   const ops = lastOp(L);
-  expect(JSON.stringify(ops).includes('"committed"'), `${what}: the journal has a committed operation`);
+  expect(ops.some((op) => op.op_id === kg.committed_op && op.state === 'committed'), `${what}: the journal has a committed operation`);
   expect(fs.existsSync(path.join(L.data, 'launcher', `ham-launcher${EXE}`)), `${what}: launcher installed`);
   await until(online(acct, L.bridgeId), `${what}: connected to the hub`, 120_000);
   expect(true, `${what}: connected to the hub`);
