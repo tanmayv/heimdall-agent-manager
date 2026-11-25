@@ -143,8 +143,7 @@ bridge_convert_os_restore_service_real :: proc(s: ^Bridge_Setup, rec: Conversion
 		_, _ = bridge_service_exec({"systemctl", "--user", "daemon-reload"})
 	case .Schtasks:
 		new_tn := strings.concatenate({"\\", bridgesvc.windows_task_name(l.service_name, bridge_convert_windows_sid(), rec.instance_id)}, context.temp_allocator)
-		_, _ = bridge_service_exec({"schtasks", "/Delete", "/TN", new_tn, "/F"})
-		_, _ = bridge_service_exec({"schtasks", "/Change", "/TN", strings.concatenate({"\\", l.service_name}, context.temp_allocator), "/ENABLE"})
+		if ok, msg := bridge_convert_win_restore(bridge_service_exec, new_tn, strings.concatenate({"\\", l.service_name}, context.temp_allocator), rec.mode == bridgesvc.CONVERT_MODE_GREENFIELD); !ok do return false, msg
 		for p in ([]string{bridgesvc.windows_launcher_cmd_path(l), bridgesvc.windows_launcher_vbs_path(l), bridgesvc.windows_launcher_task_xml_path(l)}) do _ = os.remove(p)
 	}
 	return true, ""
@@ -236,4 +235,17 @@ bridge_convert_setup_alive :: proc(pid: int, start: i64) -> bool {
 	if start <= 0 do return true
 	got, _, known := bridge_os_process_lstart_and_command(pid)
 	return !known || got == start || got == 0
+}
+
+// bridge_convert_win_restore (R2 on Windows): delete the new task, re-enable the old one.
+// A failed /ENABLE fails the step (exit 7, record and backup kept): the old bridge would
+// otherwise never autostart. A failed /Delete is only an error when the new task still
+// exists (it legitimately does not when the cut-over never ran).
+bridge_convert_win_restore :: proc(exec: proc(argv: []string) -> (bool, string), new_tn, old_tn: string, greenfield: bool) -> (bool, string) {
+	if del_ok, del_msg := exec({"schtasks", "/Delete", "/TN", new_tn, "/F"}); !del_ok {
+		if exists, _ := exec({"schtasks", "/Query", "/TN", new_tn}); exists do return false, fmt.tprintf("cannot delete the new task: %s", del_msg)
+	}
+	if greenfield do return true, ""
+	if ok, msg := exec({"schtasks", "/Change", "/TN", old_tn, "/ENABLE"}); !ok do return false, fmt.tprintf("cannot re-enable the old task: %s", msg)
+	return true, ""
 }

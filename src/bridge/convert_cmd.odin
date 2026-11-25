@@ -129,14 +129,21 @@ bridge_convert_write_file :: proc(path, text: string, mode := os.Permissions{.Re
 	// Atomic replace: temp file in the same directory, then rename.
 	tmp := strings.concatenate({path, ".tmp"}, context.temp_allocator)
 	_ = os.make_directory_all(bridgesvc.pdir(path))
-	if os.write_entire_file_from_string(tmp, text, mode) != nil do return false
+	f, oerr := os.open(tmp, {.Write, .Create, .Trunc}, mode)
+	if oerr != nil do return false
+	_, werr := os.write_string(f, text)
+	// fsync before the rename: the record and restored service files must survive power loss.
+	serr := os.sync(f)
+	_ = os.close(f)
+	if werr != nil || serr != nil {
+		_ = os.remove(tmp)
+		return false
+	}
+	// core:os rename replaces an existing file on every OS (MoveFileEx REPLACE_EXISTING on
+	// Windows), so the old file is never removed first: a crash leaves old or new, not neither.
 	if os.rename(tmp, path) != nil {
-		// Windows cannot rename over an existing file.
-		_ = os.remove(path)
-		if os.rename(tmp, path) != nil {
-			_ = os.remove(tmp)
-			return false
-		}
+		_ = os.remove(tmp)
+		return false
 	}
 	return true
 }
@@ -769,7 +776,7 @@ bridge_convert_finalize :: proc(s: ^Bridge_Setup, rec: Conversion_Record) -> bri
 	if s.conv != nil && s.conv.seams.os_finalize != nil {
 		if ok, msg := s.conv.seams.os_finalize(s, rec); !ok do return {failure = .Fatal, message = msg}
 	}
-	s.conv.seams.stop_rescuer(s, rec)
+	if s.conv != nil && s.conv.seams.stop_rescuer != nil do s.conv.seams.stop_rescuer(s, rec)
 	_ = os.remove_all(bridgesvc.convert_download_dir(l, rec.txn))
 	_ = os.remove_all(bridgesvc.convert_backup_dir(l, rec.txn))
 	_ = os.remove(bridgesvc.convert_status_path(l))
@@ -1093,6 +1100,8 @@ bridge_convert_recover :: proc(s: ^Bridge_Setup) -> (note: string, ok: bool) {
 		rec = bridge_convert_record_from_disk(s)
 	}
 	s.conv.rec = rec
+	// Roll-forward may run C6b (enroll) with the tree's binary, never bin/'s.
+	if rec.to_tree != "" do s.enroll_exe = bridgesvc.pjoin(l.data_dir, "releases", rec.to_tree, lc.TREE_BIN_DIR, bridgesvc.exe_name(s.host, "ham-bridge"))
 	ops := bridge_convert_ops(s)
 	action, res := bridgesvc.recover_conversion(ops, &s.conv.rec, bridge_convert_layout_ok(s.host, l))
 	switch {

@@ -191,6 +191,7 @@ fake_seams :: proc() -> Convert_Seams {
 			return {ok = true, message = "rendered"}
 		},
 		enroll = proc(s: ^Bridge_Setup) -> Step_Result {
+			note(world_of(s), strings.concatenate({"enroll with ", s.enroll_exe}, context.temp_allocator))
 			if world_of(s).enrolled_halt do return {halt = true, message = "not enrolled"}
 			return {ok = true, message = "skipped"}
 		},
@@ -271,7 +272,9 @@ test_convert_happy_path_ends_converted :: proc(t: ^testing.T) {
 	entries, _ := os.read_directory_by_path(l.data_dir, -1, context.temp_allocator)
 	for e in entries do testing.expect(t, !strings.has_prefix(e.name, bridgesvc.CONVERT_BACKUP_PREFIX))
 	// Order: rescuer before the stop, stop before the tree, converted start last.
-	joined := strings.join(w.log[:], ",", context.temp_allocator)
+	steps := make([dynamic]string, context.temp_allocator)
+	for line in w.log do if !strings.has_prefix(line, "enroll with ") do append(&steps, line)
+	joined := strings.join(steps[:], ",", context.temp_allocator)
 	testing.expect_value(t, joined, "rescuer,stop,pty-stop,repair,register,start converted,finalize")
 	testing.expect_value(t, s.conv.rec.to_tree, TREE_NAME)
 	testing.expect_value(t, s.enroll_exe, bridgesvc.pjoin(l.data_dir, "releases", TREE_NAME, "bin", "ham-bridge"))
@@ -726,4 +729,76 @@ test_state_restore_refuses_a_corrupt_snapshot_copy :: proc(t: ^testing.T) {
 	for e in entries do _ = os.write_entire_file_from_string(bridgesvc.pjoin(backup, "state", "files", e.name), "tampered")
 	ok, _ = bridge_convert_restore_state(l, backup, "cv_0123456789abcdef")
 	testing.expect(t, !ok, "a snapshot copy whose digest changed is never restored")
+}
+
+@(test)
+test_recovery_roll_forward_enrolls_with_the_trees_binary :: proc(t: ^testing.T) {
+	// Crash at C6b: C6 is recorded done; a fresh process must enroll with the tree's
+	// ham-bridge, not bin/'s (review finding).
+	s, w := fixture(t, "enroll-exe")
+	defer destroy(s, w)
+	s.conv.fail_after = proc(s: ^Bridge_Setup, step: bridgesvc.Convert_Step) -> string {
+		w := world_of(s)
+		if step == .Enroll {
+			w.crashed = true
+			return "killed"
+		}
+		return ""
+	}
+	s.conv.rec = bridge_convert_init_record(s)
+	_ = bridgesvc.run_conversion(crash_ops(s), &s.conv.rec)
+	w.crashed = false
+	clear(&w.log)
+	s2 := new(Bridge_Setup)
+	s2^ = s^
+	s2.enroll_exe = "" // a new process knows nothing
+	fresh_conv(s2, w)
+	_, ok := bridge_convert_recover(s2)
+	testing.expect(t, ok)
+	// Spec 6.3: roll-forward continues at C7, so C6b is not re-run; were it ever run, it must
+	// use the tree's binary, which recovery now sets before running any step.
+	tree_exe := bridgesvc.pjoin(s.layout.data_dir, "releases", TREE_NAME, "bin", "ham-bridge")
+	testing.expect_value(t, s2.enroll_exe, tree_exe)
+	for line in w.log do if strings.has_prefix(line, "enroll with ") do testing.expect_value(t, line, strings.concatenate({"enroll with ", tree_exe}, context.temp_allocator))
+	free(s2.conv)
+	free(s2)
+}
+
+@(test)
+test_win_restore_reports_a_failed_reenable :: proc(t: ^testing.T) {
+	// Single-threaded use of a package var: the proc has no context to carry state.
+	exec_ok :: proc(argv: []string) -> (bool, string) {return true, ""}
+	exec_enable_fails :: proc(argv: []string) -> (bool, string) {
+		if argv[1] == "/Change" do return false, "Access is denied"
+		return true, ""
+	}
+	exec_delete_fails_task_exists :: proc(argv: []string) -> (bool, string) {
+		if argv[1] == "/Delete" do return false, "busy"
+		return true, "" // /Query succeeds: the new task exists
+	}
+	exec_delete_fails_no_task :: proc(argv: []string) -> (bool, string) {
+		if argv[1] == "/Delete" || argv[1] == "/Query" do return false, "not found"
+		return true, ""
+	}
+	ok, msg := bridge_convert_win_restore(exec_ok, `\new`, `\old`, false)
+	testing.expect(t, ok)
+	ok, msg = bridge_convert_win_restore(exec_enable_fails, `\new`, `\old`, false)
+	testing.expect(t, !ok && strings.contains(msg, "re-enable"), msg)
+	ok, _ = bridge_convert_win_restore(exec_delete_fails_task_exists, `\new`, `\old`, false)
+	testing.expect(t, !ok, "the new task survives: step fails")
+	ok, _ = bridge_convert_win_restore(exec_delete_fails_no_task, `\new`, `\old`, false)
+	testing.expect(t, ok, "never created: fine")
+	// Greenfield has no old task to enable.
+	ok, _ = bridge_convert_win_restore(exec_enable_fails, `\new`, `\old`, true)
+	testing.expect(t, ok)
+}
+
+@(test)
+test_finalize_without_conversion_state_does_not_crash :: proc(t: ^testing.T) {
+	s, w := fixture(t, "finalize-nil")
+	defer destroy(s, w)
+	free(s.conv)
+	s.conv = nil
+	r := bridge_convert_finalize(s, Conversion_Record{txn = "cv_0123456789abcdef", to_version = "0.5.86"})
+	testing.expect(t, r.ok)
 }
