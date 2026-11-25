@@ -20,7 +20,7 @@ export interface ProviderSummaryInput {
   display_name: string;
   state: 'present' | 'absent';
   enabled: boolean;
-  models: Array<{ state: 'active' | 'deprecated' }>;
+  models: Array<{ state: string }>;
 }
 
 /** A bridge row as GET /bridges or GET /bridges/{id} returns it (only the fields read here). */

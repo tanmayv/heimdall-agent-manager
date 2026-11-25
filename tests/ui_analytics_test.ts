@@ -209,7 +209,13 @@ test('funnel milestones fire once per user at the Hub success points with non-co
   observeMilestones(analytics, { type: 'chat/messageReceived' }, apiState([{ status: 'online' }]));
 
   observeMilestones(analytics, { ...fulfilled('listBridgeProviders', { bridgeId: 'b2' }, { providers: [] }), type: 'heimdallApi/executeQuery/fulfilled' }, {});
-  observeMilestones(analytics, { ...fulfilled('listBridgeProviders', { bridgeId: 'b2' }, { providers: [{ provider: 'claude', label: 'My secret profile' }, { provider: 'codex' }] }), type: 'heimdallApi/executeQuery/fulfilled' }, {});
+  observeMilestones(analytics, { ...fulfilled('listBridgeProviders', { bridgeId: 'b2' }, { providers: [
+    { provider: 'claude', enabled: false, state: 'present', catalog_state: 'active' },
+    { provider: 'codex', enabled: true, state: 'absent', catalog_state: 'active' },
+  ] }), type: 'heimdallApi/executeQuery/fulfilled' }, {});
+  assert.equal(analytics.hasSentOnce('provider_configured'), false);
+
+  observeMilestones(analytics, { ...fulfilled('listBridgeProviders', { bridgeId: 'b2' }, { providers: [{ provider: 'claude', label: 'My secret profile', enabled: true, state: 'present', catalog_state: 'active' }, { provider: 'codex', enabled: true, state: 'present', catalog_state: 'active' }] }), type: 'heimdallApi/executeQuery/fulfilled' }, {});
   observeMilestones(analytics, fulfilled('createTaskChain', { title: 'Secret plan', description: 'do the thing', kind: 'mixed_work' }), {});
   observeMilestones(analytics, fulfilled('createTaskChain', { title: 'Second', kind: 'team_work' }), {});
   observeMilestones(analytics, { ...fulfilled('createLaunchConversation', { agentId: 'agt_1', provider: 'claude', body: 'hello prompt' }), type: 'heimdallApi/executeMutation/rejected' }, {});

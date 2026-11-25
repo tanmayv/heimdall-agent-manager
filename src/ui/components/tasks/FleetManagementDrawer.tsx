@@ -34,7 +34,6 @@ import {
   changedFleetEntries,
   detectLiveInstanceRuntimeMismatch,
   fleetApplyRequests,
-  fleetProviderCapabilities,
   fleetRolesEqual,
   formatFleetRolesBadge,
   resolvedFleetProviderModel,
@@ -132,7 +131,7 @@ const BridgeRuntimeRow: React.FC<BridgeRuntimeRowProps> = ({
   const instancesQuery = useListAgentInstancesQuery({ agentId, limit: 1000 }, { skip: !agentId });
 
   const capabilities = useMemo<FleetProviderCapability[]>(() => {
-    const fromQuery = fleetProviderCapabilities(providersQuery.currentData);
+    const fromQuery = normalizeBridgeCapabilities(providersQuery.currentData);
     if (providersQuery.currentData) return fromQuery;
     return normalizeBridgeCapabilities(bridge);
   }, [providersQuery.currentData, bridge]);
@@ -295,7 +294,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
 
   const providersQuery = useListBridgeProvidersQuery({ bridgeId }, { skip: !bridgeId || !isOpen });
   const bridgeCapabilities = useMemo(
-    () => fleetProviderCapabilities(providersQuery.currentData),
+    () => normalizeBridgeCapabilities(providersQuery.currentData),
     [providersQuery.currentData]
   );
 

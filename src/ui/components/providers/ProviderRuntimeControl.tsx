@@ -45,7 +45,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
     const deadline = setTimeout(() => { setTimedOut(true); }, ACP_INSTALL_WAIT_MS);
     const check = async () => {
       try {
-        const result = await providerSetupApi.get(bridgeId, true);
+        const result = await providerSetupApi.get(bridgeId, true, true);
         if (!cancelled) {
           onChangeRef.current(result);
           setError('');
@@ -63,7 +63,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
     setBusy(true);
     setError('');
     try {
-      onChangeRef.current(await providerSetupApi.get(bridgeId, true));
+      onChangeRef.current(await providerSetupApi.get(bridgeId, true, true));
       // Checking is an explicit retry of the bounded wait, not another install.
       setTimedOut(false);
     } catch (e) { setError(apiErrorText(e)); }
@@ -78,7 +78,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
     } catch (e) {
       setError(apiErrorText(e));
       // Selecting ACP can start an automatic install without saving the setting.
-      try { onChangeRef.current(await providerSetupApi.get(bridgeId, true)); } catch { /* keep the original error */ }
+      try { onChangeRef.current(await providerSetupApi.get(bridgeId, true, true)); } catch { /* keep the original error */ }
     } finally { setBusy(false); }
   }
 

@@ -21,7 +21,7 @@ import { usePaneVaultLock } from '../shells/usePaneVaultLock';
 import VaultLockedOverlay from '../shells/VaultLockedOverlay';
 import { useTheme } from '../../store/themeSlice';
 import { usePaneVisible } from '../workbench/paneVisibility';
-import { useListBridgeProvidersQuery } from '../../api/endpoints/bridgeSupport';
+import { useListBridgeProvidersQuery, selectBridgeProvider } from '../../api/endpoints/bridgeSupport';
 import { useGetAgentBlockersQuery } from '../../api/endpoints/extension';
 import { acpAdapterSummary, type RuntimeTransport } from '../providers/providerRuntime';
 import { AcpAuthInstructions } from './AcpAuthInstructions';
@@ -80,7 +80,7 @@ export function AgentPaneComposerPanel(props: AgentPaneComposerPanelProps) {
 function StructuredAgentPane({ instance, agentInstanceId, isExpanded, runtimeStatus, className = '', fillPane }: AgentPaneComposerPanelProps & { instance?: any }) {
   const { currentData: status } = useListBridgeProvidersQuery({ bridgeId: instance?.bridge_id || '' }, { skip: !instance?.bridge_id });
   const { currentData: blockers } = useGetAgentBlockersQuery(agentInstanceId || '', { skip: !agentInstanceId });
-  const provider = status?.providers?.find((p: any) => p.provider === instance?.provider);
+  const provider = selectBridgeProvider(status, instance?.provider, instance?.provider_profile);
   const startup = blockers?.blockers.filter((b) => b.kind === 'startup') || [];
   const authRequired = startup.some((b) => b.input.reason === 'acp_auth_required') || instance?.last_error?.cause === 'acp_auth_required';
   const [sendInput, inputRequest] = useSendAgentPaneInputMutation();

@@ -17,7 +17,7 @@ const boundaryModules: Record<string, string> = {
     export const useSendAgentPaneInputMutation = () => [(input) => { globalThis.__agentReconnectHarness.interrupts.push(input); return Promise.resolve({data: {}}); }, {isLoading: false}];
     export const useSendAgentPaneResizeMutation = () => [() => Promise.resolve()];
   `,
-  '/api/endpoints/bridgeSupport.ts': `export const useListBridgeProvidersQuery = () => ({currentData: {providers: [{provider: 'claude', effective_transport: 'pty', acp_adapter: {state: 'ready', version: '0.108.0', node_version: 'v22.0.0'}}]}});`,
+  '/api/endpoints/bridgeSupport.ts': `export const selectBridgeProvider = (status, provider, profileId) => status?.providers?.find(p => p.provider === provider && (p.profile_id || p.provider) === (profileId || provider)); export const useListBridgeProvidersQuery = () => ({currentData: {providers: [{provider: 'claude', profile_id: 'claude-work', effective_transport: 'pty', acp_adapter: {state: 'ready', version: '0.108.0', node_version: 'v22.0.0'}}]}});`,
   '/api/endpoints/extension.ts': `export const useGetAgentBlockersQuery = () => ({currentData: {blockers: globalThis.__agentReconnectHarness.blockers}});`,
   '/chat/AcpPermissionBlockers.tsx': 'export function AcpPermissionBlockers() { return null; }',
   '/api/endpoints/settings.ts': 'export const useFetchExperimentsQuery = () => ({data: {flags: [{key: "streaming_terminal_pane", enabled: true}]}});',

@@ -38,30 +38,6 @@ export function resolvedFleetProviderModel(
   return { ...selection };
 }
 
-/**
- * Provider/model options from a bridge providers payload. The live
- * GET /bridges/:id/provider-status is normalized to literal active model ids.
- */
-export function fleetProviderCapabilities(providersPayload: any): FleetProviderCapability[] {
-  const source = Array.isArray(providersPayload?.providers) ? providersPayload.providers : [];
-  const list: FleetProviderCapability[] = [];
-  for (const entry of source) {
-    if (entry === null || typeof entry !== 'object') continue;
-    if (entry.enabled === false) continue;
-    const provider = String(entry.provider || entry.name || '');
-    if (!provider) continue;
-    let models: string[];
-    if (Array.isArray(entry.models)) {
-      models = entry.models.map((t: any) => String(t)).filter(Boolean);
-    } else {
-      const modelMap = entry.models && typeof entry.models === 'object' ? entry.models : {};
-      models = Object.keys(modelMap).filter((model) => Boolean(modelMap[model]));
-    }
-    list.push({ provider, models, ...(entry.profile_id ? { profile_id: entry.profile_id, label: entry.label, accent: entry.accent } : {}) });
-  }
-  return list;
-}
-
 export const FLEET_ROLES = ['worker', 'reviewer'] as const;
 
 /**
