@@ -1,17 +1,19 @@
 import { useRef, useState } from 'react';
+import { useGetHomeFleetQuery } from '../../api/endpoints/home';
+import { loadMockFleet, MOCK_AGENTS, MOCK_PROVIDERS } from './homeWidgetFixtures';
 import { Button, Icon, IconButton, Link, Select, StatusPill, Text } from '@ui';
-import { loadMockFleet, MOCK_AGENTS, MOCK_PROVIDERS, type FleetBridge, type FleetOverride, type WidgetLoader, type WidgetResource } from './widgetData';
+import { type FleetBridge, type FleetOverride, type WidgetLoader, type WidgetResource } from './widgetData';
 import { useWidgetData, WidgetHeading, WidgetState } from './WidgetShared';
 
 function ProviderModel({ id, label, provider, model, onChange }: { id: string; label: string; provider: string; model: string; onChange: (provider: string, model: string) => void }) {
   const models = MOCK_PROVIDERS.find((item) => item.id === provider)?.models || [];
   return <>
-    <Select size="sm" value={provider} aria-label={`${label} provider`} data-debug-id={`${id}-provider`} onChange={(next) => onChange(next, MOCK_PROVIDERS.find((item) => item.id === next)!.models[0])}>
+    <div className="home-provider-control"><Text role="caption" tone="muted" className="home-mobile-select-label">Provider</Text><Select size="sm" value={provider} aria-label={`${label} provider`} data-debug-id={`${id}-provider`} onChange={(next) => onChange(next, MOCK_PROVIDERS.find((item) => item.id === next)!.models[0])}>
       {MOCK_PROVIDERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-    </Select>
-    <Select size="sm" className="home-model-select" value={model} aria-label={`${label} model`} data-debug-id={`${id}-model`} onChange={(next) => onChange(provider, next)}>
+    </Select></div>
+    <div className="home-model-control"><Text role="caption" tone="muted" className="home-mobile-select-label">Model</Text><Select size="sm" className="home-model-select" value={model} aria-label={`${label} model`} data-debug-id={`${id}-model`} onChange={(next) => onChange(provider, next)}>
       {models.map((item) => <option key={item} value={item}>{item}</option>)}
-    </Select>
+    </Select></div>
   </>;
 }
 function FleetBridgeRow({ initial, initiallyExpanded }: { initial: FleetBridge; initiallyExpanded: boolean }) {
@@ -19,7 +21,8 @@ function FleetBridgeRow({ initial, initiallyExpanded }: { initial: FleetBridge; 
   const [expanded, setExpanded] = useState(initiallyExpanded);
   const nextId = useRef(0);
   const updateOverride = (id: string, change: Partial<FleetOverride>) => setBridge((value) => ({ ...value, overrides: value.overrides.map((item) => item.id === id ? { ...item, ...change } : item) }));
-  const available = MOCK_AGENTS.filter((agent) => !bridge.overrides.some((item) => item.agent === agent));
+  const agents = bridge.availableAgents?.map((agent) => agent.name) || MOCK_AGENTS.slice(0, bridge.agents);
+  const available = agents.filter((agent) => !bridge.overrides.some((item) => item.agent === agent));
   const overridesId = `home-fleet-overrides-${bridge.id}`;
   return <div className="home-fleet-bridge">
     <div className="home-fleet-bridge-header">
@@ -33,10 +36,10 @@ function FleetBridgeRow({ initial, initiallyExpanded }: { initial: FleetBridge; 
     </div>
     {expanded && <div className="home-fleet-overrides" id={overridesId}>
       <Text role="overline" tone="muted">Agent overrides</Text>
-      {!bridge.overrides.length && <Text role="body-sm" tone="muted" className="home-no-overrides">No agent overrides. All agents use the bridge default.</Text>}
+      {!bridge.overrides.length && <Text role="body-sm" tone="muted" className="home-no-overrides">No overrides. Every agent on this bridge uses the default.</Text>}
       {bridge.overrides.map((item) => <div className="home-fleet-override" key={item.id}>
         <Select value={item.agent} size="sm" aria-label={`${bridge.label} override agent ${item.agent}`} data-debug-id={`home-fleet-override-${item.id}-agent`} onChange={(agent) => updateOverride(item.id, { agent })}>
-          {MOCK_AGENTS.filter((agent) => agent === item.agent || available.includes(agent)).map((agent) => <option key={agent} value={agent}>{agent}</option>)}
+          {agents.filter((agent) => agent === item.agent || available.includes(agent)).map((agent) => <option key={agent} value={agent}>{agent}</option>)}
         </Select>
         <ProviderModel id={`home-fleet-override-${item.id}`} label={`${bridge.label} ${item.agent} override`} provider={item.provider} model={item.model} onChange={(provider, model) => updateOverride(item.id, { provider, model })} />
         <IconButton icon="close" label={`Remove ${item.agent} override on ${bridge.label}`} size="sm" data-debug-id={`home-fleet-remove-${item.id}`} onClick={() => setBridge((value) => ({ ...value, overrides: value.overrides.filter((other) => other.id !== item.id) }))} />
@@ -45,8 +48,12 @@ function FleetBridgeRow({ initial, initiallyExpanded }: { initial: FleetBridge; 
     </div>}
   </div>;
 }
-export function FleetWidget({ resource: supplied, load = loadMockFleet }: { resource?: WidgetResource<FleetBridge[]>; load?: WidgetLoader<FleetBridge[]> } = {}) {
-  const { resource, retry } = useWidgetData(load, supplied);
+export function FleetWidget({ resource: supplied, load }: { resource?: WidgetResource<FleetBridge[]>; load?: WidgetLoader<FleetBridge[]> } = {}) {
+  const query = useGetHomeFleetQuery(undefined, { skip: Boolean(supplied || load) });
+  const endpointResource: WidgetResource<FleetBridge[]> = query.isError ? { status: 'error', message: 'Unable to load fleet' } : query.data ? { status: 'ready', data: query.data } : { status: 'loading' };
+  const custom = useWidgetData(load || loadMockFleet, supplied || (load ? undefined : endpointResource));
+  const { resource } = custom;
+  const retry = load ? custom.retry : () => { void query.refetch(); };
   const bridges = resource.status === 'ready' ? resource.data : [];
   return <section data-debug-id="home-widget-fleet" className="home-fleet" aria-labelledby="home-fleet-title">
     <WidgetHeading id="home-fleet-title" title="Fleet"><Text role="body-sm" tone="muted">{bridges.length} bridges · {bridges.reduce((sum, bridge) => sum + bridge.agents, 0)} agents</Text><Link variant="standalone" href="#/settings/bridges" data-debug-id="home-fleet-add-bridge">Add bridge</Link></WidgetHeading>

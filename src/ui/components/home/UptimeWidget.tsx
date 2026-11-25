@@ -1,5 +1,7 @@
 import { Text, Link } from '@ui';
-import { dateFromKey, loadMockUptime, type UptimeData, type UptimeDay, type WidgetLoader, type WidgetResource } from './widgetData';
+import { useGetHomeUptimeQuery } from '../../api/endpoints/home';
+import { loadMockUptime } from './homeWidgetFixtures';
+import { dateFromKey, type UptimeData, type UptimeDay, type WidgetLoader, type WidgetResource } from './widgetData';
 import { Legend, useWidgetData, WidgetHeading, WidgetStat, WidgetState } from './WidgetShared';
 
 export function uptimeDayLabel(day: UptimeDay): string {
@@ -8,8 +10,12 @@ export function uptimeDayLabel(day: UptimeDay): string {
   const duration = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
   return `${date}: ${day.state === 'none' ? 'Not enrolled yet' : day.state === 'up' ? 'Up all day' : `Down ${duration}`}`;
 }
-export function UptimeWidget({ resource: supplied, load = loadMockUptime }: { resource?: WidgetResource<UptimeData>; load?: WidgetLoader<UptimeData> } = {}) {
-  const { resource, retry } = useWidgetData(load, supplied);
+export function UptimeWidget({ resource: supplied, load }: { resource?: WidgetResource<UptimeData>; load?: WidgetLoader<UptimeData> } = {}) {
+  const query = useGetHomeUptimeQuery(undefined, { skip: Boolean(supplied || load) });
+  const endpointResource: WidgetResource<UptimeData> = query.isError ? { status: 'error', message: 'Unable to load uptime' } : query.data ? { status: 'ready', data: query.data } : { status: 'loading' };
+  const custom = useWidgetData(load || loadMockUptime, supplied || (load ? undefined : endpointResource));
+  const { resource } = custom;
+  const retry = load ? custom.retry : () => { void query.refetch(); };
   const data = resource.status === 'ready' ? resource.data : undefined;
   return <section data-debug-id="home-widget-uptime" className="home-uptime" aria-labelledby="home-uptime-title">
     <WidgetHeading id="home-uptime-title" title="Uptime"><Text role="body-sm" tone="muted">{data && data.total > 0 ? data.connected === data.total ? 'All bridges connected' : `${data.connected} bridges connected` : ''}</Text></WidgetHeading>

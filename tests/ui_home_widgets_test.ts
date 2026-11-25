@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 import {
-  activeWidgetChains, activityLevel, chainProgress, chainWidgetPage, loadMockFleet,
-  mockActivity, mockUptime, summarizeActivity,
+  activeWidgetChains, activityLevel, chainProgress, chainWidgetPage, summarizeActivity, activityFromWire, uptimeFromWire, fleetFromWire,
 } from '../src/ui/components/home/widgetData.ts';
+import { loadMockFleet, mockActivity, mockUptime, activityFixture, uptimeFixture, fleetFixture } from '../src/ui/components/home/homeWidgetFixtures.ts';
 
 test('Activity fixture covers 53 Sunday–Saturday weeks and reproduces the design summary', () => {
   const data = mockActivity('tasks_completed', new Date(2026, 10, 25, 12));
@@ -48,13 +48,14 @@ test('Mock uptime includes thirty dated bars and fleet fixtures are fresh per lo
   assert.equal((await loadMockFleet(new AbortController().signal))[0].overrides.length, 2);
 });
 
-test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips and live chain paging', async () => {
+test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips and endpoint-hook chain paging', async () => {
   const { JSDOM } = await import('jsdom');
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost/' });
   const win = dom.window as any;
   win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   win.HTMLElement.prototype.scrollIntoView = function () {};
-  const keys = ['window', 'document', 'HTMLElement', 'Node', 'KeyboardEvent', 'MouseEvent', 'localStorage'] as const;
+  win.CSS = { escape: (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, (char: string) => String.fromCharCode(92) + char) };
+  const keys = ['window', 'document', 'HTMLElement', 'Node', 'KeyboardEvent', 'MouseEvent', 'localStorage', 'CSS'] as const;
   const saved = new Map(keys.map((key) => [key, (globalThis as any)[key]]));
   const savedFetch = globalThis.fetch;
   const savedAct = (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
@@ -124,14 +125,15 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     assert.ok(codex); await act(async () => codex.click());
     assert.match(get('home-fleet-default-mock-bridge-0-model').textContent!, /gpt-6.1-sol/);
     await click('home-fleet-expand-mock-bridge-1');
-    assert.match(doc.getElementById('home-fleet-overrides-mock-bridge-1')!.textContent!, /No agent overrides/);
+    assert.match(doc.getElementById('home-fleet-overrides-mock-bridge-1')!.textContent!, /No overrides/);
     assert.equal(get('home-widget-chains').querySelectorAll('article').length, 3);
     assert.match(get('home-widget-chains').textContent!, /7 active/);
     assert.match(get('home-widget-chains').textContent!, /1–3 of 7/);
-    assert.match(get('home-widget-chains').querySelector('[role="img"]')!.getAttribute('aria-label')!, /1 of 4 tickets done, 1 in review, 1 in progress/);
+    assert.match(get('home-widget-chains').querySelector('.home-chain-progress')!.getAttribute('aria-label')!, /1 of 6 tickets done, 1 in review, 2 in progress/);
     await click('home-chains-next'); assert.match(get('home-widget-chains').textContent!, /4–6 of 7/);
     await click('home-chains-next'); assert.equal(get('home-widget-chains').querySelectorAll('article').length, 1);
     assert.equal((get('home-chains-next') as HTMLButtonElement).disabled, true);
+    assert.match(get('home-widget-chains').textContent!, /7 of 7/);
 
     await render(React.createElement(React.Fragment, null,
       React.createElement(ActivityWidget, { resource: { status: 'error', message: 'Activity unavailable' } }),
@@ -170,4 +172,20 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     globalThis.fetch = savedFetch;
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = savedAct;
   }
+});
+
+test('Wire-shaped fixtures round-trip sparse days, summary names and bridge settings through response adapters', () => {
+  const today = new Date(2026, 10, 25, 12);
+  const activity = activityFixture('tasks_completed', today);
+  assert.ok(activity.days.length < 371);
+  assert.equal(activity.summary.active_days, 149);
+  assert.equal(activityFromWire(activity).summary.total, 834);
+  const uptime = uptimeFixture(today);
+  assert.equal(uptime.fleet.uptime_pct, 98.79);
+  assert.equal(uptime.bridges[0].days.length, 1);
+  assert.equal(uptimeFromWire(uptime, today).bridges[0].days.length, 30);
+  const fleet = fleetFixture();
+  assert.equal(fleet.defaults['mock-bridge-0'].provider, 'claude');
+  assert.equal(fleet.overrides['mock-bridge-0'][0].agent_id, 'mock-worker');
+  assert.equal(fleetFromWire(fleet)[0].overrides[0].agent, 'Worker');
 });

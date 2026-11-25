@@ -1,16 +1,22 @@
 import { useCallback, useState } from 'react';
 import { Button, Text } from '@ui';
-import { ACTIVITY_METRICS, activityLevel, dateFromKey, loadMockActivity, type ActivityData, type ActivityMetric, type WidgetResource } from './widgetData';
+import { useGetHomeActivityQuery } from '../../api/endpoints/home';
+import { loadMockActivity } from './homeWidgetFixtures';
+import { ACTIVITY_METRICS, activityLevel, dateFromKey, type ActivityData, type ActivityMetric, type WidgetResource } from './widgetData';
 import { useWidgetData, WidgetState, WidgetStat } from './WidgetShared';
 
 export interface ActivityWidgetProps {
   resource?: WidgetResource<ActivityData>;
   load?: (metric: ActivityMetric, signal: AbortSignal) => Promise<ActivityData>;
 }
-export function ActivityWidget({ resource: supplied, load = loadMockActivity }: ActivityWidgetProps = {}) {
+export function ActivityWidget({ resource: supplied, load }: ActivityWidgetProps = {}) {
   const [metric, setMetric] = useState<ActivityMetric>('tasks_completed');
-  const loader = useCallback((signal: AbortSignal) => load(metric, signal), [load, metric]);
-  const { resource, retry } = useWidgetData(loader, supplied);
+  const query = useGetHomeActivityQuery(metric, { skip: Boolean(supplied || load) });
+  const loader = useCallback((signal: AbortSignal) => (load || loadMockActivity)(metric, signal), [load, metric]);
+  const endpointResource: WidgetResource<ActivityData> = query.isError ? { status: 'error', message: 'Unable to load activity' } : query.currentData ? { status: 'ready', data: query.currentData } : { status: 'loading' };
+  const custom = useWidgetData(loader, supplied || (load ? undefined : endpointResource));
+  const { resource } = custom;
+  const retry = load ? custom.retry : () => { void query.refetch(); };
   const [hovered, setHovered] = useState<string | null>(null);
   const selected = ACTIVITY_METRICS.find((item) => item.id === metric)!;
   const data = resource.status === 'ready' ? resource.data : undefined;
@@ -30,7 +36,7 @@ export function ActivityWidget({ resource: supplied, load = loadMockActivity }: 
         <WidgetStat label="Current streak" value={`${data!.summary.streakDays} days`} detail="through today" />
       </div>
       {!data!.summary.activeDays && <Text role="body-sm" tone="muted">No activity yet</Text>}
-      <svg className="home-heatmap" viewBox="0 0 831 132" role="img" aria-label={`53 weeks of ${selected.label.toLowerCase()}: ${data!.summary.activeDays} active days, current streak ${data!.summary.streakDays} days.`} tabIndex={0} data-debug-id="home-activity-heatmap"
+      <div className="home-heatmap-scroll"><svg className="home-heatmap" viewBox="0 0 831 132" role="img" aria-label={`53 weeks of ${selected.label.toLowerCase()}: ${data!.summary.activeDays} active days, current streak ${data!.summary.streakDays} days.`} tabIndex={0} data-debug-id="home-activity-heatmap"
         onMouseLeave={() => setHovered(null)} onBlur={() => setHovered(null)}
         onKeyDown={(event) => {
           if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
@@ -46,11 +52,11 @@ export function ActivityWidget({ resource: supplied, load = loadMockActivity }: 
           return <g key={item.date}>
             {date.getDate() <= 7 && date.getDay() === 0 && <text x={32 + Math.floor(index / 7) * 15} y="14" className="home-chart-label">{date.toLocaleDateString(undefined, { month: 'short' })}</text>}
             <rect x={32 + Math.floor(index / 7) * 15} y={22 + index % 7 * 15} width="12" height="12" rx="3"
-              className={`home-heat-cell home-heat-level-${activityLevel(item.value, data!.levels)}`} opacity={item.future ? 0.2 : 1}
+              className={`home-heat-cell home-heat-level-${activityLevel(item.value, data!.levels)}`} opacity={item.future ? 0 : 1}
               onMouseEnter={() => !item.future && setHovered(item.date)}><title>{format(item.date)}: {item.future ? 'Future day' : `${item.value} ${selected.unit}`}</title></rect>
           </g>;
         })}
-      </svg>
+      </svg></div>
       <footer className="home-activity-footer"><Text role="caption" tone="muted" aria-live="polite">{day ? <><strong>{day.value}</strong> {selected.unit} · {format(day.date)}</> : 'No activity yet'}</Text><div className="home-heat-key"><Text role="caption" tone="muted">Less</Text>{[0, 1, 2, 3, 4].map((level) => <i key={level} className={`home-heat-cell home-heat-level-${level}`} />)}<Text role="caption" tone="muted">More</Text></div></footer>
     </>}
   </section>;

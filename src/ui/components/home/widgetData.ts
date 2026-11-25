@@ -45,73 +45,13 @@ export function summarizeActivity(days: ActivityDay[], kind: ActivityData['kind'
   };
 }
 
-/** Deterministic local-day fixture. Replace this loader when Activity ships its API. */
-export function mockActivity(metric: ActivityMetric, today = new Date()): ActivityData {
-  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12);
-  end.setDate(end.getDate() + 6 - end.getDay());
-  const days: ActivityDay[] = Array.from({ length: 371 }, (_, index) => {
-    const date = new Date(end);
-    date.setDate(date.getDate() - 370 + index);
-    return { date: localDate(date), value: 0, future: localDate(date) > localDate(today) };
-  });
-  const last = days.findIndex((day) => day.date === localDate(today));
-  const positive = new Set<number>();
-  for (let i = 0; i < 141; i++) positive.add(Math.floor(i * (last - 9) / 141));
-  for (let i = last - 6; i <= last; i++) positive.add(i);
-  // Keep the fixture's busiest day separate from the current seven-day streak.
-  positive.add(last - 9);
-  for (const index of positive) days[index].value = 1;
-  days[last - 9].value = 17;
-  const ordered = [...positive].filter((index) => index !== last - 9);
-  let remaining = 834 - days.reduce((sum, day) => sum + day.value, 0);
-  for (let i = 0; remaining > 0; i++, remaining--) days[ordered[(i * 43) % ordered.length]].value++;
-  if (metric !== 'tasks_completed') {
-    const max = metric === 'active_chains' ? 7 : metric === 'agent_instances' ? 12 : 3;
-    for (let i = 0; i <= last; i++) days[i].value = days[i].value ? 1 + (i * 5 % max) : 0;
-  }
-  const max = Math.max(...days.map((day) => day.value));
-  const kind = metric === 'tasks_completed' ? 'counter' : 'gauge';
-  return { metric, kind, days, levels: [0, max / 4, max / 2, max * 3 / 4, max], summary: summarizeActivity(days, kind) };
-}
-export const loadMockActivity = async (metric: ActivityMetric, _signal: AbortSignal): Promise<ActivityData> => mockActivity(metric);
-
 export interface UptimeDay { date: string; state: 'up' | 'partial' | 'down' | 'none'; downSeconds: number }
 export interface UptimeBridge {
   id: string; label: string; online: boolean; uptimePercent: number; connectedFor: string; incidents: number; days: UptimeDay[];
 }
 export interface UptimeData { connected: number; total: number; uptimePercent: number; bridges: UptimeBridge[] }
-export function mockUptime(today = new Date()): UptimeData {
-  const bridges = ['riverwood', 'dawnstar', 'kamsharm-mn4988.linkedin.biz'].map((label, index) => ({
-    id: `mock-bridge-${index}`, label, online: true, uptimePercent: [99.91, 96.45, 100][index],
-    connectedFor: ['4d 3h', '12d 6h', '21d 9h'][index], incidents: [1, 2, 0][index],
-    days: Array.from({ length: 30 }, (_, day) => {
-      const date = new Date(today); date.setDate(date.getDate() - 29 + day);
-      const partial = index === 0 && day === 23 || index === 1 && day === 8;
-      const down = index === 1 && day === 16;
-      return { date: localDate(date), state: down ? 'down' as const : partial ? 'partial' as const : 'up' as const, downSeconds: down ? 86400 : partial ? (index ? 5616 : 2280) : 0 };
-    }),
-  }));
-  return { connected: 3, total: 3, uptimePercent: 98.79, bridges };
-}
-export const loadMockUptime: WidgetLoader<UptimeData> = async () => mockUptime();
-
-export const MOCK_PROVIDERS = [
-  { id: 'claude', label: 'Claude Code', models: ['claude-opus-5-5', 'claude-sonnet-5-5'] },
-  { id: 'codex', label: 'Codex', models: ['gpt-6.1-sol', 'gpt-6.1-terra'] },
-];
-export const MOCK_AGENTS = ['Worker', 'Reviewer', 'Coordinator', 'Assistant'];
 export interface FleetOverride { id: string; agent: string; provider: string; model: string }
-export interface FleetBridge { id: string; label: string; os: string; agents: number; online: boolean; provider: string; model: string; overrides: FleetOverride[] }
-export const loadMockFleet: WidgetLoader<FleetBridge[]> = async () => [
-  { id: 'mock-bridge-0', label: 'riverwood', os: 'Fedora Atomic', agents: 4, online: true, provider: 'claude', model: 'claude-opus-5-5',
-    overrides: [
-      { id: 'mock-worker', agent: 'Worker', provider: 'claude', model: 'claude-sonnet-5-5' },
-      { id: 'mock-reviewer', agent: 'Reviewer', provider: 'codex', model: 'gpt-6.1-sol' },
-    ] },
-  { id: 'mock-bridge-1', label: 'dawnstar', os: 'macOS', agents: 2, online: true, provider: 'claude', model: 'claude-opus-5-5', overrides: [] },
-  { id: 'mock-bridge-2', label: 'kamsharm-mn4988.linkedin.biz', os: 'macOS', agents: 1, online: true, provider: 'claude', model: 'claude-sonnet-5-5', overrides: [] },
-];
-
+export interface FleetBridge { id: string; label: string; os: string; agents: number; online: boolean; provider: string; model: string; overrides: FleetOverride[]; availableAgents?: { agent_id: string; name: string }[] }
 export function activeWidgetChains(chains: ChainListItem[]): ChainListItem[] {
   return chains.filter((chain) => ['active', 'running', 'needs_review', 'in_review'].includes(chain.status.toLowerCase()))
     .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0) || a.chainId.localeCompare(b.chainId));
@@ -124,4 +64,63 @@ export interface ChainProgress { total: number; done: number; review: number; pr
 export function chainProgress(tasks: { state?: string; status?: string }[]): ChainProgress {
   const count = (state: string) => tasks.filter((task) => (task.state || task.status) === state).length;
   return { total: tasks.length, done: count('done'), review: count('in_review'), progress: count('in_progress') };
+}
+
+export interface ActivityWire {
+  metric: ActivityMetric; kind: 'counter' | 'gauge'; tz: string; from: string; to: string; tracking_since: string;
+  days: { date: string; value: number }[]; levels: number[];
+  summary: { total?: number; avg?: number; best: ActivityDay; active_days: number; streak_days: number };
+}
+export interface UptimeWire {
+  tz: string; window_days: number;
+  fleet: { connected: number; total: number; uptime_pct: number };
+  bridges: { bridge_id: string; label: string; status: string; connected_since: string; uptime_pct: number; incidents: number; days: { date: string; down_s: number; state: UptimeDay['state'] }[] }[];
+}
+export interface FleetWire {
+  bridges: { bridge_id: string; label: string; machine_os: string; status: string; agent_count: number }[];
+  defaults: Record<string, { bridge_id: string; provider: string; model: string; updated_at: string }>;
+  overrides: Record<string, { bridge_id: string; agent_id: string; provider: string; model: string; updated_at: string }[]>;
+  agents: { bridge_id: string; agents: { agent_id: string; name: string }[] }[];
+}
+export interface HomeChainRow { chain_id: string; title: string; status: string; project_name: string; updated_at: string }
+export interface HomeChainPage { chains: HomeChainRow[]; total: number; next_cursor: string }
+export interface HomeChainDetail { chain_id: string; members: { role: string; display_name: string; bridge_id: string; bridge_label?: string }[]; tasks: { state: string }[] }
+
+export function activityFromWire(data: ActivityWire): ActivityData {
+  const end = dateFromKey(data.to); end.setDate(end.getDate() + 6 - end.getDay());
+  const values = new Map(data.days.map((day) => [day.date, day.value]));
+  const days = Array.from({ length: 371 }, (_, index) => {
+    const date = new Date(end); date.setDate(date.getDate() - 370 + index);
+    const key = localDate(date);
+    return { date: key, value: values.get(key) || 0, future: key > data.to };
+  });
+  return { metric: data.metric, kind: data.kind, days, levels: data.levels, summary: { total: data.summary.total, average: data.summary.avg, best: data.summary.best, activeDays: data.summary.active_days, streakDays: data.summary.streak_days } };
+}
+export function uptimeFromWire(data: UptimeWire, today = new Date()): UptimeData {
+  return {
+    connected: data.fleet.connected, total: data.fleet.total, uptimePercent: data.fleet.uptime_pct,
+    bridges: data.bridges.map((bridge) => {
+      const hours = Math.max(0, Math.floor((today.getTime() - Date.parse(bridge.connected_since)) / 3600000));
+      return {
+        id: bridge.bridge_id, label: bridge.label, online: bridge.status === 'online', uptimePercent: bridge.uptime_pct, incidents: bridge.incidents,
+        connectedFor: `${Math.floor(hours / 24)}d ${hours % 24}h`,
+        days: Array.from({ length: data.window_days }, (_, index) => {
+          const date = new Date(today); date.setDate(date.getDate() - data.window_days + 1 + index);
+          const key = localDate(date); const day = bridge.days.find((item) => item.date === key);
+          return { date: key, state: day?.state || 'up', downSeconds: day?.down_s || 0 };
+        }),
+      };
+    }),
+  };
+}
+export function fleetFromWire(data: FleetWire): FleetBridge[] {
+  return data.bridges.map((bridge) => ({
+    id: bridge.bridge_id, label: bridge.label, os: bridge.machine_os, online: bridge.status === 'online', agents: bridge.agent_count,
+    provider: data.defaults[bridge.bridge_id].provider, model: data.defaults[bridge.bridge_id].model,
+    availableAgents: data.agents.find((entry) => entry.bridge_id === bridge.bridge_id)?.agents || [],
+    overrides: (data.overrides[bridge.bridge_id] || []).map((item) => ({
+      id: item.agent_id, agent: data.agents.find((entry) => entry.bridge_id === bridge.bridge_id)?.agents.find((agent) => agent.agent_id === item.agent_id)?.name || 'Agent',
+      provider: item.provider, model: item.model,
+    })),
+  }));
 }
