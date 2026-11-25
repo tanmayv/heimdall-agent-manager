@@ -500,6 +500,34 @@ async function main() {
     } else {
       r = spawnSync('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, encoding: 'utf8', timeout: 900_000, input: '' });
     }
+    const diagnostics = process.env.HEIMDALL_E2E_P5_DIAGNOSTICS;
+    const publicKey = process.env.HEIMDALL_E2E_P5_PUBLIC_KEY;
+    if (diagnostics && publicKey) {
+      // This repository is public. Keep raw fixture log contents out of public artifacts.
+      fs.mkdirSync(diagnostics, { recursive: true });
+      const save = (name, content) => {
+        const key = crypto.randomBytes(32);
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        const ciphertext = Buffer.concat([cipher.update(content), cipher.final()]);
+        const wrapped = crypto.publicEncrypt({ key: Buffer.from(publicKey, 'base64').toString('utf8'), oaepHash: 'sha256' }, key);
+        fs.writeFileSync(path.join(diagnostics, name + '.json'), JSON.stringify({
+          wrapped: wrapped.toString('base64'), iv: iv.toString('base64'),
+          tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64'),
+        }));
+      };
+      const collect = (name, file) => { if (fs.existsSync(file)) save(name, fs.readFileSync(file)); };
+      collect('runtime.log', path.join(L5.data, 'logs', 'runtime.log'));
+      collect('live-ops.jsonl', path.join(L5.data, 'supervisor', 'journal', 'ops.jsonl'));
+      for (const name of fs.readdirSync(L5.data).filter((entry) => entry.startsWith('conversion-failed-'))) {
+        collect(name + '-ops.jsonl', path.join(L5.data, name, 'journal', 'ops.jsonl'));
+        collect(name + '-launcher-status', path.join(L5.data, name, 'launcher-status.json'));
+      }
+      if (MAC) {
+        save('installer.stdout', r.stdout || '');
+        save('installer.stderr', r.stderr || '');
+      }
+    }
     if (r.status !== 0) {
       const active = lastOp(L5);
       const archived = fs.readdirSync(L5.data)
