@@ -8,7 +8,12 @@ const output = process.argv[2];
 assert.ok(output, 'provide an evidence output directory');
 const port = process.env.HOME_CDP_PORT || 9342;
 const origin = process.env.HOME_FIXTURE_ORIGIN || 'http://127.0.0.1:5192';
-await fs.mkdir(output, { recursive: true });
+// Refuse reuse before creating a browser page, including after an ambiguous launch.
+await fs.mkdir(output);
+await fs.writeFile(path.join(output, 'capture-start.json'), JSON.stringify({
+  startedAt: new Date().toISOString(), pid: process.pid, output, port, origin,
+  sha: process.env.HOME_CAPTURE_SHA, tree: process.env.HOME_CAPTURE_TREE,
+}, null, 2));
 const tab = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
 const ws = new WebSocket(tab.webSocketDebuggerUrl);
 await new Promise(resolve => ws.once('open', resolve));
@@ -219,8 +224,14 @@ try {
       await click(base + '-model');
       assert.ok(parseFloat(await evaluate(`getComputedStyle(${el(base + '-model-sheet')}).animationDuration`)) <= .01, 'reduced motion');
       await evaluate("document.documentElement.style.setProperty('--app-viewport-height', '460px')");
-      const bottom = await evaluate(`${el(base + '-model-sheet')}.getBoundingClientRect().bottom`);
-      assert.ok(bottom <= 461, 'sheet follows visible-height variable used for software keyboard');
+      report.keyboard = await evaluate(`(() => {
+        const panel=${el(base + '-model-sheet')}, overlay=panel.parentElement, root=getComputedStyle(document.documentElement);
+        const box=e=>{const s=getComputedStyle(e);return {rect:e.getBoundingClientRect().toJSON(),height:s.height,maxHeight:s.maxHeight,top:s.top,transform:s.transform,animationDuration:s.animationDuration,animations:e.getAnimations().map(a=>({playState:a.playState,currentTime:a.currentTime,timing:a.effect?.getComputedTiming()}))}};
+        return {panel:box(panel),overlay:box(overlay),visibility:document.visibilityState,focused:document.hasFocus(),scrollY,
+          innerWidth,innerHeight,visualViewport:visualViewport&&{height:visualViewport.height,offsetTop:visualViewport.offsetTop,scale:visualViewport.scale},
+          variables:Object.fromEntries(['--app-viewport-height','--app-viewport-offset-top','--app-viewport-bottom-offset'].map(k=>[k,{inline:document.documentElement.style.getPropertyValue(k),computed:root.getPropertyValue(k)}]))};
+      })()`);
+      assert.ok(report.keyboard.panel.rect.bottom <= 461, 'sheet follows visible-height variable used for software keyboard');
       await escape(); await evaluate("document.documentElement.style.removeProperty('--app-viewport-height')");
       await click(base + '-model');
       await evaluate(`(() => { const d=document.querySelector('[role=dialog]'); d.parentElement.dispatchEvent(new MouseEvent('mousedown',{bubbles:true})); })()`);
