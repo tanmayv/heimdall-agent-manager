@@ -55,7 +55,7 @@ export function ActionDetailBody({ record, actionError, runNotice: _notice, wide
       {target.kind === 'agent' ? <><p>{target.instance_strategy} · {target.project_id || 'No project'}</p>{!target.rules.length ? <p>Anywhere (the hub picks the first available machine)</p> : <ol>{target.rules.map((r, i) => <li key={i}>{i + 1}. {r.bridge_id === '*' ? 'Any machine' : bridgeLabel(r.bridge_id, catalog)} · {r.provider === '*' ? 'Any provider' : r.provider} · {r.model === '*' ? 'Any model' : r.model}</li>)}</ol>}</> : null}
       <p>An action also starts an agent that you stopped. Disable the action to stop that.</p>
     </Panel>
-    <Panel className="p-4"><h3>Runs</h3><RunHistory key={record.id} actionId={record.id} catalog={catalog} /></Panel>
+    <Panel className="p-4"><h3>Runs</h3><RunHistory key={record.id} actionId={record.id} catalog={catalog} triggers={record.triggers} triggers={record.triggers} /></Panel>
   </div>;
 }
 export function ActionDetailMobileActions(_props: { record: Action; onVerb: (verb: ActionVerb) => void }) { return null; }

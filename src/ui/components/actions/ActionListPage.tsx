@@ -19,6 +19,7 @@ import {
   useViewport,
 } from '@ui';
 import ActionRow from './ActionRow';
+import WebhooksSection from './WebhooksSection';
 import {
   ActionDetailBody,
   ActionDetailHeader,
@@ -440,6 +441,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
     <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
       <div className={twoPane ? 'flex-1 min-h-0 overflow-y-auto' : undefined}>
         {listBody}
+        <WebhooksSection />
       </div>
 
       {selectable ? (

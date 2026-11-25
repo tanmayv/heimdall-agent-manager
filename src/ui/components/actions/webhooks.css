@@ -1,0 +1,15 @@
+.webhooks-section, .webhook-row, .webhook-secret, .webhook-secret-value { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.webhooks-section { padding: var(--space-4); border-block-start: var(--border-width) solid var(--color-border-subtle); }
+.webhook-row, .webhook-secret { padding: var(--space-4); }
+.webhook-actions, .webhook-create { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); }
+.webhook-create > :first-child { flex: 1; min-width: 0; }
+.webhook-value { overflow-wrap: anywhere; user-select: all; }
+.webhook-secret-focus:focus-visible { outline: var(--border-width-strong) solid var(--color-focus-ring); }
+@media (max-width: 639px) {
+  .webhooks-section button { min-height: calc(var(--space-8) + var(--space-3)); width: 100%; }
+  .webhook-create, .webhook-actions { flex-direction: column; align-items: stretch; }
+}
+
+.webhook-copy-notice { min-height: var(--space-6); }
+
+#webhook-secret-title:focus { outline: var(--border-width-strong) solid var(--color-focus-ring); outline-offset: var(--space-0-5); }
