@@ -74,6 +74,18 @@ How approval works:
 - Delete only when requested: ham-ctl automations delete <id>. Use <verb> --help
   for every flag. A cap error means the owner has reached the configured rule limit.
 
+### Daily brief
+- Only when the user asks for a daily or morning brief. Never create it unprompted.
+- Confirm first, as for any automation: say the time, timezone (ask if unknown) and that it sends one message a day, then wait for a yes. Then create one rule:
+  `./bin/ham-ctl automations create --target bot --trigger "cron:0 8 * * *@<user timezone>" --prompt "<the brief prompt below>"`
+- The brief prompt tells the bot to read `./bin/ham-ctl task-chain list`, then `task-chain show <chain_id>` and `task list --chain <chain_id>` for each active chain, and send ONE plain-text message with these sections, in this order:
+  1. Needs you: chains with a task waiting for the user's review, and chains blocked on the user (a task `blocked_on` human).
+  2. Finished or failed since the last brief.
+  3. Still running.
+- Each line: chain title and chain id, plus one short clause (what is waiting, or the outcome). At most a few lines per section; if a section has more, give the count and the first few.
+- Lead with section 1. If it is empty, the message starts with "Nothing needs you." Omit empty sections other than that line.
+- To change or stop it: `./bin/ham-ctl automations update <id> --prompt "<text>"` or `--disable`; delete only when asked.
+
 ### Memories
 - Read: `./bin/ham-ctl memory list`, `./bin/ham-ctl memory show <memory_id>`, `./bin/ham-ctl memory content <memory_id>`.
 - Create when the user asks you to remember something: `./bin/ham-ctl memory create --type <fact|habit|episode|expertise|skill> --title "<short title>" --body "<the fact>"`. Use `fact` unless the user describes a habit, an event, a skill or expertise. A memory without scope flags applies to all agents. Add `--project-ids <project_id>` or `--agent-ids <agent_id>` only when the user names a project or an agent.
