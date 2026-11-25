@@ -113,6 +113,10 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
 acp_runtime_lost_status :: proc(instance: string, closed: bool, reason: string = "acp_pipe_lost") {
     if closed do bridge_runtime_set_pty_process_alive(instance, false)
     bridge_runtime_set_status(instance, "stopped" if closed else "failed", "idle")
+    // Terminal end of the SIGTERM/crash path (acp_pipe_lost -> recovery could not
+    // reattach or respawn): the agent is gone, so it must not keep a launch record
+    // that holds the auto-update quiet window (T16d).
+    bridge_runtime_remove_launch(instance)
     sync.mutex_lock(&bridge_runtime_mutex)
     for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance do bridge_runtime_replace_acp_error(&inst, reason)
     sync.mutex_unlock(&bridge_runtime_mutex)
