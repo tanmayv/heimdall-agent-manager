@@ -1,6 +1,6 @@
 import { createContext, useContext, type DragEvent, type ReactNode } from 'react';
 import { IconButton, Menu } from '@ui';
-import { defaultHomeLayout, setWidgetHidden, type HomeLayout, type HomeWidgetLayout } from './homeLayout';
+import { HOME_WIDGETS, defaultHomeLayout, setWidgetHidden, type HomeLayout, type HomeWidgetLayout } from './homeLayout';
 
 export interface WidgetLayoutControls {
   widget: HomeWidgetLayout;
@@ -18,14 +18,25 @@ export function WidgetTitle({ children }: { children: ReactNode }) {
   const controls = useContext(WidgetLayoutContext);
   if (!controls) return <>{children}</>;
   const { widget, mobile, earlier, later, edit } = controls;
+  const name = HOME_WIDGETS.find((item) => item.id === widget.id)!.name;
   const remove = () => edit((layout) => setWidgetHidden(layout, widget.id, true));
   return <div className="home-widget-title">
+    {mobile && <>
+      {children}
+      <span className="home-layout-arrows" role="group" aria-label={`Reorder ${name} widget`}>
+        <IconButton icon="arrow-up" label={`Move ${name} widget up`} disabled={!earlier} onClick={earlier} data-debug-id={`home-layout-up-${widget.id}`} />
+        <IconButton icon="arrow-down" label={`Move ${name} widget down`} disabled={!later} onClick={later} data-debug-id={`home-layout-down-${widget.id}`} />
+      </span>
+    </>}
     <Menu label={`Layout actions for ${widget.id}`} className="home-layout-menu" trigger={
-      <IconButton icon="grip" label={`Reorder ${widget.id} widget`} className="home-layout-handle" draggable
-        data-debug-id={`home-layout-handle-${widget.id}`} onDragStart={controls.onDragStart} onDragEnd={controls.onDragEnd} />
+      mobile ? <IconButton icon="more-horizontal" label={`Layout actions for ${name}`} className="home-layout-options" data-debug-id={`home-layout-options-${widget.id}`} /> :
+        <IconButton icon="grip" label={`Reorder ${widget.id} widget`} className="home-layout-handle" draggable
+          data-debug-id={`home-layout-handle-${widget.id}`} onDragStart={controls.onDragStart} onDragEnd={controls.onDragEnd} />
     }>
-      <Menu.Item disabled={!earlier} data-debug-id={`home-layout-earlier-${widget.id}`} onClick={earlier}>Move earlier</Menu.Item>
-      <Menu.Item disabled={!later} data-debug-id={`home-layout-later-${widget.id}`} onClick={later}>Move later</Menu.Item>
+      {!mobile && <>
+        <Menu.Item disabled={!earlier} data-debug-id={`home-layout-earlier-${widget.id}`} onClick={earlier}>Move earlier</Menu.Item>
+        <Menu.Item disabled={!later} data-debug-id={`home-layout-later-${widget.id}`} onClick={later}>Move later</Menu.Item>
+      </>}
       {!mobile && <Menu.Item data-debug-id={`home-layout-width-${widget.id}`} onClick={() => edit((layout) => ({ ...layout, widgets: layout.widgets.map((item) => item.id === widget.id ? { ...item, width: item.width === 1 ? 2 : 1 } : item) }))}>
         {widget.width === 1 ? 'Make full width' : 'Make half width'}
       </Menu.Item>}
@@ -33,7 +44,7 @@ export function WidgetTitle({ children }: { children: ReactNode }) {
       <Menu.Separator />
       <Menu.Item data-debug-id={`home-layout-reset-${widget.id}`} onClick={() => edit((layout) => ({ ...defaultHomeLayout(), version: layout.version }))}>Reset layout</Menu.Item>
     </Menu>
-    {children}
+    {!mobile && children}
     <IconButton icon="close" label={`Remove ${widget.id} widget`} className="home-layout-remove" data-debug-id={`home-layout-remove-${widget.id}`} onClick={remove} />
   </div>;
 }

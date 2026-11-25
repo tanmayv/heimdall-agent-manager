@@ -175,6 +175,10 @@
 .home-layout-menu { max-width: min(360px, calc(100vw - 32px)); }
 .home-add-menu { width: 350px; }
 .home-add-menu button { white-space: normal; }
+.home-add-sheet-options button { white-space: normal; overflow-wrap: anywhere; }
+.home-add-sheet-options button > span { min-width: 0; }
+.home-add-sheet-options .truncate { white-space: normal; }
+.home-layout-arrows { display: inline-flex; flex: none; }
 .home-add-tile {
   border: 1px dashed var(--color-border-strong); border-radius: var(--radius-lg);
   min-height: 160px; padding: var(--space-5); display: flex; flex-direction: column;
@@ -204,7 +208,9 @@
   .home-edit-actions button, .home-layout-menu button, .home-add-tile button, .home-layout-empty button, .home-layout-feedback button { min-height: 44px; }
   .home-widget-title .home-layout-handle, .home-widget-title .home-layout-remove { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
   .home-widget-heading { gap: var(--space-1); flex-wrap: wrap; }
-  .home-widget-title { gap: 0; }
+  .home-widget-title { gap: 0; flex-wrap: wrap; width: 100%; }
+  .home-widget-title h2 { flex: 1; }
+  .home-widget-title .home-layout-options, .home-layout-arrows button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; padding: 0; }
   .home-widget-slot .home-fleet-defaults { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
   .home-widget-slot .home-fleet-defaults > .text-caption { grid-column: 1 / -1; }
   .home-widget-slot .home-fleet-overrides { padding: var(--space-3); }

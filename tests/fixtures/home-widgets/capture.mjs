@@ -5,6 +5,7 @@ import WebSocket from 'ws';
 
 const output = process.argv[2] || '/tmp/t8-home-captures';
 const widths = (process.argv[3] || '1440,390').split(',').map(Number);
+const height = Number(process.env.HOME_FIXTURE_HEIGHT || 1000);
 const port = process.env.HOME_CDP_PORT || 9338;
 const origin = process.env.HOME_FIXTURE_ORIGIN || 'http://127.0.0.1:5188';
 await fs.mkdir(output, { recursive: true });
@@ -53,8 +54,8 @@ await call('Page.bringToFront'); await call('Emulation.setFocusEmulationEnabled'
 const reports = [];
 try {
   for (const width of widths) {
-    await call('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
-    for (const state of ['normal', 'edit', 'expanded', 'empty']) {
+    await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    for (const state of width < 768 ? ['normal', 'edit', 'add-sheet', 'reordered', 'expanded', 'empty'] : ['normal', 'edit', 'expanded', 'empty']) {
       await call('Page.navigate', { url: origin + '/tests/fixtures/home-widgets/index.html' + (state === 'empty' ? '?empty' : '') });
       await settle();
       await evaluate('localStorage.clear()');
@@ -65,27 +66,68 @@ try {
         await evaluate(`document.querySelectorAll('[data-debug-id^="home-fleet-expand-"][aria-expanded="true"]').forEach((button) => button.click())`);
         if (state === 'expanded') await click('home-fleet-expand-mock-bridge-0');
       }
-      if (state === 'edit') await click('home-layout-edit');
+      if (['edit', 'add-sheet', 'reordered'].includes(state)) await click('home-layout-edit');
+      if (state === 'add-sheet') {
+        await click('home-layout-add-menu');
+        await wait(350);
+        const sheet = await evaluate(`(() => {
+          const sheet = document.querySelector('[data-debug-id="home-layout-add-sheet"]');
+          const rect = sheet.getBoundingClientRect();
+          return { x: rect.x, right: rect.right, y: rect.y, bottom: rect.bottom, height: rect.height,
+            focused: sheet.contains(document.activeElement),
+            rows: [...sheet.querySelectorAll('[role="menuitemcheckbox"]')].map(el => ({id: el.dataset.debugId, height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width})) };
+        })()`);
+        assert.ok(sheet.x >= 0 && sheet.right <= width && sheet.y >= 0 && sheet.bottom <= height + 1, 'sheet inside visible viewport');
+        assert.ok(sheet.height <= height * .8 + 1, 'sheet caps visible height');
+        assert.equal(sheet.focused, true);
+        assert.equal(sheet.rows.length, 3);
+        assert.ok(sheet.rows.every(row => row.height >= 44));
+        // The final option must be reachable even on short screens.
+        await evaluate(`document.querySelector('[data-debug-id="home-layout-toggle-fleet"]').scrollIntoView({block:'nearest'})`);
+        assert.ok(await evaluate(`(() => { const r = document.querySelector('[data-debug-id="home-layout-toggle-fleet"]').getBoundingClientRect(); return r.y >= 0 && r.bottom <= innerHeight; })()`));
+      }
+      if (state === 'reordered') {
+        await evaluate(`document.querySelector('[data-debug-id="home-layout-down-uptime"]').focus()`);
+        await key('Enter', 'Enter', 13);
+        assert.equal(await evaluate('document.activeElement.dataset.debugId'), 'home-layout-down-uptime');
+      }
       await wait(100);
       const geometry = await evaluate(`({
         viewport: innerWidth, page: document.documentElement.scrollWidth,
         slots: [...document.querySelectorAll('.home-widget-slot')].filter(el => getComputedStyle(el).display !== 'none').map(el => ({id:el.dataset.debugId,x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,width:el.getBoundingClientRect().width,outline:getComputedStyle(el).outline,offset:getComputedStyle(el).outlineOffset})),
-        controls: [...document.querySelectorAll('.home-layout-handle,.home-layout-remove,[data-debug-id="home-new-shell"],[data-debug-id="home-new-conversation"]')].map(el => ({id:el.dataset.debugId,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height})),
+        controls: [...document.querySelectorAll('.home-layout-handle,.home-layout-arrows button,.home-layout-options,.home-layout-remove,[data-debug-id="home-new-shell"],[data-debug-id="home-new-conversation"]')].map(el => ({id:el.dataset.debugId,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height})),
         height: Math.ceil(document.documentElement.scrollHeight)
       })`);
       assert.ok(geometry.page <= width, 'horizontal overflow');
+      if (width < 768) assert.ok(geometry.controls.every(control => control.width >= 44 && control.height >= 44), '44px mobile controls');
       const file = path.join(output, `home-${width}-${state}.png`);
-      const screenshot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width, height: Math.max(1000, geometry.height), scale: 1 } });
+      const screenshot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: state !== 'add-sheet', clip: { x: 0, y: 0, width, height: state === 'add-sheet' ? height : Math.max(height, geometry.height), scale: 1 } });
       await fs.writeFile(file, Buffer.from(screenshot.data, 'base64'));
       reports.push({ width, state, file, geometry });
+      if (state === 'add-sheet') {
+        await key('Escape', 'Escape', 27);
+        assert.equal(await evaluate('document.activeElement.dataset.debugId'), 'home-layout-add-menu');
+        assert.equal(await evaluate('document.body.style.overflow'), '');
+        await wait(350);
+        await click('home-layout-add-menu'); await wait(350);
+        await call('Input.dispatchMouseEvent', {type:'mousePressed', x:5, y:5, button:'left', clickCount:1});
+        await call('Input.dispatchMouseEvent', {type:'mouseReleased', x:5, y:5, button:'left', clickCount:1});
+        assert.equal(await evaluate(`document.querySelector('[data-debug-id="home-layout-add-menu"]').getAttribute('aria-expanded')`), 'false');
+        reports.at(-1).sheetViewportScrollDismissal = 'PASS';
+      }
       if (state === 'edit') {
         // Native Enter opens the handle menu; arrows move focus; Enter activates the action.
         const id = width < 768 ? 'uptime' : 'chains';
-        await evaluate(`document.querySelector('[data-debug-id="home-layout-handle-${id}"]').focus()`);
-        await key('Enter', 'Enter', 13);
-        const focused = await evaluate('document.activeElement.dataset.debugId');
-        if (!/^home-layout-(earlier|later)-/.test(focused)) console.error(JSON.stringify({focused, debug: await evaluate("document.activeElement.outerHTML + document.querySelector('[role=menu]')?.outerHTML")}));
-        assert.match(focused, /^home-layout-(earlier|later)-/);
+        if (width < 768) {
+          assert.equal(await evaluate(`Boolean(document.querySelector('[draggable="true"]'))`), false);
+          assert.equal(await evaluate(`document.querySelector('[data-debug-id="home-layout-up-uptime"]').disabled`), true);
+          assert.equal(await evaluate(`document.querySelector('[data-debug-id="home-layout-down-fleet"]').disabled`), true);
+          await evaluate(`document.querySelector('[data-debug-id="home-layout-down-${id}"]').focus()`);
+        } else {
+          await evaluate(`document.querySelector('[data-debug-id="home-layout-handle-${id}"]').focus()`);
+          await key('Enter', 'Enter', 13);
+          assert.match(await evaluate('document.activeElement.dataset.debugId'), /^home-layout-(earlier|later)-/);
+        }
         const before = await evaluate(`[...document.querySelectorAll('.home-widget-slot')].map(el=>el.dataset.debugId).join(',')`);
         // First enabled action is earlier on desktop and later on default mobile.
         await key('Enter', 'Enter', 13);
