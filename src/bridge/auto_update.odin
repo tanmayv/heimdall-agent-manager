@@ -212,14 +212,15 @@ bridge_auto_update_quiet_with_host :: proc(
 	sync.mutex_lock(&bridge_auto_update_mutex)
 	defer sync.mutex_unlock(&bridge_auto_update_mutex)
 	bridge_auto_update_busy, bridge_auto_update_busy_count = .None, 0
+	// Reset on every call so no busy reason other than Recorded_Launches shows stale ids.
+	delete(bridge_auto_update_busy_ids, runtime.heap_allocator())
+	bridge_auto_update_busy_ids = ""
 	if bridge_auto_update_launches > 0 {
 		bridge_auto_update_busy = .Launch_Preparing
 		return false
 	}
 	// A record whose instance is already stopped/failed is a dead agent's leftover
 	// (T16d): it must not hold the window. Anything else blocks, named in the log.
-	delete(bridge_auto_update_busy_ids, runtime.heap_allocator())
-	bridge_auto_update_busy_ids = ""
 	sync.mutex_lock(&bridge_runtime_mutex)
 	live_ids := make([dynamic]string, context.temp_allocator)
 	for launch in bridge_runtime_launches {
