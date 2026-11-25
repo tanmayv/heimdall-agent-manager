@@ -231,7 +231,8 @@ test_convert_runner_happy_path_runs_every_step_in_order :: proc(t: ^testing.T) {
 	testing.expect_value(t, f.records[0].step, "C1")
 	testing.expect_value(t, f.records[0].state, "begin")
 	testing.expect_value(t, f.records[1].state, "done")
-	testing.expect_value(t, len(f.records), 2 * len(Convert_Step))
+	// C9 removes the record itself, so its "done" is never written (it would resurrect it).
+	testing.expect_value(t, len(f.records), 2 * len(Convert_Step) - 1)
 }
 
 @(test)
