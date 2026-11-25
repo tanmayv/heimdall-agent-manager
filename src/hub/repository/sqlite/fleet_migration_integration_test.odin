@@ -89,7 +89,9 @@ fmi_upgrade :: proc(t: ^testing.T, from_remote: bool) {
 			INSERT INTO event_webhooks(webhook_id,owner_user_id,token_hash,created_at,updated_at,dedupe_header)
 			VALUES('existing-webhook','owner','original-hash','then','then','Svix-Id');
 			UPDATE provider_catalog SET display_name='Operator OpenCode' WHERE provider='opencode';
-		`)) do return
+		`)) {
+			return
+		}
 	}
 	remote_ledger := fmi_ledger(&conn)
 	ok, err := run_migrations(&conn, migrations_dir = "")
@@ -110,7 +112,9 @@ fmi_upgrade :: proc(t: ^testing.T, from_remote: bool) {
 		INSERT INTO instance_fleet_scope VALUES('instance','chain');
 		INSERT INTO bridge_fleet_applications(application_id,bridge_id,owner_user_id,request_id,request_json,authority_json,revision,state,application_json)
 		VALUES('application','bridge','owner','request','{"draft":"original"}','{"authority":"original"}',2,'restarting','{"sentinel":"original"}');
-	`)) do return
+	`)) {
+		return
+	}
 	ledger := fmi_ledger(&conn)
 	for _ in 0..<2 {
 		close(&conn)
