@@ -26,15 +26,24 @@ export function WebhookSecretNotice({ secret, onDismiss }: { secret: WebhookSecr
     <Button variant="secondary" data-debug-id="webhook-secret-dismiss" onClick={onDismiss}>I saved these credentials</Button>
   </Panel>;
 }
+function isCredentialHeader(value: string) {
+  return ['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key'].includes(value.toLowerCase());
+}
+function validDedupeHeader(value: string) {
+  return value.length >= 1 && value.length <= 64 && !/[^!#$%&'*+.^_`|~0-9A-Za-z-]/.test(value) && !isCredentialHeader(value);
+}
+function dedupeHeaderError(value: string) {
+  return isCredentialHeader(value) ? 'Choose an event ID header. Credential headers cannot be used for deduplication.' : 'Enter a header name of 1 to 64 letters, digits or HTTP token symbols.';
+}
 function DedupeHeaderEditor({ row, disabled, onSave }: { row: EventWebhook; disabled: boolean; onSave: (value: string) => void }) {
   const [value, setValue] = React.useState(row.dedupe_header);
   React.useEffect(() => setValue(row.dedupe_header), [row.dedupe_header]);
-  const valid = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/.test(value);
+  const valid = validDedupeHeader(value);
   return <form className="webhook-create" onSubmit={event => { event.preventDefault(); if (valid && !disabled) onSave(value); }}>
     <FormField label="Dedupe header" hint="Use your sender’s event ID header. Retries with the same value are accepted once. Missing values create separate events.">
       <Input data-debug-id={'webhook-dedupe-header-' + row.webhook_id} aria-label={'Dedupe header for ' + row.name} value={value} onChange={setValue} disabled={disabled} />
     </FormField>
-    {!valid ? <Text role="body-sm">Enter a header name of 1 to 64 letters, digits or HTTP token symbols.</Text> : null}
+    {!valid ? <Text role="body-sm">{dedupeHeaderError(value)}</Text> : null}
     <Button type="submit" variant="secondary" data-debug-id={'webhook-dedupe-save-' + row.webhook_id} disabled={disabled || !valid || value === row.dedupe_header}>Save header</Button>
   </form>;
 }
@@ -45,7 +54,7 @@ export default function WebhooksSection() {
   const [error, setError] = React.useState('');
   const [name, setName] = React.useState('');
   const [dedupeHeader, setDedupeHeader] = React.useState('Idempotency-Key');
-  const validHeader = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/.test(dedupeHeader);
+  const validHeader = validDedupeHeader(dedupeHeader);
   const [secret, setSecret] = React.useState<WebhookSecret | null>(null);
   const [confirmRotate, setConfirmRotate] = React.useState<EventWebhook | null>(null);
   const mounted = React.useRef(false);
@@ -82,7 +91,7 @@ export default function WebhooksSection() {
     <form className="webhook-create" onSubmit={event => { event.preventDefault(); if (name.trim() && validHeader && !busy && !secret) void mutate(() => createWebhook(name.trim(), dedupeHeader)); }}>
       <FormField label="Webhook name" hint="For example, Release notifications. Creating a webhook does not send a prompt."><Input data-debug-id="webhook-name" aria-label="Webhook name" value={name} onChange={setName} disabled={busy || Boolean(secret)} /></FormField>
       <FormField label="Dedupe header" hint="Defaults to Idempotency-Key. Examples: X-GitHub-Delivery, Svix-Id, X-Request-Id."><Input data-debug-id="webhook-dedupe-header" aria-label="Dedupe header" value={dedupeHeader} onChange={setDedupeHeader} disabled={busy || Boolean(secret)} /></FormField>
-      {!validHeader ? <Text role="body-sm">Enter a header name of 1 to 64 letters, digits or HTTP token symbols.</Text> : null}
+      {!validHeader ? <Text role="body-sm">{dedupeHeaderError(dedupeHeader)}</Text> : null}
       <Button type="submit" variant="primary" data-debug-id="webhook-create" disabled={!name.trim() || !validHeader || busy || Boolean(secret)}>Create webhook</Button>
     </form>
     {rows.map(row => <Panel key={row.webhook_id} className="webhook-row">

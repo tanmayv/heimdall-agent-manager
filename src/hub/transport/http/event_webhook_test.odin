@@ -308,3 +308,26 @@ webhook_configured_dedupe_scenario :: proc(t:^testing.T,api:^Action_API_Fixture)
  updated:=action_api_data(t,agent_webhook_test_call(&f,"update",strings.concatenate({`{"id":"`,id,`","dedupe_header":"X-Request-Id"}`},context.temp_allocator)))
  testing.expect_value(t,updated["dedupe_header"].(string),"X-Request-Id")
 }
+
+@(test)
+test_event_webhook_rejects_credential_dedupe_headers :: proc(t:^testing.T) {action_api_test(t,webhook_credential_dedupe_scenario)}
+webhook_credential_dedupe_scenario :: proc(t:^testing.T,api:^Action_API_Fixture) {
+ impl:sqlite.Event_Webhook_Repo_SQLite
+ f:=event_webhook_test_setup(api,&impl);event_webhook_test_bind(&f)
+ defer event_webhook_limiter_destroy(&f.h.limiter)
+ id,_:=event_webhook_test_create(t,&f)
+ path:=fmt.tprintf("/api/v1/webhooks/%s",id)
+ for name in ([]string{"Authorization","proxy-AUTHORIZATION","COOKIE","Set-Cookie","x-API-key"}) {
+  body,_:=json.marshal(struct{dedupe_header:string}{name},allocator=context.temp_allocator)
+  for method in ([]string{"POST","PATCH"}) {
+   target:="/api/v1/webhooks" if method=="POST" else path
+   response:=event_webhook_crud_handler(&f.h,action_api_request(api,method,target,string(body)))
+   testing.expect_value(t,response.status,422)
+   testing.expect(t,strings.contains(response.body,"credential headers"))
+  }
+ }
+ row,e:=webhooks.get(&f.service,string(api.wire.owner),id)
+ defer domain.event_webhook_destroy(&row)
+ testing.expect_value(t,e.code,domain.Error_Code.None)
+ testing.expect_value(t,row.dedupe_header,"Idempotency-Key")
+}

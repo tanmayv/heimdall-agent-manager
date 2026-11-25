@@ -56,6 +56,9 @@ test('webhook creation shows credentials once, dismisses and rotates with confir
     }
     await setHeader('bad header');
     assert.equal((byId('webhook-dedupe-save-wh_one') as HTMLButtonElement).disabled, true);
+    await setHeader('aUtHoRiZaTiOn');
+    assert.equal((byId('webhook-dedupe-save-wh_one') as HTMLButtonElement).disabled, true);
+    assert.match(doc.body.textContent!, /Credential headers cannot be used/);
     await setHeader('X-GitHub-Delivery');
     assert.equal((byId('webhook-dedupe-save-wh_one') as HTMLButtonElement).disabled, false);
     await React.act(async () => byId('webhook-dedupe-save-wh_one').closest('form')!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })));

@@ -136,10 +136,14 @@ ham-ctl automations webhooks update wh_1 --dedupe-header X-Request-Id
 API create (`POST /api/v1/webhooks`) and update (`PATCH /api/v1/webhooks/<id>`)
 accept `{"dedupe_header":"X-GitHub-Delivery"}`; list/show responses include the field.
 Header names are case insensitive RFC 7230 tokens of 1 to 64 ASCII characters.
-Empty names, whitespace, colons and non-ASCII names are rejected.
+Empty names, whitespace, colons and non-ASCII names are rejected. Credential
+headers Authorization, Proxy-Authorization, Cookie, Set-Cookie and X-Api-Key
+are also rejected case insensitively; choose an event ID header instead.
 
 After authentication, ingress uses the configured header value as the event ID
-input, retaining the existing 128-byte value limit. Repeated nonempty values for
+input, retaining the existing 128-byte value limit. The persisted event ID is
+derived from SHA-256 of the webhook ID and header value; the raw header value
+is not stored in the event ID or envelope. Repeated nonempty values for
 the same webhook yield one outbox event and `duplicate:true`; missing or empty
 values create separate events. Other ID headers are ignored. Existing webhooks
 retain `Idempotency-Key` through migration. Use GitHub’s `X-GitHub-Delivery`,

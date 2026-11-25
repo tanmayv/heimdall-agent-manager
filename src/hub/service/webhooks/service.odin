@@ -20,9 +20,15 @@ resolve_limits :: proc(l:Limits)->Limits {return DEFAULT_LIMITS if l==Limits{} e
 effective_limits :: proc(s:^Service)->Limits {return resolve_limits(s.limits)}
 DEFAULT_DEDUPE_HEADER :: "Idempotency-Key"
 Input :: struct { name:Maybe(string), enabled:Maybe(bool), dedupe_header:Maybe(string) }
+dedupe_header_is_credential :: proc(name:string)->bool {
+ for blocked in ([]string{"Authorization","Proxy-Authorization","Cookie","Set-Cookie","X-Api-Key"}) {
+  if strings.equal_fold(name,blocked) do return true
+ }
+ return false
+}
 // RFC 7230 tchar; names are ASCII tokens, without surrounding whitespace.
 dedupe_header_valid :: proc(name:string)->bool {
- if len(name)==0 || len(name)>64 do return false
+ if len(name)==0 || len(name)>64 || dedupe_header_is_credential(name) do return false
  for ch in transmute([]u8)name {
   if (ch>='a' && ch<='z') || (ch>='A' && ch<='Z') || (ch>='0' && ch<='9') do continue
   if strings.contains_rune("!#$%&'*+-.^_`|~",rune(ch)) do continue
@@ -97,6 +103,7 @@ mutate :: proc(s:^Service,owner,id,operation:string,input:Input={})->(domain.Eve
    delete(row.name);row.name=strings.clone(name)
   }
   if header,present:=input.dedupe_header.?;present {
+   if dedupe_header_is_credential(header) do return {},"",domain.domain_error(.Validation_Failed,"dedupe_header cannot use credential headers (Authorization, Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key)")
    if !dedupe_header_valid(header) do return {},"",domain.domain_error(.Validation_Failed,"dedupe_header must be an RFC 7230 token of 1 to 64 ASCII characters")
    delete(row.dedupe_header);row.dedupe_header=strings.clone(header)
   }

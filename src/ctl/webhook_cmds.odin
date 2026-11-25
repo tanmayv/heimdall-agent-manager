@@ -71,10 +71,12 @@ ctl_webhook_help :: proc(verb:string)->string {
  case "create": return `ham-ctl automations webhooks create [--name <text>] [--dedupe-header <header>]
 Create an enabled webhook for your owner. Returns webhook metadata and a token ONCE.
 Dedupe header defaults to Idempotency-Key; accepts an RFC 7230 token of 1 to 64 characters.
+Credential headers Authorization, Proxy-Authorization, Cookie, Set-Cookie and X-Api-Key are rejected.
 Save the token now; list/show never reveal it. Name is at most 256 bytes.
 Example: ham-ctl automations webhooks create --name 'CI build'`
  case "update": return `ham-ctl automations webhooks update <id> [--name <text>] [--dedupe-header <header>]
 Update owned webhook metadata. Header names must be RFC 7230 tokens of 1 to 64 characters.
+Credential headers Authorization, Proxy-Authorization, Cookie, Set-Cookie and X-Api-Key are rejected.
 Example: ham-ctl automations webhooks update wh_1 --dedupe-header X-GitHub-Delivery`
  case "list": return `ham-ctl automations webhooks list
 List your owner's webhook metadata; tokens and hashes are omitted.
