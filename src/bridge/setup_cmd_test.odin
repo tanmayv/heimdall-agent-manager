@@ -381,3 +381,54 @@ test_setup_update_argv_never_reenrolls_a_parked_profile :: proc(t: ^testing.T) {
 	testing.expect(t, !r.ok && r.halt)
 	testing.expect(t, s.not_enrolled != "")
 }
+
+// P2-6 acceptance: every way a legacy instance reaches the first supervisor release's
+// setup (the argv of the v0.5.77 and later `ham-bridge update` workers, install.sh and
+// install.ps1 with their flag combinations, a desktop --bundle run) goes through the real
+// fact gathering on a legacy layout with a supervisor-capable bundle and classifies as S10.
+// Spec docs/specs/bridge-supervisor-conversion.md §2.
+@(test)
+test_setup_every_legacy_caller_argv_classifies_as_s10 :: proc(t: ^testing.T) {
+	home := setup_test_home("setup-s10-callers")
+	defer os.remove_all(home)
+	version := contracts.APP_VERSION
+	hub := "https://hub.example.com"
+	callers := [][]string {
+		{"setup", "--hub", hub, "--headless"}, // v0.5.77 update_setup_argv (no --reinstall)
+		{"setup", "--hub", hub, "--headless", "--json-progress"},
+		{"setup", "--hub", hub, "--headless", "--reinstall"}, // later builds
+		{"setup", "--hub", hub, "--headless", "--reinstall", "--json-progress"},
+		{"setup", "--hub", hub, "--keep-version"}, // install.sh / install.ps1 re-run, no flags
+		{"setup", "--hub", hub, "--headless", "--keep-version"},
+		{"setup", "--hub", hub, "--headless", "--version", version}, // install.sh --version X / --bundle
+		{"setup", "--hub", hub, "--version", version, "--allow-downgrade"},
+	}
+	for argv in callers {
+		label := strings.join(argv, " ", context.temp_allocator)
+		_ = os.remove_all(home)
+		s := setup_test_make(home, argv)
+		l := s.layout
+		// A legacy instance: bin/ham-bridge and a credential, no instance.json, no launcher/.
+		testing.expect(t, os.make_directory_all(l.bin_dir) == nil)
+		testing.expect(t, os.write_entire_file_from_string(bridgesvc.pjoin(l.bin_dir, bridgesvc.exe_name(s.host, "ham-bridge")), "legacy") == nil)
+		credential := strings.concatenate({bridgesvc.CREDENTIAL_HEADER, "secret brg_a\n"}, context.temp_allocator)
+		testing.expect(t, os.write_entire_file_from_string(bridgesvc.pjoin(l.state_dir, bridgesvc.TOKEN_FILE), credential) == nil)
+		// A supervisor-capable bundle (§3.1: every engine binary).
+		s.bundle_dir = bridgesvc.pjoin(home, "bundle")
+		testing.expect(t, os.make_directory_all(s.bundle_dir) == nil)
+		for base in ([]string{"ham-bridge", "ham-pty-host", "ham-ctl", "ham-supervisor", "ham-launcher"}) {
+			testing.expect(t, os.write_entire_file_from_string(bridgesvc.pjoin(s.bundle_dir, bridgesvc.exe_name(s.host, base)), "bundle") == nil)
+		}
+		s.facts = bridge_setup_gather_facts(&s)
+		testing.expectf(t, s.facts.legacy && s.facts.bundle_capable && !s.facts.supervisor_managed, "%s: facts %v", label, s.facts)
+		plan := bridgesvc.classify_install(s.facts)
+		testing.expectf(t, plan.convert && !plan.greenfield && !plan.refuse && !plan.noop && .S10_Convert in plan.rows, "%s: plan %v", label, plan)
+		testing.expectf(t, !plan.replace_binaries, "%s: conversion replaces the legacy Stage/Binaries pair", label)
+
+		// The same callers with a bundle that is NOT supervisor-capable stay plain legacy (S10b).
+		_ = os.remove(bridgesvc.pjoin(s.bundle_dir, bridgesvc.exe_name(s.host, "ham-supervisor")))
+		s.facts = bridge_setup_gather_facts(&s)
+		plan = bridgesvc.classify_install(s.facts)
+		testing.expectf(t, !s.facts.bundle_capable && !plan.convert && !plan.refuse, "%s: old bundle: plain legacy path (%v)", label, plan)
+	}
+}

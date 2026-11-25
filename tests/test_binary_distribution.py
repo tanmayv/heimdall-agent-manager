@@ -228,6 +228,42 @@ def test_tarball_structure_and_metadata(ctx):
     ctx['tarball'] = tarball
 
 
+def test_bundle_still_extracts_the_way_the_legacy_updater_expects(ctx):
+    """P2-6 (docs/specs/bridge-supervisor-conversion.md 1): v0.5.77 and every later legacy
+    `ham-bridge update` downloads heimdall-local-<target>-<tag>.tar.gz, unpacks it with
+    `tar -xf <archive> -C <bundle>` (release_fetch.odin) and looks for ham-bridge in the
+    bundle dir or its bin/ (update_bundle_exe, uninstall.odin). The supervisor-capable
+    bundle must keep that shape: no wrapping directory, bin/ham-bridge a regular file, no
+    symlink or hard link (the supervisor's extractor refuses them), and the same
+    versioned asset name check-promotion.sh enforces. Zip (Windows) is the same layout,
+    covered by install-ps1.yml and the Windows conversion CI."""
+    base = ctx['work'] / 'legacy-extract'
+    base.mkdir()
+    res, tarball = package_tarball(base, target='linux-amd64')
+    assert res.returncode == 0, f'packaging failed:\n{res.stderr}'
+    tag = 'v0.5.99'
+    asset = base / f'heimdall-local-linux-amd64-{tag}.tar.gz'
+    shutil.copy(tarball, asset)
+    bundle = base / 'bundle'
+    bundle.mkdir()
+    out = run(['tar', '-xf', asset, '-C', bundle])
+    assert out.returncode == 0, f'tar -xf (as the old updater runs it) failed: {out.stderr}'
+    candidates = [bundle / 'ham-bridge', bundle / 'bin' / 'ham-bridge']
+    found = [c for c in candidates if c.is_file()]
+    assert found == [bundle / 'bin' / 'ham-bridge'], f'update_bundle_exe would find {found}'
+    assert not found[0].is_symlink() and found[0].stat().st_mode & 0o111
+    for engine in ('ham-supervisor', 'ham-launcher', 'ham-pty-host', 'ham-ctl'):
+        assert (bundle / 'bin' / engine).is_file(), f'{engine} missing: the bundle is not supervisor-capable'
+    with tarfile.open(asset, 'r:gz') as tf:
+        links = [m.name for m in tf.getmembers() if m.issym() or m.islnk()]
+        wrapped = [n for n in tf.getnames() if not (n in ('bin', 'share') or n.startswith('bin/') or n.startswith('share/')
+                                                    or n in ('README.md', 'LICENSE', 'METADATA.json'))]
+    assert not links, f'links in the bundle: {links}'
+    assert not wrapped, f'entries outside the legacy layout: {wrapped}'
+    # The asset name the old updater derives (bridge_release_bundle_name) and check-promotion.sh requires.
+    assert re.fullmatch(r'heimdall-local-[a-z0-9]+-[a-z0-9]+-v[0-9A-Za-z._-]+\.tar\.gz', asset.name), asset.name
+
+
 def test_tarball_without_engine_is_refused_off_termux(ctx):
     """P2-2: a linux/darwin bundle without launcher+supervisor must not be built."""
     base = ctx['work'] / 'no-engine'
@@ -4951,6 +4987,8 @@ def test_install_sh_enrollment_noninteractive_invariants(ctx):
 def main() -> int:
     tests = [
         ('tarball structure + METADATA.json schema', test_tarball_structure_and_metadata),
+        ('bundle extracts as the legacy updater expects (P2-6)',
+         test_bundle_still_extracts_the_way_the_legacy_updater_expects),
         ('tarball without pty-host (5-arg variant)', test_tarball_without_pty_host),
         ('packaging error cases', test_packaging_error_cases),
         ('SHA256SUMS validation + tamper fail-closed', test_sha256sums_validation),

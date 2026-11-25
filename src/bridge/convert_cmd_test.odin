@@ -802,3 +802,61 @@ test_finalize_without_conversion_state_does_not_crash :: proc(t: ^testing.T) {
 	r := bridge_convert_finalize(s, Conversion_Record{txn = "cv_0123456789abcdef", to_version = "0.5.86"})
 	testing.expect(t, r.ok)
 }
+
+// ---- the old updater's bookkeeping (spec §11, P2-6) ----------------------------------------
+
+// OLD_WORKER_RECORD is what the legacy worker has on disk while it waits for setup: the
+// pending update it announced (bridge_auto_update_start) in <state>/auto-update.json.
+@(private = "file")
+write_old_worker_record :: proc(s: ^Bridge_Setup) -> (path: string) {
+	path = bridgesvc.pjoin(s.layout.state_dir, "auto-update.json")
+	ok := bridge_auto_update_write(path, Bridge_Auto_Update_State{next_check_ms = 1_800_000_500_000, pending_version = "0.5.86"})
+	assert(ok, "fixture write failed")
+	return
+}
+
+@(test)
+test_convert_never_touches_the_old_workers_auto_update_state :: proc(t: ^testing.T) {
+	// Success: setup neither writes nor deletes <state>/auto-update.json (§11.2).
+	s, w := fixture(t, "bookkeeping-ok")
+	defer destroy(s, w)
+	path := write_old_worker_record(s)
+	before := strings.clone(read(path), context.temp_allocator)
+	r := bridge_convert_run(s)
+	testing.expectf(t, r.ok && r.finished, "converted: %v", r)
+	testing.expect_value(t, read(path), before)
+	// The worker's deferred step (update_cmd.odin, bridge_auto_update_finish_at) then
+	// rewrites it. The converted instance does not care.
+	bridge_auto_update_finish_at(path, true, 1_800_000_100_000, 7, "update to v0.5.86 succeeded")
+	late := bridge_auto_update_read(path)
+	testing.expect_value(t, late.pending_version, "")
+	testing.expect_value(t, late.failures, 0)
+	testing.expect(t, late.next_check_ms > 1_800_000_100_000)
+	testing.expect(t, bridge_convert_supervisor_managed(s.host, s.layout), "still supervisor-managed after the late write")
+	testing.expect(t, bridge_convert_layout_ok(s.host, s.layout), "layout still valid after the late write")
+}
+
+@(test)
+test_failed_conversion_leaves_the_old_workers_failure_record_for_its_backoff :: proc(t: ^testing.T) {
+	// Rollback (R3) restores settings from the backup, but auto-update.json is excluded from
+	// it: after a failed conversion the file is the worker's own 'update … failed' record
+	// (§11.2), and the legacy updater retries with its own backoff.
+	for step in ([]bridgesvc.Convert_Step{.Backup, .Tree, .Cutover, .Start}) {
+		s, w := fixture(t, fmt.tprintf("bookkeeping-fail-%v", step))
+		defer destroy(s, w)
+		path := write_old_worker_record(s)
+		before := strings.clone(read(path), context.temp_allocator)
+		w.fail_step = step
+		s.conv.fail_after = proc(s: ^Bridge_Setup, at: bridgesvc.Convert_Step) -> string {
+			if want, ok := world_of(s).fail_step.?; ok && want == at do return "injected failure"
+			return ""
+		}
+		r := bridge_convert_run(s)
+		testing.expectf(t, !r.ok, "%v: fails", step)
+		testing.expect_value(t, read(path), before)
+		expect_legacy_restored(t, s, w, fmt.tprintf("%v", step))
+		bridge_auto_update_finish_at(path, false, 1_800_000_100_000, 7, "update to v0.5.86 failed: setup failed")
+		failed := bridge_auto_update_read(path)
+		testing.expectf(t, failed.failures >= 1 && failed.pending_version == "", "%v: the worker records the failure for its backoff", step)
+	}
+}

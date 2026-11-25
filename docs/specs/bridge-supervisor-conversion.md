@@ -594,6 +594,17 @@ file is **dead data**: nothing reads it (§12.2). Setup therefore:
   the legacy updater wants for its backoff);
 - Phase 4 deletes it.
 
+Verified against the real released updaters by `tests/e2e/legacy_updater_compat_e2e.mjs`
+(`.github/workflows/legacy-updater-compat.yml`, Linux/macOS/Windows): v0.5.77 writes only
+`pending_version` (cleared), `failures` and `next_check_ms` (no `last_result`, no log line:
+those arrived with T16c); later builds add `last_result`. Neither writes anything else, and
+`tests/e2e/legacy_updater_compat_e2e.mjs` shows the lock (§11.1) is held until the worker
+exits and a second automatic worker is refused meanwhile.
+Windows limitation: the detached stdin there is the NUL device, which the stub's `is_terminal`
+reports as a terminal, so the "no terminal" assertion covers only stdout/stderr on Windows;
+the lock-held and wait-for-setup checks run on all three OSes. This is a contract test of the
+old updater against a stub; it does not convert anything (that is P2-7, §13).
+
 ### 11.3 Settings carried over
 
 The user's legacy auto-update preference becomes the supervisor's: C5(e) writes
