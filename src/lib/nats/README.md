@@ -34,6 +34,16 @@ used. `src/lib/natstest` is the reusable fixture: the server chooses its own por
 writes a ports file, and owns an isolated temporary JetStream store. Always call
 `natstest.destroy`, even when startup fails. `natstest.stop` supports outage tests.
 
+The Linux Nix check requires writable existing tmpfs at `/dev/shm` with at least
+256 MiB free. It selects a private mode-700 `TMPDIR`, prints its location and
+capacity, and removes it on exit without replacing the builder's cleanup trap.
+The real server still uses file-backed JetStream stores, including restart and
+persistence assertions; request deadlines and leak checks are unchanged. This
+isolates short-deadline fixtures from the host's shared disk. A matched diagnostic
+passed on tmpfs and failed under Valgrind on disk, but did not establish the
+cause of historical timeouts. macOS and direct dev-shell runs keep their existing
+temporary-directory selection. Missing tmpfs fails clearly; it does not skip tests.
+
 The time regression calls the actual linked client encoder for whole seconds,
 leading-zero fractions down to 1ns, 10/60/62/80/81/90ms and 100/990ms controls.
 Real consumer-info responses must record each exact cutoff and preserve filter,

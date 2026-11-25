@@ -107,34 +107,6 @@ test_time_consumer :: proc(t: ^testing.T, conn: ^Connection, name: string, cutof
 		"server cutoff %s: intended %d got %s", name, cutoff, info.config.opt_start_time)
 }
 
-// Opt-in diagnostic cleanup, after the original assertion has already failed.
-// The external probe pins a Linux pidfd and verifies the parent, executable and
-// exact fixture store arguments before requesting a fatal Go goroutine dump.
-test_dump_fixture_server :: proc(srv: ^server.Server) {
-	helper :: #config(HAM_NATS_STACK_HELPER, "")
-	when ODIN_OS == .Linux && helper != "" {
-		probe, start_err := os.process_start({command = []string{
-			"python3", helper, fmt.tprintf("%d", srv.process.pid),
-			fmt.tprintf("%d", os.get_pid()), srv.directory,
-		}})
-		if start_err != nil {fmt.printf("fixture stack probe start: %v\n", start_err); return}
-		result, wait_err := os.process_wait(probe, timeout = 3 * time.Second)
-		if wait_err != nil {
-			_ = os.process_kill(probe)
-			_, _ = os.process_wait(probe)
-			fmt.printf("fixture stack probe wait: %v\n", wait_err)
-			return
-		}
-		fmt.printf("fixture stack probe: pid=%d exit=%d\n", srv.process.pid, result.exit_code)
-		if result.exit_code != 0 do return
-		// Allow the fatal dump to finish before normal fixture teardown. If it
-		// fails to exit within this cleanup bound, destroy still kills/reaps it.
-		state, server_wait_err := os.process_wait(srv.process, timeout = 2 * time.Second)
-		fmt.printf("fixture stack cleanup: pid=%d exited=%v error=%v\n", srv.process.pid, state.exited, server_wait_err)
-		if server_wait_err == nil && state.exited do srv.process = {}
-	}
-}
-
 scenario_exact_start_time :: proc(t: ^testing.T) {
 	// Literal expectations exercise the actual linked nats.c encoder, rather than
 	// reproducing its formatter in a mock. Include 1-9 digit leading-zero scales.
@@ -161,14 +133,8 @@ scenario_exact_start_time :: proc(t: ^testing.T) {
 	conn := test_connect(t, srv.url)
 	if conn == nil do return
 	defer destroy(conn)
-	setup_tick := time.tick_now()
 	_, err := stream_add(conn, {name = "TIMES", subjects = []string{"ev.>"}, replicas = 1})
-	fmt.printf("exact_start_time stream_add: status=%d elapsed_ns=%d request_timeout_ms=500 now_ns=%d server=%s\n",
-		err.status, i64(time.tick_since(setup_tick)), time.to_unix_nanoseconds(time.now()), srv.url)
-	if !testing.expect_value(t, err.status, i32(0)) {
-		test_dump_fixture_server(&srv)
-		return
-	}
+	if !testing.expect_value(t, err.status, i32(0)) do return
 	target, pub_err := publish(conn, "ev.target", test_bytes("target"), "target")
 	if !testing.expect_value(t, pub_err.status, i32(0)) do return
 	_, err = publish(conn, "ev.other", test_bytes("filtered"), "filtered")
@@ -919,11 +885,7 @@ scenario_schedule_fire_ttl :: proc(t: ^testing.T) {
 	meta, err := message_metadata(batch_message(b, 0))
 	if !testing.expect_value(t, err.status, i32(0)) do return
 	time.sleep(time.Second)
-	get_tick := time.tick_now()
 	msg, me := stream_get(f.conn, "FEATURE", meta.stream_sequence)
-	fmt.printf("schedule_fire_ttl stream_get: status=%d elapsed_ns=%d request_timeout_ms=500 sequence=%d stored_ns=%d now_ns=%d server=%s\n",
-		me.status, i64(time.tick_since(get_tick)), meta.stream_sequence, meta.timestamp_ns,
-		time.to_unix_nanoseconds(time.now()), f.srv.url)
 	message_destroy(msg); testing.expect_value(t, me.status, i32(0))
 	time.sleep(3 * time.Second)
 	old, old_err := stream_get(f.conn, "FEATURE", meta.stream_sequence)
