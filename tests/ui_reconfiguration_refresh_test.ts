@@ -204,3 +204,52 @@ test('AgentChatPane only refetches through the started-query guard', async () =>
   const rawRefetches = source.split('\n').filter((line) => /\.refetch\(\)/.test(line) && !/function refetchIfStarted|query\.refetch\(\)/.test(line));
   assert.deepEqual(rawRefetches, [], 'freshness comes from tag invalidation; user refreshes use refetchIfStarted');
 });
+
+test('lifecycle acceptance refreshes scoped lists and chain without agentId; WS supplies readiness', async () => {
+  const { tasksApi } = await import('../src/ui/api/endpoints/tasks.ts');
+  const { handleUserWsEvent, INVALIDATION_COALESCE_MS, resetQueuedInvalidations } = await import('../src/ui/api/wsInvalidation.ts');
+  const instance = { agent_instance_id: 'inst_a', agent_id: 'agt_a', project_id: 'proj_a', chain_id: 'chain_a', runtime_status: 'starting' };
+  const hits: string[] = [];
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const url = new URL(String(input), 'http://localhost');
+    hits.push(`${init.method || 'GET'} ${url.pathname}${url.search}`);
+    let data: any = {};
+    if (url.pathname.endsWith('/agent-instances')) data = url.searchParams.get('agent_id') === 'agt_b' ? [] : [instance];
+    else if (url.pathname.endsWith('/inst_a')) data = instance;
+    else if (url.pathname.includes('/task-chains/')) data = { chain_id: url.pathname.split('/').pop(), members: [] };
+    return jsonResponse({ data });
+  }) as any;
+  const store = await makeVaultStore();
+  const subs = [
+    store.dispatch(agents.agentsApi.endpoints.fetchAgentInstance.initiate({ instanceId: 'inst_a' })),
+    ...[undefined, { agentId: 'agt_a' }, { agentId: 'agt_b' }, { projectId: 'proj_a' }].map(arg => store.dispatch(agents.agentsApi.endpoints.listAgentInstances.initiate(arg))),
+    ...['chain_a', 'chain_b'].map(chainId => store.dispatch(tasksApi.endpoints.fetchTaskChainDetail.initiate({ chainId }))),
+  ];
+  try {
+    await Promise.all(subs);
+    for (const action of ['startAgentInstance', 'stopAgentInstance', 'restartAgentInstance'] as const) {
+      hits.length = 0;
+      await store.dispatch(agents.agentsApi.endpoints[action].initiate({ instanceId: 'inst_a', agentId: '' }));
+      await settle();
+      const gets = hits.filter(h => h.startsWith('GET'));
+      assert.equal(gets.length, 5, gets.join(', '));
+      assert.equal(gets.filter(h => h.endsWith('/agent-instances')).length, 1, 'one global list refresh');
+      assert.ok(gets.some(h => h.endsWith('agent_id=agt_a')));
+      assert.ok(gets.some(h => h.endsWith('project_id=proj_a')));
+      assert.ok(gets.some(h => h.endsWith('/task-chains/chain_a')));
+      assert.ok(!gets.some(h => h.includes('agt_b') || h.includes('chain_b')));
+      assert.equal(agents.agentsApi.endpoints.fetchAgentInstance.select({ instanceId: 'inst_a' })(store.getState()).data?.instance?.runtime_status, 'starting', '202 acceptance does not imply readiness');
+    }
+    hits.length = 0;
+    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'inst_a', change: 'status_changed', summary: { ...instance, runtime_status: 'running', startup_status: 'ready', updated_at: '2026-11-26T00:00:00Z' } });
+    await settle(INVALIDATION_COALESCE_MS + 60);
+    assert.equal(agents.agentsApi.endpoints.listAgentInstances.select(undefined)(store.getState()).data?.instances[0].runtime_status, 'running');
+    assert.deepEqual(hits, ['GET /api/v1/task-chains/chain_a'], 'status patches lists; only affected chain projection refetches');
+  } finally {
+    resetQueuedInvalidations();
+    subs.forEach(sub => sub.unsubscribe());
+    store.dispatch(heimdallApi.util.resetApiState());
+    globalThis.fetch = previous;
+  }
+});

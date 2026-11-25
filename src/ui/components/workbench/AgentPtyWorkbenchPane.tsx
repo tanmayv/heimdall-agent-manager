@@ -23,7 +23,7 @@ export function AgentPtyWorkbenchPane({
   agentInstanceId,
   isActiveTab = true,
 }: AgentPtyWorkbenchPaneProps) {
-  const { currentData: instanceData, refetch } = useFetchAgentInstanceQuery(
+  const { currentData: instanceData } = useFetchAgentInstanceQuery(
     { instanceId: agentInstanceId },
     // No steady poll: agent_instance resource events patch this cache (and a failure
     // refetches it for last_error), as in AgentChatPane; reconnect resync covers gaps.
@@ -54,10 +54,9 @@ export function AgentPtyWorkbenchPane({
   const run = useCallback(
     async (kind: 'start' | 'stop' | 'restart') => {
       if (!agentInstanceId || actionBusy) return;
-      const result = await ({ start, stop, restart })[kind]({ instanceId: agentInstanceId, agentId });
-      if (result.status !== 'failed') refetch();
+      await ({ start, stop, restart })[kind]({ instanceId: agentInstanceId, agentId });
     },
-    [actionBusy, agentId, agentInstanceId, refetch, restart, start, stop],
+    [actionBusy, agentId, agentInstanceId, restart, start, stop],
   );
 
   const actions: AuxTabAction[] = isStopped

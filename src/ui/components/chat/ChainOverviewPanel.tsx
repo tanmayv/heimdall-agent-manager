@@ -494,23 +494,20 @@ export default function ChainOverviewPanel({
   const handleStartAgent = useCallback(
     async (instanceId: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      const result = await start(instanceId);
-      if (result.status !== 'failed') refetchChain();
-    }, [start, refetchChain]
+      await start({ instanceId, chainId });
+    }, [start, chainId]
   );
   const handleStopAgent = useCallback(
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      const result = await stop({ instanceId, agentId: agentId || '' });
-      if (result.status !== 'failed') refetchChain();
-    }, [stop, refetchChain]
+      await stop({ instanceId, agentId: agentId || '', chainId });
+    }, [stop, chainId]
   );
   const handleRestartAgent = useCallback(
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      const result = await restart({ instanceId, agentId });
-      if (result.status !== 'failed') refetchChain();
-    }, [restart, refetchChain]
+      await restart({ instanceId, agentId, chainId });
+    }, [restart, chainId]
   );
 
   // Open the agent's chat (the aux host opens a sub-agent tab) or navigate to it.

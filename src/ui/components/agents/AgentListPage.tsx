@@ -369,8 +369,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
 
   const handleRowStop = async (e: React.MouseEvent, agentId: string, instanceId: string) => {
     e.stopPropagation();
-    const result = await lifecycle.stop({ agentId, instanceId });
-    if (result.status !== 'failed') void liveInstancesQuery.refetch();
+    await lifecycle.stop({ agentId, instanceId });
   };
 
   /* ---------------- Keyboard ---------------- */
@@ -954,7 +953,6 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     (twoPane ? activeInstanceId : urlState.instanceId) ? (
       <LiveInstanceDetailPane
         instanceId={twoPane ? activeInstanceId : (urlState.instanceId || '')}
-        onStopped={() => void liveInstancesQuery.refetch()}
       />
     ) : null
   ) : selectedId ? (

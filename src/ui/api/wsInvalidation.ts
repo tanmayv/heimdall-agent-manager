@@ -890,6 +890,16 @@ function patchInstanceCachesFromSummary(dispatch: any, instanceId: string, summa
   if (errorStale) queueInvalidation(dispatch, [{ type: 'AgentInstances', id: instanceId }]);
   dispatch((d: any, getState: () => any) => {
     const state = getState();
+    for (const arg of agentsApi.util.selectCachedArgsForQuery(state, 'listAgentInstances')) {
+      d(agentsApi.util.updateQueryData('listAgentInstances', arg, (draft: any) => {
+        for (const row of draft?.instances || []) {
+          if (row.agent_instance_id !== instanceId || !isNewerOrEqual(summary.updated_at, row.updated_at)) continue;
+          for (const field of INSTANCE_SUMMARY_FIELDS) {
+            if (summary[field] !== undefined) row[field] = summary[field];
+          }
+        }
+      }));
+    }
     for (const arg of sidebarApi.util.selectCachedArgsForQuery(state, 'listSidebarConversations') as any[]) {
       d(sidebarApi.util.updateQueryData('listSidebarConversations', arg, (draft: any) => {
         for (const row of Array.isArray(draft) ? draft : []) {
@@ -961,7 +971,22 @@ function handleInstanceChanged(dispatch: any, payload: any, ctx: WsCtx, instance
     queueInvalidation(dispatch, [{ type: 'AgentsLive', id: 'ALL' }]);
   }
   if (change === 'created') {
-    queueInvalidation(dispatch, [{ type: 'AgentInstances', id: 'LIST' }, { type: 'SidebarConversations', id: 'ALL' }]);
+    queueInvalidation(dispatch, [
+      { type: 'AgentInstances', id: summary?.agent_id && summary?.project_id ? 'LIST' : 'ALL_LISTS' },
+      ...(summary?.agent_id ? [{ type: 'AgentInstances' as const, id: summary.agent_id }] : []),
+      ...(summary?.project_id ? [{ type: 'AgentInstances' as const, id: `PROJECT:${summary.project_id}` }] : []),
+      { type: 'SidebarConversations', id: 'ALL' },
+    ]);
+  }
+  if (change === 'config_changed') {
+    queueInvalidation(dispatch, [
+      { type: 'AgentInstances', id: instanceId },
+      ...(summary?.project_id ? [{ type: 'AgentInstances' as const, id: `PROJECT:${summary.project_id}` }] : []),
+    ]);
+  }
+  // The overview contains runtime projections; acceptance alone cannot settle them.
+  if (summary?.chain_id && ['created', 'status_changed', 'config_changed', 'current_task_changed'].includes(change)) {
+    queueInvalidation(dispatch, [{ type: 'Chain', id: summary.chain_id }]);
   }
   // Token data (T3r) rides in the summary (T14): patch the instance and list caches
   // in place. Only a hub that predates that falls back to refetching the instance.
