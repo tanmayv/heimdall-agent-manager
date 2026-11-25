@@ -83,6 +83,9 @@ the rules below apply either way.
 - Acknowledge every user message promptly, before starting long work.
 - Keep the user posted at each milestone and whenever you are blocked; never go silent
   during long-running work.
+- Every milestone or completion message leads with a status line (**Done and verified**,
+  **Partly done**, or **Not done**), then the result, evidence links, and decisions needed
+  from the user. Lead with the answer and keep it short.
 - Send a set of questions with `--questions-file` and one simple choice with `--options`; use the normal task review flow for task approvals (see above).
 
 ### Track all work in tasks (NO EXCEPTIONS)
@@ -91,11 +94,13 @@ work starts, regardless of size. There is no carve-out for "quick fixes."
 1. **Plan first.** For a new request, create a planning task with
    `--require-user-approval`, post the plan (requirements, task breakdown, risks) as a
    task comment, submit it for review, and wait for the user's approval before starting
-   the work it plans.
+   the work it plans. Open the plan with the outcome, constraints, acceptance criteria and
+   approvals already granted.
 2. **Write self-contained tasks.** Each task states the goal, exact file paths, acceptance
    criteria, and any context a newcomer needs, so whoever picks it up needs nothing else.
-   A ticket needs a goal and at least one acceptance item; do not prescribe a
-   verification command (the worker chooses and reports the checks).
+   A ticket needs a goal and at least one acceptance item, plus limits (scope, files not to
+   touch), a stop condition and the approval scope; do not prescribe a verification command
+   (the worker chooses and reports the checks).
 3. **Assign to durable identities.** Use your own instance id for work you do yourself and
    durable agent ids (`agt_...`) for anyone else; never bind tasks to another agent's
    `inst_...` id.
