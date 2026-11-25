@@ -33,6 +33,10 @@ mcp_fleet_lifecycle_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_H
 	g.agents.bridge_command_sink={ctx=&sink,send_runtime_command=mcp_runtime_test_send}
 	g.agents.bridge_runtime_registry=&g.bridge_runtime_registry
 	defer project.bridge_runtime_registry_destroy(&g.bridge_runtime_registry)
+	// Placement fixture teardown clears its live-connection projection. Restore
+	// only this synthetic bridge; native offline admission must stay enforced.
+	_,_,live:=project.bridge_runtime_registry_accept_live(&g.bridge_runtime_registry,"brg_placement_b",false,"",view.owner)
+	if !testing.expect(t,live,"synthetic Fleet destination is live") do return
 	b,_,_:=iface.bridge_get_bridge(&g.repos.bridges,"brg_placement_b")
 	b.capabilities_json=`{"features":["instance_reconfiguration_v1","start_agent_v1"]}`
 	_,_,_=iface.bridge_save_bridge(&g.repos.bridges,b)
@@ -54,7 +58,7 @@ mcp_fleet_lifecycle_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_H
 	other,_,_:=iface.agent_get_instance(&g.repos.agents,"inst_placement_a")
 	draft:=json.Object{"bridge_id"=json.String(b.bridge_id),"request_id"=json.String("fleet_lifecycle"),"expected_revision"=json.Integer(0),"default_runtime"=json.Object{"provider"=json.String("claude"),"model"=json.String(model)},"overrides"=json.Array{}}
 	result:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"fleet.apply",draft))
-	if !testing.expect(t,result!=nil && len(sink.commands)==1) do return
+	if !testing.expectf(t,result!=nil && len(sink.commands)==1,"MCP Fleet initial Apply: commands=%d result=%v",len(sink.commands),result) do return
 	app_id:=result["application_id"].(json.String)
 	status_args:=json.Object{"bridge_id"=json.String(b.bridge_id),"application_id"=app_id}
 	stored,found,_:=iface.fleet_application_get(&g.repos.bridges,i.owner_user_id,b.bridge_id,string(app_id))
