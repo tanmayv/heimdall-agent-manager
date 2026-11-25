@@ -189,7 +189,33 @@ class ReleaseManifestTest(unittest.TestCase):
         self.assertEqual(crashed.returncode, 3, crashed.stderr)
         self.assertIn("not a verdict", crashed.stderr)
 
+    def test_manifest_carries_engine_fields(self):
+        """P2-2 / engine spec 13.4: min_engine 1 and the other four fields, signed and verified."""
+        manifest, sig = self.release()
+        verified = self.verify(manifest, sig)
+        for field in ("min_engine", "journal_schema", "state_schema", "state_compat_min", "min_launcher_abi"):
+            self.assertEqual(verified[field], 1, field)
+            self.assertEqual(json.loads(manifest.read_text())[field], 1, field)
+
+    def test_engine_manifest_missing_a_field_is_incomplete(self):
+        doc = json.loads(self.release()[0].read_text())
+        for field in RM.ENGINE_FIELDS:
+            broken = {k: v for k, v in doc.items() if k != field}
+            with self.assertRaises(RM.Rejected) as caught:
+                RM.check_manifest_shape(broken)
+            self.assertIn("manifest_incomplete", str(caught.exception))
+
+    def test_policy_with_engine_requires_all_fields(self):
+        for field in RM.ENGINE_FIELDS:
+            bad = {**self.policy}
+            del bad[field]
+            path = self.tmp / "policy.json"
+            path.write_text(json.dumps(bad))
+            with self.assertRaises(SystemExit):
+                RM.load_policy(path)
+
     def test_shipped_policy_and_pinned_keys_are_well_formed(self):
+        self.assertEqual(self.policy["min_engine"], 1)
         self.assertGreaterEqual(self.policy["expires_after_days"], 1)
         pinned = sorted(RM.DEFAULT_KEYS_DIR.glob("*.pub"))
         if pinned:

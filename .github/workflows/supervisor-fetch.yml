@@ -57,12 +57,13 @@ jobs:
           # must hold no links and extract cleanly (test_real_release_bundles_extract).
           bundles="$out/bundles"; stubs="$out/stubs"
           rm -rf "$bundles" "$stubs"
-          for n in ham-bridge ham-ctl ham-pty-host; do
+          for n in ham-bridge ham-ctl ham-pty-host ham-launcher ham-supervisor; do
             mkdir -p "$stubs/$n/bin"; printf '#!/bin/sh\necho stub\n' > "$stubs/$n/bin/$n"; chmod 755 "$stubs/$n/bin/$n"
           done
           case "$RUNNER_OS" in macOS) target=darwin-arm64 ;; *) target=linux-amd64 ;; esac
           bash scripts/release/package-local-binary-tarball.sh "$target" 0.0.0 "$bundles" \
-            "$stubs/ham-bridge" "$stubs/ham-ctl" "$stubs/ham-pty-host"
+            "$stubs/ham-bridge" "$stubs/ham-ctl" "$stubs/ham-pty-host" \
+            "$stubs/ham-launcher" "$stubs/ham-supervisor"
           export HEIMDALL_FETCH_REAL_BUNDLES="$bundles"
           HEIMDALL_FETCH_FAKEVER="$out/fakever" nix develop -c odin test src/supervisor/fetch \
             -collection:odin_test=src -vet -strict-style -out:"$out/supervisor-fetch"

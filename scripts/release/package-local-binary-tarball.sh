@@ -9,9 +9,10 @@ Creates dist tarball: <out-dir>/heimdall-local-<target>.tar.gz
 Tarball root contains: bin/ham-bridge, bin/ham-ctl, share/heimdall/extensions/, README.md, LICENSE, METADATA.json
 When the optional <ham-pty-host-out> is given, bin/ham-pty-host is also shipped
 (self-contained; PTYH-4).
-When <ham-launcher-out> and <ham-supervisor-out> are given (T15, Phase 1), bin/ham-launcher
-and bin/ham-supervisor are shipped too. They are dormant: the service still runs
-bin/ham-bridge; Phase 2 makes the launcher the service entry point.
+bin/ham-launcher and bin/ham-supervisor (<ham-launcher-out> <ham-supervisor-out>) are
+MANDATORY for every target except termux-arm64 (P2-2: a supervisor-capable bundle,
+docs/specs/bridge-supervisor-conversion.md 3.1; Termux has no engine, engine spec 1).
+With them the pty-host argument is required too. Termux keeps the 5/6-argument form.
 USAGE
 }
 
@@ -45,6 +46,11 @@ case "$target" in
   darwin-arm64|darwin-amd64|linux-amd64|linux-arm64|termux-arm64) ;;
   *) echo "unsupported release target: $target" >&2; exit 2 ;;
 esac
+
+if [ "$target" != "termux-arm64" ] && { [ -z "$ham_pty_host_out" ] || [ -z "$ham_launcher_out" ] || [ -z "$ham_supervisor_out" ]; }; then
+  echo "target $target needs <ham-pty-host-out> <ham-launcher-out> <ham-supervisor-out> (supervisor-capable bundle)" >&2
+  exit 2
+fi
 
 for spec in \
   "$ham_bridge_out/bin/ham-bridge" \

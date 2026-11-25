@@ -107,6 +107,10 @@ def pinned_keys(keys_dir):
 
 # --- manifest ---------------------------------------------------------------
 
+# Engine spec 13.4: required whenever min_engine >= 1.
+ENGINE_FIELDS = ("state_schema", "state_compat_min", "min_launcher_abi")
+
+
 def load_policy(path):
     policy = json.loads(Path(path).read_text(encoding="utf-8"))
     for field in ("min_engine", "journal_schema", "expires_after_days"):
@@ -114,6 +118,11 @@ def load_policy(path):
             raise SystemExit(f"{path}: {field} must be a non-negative integer")
     if policy["expires_after_days"] < 1:
         raise SystemExit(f"{path}: expires_after_days must be at least 1")
+    if policy["min_engine"] >= 1:
+        # Engine spec 13.4: a release that claims an engine declares all of them.
+        for field in ENGINE_FIELDS:
+            if not isinstance(policy.get(field), int) or isinstance(policy[field], bool) or policy[field] < 1:
+                raise SystemExit(f"{path}: {field} must be a positive integer when min_engine >= 1")
     return policy
 
 
@@ -149,7 +158,9 @@ def build_manifest(tag, commit, key_id, assets, policy):
             raise SystemExit(f"duplicate target: {target}")
         size, sha256 = file_digest(path)
         targets[target] = {"asset": Path(path).name, "size": size, "sha256": sha256}
+    engine = {f: policy[f] for f in ENGINE_FIELDS} if policy["min_engine"] >= 1 else {}
     return {
+        **engine,
         "kind": MANIFEST_KIND,
         "schema": MANIFEST_SCHEMA,
         "tag": tag,
@@ -187,6 +198,11 @@ def check_manifest_shape(manifest):
     for field in ("min_engine", "journal_schema"):
         value = manifest.get(field)
         need(isinstance(value, int) and not isinstance(value, bool) and value >= 0, f"invalid {field}")
+    if manifest["min_engine"] >= 1:
+        for field in ENGINE_FIELDS:
+            value = manifest.get(field)
+            need(isinstance(value, int) and not isinstance(value, bool) and value >= 1,
+                 f"manifest_incomplete: {field} missing or invalid")
     targets = manifest.get("targets")
     need(isinstance(targets, dict) and targets, "no targets")
     for target, entry in targets.items():

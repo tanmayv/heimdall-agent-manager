@@ -1,5 +1,8 @@
 {
-  "min_engine": 0,
-  "journal_schema": 0,
+  "min_engine": 1,
+  "journal_schema": 1,
+  "state_schema": 1,
+  "state_compat_min": 1,
+  "min_launcher_abi": 1,
   "expires_after_days": 365
 }

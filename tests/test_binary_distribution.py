@@ -157,7 +157,7 @@ def make_stub_input(base: Path, name: str, binaries: list) -> Path:
 
 
 def package_tarball(base: Path, *, with_pty_host=True, with_openssl=False,
-                    ctl_binaries=('ham-ctl',), target='linux-amd64'):
+                    ctl_binaries=('ham-ctl',), target='linux-amd64', with_engine=None):
     """Run the packaging script against stub inputs; return (result, tarball)."""
     out_dir = base / 'dist'
     bridge = make_stub_input(base, 'bridge-out',
@@ -167,6 +167,12 @@ def package_tarball(base: Path, *, with_pty_host=True, with_openssl=False,
             bridge, ctl]
     if with_pty_host:
         argv.append(make_stub_input(base, 'ptyhost-out', ['ham-pty-host']))
+    # P2-2: launcher + supervisor are mandatory except for termux (default follows that).
+    if with_engine is None:
+        with_engine = with_pty_host and target != 'termux-arm64'
+    if with_engine:
+        argv.append(make_stub_input(base, 'launcher-out', ['ham-launcher']))
+        argv.append(make_stub_input(base, 'supervisor-out', ['ham-supervisor']))
     res = run(argv, cwd=ROOT)
     return res, out_dir / f'heimdall-local-{target}.tar.gz'
 
@@ -192,13 +198,14 @@ def test_tarball_structure_and_metadata(ctx):
     names, modes, metadata = read_tarball(tarball)
     required = {
         'bin/ham-bridge', 'bin/ham-pty-host', 'bin/ham-ctl',
+        'bin/ham-launcher', 'bin/ham-supervisor',
         'README.md', 'LICENSE', 'METADATA.json',
     }
     missing = required - set(names)
     assert not missing, f'tarball missing required entries: {sorted(missing)}'
     assert 'bin/openssl' in names, 'bundled openssl must ship when present in the bridge output'
 
-    for binary in ('ham-bridge', 'ham-pty-host', 'ham-ctl'):
+    for binary in ('ham-bridge', 'ham-pty-host', 'ham-ctl', 'ham-launcher', 'ham-supervisor'):
         assert modes[f'bin/{binary}'] & 0o111, f'bin/{binary} must be executable in the tarball'
 
     expected_keys = {'product', 'version', 'target', 'commit', 'built_at',
@@ -210,7 +217,8 @@ def test_tarball_structure_and_metadata(ctx):
     assert metadata['target'] == 'linux-amd64'
     assert isinstance(metadata['commit'], str) and metadata['commit'], 'commit must be non-empty'
     assert isinstance(metadata['built_at'], str) and metadata['built_at'], 'built_at must be non-empty'
-    assert sorted(metadata['binaries']) == ['ham-bridge', 'ham-ctl', 'ham-pty-host'], (
+    assert sorted(metadata['binaries']) == [
+        'ham-bridge', 'ham-ctl', 'ham-launcher', 'ham-pty-host', 'ham-supervisor'], (
         f'METADATA.json binaries mismatch: {metadata["binaries"]}')
     assert isinstance(metadata['tls_dependency'], str) and metadata['tls_dependency']
     # libcurl is linked statically at the version pinned in nix/libcurl-pin.json.
@@ -220,8 +228,21 @@ def test_tarball_structure_and_metadata(ctx):
     ctx['tarball'] = tarball
 
 
+def test_tarball_without_engine_is_refused_off_termux(ctx):
+    """P2-2: a linux/darwin bundle without launcher+supervisor must not be built."""
+    base = ctx['work'] / 'no-engine'
+    base.mkdir()
+    for target in ('linux-amd64', 'darwin-arm64'):
+        sub = base / target
+        sub.mkdir()
+        res, tarball = package_tarball(sub, target=target, with_engine=False)
+        assert res.returncode == 2, f'{target} without engine must exit 2, got {res.returncode}'
+        assert 'supervisor-capable' in res.stderr, res.stderr
+        assert not tarball.exists()
+
+
 def test_tarball_without_pty_host(ctx):
-    res, tarball = package_tarball(ctx['work2'], with_pty_host=False)
+    res, tarball = package_tarball(ctx['work2'], with_pty_host=False, target='termux-arm64')
     assert res.returncode == 0, f'5-arg (no pty-host) invocation failed:\n{res.stderr}'
     names, _, metadata = read_tarball(tarball)
     for entry in ('bin/ham-bridge', 'bin/ham-ctl',
@@ -277,7 +298,7 @@ def test_packaging_error_cases(ctx):
     assert 'unsupported release target' in res.stderr
 
     incomplete_ctl = make_stub_input(base, 'ctl-incomplete', [])
-    res = run(['bash', PACKAGE_SCRIPT, 'linux-amd64', 'v0.1.0', out_dir,
+    res = run(['bash', PACKAGE_SCRIPT, 'termux-arm64', 'v0.1.0', out_dir,
                bridge, incomplete_ctl], cwd=ROOT)
     assert res.returncode == 1, f'missing input must exit 1, got {res.returncode}'
     assert 'missing required release input' in res.stderr
@@ -2877,7 +2898,7 @@ def version_constants():
 #      what let the unrunnable `docker run ... scratch` invocation pass this
 #      check vacuously on every docker host until v0.3.3 (REQ-INST-25).
 
-RELEASE_BINARIES = ('ham-bridge', 'ham-ctl', 'ham-pty-host')
+RELEASE_BINARIES = ('ham-bridge', 'ham-ctl', 'ham-pty-host', 'ham-launcher', 'ham-supervisor')
 # Release attr per binary; the pty-host out dir name carries the musl target
 # triple, so out dirs are matched to binaries by name prefix, not position.
 RELEASE_ATTRS = {name: f'release-{name}' for name in RELEASE_BINARIES}
@@ -2979,7 +3000,9 @@ def test_release_gate_rejects_nix_wrapper(ctx):
     ctl = make_stub_input(base, 'ctl-out', ['ham-ctl'])
     pty_host = make_stub_input(base, 'pty-host-out', ['ham-pty-host'])
     res = run(['bash', PACKAGE_SCRIPT, 'linux-amd64', 'v0.1.0', base / 'dist',
-               bridge, ctl, pty_host], cwd=ROOT)
+               bridge, ctl, pty_host,
+               make_stub_input(base, 'launcher-out', ['ham-launcher']),
+               make_stub_input(base, 'supervisor-out', ['ham-supervisor'])], cwd=ROOT)
     assert res.returncode != 0, 'the v0.3.2-style Nix wrapper must be rejected'
     assert 'script' in res.stderr and '/nix/store' in res.stderr, res.stderr
 
@@ -3006,7 +3029,9 @@ def test_release_gate_rejects_dynamic_elf(ctx):
     shutil.copy(dynamic_binary, ctl / 'bin' / 'ham-ctl')
     pty_host = make_stub_input(base, 'pty-host-out', ['ham-pty-host'])
     res = run(['bash', PACKAGE_SCRIPT, 'linux-amd64', 'v0.1.0', base / 'dist',
-               bridge, ctl, pty_host], cwd=ROOT)
+               bridge, ctl, pty_host,
+               make_stub_input(base, 'launcher-out', ['ham-launcher']),
+               make_stub_input(base, 'supervisor-out', ['ham-supervisor'])], cwd=ROOT)
     assert res.returncode != 0, 'a dynamic ELF must be rejected'
     assert 'has a program interpreter' in res.stderr, res.stderr
 
@@ -3033,7 +3058,9 @@ def test_release_gate_rejects_shared_libcurl(ctx):
     ctl = make_stub_input(base, 'ctl-out', ['ham-ctl'])
     pty_host = make_stub_input(base, 'pty-host-out', ['ham-pty-host'])
     res = run(['bash', PACKAGE_SCRIPT, 'linux-amd64', 'v0.1.0', base / 'dist',
-               bridge, ctl, pty_host], cwd=ROOT)
+               bridge, ctl, pty_host,
+               make_stub_input(base, 'launcher-out', ['ham-launcher']),
+               make_stub_input(base, 'supervisor-out', ['ham-supervisor'])], cwd=ROOT)
     assert res.returncode != 0, 'a binary needing a shared libcurl must be rejected'
     assert 'needs the shared library libcurl' in res.stderr, res.stderr
 
@@ -3096,7 +3123,8 @@ def test_release_tarball_is_portable(ctx):
     outs = release_attrs_or_skip(ctx)
     res = run(['bash', PACKAGE_SCRIPT, target, 'v0.1.0', out_dir,
                outs['ham-bridge'], outs['ham-ctl'],
-               outs['ham-pty-host']], cwd=ROOT, timeout=120)
+               outs['ham-pty-host'], outs['ham-launcher'], outs['ham-supervisor']],
+              cwd=ROOT, timeout=120)
     assert res.returncode == 0, f'packaging release tarball failed:\n{res.stderr}'
     tarball = out_dir / f'heimdall-local-{target}.tar.gz'
     assert tarball.is_file(), f'no tarball at {tarball}'
