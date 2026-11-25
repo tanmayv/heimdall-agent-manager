@@ -743,6 +743,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
               agentId: cf.agentId,
               restarted_instance_ids: response?.restarted_instance_ids,
               restart_failures: response?.restart_failures,
+              restart_results: response?.restart_results,
             };
           })
         );
@@ -1436,8 +1437,9 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                   <div key={role.agentId} className="flex items-center gap-1.5 text-xs text-success">
                     <Icon name="check" size="sm" />
                     <span>
-                      {formatFleetRoleName(role.agentId, agentIdentities)}: restarted {role.count}{' '}
+                      {formatFleetRoleName(role.agentId, agentIdentities)}: restart requested for {role.count}{' '}
                       {role.count === 1 ? 'instance' : 'instances'}
+                      {role.unchanged !== undefined && `; ${role.unchanged} unchanged; ${role.ineligible} ineligible`}
                     </span>
                   </div>
                 ))}
@@ -1447,7 +1449,7 @@ export const FleetManagementDrawer: React.FC<FleetManagementDrawerProps> = ({
                     data-debug-id="fleet-restart-failure"
                     className="text-xs text-warning"
                   >
-                    <span title={failure.instance_id}>Instance restart failed</span>: {failure.message}
+                    <span title={failure.instance_id}>{failure.instance_id ? 'Instance restart failed' : 'Fleet restart incomplete'}</span>: {failure.message}
                   </div>
                 ))}
               </div>

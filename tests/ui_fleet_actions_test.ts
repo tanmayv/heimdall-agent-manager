@@ -994,3 +994,25 @@ test('M3 Fleet Placement UI & API contract: FleetManagementDrawer.tsx and taskCh
   );
 });
 
+
+test('fleet candidate accounting counts acceptance without claiming readiness and keeps partial failures', () => {
+  const summary = summarizeFleetRestartResults([{
+    agentId: 'worker',
+    restarted_instance_ids: ['ignored-legacy-count'],
+    restart_results: [
+      { instance_id: 'accepted', outcome: 'accepted', message: '' },
+      { instance_id: 'same', outcome: 'unchanged', message: '' },
+      { instance_id: 'stopped', outcome: 'ineligible', message: 'Instance is not live' },
+      { instance_id: 'offline', outcome: 'failed', message: 'Bridge offline' },
+    ],
+    restart_failures: [
+      { instance_id: 'offline', message: 'Bridge offline' },
+      { instance_id: '', message: 'Fleet saved, but candidates could not be listed' },
+    ],
+  }]);
+  assert.deepEqual(summary.restartedByRole, [
+    { agentId: 'worker', count: 1, unchanged: 1, ineligible: 1 },
+  ]);
+  assert.equal(summary.failures.length, 2);
+  assert.equal(summary.failures[1].instance_id, '');
+});

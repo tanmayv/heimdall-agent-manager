@@ -1,6 +1,10 @@
 package http
 
 import "core:strings"
+import "core:fmt"
+import iface "odin_test:hub/repository/iface"
+import sqlite "odin_test:hub/repository/sqlite"
+import project_service "odin_test:hub/service/project"
 import "core:testing"
 import json "core:encoding/json"
 import domain "odin_test:hub/domain"
@@ -222,4 +226,158 @@ test_json_int_field :: proc(t: ^testing.T) {
 	testing.expect_value(t, json_int_field(body2, "capacity", 1), 5)
 	testing.expect_value(t, json_int_field(body2, "min_warm", 0), 2)
 	testing.expect_value(t, json_int_field(body2, "idle_ttl_seconds", 600), 900)
+}
+
+// Exercise the HTTP response against the existing real repository/start fixture.
+fleet_result_send :: proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
+	assert(sqlite.tx_mutex_try_lock(), "fleet send must happen after commit")
+	return coordinator_wake_test_command(ctx, command)
+}
+
+fleet_result_put :: proc(t: ^testing.T, c: ^Coordinator_Wake_Fixture, body: string) -> Response {
+	path := fmt.tprintf("/api/v1/task-chains/%s/fleets/agt_wake", c.f.chain_id)
+	return upsert_chain_fleet_handler(&c.f.th, wire_cookie_request(c.f, "PUT", path, body))
+}
+
+fleet_result_data :: proc(t: ^testing.T, response: Response) -> []Fleet_Restart_Result {
+	testing.expectf(t, response.status == 200, "%d %s", response.status, response.body)
+	parsed: struct {data: struct {restart_results: []Fleet_Restart_Result}}
+	err := json.unmarshal_string(response.body, &parsed)
+	testing.expect(t, err == nil)
+	return parsed.data.restart_results
+}
+
+@(test)
+test_fleet_result_mixed_candidates :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	f := c.f
+	repos := iface.Repositories{agents=f.ag_repo, bridges=f.br_repo, taskchains=f.tc_repo, content=c.content_repo}
+	impl: sqlite.SQLite_Unit_Of_Work_Factory
+	factory := sqlite.new_unit_of_work_factory(&impl, &f.conn, &repos)
+	f.tc_svc.uow_factory = &factory
+	defer f.tc_svc.uow_factory = nil
+	f.ag_svc.bridge_command_sink.send_runtime_command = fleet_result_send
+	existing, _, _ := iface.agent_get_instance(&f.ag_repo, "inst_wake")
+	// Persist an old fleet destination, then change it to the valid model.
+	first := fleet_result_put(t, c, `{"capacity":8,"provider":"claude","model":"old"}`)
+	testing.expect_value(t, first.status, 200)
+	ids := []string{"inst_wake", "inst_unchanged", "inst_terminal", "inst_offline"}
+	for id, i in ids {
+		inst := existing
+		inst.agent_instance_id = id
+		inst.runtime_status = "running"
+		inst.model = "old"
+		if i == 1 do inst.model = existing.model
+		if i == 2 do inst.runtime_status = "stopped"
+		if i == 3 do inst.bridge_id = f.bridge_alt
+		_, saved, save_err := iface.agent_save_instance(&f.ag_repo, inst)
+		testing.expect(t, saved, save_err.message)
+		_, member_ok, member_err := iface.taskchain_save_member(&f.tc_repo, {
+			chain_id=f.chain_id, owner_user_id=f.owner, agent_id="agt_wake",
+			agent_instance_id=id, role="worker", created_at="now",
+		})
+		testing.expect(t, member_ok, member_err.message)
+	}
+	body := strings.concatenate({`{"capacity":8,"provider":"claude","model":"`, existing.model, `","restart_live_instances":true}`})
+	results := fleet_result_data(t, fleet_result_put(t, c, body))
+	testing.expect_value(t, len(results), 4)
+	expected := make(map[string]string)
+	expected["inst_wake"] = "accepted"
+	expected["inst_unchanged"] = "unchanged"
+	expected["inst_terminal"] = "ineligible"
+	expected["inst_offline"] = "failed"
+	for result in results do testing.expect_value(t, result.outcome, expected[result.instance_id])
+	launched, _, _ := iface.agent_get_instance(&f.ag_repo, "inst_wake")
+	testing.expect_value(t, launched.run_count, existing.run_count+1)
+	testing.expect_value(t, launched.model, existing.model)
+	// Only the accepted candidate emits a launch; HTTP acceptance is not readiness.
+	testing.expect_value(t, launched.runtime_status, "launching")
+	testing.expect_value(t, len(c.commands), 1)
+}
+
+@(test)
+test_fleet_result_lookup_failure_is_not_skipped :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	c.f.ag_repo.get_instance = nil
+	results := fleet_result_data(t, fleet_result_put(t, c, `{"restart_live_instances":true}`))
+	if testing.expect_value(t, len(results), 1) {
+		testing.expect_value(t, results[0].instance_id, "inst_wake")
+		testing.expect_value(t, results[0].outcome, "failed")
+		testing.expect(t, results[0].message != "")
+	}
+	testing.expect_value(t, len(c.commands), 0)
+}
+
+@(test)
+test_fleet_result_list_failure_reports_saved_partial_result :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	c.f.tc_repo.list_members_by_chain = nil
+	response := fleet_result_put(t, c, `{"capacity":3,"restart_live_instances":true}`)
+	testing.expect_value(t, response.status, 200)
+	testing.expect(t, strings.contains(response.body, "could not be listed"))
+	testing.expect(t, strings.contains(response.body, `"restart_failures":[{`))
+	fleets, err := iface.taskchain_list_fleets_by_chain(&c.f.tc_repo, c.f.chain_id, c.f.owner)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(fleets), 1)
+	testing.expect_value(t, fleets[0].capacity, 3)
+}
+
+@(test)
+test_fleet_result_prior_list_failure_prevents_save :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	c.f.tc_repo.list_fleets_by_chain = nil
+	response := fleet_result_put(t, c, `{"capacity":3,"restart_live_instances":true}`)
+	testing.expect_value(t, response.status, 500)
+	testing.expect_value(t, len(c.commands), 0)
+	// Restore the real read function, and verify nothing was persisted.
+	c.f.tc_repo = sqlite.new_taskchain_repository(&c.f.tc_impl, &c.f.conn)
+	fleets, _ := iface.taskchain_list_fleets_by_chain(&c.f.tc_repo, c.f.chain_id, c.f.owner)
+	testing.expect_value(t, len(fleets), 0)
+}
+
+@(test)
+test_fleet_result_unavailable_agent_service_accounts_known_members :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	c.f.th.agents = nil
+	results := fleet_result_data(t, fleet_result_put(t, c, `{"restart_live_instances":true}`))
+	if testing.expect_value(t, len(results), 1) {
+		testing.expect_value(t, results[0].instance_id, "inst_wake")
+		testing.expect_value(t, results[0].outcome, "failed")
+	}
+}
+
+@(test)
+test_fleet_result_profile_only_edit_preserves_launch_identity :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	f := c.f
+	profile_err := c.providers.reconcile_profiles(c.providers.ctx, f.bridge_pin, {
+		{profile_id="claude", provider="claude", enabled=true, state="ok"},
+		{profile_id="work", provider="claude", enabled=true, state="ok"},
+	})
+	testing.expect_value(t, profile_err.code, domain.Error_Code.None)
+	_, status_err := iface.bridge_provider_status_upsert(&c.providers, {
+		bridge_id=f.bridge_pin, provider="claude", profile_id="work", state="present", binary_path="/bin/claude", checked_at="now",
+	})
+	testing.expect_value(t, status_err.code, domain.Error_Code.None)
+	existing, _, _ := iface.agent_get_instance(&f.ag_repo, "inst_wake")
+	existing.runtime_status = "running"
+	_, saved, _ := iface.agent_save_instance(&f.ag_repo, existing)
+	testing.expect(t, saved)
+	first_body := strings.concatenate({`{"provider":"claude","model":"`, existing.model, `"}`})
+	testing.expect_value(t, fleet_result_put(t, c, first_body).status, 200)
+	body := strings.concatenate({`{"provider":"claude","provider_profile":"work","model":"`, existing.model, `","restart_live_instances":true}`})
+	results := fleet_result_data(t, fleet_result_put(t, c, body))
+	if testing.expect_value(t, len(results), 1) do testing.expect_value(t, results[0].outcome, "accepted")
+	after, _, _ := iface.agent_get_instance(&f.ag_repo, "inst_wake")
+	testing.expect_value(t, after.provider, "claude")
+	testing.expect_value(t, after.provider_profile, "work")
+	testing.expect_value(t, after.run_count, existing.run_count+1)
+	testing.expect_value(t, len(c.commands), 1)
+	if len(c.commands) == 1 do testing.expect(t, strings.contains(c.commands[0], `"provider_profile":"work"`))
 }
