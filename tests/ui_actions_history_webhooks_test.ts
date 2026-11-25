@@ -13,10 +13,10 @@ test('webhook creation shows credentials once, dismisses and rotates with confir
   for (const name of names) Object.defineProperty(g, name, { configurable: true, writable: true, value: name === 'IS_REACT_ACT_ENVIRONMENT' ? true : (dom.window as any)[name] });
   const originalFetch = globalThis.fetch;
   const calls: { url: string; method: string; body: any }[] = [];
-  const row = { webhook_id: 'wh_one', name: 'CI', enabled: true, last_received_at: '' };
+  const row = { webhook_id: 'wh_one', name: 'CI', dedupe_header: 'Idempotency-Key', enabled: true, last_received_at: '' };
   globalThis.fetch = (async (url: any, init: any = {}) => {
     const method = init.method || 'GET'; calls.push({ url: String(url), method, body: init.body && JSON.parse(init.body) });
-    const data = method === 'GET' ? [] : { webhook: row, token: String(url).endsWith('/rotate') ? 'rotated-secret' : 'once-secret' };
+    const data = method === 'GET' ? [] : method === 'PATCH' ? { ...row, ...JSON.parse(init.body) } : { webhook: row, token: String(url).endsWith('/rotate') ? 'rotated-secret' : 'once-secret' };
     return new Response(JSON.stringify({ data }), { headers: { 'content-type': 'application/json' } });
   }) as any;
   let root: any;
@@ -47,6 +47,23 @@ test('webhook creation shows credentials once, dismisses and rotates with confir
     assert.equal(byId('webhook-token'), null);
     await React.act(async () => { await new Promise(resolve => dom.window.requestAnimationFrame(resolve)); });
     assert.equal(doc.activeElement, byId('webhook-name'));
+    assert.equal((byId('webhook-dedupe-header-wh_one') as HTMLInputElement).value, 'Idempotency-Key');
+    async function setHeader(value: string) {
+      await React.act(async () => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(byId('webhook-dedupe-header-wh_one'), value);
+        byId('webhook-dedupe-header-wh_one').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      });
+    }
+    await setHeader('bad header');
+    assert.equal((byId('webhook-dedupe-save-wh_one') as HTMLButtonElement).disabled, true);
+    await setHeader('aUtHoRiZaTiOn');
+    assert.equal((byId('webhook-dedupe-save-wh_one') as HTMLButtonElement).disabled, true);
+    assert.match(doc.body.textContent!, /Credential headers cannot be used/);
+    await setHeader('X-GitHub-Delivery');
+    assert.equal((byId('webhook-dedupe-save-wh_one') as HTMLButtonElement).disabled, false);
+    await React.act(async () => byId('webhook-dedupe-save-wh_one').closest('form')!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })));
+    assert.deepEqual(calls.find(c => c.method === 'PATCH')?.body, { dedupe_header: 'X-GitHub-Delivery' });
+    assert.equal((byId('webhook-dedupe-header-wh_one') as HTMLInputElement).value, 'X-GitHub-Delivery');
     dom.window.confirm = () => false;
     await click('webhook-rotate-wh_one');
     assert.equal(calls.filter(c => c.url.endsWith('/rotate')).length, 0);
@@ -54,7 +71,7 @@ test('webhook creation shows credentials once, dismisses and rotates with confir
     await click('webhook-rotate-wh_one');
     await click('webhook-rotate-confirm');
     assert.equal((byId('webhook-token') as HTMLInputElement).value, 'rotated-secret');
-    assert.deepEqual(calls.find(c => c.method === 'POST' && !c.url.endsWith('/rotate'))?.body, { name: 'CI' });
+    assert.deepEqual(calls.find(c => c.method === 'POST' && !c.url.endsWith('/rotate'))?.body, { name: 'CI', dedupe_header: 'Idempotency-Key' });
     await React.act(async () => root.unmount());
     await React.act(async () => { root = createRoot(doc.getElementById('root')!); root.render(React.createElement(Webhooks)); });
     assert.equal(byId('webhook-token'), null, 'remount cannot recover the secret');

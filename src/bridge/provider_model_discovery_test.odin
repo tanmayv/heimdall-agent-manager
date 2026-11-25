@@ -290,3 +290,77 @@ while :; do :; done
 	defer model_test_destroy(&large)
 	testing.expect_value(t, large_state, "output_limit")
 }
+
+@(test)
+test_model_discovery_acp_models_and_cleanup :: proc(t: ^testing.T) {
+	when ODIN_OS == .Windows do return
+	path, dir := model_test_fixture(t, `case "$*" in acp|"acp --agent-engine v3") ;; *) exit 1;; esac
+test "$HEIMDALL_AGENT_TOKEN" = "" || exit 1
+IFS= read -r init
+case "$init" in *'"method":"initialize"'*) ;; *) exit 1;; esac
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"delete":{}}}}}'
+IFS= read -r new
+case "$new" in *'"method":"session/new"'*'"mcpServers":[]'*) ;; *) exit 1;; esac
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"probe-only","configOptions":[{"id":"custom-model","category":"model","type":"select","options":[{"value":"profile/one","name":"One"},{"group":"Private","options":[{"value":"profile/two/nested","name":"Two"}]}]}]}}'
+IFS= read -r cleanup
+case "$cleanup" in *'"method":"session/delete"'*'"sessionId":"probe-only"'*) ;; *) exit 1;; esac
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{}}'
+while :; do :; done
+`)
+	if path == "" do return
+	defer { os.remove(path); os.remove(dir); delete(path); delete(dir) }
+	for provider in ([]string{"opencode", "kiro"}) {
+		models, state := bridge_models_probe(provider, path, 2*time.Second, dir, {"HEIMDALL_AGENT_TOKEN=never-pass"}, {"--not-a-probe-flag"})
+		defer model_test_destroy(&models)
+		testing.expect_value(t, state, "success")
+		testing.expect_value(t, bridge_models_source(provider), "acp_v1")
+		if testing.expect_value(t, len(models), 3) {
+			testing.expect_value(t, models[0].model_id, "profile/one")
+			testing.expect_value(t, models[1].model_id, "profile/two/nested")
+			testing.expect_value(t, models[2].model_id, "default")
+		}
+	}
+	testing.expect_value(t, bridge_models_source("copilot"), "copilot_rpc")
+}
+
+@(test)
+test_model_discovery_acp_auth_and_missing_inventory :: proc(t: ^testing.T) {
+	when ODIN_OS == .Windows do return
+	path, dir := model_test_fixture(t, `IFS= read -r init
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+IFS= read -r new
+if test "$MODE" = auth; then
+  printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Not logged in"}}'
+else
+  printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"probe"}}'
+fi
+while :; do :; done
+`)
+	if path == "" do return
+	defer { os.remove(path); os.remove(dir); delete(path); delete(dir) }
+	for mode in ([]string{"MODE=auth", "MODE=missing"}) {
+		models, state := bridge_models_probe("kiro", path, 2*time.Second, dir, {mode})
+		defer model_test_destroy(&models)
+		testing.expect_value(t, state, "authentication_required" if mode == "MODE=auth" else "unsupported")
+		testing.expect_value(t, len(models), 0)
+	}
+}
+
+@(test)
+test_model_discovery_acp_live_opencode :: proc(t: ^testing.T) {
+	path := os.get_env("HEIMDALL_TEST_OPENCODE_BINARY", context.temp_allocator)
+	if path == "" do return
+	fixture, dir := model_test_fixture(t, "exit 1")
+	defer delete(fixture)
+	if dir == "" do return
+	defer { os.remove_all(dir); delete(dir) }
+	models, state := bridge_models_probe("opencode", path, 10*time.Second, dir)
+	defer model_test_destroy(&models)
+	testing.expect_value(t, state, "success")
+	for id in strings.split(os.get_env("HEIMDALL_TEST_OPENCODE_MODELS", context.temp_allocator), ",", context.temp_allocator) {
+		if id == "" do continue
+		found := false
+		for model in models do if model.model_id == id do found = true
+		testing.expectf(t, found, "live probe did not report %s", id)
+	}
+}

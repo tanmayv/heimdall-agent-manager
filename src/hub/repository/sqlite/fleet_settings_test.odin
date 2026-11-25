@@ -50,7 +50,7 @@ test_shared_fleet_snapshot_revision_owner_and_atomicity :: proc(t: ^testing.T) {
 	cleared, did_clear, clearerr := iface.fleet_settings_save(&br, "owner", "b1", draft)
 	testing.expect(t, clearerr.code == .None && did_clear && cleared.revision == 2 && len(cleared.overrides) == 0, "removing last override restores inheritance")
 	// Embedded migration replay is safe and never imports per-chain runtime data.
-	testing.expect(t, exec(&conn, MIGRATION_251_SHARED_FLEET_SETTINGS))
+	testing.expect(t, exec(&conn, MIGRATION_253_SHARED_FLEET_SETTINGS))
 }
 
 @(test)

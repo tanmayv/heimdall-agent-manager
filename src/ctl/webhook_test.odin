@@ -8,7 +8,7 @@ import "core:testing"
 @(test)
 test_ctl_webhook_verbs :: proc(t:^testing.T) {
  ctl_actions_test_tracked(t,proc(t:^testing.T) {
-  for verb in ([]string{"create","list","show","rotate","enable","disable","delete","test"}) {
+  for verb in ([]string{"create","update","list","show","rotate","enable","disable","delete","test"}) {
    args:[]string
    if verb=="test" do args={"--token","whsec_sample"}
    method,params,ok:=ctl_automation_call({"webhooks",verb,"wh_1"},args)
@@ -25,7 +25,8 @@ test_ctl_webhook_verbs :: proc(t:^testing.T) {
   testing.expect(t,ok);testing.expect(t,strings.contains(params,`"name":"CI"`))
   _,_,ok=ctl_webhook_call({"test","wh_1"},nil);testing.expect(t,!ok)
   _,_,ok=ctl_webhook_call({"delete","wh_1"},{"--name","CI"});testing.expect(t,!ok)
-  _,_,ok=ctl_webhook_call({"update","wh_1"},nil);testing.expect(t,!ok)
+  _,params,ok=ctl_webhook_call({"update","wh_1"},{"--dedupe-header","X-GitHub-Delivery"})
+  testing.expect(t,ok);testing.expect(t,strings.contains(params,`"dedupe_header":"X-GitHub-Delivery"`))
   _,params,ok=ctl_webhook_call({"test","wh_1"},{"--token","secret","--data",`{"token":"payload-value"}`})
   testing.expect(t,ok)
   testing.expect(t,strings.contains(params,"webhook_secret"))

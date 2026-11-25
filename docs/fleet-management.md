@@ -8,7 +8,7 @@ or task controls. Updating runtime policy does not change those controls.
 
 ## Persistence and transition (REQ-FLEET-2, 4, 5, 6, 9)
 
-`251_shared_fleet_settings.sql` adds `bridge_fleet_settings`,
+`253_shared_fleet_settings.sql` adds `bridge_fleet_settings`,
 `bridge_fleet_agent_overrides` and `instance_fleet_scope`. Migration imports no
 legacy chain values and triggers no process operations. A missing settings row
 means revision zero and an unconfigured bridge.
@@ -130,7 +130,7 @@ with `domain.fleet_runtime_destroy`.
 
 `fleet_application.Service` validates and saves the settings, canonical request
 and complete target snapshot in one existing Hub unit of work. Migration
-`252_fleet_applications.sql` stores these applications, including their target
+`254_fleet_applications.sql` stores these applications, including their target
 outcomes and private public-grant binding. Lifecycle work starts after commit.
 The bridge instance query is unpaginated and deduplicated; native active-operation
 reconciliation also has no first-page cap.

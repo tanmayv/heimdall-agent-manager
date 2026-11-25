@@ -18,7 +18,24 @@ limits_valid :: proc(l:Limits)->bool {
 Service :: struct { factory:^iface.Unit_Of_Work_Factory, clock:^platform.Clock, limits:Limits, experiments:^iface.Experiment_Repository }
 resolve_limits :: proc(l:Limits)->Limits {return DEFAULT_LIMITS if l==Limits{} else l}
 effective_limits :: proc(s:^Service)->Limits {return resolve_limits(s.limits)}
-Input :: struct { name:Maybe(string), enabled:Maybe(bool) }
+DEFAULT_DEDUPE_HEADER :: "Idempotency-Key"
+Input :: struct { name:Maybe(string), enabled:Maybe(bool), dedupe_header:Maybe(string) }
+dedupe_header_is_credential :: proc(name:string)->bool {
+ for blocked in ([]string{"Authorization","Proxy-Authorization","Cookie","Set-Cookie","X-Api-Key"}) {
+  if strings.equal_fold(name,blocked) do return true
+ }
+ return false
+}
+// RFC 7230 tchar; names are ASCII tokens, without surrounding whitespace.
+dedupe_header_valid :: proc(name:string)->bool {
+ if len(name)==0 || len(name)>64 || dedupe_header_is_credential(name) do return false
+ for ch in transmute([]u8)name {
+  if (ch>='a' && ch<='z') || (ch>='A' && ch<='Z') || (ch>='0' && ch<='9') do continue
+  if strings.contains_rune("!#$%&'*+-.^_`|~",rune(ch)) do continue
+  return false
+ }
+ return true
+}
 hash_token :: proc(token:string)->string {
  h:sha2.Context_256; digest:[32]byte
  sha2.init_256(&h);sha2.update(&h,transmute([]byte)token);sha2.final(&h,digest[:])
@@ -73,7 +90,7 @@ mutate :: proc(s:^Service,owner,id,operation:string,input:Input={})->(domain.Eve
   count:=len(rows);domain.event_webhooks_destroy(rows)
   if le.code!=.None do return {},"",le
   if count>=effective_limits(s).per_owner do return {},"",domain.domain_error(.Conflict,"webhook limit reached")
-  row={webhook_id=platform.time_id_generate(nil,"wh_"),owner_user_id=strings.clone(owner),enabled=true,created_at=strings.clone(platform.clock_now(s.clock))}
+  row={webhook_id=platform.time_id_generate(nil,"wh_"),owner_user_id=strings.clone(owner),dedupe_header=strings.clone(DEFAULT_DEDUPE_HEADER),enabled=true,created_at=strings.clone(platform.clock_now(s.clock))}
  } else {
   row,err=owned(repo,owner,id)
   if err.code!=.None do return {},"",err
@@ -84,6 +101,11 @@ mutate :: proc(s:^Service,owner,id,operation:string,input:Input={})->(domain.Eve
   if name,present:=input.name.?;present {
    if len(name)>256 do return {},"",domain.domain_error(.Validation_Failed,"webhook name exceeds 256 bytes")
    delete(row.name);row.name=strings.clone(name)
+  }
+  if header,present:=input.dedupe_header.?;present {
+   if dedupe_header_is_credential(header) do return {},"",domain.domain_error(.Validation_Failed,"dedupe_header cannot use credential headers (Authorization, Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key)")
+   if !dedupe_header_valid(header) do return {},"",domain.domain_error(.Validation_Failed,"dedupe_header must be an RFC 7230 token of 1 to 64 ASCII characters")
+   delete(row.dedupe_header);row.dedupe_header=strings.clone(header)
   }
   if enabled,present:=input.enabled.?;present do row.enabled=enabled
   if operation=="create" || operation=="rotate" {
@@ -101,11 +123,12 @@ mutate :: proc(s:^Service,owner,id,operation:string,input:Input={})->(domain.Eve
  return row,token,{}
 }
 Admission :: struct {ctx:rawptr, admit:proc(ctx:rawptr,id:string)->bool}
+Receive_Headers :: struct {ctx:rawptr, get:proc(ctx:rawptr,name:string)->string}
 Receive_Result :: enum { Accepted, Unauthorized, Limited, Invalid, Unsupported, Failed }
 Receive :: struct {event_id:string,duplicate:bool}
 // The only ingress repository dependencies are webhook, experiment and outbox.
 // Authentication, duplicate lookup, version increment and append share one UoW.
-receive :: proc(s:^Service,id,token,body,key,content_type:string,admission:Admission,test_actor:="")->(Receive,Receive_Result) {
+receive :: proc(s:^Service,id,token,body,key,content_type:string,admission:Admission,test_actor:="",headers:Receive_Headers={})->(Receive,Receive_Result) {
  u,ok,_:=iface.unit_of_work_begin(s.factory)
  if !ok do return {},.Failed
  defer if u.ctx!=nil do iface.unit_of_work_rollback(&u)
@@ -122,15 +145,17 @@ receive :: proc(s:^Service,id,token,body,key,content_type:string,admission:Admis
  if admission.admit!=nil && !admission.admit(admission.ctx,id) do return {},.Limited
  media:=strings.trim_space(strings.split(content_type,";",context.temp_allocator)[0])
  if !strings.equal_fold(media,"application/json") do return {},.Unsupported
- if len(key)>128 do return {},.Invalid
+ event_key:=key
+ if headers.get!=nil do event_key=headers.get(headers.ctx,row.dedupe_header)
+ if len(event_key)>128 do return {},.Invalid
  value:json.Value
  if json.unmarshal_string(body,&value,.JSON,context.temp_allocator)!=nil do return {},.Invalid
  defer json.destroy_value(value,allocator=context.temp_allocator)
  if _,is_object:=value.(json.Object);!is_object do return {},.Invalid
  if !depth_valid(value,0) do return {},.Invalid
  event_id:=""
- if key!="" {
-  digest:=hash_token(fmt.tprintf("%s|%s",id,key))
+ if event_key!="" {
+  digest:=hash_token(fmt.tprintf("%s|%s",id,event_key))
   event_id=fmt.tprintf("evt_wh_%s",digest[:32])
   exists,lookup_err:=u.repos.event_outbox.contains(u.repos.event_outbox.ctx,event_id)
   if lookup_err.code!=.None do return {},.Failed

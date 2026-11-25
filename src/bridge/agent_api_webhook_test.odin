@@ -4,7 +4,7 @@ import "core:fmt"
 
 @(test)
 test_agent_webhook_routes :: proc(t:^testing.T) {
- for verb in ([]string{"create","list","show","rotate","enable","disable","delete","test"}) {
+ for verb in ([]string{"create","update","list","show","rotate","enable","disable","delete","test"}) {
   method:=fmt.tprintf("agent.automations.webhooks.%s",verb)
   testing.expect(t,bridge_agent_method_allowed(method),method)
   route:=bridge_agent_route(method,"{}")

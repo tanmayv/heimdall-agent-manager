@@ -23,7 +23,7 @@ agent_webhook_handler :: proc(ctx:rawptr,req:Request)->Response {
   return action_response(req,rows)
  }
  switch verb {
- case "create","show","rotate","enable","disable","delete","test":
+ case "create","update","show","rotate","enable","disable","delete","test":
  case: return action_error(domain.domain_error(.Not_Found,"webhook verb not found"),req.request_id)
  }
  if verb!="create" && strings.trim_space(params.id)=="" do return action_error(domain.domain_error(.Validation_Failed,"webhook id required"),req.request_id)
@@ -52,7 +52,7 @@ agent_webhook_handler :: proc(ctx:rawptr,req:Request)->Response {
   }
   return event_webhook_receive(wh,ingress,inst.agent_instance_id,owner)
  }
- input:=webhooks.Input{name=params.name}
+ input:=webhooks.Input{name=params.name,dedupe_header=params.dedupe_header}
  operation:=verb
  if verb=="enable" || verb=="disable" {operation="update";input.enabled=verb=="enable"}
  row,token,e:=webhooks.mutate(wh.service,owner,params.id,operation,input)

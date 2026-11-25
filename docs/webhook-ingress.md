@@ -120,3 +120,32 @@ oversized, rate-limited and forced storage-error secret URLs. They capture the
 post-wrapper path/raw target, exported metrics, slow-log formatter output and
 response bodies, and assert no presented URL token occurs. SQLite statement tracing
 asserts a nonzero ingress query count with zero action/delivery-table queries.
+
+## Sender event IDs and retries
+
+Each webhook has a `dedupe_header` setting, defaulting to `Idempotency-Key`.
+Configure it when creating or updating the webhook through the API, the Webhooks
+section, or the CLI:
+
+```bash
+ham-ctl automations webhooks create --name GitHub --dedupe-header X-GitHub-Delivery
+ham-ctl automations webhooks update wh_1 --dedupe-header Svix-Id
+ham-ctl automations webhooks update wh_1 --dedupe-header X-Request-Id
+```
+
+API create (`POST /api/v1/webhooks`) and update (`PATCH /api/v1/webhooks/<id>`)
+accept `{"dedupe_header":"X-GitHub-Delivery"}`; list/show responses include the field.
+Header names are case insensitive RFC 7230 tokens of 1 to 64 ASCII characters.
+Empty names, whitespace, colons and non-ASCII names are rejected. Credential
+headers Authorization, Proxy-Authorization, Cookie, Set-Cookie and X-Api-Key
+are also rejected case insensitively; choose an event ID header instead.
+
+After authentication, ingress uses the configured header value as the event ID
+input, retaining the existing 128-byte value limit. The persisted event ID is
+derived from SHA-256 of the webhook ID and header value; the raw header value
+is not stored in the event ID or envelope. Repeated nonempty values for
+the same webhook yield one outbox event and `duplicate:true`; missing or empty
+values create separate events. Other ID headers are ignored. Existing webhooks
+retain `Idempotency-Key` through migration. Use GitHub’s `X-GitHub-Delivery`,
+Svix’s `Svix-Id`, or your sender’s `X-Request-Id`. These are generic header
+settings; they do not verify provider HMAC signatures.

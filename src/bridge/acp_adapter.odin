@@ -408,7 +408,8 @@ acp_provider_parse_cli_version :: proc(d: contracts.ACP_Provider_Descriptor, out
     text := strings.trim_space(output)
     if d.launch == .System {
         // `kiro-cli 3.5.0`: the descriptor label, then the first token only.
-        if d.cli_version_prefix == "" || !strings.has_prefix(text, d.cli_version_prefix) do return "", false
+        if d.cli_version_bare do return text, len(text) <= 64 && contracts.exact_adapter_version(text)
+        if !strings.has_prefix(text, d.cli_version_prefix) do return "", false
         text = strings.trim_prefix(text, d.cli_version_prefix)
         if end := strings.index_any(text, " \t\r\n"); end >= 0 do text = text[:end]
         return text, len(text) <= 64 && contracts.exact_adapter_version(text)

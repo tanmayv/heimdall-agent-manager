@@ -775,8 +775,11 @@ MIGRATION_248_EXTENSION_VERSION_SYNC :: #load("migrations/248_extension_version_
 MIGRATION_249_EXTENSION_VERSION_SYNC :: #load("migrations/249_extension_version_sync_0_5_86.sql", string)
 
 MIGRATION_250_EXTENSION_VERSION_SYNC :: #load("migrations/250_extension_version_sync_0_5_87.sql", string)
-MIGRATION_251_SHARED_FLEET_SETTINGS :: #load("migrations/251_shared_fleet_settings.sql", string)
-MIGRATION_252_FLEET_APPLICATIONS :: #load("migrations/252_fleet_applications.sql", string)
+MIGRATION_251_OPENCODE_ACP_PROVIDER :: #load("migrations/251_opencode_acp_provider.sql", string)
+
+MIGRATION_252_EXTENSION_VERSION_SYNC :: #load("migrations/252_extension_version_sync_0_5_88.sql", string)
+MIGRATION_253_SHARED_FLEET_SETTINGS :: #load("migrations/253_shared_fleet_settings.sql", string)
+MIGRATION_254_FLEET_APPLICATIONS :: #load("migrations/254_fleet_applications.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1061,11 +1064,14 @@ migration_order :: [?]string {
 	"actions_010_agent_automation_audit.sql",
 	"actions_011_prompt_expiry.sql",
 	"webhooks_001.sql",
+ "webhooks_002_dedupe_header.sql",
 	"248_extension_version_sync_0_5_85.sql",
 	"249_extension_version_sync_0_5_86.sql",
 	"250_extension_version_sync_0_5_87.sql",
-	"251_shared_fleet_settings.sql",
-	"252_fleet_applications.sql",
+	"251_opencode_acp_provider.sql",
+	"252_extension_version_sync_0_5_88.sql",
+	"253_shared_fleet_settings.sql",
+	"254_fleet_applications.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1127,6 +1133,11 @@ run_migrations :: proc(
 		}
 		// 215 commits atomically; repair a crash before its ledger insert.
 		if name == "215_bots_whatsapp.sql" && sqlite_object_exists(conn, "channel_push_events_pending") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		// Repair a crash after ALTER TABLE but before the migration ledger write.
+		if name == "webhooks_002_dedupe_header.sql" && table_column_exists(conn, "event_webhooks", "dedupe_header") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -1617,9 +1628,11 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "252_extension_version_sync_0_5_88.sql" do return strings.clone(MIGRATION_252_EXTENSION_VERSION_SYNC)
 	if name == "250_extension_version_sync_0_5_87.sql" do return strings.clone(MIGRATION_250_EXTENSION_VERSION_SYNC)
-	if name == "251_shared_fleet_settings.sql" do return strings.clone(MIGRATION_251_SHARED_FLEET_SETTINGS)
-	if name == "252_fleet_applications.sql" do return strings.clone(MIGRATION_252_FLEET_APPLICATIONS)
+	if name == "253_shared_fleet_settings.sql" do return strings.clone(MIGRATION_253_SHARED_FLEET_SETTINGS)
+	if name == "254_fleet_applications.sql" do return strings.clone(MIGRATION_254_FLEET_APPLICATIONS)
+	if name == "251_opencode_acp_provider.sql" do return strings.clone(MIGRATION_251_OPENCODE_ACP_PROVIDER)
 	if name == "249_extension_version_sync_0_5_86.sql" do return strings.clone(MIGRATION_249_EXTENSION_VERSION_SYNC)
 	if name == "248_extension_version_sync_0_5_85.sql" do return strings.clone(MIGRATION_248_EXTENSION_VERSION_SYNC)
 	if name == "247_extension_version_sync_0_5_84.sql" do return strings.clone(MIGRATION_247_EXTENSION_VERSION_SYNC)
@@ -1633,6 +1646,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "239_extension_version_sync_0_5_76.sql" do return strings.clone(MIGRATION_239_EXTENSION_VERSION_SYNC)
 	if name == "238_extension_version_sync_0_5_75.sql" do return strings.clone(MIGRATION_238_EXTENSION_VERSION_SYNC)
  if name == "actions_011_prompt_expiry.sql" do return strings.clone(MIGRATION_ACTIONS_011_PROMPT_EXPIRY)
+	if name == "webhooks_002_dedupe_header.sql" do return strings.clone(MIGRATION_WEBHOOKS_002_DEDUPE_HEADER)
 	if name == "webhooks_001.sql" do return strings.clone(MIGRATION_WEBHOOKS_001)
 	if name == "actions_010_agent_automation_audit.sql" do return strings.clone(MIGRATION_ACTIONS_010_AGENT_AUTOMATION_AUDIT)
 	if name == "actions_001_reset.sql" do return strings.clone(MIGRATION_ACTIONS_001_RESET)
@@ -2493,3 +2507,5 @@ upgrade_memory_action_expiry_schema :: proc(conn: ^Conn) -> bool {
 MIGRATION_EVENTS_009_INCREMENTAL_INBOX :: #load("migrations/events_009_incremental_inbox.sql", string)
 
 MIGRATION_WEBHOOKS_001 :: #load("migrations/webhooks_001.sql",string)
+
+MIGRATION_WEBHOOKS_002_DEDUPE_HEADER :: #load("migrations/webhooks_002_dedupe_header.sql",string)
