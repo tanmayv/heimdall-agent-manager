@@ -14,6 +14,9 @@ Agent_Profile :: struct {
 	ask_flags: []string,
 	prompt_flags: []string,
 	starter_prompt: string,
+	// True for a provider whose harness is not known to load its bootstrap file
+	// into context itself: its prompt keeps the "read your bootstrap file" step.
+	keep_bootstrap_read: bool,
 	// Launch-scoped evidence that the provider loads the Heimdall extension.
 	extension_expected: bool,
 	prompt_delivery: string,
@@ -94,9 +97,51 @@ render_starter_prompt_for_agent :: proc(profile: Agent_Profile, daemon_url, agen
 	out, _ = strings.replace_all(out, strings.concatenate({CTL_SHIM_INVOCATION + " --token ", agent_token, " start-success"}), CTL_SHIM_INVOCATION + " agent start-success")
 	out, _ = strings.replace_all(out, "ham-ctl --token ", CTL_SHIM_INVOCATION + " --token ")
 	out, _ = strings.replace_all(out, "ham-ctl start-success", CTL_SHIM_INVOCATION + " agent start-success")
+	out = apply_startup_instruction(out, profile.keep_bootstrap_read)
 	out = strings.concatenate({out, "\n\nHeimdall runtime: use `" + CTL_SHIM_INVOCATION + "` for CLI actions. Your agent token is `", agent_token, "` and your agent instance id is `", agent_instance_id, "`; they are also available in HEIMDALL_AGENT_TOKEN and HEIMDALL_AGENT_INSTANCE_ID."})
 	if suffix := strings.trim_space(profile.starter_prompt_suffix); suffix != "" {
 		out = strings.concatenate({out, "\n\n", suffix})
 	}
 	return out
+}
+
+STARTUP_LEASE_INSTRUCTION :: "take your task lease with `" + CTL_SHIM_INVOCATION + " lease next`, read MEMORY.md and TASK.md, and start working on the leased task; if no lease is returned, read MEMORY.md and wait for messages."
+
+// Seeded starter sentences that tell the agent to read its bootstrap file. The
+// harness of every provider except those flagged keep_bootstrap_read loads that
+// file itself, so a second read only costs tokens.
+@(private = "file")
+LEGACY_BOOTSTRAP_SENTENCES := [?]string{
+	"Then read your bootstrap file (CLAUDE.md) for context, identity, and what you can do.",
+	"Then read AGENTS.md for context.",
+}
+
+// apply_startup_instruction makes the rendered prompt carry the lease/TASK.md
+// instruction exactly once: a known seeded bootstrap sentence is replaced (or,
+// for keep_bootstrap_read, followed) by it; a user-edited prompt without one is
+// kept and the instruction appended.
+apply_startup_instruction :: proc(prompt: string, keep_bootstrap_read: bool) -> string {
+	if strings.contains(prompt, "lease next") do return prompt
+	sentence := "Then " + STARTUP_LEASE_INSTRUCTION
+	for legacy in LEGACY_BOOTSTRAP_SENTENCES {
+		if !strings.contains(prompt, legacy) do continue
+		replacement := sentence
+		if keep_bootstrap_read do replacement = strings.concatenate({legacy, " ", sentence})
+		out, _ := strings.replace_all(prompt, legacy, replacement)
+		return out
+	}
+	return strings.concatenate({strings.trim_right_space(prompt), " ", sentence})
+}
+
+// render_acp_starter_prompt renders the starter prompt an ACP driver sends as
+// its first prompt text: the same ctl invocation and instruction as the PTY
+// path, without the token suffix (ACP launches pass credentials by env).
+// keep_bootstrap_read is true when the bootstrap file was attached only as a
+// link rather than embedded content.
+render_acp_starter_prompt :: proc(starter: string, keep_bootstrap_read: bool) -> string {
+	if strings.trim_space(starter) == "" do return ""
+	out, _ := strings.replace_all(starter, "{ctl_bin} --token {token} start-success", "{ctl_bin} agent start-success")
+	out, _ = strings.replace_all(out, "{ctl_bin} start-success", "{ctl_bin} agent start-success")
+	out, _ = strings.replace_all(out, "{ctl_bin}", CTL_SHIM_INVOCATION)
+	return apply_startup_instruction(out, keep_bootstrap_read)
 }
