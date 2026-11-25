@@ -75,13 +75,16 @@ try {
           const rect = sheet.getBoundingClientRect();
           return { x: rect.x, right: rect.right, y: rect.y, bottom: rect.bottom, height: rect.height,
             focused: sheet.contains(document.activeElement),
-            rows: [...sheet.querySelectorAll('[role="menuitemcheckbox"]')].map(el => ({id: el.dataset.debugId, height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width})) };
+            rows: [...sheet.querySelectorAll('[role="menuitemcheckbox"]')].map(el => ({id: el.dataset.debugId, height: el.getBoundingClientRect().height, width: el.getBoundingClientRect().width,
+              checked: el.getAttribute('aria-checked'), feedback: el.matches(':hover,:focus-visible'), background: getComputedStyle(el).backgroundColor})) };
         })()`);
         assert.ok(sheet.x >= 0 && sheet.right <= width && sheet.y >= 0 && sheet.bottom <= height + 1, 'sheet inside visible viewport');
         assert.ok(sheet.height <= height * .8 + 1, 'sheet caps visible height');
         assert.equal(sheet.focused, true);
         assert.equal(sheet.rows.length, 3);
         assert.ok(sheet.rows.every(row => row.height >= 44));
+        assert.ok(sheet.rows.every(row => row.feedback || row.background === 'rgba(0, 0, 0, 0)'), 'idle checked rows have no persistent fill');
+        assert.ok(sheet.rows.every(row => row.checked === 'true'), 'checked indicators retained');
         // The final option must be reachable even on short screens.
         await evaluate(`document.querySelector('[data-debug-id="home-layout-toggle-fleet"]').scrollIntoView({block:'nearest'})`);
         assert.ok(await evaluate(`(() => { const r = document.querySelector('[data-debug-id="home-layout-toggle-fleet"]').getBoundingClientRect(); return r.y >= 0 && r.bottom <= innerHeight; })()`));

@@ -178,6 +178,8 @@
 .home-add-sheet-options button { white-space: normal; overflow-wrap: anywhere; }
 .home-add-sheet-options button > span { min-width: 0; }
 .home-add-sheet-options .truncate { white-space: normal; }
+/* Checkmarks carry selection; reserve row fill for pointer and keyboard feedback. */
+.home-add-sheet-options [role="menuitemcheckbox"][aria-checked="true"]:not(:hover):not(:focus-visible) { background-color: transparent; }
 .home-layout-arrows { display: inline-flex; flex: none; }
 .home-add-tile {
   border: 1px dashed var(--color-border-strong); border-radius: var(--radius-lg);
