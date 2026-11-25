@@ -42,10 +42,18 @@ const expectState = async (expression, message) => {
 };
 const sel = id => `[data-debug-id="${id}"]`;
 const el = id => `document.querySelector(${JSON.stringify(sel(id))})`;
-const click = async id => { await evaluate(`${el(id)}.focus({preventScroll:true}); ${el(id)}.click()`); await wait(350); };
+// Ordinary interactions use native pointer input, including scroll and focus.
+const click = async id => {
+  const point = await evaluate(`(() => { const e=${el(id)}; if (!e) throw new Error('Missing control: ' + ${JSON.stringify(id)}); e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+  await call('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+  await call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+  await wait(350);
+};
+// Deliberate parent-driven cleanup while a modal blocks background pointer input.
+const activate = async id => { await evaluate(`${el(id)}.click()`); await wait(350); };
 const expand = async target => {
   const id = 'home-fleet-expand-mock-bridge-0';
-  if (await evaluate(`${el(id)}.getAttribute('aria-expanded')`) !== String(target)) await click(id);
+  if (await evaluate(`${el(id)}.getAttribute('aria-expanded')`) !== String(target)) await (target ? click(id) : activate(id));
   assert.equal(await evaluate(`${el(id)}.getAttribute('aria-expanded')`), String(target), 'required disclosure state');
 };
 const key = async (key, code, virtualKey) => {
@@ -166,8 +174,8 @@ try {
       await expectState(`!!${el('home-layout-handle-chains')} && ${el('home-layout-add-menu')}.getAttribute('aria-expanded') === 'false'`, 'desktop toggle restores widget and closes menu');
     }
     await click(narrow ? 'home-layout-options-chains' : 'home-layout-handle-chains');
-    await click('home-layout-edit'); await clean();
-    await click(base + '-model'); await click('home-layout-edit'); await clean();
+    await activate('home-layout-edit'); await clean();
+    await click(base + '-model'); await activate('home-layout-edit'); await clean();
     assert.match(await evaluate(`${el(base + '-model')}.textContent`), /profile-model-39/);
     await click('home-layout-edit');
     report.checks.push('widget removal focus', 'widget action edit completion', 'Fleet edit completion retains draft', 'Add-widget mobile multi-toggle / desktop preserved');
