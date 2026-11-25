@@ -82,7 +82,7 @@ export interface FleetWire {
   overrides: Record<string, { bridge_id: string; agent_id: string; provider: string; model: string; updated_at: string }[]>;
   agents: { bridge_id: string; agents: { agent_id: string; name: string }[] }[];
 }
-export interface HomeChainRow { chain_id: string; title: string; status: string; project_name: string; updated_at: string }
+export interface HomeChainRow { chain_id: string; title: string; status: string; project_name: string; updated_at: string; user_validation_count?: number }
 export interface HomeChainPage { chains: HomeChainRow[]; total: number; next_cursor: string }
 export interface HomeChainDetail { chain_id: string; members: { role: string; display_name: string; bridge_id: string; bridge_label?: string }[]; tasks: { state: string }[] }
 

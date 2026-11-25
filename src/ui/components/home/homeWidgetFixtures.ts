@@ -102,7 +102,7 @@ export function chainsFixture(page: number): HomeChainPage {
     chains: titles.slice(page * 3, page * 3 + 3).map((title, offset) => {
       const index = page * 3 + offset;
       return {
-        chain_id: 'mock-chain-' + index, title, status: 'active',
+        chain_id: 'mock-chain-' + index, title, status: 'active', user_validation_count: index === 1 ? 1 : 0,
         project_name: index === 2 ? 'five-trails-ios' : 'heimdall-agent-manager',
         updated_at: new Date(now - [0, 18, 60, 120, 180, 240, 300][index] * 60000).toISOString(),
       };

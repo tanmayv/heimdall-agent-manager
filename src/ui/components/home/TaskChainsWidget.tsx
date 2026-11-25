@@ -22,7 +22,7 @@ function updatedLabel(value: string) {
 function TaskChainCard({ chain }: { chain: ChainListItem }) {
   const detail = useGetHomeChainDetailQuery(chain.chainId);
   const counts = detail.data ? chainProgress(detail.data.tasks || []) : null;
-  const review = chain.hasUserValidation || chain.status === 'needs_review' || chain.status === 'in_review' || Boolean(counts?.review);
+  const review = chain.hasUserValidation || chain.status === 'needs_review' || chain.status === 'in_review';
   const coordinator = detail.data?.members?.find((member: { role: string }) => member.role === 'coordinator');
   return <article className="home-chain-card">
     <div className="home-row home-chain-title-row"><Link href={`#/chains/${encodeURIComponent(chain.chainId)}`} tone="muted" variant="standalone" className="home-chain-title" data-debug-id={`home-chain-open-${chain.chainId}`}><Text role="title"><VaultText value={chain.title} fallback="Task chain" /></Text></Link>
@@ -36,7 +36,7 @@ function TaskChainCard({ chain }: { chain: ChainListItem }) {
 export function TaskChainsWidget({ resource: supplied, onRetry }: { resource?: WidgetResource<ChainListItem[]>; onRetry?: () => void } = {}) {
   const [pageIndex, setPageIndex] = useState(0);
   const query = useGetHomeTaskChainsQuery({ page: pageIndex }, { skip: Boolean(supplied) });
-  const resource: WidgetResource<ChainListItem[]> = supplied || (query.isError ? { status: 'error', message: 'Unable to load task chains' } : query.data ? { status: 'ready', data: query.data.chains.map((chain) => ({ chainId: chain.chain_id, title: chain.title, status: chain.status, projectName: chain.project_name, updatedAt: chain.updated_at } as ChainListItem)) } : { status: 'loading' });
+  const resource: WidgetResource<ChainListItem[]> = supplied || (query.isError ? { status: 'error', message: 'Unable to load task chains' } : query.data ? { status: 'ready', data: query.data.chains.map((chain) => ({ chainId: chain.chain_id, title: chain.title, status: chain.status, projectName: chain.project_name, updatedAt: chain.updated_at, hasUserValidation: Boolean(chain.user_validation_count) } as ChainListItem)) } : { status: 'loading' });
   const chains = resource.status === 'ready' ? activeWidgetChains(resource.data) : [];
   const total = supplied ? chains.length : query.data?.total || 0;
   const page = supplied ? chainWidgetPage(chains, pageIndex) : { index: pageIndex, rows: chains, start: total ? pageIndex * 3 + 1 : 0, end: Math.min(pageIndex * 3 + chains.length, total) };

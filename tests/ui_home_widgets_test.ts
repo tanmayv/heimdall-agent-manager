@@ -128,6 +128,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     assert.match(doc.getElementById('home-fleet-overrides-mock-bridge-1')!.textContent!, /No overrides/);
     assert.equal(get('home-widget-chains').querySelectorAll('article').length, 3);
     assert.match(get('home-widget-chains').textContent!, /7 active/);
+    assert.match(get('home-widget-chains').querySelector('article')!.textContent!, /Running/);
     assert.match(get('home-widget-chains').textContent!, /1–3 of 7/);
     assert.match(get('home-widget-chains').querySelector('.home-chain-progress')!.getAttribute('aria-label')!, /1 of 6 tickets done, 1 in review, 2 in progress/);
     await click('home-chains-next'); assert.match(get('home-widget-chains').textContent!, /4–6 of 7/);
@@ -164,6 +165,8 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     await click('home-fleet-retry');
     assert.match(get('home-widget-fleet').textContent!, /No bridges yet/);
     assert.equal(attempts, 2);
+    await render(React.createElement(TaskChainsWidget, { resource: { status: 'ready', data: [{ chainId: 'one', title: 'Only chain', status: 'active', updatedAt: '' }] as any } }));
+    assert.equal(get('home-chains-next'), null);
   } finally {
     await act(async () => root.unmount());
     store.dispatch(heimdallApi.util.resetApiState());
