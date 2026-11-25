@@ -68,16 +68,20 @@ async function capture(width, state) {
   const result = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width, height, scale: 1 } });
   const file = path.join(output, `fleet-${width}-${state}.png`);
   await fs.writeFile(file, Buffer.from(result.data, 'base64'));
+  const clip = await evaluate(`(() => { const r = document.querySelector('${selector('home-widget-fleet')}').getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height, scale: 1 }; })()`);
+  const detail = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+  await fs.writeFile(file.replace('.png', '-detail.png'), Buffer.from(detail.data, 'base64'));
   return file;
 }
 // Sample real layout on animation frames; no fake timers or DOM-only motion assertion.
 const motion = (reverse = false) => evaluate(`new Promise((resolve) => {
   const panel = ${body}, button = ${toggle}, samples = [], start = performance.now();
-  let reversed = false;
+  const reversals = ${JSON.stringify(reverse ? [45, 80, 115] : [])};
+  let nextReversal = 0;
   button.click();
   const frame = (now) => {
     samples.push({ ms: now - start, height: panel.getBoundingClientRect().height });
-    if (${reverse} && !reversed && now - start >= 65) { button.click(); reversed = true; }
+    if (nextReversal < reversals.length && now - start >= reversals[nextReversal]) { button.click(); nextReversal++; }
     if (now - start < 450) requestAnimationFrame(frame); else resolve(samples);
   };
   requestAnimationFrame(frame);
@@ -122,7 +126,7 @@ try {
     const collapsedFile = await capture(width, 'collapsed-draft');
     const opening = await motion();
     assert.ok(opening.some(s => s.height > 1 && s.height < initial.height - 1), 'visible opening motion');
-    const reversal = await motion(true); // close, then reverse while still moving
+    const reversal = await motion(true); // close/open/close/open while still moving
     const reopened = await geometry();
     assert.equal(reopened.expanded, 'true');
     assert.ok(Math.abs(reopened.height - reopened.contentHeight) <= 1);
@@ -164,6 +168,9 @@ try {
     assert.equal(await evaluate(`document.querySelector('${selector('home-fleet-expand-mock-bridge-1')}').getAttribute('aria-expanded')`), 'true');
     assert.equal(await evaluate(`document.activeElement.closest('.home-fleet-bridge')?.dataset.debugId`), 'home-fleet-bridge-mock-bridge-1');
     reports.at(-1).deepLink = await evaluate('document.activeElement.dataset.debugId');
+    await navigate('partial-failure', '#/?widget=fleet&bridge=mock-bridge-0&agent=mock-worker');
+    assert.equal(await evaluate('document.activeElement.dataset.debugId'), 'home-fleet-override-mock-bridge-0-mock-worker-agent', 'deep link focuses the requested agent control');
+    reports.at(-1).agentDeepLink = await evaluate('document.activeElement.dataset.debugId');
     await navigate('status-error');
     const error = await evaluate(`document.querySelector('${selector('home-fleet-error-' + first)}').textContent`);
     await click('home-fleet-expand-' + first); await wait(250);
