@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
 import './ui_bridge_fleet_test.ts';
+import './ui_home_task_chains_test.ts';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 import {
   activeWidgetChains, activityLevel, chainProgress, chainWidgetPage, summarizeActivity, activityFromWire, uptimeFromWire, fleetFromWire,
@@ -131,7 +132,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     assert.match(get('home-widget-chains').textContent!, /7 active/);
     assert.match(get('home-widget-chains').querySelector('article')!.textContent!, /Running/);
     assert.match(get('home-widget-chains').textContent!, /1–3 of 7/);
-    assert.match(get('home-widget-chains').querySelector('.home-chain-progress')!.getAttribute('aria-label')!, /1 of 6 tickets done, 1 in review, 2 in progress/);
+    assert.match(get('home-widget-chains').querySelector('.home-chain-progress')!.getAttribute('aria-label')!, /1 of 4 tickets done, 1 in review, 1 in progress/);
     await click('home-chains-next'); assert.match(get('home-widget-chains').textContent!, /4–6 of 7/);
     await click('home-chains-next'); assert.equal(get('home-widget-chains').querySelectorAll('article').length, 1);
     assert.equal((get('home-chains-next') as HTMLButtonElement).disabled, true);

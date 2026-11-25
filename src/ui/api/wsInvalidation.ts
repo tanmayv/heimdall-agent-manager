@@ -336,7 +336,7 @@ function handleTaskEvent(dispatch: any, payload: any) {
 
   // Chain-level list count invalidation only. Do NOT invalidate { type: 'Chain', id: chainId }
   // or { type: 'ChainTasks', id: chainId } to prevent reloading all tasks in the chain.
-  dispatch(heimdallApi.util.invalidateTags([{ type: 'ChainList', id: 'ALL' }]));
+  queueInvalidation(dispatch, [{ type: 'ChainList', id: 'ALL' }]);
   if (taskId) {
     dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskLog', id: taskId }]));
   }
@@ -1054,7 +1054,7 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
         tags.push({ type: 'TaskLog', id: taskId });
         tags.push({ type: 'TaskComments', id: taskId });
       }
-      dispatch(heimdallApi.util.invalidateTags(tags));
+      queueInvalidation(dispatch, tags);
       if (chainId && ctx.focusedChainId === chainId) {
         dispatch(wsChainViewRefreshRequested(`resource_changed:task:${taskId || resourceId}`));
       }
