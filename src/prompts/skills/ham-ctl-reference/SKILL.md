@@ -1,6 +1,6 @@
 ---
 name: ham-ctl-reference
-description: Exact ham-ctl syntax for the coordinator-side groups — bridge, agents, task-chain (create, propose, publish, directory, fleet, token-usage, graph/scope/complete), task authoring verbs, workflow, issue, automations, webhooks, extension and context — with flags, positional ids and valid values. Load when you need a flag or valid value you do not remember. Chat, shell, events, claims, memory, artifacts and lease/review procedure live in their own skills (pointers below).
+description: Authoritative reference for exact ham-ctl syntax, for all roles — flags, positional ids and valid values for bridge, agents, task-chain (create, propose, publish, directory, fleet, token-usage, graph/scope/complete), task (authoring and control), lease, review, workflow, issue, automations, webhooks, extension and context. Load when you need a flag or valid value you do not remember. Chat, shell, events, claims, memory, artifact and action-card detail is owned by other skills (pointer table inside).
 ---
 
 # ham-ctl command reference
@@ -20,16 +20,23 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 
 Groups documented elsewhere (the owner holds every verb, flag and valid value; do not look here):
 
-| Group | Owning skill (heading) |
+| Group | Owning skill and heading |
 | --- | --- |
-| `chat` (read, send, grouped questions, answers, `set-title`), `start-success` | `heimdall-ctl-communication` |
-| `shell` (run, serve, start, list, log, set-port, `/proxy/`) | `shell-sessions`; preview mechanics: `heimdall-preview-setup` |
-| `events`, `lease <id>`, `lease transfer`, `task cancel`, requirement revisions | `chain-events-and-claims` |
-| `artifact` (list, show, content, download, create, html-bundle) | `artifact-authoring` |
-| `memory` (list, show, content, propose, the four scope dimensions) | `memory-management-workflow` |
-| `action create` and card payloads | `action-cards` |
-| `search` | `search-command` |
-| worker flow: `lease next|heartbeat|submit|handoff|switch|block`, `task fetch`, `review post` | `worker-task-management` (signatures below) |
+| `chat read`/`send`, `set-title` | `heimdall-ctl-communication` "## 2. Read", "## 3. Send" |
+| `chat send --questions-file`, delivered answers | `heimdall-ctl-communication` "## 4. Asking questions" |
+| `start-success` | `heimdall-ctl-communication` "## 1. Startup" |
+| `shell` run, serve, start, list, log, capture, signal, restart, set-port, kill | `shell-sessions` "## Commands", "## Other verbs" |
+| `/proxy/<session_id>/` from this host | `shell-sessions` "## Calling a server session from this host" |
+| preview, `preview_url`, tunnel behaviour | `heimdall-preview-setup` "## Start and share", "## Backend behavior through the tunnel" |
+| `events next`, `ack`, `watch`, `unwatch`, `subscriptions`, `[events]` nudges | `chain-events-and-claims` "## Event inbox and migration notices", "## Subscriptions, watches and limits" |
+| `lease <task-id>`, `lease transfer`, `task cancel` | `chain-events-and-claims` "## Durable claims, cancellation and transfer" |
+| acknowledging a requirements revision | `chain-events-and-claims` "## Requirement revisions: acknowledging on your own claim" |
+| amending requirements (`task update --expected-requirements-revision`), MCP `tasks.update` | `coordinator-task-management` "## 9. Live requirement amendments and significant changes" |
+| `artifact` list, show, content, download, create, html-bundle | `artifact-authoring` "## 3. Upload"; flags: `ham-ctl artifact --help` |
+| `memory` list, show, content, propose, scope flags | `memory-management-workflow` "## Scope", "## Commands" |
+| `action create` and card payloads | `action-cards` "## From an agent: `ham-ctl action create`" |
+| `search` | `search-command` "## Parameters (CLI flag / RPC field)" |
+| lease and review procedure, `task fetch` | `worker-task-management` "## 5. Submit, hand off, or block — and share what you learned", "## 6. Fetch omitted or referenced context", "## 7. Reviewing" (signatures below) |
 
 ---
 
@@ -219,7 +226,7 @@ A positional `<task-id>` identifies the task and is enough on its own (task ids 
 - `task comments <task-id> [--last N]` — fetch comment BODIES; `--last N` = newest N (max 100).
 - `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval] [--brief-file <path.json>]` — create a task.
   `--assignee` and `--reviewer` take durable agent IDs (`agt_...`) only.
-- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>]` — edit an existing task. Any agent instance of the task's owner may update it (chain membership is not required); dependency edits (`--depends-on`) use the same owner policy while preserving same-chain endpoints, DAG and started-input/consumption guards.
+- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>] [--expected-requirements-revision <n> --reason <text>]` — edit an existing task. `--goal` and `--acceptance` amend native requirements with optimistic concurrency: pass the revision just read from `task show` (`requirements_revision`) as `--expected-requirements-revision` with a `--reason`; acceptance flags replace the whole list; on conflict reread and reconcile. Existing ownership, terminal-task and workflow-stage restrictions still apply. Any agent instance of the task's owner may update it (chain membership is not required); dependency edits (`--depends-on`) use the same owner policy while preserving same-chain endpoints, DAG and started-input/consumption guards.
 - `task publish <task-id>` — any authenticated agent of the owner may publish an ordinary draft task in a published chain after validating its brief and requested review roles. A brief needs a non-empty `goal` and at least one `acceptance` item; nothing else is required (`422 brief_incomplete` lists what is missing).
 - `task unblock <task-id> [--note <reason>]` — the owner or any of its agent instances clears a block and retries matching. Unavailable agents carry `blocked_on.kind=agent_not_running` (legacy `dispatch` is supported) and an agent/provider/model/bridge/error reason. Fix the cause first. The user can click **Start agent** (`agent.start {task_id}`) on the attention card or chat tray; failures keep the block, update its reason and show the error inline for retry. Updating the affected fleet row also clears its blocks. Infrastructure failures do not consume work attempt budget; a full fleet row is normal queueing. A solo coordinator remains pull-only: an explicit user Start launches it before clearing the block, then it pulls the ready task.
 - `task recheck <task-id>` — owner or any of its agent instances: recompute what the Hub would decide for the task now — the review gate against the CURRENT reviewers, review roles and user-approval flag; dependency readiness; a `bridge_offline` agent block whose bridge is back; dispatch against fleet capacity, roles, pause and bridge state; and a done task's pending/failed merge-back (only when the task was already done and no merge job for it is still running; a task the re-check itself moves to done gets its one merge from that transition). Never approves (it only counts verdicts already posted), never touches a task with a live lease, never spends an attempt; a call that changes nothing records nothing. Prints `{task, changed, actions[], reasons[], message}`: `actions` say what changed (`state: in_review → done`, `dispatched: work lease …`, `merge-back re-queued …`), `reasons` say what still holds it (`waiting on review from agt_x (role reviewer)`, `agt_w: fleet full 2/2 on bridge …`, `agt_w: bridge … is offline`, `chain directory … already has a live work lease (vcs_kind "")`, `merge pending: the merge-back is in flight on bridge …`, `merge none: chain directory … has vcs_kind ""`). Use it instead of `task hold` + `task release` to unstick a task. Also `POST /api/v1/tasks/{id}/recheck` and the **Re-check** item in the task card menu.
@@ -227,16 +234,17 @@ A positional `<task-id>` identifies the task and is enough on its own (task ids 
 - `task release <task-id>` — owner or any of its agent instances: clear a hold. The task can be dispatched again, and an `in_review` task has its gate re-evaluated. Release itself never changes the attempt number. A task that was handed off at a checkpoint continues as the same attempt, and review leases keep the current attempt. A fresh work grant still counts as usual: the first lease of a task that was never leased, or a new claim after ownership was explicitly released, starts a new attempt. Releasing an unheld task is a no-op.
 - `task comment <task-id> --body <t>` (or `--stdin`) `[--notify <id,id>]` — add a comment.
 - `task depend <task-id> --on <task-id>|task:<task-id>|workflow_run:<run-id> [--chain <id>]` — add one prerequisite to a ticket. A `workflow_run:` prerequisite becomes a chain-level graph edge on the whole run (the ticket stays ineligible until that run succeeds). Other typed refs (stage keys, `workflow:` names, issues) are rejected with guidance; use `task-chain depend` for run-on-ticket or run-on-run edges. `--depends-on` on `task create`/`task update` takes ticket ids only (`task:<id>` accepted) and `update --depends-on` replaces the whole list.
-- `task cancel <task-id>`, `task fetch <task-id> <ref>`: see `chain-events-and-claims` and `worker-task-management` ("Fetching context").
+- `task cancel <task-id>`: `chain-events-and-claims` "## Durable claims, cancellation and transfer".
+- `task fetch <task-id> <ref>` — fetch one event (`#<event_id>`), `output:<task_id>`, `facet:<task_id>:<attempt_no>:<kind>`, or a file: `dir:<dir_id>:<rev>:<path>`, `<path>@<rev>`, or bare `<path>`; refs are referenced by `TASK.md`.
 
 ### lease and review: signatures only
 Procedure, decisions and dead ends, checks and reviewing are owned by `worker-task-management`; claims and transfer by `chain-events-and-claims`. Exact signatures:
 - `lease next` · `lease heartbeat [--note <text>] [--lease <id>] [--acknowledge-requirements-revision <n>]` (on `409 lease_lost` stop at once, touch nothing)
 - `lease submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>] [--artifacts <json>] [--lease <id>]` — validates `output` against the brief's output contract (`task_list.v1`, `findings.v1`)
-- `lease handoff --summary <s> [handoff flags] [--lease <id>]` · `lease switch <task_id> --summary <s> [handoff flags]`
+- `lease handoff --summary <s> [handoff flags] [--lease <id>]` — stop without finishing; the task returns to `ready` and the next holder gets your handoff · `lease switch <task_id> --summary <s> [handoff flags]` — solo mode: hand off the current task (attempt not counted) and take `<task_id>` (must be `ready`) in one step
 - Handoff flags: `--decision <text>` and `--dead-end <text>` (repeatable), `--next-steps <text>`, or `--handoff-file <json>` (`{"decisions":[…],"dead_ends":[…],"next_steps":"…"}`), not both.
 - `lease block --waiting-on <kind> --reason <text> [--ref <id>] [--summary <s>]` — `<kind>` is free text: `user`, `task`, or an external system.
-- `review post [<task-id>] --verdict approve|request_changes [--summary <reason>] [--findings-file <json>] [--task <id>] [--on-behalf-of user]` — findings `[{"path","line","severity","text"}]`; response `gate: waiting|approved|changes_requested`; `--on-behalf-of user` is the coordinator recording the user's verdict (`coordinator-task-management`).
+- `review post [<task-id>] --verdict approve|request_changes [--summary <reason>] [--findings-file <json>] [--task <id>] [--on-behalf-of user]` — findings `[{"path","line","severity","text"}]`; response `gate: waiting|approved|changes_requested`; coordinators pass `--on-behalf-of user` to record the user's verdict on tasks that require user approval (or gates whose approver is `user`); refused in solo mode for your own work (`coordinator-task-management` "## 6. Recording the user's verdict").
 
 ### Task states
 A task carries a `state`: `backlog`, `ready`, `in_progress`, `in_review`, `done`, `cancelled`.

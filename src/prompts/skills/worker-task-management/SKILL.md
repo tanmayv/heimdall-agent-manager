@@ -116,8 +116,9 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 ```bash
 ./bin/ham-ctl task fetch <task-id> "#123"                          # an event (integer id)
 ./bin/ham-ctl task fetch <task-id> "output:<other-task-id>"        # another task's output
-./bin/ham-ctl task fetch <task-id> "facet:<task-id>:1:handoff"     # handoff|vcs|output|runtime|artifacts
+./bin/ham-ctl task fetch <task-id> "facet:<task_id>:<attempt_no>:<kind>"  # kind: handoff|vcs|output|runtime|artifacts, e.g. facet:<task-id>:1:handoff
 ./bin/ham-ctl task fetch <task-id> "src/main.odin@<rev>"           # a file at a revision
+./bin/ham-ctl task fetch <task-id> "src/main.odin"                 # a file at the default revision (bare <path>)
 ./bin/ham-ctl task fetch <task-id> "dir:<directory-id>:<rev>:src/main.odin"
 ```
 

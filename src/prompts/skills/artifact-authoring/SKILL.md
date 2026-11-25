@@ -5,7 +5,7 @@ description: How to produce a deliverable the user will read or view in Heimdall
 
 # Author artifacts for the user
 
-An artifact is a file stored in the Hub (sealed with your vault key) that the user opens in the **Artifact Viewer**. Use one when a result is too long, too structured or too visual for a chat message, or when the user asks for a document, image or page. Exact flags: `ham-ctl artifact --help` or the `ham-ctl-reference` skill. Bundle format and viewer rules: `docs/html-bundle-artifacts.md` in the Heimdall repository.
+An artifact is a file stored in the Hub (sealed with your vault key) that the user opens in the **Artifact Viewer**. Use one when a result is too long, too structured or too visual for a chat message, or when the user asks for a document, image or page. Exact flags: `ham-ctl artifact --help`. Bundle format and viewer rules: `docs/html-bundle-artifacts.md` in the Heimdall repository.
 
 ## 1. Choose the format
 

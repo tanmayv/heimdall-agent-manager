@@ -266,7 +266,9 @@ test_static_skills_ham_ctl_reference_does_not_restate_owned_groups :: proc(t: ^t
 		"## Live requirement revisions", "## Durable claims, cancellation and transfer",
 		"multi_question_answer", "/api/v1/preview/",
 	}) {
-		testing.expectf(t, !strings.contains(content, forbidden), "ham-ctl-reference must not restate %q (owned elsewhere)", forbidden)
+		// Headings are matched as whole lines (the pointer table may quote an owner heading); other strings as substrings.
+		restated := skill_has_heading_line(content, forbidden) if strings.has_prefix(forbidden, "#") else strings.contains(content, forbidden)
+		testing.expectf(t, !restated, "ham-ctl-reference must not restate %q (owned elsewhere)", forbidden)
 	}
 	// It points at each owner by skill name.
 	for owner in ([]string{"heimdall-ctl-communication", "shell-sessions", "chain-events-and-claims", "artifact-authoring", "memory-management-workflow", "worker-task-management"}) {
@@ -285,4 +287,40 @@ test_static_skills_shell_list_flag_requirement_matches_code :: proc(t: ^testing.
 	testing.expect(t, !strings.contains(content, "is REQUIRED (`--project` alone fails"), "shell-sessions must not claim --bridge or --chain is required")
 	ref, _ := find_static_skill("ham-ctl-reference")
 	testing.expect(t, !strings.contains(ref, "shell list"), "the shell list flag rule is stated once, in shell-sessions")
+}
+
+@(test)
+test_static_skills_reference_pointer_table_names_existing_headings :: proc(t: ^testing.T) {
+	ref, ok := find_static_skill("ham-ctl-reference")
+	testing.expect(t, ok, "ham-ctl-reference")
+	// Every pointer row names an owner skill and a heading that exists in it.
+	pointers := []struct{ owner, heading: string }{
+		{"heimdall-ctl-communication", "## 3. Send"}, {"heimdall-ctl-communication", "## 4. Asking questions"}, {"heimdall-ctl-communication", "## 1. Startup"},
+		{"shell-sessions", "## Commands"}, {"shell-sessions", "## Other verbs"}, {"shell-sessions", "## Calling a server session from this host"},
+		{"heimdall-preview-setup", "## Start and share"}, {"heimdall-preview-setup", "## Backend behavior through the tunnel"},
+		{"chain-events-and-claims", "## Event inbox and migration notices"}, {"chain-events-and-claims", "## Durable claims, cancellation and transfer"},
+		{"chain-events-and-claims", "## Requirement revisions: acknowledging on your own claim"},
+		{"coordinator-task-management", "## 9. Live requirement amendments and significant changes"},
+		{"coordinator-task-management", "## 6. Recording the user's verdict"},
+		{"artifact-authoring", "## 3. Upload"}, {"memory-management-workflow", "## Scope"}, {"memory-management-workflow", "## Commands"},
+		{"action-cards", "## From an agent: `ham-ctl action create`"}, {"search-command", "## Parameters (CLI flag / RPC field)"},
+		{"worker-task-management", "## 6. Fetch omitted or referenced context"}, {"worker-task-management", "## 7. Reviewing"},
+	}
+	for ptr in pointers {
+		testing.expectf(t, strings.contains(ref, ptr.heading), "ham-ctl-reference pointer table must name %q", ptr.heading)
+		content, found := find_static_skill(ptr.owner)
+		testing.expect(t, found, ptr.owner)
+		testing.expectf(t, skill_has_heading_line(content, ptr.heading), "%s must have heading %q", ptr.owner, ptr.heading)
+	}
+	// Restored rules (coordinator audit of e43bc3ba).
+	for rule in ([]string{"refused in solo mode for your own work", "the task returns to `ready`", "(must be `ready`)", "bare `<path>`", "--expected-requirements-revision", "workflow-stage restrictions still apply", "for all roles"}) {
+		testing.expectf(t, strings.contains(ref, rule), "ham-ctl-reference must keep %q", rule)
+	}
+	coord, _ := find_static_skill("coordinator-task-management")
+	testing.expect(t, strings.contains(coord, "MCP cannot acknowledge another agent's lease or approve reviews"), "coordinator §9 must hold the MCP rules")
+	testing.expect(t, strings.contains(coord, "opaque `revision`"), "coordinator §9 must distinguish the MCP revision")
+	comm, _ := find_static_skill("heimdall-ctl-communication")
+	testing.expect(t, strings.contains(comm, "not vault envelopes"), "comm skill must say plaintext, not vault envelopes")
+	art, _ := find_static_skill("artifact-authoring")
+	testing.expect(t, !strings.contains(art, "or the `ham-ctl-reference` skill"), "artifact-authoring must not point back at the reference")
 }
