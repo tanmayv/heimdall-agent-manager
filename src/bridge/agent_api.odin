@@ -142,10 +142,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	case "agent.task_chain.propose", "agent.chain.propose":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "propose")}
 	case "agent.task_chain.publish":
-		// REQ-CLI-1: draft chains never promote and their tasks cannot be nudged, so a
-		// coordinator agent must be able to publish the chain it built. The hub already
-		// permits an instance token that is the chain coordinator (publish_chain) and
-		// cascades Published to every task; this is purely the missing agent surface.
+		// The Hub permits any authenticated agent of the chain's owner to publish,
+		// without chain membership/coordinator status. It validates every task brief
+		// before atomically cascading Published; draft chains are not schedulable.
 		// Needs chain_id — publish has no "your own chain" default hub-side.
 		if cid := bridge_local_extract_json_string(params, "chain_id", ""); strings.trim_space(cid) != "" {
 			return Bridge_Agent_Route{kind = .Raw, http_method = .POST, path = route_path("api", "v1", "task-chains", cid, "publish")}
@@ -248,6 +247,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "workflow", "runs")}
 	case "agent.workflow.history":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "workflow", "history")}
+	// Work graph reads/mutations and workflow run controls use same-owner access.
+	// The Hub retains active-chain, endpoint, revision, consumption and lifecycle
+	// guards; this does not grant coordinator identity, claim or review authority.
 	case "agent.work.graph":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "work", "graph")}
 	case "agent.work.depend":

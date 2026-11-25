@@ -1,7 +1,6 @@
 package taskchain
 
 import "core:fmt"
-import "core:os"
 import "core:strings"
 import "core:testing"
 import contracts "odin_test:contracts"
@@ -16,11 +15,7 @@ import taskv2 "odin_test:hub/service/taskv2"
 // verify command or output contract is ever required.
 @(test)
 test_publish_rejects_review_role_without_fleet_row :: proc(t: ^testing.T) {
-	home := os.get_env("HOME", context.temp_allocator)
-	db_path := fmt.tprintf("%s/.cache/heimdall-tests/tc_publish_brief_%d.db", home, os.get_pid())
-	os.remove(db_path)
-	defer os.remove(db_path)
-	conn, open_ok, _ := sqlite.open(db_path)
+	conn, open_ok, _ := sqlite.open(":memory:")
 	if !testing.expect(t, open_ok, "sqlite open ok") do return
 	defer sqlite.close(&conn)
 	mig_ok, _ := sqlite.run_migrations(&conn)
@@ -70,9 +65,10 @@ test_publish_rejects_review_role_without_fleet_row :: proc(t: ^testing.T) {
 	testing.expect(t, !ok4 && e4.code == .Validation_Failed && strings.contains(e4.details_json, `"goal"`), fmt.tprintf("goal > 2k refused on a live chain: ok=%v error=%v", ok4, e4))
 	_, ok5, e5 := create_task(&svc, auth, Create_Task_Input{chain_id = chain.chain_id, title = "bare live", description = "no brief"})
 	testing.expect(t, !ok5 && e5.code == .Validation_Failed && strings.contains(e5.details_json, `"acceptance"`), "bare task refused on a live chain")
-	// Gates are exempt from brief validation, but mixed-work chains require
-	// them to belong to a workflow run; do not create a standalone gate here.
-	testing.expect(t, len(brief_publish_problems(&svc, chain, domain.Task{kind = .Gate})) == 0, "workflow gates need no brief")
+	// Engine-managed gates are exempt from the brief validator. Gate rows are
+	// created by workflow materialization, not the ordinary task create API.
+	missing := brief_publish_problems(&svc, chain, domain.Task{kind = .Gate})
+	testing.expect_value(t, len(missing), 0)
 }
 
 // Fleet rows carry custom review roles (`security`, …) set through the service,
@@ -80,11 +76,7 @@ test_publish_rejects_review_role_without_fleet_row :: proc(t: ^testing.T) {
 // brief's review_roles.
 @(test)
 test_fleet_custom_review_roles_and_reviewers_keep_brief_roles :: proc(t: ^testing.T) {
-	home := os.get_env("HOME", context.temp_allocator)
-	db_path := fmt.tprintf("%s/.cache/heimdall-tests/tc_fleet_roles_%d.db", home, os.get_pid())
-	os.remove(db_path)
-	defer os.remove(db_path)
-	conn, open_ok, _ := sqlite.open(db_path)
+	conn, open_ok, _ := sqlite.open(":memory:")
 	if !testing.expect(t, open_ok, "sqlite open ok") do return
 	defer sqlite.close(&conn)
 	mig_ok, _ := sqlite.run_migrations(&conn)

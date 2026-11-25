@@ -28,6 +28,7 @@ graph_fixture :: proc(t: ^testing.T, path := ":memory:") -> (^Fixture, bool) {
 	}
 	fixture_wire(fx)
 	chain := seed_chain(t, fx, "mixed_chain", true)
+	seed_instance(fx, chain, "coord_instance", "agt_c", "", "idle", "coordinator")
 	chain.coordinator_agent_instance_id = "coord_instance"
 	_, _, _ = iface.taskchain_save_chain(&fx.repo, chain)
 	ids := []string{"ticket_a", "ticket_b", "ticket_c"}
@@ -152,7 +153,7 @@ test_mixed_graph_authority_scope_and_managed_task_boundaries :: proc(t: ^testing
 	if !ok do return
 	a, b := graph_ticket("ticket_a"), graph_ticket("ticket_b")
 	_, worker, werr := graph_dependency_add(&fx.svc, "u1", Actor{kind = ACTOR_AGENT, id = "worker"}, "mixed_chain", a, b)
-	testing.expect(t, !worker && werr.code == .Forbidden, "worker cannot edit work DAG")
+	testing.expect(t, !worker && werr.code == .Forbidden, "unknown agent cannot edit work DAG")
 	_, wrong_user, uerr := graph_dependency_add(&fx.svc, "u1", Actor{kind = ACTOR_USER, id = "u2"}, "mixed_chain", a, b)
 	testing.expect(t, !wrong_user && uerr.code == .Forbidden, "user actor must match owner")
 	_, wrong_owner, oerr := graph_dependency_add(&fx.svc, "u2", Actor{kind = ACTOR_USER, id = "u2"}, "mixed_chain", a, b)

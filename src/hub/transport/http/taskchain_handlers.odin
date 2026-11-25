@@ -2234,7 +2234,7 @@ list_chain_fleets_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	fleets, err := taskchain_service.list_fleets(h.taskchains, auth_ctx, chain_id)
 	if err.code != .None do return respond_error(err, req.request_id)
 	defer delete(fleets)
-	chain, chain_ok, _ := taskchain_service.get_chain(h.taskchains, auth_ctx, chain_id)
+	chain, chain_ok, _ := taskchain_service.get_chain_for_owner_write(h.taskchains, auth_ctx, chain_id)
 	members, _ := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
 	defer delete(members)
 	rows := make([dynamic]domain.Task_Chain_Fleet, 0, len(fleets) + 1, context.temp_allocator)

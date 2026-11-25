@@ -71,7 +71,7 @@ workflow_runs_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth, ok, resp := require_auth_any(h.auth, req)
 	if !ok do return resp
 	cid := domain.Task_Chain_ID(path_part(req.path, 4))
-	if _, ok, err := taskchain_service.get_chain(h.taskchains, auth, cid); !ok do return respond_error(err, req.request_id)
+	if _, ok, err := taskchain_service.get_chain_for_owner_write(h.taskchains, auth, cid); !ok do return respond_error(err, req.request_id)
 	body, saved, err := taskv2.workflow_list_json(h.task_engine, cid, domain.User_ID(auth.user_id))
 	if !saved do return respond_error(err, req.request_id)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
@@ -160,7 +160,7 @@ workflow_cancel_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 mixed_work_dispatch :: proc(svc: ^taskv2.Service, chains: ^taskchain_service.Taskchain_Service, auth: contracts.Auth_Context, cid: domain.Task_Chain_ID, action, body: string) -> (string, bool, domain.Domain_Error) {
-	chain, ok, err := taskchain_service.get_chain(chains, auth, cid)
+	chain, ok, err := taskchain_service.get_chain_for_owner_write(chains, auth, cid)
 	if !ok do return "", false, err
 	owner := chain.owner_user_id
 	actor := taskv2.actor_from_auth(auth)
@@ -248,7 +248,7 @@ agent_action_workflow_runs_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if !ok do return resp
 	params := verbatim_params(req.body)
 	cid := json_string(params, "chain_id"); if cid == "" do cid = inst.chain_id
-	if _, allowed, err := taskchain_service.get_chain(h.taskchains, auth, domain.Task_Chain_ID(cid)); !allowed do return respond_error(err, req.request_id)
+	if _, allowed, err := taskchain_service.get_chain_for_owner_write(h.taskchains, auth, domain.Task_Chain_ID(cid)); !allowed do return respond_error(err, req.request_id)
 	body, saved, err := taskv2.workflow_list_json(h.task_engine, domain.Task_Chain_ID(cid), inst.owner_user_id)
 	if !saved do return respond_error(err, req.request_id)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
@@ -297,7 +297,7 @@ agent_action_workflow_history_handler :: proc(ctx: rawptr, req: Request) -> Resp
  run_id := domain.Workflow_Run_ID(json_string(params, "run_id"))
  wf, found, err := taskv2.workflow_context(h.task_engine, run_id, inst.owner_user_id)
  if !found do return respond_error(err, req.request_id)
- if _, allowed, err := taskchain_service.get_chain(h.taskchains, auth, wf.chain_id); !allowed do return respond_error(err, req.request_id)
+ if _, allowed, err := taskchain_service.get_chain_for_owner_write(h.taskchains, auth, wf.chain_id); !allowed do return respond_error(err, req.request_id)
  executions, history_err := iface.taskchain_list_workflow_executions(h.task_engine.repo, run_id, inst.owner_user_id)
  if history_err.code != .None do return respond_error(history_err, req.request_id)
  events, events_err := iface.taskchain_list_workflow_run_events(h.task_engine.repo, run_id, inst.owner_user_id)
@@ -308,6 +308,6 @@ agent_action_workflow_history_handler :: proc(ctx: rawptr, req: Request) -> Resp
 workflow_read_access :: proc(svc: ^taskv2.Service, chains: ^taskchain_service.Taskchain_Service, auth: contracts.Auth_Context, run_id: domain.Workflow_Run_ID) -> domain.Domain_Error {
  wf, ok, err := taskv2.workflow_context(svc, run_id, domain.User_ID(auth.user_id))
  if !ok do return err
- if _, allowed, err := taskchain_service.get_chain(chains, auth, wf.chain_id); !allowed do return err
+ if _, allowed, err := taskchain_service.get_chain_for_owner_write(chains, auth, wf.chain_id); !allowed do return err
  return domain.Domain_Error{}
 }

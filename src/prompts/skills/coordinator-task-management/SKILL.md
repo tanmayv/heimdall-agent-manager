@@ -9,6 +9,14 @@ You plan, triage, publish and steer. Leased **workers** and **reviewers** do the
 
 The Hub owns task state: active work claims make tasks `in_progress`, submits make them `in_review`, passing reviews make them `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
+These are coordinator operating responsibilities. For publication/completion, graph and scope,
+workflow run controls/reads, fleet configuration/deletion/pause/resume, ordinary task publication,
+and chain title/description/summary/directories, any authenticated agent instance of the same owner
+has access without caller chain membership or coordinator status. Target chains and referenced
+resources remain owner-isolated. This does not confer coordinator identity or widen proposal,
+named claim/transfer, assignee, lease-bound submission or review authority. Preserve required
+reviewer and explicit user approval gates.
+
 ## 1. Choose the next work item, not a chain type
 Every task chain is `mixed_work`. You remain coordinator of the same chain, team,
 and directories throughout. Add ordinary tickets when their briefs are known;
@@ -50,7 +58,9 @@ For a ticket waiting on a run, `task depend <task-id> --on workflow_run:<run-id>
 is the same graph edge; `--depends-on` on `task create`/`update` takes ticket ids only.
 Cancelled, failed, or excluded items do not satisfy prerequisites. Remove an edge
 explicitly with `task-chain remove-dependency --dependency <id> --reason "<why>"`.
-The graph verbs default to your chain; only you (the coordinator) or the owner may change it.
+The graph verbs default to your chain; any authenticated agent of the owner may read/change it.
+Mutations still require an active chain, same-chain endpoints and an acyclic graph; started-input
+and consumption guards remain.
 
 A new proposal can add work to an active chain mid-work. Its `kind` is `task` or
 `workflow_run`, describing the proposed item, never changing the chain type.
@@ -91,12 +101,17 @@ EOF
 - Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
 - Without `--auto-approve` the proposal waits for an explicit decision. Existing work continues.
 - Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
+- Same-owner agents may publish chains and ordinary draft tasks without membership/coordinator status. Single-task publication requires an already published chain; unpublish is unsupported.
 - Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
 
 **A good brief** is self-contained: a goal a newcomer can act on, checkable acceptance items (a ticket needs a non-empty goal and at least one acceptance item; nothing else is required). Do not prescribe a verification command: the worker chooses and reports checks appropriate to the change, and reviewers judge correctness from the diff and that evidence. Add `inputs` (`output:<task>`, `<path>@<rev>`) only for context beyond what dependencies already bring: a task automatically receives the handoff of every task it waits for.
 
 ## 3. Fleet and review roles
-Assign work to durable identities (`agt_…`), never `inst_…`.
+Assign work to durable identities (`agt_…`), never `inst_…`. Same-owner agents may list/configure,
+pause/resume or delete fleets; referenced durable agents and bridges must belong to that owner,
+and capacity, role and placement checks still apply. Use `fleet pause`/`resume` to stop/start new
+leases while current work continues. Fleet deletion is exposed by
+`DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; no dedicated fleet delete CLI verb exists.
 ```bash
 ./bin/ham-ctl task-chain fleet list [<chain-id>]
 ./bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \
@@ -181,8 +196,11 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 - Completion is explicit. Read `task-chain graph --chain <id>`, then run
   `task-chain complete --chain <id> --expected-work-revision <n> --summary "<final acceptance>"`.
   Every included ticket must be published and done; every included run must have
-  succeeded; no live leases or pending proposal may remain. At least one success
-  is required. A changed revision requires a fresh inspection, not a blind retry.
+  succeeded; required merges must be resolved, and no leases or pending proposal may remain.
+  At least one success is required. A changed revision requires a fresh inspection, not a blind retry.
+- Chain cancellation uses `task-chain set-status cancelled --chain <id>`; archive/restore uses
+  `task-chain archive`/`unarchive`. These are same-owner operations; there is no standalone chain
+  cancel verb or unpublish operation.
 - Cancel terminally abandoned work, then exclude it with
   `task-chain scope --chain <id> --item task:<id>|workflow_run:<id> --action exclude --reason "<why>"`.
   Exclusion is auditable and never makes a failed prerequisite successful.
