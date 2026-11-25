@@ -32,6 +32,14 @@ const evaluate = async expression => {
   return result.result.value;
 };
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const expectState = async (expression, message) => {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (await evaluate(expression)) return;
+    await wait(25);
+  }
+  assert.equal(await evaluate(expression), true, message);
+};
 const sel = id => `[data-debug-id="${id}"]`;
 const el = id => `document.querySelector(${JSON.stringify(sel(id))})`;
 const click = async id => { await evaluate(`${el(id)}.focus({preventScroll:true}); ${el(id)}.click()`); await wait(350); };
@@ -150,7 +158,13 @@ try {
       assert.equal(await evaluate(`${el('home-layout-add-menu')}.getAttribute('aria-expanded')`), 'true');
       assert.equal(await evaluate(`${el('home-layout-toggle-chains')}.getAttribute('aria-checked')`), 'false');
       await click('home-layout-toggle-chains'); await escape();
-    } else { await click('home-layout-add-menu'); await click('home-layout-toggle-chains'); }
+    } else {
+      await expectState(`${el('home-layout-add-menu')}.getAttribute('aria-expanded') === 'false' && !${el('home-layout-slot-chains')}`, 'desktop toggle hides widget and closes menu');
+      await click('home-layout-add-menu');
+      await expectState(`${el('home-layout-toggle-chains')}?.getAttribute('aria-checked') === 'false'`, 'desktop reopened menu reflects hidden widget');
+      await click('home-layout-toggle-chains');
+      await expectState(`!!${el('home-layout-handle-chains')} && ${el('home-layout-add-menu')}.getAttribute('aria-expanded') === 'false'`, 'desktop toggle restores widget and closes menu');
+    }
     await click(narrow ? 'home-layout-options-chains' : 'home-layout-handle-chains');
     await click('home-layout-edit'); await clean();
     await click(base + '-model'); await click('home-layout-edit'); await clean();
