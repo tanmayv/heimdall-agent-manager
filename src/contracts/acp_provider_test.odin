@@ -181,3 +181,17 @@ acp_codex_system_descriptor_recipe_and_version_floor :: proc(t: ^testing.T) {
     testing.expect(t, !acp_recipe_valid(`{"command":"codex","args":["exec"],"env":{},"protocol_version":1,"adapter_package":"codex","adapter_version":"0.162.0"}`))
     testing.expect(t, !acp_recipe_valid(`{"command":"codex","args":["app-server"],"env":{},"protocol_version":1,"adapter_package":"codex","adapter_version":"0.161.0"}`))
 }
+
+@(test)
+acp_opencode_recipe_is_stdio_only_on_all_supported_os :: proc(t: ^testing.T) {
+    d, known := acp_provider_descriptor("opencode")
+    testing.expect(t, known && d.launch == .System && d.protocol == .ACP && acp_descriptor_shape_valid(d))
+    for os in ([]string{"linux", "darwin", "windows"}) do testing.expect(t, acp_descriptor_system_os_supported(d, os))
+    testing.expect(t, !acp_descriptor_system_os_supported(d, "freebsd"))
+    testing.expect(t, d.agent_default_model == "default")
+    testing.expect(t, !acp_descriptor_cli_version_accepted(d, "1.19.5"))
+    testing.expect(t, acp_descriptor_cli_version_accepted(d, "1.19.6"))
+    raw :: `{"command":"opencode","args":["acp"],"env":{},"protocol_version":1,"adapter_package":"opencode","adapter_version":"1.19.6"}`
+    testing.expect(t, acp_provider_recipe_valid("opencode", raw))
+    testing.expect(t, !acp_provider_recipe_valid("kiro", raw))
+}

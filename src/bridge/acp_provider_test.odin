@@ -253,3 +253,18 @@ acp_codex_version_binding_and_registered_driver :: proc(t: ^testing.T) {
     testing.expect(t, r.driver == &acp_protocol_codex_driver && r.descriptor.protocol == .Codex_App_Server && r.mode == "ask")
     testing.expect_value(t, acp_adapter_runtime_kind(d), "system")
 }
+
+@(test)
+acp_opencode_detects_plain_version_and_preserves_argv_boundaries :: proc(t: ^testing.T) {
+    d := contracts.ACP_OPENCODE_DESCRIPTOR
+    version, parsed := acp_provider_parse_cli_version(d, "1.19.6\r\n")
+    testing.expect(t, parsed && version == "1.19.6")
+    for output in ([]string{"opencode 1.19.6", "warning\n1.19.6", "1.19.6-beta", "1.19.6 2.0.0"}) {
+        _, accepted := acp_provider_parse_cli_version(d, output)
+        testing.expect(t, !accepted)
+    }
+    for binary in ([]string{"/opt/Program Files/opencode", "C:\\Program Files\\OpenCode\\opencode.exe"}) {
+        argv, built := acp_provider_launch_argv(d, "/unused", binary)
+        testing.expect(t, built && len(argv) == 2 && argv[0] == binary && argv[1] == "acp")
+    }
+}

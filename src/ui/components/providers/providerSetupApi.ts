@@ -12,7 +12,7 @@ export type ProviderTestRunState = 'starting' | 'detecting' | 'awaiting_validati
 export interface ProviderModelStatus { model_id: string; label: string; state: 'active' | 'deprecated'; resolved_model?: string }
 export interface BridgeProviderStatus extends ModelCatalogMetadata, ProviderRuntimeFields {
   profile_id?: string; label_enc?: string; accent?: string; profile_state?: string;
-  provider: 'claude' | 'codex' | 'copilot' | 'antigravity' | 'pi' | 'kiro';
+  provider: 'claude' | 'codex' | 'copilot' | 'antigravity' | 'pi' | 'kiro' | 'opencode';
   display_name: string; icon_url: string; catalog_state: 'active' | 'deprecated';
   state: DetectionState; binary_path: string; version_text: string; checked_at: string | null;
   enabled: boolean; models: ProviderModelStatus[];

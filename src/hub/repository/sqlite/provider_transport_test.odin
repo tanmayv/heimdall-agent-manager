@@ -335,3 +335,23 @@ test_transport_snapshot_replacement_preserves_borrowed_input_without_leak :: pro
 	testing.expect_value(t, len(track.bad_free_array), 0)
 	testing.expect_value(t, len(track.allocation_map), 0)
 }
+
+@(test)
+test_opencode_catalog_is_acp_only :: proc(t: ^testing.T) {
+ conn, opened, _ := open(":memory:")
+ if !testing.expect(t, opened) do return
+ defer close(&conn)
+ migrated, err := run_migrations(&conn)
+ if !testing.expect(t, migrated, err.message) do return
+ impl: Provider_Repo_SQLite
+ repo := new_provider_repository(&impl, &conn)
+ entry, found, entry_err := iface.provider_catalog_get(&repo, "opencode")
+ if !testing.expect(t, found && entry_err.code == .None) do return
+ defer domain.provider_catalog_entry_destroy(entry)
+ testing.expect(t, entry.transports_json == `["acp"]` && entry.default_transport == "acp")
+ testing.expect(t, contracts.acp_provider_recipe_valid("opencode", entry.acp_recipe_json))
+ stored, stored_err := iface.provider_catalog_etag(&repo); defer delete(stored)
+ service := provider.Provider_Service{repo=&repo}
+ derived, derived_err := provider.catalog_etag(&service); defer delete(derived)
+ testing.expect(t, stored_err.code == .None && derived_err.code == .None && stored == derived)
+}

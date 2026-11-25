@@ -355,6 +355,24 @@ test('detect-only system CLI status uses Re-check, never Node or install wording
   } finally { await h.cleanup(); }
 });
 
+test('OpenCode is detect-only and exposes no PTY transport', async () => {
+  const runtime = normalizeProviderRuntime({ transports: ['acp'], default_transport: 'acp', acp_adapter: {
+    ...adapter, provider: 'opencode', profile: 'opencode', runtime_kind: 'system', node_version: null,
+    version: '1.19.5', installed: false, state: 'outdated', error: null,
+  } });
+  const h = await browser();
+  try {
+    const status = row({ provider: 'opencode', profile_id: 'opencode', display_name: 'OpenCode', ...runtime });
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-opencode"]')?.textContent, 'Re-check');
+    assert.deepEqual(Array.from(h.doc.querySelectorAll('select option')).map(option => (option as HTMLOptionElement).value), ['acp']);
+    const unchecked = { ...status, acp_adapter: null };
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [unchecked] }), status: unchecked, onChange() {} }));
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-opencode"]')?.textContent, 'Re-check');
+
+  } finally { await h.cleanup(); }
+});
+
 test('Codex app-server is an opt-in system runtime with PTY reset and Re-check', async () => {
   const runtime = normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'pty', acp_adapter: {
     ...adapter, provider: 'codex', profile: 'codex', runtime_kind: 'system', version: '0.162.0', node_version: null,

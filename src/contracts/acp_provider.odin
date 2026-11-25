@@ -27,6 +27,7 @@ ACP_Provider_Descriptor :: struct {
     // precedes the version in its `--version` output.
     system_os: []string,
     cli_version_prefix: string,
+    cli_version_bare: bool,
     // System only. agent_default_model is the catalog model id that keeps the
     // agent's own default model (no session/set_config_option). With
     // bootstrap_resource_link, an agent that does not advertise embeddedContext
@@ -100,11 +101,23 @@ ACP_CODEX_DESCRIPTOR :: ACP_Provider_Descriptor{
     permission_policy = .Once_Only, model_category = "model",
 }
 
+// OpenCode is an operator-installed stdio ACP agent. Its internal providers
+// and credentials belong to OpenCode, not the Heimdall catalog.
+ACP_OPENCODE_DESCRIPTOR :: ACP_Provider_Descriptor{
+    protocol = .ACP, provider = "opencode", id = "opencode-acp", display_name = "OpenCode", revision = 1, launch = .System,
+    pkg = {"opencode", "1.19.6", ""}, system_os = {"linux", "darwin", "windows"},
+    command = "opencode", args = {"acp"}, protocol_version = 1,
+    cli_command = "opencode", cli_version_bare = true,
+    agent_default_model = "default", bootstrap_filename = "AGENTS.md",
+    auth_guidance = "Run opencode auth login on the bridge host in the selected provider profile, or configure a local backend in OpenCode, then restart this instance.",
+    permission_policy = .Once_Only, model_category = "model",
+}
+
 // Persistent backing storage is required: returning a descriptor copied from
 // a constant slice literal leaves its nested env/argv slices on the caller's
 // stack in Odin. Descriptors returned by lookup retain these immutable arrays.
 @(private)
-acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR, ACP_COPILOT_DESCRIPTOR, ACP_KIRO_DESCRIPTOR, ACP_CODEX_DESCRIPTOR}
+acp_provider_descriptors := [?]ACP_Provider_Descriptor{ACP_CLAUDE_DESCRIPTOR, ACP_COPILOT_DESCRIPTOR, ACP_KIRO_DESCRIPTOR, ACP_CODEX_DESCRIPTOR, ACP_OPENCODE_DESCRIPTOR}
 
 acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, bool) {
     for d in acp_provider_descriptors do if d.provider == provider do return d, true
@@ -125,14 +138,14 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     switch d.launch {
     case .Adapter, .Native:
         if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||
-           len(d.system_os) != 0 || d.cli_version_prefix != "" || d.agent_default_model != "" || d.bootstrap_resource_link { return false }
+           len(d.system_os) != 0 || d.cli_version_prefix != "" || d.cli_version_bare || d.agent_default_model != "" || d.bootstrap_resource_link { return false }
         if d.launch == .Adapter && d.executable_env == "" do return false
         if d.launch == .Native && (d.executable_env != "" || d.cli_package != d.pkg.name || d.cli_version != d.pkg.version || len(d.platforms) == 0) do return false
     case .System:
         // Nothing is downloaded, so there is no integrity, Node or platform pin.
         if d.pkg.integrity != "" || d.node_min_major != 0 || d.executable_env != "" || d.cli_package != "" ||
            d.cli_version != "" || len(d.platforms) != 0 || d.pkg.name != d.cli_command ||
-           d.cli_version_prefix == "" || len(d.system_os) == 0 { return false }
+           (d.cli_version_prefix != "") == d.cli_version_bare || len(d.system_os) == 0 { return false }
         for name, i in d.system_os {
             if name == "" do return false
             for previous in d.system_os[:i] do if previous == name do return false
