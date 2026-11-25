@@ -66,8 +66,8 @@ test_ninjy_skills_include_channel_and_operation_recipes :: proc(t: ^testing.T) {
 			frontmatter := strings.concatenate({"---\nname: ", slug, "\ndescription: Use as the Ninjy bot"})
 			defer delete(frontmatter)
 			testing.expect(t, strings.has_prefix(skill.content, frontmatter), slug)
-			channel := []string{"channel history --limit 50", "latest `updated_at` across all projects", "artifact download", "vault_unavailable", "unsent_chunks", "events subscriptions", "events unwatch"}
-			operations := []string{"task-chain create --kind mixed_work", "user_stopped", "rate_limited", "--project-ids", "shell serve", "preview_url", "chain_work_done", "My reading:", "approvals the user granted and not granted", "### Daily brief", "Nothing needs you.", "automations create --target bot --trigger \"cron:"}
+			channel := []string{"artifact download", "vault_unavailable", "unsent_chunks", "events subscriptions", "events unwatch"}
+			operations := []string{"task-chain create --kind mixed_work", "user_stopped", "rate_limited", "--project-ids", "shell serve", "preview_url", "without `--bg`", "last 20 lines", "omit sensitive output", "My reading:", "approvals the user granted and not granted", "### Daily brief", "Nothing needs you.", "automations create --target bot --trigger \"cron:"}
 			for recipe in (channel if index == 0 else operations) {
 				testing.expect(t, strings.contains(skill.content, recipe), recipe)
 			}

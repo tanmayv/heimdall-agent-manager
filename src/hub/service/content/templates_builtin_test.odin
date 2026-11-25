@@ -121,6 +121,8 @@ test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
 		"./bin/ham-ctl channel read",
 		"./bin/ham-ctl channel send --text",
 		"./bin/ham-ctl channel history --limit 20",
+		"./bin/ham-ctl channel history --limit 50",
+		"latest `updated_at` across projects",
 		"./bin/ham-ctl task-chain list",
 		"./bin/ham-ctl task-chain show <chain_id>",
 		"./bin/ham-ctl task show <task_id>",
