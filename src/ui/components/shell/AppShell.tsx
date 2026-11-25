@@ -61,6 +61,7 @@ import {
   isAgentConversationRoute,
 } from './shellChrome';
 import { useWindowChrome } from '../../hooks/useWindowChrome';
+import { artifactIdFromPath, closeArtifactPage, handleArtifactPageLink } from '../../utils/artifactPage';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import { setApprovalPageOpener } from '../../bridge/desktopBridgeSession';
 import { Workspace } from '../mainWorkspace/Workspace';
@@ -1298,8 +1299,6 @@ function RouteOutlet({
           <SkillViewerPage slug={decodeURIComponent(path.slice('/skills/'.length))} />
         ) : path === '/library' ? (
           <LibraryPage session={{ clientToken: 'v1', daemonUrl: '' }} />
-        ) : path.startsWith('/library/artifacts/') ? (
-          <ArtifactViewer artifactId={decodeURIComponent(path.slice('/library/artifacts/'.length))} daemonUrl="" clientToken="v1" onClose={() => window.history.back()} />
         ) : path === '/issues' ? (
           <IssueListPage />
         ) : path === '/issues/new' ? (
@@ -1843,10 +1842,12 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
         setSettingsModalOpenState(true);
       }
     };
+    document.addEventListener('click', handleArtifactPageLink);
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
     update();
     return () => {
+      document.removeEventListener('click', handleArtifactPageLink);
       window.removeEventListener('hashchange', update);
       window.removeEventListener('popstate', update);
     };
@@ -1967,6 +1968,17 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
       >
         <Suspense fallback={null}>
           <ProviderEnrollmentSetupPage bridgeId={providerBridgeId} />
+        </Suspense>
+      </main>
+    );
+  }
+
+  const artifactId = artifactIdFromPath(path);
+  if (artifactId) {
+    return (
+      <main data-debug-id="artifact-standalone-page" className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-hidden bg-canvas text-primary">
+        <Suspense fallback={null}>
+          <ArtifactViewer artifactId={artifactId} daemonUrl="" clientToken="v1" onClose={closeArtifactPage} />
         </Suspense>
       </main>
     );

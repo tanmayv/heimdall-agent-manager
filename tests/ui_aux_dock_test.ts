@@ -129,12 +129,13 @@ async function makeStore() {
   });
 }
 
-test('artifact viewer shows only the title and icon actions outside the preview, and no header in aux mode', async (t) => {
+test('artifact viewer shows a page header with back and icon actions, and no header in aux mode', async (t) => {
   await withDom(async (dom) => {
     const { createRoot } = await import('react-dom/client');
     const { Provider } = await import('react-redux');
     const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
     const { default: ArtifactViewer } = await import('../src/ui/components/ArtifactViewer.tsx');
+    const { artifactIdFromPath, closeArtifactPage, handleArtifactPageLink, openArtifactPage } = await import('../src/ui/utils/artifactPage.ts');
     const fixtures = [
       { id: 'art_markdown', name: 'Notes.md', kind: 'markdown', mime: 'text/markdown', body: '## Rendered notes', selector: '[data-debug-id="artifact-viewer-content"] h2' },
       { id: 'art_image', name: 'Diagram.png', kind: 'image', mime: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6XH2ioAAAAASUVORK5CYII=', 'base64'), selector: '[data-debug-id="artifact-viewer-image-preview"]' },
@@ -210,12 +211,14 @@ test('artifact viewer shows only the title and icon actions outside the preview,
             continue;
           }
           assert.equal(header?.textContent, fixture.name);
+          assert.equal(q('[role="dialog"]'), null);
+          assert.ok(q('[data-debug-id="artifact-viewer-page-shell"]'));
           const buttons = Array.from(header?.querySelectorAll('button') ?? []);
-          assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')), ['Copy artifact link', 'Download artifact']);
+          assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')), ['Back', 'Copy artifact link', 'Download artifact']);
           assert.ok(buttons.every((button) => button.querySelector('svg')));
           await React.act(async () => {
-            buttons[0].click();
             buttons[1].click();
+            buttons[2].click();
           });
           assert.equal(copies.at(-1), `artifact://${fixture.id}`);
           assert.match(downloads.at(-1)?.href ?? '', /^blob:/);
@@ -227,6 +230,47 @@ test('artifact viewer shows only the title and icon actions outside the preview,
       }))));
       await React.act(async () => { dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' })); });
       assert.equal(onClose.mock.callCount(), 1);
+      const { history, location } = dom.window;
+      const backButton = () => q('[data-debug-id="artifact-viewer-back-btn"]') as HTMLButtonElement;
+      const previous = '#/conversations/agent_1?msg=msg_1';
+      history.replaceState(null, '', previous);
+      const lengthBeforeOpen = history.length;
+      openArtifactPage('art_image');
+      assert.equal(history.length, lengthBeforeOpen + 1);
+      assert.equal(artifactIdFromPath(location.hash.slice(1)), 'art_image');
+      const traverse = (action: () => void) => new Promise<void>((resolve) => {
+        dom.window.addEventListener('popstate', () => resolve(), { once: true });
+        action();
+      });
+      await traverse(() => history.back());
+      assert.equal(location.hash, previous);
+      await traverse(() => history.forward());
+      assert.equal(location.hash, '#/library/artifacts/art_image');
+
+      await React.act(async () => root.render(React.createElement(Provider, { store }, React.createElement(ArtifactViewer, {
+        artifactId: 'art_image', daemonUrl: '', clientToken: 'v1', onClose: closeArtifactPage,
+      }))));
+      await traverse(() => backButton().click());
+      assert.equal(location.hash, previous);
+
+      const link = dom.window.document.createElement('a');
+      link.href = '#/library/artifacts/art_image';
+      dom.window.document.body.appendChild(link);
+      dom.window.document.addEventListener('click', handleArtifactPageLink, { once: true });
+      link.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+      assert.equal(location.hash, '#/library/artifacts/art_image');
+      await traverse(() => backButton().click());
+      assert.equal(location.hash, previous);
+      link.remove();
+
+      // A direct URL has no in-app back entry. Back falls back to the library
+      // without creating another history entry or leaving the application.
+      history.replaceState(null, '', '#/library/artifacts/art_image');
+      const lengthBeforeClose = history.length;
+      backButton().click();
+      assert.equal(location.hash, '#/library');
+      assert.equal(history.length, lengthBeforeClose);
+
       assert.equal(downloadSpy.mock.callCount(), fixtures.length);
     } finally {
       await React.act(async () => root.unmount());

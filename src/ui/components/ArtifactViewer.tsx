@@ -5,6 +5,7 @@ import {
   useFetchArtifactMetaQuery,
   useFetchArtifactTextContentQuery,
 } from '../api/endpoints/artifacts';
+import { openArtifactPage } from '../utils/artifactPage';
 import { copyTextToClipboard } from '../utils/artifactAnnotations';
 import MarkdownBody from './MarkdownBody';
 import HtmlBundlePreview from './HtmlBundlePreview';
@@ -218,23 +219,21 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const meta = (metaQuery.currentData?.artifact || null) as ArtifactMeta | null;
 
   const [copyLinkState, setCopyLinkState] = useState<CopyState>('idle');
-  const [nestedArtifactId, setNestedArtifactId] = useState('');
   const copyFeedbackTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     setCopyLinkState('idle');
-    setNestedArtifactId('');
     return () => window.clearTimeout(copyFeedbackTimer.current);
   }, [artifactId]);
 
   useEffect(() => {
-    if (embedded || nestedArtifactId || !onClose) return;
+    if (embedded || !onClose) return;
     function handleEscape(event: KeyboardEvent) {
       if (event.key === 'Escape' && !event.defaultPrevented) onClose?.();
     }
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [embedded, nestedArtifactId, onClose]);
+  }, [embedded, onClose]);
 
   const previewKind = classifyPreview(meta);
   const contentState = useArtifactContentState({ daemonUrl, clientToken, artifactId });
@@ -282,23 +281,8 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   }
 
   return (
-    // REQ-MODAL-2: center the overlay in the visible viewport, including with the mobile keyboard up.
-    <div
-      data-debug-id={embedded ? 'artifact-viewer-embedded-shell' : 'artifact-viewer-modal-shell'}
-      className={embedded
-        ? 'flex h-full min-h-0 w-full flex-col bg-canvas'
-        : 'fixed inset-x-0 top-0 app-viewport-height z-[80] flex items-center justify-center bg-surface-overlay/80 p-2 sm:p-4 backdrop-blur-sm'}
-      onClick={embedded ? undefined : onClose}
-    >
-      <div
-        data-debug-id="artifact-viewer"
-        role={embedded ? undefined : 'dialog'}
-        aria-label={embedded ? undefined : (isVaultArmored(title) ? artifactId : title)}
-        className={embedded
-          ? 'flex h-full min-h-0 w-full flex-col overflow-hidden'
-          : 'flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-canvas shadow-panel'}
-        onClick={embedded ? undefined : (event) => event.stopPropagation()}
-      >
+    <div data-debug-id={embedded ? 'artifact-viewer-embedded-shell' : 'artifact-viewer-page-shell'} className="flex h-full min-h-0 w-full flex-col bg-canvas">
+      <div data-debug-id="artifact-viewer" className="flex h-full min-h-0 w-full flex-col overflow-hidden">
         {!embedded && (
           <header
             data-debug-id="artifact-viewer-header"
@@ -308,6 +292,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
               aria-hidden="true"
               className="pointer-events-none absolute inset-x-0 -bottom-6 h-6 bg-gradient-to-b from-canvas/90 via-canvas/50 to-transparent backdrop-blur-sm"
             />
+            <IconButton data-debug-id="artifact-viewer-back-btn" icon="arrow-left" label="Back" onClick={onClose} />
             <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-primary" title={isVaultArmored(title) ? undefined : title}>
               <VaultText value={title} fallback={artifactId} />
             </h1>
@@ -358,7 +343,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   data-debug-id="artifact-viewer-markdown-preview"
                   source={textContent}
                   className="p-4 text-primary"
-                  onArtifactClick={onOpenArtifact ?? setNestedArtifactId}
+                  onArtifactClick={onOpenArtifact ?? openArtifactPage}
                 />
               )
             ) : previewKind === 'json' || previewKind === 'diff' || previewKind === 'text' ? (
@@ -371,11 +356,6 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
           )}
         </div>
       </div>
-      {!embedded && nestedArtifactId ? (
-        <div onClick={(event) => event.stopPropagation()}>
-          <ArtifactViewer artifactId={nestedArtifactId} {...artifactRequestAuth} onClose={() => setNestedArtifactId('')} />
-        </div>
-      ) : null}
     </div>
   );
 }
