@@ -1,5 +1,5 @@
-import React from 'react';
-import { Icon, Text } from '@ui';
+import React, { useId, useState } from 'react';
+import { Icon } from '@ui';
 
 /**
  * previous_context messages (T5/T6 context rollover): the handoff an agent
@@ -47,10 +47,7 @@ export function previousContextLabel(metadata: any): string {
   return 'Previous context';
 }
 
-/**
- * Collapsed-by-default <details> block (same pattern as TaskDetails' Block).
- * The native <summary> is focusable and toggles with Enter/Space.
- */
+/** Collapsed by default, with a native button for Enter/Space activation. */
 export function PreviousContextBlock({
   messageId,
   metadata,
@@ -60,26 +57,32 @@ export function PreviousContextBlock({
   metadata?: any;
   children: React.ReactNode;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const bodyId = useId();
   return (
-    <details
+    <div
       data-debug-id={`conversation-previous-context-${messageId}`}
-      className="group w-full rounded-xl border border-subtle bg-surface"
+      className="my-2 min-w-0 text-sm text-muted"
     >
-      <summary
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        onClick={() => setExpanded((open) => !open)}
         data-debug-id={`conversation-previous-context-toggle-${messageId}`}
-        className="flex cursor-pointer list-none items-center gap-1.5 rounded-xl px-3 py-2 outline-none hover:bg-surface-raised focus-visible:shadow-focus [&::-webkit-details-marker]:hidden"
+        className="inline-flex max-w-full cursor-pointer items-center gap-1 rounded-sm text-left font-normal focus-visible:shadow-focus"
       >
-        <Icon name="chevron-right" size={12} className="text-muted transition-transform group-open:rotate-90" />
-        <Text as="span" role="overline" tone="muted">
-          {previousContextLabel(metadata)}
-        </Text>
-      </summary>
+        <span className="truncate">{previousContextLabel(metadata)}</span>
+        <Icon name="chevron-right" size={12} className={`motion-safe:transition-transform${expanded ? ' rotate-90' : ''}`} />
+      </button>
       <div
+        id={bodyId}
+        hidden={!expanded}
         data-debug-id={`conversation-previous-context-body-${messageId}`}
-        className="border-t border-subtle px-3 py-2 text-sm text-primary"
+        className="mt-1 [&_.conversation-markdown]:text-muted"
       >
         {children}
       </div>
-    </details>
+    </div>
   );
 }

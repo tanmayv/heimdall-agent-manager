@@ -2192,13 +2192,9 @@ export function AgentChatPane({
       return (
         <div
           data-debug-id={`conversation-agent-start-clubbed-${message.messageId}`}
-          className="my-2 flex w-full items-center gap-3"
+          className="my-2 truncate text-sm font-normal text-muted"
         >
-          <div className="flex-1 border-t border-subtle/40" />
-          <span className="shrink-0 font-mono text-[11px] text-faint">
-            agent started {count} times ({timeStr})
-          </span>
-          <div className="flex-1 border-t border-subtle/40" />
+          agent started {count} times ({timeStr})
         </div>
       );
     }
@@ -2207,13 +2203,9 @@ export function AgentChatPane({
       return (
         <div
           data-debug-id={`conversation-agent-start-${message.messageId}`}
-          className="my-2 flex w-full items-center gap-3"
+          className="my-2 truncate text-sm font-normal text-muted"
         >
-          <div className="flex-1 border-t border-subtle/40" />
-          <span className="shrink-0 font-mono text-[11px] text-faint">
-            agent started ({time})
-          </span>
-          <div className="flex-1 border-t border-subtle/40" />
+          agent started ({time})
         </div>
       );
     }

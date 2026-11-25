@@ -1,4 +1,4 @@
-// previous_context messages (chain T7): collapsed-by-default <details> block in
+// previous_context messages (chain T7): collapsed-by-default disclosure in
 // the agent conversation, never clubbed into start/tool groups.
 //
 // RUN: node --import ./tests/helpers/vaultEndpointHarness.ts --test tests/ui_previous_context_message_test.ts
@@ -60,29 +60,37 @@ test('block is collapsed by default, keyboard-reachable, and expands to the mark
       children: React.createElement(MarkdownBody, { source: '## Handoff\n\n**Next:** run the tests' }),
     }) })));
     const doc = dom.window.document;
-    const details = doc.querySelector('[data-debug-id="conversation-previous-context-msg_pctx_1"]');
-    assert.ok(details, 'block renders');
-    assert.equal(details.tagName, 'DETAILS');
-    assert.equal(details.open, false, 'collapsed by default');
-    assert.equal(details.hasAttribute('open'), false);
+    try {
+      const notice = doc.querySelector('[data-debug-id="conversation-previous-context-msg_pctx_1"]');
+      assert.ok(notice, 'block renders');
+      const toggle = notice.querySelector('button[type="button"]');
+      assert.ok(toggle, 'native button supports Enter and Space');
+      assert.equal(toggle.textContent, 'Previous context (rollover at 82% of 200K)');
+      const chevron = toggle.lastElementChild;
+      assert.equal(chevron?.tagName, 'svg', 'chevron follows the label');
+      assert.equal(chevron.getAttribute('aria-hidden'), 'true');
+      const body = doc.getElementById(toggle.getAttribute('aria-controls'));
+      assert.ok(body && notice.contains(body), 'toggle controls this notice body');
+      assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+      assert.equal(body.hidden, true, 'collapsed by default');
+      assert.equal(chevron.classList.contains('rotate-90'), false);
+      toggle.focus();
+      assert.equal(doc.activeElement, toggle, 'button takes keyboard focus');
 
-    const summary = details.querySelector('summary');
-    assert.ok(summary, 'native <summary> (focusable, Enter/Space toggles)');
-    assert.equal(summary.parentElement, details);
-    assert.equal(summary.textContent, 'Previous context (rollover at 82% of 200K)');
-    summary.focus();
-    assert.equal(doc.activeElement, summary, 'summary takes keyboard focus');
+      await React.act(async () => { toggle.click(); });
+      assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+      assert.equal(body.hidden, false, 'activating the button reveals the body');
+      assert.equal(chevron.classList.contains('rotate-90'), true);
+      assert.ok(body.querySelector('h2'), 'markdown heading rendered');
+      assert.equal(body.querySelector('strong')?.textContent, 'Next:');
 
-    await React.act(async () => { summary.click(); });
-    assert.equal(details.open, true, 'activating the summary expands the block');
-    const body = details.querySelector('[data-debug-id="conversation-previous-context-body-msg_pctx_1"]');
-    assert.ok(body);
-    assert.ok(body.querySelector('h2'), 'markdown heading rendered');
-    assert.equal(body.querySelector('strong')?.textContent, 'Next:');
-
-    await React.act(async () => { summary.click(); });
-    assert.equal(details.open, false, 'activating again collapses it');
-    await React.act(async () => root.unmount());
+      await React.act(async () => { toggle.click(); });
+      assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+      assert.equal(body.hidden, true, 'activating again collapses it');
+      assert.equal(chevron.classList.contains('rotate-90'), false);
+    } finally {
+      await React.act(async () => root.unmount());
+    }
   });
 });
 
@@ -90,8 +98,7 @@ test('block without metadata renders the plain label', async () => {
   const React = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const html = renderToStaticMarkup(React.createElement(block.PreviousContextBlock, { messageId: 'm2', children: 'body' }));
-  assert.match(html, /<details[^>]*data-debug-id="conversation-previous-context-m2"/);
-  assert.doesNotMatch(html, /<details[^>]*\sopen/);
+  assert.match(html, /<button[^>]*aria-expanded="false"[^>]*data-debug-id="conversation-previous-context-toggle-m2"/);
   assert.match(html, />Previous context</);
   assert.doesNotMatch(html, /rollover/);
 });
