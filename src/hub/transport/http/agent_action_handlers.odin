@@ -1017,18 +1017,11 @@ agent_action_task_depend_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	task_id := domain.Task_ID(json_string(params, "task_id"))
 	depends_on_task_id := domain.Task_ID(json_string(params, "depends_on_task_id"))
 	if depends_on_task_id == "" do depends_on_task_id = domain.Task_ID(json_string(params, "on"))
-	if task, task_ok, _ := taskchain_service.get_task(h.taskchains, auth, task_id); task_ok {
-		if chain, chain_ok, _ := taskchain_service.get_chain(h.taskchains, auth, task.chain_id); chain_ok {
-			if chain.coordinator_agent_instance_id != "" && chain.coordinator_agent_instance_id != inst.agent_instance_id {
-				return respond_error(domain.domain_error(.Forbidden, "only chain coordinator can add task dependencies"), req.request_id)
-			}
-		}
-	}
 	dep, added, err := taskchain_service.add_task_dependency(h.taskchains, auth, task_id, depends_on_task_id)
 	if !added do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_depend", "linked a task dependency")
-	publish_task_event(h.event_bus, string(inst.owner_user_id), string(dep.task_id), string(inst.chain_id), "updated")
-	publish_chain_event(h.event_bus, string(inst.owner_user_id), string(inst.chain_id), "updated")
+	publish_task_event(h.event_bus, string(inst.owner_user_id), string(dep.task_id), string(dep.chain_id), "updated")
+	publish_chain_event(h.event_bus, string(inst.owner_user_id), string(dep.chain_id), "updated")
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"task_id\":\""); write_handler_json_string(&b, string(dep.task_id)); strings.write_string(&b, "\",\"depends_on_task_id\":\""); write_handler_json_string(&b, string(dep.depends_on_task_id)); strings.write_string(&b, "\"}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)

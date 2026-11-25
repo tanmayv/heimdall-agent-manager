@@ -71,7 +71,7 @@ ctl_mixed_work_params :: proc(action, chain_id: string, args: []string) -> (stri
 	return ctl_json_text(body, context.temp_allocator), true
 }
 
-CTL_MIXED_WORK_USAGE :: "usage: task-chain graph [<chain-id>]; depend [<chain-id>] --item task:ID|workflow_run:ID --on task:ID|workflow_run:ID; remove-dependency [<chain-id>] --dependency ID --reason TEXT; scope [<chain-id>] --item task:ID|workflow_run:ID --action include|exclude --reason TEXT; complete <chain-id> --expected-work-revision N --summary TEXT. graph/depend/remove-dependency/scope default to your chain; complete needs an explicit chain id (read work_revision from graph)."
+CTL_MIXED_WORK_USAGE :: "usage: task-chain graph [<chain-id>]; depend [<chain-id>] --item task:ID|workflow_run:ID --on task:ID|workflow_run:ID; remove-dependency [<chain-id>] --dependency ID --reason TEXT; scope [<chain-id>] --item task:ID|workflow_run:ID --action include|exclude --reason TEXT; complete <chain-id> --expected-work-revision N --summary TEXT. graph/depend/remove-dependency/scope default to your chain; complete needs an explicit chain id (read work_revision from graph). Any authenticated agent of the chain owner may read/change the graph, scope and completion without membership/coordinator status; active-chain, same-chain endpoint, DAG, started-input and completion guards still apply."
 
 // ctl_is_mixed_work_verb names the chain-level work-graph verbs shared by the
 // user-mode and agent-mode task-chain dispatchers.
@@ -89,8 +89,9 @@ ctl_mixed_work_agent_method :: proc(action: string) -> string {
 
 // positional_chain carries the `task-chain <verb> <chain-id>` form; an explicit
 // --chain/--chain-id wins. `complete` is destructive and never falls back to the
-// caller's own chain. Authorization (owner or chain coordinator), chain status
-// and the expected work_revision are enforced by the Hub on both transports.
+// caller's own chain. The Hub enforces same-owner authentication (no agent
+// membership/coordinator requirement), chain status, graph/data guards and
+// the expected work_revision on both transports.
 ctl_mixed_work_command :: proc(transport: Ctl_Transport, action: string, args: []string, positional_chain := "") {
 	cid := option_value(args, "--chain", option_value(args, "--chain-id", positional_chain))
 	if cid == "" && action != "complete" do cid = resolve_chain_id(transport, args)

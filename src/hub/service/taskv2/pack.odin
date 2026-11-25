@@ -742,7 +742,7 @@ chain_has_overflow_event :: proc(svc: ^Service, chain: domain.Task_Chain) -> boo
 	return false
 }
 
-// chain_summary_set allows the coordinator or chain owner to set the chain
+// chain_summary_set allows any authenticated owner agent or user to set the chain
 // summary (capped at 60 lines).
 chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_in: domain.Task_Chain_ID, body_in: string) -> (domain.Chain_Summary, bool, domain.Domain_Error) {
 	chain_id := chain_id_in
@@ -752,9 +752,6 @@ chain_summary_set :: proc(svc: ^Service, auth: contracts.Auth_Context, chain_id_
 		if chain_id == "" do chain_id = domain.Task_Chain_ID(inst.chain_id)
 		chain, cok, _ := iface.taskchain_get_chain(svc.repo, chain_id)
 		if !cok || chain.owner_user_id != inst.owner_user_id do return {}, false, domain.domain_error(.Not_Found, "task chain not found")
-		if !is_coordinator(svc, chain, inst.agent_instance_id) {
-			return {}, false, domain.domain_error(.Forbidden, "only the chain coordinator or owner can set the chain summary")
-		}
 	} else if contracts.is_user_auth(auth) {
 		if chain_id == "" do return {}, false, domain.domain_error(.Validation_Failed, "chain_id is required")
 		chain, cok, _ := iface.taskchain_get_chain(svc.repo, chain_id)

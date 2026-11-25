@@ -1,0 +1,796 @@
+{
+  "schema_version": 1,
+  "source_head": "f56f13e106949d67e1e139d100600860cf3d3f44",
+  "date_utc": "2026-11-22",
+  "host_bridge": "brg_18e0e5e547267b4e",
+  "isolated_bridge": "brg_18ea47555b25c045",
+  "instances": {
+    "ask": "inst_18ea47755ff55083",
+    "yolo": "inst_18ea47755ee37084"
+  },
+  "codex_version": "0.162.0",
+  "authentication": "ChatGPT (system sign-in copied to isolated provider HOME)",
+  "result": "NOT READY FOR ROLLOUT: approve/deny and live thread resume are gaps",
+  "assertions": "7 evidence assertions passed; these validate observations, not an all-green E2E suite",
+  "stream_message_id": "msg_d234342994d1feaa",
+  "stream_revisions": [
+    {
+      "received_at": "2026-11-22T05:44:46.614Z",
+      "event": "chat_updated",
+      "revision": 2,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:46.741Z",
+      "event": "chat_updated",
+      "revision": 3,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:46.864Z",
+      "event": "chat_updated",
+      "revision": 4,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:46.966Z",
+      "event": "chat_updated",
+      "revision": 5,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:47.107Z",
+      "event": "chat_updated",
+      "revision": 6,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:47.236Z",
+      "event": "chat_updated",
+      "revision": 7,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:47.361Z",
+      "event": "chat_updated",
+      "revision": 8,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:49.480Z",
+      "event": "chat_updated",
+      "revision": 9,
+      "message_status": "pending"
+    },
+    {
+      "received_at": "2026-11-22T05:44:49.759Z",
+      "event": "chat_updated",
+      "revision": 12,
+      "message_status": "complete"
+    }
+  ],
+  "transcripts": {
+    "yolo": [
+      {
+        "message_id": "msg_98825d6ccf79e1ef",
+        "direction": "agent_to_user",
+        "body": "CRASH84",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47e3b9611971:6",
+            "launch_epoch": "launch_18ea47e3b9611971",
+            "revision": 2,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "msg_18ea47eb08b61fc5",
+        "direction": "user_to_agent",
+        "body": "Remember marker CRASH84. Reply only with marker.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_9ca9daa960102862",
+        "direction": "agent_to_user",
+        "body": "READY",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47e3b9611971:4",
+            "launch_epoch": "launch_18ea47e3b9611971",
+            "revision": 2,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "msg_start_d3c88b02f9a3e41efae8399b6f815abcfb4532bba986698d06d152138e9c5c81",
+        "direction": "agent_to_user",
+        "body": "Agent has started and is ready.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_18ea47e3b999e00e",
+        "direction": "user_to_agent",
+        "body": "What marker did I ask you to remember? Reply only with it.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_18ea47cad130dfc2",
+        "direction": "user_to_agent",
+        "body": "Run exactly: sleep 60. Reply DONE after it finishes.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_d234342994d1feaa",
+        "direction": "agent_to_user",
+        "body": "RESUME73\n\nRain softens the edges of a busy afternoon, tapping windows and darkening sidewalks. It carries the scent of wet soil, cools warm rooftops, and gathers in silver beads along leaves. Puddles mirror passing clouds while distant gutters hum steadily. For a while, the world seems quieter, refreshed by water falling patiently from the sky, nourishing gardens, fields, and hope.",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47b3dfc324ac:5",
+            "launch_epoch": "launch_18ea47b3dfc324ac",
+            "revision": 12,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "msg_18ea47bc8f72a966",
+        "direction": "user_to_agent",
+        "body": "Remember marker RESUME73. Reply with marker then a 60-word paragraph about rain.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_6bfb25f40dc2300e",
+        "direction": "agent_to_user",
+        "body": "READY. Startup reconciliation returned a recoverable conflict; `AGENTS.md` read.",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47b3dfc324ac:4",
+            "launch_epoch": "launch_18ea47b3dfc324ac",
+            "revision": 5,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "reconfig_18ea47b3dfc1adc2_ready",
+        "direction": "agent_to_user",
+        "body": "Configuration changed",
+        "message_status": "complete",
+        "metadata": {
+          "operation_id": "reconfig_18ea47b3dfc1adc2",
+          "owner_user_id": "tanmay",
+          "agent_instance_id": "inst_18ea47755ee37084",
+          "conversation_id": "chat_18ea47755ee37d82",
+          "actor_user_id": "tanmay",
+          "idempotency_key": "8ae439ad-a717-40cb-b91f-6128fa321283",
+          "expected_revision": 0,
+          "revision": 5,
+          "phase": "ready",
+          "source": {
+            "runtime_transport": "acp",
+            "provider_profile": "codex",
+            "bridge_id": "brg_18ea47555b25c045",
+            "bridge_label": "local-t4-codex",
+            "project_id": "",
+            "project_label": "",
+            "project_path": "",
+            "provider": "codex",
+            "model": "gpt-6.1-sol",
+            "permission_mode": ""
+          },
+          "destination": {
+            "runtime_transport": "acp",
+            "provider_profile": "codex",
+            "bridge_id": "brg_18ea47555b25c045",
+            "bridge_label": "local-t4-codex",
+            "project_id": "",
+            "project_label": "",
+            "project_path": "",
+            "provider": "codex",
+            "model": "gpt-6-luna",
+            "permission_mode": ""
+          },
+          "stop_command_id": "cmd_reconfig_stop_18ea47b3dfc31405",
+          "launch_command_id": "cmd_reconfig_launch_18ea47b3dfc31f33",
+          "launch_epoch": "launch_18ea47b3dfc324ac",
+          "source_stopped": true,
+          "destination_committed": true,
+          "failure_code": "",
+          "failure_message": "",
+          "created_at": "2026-11-22T05:43:59Z",
+          "updated_at": "2026-11-22T05:44:02Z"
+        }
+      },
+      {
+        "message_id": "reconfig_18ea47b3dfc1adc2_requested",
+        "direction": "agent_to_user",
+        "body": "Configuration change requested",
+        "message_status": "pending",
+        "metadata": {
+          "operation_id": "reconfig_18ea47b3dfc1adc2",
+          "owner_user_id": "tanmay",
+          "agent_instance_id": "inst_18ea47755ee37084",
+          "conversation_id": "chat_18ea47755ee37d82",
+          "actor_user_id": "tanmay",
+          "idempotency_key": "8ae439ad-a717-40cb-b91f-6128fa321283",
+          "expected_revision": 0,
+          "revision": 1,
+          "phase": "prepared",
+          "source": {
+            "runtime_transport": "acp",
+            "provider_profile": "codex",
+            "bridge_id": "brg_18ea47555b25c045",
+            "bridge_label": "local-t4-codex",
+            "project_id": "",
+            "project_label": "",
+            "project_path": "",
+            "provider": "codex",
+            "model": "gpt-6.1-sol",
+            "permission_mode": ""
+          },
+          "destination": {
+            "runtime_transport": "acp",
+            "provider_profile": "codex",
+            "bridge_id": "brg_18ea47555b25c045",
+            "bridge_label": "local-t4-codex",
+            "project_id": "",
+            "project_label": "",
+            "project_path": "",
+            "provider": "codex",
+            "model": "gpt-6-luna",
+            "permission_mode": ""
+          },
+          "stop_command_id": "cmd_reconfig_stop_18ea47b3dfc31405",
+          "launch_command_id": "cmd_reconfig_launch_18ea47b3dfc31f33",
+          "launch_epoch": "launch_18ea47b3dfc324ac",
+          "source_stopped": false,
+          "destination_committed": false,
+          "failure_code": "",
+          "failure_message": "",
+          "created_at": "2026-11-22T05:43:59Z",
+          "updated_at": "2026-11-22T05:43:59Z"
+        }
+      },
+      {
+        "message_id": "msg_247d62f6c116aa37",
+        "direction": "agent_to_user",
+        "body": "I\u2019ll wait for the command to finish.\n",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea478869d2e5af:6",
+            "launch_epoch": "launch_18ea478869d2e5af",
+            "revision": 4,
+            "stop_reason": "cancelled"
+          }
+        }
+      },
+      {
+        "message_id": "msg_18ea47aa7e515388",
+        "direction": "user_to_agent",
+        "body": "Run exactly: sleep 60. Reply DONE after it finishes.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_655aed02892cd510",
+        "direction": "agent_to_user",
+        "body": "DONE",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea478869d2e5af:5:s1",
+            "launch_epoch": "launch_18ea478869d2e5af",
+            "revision": 2,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "msg_ecb816f4b7bee3c1",
+        "direction": "agent_to_user",
+        "body": "I\u2019ll run the command.\n",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea478869d2e5af:5",
+            "launch_epoch": "launch_18ea478869d2e5af",
+            "revision": 3,
+            "stop_reason": ""
+          }
+        }
+      },
+      {
+        "message_id": "msg_18ea479f03dd4547",
+        "direction": "user_to_agent",
+        "body": "Run exactly: printf T4_YOLO > /home/tanmay/.local/state/heimdall-local/bridges/t4-codex/home/t4-yolo. Reply DONE.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_9b3ccf3df54ed752",
+        "direction": "agent_to_user",
+        "body": "READY",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea478869d2e5af:4:s1",
+            "launch_epoch": "launch_18ea478869d2e5af",
+            "revision": 2,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "msg_b82a611ec2d4a73a",
+        "direction": "agent_to_user",
+        "body": "I\u2019ll run startup, then read `AGENTS.md`.\n",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea478869d2e5af:4",
+            "launch_epoch": "launch_18ea478869d2e5af",
+            "revision": 4,
+            "stop_reason": ""
+          }
+        }
+      },
+      {
+        "message_id": "msg_start_cbbdeca18ce0f10461c5e78fad9326f0920c3d4885e3b7208214c776cf77e923",
+        "direction": "agent_to_user",
+        "body": "Agent has started and is ready.",
+        "message_status": "complete",
+        "metadata": {}
+      }
+    ],
+    "ask": [
+      {
+        "message_id": "msg_945fb0bb4a000be4",
+        "direction": "agent_to_user",
+        "body": "I\u2019ll request approval once for the specified command.\n",
+        "message_status": "failed",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47755ff56674:8",
+            "launch_epoch": "launch_18ea47755ff56674",
+            "revision": 3,
+            "stop_reason": "acp_turn_interrupted"
+          }
+        }
+      },
+      {
+        "message_id": "msg_18ea47d1198ab6b5",
+        "direction": "user_to_agent",
+        "body": "Run exactly: printf T4_DENY > /home/tanmay/.local/state/heimdall-local/bridges/t4-codex/home/t4-deny. Use exec_command with sandbox_permissions=require_escalated and justification T4 deny smoke. Request approval once; do not retry if denied.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_09a93ea117dd0db5",
+        "direction": "agent_to_user",
+        "body": "I\u2019ll request approval once for the specified command.\n",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47755ff56674:6",
+            "launch_epoch": "launch_18ea47755ff56674",
+            "revision": 3,
+            "stop_reason": "cancelled"
+          }
+        }
+      },
+      {
+        "message_id": "msg_18ea478cf00557f1",
+        "direction": "user_to_agent",
+        "body": "Run exactly: printf T4_ALLOW > /home/tanmay/.local/state/heimdall-local/bridges/t4-codex/home/t4-allow. Use exec_command with sandbox_permissions=require_escalated and justification T4 approval smoke. Request approval once. Do not retry after denial. Reply DONE only after execution.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_b2d8d97ce84b2ea5",
+        "direction": "agent_to_user",
+        "body": "ACPSMOKE27",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47755ff56674:5",
+            "launch_epoch": "launch_18ea47755ff56674",
+            "revision": 2,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "msg_18ea478111823f2a",
+        "direction": "user_to_agent",
+        "body": "Remember marker ACPSMOKE27. Reply with the marker only.",
+        "message_status": "complete",
+        "metadata": {}
+      },
+      {
+        "message_id": "msg_a1bfdd6cb954a208",
+        "direction": "agent_to_user",
+        "body": "READY. `AGENTS.md` read; startup failed: bridge unreachable.",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47755ff56674:4:s1",
+            "launch_epoch": "launch_18ea47755ff56674",
+            "revision": 2,
+            "stop_reason": "end_turn"
+          }
+        }
+      },
+      {
+        "message_id": "msg_05bef2d2c7f14aa0",
+        "direction": "agent_to_user",
+        "body": "I\u2019ll run startup confirmation, then read `AGENTS.md`.\n",
+        "message_status": "complete",
+        "metadata": {
+          "acp": {
+            "turn_id": "ham:launch_18ea47755ff56674:4",
+            "launch_epoch": "launch_18ea47755ff56674",
+            "revision": 4,
+            "stop_reason": ""
+          }
+        }
+      },
+      {
+        "message_id": "msg_start_6fe1696285715792bf69874182ab60cf6ea405ff3bbea7688b8d5705c858fdcb",
+        "direction": "agent_to_user",
+        "body": "Agent has started and is ready.",
+        "message_status": "complete",
+        "metadata": {}
+      }
+    ]
+  },
+  "native_rollouts": [
+    {
+      "rollout": "rollout-2026-11-22T11-17-27-01a201cb-8dfc-79a0-a7b2-a71633b5efee.jsonl",
+      "events": [
+        {
+          "type": "turn_context",
+          "model": "gpt-6-luna",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201cb-8e5d-7021-9668-4481f758ba43",
+          "last_agent_message": "READY",
+          "started_at": 1795326447,
+          "completed_at": 1795326453
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6-luna",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201cc-0500-7520-afd4-ab21cf85b5d6",
+          "last_agent_message": "CRASH84",
+          "started_at": 1795326477,
+          "completed_at": 1795326479
+        }
+      ]
+    },
+    {
+      "rollout": "rollout-2026-11-22T11-09-31-01a201c4-4c2c-7042-837e-1253840244e6.jsonl",
+      "events": [
+        {
+          "type": "turn_context",
+          "model": "gpt-6.1-sol",
+          "approval_policy": "on-request",
+          "sandbox_policy": {
+            "type": "workspace-write",
+            "network_access": false,
+            "exclude_tmpdir_env_var": false,
+            "exclude_slash_tmp": false
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201c4-4df6-7f90-8ddb-4d259ad9c652",
+          "last_agent_message": "READY. `AGENTS.md` read; startup failed: bridge unreachable.",
+          "started_at": 1795325971,
+          "completed_at": 1795325983
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6.1-sol",
+          "approval_policy": "on-request",
+          "sandbox_policy": {
+            "type": "workspace-write",
+            "network_access": false,
+            "exclude_tmpdir_env_var": false,
+            "exclude_slash_tmp": false
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201c5-1311-7501-8fbc-99ce7e01e93e",
+          "last_agent_message": "ACPSMOKE27",
+          "started_at": 1795326022,
+          "completed_at": 1795326025
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6.1-sol",
+          "approval_policy": "on-request",
+          "sandbox_policy": {
+            "type": "workspace-write",
+            "network_access": false,
+            "exclude_tmpdir_env_var": false,
+            "exclude_slash_tmp": false
+          }
+        },
+        {
+          "type": "turn_aborted",
+          "turn_id": "01a201c5-d573-74f3-a5d6-562dd3fb4811",
+          "reason": "interrupted",
+          "started_at": 1795326072,
+          "completed_at": 1795326314
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6.1-sol",
+          "approval_policy": "on-request",
+          "sandbox_policy": {
+            "type": "workspace-write",
+            "network_access": false,
+            "exclude_tmpdir_env_var": false,
+            "exclude_slash_tmp": false
+          }
+        },
+        {
+          "type": "turn_aborted",
+          "turn_id": "01a201ca-533c-7372-983d-49f13e4e2db8",
+          "reason": "interrupted",
+          "started_at": 1795326366,
+          "completed_at": 1795326407
+        }
+      ]
+    },
+    {
+      "rollout": "rollout-2026-11-22T11-14-02-01a201c8-6cf8-7152-97f5-ffd4afb4bb8d.jsonl",
+      "events": [
+        {
+          "type": "turn_context",
+          "model": "gpt-6-luna",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201c8-6d64-7261-be24-bfd21ed32472",
+          "last_agent_message": "READY. Startup reconciliation returned a recoverable conflict; `AGENTS.md` read.",
+          "started_at": 1795326242,
+          "completed_at": 1795326255
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6-luna",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201c8-f772-7c32-bba5-14b218a099e6",
+          "last_agent_message": "RESUME73\n\nRain softens the edges of a busy afternoon, tapping windows and darkening sidewalks. It carries the scent of wet soil, cools warm rooftops, and gathers in silver beads along leaves. Puddles mirror passing clouds while distant gutters hum steadily. For a while, the world seems quieter, refreshed by water falling patiently from the sky, nourishing gardens, fields, and hope.",
+          "started_at": 1795326277,
+          "completed_at": 1795326287
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6-luna",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "turn_aborted",
+          "turn_id": "01a201c9-e9af-77b0-b38f-b8e48c6a2c0b",
+          "reason": "interrupted",
+          "started_at": 1795326339,
+          "completed_at": 1795326362
+        }
+      ]
+    },
+    {
+      "rollout": "rollout-2026-11-22T11-10-56-01a201c5-9775-72c1-9ab3-149b451315a2.jsonl",
+      "events": [
+        {
+          "type": "turn_context",
+          "model": "gpt-6.1-sol",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201c5-97dc-7af0-a367-753f8336a8a7",
+          "last_agent_message": "READY",
+          "started_at": 1795326056,
+          "completed_at": 1795326064
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6.1-sol",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "task_complete",
+          "turn_id": "01a201c7-0b23-7041-8a72-788448032360",
+          "last_agent_message": "DONE",
+          "started_at": 1795326151,
+          "completed_at": 1795326158
+        },
+        {
+          "type": "turn_context",
+          "model": "gpt-6.1-sol",
+          "approval_policy": {
+            "granular": {
+              "sandbox_approval": false,
+              "rules": false,
+              "skill_approval": false,
+              "request_permissions": false,
+              "mcp_elicitations": true
+            }
+          },
+          "sandbox_policy": {
+            "type": "danger-full-access"
+          }
+        },
+        {
+          "type": "turn_aborted",
+          "turn_id": "01a201c7-c54b-76d1-921c-563822162c7f",
+          "reason": "interrupted",
+          "started_at": 1795326199,
+          "completed_at": 1795326239
+        }
+      ]
+    }
+  ],
+  "restart": {
+    "before-restart": {
+      "instance": "inst_18ea47755ee37084",
+      "launch_epoch": "launch_18ea47b3dfc324ac",
+      "sessionId": "01a201c8-6cf8-7152-97f5-ffd4afb4bb8d",
+      "selected_model": "gpt-6-luna",
+      "last_stdout_seq": 120,
+      "phase": "ready",
+      "error": ""
+    },
+    "after-restart": {
+      "instance": "inst_18ea47755ee37084",
+      "launch_epoch": "launch_18ea47b3dfc324ac",
+      "sessionId": "01a201c8-6cf8-7152-97f5-ffd4afb4bb8d",
+      "selected_model": "gpt-6-luna",
+      "last_stdout_seq": 120,
+      "phase": "ready",
+      "error": ""
+    },
+    "before-crash": {
+      "instance": "inst_18ea47755ee37084",
+      "launch_epoch": "launch_18ea47e3b9611971",
+      "sessionId": "01a201cb-8dfc-79a0-a7b2-a71633b5efee",
+      "selected_model": "gpt-6-luna",
+      "last_stdout_seq": 39,
+      "phase": "ready",
+      "error": ""
+    },
+    "after-crash": {
+      "instance": "inst_18ea47755ee37084",
+      "launch_epoch": "launch_18ea47e3b9611971",
+      "sessionId": "01a201cb-8dfc-79a0-a7b2-a71633b5efee",
+      "selected_model": "gpt-6-luna",
+      "last_stdout_seq": 39,
+      "phase": "ready",
+      "error": ""
+    }
+  },
+  "final_runtime_status": {
+    "yolo": "stopped",
+    "ask": "stopped"
+  },
+  "markers": {
+    "yolo": "T4_YOLO",
+    "allow_exists": false,
+    "deny_exists": false
+  },
+  "issues": [
+    "iss_18ea47c53c7b766f",
+    "iss_18ea47cace8d25c4",
+    "iss_18ea47dac8f2cff8",
+    "iss_18ea47fd743242ef"
+  ],
+  "limits": [
+    "No browser rendering test",
+    "No live approve/deny decision reached",
+    "No live native inbound request in yolo (policy disables approvals)",
+    "Neither restart recovered a running thread",
+    "No product fixes in this task"
+  ]
+}

@@ -344,9 +344,9 @@ ctl_publish_print_and_exit :: proc(response: string) {
 	if strings.contains(response, `"ok":false`) do os.exit(1)
 }
 
-// ctl_v2_task_publish publishes ONE task (coordinator only). The hub route is
-// chain-scoped, so the chain is taken from --chain, else this agent's own chain
-// (context), else the task itself (task show).
+// ctl_v2_task_publish publishes one ordinary draft task of the authenticated
+// owner. The per-task route derives its chain; published-chain and brief/role
+// preconditions are enforced by the Hub.
 ctl_v2_task_publish :: proc(endpoint, token, tid: string, args: []string, unblock := false) {
 	if unblock {
 		ctl_v2_task_action(endpoint, token, tid, args, "answer", httpc.json_body(Ctl_Task_Note_Body{note = option_value(args, "--note", "")}))
@@ -356,8 +356,8 @@ ctl_v2_task_publish :: proc(endpoint, token, tid: string, args: []string, unbloc
 }
 
 // ctl_v2_task_hold: `task hold <id> --reason <text>` / `task release <id>`
-// (coordinator or owner, REQ-TV2-5). Hold stops new dispatch; on a leased task
-// it asks the holder to checkpoint and hand off. Release of an unheld task is
+// (owner or any authenticated agent of that owner, REQ-TV2-5). Hold stops new
+// dispatch; on a leased task it asks the holder to checkpoint and hand off. Release of an unheld task is
 // a no-op with a message.
 ctl_v2_task_hold :: proc(endpoint, token, tid: string, args: []string, release := false) {
 	if release {
@@ -1371,7 +1371,7 @@ ctl_workflow_user_mode :: proc(cmd, args: []string) {
 }
 
 print_help_workflow :: proc() {
- fmt.println("ham-ctl workflow: runs inside an existing task chain; owner or coordinator controls them")
+ fmt.println("ham-ctl workflow: runs inside an existing task chain; any authenticated agent of its owner may control/read runs")
  fmt.println("  templates | define --file <definition.json>")
  fmt.println("  run <ref> --chain <id> --request-id <key> [--title <text>] [--input k=v ...] [--inputs-file <json>] [--after task:<id>|workflow_run:<id> ...]")
  fmt.println("  list --chain <id>")
@@ -1383,6 +1383,7 @@ print_help_workflow :: proc() {
  fmt.println("Fan-out: a stage may set \"for_each\": \"inputs.<array-input>\" (pass the list via --inputs-file; --input k=v is always a string)")
  fmt.println("  or \"<stage>.outputs[0].<field>\"; at most 256 items per stage. A missing/null input uses its declared default, otherwise invalid")
  fmt.println("  inputs fail before anything is created. An empty array completes the stage with zero tasks.")
+ fmt.println("Chain membership/coordinator status is not required; owner, active-chain, revision and execution guards remain.")
  fmt.println("A retry creates a fresh execution. Consumed outputs block retry. Stage retry is unsupported.")
  fmt.println("Agent mode may omit --chain when creating/listing runs; run IDs are always explicit.")
 }

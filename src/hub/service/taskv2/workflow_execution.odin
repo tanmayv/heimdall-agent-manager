@@ -128,7 +128,7 @@ workflow_run_prepare :: proc(svc: ^Service, owner: domain.User_ID, input: Workfl
 // prepared: workflow_run_prepare's result when the caller ran it before the
 // UoW; nil (nested callers already inside a UoW) prepares here.
 workflow_run_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, actor: Actor, input: Workflow_Run_Input, prepared: ^Workflow_Run_Prepared = nil) -> (domain.Workflow_Run, bool, domain.Domain_Error) {
-	chain, cok, cerr := work_control_chain(svc, owner, actor, domain.Task_Chain_ID(input.chain_id))
+	chain, cok, cerr := work_task_write_chain(svc, owner, actor, domain.Task_Chain_ID(input.chain_id))
 	if !cok do return {}, false, cerr
 	prep := prepared^ if prepared != nil else workflow_run_prepare(svc, owner, input)
 	if prep.request_hash == "" do return {}, false, prep.err
@@ -336,7 +336,7 @@ workflow_retry :: proc(svc: ^Service, run_id: domain.Workflow_Run_ID, owner: dom
 workflow_retry_in_uow :: proc(svc: ^Service, u: ^Uow, run_id: domain.Workflow_Run_ID, owner: domain.User_ID, actor: Actor, reason: string, expected_revision: i64) -> (domain.Workflow_Run, bool, domain.Domain_Error) {
 	wf, ok, err := workflow_context(svc, run_id, owner)
 	if !ok do return {}, false, err
-	if _, ok, err := work_control_chain(svc, owner, actor, wf.chain_id); !ok do return {}, false, err
+	if _, ok, err := work_task_write_chain(svc, owner, actor, wf.chain_id); !ok do return {}, false, err
 	if wf.run.revision != expected_revision do return {}, false, domain.domain_error(.Conflict, "run changed; refresh before retrying")
 	if strings.trim_space(reason) == "" do return {}, false, domain.domain_error(.Validation_Failed, "retry reason is required")
 	if wf.execution.state != "failed" && wf.execution.state != "cancelled" && wf.execution.state != "succeeded" do return {}, false, domain.domain_error(.Conflict, "only a terminal run can be retried")
@@ -372,7 +372,7 @@ workflow_cancel :: proc(svc: ^Service, run_id: domain.Workflow_Run_ID, owner: do
 workflow_cancel_in_uow :: proc(svc: ^Service, u: ^Uow, run_id: domain.Workflow_Run_ID, owner: domain.User_ID, actor: Actor, reason: string, execution_no: int) -> (domain.Workflow_Run, bool, domain.Domain_Error) {
 	wf, ok, err := workflow_context(svc, run_id, owner)
 	if !ok do return {}, false, err
-	if _, ok, err := work_control_chain(svc, owner, actor, wf.chain_id); !ok do return {}, false, err
+	if _, ok, err := work_task_write_chain(svc, owner, actor, wf.chain_id); !ok do return {}, false, err
     if execution_no <= 0 do return {}, false, domain.domain_error(.Validation_Failed, "execution_no is required")
     target, exists, target_err := iface.taskchain_get_workflow_execution(svc.repo, run_id, execution_no, owner)
     if !exists do return {}, false, target_err

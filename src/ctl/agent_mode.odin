@@ -259,7 +259,7 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
 	case "set-description":
-		// coordinator-only; pass "" to clear. --chain defaults to your chain.
+		// Any authenticated agent of the owner; pass "" to clear. --chain defaults to your chain.
 		desc := option_value(args, "--description", pos(tokens, 1))
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do desc = string(data) }
 		// REQ-VCAP-4: check the PLAINTEXT budget before encrypting, so the error
@@ -297,7 +297,7 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		if cid != "" do append(&fields, json_kv("chain_id", cid))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
 	case "publish":
-		// Coordinator only (enforced hub-side). Flips the chain Draft -> Published and
+		// Any authenticated agent of the owner (enforced hub-side). Flips Draft -> Published and
 		// cascades Published to its tasks, which is what makes them schedulable.
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
@@ -336,7 +336,7 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_agent_call_task(endpoint, token, "agent.rest.request", params, args)
 	case "graph", "depend", "remove-dependency", "scope", "complete":
 		// Mixed-work graph verbs: same parser as user mode, relayed through the
-		// authenticated agent.work.* Bridge routes (Hub enforces owner/coordinator).
+		// authenticated agent.work.* Bridge routes (Hub enforces same-owner access and data guards).
 		ctl_mixed_work_command(Ctl_Transport{kind = .Agent, agent_endpoint = endpoint, agent_token = token}, verb, args, pos(tokens, 1))
 	case:
 		print_agent_help([]string{"task-chain"})
@@ -1969,6 +1969,10 @@ print_help_agents :: proc() {
 print_help_task_chain :: proc() {
 	fmt.println("ham-ctl task-chain — your task chains")
 	fmt.println("")
+	fmt.println("Any authenticated agent of the owner may publish/complete chains, edit title/description/summary")
+	fmt.println("and directories, and manage graph/scope, workflow runs and fleets without chain membership/coordinator status.")
+	fmt.println("Owner/reference and operation guards remain; proposal, claim/transfer and review policies stay separate.")
+	fmt.println("")
 	fmt.println("VERBS")
 	fmt.println("  list [--mine] [--pinned] [--project <id>]   List chains (--mine = ones you coordinate, --pinned = pinned).")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
@@ -1977,14 +1981,14 @@ print_help_task_chain :: proc() {
 	fmt.println("      [--bridge <id>] [--project <id>] [--provider <p>] [--model <t>]")
 	fmt.println("  pin <chain-id>                      Pin a task chain to the top of the sidebar.")
 	fmt.println("  unpin <chain-id>                    Unpin a task chain.")
-	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
+	fmt.println("  set-title <title> [--chain <id>]    Rename a chain of your owner.")
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
-	fmt.println("                                      (coordinator only; pass \"\" to clear).")
+	fmt.println("                                      (any agent of the owner; pass \"\" to clear).")
 	fmt.println("  summary get [<chain-id>]            Read-only: the rendered chain summary + line_count, max_lines,")
 	fmt.println("                                      overflow_active, version, curated notes (defaults to your chain).")
 	fmt.println("  summary set <text> [--chain <id>] | --body <text> | --file <path> | --stdin")
-	fmt.println("                                      Replace your stored curated notes (<=60 lines, coordinator")
-	fmt.println("                                      only). The first 20 non-blank lines always render; dead")
+	fmt.println("                                      Replace stored curated notes (<=60 lines, any agent of the")
+	fmt.println("                                      owner). The first 20 non-blank lines always render; dead")
 	fmt.println("                                      ends come from task history and set cannot remove them.")
 	fmt.println("  propose --file <proposal.json> [--auto-approve] [--chain <id>]")
 	fmt.println("                                      Propose a ticket or workflow (creates draft tasks in one UoW;")
@@ -1995,17 +1999,19 @@ print_help_task_chain :: proc() {
 	fmt.println("                                      chain membership is not required).")
 	fmt.println("  archive [<chain-id>]                Archive a task chain (any agent of the owner).")
 	fmt.println("  unarchive [<chain-id>]              Restore an archived task chain to active (any agent of the owner).")
-	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
+	fmt.println("  publish <chain-id>                  Publish a DRAFT chain of your owner. Validates briefs; cascades")
 	fmt.println("                                      published to its tasks — until then nothing in the")
-	fmt.println("                                      chain is scheduled.")
-	fmt.println("  directory <add|update|remove|list>  Manage task chain relevant directories.")
-	fmt.println("  fleet <list|set|pause|resume>       Manage chain fleet capacities, roles, placement, and dispatch pause.")
+	fmt.println("                                      chain is scheduled. Unpublish is unsupported.")
+	fmt.println("  directory <add|update|remove|list>  Manage same-owner chain directories; referenced bridges must share the owner.")
+	fmt.println("  fleet <list|set|pause|resume>       Manage same-owner fleet capacities, roles, placement, and dispatch pause.")
 	fmt.println("  token-usage [<chain-id>]            Per-agent (and per-instance) + chain total token usage, JSON.")
 	fmt.println("")
 	fmt.println("MIXED-WORK GRAPH (every chain is mixed_work: tickets and workflow runs share one graph)")
 	fmt.println("  Refs are typed: task:<task-id> (an ordinary ticket) or workflow_run:<run-id> (a whole run;")
 	fmt.println("  stage tasks are engine-managed and cannot be graph endpoints). [<chain-id>] defaults to")
-	fmt.println("  your chain (or --chain <id>). Mutations need the chain owner or its coordinator.")
+	fmt.println("  your chain (or --chain <id>). Any authenticated agent of the owner may read/change")
+	fmt.println("  the graph without chain membership/coordinator status. Mutations require an active chain.")
+	fmt.println("  Endpoints must belong to this same chain; DAG, started-input and consumption guards remain.")
 	fmt.println("  graph [<chain-id>]                  Dependencies (with dependency ids), scope decisions,")
 	fmt.println("                                      work_revision and completion summary.")
 	fmt.println("  depend [<chain-id>] --item <ref> --on <ref>")
@@ -2020,8 +2026,10 @@ print_help_task_chain :: proc() {
 	fmt.println("  complete <chain-id> --expected-work-revision <N> --summary <text>")
 	fmt.println("                                      Complete the chain (explicit id required; N comes from")
 	fmt.println("                                      `graph`; a stale N is a work_changed conflict). Every")
-	fmt.println("                                      included ticket/run must have succeeded. Finishing a")
-	fmt.println("                                      batch never completes the chain.")
+	fmt.println("                                      included ticket/run must have succeeded, required merges resolved,")
+	fmt.println("                                      and no leases/pending proposal remain; at least one success is required.")
+	fmt.println("")
+	fmt.println("  Excluded work must be terminal. Finishing a batch never completes the chain.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl task-chain list --mine")
@@ -2040,6 +2048,10 @@ print_help_task_chain :: proc() {
 
 print_help_task_chain_fleet :: proc() {
 	fmt.println("ham-ctl task-chain fleet — fleet management for task chains")
+	fmt.println("")
+	fmt.println("Any authenticated agent of the chain owner may manage fleets; membership/coordinator status is not required.")
+	fmt.println("Referenced durable agents and bridges must share the owner; capacity, roles and placement checks still apply.")
+	fmt.println("Deletion is available via DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}; no fleet delete CLI verb.")
 	fmt.println("")
 	fmt.println("VERBS")
 	fmt.println("  list <chain-id>                             List fleet capacities, roles, placement, and active agent counts.")
@@ -2102,7 +2114,7 @@ print_help_task :: proc() {
 	fmt.println("      Flags override its fields. Other keys are rejected (unknown_brief_fields). --verify,")
 	fmt.println("      --auto-submit and --require-independent-verify were removed: ignored with a warning.")
 	fmt.println("  update <task-id>                        Edit an existing task (any agent of the owner;")
-	fmt.println("                                          dependency edits stay coordinator-only).")
+	fmt.println("                                          including dependency edits; same-chain, DAG and started-input guards apply).")
 	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agent-id>]")
 	fmt.println("      [--reviewer <agent-id,...>] [--require-user-approval | --no-require-user-approval]")
 	fmt.println("      [--depends-on <id,id>] [--bridge <bridge-id>] + the same BRIEF flags as create")
@@ -2114,8 +2126,8 @@ print_help_task :: proc() {
 	fmt.println("      --reviewer/--depends-on REPLACE the whole list (pass \"\" to clear); --bridge \"\" clears")
 	fmt.println("      the pin. Live goal/acceptance edits require --expected-requirements-revision <n>")
 	fmt.println("      and --reason <text>. Read the revision with task show; conflicts require a fresh read.")
-	fmt.println("  publish <task-id> [--chain <id>]        Publish one draft task (coordinator only). A 422")
-	fmt.println("                                          brief_incomplete lists the missing fields per task.")
+	fmt.println("  publish <task-id> [--chain <id>]        Publish one ordinary draft task of your owner. Its chain must")
+	fmt.println("                                          be published; 422 brief_incomplete lists missing brief/role fields.")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")
 	fmt.println("      [--notify <id,id>]")
 	fmt.println("  depend <task-id> --on <prerequisite>    Add one prerequisite to a ticket. <prerequisite> is")
@@ -2159,7 +2171,7 @@ print_help_chat :: proc() {
 	fmt.println("      Question text and option labels are vault-encrypted; each question also accepts custom text.")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
 	fmt.println("  set-title <title>                                              DEPRECATED: conversation titles are unused;")
-	fmt.println("                                                                 use `task-chain set-title` (coordinator only).")
+	fmt.println("                                                                 use `task-chain set-title` for a chain of your owner.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl chat read")
