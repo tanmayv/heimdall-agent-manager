@@ -130,6 +130,14 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     assert.match(get('home-fleet-error-b1').textContent!, /revision changed/);
     assert.match(get('home-fleet-default-b1-model').textContent!, /m2/, 'conflict keeps draft');
     assert.match(get('home-fleet-conflict-b1').textContent!, /Reset/);
+    const conflictCalls = calls.length;
+    await click('home-fleet-expand-b1');
+    assert.equal(get('home-fleet-body-b1').getAttribute('aria-hidden'), 'true');
+    await click('home-fleet-expand-b1');
+    assert.match(get('home-fleet-default-b1-model').textContent!, /m2/);
+    assert.match(get('home-fleet-error-b1').textContent!, /revision changed/);
+    assert.match(get('home-fleet-conflict-b1').textContent!, /Reset/);
+    assert.equal(calls.length, conflictCalls, 'disclosure preserves preview subscription and never mutates settings');
     await click('home-fleet-reset-b1');
     assert.match(get('home-fleet-default-b1-model').textContent!, /m1/);
     await choose('home-fleet-default-b1-model', 'm2');
@@ -147,6 +155,8 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     await click('home-fleet-retry-b1');
     assert.equal(countCalls('/applications/app/retry'), 1);
     assert.match(get('home-fleet-target-i-ready').textContent!, /ready/);
+    await click('home-fleet-expand-b1');
+    assert.equal(get('home-fleet-body-b1').hasAttribute('inert'), true);
     const reads = countCalls('/launch-defaults'), previewReads = countCalls('/fleet/preview');
     await act(async () => handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'i-failed', change: 'status_changed', summary: { bridge_id: 'b1', runtime_status: 'running' } }, {}));
     await settle();
@@ -158,6 +168,8 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
       flushQueuedInvalidations();
     });
     await settle();
+    assert.equal(get('home-fleet-expand-b1').getAttribute('aria-expanded'), 'false', 'live results update without opening the panel');
+    await click('home-fleet-expand-b1');
     assert.match(get('home-fleet-result-b1').textContent!, /All affected agents ready/);
     assert.equal(countCalls('/launch-defaults'), reads, 'application progress does not reload settings');
     assert.equal(countCalls('/fleet/preview'), previewReads, 'ready event does not refetch preview');
