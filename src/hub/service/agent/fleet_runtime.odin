@@ -18,7 +18,7 @@ chain_fleet_runtime :: proc(service: ^Agent_Service, owner: domain.User_ID, chai
 	return resolved.runtime, err
 }
 
-// Borrowed legacy values for explicitly excluded origins; no shared policy read.
+// Borrowed legacy candidate before shared policy resolution; no network I/O.
 chain_legacy_runtime :: proc(service: ^Agent_Service, owner: domain.User_ID, chain_id, bridge_id, agent_id: string, legacy: domain.Fleet_Runtime) -> (domain.Fleet_Runtime, domain.Domain_Error) {
 	legacy := legacy
 	if chain_id != "" && service.taskchains != nil {

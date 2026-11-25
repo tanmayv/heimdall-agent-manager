@@ -57,6 +57,12 @@ precedence is unchanged. Review placement keeps its existing pin semantics.
 Effective displays report `agent_override`, `bridge_default`, legacy `fleet` or
 `bridge_override`, or `catalog_default` as the source.
 
+An inline claim promotes eligible task scope without replacing its running
+process. Its lease, context-pack placement (including `provider_profile`) and
+grant history record the actual instance tuple, even when the saved policy
+differs. Shared settings take effect at a subsequent real launch. This preserves
+the solo coordinator's pull-only behavior and required review gate.
+
 All policy reads are indexed SQLite reads inside existing Hub orchestration.
 There are **zero new Fleet-settings HTTP/RPC calls on startup or restart**, no
 agent-side settings fetch, no startup-triggered UI refetch and no new cache.
@@ -94,7 +100,8 @@ Apply fan-out.
 
 Excluded bot/action origins retain existing orchestration and eligible claim
 permissions. Those callers inspect the explicit `Excluded` classifier result and
-skip promotion/shared runtime resolution while preserving legacy runtime. They
+skip promotion and both shared/legacy chain runtime resolution while retaining
+the instance's actual provider/profile/model for inline and wake claims. They
 do not swallow arbitrary conflicts or storage errors. The marker setter itself
 continues refusing excluded-to-chain promotion.
 

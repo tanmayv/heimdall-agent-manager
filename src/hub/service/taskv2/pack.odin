@@ -59,6 +59,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 		json_str(&placement_obj, "branch", branch)
 	}
 	json_str(&placement_obj, "provider", provider)
+	json_str(&placement_obj, "provider_profile", domain.profile_effective_id(provider, lease.provider_profile if lease.provider_profile != "" else inst.provider_profile))
 	json_str(&placement_obj, "model", model)
 	placement_json := json_end(&placement_obj)
 

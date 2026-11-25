@@ -8,6 +8,8 @@ import iface "odin_test:hub/repository/iface"
 import agent "odin_test:hub/service/agent"
 import fleet "odin_test:hub/service/fleet_settings"
 import provider "odin_test:hub/service/provider"
+import sqlite "odin_test:hub/repository/sqlite"
+import jsonx "odin_test:lib/jsonx"
 
 @(test)
 test_shared_fleet_resolution_dispatch_pins_and_legacy_transition :: proc(t: ^testing.T) {
@@ -156,5 +158,145 @@ test_shared_fleet_excluded_claim_preserves_runtime_and_manual_claim_promotes :: 
 			testing.expect(t, ce.code == .None && included == (scope == "manual"), "explicit excluded origins keep their eligible claim without Fleet promotion")
 		}
 		lease_fixture_close(fx, log)
+	}
+}
+
+shared_fleet_claim_policies :: proc(t: ^testing.T, log: ^Wake_Log) -> (domain.Fleet_Runtime, domain.Fleet_Runtime) {
+	ps := provider.Provider_Service{repo=log.service.providers}
+	e := provider.apply_profiles_report(&ps, "br_1", {
+		{profile_id="claude_live", provider="claude", enabled=true, state="ok"},
+		{profile_id="codex_work", provider="codex", enabled=true, state="ok"},
+	})
+	testing.expect_value(t, e.code, domain.Error_Code.None)
+	for r in ([]domain.Fleet_Runtime{{"claude","claude_live","claude-opus-5-5"}, {"codex","codex_work",""}}) {
+		_, _ = iface.bridge_provider_status_upsert(log.service.providers, {bridge_id="br_1", provider=r.provider, profile_id=r.provider_profile, state="present"})
+		_, _ = iface.bridge_provider_setting_upsert(log.service.providers, {bridge_id="br_1", provider=r.provider, profile_id=r.provider_profile, enabled=true})
+	}
+	p, m := resolve_launch_model(&log.service, "br_1", "codex", "", "codex_work")
+	testing.expect(t, p == "codex" && m != "", "recorded Codex profile has an available catalog model")
+	delete(p)
+	return {"claude","claude_live","claude-opus-5-5"}, {"codex","codex_work",m}
+}
+
+shared_fleet_expect_recorded_runtime :: proc(t: ^testing.T, fx: ^Fixture, chain: domain.Task_Chain, task: domain.Task, lease: domain.Task_Lease, inst: domain.Agent_Instance, actual: domain.Fleet_Runtime, pack_json: string = "") {
+	testing.expect_value(t, lease.provider, actual.provider)
+	testing.expect_value(t, lease.provider_profile, actual.provider_profile)
+	testing.expect_value(t, lease.model, actual.model)
+	history := last_event_payload(fx, string(task.task_id), EV_LEASE_GRANTED)
+	testing.expect_value(t, jsonx.extract_string(history, "provider", "", true, context.temp_allocator), actual.provider)
+	testing.expect_value(t, jsonx.extract_string(history, "provider_profile", "", true, context.temp_allocator), actual.provider_profile)
+	testing.expect_value(t, jsonx.extract_string(history, "model", "", true, context.temp_allocator), actual.model)
+	pack := pack_json
+	if pack == "" do pack = build_pack_json(&fx.svc, chain, task, lease, inst)
+	placement, found := jsonx.extract_raw_object(pack, "placement", true, context.temp_allocator)
+	testing.expect(t, found)
+	testing.expect_value(t, jsonx.extract_string(placement, "provider", "", true, context.temp_allocator), actual.provider)
+	testing.expect_value(t, jsonx.extract_string(placement, "provider_profile", "", true, context.temp_allocator), actual.provider_profile)
+	testing.expect_value(t, jsonx.extract_string(placement, "model", "", true, context.temp_allocator), actual.model)
+}
+
+@(test)
+test_shared_fleet_inline_and_solo_claim_record_actual_runtime_until_launch :: proc(t: ^testing.T) {
+	for solo in ([]bool{false, true}) {
+		tag := "shared_inline_solo" if solo else "shared_inline_manual"
+		fx, log, ok := lease_fixture(t, tag)
+		if !ok {lease_fixture_close(fx, log); continue}
+		chain := solo_chain(t, fx, "shared_inline") if solo else seed_live_chain(t, fx, "shared_inline")
+		actual, desired := shared_fleet_claim_policies(t, log)
+		s := agent.fleet_service(&log.service)
+		snapshot, _, se := fleet.save(&s, "u1", "br_1", {default_runtime=desired})
+		testing.expect_value(t, se.code, domain.Error_Code.None); domain.fleet_settings_destroy(snapshot)
+		id := "inst_coord" if solo else "inline_manual"
+		inst: domain.Agent_Instance
+		task: domain.Task
+		if solo {
+			inst, _, _ = iface.agent_get_instance(&fx.agents, id)
+			task = publish_solo_task(t, fx, chain, "shared_inline_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_c","review_roles":[]}`)
+		} else {
+			task = publish_task(t, fx, chain, "shared_inline_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+			seed_fleet(fx, chain, "agt_w")
+			inst = seed_instance(fx, chain, id, "agt_w", "br_1", "running")
+		}
+		inst.provider, inst.provider_profile, inst.model = actual.provider, actual.provider_profile, actual.model
+		inst, _, _ = iface.agent_save_instance(&fx.agents, inst)
+		testing.expect_value(t, iface.fleet_scope_set(&fx.bridges, inst, "manual").code, domain.Error_Code.None)
+		wake_log_reset(log)
+		lease: domain.Task_Lease; pack: string; granted: bool; err: domain.Domain_Error
+		if solo {
+			result, rok, re := lease_next(&fx.svc, inst_auth(id), {})
+			lease, pack, granted, err = result.lease, result.pack_json, rok && result.status == "granted", re
+		} else {
+			result, rok, re := lease_claim(&fx.svc, inst_auth(id), {task_id=task.task_id})
+			lease, pack, granted, err = result.lease, result.pack_json, rok && result.status == "granted", re
+		}
+		testing.expect(t, granted && err.code == .None, err.message)
+		if granted {
+			current, _, _ := iface.agent_get_instance(&fx.agents, id)
+			testing.expect(t, current.provider == actual.provider && current.provider_profile == actual.provider_profile && current.model == actual.model && current.run_count == inst.run_count && current.runtime_status == "running", "inline claim never changes the running process tuple/generation")
+			testing.expect(t, len(log.cmds) == 0, "inline claim emits no restart/wake/stop")
+			shared_fleet_expect_recorded_runtime(t, fx, chain, task, lease, current, actual, pack)
+			included, ce := iface.fleet_scope_get(&fx.bridges, current)
+			testing.expect(t, ce.code == .None && included, "eligible manual caller promotes transactionally")
+			if solo do testing.expect(t, get_task(fx, string(task.task_id)).requires_user_approval, "solo review gate remains required")
+			ticket, te := agent.start_begin(&log.service, {kind=.Internal_User,user_id="u1"}, id, {if_live=.Relaunch})
+			testing.expect_value(t, te.code, domain.Error_Code.None)
+			if te.code == .None {
+				testing.expect(t, ticket.instance.provider == desired.provider && ticket.instance.provider_profile == desired.provider_profile && ticket.instance.model == desired.model, "saved policy is observed at the next real launch")
+				agent.start_cancel(&log.service, &ticket); agent.start_ticket_destroy(&ticket)
+			}
+		}
+		delete(desired.model)
+		lease_fixture_close(fx, log)
+	}
+}
+
+@(test)
+test_shared_fleet_excluded_bot_action_claims_ignore_conflicting_fleet_runtime :: proc(t: ^testing.T) {
+	for origin in ([]string{"bot", "action"}) {
+		for inline in ([]bool{false, true}) {
+			tag := strings.concatenate({"shared_excluded_", origin, "_inline" if inline else "_wake"}, context.temp_allocator)
+			fx, log, ok := lease_fixture(t, tag)
+			if !ok {lease_fixture_close(fx, log); continue}
+			chain := seed_live_chain(t, fx, "shared_excluded")
+			actual, desired := shared_fleet_claim_policies(t, log)
+			task := publish_task(t, fx, chain, "shared_excluded_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+			seed_fleet(fx, chain, "agt_w")
+			rows, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, chain.chain_id, "u1")
+			rows[0].provider, rows[0].provider_profile, rows[0].model = "claude", "claude", "claude-sonnet-5-5"
+			_, _ = iface.taskchain_upsert_fleet(&fx.repo, rows[0])
+			inst := seed_instance(fx, chain, "excluded_claimant", "agt_w", "br_1", "running" if inline else "stopped")
+			inst.provider, inst.provider_profile, inst.model = actual.provider, actual.provider_profile, actual.model
+			inst, _, _ = iface.agent_save_instance(&fx.agents, inst)
+			testing.expect_value(t, iface.fleet_scope_set(&fx.bridges, inst, "excluded").code, domain.Error_Code.None)
+			if origin == "bot" {
+				testing.expect(t, sqlite.exec(&fx.conn, "INSERT INTO bots(bot_id,owner_user_id,agent_id,agent_instance_id,created_at,updated_at) VALUES('shared_bot','u1','agt_w','excluded_claimant','now','now');"))
+			} else {
+				testing.expect(t, sqlite.exec(&fx.conn, "INSERT INTO actions(action_id,owner_user_id,prompt_text,target_kind,created_at,updated_at) VALUES('shared_action','u1','p','agent','now','now'); INSERT INTO action_runs(run_id,action_id,trigger_id,owner_user_id,occurrence_key,event_type,state,target_instance_id,created_at) VALUES('shared_run','shared_action','trigger','u1','occurrence','test','queued','excluded_claimant','now');"))
+			}
+			s := agent.fleet_service(&log.service)
+			snapshot, _, se := fleet.save(&s, "u1", "br_1", {default_runtime=desired})
+			testing.expect_value(t, se.code, domain.Error_Code.None); domain.fleet_settings_destroy(snapshot)
+			_, unauthorized, ue := lease_claim(&fx.svc, inst_auth("inst_coord"), {task_id=task.task_id})
+			testing.expect(t, !unauthorized && ue.code == .Forbidden, "Fleet scope does not weaken durable-identity claim authorization")
+			wake_log_reset(log)
+			auth := inst_auth("excluded_claimant") if inline else inst_auth("inst_coord")
+			result, granted, ge := lease_claim(&fx.svc, auth, {task_id=task.task_id,instance_id="excluded_claimant"})
+			testing.expect(t, granted && ge.code == .None, ge.message)
+			if granted {
+				current, _, _ := iface.agent_get_instance(&fx.agents, inst.agent_instance_id)
+				testing.expect(t, current.provider == actual.provider && current.provider_profile == actual.provider_profile && current.model == actual.model, "neither shared nor legacy chain policy replaces excluded runtime")
+				scope, ce := iface.fleet_scope_classify(&fx.bridges, current)
+				testing.expect(t, ce.code == .None && scope == .Excluded)
+				shared_fleet_expect_recorded_runtime(t, fx, chain, task, result.lease, current, actual, result.pack_json)
+				if inline {
+					testing.expect(t, len(log.cmds) == 0 && current.run_count == inst.run_count, "excluded inline claim keeps its process")
+				} else {
+					testing.expect(t, current.run_count == inst.run_count + 1 && wake_log_has_run(log, inst.agent_instance_id), "excluded wake retains its existing launch permission")
+					for cmd in log.cmds do testing.expect(t, !strings.contains(cmd.body_json, desired.model) && !strings.contains(cmd.body_json, "claude-sonnet-5-5"), "emitted launch uses only actual excluded runtime")
+				}
+			}
+			delete(desired.model)
+			lease_fixture_close(fx, log)
+		}
 	}
 }
