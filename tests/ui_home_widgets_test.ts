@@ -127,7 +127,13 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     assert.ok(codex); await act(async () => codex.click());
     assert.match(get('home-fleet-default-mock-bridge-0-model').textContent!, /gpt-6.1-sol/);
     await click('home-fleet-expand-mock-bridge-1');
-    assert.match(doc.getElementById('home-fleet-overrides-mock-bridge-1')!.textContent!, /No overrides/);
+    const secondBridgeToggle = get('home-fleet-expand-mock-bridge-1');
+    const secondBridgePanel = doc.getElementById(secondBridgeToggle.getAttribute('aria-controls')!);
+    assert.ok(secondBridgePanel, 'bridge toggle controls its complete disclosure panel');
+    assert.equal(secondBridgeToggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(secondBridgePanel.getAttribute('aria-hidden'), 'false');
+    assert.equal(secondBridgePanel.hasAttribute('inert'), false);
+    assert.match(secondBridgePanel.textContent!, /No overrides/);
     assert.equal(get('home-widget-chains').querySelectorAll('article').length, 3);
     assert.match(get('home-widget-chains').textContent!, /7 active/);
     assert.match(get('home-widget-chains').querySelector('article')!.textContent!, /Running/);
