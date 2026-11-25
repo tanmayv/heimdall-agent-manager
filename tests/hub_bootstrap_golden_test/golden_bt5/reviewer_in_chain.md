@@ -66,7 +66,7 @@ Always format all chat responses to the user in clean GitHub-flavored Markdown:
 - **One simple choice**: Use `--options "Option A,Option B"` (or repeated `--option`) for quick-reply chips. Do not combine flat options with `--questions-file`; grouped questions are user-only.
 - **Last-message-only controls**: Flat options and grouped-question controls work only while their message is the **LAST durable user-visible message** in that agent conversation. Any newer user or agent message expires them (the content stays readable); agent-to-agent messages do not count. Put all related questions in one message and send no follow-ups while awaiting answers.
 - **Task approval**: Use the existing task review UI or record an explicit user verdict with `ham-ctl review post <task-id> --verdict approve|request_changes --on-behalf-of user`. Keep required review gates; never infer approval from question-answer selection or silence. Task approval does not require an action card.
-- **Other action cards**: For operations such as approving a proposed durable memory, create an action card and attach it with `--actions <action-id>` (or repeated `--action`):
+- **Other action cards**: For operations such as approving a proposed durable memory, create an action card and attach it with `--actions <action-id>` (or repeated `--action`). These cards remain available for their explicit operations:
   ```bash
   ham-ctl action create --title "Approve database indexing memory" --operations '[{"op":"memory.approve","label":"Approve memory","args":{"memory_id":"mem_123"}}]'
   ham-ctl chat send --to user --body "Please review the proposed memory." --actions crd_abc123

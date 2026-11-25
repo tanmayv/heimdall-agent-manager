@@ -101,7 +101,7 @@ The Hub renders the chain summary from your curated notes plus mechanical sectio
 
 The rendered summary is capped at 60 lines, filled in this order: 1. the title line; 2. up to the first 20 non-blank lines of your notes (always rendered); 3. dead ends; 4. further note lines, when room is left; 5. tasks.
 
-When dead ends do not all fit, agents see the first ones plus a `- [+N more dead ends not shown …]` pointer, and the Hub sends `summary_overflow` once per overflow episode (again only after the summary has fit and then overflows anew). Short notes leave room for more dead ends. Nothing is lost: every dead end stays in its task's handoff facet (`task fetch <task-id> facet:<task-id>:<attempt>:handoff`).
+When dead ends do not all fit, agents see the first ones plus a `- [+N more dead ends not shown …]` pointer, and the Hub sends `summary_overflow` once for that overflow episode. It does not repeat on later rebuilds or sets; it fires again only after the summary has fit and then overflows anew. Short notes leave room for more dead ends. Nothing is lost: every dead end stays in its task's handoff facet (`task fetch <task-id> facet:<task-id>:<attempt>:handoff`).
 ```bash
 ./bin/ham-ctl task-chain summary set --stdin <<'EOF'
 Conventions: tests with `pytest -q`; never edit legacy/.
@@ -211,4 +211,4 @@ ham-ctl task cancel <task-id>
 
 ## Event inbox and migration notices
 
-The full rules are in the bootstrap file's section of this name. Coordinators handle review requests, human blocks, merge conflicts and finished batches with the §5 controls and the required user gates (§6).
+The full rules are in the section of this name in your bootstrap file (`CLAUDE.md` / `AGENTS.md`). Coordinators handle review requests, human blocks, merge conflicts and finished batches with the §5 controls and the required user gates (§6).
