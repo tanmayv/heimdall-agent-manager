@@ -26,7 +26,7 @@ function TaskChainCard({ chain }: { chain: ChainListItem }) {
   // this same detail cache; chain changes invalidate it through existing tags.
   const detail = useFetchTaskChainDetailQuery({ chainId: chain.chainId });
   const record = detail.currentData?.chain;
-  const unavailable = detail.isError || (detail.isSuccess && !record);
+  const unavailable = detail.isError || (detail.isSuccess && (!detail.currentData?.hasCompleteSnapshot || record?.chainId !== chain.chainId));
   const counts = record && !unavailable ? chainProgress(record.tasks) : null;
   const review = chain.hasUserValidation;
   const coordinatorId = record ? coordinatorFromChainDetail(record) : chain.coordinatorAgentInstanceId;

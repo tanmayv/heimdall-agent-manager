@@ -744,7 +744,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
               chain.tasks = await decryptTaskList(chain.tasks, activeKey);
             }
           }
-          return { data: { chain } };
+          // Partial detail consumers may still resolve a coordinator, but Home
+          // must not interpret omitted collections as confirmed empty snapshots.
+          const hasCompleteSnapshot = Array.isArray(data.tasks) && Array.isArray(data.members);
+          return { data: { chain, hasCompleteSnapshot } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }

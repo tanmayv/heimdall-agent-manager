@@ -49,9 +49,22 @@ async function withWidget(run: (h: any) => Promise<void>) {
     }
     return new Response(JSON.stringify(status < 400 ? { data } : { error: { message: 'Unavailable' } }), { status, headers: { 'Content-Type': 'application/json' } });
   };
-  const settle = async () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)); });
   const get = (id: string) => win.document.querySelector(`[data-debug-id="${id}"]`) as HTMLElement;
   const text = () => get('home-widget-chains').textContent || '';
+  const settle = async () => {
+    // List completion mounts card queries in the next React commit. Wait for
+    // those actual query/render states, rather than one timed act boundary.
+    let stable = 0;
+    for (let i = 0; i < 200; i++) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+      const pending = Object.entries(hStoreQueries()).some(([key, value]: any) => /^(fetchHomeTaskChains|fetchTaskChainDetail|getHomeFleet)\(/.test(key) && value?.status === 'pending');
+      const loading = !get('home-widget-chains') || /Loading (ticket progress|task chains)/.test(text());
+      stable = !pending && !loading ? stable + 1 : 0;
+      if (stable >= 2) return;
+    }
+    assert.fail('Widget queries did not settle: ' + text());
+  };
+  const hStoreQueries = () => store.getState()[heimdallApi.reducerPath]?.queries || {};
   const render = async () => { await act(async () => root.render(React.createElement(Provider, { store }, React.createElement(TaskChainsWidget)))); await settle(); };
   const click = async (id: string) => { assert.ok(get(id), id); await act(async () => get(id).click()); await settle(); };
   const invalidate = async () => { await act(async () => store.dispatch(heimdallApi.util.invalidateTags([{ type: 'ChainList', id: 'ALL' }]))); await settle(); };
@@ -128,6 +141,33 @@ test('Live widget: chain-addressed native links resolve membership and follow co
     await h.act(async () => h.ws.flushQueuedInvalidations()); await h.settle();
     assert.match(h.text(), /Replacement/); assert.equal(h.get('home-chain-open-a').getAttribute('href'), href);
     assert.doesNotMatch(href, /coord|replacement/);
+  });
+});
+
+test('Live widget: incomplete collections remain unavailable; explicit empty arrays prove a zero-task chain', async () => {
+  await withWidget(async (h) => {
+    await h.render();
+    const malformed = [
+      { chain_id: 'a', members: [] },
+      { chain_id: 'a', tasks: [] },
+      { chain_id: 'a', members: [], tasks: null },
+      { chain_id: 'a', tasks: [], members: null },
+      { chain_id: 'a' },
+      { chain_id: 'wrong-chain', tasks: [], members: [] },
+    ];
+    for (const response of malformed) {
+      h.state.details.a = response;
+      await h.act(async () => h.store.dispatch(h.heimdallApi.util.invalidateTags([{ type: 'Chain', id: 'a' }])));
+      await h.settle();
+      assert.match(h.text(), /progress and coordinator unavailable/, JSON.stringify(response));
+      assert.doesNotMatch(h.text(), /0 of 0/);
+      assert.ok(h.get('home-chain-retry-a'));
+      assert.equal(h.get('home-chain-open-a').getAttribute('href'), '#/conversations/chain:a');
+    }
+    h.state.details.a = { chain_id: 'a', tasks: [], members: [] };
+    await h.click('home-chain-retry-a');
+    assert.match(h.text(), /0 of 0 tickets done/);
+    assert.equal(h.get('home-chain-open-a').getAttribute('href'), '#/chains/a');
   });
 });
 

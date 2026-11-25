@@ -70,7 +70,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
       chain_id: 'chain-' + index, title: 'Chain ' + index, status: index === 8 ? 'completed' : index === 7 ? 'archived' : 'active',
       updated_at: '2026-11-' + (10 + index), task_count: 4, completed_task_count: 1,
     }));
-    else if (/\/task-chains\/chain-\d/.test(url)) data = { chain_id: 'chain-1', tasks: [{ task_id: 'a', state: 'done' }, { task_id: 'b', state: 'in_review' }, { task_id: 'c', state: 'in_progress' }, { task_id: 'd', state: 'ready' }] };
+    else if (/\/task-chains\/chain-\d/.test(url)) data = { chain_id: url.match(/\/task-chains\/(chain-\d+)/)![1], members: [], tasks: [{ task_id: 'a', state: 'done' }, { task_id: 'b', state: 'in_review' }, { task_id: 'c', state: 'in_progress' }, { task_id: 'd', state: 'ready' }] };
     const text = JSON.stringify({ data });
     return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => JSON.parse(text), text: async () => text } as any;
   };
