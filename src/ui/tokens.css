@@ -52,6 +52,12 @@
    * colour-vision deficiency. Branding is gold; status language is unchanged. */
   --color-info: #7cceff;
 
+  /* Activity uses one info-hue ramp; status colors remain reserved for status. */
+  --color-activity-0: #252525;
+  --color-activity-1: #334650;
+  --color-activity-2: #46687d;
+  --color-activity-3: #5c92b3;
+
   --color-focus-ring: var(--color-accent);
 
   /* Soft tint fills — the `emphasis="soft"` surface for Badge/StatusPill/Alert.
