@@ -78,7 +78,7 @@ Rate your confidence before relying on an assumption, handing work off or declar
 
 ## Skills (load on demand)
 Skills are `SKILL.md` files under your provider's skills directory, relative to your run directory (the directory holding this file): `.claude/skills`, `.codex/skills` or `.agents/skills`. Load a skill at the moment named below or by a rule above; if your harness has no skill tool, read `<skills dir>/<name>/SKILL.md` directly.
-- `ham-ctl-reference`: before running a ham-ctl command group for the first time, or after a usage error.
+- `ham-ctl-reference`: when you need a flag or valid value you do not know, or after a usage error.
 - `coordinator-task-management`, `worker-task-management`, `chain-events-and-claims`, `heimdall-ctl-communication`, `shell-sessions`, `action-cards`: at the triggers above.
 - `memory-management-workflow`: before proposing a durable memory.
 - `search-command`: before searching the Hub.

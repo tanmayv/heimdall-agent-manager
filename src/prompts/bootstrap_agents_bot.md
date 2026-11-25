@@ -56,7 +56,7 @@ Skills are `SKILL.md` files under your provider's skills directory, relative to 
 - `chain-events-and-claims`: on an `[events]` nudge.
 - `shell-sessions`: before backgrounding a run, starting or stopping a `serve` session, or reading session logs.
 - `heimdall-ctl-communication`: before messaging another agent.
-- `ham-ctl-reference`: before running a ham-ctl command group for the first time, or after a usage error.
+- `ham-ctl-reference`: when you need a flag or valid value you do not know, or after a usage error.
 - `coordinator-task-management`, `worker-task-management`: at the coordinator, worker and reviewer rules above.
 - `memory-management-workflow`: before proposing a durable memory.
 - `search-command`: before searching the Hub.
