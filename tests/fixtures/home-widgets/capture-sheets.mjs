@@ -35,6 +35,11 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sel = id => `[data-debug-id="${id}"]`;
 const el = id => `document.querySelector(${JSON.stringify(sel(id))})`;
 const click = async id => { await evaluate(`${el(id)}.focus({preventScroll:true}); ${el(id)}.click()`); await wait(350); };
+const expand = async target => {
+  const id = 'home-fleet-expand-mock-bridge-0';
+  if (await evaluate(`${el(id)}.getAttribute('aria-expanded')`) !== String(target)) await click(id);
+  assert.equal(await evaluate(`${el(id)}.getAttribute('aria-expanded')`), String(target), 'required disclosure state');
+};
 const key = async (key, code, virtualKey) => {
   await call('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: virtualKey, ...(key === 'Enter' ? { text: '\r' } : {}) });
   await call('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: virtualKey });
@@ -113,16 +118,16 @@ try {
     if (narrow) await touch('[role=listbox] [role=option]:last-child'); else await choose('profile-model-39');
     assert.match(await evaluate(`${el(base + '-model')}.textContent`), /profile-model-39/);
     report.checks.push('default provider/profile identity and model reset', 'default model long-list selection', ...(narrow ? ['native touch selection'] : []));
-    await click('home-fleet-expand-mock-bridge-0');
+    await expand(true);
     for (const suffix of ['agent', 'provider', 'model']) {
       const id = 'home-fleet-override-mock-bridge-0-mock-worker-' + suffix;
       await click(id); await inspect(narrow, suffix === 'agent' ? 'override agent' : `override ${suffix}`);
       await escape(); assert.equal(await evaluate('document.activeElement.dataset.debugId'), id);
     }
     await click('home-fleet-override-mock-bridge-0-mock-worker-model');
-    await click('home-fleet-expand-mock-bridge-0'); await clean();
+    await expand(false); await clean();
     assert.equal(await evaluate('document.activeElement.dataset.debugId'), 'home-fleet-expand-mock-bridge-0');
-    await click(base + '-model'); await click('home-fleet-expand-mock-bridge-0'); await clean();
+    await expand(true); await click(base + '-model'); await expand(false); await clean();
     assert.match(await evaluate(`${el(base + '-model')}.textContent`), /profile-model-39/);
     report.checks.push('all override categories', 'Escape focus/no mutation', 'collapse clears default and override overlays; draft retained');
     await click(base + '-provider'); await metrics(narrow ? 768 : 767); await wait(400); await clean();
