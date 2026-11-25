@@ -1,5 +1,5 @@
-import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import React, { Suspense, useCallback, useMemo } from 'react';
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import {
   useFetchAgentInstanceQuery,
 } from '../../api/endpoints/agents';

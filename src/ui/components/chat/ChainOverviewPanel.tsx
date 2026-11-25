@@ -1,5 +1,5 @@
-import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import { useSelector } from 'react-redux';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { VaultText } from '../vault/VaultText';

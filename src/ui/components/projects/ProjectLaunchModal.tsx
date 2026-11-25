@@ -1,5 +1,5 @@
-import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 import { useState, useMemo, useEffect } from 'react';
+import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 
 import { Button, Checkbox, Icon, Modal, Select } from '@ui';
 import { VaultText, useDecryptedText } from '../vault/VaultText';

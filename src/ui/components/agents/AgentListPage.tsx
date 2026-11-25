@@ -1,4 +1,3 @@
-import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 /**
  * AgentListPage — `/agents`.
  * ------------------------------------------------------------------
@@ -21,6 +20,7 @@ import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
  *     refresh, the same pattern Projects uses.
  */
 import React from 'react';
+import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 import {
   ActionButton,
   Alert,

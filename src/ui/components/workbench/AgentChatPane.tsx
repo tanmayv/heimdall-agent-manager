@@ -1,4 +1,3 @@
-import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 import { FloatingComposerDock, FloatingComposerForm, FloatingComposerCard } from '../chat/FloatingComposerDock';
 import { PlainMessageBody } from '../chat/PlainMessageBody';
 import { formatMessageTimestamp } from '../chat/formatMessageTimestamp';
@@ -16,6 +15,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import { desktopUpdateFrozen, desktopUpdatePreparation } from '../../utils/desktopUpdatePreparation';
 import { writeClientStorageChecked, writeComposerDraftChecked } from '../../utils/clientPersistence';
@@ -792,6 +792,14 @@ export function AgentChatPane({
       };
     }
     return configurationIntent.current.key;
+  }
+  function finishConfigurationIntent(result: LifecycleResult) {
+    // Only ambiguous delivery may replay this intent. Acceptance identifies the
+    // operation; applying again after it fails is a new attempt, even if the
+    // destination never committed and the configuration revision is unchanged.
+    if (result.status !== 'failed' || (result.httpStatus !== undefined && result.httpStatus < 500)) {
+      configurationIntent.current = null;
+    }
   }
   const lifecycle = useAgentLifecycle({ inline: result => { if (result) setReconfigStatus(result.message); } });
 
@@ -2314,8 +2322,10 @@ export function AgentChatPane({
         idempotency_key: operation.idempotency_key,
         expected_operation_revision: operation.revision,
       });
-      if (result.status === 'accepted') setAcceptedOperation(result.data);
-      if (result.status === 'accepted') setReconfigStatus('');
+      if (result.status === 'accepted') {
+        setAcceptedOperation(result.data);
+        setReconfigStatus('');
+      }
       return;
     }
     const nextProvider = provider || providerOptions[0] || '';
@@ -2342,8 +2352,11 @@ export function AgentChatPane({
         expected_revision: Number(instance?.configuration_revision || 0),
       }),
     });
-    if (result.status === 'accepted') setAcceptedOperation(result.data);
-    if (result.status === 'accepted') setReconfigStatus('');
+    finishConfigurationIntent(result);
+    if (result.status === 'accepted') {
+      setAcceptedOperation(result.data);
+      setReconfigStatus('');
+    }
   }
 
   async function togglePermissionBypass(bypass: boolean) {
@@ -2356,8 +2369,11 @@ export function AgentChatPane({
     const result = await lifecycle.reconfigure({
       ...request, idempotency_key: configurationIntentKey(request),
     });
-    if (result.status === 'accepted') setAcceptedOperation(result.data);
-    if (result.status === 'accepted') setReconfigStatus('');
+    finishConfigurationIntent(result);
+    if (result.status === 'accepted') {
+      setAcceptedOperation(result.data);
+      setReconfigStatus('');
+    }
   }
 
   async function forceStopRuntime() {

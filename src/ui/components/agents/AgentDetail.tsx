@@ -1,4 +1,3 @@
-import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 /**
  * AgentDetail — the agent view's guts, rendered as a full page AND as the
  * two-pane right-hand pane. Modeled after ProjectDetail.
@@ -19,6 +18,7 @@ import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLif
  * Project→Agent link; the Agent→Memory link is intentionally preserved.
  */
 import React from 'react';
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import {
   ActionButton,
   Alert,

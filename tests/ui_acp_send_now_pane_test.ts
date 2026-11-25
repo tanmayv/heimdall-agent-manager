@@ -37,7 +37,8 @@ const agentRow = (id: string, sec: number, inputIds: string[] = []) => ({
   message_type: 'text', message_status: 'complete', metadata: inputIds.length ? { acp: { input_ids: inputIds } } : {}, sender_agent_instance_id: 'worker',
 });
 
-type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: string; body: any }>; sendNowReply: { status: number; body: any }; gets?: string[] };
+type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: string; body: any }>; sendNowReply: { status: number; body: any }; gets?: string[];
+  configuration?: { operations: any[]; response?: { status: number; body: any } | 'network' } };
 
 async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/#/conversations/worker', pretendToBeVisual: true });
@@ -70,6 +71,16 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
     const url = new URL(String(input), 'http://localhost'); const path = url.pathname;
     const method = String(init.method || 'GET');
     if (method === 'GET') hub.gets?.push(path);
+    if (method === 'POST' && path.endsWith('/reconfigurations') && hub.configuration) {
+      const body = JSON.parse(init.body);
+      hub.posts.push({ path, body });
+      if (hub.configuration.response === 'network') throw new TypeError('Network connection lost');
+      if (hub.configuration.response) return respond(hub.configuration.response.status, hub.configuration.response.body);
+      const operation = { operation_id: `operation-${hub.posts.length}`, idempotency_key: body.idempotency_key,
+        phase: 'prepared', revision: 1, source: {}, destination: { ...body }, source_stopped: false, destination_committed: false };
+      hub.configuration.operations = [operation];
+      return respond(202, { data: operation });
+    }
     if (method === 'POST' && path.endsWith('/send-now')) { hub.posts.push({ path, body: JSON.parse(init.body) }); return respond(hub.sendNowReply.status, hub.sendNowReply.body); }
     if (method === 'POST' && path.endsWith('/messages')) {
       const body = JSON.parse(init.body);
@@ -84,10 +95,13 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
     else if (path.endsWith('/send-now')) data = { conversation_id: 'workerchat', runtime_transport: hub.transport, launch_epoch: 'ep1', steering_supported: false,
       batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
     else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b',
-      runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1' };
-    else if (path.endsWith('/reconfigurations')) data = { operations: [] };
-    else if (path.endsWith('/provider-status')) data = { providers: [{ provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }] }] };
-    else if (path.endsWith('/bridges')) data = [{ bridge_id: 'b', status: 'online', runtime_connected: true }];
+      runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
+    else if (path.endsWith('/reconfigurations')) data = { operations: hub.configuration?.operations || [] };
+    else if (path.endsWith('/provider-status')) data = { providers: [
+      { provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }] },
+      ...(hub.configuration ? [{ provider: 'codex', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'smart', state: 'active' }] }] : []),
+    ] };
+    else if (path.endsWith('/bridges')) data = [{ bridge_id: 'b', status: 'online', runtime_connected: true, reconfiguration_supported: Boolean(hub.configuration) }];
     else if (path.endsWith('/agents/live') || path.endsWith('/tasks')) data = [];
     else if (path.endsWith('/attention')) data = { items: [] };
     return respond(200, { data });
@@ -115,6 +129,57 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
     for (const frame of frames) clearTimeout(frame);
     dom.window.close(); for (const [name, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete (globalThis as any)[name]; }
   }
+}
+
+async function stageConfiguration({ q, wait }: any) {
+  await wait(() => Boolean(q('conversation-runtime-menu-btn')), 'runtime settings available');
+  await act(async () => q('conversation-runtime-menu-btn')!.click());
+  await wait(() => Boolean(q('conversation-provider-option-codex')) && !q('conversation-provider-option-codex')!.disabled, 'provider choices loaded');
+  await act(async () => q('conversation-provider-option-codex')!.click());
+  await wait(() => Boolean(q('conversation-runtime-modal-apply-btn')) && !q('conversation-runtime-modal-apply-btn')!.disabled, 'staged change can apply');
+}
+
+test('AgentChatPane Apply starts a new intent after an accepted operation fails before commit', async () => {
+  const hub: Hub = { transport: 'acp', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] } };
+  await fixture(hub, async (env) => {
+    const { q, wait, store } = env;
+    await stageConfiguration(env);
+    await act(async () => q('conversation-runtime-modal-apply-btn')!.click());
+    await wait(() => hub.posts.length === 1 && hub.configuration!.operations.length === 1, 'first operation accepted');
+    const operation = hub.configuration!.operations[0];
+    hub.configuration!.operations = [{ ...operation, phase: 'failed', revision: 2, failure_code: 'preflight_failed', failure_message: 'Preflight failed' }];
+    await act(async () => { store.dispatch(heimdallApi.util.invalidateTags([{ type: 'InstanceReconfigurations', id: 'worker' }])); });
+    await wait(() => Boolean(q('conversation-reconfigure-apply-btn')) && !q('conversation-reconfigure-apply-btn')!.disabled, 'pre-commit failure permits applying again');
+    await act(async () => q('conversation-reconfigure-apply-btn')!.click());
+    await wait(() => hub.posts.length === 2, 'second attempt posted');
+    const [first, second] = hub.posts.map(post => post.body);
+    assert.equal(first.expected_revision, 7);
+    assert.equal(second.expected_revision, 7, 'no destination commit changed the revision');
+    assert.notEqual(first.idempotency_key, second.idempotency_key, 'accepted operation retires its intent key');
+    assert.deepEqual({ ...first, idempotency_key: '' }, { ...second, idempotency_key: '' }, 'same destination is a new explicit attempt');
+  });
+});
+
+for (const [failure, reuse] of [['network', true], [503, true], [409, false]] as const) {
+  test(`AgentChatPane Apply ${failure} failure ${reuse ? 'retains uncertain' : 'retires rejected'} intent key`, async () => {
+    const hub: Hub = { transport: 'acp', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [],
+      response: failure === 'network' ? 'network' : { status: failure, body: { error: { code: 'conflict', message: 'Configuration request failed' } } },
+    } };
+    await fixture(hub, async (env) => {
+      const { q, wait } = env;
+      await stageConfiguration(env);
+      await act(async () => q('conversation-runtime-modal-apply-btn')!.click());
+      await wait(() => hub.posts.length === 1 && Boolean(q('conversation-reconfigure-apply-btn')) && !q('conversation-reconfigure-apply-btn')!.disabled, 'failed request can be explicitly retried');
+      assert.equal(hub.posts.length, 1, 'no automatic retry');
+      hub.configuration!.response = undefined;
+      await act(async () => q('conversation-reconfigure-apply-btn')!.click());
+      await wait(() => hub.posts.length === 2, 'user retry posted');
+      const [first, second] = hub.posts.map(post => post.body);
+      assert.equal(first.expected_revision, 7);
+      assert.equal(second.expected_revision, 7);
+      assert.equal(first.idempotency_key === second.idempotency_key, reuse);
+    });
+  });
 }
 
 test('ACP pane: turn-held rows wait above the composer; Send now posts one FIFO snapshot; delivery moves each row in once', async () => {
