@@ -286,6 +286,7 @@ function renderAuxTabBody({
           daemonUrl=""
           clientToken="v1"
           embedded={true}
+          onOpenArtifact={(artifactId) => onOpenTab({ type: 'artifact', artifactId })}
         />
       );
     default:
