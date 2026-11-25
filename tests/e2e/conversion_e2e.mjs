@@ -306,9 +306,11 @@ const snapshot = (L) => ({
   config: fs.existsSync(path.join(L.state, 'config.toml')) ? sha(path.join(L.state, 'config.toml')) : '',
 });
 const runtimePid = (L) => readJson(path.join(L.state, 'runtime-status.json'))?.pid || 0;
-const lastOp = (L) => {
-  try { const lines = fs.readFileSync(path.join(L.data, 'supervisor', 'journal', 'ops.jsonl'), 'utf8').trim().split('\n'); return lines.map((l) => JSON.parse(l)); } catch { return []; }
+const readOps = (journalDir) => {
+  try { const lines = fs.readFileSync(path.join(journalDir, 'ops.jsonl'), 'utf8').trim().split('\n'); return lines.map((l) => JSON.parse(l)); } catch { return []; }
 };
+
+const lastOp = (L) => readOps(path.join(L.data, 'supervisor', 'journal'));
 
 async function assertConverted(acct, L, what) {
   await until(() => !fs.existsSync(path.join(L.data, 'conversion.json')) && fs.existsSync(path.join(L.data, 'instance.json')), `${what}: conversion finished`, 600_000, 1000);
@@ -463,7 +465,11 @@ async function main() {
       r = spawnSync('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, encoding: 'utf8', timeout: 900_000, input: '' });
     }
     if (r.status !== 0) {
-      const states = lastOp(L5).map(({ state, sub, error, note }) => ({ state, sub, error, note }));
+      const active = lastOp(L5);
+      const archived = fs.readdirSync(L5.data)
+        .filter((name) => name.startsWith('conversion-failed-'))
+        .flatMap((name) => readOps(path.join(L5.data, name, 'journal')));
+      const states = (active.length ? active : archived).map(({ state, sub, error, note }) => ({ state, sub, error, note }));
       console.log('    P5 journal transitions:', JSON.stringify(states));
       for (const dir of [L5.data, L5.state, path.join(L5.data, 'logs')]) {
         if (fs.existsSync(dir)) console.log('    P5 files:', dir, fs.readdirSync(dir).join(', '));
