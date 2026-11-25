@@ -28,10 +28,14 @@ fleet_test_service :: proc(t:^testing.T,fx:^Fixture,log:^Wake_Log,p:^Fleet_Probe
 	// Use the real owner repository; never weaken the production foreign key.
 	impl:sqlite.User_Repo_SQLite
 	users:=sqlite.new_user_repository(&impl,&fx.conn)
-	_,saved,se:=iface.user_save(&users,{user_id="u1",name="Fleet fixture owner",status=.Active})
-	if !testing.expectf(t,saved && se.code==.None,"Fleet fixture user save: %v %s",se.code,se.message) do return {},false
 	owner,found,oe:=iface.user_get_by_id(&users,"u1")
-	if !testing.expectf(t,found && oe.code==.None && owner.user_id=="u1","Fleet fixture owner lookup: %v %s",oe.code,oe.message) do return {},false
+	if !found {
+		if !testing.expectf(t,oe.code==.Not_Found,"Fleet fixture owner initial lookup: %v %s",oe.code,oe.message) do return {},false
+		_,saved,se:=iface.user_save(&users,{user_id="u1",name="Fleet fixture owner",status=.Active})
+		if !testing.expectf(t,saved && se.code==.None,"Fleet fixture user save: %v %s",se.code,se.message) do return {},false
+		owner,found,oe=iface.user_get_by_id(&users,"u1")
+	}
+	if !testing.expectf(t,found && oe.code==.None && owner.user_id=="u1" && owner.status==.Active,"Fleet fixture owner verification: %v %s",oe.code,oe.message) do return {},false
 	p.fx=fx
 	log.service.bridge_command_sink={ctx=p,send_runtime_command=fleet_probe_send}
 	log.service.hooks={ctx=&fx.svc,on_terminal=proc(ctx:rawptr,id:string){on_instance_terminal((^Service)(ctx),id)},launch_context=proc(ctx:rawptr,i:domain.Agent_Instance)->(agent.Start_Lease,bool,domain.Domain_Error){return reconfiguration_launch_context((^Service)(ctx),i)}}
