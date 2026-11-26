@@ -798,6 +798,8 @@ MIGRATION_260_DROP_FLEET_ROLES_OWNER_LEGACY :: #load("migration_variants/260_dro
 
 MIGRATION_261_EXTENSION_VERSION_SYNC :: #load("migrations/261_extension_version_sync_0_5_92.sql", string)
 
+MIGRATION_262_EXTENSION_VERSION_SYNC :: #load("migrations/262_extension_version_sync_0_5_93.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1096,6 +1098,7 @@ migration_order :: [?]string {
 	"259_agent_id_assignment.sql",
 	"260_drop_fleet_roles.sql",
 	"261_extension_version_sync_0_5_92.sql",
+	"262_extension_version_sync_0_5_93.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1663,6 +1666,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "262_extension_version_sync_0_5_93.sql" do return strings.clone(MIGRATION_262_EXTENSION_VERSION_SYNC)
 	if name == "261_extension_version_sync_0_5_92.sql" do return strings.clone(MIGRATION_261_EXTENSION_VERSION_SYNC)
 	if name == "260_drop_fleet_roles.sql" do return strings.clone(MIGRATION_260_DROP_FLEET_ROLES)
 	if name == "259_agent_id_assignment.sql" do return strings.clone(MIGRATION_259_AGENT_ID_ASSIGNMENT)
