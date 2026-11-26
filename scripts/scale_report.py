@@ -157,6 +157,15 @@ def main():
         hdr = ["done tasks", "events", "rebuild_timers ms", "rebuild SELECTs", "boot ms", "boot SELECTs"]
     out.append(table(hdr, rows) + "\n")
 
+    # Rematch storm (first timer tick after boot + 60 s)
+    storms = [(r["label"], x) for r in ([new] + ([old] if old else [])) for x in r.get("boot", []) if x.get("storm_fired", -1) >= 0]
+    if storms:
+        out.append("#### Rematch storm (first timer tick 61 s after boot, one arena)\n")
+        rows = [[lbl, fmt(x["done_tasks"], 0), fmt(x["storm_fired"], 0), fmt(x["storm_ms"], 0),
+                 fmt(x["storm_ms"] / x["storm_fired"], 1) if x["storm_fired"] else "–", fmt(x["storm_rss_mb"], 0),
+                 fmt(x["storm_rss_mb"] / x["storm_fired"], 2) if x["storm_fired"] else "–"] for lbl, x in storms]
+        out.append(table(["run", "done tasks", "timers fired", "tick ms", "ms per timer", "RSS growth MB", "MB per timer"], rows) + "\n")
+
     ov = new.get("lock_profile_overhead_ns")
     if ov:
         out.append(f"Lock profile cost per uncontended lock/unlock ({a}): plain `sync.mutex_lock` {ov['plain']:.1f} ns, "

@@ -71,6 +71,14 @@ Scale_Config :: struct {
 	ops:        int,
 	serial_ops: int,
 	boot_sizes: []int,
+	// Fake-clock seconds each chaos round advances. 0 (default) keeps the load
+	// phase at steady state: any step that adds up to the first Rematch delay
+	// (60 s) fires one Rematch per Ready / In-review task in a single timer pass
+	// (the storm), which the boot phase measures on its own instead.
+	clock_step: int,
+	// Largest boot size that also runs the Rematch storm (memory grows with
+	// chain size x due timers; 100k done tasks can exhaust a 64 GB host).
+	storm_max_done: int,
 	db_dir:     string,
 	out:        string,
 }
@@ -90,6 +98,8 @@ scale_config :: proc() -> Scale_Config {
 		threads    = max(1, scale_env_int("HEIMDALL_SCALE_THREADS", 8)),
 		ops        = scale_env_int("HEIMDALL_SCALE_OPS", 150),
 		serial_ops = scale_env_int("HEIMDALL_SCALE_SERIAL_OPS", 300),
+		clock_step = max(0, scale_env_int("HEIMDALL_SCALE_CLOCK_STEP", 0)),
+		storm_max_done = scale_env_int("HEIMDALL_SCALE_STORM_MAX_DONE", 10000),
 		db_dir     = strings.clone(os.get_env("HEIMDALL_SCALE_DB_DIR", context.temp_allocator)),
 		out        = strings.clone(os.get_env("HEIMDALL_SCALE_OUT", context.temp_allocator)),
 	}
@@ -194,6 +204,7 @@ Scale_World :: struct {
 	instances: [dynamic]Scale_Instance,
 	bridges:   int,
 	offline:   []bool, // bridge offline flags (atomic reads)
+	clock_step: int,   // cfg.clock_step, for the chaos thread
 }
 
 SCALE_BRIDGES :: 4
@@ -202,6 +213,7 @@ scale_open :: proc(t: ^testing.T, cfg: Scale_Config, tag: string) -> (^Scale_Wor
 	w := new(Scale_World)
 	w.bridges = SCALE_BRIDGES
 	w.offline = make([]bool, SCALE_BRIDGES)
+	w.clock_step = cfg.clock_step
 	fx := new(Fixture)
 	path := ":memory:"
 	if cfg.db_dir != "" {
@@ -475,8 +487,8 @@ scale_chaos_proc :: proc(ch: ^Scale_Chaos) {
 		s := scale_disconnect(w, bridge)
 		append(&ch.samples, s)
 		time.sleep(20 * time.Millisecond)
-		// Time passes and timers fire (lease stall, ready_unclaimed, ...).
-		sync.atomic_add(&fx.clock_state.unix_seconds, 30)
+		// Time passes (HEIMDALL_SCALE_CLOCK_STEP) and due timers fire.
+		sync.atomic_add(&fx.clock_state.unix_seconds, i64(w.clock_step))
 		tm := scale_fire_timers(w)
 		append(&ch.samples, tm)
 		// The bridge comes back with its instances alive.
@@ -644,8 +656,8 @@ scale_harness_run :: proc(t: ^testing.T) {
 
 	out: strings.Builder
 	strings.builder_init(&out)
-	fmt.sbprintf(&out, `{{"label":"%s","chains":%d,"tasks_per_chain":%d,"threads":%d,"ops_per_thread":%d,"serial_ops":%d,"db":"%s"`,
-		cfg.label, cfg.chains, cfg.tasks, cfg.threads, cfg.ops, cfg.serial_ops, "file-wal" if cfg.db_dir != "" else "memory")
+	fmt.sbprintf(&out, `{{"label":"%s","chains":%d,"tasks_per_chain":%d,"threads":%d,"ops_per_thread":%d,"serial_ops":%d,"clock_step_s":%d,"db":"%s"`,
+		cfg.label, cfg.chains, cfg.tasks, cfg.threads, cfg.ops, cfg.serial_ops, cfg.clock_step, "file-wal" if cfg.db_dir != "" else "memory")
 
 	// Off-path cost of the lock profile (acceptance: no measurable cost when off).
 	scale_profile_overhead(&out)
@@ -822,9 +834,42 @@ scale_boot :: proc(t: ^testing.T, cfg: Scale_Config, done: int, out: ^strings.Bu
 	armed_boot := timers_armed_count(b)
 	free_all(context.temp_allocator)
 
-	fmt.sbprintf(out, `{{"done_tasks":%s,"events":%s,"leases":%s,"rebuild_timers_ms":%.2f,"rebuild_timers_statements":%d,"rebuild_timers_selects":%d,"rebuild_timers_vm_steps":%d,"timers_armed":%d,"boot_ms":%.2f,"boot_statements":%d,"boot_selects":%d,"boot_vm_steps":%d,"boot_timers_armed":%d}}`,
+	// Rematch storm: boot armed one Rematch per Ready / In-review task at
+	// now + 60 s. Once that passes, the hub's timer thread fires all of them in
+	// one tick, each a full chain match, inside one per-tick arena. Run that
+	// tick here in one scratch arena and read how far RSS grew before it is
+	// freed (what the hub holds at the end of the tick).
+	storm_fired, storm_ms, storm_rss_mb := -1, 0.0, 0.0
+	if done <= cfg.storm_max_done {
+		sync.atomic_add(&w.fx.clock_state.unix_seconds, REMATCH_DELAYS_SECONDS[0] + 1)
+		scratch: Scratch
+		context.allocator = scratch_begin(&scratch)
+		rss0 := scale_rss_bytes()
+		t2 := time.tick_now()
+		storm_fired = fire_due(b, now_ms(&w.fx.clock))
+		storm_ms = f64(time.tick_since(t2)) / 1e6
+		storm_rss_mb = f64(max(scale_rss_bytes(), rss0) - rss0) / (1 << 20)
+		scratch_end(&scratch)
+		context.allocator = runtime.heap_allocator()
+		free_all(context.temp_allocator)
+	}
+
+	fmt.sbprintf(out, `{{"done_tasks":%s,"events":%s,"leases":%s,"rebuild_timers_ms":%.2f,"rebuild_timers_statements":%d,"rebuild_timers_selects":%d,"rebuild_timers_vm_steps":%d,"timers_armed":%d,"boot_ms":%.2f,"boot_statements":%d,"boot_selects":%d,"boot_vm_steps":%d,"boot_timers_armed":%d,"storm_fired":%d,"storm_ms":%.1f,"storm_rss_mb":%.1f}}`,
 		done_rows, events, leases, f64(rebuild_ns) / 1e6, rt.statements, mid.selects - before.selects, mid.vm - before.vm, armed_rebuild,
-		f64(boot_ns) / 1e6, bt.statements, after.selects - mid.selects, after.vm - mid.vm, armed_boot)
-	fmt.printf("scale: boot at %s done tasks: rebuild_timers %.1f ms, boot %.1f ms\n", done_rows, f64(rebuild_ns) / 1e6, f64(boot_ns) / 1e6)
+		f64(boot_ns) / 1e6, bt.statements, after.selects - mid.selects, after.vm - mid.vm, armed_boot, storm_fired, storm_ms, storm_rss_mb)
+	fmt.printf("scale: boot at %s done tasks: rebuild_timers %.1f ms, boot %.1f ms, rematch storm %d timers in %.0f ms (+%.0f MB)\n", done_rows, f64(rebuild_ns) / 1e6, f64(boot_ns) / 1e6, storm_fired, storm_ms, storm_rss_mb)
 	return true
+}
+
+// scale_rss_bytes: VmRSS of this process (Linux /proc/self/status), 0 elsewhere.
+scale_rss_bytes :: proc() -> u64 {
+	data, err := os.read_entire_file_from_path("/proc/self/status", context.temp_allocator)
+	if err != nil do return 0
+	text := string(data)
+	for line in strings.split_lines_iterator(&text) {
+		if !strings.has_prefix(line, "VmRSS:") do continue
+		kb, _ := strconv.parse_u64(strings.trim_space(strings.trim_suffix(strings.trim_space(line[len("VmRSS:"):]), "kB")))
+		return kb * 1024
+	}
+	return 0
 }

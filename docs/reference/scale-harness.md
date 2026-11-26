@@ -33,6 +33,8 @@ Sizes and placement come from the environment:
 | `HEIMDALL_SCALE_THREADS` | 8 | concurrent callers |
 | `HEIMDALL_SCALE_OPS` | 150 | events per caller in the concurrent phase |
 | `HEIMDALL_SCALE_BOOT` | `1000,10000,100000` | Done-task counts for the boot phase |
+| `HEIMDALL_SCALE_CLOCK_STEP` | 0 | fake-clock seconds each chaos round advances (see *Rematch storm*) |
+| `HEIMDALL_SCALE_STORM_MAX_DONE` | 10000 | largest boot size that also runs the Rematch storm |
 | `HEIMDALL_SCALE_DB_DIR` | `~/.cache/heimdall-scale` | database directory (WAL, `synchronous=NORMAL`, as the hub runs); `memory` uses `:memory:` |
 | `HEIMDALL_SCALE_ODIN_FLAGS` | (none) | extra Odin flags, e.g. `-o:speed` |
 
@@ -54,12 +56,25 @@ The full default run takes tens of minutes per commit. A smoke run:
   write statements and SELECT VM steps (from the SQLite telemetry counters) are exact.
 - **Concurrent phase:** N caller threads drive the same loop over their share of the
   instances while a chaos thread repeatedly takes one bridge offline (callers on it go quiet,
-  its instances turn unreachable and hit `on_instance_terminal`), advances the clock, fires
-  due timers, and brings the bridge back (`on_bridge_hello`). Latency percentiles and lock
-  waits come from this phase.
+  its instances turn unreachable and hit `on_instance_terminal`), advances the clock by
+  `HEIMDALL_SCALE_CLOCK_STEP` (default 0), fires due timers, and brings the bridge back
+  (`on_bridge_hello`). Latency percentiles and lock waits come from this phase.
 - **Boot phase:** for each size, 100 chains holding that many Done tasks in total plus 10
   ready and 10 in-review tasks each and the fleet's confirmed leases; then a fresh `Service`
-  (a hub restart) runs `rebuild_timers` alone, and another runs the whole `boot`.
+  (a hub restart) runs `rebuild_timers` alone, and another runs the whole `boot`. Up to
+  `HEIMDALL_SCALE_STORM_MAX_DONE`, the clock then moves 61 s and one `fire_due` pass runs in
+  one scratch arena: the Rematch storm below.
+
+## Rematch storm
+
+`arm_task_timers` arms three Rematch one-shots (60, 180, 600 s) for every Ready and In-review
+task, and `boot` re-arms them for all of them. When the first delay passes, the hub's timer
+thread pops every one in a single tick; each runs `match_chain_in_uow` (a full chain match)
+and everything the tick allocates lives in the thread's temp arena until the tick ends. At
+100 chains x 1,000 tasks (about 30,000 Ready / In-review tasks) that tick grows by roughly
+3 GB a minute and was OOM-killed at 57 GB, so the load phase keeps the clock still by
+default and the boot phase measures the storm on its own (timers fired, tick time, RSS
+growth). `HEIMDALL_SCALE_CLOCK_STEP=30` reproduces it inside the load phase.
 
 A **grant** is any event whose transaction pushed at least one grant (observed as a
 `wake_agent` with a `run[]` entry after commit) or a `lease next` that granted inline. Grants
