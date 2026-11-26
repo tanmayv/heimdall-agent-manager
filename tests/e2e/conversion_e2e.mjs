@@ -468,16 +468,18 @@ async function main() {
       const partitions = 'teamid:8TSXLYJZN3,cdhash:' + cdHash;
       const security = (args) => spawnSync('/usr/bin/security', args, { encoding: 'utf8', timeout: 15_000 });
       // Metadata only. Never use dump-keychain -d or find-generic-password -g/-w.
-      const dump = security(['dump-keychain']);
+      const dump = security(['dump-keychain', fixtureKeychain]);
       const fixtureRecords = (dump.stdout || '').split(/(?=^keychain: )/m).flatMap((entry) => {
         const keychain = entry.match(/^keychain: "([^"]+)"/m)?.[1];
         const service = entry.match(/^\s*"svce"<blob>="(works\.earendil\.heimdall-bridge\.vault-[a-z-]+)"\s*$/m)?.[1];
         const account = entry.match(/^\s*"acct"<blob>="([^"]+)"\s*$/m)?.[1];
         return keychain && service && account ? [{ keychain, service, account }] : [];
       });
-      console.log('    P5 Keychain fixture metadata:', JSON.stringify(fixtureRecords), 'expected account:', L5.bridgeId);
-      expect(dump.status === 0, 'P5: read Keychain metadata via the CI search list (' + (dump.stderr?.trim() || dump.status) + ')');
-      const records = fixtureRecords.filter((record) => record.account === L5.bridgeId);
+      expect(dump.status === 0, 'P5: read disposable Keychain metadata (' + (dump.stderr?.trim() || dump.status) + ')');
+      // Mirror keystore_scope_name_for_hub for the harness's canonical loopback base.
+      const scope = crypto.createHash('sha256')
+        .update(`heimdall-bridge-scope/v1|${hub.base}|${L5.bridgeId}`).digest('hex').slice(0, 32);
+      const records = fixtureRecords.filter((record) => record.account === `${L5.bridgeId}_${scope}`);
       expect(records.length > 0, 'P5: found legacy vault items for the fixture account');
       for (const { keychain, service, account } of records) {
         expect(keychain === fixtureKeychain, 'P5: ' + service + ' is in the disposable CI Keychain (' + keychain + ')');
