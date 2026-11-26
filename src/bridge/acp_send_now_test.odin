@@ -119,6 +119,7 @@ sn_send_now_steers_native_chat_ahead_of_bot_queue :: proc(t: ^testing.T) {
         e := sn_last(f, "msg_urgent")
         testing.expect_value(t, e.state, "queued")
         testing.expect_value(t, e.hold_reason, "turn_active")
+        testing.expect_value(t, t16_writes(f), 1)
         testing.expect(t, sn_batch(f, "snb_native", 1, {"msg_urgent"}))
         if !acp_test_wait(t, &f.f, .Writes, 2) do return
         line := sn_write(f, 1)

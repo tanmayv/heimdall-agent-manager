@@ -135,6 +135,8 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
     }
     if r.d.phase == "prompt" {
         if steer < 0 do return
+        // Keep normal input FIFO behind a next-turn-only entry. Explicit
+        // Send now may move queued native chat ahead of that entry.
         front := r.d.queue[steer]
         // A pending Send now batch anywhere in the queue owns the decision.
         batch := false

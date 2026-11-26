@@ -229,6 +229,11 @@ acp_runtime_reclassify_saved_queue :: proc(r: ^ACP_Runtime) {
     first_bot := -1
     for i := 0; i < len(r.d.queue); {
         input := &r.d.queue[i]
+        // Old bot delivery used "bot" as the nudge sender, not its kind.
+        // Match the exact saved wake, not other untyped legacy notices.
+        if input.kind == "" && input.key == "" && strings.has_prefix(input.id, "notice_") && input.text == BOT_NOTICE {
+            acp_runtime_replace(&input.kind, ACP_BOT_KIND)
+        }
         if input.kind == ACP_BOT_KIND {
             if first_bot >= 0 {
                 // Keep FIFO position, but prefer a stable attempt over a

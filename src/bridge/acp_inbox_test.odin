@@ -112,8 +112,10 @@ t16_acp_bot_burst_waits_for_idle_and_deduplicates :: proc(t: ^testing.T) {
 t16_acp_bot_restore_promotes_and_coalesces_saved_digest :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     f: T4_Runtime_Test; t16_open(&f, "inst_bot_restore")
-    testing.expect(t, t16_input(&f, "notice_legacy_bot", "legacy channel wake", .Digest, "", ACP_BOT_KIND))
-    testing.expect(t, t16_input(&f, "notice_other_bot", "duplicate legacy wake", .Digest, "", ACP_BOT_KIND))
+    // The old PTY nudge call passed "bot" as the sender, not the role.
+    testing.expect(t, t16_input(&f, "notice_100", BOT_NOTICE, .Digest, "", ""))
+    testing.expect(t, t16_input(&f, "notice_101", BOT_NOTICE, .Batch, "", ""))
+    testing.expect(t, t16_input(&f, "notice_102", "ordinary legacy notice", .Digest, "", ""))
     sync.mutex_lock(&f.f.mu); snapshot := strings.clone(f.f.snapshot, runtime.heap_allocator()); sync.mutex_unlock(&f.f.mu)
     defer delete(snapshot, runtime.heap_allocator())
     t16_close(&f)
@@ -127,11 +129,16 @@ t16_acp_bot_restore_promotes_and_coalesces_saved_digest :: proc(t: ^testing.T) {
     sn_do(&next, proc(f: ^T4_Runtime_Test) {
         acp_runtime_merge_saved_queue(&f.r.d)
         acp_runtime_reclassify_saved_queue(f.r)
+        f.r.d.last_notice_turn_ms = acp_rpc_now(f.r.client)
     })
+    if !testing.expect_value(t, len(next.r.d.queue), 2) do return
+    bot := next.r.d.queue[0]
+    testing.expect(t, bot.id == "notice_100" && bot.kind == ACP_BOT_KIND && bot.key == ACP_BOT_KIND && bot.lane == .Steer)
+    testing.expect(t, next.r.d.queue[1].id == "notice_102" && next.r.d.queue[1].lane == .Batch)
     t4_runtime_call(&next, "resume")
     if !acp_test_wait(t, &next.f, .Writes, 1) do return
     line := sn_write(&next, 0)
-    testing.expect(t, strings.contains(line, "legacy channel wake") && !strings.contains(line, "duplicate legacy wake"))
+    testing.expect(t, strings.contains(line, "New chat message for you") && strings.contains(line, "ordinary legacy notice"))
     t4_runtime_reply(t, &next, 0, `{"stopReason":"end_turn"}`, 1)
     testing.expect_value(t, t16_writes(&next), 1)
 }
