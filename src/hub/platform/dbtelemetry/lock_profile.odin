@@ -2,7 +2,7 @@ package dbtelemetry
 
 import "core:sync"
 
-// Opt-in lock-wait profile (Scale H load harness, docs/guides/scale-harness.md).
+// Opt-in lock-wait profile (Scale H load harness, docs/reference/scale-harness.md).
 //
 // The hub's two hot locks decide between the remaining scaling options: the
 // process-wide unit-of-work mutex (sqlite tx_mutex, the single SQLite writer)

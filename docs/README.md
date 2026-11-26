@@ -28,6 +28,7 @@ Groups:
 - [context-rollover-recovery.md](context-rollover-recovery.md): unique handoff identities, safe-idle restart and bounded notification recovery.
 - [reference/heimdall_memory_system_and_bootstrap.md](reference/heimdall_memory_system_and_bootstrap.md): the federated memory system and agent run-dir bootstrap across hub, bridge and `ham-ctl`.
 - [reference/db-telemetry.md](reference/db-telemetry.md): hub DB latency and lock-contention telemetry (phase 1): configuration, metrics and call-site attribution.
+- [reference/scale-harness.md](reference/scale-harness.md): opt-in task engine load harness (Scale H) and the opt-in lock-wait profile.
 - [reference/task-placement-failures.md](reference/task-placement-failures.md): native placement-failure snapshots stored in `task_attempt_facets` (REQ-PLACE-1).
 - [reference/task-placement-recovery.md](reference/task-placement-recovery.md): the `task_placement` attention cards and recovery APIs built on placement-failure snapshots (REQ-PLACE-2/3).
 - [plans/task-system-v2.md](plans/task-system-v2.md): Task System v2 specification and implementation status; the current task engine.
