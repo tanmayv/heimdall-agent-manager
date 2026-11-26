@@ -1280,11 +1280,12 @@ export function AgentChatPane({
   }, [chainDetailQuery.data, chainId]);
 
   const chainAgentOptions = chainAgentGroups[0]?.conversations || [];
-  // "<agent> #<n>" as the breadcrumb and the Agent settings subtitle show it.
-  const agentBreadcrumbLabel =
-    chainAgentGroups[0]?.conversations.find((member) => member.agentInstanceId === agentInstanceId)?.title ||
-    agentDisplayName ||
-    agentId;
+  const chainMemberTitle =
+    chainAgentGroups[0]?.conversations.find((member) => member.agentInstanceId === agentInstanceId)?.title || '';
+  const agentBreadcrumbLabel = chainMemberTitle || agentDisplayName || agentId;
+  // Agent settings subtitle: "<agent> #<n>" (the instance's numbered display name).
+  const agentInstanceLabel =
+    chainMemberTitle || String(instance?.display_name || '').trim() || agentDisplayName || agentId;
   const canOpenChainAgentSwitcher = (
     variant === 'main'
     && isFocusedPane
@@ -2625,7 +2626,7 @@ export function AgentChatPane({
       model={instanceModel}
       transport={instance?.runtime_transport === 'acp' ? 'acp' : 'pty'}
       folder={String(instance?.project_path || '')}
-      agentLabel={agentBreadcrumbLabel}
+      agentLabel={agentInstanceLabel}
       touch={settingsPanel.mode === 'page'}
       actionsDisabled={
         !agentInstanceId ||
@@ -3663,7 +3664,7 @@ export function AgentChatPane({
 
       <AgentSettingsPanel
         state={settingsPanel}
-        agentLabel={<VaultText value={agentBreadcrumbLabel} fallback="Agent" />}
+        agentLabel={<VaultText value={agentInstanceLabel} fallback="Agent" />}
         projectLabel={projectId ? <VaultText value={projectName} fallback="Project" /> : undefined}
         runtime={runtimeSection}
       >

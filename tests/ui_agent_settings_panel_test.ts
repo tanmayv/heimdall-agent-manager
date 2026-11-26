@@ -280,6 +280,9 @@ test('Runtime card: stopped shows Start only; restarting disables Restart/Stop a
     assert.equal(q(doc, 'agent-panel-runtime-transport')!.textContent, 'ACP');
     assert.equal(q(doc, 'agent-panel-runtime-restart'), null);
     assert.equal(q(doc, 'agent-panel-runtime-stop'), null);
+    assert.ok(q(doc, 'agent-panel-runtime-more'), 'Force stop stays reachable while a stop is unconfirmed');
+    await render(React.createElement(RuntimeSection, { ...stopped.props, forceStopDisabled: true }));
+    assert.equal(q(doc, 'agent-panel-runtime-more'), null, 'no … menu when there is nothing to force stop');
     await click(q(doc, 'agent-panel-runtime-start'));
     assert.deepEqual(stopped.calls, ['start']);
 

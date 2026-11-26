@@ -226,6 +226,8 @@ export function RuntimeSection(props: RuntimeSectionProps) {
               </Button>
             </>
           )}
+          {/* Stopped with nothing left to kill: Start is the only action. */}
+          {stopped && props.forceStopDisabled ? null : (
           <div className="ml-auto">
             <Menu
               align="end"
@@ -256,6 +258,7 @@ export function RuntimeSection(props: RuntimeSectionProps) {
               </Menu.Item>
             </Menu>
           </div>
+          )}
         </div>
         {props.statusMessage ? (
           <Text role="caption" tone="muted" data-debug-id="agent-panel-runtime-message" className="mt-2">
