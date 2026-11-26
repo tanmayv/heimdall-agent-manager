@@ -792,7 +792,9 @@ MIGRATION_259_AGENT_ID_ASSIGNMENT :: #load("migrations/259_agent_id_assignment.s
 
 MIGRATION_260_DROP_FLEET_ROLES :: #load("migrations/260_drop_fleet_roles.sql", string)
 
-MIGRATION_261_TASK_MERGE_PENDING :: #load("migrations/261_task_merge_pending.sql", string)
+MIGRATION_261_EXTENSION_VERSION_SYNC :: #load("migrations/261_extension_version_sync_0_5_92.sql", string)
+
+MIGRATION_262_TASK_MERGE_PENDING :: #load("migrations/262_task_merge_pending.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1091,7 +1093,8 @@ migration_order :: [?]string {
 	"258_extension_version_sync_0_5_91.sql",
 	"259_agent_id_assignment.sql",
 	"260_drop_fleet_roles.sql",
-	"261_task_merge_pending.sql",
+	"261_extension_version_sync_0_5_92.sql",
+	"262_task_merge_pending.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1648,7 +1651,8 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
-	if name == "261_task_merge_pending.sql" do return strings.clone(MIGRATION_261_TASK_MERGE_PENDING)
+	if name == "262_task_merge_pending.sql" do return strings.clone(MIGRATION_262_TASK_MERGE_PENDING)
+	if name == "261_extension_version_sync_0_5_92.sql" do return strings.clone(MIGRATION_261_EXTENSION_VERSION_SYNC)
 	if name == "260_drop_fleet_roles.sql" do return strings.clone(MIGRATION_260_DROP_FLEET_ROLES)
 	if name == "259_agent_id_assignment.sql" do return strings.clone(MIGRATION_259_AGENT_ID_ASSIGNMENT)
 	if name == "258_extension_version_sync_0_5_91.sql" do return strings.clone(MIGRATION_258_EXTENSION_VERSION_SYNC)

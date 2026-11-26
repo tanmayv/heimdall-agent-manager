@@ -7,12 +7,12 @@ import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
-// Scale B (migration 261): tasks.merge_pending mirrors taskv2.merge_pending
+// Scale B (migration 262): tasks.merge_pending mirrors taskv2.merge_pending
 // (events). The migration backfills it once from the event log, the event
 // append keeps it in sync in the same transaction, and the boot/hello lookup
 // returns only Done tasks that carry it.
 
-TMP_MIGRATION :: "261_task_merge_pending.sql"
+TMP_MIGRATION :: "262_task_merge_pending.sql"
 
 TMP_SEED :: `
 BEGIN;
@@ -34,7 +34,7 @@ tmp_task :: proc(conn: ^Conn, id, state: string, created: int) -> bool {
  VALUES ('%s','chain_mp','u1','t','','published','%s','task','{"goal":"g"}','2026-01-01T00:00:%02dZ','2026-01-01T00:00:00Z');`, id, state, created))
 }
 
-// Raw event rows bypass the repository, as a pre-261 database holds them.
+// Raw event rows bypass the repository, as a pre-262 database holds them.
 tmp_raw_events :: proc(conn: ^Conn, id: string, kinds: ..string) -> bool {
 	for k in kinds {
 		if !exec(conn, fmt.tprintf(`INSERT INTO task_events(task_id, chain_id, owner_user_id, ts_ms, kind, payload_json) VALUES ('%s','chain_mp','u1',1,'%s','{}');`, id, k)) do return false
@@ -63,7 +63,9 @@ test_merge_pending_backfill_from_events_once :: proc(t: ^testing.T) {
 	defer close(&conn)
 	mig_ok, err := run_migrations(&conn, stop_before = TMP_MIGRATION)
 	if !testing.expect(t, mig_ok, err.message) do return
-	testing.expect(t, !table_column_exists(&conn, "tasks", "merge_pending"), "before 261: no column")
+	testing.expect(t, !table_column_exists(&conn, "tasks", "merge_pending"), "before 262: no column")
+	// A database already on release 0.5.92 (its 261) picks 262 up cleanly.
+	testing.expect(t, migration_applied(&conn, "261_extension_version_sync_0_5_92.sql"), "release 261 applied first")
 	if !testing.expect(t, exec(&conn, TMP_SEED), "seed chain") do return
 	Case :: struct { id, state: string, kinds: []string, want: string }
 	cases := []Case{
@@ -86,7 +88,7 @@ test_merge_pending_backfill_from_events_once :: proc(t: ^testing.T) {
 	for pass in ([]string{"upgrade", "restart"}) {
 		mig_ok, err = run_migrations(&conn)
 		if !testing.expectf(t, mig_ok, "%s: %s", pass, err.message) do return
-		testing.expectf(t, tmp_text(&conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", TMP_MIGRATION)) == "1", "%s: 261 recorded once", pass)
+		testing.expectf(t, tmp_text(&conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", TMP_MIGRATION)) == "1", "%s: 262 recorded once", pass)
 		for c in cases do testing.expectf(t, tmp_pending(&conn, c.id) == c.want, "%s: %s merge_pending=%s, want %s", pass, c.id, tmp_pending(&conn, c.id), c.want)
 		// Only Done rows are listed (in_review t_review is pending but not Done), oldest first.
 		testing.expect_value(t, tmp_listed(t, &repo), "t_pending,t_approved,t_failed,t_reopened")

@@ -282,7 +282,7 @@ merge_pending :: proc(evs: []domain.Task_Event) -> bool {
 // the bridge side is idempotent (an already-merged branch is gone → no-op).
 // Covers done tasks of every chain: the chain of a task that just finished is
 // usually already `completed`, so active chains alone would miss it. Reads only
-// the tasks the merge_pending projection marks (migration 261), never the whole
+// the tasks the merge_pending projection marks (migration 262), never the whole
 // Done history; merge_pending(evs) still decides on the loaded events.
 requeue_pending_merges :: proc(svc: ^Service, u: ^Uow, bridge_id: string) {
 	if !PER_LEASE_WORKTREES_ENABLED do return

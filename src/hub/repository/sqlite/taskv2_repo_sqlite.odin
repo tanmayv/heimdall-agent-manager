@@ -206,7 +206,7 @@ task_event_insert :: proc(impl: ^Taskchain_Repo_SQLite, event: domain.Task_Event
 }
 
 // merge_pending_after_event: how an event moves the tasks.merge_pending
-// projection (migration 261). It mirrors taskv2.merge_pending(events): the
+// projection (migration 262). It mirrors taskv2.merge_pending(events): the
 // latest of approved | submitted | merged | merge_conflict decides; every other
 // kind (merge_failed included: a failed merge is retried) leaves it as it is.
 merge_pending_after_event :: proc(kind: string) -> (pending: bool, moves: bool) {
