@@ -320,8 +320,9 @@ test_static_skills_reference_pointer_table_names_existing_headings :: proc(t: ^t
 		testing.expect(t, found, ptr.owner)
 		testing.expectf(t, skill_has_heading_line(content, ptr.heading), "%s must have heading %q", ptr.owner, ptr.heading)
 	}
-	// Restored rules (coordinator audit of e43bc3ba).
-	for rule in ([]string{"refused in solo mode for your own work", "the task returns to `ready`", "(must be `ready`)", "bare `<path>`", "--expected-requirements-revision", "workflow-stage restrictions still apply", "for all roles"}) {
+	// Restored rules (coordinator audit of e43bc3ba); SCHED-3 reworded the self-review
+	// rule (no solo mode) and the audience line (no roles).
+	for rule in ([]string{"refused for an attempt your own agent authored", "the task returns to `ready`", "(must be `ready`)", "bare `<path>`", "--expected-requirements-revision", "workflow-stage restrictions still apply", "for every agent"}) {
 		testing.expectf(t, strings.contains(ref, rule), "ham-ctl-reference must keep %q", rule)
 	}
 	coord, _ := find_static_skill("coordinator-task-management")
