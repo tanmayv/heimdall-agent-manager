@@ -35,6 +35,12 @@ on:
       - 'scripts/windows/build.ps1'
       - '.github/workflows/conversion-e2e.yml'
   workflow_dispatch:
+    inputs:
+      phases:
+        description: Optional comma-separated conversion phases (P1 through P5)
+        type: string
+env:
+  HEIMDALL_E2E_ONLY: ${{ inputs.phases }}
 permissions:
   contents: read
 concurrency:

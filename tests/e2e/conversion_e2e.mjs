@@ -522,10 +522,7 @@ async function main() {
           runtimePid: runtime?.pid, connected: runtime?.connected,
           controlPid: control?.pid, logBytes,
         });
-        if (!seen.has(summary)) {
-          seen.add(summary);
-
-        }
+        seen.add(summary);
       };
       let stdout = '', stderr = '';
       child.stdout.on('data', (chunk) => { stdout += chunk; });
