@@ -1,3 +1,5 @@
+import type { FleetRestartResult } from '../../api/endpoints/taskChains';
+
 // Fleet provider/model selection logic (REQ-FLEET-PT-3) and the restart-confirmation
 // decision that guards it (REQ-RS-3 / REQ-RS-4).
 //
@@ -37,30 +39,6 @@ export function resolvedFleetProviderModel(
     if (model) return { provider: capability.provider, model, ...(capability.profile_id ? { provider_profile: capability.profile_id } : {}) };
   }
   return { ...selection };
-}
-
-/**
- * Provider/model options from a bridge providers payload. The live
- * GET /bridges/:id/provider-status is normalized to literal active model ids.
- */
-export function fleetProviderCapabilities(providersPayload: any): FleetProviderCapability[] {
-  const source = Array.isArray(providersPayload?.providers) ? providersPayload.providers : [];
-  const list: FleetProviderCapability[] = [];
-  for (const entry of source) {
-    if (entry === null || typeof entry !== 'object') continue;
-    if (entry.enabled === false) continue;
-    const provider = String(entry.provider || entry.name || '');
-    if (!provider) continue;
-    let models: string[];
-    if (Array.isArray(entry.models)) {
-      models = entry.models.map((t: any) => String(t)).filter(Boolean);
-    } else {
-      const modelMap = entry.models && typeof entry.models === 'object' ? entry.models : {};
-      models = Object.keys(modelMap).filter((model) => Boolean(modelMap[model]));
-    }
-    list.push({ provider, models, ...(entry.profile_id ? { profile_id: entry.profile_id, label: entry.label, accent: entry.accent } : {}) });
-  }
-  return list;
 }
 
 export const FLEET_ROLES = ['worker', 'reviewer'] as const;
@@ -612,24 +590,32 @@ export interface FleetRestartRoleResult {
   agentId: string;
   restarted_instance_ids?: string[];
   restart_failures?: FleetRestartFailure[];
+  restart_results?: FleetRestartResult[];
 }
 
 export interface FleetRestartSummary {
-  restartedByRole: { agentId: string; count: number }[];
+  restartedByRole: { agentId: string; count: number; unchanged?: number; ineligible?: number }[];
   failures: FleetRestartFailure[];
 }
 
 /**
- * Collapse the flagged PUT responses into the Apply summary. A role's
- * restarted_instance_ids is counted only when the server sent it (it is present
- * exactly on the flagged PUTs); failures are flattened verbatim.
+ * Collapse candidate outcomes into the Apply summary. Acceptance counts a
+ * restart request, not runtime readiness; list and candidate failures remain
+ * visible even when the fleet configuration was successfully saved.
  */
 export function summarizeFleetRestartResults(results: FleetRestartRoleResult[]): FleetRestartSummary {
-  const restartedByRole: { agentId: string; count: number }[] = [];
+  const restartedByRole: FleetRestartSummary['restartedByRole'] = [];
   const failures: FleetRestartFailure[] = [];
   for (const result of results || []) {
     if (!result) continue;
-    if (Array.isArray(result.restarted_instance_ids)) {
+    if (Array.isArray(result.restart_results)) {
+      restartedByRole.push({
+        agentId: result.agentId,
+        count: result.restart_results.filter((entry) => entry.outcome === 'accepted').length,
+        unchanged: result.restart_results.filter((entry) => entry.outcome === 'unchanged').length,
+        ineligible: result.restart_results.filter((entry) => entry.outcome === 'ineligible').length,
+      });
+    } else if (Array.isArray(result.restarted_instance_ids)) {
       restartedByRole.push({ agentId: result.agentId, count: result.restarted_instance_ids.length });
     }
     for (const failure of result.restart_failures || []) {

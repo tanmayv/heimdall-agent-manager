@@ -484,6 +484,7 @@ test('bridge provider_status_changed refetches only that bridge provider status,
   const net = installRoutes({
     '/bridges': { body: { data: { bridges: [{ bridge_id: 'brg_1', status: 'online' }] } } },
     '/bridges/brg_1/provider-status': { body: { data: { providers: [] } } },
+    '/bridges/brg_2/provider-status': { body: { data: { providers: [] } } },
   });
   try {
     const store = await makeStore();
@@ -491,12 +492,19 @@ test('bridge provider_status_changed refetches only that bridge provider status,
     const { handleUserWsEvent } = await import('../src/ui/api/wsInvalidation.ts');
     const subs = [store.dispatch(bridgeSupportApi.endpoints.listBridges.initiate(undefined))];
     subs.push(store.dispatch(bridgeSupportApi.endpoints.listBridgeProviders.initiate({ bridgeId: 'brg_1' })));
+    subs.push(store.dispatch(bridgeSupportApi.endpoints.listBridgeProviders.initiate({ bridgeId: 'brg_2' })));
     await Promise.all(subs);
     net.hits.length = 0;
-    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge', resource_id: 'brg_1', change: 'provider_status_changed', summary: { provider: 'claude' } });
+    for (let i = 0; i < 20; i++) handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge', resource_id: 'brg_1', change: 'provider_status_changed', summary: { provider: 'claude' } });
     await settle();
     assert.equal(count(net.hits, (h) => h === 'GET /api/v1/bridges'), 0, `bridge list untouched; saw ${net.hits.join(', ')}`);
     assert.deepEqual(net.hits, ['GET /api/v1/bridges/brg_1/provider-status'], 'one selected-bridge provider call');
+    const { resyncAfterReconnect } = await import('../src/ui/api/wsInvalidation.ts');
+    net.hits.length = 0;
+    resyncAfterReconnect(store.dispatch);
+    await tick(60);
+    assert.equal(net.hits.filter(h => h.endsWith('/provider-status')).length, 2, 'reconnect authoritatively refreshes both mounted bridges without discovery');
+    assert.ok(!net.hits.some(h => h.startsWith('POST')));
     for (const s of subs) s.unsubscribe();
   } finally { net.restore(); }
 });

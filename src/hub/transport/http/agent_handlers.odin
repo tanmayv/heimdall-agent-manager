@@ -341,7 +341,7 @@ restart_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// check keep the same-owner boundary.
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
-	inst, restarted, err := agent_service.restart_instance(h.agents, auth_ctx, path_part(req.path, 4))
+	inst, restarted, err := agent_service.restart_instance(h.agents, auth_ctx, path_part(req.path, 4), {expected_run_count=json_int(req.body, "expected_run_count", -1)})
 	if !restarted do return respond_error(err, req.request_id)
 	publish_instance_changed(h.event_bus, inst, "status_changed")
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)
@@ -361,27 +361,12 @@ start_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 202)
 }
 
-patch_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
-	if !ok do return auth_resp
-	inst, updated, err := agent_service.reconfigure_instance(h.agents, auth_ctx, path_part(req.path, 4), reconfigure_input_from_body(req.body))
-	if !updated do return respond_error(err, req.request_id)
-	publish_instance_changed(h.event_bus, inst, "status_changed")
-	b := strings.builder_make(); write_agent_instance_json(&b, inst)
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
-}
-
 agent_input_from_body :: proc(body: string) -> agent_service.Create_Agent_Input {
 	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), instructions = json_string(body, "instructions"), has_template_id = strings.contains(body, "\"template_id\""), permission_mode = json_string(body, "permission_mode")}
 }
 
 instance_input_from_body :: proc(body: string) -> agent_service.Create_Instance_Input {
 	return agent_service.Create_Instance_Input{agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), provider = json_string(body, "provider"),provider_profile=json_string(body,"provider_profile"), model = json_string(body, "model"), project_id = domain.Project_ID(json_string(body, "project_id")), chain_id = json_string(body, "chain_id"), display_name = json_string(body, "display_name")}
-}
-
-reconfigure_input_from_body :: proc(body: string) -> agent_service.Reconfigure_Instance_Input {
-	return agent_service.Reconfigure_Instance_Input{provider = json_string(body, "provider"),provider_profile=json_string(body,"provider_profile"), model = json_string(body, "model"), agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), chain_id = json_string(body, "chain_id"), conversation_id = json_string(body, "conversation_id"), display_name = json_string(body, "display_name"), project_id = domain.Project_ID(json_string(body, "project_id")), has_agent_id = strings.contains(body, "\"agent_id\""), has_bridge_id = strings.contains(body, "\"bridge_id\""), has_project_id = strings.contains(body, "\"project_id\""), has_chain_id = strings.contains(body, "\"chain_id\""), has_conversation_id = strings.contains(body, "\"conversation_id\""), has_display_name = strings.contains(body, "\"display_name\"")}
 }
 
 support_input_from_body :: proc(body: string) -> agent_service.Support_Input {

@@ -1,3 +1,4 @@
+import { buildRuntimePayload, type RuntimeSelection } from '../runtimePayload';
 import { acceptAssistantSnapshot, assistantRevision, upsertAssistantSnapshot } from '../acpChatStream';
 import { getExpectedUserId } from '../../utils/expectedUser';
 import { guardDesktopUpdateRequest } from '../../utils/desktopUpdatePreparation';
@@ -216,8 +217,8 @@ function guideChatArgs() {
 
 export const chatEndpoints = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; provider?: string; providerProfile?: string; model?: string; body: string; artifactIds?: string[] }>({
-      queryFn: async ({ agentId, projectId, bridgeId, provider, providerProfile, model, body, artifactIds = [] }, api) => {
+    createLaunchConversation: build.mutation<any, RuntimeSelection & { agentId: string; body: string; artifactIds?: string[] }>({
+      queryFn: async ({ agentId, body, artifactIds = [], ...runtime }, api) => {
         try {
           const state: any = api.getState();
           const isUnlocked = Boolean(state?.vault?.isUnlocked);
@@ -228,12 +229,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           if (isUnlocked && activeKey && encBody && !isVaultArmored(encBody)) {
             encBody = await encryptVaultText(encBody, activeKey);
           }
-          const payload: any = { agent_id: agentId, initial_message: { body: encBody }, artifact_ids: artifactIds };
-          if (projectId) payload.project_id = projectId;
-          if (bridgeId) payload.bridge_id = bridgeId;
-          if (provider) payload.provider = provider;
-          if (providerProfile) payload.provider_profile = providerProfile;
-          if (model) payload.model = model;
+          const payload = { agent_id: agentId, ...buildRuntimePayload(runtime), initial_message: { body: encBody }, artifact_ids: artifactIds };
           const conversation = await cookieMutation('/chats', 'POST', payload);
           let instance: any = {};
           if (conversation?.agent_instance_id) {

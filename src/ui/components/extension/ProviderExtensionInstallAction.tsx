@@ -35,7 +35,6 @@ export default function ProviderExtensionInstallAction({ bridgeId, provider, pro
   const statusQuery = useListBridgeProvidersQuery({ bridgeId }, {
     pollingInterval: 5000,
     skipPollingIfUnfocused: true,
-    refetchOnMountOrArgChange: true,
   });
   // The Hub lists commands oldest first; the newest install/uninstall of this provider wins.
   const latest = [...((statusQuery.currentData?.extension_commands as ProviderExtensionCommand[] | undefined) || [])]

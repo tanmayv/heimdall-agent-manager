@@ -140,6 +140,7 @@ bridge_agent_runtime_profile :: proc(profile: Bridge_Provider_Profile) -> agent_
 		ask_flags = profile.ask_flags,
 		prompt_flags = profile.prompt_flags,
 		starter_prompt = profile.starter_prompt,
+		keep_bootstrap_read = bridge_provider_keeps_bootstrap_read(profile.name),
 		extension_expected = profile.extension_expected,
 		prompt_delivery = profile.prompt_delivery,
 		prompt_tmux_delay_ms = profile.prompt_tmux_delay_ms,
@@ -209,4 +210,12 @@ bridge_provider_startup_log :: proc() {
 	}
 	sync.rw_mutex_shared_unlock(&bridge_provider_paths_mutex)
 	fmt.printfln("bridge providers: catalog=%d present=%d", catalog_count, present_count)
+}
+
+// Providers whose harness is NOT known to load the bootstrap file into context
+// by itself keep the explicit "read your bootstrap file" step in their startup
+// prompt. Claude (CLAUDE.md), Codex, Copilot, pi, Kiro and opencode (AGENTS.md)
+// load theirs; Antigravity's loading of AGENTS.md could not be confirmed.
+bridge_provider_keeps_bootstrap_read :: proc(name: string) -> bool {
+	return bridge_extension_canonical_provider(name) == "antigravity"
 }

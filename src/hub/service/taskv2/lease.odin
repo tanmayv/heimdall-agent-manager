@@ -209,6 +209,12 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	}
 	saved, ok, err := iface.taskchain_save_lease(svc.repo, lease)
 	if !ok do return {}, false, err
+	// A new grant may reuse a process that has not yet observed its completion
+	// stop. New responsibility supersedes that completion intent, without opening
+	// another generation; a user stop is never cleared here.
+	if inst.stop_reason == "task_completed" {
+		if cleared, clear_err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, ""); !cleared do return {}, false, clear_err
+	}
 	p := json_begin()
 	json_str(&p, "lease_id", saved.lease_id)
 	json_str(&p, "kind", saved.kind)
@@ -378,30 +384,34 @@ instance_has_open_work :: proc(svc: ^Service, chain: domain.Task_Chain, instance
 // fleet instance of the chain whose tasks are all done or cancelled. Runs at
 // the end of after_chain_change, after the matcher, so an instance the matcher
 // just re-granted holds a lease and is kept.
-stop_finished_instances_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain) {
-	if svc.agents == nil || u == nil do return
+stop_finished_instances_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain) -> (bool, domain.Domain_Error) {
+	if svc.agents == nil || u == nil do return true, {}
 	insts, ierr := iface.agent_list_instances_by_chain(svc.agents, chain.owner_user_id, string(chain.chain_id))
-	if ierr.code != .None do return
+	if ierr.code != .None do return true, {}
 	candidates := make([dynamic]domain.Agent_Instance, context.temp_allocator)
 	for inst in insts {
 		if !instance_is_live(inst) && !instance_is_pending(inst) do continue
 		if is_coordinator(svc, chain, inst.agent_instance_id) do continue
 		if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held do continue
-		if effect_has_stop(u, inst.bridge_id, string(chain.chain_id), inst.agent_instance_id) do continue
 		if !instance_is_fleet_member(svc, chain, inst) do continue
 		append(&candidates, inst)
 	}
-	if len(candidates) == 0 do return
+	if len(candidates) == 0 do return true, {}
 	work, ok := chain_instance_work(svc, chain)
-	if !ok do return
+	if !ok do return true, {}
 	for inst in candidates {
 		w := work[inst.agent_instance_id]
 		if !w.finished || w.open do continue
 		// A reviewer whose agent still owes a review the matcher could not place
 		// (e.g. its bridge was offline) stays under the idle TTL (REQ-TV2-3a).
 		if agent_owes_review_in_chain(svc, chain.chain_id, chain.owner_user_id, inst.agent_id) do continue
+		// Commit stop intent before sending its effect. Runtime status remains a
+		// bridge projection: preserve warm-grant/idle-TTL policy. Late reports cannot
+		// overwrite this reason, so they cannot authorize a delayed rollover.
+		if recorded, reason_err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, "task_completed"); !recorded do return false, reason_err
 		effect_stop(u, inst.bridge_id, string(chain.chain_id), inst.agent_instance_id)
 	}
+	return true, {}
 }
 
 // expire_lease_in_uow explicitly invalidates a claim for lifecycle recovery.

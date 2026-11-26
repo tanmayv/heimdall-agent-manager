@@ -4,6 +4,12 @@ import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 import { encryptVaultText, isVaultArmored, getActiveVaultKey } from '../../utils/vaultContent';
 import { decryptChainRecord, decryptChainList } from '../../utils/vaultChains';
 
+export interface FleetRestartResult {
+  instance_id: string;
+  outcome: 'accepted' | 'unchanged' | 'ineligible' | 'failed';
+  message: string;
+}
+
 export interface FleetRestartFailure {
   instance_id: string;
   message: string;
@@ -58,6 +64,7 @@ export interface TaskChainFleet {
   // restart_live_instances boolean; absent on fleet list rows.
   restarted_instance_ids?: string[];
   restart_failures?: FleetRestartFailure[];
+  restart_results?: FleetRestartResult[];
   created_at?: string;
   updated_at?: string;
 }
@@ -120,6 +127,7 @@ export function normalizeFleet(f: any): TaskChainFleet {
     restarted_instance_ids: Array.isArray(f?.restarted_instance_ids)
       ? f.restarted_instance_ids.map((id: any) => String(id))
       : undefined,
+    restart_results: Array.isArray(f?.restart_results) ? f.restart_results : undefined,
     restart_failures: Array.isArray(f?.restart_failures)
       ? f.restart_failures.map((entry: any) => ({
           instance_id: String(entry?.instance_id || ''),

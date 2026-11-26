@@ -1,3 +1,4 @@
+import { buildRuntimePayload, type CreateAgentInstanceArgs } from '../runtimePayload';
 import * as daemonApi from '../daemonApi';
 import { applyAgentRuntimeEvent, loadKnownAgents, mapAgent, mergeKnownAndLiveAgents, storeKnownAgents, upsertKnownAgentRecord } from '../agentCatalog';
 import { apiErrorText, cookieMutation, cookieJsonFetch, cookieJsonFetchEnvelope, customQueryError } from '../cookieFetch';
@@ -6,6 +7,29 @@ import { heimdallApi, withSessionQuery } from '../heimdallApi';
 import { readBridgeRows } from './bridgeSupport';
 import { openPaneReplyOutput } from '../../components/shells/ptyWire';
 import type { RuntimeTransport } from '../../components/providers/providerRuntime';
+
+// Refresh affected projections after acceptance or uncertain delivery. Capture
+// placement before the request; HTTP acceptance does not supply runtime readiness.
+async function refreshLifecycleCaches(
+  { instanceId, agentId, chainId }: { instanceId: string; agentId?: string; chainId?: string },
+  { dispatch, getState, queryFulfilled }: { dispatch: any; getState: () => any; queryFulfilled: Promise<any> },
+) {
+  const state = getState();
+  const cached = agentsApi.endpoints.fetchAgentInstance.select({ instanceId })(state).data?.instance;
+  const rows = agentsApi.util.selectCachedArgsForQuery(state, 'listAgentInstances')
+    .flatMap(arg => agentsApi.endpoints.listAgentInstances.select(arg)(state).data?.instances || []);
+  const instance = cached || rows.find((row: any) => row.agent_instance_id === instanceId);
+  try { await queryFulfilled; } catch { /* Reconcile uncertain delivery and conflicts too. */ }
+  const owner = agentId || instance?.agent_id;
+  const chain = chainId || instance?.chain_id;
+  dispatch(heimdallApi.util.invalidateTags([
+    { type: 'AgentInstances' as const, id: instanceId },
+    { type: 'AgentInstances' as const, id: 'LIST' },
+    ...(owner ? [{ type: 'Agents' as const, id: owner }, { type: 'AgentInstances' as const, id: owner }] : []),
+    ...(instance?.project_id ? [{ type: 'AgentInstances' as const, id: `PROJECT:${instance.project_id}` }] : []),
+    ...(chain ? [{ type: 'Chain' as const, id: chain }] : []),
+  ]));
+}
 
 /** Runtime transport belongs to this launch, independently of provider settings. */
 export interface AgentInstance extends AgentInstanceTokenFields {
@@ -86,6 +110,23 @@ function agentTagId(agent: any, fallback = '') {
 // never clears has_more cannot spin the queryFn forever (40 x 200 = 8000 identities).
 const IDENTITY_PAGE_SIZE = 200;
 const IDENTITY_MAX_PAGES = 40;
+
+/**
+ * True when a start failed only because the instance is already running. The hub
+ * answers 409 with details.code=already_running; other 409s (e.g. start_raced)
+ * are real failures, so the HTTP status alone is not enough.
+ */
+export function isAlreadyRunningError(err: any): boolean {
+  if (!err) return false;
+  return (err.details?.code || err.data?.error?.details?.code) === 'already_running';
+}
+
+/** Human-readable text for a failed RTK mutation result/error. */
+export function lifecycleErrorMessage(err: any, fallback: string): string {
+  if (!err) return fallback;
+  if (typeof err === 'string') return err;
+  return String(err.data?.error?.message || err.data?.message || err.error || err.message || fallback);
+}
 
 export const agentsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
@@ -377,57 +418,6 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
       },
     }),
-    startAgent: build.mutation<any, { agentInstanceId: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; model?: string }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, model }, { session }) => {
-        if (!session?.daemonUrl || !agentInstanceId) return { ok: false, message: 'Missing agent' };
-        return daemonApi.startAgent({ daemonUrl: session.daemonUrl, agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, model });
-      }),
-      invalidatesTags: (_result, _error, { agentInstanceId }) => [
-        { type: 'Agents' as const, id: agentInstanceId },
-      ],
-    }),
-    stopAgent: build.mutation<any, { agentInstanceId: string; timeInSec?: number }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, timeInSec }, { session }) => {
-        if (!session?.daemonUrl || !agentInstanceId) return { ok: false, message: 'Missing agent' };
-        return daemonApi.stopAgent({ daemonUrl: session.daemonUrl, agentInstanceId, timeInSec });
-      }),
-      invalidatesTags: (_result, _error, { agentInstanceId }) => [
-        { type: 'Agents' as const, id: agentInstanceId },
-      ],
-    }),
-    // UI-8: Add agent to chain via the rewrite API (POST /api/v1/agent-instances
-    // with existing chain_id). Hydrates a fresh AgentInstance into the chain and
-    // creates its 1:1 conversation; never attaches an unrelated live instance.
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; model?: string; projectId?: string; displayName?: string; templateId?: string }>({
-      // Launch a new instance of a durable agent, bound to a chain. Uses the cookie
-      // path (POST /agent-instances) like launchAgentInstance, so it works in the
-      // session-cookie shell. The previous token-based path required a
-      // session.clientToken that the cookie shell never has, so "Launch new" from
-      // the Add-Member dialog always failed with "Missing agentId/chainId" even
-      // with an agent selected. The hub create endpoint reads provider/model (not
-      // provider_profile/model), so map to those field names.
-      queryFn: async ({ agentId, chainId, bridgeId, providerProfile, model, projectId, displayName, templateId }) => {
-        if (!agentId || !chainId) return { data: { ok: false, message: 'Choose an agent identity to launch.' } };
-        try {
-          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-          const payload: any = { agent_id: agentId, chain_id: chainId };
-          if (bridgeId) payload.bridge_id = bridgeId;
-          if (providerProfile) payload.provider = providerProfile;
-          if (model) payload.model = model;
-          if (projectId) payload.project_id = projectId;
-          if (displayName) payload.display_name = displayName;
-          if (templateId) payload.template_id = templateId;
-          const data = await cookieMutation('/agent-instances', 'POST', payload);
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { chainId }) => [
-        { type: 'ChainTasks' as const, id: chainId },
-      ],
-    }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; instructions?: string; favorite?: boolean; permissionMode?: AgentPermissionMode }>({
       queryFn: async (arg) => {
@@ -475,13 +465,14 @@ export const agentsApi = heimdallApi.injectEndpoints({
       invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    listAgentInstances: build.query<any, { agentId?: string; projectId?: string; limit?: number; cursor?: string } | void>({
+    listAgentInstances: build.query<any, { agentId?: string; projectId?: string; bridgeId?: string; limit?: number; cursor?: string } | void>({
       queryFn: async (arg) => {
         try {
           const params = new URLSearchParams();
           const opts = (arg && typeof arg === 'object') ? arg : undefined;
           if (opts?.agentId) params.set('agent_id', opts.agentId);
           if (opts?.projectId) params.set('project_id', opts.projectId);
+          if (opts?.bridgeId) params.set('bridge_id', opts.bridgeId);
           if (opts?.limit) params.set('limit', String(opts.limit));
           if (opts?.cursor) params.set('cursor', opts.cursor);
           const qs = params.toString() ? `?${params.toString()}` : '';
@@ -494,7 +485,8 @@ export const agentsApi = heimdallApi.injectEndpoints({
       providesTags: (_result, _error, arg) => {
         const opts = (arg && typeof arg === 'object') ? arg : undefined;
         return [
-          { type: 'AgentInstances' as const, id: 'LIST' },
+          { type: 'AgentInstances' as const, id: 'ALL_LISTS' },
+          ...(!opts?.agentId && !opts?.projectId ? [{ type: 'AgentInstances' as const, id: 'LIST' }] : []),
           ...(opts?.agentId ? [{ type: 'AgentInstances' as const, id: opts.agentId }] : []),
           ...(opts?.projectId ? [{ type: 'AgentInstances' as const, id: `PROJECT:${opts.projectId}` }] : []),
         ];
@@ -518,68 +510,63 @@ export const agentsApi = heimdallApi.injectEndpoints({
       keepUnusedDataFor: 300,
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; model?: string; projectId?: string }>({
-      queryFn: async ({ agentId, bridgeId, provider, model, projectId }) => {
+    createAgentInstance: build.mutation<any, CreateAgentInstanceArgs>({
+      queryFn: async ({ agentId, displayName, ...runtime }) => {
         try {
-          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-          const payload: any = { agent_id: agentId };
-          if (bridgeId) payload.bridge_id = bridgeId;
-          if (provider) payload.provider = provider;
-          if (model) payload.model = model;
-          if (projectId) payload.project_id = projectId;
+          const payload = {
+            agent_id: agentId,
+            ...buildRuntimePayload(runtime),
+            ...(displayName !== undefined ? { display_name: displayName } : {}),
+          };
           const data = await cookieMutation('/agent-instances', 'POST', payload);
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
-      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
+      invalidatesTags: (_result, _error, { agentId, chainId, projectId }) => [
+        { type: 'AgentInstances' as const, id: 'LIST' },
+        ...(projectId ? [{ type: 'AgentInstances' as const, id: `PROJECT:${projectId}` }] : []),
+        { type: 'Agents' as const, id: agentId },
+        { type: 'AgentInstances' as const, id: agentId },
+        ...(chainId ? [{ type: 'ChainTasks' as const, id: chainId }] : []),
+      ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    stopAgentInstance: build.mutation<any, { agentId: string; instanceId: string; force?: boolean }>({
+    stopAgentInstance: build.mutation<any, { agentId: string; instanceId: string; chainId?: string; force?: boolean }>({
       queryFn: async ({ instanceId, force = false }) => {
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/stop`, 'POST', { force, reason: force ? 'user_force_stop' : 'user_requested' });
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
-      invalidatesTags: (_result, _error, { agentId, instanceId }) => [
-        { type: 'Agents' as const, id: agentId },
-        { type: 'AgentInstances' as const, id: agentId },
-        { type: 'AgentInstances' as const, id: instanceId },
-      ],
+      onQueryStarted: refreshLifecycleCaches,
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    restartAgentInstance: build.mutation<any, { agentId?: string; instanceId: string }>({
+    restartAgentInstance: build.mutation<any, { agentId?: string; instanceId: string; chainId?: string }>({
       queryFn: async ({ instanceId }) => {
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/restart`, 'POST', {});
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
-      invalidatesTags: (_result, _error, { agentId, instanceId }) => [
-        ...(agentId ? [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }] : []),
-        { type: 'AgentInstances' as const, id: instanceId },
-      ],
+      onQueryStarted: refreshLifecycleCaches,
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    startAgentInstance: build.mutation<any, { agentId?: string; instanceId: string }>({
+    startAgentInstance: build.mutation<any, { agentId?: string; instanceId: string; chainId?: string }>({
       queryFn: async ({ instanceId }) => {
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/start`, 'POST', {});
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
-      invalidatesTags: (_result, _error, { agentId, instanceId }) => [
-        ...(agentId ? [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }] : []),
-        { type: 'AgentInstances' as const, id: instanceId },
-      ],
+      onQueryStarted: refreshLifecycleCaches,
     }),
     listInstanceReconfigurations: build.query<{ operations: InstanceReconfiguration[] }, { instanceId: string }>({
       queryFn: async ({ instanceId }) => {
@@ -617,7 +604,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations/retry`, 'POST', body);
           return { data: normalizeInstanceReconfiguration(data) };
-        } catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+        } catch (error: any) { return { error: customQueryError(error) as any }; }
       },
       // The instance itself changes later and announces it (agent_instance/config_changed).
       invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
@@ -627,26 +614,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations`, 'POST', body);
           return { data: normalizeInstanceReconfiguration(data) };
-        } catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
+        } catch (error: any) { return { error: customQueryError(error) as any }; }
       },
       // The instance itself changes later and announces it (agent_instance/config_changed).
       invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
-    }),
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; model?: string; bridgeId?: string }>({
-      queryFn: async ({ instanceId, provider, model, bridgeId }) => {
-        try {
-          // Legacy PATCH supports provider/model only. Location changes use the
-          // explicit durable reconfiguration operation endpoint above.
-          const body: Record<string, string> = { provider: provider || '', model: model || '' };
-          if (bridgeId) body.bridge_id = bridgeId;
-          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}`, 'PATCH', body);
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
     getAgentPane: build.query<AgentPaneResult, GetAgentPaneArgs>({
       queryFn: async ({ agentInstanceId, sinceHash, width = 80, lineLimit = 120 }) => {
@@ -842,7 +813,7 @@ export const {
   useUnarchiveAgentIdentityMutation,
   useListAgentInstancesQuery,
   useFetchAgentInstanceQuery,
-  useLaunchAgentInstanceMutation,
+  useCreateAgentInstanceMutation,
   useStopAgentInstanceMutation,
   useRestartAgentInstanceMutation,
   useStartAgentInstanceMutation,
@@ -854,7 +825,7 @@ export const {
 
 export function useStartInstanceMutation() {
   const [mutate, result] = useStartAgentInstanceMutation();
-  const trigger = (arg: string | { instanceId: string; agentId?: string }) => {
+  const trigger = (arg: string | { instanceId: string; agentId?: string; chainId?: string }) => {
     return mutate(typeof arg === 'string' ? { instanceId: arg } : arg);
   };
   return [trigger, result] as const;

@@ -85,9 +85,11 @@ test('instance badge falls back to screen detection without capabilities', () =>
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (p: string) => fs.readFileSync(`${root}/${p}`, 'utf8');
 
-test('provider setup surface renders the extension badge and copyable hint', () => {
-  const api = read('src/ui/components/providers/providerSetupApi.ts');
-  assert.match(api, /normalizeProviderExtension\(raw\?\.extension\)/);
+test('provider setup surface renders the extension badge and copyable hint', async () => {
+  const { normalizeProviderStatus } = await import('../src/ui/api/endpoints/bridgeSupport.ts');
+  const status = await normalizeProviderStatus({ providers: [{ provider: 'codex', extension: { state: 'present', version: '0.1.0' } }] });
+  assert.equal(status.providers[0].extension?.state, 'present');
+  assert.equal(status.providers[0].extension?.version, '0.1.0');
   const surface = read('src/ui/components/providers/ProviderSetupSurface.tsx');
   assert.match(surface, /<ProviderExtensionBadge/);
   const badges = read('src/ui/components/extension/ExtensionBadges.tsx');

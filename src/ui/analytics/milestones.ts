@@ -1,15 +1,14 @@
 // REQ-PH-5: funnel milestones read from the Redux/RTK Query layer — the Hub's
 // answers — rather than from button clicks, so an event means the thing happened.
 // Each milestone goes through analytics.trackOnce (once per user). See docs/analytics.md.
+import { selectLaunchableProviderCapabilities } from '../api/endpoints/bridgeSupport';
 import { analytics, type Analytics } from './analytics';
 
 // Endpoints whose success means the Hub accepted an agent launch/start.
 const AGENT_START_ENDPOINTS = new Set([
   'createLaunchConversation',
-  'launchAgentInstance',
+  'createAgentInstance',
   'startAgentInstance',
-  'startAgent',
-  'createAgentInstanceInChain',
 ]);
 
 /** Same rule as the Bridges panel (components/settings/BridgesPanel.tsx). */
@@ -54,8 +53,8 @@ export function observeMilestones(target: Analytics, action: any, state: any): v
   const arg = action?.meta?.arg?.originalArgs || {};
 
   if (endpoint === 'listBridgeProviders') {
-    // listBridgeProviders keeps only enabled + present + active providers.
-    const providers = Array.isArray(action?.payload?.providers) ? action.payload.providers : [];
+    // Full status includes unavailable rows; only configured launch choices count.
+    const providers = selectLaunchableProviderCapabilities(action?.payload);
     if (providers.length > 0) {
       target.trackOnce('provider_configured', {
         provider: typeSlug(providers[0]?.provider) ?? 'other',

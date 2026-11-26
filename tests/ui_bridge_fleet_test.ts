@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
-import { fleetApplyInput, fleetDraftKey, validFleetDraft } from '../src/ui/components/home/fleetDraft.ts';
+import { fleetApplyInput, fleetDraftKey, validFleetDraft, fleetExcludedCounts } from '../src/ui/components/home/fleetDraft.ts';
 
 test('Fleet drafts preserve profile and durable agent identity, canonical override order and removal', () => {
   const runtime = { provider: 'codex', provider_profile: 'work', model: 'm' };
@@ -54,6 +54,7 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
   let application: any;
   const calls: { path: string; body: any }[] = [];
   let holdPreview = true;
+  let instanceListFails = false;
   const previews: { body: any; resolve: (response: Response) => void }[] = [];
   let applyMode: 'conflict' | 'lost' | 'success' = 'conflict';
   const response = (data: any, status = 200) => new Response(JSON.stringify({ data }), { status });
@@ -63,6 +64,16 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     calls.push({ path, body });
     if (path === '/api/v1/bridges') return response([{ bridge_id: 'b1', label: 'First bridge', status: 'online', machine_os: 'Linux' }, { bridge_id: 'b2', label: 'Unavailable bridge', status: 'offline' }]);
     if (path === '/api/v1/agents') return response([{ agent_id: 'a', name: 'Same name', state: 'active' }, { agent_id: 'b', name: 'Same name', state: 'active' }]);
+    if (path === '/api/v1/agent-instances') {
+      if (instanceListFails) return new Response(JSON.stringify({ error: { message: 'Instance view unavailable' } }), { status: 503 });
+      assert.equal(new URL(String(input?.url ?? input), 'http://localhost').searchParams.get('bridge_id'), 'b1');
+      return response([
+        { agent_instance_id: 'i-ready', bridge_id: 'b1', agent_id: 'a', runtime_status: 'running', ...runtime('m2') },
+        { agent_instance_id: 'i-matches', bridge_id: 'b1', agent_id: 'a', runtime_status: 'running', ...runtime('m2') },
+        { agent_instance_id: 'i-stopped', bridge_id: 'b1', agent_id: 'b', runtime_status: 'stopped', ...runtime('m2') },
+        { agent_instance_id: 'i-other', bridge_id: 'b1', agent_id: 'b', runtime_status: 'running', ...runtime('m1') },
+      ]);
+    }
     if (path.endsWith('/fleets')) return response([]);
     if (path.includes('/b2/')) return new Response(JSON.stringify({ error: { message: 'Bridge choices unavailable' } }), { status: 503 });
     if (path.endsWith('/provider-status')) return response({ providers: [{ provider: 'codex', profile_id: 'work', label: 'Work', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'm1', state: 'active' }, { model_id: 'm2', state: 'active' }] }] });
@@ -79,6 +90,8 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
       settings = { ...settings, revision: 3, default_runtime: body.default_runtime, overrides: body.overrides };
       application = { application_id: 'app', bridge_id: 'b1', request_id: body.request_id, settings_revision: 3, revision: 1, settings_saved: true, cancelled: false, state: 'partial_failure', targets: [
         { agent_instance_id: 'i-ready', agent_id: 'a', state: 'ready', retryable: false },
+        { agent_instance_id: 'i-accepted', agent_id: 'a', state: 'restarting', retryable: false },
+        { agent_instance_id: 'i-pending', agent_id: 'a', state: 'pending', retryable: false },
         { agent_instance_id: 'i-failed', agent_id: 'b', state: 'failed', error_message: 'Bridge offline', retryable: true },
       ] };
       if (applyMode === 'lost') { applyMode = 'success'; throw new TypeError('Network response lost'); }
@@ -111,7 +124,12 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
   const countCalls = (suffix: string) => calls.filter((c) => c.path.endsWith(suffix)).length;
   try {
     await act(async () => root.render(React.createElement(Provider, { store }, React.createElement(FleetWidget))));
-    await settle();
+    // Provider-status normalization and the shared identity query complete
+    // asynchronously; wait for both bridges rather than one fixed 150ms tick.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await settle();
+      if (get('home-fleet-apply-b1') && /Could not load settings/.test(get('home-widget-fleet').textContent || '')) break;
+    }
     assert.match(get('home-widget-fleet').textContent!, /First bridge/);
     assert.match(get('home-widget-fleet').textContent!, /Could not load settings/);
     assert.equal(countCalls('/agents'), 1, 'all bridges share the owner identity query');
@@ -152,9 +170,19 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     assert.deepEqual(calls.filter((c) => c.path.endsWith('/fleet/apply')).at(-1)!.body, lost, 'recovery replays exact request ID/revision/draft');
     assert.match(get('home-fleet-result-b1').textContent!, /Settings saved.*Some agents could not restart/s);
     assert.match(get('home-fleet-target-i-failed').textContent!, /Bridge offline/);
+    assert.match(get('home-fleet-target-i-accepted').textContent!, /restarting/);
+    assert.match(get('home-fleet-target-i-pending').textContent!, /pending/);
+    assert.match(get('home-fleet-excluded-b1').textContent!, /1 match saved settings.*1 not running.*1 other excluded/);
+    assert.match(get('home-fleet-excluded-b1').textContent!, /not saved server outcomes/);
+    assert.match(get('home-fleet-result-b1').textContent!, /1 ready.*1 pending.*1 restarting.*1 failed/);
+    assert.doesNotMatch(get('home-fleet-result-b1').textContent!, /All affected agents ready/,
+      'HTTP 202 and an accepted restart do not establish runtime readiness');
+    instanceListFails = true;
     await click('home-fleet-retry-b1');
     assert.equal(countCalls('/applications/app/retry'), 1);
     assert.match(get('home-fleet-target-i-ready').textContent!, /ready/);
+    assert.match(get('home-fleet-excluded-unavailable-b1').textContent!, /Client excluded counts unavailable/);
+    assert.equal(get('home-fleet-excluded-b1'), null, 'failed refresh does not label cached counts as current');
     await click('home-fleet-expand-b1');
     assert.equal(get('home-fleet-body-b1').hasAttribute('inert'), true);
     const reads = countCalls('/launch-defaults'), previewReads = countCalls('/fleet/preview');
@@ -203,4 +231,22 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     globalThis.fetch = savedFetch;
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = savedAct;
   }
+});
+
+test('Client excluded counts use loaded bridge instances, deduplicate and never reclassify server targets', () => {
+  const saved = { provider: 'codex', provider_profile: 'work', model: 'm2' };
+  const settings = { bridge_id: 'b1', revision: 1, default_runtime: saved,
+    overrides: [{ agent_id: 'a', runtime: { ...saved, model: 'override' } }] };
+  const application = { bridge_id: 'b1', targets: [{ agent_instance_id: 'target' }] } as any;
+  const base = { bridge_id: 'b1', agent_id: 'b', runtime_status: 'running', ...saved };
+  assert.deepEqual(fleetExcludedCounts([
+    { ...base, agent_instance_id: 'target' },
+    { ...base, agent_instance_id: 'match' },
+    { ...base, agent_instance_id: 'match' },
+    { ...base, agent_instance_id: 'stopped', runtime_status: 'stopped' },
+    { ...base, agent_instance_id: 'override', agent_id: 'a', model: 'override' },
+    { ...base, agent_instance_id: 'profile-mismatch', provider_profile: 'personal' },
+    { ...base, agent_instance_id: 'different-bridge', bridge_id: 'b2' },
+  ], settings, application), { unchanged: 2, notRunning: 1, other: 1 });
+  assert.deepEqual(application.targets, [{ agent_instance_id: 'target' }]);
 });

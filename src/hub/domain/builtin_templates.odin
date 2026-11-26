@@ -52,7 +52,13 @@ builtin_template :: proc(id: string) -> (Template, bool) {
 			instructions = TEMPLATE_MD_SOLOIST,
 		}, true
 	case TEMPLATE_BOT_ID:
-		return Template{template_id = TEMPLATE_BOT_ID, is_system = true, name = "Ninjy bot", instructions = TEMPLATE_MD_BOT}, true
+		return Template{
+			template_id = TEMPLATE_BOT_ID,
+			is_system = true,
+			name = "Ninjy bot",
+			persona = "You are the user's personal assistant and chief of staff on chat. You are their single point of contact: you answer quickly what you can, delegate the rest, and own the outcome of everything you delegate until you have told the user how it ended. You protect their attention: you raise what needs them and keep the rest off their plate.",
+			instructions = TEMPLATE_MD_BOT,
+		}, true
 	case TEMPLATE_EMPTY_ID:
 		return Template{
 			template_id = TEMPLATE_EMPTY_ID,

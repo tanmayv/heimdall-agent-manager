@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { useAgentLifecycle } from '../../hooks/useAgentLifecycle';
 
 import { Button, Checkbox, Icon, Modal, Select } from '@ui';
 import { VaultText, useDecryptedText } from '../vault/VaultText';
@@ -10,8 +11,6 @@ import {
 import {
   useListAgentIdentitiesQuery,
   useListAgentInstancesQuery,
-  useStartAgentInstanceMutation,
-  useLaunchAgentInstanceMutation,
 } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 
@@ -76,8 +75,11 @@ export default function ProjectLaunchModal({
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Mutations
-  const [startAgentInstance] = useStartAgentInstanceMutation();
-  const [launchAgentInstance] = useLaunchAgentInstanceMutation();
+  const lifecycle = useAgentLifecycle({
+    inline: result => {
+      if (result?.status === 'failed') setFeedback({ type: 'error', message: result.message });
+    },
+  });
 
   // Queries
   const projectId = project?.projectId || '';
@@ -276,32 +278,16 @@ export default function ProjectLaunchModal({
       let startedCount = 0;
       let alreadyRunningCount = 0;
       for (const instanceId of ids) {
-        try {
-          await startAgentInstance({ instanceId }).unwrap();
-          startedCount++;
-        } catch (err: any) {
-          const errStr = String(
-            err?.data?.error?.message ||
-            err?.data?.error ||
-            err?.error ||
-            err?.message ||
-            ''
-          ).toLowerCase();
-          const isAlreadyRunning =
-            err?.status === 409 ||
-            err?.data?.status === 409 ||
-            errStr.includes('already_running') ||
-            errStr.includes('already running');
-          if (isAlreadyRunning) {
-            alreadyRunningCount++;
-          } else {
-            throw err;
-          }
+        const result = await lifecycle.start({ instanceId });
+        if (result.status === 'failed') {
+          return;
         }
+        if (result.status === 'already-running') alreadyRunningCount++;
+        else startedCount++;
       }
       setFeedback({
         type: 'success',
-        message: `Successfully started ${startedCount} chain agent instance(s)${
+        message: `Start requested for ${startedCount} chain agent instance(s)${
           alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
         }.`,
       });
@@ -312,11 +298,6 @@ export default function ProjectLaunchModal({
       } else {
         onClose();
       }
-    } catch (err: any) {
-      setFeedback({
-        type: 'error',
-        message: String(err?.data?.error?.message || err?.error || err?.message || 'Failed to start agents'),
-      });
     } finally {
       setIsActionRunning(false);
     }
@@ -342,13 +323,17 @@ export default function ProjectLaunchModal({
       for (const agentId of ids) {
         // The POST /agent-instances response carries the new instance id at the
         // top level; capture the first one so we can navigate to it afterwards.
-        const result: any = await launchAgentInstance({ agentId, projectId, bridgeId: selectedBridgeId }).unwrap();
+        const outcome = await lifecycle.create({ agentId, projectId, bridgeId: selectedBridgeId });
+        if (outcome.status !== 'accepted') {
+          return;
+        }
+        const result = outcome.data;
         const newId = String(result?.agent_instance_id || result?.agentInstanceId || '').trim();
         if (newId && !firstLaunchedId) firstLaunchedId = newId;
       }
       setFeedback({
         type: 'success',
-        message: `Successfully launched ${ids.length} new agent instance(s) for ${decryptedProjectName || project.name}.`,
+        message: `Launch requested for ${ids.length} new agent instance(s) for ${decryptedProjectName || project.name}.`,
       });
       setSelectedNewAgentIds(new Set());
       // Navigate to the first launched instance when a handler is provided and
@@ -358,11 +343,6 @@ export default function ProjectLaunchModal({
       } else {
         onClose();
       }
-    } catch (err: any) {
-      setFeedback({
-        type: 'error',
-        message: String(err?.data?.error?.message || err?.error || err?.message || 'Failed to launch agent instances'),
-      });
     } finally {
       setIsActionRunning(false);
     }
@@ -388,32 +368,16 @@ export default function ProjectLaunchModal({
       let startedCount = 0;
       let alreadyRunningCount = 0;
       for (const instanceId of ids) {
-        try {
-          await startAgentInstance({ instanceId }).unwrap();
-          startedCount++;
-        } catch (err: any) {
-          const errStr = String(
-            err?.data?.error?.message ||
-            err?.data?.error ||
-            err?.error ||
-            err?.message ||
-            ''
-          ).toLowerCase();
-          const isAlreadyRunning =
-            err?.status === 409 ||
-            err?.data?.status === 409 ||
-            errStr.includes('already_running') ||
-            errStr.includes('already running');
-          if (isAlreadyRunning) {
-            alreadyRunningCount++;
-          } else {
-            throw err;
-          }
+        const result = await lifecycle.start({ instanceId });
+        if (result.status === 'failed') {
+          return;
         }
+        if (result.status === 'already-running') alreadyRunningCount++;
+        else startedCount++;
       }
       setFeedback({
         type: 'success',
-        message: `Successfully started ${startedCount} existing instance(s)${
+        message: `Start requested for ${startedCount} existing instance(s)${
           alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
         }.`,
       });
@@ -425,11 +389,6 @@ export default function ProjectLaunchModal({
       } else {
         onClose();
       }
-    } catch (err: any) {
-      setFeedback({
-        type: 'error',
-        message: String(err?.data?.error?.message || err?.error || err?.message || 'Failed to start instances'),
-      });
     } finally {
       setIsActionRunning(false);
     }
