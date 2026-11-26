@@ -63,6 +63,7 @@ before new native work and recovery. See `docs/fleet-management.md`.
 - `bridge list [--scope hub|configured|all]` — bridges you can target. Default `all` =
   Hub-registered + locally-configured peers + this host (self).
 - `bridge providers --bridge <id>` — that bridge's providers and their models: `providers[].provider` (with `enabled`) and `providers[].models[].model_id`. These are the `--provider` / `--model` values a launch accepts. Without `--bridge` it returns the bridge list only (no providers or models); use `bridge list` to find bridge ids.
+- `bridge provider-status <bridge-id>` — the same per-provider view of one bridge, documented for its `providers[].acp_availability`: whether that provider can run over ACP on that bridge and, if not, why (for example the bridge runs a version without ACP support). Check it before `agents instance reconfigure --transport acp`.
 
 ## agents — durable identities, templates, and runtime instances
 - `agents list` — your durable agent identities.
@@ -72,7 +73,10 @@ before new native work and recovery. See `docs/fleet-management.md`.
 - `agents instance list [--agent <id>] [--live]` — list instances (durable, or only live with `--live`).
 - `agents new-instance <agent-id> [--project <id>] [--bridge <id>] [--provider <p>] [--chain <id>]` — launch a NEW instance of a durable agent.
 - `agents start <instance-id>` — start a STOPPED instance (errors if already running).
-- `agents stop <instance-id> [--reason <t>]` — stop a running instance.
+- `agents stop <instance-id> [--reason <t>] [--force]` — stop a running instance. `--force` also stops while a reconfiguration is in progress (recovery; it ends that operation).
+- `agents instance reconfigure <instance-id> [--bridge <id>] [--provider <p>] [--profile <id>] [--model <m>] [--transport pty|acp] [--permission-mode yolo|ask] [--apply now|after_turn] [--expected-revision <n>] [--idempotency-key <k>]` — change where and how an instance runs; it restarts with a fresh session and the conversation stays. The CLI reads the instance first and fills every flag you leave out from its current configuration; the project is always kept. `--expected-revision` defaults to the instance's current `configuration_revision` (a concurrent change returns 409 `configuration changed; refresh before applying`). `--apply after_turn` on a busy instance queues the change until the current turn ends (operation phase `waiting_for_idle`); `now` (default) applies at once and supersedes a queued change. A changed `--provider` without `--profile` uses that provider's default profile. `--permission-mode` is user-only: the hub refuses it from an agent token. Returns the operation (202); follow it with `reconfigurations`.
+- `agents instance reconfigurations <instance-id>` — list the instance's reconfiguration operations (`operations[]` with `phase`, `revision`, `idempotency_key`, `failure_code`). `phase` is the hub enum ordinal: 0 prepared, 1 stopping, 2 source_stopped, 3 launching, 4 ready, 5 failed, 6 recovery_required, 7 waiting_for_idle.
+- `agents instance cancel-reconfiguration <instance-id>` — cancel the change queued after the current turn (the `waiting_for_idle` operation). Errors when nothing is queued.
 - `agents restart <instance-id>` — restart (stop-then-start) an instance.
 
 

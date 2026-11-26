@@ -24,6 +24,7 @@ import "core:encoding/base64"
 import "core:strconv"
 import "core:strings"
 import httpc "odin_test:lib/httpc"
+import jsonx "odin_test:lib/jsonx"
 import vault "odin_test:lib/vault"
 
 Bridge_Agent_Route_Kind :: enum {
@@ -46,6 +47,10 @@ Bridge_Agent_Route :: struct {
 	local_op:    string,
 	// send_body: for .Raw, whether params should be forwarded as the request body.
 	send_body:   bool,
+	// body: for .Raw with send_body, the exact body to forward instead of params
+	// (temp-allocated). Used where the hub rejects unknown keys, so the routing
+	// instance_id must not travel in the body.
+	body:        string,
 	// message: for .Bad_Request, the specific "which params are needed" error.
 	message:     string,
 }
@@ -106,6 +111,28 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 	case "agent.agents.instance_stop":
 		if id := bridge_agent_instance_id(params); id != "" {
 			return Bridge_Agent_Route{kind = .Raw, http_method = .POST, path = route_path("api", "v1", "agent-instances", id, "stop"), send_body = true}
+		}
+	case "agent.agents.instance_get":
+		if id := bridge_agent_instance_id(params); id != "" {
+			return Bridge_Agent_Route{kind = .Raw, http_method = .GET, path = route_path("api", "v1", "agent-instances", id)}
+		}
+	case "agent.agents.instance_reconfigurations":
+		if id := bridge_agent_instance_id(params); id != "" {
+			return Bridge_Agent_Route{kind = .Raw, http_method = .GET, path = route_path("api", "v1", "agent-instances", id, "reconfigurations")}
+		}
+	case "agent.agents.instance_reconfigure":
+		// params: {instance_id, reconfiguration:{full destination}}. The hub
+		// rejects unknown reconfiguration fields, so only the nested object is
+		// forwarded as the body.
+		id := bridge_agent_instance_id(params)
+		body, has_body := jsonx.extract_raw_object(params, "reconfiguration", true, context.temp_allocator)
+		if id == "" || !has_body do return Bridge_Agent_Route{kind = .Bad_Request, message = "instance_id and reconfiguration are required"}
+		return Bridge_Agent_Route{kind = .Raw, http_method = .POST, path = route_path("api", "v1", "agent-instances", id, "reconfigurations"), send_body = true, body = body}
+	case "agent.agents.instance_reconfiguration_cancel":
+		// params: {instance_id, idempotency_key, expected_operation_revision};
+		// the hub reads the two keys it needs and ignores instance_id.
+		if id := bridge_agent_instance_id(params); id != "" {
+			return Bridge_Agent_Route{kind = .Raw, http_method = .POST, path = route_path("api", "v1", "agent-instances", id, "reconfigurations", "cancel"), send_body = true}
 		}
 
 	// ---- task-chain -------------------------------------------------------
@@ -400,7 +427,9 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.agents.template_list", "agent.agents.template_create",
 	     "agent.agents.instance_list", "agent.agents.new_instance",
 	     "agent.agents.instance_start", "agent.agents.instance_restart",
-	     "agent.agents.instance_stop",
+	     "agent.agents.instance_stop", "agent.agents.instance_get",
+	     "agent.agents.instance_reconfigure", "agent.agents.instance_reconfigurations",
+	     "agent.agents.instance_reconfiguration_cancel",
 	     // task-chain + task
 	     "agent.task_chain.create", "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
 	     "agent.task_chain.set_description", "agent.task_chain.set_status", "agent.task_chain.update",

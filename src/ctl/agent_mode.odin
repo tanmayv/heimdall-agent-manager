@@ -141,6 +141,12 @@ ctl_v2_bridge :: proc(endpoint, token: string, tokens, args: []string) {
 		bid := option_value(args, "--bridge", pos(tokens, 1))
 		if bid != "" { ctl_agent_call(endpoint, token, "agent.bridge.providers", json_object(json_kv("bridge_id", bid))) }
 		else { ctl_agent_call(endpoint, token, "agent.bridge.providers", "{}") }
+	case "provider-status":
+		// Per-provider status of one bridge, including providers[].acp_availability
+		// (GET /api/v1/bridges/{id}/provider-status).
+		bid := option_value(args, "--bridge", pos(tokens, 1))
+		if bid == "" { print_agent_help([]string{"bridge"}); return }
+		ctl_agent_call_exit(endpoint, token, "agent.bridge.providers", json_object(json_kv("bridge_id", bid)))
 	case:
 		print_agent_help([]string{"bridge"})
 	}
@@ -198,6 +204,32 @@ ctl_v2_agents :: proc(endpoint, token: string, tokens, args: []string) {
 			ctl_agent_call(endpoint, token, "agent.agents.instance_list", json_object_from_slice(fields[:]))
 			return
 		}
+		inst := pos(tokens, 2)
+		switch sub {
+		case "reconfigure":
+			if inst == "" { print_agent_help([]string{"agents"}); return }
+			// Fill unspecified fields from the current instance (instance_reconfigure.odin).
+			current_response, reachable := ctl_agent_local_call(endpoint, token, "agent.agents.instance_get", json_object(json_kv("instance_id", inst)))
+			if !reachable { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+			current, current_ok, current_message := ctl_instance_config_from_response(current_response)
+			if !current_ok { fmt.println(ctl_error_json(current_message)); os.exit(1) }
+			params, valid, message := ctl_reconfigure_params(inst, current, args, ctl_reconfigure_idempotency_key(args))
+			if !valid { fmt.println(ctl_error_json(message)); os.exit(2) }
+			ctl_agent_call_exit(endpoint, token, "agent.agents.instance_reconfigure", params)
+			return
+		case "reconfigurations":
+			if inst == "" { print_agent_help([]string{"agents"}); return }
+			ctl_agent_call_exit(endpoint, token, "agent.agents.instance_reconfigurations", json_object(json_kv("instance_id", inst)))
+			return
+		case "cancel-reconfiguration":
+			if inst == "" { print_agent_help([]string{"agents"}); return }
+			list_response, reachable := ctl_agent_local_call(endpoint, token, "agent.agents.instance_reconfigurations", json_object(json_kv("instance_id", inst)))
+			if !reachable { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+			params, valid, message := ctl_cancel_reconfiguration_params(inst, list_response)
+			if !valid { fmt.println(ctl_error_json(message)); os.exit(1) }
+			ctl_agent_call_exit(endpoint, token, "agent.agents.instance_reconfiguration_cancel", params)
+			return
+		}
 		print_agent_help([]string{"agents"})
 	case "new-instance":
 		agent_id := pos(tokens, 1)
@@ -216,10 +248,7 @@ ctl_v2_agents :: proc(endpoint, token: string, tokens, args: []string) {
 		method := "agent.agents.instance_start"
 		if verb == "stop" do method = "agent.agents.instance_stop"
 		if verb == "restart" do method = "agent.agents.instance_restart"
-		fields := make([dynamic]string)
-		append(&fields, json_kv("instance_id", inst))
-		if verb == "stop" { if v := option_value(args, "--reason", ""); v != "" do append(&fields, json_kv("reason", v)) }
-		ctl_agent_call(endpoint, token, method, json_object_from_slice(fields[:]))
+		ctl_agent_call(endpoint, token, method, ctl_instance_lifecycle_params(verb, inst, args))
 	case:
 		print_agent_help([]string{"agents"})
 	}
@@ -1612,6 +1641,28 @@ ctl_agent_call :: proc(endpoint, token, method, params_json: string) {
 	fmt.println(response)
 }
 
+// ctl_instance_lifecycle_params builds the start|stop|restart params. For stop,
+// --reason and --force (Stop_Instance_Input.force: also stops an instance whose
+// reconfiguration is in progress, ending that operation) are forwarded.
+ctl_instance_lifecycle_params :: proc(verb, inst: string, args: []string) -> string {
+	context.allocator = context.temp_allocator // the result is sent at once
+	fields := make([dynamic]string)
+	append(&fields, json_kv("instance_id", inst))
+	if verb == "stop" {
+		if v := option_value(args, "--reason", ""); v != "" do append(&fields, json_kv("reason", v))
+		if has_flag(args, "--force") do append(&fields, json_kv_raw("force", "true"))
+	}
+	return json_object_from_slice(fields[:])
+}
+
+// ctl_agent_call_exit is ctl_agent_call that exits 1 when the call failed.
+ctl_agent_call_exit :: proc(endpoint, token, method, params_json: string) {
+	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	fmt.println(response)
+	if strings.contains(response, `"ok":false`) do os.exit(1)
+}
+
 ctl_agent_call_and_decrypt :: proc(endpoint, token, method, params_json: string, args: []string = nil) {
 	ctl_agent_call_task(endpoint, token, method, params_json, args)
 }
@@ -1968,6 +2019,8 @@ print_help_bridge :: proc() {
 	fmt.println("  list [--scope hub|configured|all]   List bridges. default all: Hub-registered")
 	fmt.println("                                      + locally-configured peers + this host (self).")
 	fmt.println("  providers --bridge <id>             Providers (+ models) of one Hub bridge; no --bridge lists bridges only.")
+	fmt.println("  provider-status <bridge-id>         Per-provider status of one bridge, incl. providers[].acp_availability")
+	fmt.println("                                      (whether ACP can run there and why not).")
 	fmt.println("  fleet show|defaults|overrides <bridge-id>   Read the complete revisioned Fleet snapshot.")
 	fmt.println("  fleet apply <bridge-id> --draft-file <json> Save snapshot and restart changed running task agents.")
 	fmt.println("  fleet status|retry <bridge-id> <application-id>   Inspect/retry durable restart outcomes.")
@@ -1976,6 +2029,7 @@ print_help_bridge :: proc() {
 	fmt.println("  ham-ctl bridge list")
 	fmt.println("  ham-ctl bridge list --scope configured")
 	fmt.println("  ham-ctl bridge providers --bridge brg_abc")
+	fmt.println("  ham-ctl bridge provider-status brg_abc")
 }
 
 print_help_agents :: proc() {
@@ -1994,11 +2048,25 @@ print_help_agents :: proc() {
 	fmt.println("  new-instance <agent-id>             Launch a NEW instance of a durable agent.")
 	fmt.println("      [--project <id>] [--bridge <id>] [--provider <p>] [--model <t>] [--chain <id>]")
 	fmt.println("  start   <agent-instance-id>          Start a STOPPED instance (409 if already running).")
-	fmt.println("  stop    <agent-instance-id> [--reason <t>]   Stop a running instance.")
+	fmt.println("  instance reconfigure <agent-instance-id>   Change where/how an instance runs (restarts it with a")
+	fmt.println("      fresh session; the conversation stays). Unset flags keep the current value; the project is kept.")
+	fmt.println("      [--bridge <id>] [--provider <p>] [--profile <id>] [--model <m>] [--transport pty|acp]")
+	fmt.println("      [--permission-mode yolo|ask] [--apply now|after_turn] [--expected-revision <n>] [--idempotency-key <k>]")
+	fmt.println("      --apply after_turn on a busy instance queues the change (phase waiting_for_idle).")
+	fmt.println("      --expected-revision defaults to the instance's current configuration_revision.")
+	fmt.println("      --permission-mode is user-only: the hub refuses it from an agent token.")
+	fmt.println("  instance reconfigurations <agent-instance-id>        List the instance's reconfiguration operations.")
+	fmt.println("  instance cancel-reconfiguration <agent-instance-id>  Cancel the change queued after the current turn.")
+	fmt.println("  stop    <agent-instance-id> [--reason <t>] [--force]   Stop a running instance.")
+	fmt.println("      --force also stops while a reconfiguration is in progress (recovery; ends that operation).")
 	fmt.println("  restart <agent-instance-id>          Restart (stop-then-start) an instance.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl agents list")
+	fmt.println("  ham-ctl agents instance reconfigure inst_123 --model opus --apply after_turn")
+	fmt.println("  ham-ctl agents instance reconfigure inst_123 --transport acp")
+	fmt.println("  ham-ctl agents instance cancel-reconfiguration inst_123")
+	fmt.println("  ham-ctl agents stop inst_123 --force")
 	fmt.println("  ham-ctl agents new-instance agt_abc --project proj_x --provider claude --model smart")
 	fmt.println("  ham-ctl agents start inst_123")
 	fmt.println("  ham-ctl agents template create --name coder --persona 'You write code.'")
