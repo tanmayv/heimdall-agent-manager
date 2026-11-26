@@ -195,6 +195,10 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
       return known('Ready, but no worker has picked it up yet');
     case 'review_stalled':
       return known('Review is waiting for an eligible reviewer');
+    case 'lease_stall_nudged':
+      return known('The holder went quiet; nudged once to report progress');
+    case 'lease_stalled':
+      return known('Still quiet after the nudge; the coordinator was told (the task stays held)');
     case 'hold_stale':
       return known('Still held; the coordinator was reminded to release it');
     case 'dependency_stalled':
