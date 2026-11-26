@@ -200,10 +200,12 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 		if inst.agent_id != fleet.agent_id do continue
 		if ctx_is_coordinator(svc, ctx, inst.agent_instance_id) do continue
 		in_scope := restrict == "" || inst.bridge_id == restrict
+		// A lease holder always occupies its slot, whatever its runtime state
+		// (a failed holder keeps its waiting claim).
 		held := ctx.held[inst.agent_instance_id]
-		if held do scan.held += 1
+		if held { scan.held += 1; scan.occupied += 1 }
 		if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None {
-			scan.occupied += 1
+			if !held do scan.occupied += 1
 			if in_scope && !held do scan.failure = "instance has a pending runtime action"
 			continue
 		}
@@ -217,7 +219,7 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 		if disposition == .Hold {
 			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable {
 				// Provider backoff: occupies its slot and is retried at its deadline.
-				scan.occupied += 1
+				if !held do scan.occupied += 1
 				if in_scope && !held {
 					due := to_ms(inst.stopped_at) + agent.instance_retry_delay_ms(agent.instance_last_error_attempt(inst), werr.retry_after_ms)
 					if scan.retry_due_ms == 0 || due < scan.retry_due_ms do scan.retry_due_ms = due
@@ -230,7 +232,7 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 			continue
 		}
 		live := instance_is_live(inst) || instance_is_pending(inst)
-		if held || live do scan.occupied += 1
+		if !held && live do scan.occupied += 1
 		if held || !in_scope do continue
 		if why := bridge_reuse_problem(svc, ctx, fleet, inst.bridge_id, kind); why != "" {
 			if scan.unusable == "" do scan.unusable = fmt.tprintf("instance %s on bridge %s: %s", inst.agent_instance_id, inst.bridge_id, why)
@@ -267,6 +269,7 @@ agent_occupied_count :: proc(svc: ^Service, ctx: ^Match_Context, agent_id: strin
 	n := 0
 	for inst in ctx.instances {
 		if inst.agent_id != agent_id || ctx_is_coordinator(svc, ctx, inst.agent_instance_id) do continue
+		if ctx.held[inst.agent_instance_id] { n += 1; continue }
 		if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None { n += 1; continue }
 		if inst.stopped_by == agent.STOPPED_BY_USER do continue
 		disposition := agent.failed_instance_disposition(inst, ctx.now_ms)

@@ -400,12 +400,12 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 			if inst.agent_instance_id != claim.holder_instance_id || inst.agent_id != fleet.agent_id do continue
 			placement := placement_on_bridge(ctx, fleet, inst.bridge_id)
 			if restrict != "" && inst.bridge_id != restrict do return {placement = placement, why = "assigned instance is on another bridge"}
+			// Its bridge being away or ineligible is queueing reported by the
+			// placement snapshot, checked before the instance (as before reuse).
+			if reason, _ := placement_problem(svc, ctx, placement, true, fleet.agent_id); reason != "" do return {placement = placement}
 			if disposition := agent.failed_instance_disposition(inst, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {placement = placement, why = instance_failure_reason(inst)}
 			if inst.stopped_by == agent.STOPPED_BY_USER do return {placement = placement, why = "assigned instance was stopped by the user"}
 			if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None do return {placement = placement, why = "assigned instance has a pending runtime action"}
-			// Its bridge being away or its directory busy is queueing; the
-			// placement snapshot reports the bridge.
-			if reason, _ := placement_problem(svc, ctx, placement, true, fleet.agent_id); reason != "" do return {placement = placement}
 			if kind == domain.LEASE_KIND_WORK && placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id) do return {placement = placement}
 			return {inst = inst, placement = placement, found = true, counted = instance_slot_counted(svc, ctx, u, inst)}
 		}
@@ -437,11 +437,12 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 	if scan.have_warm && below_capacity do return choose(svc, ctx, u, fleet, scan.warm)
 	if scan.have_stopping && within_capacity do return choose(svc, ctx, u, fleet, scan.stopping)
 	if !below_capacity do return {placement = base}
-	if scan.failure != "" do return {placement = base, why = scan.failure}
 	// A new instance goes where the base placement says. Problems there are
-	// queueing reported by the placement snapshot, never a card.
+	// queueing reported by the placement snapshot, never a card, and are
+	// checked before an unusable instance's card (as before reuse).
 	if !base_ok do return {placement = base}
 	if reason, _ := placement_problem(svc, ctx, base, true, fleet.agent_id); reason != "" do return {placement = base}
+	if scan.failure != "" do return {placement = base, why = scan.failure}
 	if kind == domain.LEASE_KIND_WORK && base.directory_id != "" && directory_has_work_lease_ctx(ctx, base.directory_id) do return {placement = base}
 	return {placement = base, found = true, jit = true, reuse_note = scan.unusable}
 }
