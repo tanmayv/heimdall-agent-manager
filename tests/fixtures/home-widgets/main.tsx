@@ -14,6 +14,7 @@ import { HomeSelect } from '../../../src/ui/components/home/HomeSelect';
 import { fleetFixture, mockActivity, MOCK_PROVIDERS, chainsFixture, chainDetailFixture } from '../../../src/ui/components/home/homeWidgetFixtures';
 import { summarizeActivity, fleetFromWire } from '../../../src/ui/components/home/widgetData';
 import { setExpectedUserId } from '../../../src/ui/utils/expectedUser';
+import { createLocalHomeLayoutAdapter, HomeLayoutConflict } from '../../../src/ui/components/home/homeLayout';
 import '../../../src/ui/styles.css';
 
 const store = configureStore({ reducer: { vault, [heimdallApi.reducerPath]: heimdallApi.reducer }, middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(heimdallApi.middleware) });
@@ -22,7 +23,9 @@ const params = new URLSearchParams(location.search);
 // contacting a Hub or restarting a live instance.
 const fixtureFleet = fleetFromWire(fleetFixture());
 const fleetState = params.get('fleet-state') || 'normal';
-setExpectedUserId('home-visual-fixture');
+let fixtureUser = 'home-visual-fixture';
+const visualLayout = createLocalHomeLayoutAdapter(localStorage);
+setExpectedUserId(fixtureUser);
 for (const bridge of fixtureFleet) {
   sessionStorage.removeItem(`heimdall:fleet:home-visual-fixture:${bridge.id}`);
 }
@@ -30,6 +33,7 @@ if (fleetState === 'applying' || fleetState === 'partial-failure' || fleetState 
   sessionStorage.setItem('heimdall:fleet:home-visual-fixture:mock-bridge-0', JSON.stringify({ applicationId: 'fixture-application' }));
 }
 const nativeFetch = window.fetch.bind(window);
+if (params.has('real-layout')) (window as any).__homeFixtureNativeFetch = nativeFetch;
 const fixtureRequests: { path: string; method: string }[] = [];
 (window as any).__fleetFixtureRequests = fixtureRequests;
 window.fetch = async (input, init) => {
@@ -37,6 +41,19 @@ window.fetch = async (input, init) => {
   if (!url.pathname.startsWith('/api/v1/')) return nativeFetch(input, init);
   const path = url.pathname;
   fixtureRequests.push({ path, method: init?.method || (input instanceof Request ? input.method : 'GET') });
+  if (path === '/api/v1/me/home-layout') {
+    // Only this route reaches the isolated real Hub in integration mode. Other
+    // widgets remain visual fixtures; their data is not persistence evidence.
+    if (params.has('real-layout')) return nativeFetch(input, init);
+    try {
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      const data = body ? await visualLayout.save(fixtureUser, body, body.version) : await visualLayout.load(fixtureUser);
+      return new Response(JSON.stringify({ data }), { headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      if (!(error instanceof HomeLayoutConflict)) throw error;
+      return new Response(JSON.stringify({ error: { code: 'conflict', message: error.message } }), { status: 409 });
+    }
+  }
   const bridge = fixtureFleet.find((b) => path.includes('/' + b.id + '/')) || fixtureFleet[0];
   let data: any;
   if (path === '/api/v1/task-chains') data = [0, 1, 2].flatMap((page) => chainsFixture(page).chains);
@@ -85,7 +102,7 @@ function SheetProbes() {
   </section>;
 }
 const fixtureRoot = createRoot(document.getElementById('root')!);
-function renderFixture(user: string | null = 'home-visual-fixture') {
+function renderFixture(user: string | null = fixtureUser) {
   fixtureRoot.render(user === null ? null : <Provider store={store}><div className="fixture-shell"><aside className="fixture-sidebar">Ninjy</aside><main className="fixture-main">
   <AuthUserProvider value={{ user_id: user }}>
     {params.has('empty') ? <HomeDashboard userId="home-visual-fixture" widgets={{
@@ -99,4 +116,15 @@ function renderFixture(user: string | null = 'home-visual-fixture') {
 </main></div></Provider>);
 }
 (window as any).__homeFixtureRender = renderFixture;
-renderFixture();
+if (params.has('real-layout')) {
+  // Test-only login mints a genuine SQLite-backed Hub session cookie. Browser
+  // requests subsequently authenticate through the production session path.
+  nativeFetch('/api/v1/_fixture/login?user=' + encodeURIComponent(params.get('layout-user') || 'layout_browser'), { method: 'POST' })
+    .then(async (response) => {
+      if (!response.ok) throw new Error('Real layout fixture login failed');
+      fixtureUser = (await response.json()).data.user_id;
+      setExpectedUserId(fixtureUser);
+      (window as any).__homeFixtureUser = fixtureUser;
+      renderFixture();
+    });
+} else renderFixture();
