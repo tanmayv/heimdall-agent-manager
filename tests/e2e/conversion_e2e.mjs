@@ -458,6 +458,7 @@ async function main() {
     // macOS signing identities. Grant the staged CDHash access only to P5's
     // records in the dedicated, disposable CI keychain.
     const fixtureKeychain = process.env.HEIMDALL_E2E_P5_KEYCHAIN;
+    let fixtureRuntimeCdHash;
     if (MAC && fixtureKeychain) {
       expect(process.env.GITHUB_ACTIONS === 'true' &&
         fixtureKeychain === path.join(process.env.RUNNER_TEMP || '', 'e2e.keychain-db'),
@@ -465,6 +466,7 @@ async function main() {
       const signature = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', NEW_BRIDGE], { encoding: 'utf8', timeout: 10_000 });
       const cdHash = signature.stderr?.match(/^CDHash=([a-f0-9]{40})$/im)?.[1];
       expect(signature.status === 0 && cdHash, 'P5: identified the staged runtime CDHash');
+      fixtureRuntimeCdHash = cdHash;
       const partitions = 'teamid:8TSXLYJZN3,cdhash:' + cdHash;
       const security = (args) => spawnSync('/usr/bin/security', args, { encoding: 'utf8', timeout: 15_000 });
       // Metadata only. Never use dump-keychain -d or find-generic-password -g/-w.
@@ -518,7 +520,7 @@ async function main() {
         let logBytes = null;
         try { logBytes = fs.statSync(path.join(root, 'logs', 'runtime.log')).size; } catch {}
         const managed = procs?.procs?.find((proc) => proc.role === 'runtime');
-        if (collectMac && managed?.pid && !sampleRun && control?.pid !== managed.pid) {
+        if ((collectMac || fixtureRuntimeCdHash) && managed?.pid && !sampleRun && control?.pid !== managed.pid) {
           if (samplePid !== managed.pid) {
             samplePid = managed.pid;
             macReports['codesign-managed'] = commandReport('/usr/bin/codesign', ['-dv', '--verbose=4', path.join(root, 'releases', managed.tree, 'bin', 'ham-bridge')]);
@@ -558,9 +560,23 @@ async function main() {
         clearTimeout(timeout);
       }
       if (r.status !== 0) for (const summary of seen) console.log('    P5 startup sample:', summary);
-      if (collectMac && r.status !== 0) {
+      if ((collectMac || fixtureRuntimeCdHash) && r.status !== 0) {
         if (sampleRun) macReports['runtime-sample'] = await sampleRun;
         macReports['securityd-log'] = commandReport('/usr/bin/log', ['show', '--last', '3m', '--style', 'compact', '--predicate', 'process == "securityd" AND (eventMessage CONTAINS[c] "ACL" OR eventMessage CONTAINS[c] "interaction" OR eventMessage CONTAINS[c] "prompt")']);
+        if (fixtureRuntimeCdHash) {
+          const managedSignature = JSON.parse(macReports['codesign-managed'] || '{}');
+          const managedCdHash = managedSignature.stderr?.match(/^CDHash=([a-f0-9]{40})$/im)?.[1];
+          const sample = macReports['runtime-sample'];
+          const securityd = JSON.parse(macReports['securityd-log']);
+          // Public CI output contains classifications only, never raw stacks or logs.
+          console.log('    P5 fixture authorization evidence:', JSON.stringify({
+            managedMatchesFixtureSignature: managedCdHash ? managedCdHash === fixtureRuntimeCdHash : null,
+            sampled: sample?.startsWith('exit 0\n') ?? false,
+            sampleInKeychainRead: /keychain_find_item|SecKeychainFindGenericPassword/.test(sample || ''),
+            securitydRead: securityd.status === 0,
+            securitydReportsPrompt: /displaying.*prompt|prompt.*display/i.test(securityd.stdout || ''),
+          }));
+        }
       }
     } else {
       r = spawnSync('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, encoding: 'utf8', timeout: 900_000, input: '' });
