@@ -800,6 +800,8 @@ MIGRATION_261_EXTENSION_VERSION_SYNC :: #load("migrations/261_extension_version_
 
 MIGRATION_262_EXTENSION_VERSION_SYNC :: #load("migrations/262_extension_version_sync_0_5_93.sql", string)
 
+MIGRATION_263_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE :: #load("migrations/263_instance_runtime_transport_override.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1099,6 +1101,7 @@ migration_order :: [?]string {
 	"260_drop_fleet_roles.sql",
 	"261_extension_version_sync_0_5_92.sql",
 	"262_extension_version_sync_0_5_93.sql",
+	"263_instance_runtime_transport_override.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1591,6 +1594,14 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		// 263 runs inside its own BEGIN/COMMIT; its last statement recreates the
+		// commit trigger, so a trigger that mentions the override proves completion.
+		if name == "263_instance_runtime_transport_override.sql" &&
+		   table_column_exists(conn, "agent_instances", "runtime_transport_override") &&
+		   sqlite_trigger_mentions(conn, "instance_reconfiguration_commit", "runtime_transport_override") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 110 commits atomically before its ledger row; its column proves completion.
 		if name == "110_provider_ask_args.sql" && table_column_exists(conn, "provider_catalog", "ask_args") {
 			mark_migration_applied(conn, name)
@@ -1625,7 +1636,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_instance_runtime_transport_override.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1666,6 +1677,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "263_instance_runtime_transport_override.sql" do return strings.clone(MIGRATION_263_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE)
 	if name == "262_extension_version_sync_0_5_93.sql" do return strings.clone(MIGRATION_262_EXTENSION_VERSION_SYNC)
 	if name == "261_extension_version_sync_0_5_92.sql" do return strings.clone(MIGRATION_261_EXTENSION_VERSION_SYNC)
 	if name == "260_drop_fleet_roles.sql" do return strings.clone(MIGRATION_260_DROP_FLEET_ROLES)

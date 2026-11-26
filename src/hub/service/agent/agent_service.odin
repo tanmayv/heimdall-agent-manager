@@ -2592,14 +2592,17 @@ bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, ow
 }
 
 
-resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string) -> (string,domain.Domain_Error) {
+resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string, instance_override: string = "") -> (string,domain.Domain_Error) {
  svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
- return provider_service.resolve_runtime_transport(&svc,bridge_id,provider)
+ return provider_service.resolve_runtime_transport(&svc,bridge_id,provider,instance_override)
 }
 
 // Only new launches call this helper. Re-delivery serializers use the snapshot.
+// Precedence: the instance's explicit runtime_transport_override (set by
+// reconfiguration) wins over the bridge-wide provider setting, which wins over
+// the catalog default; see provider_service.resolve_runtime_transport.
 freeze_runtime_transport :: proc(service: ^Agent_Service, inst: ^domain.Agent_Instance) -> domain.Domain_Error {
- transport,err:=resolve_launch_transport(service,inst.bridge_id,inst.provider)
+ transport,err:=resolve_launch_transport(service,inst.bridge_id,inst.provider,domain.runtime_transport_override_normalize(inst.runtime_transport_override))
  if err.code!=.None do return err
  inst.runtime_transport=transport
  return {}

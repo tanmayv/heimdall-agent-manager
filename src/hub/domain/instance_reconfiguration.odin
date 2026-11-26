@@ -15,6 +15,10 @@ Instance_Configuration :: struct {
 	// permission_mode is the instance override ("" inherit | "yolo" | "ask"); the
 	// move commit trigger copies the destination value onto the instance.
 	permission_mode: string,
+	// runtime_transport_override is the instance's explicit transport choice
+	// ("" follow bridge/catalog | "pty" | "acp"); runtime_transport above is the
+	// value it resolved to. The move commit trigger copies it onto the instance.
+	runtime_transport_override: string,
 }
 
 Instance_Reconfiguration_Phase :: enum {
@@ -89,7 +93,7 @@ instance_reconfiguration_transition_allowed :: proc(from, to: Instance_Reconfigu
 }
 
 instance_configuration_equal :: proc(a, b: Instance_Configuration) -> bool {
-	return a.bridge_id == b.bridge_id && a.project_id == b.project_id && a.project_path == b.project_path && a.provider == b.provider && profile_effective_id(a.provider,a.provider_profile)==profile_effective_id(b.provider,b.provider_profile) && a.model == b.model && a.permission_mode == b.permission_mode && a.runtime_transport==b.runtime_transport
+	return a.bridge_id == b.bridge_id && a.project_id == b.project_id && a.project_path == b.project_path && a.provider == b.provider && profile_effective_id(a.provider,a.provider_profile)==profile_effective_id(b.provider,b.provider_profile) && a.model == b.model && a.permission_mode == b.permission_mode && a.runtime_transport==b.runtime_transport && runtime_transport_override_normalize(a.runtime_transport_override)==runtime_transport_override_normalize(b.runtime_transport_override)
 }
 
 instance_configuration_destroy :: proc(config: ^Instance_Configuration) {
@@ -97,6 +101,7 @@ instance_configuration_destroy :: proc(config: ^Instance_Configuration) {
 	delete(config.bridge_id); delete(config.bridge_label)
 	delete(config.project_id); delete(config.project_label); delete(config.project_path)
 	delete(config.provider_profile); delete(config.provider); delete(config.model); delete(config.permission_mode)
+	delete(config.runtime_transport_override)
 	config^ = {}
 }
 

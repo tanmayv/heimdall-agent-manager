@@ -273,3 +273,42 @@ test('lifecycle acceptance refreshes scoped lists and chain without agentId; WS 
     globalThis.fetch = previous;
   }
 });
+
+test('agent_instance summaries patch the settings panel fields (project, profile, permission, transport)', async () => {
+  const { handleUserWsEvent, INVALIDATION_COALESCE_MS, resetQueuedInvalidations } = await import('../src/ui/api/wsInvalidation.ts');
+  const instance = { agent_instance_id: 'inst_a', agent_id: 'agt_a', project_id: 'proj_a', provider: 'claude', provider_profile: 'claude', permission_mode: '', effective_permission_mode: 'yolo', runtime_transport: 'pty', runtime_transport_override: '', runtime_status: 'running', updated_at: '2026-11-26T00:00:00Z' };
+  const fetched = installRoutedFetch({ '/agent-instances/inst_a': () => instance, '/agent-instances': () => [instance] });
+  const store = await makeVaultStore();
+  const subs = [
+    store.dispatch(agents.agentsApi.endpoints.fetchAgentInstance.initiate({ instanceId: 'inst_a' })),
+    store.dispatch(agents.agentsApi.endpoints.listAgentInstances.initiate(undefined)),
+  ];
+  try {
+    await Promise.all(subs);
+    // Every agent_instance change carries the complete summary; status_changed patches
+    // in place without a refetch (config_changed additionally refetches the instance).
+    const before = fetched.count(/^GET /);
+    const patch = { project_id: 'proj_b', provider_profile: 'work', permission_mode: 'ask', effective_permission_mode: 'ask', runtime_transport: 'acp', runtime_transport_override: 'acp' };
+    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'inst_a', change: 'status_changed', summary: { ...instance, ...patch, updated_at: '2026-11-26T00:01:00Z' } });
+    await settle(INVALIDATION_COALESCE_MS + 60);
+    const detail = agents.agentsApi.endpoints.fetchAgentInstance.select({ instanceId: 'inst_a' })(store.getState()).data?.instance;
+    const row = agents.agentsApi.endpoints.listAgentInstances.select(undefined)(store.getState()).data?.instances[0];
+    for (const [field, value] of Object.entries(patch)) {
+      assert.equal(detail?.[field], value, `detail ${field}`);
+      assert.equal(row?.[field], value, `list ${field}`);
+    }
+    // A producer that lacks the agent's mode omits effective_permission_mode: the cached value stays.
+    const { effective_permission_mode: _omitted, ...withoutEffective } = { ...instance, ...patch, permission_mode: '' };
+    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'inst_a', change: 'status_changed', summary: { ...withoutEffective, updated_at: '2026-11-26T00:02:00Z' } });
+    await settle(INVALIDATION_COALESCE_MS + 60);
+    assert.equal(fetched.count(/^GET /), before, 'patched in place, no refetch');
+    const after = agents.agentsApi.endpoints.fetchAgentInstance.select({ instanceId: 'inst_a' })(store.getState()).data?.instance;
+    assert.equal(after?.permission_mode, '');
+    assert.equal(after?.effective_permission_mode, 'ask');
+  } finally {
+    resetQueuedInvalidations();
+    subs.forEach(sub => sub.unsubscribe());
+    store.dispatch(heimdallApi.util.resetApiState());
+    fetched.restore();
+  }
+});

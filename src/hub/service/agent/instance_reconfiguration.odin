@@ -20,6 +20,23 @@ Reconfigure_Operation_Input :: struct {
 	// ("yolo" | "ask"); "" keeps the instance's current override. A change that
 	// touches only this field is a valid operation and restarts the instance.
 	permission_mode: string,
+	// runtime_transport optionally pins this one instance to "pty" | "acp",
+	// winning over the bridge-wide provider setting on this and every later
+	// launch. "" keeps the instance's current choice (for most instances: none,
+	// i.e. bridge-provider override, then catalog default). A transport-only
+	// change is a valid operation and restarts the instance.
+	runtime_transport: string,
+}
+
+// reconfiguration_destination_transport_override resolves the destination's
+// explicit transport choice: the requested value when given (validated), else the
+// instance's current choice. Always returns a static literal ("" | "pty" | "acp").
+// Catalog support and ACP readiness are checked when the destination is frozen.
+reconfiguration_destination_transport_override :: proc(inst: domain.Agent_Instance, requested: string) -> (string, bool, domain.Domain_Error) {
+	transport := strings.trim_space(requested)
+	if transport == "" do return domain.runtime_transport_override_normalize(inst.runtime_transport_override), true, {}
+	if !contracts.runtime_transport_valid(transport) do return "", false, domain.domain_error(.Invalid_Transport, "runtime_transport must be 'pty' or 'acp'")
+	return domain.runtime_transport_override_normalize(transport), true, {}
 }
 
 // reconfiguration_destination_permission_mode resolves the destination override
@@ -36,8 +53,8 @@ reconfiguration_destination_permission_mode :: proc(auth: contracts.Auth_Context
 
 // reconfiguration_same_destination reports whether an existing operation (same
 // idempotency key) targets exactly the requested destination.
-reconfiguration_same_destination :: proc(existing: domain.Instance_Reconfiguration, input: Reconfigure_Operation_Input, permission_mode: string) -> bool {
-	return existing.destination.bridge_id == input.bridge_id && existing.destination.project_id == input.project_id && existing.destination.provider == input.provider && domain.profile_effective_id(existing.destination.provider,existing.destination.provider_profile)==domain.profile_effective_id(input.provider,input.provider_profile) && existing.destination.model == input.model && domain.agent_instance_permission_mode_normalize(existing.destination.permission_mode) == permission_mode
+reconfiguration_same_destination :: proc(existing: domain.Instance_Reconfiguration, input: Reconfigure_Operation_Input, permission_mode: string, transport_override: string) -> bool {
+	return domain.runtime_transport_override_normalize(existing.destination.runtime_transport_override) == transport_override && existing.destination.bridge_id == input.bridge_id && existing.destination.project_id == input.project_id && existing.destination.provider == input.provider && domain.profile_effective_id(existing.destination.provider,existing.destination.provider_profile)==domain.profile_effective_id(input.provider,input.provider_profile) && existing.destination.model == input.model && domain.agent_instance_permission_mode_normalize(existing.destination.permission_mode) == permission_mode
 }
 
 instance_assertion_token :: proc(inst: domain.Agent_Instance) -> string {
@@ -56,7 +73,7 @@ reconfiguration_bridge_supported :: proc(bridge: domain.Bridge) -> bool {
 }
 
 configuration_snapshot :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> domain.Instance_Configuration {
-	config := domain.Instance_Configuration{runtime_transport=inst.runtime_transport,bridge_id = inst.bridge_id, project_id = string(inst.project_id), project_path = inst.project_path, provider = inst.provider, provider_profile=inst.provider_profile, model = inst.model, permission_mode = domain.agent_instance_permission_mode_normalize(inst.permission_mode)}
+	config := domain.Instance_Configuration{runtime_transport=inst.runtime_transport,runtime_transport_override=domain.runtime_transport_override_normalize(inst.runtime_transport_override),bridge_id = inst.bridge_id, project_id = string(inst.project_id), project_path = inst.project_path, provider = inst.provider, provider_profile=inst.provider_profile, model = inst.model, permission_mode = domain.agent_instance_permission_mode_normalize(inst.permission_mode)}
 	if bridge, found, _ := iface.bridge_get_bridge(service.bridges, inst.bridge_id); found {
 		config.bridge_label = bridge.label
 		if config.bridge_label == "" do config.bridge_label = bridge.machine_hostname
@@ -84,8 +101,10 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	if strings.trim_space(input.idempotency_key) == "" || len(input.idempotency_key) > 128 || input.bridge_id == "" || input.provider == "" || input.model == "" do return {}, false, domain.domain_error(.Validation_Failed, "idempotency key, bridge, provider and model are required")
 	permission_mode, mode_ok, mode_err := reconfiguration_destination_permission_mode(auth, inst, input.permission_mode)
 	if !mode_ok do return {}, false, mode_err
+	transport_override, transport_ok, transport_err := reconfiguration_destination_transport_override(inst, input.runtime_transport)
+	if !transport_ok do return {}, false, transport_err
 	if existing, exists, _ := iface.instance_reconfiguration_get(service.agents, string(inst.owner_user_id), instance_id, input.idempotency_key); exists {
-		if !reconfiguration_same_destination(existing, input, permission_mode) {
+		if !reconfiguration_same_destination(existing, input, permission_mode, transport_override) {
 			domain.instance_reconfiguration_destroy(&existing)
 			return {}, false, domain.domain_error(.Conflict, "idempotency key already belongs to another configuration")
 		}
@@ -110,6 +129,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	next.bridge_id = input.bridge_id; next.project_id = domain.Project_ID(input.project_id)
 	next.provider_profile=domain.profile_effective_id(input.provider,input.provider_profile); next.provider = input.provider; next.model = input.model; next.project_path = ""
 	next.permission_mode = permission_mode
+	next.runtime_transport_override = transport_override
 	_, provider_ok, provider_err := validate_pinned_provider_model(service, auth, next, input.provider, input.model)
 	if !provider_ok do return {}, false, provider_err
 	if err:=freeze_runtime_transport(service,&next);err.code!=.None do return {},false,err
@@ -164,7 +184,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	// waiting. Recheck at the native acceptance boundary before persisting/sending.
 	if guard!=nil {if err:=guard(guard_ctx);err.code!=.None do return {},false,err}
 	if existing, exists, _ := iface.instance_reconfiguration_get(service.agents, string(inst.owner_user_id), instance_id, input.idempotency_key); exists {
-		if !reconfiguration_same_destination(existing, input, permission_mode) {
+		if !reconfiguration_same_destination(existing, input, permission_mode, transport_override) {
 			domain.instance_reconfiguration_destroy(&existing)
 			return {}, false, domain.domain_error(.Conflict, "idempotency key already belongs to another configuration")
 		}
@@ -268,6 +288,7 @@ reconfiguration_launch_destination :: proc(service: ^Agent_Service, op: domain.I
 	// The commit trigger applies the destination override; launch with it now.
 	next.permission_mode = domain.agent_instance_permission_mode_normalize(op.destination.permission_mode)
 	next.runtime_transport=op.destination.runtime_transport
+	next.runtime_transport_override=domain.runtime_transport_override_normalize(op.destination.runtime_transport_override)
 	generation, admitted, _ := reserve_runtime_launch(service, next)
 	if !admitted {
 		failed, _, _ := reconfiguration_advance(service, op, .Recovery_Required, true, false, "destination_capacity", "Source is stopped; destination capacity is unavailable.")
