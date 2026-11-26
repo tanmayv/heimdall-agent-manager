@@ -664,10 +664,18 @@ Secure_Form_Retry_Decision :: struct { action: Secure_Form_Retry_Action, attempt
 secure_form_retry :: proc(original, caller: Secure_Form_Retry_Binding, receipt, now, after: u64,
 	retained: bool, latest: Secure_Form_Attempt) -> Secure_Form_Retry_Decision {
 	if original != caller || after == 0 do return {.Reject, 0, .Unauthorized}
-	if !retained || now < receipt || now - receipt >= SECURE_FORM_RETENTION_MS do return {.Reject, 0, .Retention_Expired}
+	// Joining reads metadata only, so it remains valid while the successor
+	// status is available, even if the retained input has expired.
 	if latest.number > 1 && after == latest.number - 1 do return {.Join, latest.number, latest.code}
+	if !retained || now < receipt || now - receipt >= SECURE_FORM_RETENTION_MS do return {.Reject, 0, .Retention_Expired}
 	if after != latest.number || latest.number == max(u64) do return {.Reject, 0, .Unauthorized}
-	if !latest.terminal || latest.code == .Unknown do return {.Reject, 0, .Unknown}
-	if latest.code != .Stdin_Failed && latest.code != .Child_Failed && latest.code != .Execution_Expired do return {.Reject, 0, .Unauthorized}
-	return {.Start, latest.number + 1, .Unknown}
+	// A confirmed terminal 28 means the attempt is over but its external
+	// effects are uncertain. The explicit caller checks those effects.
+	if !latest.terminal do return {.Reject, 0, .Unknown}
+	#partial switch latest.code {
+	case .Stdin_Failed, .Child_Failed, .Execution_Expired, .Unknown:
+		return {.Start, latest.number + 1, .Unknown}
+	case:
+		return {.Reject, 0, .Unauthorized}
+	}
 }

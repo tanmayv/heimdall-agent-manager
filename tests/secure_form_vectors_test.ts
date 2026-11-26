@@ -104,5 +104,33 @@ test("WebCrypto derives the fixture key and authenticates the original request A
   const ciphertext = await subtle.encrypt(params, aes, enc.encode(v.plaintext));
   assert.equal(Buffer.from(ciphertext).toString("base64"), v.answer.ciphertext);
   assert.equal(new TextDecoder().decode(await subtle.decrypt(params, aes, ciphertext)), v.plaintext);
-  await assert.rejects(() => subtle.decrypt({ ...params, additionalData: new Uint8Array(32) }, aes, ciphertext));
+  const bridge = await signingKey(v.bridge_public);
+  const device = await signingKey(v.device_public);
+  for (const negative of v.negative) {
+    const { name, value, transcript } = negative;
+    switch (name) {
+      case "stale_generation":
+      case "cross_owner": {
+        const changed = name === "stale_generation" ? { generation: value } : { owner: value };
+        const bytes = request({ ...v.request, ...changed });
+        assert.equal(toHex(bytes), transcript, name);
+        assert.equal(await verify(bridge, v.request_signature, bytes), false, name);
+        break;
+      }
+      case "stale_directory": {
+        const bytes = answer({ ...v.answer, directory_sequence: value });
+        assert.equal(toHex(bytes), transcript, name);
+        assert.equal(await verify(device, v.answer.signature, bytes), false, name);
+        break;
+      }
+      case "der_signature":
+        assert.equal(await verify(device, value, answer()), false, name);
+        break;
+      case "wrong_aad":
+        await assert.rejects(() => subtle.decrypt({ ...params, additionalData: hex(value) }, aes, ciphertext), name);
+        break;
+      default:
+        assert.fail(`Unknown negative vector: ${name}`);
+    }
+  }
 });

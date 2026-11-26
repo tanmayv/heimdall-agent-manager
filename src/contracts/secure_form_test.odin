@@ -233,6 +233,40 @@ test_secure_form_answer_trust_and_crypto :: proc(t: ^testing.T) {
 	defer aes.reset_gcm(&gcm)
 	aes.seal_gcm(&gcm, ct[:len(plaintext)], ct[len(plaintext):], secure_form_fixture_hex(e.nonce), digest[:], plaintext)
 	testing.expect_value(t, base64.encode(ct, allocator = context.temp_allocator), e.ciphertext)
+
+	negatives := f["negative"].(json.Array)
+	for item in negatives {
+		negative := item.(json.Object)
+		name, value := mq_string(negative, "name"), mq_string(negative, "value")
+		expected := secure_form_fixture_hex(mq_string(negative, "transcript"))
+		switch name {
+		case "stale_generation", "cross_owner":
+			live := secure_form_fixture_request(f)
+			changed := live
+			if name == "stale_generation" do changed.generation = value
+			if name == "cross_owner" do changed.owner = value
+			wire, ok := secure_form_request_transcript(changed)
+			testing.expect(t, ok && string(wire) == string(expected), name)
+			testing.expect(t, !secure_form_admit_initial(changed, live, 1700000179999, .Pending), name)
+			testing.expect(t, !secure_form_fixture_verify(mq_string(f, "bridge_public"), mq_string(f, "request_signature"), wire), name)
+		case "stale_directory":
+			changed := e
+			changed.directory_sequence = value
+			wire, ok := secure_form_answer_transcript(changed)
+			testing.expect(t, ok && string(wire) == string(expected), name)
+			testing.expect(t, !secure_form_fixture_verify(pub, e.signature, wire), name)
+		case "der_signature":
+			testing.expect(t, !secure_form_fixture_verify(pub, value, msg), name)
+		case "wrong_aad":
+			buffer := make([]byte, len(plaintext), context.temp_allocator)
+			nonce := secure_form_fixture_hex(e.nonce)
+			body, tag := ct[:len(plaintext)], ct[len(plaintext):]
+			testing.expect(t, aes.open_gcm(&gcm, buffer, nonce, digest[:], body, tag))
+			testing.expect(t, !aes.open_gcm(&gcm, buffer, nonce, secure_form_fixture_hex(value), body, tag), name)
+		case:
+			testing.expect(t, false, name)
+		}
+	}
 }
 
 @(test)
@@ -241,11 +275,26 @@ test_secure_form_retry_binding_and_expiry :: proc(t: ^testing.T) {
 	r := secure_form_fixture_request(f)
 	entries, parsed := secure_form_fixture_entry(f)
 	if !testing.expect(t, parsed && len(entries) == 1) do return
-	e := entries[0]
-	b := Secure_Form_Retry_Binding{r.request_id, r.manifest_digest, e.script, e.purpose, r.owner, r.bridge, r.instance, r.task}
+
+	// Resolve the same approved manifest entry anew after a body edit. The
+	// snapshot digest changes but is deliberately not part of the binding.
+	resolved, resolved_ok := secure_form_fixture_entry(f)
+	if !testing.expect(t, resolved_ok && len(resolved) == 1) do return
+	original_manifest, original_ok := secure_form_manifest_transcript(entries[0])
+	edited_manifest, edited_ok := secure_form_manifest_transcript(resolved[0])
+	testing.expect(t, original_ok && edited_ok && string(original_manifest) == string(edited_manifest))
 	before := secure_form_digest(transmute([]byte)string("exit 1"))
 	after := secure_form_digest(transmute([]byte)string("exit 0"))
 	testing.expect(t, before != after)
+	binding := proc(entry: Secure_Form_Entry, r: Secure_Form_Request, manifest: []byte) -> Secure_Form_Retry_Binding {
+		digest := secure_form_digest(manifest)
+		return {r.request_id, vault.hex_encode_lower(digest[:], context.temp_allocator),
+			entry.script, entry.purpose, r.owner, r.bridge, r.instance, r.task}
+	}
+	b := binding(entries[0], r, original_manifest)
+	edited := binding(resolved[0], r, edited_manifest)
+	testing.expect(t, b.manifest_digest == r.manifest_digest && b == edited)
+
 	retry_bytes, _ := json.marshal(Secure_Form_Retry_Command{1, r.request_id, "1"}, allocator = context.temp_allocator)
 	_, retry_ok := secure_form_parse_retry(string(retry_bytes))
 	testing.expect(t, retry_ok)
@@ -254,10 +303,17 @@ test_secure_form_retry_binding_and_expiry :: proc(t: ^testing.T) {
 	testing.expect(t, !noncanonical)
 
 	failed := Secure_Form_Attempt{1, true, .Child_Failed}
-	decision := secure_form_retry(b, b, 100, 300099, 1, true, failed)
+	decision := secure_form_retry(b, edited, 100, 300099, 1, true, failed)
 	testing.expect(t, decision.action == .Start && decision.attempt == 2)
 	replay := secure_form_retry(b, b, 100, 300099, 1, true, {2, false, .Unknown})
 	testing.expect(t, replay.action == .Join && replay.attempt == 2)
+	expired_replay := secure_form_retry(b, edited, 100, 300100, 1, false, {2, false, .Unknown})
+	testing.expect(t, expired_replay.action == .Join && expired_replay.attempt == 2 && expired_replay.code == .Unknown)
+	discarded_replay := secure_form_retry(b, edited, 100, 101, 1, false, {2, true, .Success})
+	testing.expect(t, discarded_replay.action == .Join && discarded_replay.attempt == 2 && discarded_replay.code == .Success)
+	uncertain := secure_form_retry(b, edited, 100, 300099, 1, true, {1, true, .Unknown})
+	testing.expect(t, uncertain.action == .Start && uncertain.attempt == 2)
+
 	unknown := secure_form_retry(b, b, 100, 300099, 2, true, {2, false, .Unknown})
 	testing.expect(t, unknown.action == .Reject && unknown.code == .Unknown)
 	expired := secure_form_retry(b, b, 100, 300100, 1, true, failed)
@@ -269,5 +325,7 @@ test_secure_form_retry_binding_and_expiry :: proc(t: ^testing.T) {
 	testing.expect(t, secure_form_retry(b, changed, 100, 101, 1, true, failed).code == .Unauthorized)
 	changed = b
 	changed.task = "other_task"
+	untrusted_join := secure_form_retry(b, changed, 100, 300100, 1, false, {2, true, .Success})
+	testing.expect(t, untrusted_join.action == .Reject && untrusted_join.code == .Unauthorized)
 	testing.expect(t, secure_form_retry(b, changed, 100, 101, 1, true, failed).code == .Unauthorized)
 }
