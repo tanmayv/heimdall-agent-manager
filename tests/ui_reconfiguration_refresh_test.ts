@@ -312,3 +312,42 @@ test('agent_instance summaries patch the settings panel fields (project, profile
     fetched.restore();
   }
 });
+
+// T4: a change queued after the current turn (waiting_for_idle) never blocks the
+// conversation, mirroring the Hub's instance_reconfiguration_blocks_input.
+test('waiting_for_idle does not block input; blocking phases still do', () => {
+  const { reconfigurationBlocksInput, isCancelledReconfiguration } = agents;
+  assert.equal(reconfigurationBlocksInput(undefined), false);
+  assert.equal(reconfigurationBlocksInput(op('q', 'waiting_for_idle', { source_stopped: false })), false);
+  for (const phase of ['prepared', 'stopping', 'source_stopped', 'launching', 'recovery_required']) {
+    assert.equal(reconfigurationBlocksInput(op('b', phase)), true, phase);
+  }
+  assert.equal(reconfigurationBlocksInput(op('r', 'ready')), false);
+  // A queued change that ended without running (cancel, Restart now, conflict) never stopped the source.
+  const cancelled = op('c', 'failed', { source_stopped: false, failure_code: 'cancelled' });
+  assert.equal(reconfigurationBlocksInput(cancelled), false);
+  assert.equal(isCancelledReconfiguration(cancelled), true);
+  assert.equal(isCancelledReconfiguration(op('s', 'failed', { source_stopped: false, failure_code: 'superseded' })), true);
+  assert.equal(isCancelledReconfiguration(op('f', 'failed', { failure_code: 'launch_failed' })), false);
+  assert.equal(reconfigurationBlocksInput(op('f', 'failed', { failure_code: 'launch_failed' })), true);
+});
+
+test('ordinal phase 7 normalizes to waiting_for_idle', async () => {
+  const fetch = installRoutedFetch({ '/reconfigurations': () => ({ operations: [op('q', 7 as any)] }) });
+  const store = await makeVaultStore();
+  try {
+    const result: any = await store.dispatch(agents.agentsApi.endpoints.listInstanceReconfigurations.initiate({ instanceId: 'inst_a' }) as any);
+    store.dispatch(heimdallApi.util.resetApiState());
+    assert.equal(result.data.operations[0].phase, 'waiting_for_idle');
+  } finally { fetch.restore(); }
+});
+
+test('progress banner shows a queued change as queued, not as a failure', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { default: Progress } = await import('../src/ui/components/chat/InstanceReconfigurationProgress.tsx');
+  const html = renderToStaticMarkup(React.createElement(Progress, { operation: op('q', 'waiting_for_idle', { source_stopped: false }) }));
+  assert.match(html, /Restart queued after this turn/);
+  assert.match(html, />Running</);
+  assert.match(html, />Queued</);
+  assert.doesNotMatch(html, /needs attention/i);
+});

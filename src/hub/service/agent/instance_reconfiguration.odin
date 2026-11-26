@@ -47,20 +47,27 @@ reconfiguration_apply_mode :: proc(requested: string) -> (string, bool, domain.D
 	return "", false, domain.domain_error(.Validation_Failed, "apply must be 'now' or 'after_turn'")
 }
 
+// reconfiguration_runtime_stopped: no runtime runs, so no turn can be interrupted.
+// At create time an after_turn request then starts at once (like Apply and start).
+// While queued it CANCELS the operation instead: a Stop (or crash) must never be
+// undone by a queued restart (see reconfiguration_fire_waiting_locked).
+reconfiguration_runtime_stopped :: proc(inst: domain.Agent_Instance) -> bool {
+	return inst.runtime_status == "stopped" || inst.runtime_status == "failed"
+}
+
 // reconfiguration_instance_idle reports whether a queued (after_turn) operation
-// may fire now: no turn can be interrupted.
+// may fire now: a running agent whose turn has ended.
 //   - The source bridge must be live. A disconnected source keeps the operation
 //     waiting (it is never fenced mid-turn); it fires after the bridge reconnects
 //     and reports idle. "Restart now" uses the immediate path, which fences.
-//   - A stopped or failed runtime has no turn: fire (the launch starts the agent).
-//   - A running runtime must report activity "idle" and, for ACP, hold no input
-//     behind an active turn (hold_reason turn_active on its current launch).
+//   - The runtime must be running (running/idle/busy) and report activity
+//     "idle" and, for ACP, hold no input behind an active turn (hold_reason
+//     turn_active on its current launch).
 //   - Transitional states (launching, starting, stopping, blocked, unreachable)
-//     keep waiting.
+//     keep waiting; stopped/failed are handled by reconfiguration_runtime_stopped.
 reconfiguration_instance_idle :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> bool {
 	if !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return false
 	switch inst.runtime_status {
-	case "stopped", "failed": return true
 	case "running", "idle", "busy":
 	case: return false
 	}
@@ -260,7 +267,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	waiting := false
 	if apply == domain.RECONFIGURATION_APPLY_AFTER_TURN {
 		current, current_found, _ := iface.agent_get_instance(service.agents, instance_id)
-		waiting = !current_found || !reconfiguration_instance_idle(service, current)
+		waiting = !current_found || !(reconfiguration_runtime_stopped(current) || reconfiguration_instance_idle(service, current))
 		if current_found do domain.agent_instance_destroy(&current)
 	}
 	now := platform.clock_now(service.clock)
@@ -531,6 +538,14 @@ reconfiguration_fire_waiting_locked :: proc(service: ^Agent_Service, op: domain.
 		domain.instance_reconfiguration_destroy(&failed)
 		return
 	}
+	// A user Stop, or a crash, while queued cancels the change: never relaunch an
+	// agent that stopped. (stop_instance also cancels at once; this covers stops
+	// that did not go through it, e.g. a bridge-side exit, and the race.)
+	if reconfiguration_runtime_stopped(inst) {
+		cancelled, _, _ := reconfiguration_advance(service, op, .Failed, false, false, domain.RECONFIGURATION_CANCELLED, RECONFIGURATION_STOPPED_MESSAGE)
+		domain.instance_reconfiguration_destroy(&cancelled)
+		return
+	}
 	if !reconfiguration_instance_idle(service, inst) do return
 	if valid, validity_err := reconfiguration_validate_live_destination(service, op); !valid {
 		failed, _, _ := reconfiguration_advance(service, op, .Failed, false, false, domain.error_code_string(validity_err.code), validity_err.message)
@@ -553,6 +568,18 @@ reconfiguration_fire_waiting_locked :: proc(service: ^Agent_Service, op: domain.
 	// Same continuation as an immediate apply: idle implies a live source.
 	started, _, _ := reconfiguration_start_stop(service, op)
 	domain.instance_reconfiguration_destroy(&started)
+}
+
+RECONFIGURATION_STOPPED_MESSAGE :: "Agent stopped; the queued change was cancelled."
+
+// reconfiguration_cancel_waiting_locked cancels the instance's queued operation,
+// if any (operation mutex held). Used when the agent is explicitly stopped.
+reconfiguration_cancel_waiting_locked :: proc(service: ^Agent_Service, owner, instance_id: string) {
+	queued, found, _ := reconfiguration_waiting_for_instance(service, owner, instance_id)
+	if !found do return
+	defer domain.instance_reconfiguration_destroy(&queued)
+	cancelled, _, _ := reconfiguration_advance(service, queued, .Failed, false, false, domain.RECONFIGURATION_CANCELLED, RECONFIGURATION_STOPPED_MESSAGE)
+	domain.instance_reconfiguration_destroy(&cancelled)
 }
 
 // cancel_instance_reconfiguration ends a queued (Waiting_For_Idle) operation.

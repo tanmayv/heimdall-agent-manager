@@ -173,13 +173,22 @@ instance_reconfiguration_list_sqlite :: proc(ctx: rawptr, owner, instance_id: st
 	return ops[:], {}
 }
 
+RECONFIGURATION_LIST_WAITING_INSTANCE_SQL :: "SELECT payload_json FROM instance_reconfigurations INDEXED BY instance_reconfigurations_exclusive WHERE agent_instance_id=?3 AND phase='waiting_for_idle' AND (?1='' OR owner_user_id=?2) ORDER BY created_at, operation_id;"
+RECONFIGURATION_LIST_WAITING_ALL_SQL :: "SELECT payload_json FROM instance_reconfigurations INDEXED BY instance_reconfigurations_exclusive WHERE phase='waiting_for_idle' AND (?1='' OR owner_user_id=?2) ORDER BY created_at, operation_id;"
+
 instance_reconfiguration_list_waiting_sqlite :: proc(ctx: rawptr, owner, instance_id: string) -> ([]domain.Instance_Reconfiguration, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
-	query := "SELECT payload_json FROM instance_reconfigurations WHERE (?='' OR owner_user_id=?) AND (?='' OR agent_instance_id=?) AND phase='waiting_for_idle' ORDER BY created_at, operation_id;"
+	// Both shapes use the partial exclusive index (its WHERE is blocking OR
+	// waiting_for_idle; phase='waiting_for_idle' implies it): the per-instance
+	// form is an index lookup on the hot idle-report path, the sweep form scans
+	// only active rows, never history.
+	query := RECONFIGURATION_LIST_WAITING_ALL_SQL
+	if instance_id != "" do query = RECONFIGURATION_LIST_WAITING_INSTANCE_SQL
 	stmt: sqlite3_stmt
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed queued reconfiguration list")
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, owner); bind_text(stmt, 2, owner); bind_text(stmt, 3, instance_id); bind_text(stmt, 4, instance_id)
+	bind_text(stmt, 1, owner); bind_text(stmt, 2, owner)
+	if instance_id != "" do bind_text(stmt, 3, instance_id)
 	ops := make([dynamic]domain.Instance_Reconfiguration)
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		op, found, err := instance_reconfiguration_decode(stmt)

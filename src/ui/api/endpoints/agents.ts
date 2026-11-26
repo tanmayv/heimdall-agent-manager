@@ -1039,6 +1039,20 @@ export type ApplyInstanceConfigurationInput = {
    */
   apply?: ReconfigurationApply;
 };
+/**
+ * Mirrors the Hub's instance_reconfiguration_blocks_input: whether messages and
+ * runtime actions are disabled while this operation is the latest one. A change
+ * queued after the current turn (waiting_for_idle) never blocks input.
+ */
+export function reconfigurationBlocksInput(operation: InstanceReconfiguration | undefined | null): boolean {
+  if (!operation || operation.phase === 'ready' || operation.phase === 'waiting_for_idle') return false;
+  if (operation.phase !== 'failed') return true;
+  return !(operation.failure_code === 'recovery_stopped' || (!operation.source_stopped && !operation.destination_committed));
+}
+/** A queued change that ended without running: cancelled, or superseded by Restart now. */
+export function isCancelledReconfiguration(operation: InstanceReconfiguration): boolean {
+  return operation.phase === 'failed' && (operation.failure_code === 'cancelled' || operation.failure_code === 'superseded');
+}
 /** Whether an operation reached a phase that changes the instance and conversation. */
 export function isSettledReconfiguration(operation: InstanceReconfiguration): boolean {
   return operation.phase === 'ready' || (operation.phase === 'failed' && operation.failure_code === 'recovery_stopped');

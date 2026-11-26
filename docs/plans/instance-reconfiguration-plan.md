@@ -321,9 +321,13 @@ unsupported provider/tier, multiple issues, failed verification, and repair. All
   once. On a busy instance the operation is stored in phase `waiting_for_idle`
   with `waiting_since`. That phase does not block messages or runtime actions,
   but it holds the single active-operation slot. It fires the normal flow on the
-  next idle report: a live source bridge, activity `idle` and, for ACP, no input
-  held behind an active turn. A stopped or failed runtime also counts as idle.
-  The reaper sweep and bridge reconcile catch missed edges. While its source
+  next idle report: a live source bridge, a running runtime with activity `idle`
+  and, for ACP, no input held behind an active turn. The reaper sweep and bridge
+  reconcile catch missed edges. A Stop always wins: `stop_instance` cancels the
+  queued change, and a runtime that becomes stopped or failed while waiting
+  cancels it too (`failed`/`cancelled`, "Agent stopped; the queued change was
+  cancelled."). Nothing is relaunched. An `after_turn` request on an
+  already-stopped agent starts at once. While its source
   bridge is offline it keeps waiting and is never fenced mid-turn. The Hub waits
   indefinitely, and the UI offers Restart now after 30 minutes. At fire time the
   configuration revision and source snapshot are rechecked: a change ends it
@@ -336,6 +340,9 @@ unsupported provider/tier, multiple issues, failed verification, and repair. All
   one. An omitted `apply` or a second `after_turn` returns 409 while one is
   queued. WS `agent_instance_reconfiguration` summaries carry `phase`, `apply`
   and `waiting_since`, and change `cancelled` reports a cancel or supersede.
+  The chat pane treats `waiting_for_idle` as non-blocking
+  (`reconfigurationBlocksInput` mirrors the Hub). It shows a queued change as
+  "Restart queued after this turn" and hides cancelled or superseded ones.
 - Source and destination must advertise `instance_reconfiguration_v1`. The Hub
   validates provider/model against active catalog, enabled/present destination
   providers, ownership, online state, capacity and destination project path before

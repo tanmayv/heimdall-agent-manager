@@ -857,6 +857,9 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_stop_"), "_", inst.agent_instance_id})
 	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = command_id, body_json = stop_command_json(command_id, inst.agent_instance_id, reason, force = input.force)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
+	// A Stop wins over a change queued "after_turn": cancel it so the next idle
+	// sweep cannot relaunch the agent (T4).
+	reconfiguration_cancel_waiting_locked(service, string(inst.owner_user_id), inst.agent_instance_id)
 	// Record why the Hub stopped it (UI label, instance events). Saves never
 	// write the column; the next run clears it.
 	if recorded, _ := iface.agent_set_stop_reason(service.agents, inst.agent_instance_id, reason); recorded do inst.stop_reason = strings.clone(reason)

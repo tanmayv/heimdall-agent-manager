@@ -349,3 +349,61 @@ test_restart_now_supersedes_waiting_operation :: proc(t: ^testing.T) {
 		testing.expect_value(t, h.events[events_before+1].change, "created")
 	}
 }
+
+@(test)
+test_user_stop_while_waiting_cancels_queued_change :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	h: Deferred_Harness
+	if !deferred_open(t, &h, "t4_stop_while_waiting") { deferred_close(&h); return }
+	defer deferred_close(&h)
+	_, accepted, err := begin_instance_reconfiguration(&h.service, deferred_auth(), DEFER_INSTANCE, deferred_input("stop-key", "after_turn"))
+	if !testing.expect(t, accepted, err.message) do return
+	_, stopped, stop_err := stop_instance(&h.service, deferred_auth(), DEFER_INSTANCE, {reason = "user_requested"})
+	if !testing.expect(t, stopped, stop_err.message) do return
+	cancelled := deferred_get(t, &h, "stop-key")
+	testing.expect_value(t, cancelled.phase, domain.Instance_Reconfiguration_Phase.Failed)
+	testing.expect_value(t, cancelled.failure_code, domain.RECONFIGURATION_CANCELLED)
+	testing.expect_value(t, cancelled.failure_message, RECONFIGURATION_STOPPED_MESSAGE)
+	testing.expect_value(t, h.events[len(h.events)-1].change, "cancelled")
+	// The runtime reports stopped and the sweep runs: nothing relaunches it.
+	sent := len(h.commands)
+	testing.expect(t, sqlite.exec(&h.conn, "UPDATE agent_instances SET runtime_status='stopped', activity_status='idle' WHERE agent_instance_id='inst_deferred';"))
+	notify_instance_activity(&h.service, DEFER_INSTANCE, "idle")
+	reconcile_active_reconfigurations(&h.service)
+	testing.expect_value(t, len(h.commands), sent)
+	for c in h.commands do testing.expect(t, !strings.contains(c.body_json, "launch_agent"), c.body_json)
+}
+
+@(test)
+test_runtime_stopped_or_failed_while_waiting_cancels_without_launch :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	for status in ([]string{"stopped", "failed"}) {
+		h: Deferred_Harness
+		if !deferred_open(t, &h, fmt.tprintf("t4_runtime_%s_while_waiting", status)) { deferred_close(&h); return }
+		_, accepted, err := begin_instance_reconfiguration(&h.service, deferred_auth(), DEFER_INSTANCE, deferred_input("exit-key", "after_turn"))
+		if testing.expect(t, accepted, err.message) {
+			// A bridge-side exit or crash that did not go through stop_instance.
+			testing.expect(t, sqlite.exec(&h.conn, fmt.tprintf("UPDATE agent_instances SET runtime_status='%s' WHERE agent_instance_id='inst_deferred';", status)))
+			reconcile_active_reconfigurations(&h.service)
+			op := deferred_get(t, &h, "exit-key")
+			testing.expectf(t, op.phase == .Failed && op.failure_code == domain.RECONFIGURATION_CANCELLED, "%s: %v %s", status, op.phase, op.failure_code)
+			testing.expectf(t, len(h.commands) == 0, "%s: nothing launched", status)
+		}
+		deferred_close(&h)
+	}
+}
+
+@(test)
+test_after_turn_on_stopped_instance_starts_at_once :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	h: Deferred_Harness
+	if !deferred_open(t, &h, "t4_after_turn_stopped", runtime_status = "stopped", activity = "unknown") { deferred_close(&h); return }
+	defer deferred_close(&h)
+	op, accepted, err := begin_instance_reconfiguration(&h.service, deferred_auth(), DEFER_INSTANCE, deferred_input("stopped-key", "after_turn"))
+	if !testing.expect(t, accepted, err.message) do return
+	testing.expect(t, op.phase != .Waiting_For_Idle, "a stopped agent has no turn to wait for")
+	testing.expect_value(t, op.waiting_since, "")
+}

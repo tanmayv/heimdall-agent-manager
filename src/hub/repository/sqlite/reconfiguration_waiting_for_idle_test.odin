@@ -92,6 +92,20 @@ test_reconfiguration_waiting_for_idle_migration_slot_and_supersede :: proc(t: ^t
 	testing.expect_value(t, len(listed), 1)
 	for &op in listed do domain.instance_reconfiguration_destroy(&op)
 	delete(listed)
+	// Both list shapes are index-backed (INDEXED BY fails to prepare otherwise).
+	for query in ([]string{RECONFIGURATION_LIST_WAITING_INSTANCE_SQL, RECONFIGURATION_LIST_WAITING_ALL_SQL}) {
+		stmt: sqlite3_stmt
+		testing.expect_value(t, sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil), SQLITE_OK)
+		sqlite3_finalize(stmt)
+	}
+	mine, mine_err := iface.instance_reconfiguration_list_waiting(&repo, "owner", "rwi_a")
+	testing.expect_value(t, mine_err.code, domain.Error_Code.None)
+	testing.expect_value(t, len(mine), 1)
+	for &op in mine do domain.instance_reconfiguration_destroy(&op)
+	delete(mine)
+	others, _ := iface.instance_reconfiguration_list_waiting(&repo, "someone_else", "rwi_a")
+	testing.expect_value(t, len(others), 0)
+	delete(others)
 	active, _ := iface.instance_reconfiguration_list(&repo, "", "rwi_a", true)
 	testing.expect_value(t, len(active), 0) // active_only keeps meaning "blocks input"
 	delete(active)

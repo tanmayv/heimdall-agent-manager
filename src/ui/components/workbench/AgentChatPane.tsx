@@ -59,6 +59,8 @@ import {
   useListInstanceReconfigurationsQuery,
   type InstanceReconfiguration,
   reconfigurationSettled,
+  reconfigurationBlocksInput,
+  isCancelledReconfiguration,
 } from '../../api/endpoints/agents';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
@@ -1341,15 +1343,9 @@ export function AgentChatPane({
     operation &&
       ['prepared', 'stopping', 'source_stopped', 'launching'].includes(operation.phase),
   );
-  const operationBlocksInput = Boolean(
-    operation &&
-      operation.phase !== 'ready' &&
-      !(
-        operation.phase === 'failed' &&
-        (operation.failure_code === 'recovery_stopped' ||
-          (!operation.source_stopped && !operation.destination_committed))
-      ),
-  );
+  // A change queued after the current turn (waiting_for_idle) keeps the
+  // conversation and runtime actions usable, exactly like the Hub.
+  const operationBlocksInput = reconfigurationBlocksInput(operation);
   const bridgeLabel = String(
     instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '',
   );
@@ -2819,7 +2815,7 @@ export function AgentChatPane({
                   </ul>
                 </div>
               ) : null}
-              {operation ? (
+              {operation && !isCancelledReconfiguration(operation) ? (
                 <InstanceReconfigurationProgress operation={operation} />
               ) : null}
               {operationBlocksInput ? (
