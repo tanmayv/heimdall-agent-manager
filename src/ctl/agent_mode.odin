@@ -37,6 +37,10 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	if action == "help" || has_flag(args, "--help") { print_agent_help(cmd[idx:]); return }
 	endpoint := agent_mode_endpoint(args)
 	token := agent_mode_token(args)
+	if resource == "secure-form" {
+		ctl_secure_form(endpoint, token, action, args)
+		return
+	}
 	if endpoint == "" || token == "" {
 		fmt.println(`{"ok":false,"message":"agent mode requires HEIMDALL_BRIDGE_ENDPOINT and HEIMDALL_AGENT_TOKEN (or --bridge-endpoint/--agent-token)"}`)
 		return
@@ -1868,6 +1872,9 @@ print_agent_help :: proc(cmd: []string) {
 		}
 	}
 	switch resource {
+	case "secure-form":
+		fmt.println("ham-ctl secure-form run --form <form.json> --script <absolute-path> [--timeout 180] [--execution-timeout 60]")
+		fmt.println("ham-ctl secure-form retry --request <request-id> --after-attempt <number>")
 	case "automations":
   if sub=="webhooks" {
    index:=2

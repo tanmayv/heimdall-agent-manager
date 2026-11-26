@@ -436,6 +436,7 @@ bridge_hub_runtime_worker :: proc() {
 		hub_error := ""
 		hub_catalog_etag := ""
 		auth_rejected := false
+		secure_form_generation := 0
 		for time.to_unix_nanoseconds(time.now()) < ready_deadline {
 			if text, got := ws.poll_text(&conn); got {
 				msg_type := extract_json_string(text, "type", "")
@@ -448,6 +449,7 @@ bridge_hub_runtime_worker :: proc() {
 					}
 					hub_catalog_etag = extract_json_string(text, "catalog_etag", "")
 					bridge_hub_apply_ready_settings(text)
+					secure_form_generation = extract_json_int(text, "connection_generation", 0)
 					// D4 reauth fencing: this session is authenticated with the generation
 					// captured BEFORE the dial, not "the current credential". A renewal that
 					// published meanwhile is still sent in-band by the drain.
@@ -509,7 +511,7 @@ bridge_hub_runtime_worker :: proc() {
             sync.atomic_store(&bridge_hub_runtime_up, true)
 			acp_chat_hub_reconnected()
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(true)
-			bridge_hub_runtime_loop(&conn)
+			bridge_hub_runtime_loop(&conn, secure_form_generation)
             sync.atomic_store(&bridge_hub_runtime_up, false)
 			if !bridge_hub_is_enroll_only_runtime() do bridge_local_status_write(false)
 			// NOT beside the PTY stream teardown, and not inside
@@ -724,10 +726,12 @@ bridge_hub_heartbeat_due :: proc(last_ns: ^i64, now_ns, interval_ns: i64) -> boo
 
 BRIDGE_HUB_INBOUND_BUDGET :: 32
 
-bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
+bridge_hub_runtime_loop :: proc(conn: ^ws.Connection, secure_form_generation := 0) {
 	if sync.atomic_load(&bridge_hub_traffic_stopped) do return
 	defer bridge_tool_live_disconnect()
 	connection_generation := bridge_command_dispatch_begin_connection()
+	secure_form_hub_connected(secure_form_generation)
+	defer secure_form_hub_disconnected(secure_form_generation)
 	// PER-CONNECTION inbound chunk reassembly (REQ-SHELL-36). The hub splits any
 	// hub->bridge command larger than one 16-bit WS frame into ordered kind:"chunk"
 	// frames (write_ws_command); we rebuild the original command here before it reaches
@@ -775,17 +779,18 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 				assembled, complete, ok := hub_command_reassemble(&reassemblies, text)
 				if !ok { ws.abort(conn); delete(text); break }
 				if ok && complete {
-					if !bridge_command_dispatch(conn, assembled, connection_generation) do bridge_hub_handle_command(conn, assembled)
+					if !secure_form_hub_receive(conn, secure_form_generation, assembled) && !bridge_command_dispatch(conn, assembled, connection_generation) do bridge_hub_handle_command(conn, assembled)
 					delete(assembled)
 				}
 			} else {
-				if !bridge_command_dispatch(conn, text, connection_generation) do bridge_hub_handle_command(conn, text)
+				if !secure_form_hub_receive(conn, secure_form_generation, text) && !bridge_command_dispatch(conn, text, connection_generation) do bridge_hub_handle_command(conn, text)
 			}
 			delete(text)
 			if sync.atomic_load(&bridge_hub_traffic_stopped) do break
 		}
 		// Stop before ANY drain or heartbeat in the iteration receiving retirement.
 		if sync.atomic_load(&bridge_hub_traffic_stopped) do break
+		secure_form_hub_drain(conn, secure_form_generation)
 		bridge_bot_drain(conn, connection_generation)
 		// Before command results: a provider scan that flipped acp_runtime_v1 must
 		// re-advertise it ahead of its report (provider_path_store.odin).

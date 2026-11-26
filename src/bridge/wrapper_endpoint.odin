@@ -214,8 +214,11 @@ bridge_local_endpoint_unix_client_thread :: proc(client: local_socket.Socket) {
 			defer delete(resp)
 			resp_line := strings.concatenate({resp, "\n"})
 			defer delete(resp_line)
-			bytes := transmute([]byte)resp_line
-			_ = local_socket.send(client, bytes)
+			for sent := 0; sent < len(resp_line); {
+				n := local_socket.send(client, transmute([]byte)resp_line[sent:])
+				if n <= 0 do return
+				sent += n
+			}
 		}
 	}
 }
@@ -283,7 +286,11 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 			defer delete(resp)
 			resp_line := strings.concatenate({resp, "\n"})
 			defer delete(resp_line)
-			_, _ = net.send_tcp(client, transmute([]byte)resp_line)
+			for sent := 0; sent < len(resp_line); {
+				n, send_err := net.send_tcp(client, transmute([]byte)resp_line[sent:])
+				if n <= 0 || send_err != nil do return
+				sent += n
+			}
 		}
 	}
 }
@@ -396,7 +403,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Agent:
 		// Agent API v2: a single allowlist driven by the unified route table
 		// (see agent_api.odin). No more 400-char `||` chain.
-		return bridge_agent_method_allowed(method)
+		return secure_form_local_method(method) || bridge_agent_method_allowed(method)
 	}
 	return false
 }
@@ -488,6 +495,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 }
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+	if secure_form_local_method(method) do return secure_form_local_call(request_id, method, params, rec)
 	bridge_runtime_touch_liveness(rec.agent_instance_id)
 	if method == "agent.activity.report" {
 		activity := bridge_local_extract_json_string(params, "status", "unknown")
