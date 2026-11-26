@@ -1563,11 +1563,6 @@ bridge_shell_child_env :: proc(kind: Bridge_Shell_Session_Kind, supplied: [][2]s
 	out := make([dynamic][2]string)
 	for pair in supplied {
 		if profile_env_name_equal(pair[0], BRIDGE_BROWSER_PROFILE_ENV) do continue
-		when ODIN_OS == .Linux {
-			desktop := false
-			for name in BRIDGE_BROWSER_SESSION_ENV do if pair[0] == name do desktop = true
-			if desktop do continue
-		}
 		append(&out, [2]string{strings.clone(pair[0]), strings.clone(pair[1])})
 	}
 	// REQ-PAGER-1/2/3: keep one-shot runs from blocking on interactive pagers.
@@ -1583,7 +1578,12 @@ bridge_shell_child_env :: proc(kind: Bridge_Shell_Session_Kind, supplied: [][2]s
 	append(&out, [2]string{strings.clone(BRIDGE_BROWSER_PROFILE_ENV), bridge_browser_profile_dir(settings.data_dir, settings.daemon_id)})
 	when ODIN_OS == .Linux {
 		for name in BRIDGE_BROWSER_SESSION_ENV {
-			append(&out, [2]string{strings.clone(name), os.get_env_alloc(name, context.allocator)})
+			found := false
+			for pair in supplied do if pair[0] == name do found = true
+			if found do continue
+			value := os.get_env(name, context.temp_allocator)
+			if value == "" do continue
+			append(&out, [2]string{strings.clone(name), strings.clone(value)})
 		}
 	}
 	return out[:]

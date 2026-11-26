@@ -373,11 +373,17 @@ bridge_os_is_executable :: proc(path: string) -> bool {
 	return posix.access(c_path, {.X_OK}) == .OK
 }
 
-// Walk by directory descriptors. Never follow a symlink or create a directory
-// below a parent writable by a different unprivileged account.
 bridge_os_browser_profile_dir :: proc(root, id: string) -> string {
 	if !strings.has_prefix(root, "/") || !bridge_browser_registration_valid(id) do return ""
 	path := strings.concatenate({strings.trim_right(root, "/"), "/browser-profiles/", id, "/browser-profile"}, context.temp_allocator)
+	return bridge_browser_walk_unix(path, 0, 16)
+}
+
+// Only system-owned aliases above the configured root are eligible. Read the
+// link from a protected parent, then restart validation at / on the rewritten
+// path. The configured root itself and all managed children stay NOFOLLOW.
+@(private = "package")
+bridge_browser_walk_unix :: proc(path: string, system_uid: posix.uid_t, aliases_left: int) -> string {
 	flags := posix.O_Flags{.DIRECTORY, .NOFOLLOW, .CLOEXEC}
 	fd := posix.open("/", flags)
 	if fd < 0 do return ""
@@ -385,6 +391,9 @@ bridge_os_browser_profile_dir :: proc(root, id: string) -> string {
 	uid := posix.geteuid()
 	private := posix.mode_t{.IRUSR, .IWUSR, .IXUSR}
 	parts := strings.split(path[1:], "/", context.temp_allocator)
+	parent: posix.stat_t
+	if posix.fstat(fd, &parent) != .OK do return ""
+	offset := 1
 	for part, i in parts {
 		if part == "" || part == "." || part == ".." || strings.index_byte(part, 0) >= 0 do return ""
 		name := strings.clone_to_cstring(part, context.temp_allocator)
@@ -393,11 +402,28 @@ bridge_os_browser_profile_dir :: proc(root, id: string) -> string {
 			_ = posix.mkdirat(fd, name, private)
 			next = posix.openat(fd, name, flags)
 		}
+		if next < 0 && i < len(parts)-4 && aliases_left > 0 &&
+		   parent.st_uid == system_uid && !(.IWGRP in parent.st_mode || .IWOTH in parent.st_mode) {
+			link: posix.stat_t
+			if posix.fstatat(fd, name, &link, {.SYMLINK_NOFOLLOW}) != .OK ||
+			   link.st_uid != system_uid || !posix.S_ISLNK(link.st_mode) {
+				return ""
+			}
+			buf: [4096]byte
+			n := posix.readlinkat(fd, name, raw_data(buf[:]), len(buf))
+			if n <= 0 || n >= len(buf) do return ""
+			target := strings.trim_right(string(buf[:int(n)]), "/")
+			prefix := "" if buf[0] == '/' else path[:offset]
+			rewritten := strings.concatenate({prefix, target, path[offset+len(part):]}, context.temp_allocator)
+			return bridge_browser_walk_unix(rewritten, system_uid, aliases_left-1)
+		}
 		if next < 0 do return ""
 		_ = posix.close(fd)
 		fd = next
 		info: posix.stat_t
 		if posix.fstat(fd, &info) != .OK do return ""
+		parent = info
+		offset += len(part) + 1
 		if i >= len(parts)-3 {
 			if info.st_uid != uid || info.st_mode & (posix.S_IRWXU | posix.S_IRWXG | posix.S_IRWXO) != private do return ""
 		} else {

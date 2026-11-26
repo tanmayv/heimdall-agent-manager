@@ -103,7 +103,17 @@ bridge_prespawn_env_has_all_heimdall_vars :: proc(t: ^testing.T) {
 	defer { for e in env do delete(e); delete(env) }
 
 	when ODIN_OS == .Linux {
-		testing.expect_value(t, len(env), 5 + len(BRIDGE_BROWSER_SESSION_ENV))
+		expected := 5
+		for name in BRIDGE_BROWSER_SESSION_ENV {
+			value := os.get_env(name, context.temp_allocator)
+			if value == "" {
+				testing.expect(t, !bridge_prespawn_test_env_has(env, fmt.tprintf("%s=", name)))
+			} else {
+				expected += 1
+				testing.expect(t, bridge_prespawn_test_env_has(env, fmt.tprintf("%s=%s", name, value)))
+			}
+		}
+		testing.expect_value(t, len(env), expected)
 	} else {
 		testing.expect_value(t, len(env), 5)
 	}
@@ -140,11 +150,6 @@ bridge_prespawn_env_omits_vault_key :: proc(t: ^testing.T) {
 	)
 	defer { for e in env do delete(e); delete(env) }
 
-	when ODIN_OS == .Linux {
-		testing.expect_value(t, len(env), 5 + len(BRIDGE_BROWSER_SESSION_ENV))
-	} else {
-		testing.expect_value(t, len(env), 5)
-	}
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_BRIDGE_ENDPOINT=unix:/tmp/bridge.sock"), "endpoint entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_TOKEN=hlat_tok_1"), "token entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_INSTANCE_ID=inst_abc"), "instance entry")
@@ -408,11 +413,61 @@ bridge_browser_profile_refuses_symlinks_and_unsafe_mode :: proc(t: ^testing.T) {
 }
 
 @(test)
+bridge_browser_profile_resolves_only_trusted_ancestor_alias :: proc(t: ^testing.T) {
+	root, err := bridge_browser_test_root()
+	if !testing.expect(t, err == nil) do return
+	defer { _ = os.remove_all(root); delete(root) }
+	link := strings.clone_to_cstring(fmt.tprintf("%s/alias", root), context.temp_allocator)
+	if !testing.expect(t, posix.symlink("real", link) == .OK) do return
+	direct := bridge_os_browser_profile_dir(fmt.tprintf("%s/real/data", root), "brg_a")
+	defer delete(direct)
+	if !testing.expect(t, direct != "") do return
+	// Model a system-owned protected parent with a fixture owned by this
+	// unprivileged test process. The public entry point still requires UID 0.
+	uid := posix.geteuid()
+	resolved := bridge_browser_walk_unix(fmt.tprintf("%s/alias/data/browser-profiles/brg_a/browser-profile", root), uid, 16)
+	defer delete(resolved)
+	managed := bridge_browser_walk_unix(fmt.tprintf("%s/alias/browser-profiles/brg_a/browser-profile", root), uid, 16)
+	defer delete(managed)
+	testing.expect_value(t, resolved, direct)
+	testing.expect_value(t, managed, "")
+	if uid != 0 {
+		untrusted := bridge_os_browser_profile_dir(fmt.tprintf("%s/alias/data", root), "brg_a")
+		defer delete(untrusted)
+		testing.expect_value(t, untrusted, "")
+	}
+}
+
+@(test)
+bridge_browser_shell_desktop_env_preserves_explicit_values :: proc(t: ^testing.T) {
+	config := Bridge_Config{}
+	env := bridge_shell_child_env(.Run, {{"DISPLAY", ":99"}, {"DBUS_SESSION_BUS_ADDRESS", ""}}, &config)
+	defer bridge_pty_host_spawn_request_delete({env = env})
+	values := [?][2]string{{"DISPLAY", ":99"}, {"DBUS_SESSION_BUS_ADDRESS", ""}}
+	for expected in values {
+		count := 0
+		for pair in env {
+			if pair[0] != expected[0] do continue
+			count += 1
+			testing.expect_value(t, pair[1], expected[1])
+		}
+		testing.expect_value(t, count, 1)
+	}
+}
+
+@(test)
 bridge_browser_profile_matches_in_agent_and_shell_children :: proc(t: ^testing.T) {
 	root, err := bridge_browser_test_root()
 	if !testing.expect(t, err == nil) do return
 	defer { _ = os.remove_all(root); delete(root) }
 	config := Bridge_Config{data_dir = root, daemon_id = "brg_fixture"}
+	// Optional host smoke: pass a system alias for the current workdir while
+	// still creating and cleaning up only this test's unique fixture.
+	if alias := os.get_env("HAM_TEST_BROWSER_WORKDIR_ALIAS", context.temp_allocator); alias != "" {
+		cwd, cwd_err := os.get_working_directory(context.temp_allocator)
+		if !testing.expect(t, cwd_err == nil && strings.has_prefix(root, fmt.tprintf("%s/", cwd))) do return
+		config.data_dir = fmt.tprintf("%s%s", alias, root[len(cwd):])
+	}
 	expected := fmt.tprintf("%s/browser-profiles/brg_fixture/browser-profile", root)
 	argv := [?]string{"/bin/sh", "-c", `printf '%s' "$HEIMDALL_BROWSER_PROFILE_DIR"`}
 

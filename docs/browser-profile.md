@@ -5,9 +5,11 @@ for its current registration. Agent launches and managed shell sessions inherit
 the same path. A restart leaves it in place. A different registration uses a
 different directory, even with the same configured data root. If the value is
 empty or absent, report **profile unavailable** and stop. Don't substitute the
-user's regular profile or a temporary profile. The bridge rejects symbolic
-links, junctions and unsafe permissions. Configure an absolute data root with no
-symlink components if the platform's usual home path is an alias.
+user's regular profile or a temporary profile. The bridge rejects symlinks in
+the configured data root itself and the managed directories below it, as well
+as junctions and unsafe permissions. On Unix, a root-owned alias in a protected
+parent above the data root, such as Fedora Atomic's `/home`, is resolved and the
+resulting path is checked before use.
 
 ## Launch and reuse
 
@@ -21,6 +23,9 @@ symlink components if the platform's usual home path is an alias.
   `DISPLAY` or `WAYLAND_DISPLAY` is not a connection check. macOS needs an active
   Aqua login for the launch user. Windows needs an interactive desktop in the
   same user session. Don't copy or synthesize another user's session credentials.
+- On Linux, the bridge forwards nonempty desktop and session-bus variables.
+  Explicit shell session values take precedence, including an explicit empty
+  value. Absent or empty bridge values leave the launch environment alone.
 - Without a usable desktop, use the browser's supported headless mode on the
   **same** profile only for already-authenticated work. If interactive sign-in
   is needed, report **display required**. Don't attempt sign-in in a disposable

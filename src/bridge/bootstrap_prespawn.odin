@@ -151,6 +151,7 @@ bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: 
 	when ODIN_OS == .Linux {
 		for name in BRIDGE_BROWSER_SESSION_ENV {
 			value := os.get_env(name, context.temp_allocator)
+			if value == "" do continue
 			append(&out, strings.concatenate({name, "=", value}))
 		}
 	}
