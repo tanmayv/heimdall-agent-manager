@@ -94,7 +94,8 @@ export function ConnectionSection({ selected, onSelect, acp, onFix, fixPending =
       {showAcp && acp.kind === 'installing' ? (
         <Alert tone="info" icon={null} data-debug-id="agent-panel-connection-installing">
           <span className="flex items-center gap-2">
-            <Spinner size="sm" label="Installing" />
+            {/* Decorative: the row's text is the announcement (the Alert is role=status). */}
+            <span aria-hidden="true" className="inline-flex"><Spinner size="sm" label="" /></span>
             {acp.text}
           </span>
         </Alert>

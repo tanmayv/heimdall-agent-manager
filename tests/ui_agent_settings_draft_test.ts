@@ -357,6 +357,8 @@ test('Connection: two radio cards; ACP alert role=alert with the hub fix; instal
     const installing = q(doc, 'agent-panel-connection-installing')!;
     assert.equal(installing.getAttribute('role'), 'status');
     assert.match(installing.textContent || '', /Installing the ACP adapter on dawnstar…/);
+    assert.equal(installing.querySelectorAll('[role="status"][aria-label]:not([aria-label=""])').length, 0, 'the spinner adds no second announcement');
+    assert.equal(installing.querySelector('[aria-hidden="true"] [role="status"]') !== null, true, 'spinner is decorative');
     assert.equal(doc.querySelector('[role="alert"]'), null);
   });
 });

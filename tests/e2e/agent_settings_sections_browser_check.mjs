@@ -84,6 +84,7 @@ try {
       }
       assert.equal((await q('agent-panel-apply-blocked').textContent()).trim(), 'Fix the connection above before applying.');
       assert.equal(await q('agent-panel-legacy-apply-btn').isDisabled(), true, `${label}: Apply disabled`);
+      assert.equal(await q('conversation-reconfigure-apply-btn').count(), 0, `${label}: the panel owns Apply (no composer Apply)`);
     }
 
     const m = await page.evaluate(() => {

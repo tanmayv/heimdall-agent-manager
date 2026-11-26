@@ -2581,7 +2581,8 @@ export function AgentChatPane({
     borrowed: Boolean(trayModeItem),
     menuOpen: statusMenuOpen || runtimeMenuOpen || mentionQuery !== null,
     uploadActive: filePickerOpen || hasUploadingAttachments || voice.active,
-    pendingActions: pendingReconfig,
+    // The open settings panel owns Apply (one primary action per decision).
+    pendingActions: pendingReconfig && !settingsPanel.open,
     readOnly: conversationReadOnly,
   });
   const permissionToggle = permissionToggleState({
@@ -3136,7 +3137,7 @@ export function AgentChatPane({
                   </button>
                 </div>
               ) : null}
-              {pendingReconfig && stagedConfigurationIssues.length > 0 ? (
+              {pendingReconfig && !settingsPanel.open && stagedConfigurationIssues.length > 0 ? (
                 <div
                   data-debug-id="conversation-apply-blocked-reasons"
                   role="status"
@@ -3258,7 +3259,9 @@ export function AgentChatPane({
                 {...composerActions}
                 readOnly={conversationReadOnly}
                 pendingActions={
-                  pendingReconfig ? (
+                  // While the settings panel is open it owns Discard/Apply for the draft
+                  // (T7's footer replaces its interim row), so the composer shows none.
+                  pendingReconfig && !settingsPanel.open ? (
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -3276,7 +3279,8 @@ export function AgentChatPane({
                           runtimeActionBusy ||
                           (operation?.phase !== 'recovery_required' &&
                             (isStarting || runtimeStopping)) ||
-                          stagedConfigurationIssues.length > 0
+                          stagedConfigurationIssues.length > 0 ||
+                          Boolean(draftApplyBlocked)
                         }
                         onClick={() => void applyReconfigure()}
                         className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg disabled:opacity-40"

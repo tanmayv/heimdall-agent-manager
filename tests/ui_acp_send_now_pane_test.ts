@@ -395,6 +395,7 @@ test('Agent settings panel draft: connection and bypass stage, ACP gate blocks A
     assert.ok(q('agent-panel-connection-fix-install_adapter'), 'Install adapter action from fix');
     assert.equal(q('agent-panel-apply-blocked')!.textContent, 'Fix the connection above before applying.');
     assert.equal((q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, true);
+    assert.equal(q('conversation-reconfigure-apply-btn'), null, 'the open panel owns Apply: no second Apply in the composer');
 
     await act(async () => q('agent-panel-connection-pty')!.click());
     assert.equal(q('agent-panel-connection-acp-alert'), null);
