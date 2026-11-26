@@ -209,6 +209,10 @@ mcp_mutate_task :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,command:mcp.C
 			if eerr!=nil do return "","request_failed"
 			fleet:=command.fleet;fleet.bridge_models_json=string(encoded)
 			_,operation_err=tc.upsert_fleet(&chains,principal,fleet);ok=operation_err.code==.None
+		case "caps":
+			// Chain cap (REQ-SCHED-34); the service validates the ranges.
+			if !command.caps.has_max_parallel && !command.caps.has_review_reserve do return "","invalid_arguments"
+			_,ok,operation_err=tc.update_chain(&chains,principal,chain.chain_id,command.caps)
 		case:return "","invalid_arguments"
 		}
 		id=string(chain.chain_id)

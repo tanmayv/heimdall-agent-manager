@@ -134,6 +134,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "set-description")}
 	case "agent.task_chain.set_status":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "set-status")}
+	case "agent.task_chain.update":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "update")}
 	case "agent.task_chain.set_summary", "agent.chain.summary":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chain", "summary")}
 	case "agent.task_chain.get_summary":
@@ -401,7 +403,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.agents.instance_stop",
 	     // task-chain + task
 	     "agent.task_chain.create", "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
-	     "agent.task_chain.set_description", "agent.task_chain.set_status",
+	     "agent.task_chain.set_description", "agent.task_chain.set_status", "agent.task_chain.update",
 	     "agent.task_chain.set_summary", "agent.chain.summary", "agent.task_chain.get_summary",
 	     "agent.task_chain.propose", "agent.chain.propose",
 	     "agent.task_chain.publish", "agent.task_chain.pin",

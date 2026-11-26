@@ -488,6 +488,36 @@ agent_action_chain_set_status_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
+// agent_action_chain_update_handler sets the chain cap (`ham-ctl task-chain
+// update --max-parallel --review-reserve`, REQ-SCHED-34). chain_id defaults to
+// the caller's chain; the service allows only the chain's coordinator.
+agent_action_chain_update_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	has_max := strings.contains(params, "\"max_parallel\"")
+	has_reserve := strings.contains(params, "\"review_reserve\"")
+	if !has_max && !has_reserve do return respond_error(domain.domain_error(.Validation_Failed, "max_parallel or review_reserve is required"), req.request_id)
+	max_parallel := json_int_field(params, "max_parallel", CHAIN_CAP_NOT_INT) if has_max else 0
+	review_reserve := json_int_field(params, "review_reserve", CHAIN_CAP_NOT_INT) if has_reserve else 0
+	if max_parallel == CHAIN_CAP_NOT_INT || review_reserve == CHAIN_CAP_NOT_INT {
+		return respond_error(domain.domain_error(.Validation_Failed, "max_parallel and review_reserve must be integers"), req.request_id)
+	}
+	chain, saved, err := taskchain_service.update_chain(h.taskchains, auth, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{
+		max_parallel = max_parallel, has_max_parallel = has_max,
+		review_reserve = review_reserve, has_review_reserve = has_reserve,
+	})
+	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_caps", fmt.tprintf("set chain cap max_parallel=%d review_reserve=%d", chain.max_parallel, chain.review_reserve))
+	b := strings.builder_make()
+	write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 // agent_action_chain_show_handler returns the full chain (incl. description).
 // chain_id is optional: defaults to the caller instance's own chain.
 agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {

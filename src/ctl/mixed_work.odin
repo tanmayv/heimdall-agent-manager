@@ -190,3 +190,33 @@ ctl_task_depend_workflow_body :: proc(chain_id, task_id, run_id: string) -> Ctl_
 ctl_task_depend_workflow_params :: proc(chain_id, task_id, run_id: string) -> string {
 	return ctl_json_text(ctl_task_depend_workflow_body(chain_id, task_id, run_id), context.temp_allocator)
 }
+
+Ctl_Chain_Cap :: struct {
+	key:   string, // wire key
+	value: int,
+}
+
+// ctl_chain_caps parses `--max-parallel <n>` and `--review-reserve <n>`
+// (REQ-SCHED-34) for a chain update. The hub validates the ranges
+// (max_parallel 0 = no cap, else >= 2; 1 <= review_reserve <= M - 1). A value
+// that is not an integer exits with an error.
+ctl_chain_caps :: proc(args: []string) -> [dynamic]Ctl_Chain_Cap {
+	caps := make([dynamic]Ctl_Chain_Cap)
+	for pair in ([?][2]string{{"--max-parallel", "max_parallel"}, {"--review-reserve", "review_reserve"}}) {
+		if !has_flag(args, pair[0]) do continue
+		raw := strings.trim_space(option_value(args, pair[0], ""))
+		n, ok := strconv.parse_int(raw, 10)
+		if !ok || raw == "" do ctl_print_error_exit(strings.concatenate({pair[0], " needs an integer value"}, context.temp_allocator))
+		append(&caps, Ctl_Chain_Cap{key = pair[1], value = n})
+	}
+	return caps
+}
+
+// ctl_chain_cap_fields: the caps as pre-serialized JSON fields (agent mode).
+ctl_chain_cap_fields :: proc(args: []string) -> [dynamic]string {
+	caps := ctl_chain_caps(args)
+	defer delete(caps)
+	fields := make([dynamic]string)
+	for c in caps do append(&fields, json_kv_raw(c.key, fmt.tprintf("%d", c.value)))
+	return fields
+}

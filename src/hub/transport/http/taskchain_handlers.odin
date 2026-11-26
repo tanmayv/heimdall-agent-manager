@@ -143,6 +143,8 @@ Task_Chain_Wire :: struct {
 	updated_at:                    string     `json:"updated_at"`,
 	is_pinned:                     bool       `json:"is_pinned"`,
 	pinned_at:                     string     `json:"pinned_at"`,
+	max_parallel:                  int        `json:"max_parallel"`,
+	review_reserve:                int        `json:"review_reserve"`,
 }
 
 Chain_List_Item_Wire :: struct {
@@ -371,6 +373,8 @@ Task_Chain_Detail_Response_Wire :: struct {
 	updated_at:                    string                      `json:"updated_at"`,
 	is_pinned:                     bool                        `json:"is_pinned"`,
 	pinned_at:                     string                      `json:"pinned_at"`,
+	max_parallel:                  int                         `json:"max_parallel"`,
+	review_reserve:                int                         `json:"review_reserve"`,
 	members:                       []Task_Chain_Member_Wire    `json:"members"`,
 	tasks:                         []Task_Detail_Wire          `json:"tasks"`,
 	directories:                   []Task_Chain_Directory_Wire `json:"directories"`,
@@ -396,6 +400,8 @@ make_chain_wire :: proc(c: domain.Task_Chain) -> Task_Chain_Wire {
 		updated_at                    = c.updated_at,
 		is_pinned                     = c.is_pinned,
 		pinned_at                     = c.pinned_at,
+		max_parallel                  = c.max_parallel,
+		review_reserve                = c.review_reserve,
 	}
 }
 
@@ -754,6 +760,8 @@ make_chain_detail_response_wire :: proc(
 		updated_at                    = chain.updated_at,
 		is_pinned                     = chain.is_pinned,
 		pinned_at                     = chain.pinned_at,
+		max_parallel                  = chain.max_parallel,
+		review_reserve                = chain.review_reserve,
 		members                       = members_wire,
 		tasks                         = tasks_wire,
 		directories                   = dirs_wire,
@@ -1473,6 +1481,9 @@ chain_patch_title_source :: proc(title: string, kind: contracts.Auth_Kind) -> st
 	return "agent" if kind == .Instance_Token else "user"
 }
 
+// CHAIN_CAP_NOT_INT: sentinel for a cap key whose value is not an integer.
+CHAIN_CAP_NOT_INT :: min(int)
+
 patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -1481,6 +1492,14 @@ patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	has_pinned := strings.contains(req.body, "\"is_pinned\"") || strings.contains(req.body, "\"pinned\"")
 	is_pinned_val := json_bool(req.body, "is_pinned") if strings.contains(req.body, "\"is_pinned\"") else json_bool(req.body, "pinned")
 	title := json_string(req.body, "title")
+	// Chain cap (REQ-SCHED-34): integers; the service validates the ranges.
+	has_max_parallel := strings.contains(req.body, "\"max_parallel\"")
+	has_review_reserve := strings.contains(req.body, "\"review_reserve\"")
+	max_parallel := json_int_field(req.body, "max_parallel", CHAIN_CAP_NOT_INT) if has_max_parallel else 0
+	review_reserve := json_int_field(req.body, "review_reserve", CHAIN_CAP_NOT_INT) if has_review_reserve else 0
+	if max_parallel == CHAIN_CAP_NOT_INT || review_reserve == CHAIN_CAP_NOT_INT {
+		return respond_error(domain.domain_error(.Validation_Failed, "max_parallel and review_reserve must be integers"), req.request_id)
+	}
 	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{
 		title = title,
 		title_source = chain_patch_title_source(title, auth_ctx.kind),
@@ -1490,6 +1509,10 @@ patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		has_coordinator = strings.contains(req.body, "\"coordinator_agent_instance_id\""),
 		is_pinned = is_pinned_val,
 		has_is_pinned = has_pinned,
+		max_parallel = max_parallel,
+		has_max_parallel = has_max_parallel,
+		review_reserve = review_reserve,
+		has_review_reserve = has_review_reserve,
 	})
 	if !updated do return respond_error(err, req.request_id)
 	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")

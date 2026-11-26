@@ -33,17 +33,21 @@ match_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, tri
 		if task.state != .In_Review || task.kind == .Gate do continue
 		grant_reviews(svc, u, &ctx, task, trigger)
 	}
-	// Work pass.
+	// Work passes: rework (a task worked before) ahead of new work
+	// (REQ-SCHED-35), each by priority then age.
 	stage_caps := make(map[string]map[string]int, context.temp_allocator)
-	for task in ctx.sorted {
-		if task.state != .Ready || task.kind == .Gate do continue
-		if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
-		if task.stage_key != "" {
-			if cap := workflow_task_max_parallel_cached(svc, &stage_caps, task); cap > 0 {
-				if stage_live_work_lease_count(&ctx, task.workflow_run_id, task.workflow_execution_no, task.stage_key) >= cap do continue
+	for rework in ([]bool{true, false}) {
+		for task in ctx.sorted {
+			if task.state != .Ready || task.kind == .Gate do continue
+			if (task.attempt_no > 0) != rework do continue
+			if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+			if task.stage_key != "" {
+				if cap := workflow_task_max_parallel_cached(svc, &stage_caps, task); cap > 0 {
+					if stage_live_work_lease_count(&ctx, task.workflow_run_id, task.workflow_execution_no, task.stage_key) >= cap do continue
+				}
 			}
+			grant_work(svc, u, &ctx, task, trigger)
 		}
-		grant_work(svc, u, &ctx, task, trigger)
 	}
 	return reconcile_placement_in_uow(svc, u, chain, ctx.grant_failures[:], true)
 }
@@ -174,6 +178,13 @@ resolve_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.
 	if bridge_id == "" && len(ctx.dirs) > 0 do bridge_id = ctx.dirs[0].bridge_id
 	if bridge_id == "" && ctx.has_coordinator do bridge_id = ctx.coordinator.bridge_id
 	if bridge_id == "" do return Placement{}, false
+	return placement_on_bridge(ctx, fleet, bridge_id), true
+}
+
+// placement_on_bridge: the fleet row's runtime selection and the chain
+// directory for one bridge. Reuse (REQ-SCHED-31) places a grant on the bridge
+// of the instance it reuses.
+placement_on_bridge :: proc(ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, bridge_id: string) -> Placement {
 	provider, model := fleet_model_on_bridge(fleet, bridge_id)
 	profile := fleet_profile_on_bridge(fleet, bridge_id)
 	runtime_error: domain.Domain_Error
@@ -191,7 +202,7 @@ resolve_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.
 		provider_profile=profile,
 		provider     = provider,
 		model        = model,
-	}, true
+	}
 }
 
 // ---- work pass -----------------------------------------------------------------------
@@ -224,19 +235,24 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 	if view.last_release == .Changes_Requested || view.last_release == .Expired {
 		prefer = last_attempt_holder(svc, task)
 	}
-	placement, pok := resolve_placement(ctx, task, fleet, true)
-	if placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id) do return
-	if !fleet_owns_task(ctx, task, fleet.agent_id) && fleet_row_full(ctx, fleet, placement) do return
-	if reason, _ := placement_problem(svc, ctx, placement, pok, fleet.agent_id); reason != "" do return
-	inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.LEASE_KIND_WORK, prefer)
-	if !found {
+	base, pok := resolve_placement(ctx, task, fleet, true)
+	pick := pick_instance(svc, u, ctx, task, fleet, base, pok, placement_restriction(task, fleet, true), domain.LEASE_KIND_WORK, prefer)
+	if !pick.found {
+		if pick.why != "" do block_ready_agent_in_uow(svc, u, task, fleet.agent_id, pick.placement, pick.why)
+		return
+	}
+	// The chain cap queues the grant silently; a slot frees by an event that
+	// rematches (REQ-SCHED-34).
+	if chain_cap_refusal(svc, ctx, u, pick.inst, pick.counted, domain.LEASE_KIND_WORK, task) != "" do return
+	inst, placement, ready, why := pick_materialize(svc, u, ctx, fleet, pick, domain.LEASE_KIND_WORK)
+	if !ready {
 		if why != "" do block_ready_agent_in_uow(svc, u, task, fleet.agent_id, placement, why)
 		return
 	}
 	lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
 		chain = ctx.chain, task = task, instance = inst,
 		kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_WAKE,
-		placement = placement, actor = hub_actor(), trigger = trigger,
+		placement = placement, actor = hub_actor(), trigger = trigger, reuse_note = pick.reuse_note,
 	})
 	if !gok {
 		record_grant_placement_failure(ctx, task, fleet, placement, "work", gerr)
@@ -289,19 +305,25 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		}
 		fleet, has_row := fleet_row_for_agent(ctx.fleets[:], agent_id)
 		if !has_row || fleet.paused do continue
-		placement, pok := resolve_placement(ctx, task, fleet, false)
-		if !fleet_owns_task(ctx, task, fleet.agent_id) && fleet_row_full(ctx, fleet, placement) do continue
-		if reason, _ := placement_problem(svc, ctx, placement, pok, fleet.agent_id); reason != "" do continue
-		inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.LEASE_KIND_REVIEW, "")
-		if !found {
+		base, pok := resolve_placement(ctx, task, fleet, false)
+		pick := pick_instance(svc, u, ctx, task, fleet, base, pok, placement_restriction(task, fleet, false), domain.LEASE_KIND_REVIEW, "")
+		if !pick.found {
 			// Capacity and retriable backoff report no reason and simply wait.
+			if pick.why != "" do failure, failed_agent, failed_placement = pick.why, agent_id, pick.placement
+			continue
+		}
+		// A review may take a grace instance's slot; otherwise it waits for a
+		// running review to end (REQ-SCHED-34, spec 9.2).
+		if chain_cap_refusal(svc, ctx, u, pick.inst, pick.counted, domain.LEASE_KIND_REVIEW, task) != "" do continue
+		inst, placement, ready, why := pick_materialize(svc, u, ctx, fleet, pick, domain.LEASE_KIND_REVIEW)
+		if !ready {
 			if why != "" do failure, failed_agent, failed_placement = why, agent_id, placement
 			continue
 		}
 		lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
 			chain = ctx.chain, task = task, instance = inst,
 			kind = domain.LEASE_KIND_REVIEW, delivery = domain.LEASE_DELIVERY_WAKE,
-			placement = placement, actor = hub_actor(), trigger = trigger,
+			placement = placement, actor = hub_actor(), trigger = trigger, reuse_note = pick.reuse_note,
 		})
 		if !gok {
 			record_grant_placement_failure(ctx, task, fleet, placement, "review", gerr)
@@ -342,108 +364,95 @@ instance_failure_reason :: proc(inst: domain.Agent_Instance) -> string {
 
 // ---- instance selection --------------------------------------------------------------
 
-// pick_instance chooses WHO runs a grant for `fleet` on `placement.bridge_id`:
-//   1. `prefer` (the previous holder) when it is lease-free and not dead;
-//   2. a live, lease-free instance of the template on that bridge;
-//   3. a stopped warm instance (same id re-bootstrapped by the wake);
-//   4. JIT: a new instance when live count < fleet capacity (default 1).
-// Coordinators are never candidates: an item for the coordinator's agent is
-// pulled by the coordinator, never woken or JIT-copied (REQ-SCHED-13).
+// Pick: the instance chosen for a grant, before the chain cap is checked and
+// before a new instance is created (pick_materialize).
+Pick :: struct {
+	inst:       domain.Agent_Instance,
+	placement:  Placement,
+	found:      bool,
+	counted:    bool,   // inst already occupies a chain slot (REQ-SCHED-34)
+	jit:        bool,   // no instance can be reused: create one on `placement`
+	why:        string, // Start agent card reason when nothing may be picked
+	reuse_note: string, // why an existing instance was not reused (jit only)
+}
+
+// pick_instance chooses WHO runs a grant for `fleet`, over all bridges unless
+// `restrict` names one (task pin or fleet-row bridge; REQ-SCHED-30/31):
+//   1. the holder of a waiting claim on the task (rework, a parked review);
+//   2. `prefer` (the previous holder), then a live lease-free instance that
+//      is not being stopped (a reviewer in its grace window keeps its process);
+//   3. a stopped reusable instance on an online bridge that supports the
+//      row's runtime (relaunched by the wake), below capacity;
+//   4. an instance that is being stopped;
+//   5. a new instance on `base`, below capacity, only when no existing
+//      instance may be used and none must not be replaced (REQ-SCHED-32).
+// Capacity is the agent's occupied instances over all bridges (REQ-SCHED-33).
+// Among equal candidates the base placement's bridge wins. Coordinators are
+// never candidates: an item for the coordinator's agent is pulled by the
+// coordinator, never woken or JIT-copied (REQ-SCHED-13).
 @(private = "file")
-pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement, kind: string, prefer: string) -> (domain.Agent_Instance, bool, string) {
-	if ctx.has_coordinator && fleet.agent_id == ctx.coordinator.agent_id do return {}, false, ""
+pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, base: Placement, base_ok: bool, restrict, kind, prefer: string) -> Pick {
+	if ctx.has_coordinator && fleet.agent_id == ctx.coordinator.agent_id do return {placement = base}
 	// A waiting claim is a reservation for this exact instance, including rework.
 	for claim in ctx.leases {
-		if claim.task_id != task.task_id || claim.phase != domain.LEASE_PHASE_WAITING do continue
+		if claim.task_id != task.task_id || claim.phase != domain.LEASE_PHASE_WAITING || claim.kind != kind do continue
 		for inst in ctx.instances {
 			if inst.agent_instance_id != claim.holder_instance_id || inst.agent_id != fleet.agent_id do continue
-			if claim.kind != kind do continue
-			if inst.bridge_id != placement.bridge_id do return {}, false, "assigned instance is on another bridge"
-			if disposition := agent.failed_instance_disposition(inst, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {}, false, instance_failure_reason(inst)
-			if inst.stopped_by == agent.STOPPED_BY_USER do return {}, false, "assigned instance was stopped by the user"
-			if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None do return {}, false, "assigned instance has a pending runtime action"
-			return inst, true, ""
+			placement := placement_on_bridge(ctx, fleet, inst.bridge_id)
+			if restrict != "" && inst.bridge_id != restrict do return {placement = placement, why = "assigned instance is on another bridge"}
+			if disposition := agent.failed_instance_disposition(inst, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {placement = placement, why = instance_failure_reason(inst)}
+			if inst.stopped_by == agent.STOPPED_BY_USER do return {placement = placement, why = "assigned instance was stopped by the user"}
+			if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None do return {placement = placement, why = "assigned instance has a pending runtime action"}
+			// Its bridge being away or its directory busy is queueing; the
+			// placement snapshot reports the bridge.
+			if reason, _ := placement_problem(svc, ctx, placement, true, fleet.agent_id); reason != "" do return {placement = placement}
+			if kind == domain.LEASE_KIND_WORK && placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id) do return {placement = placement}
+			return {inst = inst, placement = placement, found = true, counted = instance_slot_counted(svc, ctx, u, inst)}
 		}
 	}
 
 	// Pause (REQ-SCHED-2) is decided by the callers before a pick.
-	failure := ""
-	live_count := 0
-	live_free := domain.Agent_Instance{}
-	stopping_free := domain.Agent_Instance{}
-	warm := domain.Agent_Instance{}
-	preferred := domain.Agent_Instance{}
-	have_live, have_stopping, have_warm, have_pref := false, false, false, false
-	for inst in ctx.instances {
-		if inst.agent_id != fleet.agent_id || inst.bridge_id != placement.bridge_id do continue
-		if busy,err:=iface.agent_runtime_busy(svc.agents,inst.agent_instance_id);busy || err.code!=.None {
-			live_count+=1
-			failure="instance has a pending runtime action"
-			continue
-		}
-		// F4: a person stopped this instance — never re-wake or re-grant it
-		// (whatever its runtime state, including as prefer=last holder), and
-		// do not count it toward capacity. Without another free instance, ask
-		// the user to restart it instead of creating an unsolicited replacement.
-		if inst.stopped_by == agent.STOPPED_BY_USER {
-			failure = fmt.tprintf("instance %s was stopped by the user", inst.agent_instance_id)
-			continue
-		}
-		if is_coordinator(svc, ctx.chain, inst.agent_instance_id) do continue
-		disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
-		if disposition == .Hold {
-			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable {
-				// Standard rematches end at ten minutes; provider backoff may be
-				// longer. Recheck this task just after the actual retry deadline.
-				due := to_ms(inst.stopped_at) + agent.instance_retry_delay_ms(agent.instance_last_error_attempt(inst), werr.retry_after_ms)
-				timers_arm(svc, .Rematch, string(task.task_id), due + 1000, domain.task_state_string(task.state))
-				live_count += 1
-				continue
-			}
-		}
-		if disposition == .Dead || disposition == .Hold {
-			failure = instance_failure_reason(inst)
-			continue
-		}
-		free := !ctx.held[inst.agent_instance_id]
-		stopping := u != nil && effect_has_stop(u, inst.bridge_id, string(ctx.chain.chain_id), inst.agent_instance_id)
-		// An instance granted earlier in this pass is about to run even if it is a
-		// stopped warm instance (the wake starts it after commit), so it counts
-		// toward capacity. Without this, waking a warm instance and then JIT-ing
-		// another in the same pass exceeded the fleet row's capacity.
-		if !free && !(instance_is_live(inst) || instance_is_pending(inst)) {
-			live_count += 1
-			continue
-		}
-		if instance_is_live(inst) || instance_is_pending(inst) {
-			live_count += 1
-			if free {
-				if stopping {
-					if !have_stopping { stopping_free = inst; have_stopping = true }
-				} else if !have_live {
-					live_free = inst
-					have_live = true
-				}
-			}
-		} else if free && !have_warm {
-			warm = inst
-			have_warm = true
-		}
-		if free && prefer != "" && inst.agent_instance_id == prefer { preferred = inst; have_pref = true }
+	scan := reuse_scan(svc, u, ctx, task, fleet, restrict, base.bridge_id, kind, prefer)
+	// Standard rematches end at ten minutes; provider backoff may be longer.
+	// Recheck this task just after the earliest actual retry deadline.
+	if scan.retry_due_ms > 0 do timers_arm(svc, .Rematch, string(task.task_id), scan.retry_due_ms + 1000, domain.task_state_string(task.state))
+	choose :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, fleet: domain.Task_Chain_Fleet, inst: domain.Agent_Instance) -> Pick {
+		return {inst = inst, placement = placement_on_bridge(ctx, fleet, inst.bridge_id), found = true, counted = instance_slot_counted(svc, ctx, u, inst)}
 	}
 	// Capacity bounds every pick that starts a process: a stopped previous
 	// holder or warm instance is re-bootstrapped by the wake, so it may only be
-	// chosen below capacity, exactly like a JIT (REQ-TV2-5).
-	capacity := fleet.capacity
-	if capacity < 1 do capacity = 1
-	below_capacity := live_count < capacity
-	if have_pref && (instance_is_live(preferred) || instance_is_pending(preferred) || below_capacity) do return preferred, true, ""
-	if have_live do return live_free, true, ""
-	if have_warm && below_capacity do return warm, true, ""
-	if have_stopping do return stopping_free, true, ""
-	if !below_capacity do return {}, false, ""
-	if failure != "" do return {}, false, failure
-	return jit_prepare(svc, u, ctx, fleet, placement, kind)
+	// chosen below capacity, exactly like a new instance (REQ-TV2-5).
+	// A live or stopping instance is already counted, so its grant keeps the
+	// occupied count; it still needs the agent's lease holders to stay within
+	// capacity after the grant (a manual extra instance, or one on another
+	// bridge, cannot bypass it).
+	below_capacity := scan.occupied < scan.capacity
+	within_capacity := scan.held < scan.capacity
+	if scan.have_pref {
+		if instance_is_live(scan.preferred) || instance_is_pending(scan.preferred) {
+			if within_capacity do return choose(svc, ctx, u, fleet, scan.preferred)
+		} else if below_capacity do return choose(svc, ctx, u, fleet, scan.preferred)
+	}
+	if scan.have_live && within_capacity do return choose(svc, ctx, u, fleet, scan.live)
+	if scan.have_warm && below_capacity do return choose(svc, ctx, u, fleet, scan.warm)
+	if scan.have_stopping && within_capacity do return choose(svc, ctx, u, fleet, scan.stopping)
+	if !below_capacity do return {placement = base}
+	if scan.failure != "" do return {placement = base, why = scan.failure}
+	// A new instance goes where the base placement says. Problems there are
+	// queueing reported by the placement snapshot, never a card.
+	if !base_ok do return {placement = base}
+	if reason, _ := placement_problem(svc, ctx, base, true, fleet.agent_id); reason != "" do return {placement = base}
+	if kind == domain.LEASE_KIND_WORK && base.directory_id != "" && directory_has_work_lease_ctx(ctx, base.directory_id) do return {placement = base}
+	return {placement = base, found = true, jit = true, reuse_note = scan.unusable}
+}
+
+// pick_materialize creates the new instance a pick asked for (after the chain
+// cap admitted it, so a refused grant never leaves an unused instance behind).
+@(private = "file")
+pick_materialize :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, pick: Pick, kind: string) -> (domain.Agent_Instance, Placement, bool, string) {
+	if !pick.jit do return pick.inst, pick.placement, true, ""
+	inst, ok, why := jit_prepare(svc, u, ctx, fleet, pick.placement, kind)
+	return inst, pick.placement, ok, why
 }
 
 // jit_prepare creates a stopped instance. Only the subsequent grant opens
@@ -516,7 +525,9 @@ grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Cha
 		if fleet.paused { note_refusal(&refusal, task.task_id, "this agent's fleet row is paused"); continue }
 		if task_is_held(task) { note_refusal(&refusal, task.task_id, "task is held"); continue }
 		if requirements_stale_review(svc, task) { note_refusal(&refusal, task.task_id, "task requirements changed; the review waits for the worker"); continue }
-		placement := inline_placement(&ctx, task, fleet, inst, false)
+		if restrict := placement_restriction(task, fleet, false); restrict != "" && restrict != inst.bridge_id { note_refusal(&refusal, task.task_id, "this agent's fleet row is placed on another bridge"); continue }
+		placement := inline_placement(&ctx, fleet, inst)
+		if reason := chain_cap_refusal(svc, &ctx, u, inst, instance_slot_counted(svc, &ctx, u, inst), domain.LEASE_KIND_REVIEW, task); reason != "" { note_refusal(&refusal, task.task_id, reason); continue }
 		lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
 			chain = chain, task = task, instance = inst,
 			kind = domain.LEASE_KIND_REVIEW, delivery = domain.LEASE_DELIVERY_INLINE,
@@ -536,11 +547,10 @@ grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Cha
 			if brief_assignee(task.brief_json) != inst.agent_id do continue
 			if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
 			if fleet.paused { note_refusal(&refusal, task.task_id, "this agent's fleet row is paused"); continue }
-			if task.bridge_id != "" && task.bridge_id != inst.bridge_id { note_refusal(&refusal, task.task_id, "task is pinned to another bridge"); continue }
-			placement, pok := resolve_placement(&ctx, task, fleet, true)
-			if !pok do placement = Placement{bridge_id = inst.bridge_id}
-			if placement.bridge_id != inst.bridge_id { note_refusal(&refusal, task.task_id, "task is placed on another bridge"); continue }
+			if reason := inline_bridge_refusal(task, fleet, inst); reason != "" { note_refusal(&refusal, task.task_id, reason); continue }
+			placement := inline_placement(&ctx, fleet, inst)
 			if placement.directory_id != "" && directory_has_work_lease_ctx(&ctx, placement.directory_id) { note_refusal(&refusal, task.task_id, "another work lease is live on this chain directory"); continue }
+			if reason := chain_cap_refusal(svc, &ctx, u, inst, instance_slot_counted(svc, &ctx, u, inst), domain.LEASE_KIND_WORK, task); reason != "" { note_refusal(&refusal, task.task_id, reason); continue }
 			lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
 				chain = chain, task = task, instance = inst,
 				kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_INLINE,
@@ -557,14 +567,20 @@ grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Cha
 }
 
 // inline_placement: the caller is where it is — its bridge and that bridge's
-// chain directory, with the fleet row's runtime selection when it resolves.
+// chain directory, with the fleet row's runtime selection for that bridge.
+// Placement follows the reused instance (REQ-SCHED-31).
 @(private = "file")
-inline_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, inst: domain.Agent_Instance, honour_pin: bool) -> Placement {
-	placement, pok := resolve_placement(ctx, task, fleet, honour_pin)
-	if !pok do placement = Placement{bridge_id = inst.bridge_id}
-	placement.bridge_id = inst.bridge_id
-	placement.directory_id = resolve_directory_for_bridge(ctx.dirs, inst.bridge_id)
-	return placement
+inline_placement :: proc(ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, inst: domain.Agent_Instance) -> Placement {
+	return placement_on_bridge(ctx, fleet, inst.bridge_id)
+}
+
+// inline_bridge_refusal: a task pin or the fleet row's bridge restricts work
+// to one bridge, and pins win over reuse (REQ-SCHED-31).
+@(private = "file")
+inline_bridge_refusal :: proc(task: domain.Task, fleet: domain.Task_Chain_Fleet, inst: domain.Agent_Instance) -> string {
+	if pin := strings.trim_space(task.bridge_id); pin != "" && pin != inst.bridge_id do return "task is pinned to another bridge"
+	if row := strings.trim_space(fleet.bridge_id); row != "" && row != inst.bridge_id do return "this agent's fleet row is placed on another bridge"
+	return ""
 }
 
 // grant_inline_task_for_instance: the work pass of grant_inline_for_instance
@@ -582,10 +598,9 @@ grant_inline_task_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Tas
 		if task.state != .Ready || task.kind == .Gate do return {}, {}, false, domain.domain_error(.Conflict, "task is not ready")
 		if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do return {}, {}, false, domain.domain_error(.Conflict, "task is already held")
 		if brief_assignee(task.brief_json) != inst.agent_id do return {}, {}, false, domain.domain_error(.Conflict, "task is assigned to another agent")
-		if task.bridge_id != "" && task.bridge_id != inst.bridge_id do return {}, {}, false, domain.domain_error(.Conflict, "task is pinned to another bridge")
-		placement, pok := resolve_placement(&ctx, task, fleet, true)
-		if !pok do placement = Placement{bridge_id = inst.bridge_id}
-		if placement.bridge_id != inst.bridge_id do return {}, {}, false, domain.domain_error(.Conflict, "task is placed on another bridge")
+		if reason := inline_bridge_refusal(task, fleet, inst); reason != "" do return {}, {}, false, domain.domain_error(.Conflict, reason)
+		placement := inline_placement(&ctx, fleet, inst)
+		if reason := chain_cap_refusal(svc, &ctx, u, inst, instance_slot_counted(svc, &ctx, u, inst), domain.LEASE_KIND_WORK, task); reason != "" do return {}, {}, false, domain.domain_error(.Conflict, reason, `{"code":"chain_cap"}`)
 		lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
 			chain = chain, task = task, instance = inst,
 			kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_INLINE,
@@ -640,11 +655,13 @@ directory_has_work_lease_ctx :: proc(ctx: ^Match_Context, directory_id: string) 
 
 _ :: platform
 
-// A full row is queueing even when its bridge is offline.
+// A full row is queueing even when its bridge is offline. Capacity counts the
+// agent's lease holders on every bridge (REQ-SCHED-33); `placement` is kept
+// for callers and no longer narrows the count.
 fleet_row_full :: proc(ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, placement: Placement) -> bool {
 	count := 0
 	for inst in ctx.instances {
-		if inst.agent_id != fleet.agent_id || inst.bridge_id != placement.bridge_id do continue
+		if inst.agent_id != fleet.agent_id do continue
 		if ctx.held[inst.agent_instance_id] do count += 1
 	}
 	return count >= max(1, fleet.capacity)
@@ -719,11 +736,18 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 	}
 	held := 0
 	for inst in ctx.instances {
-		if inst.agent_id == fleet.agent_id && inst.bridge_id == placement.bridge_id && ctx.held[inst.agent_instance_id] do held += 1
+		if inst.agent_id == fleet.agent_id && ctx.held[inst.agent_instance_id] do held += 1
 	}
-	if held >= max(1, fleet.capacity) {
-		append(&out, fmt.tprintf("%s: fleet full %d/%d on bridge %s", fleet.agent_id, held, max(1, fleet.capacity), placement.bridge_id))
+	if held >= max(1, fleet.capacity) && !fleet_owns_task(&ctx, task, fleet.agent_id) {
+		append(&out, fmt.tprintf("%s: fleet full %d/%d over all bridges", fleet.agent_id, held, max(1, fleet.capacity)))
 		return out[:]
+	}
+	if m, r := chain_cap_limits(ctx.chain); m > 0 {
+		slots := chain_slots(svc, &ctx, nil)
+		if !fleet_owns_task(&ctx, task, fleet.agent_id) && slots.work + 1 > m - r {
+			append(&out, fmt.tprintf("chain work limit reached: %d work leases of max_parallel %d with review_reserve %d", slots.work, m, r))
+			return out[:]
+		}
 	}
 	if !bridge_online(svc, placement.bridge_id) {
 		append(&out, fmt.tprintf("%s: bridge %s is offline", fleet.agent_id, placement.bridge_id))
@@ -741,7 +765,8 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 	}
 	instance_reason := ""
 	for inst in ctx.instances {
-		if inst.agent_id != fleet.agent_id || inst.bridge_id != placement.bridge_id || ctx.held[inst.agent_instance_id] do continue
+		if inst.agent_id != fleet.agent_id || ctx.held[inst.agent_instance_id] do continue
+		if restrict := placement_restriction(task, fleet, true); restrict != "" && inst.bridge_id != restrict do continue
 		if inst.stopped_by == agent.STOPPED_BY_USER {
 			instance_reason = fmt.tprintf("instance %s was stopped by the user", inst.agent_instance_id)
 			continue
@@ -758,7 +783,7 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 		append(&out, fmt.tprintf("%s: %s", fleet.agent_id, instance_reason))
 		return out[:]
 	}
-	append(&out, fmt.tprintf("%s: a slot is free on bridge %s (%d/%d) but no lease was granted; see the hub log", fleet.agent_id, placement.bridge_id, held, max(1, fleet.capacity)))
+	append(&out, fmt.tprintf("%s: a slot is free (%d/%d over all bridges; placement bridge %s) but no lease was granted; see the hub log", fleet.agent_id, held, max(1, fleet.capacity), placement.bridge_id))
 	return out[:]
 }
 

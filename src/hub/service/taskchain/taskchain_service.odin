@@ -111,6 +111,40 @@ Update_Chain_Input :: struct {
 	title_source: string,
 	is_pinned: bool,
 	has_is_pinned: bool,
+	// Chain cap (REQ-SCHED-34). has_* distinguishes "absent" from "set".
+	// max_parallel 0 removes the cap (and the reserve); otherwise M >= 2 and
+	// 1 <= review_reserve <= M - 1, with review_reserve defaulting to 1.
+	max_parallel: int,
+	has_max_parallel: bool,
+	review_reserve: int,
+	has_review_reserve: bool,
+}
+
+// apply_chain_caps validates and applies a chain-cap change (REQ-SCHED-34,
+// spec decision 3). Returns true when the stored caps changed.
+apply_chain_caps :: proc(chain: ^domain.Task_Chain, input: Update_Chain_Input) -> (bool, domain.Domain_Error) {
+	if !input.has_max_parallel && !input.has_review_reserve do return false, {}
+	m := chain.max_parallel
+	r := chain.review_reserve
+	if input.has_max_parallel do m = input.max_parallel
+	if input.has_review_reserve do r = input.review_reserve
+	if m < 0 do return false, domain.domain_error(.Validation_Failed, "max_parallel must be 0 (no cap) or at least 2")
+	if m == 0 {
+		if input.has_review_reserve && input.review_reserve != 0 && !input.has_max_parallel do return false, domain.domain_error(.Validation_Failed, "review_reserve needs max_parallel; set max_parallel first")
+		r = 0
+	} else {
+		if m < 2 do return false, domain.domain_error(.Validation_Failed, "max_parallel must be at least 2: a cap of 1 with reviews cannot avoid deadlock")
+		if !input.has_review_reserve && r < 1 do r = 1
+		if r < 1 do return false, domain.domain_error(.Validation_Failed, "review_reserve must be at least 1")
+		if r > m - 1 {
+			if input.has_review_reserve do return false, domain.domain_error(.Validation_Failed, "review_reserve must be at most max_parallel - 1")
+			r = m - 1
+		}
+	}
+	changed := m != chain.max_parallel || r != chain.review_reserve
+	chain.max_parallel = m
+	chain.review_reserve = r
+	return changed, {}
 }
 
 // Create_Task_Input (Task System v2). The brief carries goal/acceptance/
@@ -571,6 +605,11 @@ update_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
 	}
 	if input.status != "" && chain_status_from_string(input.status) == .Completed do return {}, false, domain.domain_error(.Validation_Failed, "use complete with expected_work_revision and final summary")
+	if (input.has_max_parallel || input.has_review_reserve) && auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
+		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can change the chain caps")
+	}
+	caps_changed, caps_err := apply_chain_caps(&chain, input)
+	if caps_err.code != .None do return {}, false, caps_err
 	if input.title != "" do chain.title = input.title
 	if input.title_source == "agent" || input.title_source == "user" || input.title_source == "default" do chain.title_source = input.title_source
 	// has_description allows explicit clearing (pass ""); a bare non-empty
@@ -637,6 +676,9 @@ update_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		broadcast_chain_closed(service, auth, saved, closed_status)
 	}
 	if save_ok && status_reopened do broadcast_chain_status_notice(service, auth, saved, .Active)
+	// A changed cap re-runs the matcher: a raised cap may admit queued grants.
+	// A lowered cap evicts nothing (spec 12); grants stop until counts fall.
+	if save_ok && caps_changed && !status_closed && service.engine != nil do _ = taskv2.fleet_changed(service.engine, saved)
 	return saved, save_ok, save_err
 }
 

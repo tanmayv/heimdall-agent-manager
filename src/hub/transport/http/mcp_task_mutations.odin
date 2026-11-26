@@ -93,6 +93,7 @@ mcp_task_write_call :: proc(h:^MCP_Control_Handlers,id:json.Value,raw:string,vie
 	command.fleet={chain_id=command.chain_id,agent_id=args.agent_id,bridge_id=bridge,provider=args.provider,model=args.model,provider_profile=profile,has_provider_profile=true,capacity=capacity}
 	// chains.configure `paused` (REQ-SCHED-2) is saved in the same row write.
 	if mcp.task_argument_present(args,"paused") {paused:=new(bool,context.temp_allocator);paused^=args.paused;command.fleet.paused=paused}
+	command.caps={max_parallel=args.max_parallel,has_max_parallel=mcp.task_argument_present(args,"max_parallel"),review_reserve=args.review_reserve,has_review_reserve=mcp.task_argument_present(args,"review_reserve")}
 	applied:=make([dynamic]string,context.temp_allocator)
 	for key in mcp.TASK_TOOL_KEYS do if mcp.task_argument_present(args,key) && key!="chain_id" && key!="task_id" && key!="request_id" && key!="expected_revision" do append(&applied,key)
 	command.applied_fields=applied[:]
