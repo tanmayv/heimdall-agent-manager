@@ -21,13 +21,25 @@ provider_transport_from_entry :: proc(entry: domain.Provider_Catalog_Entry, over
 
 // Settings status describes the current selection. A launch separately checks
 // live bridge capability and adapter readiness immediately before freezing it.
-resolve_runtime_transport :: proc(service: ^Provider_Service, bridge_id, provider: string) -> (string, domain.Domain_Error) {
+//
+// Precedence (highest first):
+//   1. instance_override: one agent instance's explicit choice ("pty" | "acp"),
+//      set through instance reconfiguration (agent_instances.runtime_transport_override);
+//   2. the bridge-wide provider setting (bridge_provider_settings transport);
+//   3. the catalog default_transport.
+// Every source passes the same catalog support/recipe and ACP readiness checks.
+resolve_runtime_transport :: proc(service: ^Provider_Service, bridge_id, provider: string, instance_override: string = "") -> (string, domain.Domain_Error) {
+ if instance_override!="" && !contracts.runtime_transport_valid(instance_override) do return "",domain.domain_error(.Invalid_Transport,"runtime_transport must be 'pty' or 'acp'")
  entry,found,err:=iface.provider_catalog_get(service.repo,provider)
  if err.code!=.None do return "",err
  if !found || entry.state!="active" do return "",domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
  defer domain.provider_catalog_entry_destroy(entry)
- override,read_err:=iface.get_provider_transport(service.repo,bridge_id,provider)
- if read_err.code!=.None do return "",read_err
+ override:=strings.clone(instance_override)
+ if instance_override=="" {
+  read_err: domain.Domain_Error
+  override,read_err=iface.get_provider_transport(service.repo,bridge_id,provider)
+  if read_err.code!=.None do return "",read_err
+ }
  defer delete(override)
  transport,terr:=provider_transport_from_entry(entry,override)
  if terr.code!=.None do return "",terr

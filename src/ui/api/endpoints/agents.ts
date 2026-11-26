@@ -34,6 +34,14 @@ async function refreshLifecycleCaches(
 /** Runtime transport belongs to this launch, independently of provider settings. */
 export interface AgentInstance extends AgentInstanceTokenFields {
   runtime_transport: RuntimeTransport;
+  /** This instance's explicit PTY/ACP choice; '' follows the bridge-provider setting, then the catalog default. */
+  runtime_transport_override?: '' | RuntimeTransport;
+  project_id?: string;
+  provider_profile?: string;
+  /** Instance permission override: '' inherits the agent's mode. */
+  permission_mode?: '' | 'yolo' | 'ask';
+  /** The mode the next launch uses (instance override, else the agent's). */
+  effective_permission_mode?: 'yolo' | 'ask';
   launch_epoch?: string;
   /** Why the Hub last stopped this run (e.g. coordinator_idle); '' when it did not. */
   stop_reason?: string;
@@ -979,6 +987,10 @@ export type InstanceConfiguration = {
   project_path: string; provider: string; provider_profile?: string; model: string;
   /** Instance permission override: '' inherits the agent's mode. */
   permission_mode?: '' | 'yolo' | 'ask';
+  /** Resolved launch transport for this configuration. */
+  runtime_transport?: RuntimeTransport;
+  /** Explicit per-instance choice; '' follows the bridge-provider setting, then the catalog default. */
+  runtime_transport_override?: '' | RuntimeTransport;
 };
 export type InstanceReconfiguration = {
   operation_id: string; agent_instance_id: string; conversation_id: string; idempotency_key: string;
@@ -992,6 +1004,12 @@ export type ApplyInstanceConfigurationInput = {
   idempotency_key: string; expected_revision: number;
   /** Optional: set this instance's permission mode (restarts it with/without yolo flags). */
   permission_mode?: 'yolo' | 'ask';
+  /**
+   * Optional: pin this one instance to PTY or ACP (restarts it). Wins over the
+   * bridge-wide provider setting on every later launch. Omitted keeps the
+   * instance's current choice. ACP failures: acp_unavailable (details.state) or acp_installing.
+   */
+  runtime_transport?: RuntimeTransport;
 };
 /** Whether an operation reached a phase that changes the instance and conversation. */
 export function isSettledReconfiguration(operation: InstanceReconfiguration): boolean {
