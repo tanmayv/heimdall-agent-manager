@@ -109,6 +109,8 @@ test_template_available_all_builtins :: proc(t: ^testing.T) {
 	testing.expect_value(t, template_available(&service, "user_1", "tmpl_non_existent"), false)
 }
 
+BOT_CHANNEL_SKILL :: #load("../../../prompts/skills/ninjy-channel-communication/SKILL.md", string)
+
 // Exercise the public listing service: domain cannot import content without a cycle.
 @(test)
 test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
@@ -118,22 +120,28 @@ test_bot_template_loaded_and_hidden_from_list :: proc(t: ^testing.T) {
 	testing.expect_value(t, tmpl.is_system, true)
 	for required in ([]string{
 		"You are the user's personal Ninjy bot.",
-		"./bin/ham-ctl channel read",
 		"./bin/ham-ctl channel send --text",
+		"ninjy-channel-communication",
+		"ninjy-bot-operations",
+		"only within the user's approval",
+		"./bin/ham-ctl events next",
+		"review verdicts and memory-proposal approvals",
+		"sensitive file contents out of chat",
+	}) {
+		testing.expect(t, strings.contains(tmpl.instructions, required), required)
+	}
+	// Channel commands the template no longer spells out live in the channel skill it loads.
+	for moved in ([]string{
+		"./bin/ham-ctl channel read",
 		"./bin/ham-ctl channel history --limit 20",
 		"./bin/ham-ctl channel history --limit 50",
 		"latest `updated_at` across projects",
 		"./bin/ham-ctl task-chain list",
 		"./bin/ham-ctl task-chain show <chain_id>",
 		"./bin/ham-ctl task show <task_id>",
-		"ninjy-bot-operations",
-		"only within the user's approval",
-		"./bin/ham-ctl events next",
 		"./bin/ham-ctl events ack <event_id>",
-		"review verdicts and memory-proposal approvals",
-		"sensitive file contents out of chat",
 	}) {
-		testing.expect(t, strings.contains(tmpl.instructions, required), required)
+		testing.expect(t, strings.contains(BOT_CHANNEL_SKILL, moved), moved)
 	}
 
 	repo := iface.Content_Repository{list_templates = fake_content_list_templates_empty, get_template = fake_content_get_template_none}
