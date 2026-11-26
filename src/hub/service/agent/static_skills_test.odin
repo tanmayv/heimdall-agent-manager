@@ -358,4 +358,7 @@ test_prompts_do_not_teach_roles_or_solo_mode :: proc(t: ^testing.T) {
 		lower := strings.to_lower(p.content, context.temp_allocator)
 		for term in banned do testing.expectf(t, !strings.contains(lower, term), "%s still mentions %q", p.name, term)
 	}
+	// The Soloist is a coordinator: its submit and block delete its lease
+	// (REQ-SCHED-14), so it never holds a waiting claim.
+	testing.expect(t, !strings.contains(strings.to_lower(domain.TEMPLATE_MD_SOLOIST, context.temp_allocator), "waiting claim"), "soloist.md must not teach a waiting claim")
 }
