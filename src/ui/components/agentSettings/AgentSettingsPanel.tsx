@@ -108,7 +108,8 @@ export function AgentSettingsPanel({ state, agentLabel, projectLabel, runtime, c
       }
     >
       {header}
-      <div className="chat-scrollbar flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
+      {/* scroll-py-4: scrollIntoView keeps the 16px panel padding (the ACP alert clears the footer). */}
+      <div className="chat-scrollbar flex min-h-0 flex-1 scroll-py-4 flex-col gap-6 overflow-y-auto p-4">
         {runtime}
         {children}
       </div>

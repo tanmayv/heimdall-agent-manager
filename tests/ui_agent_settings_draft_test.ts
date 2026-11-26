@@ -134,13 +134,13 @@ test('ACP copy is mapped from acp_availability reason/fix only', async () => {
   }
   assert.deepEqual(v('installing', null), { kind: 'installing', text: 'Installing the ACP adapter on dawnstar…' });
   assert.deepEqual(v('not_checked', 'check_now'), {
-    kind: 'problem', text: "ACP hasn't been checked on dawnstar.", action: { fix: 'check_now', label: 'Check now' },
+    kind: 'problem', text: "ACP hasn't been checked on dawnstar.", action: { fix: 'check_now', label: 'Check now' }, titled: false,
   });
   // The action follows the hub's fix, never the reason.
   assert.equal(v('adapter_error', null).kind === 'problem' && (v('adapter_error', null) as any).action, null);
   // No verdict (loading / older hub) reads as not checked.
   assert.deepEqual(acpAvailabilityCopy(null, names), {
-    kind: 'problem', text: "ACP hasn't been checked on dawnstar.", action: { fix: 'check_now', label: 'Check now' },
+    kind: 'problem', text: "ACP hasn't been checked on dawnstar.", action: { fix: 'check_now', label: 'Check now' }, titled: false,
   });
 });
 
@@ -346,7 +346,7 @@ test('Connection: two radio cards; ACP alert role=alert with the hub fix; instal
     await render(React.createElement(ConnectionSection, { ...props, selected: 'acp' }));
     const alert = q(doc, 'agent-panel-connection-acp-alert')!;
     assert.equal(alert.getAttribute('role'), 'alert');
-    assert.match(alert.textContent || '', /^ACP isn't available\. dawnstar runs a bridge version without ACP support\. Update it to the latest release\./);
+    assert.match(alert.textContent || '', /^ACP isn't available\.\s*dawnstar runs a bridge version without ACP support\. Update it to the latest release\./);
     await act(async () => q(doc, 'agent-panel-connection-fix-update_bridge')!.click());
     assert.deepEqual(events, ['acp', 'fix:update_bridge']);
 
@@ -360,6 +360,46 @@ test('Connection: two radio cards; ACP alert role=alert with the hub fix; instal
     assert.equal(installing.querySelectorAll('[role="status"][aria-label]:not([aria-label=""])').length, 0, 'the spinner adds no second announcement');
     assert.equal(installing.querySelector('[aria-hidden="true"] [role="status"]') !== null, true, 'spinner is decorative');
     assert.equal(doc.querySelector('[role="alert"]'), null);
+  });
+});
+
+test('Connection: picking ACP scrolls the ACP alert into view; mounting on ACP does not; not_checked has no title', async () => {
+  await withDom(async ({ doc, render }) => {
+    const { ConnectionSection } = await import('../src/ui/components/agentSettings/ConnectionSection.tsx');
+    const { acpAvailabilityCopy } = await copyMod();
+    const names = { provider: 'Claude Code', bridge: 'dawnstar' };
+    const scrolled: unknown[] = [];
+    const view = doc.defaultView as any;
+    const original = view.HTMLElement.prototype.scrollIntoView;
+    view.HTMLElement.prototype.scrollIntoView = function (this: HTMLElement, arg: unknown) { scrolled.push([this.querySelector('[role="alert"]')?.getAttribute('data-debug-id'), arg]); };
+    const tick = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    try {
+      const missing = acpAvailabilityCopy({ available: false, reason: 'adapter_missing', fix: 'install_adapter' }, names);
+      const props = { onSelect: () => {}, onFix: () => {}, acp: missing };
+      // Mounted already on ACP (an ACP instance): no scroll.
+      await render(React.createElement(ConnectionSection, { ...props, selected: 'acp' as const }));
+      await tick();
+      assert.deepEqual(scrolled, [], 'no scroll on mount');
+      await render(React.createElement(ConnectionSection, { ...props, selected: 'pty' as const }));
+      await tick();
+      // The user picks ACP: the alert comes into view (nearest edge, no jump to the top).
+      await render(React.createElement(ConnectionSection, { ...props, selected: 'acp' as const }));
+      await tick();
+      assert.deepEqual(scrolled, [['agent-panel-connection-acp-alert', { block: 'nearest' }]]);
+      const alert = q(doc, 'agent-panel-connection-acp-alert')!;
+      assert.equal(alert.querySelector('.font-semibold')?.textContent, "ACP isn't available.", 'the Alert title is the lead');
+      assert.equal(q(doc, 'agent-panel-connection-acp-alert-text')?.textContent, "The Claude Code ACP adapter isn't installed on dawnstar.");
+      // Picking ACP when it can run does not scroll.
+      await render(React.createElement(ConnectionSection, { ...props, selected: 'pty' as const, acp: { kind: 'ready' } }));
+      await render(React.createElement(ConnectionSection, { ...props, selected: 'acp' as const, acp: { kind: 'ready' } }));
+      await tick();
+      assert.equal(scrolled.length, 1);
+      // not_checked: the reason already names ACP, so no repeated lead.
+      await render(React.createElement(ConnectionSection, { ...props, selected: 'acp' as const, acp: acpAvailabilityCopy({ available: false, reason: 'not_checked', fix: 'check_now' }, names) }));
+      assert.equal(q(doc, 'agent-panel-connection-acp-alert')!.textContent?.startsWith("ACP hasn't been checked on dawnstar."), true);
+    } finally {
+      view.HTMLElement.prototype.scrollIntoView = original;
+    }
   });
 });
 

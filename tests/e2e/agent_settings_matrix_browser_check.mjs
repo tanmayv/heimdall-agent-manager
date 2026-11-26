@@ -91,6 +91,26 @@ try {
         await alert.waitFor({ timeout: 5000 }).catch(() => {});
         check(`${label} ACP alert role=alert`, (await alert.getAttribute('role')) === 'alert');
         check(`${label} Apply disabled`, await q('agent-panel-apply-btn').isDisabled());
+        // Picking ACP brings the alert (reason + fix) fully into view above the sticky footer.
+        await page.waitForTimeout(300);
+        const r = await page.evaluate(() => {
+          const a = document.querySelector('[data-debug-id="agent-panel-connection-acp-alert"]').getBoundingClientRect();
+          const f = document.querySelector('[data-debug-id="agent-panel-apply"]').getBoundingClientRect();
+          const h = document.querySelector('[data-debug-id="agent-panel"] header, [data-debug-id="agent-panel"] > :first-child').getBoundingClientRect();
+          return { alertTop: Math.round(a.top), alertBottom: Math.round(a.bottom), footerTop: Math.round(f.top), headerBottom: Math.round(h.bottom) };
+        });
+        check(`${label} ACP alert fully visible above the footer`, r.alertBottom <= r.footerTop && r.alertTop >= r.headerBottom, JSON.stringify(r));
+      }
+      if (name === 'restarting') {
+        // The status lives in the Runtime card: capture the panel scrolled to the top.
+        await page.evaluate(() => {
+          const scroller = [...document.querySelectorAll('[data-debug-id="agent-panel"] *')].find((el) => /(auto|scroll)/.test(getComputedStyle(el).overflowY));
+          if (scroller) scroller.scrollTop = 0;
+        });
+        check(`${label} Runtime pill in view`, await q('agent-panel-runtime-status').isVisible() && await page.evaluate(() => {
+          const p = document.querySelector('[data-debug-id="agent-panel-runtime-status"]').getBoundingClientRect();
+          return p.top >= 0 && p.bottom <= window.innerHeight;
+        }));
       }
       if (name === 'stopped') check(`${label} Apply and start`, (await q('agent-panel-apply-btn').textContent()).trim() === 'Apply and start');
       if (name === 'restarting') check(`${label} pill Restarting`, (await q('agent-panel-runtime-status').textContent()).includes('Restarting'));

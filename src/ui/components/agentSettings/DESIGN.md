@@ -56,8 +56,10 @@ colour, never colour alone: Running/Restarting use the info tint, Stopped is neu
    re-runs discovery on the draft bridge (`refreshBridgeModels`).
 4. **Connection** (`ConnectionSection.tsx`, `agent-panel-connection`): PTY / ACP cards
    (`runtime_transport`). The ACP alert is mapped from the hub's `acp_availability`
-   only (`acpAvailabilityCopy.ts`), behind the fixed lead "ACP isn't available." in
-   the warning ink (the reason itself is primary ink, as in the design PNGs); fixes call the existing endpoints (bridge update,
+   only (`acpAvailabilityCopy.ts`), under the Alert title "ACP isn't available." (the
+   reason in primary ink, as in the design PNGs; not_checked has no title since its
+   reason already says it). Picking ACP scrolls the alert into view (`nearest`; the
+   scroller's scroll-py-4 keeps it clear of the staged-changes footer); fixes call the existing endpoints (bridge update,
    ACP adapter install, and for "Check now" provider discovery `{stage:'providers'}`,
    the stage that records the adapter state `acp_availability` is classified from).
 5. **Permissions** (`PermissionsSection.tsx`, `agent-panel-permissions`): the @ui Toggle,

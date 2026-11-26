@@ -13,7 +13,7 @@ import React from 'react';
 import { Alert, Button, Icon, Spinner, Text } from '@ui';
 import type { AcpAvailabilityFix } from '../../api/endpoints/bridgeSupport';
 import { AgentPanelSection } from './AgentSettingsPanel';
-import type { AcpCopy } from './acpAvailabilityCopy';
+import { ACP_PROBLEM_TITLE, type AcpCopy } from './acpAvailabilityCopy';
 import type { RuntimeTransport } from './agentSettingsDraft';
 import { radioGroupKeyDown, radioTabStop } from './radioGroup';
 
@@ -44,6 +44,23 @@ export function ConnectionSection({ selected, onSelect, acp, onFix, fixPending =
     if (!disabled && value !== selected) onSelect(value as RuntimeTransport);
   };
   const showAcp = selected === 'acp';
+  const problem = showAcp && acp.kind === 'problem';
+
+  // When the user picks ACP and it can't run, bring the alert (the reason and the
+  // fix) into view: the staged-changes footer appears at the same moment, shrinks the
+  // scroller and would otherwise leave the alert below the fold while the footer says
+  // "Fix the connection above before applying." Not on mount: an instance that is
+  // already ACP keeps the panel's top-of-panel scroll position.
+  const problemRef = React.useRef<HTMLDivElement>(null);
+  const previousSelected = React.useRef(selected);
+  React.useEffect(() => {
+    const picked = previousSelected.current !== selected;
+    previousSelected.current = selected;
+    if (!picked || !problem) return undefined;
+    // After layout: the footer mounts in the same commit and resizes the scroller.
+    const timer = window.setTimeout(() => problemRef.current?.scrollIntoView?.({ block: 'nearest' }), 0);
+    return () => window.clearTimeout(timer);
+  }, [selected, problem]);
 
   return (
     <AgentPanelSection id="connection" label="Connection">
@@ -100,30 +117,34 @@ export function ConnectionSection({ selected, onSelect, acp, onFix, fixPending =
           </span>
         </Alert>
       ) : null}
-      {showAcp && acp.kind === 'problem' ? (
-        <Alert tone="warning" role="alert" data-debug-id="agent-panel-connection-acp-alert">
-          {/* Lead in the warning ink, the hub-mapped reason in primary ink (design PNGs). */}
-          <p data-debug-id="agent-panel-connection-acp-alert-text">
-            <span className="font-semibold">ACP isn&apos;t available.</span>{' '}
-            <span className="text-primary">{acp.text}</span>
-          </p>
-          {acp.action ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              className={`mt-2 ${touch ? 'min-h-11' : ''}`}
-              data-debug-id={`agent-panel-connection-fix-${acp.action.fix}`}
-              loading={fixPending}
-              disabled={disabled}
-              onClick={() => onFix(acp.action!.fix)}
-            >
-              {acp.action.label}
-            </Button>
-          ) : null}
-          {fixError ? (
-            <p className="mt-1 text-danger" data-debug-id="agent-panel-connection-fix-error">{fixError}</p>
-          ) : null}
-        </Alert>
+      {problem && acp.kind === 'problem' ? (
+        <div ref={problemRef}>
+          <Alert
+            tone="warning"
+            role="alert"
+            data-debug-id="agent-panel-connection-acp-alert"
+            title={acp.titled === false ? undefined : ACP_PROBLEM_TITLE}
+          >
+            {/* The hub-mapped reason in primary ink under the warning lead (design PNGs). */}
+            <p className="text-primary" data-debug-id="agent-panel-connection-acp-alert-text">{acp.text}</p>
+            {acp.action ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                className={`mt-2 ${touch ? 'min-h-11' : ''}`}
+                data-debug-id={`agent-panel-connection-fix-${acp.action.fix}`}
+                loading={fixPending}
+                disabled={disabled}
+                onClick={() => onFix(acp.action!.fix)}
+              >
+                {acp.action.label}
+              </Button>
+            ) : null}
+            {fixError ? (
+              <p className="mt-1 text-danger" data-debug-id="agent-panel-connection-fix-error">{fixError}</p>
+            ) : null}
+          </Alert>
+        </div>
       ) : null}
     </AgentPanelSection>
   );

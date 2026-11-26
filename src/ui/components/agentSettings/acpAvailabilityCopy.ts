@@ -11,8 +11,14 @@ export type AcpCopy =
   | { kind: 'ready' }
   /** An info status row with a spinner (the adapter is being installed). */
   | { kind: 'installing'; text: string }
-  /** A warning alert, with the fix action when the hub names one. */
-  | { kind: 'problem'; text: string; action: { fix: AcpAvailabilityFix; label: string } | null };
+  /**
+   * A warning alert, with the fix action when the hub names one. The alert's title is
+   * ACP_PROBLEM_TITLE except for not_checked, whose text already says it (`titled`).
+   */
+  | { kind: 'problem'; text: string; action: { fix: AcpAvailabilityFix; label: string } | null; titled?: false };
+
+/** The warning alert's lead (design PNGs: "ACP isn't available." then the reason). */
+export const ACP_PROBLEM_TITLE = "ACP isn't available.";
 
 export const ACP_FIX_LABELS: Record<AcpAvailabilityFix, string> = {
   update_bridge: 'Update bridge',
@@ -45,6 +51,6 @@ export function acpAvailabilityCopy(
       return { kind: 'problem', text: `The ${names.provider} ACP adapter isn't installed on ${names.bridge}.`, action };
     case 'not_checked':
     default:
-      return { kind: 'problem', text: `ACP hasn't been checked on ${names.bridge}.`, action };
+      return { kind: 'problem', text: `ACP hasn't been checked on ${names.bridge}.`, action, titled: false };
   }
 }
