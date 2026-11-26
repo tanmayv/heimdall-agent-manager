@@ -1,9 +1,11 @@
 package fleet_application
 
+import "base:runtime"
 import "core:encoding/json"
 import "core:slice"
 import "core:strings"
 import "core:sync"
+import "core:thread"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -129,14 +131,11 @@ apply :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, inpu
 	defer {for &inst in instances do domain.agent_instance_destroy(&inst); delete(instances)}
 	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances)
 	if te.code != .None do return {}, false, te
+	// One lease read for the whole snapshot instead of one lookup per target.
+	holders, he := lease_ids_by_holder(s, len(targets))
+	if he.code != .None do return {}, false, he
 	for &target in targets {
-		lease_id := ""
-		if s.agents.taskchains != nil {
-			lease, held, le := iface.taskchain_get_lease_by_holder(s.agents.taskchains, target.agent_instance_id)
-			if held do lease_id = lease.lease_id
-			if !held && le.code != .None && le.code != .Not_Found do return {}, false, le
-		}
-		target.lease_id = lease_id
+		target.lease_id = holders[target.agent_instance_id]
 		target.operation_key = platform.generate_id(s.ids,"fleet_target_")
 	}
 	now := platform.clock_now(s.clock)
@@ -178,9 +177,11 @@ fail :: proc(t: ^domain.Fleet_Application_Target, code, message: string, retryab
 Guard :: struct {s: ^Service, record: ^domain.Fleet_Application_Record, target: ^domain.Fleet_Application_Target, recovering: bool,authorization:Authorization}
 guard_target :: proc(ctx: rawptr) -> domain.Domain_Error {
 	g := (^Guard)(ctx); r := g.record; t := g.target
-	if r.application.cancelled do return domain.domain_error(.Forbidden,"Fleet application was cancelled")
+	// Guards of one pass run on parallel native-start workers; the shared
+	// record is read-only to them except for this cancellation flag.
+	if sync.atomic_load(&r.application.cancelled) do return domain.domain_error(.Forbidden,"Fleet application was cancelled")
 	if g.authorization.check!=nil {
-		if e:=g.authorization.check(g.authorization.ctx);e.code!=.None {r.application.cancelled=true;return e}
+		if e:=g.authorization.check(g.authorization.ctx);e.code!=.None {sync.atomic_store(&r.application.cancelled,true);return e}
 	}
 	if r.authority_json!="" {
 		if g.s.authority_check==nil do return domain.domain_error(.Forbidden,"delegated Fleet authority unavailable")
@@ -205,26 +206,55 @@ guard_target :: proc(ctx: rawptr) -> domain.Domain_Error {
 	return {}
 }
 
-advance_target :: proc(s: ^Service, r: ^domain.Fleet_Application_Record, t: ^domain.Fleet_Application_Target, retry: bool,authorization:Authorization) {
-	if t.state == "ready" do return
-	op, found, err := iface.instance_reconfiguration_get(s.agents.agents, string(r.owner_user_id), t.agent_instance_id, t.operation_key)
-	defer if found do domain.instance_reconfiguration_destroy(&op)
-	if !found && err.code != .Not_Found {fail(t,"storage_error",err.message); return}
-	if !found && t.state == "failed" && !retry do return
-	if !found {
-		g := Guard{s,r,t,false,authorization}
-		if e := guard_target(&g); e.code != .None {fail(t,"target_changed",e.message,false); return}
-		auth := contracts.Auth_Context{kind=.Internal_User,user_id=string(r.owner_user_id)}
-		next, accepted, ne := agent.begin_instance_reconfiguration(s.agents, auth, t.agent_instance_id, {bridge_id=r.application.bridge_id,project_id=t.project_id,provider=t.desired.provider,provider_profile=t.desired.provider_profile,model=t.desired.model,idempotency_key=t.operation_key,expected_revision=t.configuration_revision}, &g, guard_target, s.factory)
-		if !accepted {fail(t,domain.error_code_string(ne.code),ne.message); return}
-		op, found = next, true
-	} else if retry && op.phase == .Recovery_Required {
-		g := Guard{s,r,t,true,authorization}
-		if e := guard_target(&g); e.code != .None {fail(t,"target_changed",e.message,false); return}
-		next, accepted, ne := agent.retry_instance_reconfiguration(s.agents, {kind=.Internal_User,user_id=string(r.owner_user_id)}, t.agent_instance_id, t.operation_key, op.revision, &g, guard_target, s.factory)
-		if !accepted {fail(t,domain.error_code_string(ne.code),ne.message); return}
-		domain.instance_reconfiguration_destroy(&op); op = next
+// FLEET_RESTART_CONCURRENCY bounds the native starts (guard + begin/retry)
+// that one application pass runs at once. A native start can wait on a bridge
+// round-trip (project-path preflight) before it takes reconfiguration_mutex,
+// so a serial loop made every Apply and retry linear in bridge latency. An
+// application targets exactly one bridge and Service.mutex serialises passes,
+// so this is also the per-bridge and process-wide bound for Fleet. SQL still
+// serialises on tx_mutex (one connection); only bridge waits overlap.
+FLEET_RESTART_CONCURRENCY :: 8
+
+Native_Step :: enum {None, Begin, Retry}
+Native_Job :: struct {s: ^Service, r: ^domain.Fleet_Application_Record, t: ^domain.Fleet_Application_Target, step: Native_Step, op_revision: int, authorization: Authorization}
+Native_Pool :: struct {jobs: []Native_Job, next: int}
+
+// lease_ids_by_holder maps instance -> held lease with one read, replacing a
+// per-target taskchain_get_lease_by_holder.
+lease_ids_by_holder :: proc(s: ^Service, targets: int) -> (map[string]string, domain.Domain_Error) {
+	holders := make(map[string]string, targets, context.temp_allocator)
+	if targets == 0 || s.agents.taskchains == nil do return holders, {}
+	leases, err := iface.taskchain_list_all_leases(s.agents.taskchains)
+	if err.code != .None && err.code != .Not_Found do return holders, err
+	// Lease rows are owned like taskchain_get_lease_by_holder results were.
+	defer delete(leases)
+	for l in leases do if l.holder_instance_id != "" do holders[l.holder_instance_id] = l.lease_id
+	return holders, {}
+}
+
+// active_operations reads the owner's in-flight native operations once per
+// pass, keyed by operation key. Targets whose operation left the active set
+// (ready/failed) fall back to one exact read at that terminal transition.
+active_operations :: proc(s: ^Service, r: ^domain.Fleet_Application_Record) -> map[string]domain.Instance_Reconfiguration {
+	ops := make(map[string]domain.Instance_Reconfiguration)
+	needed := false
+	for t in r.application.targets do needed = needed || (t.state != "ready" && t.operation_key != "")
+	if !needed || s.agents.agents == nil || s.agents.agents.reconfiguration_list == nil do return ops
+	list, err := iface.instance_reconfiguration_list(s.agents.agents, string(r.owner_user_id), "", true)
+	defer delete(list)
+	for &op in list {
+		// A failed listing only costs the exact per-target reads below.
+		if err.code != .None || op.idempotency_key in ops {domain.instance_reconfiguration_destroy(&op); continue}
+		ops[op.idempotency_key] = op
 	}
+	return ops
+}
+active_operations_destroy :: proc(ops: ^map[string]domain.Instance_Reconfiguration) {
+	for _, &op in ops do domain.instance_reconfiguration_destroy(&op)
+	delete(ops^)
+}
+
+target_apply_phase :: proc(t: ^domain.Fleet_Application_Target, op: domain.Instance_Reconfiguration) {
 	switch op.phase {
 	case .Ready:
 		set_text(&t.state,"ready"); set_text(&t.error_code,""); set_text(&t.error_message,""); t.retryable=false
@@ -237,6 +267,96 @@ advance_target :: proc(s: ^Service, r: ^domain.Fleet_Application_Record, t: ^dom
 	}
 }
 
+// plan_target folds durable native state into t without any bridge work and
+// returns the native start the target still needs (run by run_native_jobs).
+plan_target :: proc(s: ^Service, r: ^domain.Fleet_Application_Record, t: ^domain.Fleet_Application_Target, retry: bool, active: ^map[string]domain.Instance_Reconfiguration) -> (Native_Step, int) {
+	if t.state == "ready" do return .None, 0
+	op: domain.Instance_Reconfiguration; found := false; owned := false; err: domain.Domain_Error
+	if cached, hit := active[t.operation_key]; hit && cached.agent_instance_id == t.agent_instance_id {
+		op, found = cached, true
+	} else {
+		op, found, err = iface.instance_reconfiguration_get(s.agents.agents, string(r.owner_user_id), t.agent_instance_id, t.operation_key)
+		owned = found
+	}
+	defer if owned do domain.instance_reconfiguration_destroy(&op)
+	if !found && err.code != .Not_Found {fail(t,"storage_error",err.message); return .None, 0}
+	if !found && t.state == "failed" && !retry do return .None, 0
+	if !found do return .Begin, 0
+	if retry && op.phase == .Recovery_Required do return .Retry, op.revision
+	target_apply_phase(t, op)
+	return .None, 0
+}
+
+// run_native performs one target's guarded native start. It only writes its
+// own target; the shared record is read-only apart from the atomic cancel flag.
+run_native :: proc(job: ^Native_Job) {
+	s, r, t := job.s, job.r, job.t
+	g := Guard{s,r,t,job.step == .Retry,job.authorization}
+	if e := guard_target(&g); e.code != .None {fail(t,"target_changed",e.message,false); return}
+	auth := contracts.Auth_Context{kind=.Internal_User,user_id=string(r.owner_user_id)}
+	op: domain.Instance_Reconfiguration; accepted: bool; ne: domain.Domain_Error
+	if job.step == .Begin {
+		op, accepted, ne = agent.begin_instance_reconfiguration(s.agents, auth, t.agent_instance_id, {bridge_id=r.application.bridge_id,project_id=t.project_id,provider=t.desired.provider,provider_profile=t.desired.provider_profile,model=t.desired.model,idempotency_key=t.operation_key,expected_revision=t.configuration_revision}, &g, guard_target, s.factory)
+	} else {
+		op, accepted, ne = agent.retry_instance_reconfiguration(s.agents, auth, t.agent_instance_id, t.operation_key, job.op_revision, &g, guard_target, s.factory)
+	}
+	if !accepted {fail(t,domain.error_code_string(ne.code),ne.message); return}
+	defer domain.instance_reconfiguration_destroy(&op)
+	target_apply_phase(t, op)
+}
+
+native_worker :: proc(data: rawptr) {
+	p := (^Native_Pool)(data)
+	for {
+		i := sync.atomic_add(&p.next, 1)
+		if i >= len(p.jobs) do return
+		run_native(&p.jobs[i])
+		free_all(context.temp_allocator)
+	}
+}
+
+// A pass entered from inside the caller's unit of work must stay on that
+// thread: workers would block on the tx_mutex the joining caller holds (and a
+// nested native acceptance is refused anyway). Unknown -> stay inline.
+native_starts_inline :: proc(factory: ^iface.Unit_Of_Work_Factory) -> bool {
+	if factory == nil do return true
+	u, begun, _ := iface.unit_of_work_begin(factory)
+	if !begun do return true
+	nested := u.nested
+	iface.unit_of_work_rollback(&u)
+	return nested
+}
+
+// run_native_jobs runs at most FLEET_RESTART_CONCURRENCY native starts at a
+// time and returns after all of them finished, so the caller folds every
+// per-target result into one application write.
+run_native_jobs :: proc(s: ^Service, jobs: []Native_Job) {
+	workers := min(len(jobs), FLEET_RESTART_CONCURRENCY)
+	if workers <= 1 || native_starts_inline(s.factory) {
+		for &job in jobs do run_native(&job)
+		return
+	}
+	pool := Native_Pool{jobs=jobs}
+	// Fresh per-thread temp allocators; shared (thread-safe) heap allocator so
+	// target strings set by workers are owned like the rest of the record.
+	ctx := runtime.default_context()
+	ctx.allocator = context.allocator; ctx.logger = context.logger
+	threads := make([dynamic]^thread.Thread, 0, workers, context.temp_allocator)
+	for _ in 0..<workers {
+		th := thread.create_and_start_with_data(&pool, native_worker, init_context=ctx)
+		if th == nil do break
+		append(&threads, th)
+	}
+	// Thread creation failure degrades to the serial path; never drops a job.
+	if len(threads) == 0 do native_worker(&pool)
+	for th in threads {thread.join(th); thread.destroy(th)}
+}
+
+application_in_flight :: proc(a: domain.Fleet_Application) -> bool {
+	for t in a.targets do if t.state == "pending" || t.state == "restarting" do return true
+	return false
+}
+
 // Reads never start work. Reaper and committed mutations drive this pass;
 // operation keys close the crash window between native accept and target CAS.
 reconcile_one :: proc(s: ^Service, owner: domain.User_ID, bridge_id, id: string, retry := false,authorization:=Authorization{}) {
@@ -245,7 +365,14 @@ reconcile_one :: proc(s: ^Service, owner: domain.User_ID, bridge_id, id: string,
 	if !found do return
 	defer domain.fleet_application_record_destroy(&r)
 	before, _ := json.marshal(r.application, allocator=context.temp_allocator)
-	for &t in r.application.targets do advance_target(s,&r,&t,retry && t.retryable,authorization)
+	active := active_operations(s, &r)
+	defer active_operations_destroy(&active)
+	jobs := make([dynamic]Native_Job, 0, len(r.application.targets), context.temp_allocator)
+	for &t in r.application.targets {
+		step, revision := plan_target(s,&r,&t,retry && t.retryable,&active)
+		if step != .None do append(&jobs, Native_Job{s,&r,&t,step,revision,authorization})
+	}
+	run_native_jobs(s, jobs[:])
 	pending, failed, restarting := false, false, false
 	for t in r.application.targets {pending = pending || t.state=="pending"; failed=failed || t.state=="failed"; restarting=restarting || t.state=="restarting"}
 	state := "pending" if pending else "restarting" if restarting else "partial_failure" if failed else "ready"
@@ -256,12 +383,14 @@ reconcile_one :: proc(s: ^Service, owner: domain.User_ID, bridge_id, id: string,
 	set_text(&r.application.updated_at,platform.clock_now(s.clock))
 	if saved, _ := iface.fleet_application_put(s.settings.bridges,r,prior); saved && s.on_changed != nil do s.on_changed(s.event_ctx,owner,r.application,false)
 }
+// Only applications with pending or restarting targets have anything to
+// observe; settled partial failures move again only through retry_application.
 reconcile :: proc(s: ^Service) {
 	if s == nil || s.agents == nil || s.settings.bridges == nil do return
 	rows, err := iface.fleet_application_list_active(s.settings.bridges)
 	if err.code != .None do return
 	defer {for &r in rows do domain.fleet_application_record_destroy(&r); delete(rows)}
-	for r in rows do reconcile_one(s,r.owner_user_id,r.application.bridge_id,r.application.application_id)
+	for r in rows do if application_in_flight(r.application) do reconcile_one(s,r.owner_user_id,r.application.bridge_id,r.application.application_id)
 }
 retry_application :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id, id: string,authorization:=Authorization{}) -> (domain.Fleet_Application_Record, bool, domain.Domain_Error) {
 	r, found, err := read_application(s,auth,bridge_id,id)

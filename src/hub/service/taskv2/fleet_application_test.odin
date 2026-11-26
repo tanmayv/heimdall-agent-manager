@@ -2,7 +2,9 @@ package taskv2
 
 import "core:fmt"
 import "core:strings"
+import "core:sync"
 import "core:testing"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -10,14 +12,33 @@ import sqlite "odin_test:hub/repository/sqlite"
 import agent "odin_test:hub/service/agent"
 import fleet "odin_test:hub/service/fleet_application"
 import project "odin_test:hub/service/project"
+import platform "odin_test:hub/platform"
 
-Fleet_Probe :: struct {commands:[dynamic]project.Runtime_Command,under_tx:bool,fx:^Fixture}
+// fail_marker: while set, sends whose body names it are refused (a stop the
+// live source never confirmed). Preflight counters observe bridge round-trips
+// that native starts may wait on, and how many overlap.
+Fleet_Probe :: struct {commands:[dynamic]project.Runtime_Command,under_tx:bool,fx:^Fixture,mutex:sync.Mutex,fail_marker:string,preflights,preflight_in_flight,preflight_max:int}
 fleet_probe_send :: proc(ctx:rawptr,cmd:project.Runtime_Command)->(bool,domain.Domain_Error) {
 	p:=(^Fleet_Probe)(ctx)
 	u,ok,_:=iface.unit_of_work_begin(&p.fx.uow)
 	if ok {p.under_tx=p.under_tx || u.nested;iface.unit_of_work_rollback(&u)}
+	sync.mutex_guard(&p.mutex)
+	if p.fail_marker!="" && strings.contains(cmd.body_json,p.fail_marker) do return false,domain.domain_error(.Bridge_Offline,"injected send failure")
 	append(&p.commands,project.Runtime_Command{bridge_id=strings.clone(cmd.bridge_id),command_id=strings.clone(cmd.command_id),body_json=strings.clone(cmd.body_json)})
 	return true,{}
+}
+fleet_probe_validate :: proc(ctx:rawptr,cmd:project.Validate_Project_Path_Command)->(project.Project_Path_Validation_Result,bool,domain.Domain_Error) {
+	p:=(^Fleet_Probe)(ctx)
+	sync.atomic_add(&p.preflights,1)
+	now:=sync.atomic_add(&p.preflight_in_flight,1)+1
+	for {
+		seen:=sync.atomic_load(&p.preflight_max)
+		if now<=seen do break
+		if _,swapped:=sync.atomic_compare_exchange_strong(&p.preflight_max,seen,now);swapped do break
+	}
+	time.sleep(2*time.Millisecond) // one bridge round-trip
+	sync.atomic_sub(&p.preflight_in_flight,1)
+	return {type="validate_project_path",command_id=cmd.command_id,project_id=cmd.project_id,path=cmd.path,ok=true},true,{}
 }
 fleet_probe_close :: proc(p:^Fleet_Probe) {
 	for c in p.commands {delete(c.bridge_id);delete(c.command_id);delete(c.body_json)}
@@ -268,4 +289,113 @@ test_fleet_apply_override_removal_and_capability_retry :: proc(t:^testing.T) {
 	after,_,_:=iface.agent_get_instance(&fx.agents,i.agent_instance_id)
 	testing.expect_value(t,after.model,"claude-sonnet-5-5")
 	domain.agent_instance_destroy(&after)
+}
+
+// Scale E: Apply cost must not be one serial bridge wait per target. Native
+// starts overlap up to FLEET_RESTART_CONCURRENCY; the Fleet row is written once
+// per pass whatever the size; per-target failure and retry accounting holds.
+fleet_scale_run :: proc(t:^testing.T,n:int)->(writes:int,preflight_max:int,ok:bool) {
+	tag:=fmt.tprintf("fleet_scale_%d",n)
+	fx,log,fok:=lease_fixture(t,tag);defer lease_fixture_close(fx,log);if !fok do return
+	chain:=seed_live_chain(t,fx,tag);fleet_feature_bridge(fx,"br_1")
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
+	log.service.bridge_command_sink.validate_project_path=fleet_probe_validate
+	// An explicit per-bridge project path makes every native start wait on a
+	// bridge preflight round-trip before reconfiguration_mutex.
+	now:=platform.clock_now(&fx.clock)
+	_,psaved,pe:=iface.project_save(&log.projects,{project_id="proj_fleet_scale",owner_user_id="u1",name="Fleet scale",slug="fleet-scale",state=.Active,created_at=now,updated_at=now})
+	if !testing.expectf(t,psaved,"project save: %s",pe.message) do return
+	_,bsaved,be:=iface.project_save_bridge_path(&log.projects,{project_id="proj_fleet_scale",bridge_id="br_1",owner_user_id="u1",path="/srv/fleet_scale"})
+	if !testing.expectf(t,bsaved,"bridge path save: %s",be.message) do return
+	failing:=0
+	for k in 0..<n {
+		// Every tenth stop is refused by the (live) source on first delivery.
+		name:=fmt.tprintf("fleet_scale_fail_%d",k) if k%10==0 else fmt.tprintf("fleet_scale_ok_%d",k)
+		if k%10==0 do failing+=1
+		i:=seed_instance(fx,chain,name,"agt_w","br_1","running")
+		i.project_id="proj_fleet_scale";_,_,_=iface.agent_save_instance(&fx.agents,i)
+		testing.expect_value(t,iface.fleet_scope_set(&fx.bridges,i,"chain").code,domain.Error_Code.None)
+	}
+	p.fail_marker="fleet_scale_fail_"
+	r,accepted,e:=fleet_test_apply(&s,tag)
+	if !testing.expectf(t,accepted && e.code==.None,"apply %d: %s",n,e.message) do return
+	defer domain.fleet_application_record_destroy(&r)
+	if !testing.expect_value(t,len(r.application.targets),n) do return
+	testing.expect_value(t,p.preflights,n)
+	testing.expectf(t,p.preflight_max<=fleet.FLEET_RESTART_CONCURRENCY,"native starts in flight %d exceed limit",p.preflight_max)
+	testing.expect_value(t,len(p.commands),n-failing)
+	testing.expect_value(t,r.application.state,"restarting")
+	// Per-target accounting is unchanged: refused stops are retryable failures.
+	failed_targets:=0
+	for target in r.application.targets {
+		if strings.has_prefix(target.agent_instance_id,"fleet_scale_fail_") {
+			failed_targets+=1
+			testing.expect(t,target.state=="failed" && target.error_code=="stop_unconfirmed" && target.retryable,target.agent_instance_id)
+		} else do testing.expect(t,target.state=="restarting" && target.error_code=="" && !target.retryable,target.agent_instance_id)
+	}
+	testing.expect_value(t,failed_targets,failing)
+	writes=r.application.revision
+	// Retry restarts exactly the failed targets, once each, in one more write.
+	p.fail_marker=""
+	retried,rok,re:=fleet.retry_application(&s,{user_id="u1"},"br_1",r.application.application_id)
+	if !testing.expectf(t,rok && re.code==.None,"retry %d: %s",n,re.message) do return
+	defer domain.fleet_application_record_destroy(&retried)
+	testing.expect_value(t,len(p.commands),n)
+	testing.expect_value(t,retried.application.revision,writes+1)
+	testing.expect_value(t,retried.application.state,"restarting")
+	for target in retried.application.targets do testing.expect(t,target.state=="restarting" && target.error_code=="",target.agent_instance_id)
+	// A steady reconcile pass with nothing changed sends nothing and writes nothing.
+	fleet.reconcile(&s)
+	status,found,_:=fleet.read_application(&s,{user_id="u1"},"br_1",r.application.application_id)
+	if testing.expect(t,found) {
+		testing.expect_value(t,status.application.revision,writes+1)
+		domain.fleet_application_record_destroy(&status)
+	}
+	testing.expect_value(t,len(p.commands),n)
+	testing.expect_value(t,p.preflights,n) // native retry re-sends the stop without a new preflight
+	return writes,p.preflight_max,true
+}
+
+@(test)
+test_fleet_apply_scales_with_bounded_native_starts :: proc(t:^testing.T) {
+	small_writes,small_max,sok:=fleet_scale_run(t,10)
+	large_writes,large_max,lok:=fleet_scale_run(t,200)
+	if !sok || !lok do return
+	// Fleet row writes per Apply are constant (insert + one pass), not per target.
+	testing.expect_value(t,small_writes,2)
+	testing.expect_value(t,large_writes,small_writes)
+	// Bridge waits overlap: 200 targets are not 200 serial preflights, and the
+	// overlap never exceeds the documented bound.
+	testing.expectf(t,large_max>1 && large_max<=fleet.FLEET_RESTART_CONCURRENCY,"200-target preflight overlap %d (10-target %d)",large_max,small_max)
+}
+
+// Settled partial failures leave the reconcile listing; only retry moves them.
+@(test)
+test_fleet_reconcile_skips_settled_partial_failure :: proc(t:^testing.T) {
+	fx,log,ok:=lease_fixture(t,"fleet_settled");defer lease_fixture_close(fx,log);if !ok do return
+	chain:=seed_live_chain(t,fx,"fleet_settled")
+	i:=seed_instance(fx,chain,"fleet_settled_holder","agt_w","br_1","running")
+	_=iface.fleet_scope_set(&fx.bridges,i,"chain")
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
+	// Bridge lacks the native capability: a saved, retryable partial failure.
+	r,accepted,e:=fleet_test_apply(&s,"settled")
+	if !testing.expect(t,accepted && e.code==.None && r.application.state=="partial_failure",e.message) do return
+	defer domain.fleet_application_record_destroy(&r)
+	testing.expect(t,!fleet.application_in_flight(r.application))
+	rows,le:=iface.fleet_application_list_active(&fx.bridges)
+	testing.expect(t,le.code==.None && len(rows)==0,"partial_failure rows are not reloaded by every reconcile pass")
+	for &row in rows do domain.fleet_application_record_destroy(&row)
+	delete(rows)
+	fleet_feature_bridge(fx,"br_1");fleet.reconcile(&s)
+	status,_,_:=fleet.read_application(&s,{user_id="u1"},"br_1",r.application.application_id)
+	testing.expect(t,status.application.state=="partial_failure" && status.application.revision==r.application.revision && len(p.commands)==0,"reconcile never retries on its own")
+	domain.fleet_application_record_destroy(&status)
+	retry,rok,_:=fleet.retry_application(&s,{user_id="u1"},"br_1",r.application.application_id)
+	testing.expect(t,rok && retry.application.state=="restarting" && len(p.commands)==1)
+	testing.expect(t,fleet.application_in_flight(retry.application))
+	domain.fleet_application_record_destroy(&retry)
+	rows,le=iface.fleet_application_list_active(&fx.bridges)
+	testing.expect(t,le.code==.None && len(rows)==1,"a retried application is in flight again")
+	for &row in rows do domain.fleet_application_record_destroy(&row)
+	delete(rows)
 }

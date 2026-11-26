@@ -70,7 +70,9 @@ fleet_application_put_sqlite :: proc(ctx: rawptr, r: domain.Fleet_Application_Re
 fleet_application_list_sqlite :: proc(ctx: rawptr) -> ([]domain.Fleet_Application_Record, domain.Domain_Error) {
 	guard := tx_repository_enter(); defer tx_repository_leave(guard)
 	impl := (^Bridge_Repo_SQLite)(ctx)
-	q := "SELECT owner_user_id,request_json,application_json,authority_json FROM bridge_fleet_applications WHERE state IN ('pending','restarting','partial_failure') ORDER BY application_id;"
+	// Settled partial failures change only through an explicit retry. Keep the
+	// partial index predicate verbatim so SQLite can still use it, then narrow.
+	q := "SELECT owner_user_id,request_json,application_json,authority_json FROM bridge_fleet_applications WHERE state IN ('pending','restarting','partial_failure') AND state<>'partial_failure' ORDER BY application_id;"
 	stmt: sqlite3_stmt
 	if sqlite3_prepare_v2(impl.conn.db, strings.clone_to_cstring(q, context.temp_allocator), -1, &stmt, nil) != SQLITE_OK do return nil, fleet_db_error()
 	defer sqlite3_finalize(stmt)
