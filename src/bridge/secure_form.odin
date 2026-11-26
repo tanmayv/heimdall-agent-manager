@@ -477,8 +477,16 @@ secure_form_run_child :: proc(script, working_dir: string, env: []string, stdin_
 	if gate == nil || !contracts.secure_form_path(script) || timeout <= 0 do return
 	if !bridge_process_slot_try_acquire() do return
 	defer bridge_process_slot_release()
-	bash := bridge_runtime_find_on_path("bash")
-	defer delete(bash)
+	path_arena: virtual.Arena
+	if virtual.arena_init_growing(&path_arena) != nil do return
+	defer virtual.arena_destroy(&path_arena)
+	bash: string
+	{
+		// The Odin path resolver may retain readlink scratch space.
+		// Keep that allocation out of the process heap across attempts.
+		context.allocator = virtual.arena_allocator(&path_arena)
+		bash = bridge_runtime_find_on_path("bash")
+	}
 	if bash == "" do return
 	in_r, in_w, in_err := os.pipe()
 	if in_err != nil do return
