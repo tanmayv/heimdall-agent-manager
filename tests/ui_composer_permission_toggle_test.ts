@@ -110,8 +110,10 @@ test('the composer settings panel renders the toggle and restarts through the re
   assert.match(pane, /permissionToggleState\(/);
   assert.match(pane, /data-debug-id="conversation-permission-toggle"/);
   assert.match(pane, /Bypass permissions/);
-  assert.match(pane, /reconfigureInstance\(\s*permissionToggleRequest\(/);
-  assert.match(pane, /setAcceptedOperation\(applied\)/);
+  // The old modal's toggle restarts through the shared lifecycle reconfigure.
+  assert.match(pane, /const request = permissionToggleRequest\(/);
+  assert.match(pane, /lifecycle\.reconfigure\(\{\s*\.\.\.request,/);
+  assert.match(pane, /setAcceptedOperation\(result\.data\)/);
   // The agent editor keeps the durable default.
   const form = fs.readFileSync(fileURLToPath(new URL('../src/ui/components/agents/AgentFormPage.tsx', import.meta.url)), 'utf8');
   assert.match(form, /permission_mode|permissionMode/);
