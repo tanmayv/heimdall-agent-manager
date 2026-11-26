@@ -8,7 +8,7 @@ test_bridge_taskv2_render_durable_waiting_claim :: proc(t: ^testing.T) {
 	pack := `{"task_id":"task_wait","expires_at":"LEGACY_EXPIRY","hard_deadline_at":"LEGACY_DEADLINE","lease":{"lease_id":"claim_wait","kind":"review","review_role":"security","review_focus":"FOCUS_ON_RETRIES","phase":"waiting"},"task":{"title":"Waiting task"},"protocol":{"rules":[]}}`
 	md := bridge_taskv2_render_task_md(pack, 32_000)
 	defer delete(md)
-	for guidance in ([]string{"(reviewer, attempt", "**Review focus**: FOCUS_ON_RETRIES", "**Claim**: `claim_wait` (waiting", "Durable; does not expire", "You retain this task and your role", "do not pull unrelated work", "acknowledges requirements revisions", "lease <task-id>", "lease transfer"}) {
+	for guidance in ([]string{"(reviewer, attempt", "**Review focus**: FOCUS_ON_RETRIES", "**Claim**: `claim_wait` (waiting", "Durable; does not expire", "You retain this task and your claim", "do not pull unrelated work", "acknowledges requirements revisions", "lease <task-id>", "lease transfer"}) {
 		testing.expectf(t, strings.contains(md, guidance), "waiting claim guidance is present: %s", guidance)
 	}
 	// No review-role label (REQ-SCHED-6): a stale pack's review_role is ignored.

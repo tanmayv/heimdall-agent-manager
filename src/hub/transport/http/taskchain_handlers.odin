@@ -2313,15 +2313,9 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		roles            = roles[:],
 		has_roles        = has_roles,
 		bridge_id        = fleet_bridge_ptr,
+		paused           = &paused if has_paused else nil,
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
-	if has_paused && fleet.paused != paused {
-		paused_fleet, pause_err := taskchain_service.set_fleet_pause(h.taskchains, auth_ctx, taskchain_service.Fleet_Pause_Input{
-			chain_id = chain_id, agent_id = agent_id, paused = paused,
-		})
-		if pause_err.code != .None do return respond_error(pause_err, req.request_id)
-		fleet = paused_fleet
-	}
 	restart_results := make([dynamic]Fleet_Restart_Result, context.temp_allocator)
 	restarted_ids := make([dynamic]string)
 	defer delete(restarted_ids)
@@ -2418,7 +2412,7 @@ pause_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if verb != "pause" && verb != "resume" do return respond_error(domain.domain_error(.Not_Found, "unknown fleet action"), req.request_id)
 	roles := jsonx.extract_string_array(req.body, "roles", true, context.temp_allocator)
 	fleet, err := taskchain_service.set_fleet_pause(h.taskchains, auth_ctx, taskchain_service.Fleet_Pause_Input{
-		chain_id = chain_id, agent_id = agent_id, roles = roles[:], paused = verb == "pause",
+		chain_id = chain_id, agent_id = agent_id, roles = roles[:], has_roles = jsonx.has_key(req.body, "roles", top_level_only = true), paused = verb == "pause",
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")

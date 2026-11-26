@@ -209,9 +209,6 @@ mcp_mutate_task :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,command:mcp.C
 			if eerr!=nil do return "","request_failed"
 			fleet:=command.fleet;fleet.bridge_models_json=string(encoded)
 			_,operation_err=tc.upsert_fleet(&chains,principal,fleet);ok=operation_err.code==.None
-			if ok && command.has_fleet_paused {
-				_,operation_err=tc.set_fleet_pause(&chains,principal,{chain_id=chain.chain_id,agent_id=command.fleet.agent_id,paused=command.fleet_paused});ok=operation_err.code==.None
-			}
 		case:return "","invalid_arguments"
 		}
 		id=string(chain.chain_id)

@@ -409,8 +409,18 @@ test_fleet_contract_roles_removed_and_paused :: proc(t: ^testing.T) {
 	testing.expectf(t, resumed.status == 200 && strings.contains(resumed.body, `"paused":false`), "resume: %d %s", resumed.status, resumed.body)
 	paused_again := pause_chain_fleet_handler(&f.th, wire_cookie_request(f, "POST", strings.concatenate({base, "pause"}), ""))
 	testing.expectf(t, paused_again.status == 200 && strings.contains(paused_again.body, `"paused":true`), "pause: %d %s", paused_again.status, paused_again.body)
-	role_pause := pause_chain_fleet_handler(&f.th, wire_cookie_request(f, "POST", strings.concatenate({base, "resume"}), `{"roles":["reviewer"]}`))
-	testing.expectf(t, role_pause.status == 400 && strings.contains(role_pause.body, "fleet_roles_removed"), "per-role resume: %d %s", role_pause.status, role_pause.body)
+	for verb in ([]string{"pause", "resume"}) {
+		for body in ([]string{`{"roles":["reviewer"]}`, `{"roles":[]}`}) {
+			role_pause := pause_chain_fleet_handler(&f.th, wire_cookie_request(f, "POST", strings.concatenate({base, verb}), body))
+			testing.expectf(t, role_pause.status == 400 && strings.contains(role_pause.body, "fleet_roles_removed"), "%s %s: %d %s", verb, body, role_pause.status, role_pause.body)
+		}
+	}
+
+	// paused is saved in the same write as the row: a refused PUT saves neither.
+	refused := fleet_result_put(t, c, `{"capacity":0,"provider":"claude","model":"old","paused":false}`)
+	testing.expectf(t, refused.status == 400, "capacity 0 is refused: %d %s", refused.status, refused.body)
+	rows, _ := iface.taskchain_list_fleets_by_chain(&f.tc_repo, f.chain_id, f.owner)
+	for row in rows do if row.agent_id == "agt_wake" do testing.expect(t, row.paused && row.capacity == 2, "refused PUT left the row (paused, capacity) unchanged")
 }
 
 // Task create/patch refuse review_roles by name (REQ-SCHED-8).

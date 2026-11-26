@@ -30,8 +30,6 @@ Control_Task_Command :: struct {
 	create:tc.Create_Task_Input,
 	update:tc.Update_Task_Input,
 	fleet:tc.Upsert_Fleet_Input,
-	// fleet_paused / has_fleet_paused: chains.configure `paused` (REQ-SCHED-2).
-	fleet_paused,has_fleet_paused:bool,
 	applied_fields:[]string,
 }
 Control_Task_Mutate_Proc :: proc(ctx:rawptr,raw:string,view:Access_View,command:Control_Task_Command)->(result_id,error:string)

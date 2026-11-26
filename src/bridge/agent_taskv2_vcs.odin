@@ -403,7 +403,7 @@ bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.tem
 	fmt.sbprintf(&b, "# Task %s: %s (%s, attempt #%d)\n\n", d.task_id, d.title, d.kind_label, d.attempt_no)
 	fmt.sbprintf(&b, "- **Claim**: `%s` (%s, attempt %d/%d, review_rounds: %d). Durable; does not expire.\n", d.lease_id, d.phase, d.attempt_no, d.max_attempts, d.review_rounds)
 	if d.phase == "waiting" {
-		strings.write_string(&b, "- **Waiting**: You retain this task and your role while review or dependencies are pending. Wait for this task to resume or for explicit coordinator direction; do not pull unrelated work.\n")
+		strings.write_string(&b, "- **Waiting**: You retain this task and your claim while review or dependencies are pending. Wait for this task to resume or for explicit coordinator direction; do not pull unrelated work.\n")
 	}
 	if d.bridge_id != "" || d.directory_id != "" || d.provider != "" || d.model != "" {
 		fmt.sbprintf(&b, "- **Placement**: bridge=`%s` directory=`%s` provider=`%s` model=`%s`\n", d.bridge_id, d.directory_id, d.provider, d.model)
@@ -523,7 +523,7 @@ bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.tem
 			strings.write_byte(&b, '\n')
 		}
 	} else {
-		strings.write_string(&b, "1. Inspect your durable claim with `ham-ctl lease next`. Active permits work; waiting retains this task and your role. After submit or block, stay with this task while waiting; do not pull unrelated work.\n2. Choose and run checks appropriate to the change; report the commands and their outcomes in `ham-ctl lease submit --summary \"...\"` when done.\n3. `ham-ctl lease heartbeat` reports progress and acknowledges requirements revisions; no periodic renewal is required. The coordinator can use `lease <task-id> --instance <id>` and `lease transfer` to change ownership explicitly.\n")
+		strings.write_string(&b, "1. Inspect your durable claim with `ham-ctl lease next`. Active permits work; waiting retains this task and your claim. After submit or block, stay with this task while waiting; do not pull unrelated work.\n2. Choose and run checks appropriate to the change; report the commands and their outcomes in `ham-ctl lease submit --summary \"...\"` when done.\n3. `ham-ctl lease heartbeat` reports progress and acknowledges requirements revisions; no periodic renewal is required. The coordinator can use `lease <task-id> --instance <id>` and `lease transfer` to change ownership explicitly.\n")
 	}
 	return strings.to_string(b)
 }
