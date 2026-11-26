@@ -38,7 +38,9 @@ const agentRow = (id: string, sec: number, inputIds: string[] = []) => ({
 });
 
 type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: string; body: any }>; sendNowReply: { status: number; body: any }; gets?: string[];
-  configuration?: { operations: any[]; response?: { status: number; body: any } | 'network' } };
+  configuration?: { operations: any[]; response?: { status: number; body: any } | 'network' };
+  /** /me/experiments rows; omitted keeps the flags unloaded (the old settings modal). */
+  experiments?: Array<{ key: string; enabled: boolean }> };
 
 async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/#/conversations/worker', pretendToBeVisual: true });
@@ -90,7 +92,8 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
       return respond(201, { data: row });
     }
     let data: any = {};
-    if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', runtime_status: 'running' };
+    if (path.endsWith('/me/experiments') && hub.experiments) data = { experiments: hub.experiments };
+    else if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', runtime_status: 'running' };
     else if (path.endsWith('/messages')) data = [...hub.messages].reverse();
     else if (path.endsWith('/send-now')) data = { conversation_id: 'workerchat', runtime_transport: hub.transport, launch_epoch: 'ep1', steering_supported: false,
       batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
@@ -315,5 +318,52 @@ test('ACP pane: a failed batch says so and Retry reuses its request_id for the m
     await wait(() => hub.posts.length === 2, 'retry posted');
     assert.equal(hub.posts[1].body.request_id, hub.posts[0].body.request_id, 'same request_id');
     assert.deepEqual(hub.posts[1].body.message_ids, ['msg_m1', 'msg_m2']);
+  });
+});
+
+// Agent settings panel (agent_settings_panel experiment): the gear and the composer
+// settings chip open the panel (a drawer at jsdom's 1024px) instead of the modal, the
+// Runtime card shows this instance, and the interim configuration slot still applies.
+test('Agent settings panel: flag on opens the panel from the gear and the composer chip; flag off keeps the modal', async () => {
+  const hub: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] },
+    experiments: [{ key: 'agent_settings_panel', enabled: true }] };
+  await fixture(hub, async ({ q, wait, dom }) => {
+    await wait(() => Boolean(q('conversation-agent-settings-btn')), 'gear rendered');
+    const gear = q('conversation-agent-settings-btn')!;
+    assert.equal(gear.getAttribute('aria-label'), 'Agent settings');
+    assert.equal(gear.getAttribute('aria-expanded'), 'false');
+    await act(async () => gear.click());
+    await wait(() => Boolean(q('agent-panel-runtime')), 'panel with runtime section');
+    assert.equal(q('agent-panel')!.getAttribute('data-mode'), 'drawer');
+    assert.equal(q('conversation-runtime-modal'), null, 'no modal');
+    assert.equal(gear.getAttribute('aria-expanded'), 'true');
+    assert.equal(q('agent-panel-runtime-status')!.textContent, 'Running');
+    assert.equal(q('agent-panel-runtime-provider')!.textContent, 'Claude Code');
+    assert.equal(q('agent-panel-runtime-model')!.textContent, 'opus');
+    assert.equal(q('agent-panel-runtime-transport')!.textContent, 'PTY');
+    await act(async () => { dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    await wait(() => !q('agent-panel'), 'Esc closes the drawer');
+
+    await act(async () => q('conversation-runtime-menu-btn')!.click());
+    await wait(() => Boolean(q('agent-panel')), 'composer chip opens the panel');
+    assert.equal(q('conversation-runtime-modal'), null);
+    await wait(() => Boolean(q('conversation-provider-option-codex')) && !q('conversation-provider-option-codex')!.disabled, 'interim configuration slot loaded');
+    await act(async () => q('conversation-provider-option-codex')!.click());
+    await wait(() => !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'staged change can apply');
+    await act(async () => q('agent-panel-legacy-apply-btn')!.click());
+    await wait(() => hub.posts.length === 1, 'reconfiguration posted');
+    assert.equal(hub.posts[0].body.provider, 'codex');
+    assert.equal(hub.posts[0].body.expected_revision, 7);
+    assert.ok(q('agent-panel'), 'the panel stays open to watch the restart');
+  });
+
+  const off: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} },
+    experiments: [{ key: 'agent_settings_panel', enabled: false }] };
+  await fixture(off, async ({ q, wait }) => {
+    await wait(() => Boolean(q('conversation-runtime-menu-btn')), 'composer rendered');
+    assert.equal(q('conversation-agent-settings-btn'), null, 'no gear with the flag off');
+    await act(async () => q('conversation-runtime-menu-btn')!.click());
+    await wait(() => Boolean(q('conversation-runtime-modal')), 'old modal opens');
+    assert.equal(q('agent-panel'), null);
   });
 });

@@ -994,7 +994,8 @@ export type InstanceConfiguration = {
 };
 export type InstanceReconfiguration = {
   operation_id: string; agent_instance_id: string; conversation_id: string; idempotency_key: string;
-  phase: 'prepared' | 'stopping' | 'source_stopped' | 'launching' | 'ready' | 'failed' | 'recovery_required';
+  /** `waiting_for_idle`: a deferred apply queued for the end of the current turn (hub T4). */
+  phase: 'prepared' | 'stopping' | 'source_stopped' | 'launching' | 'ready' | 'failed' | 'recovery_required' | 'waiting_for_idle';
   source: InstanceConfiguration; destination: InstanceConfiguration;
   source_stopped: boolean; destination_committed: boolean;
   failure_code: string; failure_message: string; revision: number; updated_at?: string;
@@ -1031,5 +1032,7 @@ export function reconfigurationSettled(
 function normalizeInstanceReconfiguration(raw: any): InstanceReconfiguration {
   const phases = ['prepared', 'stopping', 'source_stopped', 'launching', 'ready', 'failed', 'recovery_required'];
   const phase = typeof raw?.phase === 'number' ? phases[raw.phase] : String(raw?.phase || '').toLowerCase();
+  // String-only: a deferred apply (hub T4) must not read as recovery_required.
+  if (phase === 'waiting_for_idle') return { ...raw, phase };
   return { ...raw, phase: phases.includes(phase) ? phase : 'recovery_required' };
 }
