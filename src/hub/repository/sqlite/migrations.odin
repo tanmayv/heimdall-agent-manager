@@ -796,6 +796,11 @@ MIGRATION_261_EXTENSION_VERSION_SYNC :: #load("migrations/261_extension_version_
 
 MIGRATION_262_TASK_MERGE_PENDING :: #load("migrations/262_task_merge_pending.sql", string)
 
+// 262 for a database with the owner legacy source fences: the backfill skips
+// frozen/imported legacy chains, whose task rows the owner_legacy_guard_*
+// triggers make read-only (see the variant's header).
+MIGRATION_262_TASK_MERGE_PENDING_OWNER_LEGACY :: #load("migration_variants/262_task_merge_pending_owner_legacy.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1603,6 +1608,10 @@ run_migrations :: proc(
         // Ensure that prerequisite before migrating their default profile IDs.
         if name=="169_provider_profiles.sql" && !upgrade_task_chain_fleets_schema(conn) do return false,domain.domain_error(.Internal_Error,"fleet profile migration prerequisite failed")
 		sql := migration_sql(name, migrations_dir)
+		if name == "262_task_merge_pending.sql" && sqlite_object_exists(conn, "owner_legacy_migrations") {
+			delete(sql)
+			sql = strings.clone(MIGRATION_262_TASK_MERGE_PENDING_OWNER_LEGACY)
+		}
 		if sql == "" {
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1610,7 +1619,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "262_task_merge_pending.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,

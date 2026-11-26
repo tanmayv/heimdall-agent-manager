@@ -8,6 +8,8 @@
 -- merge_conflict after it. merge_failed does not clear it (a failed merge is
 -- retried on bridge hello). task_event_append_sqlite keeps it in sync in the
 -- same transaction as the event; this migration backfills it once.
+-- One transaction: a failed backfill leaves no half-applied column behind.
+BEGIN;
 ALTER TABLE tasks ADD COLUMN merge_pending INTEGER NOT NULL DEFAULT 0;
 
 UPDATE tasks SET merge_pending = 1
@@ -19,3 +21,4 @@ WHERE (
 ) IN ('approved', 'submitted');
 
 CREATE INDEX IF NOT EXISTS idx_tasks_merge_pending ON tasks(state, created_at) WHERE merge_pending = 1;
+COMMIT;

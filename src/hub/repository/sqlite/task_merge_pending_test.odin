@@ -161,3 +161,81 @@ test_merge_pending_set_and_cleared_by_event_append :: proc(t: ^testing.T) {
 	testing.expect(t, !aok, "append fails closed without the projection")
 	testing.expect_value(t, tmp_text(&conn, "SELECT count(*) FROM task_events WHERE task_id='t_a' AND kind='submitted';"), "1")
 }
+
+// A database carrying the owner legacy source fences (bridge-owned legacy
+// chain export, as on Mundus): the owner_legacy_guard_* triggers make every
+// row of a 'frozen' / 'imported' chain read-only. 262's backfill skips those
+// chains (they cannot have a live merge), 'draining' and unfenced chains are
+// backfilled as usual, and the fences are left untouched.
+
+TMP_OL_FENCES_SQL :: #load("../../../../tests/fixtures/owner_legacy_fences.sql", string)
+TMP_OL_DIGEST :: "0000000000000000000000000000000000000000000000000000000000000000"
+TMP_OL_CHAINS :: [4]string{"chain_live", "chain_drain", "chain_frozen", "chain_imported"}
+
+tmp_ol_fences_digest :: proc(conn: ^Conn) -> string {
+	return tmp_text(conn, "SELECT count(*) || ':' || group_concat(name || '=' || sql, ';') FROM (SELECT name, sql FROM sqlite_master WHERE name LIKE 'owner_legacy%' ORDER BY name);")
+}
+
+@(test)
+test_merge_pending_backfill_skips_owner_legacy_frozen_chains :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	conn, path, ok := tmpl_open_file_prod(t, "merge_pending_owner_legacy")
+	if !ok do return
+	defer tmpl_remove_db(path)
+	defer close(&conn)
+	mig_ok, err := run_migrations(&conn, stop_before = TMP_MIGRATION)
+	if !testing.expect(t, mig_ok, err.message) do return
+	if !testing.expect(t, exec(&conn, `INSERT INTO users(user_id, name, display_name, status, created_at, updated_at) VALUES ('u1','u1','u1','active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`), "seed user") do return
+	// One Done task per chain whose merge never settled.
+	chains := TMP_OL_CHAINS
+	for chain, i in chains {
+		seeded := exec(&conn, fmt.tprintf(`INSERT INTO task_chains(chain_id, owner_user_id, title, created_at, updated_at) VALUES ('%s','u1','c','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+INSERT INTO tasks(task_id, chain_id, owner_user_id, title, description, publish_state, state, kind, brief_json, created_at, updated_at)
+ VALUES ('t_%s','%s','u1','t','','published','done','task','{"goal":"g"}','2026-01-01T00:00:%02dZ','2026-01-01T00:00:00Z');
+INSERT INTO task_events(task_id, chain_id, owner_user_id, ts_ms, kind, payload_json) VALUES ('t_%s','%s','u1',1,'submitted','{}');`, chain, chain, chain, i, chain, chain))
+		if !testing.expect(t, seeded, chain) do return
+	}
+	// A fenced database keeps task_leases.review_role (owner_legacy_no_replaced_lease
+	// reads it, so 260's fenced variant does not drop it).
+	if !table_column_exists(&conn, "task_leases", "review_role") {
+		if !testing.expect(t, exec(&conn, "ALTER TABLE task_leases ADD COLUMN review_role TEXT NOT NULL DEFAULT '';"), "fenced schema keeps review_role") do return
+	}
+	// Fences and legacy state go in last: a frozen chain's rows cannot be written.
+	if !testing.expect(t, exec(&conn, TMP_OL_FENCES_SQL), "install owner legacy fences") do return
+	d := TMP_OL_DIGEST
+	legacy := fmt.tprintf(`INSERT INTO owner_legacy_source_generations (chain_id, account_id, generation) VALUES ('chain_drain', 'acct', 1), ('chain_frozen', 'acct', 1), ('chain_imported', 'acct', 1);
+INSERT INTO owner_legacy_migrations (migration_id, chain_id, account_id, owner_bridge_id, owner_key_id, selection_digest, state, revision, frozen_generation, quiescence_digest, manifest_digest, receipt_digest) VALUES
+ ('olm_drain', 'chain_drain', 'acct', 'brg_o', 'key_o', '%s', 'draining', 1, 0, '', '', ''),
+ ('olm_frozen', 'chain_frozen', 'acct', 'brg_o', 'key_o', '%s', 'frozen', 2, 1, '%s', '', ''),
+ ('olm_imported', 'chain_imported', 'acct', 'brg_o', 'key_o', '%s', 'imported', 3, 1, '%s', '%s', '%s');`, d, d, d, d, d, d, d)
+	if !testing.expect(t, exec(&conn, legacy), "seed owner legacy migrations") do return
+	fences := tmp_ol_fences_digest(&conn)
+	// The fixture reproduces the failure an unfiltered backfill would hit.
+	testing.expect(t, !exec(&conn, "UPDATE tasks SET updated_at = updated_at WHERE task_id = 't_chain_frozen';"), "frozen task rows are read-only")
+
+	impl: Taskchain_Repo_SQLite
+	repo := new_taskchain_repository(&impl, &conn)
+	for pass in ([]string{"upgrade", "restart"}) {
+		mig_ok, err = run_migrations(&conn)
+		if !testing.expectf(t, mig_ok, "%s: %s", pass, err.message) do return
+		testing.expectf(t, migration_applied(&conn, TMP_MIGRATION), "%s: 262 recorded", pass)
+		testing.expectf(t, tmp_pending(&conn, "t_chain_live") == "1", "%s: unfenced chain backfilled", pass)
+		testing.expectf(t, tmp_pending(&conn, "t_chain_drain") == "1", "%s: draining chain backfilled", pass)
+		testing.expectf(t, tmp_pending(&conn, "t_chain_frozen") == "0", "%s: frozen chain untouched", pass)
+		testing.expectf(t, tmp_pending(&conn, "t_chain_imported") == "0", "%s: imported chain untouched", pass)
+		testing.expect_value(t, tmp_listed(t, &repo), "t_chain_live,t_chain_drain")
+		testing.expectf(t, tmp_ol_fences_digest(&conn) == fences, "%s: fence tables and triggers unchanged", pass)
+		testing.expectf(t, tmp_text(&conn, "SELECT generation FROM owner_legacy_source_generations WHERE chain_id='chain_frozen';") == "1", "%s: frozen generation unchanged", pass)
+	}
+
+	// At runtime the projection write rides on the event insert: a frozen
+	// chain's event is refused by its guard, so no projection write follows;
+	// a draining chain settles as usual.
+	_, fok, _ := iface.taskchain_append_event(&repo, domain.Task_Event{task_id = "t_chain_frozen", chain_id = "chain_frozen", owner_user_id = "u1", ts_ms = 2, kind = "approved", payload_json = "{}"})
+	testing.expect(t, !fok, "frozen chain event refused by its guard")
+	testing.expect_value(t, tmp_pending(&conn, "t_chain_frozen"), "0")
+	_, dok, derr := iface.taskchain_append_event(&repo, domain.Task_Event{task_id = "t_chain_drain", chain_id = "chain_drain", owner_user_id = "u1", ts_ms = 2, kind = "merged", payload_json = "{}"})
+	testing.expect(t, dok, derr.message)
+	testing.expect_value(t, tmp_pending(&conn, "t_chain_drain"), "0")
+	testing.expect_value(t, tmp_listed(t, &repo), "t_chain_live")
+}
