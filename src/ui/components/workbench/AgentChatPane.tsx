@@ -69,6 +69,7 @@ import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import {
   normalizeBridgeCapabilities,
   useBridgeProviderStatus,
+  useDiscoverBridgeProvidersMutation,
   useInstallAcpAdapterMutation,
   useListBridgeProvidersQuery,
   useListBridgesQuery,
@@ -1826,6 +1827,7 @@ export function AgentChatPane({
   const [refreshBridgeModels, refreshModelsState] = useRefreshBridgeModelsMutation();
   const [updateBridgeRequest, updateBridgeState] = useUpdateBridgeMutation();
   const [installAcpAdapter, installAcpState] = useInstallAcpAdapterMutation();
+  const [discoverBridgeProviders, discoverProvidersState] = useDiscoverBridgeProvidersMutation();
   const [draftRefreshError, setDraftRefreshError] = useState('');
   const [draftFixError, setDraftFixError] = useState('');
   useEffect(() => { setDraftRefreshError(''); setDraftFixError(''); }, [destinationBridgeId]);
@@ -1841,7 +1843,8 @@ export function AgentChatPane({
     try {
       if (fix === 'update_bridge') await updateBridgeRequest({ bridgeId: destinationBridgeId }).unwrap();
       else if (fix === 'install_adapter') await installAcpAdapter({ bridgeId: destinationBridgeId, provider: draftConfig.provider }).unwrap();
-      else await refreshBridgeModels({ bridgeId: destinationBridgeId }).unwrap();
+      // check_now: provider discovery is the stage that records the ACP adapter state.
+      else await discoverBridgeProviders({ bridgeId: destinationBridgeId }).unwrap();
     } catch (err) {
       setDraftFixError(agentErrorText(err, 'The request failed.'));
     }
@@ -2838,7 +2841,7 @@ export function AgentChatPane({
           bridge: draftBridgeLabel,
         })}
         onFix={(fix) => void fixDraftConnection(fix)}
-        fixPending={refreshModelsState.isLoading || updateBridgeState.isLoading || installAcpState.isLoading}
+        fixPending={discoverProvidersState.isLoading || updateBridgeState.isLoading || installAcpState.isLoading}
         fixError={draftFixError}
         disabled={draftControlsDisabled}
         touch={panelTouch}

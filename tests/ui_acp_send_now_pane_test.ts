@@ -42,7 +42,9 @@ type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: str
   /** /me/experiments rows; omitted keeps the flags unloaded (the old settings modal). */
   experiments?: Array<{ key: string; enabled: boolean }>;
   /** providers[].acp_availability for claude on provider-status (T6 panel); omitted = older hub. */
-  acpAvailability?: any };
+  acpAvailability?: any;
+  /** When set, POSTs under /bridges/ (the panel's ACP fixes) are recorded here and answered 202. */
+  bridgePosts?: Array<{ path: string; body: any }> };
 
 async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/#/conversations/worker', pretendToBeVisual: true });
@@ -85,6 +87,10 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
       hub.configuration.operations = [operation];
       return respond(202, { data: operation });
     }
+    if (method === 'POST' && hub.bridgePosts && path.includes('/bridges/')) {
+      hub.bridgePosts.push({ path, body: init.body ? JSON.parse(init.body) : {} });
+      if (!path.endsWith('/providers/discover')) return respond(202, { data: { command_id: 'cmd_1' } });
+    }
     if (method === 'POST' && path.endsWith('/send-now')) { hub.posts.push({ path, body: JSON.parse(init.body) }); return respond(hub.sendNowReply.status, hub.sendNowReply.body); }
     if (method === 'POST' && path.endsWith('/messages')) {
       const body = JSON.parse(init.body);
@@ -102,7 +108,7 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
     else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b',
       runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
     else if (path.endsWith('/reconfigurations')) data = { operations: hub.configuration?.operations || [] };
-    else if (path.endsWith('/provider-status')) data = { providers: [
+    else if (path.endsWith('/provider-status') || path.endsWith('/providers/discover')) data = { providers: [
       { provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }],
         ...(hub.acpAvailability ? { acp_availability: hub.acpAvailability } : {}) },
       ...(hub.configuration ? [{ provider: 'codex', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'smart', state: 'active' }] }] : []),
@@ -425,4 +431,32 @@ test('Agent settings panel draft: connection and bypass stage, ACP gate blocks A
     assert.equal(ready.posts[0].body.runtime_transport, 'acp');
     assert.equal(ready.posts[0].body.permission_mode, undefined, 'unchanged bypass is not sent');
   });
+});
+
+test('Agent settings panel: each ACP fix calls its existing endpoint on the draft bridge', async () => {
+  const cases = [
+    { availability: { available: false, reason: 'unsupported_bridge', fix: 'update_bridge' }, button: 'agent-panel-connection-fix-update_bridge',
+      path: '/bridges/b/update', body: {} },
+    { availability: { available: false, reason: 'adapter_missing', fix: 'install_adapter' }, button: 'agent-panel-connection-fix-install_adapter',
+      path: '/bridges/b/providers/claude/acp-adapter', body: { action: 'install' } },
+    // Provider discovery is the stage that records the adapter state acp_availability reads.
+    { availability: { available: false, reason: 'not_checked', fix: 'check_now' }, button: 'agent-panel-connection-fix-check_now',
+      path: '/bridges/b/providers/discover', body: { stage: 'providers' } },
+  ];
+  for (const c of cases) {
+    const hub: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] },
+      experiments: [{ key: 'agent_settings_panel', enabled: true }], acpAvailability: c.availability, bridgePosts: [] };
+    await fixture(hub, async ({ q, wait }) => {
+      await wait(() => Boolean(q('conversation-agent-settings-btn')), 'gear rendered');
+      await act(async () => q('conversation-agent-settings-btn')!.click());
+      await wait(() => Boolean(q('agent-panel-model-provider-claude')), 'provider rows loaded');
+      await act(async () => q('agent-panel-connection-acp')!.click());
+      await wait(() => Boolean(q(c.button)), `${c.availability.reason}: fix button`);
+      await act(async () => q(c.button)!.click());
+      await wait(() => hub.bridgePosts!.length > 0, `${c.availability.reason}: fix request sent`);
+      assert.deepEqual(hub.bridgePosts!.map((p) => p.path.replace(/^\/api\/v1/, '')), [c.path], `${c.availability.reason}: one request, existing endpoint`);
+      assert.deepEqual(hub.bridgePosts![0].body, c.body, `${c.availability.reason}: request body`);
+      assert.equal(hub.posts.length, 0, 'a fix never reconfigures the instance');
+    });
+  }
 });

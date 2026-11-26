@@ -563,6 +563,19 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
     }),
+    // Provider discovery only (POST /bridges/{id}/providers/discover {stage:'providers'}):
+    // the stage that records each provider's ACP adapter state, which acp_availability
+    // is classified from. The Agent settings panel's "Check now" fix.
+    discoverBridgeProviders: build.mutation<any, { bridgeId: string }>({
+      queryFn: async ({ bridgeId }) => {
+        try {
+          const { discoverBridgeProviders } = await import('../../components/providers/providerSetupApi');
+          return { data: await discoverBridgeProviders(bridgeId, 'providers', false) };
+        }
+        catch (error: any) { return { error: customQueryError(error) as any }; }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
+    }),
     listBridgeProviders: build.query<any, { bridgeId: string }>({
       queryFn: async ({ bridgeId }) => {
         if (!bridgeId) return { data: { bridge_id: '', providers: [] } };
@@ -608,6 +621,7 @@ export const {
   useGetProviderExtensionInstallQuery,
   useListBridgeProvidersQuery,
   useRefreshBridgeModelsMutation,
+  useDiscoverBridgeProvidersMutation,
 } = bridgeSupportApi;
 
 /** How long a visible, open runtime/provider picker may show provider status. */

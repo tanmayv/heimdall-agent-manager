@@ -57,7 +57,8 @@ colour, never colour alone: Running/Restarting use the info tint, Stopped is neu
 4. **Connection** (`ConnectionSection.tsx`, `agent-panel-connection`): PTY / ACP cards
    (`runtime_transport`). The ACP alert is mapped from the hub's `acp_availability`
    only (`acpAvailabilityCopy.ts`); fixes call the existing endpoints (bridge update,
-   ACP adapter install, discovery).
+   ACP adapter install, and for "Check now" provider discovery `{stage:'providers'}`,
+   the stage that records the adapter state `acp_availability` is classified from).
 5. **Permissions** (`PermissionsSection.tsx`, `agent-panel-permissions`): the @ui Toggle,
    per running instance only.
 6. Staged-changes footer: T7 (`agent-panel-apply`). Until then a minimal Discard/Apply
