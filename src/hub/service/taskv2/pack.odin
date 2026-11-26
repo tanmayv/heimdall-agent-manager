@@ -18,8 +18,11 @@ CHAIN_SUMMARY_MAX_LINES :: 60
 // is left, and are stored in full either way (Chain_Summary.curated_body).
 CHAIN_SUMMARY_CURATED_RESERVED_LINES :: 20
 
-build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Task, lease: domain.Task_Lease, inst: domain.Agent_Instance) -> string {
-	evs, _ := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+// build_pack_json reads the task's events once (or uses `events` when the
+// caller already holds the current list) and passes them down (spec SCHED 10.2).
+build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Task, lease: domain.Task_Lease, inst: domain.Agent_Instance, events: []domain.Task_Event = nil) -> string {
+	evs := events
+	if evs == nil do evs, _ = iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
 	view := fold_task(evs, fold_input_for_task(task, true))
 	// "why this attempt exists" is the release that PRECEDED the current grant:
 	// fold up to (excluding) the last lease_granted for this lease.
@@ -104,7 +107,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 	json_raw(&t, "brief", brief_raw)
 	json_raw(&o, "task", json_end(&t))
 	json_raw(&o, "brief", brief_raw)
-	json_raw(&o, "requirements", requirements_pack_json(svc, task, lease))
+	json_raw(&o, "requirements", requirements_pack_json(svc, task, lease, evs))
 
 	c := json_begin()
 	json_str(&c, "chain_id", string(chain.chain_id))
@@ -131,7 +134,7 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 	prev_json, where_vcs, prev_outcome := previous_attempt_and_vcs_json(svc, task, lease, pre.last_release == .Handoff, evs)
 	json_raw(&o, "where_you_are", where_vcs)
 	json_raw(&o, "previous_attempt", prev_json)
-	json_raw(&o, "findings", open_findings_json(svc, task, lease))
+	json_raw(&o, "findings", open_findings_json(svc, task, lease, evs))
 	json_str(&o, "why", pack_why(pre, lease, prev_outcome))
 	// The task was done but its branch did not merge into the directory: this
 	// attempt reconciles the branch (merge the directory's branch in, resolve,
@@ -411,7 +414,7 @@ last_heartbeat_note_for_attempt :: proc(evs: []domain.Task_Event, target_attempt
 }
 
 @(private = "file")
-open_findings_json :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease) -> string {
+open_findings_json :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease, evs: []domain.Task_Event) -> string {
 	reviews, err := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
 	if err.code != .None || len(reviews) == 0 do return "[]"
 	// Work: the LATEST request_changes round before this attempt — not simply
@@ -441,7 +444,7 @@ open_findings_json :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_
 	// A reviewer's free-text reason (review summary: the user's "what needs to
 	// change", or an agent's --summary) is a finding too — without it a
 	// summary-only request_changes reached the agent as "no findings".
-	if evs, eerr := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id); eerr.code == .None {
+	{
 		for ev in evs {
 			if ev.kind != EV_REVIEW_POSTED do continue
 			if jsonx.extract_string(ev.payload_json, "verdict", "", true, context.temp_allocator) != "request_changes" do continue
@@ -827,10 +830,11 @@ DEP_OUTPUT_MAX_BYTES :: 2 * 1024
 // `output:<id>` is not repeated; an oversized output is replaced by a fetch
 // hint so the brief is never what the size cap cuts.
 dependencies_pack_json :: proc(svc: ^Service, task: domain.Task) -> string {
-	deps, derr := iface.taskchain_list_dependencies_by_chain(svc.repo, task.chain_id, task.owner_user_id)
+	// The edges of this task only, not every edge of the chain (spec SCHED 10.2).
+	deps, derr := iface.taskchain_list_dependencies_by_task(svc.repo, task.task_id, task.owner_user_id)
 	if derr.code != .None do return "[]"
     if task.workflow_run_id == "" {
-        edges, err := iface.taskchain_list_work_dependencies(svc.repo, task.chain_id, task.owner_user_id)
+        edges, err := iface.taskchain_list_work_dependencies_by_dependent(svc.repo, task.chain_id, task.owner_user_id, domain.Work_Item_Ref{kind = domain.WORK_ITEM_TASK, id = string(task.task_id)})
         if err.code == .None {
             combined := make([dynamic]domain.Task_Dependency, context.temp_allocator)
             append(&combined, ..deps)

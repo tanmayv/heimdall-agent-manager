@@ -47,16 +47,27 @@ requirements_stale_review :: proc(svc: ^Service, task: domain.Task) -> bool {
 }
 
 requirements_present :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease) -> domain.Domain_Error {
-	events, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
-	if err.code != .None do return err
+	_, err := requirements_present_events(svc, task, lease, nil)
+	return err
+}
+
+// requirements_present_events is requirements_present over the task's events
+// when the caller already read them (`lease next` reads them once). `appended`
+// reports a new requirements_presented event (the list is then stale).
+requirements_present_events :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease, known_events: []domain.Task_Event) -> (appended: bool, err: domain.Domain_Error) {
+	events := known_events
+	if events == nil {
+		events, err = iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+		if err.code != .None do return false, err
+	}
 	revision := requirements_state(events).revision
-	if revision == 1 || requirements_lease_revision(events, lease.lease_id, EV_REQUIREMENTS_PRESENTED) == revision do return {}
+	if revision == 1 || requirements_lease_revision(events, lease.lease_id, EV_REQUIREMENTS_PRESENTED) == revision do return false, {}
 	p := json_begin()
 	json_str(&p, "lease_id", lease.lease_id)
 	json_int(&p, "revision", revision)
 	_, ok, aerr := append_event(svc.repo, svc.clock, task, {kind = ACTOR_AGENT, id = lease.holder_instance_id}, EV_REQUIREMENTS_PRESENTED, json_end(&p))
-	if !ok do return aerr
-	return {}
+	if !ok do return false, aerr
+	return true, {}
 }
 
 // Explicit acknowledgement is carried by lease.heartbeat. It can acknowledge
@@ -174,8 +185,9 @@ requirements_reconcile_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Ta
 	return true, {}
 }
 
-requirements_pack_json :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease) -> string {
-	events, err := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
+requirements_pack_json :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease, known_events: []domain.Task_Event = nil) -> string {
+	events, err := known_events, domain.Domain_Error{}
+	if events == nil do events, err = iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
 	p := json_begin()
 	if err.code != .None { json_bool(&p, "unavailable", true); return json_end(&p) }
 	state := requirements_state(events)

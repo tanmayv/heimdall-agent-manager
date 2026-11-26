@@ -57,11 +57,17 @@ stage_live_work_lease_count :: proc(ctx: ^Match_Context, run_id: domain.Workflow
 	count := 0
 	for l in ctx.leases {
 		if l.phase == domain.LEASE_PHASE_WAITING || l.kind != domain.LEASE_KIND_WORK do continue
-		for t in ctx.tasks {
-			if t.task_id == l.task_id && t.workflow_run_id == run_id && t.workflow_execution_no == execution_no && t.stage_key == stage_key {
-				count += 1
-				break
+		if ctx.tasks_loaded {
+			for t in ctx.tasks {
+				if t.task_id == l.task_id && t.workflow_run_id == run_id && t.workflow_execution_no == execution_no && t.stage_key == stage_key {
+					count += 1
+					break
+				}
 			}
+		} else if ctx.service != nil {
+			// A context without tasks (inline grant) reads the leased task: bounded
+			// by the chain's leases, not its tasks.
+			if t, ok, _ := iface.taskchain_get_task(ctx.service.repo, l.task_id); ok && t.workflow_run_id == run_id && t.workflow_execution_no == execution_no && t.stage_key == stage_key do count += 1
 		}
 	}
 	return count
@@ -79,6 +85,9 @@ Match_Context :: struct {
  grant_failures: [dynamic]Grant_Placement_Failure,
 
 	chain:     domain.Task_Chain,
+	// tasks_loaded: false for a context built for one pulling instance or one
+	// task (`lease next`, inline grants): tasks and sorted are then empty.
+	tasks_loaded: bool,
 	tasks:     []domain.Task,
 	sorted:    []domain.Task,
 	fleets:    []domain.Task_Chain_Fleet,
@@ -93,24 +102,30 @@ Match_Context :: struct {
 }
 
 @(private = "package")
-load_match_context :: proc(svc: ^Service, chain: domain.Task_Chain) -> (Match_Context, bool, domain.Domain_Error) {
+// with_tasks=false skips the chain's tasks (the only part that grows with the
+// chain): fleets, directories, leases and member instances are bounded by the
+// fleet and the running instances (REQ-SCHED-38).
+load_match_context :: proc(svc: ^Service, chain: domain.Task_Chain, with_tasks := true) -> (Match_Context, bool, domain.Domain_Error) {
 	ctx := Match_Context{chain = chain, now_ms = now_ms(svc.clock), grant_failures=make([dynamic]Grant_Placement_Failure,context.temp_allocator)}
 	ctx.service = svc
-	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
-	if terr.code != .None do return ctx, false, terr
-	ctx.tasks = tasks
-	ctx.sorted = slice.clone(tasks)
-	slice.sort_by(ctx.sorted, proc(a, b: domain.Task) -> bool {
-		if a.priority != b.priority do return a.priority < b.priority
-		ra, rb := a.ready_since, b.ready_since
-		if ra != rb {
-			if ra == "" do return false
-			if rb == "" do return true
-			return ra < rb
-		}
-		if a.created_at != b.created_at do return a.created_at < b.created_at
-		return a.task_id < b.task_id
-	})
+	if with_tasks {
+		tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
+		if terr.code != .None do return ctx, false, terr
+		ctx.tasks_loaded = true
+		ctx.tasks = tasks
+		ctx.sorted = slice.clone(tasks)
+		slice.sort_by(ctx.sorted, proc(a, b: domain.Task) -> bool {
+			if a.priority != b.priority do return a.priority < b.priority
+			ra, rb := a.ready_since, b.ready_since
+			if ra != rb {
+				if ra == "" do return false
+				if rb == "" do return true
+				return ra < rb
+			}
+			if a.created_at != b.created_at do return a.created_at < b.created_at
+			return a.task_id < b.task_id
+		})
+	}
 	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
 	if ferr.code != .None do return ctx, false, ferr
 	ctx.fleets = fleets
@@ -496,17 +511,34 @@ Inline_Refusal :: struct {
 	reason:  string,
 }
 
+// INLINE_CANDIDATE_LIMIT is k in spec SCHED 10.1: how many owed reviews and how
+// many assigned ready tasks one `lease next` considers. A candidate refused by a
+// grant check (held, stale requirements, directory rule) passes to the next.
+INLINE_CANDIDATE_LIMIT :: 16
+
 // grant_inline_for_instance is the matcher restricted to ONE candidate holder:
 // the instance that just called `lease.next`. delivery=inline, so the caller
 // is never woken. Order (REQ-SCHED-12, REQ-SCHED-35): a review its agent owes,
 // then rework on a task assigned to its agent, then new ready work assigned to
 // its agent. Every grant check lives in grant_in_uow. Returns the lease and its
 // task when something was granted; otherwise the first refusal, if any.
+//
+// Cost (REQ-SCHED-38/40): the candidates come from two index lookups
+// (task_reviewers and tasks.assignee_agent_id), at most INLINE_CANDIDATE_LIMIT
+// each. When both are empty (the idle path) nothing else is read. Otherwise the
+// context holds the chain's fleet, directories, leases and member instances,
+// never its tasks.
 grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, inst: domain.Agent_Instance, trigger: Trigger) -> (domain.Task_Lease, domain.Task, bool, Inline_Refusal) {
 	refusal := Inline_Refusal{}
 	if chain.publish_state != .Published || chain.status != .Active do return {}, {}, false, refusal
+	if inst.agent_id == "" do return {}, {}, false, refusal
 	metric_matcher_run(trigger)
-	ctx, ok, _ := load_match_context(svc, chain)
+	owed, oerr := iface.taskchain_list_owed_reviews(svc.repo, chain.chain_id, chain.owner_user_id, inst.agent_id, INLINE_CANDIDATE_LIMIT)
+	if oerr.code != .None do return {}, {}, false, refusal
+	assigned, aerr := iface.taskchain_list_assigned_ready(svc.repo, chain.chain_id, chain.owner_user_id, inst.agent_id, INLINE_CANDIDATE_LIMIT)
+	if aerr.code != .None do return {}, {}, false, refusal
+	if len(owed) == 0 && len(assigned) == 0 do return {}, {}, false, refusal
+	ctx, ok, _ := load_match_context(svc, chain, with_tasks = false)
 	if !ok do return {}, {}, false, refusal
 	defer destroy_match_context(&ctx)
 	if ctx.held[inst.agent_instance_id] do return {}, {}, false, refusal
@@ -517,14 +549,12 @@ grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Cha
 		if refusal.task_id == "" do refusal^ = Inline_Refusal{task_id = task_id, reason = reason}
 	}
 
-	// Review pass: reviews this agent owes.
-	for task in ctx.sorted {
-		if task.state != .In_Review || task.kind == .Gate do continue
+	// Review pass: reviews this agent owes (the lookup applies the listing,
+	// own-work and already-posted rules of required_reviewers/agent_review_owed).
+	for task in owed {
 		listed := false
-		for id in required_reviewers(task, task_author_agent(svc, task)) do if id == inst.agent_id { listed = true; break }
+		for id in brief_reviewer_agents(task.brief_json, context.temp_allocator) do if id == inst.agent_id { listed = true; break }
 		if !listed do continue
-		reviews, _ := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
-		if !agent_review_owed(reviews, task, inst.agent_id) do continue
 		if review_lease_live_for(&ctx, svc, task.task_id, inst.agent_id) do continue
 		if fleet.paused { note_refusal(&refusal, task.task_id, "this agent's fleet row is paused"); continue }
 		if task_is_held(task) { note_refusal(&refusal, task.task_id, "task is held"); continue }
@@ -543,29 +573,28 @@ grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Cha
 		}
 		note_refusal(&refusal, task.task_id, gerr.message)
 	}
-	// Work passes: rework first (the task was worked before), then new work.
-	for rework in ([]bool{true, false}) {
-		for task in ctx.sorted {
-			if task.state != .Ready || task.kind == .Gate do continue
-			if (task.attempt_no > 0) != rework do continue
-			if brief_assignee(task.brief_json) != inst.agent_id do continue
-			if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
-			if fleet.paused { note_refusal(&refusal, task.task_id, "this agent's fleet row is paused"); continue }
-			if reason := inline_bridge_refusal(task, fleet, inst); reason != "" { note_refusal(&refusal, task.task_id, reason); continue }
-			placement := inline_placement(&ctx, fleet, inst)
-			if placement.directory_id != "" && directory_has_work_lease_ctx(&ctx, placement.directory_id) { note_refusal(&refusal, task.task_id, "another work lease is live on this chain directory"); continue }
-			if reason := chain_cap_refusal(svc, &ctx, u, inst, instance_slot_counted(svc, &ctx, u, inst), domain.LEASE_KIND_WORK, task); reason != "" { note_refusal(&refusal, task.task_id, reason); continue }
-			lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
-				chain = chain, task = task, instance = inst,
-				kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_INLINE,
-				placement = placement, actor = actor, trigger = trigger,
-			})
-			if gok {
-				fresh, _, _ := iface.taskchain_get_task(svc.repo, task.task_id)
-				return lease, fresh, true, {}
-			}
-			note_refusal(&refusal, task.task_id, gerr.message)
+	// Work: rework first (the task was worked before), then new work — the
+	// lookup's order (REQ-SCHED-35). Placement follows the caller unless a
+	// task pin or the fleet row's bridge restricts it (REQ-SCHED-31); the
+	// chain cap applies to inline grants too (REQ-SCHED-34).
+	for task in assigned {
+		if brief_assignee(task.brief_json) != inst.agent_id do continue
+		if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+		if fleet.paused { note_refusal(&refusal, task.task_id, "this agent's fleet row is paused"); continue }
+		if reason := inline_bridge_refusal(task, fleet, inst); reason != "" { note_refusal(&refusal, task.task_id, reason); continue }
+		placement := inline_placement(&ctx, fleet, inst)
+		if placement.directory_id != "" && directory_has_work_lease_ctx(&ctx, placement.directory_id) { note_refusal(&refusal, task.task_id, "another work lease is live on this chain directory"); continue }
+		if reason := chain_cap_refusal(svc, &ctx, u, inst, instance_slot_counted(svc, &ctx, u, inst), domain.LEASE_KIND_WORK, task); reason != "" { note_refusal(&refusal, task.task_id, reason); continue }
+		lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
+			chain = chain, task = task, instance = inst,
+			kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_INLINE,
+			placement = placement, actor = actor, trigger = trigger,
+		})
+		if gok {
+			fresh, _, _ := iface.taskchain_get_task(svc.repo, task.task_id)
+			return lease, fresh, true, {}
 		}
+		note_refusal(&refusal, task.task_id, gerr.message)
 	}
 	return {}, {}, false, refusal
 }
@@ -591,14 +620,14 @@ inline_bridge_refusal :: proc(task: domain.Task, fleet: domain.Task_Chain_Fleet,
 // restricted to ONE named task (lease switch). Returns why it cannot be granted.
 grant_inline_task_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, inst: domain.Agent_Instance, task_id: domain.Task_ID, trigger: Trigger) -> (domain.Task_Lease, domain.Task, bool, domain.Domain_Error) {
 	if chain.publish_state != .Published || chain.status != .Active do return {}, {}, false, domain.domain_error(.Conflict, "chain is not active")
-	ctx, ok, err := load_match_context(svc, chain)
+	ctx, ok, err := load_match_context(svc, chain, with_tasks = false)
 	if !ok do return {}, {}, false, err
 	defer destroy_match_context(&ctx)
 	fleet, has_fleet := puller_fleet_row(&ctx, inst, is_coordinator(svc, chain, inst.agent_instance_id))
 	if !has_fleet do return {}, {}, false, domain.domain_error(.Conflict, "this agent has no fleet row in the chain")
 	if fleet.paused do return {}, {}, false, domain.domain_error(.Conflict, "this agent's fleet row is paused on the chain")
-	for task in ctx.sorted {
-		if task.task_id != task_id do continue
+	// One point read of the named task, not the chain's tasks.
+	if task, found, _ := iface.taskchain_get_task(svc.repo, task_id); found && task.chain_id == chain.chain_id && task.owner_user_id == chain.owner_user_id {
 		if task.state != .Ready || task.kind == .Gate do return {}, {}, false, domain.domain_error(.Conflict, "task is not ready")
 		if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do return {}, {}, false, domain.domain_error(.Conflict, "task is already held")
 		if brief_assignee(task.brief_json) != inst.agent_id do return {}, {}, false, domain.domain_error(.Conflict, "task is assigned to another agent")

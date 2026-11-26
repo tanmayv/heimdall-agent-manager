@@ -291,8 +291,10 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	arm_lease_timers(svc, saved)
 	metric_lease_granted(saved.kind)
 	if saved.delivery == domain.LEASE_DELIVERY_WAKE do effect_wake_lease(svc, u, saved, refolded, start_ticket)
+	// An inline grant (`lease next`) records the placement of the granted task
+	// only, not of every task in the chain (spec SCHED 10.1, REQ-SCHED-38).
 	if saved.delivery == domain.LEASE_DELIVERY_INLINE {
-		if pok, perr := reconcile_placement_in_uow(svc, u, req.chain); !pok do return {}, false, perr
+		if pok, perr := reconcile_placement_for_task_in_uow(svc, u, req.chain, refolded); !pok do return {}, false, perr
 	}
 	return saved, true, domain.Domain_Error{}
 }
