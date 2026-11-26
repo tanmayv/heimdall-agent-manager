@@ -27,20 +27,37 @@ export function fleetFocusHref(bridgeId = '', agentId = ''): string {
   return `#/?${search}`;
 }
 
-/** A bounded client view, not historical server outcomes or eligibility decisions. */
+export type FleetSettingsSnapshot = Pick<FleetSettings, 'revision' | 'default_runtime' | 'overrides'>;
+export interface FleetExcludedCounts {
+  unchanged: number; notRunning: number; other: number;
+  /** 'applied': compared with the settings revision the application saved; 'current': that revision is not loaded, so compared with current settings. */
+  basis: 'applied' | 'current';
+  /** Revision of the settings the counts were compared against. */
+  revision: number;
+}
+
+/**
+ * A bounded client view, not historical server outcomes or eligibility decisions.
+ * Instances are compared with the settings revision the application saved: the
+ * snapshot recorded at Apply time, or the loaded settings when they are still at
+ * that revision. Otherwise the counts fall back to current settings, labelled so.
+ */
 export function fleetExcludedCounts(
   instances: { agent_instance_id: string; bridge_id: string; agent_id: string; runtime_status: string; provider: string; provider_profile?: string; model: string }[],
-  settings: FleetSettings,
+  settings: FleetSettingsSnapshot,
   application: FleetApplication,
-) {
+  appliedSettings?: FleetSettingsSnapshot,
+): FleetExcludedCounts {
+  const applied = [appliedSettings, settings].find((candidate) => !!candidate && !!application.settings_revision && candidate.revision === application.settings_revision);
+  const basisSettings = applied || settings;
   const targets = new Set(application.targets.map((target) => target.agent_instance_id));
   const seen = new Set<string>();
-  const counts = { unchanged: 0, notRunning: 0, other: 0 };
+  const counts: FleetExcludedCounts = { unchanged: 0, notRunning: 0, other: 0, basis: applied ? 'applied' : 'current', revision: basisSettings.revision };
   for (const instance of instances) {
     if (!instance.agent_instance_id || instance.bridge_id !== application.bridge_id || targets.has(instance.agent_instance_id) || seen.has(instance.agent_instance_id)) continue;
     seen.add(instance.agent_instance_id);
     if (instance.runtime_status !== 'running') { counts.notRunning += 1; continue; }
-    const desired = settings.overrides.find((override) => override.agent_id === instance.agent_id)?.runtime || settings.default_runtime;
+    const desired = basisSettings.overrides.find((override) => override.agent_id === instance.agent_id)?.runtime || basisSettings.default_runtime;
     if (runtimeKey({ provider: instance.provider, provider_profile: instance.provider_profile || instance.provider, model: instance.model }) === runtimeKey(desired)) counts.unchanged += 1;
     else counts.other += 1;
   }

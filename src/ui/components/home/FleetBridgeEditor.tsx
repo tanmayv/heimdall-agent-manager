@@ -5,7 +5,7 @@ import { usePreviewBridgeFleetQuery, type FleetApplication, type FleetApplyInput
 import { apiErrorText } from '../../api/cookieFetch';
 import { getRouteSearch } from '../../utils/appLocation';
 import type { FleetProviderCapability } from '../tasks/fleetSelection';
-import { catalogRuntime, fleetApplyInput, fleetDraftKey, initialFleetDraft, validFleetDraft, type fleetExcludedCounts } from './fleetDraft';
+import { catalogRuntime, fleetApplyInput, fleetDraftKey, initialFleetDraft, validFleetDraft, type FleetExcludedCounts } from './fleetDraft';
 import type { FleetBridge } from './widgetData';
 
 function ProviderModel({ id, label, runtime, catalog, disabled, onChange }: {
@@ -56,7 +56,7 @@ function PreviewApply({ bridgeId, draft, valid, busy, dirty, replay, onApply }: 
 
 export function FleetBridgeEditor({ bridge, settings, catalog, agents, initiallyExpanded = false, application, applicationError, excludedCounts, excludedCountsUnavailable, onRefreshApplication, onRetry, onApply, restoredInput, replay = false }: {
   bridge: FleetBridge; settings: FleetSettings; catalog: FleetProviderCapability[]; agents: { agent_id: string; name: string }[];
-  excludedCounts?: ReturnType<typeof fleetExcludedCounts>; excludedCountsUnavailable?: boolean;
+  excludedCounts?: FleetExcludedCounts; excludedCountsUnavailable?: boolean;
   initiallyExpanded?: boolean; application?: FleetApplication; applicationError?: string; onRefreshApplication?: () => void;
   onRetry?: () => Promise<unknown>; onApply?: (draft: FleetSettings) => Promise<unknown>; restoredInput?: FleetApplyInput; replay?: boolean;
 }) {
@@ -152,7 +152,10 @@ export function FleetBridgeEditor({ bridge, settings, catalog, agents, initially
           <Text role="caption" tone="muted">Saved revision {application.settings_revision} · {application.targets.filter((t) => t.state === 'ready').length} ready · {application.targets.filter((t) => t.state === 'pending').length} pending · {application.targets.filter((t) => t.state === 'restarting').length} restarting · {application.targets.filter((t) => t.state === 'failed').length} failed</Text>
           {application.targets.map((t) => <div key={t.agent_instance_id} data-debug-id={`home-fleet-target-${t.agent_instance_id}`}><Text role="caption">{name(t.agent_id)} · {t.agent_instance_id} · {t.state}{t.error_message ? ` — ${t.error_message}` : ''}</Text></div>)}
           {excludedCounts && <Text role="caption" tone="muted" data-debug-id={`home-fleet-excluded-${bridge.id}`}>
-            Client view of up to 200 loaded instances outside this application: {excludedCounts.unchanged} match saved settings · {excludedCounts.notRunning} not running · {excludedCounts.other} other excluded. These are current client counts, not saved server outcomes.
+            {excludedCounts.basis === 'applied'
+              ? `Client view of up to 200 loaded instances outside this application, compared with applied revision ${excludedCounts.revision}: ${excludedCounts.unchanged} match applied settings`
+              : `Client view of up to 200 loaded instances outside this application, compared with current settings (revision ${excludedCounts.revision}; applied revision ${application.settings_revision} is not loaded): ${excludedCounts.unchanged} match current settings`}
+            {` · ${excludedCounts.notRunning} not running · ${excludedCounts.other} other excluded. These are current client counts, not saved server outcomes.`}
           </Text>}
           {excludedCountsUnavailable && <Text role="caption" tone="muted" data-debug-id={`home-fleet-excluded-unavailable-${bridge.id}`}>Client excluded counts unavailable. Server target results above are unchanged.</Text>}
           {onRetry && !application.cancelled && application.targets.some((t) => t.state === 'failed' && t.retryable) && <Button size="sm" variant="secondary" disabled={busy || !!running} data-debug-id={`home-fleet-retry-${bridge.id}`} onClick={() => void run(onRetry)}>Retry failed restarts</Button>}

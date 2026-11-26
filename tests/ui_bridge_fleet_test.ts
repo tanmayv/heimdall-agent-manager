@@ -199,8 +199,18 @@ test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, r
     assert.match(get('home-fleet-target-i-failed').textContent!, /Bridge offline/);
     assert.match(get('home-fleet-target-i-accepted').textContent!, /restarting/);
     assert.match(get('home-fleet-target-i-pending').textContent!, /pending/);
-    assert.match(get('home-fleet-excluded-b1').textContent!, /1 match saved settings.*1 not running.*1 other excluded/);
+    assert.match(get('home-fleet-excluded-b1').textContent!, /applied revision 3: 1 match applied settings.*1 not running.*1 other excluded/);
     assert.match(get('home-fleet-excluded-b1').textContent!, /not saved server outcomes/);
+    // Settings move on after the Apply: counts stay pinned to the revision the
+    // application saved (the snapshot recorded at Apply), not current settings.
+    settings = { ...settings, revision: 4, default_runtime: runtime('m3'), overrides: [{ agent_id: 'a', runtime: runtime('m3') }] };
+    await act(async () => {
+      handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge_fleet_settings', resource_id: 'b1', summary: { bridge_id: 'b1', revision: 4 } }, {});
+      flushQueuedInvalidations();
+    });
+    await settle();
+    assert.match(get('home-fleet-excluded-b1').textContent!, /applied revision 3: 1 match applied settings.*1 not running.*1 other excluded/);
+    assert.doesNotMatch(get('home-fleet-excluded-b1').textContent!, /current settings/);
     assert.match(get('home-fleet-result-b1').textContent!, /1 ready.*1 pending.*1 restarting.*1 failed/);
     assert.doesNotMatch(get('home-fleet-result-b1').textContent!, /All affected agents ready/,
       'HTTP 202 and an accepted restart do not establish runtime readiness');
@@ -274,6 +284,28 @@ test('Client excluded counts use loaded bridge instances, deduplicate and never 
     { ...base, agent_instance_id: 'override', agent_id: 'a', model: 'override' },
     { ...base, agent_instance_id: 'profile-mismatch', provider_profile: 'personal' },
     { ...base, agent_instance_id: 'different-bridge', bridge_id: 'b2' },
-  ], settings, application), { unchanged: 2, notRunning: 1, other: 1 });
+  ], settings, application), { unchanged: 2, notRunning: 1, other: 1, basis: 'current', revision: 1 });
   assert.deepEqual(application.targets, [{ agent_instance_id: 'target' }]);
+});
+
+test('Client excluded counts compare with the applied settings revision, or label current settings', () => {
+  const runtime = (model: string) => ({ provider: 'codex', provider_profile: 'work', model });
+  const applied = { revision: 3, default_runtime: runtime('m2'), overrides: [] };
+  const current = { bridge_id: 'b1', revision: 4, default_runtime: runtime('m3'), overrides: [] };
+  const application = { bridge_id: 'b1', settings_revision: 3, targets: [] } as any;
+  const instances = [
+    { agent_instance_id: 'old', bridge_id: 'b1', agent_id: 'a', runtime_status: 'running', ...runtime('m2') },
+    { agent_instance_id: 'new', bridge_id: 'b1', agent_id: 'a', runtime_status: 'running', ...runtime('m3') },
+    { agent_instance_id: 'other', bridge_id: 'b1', agent_id: 'a', runtime_status: 'running', ...runtime('m1') },
+  ];
+  // Snapshot recorded at Apply wins over newer current settings.
+  assert.deepEqual(fleetExcludedCounts(instances, current, application, applied),
+    { unchanged: 1, notRunning: 0, other: 2, basis: 'applied', revision: 3 });
+  // Current settings still at the applied revision count as applied.
+  assert.deepEqual(fleetExcludedCounts(instances, { ...current, revision: 3 }, application),
+    { unchanged: 1, notRunning: 0, other: 2, basis: 'applied', revision: 3 });
+  // A snapshot of another revision is ignored; without the applied revision the
+  // counts compare with current settings and say so.
+  assert.deepEqual(fleetExcludedCounts(instances, current, application, { ...applied, revision: 2 }),
+    { unchanged: 1, notRunning: 0, other: 2, basis: 'current', revision: 4 });
 });

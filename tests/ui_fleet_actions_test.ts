@@ -31,7 +31,6 @@ import {
   restartAffectedEntries,
   seedPerBridgeProviderModelDrafts,
   seedProviderModelDrafts,
-  summarizeFleetRestartResults,
   modelOptionsForProvider,
 } from '../src/ui/components/tasks/fleetSelection.ts';
 
@@ -529,37 +528,6 @@ test('fleetApplyRequests flags affected roles only; unaffected bodies keep the p
   assert.deepEqual(fleetApplyRequests([], []), []);
 });
 
-test('summarizeFleetRestartResults maps per-role restart counts and flattens failures', () => {
-  const summary = summarizeFleetRestartResults([
-    { agentId: 'agt_worker', restarted_instance_ids: ['inst_a', 'inst_b'], restart_failures: [] },
-    {
-      agentId: 'agt_reviewer',
-      restarted_instance_ids: [],
-      restart_failures: [{ instance_id: 'inst_c', message: 'launch failed: model missing' }],
-    },
-  ]);
-  assert.deepEqual(summary.restartedByRole, [
-    { agentId: 'agt_worker', count: 2 },
-    { agentId: 'agt_reviewer', count: 0 },
-  ]);
-  assert.deepEqual(summary.failures, [
-    { instance_id: 'inst_c', message: 'launch failed: model missing' },
-  ]);
-});
-
-test('summarizeFleetRestartResults tolerates flag-less responses and missing fields', () => {
-  const summary = summarizeFleetRestartResults([
-    { agentId: 'agt_worker' },
-    { agentId: 'agt_reviewer', restarted_instance_ids: ['inst_z'] },
-  ]);
-  assert.deepEqual(summary.restartedByRole, [{ agentId: 'agt_reviewer', count: 1 }]);
-  assert.deepEqual(summary.failures, []);
-  assert.deepEqual(summarizeFleetRestartResults([]), {
-    restartedByRole: [],
-    failures: [],
-  });
-});
-
 test('drawer decision end-to-end: only the role with a live instance gets the restart flag', () => {
   const rawFleets = [
     { agent_id: 'agt_worker', capacity: 1, provider: '', model: '' },
@@ -958,28 +926,6 @@ test('Chain staffing preserves placement and capacity while runtime editors live
   );
 });
 
-
-test('fleet candidate accounting counts acceptance without claiming readiness and keeps partial failures', () => {
-  const summary = summarizeFleetRestartResults([{
-    agentId: 'worker',
-    restarted_instance_ids: ['ignored-legacy-count'],
-    restart_results: [
-      { instance_id: 'accepted', outcome: 'accepted', message: '' },
-      { instance_id: 'same', outcome: 'unchanged', message: '' },
-      { instance_id: 'stopped', outcome: 'ineligible', message: 'Instance is not live' },
-      { instance_id: 'offline', outcome: 'failed', message: 'Bridge offline' },
-    ],
-    restart_failures: [
-      { instance_id: 'offline', message: 'Bridge offline' },
-      { instance_id: '', message: 'Fleet saved, but candidates could not be listed' },
-    ],
-  }]);
-  assert.deepEqual(summary.restartedByRole, [
-    { agentId: 'worker', count: 1, unchanged: 1, ineligible: 1 },
-  ]);
-  assert.equal(summary.failures.length, 2);
-  assert.equal(summary.failures[1].instance_id, '');
-});
 
 test('SCHED-0d guard: no UI source requests /review-roles or sends removed role and solo fields', () => {
   // REQ-SCHED-1/6/8/11: the review-role registry, fleet roles, paused_roles,

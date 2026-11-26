@@ -11,12 +11,13 @@ import {
 } from '../../api/endpoints/bridgeFleet';
 import { queryErrorStatus } from '../../api/cookieFetch';
 import { getExpectedUserId } from '../../utils/expectedUser';
-import { fleetApplyInput, fleetExcludedCounts } from './fleetDraft';
+import { fleetApplyInput, fleetExcludedCounts, type FleetSettingsSnapshot } from './fleetDraft';
 import { FleetBridgeEditor } from './FleetBridgeEditor';
 import { type FleetBridge, type WidgetLoader, type WidgetResource } from './widgetData';
 import { useWidgetData, WidgetHeading, WidgetState } from './WidgetShared';
 
-interface TrackedApply { input?: FleetApplyInput; applicationId?: string }
+/** `applied` is the settings snapshot the tracked application saved, so excluded counts can use that revision after settings move on. */
+interface TrackedApply { input?: FleetApplyInput; applicationId?: string; applied?: FleetSettingsSnapshot }
 function readTracked(key: string): TrackedApply {
   try { return key ? JSON.parse(window.sessionStorage.getItem(key) || '{}') : {}; } catch { return {}; }
 }
@@ -46,7 +47,7 @@ function LiveFleetBridge({ bridge, initiallyExpanded }: { bridge: FleetBridge; i
   }
   const agents = (identities.data.agents || []).filter((a: any) => !a.archived_at && (!a.state || String(a.state).toLowerCase() === 'active')).map((a: any) => ({ agent_id: String(a.agent_id || a.id), name: String(a.name || a.display_name || a.agent_id) }));
   return <FleetBridgeEditor bridge={bridge} settings={settings.data} catalog={normalizeBridgeCapabilities(providers.data)} agents={agents} initiallyExpanded={initiallyExpanded}
-    excludedCounts={application && !instances.isError && instances.currentData ? fleetExcludedCounts(instances.currentData.instances, settings.data, application) : undefined}
+    excludedCounts={application && !instances.isError && instances.currentData ? fleetExcludedCounts(instances.currentData.instances, settings.data, application, tracked.applied) : undefined}
     excludedCountsUnavailable={!!application && instances.isError}
     restoredInput={tracked.input} replay={!!tracked.input} application={application}
     applicationError={status.isError ? 'Could not refresh restart results. Last known outcomes are shown.' : undefined}
@@ -57,7 +58,7 @@ function LiveFleetBridge({ bridge, initiallyExpanded }: { bridge: FleetBridge; i
       track({ input });
       try {
         const result = await apply({ bridgeId: bridge.id, input }).unwrap();
-        setAccepted(result); track({ applicationId: result.application_id });
+        setAccepted(result); track({ applicationId: result.application_id, applied: { revision: result.settings_revision, default_runtime: input.default_runtime, overrides: input.overrides } });
         dispatch(bridgeFleetApi.util.upsertQueryData('getBridgeFleetSettings', bridge.id, { bridge_id: bridge.id, revision: result.settings_revision, default_runtime: input.default_runtime, overrides: input.overrides }));
       } catch (err) {
         const status = queryErrorStatus(err);

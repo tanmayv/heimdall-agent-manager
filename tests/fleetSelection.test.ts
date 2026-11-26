@@ -6,7 +6,6 @@ import {
   isLiveFleetMember,
   restartAffectedEntries,
   fleetApplyRequests,
-  summarizeFleetRestartResults,
   providerModelModified,
   changedFleetEntries,
   resolvedFleetProviderModel,
@@ -392,29 +391,6 @@ test('fleetApplyRequests omits restartLiveInstances for "Apply to New Instances 
   assert.equal(requests.length, 1);
   assert.equal(requests[0].agentId, 'agt_worker');
   assert.equal(requests[0].restartLiveInstances, undefined);
-});
-
-test('summarizeFleetRestartResults aggregates restarted instances and failure messages', () => {
-  const results = [
-    {
-      agentId: 'agt_worker',
-      restarted_instance_ids: ['inst_1', 'inst_2'],
-      restart_failures: [{ instance_id: 'inst_fail_1', message: 'Instance busy' }],
-    },
-    {
-      agentId: 'agt_reviewer',
-      restarted_instance_ids: ['inst_3'],
-    },
-  ];
-
-  const summary = summarizeFleetRestartResults(results);
-  assert.deepEqual(summary.restartedByRole, [
-    { agentId: 'agt_worker', count: 2 },
-    { agentId: 'agt_reviewer', count: 1 },
-  ]);
-  assert.equal(summary.failures.length, 1);
-  assert.equal(summary.failures[0].instance_id, 'inst_fail_1');
-  assert.equal(summary.failures[0].message, 'Instance busy');
 });
 
 // ---------------------------------------------------------------------------

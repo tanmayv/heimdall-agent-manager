@@ -1,4 +1,3 @@
-import type { FleetRestartResult } from '../../api/endpoints/taskChains';
 
 // Fleet provider/model selection logic (REQ-FLEET-PT-3) and the restart-confirmation
 // decision that guards it (REQ-RS-3 / REQ-RS-4).
@@ -366,11 +365,6 @@ export function changedFleetEntries(
 // task cards still use them. See docs/fleet-management.md.
 // ---------------------------------------------------------------------------
 
-export interface FleetRestartFailure {
-  instance_id: string;
-  message: string;
-}
-
 /** A live fleet member: every runtime status except the three terminal ones. */
 export function isLiveFleetMember(member: any): boolean {
   const status = String(member?.runtimeStatus || member?.runtime_status || '').toLowerCase();
@@ -503,48 +497,6 @@ export function fleetApplyRequests(
     if (restartIds.has(entry.agentId)) request.restartLiveInstances = true;
     return request;
   });
-}
-
-export interface FleetRestartRoleResult {
-  agentId: string;
-  restarted_instance_ids?: string[];
-  restart_failures?: FleetRestartFailure[];
-  restart_results?: FleetRestartResult[];
-}
-
-export interface FleetRestartSummary {
-  restartedByRole: { agentId: string; count: number; unchanged?: number; ineligible?: number }[];
-  failures: FleetRestartFailure[];
-}
-
-/**
- * Collapse candidate outcomes into the Apply summary. Acceptance counts a
- * restart request, not runtime readiness; list and candidate failures remain
- * visible even when the fleet configuration was successfully saved.
- */
-export function summarizeFleetRestartResults(results: FleetRestartRoleResult[]): FleetRestartSummary {
-  const restartedByRole: FleetRestartSummary['restartedByRole'] = [];
-  const failures: FleetRestartFailure[] = [];
-  for (const result of results || []) {
-    if (!result) continue;
-    if (Array.isArray(result.restart_results)) {
-      restartedByRole.push({
-        agentId: result.agentId,
-        count: result.restart_results.filter((entry) => entry.outcome === 'accepted').length,
-        unchanged: result.restart_results.filter((entry) => entry.outcome === 'unchanged').length,
-        ineligible: result.restart_results.filter((entry) => entry.outcome === 'ineligible').length,
-      });
-    } else if (Array.isArray(result.restarted_instance_ids)) {
-      restartedByRole.push({ agentId: result.agentId, count: result.restarted_instance_ids.length });
-    }
-    for (const failure of result.restart_failures || []) {
-      failures.push({
-        instance_id: String(failure?.instance_id || ''),
-        message: String(failure?.message || ''),
-      });
-    }
-  }
-  return { restartedByRole, failures };
 }
 
 // ---------------------------------------------------------------------------
