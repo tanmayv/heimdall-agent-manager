@@ -48,7 +48,6 @@ export interface TicketBoardProps {
   onEditTicket: (taskId: string, field: TaskEditField) => void;
   onNewTask?: () => void;
   onOpenStaffing?: () => void;
-  onOpenReviewRoles?: () => void;
   /** Shown in the board menu while the chain is a draft. */
   onPublishChain?: () => void;
   publishingChain?: boolean;
@@ -109,7 +108,6 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
   onEditTicket,
   onNewTask,
   onOpenStaffing,
-  onOpenReviewRoles,
   onPublishChain,
   publishingChain = false,
   publishError,
@@ -132,7 +130,6 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
   const masked = !vaultUnlocked && tasks.some((t) => isVaultArmored(t.title));
 
   const menuItems = [
-    ...(onOpenReviewRoles ? [{ label: 'Review roles', onClick: onOpenReviewRoles, debugId: 'task-board-review-roles-btn' }] : []),
     ...(onOpenStaffing ? [{ label: 'Chain staffing', onClick: onOpenStaffing, debugId: 'task-board-staffing-btn' }] : []),
     ...(onPublishChain ? [{ label: 'Publish chain', onClick: onPublishChain, debugId: 'task-board-publish-chain-btn' }] : []),
   ];

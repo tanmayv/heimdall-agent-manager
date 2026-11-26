@@ -423,7 +423,7 @@ export const TicketView: React.FC<TicketViewProps> = ({ chainId, taskId, isMobil
     </div>
   );
 
-  const people = getTaskPeople(task, ctx.fleets);
+  const people = getTaskPeople(task);
   const agentsCard = (
     <TicketAgentsCard task={task} names={ctx.names} machines={ctx.machines} people={people} now={now} onOpenAgent={onOpenAgent} />
   );

@@ -54,13 +54,12 @@ export type PlacementGuard = {
   expected_attempt: number;
   phase: 'work' | 'review';
   agent_id: string;
-  role: string;
   fingerprint: string;
   configuration: string;
   expected_assignment: string;
 };
 export type PlacementFailure = {
-  phase: 'work' | 'review'; agent_id: string; role: string; bridge_id: string;
+  phase: 'work' | 'review'; agent_id: string; bridge_id: string;
   directory_id: string; source: string; reason: string; message: string;
   provider: string; provider_profile: string; model: string;
   fingerprint: string; configuration: string;
@@ -70,7 +69,7 @@ export type PlacementTarget = {
   guard: PlacementGuard;
   bridge_action: 'change_bridge' | 'configure_coordinator';
   bridge_action_label: string; bridge_scope_label: string;
-  identity_action: 'change_assignee' | 'change_reviewer' | 'configure_fleet';
+  identity_action: 'change_assignee' | 'change_reviewer';
   identity_action_label: string; identity_scope: 'ticket' | 'chain_fleet';
   fleet_configuration: boolean; affected_task_ids: string[];
 };

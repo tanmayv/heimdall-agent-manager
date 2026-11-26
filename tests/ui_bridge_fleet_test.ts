@@ -19,21 +19,48 @@ test('Chain staffing mutations omit runtime policy and preserve explicit legacy 
   const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
   const store = await makeVaultStore();
   const oldFetch = globalThis.fetch;
-  const requests: { path: string; body: any }[] = [];
+  const requests: { path: string; method: string; rawBody: unknown; body: any }[] = [];
   globalThis.fetch = async (input: any, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body || '{}'));
-    requests.push({ path: String(input), body });
-    return new Response(JSON.stringify({ data: { agent_id: 'a', capacity: body.capacity || 2, roles: body.roles || ['worker'] } }), { status: 200 });
+    requests.push({ path: String(input), method: String(init?.method || 'GET'), rawBody: init?.body, body });
+    return new Response(JSON.stringify({ data: { agent_id: 'a', capacity: body.capacity || 2, paused: true } }), { status: 200 });
   };
   try {
-    await store.dispatch(taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', agentId: 'a', capacity: 2, roles: ['worker', 'security'], minWarm: 1, idleTtlSeconds: 600, bridgeId: 'b' })).unwrap();
-    assert.deepEqual(requests[0].body, { capacity: 2, roles: ['worker', 'security'], min_warm: 1, idle_ttl_seconds: 600, bridge_id: 'b' });
+    await store.dispatch(taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', agentId: 'a', capacity: 2, minWarm: 1, idleTtlSeconds: 600, bridgeId: 'b' })).unwrap();
+    assert.deepEqual(requests[0].body, { capacity: 2, min_warm: 1, idle_ttl_seconds: 600, bridge_id: 'b' });
     await store.dispatch(taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', agentId: 'a', capacity: 2, provider: '', model: '' })).unwrap();
     assert.deepEqual(requests[1].body, { capacity: 2, provider: '', model: '' });
-    await store.dispatch(taskChainsApi.endpoints.setTaskChainStaffingPaused.initiate({ chainId: 'chain', agentId: 'a', paused: false, roles: ['worker'] })).unwrap();
-    assert.match(requests[2].path, /\/fleets\/a\/resume$/);
-    assert.deepEqual(requests[2].body, { roles: ['worker'] });
+    // REQ-SCHED-2: pause and resume take no body; the whole row is paused.
+    const paused = await store.dispatch(taskChainsApi.endpoints.setTaskChainStaffingPaused.initiate({ chainId: 'chain', agentId: 'a', paused: true })).unwrap();
+    assert.match(requests[2].path, /\/fleets\/a\/pause$/);
+    assert.equal(requests[2].rawBody, undefined);
+    assert.equal(paused.paused, true);
+    await store.dispatch(taskChainsApi.endpoints.setTaskChainStaffingPaused.initiate({ chainId: 'chain', agentId: 'a', paused: false })).unwrap();
+    assert.match(requests[3].path, /\/fleets\/a\/resume$/);
+    assert.equal(requests[3].rawBody, undefined);
+    // REQ-SCHED-34: chain caps go to the chain PATCH, only the keys given.
+    await store.dispatch(taskChainsApi.endpoints.updateTaskChainCaps.initiate({ chainId: 'chain', maxParallel: 4, reviewReserve: 2 })).unwrap();
+    assert.match(requests[4].path, /\/task-chains\/chain$/);
+    assert.equal(requests[4].method, 'PATCH');
+    assert.deepEqual(requests[4].body, { max_parallel: 4, review_reserve: 2 });
+    await store.dispatch(taskChainsApi.endpoints.updateTaskChainCaps.initiate({ chainId: 'chain', maxParallel: 0 })).unwrap();
+    assert.deepEqual(requests[5].body, { max_parallel: 0 });
+    for (const r of requests) assert.equal('roles' in r.body, false);
   } finally { store.dispatch(heimdallApi.util.resetApiState()); globalThis.fetch = oldFetch; }
+});
+
+test('chain caps follow the hub rule: 0 is unlimited, otherwise M >= 2 and 1 <= r <= M - 1', async () => {
+  const { chainCapsError, readChainCaps } = await import('../src/ui/api/endpoints/taskChains.ts');
+  assert.equal(chainCapsError({ maxParallel: 0, reviewReserve: 0 }), '');
+  assert.equal(chainCapsError({ maxParallel: 3, reviewReserve: 1 }), '');
+  assert.equal(chainCapsError({ maxParallel: 4, reviewReserve: 3 }), '');
+  assert.notEqual(chainCapsError({ maxParallel: 1, reviewReserve: 0 }), '');
+  assert.notEqual(chainCapsError({ maxParallel: 3, reviewReserve: 0 }), '');
+  assert.notEqual(chainCapsError({ maxParallel: 3, reviewReserve: 3 }), '');
+  assert.notEqual(chainCapsError({ maxParallel: 0, reviewReserve: 1 }), '');
+  assert.notEqual(chainCapsError({ maxParallel: 2.5, reviewReserve: 1 }), '');
+  assert.deepEqual(readChainCaps({ max_parallel: 3, review_reserve: 1 }), { maxParallel: 3, reviewReserve: 1 });
+  assert.deepEqual(readChainCaps({}), { maxParallel: 0, reviewReserve: 0 });
 });
 
 test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, retry and scoped WS freshness', async () => {

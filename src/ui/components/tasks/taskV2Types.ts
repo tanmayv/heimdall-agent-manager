@@ -137,21 +137,21 @@ export function getTaskBadges(task: TaskWire, _chainFleets?: any[], nowMs: numbe
     });
   }
 
-  const reviewRoles = task.brief?.review_roles || [];
+  const reviewerAgents = briefReviewerAgents(task);
   if (state === 'in_review') {
-    if (task.requires_user_approval) {
+    if (taskNeedsUserApproval(task)) {
       badges.push({
         kind: 'review',
-        label: reviewRoles.length ? `${reviewRoles.length} reviews + you` : 'awaiting you',
+        label: reviewerAgents.length ? `${reviewerAgents.length} review${reviewerAgents.length === 1 ? '' : 's'} + you` : 'awaiting you',
         tone: 'accent',
         title: 'Awaiting review decision',
       });
-    } else if (reviewRoles.length > 0) {
+    } else if (reviewerAgents.length > 0) {
       badges.push({
         kind: 'review',
-        label: `reviews: ${reviewRoles.join(', ')}`,
+        label: `reviews: ${reviewerAgents.map(names.agent).join(', ')}`,
         tone: 'info',
-        title: 'Waiting for reviewer role decisions',
+        title: 'Waiting for reviewer decisions',
       });
     }
   }
@@ -225,29 +225,27 @@ export function getTaskStatusLines(task: TaskWire, _chainFleets?: any[], nowMs: 
   }
 
   if (state === 'in_review') {
-    const roles = task.brief?.review_roles || [];
-    const rolesStr = roles.join(', ');
-    // An agent holding a review lease is named; the role-only text stays for
-    // when no review lease exists yet.
+    const reviewerNames = briefReviewerAgents(task).map(names.agent).join(', ');
+    // An agent holding a review lease is named by instance; the listed
+    // reviewer agents are named when no review lease exists yet.
     const reviewing = reviewLeaseHolders(task, nowMs)
-      .map((h) => `${(h.instanceId && names.instance(h.instanceId)) || 'An agent'} ${reviewingSentenceRest(h.role, h.phase, h.waitReason)}`)
+      .map((h) => `${(h.instanceId && names.instance(h.instanceId)) || 'An agent'} ${reviewingSentenceRest(h.phase, h.waitReason)}`)
       .join('; ');
+    const userApproval = taskNeedsUserApproval(task);
     if (reviewing) {
       return [
-        task.requires_user_approval ? `${reviewing}; then you` : reviewing,
+        userApproval ? `${reviewing}; then you` : reviewing,
         `Attempt ${task.attempt_no || 1} submitted · review in progress`,
       ];
     }
-    if (task.requires_user_approval) {
+    if (userApproval) {
       return [
-        roles.length > 0
-          ? `Waiting on ${rolesStr} and you`
-          : 'Waiting on your approval',
+        reviewerNames ? `Waiting on ${reviewerNames} and you` : 'Waiting on your approval',
         `Attempt ${task.attempt_no || 1} submitted${lease ? ' · worker ownership retained while waiting' : ''}`,
       ];
     }
     return [
-      `Waiting on reviewer roles: ${rolesStr || 'reviewers'}`,
+      `Waiting on ${reviewerNames || 'reviewers'}`,
       `Attempt ${task.attempt_no || 1} submitted · review in progress`,
     ];
   }
@@ -256,7 +254,7 @@ export function getTaskStatusLines(task: TaskWire, _chainFleets?: any[], nowMs: 
     const readySinceMs = task.ready_since ? new Date(task.ready_since).getTime() : null;
     const unclaimedMins = readySinceMs ? Math.max(0, Math.round((nowMs - readySinceMs) / 60000)) : 0;
     return [
-      'Ready — will be granted to the next free worker',
+      'Ready — will be granted to its assignee',
       unclaimedMins > 0 ? `unclaimed for ${unclaimedMins} min` : 'all dependencies done',
     ];
   }
@@ -298,26 +296,20 @@ export function getTaskStatusLines(task: TaskWire, _chainFleets?: any[], nowMs: 
 /** An instance holding one of the task's review leases. */
 export interface TaskReviewHolder {
   instanceId: string;
-  // The review role the lease is for ('' when the hub sent none).
-  role: string;
   phase: 'active' | 'waiting';
   waitReason: string;
 }
 
 export interface TaskPeople {
-  // assignee: brief.assignee — the worker agent TEMPLATE the task is pinned to
-  // ('' = any worker in the fleet). The matcher resolves it to an instance.
+  // assignee: brief.assignee — the agent the work goes to (REQ-SCHED-3). The
+  // matcher resolves it to an instance. '' only on a legacy unassigned task.
   assignee: string;
-  // workers: agent ids that can take the work lease (the assignee alone when
-  // pinned, otherwise every fleet row with the worker role).
+  // workers: agent ids that can take the work lease: the assignee alone
+  // (REQ-SCHED-9, there is no "any worker" fallback).
   workers: string[];
-  // named: agents named as reviewers of this task (brief.reviewers).
-  named: string[];
-  // reviewers: named reviewers, then agents holding one of brief.review_roles.
+  // reviewers: reviewer agents listed in brief.reviewers, without 'user'.
+  // Every one of them must approve (REQ-SCHED-5).
   reviewers: string[];
-  // reviewersByRole: brief.review_roles in order → agent ids of the rows holding
-  // that role (every one of them must approve; [] = role not covered).
-  reviewersByRole: { role: string; agents: string[] }[];
   // holder: instance currently holding the work lease ('' when none).
   holder: string;
   holderPhase: 'active' | 'waiting' | '';
@@ -327,8 +319,15 @@ export interface TaskPeople {
   userApproval: boolean;
 }
 
-function fleetRoles(f: any): string[] {
-  return Array.isArray(f?.roles) ? f.roles.map(String) : [];
+/** Reviewer agent ids of the brief, without the literal 'user' (REQ-SCHED-4). */
+export function briefReviewerAgents(task: Pick<TaskWire, 'brief'>): string[] {
+  const listed = Array.isArray(task.brief?.reviewers) ? task.brief!.reviewers! : [];
+  return Array.from(new Set(listed.map((r) => String(r || '').trim()).filter((r) => r && r !== 'user')));
+}
+
+/** The user must approve: the stored flag, or 'user' listed as a reviewer (6.2). */
+export function taskNeedsUserApproval(task: Pick<TaskWire, 'brief' | 'requires_user_approval'>): boolean {
+  return Boolean(task.requires_user_approval) || (Array.isArray(task.brief?.reviewers) && task.brief!.reviewers!.includes('user'));
 }
 
 /** One changed file of an attempt's VCS facet. */
@@ -346,43 +345,22 @@ export function taskChangedFiles(vcs: any): TaskChangedFile[] {
     .filter((f: TaskChangedFile) => f.path);
 }
 
-export function getTaskPeople(task: TaskWire, chainFleets: any[] = []): TaskPeople {
+export function getTaskPeople(task: TaskWire): TaskPeople {
   const assignee = String(task.brief?.assignee || '').trim();
-  const fleets = Array.isArray(chainFleets) ? chainFleets : [];
-  const fleetAgent = (f: any) => String(f?.agent_id || f?.agentId || '');
-  const workers = assignee
-    ? [assignee]
-    : fleets.filter((f) => fleetRoles(f).includes('worker')).map(fleetAgent).filter(Boolean);
-  const roles = task.brief?.review_roles || [];
-  const named = Array.from(new Set((task.brief?.reviewers || []).map(String).filter(Boolean)));
-  const reviewers = [
-    ...named,
-    ...fleets
-      .filter((f) => fleetRoles(f).some((r) => roles.includes(r)))
-      .map(fleetAgent)
-      .filter(Boolean),
-  ];
   const work = (task.leases || []).find((l: any) => (l?.kind || 'work') === 'work');
-  const reviewersByRole = roles.map((role) => ({
-    role,
-    agents: fleets.filter((f) => fleetRoles(f).includes(role)).map(fleetAgent).filter(Boolean),
-  }));
   return {
     assignee,
-    workers: Array.from(new Set(workers)),
-    named,
-    reviewers: Array.from(new Set(reviewers)),
-    reviewersByRole,
+    workers: assignee ? [assignee] : [],
+    reviewers: briefReviewerAgents(task),
     holder: String(work?.holder_instance_id || ''),
     holderPhase: work ? ownershipPhase(work) : '',
     holderWaitReason: work ? ownershipWaitReason(task, work) : '',
     reviewHolders: reviewLeases(task).map((l) => ({
       instanceId: String(l.holder_instance_id),
-      role: String(l.review_role || ''),
       phase: ownershipPhase(l),
       waitReason: ownershipWaitReason(task, l),
     })),
-    userApproval: Boolean(task.requires_user_approval),
+    userApproval: taskNeedsUserApproval(task),
   };
 }
 
@@ -463,10 +441,10 @@ export function workLeaseHolder(task: TaskWire, _nowMs: number = Date.now()): { 
 }
 
 /** The review sentence after the holder's name, including waiting state. */
-export function reviewingSentenceRest(role: string, phase: 'active' | 'waiting', waitReason = ''): string {
+export function reviewingSentenceRest(phase: 'active' | 'waiting', waitReason = ''): string {
   return phase === 'waiting'
-    ? `is waiting${role ? ` (${role})` : ''} · ${waitReason || 'ownership retained'}`
-    : `is reviewing${role ? ` (${role})` : ''}`;
+    ? `is waiting · ${waitReason || 'ownership retained'}`
+    : 'is reviewing';
 }
 
 /** The task's review leases that name a holder, in wire order. */
@@ -475,12 +453,12 @@ export function reviewLeases(task: TaskWire): TaskLeaseWire[] {
 }
 
 /**
- * The review claim holders of an in-review task with their role and phase, so a view can render each with <HolderName>. [] outside in_review.
+ * The review claim holders of an in-review task with their phase, so a view can render each with <HolderName>. [] outside in_review.
  */
-export function reviewLeaseHolders(task: TaskWire, _nowMs: number = Date.now()): { instanceId: string; role: string; phase: 'active' | 'waiting'; waitReason: string }[] {
+export function reviewLeaseHolders(task: TaskWire, _nowMs: number = Date.now()): TaskReviewHolder[] {
   if (normalizeTaskState(task.state) !== 'in_review') return [];
   return reviewLeases(task).map((l) => {
-    return { instanceId: String(l.holder_instance_id), role: String(l.review_role || ''), phase: ownershipPhase(l), waitReason: ownershipWaitReason(task, l) };
+    return { instanceId: String(l.holder_instance_id), phase: ownershipPhase(l), waitReason: ownershipWaitReason(task, l) };
   });
 }
 

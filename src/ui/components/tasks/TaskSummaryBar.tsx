@@ -15,7 +15,7 @@ export interface TaskSummaryBarProps {
   onToggleNeedsYou?: () => void;
   /** The one main chain action (New task / Publish chain), right-aligned. */
   primaryAction?: React.ReactNode;
-  /** Everything else (Fleet, Review roles, Retry, Cancel) goes in one menu. */
+  /** Everything else (Staffing, Retry, Cancel) goes in one menu. */
   menuItems?: SummaryMenuItem[];
 }
 
@@ -128,8 +128,9 @@ export const TaskSummaryBar: React.FC<TaskSummaryBarProps> = ({
       (nowMs - new Date(t.ready_since).getTime()) / 60000 >= UNCLAIMED_AFTER_MINS,
   ).length;
   const activeLeases = tasks.reduce((n, t) => n + (t.leases || []).filter((lease) => lease.phase !== 'waiting').length, 0);
-  const workers = chainFleets.filter((f) => (f.roles || []).includes('worker') || !f.roles?.length).length;
-  const reviewers = chainFleets.filter((f) => (f.roles || []).some((r: string) => r !== 'worker')).length;
+  // Fleet rows have no roles (REQ-SCHED-1): each staffed agent works what it
+  // is assigned and reviews what it is listed on.
+  const staffed = chainFleets.length;
 
   const isWorkflow = kind === 'workflow' || Boolean(workflowStatus);
   const stages: any[] = workflowStatus?.stages || [];
@@ -250,7 +251,7 @@ export const TaskSummaryBar: React.FC<TaskSummaryBarProps> = ({
               </span>
             ))}
             <span className="text-faint tabular-nums">
-              {workers} worker{workers === 1 ? '' : 's'} · {reviewers} reviewer{reviewers === 1 ? '' : 's'} · {activeLeases} active claims
+              {staffed} agent{staffed === 1 ? '' : 's'} · {activeLeases} active claims
             </span>
           </div>
           <span className="tabular-nums text-primary">{progressLabel}</span>

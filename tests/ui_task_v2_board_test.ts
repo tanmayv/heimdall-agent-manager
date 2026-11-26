@@ -113,7 +113,7 @@ test('waiting ownership explains blocks and submitted reviews without inventing 
   assert.ok(getTaskStatusLines({ ...task, requires_user_approval: true, leases: [] }).every((line) => !line.includes('ownership retained')));
 });
 
-test('getTaskBadges derives bridge pin, attempt count, review roles, blocked on you, and no verified badge', async () => {
+test('getTaskBadges derives bridge pin, attempt count, reviewers, blocked on you, and no verified badge', async () => {
   const nowMs = 1700000000000;
 
   // Gate badge
@@ -144,11 +144,17 @@ test('getTaskBadges derives bridge pin, attempt count, review roles, blocked on 
     brief: {
       goal: 'review goal',
       acceptance: ['ok'],
-      review_roles: ['reviewer', 'security'],
+      assignee: 'agt_worker',
+      reviewers: ['agt_rev', 'agt_sec'],
     },
   });
   const reviewBadges = getTaskBadges(reviewTask, [], nowMs);
   assert.ok(reviewBadges.some((b) => b.label === '2 reviews + you' && b.tone === 'accent'));
+  // 'user' listed as a reviewer is the same as requires_user_approval (spec 6.2).
+  const userListed = getTaskBadges(makeTask({ state: 'in_review', brief: { goal: 'g', acceptance: ['a'], assignee: 'agt_w', reviewers: ['agt_rev', 'user'] } }), [], nowMs);
+  assert.ok(userListed.some((b) => b.label === '1 review + you'));
+  const agentsOnly = getTaskBadges(makeTask({ state: 'in_review', brief: { goal: 'g', acceptance: ['a'], assignee: 'agt_w', reviewers: ['agt_rev'] } }), [], nowMs);
+  assert.ok(agentsOnly.some((b) => b.label === 'reviews: Rev' && b.tone === 'info'));
 
   // Blocked on human
   const blockedTask = makeTask({
@@ -207,7 +213,7 @@ test('getTaskStatusLines generates human-readable status sentences for each stat
     ready_since: new Date(nowMs - 15 * 60000).toISOString(),
   });
   const [readyLine1, readyLine2] = getTaskStatusLines(readyTask, [], nowMs);
-  assert.match(readyLine1, /Ready — will be granted to the next free worker/);
+  assert.match(readyLine1, /Ready — will be granted to its assignee/);
   assert.match(readyLine2, /unclaimed for 15 min/);
 
   // Blocked on human
@@ -407,62 +413,49 @@ test('chain detail normalizer keeps the v2 wire fields the board and detail view
   assert.ok(!labels.includes('undefined'), `badges must not render undefined: ${labels}`);
 });
 
-test('getTaskPeople resolves the assignee pin, fleet workers, role reviewers and lease holder', async () => {
+test('getTaskPeople resolves the assignee, reviewer agents and lease holder (no roles, REQ-SCHED-9)', async () => {
   const { getTaskPeople } = await import('../src/ui/components/tasks/taskV2Types.ts');
-  const fleets = [
-    { agent_id: 'agt_coder', roles: ['worker'] },
-    { agent_id: 'agt_backend', roles: ['worker'] },
-    { agent_id: 'agt_rev', roles: ['reviewer'] },
-    { agent_id: 'agt_sec', roles: ['security'] },
-  ];
-  // Pinned assignee: only that template may take the work lease.
-  const pinned = getTaskPeople(makeTask({ brief: { goal: 'g', acceptance: ['a'], assignee: 'agt_backend', review_roles: ['reviewer', 'security'] }, requires_user_approval: true }), fleets);
+  // Assignee: only that agent may take the work lease.
+  const pinned = getTaskPeople(makeTask({ brief: { goal: 'g', acceptance: ['a'], assignee: 'agt_backend', reviewers: ['agt_rev', 'agt_sec', 'user'] }, requires_user_approval: false }));
   assert.equal(pinned.assignee, 'agt_backend');
   assert.deepEqual(pinned.workers, ['agt_backend']);
   assert.deepEqual(pinned.reviewers, ['agt_rev', 'agt_sec']);
-  assert.deepEqual(pinned.reviewersByRole, [{ role: 'reviewer', agents: ['agt_rev'] }, { role: 'security', agents: ['agt_sec'] }]);
-  assert.equal(pinned.userApproval, true);
-  // Unpinned: every worker row is eligible; no review roles -> no reviewers.
-  const open = getTaskPeople(makeTask({ brief: { goal: 'g', acceptance: ['a'] } }), fleets);
+  assert.equal(pinned.userApproval, true, "'user' in reviewers means the user approves");
+  assert.equal('reviewersByRole' in pinned, false);
+  // A legacy task without an assignee has no "any worker" fallback.
+  const open = getTaskPeople(makeTask({ brief: { goal: 'g', acceptance: ['a'] } }));
   assert.equal(open.assignee, '');
-  assert.deepEqual(open.workers, ['agt_coder', 'agt_backend']);
+  assert.deepEqual(open.workers, []);
   assert.deepEqual(open.reviewers, []);
   // Live work lease -> holder instance surfaces.
-  const running = getTaskPeople(makeTask({ state: 'in_progress', leases: [{ kind: 'work', holder_instance_id: 'inst_42' } as any] }), fleets);
+  const running = getTaskPeople(makeTask({ state: 'in_progress', leases: [{ kind: 'work', holder_instance_id: 'inst_42' } as any] }));
   assert.equal(running.holder, 'inst_42');
-  // No fleet at all.
-  assert.deepEqual(getTaskPeople(makeTask(), []).workers, []);
 });
 
-test('getTaskPeople lists review-lease holders with their role, including non-member instances', async () => {
+test('getTaskPeople lists review-lease holders, including non-member instances', async () => {
   const { getTaskPeople } = await import('../src/ui/components/tasks/taskV2Types.ts');
-  const fleets = [
-    { agent_id: 'agt_rev', roles: ['reviewer'] },
-    { agent_id: 'agt_sec', roles: ['security'] },
-  ];
   const task = makeTask({
     state: 'in_review',
-    brief: { goal: 'g', acceptance: ['a'], review_roles: ['reviewer', 'security'] },
+    brief: { goal: 'g', acceptance: ['a'], assignee: 'agt_worker', reviewers: ['agt_rev', 'agt_sec'] },
     leases: [
       { kind: 'work', holder_instance_id: 'inst_worker' },
-      { kind: 'review', review_role: 'reviewer', holder_instance_id: 'inst_rev1', expires_at: '2026-10-17T05:07:00Z' },
+      { kind: 'review', holder_instance_id: 'inst_rev1', expires_at: '2026-10-17T05:07:00Z' },
       // A JIT instance that is not a chain member still surfaces by instance id.
-      { kind: 'review', review_role: 'security', holder_instance_id: 'inst_jit77', expires_at: '2026-10-17T05:09:00Z' },
-      { kind: 'review', review_role: 'reviewer', holder_instance_id: '' },
+      { kind: 'review', holder_instance_id: 'inst_jit77', expires_at: '2026-10-17T05:09:00Z' },
+      { kind: 'review', holder_instance_id: '' },
     ] as any,
   });
-  const people = getTaskPeople(task, fleets);
+  const people = getTaskPeople(task);
   assert.equal(people.holder, 'inst_worker');
   assert.deepEqual(people.reviewHolders, [
-    { instanceId: 'inst_rev1', role: 'reviewer', phase: 'active', waitReason: '' },
-    { instanceId: 'inst_jit77', role: 'security', phase: 'active', waitReason: '' },
+    { instanceId: 'inst_rev1', phase: 'active', waitReason: '' },
+    { instanceId: 'inst_jit77', phase: 'active', waitReason: '' },
   ]);
-  // Reviewer candidates stay the fleet's role holders.
   assert.deepEqual(people.reviewers, ['agt_rev', 'agt_sec']);
-  assert.deepEqual(getTaskPeople(makeTask(), fleets).reviewHolders, []);
+  assert.deepEqual(getTaskPeople(makeTask()).reviewHolders, []);
 });
 
-test('task details: the Reviewers row names each agent reviewing now, with its role', async () => {
+test('task details: the Reviewers row names each reviewer agent and each agent reviewing now', async () => {
   const React = (await import('react')).default;
   const { Provider } = await import('react-redux');
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -478,28 +471,29 @@ test('task details: the Reviewers row names each agent reviewing now, with its r
   await store.dispatch(agentsApi.util.upsertQueryData('fetchAgentInstance', { instanceId: 'inst_jit77' }, { instance: { display_name: 'Ad-hoc #9' } } as any));
   const task = makeTask({
     state: 'in_review',
-    brief: { goal: 'g', acceptance: ['a'], review_roles: ['reviewer'] },
+    brief: { goal: 'g', acceptance: ['a'], assignee: 'agt_worker', reviewers: ['agt_rev'] },
     leases: [
-      { kind: 'review', review_role: 'reviewer', holder_instance_id: 'inst_rev1', expires_at: new Date(Date.now() + 5 * 60000).toISOString() },
-      { kind: 'review', review_role: 'coordinator', holder_instance_id: 'inst_jit77', expires_at: new Date(Date.now() + 5 * 60000).toISOString() },
+      { kind: 'review', holder_instance_id: 'inst_rev1', expires_at: new Date(Date.now() + 5 * 60000).toISOString() },
+      { kind: 'review', holder_instance_id: 'inst_jit77', expires_at: new Date(Date.now() + 5 * 60000).toISOString() },
     ] as any,
   });
   const actions: any = { busy: false, approve: async () => true, requestChanges: async () => true, comment: async () => true };
   const html = renderToStaticMarkup(
-    React.createElement(Provider, { store, children: React.createElement(TaskDetails, { chainId: 'chain-test-1', task, actions, chainFleets: [{ agent_id: 'agt_rev', roles: ['reviewer'] }] }) }),
+    React.createElement(Provider, { store, children: React.createElement(TaskDetails, { chainId: 'chain-test-1', task, actions, chainFleets: [{ agent_id: 'agt_rev', capacity: 1 }] }) }),
   );
   store.dispatch(tasksApi.util.resetApiState());
   store.dispatch(agentsApi.util.resetApiState());
 
   const row = html.slice(html.indexOf('data-debug-id="task-detail-reviewers"'), html.indexOf('>Bridge<'));
   const text = row.replace(/<[^>]+>/g, '');
-  assert.match(text, /reviewer role:.*now Reviewer #3 \(reviewer\)/);
-  assert.match(text, /now Ad-hoc #9 \(coordinator\)/);
+  assert.match(text, /Rev.*now Reviewer #3 · active/);
+  assert.match(text, /now Ad-hoc #9 · active/);
+  assert.doesNotMatch(text, /role/);
   assert.match(row, /task-holder-link-inst_rev1/);
   assert.doesNotMatch(text, /inst_/);
 });
 
-test('task card: the in-review sentence names the reviewing agent, role-only text without a review lease', async () => {
+test('task card: the in-review sentence names the reviewing agent, reviewer agents without a review lease', async () => {
   const React = (await import('react')).default;
   const { Provider } = await import('react-redux');
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -510,7 +504,7 @@ test('task card: the in-review sentence names the reviewing agent, role-only tex
   const store = await makeVaultStore();
   // A JIT reviewer that is not a chain member: named from its instance.
   await store.dispatch(agentsApi.util.upsertQueryData('fetchAgentInstance', { instanceId: 'inst_jit77' }, { instance: { display_name: 'Reviewer #3' } } as any));
-  const brief = { goal: 'g', acceptance: ['a'], review_roles: ['security'] };
+  const brief = { goal: 'g', acceptance: ['a'], assignee: 'agt_worker', reviewers: ['agt_sec'] };
   const status = (task: TaskWire) => {
     const html = renderToStaticMarkup(React.createElement(Provider, { store, children: React.createElement(TaskCard, { chainId: 'chain-test-1', task }) }));
     const at = html.indexOf(`data-debug-id="task-card-status-${task.task_id}"`);
@@ -519,19 +513,12 @@ test('task card: the in-review sentence names the reviewing agent, role-only tex
   const reviewing = status(makeTask({
     state: 'in_review',
     brief,
-    leases: [{ kind: 'review', review_role: 'security', holder_instance_id: 'inst_jit77', expires_at: new Date(Date.now() + 6 * 60000 + 1000).toISOString() }] as any,
+    leases: [{ kind: 'review', holder_instance_id: 'inst_jit77', expires_at: new Date(Date.now() + 6 * 60000 + 1000).toISOString() }] as any,
   }));
-  assert.match(reviewing, /Reviewer #3 is reviewing \(security\) · Attempt 1 submitted · review in progress/);
-  assert.doesNotMatch(reviewing, /inst_|Waiting on reviewer roles/);
-  assert.match(status(makeTask({ state: 'in_review', brief })), /Waiting on reviewer roles: security/);
+  assert.match(reviewing, /Reviewer #3 is reviewing · Attempt 1 submitted · review in progress/);
+  assert.doesNotMatch(reviewing, /inst_|role/);
+  assert.match(status(makeTask({ state: 'in_review', brief })), /Waiting on Sec · Attempt 1 submitted/);
   store.dispatch(agentsApi.util.resetApiState());
-});
-
-test('getTaskPeople names the Soloist from its implicit fleet row', async () => {
-  const { getTaskPeople } = await import('../src/ui/components/tasks/taskV2Types.ts');
-  // GET /fleets lists the Soloist coordinator's implicit worker row (no stored row).
-  const people = getTaskPeople(makeTask(), [{ agent_id: 'agt_soloist', roles: ['worker'], implicit: true }]);
-  assert.deepEqual(people.workers, ['agt_soloist']);
 });
 
 test('taskChangedFiles accepts paths and {path, status, add, del} objects', async () => {

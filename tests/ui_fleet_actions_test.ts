@@ -802,18 +802,13 @@ test('canStartTask, canCompleteTask, canPauseTask handle finishing and pausing s
 });
 
 // -----------------------------------------------------------------------------
-// Task System v2 M3: Fleet Placement Editor (roles, bridge_id, provider, model, delete)
+// Task System v2 M3: Fleet Placement Editor (bridge_id, provider, model, delete; no roles, REQ-SCHED-1)
 // -----------------------------------------------------------------------------
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FLEET_ROLES,
-  normalizeFleetRoles,
-  toggleFleetRole,
-  formatFleetRolesBadge,
-  seedFleetRolesDrafts,
   seedFleetBridgeIdDrafts,
   seedFleetMinWarmDrafts,
   seedFleetIdleTtlDrafts,
@@ -823,14 +818,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 
-test('M3 Fleet Placement: roles toggle and dirty detection for staged and persisted rows', () => {
-  assert.deepEqual(FLEET_ROLES, ['worker', 'reviewer']);
-
+test('M3 Fleet Placement: dirty detection for staged and persisted rows', () => {
   const rawFleets = [
     {
       agent_id: 'agt_worker',
       capacity: 2,
-      roles: ['worker'],
       bridge_id: 'brg_alpha',
       provider: 'claude',
       model: 'sonnet',
@@ -840,21 +832,15 @@ test('M3 Fleet Placement: roles toggle and dirty detection for staged and persis
   ];
 
   // Seeding preserves server values
-  const rolesDraft = seedFleetRolesDrafts(rawFleets);
   const bridgeIdsDraft = seedFleetBridgeIdDrafts(rawFleets);
   const topPTDraft = seedProviderModelDrafts(rawFleets);
   const minWarmsDraft = seedFleetMinWarmDrafts(rawFleets);
   const idleTtlsDraft = seedFleetIdleTtlDrafts(rawFleets);
 
-  assert.deepEqual(rolesDraft.agt_worker, ['worker']);
   assert.equal(bridgeIdsDraft.agt_worker, 'brg_alpha');
   assert.deepEqual(topPTDraft.agt_worker, { provider: 'claude', model: 'sonnet' });
   assert.equal(minWarmsDraft.agt_worker, 1);
   assert.equal(idleTtlsDraft.agt_worker, 600);
-
-  // Toggling reviewer adds it alongside worker
-  rolesDraft.agt_worker = toggleFleetRole(rolesDraft.agt_worker, 'reviewer');
-  assert.deepEqual(rolesDraft.agt_worker, ['worker', 'reviewer']);
 
   // Changing bridge_id to '' (clear pin to inherit) and top-level model to 'opus'
   bridgeIdsDraft.agt_worker = '';
@@ -867,7 +853,6 @@ test('M3 Fleet Placement: roles toggle and dirty detection for staged and persis
     rawFleets,
     'brg_alpha',
     {
-      roles: rolesDraft,
       bridgeIds: bridgeIdsDraft,
       topLevelProviderModels: topPTDraft,
       minWarms: minWarmsDraft,
@@ -881,13 +866,12 @@ test('M3 Fleet Placement: roles toggle and dirty detection for staged and persis
     capacity: 2,
     provider: 'claude',
     model: 'opus',
-    roles: ['worker', 'reviewer'],
     bridgeId: '',
     minWarm: 1,
     idleTtlSeconds: 600,
   });
 
-  // Apply payload preserves empty string bridgeId (so hub clears bridge pin) and roles array
+  // Apply payload preserves empty string bridgeId (so hub clears bridge pin) and never sends roles
   const requests = fleetApplyRequests(changed, []);
   assert.deepEqual(requests, [
     {
@@ -895,7 +879,6 @@ test('M3 Fleet Placement: roles toggle and dirty detection for staged and persis
       capacity: 2,
       provider: 'claude',
       model: 'opus',
-      roles: ['worker', 'reviewer'],
       bridgeId: '',
       minWarm: 1,
       idleTtlSeconds: 600,
@@ -908,7 +891,6 @@ test('M3 Fleet Placement: top-level provider/model edit triggers restart confirm
     {
       agent_id: 'agt_worker',
       capacity: 2,
-      roles: ['worker'],
       bridge_id: 'brg_alpha',
       provider: 'claude',
       model: 'sonnet',
@@ -959,16 +941,16 @@ test('Chain staffing preserves placement and capacity while runtime editors live
 
   assert.ok(drawerSrc.includes('chain-staffing-bridge-'));
   assert.ok(drawerSrc.includes('chain-staffing-capacity-') && drawerSrc.includes('chain-staffing-warm-') && drawerSrc.includes('chain-staffing-ttl-'));
-  assert.ok(drawerSrc.includes('chain-staffing-add-worker') && drawerSrc.includes('chain-staffing-pause-'));
+  assert.ok(drawerSrc.includes('chain-staffing-add-agent') && drawerSrc.includes('chain-staffing-pause-'));
+  // REQ-SCHED-1/2: no role UI; one pause switch per row; chain caps (REQ-SCHED-34).
+  assert.doesNotMatch(drawerSrc, /roles[?]?:|\.roles\b|focusRole|holder/);
+  assert.ok(drawerSrc.includes('chain-staffing-max-parallel') && drawerSrc.includes('chain-staffing-review-reserve'));
   assert.doesNotMatch(drawerSrc, /provider:|model:|restartLiveInstances/);
   assert.equal(fs.existsSync(path.join(REPO_ROOT, 'src/ui/components/tasks/FleetManagementDrawer.tsx')), false);
 
-  // Verify taskChains.ts normalizes and sends roles and bridge_id, and exposes deleteTaskChainFleet
-  assert.ok(
-    taskChainsSrc.includes('body.roles = roles') &&
-      taskChainsSrc.includes('body.bridge_id = resolvedBridgeId'),
-    'updateTaskChainFleet must send roles and bridge_id in the PUT body'
-  );
+  // Verify taskChains.ts sends bridge_id but never roles, and exposes deleteTaskChainFleet
+  assert.ok(taskChainsSrc.includes('body.bridge_id = resolvedBridgeId'), 'updateTaskChainFleet must send bridge_id in the PUT body');
+  assert.doesNotMatch(taskChainsSrc, /body\.roles|paused_roles|review-roles/);
   assert.ok(
     taskChainsSrc.includes('deleteTaskChainFleet') &&
       tasksSrc.includes('useDeleteTaskChainFleetMutation'),
@@ -997,4 +979,21 @@ test('fleet candidate accounting counts acceptance without claiming readiness an
   ]);
   assert.equal(summary.failures.length, 2);
   assert.equal(summary.failures[1].instance_id, '');
+});
+
+test('SCHED-0d guard: no UI source requests /review-roles or sends removed role and solo fields', () => {
+  // REQ-SCHED-1/6/8/11: the review-role registry, fleet roles, paused_roles,
+  // the lease review_role and solo mode are gone from the UI.
+  const banned = /review-roles|review_roles|paused_roles|review_role\b|ReviewRolesModal|isSolo|implicit_solo/;
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.(ts|tsx|mjs)$/.test(entry.name) && banned.test(fs.readFileSync(full, 'utf8'))) offenders.push(path.relative(REPO_ROOT, full));
+    }
+  };
+  walk(path.join(REPO_ROOT, 'src/ui'));
+  assert.deepEqual(offenders, []);
+  assert.equal(fs.existsSync(path.join(REPO_ROOT, 'src/ui/components/tasks/ReviewRolesModal.tsx')), false);
 });

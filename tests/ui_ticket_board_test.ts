@@ -118,7 +118,7 @@ const working = makeTask({
   task_id: 'tsk_work',
   state: 'in_progress',
   created_at: iso(40 * MIN),
-  leases: [{ lease_id: 'l1', kind: 'work', review_role: '', holder_instance_id: 'inst_w5', attempt_no: 1, bridge_id: 'brg_mac', granted_at: iso(1 * MIN), confirmed_at: iso(1 * MIN), expires_at: new Date(NOW + 14 * MIN).toISOString(), hard_deadline_at: new Date(NOW + 59 * MIN).toISOString(), delivery: '' }],
+  leases: [{ lease_id: 'l1', kind: 'work', holder_instance_id: 'inst_w5', attempt_no: 1, bridge_id: 'brg_mac', granted_at: iso(1 * MIN), confirmed_at: iso(1 * MIN), expires_at: new Date(NOW + 14 * MIN).toISOString(), hard_deadline_at: new Date(NOW + 59 * MIN).toISOString(), delivery: '' }],
 });
 const held = makeTask({ task_id: 'tsk_held', state: 'ready', blocked_on: { kind: 'hold', reason: 're-route' } as any, created_at: iso(35 * MIN) });
 const next = makeTask({ task_id: 'tsk_next', state: 'ready', depends_on: ['tsk_work'], created_at: iso(20 * MIN) });
@@ -251,7 +251,7 @@ test('card sentences: needs-you context and up-next dependencies', () => {
   });
   assert.equal(needsYouContext(t, names), 'worker #5 handed off attempt 2 · reviewer #2 approved · waiting on you');
   const keys = ticketKeys(ALL);
-  assert.equal(upNextContext(next, keys, ALL, names), `Starts after ${keys.get('tsk_work')} · any worker`);
+  assert.equal(upNextContext(next, keys, ALL, names), `Starts after ${keys.get('tsk_work')} · no assignee`);
 });
 
 /* Requirement history (gap G1) --------------------------------------- */
@@ -344,9 +344,9 @@ test('REQ-B3: fleet rows grouped by machine with Working / Idle / Coordinating /
       { agent_instance_id: 'inst_lx', agent_id: 'agt_linux', role: 'member', display_name: 'builder #1', runtime_status: 'live' },
     ],
     fleets: [
-      { agent_id: 'agt_worker', capacity: 2, roles: ['worker'], effective: { bridge_id: 'brg_mac' } },
-      { agent_id: 'agt_rev', capacity: 1, roles: ['reviewer'], bridge_id: 'brg_mac' },
-      { agent_id: 'agt_linux', capacity: 2, roles: ['worker'], bridge_id: 'brg_linux' },
+      { agent_id: 'agt_worker', capacity: 2, effective: { bridge_id: 'brg_mac' } },
+      { agent_id: 'agt_rev', capacity: 1, bridge_id: 'brg_mac' },
+      { agent_id: 'agt_linux', capacity: 2, bridge_id: 'brg_linux' },
     ],
     bridges: [
       { bridge_id: 'brg_mac', label: 'Tanmays-MacBook-Pro.local', status: 'online' },
@@ -365,7 +365,10 @@ test('REQ-B3: fleet rows grouped by machine with Working / Idle / Coordinating /
   assert.equal(byId.inst_w5.taskId, 'tsk_work');
   assert.match(byId.inst_w5.detail, new RegExp(`^${keys.get('tsk_work')} `));
   assert.equal(byId.inst_r2.state, 'idle');
-  assert.equal(byId.inst_r2.detail, 'Waiting for a handoff');
+  assert.equal(byId.inst_r2.detail, 'Waiting for work or a review');
+  // REQ-SCHED-1: the slot label follows what the instance holds, not a fleet role.
+  assert.equal(byId.inst_w5.role, 'Worker');
+  assert.equal(byId.inst_r2.role, 'Agent');
   assert.equal(byId['agt_worker-slot-1'].state, 'not_running', 'unused capacity is a slot the hub starts when needed');
   assert.ok(linux.slots.every((s) => s.state === 'not_running' && s.detail === 'Machine offline'));
   assert.equal(linux.slots.length, 2);
@@ -380,7 +383,7 @@ test('a starting agent reads Starting, not Not running', () => {
   const [machine] = buildFleetMachines({
     tasks: [],
     members: [{ agent_instance_id: 'inst_new', agent_id: 'agt_worker', display_name: 'worker #6', runtime_status: 'starting' }],
-    fleets: [{ agent_id: 'agt_worker', capacity: 1, roles: ['worker'], bridge_id: 'brg_mac' }],
+    fleets: [{ agent_id: 'agt_worker', capacity: 1, bridge_id: 'brg_mac' }],
     bridges: [{ bridge_id: 'brg_mac', label: 'mac', status: 'online' }],
     keys: new Map(),
     agentName: () => 'worker',
@@ -400,7 +403,7 @@ test('edge state "Agent stopped mid-work": the slot reads Blocked on that ticket
   const [mac] = buildFleetMachines({
     tasks: [stalled],
     members: [{ agent_instance_id: 'inst_w5', agent_id: 'agt_worker', display_name: 'worker #5', runtime_status: 'stopped' }],
-    fleets: [{ agent_id: 'agt_worker', capacity: 1, roles: ['worker'], bridge_id: 'brg_mac' }],
+    fleets: [{ agent_id: 'agt_worker', capacity: 1, bridge_id: 'brg_mac' }],
     bridges: [{ bridge_id: 'brg_mac', label: 'mac', status: 'online' }],
     keys,
     agentName: () => 'worker',
@@ -604,7 +607,7 @@ test('ticket agents retain waiting worker and reviewer responsibility without co
   const { TicketAgentsCard } = await import('../src/ui/components/tasks/TicketAgentsCard.tsx');
   const task = makeTask({ ...working, state: 'in_review', leases: [
     { ...working.leases![0], phase: 'waiting', expires_at: iso(60 * MIN) },
-    { ...working.leases![0], lease_id: 'review', kind: 'review', holder_instance_id: 'inst_rev', review_role: 'security', phase: 'waiting' },
+    { ...working.leases![0], lease_id: 'review', kind: 'review', holder_instance_id: 'inst_rev', phase: 'waiting' },
   ] });
   const names = buildTaskNames({ tasks: [task], identities: [
     { agent_id: 'agt_rev', name: 'Security reviewer' },
@@ -614,7 +617,7 @@ test('ticket agents retain waiting worker and reviewer responsibility without co
     now: NOW, onOpenAgent: () => {},
   }));
   assert.match(html, /Assignee · waiting · waiting for review/);
-  assert.match(html, /Reviewer · is waiting \(security\) · waiting to continue/);
+  assert.match(html, /Reviewer · is waiting · waiting to continue/);
   assert.doesNotMatch(html, /[0-9]+m left|hard limit|has the lease/);
 });
 
@@ -622,7 +625,7 @@ test('fleet waiting claim remains tied to its task without active work animation
   const task = makeTask({ ...working, leases: [{ ...working.leases![0], phase: 'waiting' }] });
   const machines = buildFleetMachines({
     tasks: [task], members: [{ agent_instance_id: 'inst_w5', agent_id: 'agt_worker', runtime_status: 'live' }],
-    fleets: [{ agent_id: 'agt_worker', capacity: 1, roles: ['worker'], bridge_id: 'brg_mac' }],
+    fleets: [{ agent_id: 'agt_worker', capacity: 1, bridge_id: 'brg_mac' }],
     bridges: [{ bridge_id: 'brg_mac', status: 'online' }], coordinatorInstanceId: '',
     keys: ticketKeys([task]), agentName: () => 'Worker',
   });
@@ -648,7 +651,7 @@ test('waiting fleet row opens its owned ticket rather than the agent conversatio
   const task = makeTask({ ...working, leases: [{ ...working.leases![0], phase: 'waiting' }] });
   const machines = buildFleetMachines({
     tasks: [task], members: [{ agent_instance_id: 'inst_w5', agent_id: 'agt_worker', runtime_status: 'live' }],
-    fleets: [{ agent_id: 'agt_worker', capacity: 1, roles: ['worker'], bridge_id: 'brg_mac' }],
+    fleets: [{ agent_id: 'agt_worker', capacity: 1, bridge_id: 'brg_mac' }],
     bridges: [{ bridge_id: 'brg_mac', status: 'online' }], coordinatorInstanceId: '',
     keys: ticketKeys([task]), agentName: () => 'Worker',
   });

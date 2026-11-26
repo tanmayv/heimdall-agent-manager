@@ -27,7 +27,7 @@ export const GATE_FILES = [
   'src/ui/components/tasks/WorkflowPipelineView.tsx',
   'src/ui/components/tasks/CreateTaskModal.tsx',
   'src/ui/components/tasks/ChainStaffingModal.tsx',
-  'src/ui/components/tasks/ReviewRolesModal.tsx',
+  'src/ui/components/tasks/ReviewerPicker.tsx',
   'src/ui/components/tasks/taskV2Types.ts',
   'src/ui/components/taskchain/TaskChainOverview.tsx',
   'src/ui/components/taskchain/TaskChainsPage.tsx',

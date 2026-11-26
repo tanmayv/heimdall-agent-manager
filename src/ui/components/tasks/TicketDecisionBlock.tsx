@@ -114,7 +114,7 @@ export function TicketDecisionBlock({ task, chainId, actions, names, now }: { ta
               {votes.map((v, i) => {
                 const label = names.participant(v.reviewer) || names.instance(v.reviewer_instance_id) || 'A reviewer';
                 return (
-                  <li key={`${v.reviewer}-${v.role}-${i}`} className="inline-flex items-center gap-1.5 text-body-sm">
+                  <li key={`${v.reviewer}-${i}`} className="inline-flex items-center gap-1.5 text-body-sm">
                     <TicketAgentAvatar name={label} state="idle" />
                     <span className={rework ? 'text-faint line-through' : 'text-primary'}>{label}</span>
                     <span className="text-muted">{v.verdict === 'approve' ? 'approved' : 'requested changes'}</span>

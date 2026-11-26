@@ -41,48 +41,7 @@ export function resolvedFleetProviderModel(
   return { ...selection };
 }
 
-export const FLEET_ROLES = ['worker', 'reviewer'] as const;
-
-/**
- * A fleet role name: `worker` is the work role; any other name is a REVIEW role a
- * brief can require via review_roles (`reviewer`, `security`, `ux`, …). Mirrors the
- * hub's fleet_role_name_valid: 1–32 chars of [a-z0-9_-], starting with a letter.
- */
-export function isValidFleetRoleName(role: string): boolean {
-  return /^[a-z][a-z0-9_-]{0,31}$/.test(role);
-}
-
-/** Normalize a fleet roles array: valid, de-duplicated roles with worker/reviewer first (canonical order) and custom review roles after, defaulting to ['worker', 'reviewer'] (or fallback). */
-export function normalizeFleetRoles(roles?: any, fallback: string[] = ['worker', 'reviewer']): string[] {
-  if (!Array.isArray(roles)) return fallback.slice();
-  const cleaned = roles.map((item: any) => String(item || '').trim().toLowerCase()).filter(isValidFleetRoleName);
-  const builtin = FLEET_ROLES.filter((r) => cleaned.includes(r));
-  const custom = Array.from(new Set(cleaned.filter((r) => !(FLEET_ROLES as readonly string[]).includes(r))));
-  const valid = [...builtin, ...custom];
-  return valid.length > 0 ? valid : fallback.slice();
-}
-
-/** Toggle a role (worker, reviewer or a custom review role) in a roles array while guaranteeing at least one role stays selected. */
-export function toggleFleetRole(currentRoles: string[] | undefined, role: string): string[] {
-  const normalized = normalizeFleetRoles(currentRoles);
-  const target = String(role || '').trim().toLowerCase();
-  if (!isValidFleetRoleName(target)) return normalized;
-  if (normalized.includes(target)) {
-    // Prevent deselecting the last remaining role
-    if (normalized.length <= 1) return normalized;
-    return normalized.filter((r) => r !== target);
-  }
-  return normalizeFleetRoles([...normalized, target]);
-}
-
-/** Format a concise role badge label for role cards (e.g. 'worker + reviewer', 'reviewer + security'). */
-export function formatFleetRolesBadge(roles?: string[]): string {
-  const norm = normalizeFleetRoles(roles);
-  return norm.join(' + ') || 'worker';
-}
-
 export interface FleetPlacementDrafts {
-  roles?: Record<string, string[]>;
   bridgeIds?: Record<string, string>;
   topLevelProviderModels?: Record<string, FleetProviderModel>;
   minWarms?: Record<string, number>;
@@ -96,7 +55,6 @@ export interface ChangedFleetEntry {
   capacity: number;
   provider: string;
   model: string;
-  roles?: string[];
   bridgeId?: string;
   minWarm?: number;
   idleTtlSeconds?: number;
@@ -121,17 +79,6 @@ export function seedProviderModelDrafts(fleets: any[]): Record<string, FleetProv
     const aid = fleetAgentId(f);
     if (!aid) continue;
     init[aid] = fleetProviderModel(f);
-  }
-  return init;
-}
-
-/** Draft roles per fleet template, seeded from server-returned fleets (defaults to ['worker']). */
-export function seedFleetRolesDrafts(fleets: any[]): Record<string, string[]> {
-  const init: Record<string, string[]> = {};
-  for (const f of fleets || []) {
-    const aid = fleetAgentId(f);
-    if (!aid) continue;
-    init[aid] = normalizeFleetRoles(f?.roles);
   }
   return init;
 }
@@ -177,13 +124,6 @@ export function getOriginalProviderModel(fleets: any[], agentId: string): FleetP
   return found ? fleetProviderModel(found) : { provider: '', model: '' };
 }
 
-/** Server/original roles for a fleet row; unpersisted rows return null. */
-export function getOriginalFleetRoles(fleets: any[], agentId: string): string[] | null {
-  const found = (fleets || []).find((f) => fleetAgentId(f) === agentId);
-  if (!found) return null;
-  return normalizeFleetRoles(found.roles);
-}
-
 /** Server/original bridge_id for a fleet row; unpersisted rows return ''. */
 export function getOriginalFleetBridgeId(fleets: any[], agentId: string): string {
   const found = (fleets || []).find((f) => fleetAgentId(f) === agentId);
@@ -204,13 +144,6 @@ export function getOriginalFleetIdleTtl(fleets: any[], agentId: string): number 
   return typeof found.idle_ttl_seconds === 'number'
     ? found.idle_ttl_seconds
     : (typeof found.idleTtlSeconds === 'number' ? found.idleTtlSeconds : 600);
-}
-
-export function fleetRolesEqual(a: string[] | undefined | null, b: string[] | undefined | null): boolean {
-  const na = normalizeFleetRoles(a);
-  const nb = normalizeFleetRoles(b);
-  if (na.length !== nb.length) return false;
-  return na.every((r, idx) => r === nb[idx]);
 }
 
 /** Model options offered by the selected provider; '' (Auto) provider has none. */
@@ -308,11 +241,11 @@ export function flattenProviderModelDrafts(
 }
 
 /**
- * Roles whose drafts diverge from the server state (or that are newly staged):
- * the exact entries the drawer's Apply button turns into fleet PUTs. A role
- * counts as changed when its capacity differs, its provider/model differs, its
- * placement (roles, bridgeId, minWarm, idleTtlSeconds) differs, or it
- * is a not-yet-persisted role with any non-inherit value staged.
+ * Fleet rows whose drafts diverge from the server state (or that are newly
+ * staged): the exact entries an Apply turns into fleet PUTs. A row counts as
+ * changed when its capacity differs, its provider/model differs, its placement
+ * (bridgeId, minWarm, idleTtlSeconds) differs, or it is a not-yet-persisted row
+ * with any non-inherit value staged.
  */
 export function changedFleetEntries(
   fleets: any[],
@@ -329,21 +262,18 @@ export function changedFleetEntries(
     if (!aid) continue;
     const draftCapacity = draftCapacities[aid];
     const draftPT = flatPT[aid] ?? (draftProviderModels[aid] && 'provider' in (draftProviderModels[aid] as any) ? (draftProviderModels[aid] as FleetProviderModel) : undefined);
-    const draftRoles = placementDrafts?.roles?.[aid];
     const draftBridgeId = placementDrafts?.bridgeIds?.[aid];
     const draftTopPT = placementDrafts?.topLevelProviderModels?.[aid];
     const draftMinWarm = placementDrafts?.minWarms?.[aid];
     const draftIdleTtl = placementDrafts?.idleTtls?.[aid];
 
     const hasPlacementDraft =
-      draftRoles !== undefined ||
       draftBridgeId !== undefined ||
       draftTopPT !== undefined ||
       draftMinWarm !== undefined ||
       draftIdleTtl !== undefined;
 
-    // Roles with no draft at all are untouched (a role only appears here when it
-    // is persisted or staged via Add Role, so it always carries drafts).
+    // Rows with no draft at all are untouched.
     if (
       draftCapacity === undefined &&
       draftPT === undefined &&
@@ -357,7 +287,6 @@ export function changedFleetEntries(
       draftCapacity !== undefined ? draftCapacity : (typeof fleet.capacity === 'number' ? fleet.capacity : 1);
     const origCapacity = getOriginalFleetCapacity(rawFleets, aid);
     const origPT = getOriginalProviderModel(rawFleets, aid);
-    const origRoles = getOriginalFleetRoles(rawFleets, aid);
     const origBridgeId = getOriginalFleetBridgeId(rawFleets, aid);
     const origMinWarm = getOriginalFleetMinWarm(rawFleets, aid);
     const origIdleTtl = getOriginalFleetIdleTtl(rawFleets, aid);
@@ -382,8 +311,6 @@ export function changedFleetEntries(
     const providerChanged = effectiveTopProvider !== origPT.provider || (effectiveTopProfile || effectiveTopProvider) !== (origPT.provider_profile || origPT.provider);
     const tierChanged = effectiveTopModel !== origPT.model;
 
-    const normalizedDraftRoles = draftRoles !== undefined ? normalizeFleetRoles(draftRoles) : undefined;
-    const rolesChanged = normalizedDraftRoles !== undefined && (origRoles === null || !fleetRolesEqual(normalizedDraftRoles, origRoles));
     const bridgeIdChanged = draftBridgeId !== undefined && (origCapacity === null || draftBridgeId !== origBridgeId);
     const minWarmChanged = draftMinWarm !== undefined && (origCapacity === null || draftMinWarm !== origMinWarm);
     const idleTtlChanged = draftIdleTtl !== undefined && (origCapacity === null || draftIdleTtl !== origIdleTtl);
@@ -393,7 +320,6 @@ export function changedFleetEntries(
       providerChanged ||
       tierChanged ||
       bridgeChanged ||
-      rolesChanged ||
       bridgeIdChanged ||
       minWarmChanged ||
       idleTtlChanged
@@ -412,11 +338,6 @@ export function changedFleetEntries(
           )),
         } } : {}),
       };
-      if (normalizedDraftRoles !== undefined) {
-        entry.roles = normalizedDraftRoles;
-      } else if (Array.isArray(fleet?.roles) && fleet.roles.length > 0) {
-        entry.roles = normalizeFleetRoles(fleet.roles);
-      }
       if (draftBridgeId !== undefined) {
         entry.bridgeId = draftBridgeId;
       } else if (fleet?.bridge_id !== undefined || fleet?.bridgeId !== undefined) {
@@ -441,8 +362,8 @@ export function changedFleetEntries(
 // drawer is retired; no production UI imports its restart decision/apply helpers.
 // Home Fleet uses fleetDraft and bridgeFleet's shared Apply/status/retry contract,
 // which restarts changed running task agents directly without this confirmation.
-// Keep the catalog/effective-placement/role helpers in this module: Home Fleet,
-// task cards and Review Roles still use them. See docs/fleet-management.md.
+// Keep the catalog/effective-placement helpers in this module: Home Fleet and
+// task cards still use them. See docs/fleet-management.md.
 // ---------------------------------------------------------------------------
 
 export interface FleetRestartFailure {
@@ -550,7 +471,6 @@ export interface FleetApplyRequest {
   capacity: number;
   provider: string;
   model: string;
-  roles?: string[];
   bridgeId?: string;
   minWarm?: number;
   idleTtlSeconds?: number;
@@ -577,7 +497,6 @@ export function fleetApplyRequests(
     };
     if (entry.provider_profile !== undefined) request.provider_profile = entry.provider_profile;
     if (entry.bridgeModels) request.bridgeModels = entry.bridgeModels;
-    if (entry.roles !== undefined) request.roles = entry.roles;
     if (entry.bridgeId !== undefined) request.bridgeId = entry.bridgeId;
     if (entry.minWarm !== undefined) request.minWarm = entry.minWarm;
     if (entry.idleTtlSeconds !== undefined) request.idleTtlSeconds = entry.idleTtlSeconds;
@@ -943,15 +862,15 @@ export function describeEffectivePlacement(
 
 /**
  * The placement a task would get: its bridge pin first, then the assignee's
- * fleet row, else the first worker row (any free worker).
+ * fleet row. Work goes only to the assignee (REQ-SCHED-9), so there is no
+ * "any worker" fallback.
  */
 export function taskEffectivePlacement(
   task: { bridge_id?: string; brief?: { assignee?: string } | null },
   fleets: any[] = [],
 ): { bridge_id: string; bridge_source: string; provider: string; model: string; model_source: string } | null {
   const assignee = String(task.brief?.assignee || '');
-  const rows = (fleets || []).filter((f) => (f?.roles || ['worker']).includes('worker'));
-  const row = (assignee ? rows.find((f) => String(f.agent_id || f.agentId) === assignee) : rows[0]) || null;
+  const row = (assignee ? (fleets || []).find((f) => String(f?.agent_id || f?.agentId) === assignee) : null) || null;
   const eff = row?.effective || null;
   const pin = String(task.bridge_id || '');
   if (pin) {

@@ -11,7 +11,6 @@ import { heimdallApi } from '../../api/heimdallApi';
 import { setPlacementDraft, clearPlacementDraft, type PlacementDraft } from '../../store/attentionSlice';
 import { bridgeIdOf, bridgeIsOnline, bridgeLabel } from '../../utils/bridgeLaunchOptions';
 import { ChainStaffingModal } from '../tasks/ChainStaffingModal';
-import { ReviewRolesModal } from '../tasks/ReviewRolesModal';
 import { fleetFocusHref } from '../home/fleetDraft';
 import { useGetBridgeFleetSettingsQuery } from '../../api/endpoints/bridgeFleet';
 import { VaultText } from '../vault';
@@ -26,7 +25,7 @@ const SOURCE_LABELS: Record<string, string> = {
 export function PlacementRecovery({ item, onOpenConfiguration }: { item: AttentionTaskItem; onOpenConfiguration?: () => void }) {
   return (
     <section aria-label="Placement recovery" data-debug-id="attention-placement" className="mt-3 space-y-3 text-[13px]">
-      <p className="text-muted">Repair each unavailable worker or reviewer. Other reviewers, role requirements and your approval stay in place.</p>
+      <p className="text-muted">Repair each unavailable worker or reviewer. Other reviewers and your approval stay in place.</p>
       {(item.details.targets || []).map((target) => (
         <RecoveryTarget key={placementTargetKey(item.card_id, target)} item={item} target={target} onOpenConfiguration={onOpenConfiguration} />
       ))}
@@ -37,7 +36,7 @@ export function PlacementRecovery({ item, onOpenConfiguration }: { item: Attenti
 function RecoveryTarget({ item, target, onOpenConfiguration }: { item: AttentionTaskItem; target: PlacementTarget; onOpenConfiguration?: () => void }) {
   const dispatch = useDispatch<any>();
   const key = placementTargetKey(item.card_id, target);
-  const prefix = `attention-placement-${target.failure.phase}-${target.failure.agent_id || 'unassigned'}-${target.failure.role}`;
+  const prefix = `attention-placement-${target.failure.phase}-${target.failure.agent_id || 'unassigned'}`;
   const draft = useSelector((s: any): PlacementDraft => s.attention?.placementDrafts?.[key] || EMPTY_DRAFT);
   const change = (patch: Partial<PlacementDraft>) => {
     dispatch(setPlacementDraft({ key, draft: { ...draft, ...patch } }));
@@ -48,7 +47,6 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
   const [notice, setNotice] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [fleetOpen, setFleetOpen] = useState(false);
-  const [reviewRolesOpen, setReviewRolesOpen] = useState(false);
   const [recover, mutation] = useRecoverPlacementMutation();
   const chainId = item.action_refs.chain_id;
   const taskId = item.action_refs.task_id;
@@ -87,7 +85,7 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
   const bridgeReady = !!selectedBridge && !!shared.data && !shared.isFetching && !shared.isError && providerStatus.loaded && supportsProvider && enabled && !support.isFetching && !support.isError;
   const identityReady = candidates.some((c) => c.agentId === draft.agentId);
   const destination = draft.action === 'bridge' ? draft.bridgeId : draft.agentId;
-  const allowedAction = draft.action === 'bridge' ? target.bridge_action === 'change_bridge' : target.identity_action !== 'configure_fleet';
+  const allowedAction = draft.action !== 'bridge' || target.bridge_action === 'change_bridge';
   const input = allowedAction ? placementRecoveryInput(target, draft.action, destination) : null;
   const signature = JSON.stringify(input);
   const guardSignature = JSON.stringify(target.guard);
@@ -131,8 +129,8 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
   };
 
   return (
-    <section aria-label={`${worker ? 'Worker' : 'Reviewer'} ${targetName} ${f.role}`} data-debug-id={prefix} className="space-y-2 rounded-[var(--radius-md)] border border-subtle p-3">
-      <h4 className="font-semibold text-primary">{worker ? 'Worker' : 'Reviewer'} · {targetName}{!worker ? ` · ${f.role === 'named' ? 'Named reviewer' : f.role}` : ''}</h4>
+    <section aria-label={`${worker ? 'Worker' : 'Reviewer'} ${targetName}`} data-debug-id={prefix} className="space-y-2 rounded-[var(--radius-md)] border border-subtle p-3">
+      <h4 className="font-semibold text-primary">{worker ? 'Worker' : 'Reviewer'} · {targetName}</h4>
       <p data-debug-id={`${prefix}-effective`} className="text-muted">
         Effective bridge: {effectiveBridge ? bridgeLabel(effectiveBridge) : f.bridge_id ? `Missing or inaccessible bridge (${f.bridge_id})` : 'No bridge'} · {SOURCE_LABELS[f.source] || f.source}
         {f.provider ? ` · ${f.provider_profile || f.provider}${f.model ? ` / ${f.model}` : ''}` : ''}
@@ -147,12 +145,9 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
         {target.bridge_action === 'configure_coordinator' ? (
           <a data-debug-id={`${prefix}-coordinator`} href={`#/chains/${encodeURIComponent(chainId)}`} onClick={onOpenConfiguration} className="text-accent underline">Configure coordinator instance</a>
         ) : <Button size="sm" data-debug-id={`${prefix}-bridge`} disabled={mutation.isLoading || workflow || live} onClick={() => change({ action: 'bridge' })}>Change bridge</Button>}
-        {target.identity_action === 'configure_fleet' ? (
-          <Button size="sm" data-debug-id={`${prefix}-fleet`} disabled={workflow || mutation.isLoading} onClick={() => setReviewRolesOpen(true)}>Configure review role: {f.role}</Button>
-        ) : <Button size="sm" data-debug-id={`${prefix}-identity`} disabled={mutation.isLoading || workflow || live} onClick={() => change({ action: 'identity' })}>{target.identity_action_label}</Button>}
+        <Button size="sm" data-debug-id={`${prefix}-identity`} disabled={mutation.isLoading || workflow || live} onClick={() => change({ action: 'identity' })}>{target.identity_action_label}</Button>
         <Button size="sm" variant="ghost" data-debug-id={`${prefix}-refresh`} disabled={mutation.isLoading || refreshing} onClick={() => void refresh()}>{refreshing ? 'Refreshing…' : 'Refresh'}</Button>
       </div>
-      {target.identity_action === 'configure_fleet' ? <p className="text-muted">Role {f.role} uses all eligible fleet holders; this ticket cannot assign a single replacement. Fleet role changes affect the chain. Other role requirements remain required. {candidates.length ? `Other eligible holders: ${candidates.map((c) => c.name).join(', ')}.` : 'No other eligible holder is configured.'}</p> : null}
       {allowedAction && !workflow ? (
         <>
           <label className="block text-muted" htmlFor={`${prefix}-select`}>{draft.action === 'bridge' ? 'Destination bridge' : 'Replacement durable agent'}</label>
@@ -164,11 +159,11 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
           {draft.action === 'bridge' && destination && !bridgeReady ? <p role="status">{!providerStatus.loaded ? 'Checking destination provider availability…' : !enabled ? 'This agent is disabled on the destination bridge.' : 'Destination provider/profile/model is unavailable. Configure the bridge and refresh.'}</p> : null}
           {draft.action === 'identity' && !candidates.length ? (
             <div>
-              <p>No eligible active fleet identity. Configure an unpaused {worker ? 'worker' : 'reviewer'} row first.</p>
+              <p>No eligible agent. Add an active agent to the chain staffing, or resume a paused one, first.</p>
               <Button size="sm" data-debug-id={`${prefix}-fleet`} onClick={() => setFleetOpen(true)}>Configure chain staffing</Button>
             </div>
           ) : null}
-          <p data-debug-id={`${prefix}-scope`} className="text-muted">{fleetScope ? 'All tickets using this fleet: changes this agent’s bridge across the chain for future grants. Existing leases keep their placement.' : draft.action === 'bridge' ? 'This ticket: changes only its worker bridge pin.' : worker ? 'This ticket: replaces only its durable assignee.' : 'This ticket: replaces only this failed named reviewer. Other reviewers, roles and user approval remain required.'}</p>
+          <p data-debug-id={`${prefix}-scope`} className="text-muted">{fleetScope ? 'All tickets using this fleet: changes this agent’s bridge across the chain for future grants. Existing leases keep their placement.' : draft.action === 'bridge' ? 'This ticket: changes only its worker bridge pin.' : worker ? 'This ticket: replaces only its durable assignee.' : 'This ticket: replaces only this failed reviewer. Other reviewers and user approval remain required.'}</p>
           {fleetScope ? <p data-debug-id={`${prefix}-affected`}>Potentially affected ready/review tickets: {target.affected_task_ids.length}. <span className="text-muted">Already granted leases continue on their original bridge.</span></p> : null}
           <p className="text-muted">The destination must have a valid chain workspace and provider configuration. Host-local paths are never copied.</p>
           {stale ? <p role="alert">The observed placement changed or is restricted. Refresh and review the current target before applying; your selection is kept.</p> : null}
@@ -195,8 +190,7 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
       {error ? <p role="alert" data-debug-id={`${prefix}-error`}>{error}</p> : null}
       {error ? <a data-debug-id={`${prefix}-configuration`} href={`#/chains/${encodeURIComponent(chainId)}`} onClick={onOpenConfiguration} className="text-accent underline">Open chain workspace and runtime configuration</a> : null}
       {notice ? <p role="status">{notice}</p> : null}
-      {fleetOpen ? <ChainStaffingModal chainId={chainId} open onClose={() => setFleetOpen(false)} focusRole={worker ? 'worker' : 'reviewer'} /> : null}
-      {reviewRolesOpen ? <ReviewRolesModal chainId={chainId} open focusRole={f.role} onClose={() => setReviewRolesOpen(false)} /> : null}
+      {fleetOpen ? <ChainStaffingModal chainId={chainId} open onClose={() => setFleetOpen(false)} /> : null}
     </section>
   );
 }

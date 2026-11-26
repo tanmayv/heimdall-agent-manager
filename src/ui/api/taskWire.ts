@@ -15,10 +15,12 @@ export interface TaskBriefWire {
   goal?: string;
   acceptance?: string[];
   inputs?: unknown[];
-  review_roles?: string[];
-  /** Agents named as reviewers of THIS task (hybrid review model). */
+  /** Reviewer agent ids of this task, optionally the literal 'user' (REQ-SCHED-4). */
   reviewers?: string[];
+  /** Required agent id that works the task (REQ-SCHED-3). */
   assignee?: string;
+  /** Optional per-reviewer notes: reviewer agent id -> what to check. */
+  review_focus?: Record<string, string>;
   budget?: TaskBriefBudgetWire;
   output?: Record<string, unknown>;
   [extra: string]: unknown;
@@ -36,7 +38,6 @@ export interface TaskLeaseWire {
   phase?: "active" | "waiting";
   lease_id: string;
   kind: string;
-  review_role: string;
   holder_instance_id: string;
   attempt_no: number;
   bridge_id: string;
@@ -47,13 +48,12 @@ export interface TaskLeaseWire {
   delivery: string;
 }
 
-/** One reviewer's verdict on the task's current attempt (per review role). */
+/** One reviewer's verdict on the task's current attempt. */
 export interface TaskReviewWire {
   /** Agent id of an agent/coordinator reviewer, or 'user' for you. */
   reviewer: string;
   reviewer_kind: string;
   reviewer_instance_id: string;
-  role: string;
   verdict: 'approve' | 'request_changes' | string;
   created_at: string;
 }

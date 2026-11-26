@@ -1,6 +1,6 @@
 import type { TaskWire } from '../../api/taskWire';
 import { normalizeTaskState, ownershipPhase, ownershipWaitReason, reviewLeases, taskHold, workLease } from './taskV2Types';
-import { awaitingYourReview, blockedOnYou, getTaskActions, isDraft, taskNeedsYou, type TaskActionId } from './taskActions';
+import { awaitingYourReview, blockedOnYou, getTaskActions, isDraft, isSupersededReview, taskNeedsYou, type TaskActionId } from './taskActions';
 import { isAgentRunning } from '../../utils/agentStatus';
 import { containsVaultArmored } from '../../utils/vaultCrypto';
 
@@ -803,11 +803,10 @@ export function buildFleetMachines(input: FleetInputs): FleetMachine[] {
       detail = 'Hub starts it when needed';
     } else {
       state = 'idle';
-      const roles: string[] = Array.isArray(fleet?.roles) ? fleet.roles.map(String) : [];
-      detail = roles.includes('worker') ? 'Waiting for work' : 'Waiting for a handoff';
+      detail = 'Waiting for work or a review';
     }
     if (state !== 'not_running') runningPerAgent.set(agentId, (runningPerAgent.get(agentId) || 0) + 1);
-    const role = isCoordinator ? 'Coordinator' : roleLabel(str(m?.role), fleet);
+    const role = slotLabel(isCoordinator, work);
     slots.push({
       id: instanceId,
       instanceId,
@@ -835,7 +834,7 @@ export function buildFleetMachines(input: FleetInputs): FleetMachine[] {
         instanceId: '',
         agentId,
         name: agentName(agentId),
-        role: roleLabel('', f),
+        role: slotLabel(false, undefined),
         state: 'not_running',
         taskId: null,
         detail: 'Hub starts it when needed',
@@ -885,10 +884,11 @@ export function buildFleetMachines(input: FleetInputs): FleetMachine[] {
   return Array.from(byBridge.values()).sort((a, b) => Number(b.online) - Number(a.online) || b.slots.length - a.slots.length || a.label.localeCompare(b.label));
 }
 
-function roleLabel(memberRole: string, fleet: any): string {
-  const roles: string[] = Array.isArray(fleet?.roles) ? fleet.roles.map(String) : [];
-  const role = memberRole && memberRole !== 'member' ? memberRole : roles[0] || 'worker';
-  return role.charAt(0).toUpperCase() + role.slice(1);
+/** What the slot is doing now: fleet rows have no roles (REQ-SCHED-1), so the label follows the lease. */
+function slotLabel(isCoordinator: boolean, work: { reviewing: boolean } | undefined): string {
+  if (isCoordinator) return 'Coordinator';
+  if (!work) return 'Agent';
+  return work.reviewing ? 'Reviewer' : 'Worker';
 }
 
 /** "2 working · 1 idle · 1 off" for the fleet heading. */
@@ -942,18 +942,18 @@ export function needsYouContext(task: TaskWire, names: ContextNames): string {
   parts.push(`${author || 'The worker'} handed off attempt ${attempt}`);
   for (const r of task.reviews || []) {
     const id = String(r?.reviewer || r?.reviewer_instance_id || '');
-    if (!id || id === 'user' || String(r?.role || '').startsWith('legacy-verify:')) continue;
+    if (!id || id === 'user' || isSupersededReview(r)) continue;
     parts.push(`${who(names, id, 'A reviewer')} ${r.verdict === 'approve' ? 'approved' : 'requested changes'}`);
   }
   parts.push(isRework(task) ? 'requirements changed since' : 'waiting on you');
   return parts.join(' · ');
 }
 
-/** "Starts after T-21 · any worker" for a ticket that is up next. */
+/** "Starts after T-21 · Builder" for a ticket that is up next. */
 export function upNextContext(task: TaskWire, keys: Map<string, string>, tasks: readonly TaskWire[], names: ContextNames): string {
   const open = new Set(tasks.filter((t) => !isFinishedTask(t)).map((t) => t.task_id));
   const waits = (task.depends_on || []).filter((d) => open.has(d)).map((d) => keyFor(keys, d));
-  const worker = task.brief?.assignee ? names.agent(String(task.brief.assignee)) : 'any worker';
+  const worker = task.brief?.assignee ? names.agent(String(task.brief.assignee)) : 'no assignee';
   if (isDraft(task)) return `Draft · ${worker}`;
   if (waits.length) return `Starts after ${waits.join(', ')} · ${worker}`;
   return `Ready for ${worker}`;

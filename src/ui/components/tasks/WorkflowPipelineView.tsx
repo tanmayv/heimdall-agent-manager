@@ -25,7 +25,6 @@ export interface WorkflowPipelineViewProps {
   scrollTaskId?: string | null;
   onScrolled?: () => void;
   onOpenStaffing?: () => void;
-  onOpenReviewRoles?: () => void;
   /** Rendered directly under the summary bar (the chain overview mounts its Active servers panel here). */
   summarySlot?: React.ReactNode;
   names?: TaskNames;
@@ -108,7 +107,6 @@ export const WorkflowPipelineView: React.FC<WorkflowPipelineViewProps> = ({
   scrollTaskId,
   onScrolled,
   onOpenStaffing,
-  onOpenReviewRoles,
   summarySlot,
   names = EMPTY_TASK_NAMES,
   className = '',
@@ -159,7 +157,6 @@ export const WorkflowPipelineView: React.FC<WorkflowPipelineViewProps> = ({
         summaryText={chain?.summary}
         menuItems={[
           ...(onOpenStaffing ? [{ label: 'Chain staffing', onClick: onOpenStaffing }] : []),
-          ...(onOpenReviewRoles ? [{ label: 'Review roles', onClick: onOpenReviewRoles }] : []),
           ...(!run ? [{
             label: 'Retry a stage…',
             debugId: 'workflow-retry-btn',

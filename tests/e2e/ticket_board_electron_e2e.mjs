@@ -187,13 +187,10 @@ await step('REQ-B3: the fleet table lists the coordinator; its row opens the con
   await openTicketsTab();
 });
 
-await step('board menu: Review roles opens and Esc closes it', async () => {
+await step('board menu: there is no Review roles item (REQ-SCHED-8)', async () => {
   await S('ticket-board-menu-btn').click();
-  await S('task-board-review-roles-btn').click();
-  await dialogOpen();
-  assert.match(await page.locator('[role="dialog"]').first().innerText(), /Review roles/);
+  assert.equal(await S('task-board-review-roles-btn').count(), 0);
   await pressEscape();
-  await dialogClosed();
   await visible('ticket-board-view');
 });
 
@@ -202,6 +199,7 @@ await step('board menu: Chain staffing opens and Close returns to the board', as
   await S('task-board-staffing-btn').click();
   await visible('chain-staffing-modal');
   assert.match(await page.locator('[role="dialog"]').first().innerText(), /future grants.*Existing leases and required reviews stay/s);
+  await visible('chain-staffing-caps');
   await S('chain-staffing-close').click();
   await gone('chain-staffing-modal');
   await visible('ticket-board-view');

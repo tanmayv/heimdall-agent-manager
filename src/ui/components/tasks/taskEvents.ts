@@ -51,15 +51,6 @@ function humanizeKind(kind: string): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Event';
 }
 
-/** "security" / "reviewer,named" → " (security review)"; a named review has no role suffix. */
-function roleSuffix(roleField: unknown): string {
-  const roles = String(roleField || '')
-    .split(',')
-    .map((r) => r.trim())
-    .filter((r) => r && r !== 'named');
-  return roles.length ? ` (${roles.join(' and ')} review)` : '';
-}
-
 function attempt(p: any): string {
   const n = Number(p?.attempt_no || 0);
   return n > 0 ? ` (attempt ${n})` : '';
@@ -138,7 +129,7 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
       const holder = holderName(p, names);
       const where = s(p.bridge_id) ? ` on ${names.bridge(s(p.bridge_id))}` : '';
       if (s(p.kind) === 'review') {
-        return known(`${holder} started reviewing${roleSuffix(p.review_role)}${where}${attempt(p)}`);
+        return known(`${holder} started reviewing${where}${attempt(p)}`);
       }
       return known(`Assigned to ${holder}${where}${attempt(p)}`);
     }
@@ -186,10 +177,10 @@ export function describeTaskEvent(ev: TaskEventWire, names: TaskNames): Describe
     case 'review_posted': {
       const reviewer = whoById(reviewerIdFromPayload(p), names);
       const verdict = s(p.verdict) === 'approve' || s(p.verdict) === 'approved' ? 'approved' : 'requested changes';
-      return known(`${reviewer} ${verdict}${roleSuffix(p.role)}`);
+      return known(`${reviewer} ${verdict}`);
     }
     case 'changes_requested':
-      return known(`${whoById(reviewerIdFromPayload(p), names)} requested changes${roleSuffix(p.role)}${attempt(p)}`);
+      return known(`${whoById(reviewerIdFromPayload(p), names)} requested changes${attempt(p)}`);
     case 'user_review_requested':
       return known(`Waiting for your approval${attempt(p)}`);
     case 'approved':

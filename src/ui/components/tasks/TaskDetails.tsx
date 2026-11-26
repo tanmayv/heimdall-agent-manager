@@ -213,7 +213,7 @@ export const TaskDetails: React.FC<TaskDetailsProps> = ({
 
   const events: any[] = eventsData?.events || [];
   const eventNames = useMemo(() => withInstanceAgents(chainNames, instanceAgentsFromEvents(events)), [chainNames, events]);
-  const people = getTaskPeople(task, chainFleets);
+  const people = getTaskPeople(task);
   // Instance ids that members and events do not map are looked up, so votes,
   // pending reviewers and extra voters all match by durable id (REQ-TV2-6).
   const names = useLookupNames(eventNames, reviewParticipantIds(task, people.reviewers));
@@ -252,41 +252,29 @@ export const TaskDetails: React.FC<TaskDetailsProps> = ({
     ...taskBridgeOptions(bridges, String(task.bridge_id || '')).slice(1).map((o) => ({ value: o.value, text: o.label })),
   ];
 
-  const workerText = people.assignee
-    ? names.agent(people.assignee)
-    : people.workers.length
-      ? `Any worker: ${people.workers.map(names.agent).join(', ')}`
-      : 'No worker in the fleet';
+  const workerText = people.assignee ? names.agent(people.assignee) : 'No assignee';
   // Votes and assignments meet on the durable agent id (REQ-TV2-6): a legacy
   // assignment or vote that carries an instance id still lines up.
   const votes = useMemo(() => reviewVotes(task, names), [task, names]);
-  // Voters outside the fleet's reviewer list (a coordinator reviewing) still show.
+  // Voters outside the task's reviewer list (e.g. after a reviewer change) still show.
   const extraVoters = Array.from(votes.keys()).filter((key) => key !== 'user' && !people.reviewers.some((id) => sameReviewer(votes, key, id, names)));
   const userApproved = youApproved(task);
   const hold = taskHold(task);
   const pendingReviewers = people.reviewers.filter((id) => voteFor(votes, id, names) !== 'approve');
   const vote = (id: string) => <ReviewerVote key={id} id={id} names={names} verdict={voteFor(votes, id, names)} />;
   // The instance holding a review lease right now, like the Assignee row's
-  // "now <holder>". A role the brief does not list still shows on its own.
-  const reviewing = (h: { instanceId: string; role: string; phase: string; waitReason: string }, i: number) => (
-    <span key={`reviewing-${h.instanceId}-${h.role}-${i}`} data-debug-id={`task-detail-reviewing-${h.instanceId}`} className="text-muted">
+  // "now <holder>".
+  const reviewing = (h: { instanceId: string; phase: string; waitReason: string }, i: number) => (
+    <span key={`reviewing-${h.instanceId}-${i}`} data-debug-id={`task-detail-reviewing-${h.instanceId}`} className="text-muted">
       now <HolderName instanceId={h.instanceId} names={names} />
-      {h.role ? ` (${h.role})` : ''} · {h.phase}{h.waitReason ? ` · ${h.waitReason}` : ''}
+      {' '}· {h.phase}{h.waitReason ? ` · ${h.waitReason}` : ''}
     </span>
   );
-  const briefRoles = new Set(people.reviewersByRole.map(({ role }) => role));
   const reviewerGroups: React.ReactNode[] = [
-    ...(people.named.length ? [<span key="named" className="inline-flex flex-wrap gap-x-2">{people.named.map(vote)}</span>] : []),
-    ...people.reviewersByRole.map(({ role, agents }) => (
-      <span key={`role-${role}`} className="inline-flex flex-wrap items-center gap-x-2">
-        <span className="text-muted">{role} role:</span>
-        {agents.length ? agents.map(vote) : <span className="text-muted">nobody holds it</span>}
-        {people.reviewHolders.filter((h) => h.role === role).map(reviewing)}
-      </span>
-    )),
-    ...people.reviewHolders.filter((h) => !briefRoles.has(h.role)).map(reviewing),
+    ...(people.reviewers.length ? [<span key="reviewers" className="inline-flex flex-wrap gap-x-2">{people.reviewers.map(vote)}</span>] : []),
+    ...people.reviewHolders.map(reviewing),
     ...extraVoters.map((id) => <ReviewerVote key={id} id={id} names={names} verdict={voteFor(votes, id, names)} />),
-    ...(task.requires_user_approval || votes.has('user') ? [<ReviewerVote key="user" id="user" names={names} label="you" verdict={votes.get('user')} />] : []),
+    ...(people.userApproval || votes.has('user') ? [<ReviewerVote key="user" id="user" names={names} label="you" verdict={votes.get('user')} />] : []),
   ];
 
   const visibleEvents = showAllEvents ? events : events.slice(-TIMELINE_PREVIEW);

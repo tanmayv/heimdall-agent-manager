@@ -331,7 +331,8 @@ test('timeline sentences use names, never raw ids', () => {
     { kind: 'review_posted', actor_kind: 'agent', actor_id: 'inst_member02', payload: { reviewer: 'agt_18df385df494b971', verdict: 'approve', role: 'security' } },
     names,
   ).text;
-  assert.equal(review, 'Security Reviewer approved (security review)');
+  // REQ-SCHED-6: reviews have no role; a legacy payload's role is not shown.
+  assert.equal(review, 'Security Reviewer approved');
   for (const t of [granted, review]) assert.ok(!RAW_ID.test(t), t);
 });
 
@@ -404,7 +405,7 @@ test('holder and phase come from the work lease even when a review lease is list
   assert.ok(getTaskBadges(t, [], now, names).some((b) => b.kind === 'lease' && b.label === 'Backend Dev · active'));
 });
 
-test('the in-review sentence names each review-lease holder; role-only text without a review lease', () => {
+test('the in-review sentence names each review-lease holder; reviewer agents without a review lease', () => {
   const now = Date.parse('2026-10-17T05:00:00Z');
   const inReview = (leases: any[], extra: any = {}) =>
     ({
@@ -413,21 +414,22 @@ test('the in-review sentence names each review-lease holder; role-only text with
       title: 'Reviewing',
       state: 'in_review',
       attempt_no: 2,
-      brief: { goal: 'g', acceptance: ['a'], review_roles: ['reviewer', 'security'] },
+      brief: { goal: 'g', acceptance: ['a'], assignee: 'agt_worker', reviewers: ['agt_18df385deeb91f7c', 'agt_18df385df494b971'] },
       leases,
       ...extra,
     }) as unknown as TaskWire;
   const two = inReview([
-    { kind: 'review', review_role: 'reviewer', holder_instance_id: 'inst_member02', expires_at: '2026-10-17T05:07:00Z' },
-    { kind: 'review', review_role: 'security', holder_instance_id: 'inst_fleet99', expires_at: '2026-10-17T05:03:00Z' },
+    { kind: 'review', holder_instance_id: 'inst_member02', expires_at: '2026-10-17T05:07:00Z' },
+    { kind: 'review', holder_instance_id: 'inst_fleet99', expires_at: '2026-10-17T05:03:00Z' },
   ]);
   const [line, detail] = getTaskStatusLines(two, [], now, names);
-  assert.equal(line, 'Backend Dev is reviewing (reviewer); An agent is reviewing (security)');
+  assert.equal(line, 'Backend Dev is reviewing; An agent is reviewing');
   assert.equal(detail, 'Attempt 2 submitted · review in progress');
   assert.ok(!RAW_ID.test(line), line);
-  const withYou = getTaskStatusLines(inReview([{ kind: 'review', review_role: '', holder_instance_id: 'inst_coord01', expires_at: '2026-10-17T05:10:00Z' }], { requires_user_approval: true }), [], now, names);
+  const withYou = getTaskStatusLines(inReview([{ kind: 'review', holder_instance_id: 'inst_coord01', expires_at: '2026-10-17T05:10:00Z' }], { requires_user_approval: true }), [], now, names);
   assert.equal(withYou[0], 'soloist #20 is reviewing; then you');
-  // No review lease (or only a work lease left over): role-only text.
-  assert.equal(getTaskStatusLines(inReview([]), [], now, names)[0], 'Waiting on reviewer roles: reviewer, security');
-  assert.equal(getTaskStatusLines(inReview([{ kind: 'work', holder_instance_id: 'inst_member02' }]), [], now, names)[0], 'Waiting on reviewer roles: reviewer, security');
+  // No review lease (or only a work lease left over): the reviewer agents by name.
+  assert.equal(getTaskStatusLines(inReview([]), [], now, names)[0], 'Waiting on Backend Dev, Security Reviewer');
+  assert.equal(getTaskStatusLines(inReview([{ kind: 'work', holder_instance_id: 'inst_member02' }]), [], now, names)[0], 'Waiting on Backend Dev, Security Reviewer');
+  assert.equal(getTaskStatusLines(inReview([], { requires_user_approval: true }), [], now, names)[0], 'Waiting on Backend Dev, Security Reviewer and you');
 });
