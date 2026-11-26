@@ -41,6 +41,7 @@ import "core:strings"
 PTY_WIRE_KIND_OUTPUT :: u8(0x01)
 PTY_WIRE_KIND_INPUT  :: u8(0x02)
 PTY_WIRE_KIND_SCREEN :: u8(0x03)
+STREAM_WIRE_KIND_PIECE :: u8(0x04) // Reserved for stream.odin on the shared bridge WebSocket.
 
 PTY_WIRE_FLAG_SNAPSHOT  :: u8(0x01)
 PTY_WIRE_FLAG_ENCRYPTED :: u8(0x02)
