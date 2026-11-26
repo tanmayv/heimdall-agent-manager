@@ -314,7 +314,8 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		}
 		// A review may take a grace instance's slot; otherwise it waits for a
 		// running review to end (REQ-SCHED-34, spec 9.2).
-		if chain_cap_refusal(svc, ctx, u, pick.inst, pick.counted, domain.LEASE_KIND_REVIEW, task) != "" do continue
+		victim: domain.Agent_Instance
+		if chain_cap_refusal(svc, ctx, u, pick.inst, pick.counted, domain.LEASE_KIND_REVIEW, task, &victim) != "" do continue
 		inst, placement, ready, why := pick_materialize(svc, u, ctx, fleet, pick, domain.LEASE_KIND_REVIEW)
 		if !ready {
 			if why != "" do failure, failed_agent, failed_placement = why, agent_id, placement
@@ -329,6 +330,8 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 			record_grant_placement_failure(ctx, task, fleet, placement, "review", gerr)
 			continue
 		}
+		// The review holds the slot now; only then does the grace instance yield.
+		yield_grace_slot(svc, ctx, u, victim)
 		append(&ctx.leases, lease)
 		ctx.held[inst.agent_instance_id] = true
 	}

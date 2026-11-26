@@ -283,6 +283,14 @@ test_sched1b_parked_review_lease_occupies_no_slot :: proc(t: ^testing.T) {
 	ctx.instances[2].runtime_status = "stopped" // the grace instance stops
 	refusal = chain_cap_refusal(nil, &ctx, nil, parked, false, domain.LEASE_KIND_REVIEW, task_2)
 	testing.expectf(t, refusal == "", "re-activation granted once a slot frees (got %q)", refusal)
+	// With a grace instance to yield, the review is admitted and the victim
+	// is only chosen here: the caller stops it after its grant succeeds.
+	ctx.instances[2].runtime_status = "running"
+	victim: domain.Agent_Instance
+	refusal = chain_cap_refusal(nil, &ctx, nil, parked, false, domain.LEASE_KIND_REVIEW, task_2, &victim)
+	testing.expectf(t, refusal == "" && victim.agent_instance_id == "inst_g", "review admitted by yielding inst_g (got %q, victim %q)", refusal, victim.agent_instance_id)
+	testing.expect_value(t, ctx.instances[2].stop_reason, "")
+	ctx.instances[2].runtime_status = "stopped"
 	// The coordinator is outside the cap.
 	testing.expect_value(t, chain_cap_refusal(nil, &ctx, nil, ctx.coordinator, false, domain.LEASE_KIND_WORK, domain.Task{task_id = "task_9"}), "")
 	// New work needs W + 1 <= M - r = 1: refused.
@@ -391,4 +399,25 @@ test_sched1b_instance_count_does_not_grow :: proc(t: ^testing.T) {
 		testing.expectf(t, get_task(fx, id).state == .Done, "%s done", id)
 		testing.expectf(t, rounds[id] == 3, "%s had 3 review rounds (got %d)", id, rounds[id])
 	}
+}
+
+// REQ-SCHED-30 (5): an agent whose only instance is Dead (terminated) gets a
+// new instance under capacity instead of a Start agent card.
+@(test)
+test_sched1b_dead_only_agent_gets_new_instance :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "s1b_dead")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_s1b_dead")
+	seed_worker(fx, chain, "inst_dead", "agt_wd", status = "terminated")
+	task := publish_task(t, fx, chain, "task_1", brief = brief_for("agt_wd", ""))
+	testing.expectf(t, task.blocked_on_json == "", "no Start agent card for a Dead-only agent (got %s)", task.blocked_on_json)
+	_, dead_held := lease_of(fx, "inst_dead")
+	testing.expect(t, !dead_held, "the Dead instance is not reused")
+	insts, _ := iface.agent_list_instances_by_chain(&fx.agents, chain.owner_user_id, string(chain.chain_id))
+	fresh := ""
+	for inst in insts do if inst.agent_id == "agt_wd" && inst.agent_instance_id != "inst_dead" do fresh = inst.agent_instance_id
+	testing.expect(t, fresh != "", "a new instance is created for the agent")
+	l, held := lease_of(fx, fresh)
+	testing.expect(t, held && l.kind == domain.LEASE_KIND_WORK && string(l.task_id) == "task_1", "the new instance holds the work lease")
 }

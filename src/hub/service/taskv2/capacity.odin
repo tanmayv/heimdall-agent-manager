@@ -97,10 +97,12 @@ instance_slot_counted :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, inst:
 // chain_cap_refusal checks one grant against the chain cap on the counts AFTER
 // the grant (REQ-SCHED-34). `counted`: the target already occupies a slot.
 // "" means the grant may proceed. A review that does not fit while a grace
-// instance of another agent exists stops that instance and takes its slot
-// (`yield` = true; the stop is queued on `u`). Active and waiting work is
-// never evicted. The coordinator is outside the cap.
-chain_cap_refusal :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, inst: domain.Agent_Instance, counted: bool, kind: string, task: domain.Task) -> string {
+// instance of another agent exists may take that instance's slot: when
+// `yield_victim` is given, the instance to stop is written there and the
+// caller stops it with yield_grace_slot only AFTER its grant succeeded, so a
+// failed grant never stops a grace instance for nothing. Active and waiting
+// work is never evicted. The coordinator is outside the cap.
+chain_cap_refusal :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, inst: domain.Agent_Instance, counted: bool, kind: string, task: domain.Task, yield_victim: ^domain.Agent_Instance = nil) -> string {
 	m, r := chain_cap_limits(ctx.chain)
 	if m == 0 do return ""
 	if inst.agent_instance_id != "" && ctx_is_coordinator(svc, ctx, inst.agent_instance_id) do return ""
@@ -113,25 +115,35 @@ chain_cap_refusal :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, inst: dom
 	}
 	if counted do return ""
 	if s.work + s.review + s.grace + 1 <= m do return ""
-	if kind == domain.LEASE_KIND_REVIEW && s.grace > 0 && u != nil {
-		if yielded := yield_grace_slot(svc, ctx, u, inst.agent_id); yielded do return ""
+	if kind == domain.LEASE_KIND_REVIEW && s.grace > 0 && yield_victim != nil {
+		if victim, found := grace_victim(svc, ctx, u, inst.agent_id); found {
+			yield_victim^ = victim
+			return ""
+		}
 	}
 	return fmt.tprintf("chain cap full (%d of max_parallel %d occupied)", s.work + s.review + s.grace, m)
 }
 
-// yield_grace_slot stops the grace instance of another agent that has been
-// lease-free the longest, so a pending review can take its slot.
+// grace_victim: the grace instance of another agent that has been lease-free
+// the longest, whose slot a pending review may take.
 @(private = "file")
-yield_grace_slot :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, for_agent: string) -> bool {
+grace_victim :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, for_agent: string) -> (domain.Agent_Instance, bool) {
 	best := -1
 	for inst, i in ctx.instances {
 		if inst.agent_id == for_agent || !instance_in_grace(svc, ctx, u, inst) do continue
 		if best < 0 || grace_older(inst, ctx.instances[best]) do best = i
 	}
-	if best < 0 do return false
-	victim := ctx.instances[best]
-	stopped, _ := stop_instance_in_uow(svc, u, victim, string(ctx.chain.chain_id), STOP_REASON_CAPACITY_YIELD)
-	return stopped && effect_has_stop(u, victim.bridge_id, string(ctx.chain.chain_id), victim.agent_instance_id)
+	if best < 0 do return {}, false
+	return ctx.instances[best], true
+}
+
+// yield_grace_slot stops the instance chain_cap_refusal chose, after the
+// review that needed its slot was granted (stop intent first, REQ-SCHED-28).
+yield_grace_slot :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, victim: domain.Agent_Instance) {
+	if victim.agent_instance_id == "" do return
+	if stopped, err := stop_instance_in_uow(svc, u, victim, string(ctx.chain.chain_id), STOP_REASON_CAPACITY_YIELD); !stopped {
+		fmt.eprintfln("[taskv2] capacity yield: stopping %s failed: %s", victim.agent_instance_id, err.message)
+	}
 }
 
 @(private = "file")
@@ -167,8 +179,10 @@ Reuse_Scan :: struct {
 	preferred:     domain.Agent_Instance,
 	have_pref:     bool,
 	// failure: a free instance that must not be replaced (user-stopped, Hold,
-	// Dead, a pending runtime action). With no candidate it blocks a new
-	// instance and names the Start agent card reason (REQ-SCHED-32).
+	// a pending runtime action). With no candidate it blocks a new instance
+	// and names the Start agent card reason (REQ-SCHED-32). A Dead instance
+	// (terminated, or failed without a typed error) does not: an agent with
+	// only Dead instances gets a new one (REQ-SCHED-30 (5)).
 	failure:       string,
 	// unusable: a free instance that could not be reused because of its
 	// bridge (offline, ineligible, provider, busy directory); recorded with
@@ -227,7 +241,8 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 				continue
 			}
 		}
-		if disposition == .Dead || disposition == .Hold {
+		if disposition == .Dead do continue
+		if disposition == .Hold {
 			if in_scope && !held do scan.failure = instance_failure_reason(inst)
 			continue
 		}
@@ -277,7 +292,7 @@ agent_occupied_count :: proc(svc: ^Service, ctx: ^Match_Context, agent_id: strin
 			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable { n += 1; continue }
 		}
 		if disposition == .Dead || disposition == .Hold do continue
-		if ctx.held[inst.agent_instance_id] || instance_is_live(inst) || instance_is_pending(inst) do n += 1
+		if instance_is_live(inst) || instance_is_pending(inst) do n += 1
 	}
 	return n
 }
