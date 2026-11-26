@@ -46,7 +46,9 @@ lookup_tasks :: proc(impl: ^Taskchain_Repo_SQLite, query: string, what: string, 
 // A review is owed when the agent is listed (task_reviewers), has posted no
 // agent verdict on the current attempt (the roles excluded here are the ones
 // agent_verdict_role rejects) and is not the agent of the current attempt's
-// holder (nobody reviews their own work).
+// holder (nobody reviews their own work), and no instance of the agent holds
+// a live review lease on it (spec SCHED 10.1 step 2), so leased items can
+// never hide an owed one behind the limit.
 task_list_owed_reviews_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, agent_id: string, limit: int) -> ([]domain.Task, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	query := "SELECT " + LOOKUP_TASK_COLS + " FROM task_reviewers r JOIN tasks t ON t.task_id = r.task_id" +
@@ -55,6 +57,8 @@ task_list_owed_reviews_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_I
 		" AND v.role NOT IN ('coordinator', 'user') AND v.role NOT LIKE 'legacy-verify:%')" +
 		" AND NOT EXISTS (SELECT 1 FROM task_attempts a JOIN agent_instances i ON i.agent_instance_id = a.holder_instance_id" +
 		" WHERE a.task_id = t.task_id AND i.agent_id = r.agent_id AND a.attempt_no = (SELECT MAX(m.attempt_no) FROM task_attempts m WHERE m.task_id = t.task_id))" +
+		" AND NOT EXISTS (SELECT 1 FROM task_leases l JOIN agent_instances li ON li.agent_instance_id = l.holder_instance_id" +
+		" WHERE l.task_id = t.task_id AND l.kind = 'review' AND l.phase <> 'waiting' AND li.agent_id = r.agent_id)" +
 		" ORDER BY " + LOOKUP_TASK_ORDER + " LIMIT ?4;"
 	return lookup_tasks(impl, query, "owed review list", chain_id, owner_user_id, agent_id, limit)
 }

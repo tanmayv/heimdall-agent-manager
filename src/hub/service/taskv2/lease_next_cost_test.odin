@@ -266,9 +266,11 @@ test_lease_next_reads_do_not_grow_with_tasks_or_chains :: proc(t: ^testing.T) {
 	testing.expect_value(t, large.idle.task_rows, 0)
 	testing.expect(t, !large.idle.pack, "idle builds no pack")
 	for c in large.idle.calls do testing.expectf(t, c != "get_task" && c != "list_events_by_task", "idle reads a task: %s", c)
-	// Table 10.3 bounds (the instance lookup of the caller's own token is one of them).
+	// Table 10.3 bounds. The counts include the caller's own instance lookup
+	// (instance_from_auth), which the table does not list: idle <= 6 and
+	// current <= 6 as in the table, waiting <= 5 + that lookup.
 	expect_reads_at_most(t, "idle", large.idle, 6)
-	expect_reads_at_most(t, "waiting (unchanged pack)", large.waiting_same, 6)
+	expect_reads_at_most(t, "waiting (unchanged pack)", large.waiting_same, 5 + 1)
 	expect_reads_at_most(t, "current (unchanged pack)", large.current_same, 6)
 	// REQ-SCHED-39: an unchanged version builds nothing.
 	testing.expect(t, large.waiting_full.pack && !large.waiting_same.pack, "waiting: pack only when the version changed")
@@ -316,6 +318,9 @@ test_pack_version_follows_requirements_events_and_summary :: proc(t: ^testing.T)
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
+	// The fixture chain is seeded published, so no publish rebuilt its summary;
+	// a versioned pack needs the row (test_pack_version_empty_without_summary_row).
+	if _, sok, serr := chain_summary_set(&fx.svc, user_auth(), chain.chain_id, "first note"); !testing.expectf(t, sok, "summary: %s", serr.message) do return
 	auth := inst_auth("inst_w1")
 	first, fok, ferr := lease_next(&fx.svc, auth, {})
 	if !testing.expectf(t, fok && first.status == "current", "first: %s %s", first.status, ferr.message) do return
@@ -351,4 +356,48 @@ test_pack_version_follows_requirements_events_and_summary :: proc(t: ^testing.T)
 	// A peek is never short-circuited by a stale version.
 	peek, _, _ := lease_next(&fx.svc, auth, {peek = true})
 	testing.expect(t, peek.pack_json != "", "peek without a version returns the pack")
+}
+
+// Spec 10.1 step 2: a review the agent's other instance already holds is not a
+// candidate, so k leased items can never hide the (k+1)th owed review.
+@(test)
+test_owed_review_lookup_skips_reviews_leased_by_the_agent :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "owed_review_leased")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_owed_leased")
+	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "running")
+	now := platform.clock_now(&fx.clock)
+	for id in ([]string{"task_r1", "task_r2"}) {
+		task := seed_task(t, fx, chain, id, `{"goal":"g","assignee":"agt_w","reviewers":["agt_r"]}`)
+		task.state = .In_Review
+		task.publish_state = .Published
+		task.attempt_no = 1
+		_, _, _ = iface.taskchain_save_task(&fx.repo, task)
+	}
+	_, lok, lerr := iface.taskchain_save_lease(&fx.repo, domain.Task_Lease{lease_id = "lease_r1", task_id = "task_r1", chain_id = chain.chain_id, owner_user_id = "u1", holder_instance_id = "inst_r1", kind = domain.LEASE_KIND_REVIEW, attempt_no = 1, bridge_id = "br_1", granted_at = now, confirmed_at = now, last_beat_at = now, phase = domain.LEASE_PHASE_ACTIVE, delivery = domain.LEASE_DELIVERY_INLINE})
+	if !testing.expectf(t, lok, "save lease: %s", lerr.message) do return
+	owed, err := iface.taskchain_list_owed_reviews(&fx.repo, chain.chain_id, "u1", "agt_r", 1)
+	testing.expect(t, err.code == .None, err.message)
+	if testing.expect_value(t, len(owed), 1) do testing.expect_value(t, string(owed[0].task_id), "task_r2")
+}
+
+// Without a chain_summaries row the pack shows the mechanical summary, which
+// has no version: no version is returned and the pack is always built.
+@(test)
+test_pack_version_empty_without_summary_row :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "pack_version_no_summary")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_no_summary")
+	seed_fleet(fx, chain, "agt_w")
+	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
+	_ = publish_task(t, fx, chain, "task_1")
+	confirm_holder(fx, "inst_w1")
+	testing.expect(t, exec_ok(t, fx, "DELETE FROM chain_summaries WHERE chain_id = 'chain_no_summary';"), "drop summary row")
+	first, fok, ferr := lease_next(&fx.svc, inst_auth("inst_w1"), {})
+	if !testing.expectf(t, fok, "lease next: %s", ferr.message) do return
+	testing.expect_value(t, first.pack_version, "")
+	again, _, _ := lease_next(&fx.svc, inst_auth("inst_w1"), {pack_version = "pv1-stale"})
+	testing.expect(t, again.pack_json != "", "without a version the pack is always built")
 }

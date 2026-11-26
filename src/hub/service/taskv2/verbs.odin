@@ -122,7 +122,7 @@ lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Nex
 	}
 	if rok && res.status != "none" {
 		res.pack_version = pack_version_for(svc, res.task, res.lease)
-		if res.status == "granted" || input.pack_version == "" || input.pack_version != res.pack_version {
+		if res.status == "granted" || res.pack_version == "" || input.pack_version != res.pack_version {
 			if chain, cok, _ := iface.taskchain_get_chain(svc.repo, res.task.chain_id); cok {
 				res.pack_json = build_pack_json(svc, chain, res.task, res.lease, inst, evs)
 			}
@@ -208,11 +208,18 @@ record_attempt_started :: proc(svc: ^Service, task: domain.Task, lease: domain.T
 // task event, so the requirements revision moves it too); the lease id and
 // phase; the chain summary version; and the task row's updated_at, state and
 // attempt (brief/title edits and hold changes save the row). Two point reads.
+//
+// Without a chain_summaries row the pack carries the mechanical summary, which
+// changes with other tasks and has no version: the version is then "" and the
+// pack is always built (published chains always have a row). Accepted gaps,
+// which do not change what the holder must do: the chain title and directory
+// rows (renaming the chain or moving a directory path refreshes TASK.md with
+// the next task event); `lease next --refresh` forces a fresh pack.
 pack_version_for :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_Lease) -> string {
+	summary, found, _ := iface.taskchain_get_chain_summary(svc.repo, task.chain_id, task.owner_user_id)
+	if !found do return ""
 	last, _ := iface.taskchain_latest_event_id(svc.repo, task.task_id, task.owner_user_id)
-	summary_version := 0
-	if summary, found, _ := iface.taskchain_get_chain_summary(svc.repo, task.chain_id, task.owner_user_id); found do summary_version = summary.version
-	return pack_version_from(task, lease, last, summary_version)
+	return pack_version_from(task, lease, last, summary.version)
 }
 
 pack_version_from :: proc(task: domain.Task, lease: domain.Task_Lease, last_event_id: i64, summary_version: int) -> string {
