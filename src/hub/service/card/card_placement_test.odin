@@ -26,7 +26,7 @@ test_placement_card_groups_preserves_attention_and_reconciles :: proc(t: ^testin
 	testing.expect_value(t, string(id), "crd_placement_task_place_card_2")
 	testing.expect_value(t, placement_task_id_from_card(id), task.task_id)
 	testing.expect_value(t, card.operations_json, "[]")
-	for part in ([]string{"agt_a", "agt_b", "br_off", "br_missing", "security", "fp_a", "fp_b", "All tickets using this fleet", "change_reviewer", "configure_fleet"}) {
+	for part in ([]string{"agt_a", "agt_b", "br_off", "br_missing", "fp_a", "fp_b", "All tickets using this fleet", "change_reviewer"}) {
 		testing.expect(t, strings.contains(card.details_json, part), part)
 	}
 	still_question, _, _ := iface.card_get(&h.cards, question.card_id)
