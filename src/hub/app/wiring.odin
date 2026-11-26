@@ -555,7 +555,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// `brg_` identity, never a user token with the machine as a label.
 	device_auth_service.with_bridge_token_minter(&graph.device_auth, device_bridge_minter, rawptr(graph))
 	graph.users.bridges = &graph.repos.bridges
-	graph.user_handlers = http.User_Handlers{launch_preferences = &graph.users, auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store(), forwarded_for_cidrs = config.forwarded_for_trusted_cidrs}
+	graph.user_handlers = http.User_Handlers{home_layouts = &graph.users, launch_preferences = &graph.users, auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store(), forwarded_for_cidrs = config.forwarded_for_trusted_cidrs}
 	graph.user_handlers.ws_tickets.auth = &graph.auth
 	graph.shell_session_service = shell_session_svc.new_shell_session_service(
 		repo                = &graph.shell_session_repo,
@@ -951,6 +951,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs", rawptr(&graph.bridge_handlers), http.list_instance_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs/file", rawptr(&graph.bridge_handlers), http.read_instance_file_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/conversation-launch", rawptr(&graph.user_handlers), http.get_conversation_launch_preferences_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/me/home-layout", rawptr(&graph.user_handlers), http.home_layout_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/me/home-layout", rawptr(&graph.user_handlers), http.home_layout_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/me/conversation-launch", rawptr(&graph.user_handlers), http.patch_conversation_launch_preferences_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/agents/*/favorite", rawptr(&graph.user_handlers), http.set_agent_favorite_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents", rawptr(&graph.agent_handlers), http.list_agents_handler)

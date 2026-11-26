@@ -11,6 +11,7 @@ import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import platform "odin_test:hub/platform"
 import sqlite "odin_test:hub/repository/sqlite"
 import eventinbox "odin_test:hub/service/eventinbox"
 import eventrelay "odin_test:hub/service/eventrelay"
@@ -50,6 +51,31 @@ bot_event_outbox_snapshot :: proc(t: ^testing.T, conn: ^sqlite.Conn) -> string {
 	defer sqlite.sqlite3_finalize(stmt)
 	if !testing.expect_value(t,sqlite.sqlite3_step(stmt),sqlite.SQLITE_ROW) do return ""
 	return strings.clone(string(sqlite.sqlite3_column_text(stmt,0)))
+}
+
+// Read target metadata through a separate consumer after the original pull.
+// Its independent cursor cannot acknowledge, advance or repair the tested watches.
+bot_event_timestamp_probe :: proc(conn: ^nats.Connection, subject: string, bindings: []domain.Event_Subscription) {
+	probe_name := "bot_event_timestamp_probe"
+	add_err := nats.consumer_add(conn, {stream = "HEIM_EVENTS", durable = probe_name, filter_subjects = {subject}, ack_wait_ns = i64(time.Minute), max_deliver = 1})
+	if add_err.status != 0 {fmt.eprintf("BOT_EVENT_TIME probe_add_status=%d\n", add_err.status); return}
+	pull, bind_err := nats.pull_bind(conn, "HEIM_EVENTS", probe_name)
+	if bind_err.status != 0 {fmt.eprintf("BOT_EVENT_TIME probe_bind_status=%d\n", bind_err.status); return}
+	defer nats.pull_destroy(pull)
+	batch, fetch_err := nats.fetch_available(pull, 1)
+	defer nats.batch_destroy(batch)
+	if fetch_err.status != 0 || batch == nil || nats.batch_count(batch) != 1 {
+		fmt.eprintf("BOT_EVENT_TIME probe_fetch_status=%d\n", fetch_err.status)
+		return
+	}
+	msg := nats.batch_message(batch, 0)
+	meta, meta_err := nats.message_metadata(msg)
+	fmt.eprintf("BOT_EVENT_TIME timestamp_ns=%d stream_sequence=%d metadata_status=%d body=%s\n", meta.timestamp_ns, meta.stream_sequence, meta_err.status, string(nats.message_data(msg)))
+	for binding in bindings {
+		start, parsed := platform.parse_rfc3339_utc(binding.created_at)
+		start_ns := time.to_unix_nanoseconds(start)
+		fmt.eprintf("BOT_EVENT_START subscription=%s created_at=%s parsed=%t start_ns=%d event_minus_start_ns=%d\n", binding.subscription_id, binding.created_at, parsed, start_ns, meta.timestamp_ns - start_ns)
+	}
 }
 
 // Script a bot's authenticated create/message/pull/ack actions against the real
@@ -242,6 +268,7 @@ bot_events_scenario :: proc(t: ^testing.T) {
 		state,state_err:=nats.consumer_state(probe_conn,"HEIM_EVENTS",binding.consumer_name)
 		fmt.eprintf("BOT_EVENT_BINDING subscription=%s instance=%s chain=%s consumer=%s filters=%s created_at=%s state=%v status=%d jetstream=%d\n",binding.subscription_id,binding.subscriber_instance_id,binding.chain_id,binding.consumer_name,binding.filter_subjects,binding.created_at,state,state_err.status,state_err.jetstream)
 	}
+	if len(wire.data.events) != 1 do bot_event_timestamp_probe(probe_conn, string(subject), bindings)
 	testing.expect_value(t, len(wire.data.events), 1)
 	if len(wire.data.events) != 1 do return
 	ev := wire.data.events[0]

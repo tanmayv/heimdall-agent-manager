@@ -780,6 +780,7 @@ MIGRATION_251_OPENCODE_ACP_PROVIDER :: #load("migrations/251_opencode_acp_provid
 MIGRATION_252_EXTENSION_VERSION_SYNC :: #load("migrations/252_extension_version_sync_0_5_88.sql", string)
 MIGRATION_253_SHARED_FLEET_SETTINGS :: #load("migrations/253_shared_fleet_settings.sql", string)
 MIGRATION_254_FLEET_APPLICATIONS :: #load("migrations/254_fleet_applications.sql", string)
+MIGRATION_257_USER_HOME_LAYOUTS :: #load("migrations/257_user_home_layouts.sql", string)
 
 MIGRATION_255_EXTENSION_VERSION_SYNC :: #load("migrations/255_extension_version_sync_0_5_89.sql", string)
 
@@ -1078,6 +1079,7 @@ migration_order :: [?]string {
 	"254_fleet_applications.sql",
 	"255_extension_version_sync_0_5_89.sql",
 	"256_extension_version_sync_0_5_90.sql",
+	"257_user_home_layouts.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1640,6 +1642,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "250_extension_version_sync_0_5_87.sql" do return strings.clone(MIGRATION_250_EXTENSION_VERSION_SYNC)
 	if name == "253_shared_fleet_settings.sql" do return strings.clone(MIGRATION_253_SHARED_FLEET_SETTINGS)
 	if name == "254_fleet_applications.sql" do return strings.clone(MIGRATION_254_FLEET_APPLICATIONS)
+	if name == "257_user_home_layouts.sql" do return strings.clone(MIGRATION_257_USER_HOME_LAYOUTS)
 	if name == "251_opencode_acp_provider.sql" do return strings.clone(MIGRATION_251_OPENCODE_ACP_PROVIDER)
 	if name == "249_extension_version_sync_0_5_86.sql" do return strings.clone(MIGRATION_249_EXTENSION_VERSION_SYNC)
 	if name == "248_extension_version_sync_0_5_85.sql" do return strings.clone(MIGRATION_248_EXTENSION_VERSION_SYNC)

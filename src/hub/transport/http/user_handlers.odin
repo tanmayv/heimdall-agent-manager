@@ -40,6 +40,7 @@ User_WS_Ticket_Store :: struct {
 }
 
 User_Handlers :: struct {
+	home_layouts: ^user_service.User_Service,
  launch_preferences: ^user_service.User_Service,
 	auth: ^auth_service.Auth_Service,
 	event_bus: ^events.User_Event_Bus,
