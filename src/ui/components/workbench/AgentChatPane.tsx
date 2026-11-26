@@ -15,7 +15,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
+import { lifecycleResult, useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import { desktopUpdateFrozen, desktopUpdatePreparation } from '../../utils/desktopUpdatePreparation';
 import { writeClientStorageChecked, writeComposerDraftChecked } from '../../utils/clientPersistence';
@@ -60,6 +60,7 @@ import {
   useFetchAgentInstanceQuery,
   useFetchAgentIdentityQuery,
   useListInstanceReconfigurationsQuery,
+  useCancelInstanceConfigurationMutation,
   type InstanceReconfiguration,
   reconfigurationSettled,
   reconfigurationBlocksInput,
@@ -138,6 +139,8 @@ import { BridgeSection } from '../agentSettings/BridgeSection';
 import { ModelSection } from '../agentSettings/ModelSection';
 import { ConnectionSection } from '../agentSettings/ConnectionSection';
 import { PermissionsSection } from '../agentSettings/PermissionsSection';
+import { ApplyFooter } from '../agentSettings/ApplyFooter';
+import { applyFooterView, useApplyAgentSettings } from '../agentSettings/useApplyAgentSettings';
 import { acpAvailabilityCopy } from '../agentSettings/acpAvailabilityCopy';
 import {
   applyBlockedReason,
@@ -1850,6 +1853,26 @@ export function AgentChatPane({
   const draftApplyBlocked = settingsPanel.open
     ? applyBlockedReason(draftConfig, draftProvidersLoaded ? draftProviderOptions : null)
     : null;
+  // Staged-changes footer (T7): the panel's Apply flow (useApplyAgentSettings.ts).
+  const [cancelInstanceConfiguration] = useCancelInstanceConfigurationMutation();
+  const applyFlow = useApplyAgentSettings({
+    instanceId: agentInstanceId,
+    projectId: destinationProjectId,
+    current: currentConfig,
+    draft: draftConfig,
+    revision: Number(instance?.configuration_revision || 0),
+    launchEpoch: String((instance as any)?.launch_epoch || ''),
+    running: runtimeStateFromStatus(runtimeStatus) === 'live',
+    midTurn: isWorking,
+    operation,
+    labels: { bridgeLabel: bridgeLabelOf, providerLabel: providerLabelOf },
+    // The footer shows the outcome; the Runtime card's inline message would repeat it.
+    reconfigure: async (args) => { const result = await lifecycle.reconfigure(args); setReconfigStatus(''); return result; },
+    retry: async (args) => { const result = await lifecycle.retry(args); setReconfigStatus(''); return result; },
+    cancel: (args) => lifecycleResult('reconfigure', () => cancelInstanceConfiguration(args).unwrap()),
+    refetchInstance: () => instanceQuery.refetch(),
+    onAccepted: (accepted) => setAcceptedOperation(accepted),
+  });
   function commitDraft(next: AgentConfig) {
     settingsEditedRef.current = true;
     setStagedBridgeId(next.bridgeId === instanceBridgeId ? null : next.bridgeId);
@@ -2581,7 +2604,8 @@ export function AgentChatPane({
     menuOpen: statusMenuOpen || runtimeMenuOpen || mentionQuery !== null,
     uploadActive: filePickerOpen || hasUploadingAttachments || voice.active,
     // The open settings panel owns Apply (one primary action per decision).
-    pendingActions: pendingReconfig && !settingsPanel.open,
+    // With the panel enabled its footer owns Apply (one primary action per decision).
+    pendingActions: pendingReconfig && !settingsPanelEnabled,
     readOnly: conversationReadOnly,
   });
   const permissionToggle = permissionToggleState({
@@ -2753,7 +2777,7 @@ export function AgentChatPane({
         stopReason: String(instance?.stop_reason || ''),
         operations: operationQuery.data?.operations,
         operationInFlight,
-        restartPending: lifecycle.isPending('restart'),
+        restartPending: lifecycle.isPending('restart') || applyFlow.state.phase === 'restarting',
         now: panelNow,
       })}
       bridgeLabel={bridgeLabel}
@@ -2850,45 +2874,39 @@ export function AgentChatPane({
         disabled={draftControlsDisabled}
         touch={panelTouch}
       />
-      {/* Interim Discard/Apply until T7's staged-changes footer (agent-panel-apply). */}
-      {pendingReconfig ? (
-        <div data-debug-id="agent-panel-interim-apply" className="flex flex-col gap-2">
-          {draftApplyBlocked ? (
-            <Text role="body-sm" tone="muted" data-debug-id="agent-panel-apply-blocked">{draftApplyBlocked.message}</Text>
-          ) : null}
-          {stagedConfigurationIssues.length ? (
-            <ul data-debug-id="agent-panel-destination-validation" className="list-disc space-y-1 pl-5 text-caption text-danger">
-              {stagedConfigurationIssues.map((issue) => <li key={issue}>{issue}</li>)}
-            </ul>
-          ) : null}
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="ghost"
-              data-debug-id="agent-panel-legacy-reset-btn"
-              className="min-h-11"
-              disabled={runtimeActionBusy || operationBlocksInput}
-              onClick={resetRuntimeConfiguration}
-            >
-              Discard
-            </Button>
-            <Button
-              variant="primary"
-              data-debug-id="agent-panel-legacy-apply-btn"
-              className="min-h-11"
-              disabled={
-                runtimeActionBusy ||
-                (operation?.phase !== 'recovery_required' && (isStarting || runtimeStopping)) ||
-                stagedConfigurationIssues.length > 0 ||
-                Boolean(draftApplyBlocked)
-              }
-              onClick={() => void applyReconfigure()}
-            >
-              Apply
-            </Button>
-          </div>
-        </div>
-      ) : null}
     </>
+  ) : null;
+  const destinationFolder = bridgeRowsView({
+    bridges,
+    currentBridgeId: instanceBridgeId,
+    projectId,
+    bridgePaths: projectQuery.data?.bridge_paths || [],
+    defaultPath: String(projectQuery.data?.project?.default_path || ''),
+    currentFolder: String(instance?.project_path || ''),
+  }).rows.find((row) => row.bridgeId === destinationBridgeId)?.folder || '';
+  const applyFooter = settingsPanel.open ? (
+    <ApplyFooter
+      view={applyFooterView({
+        changes: applyFlow.changes,
+        flow: applyFlow.state,
+        midTurn: isWorking,
+        stopped: needsStart,
+        destinationBridge: draftBridgeLabel,
+        destinationFolder,
+        blockedMessage: draftApplyBlocked?.message || '',
+        issues: applyFlow.changes.length ? stagedConfigurationIssues : [],
+        busy:
+          !agentInstanceId ||
+          runtimeActionBusy ||
+          (operation?.phase !== 'recovery_required' && (operationBlocksInput || isStarting || runtimeStopping)),
+        now: panelNow,
+      })}
+      touch={panelTouch}
+      onApply={() => void (operation?.phase === 'recovery_required' ? applyFlow.retry() : applyFlow.apply())}
+      onRestartNow={() => void applyFlow.restartNow()}
+      onCancel={() => void applyFlow.cancelWaiting()}
+      onDiscard={() => { applyFlow.clear(); resetRuntimeConfiguration(); }}
+    />
   ) : null;
   const runtimeControls = (
     <div data-debug-id="conversation-runtime-controls" className="text-left">
@@ -3136,7 +3154,7 @@ export function AgentChatPane({
                   </button>
                 </div>
               ) : null}
-              {pendingReconfig && !settingsPanel.open && stagedConfigurationIssues.length > 0 ? (
+              {pendingReconfig && !settingsPanelEnabled && stagedConfigurationIssues.length > 0 ? (
                 <div
                   data-debug-id="conversation-apply-blocked-reasons"
                   role="status"
@@ -3258,9 +3276,9 @@ export function AgentChatPane({
                 {...composerActions}
                 readOnly={conversationReadOnly}
                 pendingActions={
-                  // While the settings panel is open it owns Discard/Apply for the draft
-                  // (T7's footer replaces its interim row), so the composer shows none.
-                  pendingReconfig && !settingsPanel.open ? (
+                  // With the settings panel enabled its staged-changes footer owns
+                  // Discard/Apply for the draft, so the composer shows none.
+                  pendingReconfig && !settingsPanelEnabled ? (
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -3904,6 +3922,7 @@ export function AgentChatPane({
         agentLabel={<VaultText value={agentInstanceLabel} fallback="Agent" />}
         projectLabel={projectId ? <VaultText value={projectName} fallback="Project" /> : undefined}
         runtime={runtimeSection}
+        footer={applyFooter}
       >
         {settingsSections}
       </AgentSettingsPanel>
