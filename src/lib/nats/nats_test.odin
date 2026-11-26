@@ -17,6 +17,7 @@ test_jetstream_real_server :: proc(t: ^testing.T) {
 	mem.tracking_allocator_init(&track, context.allocator)
 	defer mem.tracking_allocator_destroy(&track)
 	context.allocator = mem.tracking_allocator(&track)
+	scenario_exact_start_time(t)
 	test_publish_and_rollup(t)
 	test_durable_delivery(t)
 	test_persisted_ack_and_advisory(t)
@@ -49,6 +50,142 @@ test_jetstream_real_server :: proc(t: ^testing.T) {
 	err := shutdown(5000)
 	testing.expectf(t, err.status == 0, "shutdown: %s", error_text(err))
 	testing.expectf(t, len(track.allocation_map) == 0, "Odin live allocations: %d", len(track.allocation_map))
+}
+
+// Parse the server's UTC nanoseconds as decimal digits. The generic time parser
+// in the pinned Odin toolchain truncates fractions, so it is not an oracle here.
+test_exact_utc_ns :: proc(t: ^testing.T, value: string) -> i64 {
+	if !testing.expect(t, len(value) >= 20 && value[len(value)-1] == 'Z', value) do return -1
+	base, consumed := time.rfc3339_to_time_utc(fmt.tprintf("%sZ", value[:19]))
+	if !testing.expect_value(t, consumed, 20) do return -1
+	fraction: i64
+	digits := 0
+	if len(value) > 20 {
+		if !testing.expect(t, value[19] == '.' && len(value) <= 30, value) do return -1
+		for ch in value[20:len(value)-1] {
+			if !testing.expect(t, ch >= '0' && ch <= '9', value) do return -1
+			fraction = fraction * 10 + i64(ch - '0')
+			digits += 1
+		}
+		if !testing.expect(t, digits > 0 && digits <= 9, value) do return -1
+	}
+	for digits < 9 {fraction *= 10; digits += 1}
+	return time.to_unix_nanoseconds(base) + fraction
+}
+
+test_time_consumer :: proc(t: ^testing.T, conn: ^Connection, name: string, cutoff: i64) -> bool {
+	err := consumer_add(conn, {
+		stream = "TIMES", durable = name, filter_subjects = []string{"ev.target"},
+		ack_wait_ns = i64(time.Minute), max_deliver = 1, start_time_ns = cutoff,
+	})
+	if !testing.expectf(t, err.status == 0, "time consumer %s: %v", name, err) do return false
+	api := strings.clone_to_cstring(fmt.tprintf("$JS.API.CONSUMER.INFO.TIMES.%s", name))
+	defer delete(api)
+	msg: ^Message
+	status := ham_nats_request(&msg, conn, api, nil, 0)
+	if !testing.expect_value(t, status, i32(0)) do return false
+	defer message_destroy(msg)
+	info: struct {
+		config: struct {
+			opt_start_time, deliver_policy, ack_policy, replay_policy, filter_subject: string,
+			ack_wait, max_deliver: i64,
+		},
+		error: struct {code: i32},
+	}
+	decode_err := json.unmarshal(message_data(msg), &info)
+	defer delete(info.config.opt_start_time)
+	defer delete(info.config.deliver_policy)
+	defer delete(info.config.ack_policy)
+	defer delete(info.config.replay_policy)
+	defer delete(info.config.filter_subject)
+	if !testing.expectf(t, decode_err == nil && info.error.code == 0, "consumer info: %s", message_data(msg)) do return false
+	testing.expect(t, info.config.deliver_policy == "by_start_time" &&
+		info.config.ack_policy == "explicit" && info.config.replay_policy == "instant" &&
+		info.config.filter_subject == "ev.target" && info.config.ack_wait == i64(time.Minute) &&
+		info.config.max_deliver == 1, "preserve filter, delivery, ack and replay settings")
+	return testing.expectf(t, test_exact_utc_ns(t, info.config.opt_start_time) == cutoff,
+		"server cutoff %s: intended %d got %s", name, cutoff, info.config.opt_start_time)
+}
+
+scenario_exact_start_time :: proc(t: ^testing.T) {
+	// Literal expectations exercise the actual linked nats.c encoder, rather than
+	// reproducing its formatter in a mock. Include 1-9 digit leading-zero scales.
+	cases := []struct {fraction: i64, suffix: string}{
+		{0, "Z"}, {1, ".000000001Z"}, {10, ".00000001Z"},
+		{100, ".0000001Z"}, {1000, ".000001Z"}, {10000, ".00001Z"},
+		{100000, ".0001Z"}, {1000000, ".001Z"}, {7181125, ".007181125Z"},
+		{10000000, ".01Z"}, {60000000, ".06Z"}, {62000000, ".062Z"},
+		{80000000, ".08Z"}, {81000000, ".081Z"}, {90000000, ".09Z"},
+		{100000000, ".1Z"}, {990000000, ".99Z"}, {999999999, ".999999999Z"},
+	}
+	for item in cases {
+		ns := i64(1700000000000000000) + item.fraction
+		buf: [64]u8
+		status := nats_EncodeTimeUTC(raw_data(buf[:]), len(buf), ns)
+		if !testing.expect_value(t, status, i32(0)) do return
+		encoded := string(cstring(raw_data(buf[:])))
+		testing.expect_value(t, encoded, fmt.tprintf("2023-11-14T22:13:20%s", item.suffix))
+		testing.expect_value(t, test_exact_utc_ns(t, encoded), ns)
+	}
+	srv, ok := server.start()
+	defer server.destroy(&srv)
+	if !testing.expect(t, ok) do return
+	conn := test_connect(t, srv.url)
+	if conn == nil do return
+	defer destroy(conn)
+	_, err := stream_add(conn, {name = "TIMES", subjects = []string{"ev.>"}, replicas = 1})
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	target, pub_err := publish(conn, "ev.target", test_bytes("target"), "target")
+	if !testing.expect_value(t, pub_err.status, i32(0)) do return
+	_, err = publish(conn, "ev.other", test_bytes("filtered"), "filtered")
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	// Read authoritative stored metadata once. No clock polling, sleeps, retries
+	// or assumptions about which fractional second publication happens in.
+	err = consumer_add(conn, {stream = "TIMES", durable = "metadata",
+		filter_subjects = []string{"ev.target"}, ack_wait_ns = i64(time.Minute), max_deliver = 1})
+	if !testing.expect_value(t, err.status, i32(0)) do return
+	pull, bind_err := pull_bind(conn, "TIMES", "metadata")
+	if !testing.expect_value(t, bind_err.status, i32(0)) do return
+	defer pull_destroy(pull)
+	batch, fetch_err := fetch(pull, 1, 1000)
+	if !testing.expect(t, fetch_err.status == 0 && batch_count(batch) == 1) do return
+	defer batch_destroy(batch)
+	meta, meta_err := message_metadata(batch_message(batch, 0))
+	if !testing.expect(t, meta_err.status == 0 && meta.stream_sequence == target.sequence && meta.timestamp_ns > 0) do return
+	if !testing.expect_value(t, ack(batch_message(batch, 0)).status, i32(0)) do return
+	// All fixed fractions are in a past second derived from the stored message.
+	// Each server response must retain the exact intended cutoff through nats.c.
+	base := meta.timestamp_ns - meta.timestamp_ns % 1000000000 - 2 * 1000000000
+	for item, i in cases {
+		name := fmt.tprintf("fraction-%d", i)
+		if !test_time_consumer(t, conn, name, base + item.fraction) do return
+		testing.expect_value(t, consumer_delete(conn, "TIMES", name).status, i32(0))
+	}
+	// Same filter/ack/replay settings and target on both sides of the boundary:
+	// inclusive at the exact stored nanosecond, excluded one nanosecond later.
+	for cutoff, i in ([]i64{meta.timestamp_ns, meta.timestamp_ns + 1}) {
+		name := fmt.tprintf("boundary-%d", i)
+		if !test_time_consumer(t, conn, name, cutoff) do return
+		defer consumer_delete(conn, "TIMES", name)
+		state, state_err := consumer_state(conn, "TIMES", name)
+		if !testing.expect_value(t, state_err.status, i32(0)) do return
+		testing.expect_value(t, state.pending, u64(1 - i))
+		p, e := pull_bind(conn, "TIMES", name)
+		if !testing.expect_value(t, e.status, i32(0)) do return
+		defer pull_destroy(p)
+		b, fe := fetch_available(p, 2)
+		defer batch_destroy(b)
+		if i == 0 {
+			if !testing.expect(t, fe.status == 0 && batch_count(b) == 1, "eligible target delivered exactly once") do return
+			msg := batch_message(b, 0)
+			m, me := message_metadata(msg)
+			testing.expect(t, me.status == 0 && m.stream_sequence == target.sequence && m.timestamp_ns == meta.timestamp_ns)
+			testing.expect_value(t, string(message_data(msg)), "target")
+			testing.expect_value(t, ack(msg).status, i32(0))
+		} else {
+			testing.expect(t, fe.status == 26 && batch_count(b) == 0, "pre-boundary target excluded")
+		}
+	}
 }
 
 test_connect :: proc(t: ^testing.T, url: string) -> ^Connection {
@@ -193,8 +330,14 @@ test_durable_delivery :: proc(t: ^testing.T) {
 	// Leave it unacked; ack_wait must redeliver, independently of nak.
 	batch_destroy(batch)
 	time.sleep(180 * time.Millisecond)
+	redelivery_started := time.tick_now()
 	batch, err = fetch(pull, 1, 1000)
-	if !testing.expect(t, err.status == 0) do return
+	redelivery_elapsed_ns := i64(time.tick_since(redelivery_started))
+	if !testing.expectf(t, err.status == 0,
+		"ack-wait redelivery: status=%d jetstream=%d error=%s elapsed_ns=%d",
+		err.status, err.jetstream, error_text(err), redelivery_elapsed_ns) {
+		return
+	}
 	msg = batch_message(batch, 0)
 	m3: Metadata
 	m3, err = message_metadata(msg)
@@ -498,8 +641,18 @@ feature_destroy :: proc(f: ^Feature_Fixture) {
 	pull_destroy(f.pull); destroy(f.conn); server.destroy(&f.srv)
 }
 feature_publish :: proc(t: ^testing.T, f: ^Feature_Fixture, subject: string, headers: []Header = nil) -> Pub_Ack {
+	started := time.tick_now()
 	a, err := publish(f.conn, subject, test_bytes("payload"), "", headers)
-	testing.expectf(t, err.status == 0, "feature publish %s: %v", subject, err)
+	elapsed_ns := i64(time.tick_since(started))
+	pattern := ""
+	if err.status != 0 {
+		for header in headers {
+			if header.key == "Nats-Schedule" {pattern = header.value; break}
+		}
+	}
+	testing.expectf(t, err.status == 0,
+		"feature publish %s schedule=%q: status=%d jetstream=%d error=%s elapsed_ns=%d",
+		subject, pattern, err.status, err.jetstream, error_text(err), elapsed_ns)
 	return a
 }
 feature_schedule :: proc(t: ^testing.T, f: ^Feature_Fixture, pattern: string, extra: []Header = nil) {

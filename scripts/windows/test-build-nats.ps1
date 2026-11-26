@@ -5,6 +5,44 @@ $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('heimdall-nats-routing-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $temp | Out-Null
 try {
+  # Evaluate only the production patch function, never the download/VS build.
+  $tokens = $null
+  $errors = $null
+  $builder = Join-Path $PSScriptRoot 'build-nats.ps1'
+  $ast = [Management.Automation.Language.Parser]::ParseFile($builder, [ref]$tokens, [ref]$errors)
+  if ($errors.Count -ne 0) { throw "build-nats.ps1 parse errors: $errors" }
+  $function = $ast.Find({ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-NatsTimeEncoding'
+  }, $true)
+  if (-not $function) { throw 'missing production NATS patch function' }
+  Invoke-Expression $function.Extent.Text
+  # Derive fixtures from the shared Nix patch so the Windows result must match
+  # its complete context/output, including unchanged trailing-zero trimming.
+  $patch = @(Get-Content (Join-Path $repo 'nix/patches/nats-encode-time-utc-leading-zeros.patch'))
+  $hunk = @($patch | Where-Object { $_ -match '^[ +\-]' -and $_ -notmatch '^(---|\+\+\+)' })
+  $before = (@($hunk | Where-Object { -not $_.StartsWith('+') } | ForEach-Object { $_.Substring(1) }) -join "`n") + "`n"
+  $after = (@($hunk | Where-Object { -not $_.StartsWith('-') } | ForEach-Object { $_.Substring(1) }) -join "`n") + "`n"
+  if ($before -eq $after -or -not $after.Contains('".%09" PRId64')) { throw 'invalid shared patch fixture' }
+  $sourceDir = Join-Path $temp 'nats-source'
+  New-Item -ItemType Directory -Force (Join-Path $sourceDir 'src') | Out-Null
+  $util = Join-Path $sourceDir 'src/util.c'
+  foreach ($newline in @("`n", "`r`n")) {
+    $original = ("/* prefix */`n" + $before + "/* suffix */`n").Replace("`n", $newline)
+    $expected = ("/* prefix */`n" + $after + "/* suffix */`n").Replace("`n", $newline)
+    [IO.File]::WriteAllText($util, $original)
+    Set-NatsTimeEncoding $sourceDir
+    if ([IO.File]::ReadAllText($util) -cne $expected) { throw 'Windows and Nix patch outputs differ' }
+  }
+  foreach ($invalid in @($after, ($before + $before), $before.Replace('int i, nd;', 'int changed;'), 'unrelated source')) {
+    [IO.File]::WriteAllText($util, $invalid)
+    $rejected = $false
+    try { Set-NatsTimeEncoding $sourceDir } catch {
+      if ($_.Exception.Message -notlike 'nats.c time encoding patch context mismatch:*') { throw }
+      $rejected = $true
+    }
+    if (-not $rejected -or [IO.File]::ReadAllText($util) -cne $invalid) { throw 'patch drift must fail without rewriting source' }
+  }
+  Write-Host 'PASS: Nix/Windows patch parity (LF/CRLF), already-patched/duplicate/drift/missing-context rejection (6 checks)'
   # Isolate fake dependencies from real builds and downloads.
   $scripts = Join-Path $temp 'scripts/windows'
   $deps = Join-Path $temp 'deps'

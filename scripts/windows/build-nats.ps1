@@ -24,6 +24,31 @@ function Get-PinnedTarball($entry, [string]$dest) {
   if ($got -ne $entry.sha256) { throw "SHA-256 mismatch for $($entry.url): $got" }
 }
 
+# Same minimal correction as nix/patches/nats-encode-time-utc-leading-zeros.patch.
+# Use built-in .NET IO rather than adding a patch/git prerequisite on Windows.
+function Set-NatsTimeEncoding([string]$SourceDir) {
+  $path = Join-Path $SourceDir 'src/util.c'
+  $source = [IO.File]::ReadAllText($path)
+  $newline = if ($source.Contains("`r`n")) { "`r`n" } else { "`n" }
+  $normalized = $source.Replace("`r`n", "`n")
+  $before = @'
+        char nsBuf[15];
+        int i, nd;
+
+        nd = snprintf(nsBuf, sizeof(nsBuf), ".%" PRId64, ns);
+        for (; (nd > 0) && (nsBuf[nd-1] == '0'); )
+            nd--;
+
+'@
+  $before = $before.Replace("`r`n", "`n")
+  if ([regex]::Matches($normalized, [regex]::Escape($before)).Count -ne 1) {
+    throw 'nats.c time encoding patch context mismatch: expected exactly one original formatter block in src/util.c'
+  }
+  $after = $before.Replace('".%" PRId64', '".%09" PRId64')
+  $patched = $normalized.Replace($before, $after).Replace("`n", $newline)
+  [IO.File]::WriteAllText($path, $patched, (New-Object Text.UTF8Encoding $false))
+}
+
 # Git's MSYS Perl cannot build native OpenSSL; prefer Strawberry explicitly.
 if (-not $Perl) {
   $strawberry = 'C:\Strawberry\perl\bin\perl.exe'
@@ -56,6 +81,7 @@ try {
   Get-PinnedTarball $pin.nats $natsTar
   Invoke-Checked 'tar nats.c' { & tar -xzf $natsTar -C $WorkDir }
   $natsSrc = Join-Path $WorkDir "nats.c-$($pin.nats.version)"
+  Set-NatsTimeEncoding $natsSrc
   $natsBuild = Join-Path $WorkDir 'nats-build'
   $cmakeArgs = @(
     '-S', $natsSrc, '-B', $natsBuild, '-G', 'Visual Studio 17 2022', '-A', 'x64',
@@ -84,14 +110,35 @@ try {
   $smoke = Join-Path $WorkDir 'smoke.c'
   @'
 #include <nats/nats.h>
+#include <stdint.h>
 #include <string.h>
 extern const char *ham_nats_version(void);
+extern natsStatus nats_EncodeTimeUTC(char *, size_t, int64_t);
 int main(int argc, char **argv) {
     natsOptions *opts = NULL;
     if (argc != 2 || strcmp(ham_nats_version(), argv[1]) != 0) return 1;
     if (natsOptions_Create(&opts) != NATS_OK) return 2;
     natsStatus status = natsOptions_SetSecure(opts, true);
     natsOptions_Destroy(opts);
+    /* Link the actual patched encoder, including sub-millisecond precision. */
+    const struct { int64_t fraction; const char *text; } cases[] = {
+        {0, "2023-11-14T22:13:20Z"},
+        {1, "2023-11-14T22:13:20.000000001Z"},
+        {7181125, "2023-11-14T22:13:20.007181125Z"},
+        {10000000, "2023-11-14T22:13:20.01Z"},
+        {60000000, "2023-11-14T22:13:20.06Z"},
+        {62000000, "2023-11-14T22:13:20.062Z"},
+        {80000000, "2023-11-14T22:13:20.08Z"},
+        {81000000, "2023-11-14T22:13:20.081Z"},
+        {90000000, "2023-11-14T22:13:20.09Z"},
+        {100000000, "2023-11-14T22:13:20.1Z"},
+        {990000000, "2023-11-14T22:13:20.99Z"}
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char encoded[64];
+        if (nats_EncodeTimeUTC(encoded, sizeof(encoded), INT64_C(1700000000000000000) + cases[i].fraction) != NATS_OK
+            || strcmp(encoded, cases[i].text) != 0) return 4;
+    }
     nats_CloseAndWait(1000);
     return status == NATS_OK ? 0 : 3;
 }
@@ -100,7 +147,7 @@ int main(int argc, char **argv) {
   Push-Location $WorkDir
   try {
     Invoke-Checked 'link NATS smoke' { & cl.exe /nologo /O2 /MT "/I$(Join-Path $OutDir 'include')" $smoke "/Fe$smokeExe" /link "/LIBPATH:$libDir" ham_nats.lib nats_static.lib ssl.lib crypto.lib ws2_32.lib gdi32.lib advapi32.lib crypt32.lib user32.lib }
-    Invoke-Checked 'NATS version and TLS smoke' { & $smokeExe $pin.nats.version }
+    Invoke-Checked 'NATS version, TLS and exact time encoding smoke' { & $smokeExe $pin.nats.version }
   } finally { Pop-Location }
   Copy-Item $pinPath (Join-Path $OutDir 'nats-windows-pin.json')
   Get-ChildItem $libDir -Filter *.lib | ForEach-Object { Write-Host ("built {0} ({1:N0} bytes)" -f $_.FullName, $_.Length) }
