@@ -1,8 +1,10 @@
 package taskv2
 
-// T8: worker and reviewer agents keep their process across attempts and review
-// rounds; they are stopped only when their tasks complete (or by their own
-// `lease handoff`, or the bridge's context rollover).
+// T8 / SCHED-1a: a worker keeps its process across attempts and review rounds
+// and is stopped when its task is done or cancelled (or by its own `lease
+// handoff`); a reviewer is stopped when it approves and kept for a grace
+// window after request-changes. The next responsibility after a stop gets a
+// fresh process (REQ-SCHED-25). Table 8.1 rows: sched1a_lifecycle_test.odin.
 
 import "core:fmt"
 import "core:strings"
@@ -113,15 +115,17 @@ test_completion_fences_delayed_rollover_before_bridge_stop :: proc(t: ^testing.T
 	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
 	testing.expect_value(t,log.registry.active_instances,reservations)
 	testing.expect_value(t,len(log.cmds),commands)
-	// Preserve the existing warm-grant policy when subsequent work arrives.
+	// The worker's next task gets a fresh process (REQ-SCHED-25): the recorded
+	// stop intent forbids reusing the completed task's process.
 	wake_log_reset(log)
 	_ = publish_task(t,fx,chain,"task_2")
 	new_lease, regranted := lease_of(fx,"inst_w1")
 	testing.expect(t,regranted && new_lease.task_id=="task_2")
-	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation)
+	testing.expect_value(t,run_count_of(fx,"inst_w1"),generation+1)
 	fresh, _, _ := iface.agent_get_instance(&fx.agents,"inst_w1")
 	testing.expect_value(t,fresh.stop_reason,"")
-	expect_nudged(t,log,"inst_w1",generation,"new work supersedes completed task stop")
+	entry := wake_log_run_entry(log,"inst_w1")
+	testing.expect(t,entry!="" && !strings.contains(entry,`"deliver"`),"new work after completion relaunches the worker")
 }
 
 @(test)
@@ -187,8 +191,9 @@ test_completion_stop_intent_failure_rolls_back_task_and_lease :: proc(t: ^testin
 	testing.expect_value(t,log.registry.active_instances,0)
 }
 
-// Submit, request_changes, re-submit and the re-review never stop or relaunch
-// the worker or the reviewer; the approval that completes the task stops both.
+// Submit, request_changes, re-submit and the re-review (inside the reviewer's
+// grace window) never stop or relaunch the worker or the reviewer; the
+// approval that completes the task stops both.
 @(test)
 test_t8_attempts_and_review_rounds_keep_agents_until_done :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "t8_rounds")
@@ -239,8 +244,9 @@ test_t8_attempts_and_review_rounds_keep_agents_until_done :: proc(t: ^testing.T)
 	testing.expect_value(t, run_count_of(fx, "inst_r1"), r_gen)
 }
 
-// A worker that also holds another task's lease is not stopped when one of
-// its tasks completes; the instance is stopped when its last task completes.
+// A worker whose task completes is stopped; when the same unit of work grants
+// it the next task, that grant relaunches it fresh instead (REQ-SCHED-25) and
+// no separate stop is sent. Its last task's completion stops it.
 @(test)
 test_t8_done_task_does_not_stop_holder_of_another_lease :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "t8_other")
@@ -260,7 +266,9 @@ test_t8_done_task_does_not_stop_holder_of_another_lease :: proc(t: ^testing.T) {
 	testing.expect_value(t, get_task(fx, string(first.task_id)).state, domain.Task_State.Done)
 	second, held := lease_of(fx, "inst_w1")
 	testing.expect(t, held && second.task_id != first.task_id, "the next task is granted to the same instance")
-	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "a holder of another lease is not stopped")
+	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "the relaunch supersedes the completion stop")
+	entry := wake_log_run_entry(log, "inst_w1")
+	testing.expect(t, entry != "" && !strings.contains(entry, `"deliver"`), "the next task gets a fresh process")
 	confirm_holder(fx, "inst_w1")
 	wake_log_reset(log)
 	_, s2ok, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "two"})
@@ -415,9 +423,9 @@ test_t8_review_checkpoint_keeps_reviewer :: proc(t: ^testing.T) {
 	expect_nudged(t, log, "inst_r2", r_gen, "review re-grant after checkpoint")
 }
 
-// A request_changes drops the other reviewers' leases (reason
-// changes_requested) without stopping them or refusing their next pull; an
-// expiry for any other reason still stops the holder.
+// A request_changes deletes every other reviewer's lease (none is parked) and
+// keeps them for the grace window without stopping them or refusing their next
+// pull; an expiry for any other reason still stops the holder.
 @(test)
 test_t8_changes_requested_expiry_keeps_other_reviewer :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "t8_cr_expiry")
@@ -445,8 +453,10 @@ test_t8_changes_requested_expiry_keeps_other_reviewer :: proc(t: ^testing.T) {
 	wake_log_reset(log)
 	_, rok, rerr := review_post(&fx.svc, inst_auth("inst_r1"), {verdict = "request_changes", findings_json = `[{"path":"a.odin","line":1,"severity":"major","text":"fix"}]`})
 	if !testing.expectf(t, rok, "request_changes: %s", rerr.message) do return
-	b_now, still, _ := iface.taskchain_get_lease(&fx.repo, b_lease.lease_id)
-	testing.expect(t, still && b_now.phase == domain.LEASE_PHASE_WAITING, "B retains a waiting review claim")
+	_, still, _ := iface.taskchain_get_lease(&fx.repo, b_lease.lease_id)
+	testing.expect(t, !still, "B's review lease is deleted, not parked (REQ-SCHED-21)")
+	b_inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_r2")
+	testing.expect(t, b_inst.idle_since != "", "B starts its grace window")
 	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 0)
 	testing.expect(t, !wake_log_has_stop(log, "inst_r2"), "review rework does not stop B")
 	testing.expect(t, !wake_log_has_stop(log, "inst_r1"), "review post does not stop A")
