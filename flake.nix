@@ -23,7 +23,7 @@
           import nixpkgs { inherit system; };
 
       # Keep appVersion in sync with src/contracts/protocol.odin APP_VERSION.
-      appVersion = "0.5.90";
+      appVersion = "0.5.91";
       npmDepsHash = "sha256-6bl8X0ksrbW/l2Yas7Tdxnr/FFgAxA/sX2hzNEWVdYs=";
 
       # Every Odin binary that links src/lib/httpc links the ONE libcurl pinned
@@ -441,8 +441,32 @@
             dontInstall = true;
             buildPhase = ''
               mkdir -p $out/bin
-              odin test src/lib/nats -collection:odin_test=src -keep-executable -out:$out/bin/nats-tests
-              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/nats-tests"}
+              (
+                ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+                  # Keep file-backed fixtures off the host's shared disk without
+                  # changing request deadlines. Scope cleanup to this subshell
+                  # so stdenv retains its own EXIT trap.
+                  nats_test_tmpdir=$(mktemp -d /dev/shm/heimdall-nats-check.XXXXXX) || {
+                    echo "NATS check requires writable existing tmpfs at /dev/shm" >&2
+                    exit 1
+                  }
+                  trap 'rm -rf -- "$nats_test_tmpdir"' EXIT
+                  export TMPDIR="$nats_test_tmpdir"
+                  available_bytes=$(df -B1 --output=avail "$TMPDIR" | tail -n 1 | tr -d '[:space:]')
+                  case "$available_bytes" in
+                    ""|*[!0-9]*) echo "Cannot determine NATS tmpfs capacity: $TMPDIR" >&2; exit 1 ;;
+                  esac
+                  if [ "$(stat -f -c %T "$TMPDIR")" != tmpfs ] ||
+                     [ "$(stat -c %a "$TMPDIR")" != 700 ] ||
+                     [ "$available_bytes" -lt 268435456 ]; then
+                    echo "NATS check requires private tmpfs with at least 256 MiB free: $TMPDIR" >&2
+                    exit 1
+                  fi
+                  echo "NATS fixture TMPDIR=$TMPDIR filesystem=tmpfs mode=700 available_bytes=$available_bytes"
+                ''}
+                odin test src/lib/nats -collection:odin_test=src -keep-executable -out:$out/bin/nats-tests
+                ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "valgrind --suppressions=src/lib/nats/valgrind.supp --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=99 $out/bin/nats-tests"}
+              )
             '';
           };
 

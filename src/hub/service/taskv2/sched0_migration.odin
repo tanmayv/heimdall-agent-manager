@@ -10,7 +10,7 @@ import platform "odin_test:hub/platform"
 import jsonx "odin_test:lib/jsonx"
 
 // SCHED-0a one-shot data mapping (spec art_18eb828949cd9431, section 11.1,
-// REQ-SCHED-10). Migration 257 adds the schema, snapshots every fleet row's role
+// REQ-SCHED-10). Migration 259 adds the schema, snapshots every fleet row's role
 // data into sched0_fleet_roles and leaves the sched0_migration_pending marker
 // (only on a database that already had task-system data). The first boot after
 // it runs this step inside the boot UoW, before boot_regate:

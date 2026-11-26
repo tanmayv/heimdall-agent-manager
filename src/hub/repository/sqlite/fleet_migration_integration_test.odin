@@ -8,6 +8,9 @@ import "core:testing"
 
 FMI_SETTINGS :: "253_shared_fleet_settings.sql"
 FMI_APPLICATIONS :: "254_fleet_applications.sql"
+FMI_HOME_LAYOUTS :: "257_user_home_layouts.sql"
+FMI_EXTENSION_089 :: "255_extension_version_sync_0_5_89.sql"
+FMI_EXTENSION_090 :: "256_extension_version_sync_0_5_90.sql"
 FMI_REMOTE :: [3]string{"webhooks_002_dedupe_header.sql", "251_opencode_acp_provider.sql", "252_extension_version_sync_0_5_88.sql"}
 
 fmi_text :: proc(conn: ^Conn, query: string) -> string {
@@ -42,15 +45,15 @@ test_fleet_integration_migration_registry_matches_disk_and_embedded_tail :: proc
 		testing.expectf(t, registered[entry.name], "%s is registered", entry.name)
 	}
 	testing.expect_value(t, disk_count, len(migration_order))
-	for name in ([5]string{FMI_REMOTE[0], FMI_REMOTE[1], FMI_REMOTE[2], FMI_SETTINGS, FMI_APPLICATIONS}) {
+	for name in ([8]string{FMI_REMOTE[0], FMI_REMOTE[1], FMI_REMOTE[2], FMI_SETTINGS, FMI_APPLICATIONS, FMI_EXTENSION_089, FMI_EXTENSION_090, FMI_HOME_LAYOUTS}) {
 		disk, read_err := os.read_entire_file(strings.concatenate({dir, "/", name}), context.temp_allocator)
 		if !testing.expectf(t, read_err == nil, "read %s", name) do continue
 		embedded := migration_sql(name, "")
 		testing.expectf(t, len(embedded) > 0 && embedded == string(disk), "%s embeds the exact SQL file bytes", name)
 	}
 	order := migration_order
-	tail := order[len(order)-4:]
-	for name, i in ([4]string{FMI_REMOTE[1], FMI_REMOTE[2], FMI_SETTINGS, FMI_APPLICATIONS}) {
+	tail := order[len(order)-7:]
+	for name, i in ([7]string{FMI_REMOTE[1], FMI_REMOTE[2], FMI_SETTINGS, FMI_APPLICATIONS, FMI_EXTENSION_089, FMI_EXTENSION_090, FMI_HOME_LAYOUTS}) {
 		testing.expect_value(t, tail[i], name)
 	}
 	testing.expect(t, !registered["251_shared_fleet_settings.sql"] && !registered["252_fleet_applications.sql"], "unpublished conflicting identities are absent")
@@ -63,7 +66,7 @@ fmi_expect_schema :: proc(t: ^testing.T, conn: ^Conn) {
 	testing.expect(t, table_column_exists(conn, "event_webhooks", "dedupe_header"))
 	testing.expect_value(t, fmi_text(conn, "SELECT transports || ':' || default_transport FROM provider_catalog WHERE provider='opencode';"), `["acp"]:acp`)
 	for provider in ([3]string{"antigravity", "claude", "codex"}) {
-		testing.expect_value(t, fmi_text(conn, fmt.tprintf("SELECT json_extract(extension,'$.min_version') FROM provider_catalog WHERE provider='%s';", provider)), "0.5.88")
+		testing.expect_value(t, fmi_text(conn, fmt.tprintf("SELECT json_extract(extension,'$.min_version') FROM provider_catalog WHERE provider='%s';", provider)), "0.5.90")
 	}
 	for name in ([7]string{"bridge_fleet_settings", "bridge_fleet_agent_overrides", "instance_fleet_scope", "bridge_fleet_applications", "fleet_override_agent_delete_revision", "fleet_applications_active", "idx_fleet_actions_instance"}) {
 		testing.expectf(t, sqlite_object_exists(conn, name), "%s installed", name)

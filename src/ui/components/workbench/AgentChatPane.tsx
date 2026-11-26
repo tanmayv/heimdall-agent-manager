@@ -503,7 +503,7 @@ export function ThreadMessageBody({ body, onQuote, quoteDisabledReason = '', rev
   }
   if (containsArmored && locked) {
     const sanitized = replaceVaultTokens(body, '[🔒 Encrypted]');
-    return <Markdown source={sanitized} compact copyAll={false} />;
+    return <Markdown source={sanitized} variant="conversation" compact copyAll={false} />;
   }
   // REQ-ENC-2: never paint `vault:v2:`. While a vault body decrypts, keep this row's
   // previous plaintext (e.g. the optimistic send's text) or show the mask; a failed open
@@ -513,7 +513,7 @@ export function ThreadMessageBody({ body, onQuote, quoteDisabledReason = '', rev
   const source = !hasVault ? body
     : plain(decrypted) && (ready || !decryptFailed) ? decrypted! : maskVaultArmored(body);
   return <>
-    <Markdown source={source} compact copyAll={false}
+    <Markdown source={source} variant="conversation" compact copyAll={false}
       onTextSelectionChange={quoteReady ? setSelection : undefined}
       // Hold the reveal until a vault body has decrypted, so ciphertext never shows.
       reveal={reveal && !decryptFailed ? { ...reveal, hold: reveal.hold || (hasVault && !ready) } : undefined} />
@@ -2192,13 +2192,9 @@ export function AgentChatPane({
       return (
         <div
           data-debug-id={`conversation-agent-start-clubbed-${message.messageId}`}
-          className="my-2 flex w-full items-center gap-3"
+          className="my-2 truncate text-sm font-normal text-muted"
         >
-          <div className="flex-1 border-t border-subtle/40" />
-          <span className="shrink-0 font-mono text-[11px] text-faint">
-            agent started {count} times ({timeStr})
-          </span>
-          <div className="flex-1 border-t border-subtle/40" />
+          agent started {count} times ({timeStr})
         </div>
       );
     }
@@ -2207,13 +2203,9 @@ export function AgentChatPane({
       return (
         <div
           data-debug-id={`conversation-agent-start-${message.messageId}`}
-          className="my-2 flex w-full items-center gap-3"
+          className="my-2 truncate text-sm font-normal text-muted"
         >
-          <div className="flex-1 border-t border-subtle/40" />
-          <span className="shrink-0 font-mono text-[11px] text-faint">
-            agent started ({time})
-          </span>
-          <div className="flex-1 border-t border-subtle/40" />
+          agent started ({time})
         </div>
       );
     }

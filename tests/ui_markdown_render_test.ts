@@ -4,9 +4,26 @@ import './helpers/vaultEndpointHarness.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderMarkdown } from '../src/ui/components/markdownRender.ts';
+import { highlightCode } from '../src/ui/utils/codeHighlight.ts';
 
 const md = (src: string) => renderMarkdown(src, false);
 const ACCENT_QUOTE = 'text-accent font-medium';
+
+test('conversation snippets carry distinct token colors for both appearances', async () => {
+  const code = 'const value = true ? "example" : 42;';
+  const html = await highlightCode(code, 'js', { light: 'catppuccin-latte', dark: 'catppuccin-mocha' });
+  assert.ok(html, 'supported JavaScript fences should be highlighted');
+  for (const appearance of ['light', 'dark']) {
+    const colors = [...html.matchAll(new RegExp(`--shiki-${appearance}:(#[0-9a-f]+)`, 'gi'))]
+      .map((match) => match[1]);
+    assert.ok(new Set(colors).size >= 4, `${appearance} must distinguish syntax tokens from plain text`);
+  }
+
+  const shared = await highlightCode(code, 'js', 'default-dark');
+  assert.ok(shared);
+  assert.match(shared, /class="shiki github-dark"/);
+  assert.doesNotMatch(shared, /--shiki-(light|dark):/);
+});
 
 test('typographic apostrophes are not treated as a quotation (reported bug)', () => {
   const html = md('I received your approval to begin. I’m checking the approved task and chain state now, then I’ll move it.');

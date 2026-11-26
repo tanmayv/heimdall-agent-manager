@@ -72,7 +72,7 @@ taskchain_take_boot_regate_sqlite :: proc(ctx: rawptr) -> (bool, domain.Domain_E
 	return false, domain.Domain_Error{}
 }
 
-// ---- SCHED-0a one-shot mapping (migration 257) -------------------------------
+// ---- SCHED-0a one-shot mapping (migration 259) -------------------------------
 
 // taskchain_take_sched0_migration_sqlite deletes the sched0_migration_pending
 // marker and reports whether it was there. Inside the boot UoW, so a rollback

@@ -15,6 +15,7 @@ export function applyThemeToDocument(themeId: string): ThemeDefinition {
   const theme = getTheme(themeId);
   if (typeof document !== 'undefined') {
     document.documentElement.dataset.theme = theme.id;
+    document.documentElement.dataset.appearance = theme.appearance;
     document.documentElement.style.colorScheme = theme.appearance;
   }
   return theme;

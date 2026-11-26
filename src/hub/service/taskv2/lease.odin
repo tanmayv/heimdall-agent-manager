@@ -937,7 +937,7 @@ boot :: proc(svc: ^Service) {
         _, _ = end_uow(svc, &u, false)
         return
     }
-	// SCHED-0a (migration 257): one-shot agent-id mapping; before boot_regate so
+	// SCHED-0a (migration 259): one-shot agent-id mapping; before boot_regate so
 	// the regular regate sees the mapped reviewers.
 	if mapped, map_err := sched0_migrate_in_uow(svc, &u); !mapped {
 		fmt.eprintfln("[taskv2] sched0 agent-id migration failed: %s", map_err.message)

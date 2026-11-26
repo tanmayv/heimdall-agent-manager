@@ -579,7 +579,7 @@ test_task_v2_fields_sqlite_roundtrip :: proc(t: ^testing.T) {
 	for col in ([?]string{"state", "kind", "attempt_no", "brief_json", "blocked_on_json", "requires_user_approval", "ready_since", "stage_key", "stage_index", "generated_by_json"}) {
 		testing.expectf(t, table_column_exists(&conn, "tasks", col), "tasks.%s column exists", col)
 	}
-	// SCHED-0b (migration 258): fleet roles, per-role pause and lease review
+	// SCHED-0b (migration 260): fleet roles, per-role pause and lease review
 	// roles are dropped.
 	testing.expect(t, !table_column_exists(&conn, "task_chain_fleets", "roles_json"), "task_chain_fleets.roles_json is dropped")
 	testing.expect(t, !table_column_exists(&conn, "task_chain_fleets", "paused_roles_json"), "task_chain_fleets.paused_roles_json is dropped")

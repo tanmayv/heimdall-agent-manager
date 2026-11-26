@@ -216,15 +216,45 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     r.saved_tools = strings.clone(s.tool_map_json); r.saved_outbox = strings.clone(s.chat_outbox_json)
     // Older checkpoints stored every notice in the FIFO's default lane.
     // Reclassify those legacy IDs so a restore cannot replay N model turns.
-    for &input in r.d.queue {
-        if input.kind == "" && strings.has_prefix(input.id, "notice_") do input.lane = .Batch
-    }
+    acp_runtime_reclassify_saved_queue(r)
     if !acp_tools_prepare(r,r.saved_tools) {
         acp_runtime_replace(&r.d.error,"acp_protocol_error")
         r.d.auth_required=false;r.d.ready=false
     }
     if s.chat_outbox_json != "" && !acp_chat_prepare(r) { acp_runtime_destroy(r);return nil,false }
     return r, true
+}
+
+acp_runtime_reclassify_saved_queue :: proc(r: ^ACP_Runtime) {
+    first_bot := -1
+    for i := 0; i < len(r.d.queue); {
+        input := &r.d.queue[i]
+        // Old bot delivery used "bot" as the nudge sender, not its kind.
+        // Match the exact saved wake, not other untyped legacy notices.
+        if input.kind == "" && input.key == "" && strings.has_prefix(input.id, "notice_") && input.text == BOT_NOTICE {
+            acp_runtime_replace(&input.kind, ACP_BOT_KIND)
+        }
+        if input.kind == ACP_BOT_KIND {
+            if first_bot >= 0 {
+                // Keep FIFO position, but prefer a stable attempt over a
+                // legacy notice so the live worker can observe dispatch.
+                first := &r.d.queue[first_bot]
+                if !strings.has_prefix(first.id, ACP_BOT_INPUT_PREFIX) && strings.has_prefix(input.id, ACP_BOT_INPUT_PREFIX) {
+                    first^, input^ = input^, first^
+                }
+                acp_inbox_remember(r, input.id)
+                acp_inbox_input_delete(input^); ordered_remove(&r.d.queue, i)
+                continue
+            }
+            first_bot = i
+        }
+        if input.kind == "" && strings.has_prefix(input.id, "notice_") do input.lane = .Batch
+        i += 1
+    }
+    if first_bot >= 0 {
+        r.d.queue[first_bot].lane = .Steer
+        acp_runtime_replace(&r.d.queue[first_bot].key, ACP_BOT_KIND)
+    }
 }
 
 // A saved FIFO may overlap a restored in-flight/completed input or contain a

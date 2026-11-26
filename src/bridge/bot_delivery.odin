@@ -21,6 +21,8 @@ Bridge_Bot_Worker :: struct {
 	outcomes: [dynamic]contracts.Bot_Candidate_Outcome_Wire,
 	seq: int,
 	read_seen_ms, reply_seen_ms, notified_ms: i64,
+	dispatched_ms: i64, // atomic, first dispatch only
+	notice_waits_for_dispatch: bool, // set only by the delivery worker
 	read_extends: int,
 	idle_since_ms: i64,
 	worker_thread: ^thread.Thread,
@@ -293,6 +295,8 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 		if outcome != "" { bridge_bot_outcome(w, c, outcome, detail, ready_err, has_err); continue }
 		// Reset observation before typing: an immediate read/reply must not be lost.
 		sync.atomic_store(&w.read_seen_ms, 0); sync.atomic_store(&w.reply_seen_ms, 0)
+		sync.atomic_store(&w.dispatched_ms, 0)
+		w.notice_waits_for_dispatch = false
 		if !bridge_bot_notice_proc(w.frame.agent_instance_id) {
 			if sync.atomic_load(&w.cancel) do return
 			if bridge_bot_now_proc() >= w.ready_deadline_ms do bridge_bot_outcome(w, c, "launch_timeout", "")
@@ -301,6 +305,7 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 		}
 		w.phase = .Notified
 		w.notified_ms = bridge_bot_now_proc()
+		if !w.notice_waits_for_dispatch do sync.atomic_store(&w.dispatched_ms, w.notified_ms)
 		w.read_extends, w.idle_since_ms = 0, 0
 		bridge_bot_report(w, "working")
 		for !sync.atomic_load(&w.cancel) {
@@ -314,6 +319,7 @@ bridge_bot_run :: proc(w: ^Bridge_Bot_Worker) {
 				if result == "idle_no_reply" && act == "waiting_user" do detail = "waiting_user"
 				bridge_bot_outcome(w, c, result, detail)
 				if result == "acted" { w.phase = .Done; bridge_bot_report(w, "acted"); return }
+				if result == "not_dispatched" { w.phase = .Done; bridge_bot_report(w, "exhausted", result); return }
 				break
 			}
 			if w.phase != old_phase do bridge_bot_report(w, "working")
@@ -384,6 +390,10 @@ bridge_bot_deliver_notice :: proc(instance_id: string) -> bool {
 	if w == nil || w.frame.agent_instance_id != instance_id do return false
 	outcome, _, _, _ := bridge_bot_wait_ready(w, false, "")
 	if outcome != "" || sync.atomic_load(&w.cancel) do return false
+	if bridge_runtime_is_acp(instance_id) {
+		w.notice_waits_for_dispatch = true
+		return acp_runtime_deliver(instance_id, BOT_NOTICE, fmt.tprintf("%s%s", ACP_BOT_INPUT_PREFIX, w.frame.attempt_id), ACP_Input_Lane.Steer, ACP_BOT_KIND, ACP_BOT_KIND)
+	}
 	return bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "bot", "", "", human_message = BOT_NOTICE)
 }
 // Queue writes for the WS owner. Never retain a connection pointer in a worker.
@@ -472,6 +482,25 @@ bridge_bot_shutdown :: proc() {
 	for w in retired do bridge_bot_worker_destroy(w)
 }
 
+bridge_bot_notice_superseded :: proc(instance_id, input_id: string) -> bool {
+	if !strings.has_prefix(input_id, ACP_BOT_INPUT_PREFIX) do return false
+	sync.mutex_lock(&bridge_bot_workers_mutex)
+	defer sync.mutex_unlock(&bridge_bot_workers_mutex)
+	w := bridge_bot_workers[input_id[len(ACP_BOT_INPUT_PREFIX):]]
+	return w != nil && w.frame.agent_instance_id == instance_id && sync.atomic_load(&w.cancel)
+}
+
+// Observe prompt dispatch once, even if the admission receipt is replayed.
+bridge_bot_note_dispatch :: proc(instance_id, input_id: string, now_ms: i64) {
+	if !strings.has_prefix(input_id, ACP_BOT_INPUT_PREFIX) do return
+	attempt_id := input_id[len(ACP_BOT_INPUT_PREFIX):]
+	sync.mutex_lock(&bridge_bot_workers_mutex)
+	defer sync.mutex_unlock(&bridge_bot_workers_mutex)
+	w := bridge_bot_workers[attempt_id]
+	if w == nil || w.frame.agent_instance_id != instance_id || sync.atomic_load(&w.cancel) || sync.atomic_load(&w.finished) do return
+	if sync.atomic_load(&w.dispatched_ms) == 0 do sync.atomic_store(&w.dispatched_ms, now_ms)
+}
+
 // Relay observations are accepted only for live delivery workers.
 bridge_bot_note_read :: proc(instance_id, relay_body: string, now_ms: i64) {
 	temp := runtime.default_temp_allocator_temp_begin()
@@ -500,10 +529,13 @@ bridge_bot_watch_step :: proc(w: ^Bridge_Bot_Worker, act, status: string, now_ms
 	if status == "failed" || status == "stopped" || status == "unreachable" do return "crashed", true
 	timers := w.frame.timers
 	if w.phase == .Notified {
+		dispatched := sync.atomic_load(&w.dispatched_ms)
 		if read > 0 {
 			w.phase = .Read
 			w.idle_since_ms = 0
-		} else if now_ms - w.notified_ms >= timers.read_ms + i64(w.read_extends) * timers.read_extend_ms {
+		} else if dispatched == 0 {
+			if now_ms - w.notified_ms >= timers.reply_cap_ms do return "not_dispatched", true
+		} else if now_ms - dispatched >= timers.read_ms + i64(w.read_extends) * timers.read_extend_ms {
 			if act == "active" && w.read_extends < timers.read_max_extends do w.read_extends += 1
 			else do return "not_read", true
 		}

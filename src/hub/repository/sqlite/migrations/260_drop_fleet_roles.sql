@@ -1,7 +1,7 @@
 -- SCHED-0b (spec art_18eb828949cd9431, sections 6.4 and 11.2): fleet roles,
 -- per-role pause and lease review roles are gone. The role data the one-shot
 -- SCHED-0a boot mapping still needs was snapshotted into sched0_fleet_roles by
--- migration 257, so dropping the columns here cannot lose it.
+-- migration 259, so dropping the columns here cannot lose it.
 --
 -- task_reviews.role stays (it is in the primary key); an agent verdict is now
 -- written as 'review'. Rows written under the SCHED-0a interim name 'named' are

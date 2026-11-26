@@ -11,7 +11,7 @@ Task_List_By_State_Proc :: proc(ctx: rawptr, state: domain.Task_State) -> ([]dom
 // Take_Boot_Regate_Proc consumes the one-shot "re-evaluate every in-review
 // gate at boot" marker a gate-affecting migration leaves; true when it was set.
 Take_Boot_Regate_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)
-// SCHED-0a one-shot mapping (migration 257): take the marker, read and clear the
+// SCHED-0a one-shot mapping (migration 259): take the marker, read and clear the
 // fleet role snapshot, and collapse a task attempt's agent verdicts to one row
 // per agent under domain.SCHED0_REVIEW_ROLE (its review leases move with them).
 Take_Sched0_Migration_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)

@@ -14,7 +14,8 @@ User_Repo_SQLite :: struct {
 
 new_user_repository :: proc(impl: ^User_Repo_SQLite, conn: ^Conn) -> iface.User_Repository {
 	impl.conn = conn
-	return iface.User_Repository{resolve_external = user_resolve_external_sqlite, ctx = rawptr(impl), launch_preferences_get = launch_preferences_get_sqlite, launch_preferences_save = launch_preferences_save_sqlite, get_by_id = user_get_by_id_sqlite, save = user_save_sqlite}
+	// Home layout preferences share the authenticated-user repository.
+	return iface.User_Repository{resolve_external = user_resolve_external_sqlite, ctx = rawptr(impl), home_layout_get = home_layout_get_sqlite, home_layout_cas = home_layout_cas_sqlite, launch_preferences_get = launch_preferences_get_sqlite, launch_preferences_save = launch_preferences_save_sqlite, get_by_id = user_get_by_id_sqlite, save = user_save_sqlite}
 }
 
 user_get_by_id_sqlite :: proc(ctx: rawptr, user_id: domain.User_ID) -> (domain.User, bool, domain.Domain_Error) {

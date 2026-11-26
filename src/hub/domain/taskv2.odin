@@ -139,7 +139,7 @@ Workflow_Definition :: struct {
 	created_at:    string,
 }
 
-// Sched0_Fleet_Roles: one fleet row's role data, snapshotted by migration 257
+// Sched0_Fleet_Roles: one fleet row's role data, snapshotted by migration 259
 // (SCHED-0a) for the one-shot agent-id mapping at the next boot. It outlives the
 // role columns that SCHED-0b drops.
 Sched0_Fleet_Roles :: struct {

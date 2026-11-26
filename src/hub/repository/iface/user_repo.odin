@@ -6,6 +6,8 @@ User_Get_By_ID_Proc :: proc(ctx: rawptr, user_id: domain.User_ID) -> (domain.Use
 User_Save_Proc :: proc(ctx: rawptr, user: domain.User) -> (domain.User, bool, domain.Domain_Error)
 
 User_Repository :: struct {
+	home_layout_get: Home_Layout_Get_Proc,
+	home_layout_cas: Home_Layout_CAS_Proc,
 	resolve_external: proc(ctx: rawptr, issuer, subject, username, display_name, email, now: string, provision, claim_existing: bool) -> (domain.User, bool, domain.Domain_Error),
  launch_preferences_get: Launch_Preferences_Get_Proc,
  launch_preferences_save: Launch_Preferences_Save_Proc,

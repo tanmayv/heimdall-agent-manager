@@ -1,6 +1,6 @@
 {
   "name": "heimdall",
-  "version": "0.5.90",
+  "version": "0.5.91",
   "description": "Heimdall Codex lifecycle and permission hooks",
   "hooks": "./hooks/hooks.json"
 }

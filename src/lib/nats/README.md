@@ -6,6 +6,15 @@ This package wraps the nats.c version/source/hash selected by `flake.lock`
 their version-sensitive layouts in Odin. There are no callbacks into Odin and
 no asynchronous subscriptions.
 
+The source pin is unchanged. Both the shared Nix derivation (native, static and
+cross builds) and the Windows source builder apply the minimal leading-zero
+fraction correction in `nix/patches/nats-encode-time-utc-leading-zeros.patch`.
+Nine nanosecond digits are printed before the existing trailing-zero trim, so
+62ms remains `.062Z`, rather than becoming `.62Z`. Patch context drift fails the
+build; the Windows equivalent uses built-in PowerShell/.NET without requiring
+Git or a patch executable. Version/archive hashes, TLS and static settings stay
+with the existing pins.
+
 ## Build and verify
 
 ```bash
@@ -24,6 +33,28 @@ allocations are not classified as task leaks. No existing server or credentials 
 used. `src/lib/natstest` is the reusable fixture: the server chooses its own port,
 writes a ports file, and owns an isolated temporary JetStream store. Always call
 `natstest.destroy`, even when startup fails. `natstest.stop` supports outage tests.
+
+The Linux Nix check requires writable existing tmpfs at `/dev/shm` with at least
+256 MiB free. It selects a private mode-700 `TMPDIR`, prints its location and
+capacity, and removes it on exit without replacing the builder's cleanup trap.
+The real server still uses file-backed JetStream stores, including restart and
+persistence assertions; request deadlines and leak checks are unchanged. This
+isolates short-deadline fixtures from the host's shared disk. A matched diagnostic
+passed on tmpfs and failed under Valgrind on disk, but did not establish the
+cause of historical timeouts. macOS and direct dev-shell runs keep their existing
+temporary-directory selection. Missing tmpfs fails clearly; it does not skip tests.
+
+The time regression calls the actual linked client encoder for whole seconds,
+leading-zero fractions down to 1ns, 10/60/62/80/81/90ms and 100/990ms controls.
+Real consumer-info responses must record each exact cutoff and preserve filter,
+ack and replay settings. A stored target's authoritative metadata supplies the
+inclusive boundary and the one-nanosecond-later exclusion control; no publication
+timing assumption, sleeps or retries are used. The test decodes fractional digits
+independently of Odin's generic RFC3339 parser. It retains global shutdown and
+the existing tracking allocator assertion. Windows's linked version/TLS smoke
+also checks exact encoder output; `scripts/windows/test-build-nats.ps1` checks
+patch parity and clear drift rejection without Visual Studio. Running that script
+on Linux does not establish native Windows compilation or execution coverage.
 
 TLS is **enabled**, with hostname verification and OpenSSL from the same package
 set used by pinned curl. Libsodium, legacy NATS Streaming and examples are

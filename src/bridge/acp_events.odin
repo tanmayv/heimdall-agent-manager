@@ -213,6 +213,7 @@ acp_events_activity :: proc(r: ^ACP_Runtime,state,summary: string) {
 
 
 acp_events_prompt_started :: proc(r: ^ACP_Runtime,input_id: string) {
+    if strings.has_prefix(input_id, ACP_BOT_INPUT_PREFIX) do bridge_bot_note_dispatch(r.instance, input_id, acp_rpc_now(r.client))
     acp_events_activity(r,"active","")
     acp_chat_prompt_started(r,input_id)
 }

@@ -9,7 +9,7 @@ import "core:testing"
 // a database must still run the 0.4.44 extension sync (the ledger is keyed by
 // full file name), must not re-run the ALTER TABLE (a hard "duplicate column
 // name"), and must keep its pause (SCHED-0b: one `paused` boolean; the per-role
-// column is dropped by 258 and must not come back).
+// column is dropped by 260 and must not come back).
 
 FPR_SYNC :: "130_extension_version_sync_0_4_44.sql"
 FPR_PAUSE :: "131_fleet_pause.sql"

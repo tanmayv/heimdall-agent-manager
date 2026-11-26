@@ -1387,9 +1387,18 @@ test_provider_transport_http_busy_is_storage_error :: proc(t: ^testing.T) {
 	defer free_all(context.temp_allocator)
 	// A second connection holds RESERVED: reads and BEGIN DEFERRED succeed,
 	// but the actual transport INSERT/UPDATE gets SQLITE_BUSY.
-	path := fmt.aprintf("%s/.cache/heimdall-tests/t8-transport-busy.db", os.get_env("HOME", context.temp_allocator))
-	os.remove(path)
-	defer os.remove(path)
+	// Parallel suite processes share HOME. A fixed filename let one process
+	// unlink the other's live database while its migrations or busy probe ran.
+	path := fmt.aprintf("%s/.cache/heimdall-tests/t8-transport-busy-%d-%d.db", os.get_env("HOME", context.temp_allocator), os.get_pid(), i64(time.tick_now()._nsec))
+	fmt.eprintf("PROVIDER_TRANSPORT_BUSY_DB path=%s\n", path)
+	// Registered before connection cleanup, so these owned files are removed
+	// only after the writer and fixture connections have both closed.
+	defer {
+		_ = os.remove(path)
+		_ = os.remove(strings.concatenate({path, "-wal"}))
+		_ = os.remove(strings.concatenate({path, "-shm"}))
+		_ = os.remove(strings.concatenate({path, "-journal"}))
+	}
 	f := extension_test_setup(t, "transport_busy", path)
 	if f == nil do return
 	defer extension_test_teardown(f)

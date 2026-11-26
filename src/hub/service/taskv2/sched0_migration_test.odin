@@ -11,8 +11,8 @@ import jsonx "odin_test:lib/jsonx"
 
 // SCHED-0a migration tests (spec art_18eb828949cd9431, section 14.6).
 
-// SCHED0_REARM_SQL writes what migration 257 snapshots on an existing database:
-// the fleet role data (the role columns themselves are dropped by 258) and the
+// SCHED0_REARM_SQL writes what migration 259 snapshots on an existing database:
+// the fleet role data (the role columns themselves are dropped by 260) and the
 // one-shot marker. The pre-0b role state of tasks, verdicts and pauses is
 // written directly, since the engine no longer has roles.
 @(private = "file")
@@ -143,7 +143,7 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	testing.expect(t, rok && eok, fmt.tprintf("fixture: running workflow run: %s %s", rerr.message, eerr.message))
 
 	// ---- migrate ----------------------------------------------------------------
-	testing.expect(t, sqlite.exec(&fx.conn, SCHED0_REARM_SQL), "re-arm migration 257 data snapshot")
+	testing.expect(t, sqlite.exec(&fx.conn, SCHED0_REARM_SQL), "re-arm migration 259 data snapshot")
 	boot(&fx.svc)
 
 	// Role-based review mapped to named reviewers; review roles gone; focus kept.
@@ -241,72 +241,72 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(notices.lines), 0)
 }
 
-// Migration 257 itself on a pre-257 schema: columns, projections, backfill,
+// Migration 259 itself on a pre-259 schema: columns, projections, backfill,
 // marker and snapshot; and an empty database gets no marker.
 @(test)
-test_sched0_migration_257_schema_and_projections :: proc(t: ^testing.T) {
+test_sched0_migration_259_schema_and_projections :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
-	fx, ok := fixture_open(t, "sched0_257", stop_before = "257_agent_id_assignment.sql")
+	fx, ok := fixture_open(t, "sched0_259", stop_before = "259_agent_id_assignment.sql")
 	defer fixture_close(fx)
 	if !ok do return
-	testing.expect(t, sqlite.exec(&fx.conn, `INSERT INTO task_chains (chain_id, owner_user_id, title, description, publish_state, status, kind, coordinator_agent_instance_id, defaults_json, created_at, updated_at, published_at, completed_at, last_activity_at, last_title_nudge_at, title_source, is_pinned, pinned_at) VALUES ('chain_257', 'u1', 'c', '', 'published', 'active', 'mixed_work', '', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '', '', '', '', '', 0, '');
+	testing.expect(t, sqlite.exec(&fx.conn, `INSERT INTO task_chains (chain_id, owner_user_id, title, description, publish_state, status, kind, coordinator_agent_instance_id, defaults_json, created_at, updated_at, published_at, completed_at, last_activity_at, last_title_nudge_at, title_source, is_pinned, pinned_at) VALUES ('chain_259', 'u1', 'c', '', 'published', 'active', 'mixed_work', '', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '', '', '', '', '', 0, '');
 INSERT INTO task_chain_fleets (task_chain_id, agent_id, capacity, min_warm, idle_ttl_seconds, provider, model, created_at, updated_at, bridge_models_json, roles_json, bridge_id, paused_roles_json, provider_profile) VALUES
- ('chain_257', 'agt_a', 1, 0, 0, '', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}', '["worker"]', '', '', ''),
- ('chain_257', 'agt_b', 1, 0, 0, '', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}', '["worker","sec"]', '', '["sec"]', '');`), "seed pre-257 chain and fleet")
-	// The pre-257 schema stops before the post-loop upgrade twins, so the task row
+ ('chain_259', 'agt_a', 1, 0, 0, '', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}', '["worker"]', '', '', ''),
+ ('chain_259', 'agt_b', 1, 0, 0, '', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}', '["worker","sec"]', '', '["sec"]', '');`), "seed pre-259 chain and fleet")
+	// The pre-259 schema stops before the post-loop upgrade twins, so the task row
 	// is written with the columns every schema has.
-	testing.expect(t, sqlite.exec(&fx.conn, `INSERT INTO tasks (task_id, chain_id, owner_user_id, title, brief_json, created_at, updated_at) VALUES ('t_257', 'chain_257', 'u1', 't', '{"goal":"g","assignee":" agt_a ","reviewers":["agt_b","user"," agt_c ",""],"review_roles":["sec"]}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');`), "seed pre-257 task")
+	testing.expect(t, sqlite.exec(&fx.conn, `INSERT INTO tasks (task_id, chain_id, owner_user_id, title, brief_json, created_at, updated_at) VALUES ('t_259', 'chain_259', 'u1', 't', '{"goal":"g","assignee":" agt_a ","reviewers":["agt_b","user"," agt_c ",""],"review_roles":["sec"]}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');`), "seed pre-259 task")
 
 	migrated, merr := sqlite.run_migrations(&fx.conn)
 	if !testing.expect(t, migrated, merr.message) do return
 	testing.expect_value(t, scalar_int(fx, "SELECT paused FROM task_chain_fleets WHERE agent_id = 'agt_a';"), 0)
 	testing.expect_value(t, scalar_int(fx, "SELECT paused FROM task_chain_fleets WHERE agent_id = 'agt_b';"), 1)
-	testing.expect_value(t, scalar_int(fx, "SELECT max_parallel + review_reserve FROM task_chains WHERE chain_id = 'chain_257';"), 0)
-	testing.expect_value(t, scalar_text(fx, "SELECT assignee_agent_id FROM tasks WHERE task_id = 't_257';"), "agt_a")
-	testing.expect_value(t, scalar_text(fx, "SELECT group_concat(agent_id || '@' || chain_id || '@' || owner_user_id, ',') FROM (SELECT * FROM task_reviewers WHERE task_id = 't_257' ORDER BY agent_id);"), "agt_b@chain_257@u1,agt_c@chain_257@u1")
+	testing.expect_value(t, scalar_int(fx, "SELECT max_parallel + review_reserve FROM task_chains WHERE chain_id = 'chain_259';"), 0)
+	testing.expect_value(t, scalar_text(fx, "SELECT assignee_agent_id FROM tasks WHERE task_id = 't_259';"), "agt_a")
+	testing.expect_value(t, scalar_text(fx, "SELECT group_concat(agent_id || '@' || chain_id || '@' || owner_user_id, ',') FROM (SELECT * FROM task_reviewers WHERE task_id = 't_259' ORDER BY agent_id);"), "agt_b@chain_259@u1,agt_c@chain_259@u1")
 	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM sched0_migration_pending;"), 1)
 	testing.expect_value(t, scalar_text(fx, "SELECT roles_json || paused_roles_json FROM sched0_fleet_roles WHERE agent_id = 'agt_b';"), `["worker","sec"]["sec"]`)
 	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM sqlite_master WHERE name = 'idx_tasks_chain_assignee_state';"), 1)
 
 	// Projections follow every later brief write, whatever path wrote it.
-	task := get_task(fx, "t_257")
+	task := get_task(fx, "t_259")
 	task.brief_json = `{"goal":"g","assignee":"agt_z","reviewers":["agt_y"]}`
 	_, saved, serr := iface.taskchain_save_task(&fx.repo, task)
 	testing.expect(t, saved, serr.message)
-	testing.expect_value(t, scalar_text(fx, "SELECT assignee_agent_id FROM tasks WHERE task_id = 't_257';"), "agt_z")
-	testing.expect_value(t, scalar_text(fx, "SELECT group_concat(agent_id, ',') FROM task_reviewers WHERE task_id = 't_257';"), "agt_y")
-	testing.expect(t, sqlite.exec(&fx.conn, `UPDATE tasks SET brief_json = 'not json' WHERE task_id = 't_257';`), "an unreadable brief does not fail the write")
-	testing.expect_value(t, scalar_text(fx, "SELECT assignee_agent_id FROM tasks WHERE task_id = 't_257';"), "")
-	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM task_reviewers WHERE task_id = 't_257';"), 0)
-	testing.expect(t, sqlite.exec(&fx.conn, `UPDATE tasks SET brief_json = '{"reviewers":["agt_x"]}' WHERE task_id = 't_257'; DELETE FROM tasks WHERE task_id = 't_257';`), "delete task")
+	testing.expect_value(t, scalar_text(fx, "SELECT assignee_agent_id FROM tasks WHERE task_id = 't_259';"), "agt_z")
+	testing.expect_value(t, scalar_text(fx, "SELECT group_concat(agent_id, ',') FROM task_reviewers WHERE task_id = 't_259';"), "agt_y")
+	testing.expect(t, sqlite.exec(&fx.conn, `UPDATE tasks SET brief_json = 'not json' WHERE task_id = 't_259';`), "an unreadable brief does not fail the write")
+	testing.expect_value(t, scalar_text(fx, "SELECT assignee_agent_id FROM tasks WHERE task_id = 't_259';"), "")
+	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM task_reviewers WHERE task_id = 't_259';"), 0)
+	testing.expect(t, sqlite.exec(&fx.conn, `UPDATE tasks SET brief_json = '{"reviewers":["agt_x"]}' WHERE task_id = 't_259'; DELETE FROM tasks WHERE task_id = 't_259';`), "delete task")
 	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM task_reviewers;"), 0)
 
-	// 258 dropped the role columns; `paused` is the row's own field (SCHED-0b).
+	// 260 dropped the role columns; `paused` is the row's own field (SCHED-0b).
 	testing.expect(t, !sqlite.table_column_exists(&fx.conn, "task_chain_fleets", "roles_json") && !sqlite.table_column_exists(&fx.conn, "task_chain_fleets", "paused_roles_json") && !sqlite.table_column_exists(&fx.conn, "task_leases", "review_role"), "role columns dropped")
-	_, ferr := iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_257", agent_id = "agt_b", capacity = 1, paused = false})
+	_, ferr := iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_259", agent_id = "agt_b", capacity = 1, paused = false})
 	testing.expect_value(t, ferr.code, domain.Error_Code.None)
-	fleets, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, "chain_257", "u1")
+	fleets, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, "chain_259", "u1")
 	for f in fleets do if f.agent_id == "agt_b" do testing.expect(t, !f.paused, "resumed row reads unpaused")
-	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_257", agent_id = "agt_a", capacity = 1, paused = true})
+	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_259", agent_id = "agt_a", capacity = 1, paused = true})
 	testing.expect_value(t, scalar_int(fx, "SELECT paused FROM task_chain_fleets WHERE agent_id = 'agt_a';"), 1)
 
 	// Chain caps round-trip through the repository.
-	c, cok, _ := iface.taskchain_get_chain(&fx.repo, "chain_257")
-	if testing.expect(t, cok, "chain readable after 257") {
+	c, cok, _ := iface.taskchain_get_chain(&fx.repo, "chain_259")
+	if testing.expect(t, cok, "chain readable after 259") {
 		c.max_parallel = 3
 		c.review_reserve = 1
 		_, _, _ = iface.taskchain_save_chain(&fx.repo, c)
-		again, _, _ := iface.taskchain_get_chain(&fx.repo, "chain_257")
+		again, _, _ := iface.taskchain_get_chain(&fx.repo, "chain_259")
 		testing.expect(t, again.max_parallel == 3 && again.review_reserve == 1, "chain caps persisted")
 	}
 
 	// Re-running the migrations is a no-op.
 	again_ok, again_err := sqlite.run_migrations(&fx.conn)
 	testing.expect(t, again_ok, again_err.message)
-	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM schema_migrations WHERE version = '257_agent_id_assignment.sql';"), 1)
+	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM schema_migrations WHERE version = '259_agent_id_assignment.sql';"), 1)
 
 	// A database with no task-system data has nothing to map.
-	fresh, fok := fixture_open(t, "sched0_257_fresh")
+	fresh, fok := fixture_open(t, "sched0_259_fresh")
 	defer fixture_close(fresh)
 	if fok do testing.expect_value(t, scalar_int(fresh, "SELECT count(*) FROM sched0_migration_pending;"), 0)
 }

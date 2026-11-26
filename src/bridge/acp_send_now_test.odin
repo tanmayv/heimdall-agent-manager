@@ -109,6 +109,31 @@ sn_queue_ids :: proc(f: ^T4_Runtime_Test) -> string {
 sn_ids_target: ^[dynamic]string
 
 @(test)
+sn_send_now_steers_native_chat_ahead_of_bot_queue :: proc(t: ^testing.T) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+        sn_do(f, proc(f: ^T4_Runtime_Test) { f.r.d.steering_supported = true })
+        testing.expect(t, sn_msg(f, "msg_active", "active work"))
+        if !acp_test_wait(t, &f.f, .Writes, 1) do return
+        testing.expect(t, t16_bot_input(f, "bot_waiting", "channel wake after turn"))
+        testing.expect(t, sn_msg(f, "msg_urgent", "native urgent input"))
+        e := sn_last(f, "msg_urgent")
+        testing.expect_value(t, e.state, "queued")
+        testing.expect_value(t, e.hold_reason, "turn_active")
+        testing.expect_value(t, t16_writes(f), 1)
+        testing.expect(t, sn_batch(f, "snb_native", 1, {"msg_urgent"}))
+        if !acp_test_wait(t, &f.f, .Writes, 2) do return
+        line := sn_write(f, 1)
+        testing.expect(t, strings.contains(line, "_session/steering") && strings.contains(line, "native urgent input") && !strings.contains(line, "channel wake"))
+        t4_runtime_reply(t, f, 1, `{"outcome":"injected"}`, 1)
+        t4_runtime_reply(t, f, 0, `{"stopReason":"end_turn"}`, 2)
+        if !acp_test_wait(t, &f.f, .Writes, 3) do return
+        testing.expect(t, strings.contains(sn_write(f, 2), "channel wake after turn"))
+        testing.expect_value(t, sn_count_writes(f, "session/cancel"), 0)
+        t4_runtime_reply(t, f, 2, `{"stopReason":"end_turn"}`, 3)
+    })
+}
+
+@(test)
 sn_idle_send_is_not_turn_held_and_delivers_as_prompt :: proc(t: ^testing.T) {
     sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
         testing.expect(t, sn_msg(f, "msg_idle", "hello"))

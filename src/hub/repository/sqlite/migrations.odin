@@ -780,14 +780,17 @@ MIGRATION_251_OPENCODE_ACP_PROVIDER :: #load("migrations/251_opencode_acp_provid
 MIGRATION_252_EXTENSION_VERSION_SYNC :: #load("migrations/252_extension_version_sync_0_5_88.sql", string)
 MIGRATION_253_SHARED_FLEET_SETTINGS :: #load("migrations/253_shared_fleet_settings.sql", string)
 MIGRATION_254_FLEET_APPLICATIONS :: #load("migrations/254_fleet_applications.sql", string)
+MIGRATION_257_USER_HOME_LAYOUTS :: #load("migrations/257_user_home_layouts.sql", string)
 
 MIGRATION_255_EXTENSION_VERSION_SYNC :: #load("migrations/255_extension_version_sync_0_5_89.sql", string)
 
 MIGRATION_256_EXTENSION_VERSION_SYNC :: #load("migrations/256_extension_version_sync_0_5_90.sql", string)
 
-MIGRATION_257_AGENT_ID_ASSIGNMENT :: #load("migrations/257_agent_id_assignment.sql", string)
+MIGRATION_258_EXTENSION_VERSION_SYNC :: #load("migrations/258_extension_version_sync_0_5_91.sql", string)
 
-MIGRATION_258_DROP_FLEET_ROLES :: #load("migrations/258_drop_fleet_roles.sql", string)
+MIGRATION_259_AGENT_ID_ASSIGNMENT :: #load("migrations/259_agent_id_assignment.sql", string)
+
+MIGRATION_260_DROP_FLEET_ROLES :: #load("migrations/260_drop_fleet_roles.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1082,8 +1085,10 @@ migration_order :: [?]string {
 	"254_fleet_applications.sql",
 	"255_extension_version_sync_0_5_89.sql",
 	"256_extension_version_sync_0_5_90.sql",
-	"257_agent_id_assignment.sql",
-	"258_drop_fleet_roles.sql",
+	"257_user_home_layouts.sql",
+	"258_extension_version_sync_0_5_91.sql",
+	"259_agent_id_assignment.sql",
+	"260_drop_fleet_roles.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1640,14 +1645,16 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
-	if name == "258_drop_fleet_roles.sql" do return strings.clone(MIGRATION_258_DROP_FLEET_ROLES)
-	if name == "257_agent_id_assignment.sql" do return strings.clone(MIGRATION_257_AGENT_ID_ASSIGNMENT)
+	if name == "260_drop_fleet_roles.sql" do return strings.clone(MIGRATION_260_DROP_FLEET_ROLES)
+	if name == "259_agent_id_assignment.sql" do return strings.clone(MIGRATION_259_AGENT_ID_ASSIGNMENT)
+	if name == "258_extension_version_sync_0_5_91.sql" do return strings.clone(MIGRATION_258_EXTENSION_VERSION_SYNC)
 	if name == "256_extension_version_sync_0_5_90.sql" do return strings.clone(MIGRATION_256_EXTENSION_VERSION_SYNC)
 	if name == "255_extension_version_sync_0_5_89.sql" do return strings.clone(MIGRATION_255_EXTENSION_VERSION_SYNC)
 	if name == "252_extension_version_sync_0_5_88.sql" do return strings.clone(MIGRATION_252_EXTENSION_VERSION_SYNC)
 	if name == "250_extension_version_sync_0_5_87.sql" do return strings.clone(MIGRATION_250_EXTENSION_VERSION_SYNC)
 	if name == "253_shared_fleet_settings.sql" do return strings.clone(MIGRATION_253_SHARED_FLEET_SETTINGS)
 	if name == "254_fleet_applications.sql" do return strings.clone(MIGRATION_254_FLEET_APPLICATIONS)
+	if name == "257_user_home_layouts.sql" do return strings.clone(MIGRATION_257_USER_HOME_LAYOUTS)
 	if name == "251_opencode_acp_provider.sql" do return strings.clone(MIGRATION_251_OPENCODE_ACP_PROVIDER)
 	if name == "249_extension_version_sync_0_5_86.sql" do return strings.clone(MIGRATION_249_EXTENSION_VERSION_SYNC)
 	if name == "248_extension_version_sync_0_5_85.sql" do return strings.clone(MIGRATION_248_EXTENSION_VERSION_SYNC)
@@ -1973,6 +1980,11 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	if version == "129_remove_task_verify.sql" {
 		return migration_applied(conn, "128_remove_task_verify.sql")
 	}
+	// SCHED-0a/0b ran on development databases as 257/258 before release 0.5.91
+	// took those numbers, so they were renumbered 259/260. Re-running them would
+	// fail (duplicate `paused` column; dropping already-dropped role columns).
+	if version == "259_agent_id_assignment.sql" do return migration_applied(conn, "257_agent_id_assignment.sql")
+	if version == "260_drop_fleet_roles.sql" do return migration_applied(conn, "258_drop_fleet_roles.sql")
 	// The column may already exist (upgrade_task_v2_schema ensures it too). A
 	// database that ran this file under its pre-release number (130_fleet_pause.sql,
 	// before release 0.4.44 took 130) also has it, so the renumbered file is marked
@@ -1988,9 +2000,9 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 		return table_column_exists(conn, "bridge_tokens", "rotation_request_hash")
 	}
 	if version == "131_fleet_pause.sql" {
-		// SCHED-0b: 258 drops the column again, so its absence after 258 is not
+		// SCHED-0b: 260 drops the column again, so its absence after 260 is not
 		// a reason to re-run 131 (that would re-add it).
-		return table_column_exists(conn, "task_chain_fleets", "paused_roles_json") || migration_applied(conn, "258_drop_fleet_roles.sql")
+		return table_column_exists(conn, "task_chain_fleets", "paused_roles_json") || migration_applied(conn, "260_drop_fleet_roles.sql")
 	}
 	if version == "048_task_subscriptions.sql" || version == "049_task_subscriptions.sql" {
 		return sqlite_object_exists(conn, "task_subscriptions")

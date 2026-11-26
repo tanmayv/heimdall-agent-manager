@@ -59,6 +59,7 @@ export type MarkdownBodyProps = {
   source: string;
   className?: string;
   compact?: boolean;
+  variant?: 'conversation';
   copyAll?: boolean;
   'data-debug-id'?: string;
   onArtifactClick?: (artifactId: string) => void;
@@ -135,7 +136,7 @@ export async function renderMermaidElement(
   }
 }
 
-export default function MarkdownBody({ source, className, compact, copyAll = true, 'data-debug-id': dataDebugId, onArtifactClick, onTextSelectionChange, reveal }: MarkdownBodyProps) {
+export default function MarkdownBody({ source, className, compact, variant, copyAll = true, 'data-debug-id': dataDebugId, onArtifactClick, onTextSelectionChange, reveal }: MarkdownBodyProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const html = useMemo(() => renderMarkdown(source || '', copyAll), [source, copyAll]);
   useStreamReveal(rootRef, html, reveal);
@@ -200,7 +201,10 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
     if (containers.length === 0) return undefined;
 
     let cancelled = false;
-    const activeTheme = getActiveShikiTheme();
+    // Keep chat syntax colors consistent across app themes to match the chat reference.
+    const activeTheme = variant === 'conversation'
+      ? { light: 'catppuccin-latte', dark: 'catppuccin-mocha' }
+      : getActiveShikiTheme();
 
     containers.forEach(async (container) => {
       const code = container.getAttribute('data-code-raw') ?? container.querySelector('pre code')?.textContent ?? container.textContent ?? '';
@@ -228,7 +232,7 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
     return () => {
       cancelled = true;
     };
-  }, [html]);
+  }, [html, variant]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -327,7 +331,7 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
     <div
       ref={rootRef}
       data-debug-id={dataDebugId}
-      className={`markdown min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${spacing} text-sm text-primary ${className || ''}`}
+      className={`markdown min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${spacing} text-sm text-primary ${variant === 'conversation' ? 'conversation-markdown' : ''} ${className || ''}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

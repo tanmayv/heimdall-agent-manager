@@ -57,6 +57,92 @@ t16_tick :: proc(data: rawptr) {
     acp_inbox_tick(f.r)
 }
 
+t16_bot_input :: proc(f: ^T4_Runtime_Test, id, text: string) -> bool {
+    return t16_input(f, id, text, acp_inbox_lane(ACP_BOT_KIND), ACP_BOT_KIND, ACP_BOT_KIND)
+}
+
+@(test)
+t16_acp_bot_bypasses_notice_budget_and_does_not_reset_it :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    f: T4_Runtime_Test; t16_open(&f, "inst_bot_budget"); defer t16_close(&f)
+    testing.expect(t, t16_input(&f, "event_first", "first generic notice", .Batch))
+    sync.atomic_store(&f.f.clock, 102000); t4_runtime_call(&f, "inbox_tick")
+    if !acp_test_wait(t, &f.f, .Writes, 1) do return
+    t4_runtime_reply(t, &f, 0, `{"stopReason":"end_turn"}`, 1)
+    testing.expect(t, t16_input(&f, "event_second", "generic digest context", .Batch))
+    testing.expect(t, len(f.r.d.queue) == 1 && f.r.d.queue[0].lane == .Digest)
+
+    testing.expect(t, t16_bot_input(&f, "bot_first", "first bot turn"))
+    if !acp_test_wait(t, &f.f, .Writes, 2) do return
+    testing.expect(t, strings.contains(sn_write(&f, 1), "generic digest context"))
+    t4_runtime_reply(t, &f, 1, `{"stopReason":"end_turn"}`, 2)
+    sync.atomic_store(&f.f.clock, 122000)
+    testing.expect(t, t16_bot_input(&f, "bot_second", "second bot turn"))
+    if !acp_test_wait(t, &f.f, .Writes, 3) do return
+    testing.expect(t, strings.contains(sn_write(&f, 2), "second bot turn"))
+    testing.expect_value(t, f.r.d.last_notice_turn_ms, 102000)
+    t4_runtime_reply(t, &f, 2, `{"stopReason":"end_turn"}`, 3)
+}
+
+@(test)
+t16_acp_bot_burst_waits_for_idle_and_deduplicates :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    f: T4_Runtime_Test; t16_open(&f, "inst_bot_burst"); defer t16_close(&f)
+    f.r.d.steering_supported = true
+    testing.expect(t, t16_input(&f, "msg_busy", "work in progress", .Steer))
+    if !acp_test_wait(t, &f.f, .Writes, 1) do return
+    testing.expect(t, t16_bot_input(&f, "bot_oldest", "oldest wake"))
+    testing.expect(t, t16_bot_input(&f, "bot_middle", "middle wake"))
+    testing.expect(t, t16_bot_input(&f, "bot_latest", "latest wake"))
+    testing.expect(t, t16_bot_input(&f, "bot_latest", "retry while queued"))
+    testing.expect(t, t16_bot_input(&f, "bot_oldest", "superseded retry"))
+    testing.expect(t, len(f.r.d.queue) == 1 && f.r.d.queue[0].id == "bot_latest")
+    // A write here would be an early prompt, a steer or a cancel.
+    testing.expect_value(t, t16_writes(&f), 1)
+    t4_runtime_reply(t, &f, 0, `{"stopReason":"end_turn"}`, 1)
+    if !acp_test_wait(t, &f.f, .Writes, 2) do return
+    line := sn_write(&f, 1)
+    testing.expect(t, strings.contains(line, "session/prompt") && strings.contains(line, "latest wake") && !strings.contains(line, "retry"))
+    t4_runtime_reply(t, &f, 1, `{"stopReason":"end_turn"}`, 2)
+    testing.expect(t, t16_bot_input(&f, "bot_latest", "retry after completion"))
+    testing.expect_value(t, t16_writes(&f), 2)
+}
+
+@(test)
+t16_acp_bot_restore_promotes_and_coalesces_saved_digest :: proc(t: ^testing.T) {
+    sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    f: T4_Runtime_Test; t16_open(&f, "inst_bot_restore")
+    // The old PTY nudge call passed "bot" as the sender, not the role.
+    testing.expect(t, t16_input(&f, "notice_100", BOT_NOTICE, .Digest, "", ""))
+    testing.expect(t, t16_input(&f, "notice_101", BOT_NOTICE, .Batch, "", ""))
+    testing.expect(t, t16_input(&f, "notice_102", "ordinary legacy notice", .Digest, "", ""))
+    sync.mutex_lock(&f.f.mu); snapshot := strings.clone(f.f.snapshot, runtime.heap_allocator()); sync.mutex_unlock(&f.f.mu)
+    defer delete(snapshot, runtime.heap_allocator())
+    t16_close(&f)
+
+    state, valid := acp_state_decode(snapshot); defer acp_state_delete(&state)
+    if !testing.expect(t, valid) do return
+    next: T4_Runtime_Test; t16_open(&next, "inst_bot_restore"); defer t16_close(&next)
+    delete(next.r.d.phase, runtime.heap_allocator()); delete(next.r.d.starter, runtime.heap_allocator()); next.r.d = {}
+    if !testing.expect(t, json.unmarshal_string(state.runtime_json, &next.r.d, allocator = runtime.heap_allocator()) == nil) do return
+    testing.expect(t, acp_rpc_restore(next.r.client, snapshot))
+    sn_do(&next, proc(f: ^T4_Runtime_Test) {
+        acp_runtime_merge_saved_queue(&f.r.d)
+        acp_runtime_reclassify_saved_queue(f.r)
+        f.r.d.last_notice_turn_ms = acp_rpc_now(f.r.client)
+    })
+    if !testing.expect_value(t, len(next.r.d.queue), 2) do return
+    bot := next.r.d.queue[0]
+    testing.expect(t, bot.id == "notice_100" && bot.kind == ACP_BOT_KIND && bot.key == ACP_BOT_KIND && bot.lane == .Steer)
+    testing.expect(t, next.r.d.queue[1].id == "notice_102" && next.r.d.queue[1].lane == .Batch)
+    t4_runtime_call(&next, "resume")
+    if !acp_test_wait(t, &next.f, .Writes, 1) do return
+    line := sn_write(&next, 0)
+    testing.expect(t, strings.contains(line, "New chat message for you") && strings.contains(line, "ordinary legacy notice"))
+    t4_runtime_reply(t, &next, 0, `{"stopReason":"end_turn"}`, 1)
+    testing.expect_value(t, t16_writes(&next), 1)
+}
+
 @(test)
 t16_acp_inbox_dispatcher_timer_and_long_turn_merge :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
