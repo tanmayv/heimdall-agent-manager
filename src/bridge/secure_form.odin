@@ -1,5 +1,6 @@
 package main
 
+import "core:encoding/json"
 import "odin_test:contracts"
 
 @(private)
@@ -86,4 +87,63 @@ secure_form_waiter_retry :: proc(s: ^Secure_Form_Waiter_State, caller: contracts
 		s.attempt = {decision.attempt, false, .Unknown}
 	}
 	return decision
+}
+
+// Parse the outer envelope without reserializing its payload. The contract
+// parser must see the original bytes, including duplicate or malformed keys.
+@(private)
+secure_form_frame_payload :: proc(raw, action: string, limit: int) -> (string, bool) {
+	if len(raw) > limit do return "", false
+	t := json.make_tokenizer(raw, .JSON, true)
+	first, err := json.get_token(&t)
+	if err != nil || first.kind != .Open_Brace do return "", false
+	seen_type, seen_version := false, false
+	payload := ""
+	for i in 0..<3 {
+		key, key_err := json.get_token(&t)
+		colon, colon_err := json.get_token(&t)
+		value, value_err := json.get_token(&t)
+		if key_err != nil || key.kind != .String || colon_err != nil || colon.kind != .Colon || value_err != nil do return "", false
+		switch key.text {
+		case `"type"`:
+			if seen_type || value.kind != .String || value.text[1:len(value.text)-1] != action do return "", false
+			seen_type = true
+		case `"protocol_version"`:
+			if seen_version || value.kind != .Integer || value.text != "1" do return "", false
+			seen_version = true
+		case `"payload"`:
+			if payload != "" || value.kind != .Open_Brace do return "", false
+			start := int(uintptr(raw_data(value.text)) - uintptr(raw_data(raw)))
+			depth := 1
+			for depth > 0 {
+				token, token_err := json.get_token(&t)
+				if token_err != nil do return "", false
+				#partial switch token.kind {
+				case .Open_Brace, .Open_Bracket: depth += 1
+				case .Close_Brace, .Close_Bracket: depth -= 1
+				}
+				if depth > 8 do return "", false
+				if depth == 0 {
+					if token.kind != .Close_Brace do return "", false
+					end := int(uintptr(raw_data(token.text)) - uintptr(raw_data(raw))) + len(token.text)
+					payload = raw[start:end]
+				}
+			}
+		case:
+			return "", false
+		}
+		separator, separator_err := json.get_token(&t)
+		expected := i == 2 ? json.Token_Kind.Close_Brace : json.Token_Kind.Comma
+		if separator_err != nil || separator.kind != expected do return "", false
+	}
+	_, eof := json.get_token(&t)
+	return payload, eof == .EOF && seen_type && seen_version && payload != ""
+}
+
+@(private)
+secure_form_waiter_register_frame :: proc(s: ^Secure_Form_Waiter_State, raw: string, now: u64) -> bool {
+	payload, ok := secure_form_frame_payload(raw, SECURE_FORM_REGISTER_ACK_FRAME, 1152)
+	if !ok do return false
+	ack, parsed := contracts.secure_form_parse_ack(payload)
+	return parsed && secure_form_waiter_register_ack(s, ack, now)
 }

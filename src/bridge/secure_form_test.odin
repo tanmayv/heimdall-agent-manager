@@ -53,3 +53,28 @@ test_secure_form_waiter_retry_without_renewal :: proc(t: ^testing.T) {
 	s.attempt = {2, true, .Child_Failed}
 	testing.expect(t, secure_form_waiter_retry(&s, s.binding, 300_102, 2).code == .Retention_Expired)
 }
+
+@(test)
+test_secure_form_waiter_wires_registration_ack :: proc(t: ^testing.T) {
+	id :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	s := secure_form_test_waiter()
+	s.binding.request_id = id
+	payload :: `{"version":1,"request_id":"` + id + `","generation":"2","state":"pending","code":null}`
+	prefix :: `{"type":"secure_form_register_ack","protocol_version":1,"payload":`
+	valid :: prefix + payload + "}"
+	bad := [?]string{
+		valid + "{}",
+		prefix + payload + `,"extra":0}`,
+		`{"type":"secure_form_register_ack","protocol_version":2,"payload":` + payload + "}",
+		`{"type":"secure_form_register_ack","type":"secure_form_register_ack","payload":` + payload + "}",
+		prefix + `{"version":1,"request_id":"` + id + `","generation":"1","state":"pending","code":null}}`,
+		prefix + `{"version":1,"version":1,"request_id":"` + id + `","generation":"2","state":"pending","code":null}}`,
+	}
+	for raw in bad {
+		testing.expect(t, !secure_form_waiter_register_frame(&s, raw, 101))
+		testing.expect(t, !s.registered && !s.attempt.terminal)
+	}
+	testing.expect(t, secure_form_waiter_register_frame(&s, valid, 10_099))
+	testing.expect(t, s.registered)
+	testing.expect(t, !secure_form_waiter_register_frame(&s, valid, 10_099))
+}
