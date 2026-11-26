@@ -617,6 +617,16 @@ export const agentsApi = heimdallApi.injectEndpoints({
       // The instance itself changes later and announces it (agent_instance/config_changed).
       invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
     }),
+    cancelInstanceConfiguration: build.mutation<InstanceReconfiguration, { instanceId: string; idempotency_key: string; expected_operation_revision: number }>({
+      queryFn: async ({ instanceId, ...body }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations/cancel`, 'POST', body);
+          return { data: normalizeInstanceReconfiguration(data) };
+        } catch (error: any) { return { error: customQueryError(error) as any }; }
+      },
+      // Only a waiting_for_idle operation can be cancelled (409 otherwise).
+      invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
+    }),
     applyInstanceConfiguration: build.mutation<InstanceReconfiguration, ApplyInstanceConfigurationInput>({
       queryFn: async ({ instanceId, ...body }) => {
         try {
@@ -806,6 +816,7 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
 
 export const {
   useRetryInstanceConfigurationMutation,
+  useCancelInstanceConfigurationMutation,
   useListInstanceReconfigurationsQuery,
   useApplyInstanceConfigurationMutation,
   useListAgentIdentitiesQuery,
@@ -994,11 +1005,22 @@ export type InstanceConfiguration = {
 };
 export type InstanceReconfiguration = {
   operation_id: string; agent_instance_id: string; conversation_id: string; idempotency_key: string;
-  phase: 'prepared' | 'stopping' | 'source_stopped' | 'launching' | 'ready' | 'failed' | 'recovery_required';
+  /**
+   * waiting_for_idle: queued by apply 'after_turn' until the current turn ends.
+   * It does not block messages. It leaves to stopping (fired) or to failed with
+   * failure_code 'cancelled' | 'superseded' (Restart now) | 'conflict' (the
+   * configuration changed while it waited).
+   */
+  phase: 'prepared' | 'stopping' | 'source_stopped' | 'launching' | 'ready' | 'failed' | 'recovery_required' | 'waiting_for_idle';
   source: InstanceConfiguration; destination: InstanceConfiguration;
   source_stopped: boolean; destination_committed: boolean;
   failure_code: string; failure_message: string; revision: number; updated_at?: string;
+  /** 'now' | 'after_turn' (absent on operations created before deferred apply). */
+  apply?: ReconfigurationApply;
+  /** RFC 3339 time the operation was queued; '' when it never waited. The Hub waits indefinitely. */
+  waiting_since?: string;
 };
+export type ReconfigurationApply = 'now' | 'after_turn';
 export type ApplyInstanceConfigurationInput = {
   instanceId: string; bridge_id: string; project_id: string; provider: string; provider_profile?: string; model: string;
   idempotency_key: string; expected_revision: number;
@@ -1010,6 +1032,12 @@ export type ApplyInstanceConfigurationInput = {
    * instance's current choice. ACP failures: acp_unavailable (details.state) or acp_installing.
    */
   runtime_transport?: RuntimeTransport;
+  /**
+   * 'now' (default) restarts at once. 'after_turn' queues the change until the
+   * current turn ends (phase waiting_for_idle; starts at once when idle). An
+   * explicit 'now' with a new idempotency_key supersedes a queued change (Restart now).
+   */
+  apply?: ReconfigurationApply;
 };
 /** Whether an operation reached a phase that changes the instance and conversation. */
 export function isSettledReconfiguration(operation: InstanceReconfiguration): boolean {
@@ -1029,7 +1057,8 @@ export function reconfigurationSettled(
   return previous.operation_id !== next.operation_id || !isSettledReconfiguration(previous);
 }
 function normalizeInstanceReconfiguration(raw: any): InstanceReconfiguration {
-  const phases = ['prepared', 'stopping', 'source_stopped', 'launching', 'ready', 'failed', 'recovery_required'];
+  // Index order matches the Hub enum (ordinal payloads); waiting_for_idle was appended.
+  const phases = ['prepared', 'stopping', 'source_stopped', 'launching', 'ready', 'failed', 'recovery_required', 'waiting_for_idle'];
   const phase = typeof raw?.phase === 'number' ? phases[raw.phase] : String(raw?.phase || '').toLowerCase();
   return { ...raw, phase: phases.includes(phase) ? phase : 'recovery_required' };
 }

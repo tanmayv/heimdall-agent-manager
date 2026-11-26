@@ -70,6 +70,9 @@ Agent_Repository :: struct {
 	reconfiguration_get: Instance_Reconfiguration_Get_Proc,
 	reconfiguration_advance: Instance_Reconfiguration_Advance_Proc,
 	reconfiguration_list: Instance_Reconfiguration_List_Proc,
+	// Additive (T4): optional; nil means no queued operations are supported.
+	reconfiguration_list_waiting: Instance_Reconfiguration_List_Waiting_Proc,
+	reconfiguration_begin_superseding: Instance_Reconfiguration_Begin_Superseding_Proc,
 	save: Agent_Save_Proc,
 	get: Agent_Get_Proc,
 	list_by_owner: Agent_List_By_Owner_Proc,

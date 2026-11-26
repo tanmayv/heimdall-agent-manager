@@ -80,8 +80,10 @@ publish_conversation_changed :: proc(bus: ^events.User_Event_Bus, c: domain.Chat
 }
 
 //   resource_changed resource=agent_instance_reconfiguration
-//       resource_id=<agent_instance_id> change=created|progress|error|succeeded|failed
-//       summary {reconfiguration_id, phase, revision, error_code}
+//       resource_id=<agent_instance_id> change=created|progress|error|succeeded|failed|cancelled
+//       summary {reconfiguration_id, phase, revision, error_code, apply, waiting_since}
+//       (phase waiting_for_idle: queued after the current turn; cancelled: a
+//       queued operation was cancelled or superseded by Restart now)
 //   resource_changed resource=agent_instance change=<caller's change>
 //       summary = instance_changed_summary_json (status fields + display_name,
 //       bridge_id, provider, model, runtime_transport, runtime_transport_override,
@@ -96,6 +98,10 @@ reconfiguration_summary_json :: proc(op: domain.Instance_Reconfiguration) -> str
 	write_handler_json_string(&b, domain.instance_reconfiguration_phase_string(op.phase))
 	fmt.sbprintf(&b, "\",\"revision\":%d,\"error_code\":\"", op.revision)
 	write_handler_json_string(&b, op.failure_code)
+	strings.write_string(&b, "\",\"apply\":\"")
+	write_handler_json_string(&b, op.apply if op.apply != "" else domain.RECONFIGURATION_APPLY_NOW)
+	strings.write_string(&b, "\",\"waiting_since\":\"")
+	write_handler_json_string(&b, op.waiting_since)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }

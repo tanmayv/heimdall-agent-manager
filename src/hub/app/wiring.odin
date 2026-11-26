@@ -939,6 +939,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/input", rawptr(&graph.agent_handlers), http.agent_instance_input_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/resize", rawptr(&graph.agent_handlers), http.agent_instance_resize_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/reconfigurations/retry", rawptr(&graph.agent_handlers), http.retry_instance_reconfiguration_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/reconfigurations/cancel", rawptr(&graph.agent_handlers), http.cancel_instance_reconfiguration_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/reconfigurations", rawptr(&graph.agent_handlers), http.create_instance_reconfiguration_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/reconfigurations", rawptr(&graph.agent_handlers), http.list_instance_reconfigurations_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/extension/events", rawptr(&graph.agent_handlers), http.agent_instance_extension_events_handler)

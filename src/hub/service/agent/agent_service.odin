@@ -49,7 +49,8 @@ Agent_Service :: struct {
 }
 
 // Resource_Event_Hooks are invoked only after the write they describe returned
-// success. change for reconfigurations is created|progress|error|succeeded|failed;
+// success. change for reconfigurations is created|progress|error|succeeded|failed|cancelled
+// (cancelled: a queued after_turn operation was cancelled or superseded);
 // config_committed is true on the advance that committed the destination (the
 // SQL trigger that rewrites agent_instances bridge/provider/model/revision).
 Resource_Event_Hooks :: struct {
@@ -113,8 +114,11 @@ notify_instances_terminal :: proc(service: ^Agent_Service, insts: []domain.Agent
 }
 
 notify_instance_activity :: proc(service: ^Agent_Service, instance_id, activity_status: string) {
-	if service == nil || service.hooks.on_activity == nil || instance_id == "" || activity_status == "" do return
-	service.hooks.on_activity(service.hooks.ctx, instance_id, activity_status)
+	if service == nil || instance_id == "" || activity_status == "" do return
+	if service.hooks.on_activity != nil do service.hooks.on_activity(service.hooks.ctx, instance_id, activity_status)
+	// The turn ended: fire a reconfiguration queued "after_turn" (T4). Facts are
+	// delivered after the status write committed and its locks were released.
+	if activity_status == "idle" do reconfiguration_fire_waiting(service, instance_id)
 }
 
 instance_runtime_is_terminal :: proc(runtime_status: string) -> bool {

@@ -802,6 +802,8 @@ MIGRATION_262_EXTENSION_VERSION_SYNC :: #load("migrations/262_extension_version_
 
 MIGRATION_263_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE :: #load("migrations/263_instance_runtime_transport_override.sql", string)
 
+MIGRATION_264_RECONFIGURATION_WAITING_FOR_IDLE :: #load("migrations/264_reconfiguration_waiting_for_idle.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1102,6 +1104,7 @@ migration_order :: [?]string {
 	"261_extension_version_sync_0_5_92.sql",
 	"262_extension_version_sync_0_5_93.sql",
 	"263_instance_runtime_transport_override.sql",
+	"264_reconfiguration_waiting_for_idle.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1602,6 +1605,15 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		// 264 rebuilds instance_reconfigurations inside its own BEGIN/COMMIT; the
+		// rebuilt table admits waiting_for_idle and its last statement recreates
+		// the hold_messages trigger, so both together prove completion.
+		if name == "264_reconfiguration_waiting_for_idle.sql" &&
+		   sqlite_table_sql_mentions(conn, "instance_reconfigurations", "waiting_for_idle") &&
+		   sqlite_object_exists(conn, "instance_reconfiguration_hold_messages") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 110 commits atomically before its ledger row; its column proves completion.
 		if name == "110_provider_ask_args.sql" && table_column_exists(conn, "provider_catalog", "ask_args") {
 			mark_migration_applied(conn, name)
@@ -1636,7 +1648,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_instance_runtime_transport_override.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_instance_runtime_transport_override.sql" || name == "264_reconfiguration_waiting_for_idle.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1677,6 +1689,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "264_reconfiguration_waiting_for_idle.sql" do return strings.clone(MIGRATION_264_RECONFIGURATION_WAITING_FOR_IDLE)
 	if name == "263_instance_runtime_transport_override.sql" do return strings.clone(MIGRATION_263_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE)
 	if name == "262_extension_version_sync_0_5_93.sql" do return strings.clone(MIGRATION_262_EXTENSION_VERSION_SYNC)
 	if name == "261_extension_version_sync_0_5_92.sql" do return strings.clone(MIGRATION_261_EXTENSION_VERSION_SYNC)
@@ -2163,6 +2176,20 @@ sqlite_trigger_mentions :: proc(conn: ^Conn, name, needle: string) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := fmt.tprintf(
 		"SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='%s' AND instr(sql, '%s') > 0 LIMIT 1;",
+		escape_sql_literal(name), escape_sql_literal(needle),
+	)
+	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	return sqlite3_step(stmt) == SQLITE_ROW
+}
+
+// sqlite_table_sql_mentions reports whether table `name` exists and its CREATE
+// SQL contains `needle` (a table rebuild keys its skip on a new CHECK value).
+sqlite_table_sql_mentions :: proc(conn: ^Conn, name, needle: string) -> bool {
+	if conn == nil || conn.db == nil do return false
+	stmt: sqlite3_stmt = nil
+	query := fmt.tprintf(
+		"SELECT 1 FROM sqlite_master WHERE type='table' AND name='%s' AND instr(sql, '%s') > 0 LIMIT 1;",
 		escape_sql_literal(name), escape_sql_literal(needle),
 	)
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
