@@ -34,6 +34,14 @@ import jsonx "odin_test:lib/jsonx"
 // and after values. Taking the marker is the idempotence guard: a second boot
 // finds no marker and changes nothing.
 //
+// Chains frozen or imported by the owner legacy source export are skipped
+// entirely (their tasks, verdicts, leases, workflow runs and alert). Their hub
+// rows are read-only: the owner_legacy_guard_* triggers abort any write to them,
+// which would roll back the whole boot. Skipping is safe because such a chain
+// is never scheduled, reviewed or gated by this hub again (its canonical copy
+// lives with its owner, or is being exported verbatim), and the export only
+// accepts quiescent chains, so it has no open task or live lease to map.
+//
 // Agent verdicts are collapsed under domain.SCHED0_REVIEW_ROLE ("review", the
 // role every agent verdict carries since SCHED-0b). A fleet row the
 // coordinator's agent may still have is ignored for launching (spec 6.1), and
@@ -94,6 +102,7 @@ Sched0_Run :: struct {
 	chains: map[domain.Task_Chain_ID]^Sched0_Chain,
 	agents: map[string]bool, // agent id → exists for the owner (keyed "owner|agent")
 	order:  [dynamic]domain.Task_Chain_ID,
+	frozen: map[domain.Task_Chain_ID]bool, // owner legacy frozen/imported chains: read-only, skipped
 }
 
 // sched0_migrate_in_uow runs the mapping once. A repository without the marker
@@ -104,14 +113,20 @@ sched0_migrate_in_uow :: proc(svc: ^Service, u: ^Uow) -> (bool, domain.Domain_Er
 	if terr.code != .None || !taken do return true, {}
 	snapshot, serr := iface.taskchain_list_sched0_fleet_roles(svc.repo)
 	if serr.code != .None do return false, serr
+	frozen_ids, ferr := iface.taskchain_list_owner_legacy_frozen_chains(svc.repo)
+	if ferr.code != .None do return false, ferr
 
 	run := Sched0_Run{
 		svc = svc, u = u,
 		chains = make(map[domain.Task_Chain_ID]^Sched0_Chain, context.temp_allocator),
 		agents = make(map[string]bool, context.temp_allocator),
 		order = make([dynamic]domain.Task_Chain_ID, context.temp_allocator),
+		frozen = make(map[domain.Task_Chain_ID]bool, context.temp_allocator),
 	}
+	for id in frozen_ids do run.frozen[id] = true
+	if len(frozen_ids) > 0 do fmt.eprintfln("[taskv2] sched0 migration: skipping %d owner legacy frozen/imported chains (read-only)", len(frozen_ids))
 	for row in snapshot {
+		if run.frozen[row.chain_id] do continue
 		st := sched0_chain(&run, row.chain_id)
 		append(&st.fleets, row)
 	}
@@ -126,6 +141,7 @@ sched0_migrate_in_uow :: proc(svc: ^Service, u: ^Uow) -> (bool, domain.Domain_Er
 		tasks, lerr := iface.taskchain_list_tasks_by_state(svc.repo, state)
 		if lerr.code != .None do return false, lerr
 		for task in tasks {
+			if run.frozen[task.chain_id] do continue
 			if ok, err := sched0_map_task(&run, task); !ok do return false, err
 		}
 	}
@@ -405,7 +421,7 @@ sched0_map_review_leases :: proc(run: ^Sched0_Run) -> (bool, domain.Domain_Error
 	leases, lerr := iface.taskchain_list_all_leases(svc.repo)
 	if lerr.code != .None do return false, lerr
 	for lease in leases {
-		if lease.kind != domain.LEASE_KIND_REVIEW do continue
+		if lease.kind != domain.LEASE_KIND_REVIEW || run.frozen[lease.chain_id] do continue
 		if lease.phase == domain.LEASE_PHASE_WAITING {
 			if _, derr := delete_claim(svc, lease); derr.code != .None do return false, derr
 			if inst, iok, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id); iok && inst.current_task_id == string(lease.task_id) {
@@ -417,6 +433,7 @@ sched0_map_review_leases :: proc(run: ^Sched0_Run) -> (bool, domain.Domain_Error
 	if terr.code != .None do return false, terr
 	actor := Actor{kind = ACTOR_HUB, id = "sched0_migration"}
 	for task in tasks {
+		if run.frozen[task.chain_id] do continue
 		if _, nerr := iface.taskchain_sched0_normalize_reviews(svc.repo, task.task_id, task.attempt_no); nerr.code != .None do return false, nerr
 		if task_is_held(task) do continue
 		st := sched0_chain(run, task.chain_id)

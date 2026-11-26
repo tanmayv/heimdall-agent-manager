@@ -310,3 +310,107 @@ INSERT INTO task_chain_fleets (task_chain_id, agent_id, capacity, min_warm, idle
 	defer fixture_close(fresh)
 	if fok do testing.expect_value(t, scalar_int(fresh, "SELECT count(*) FROM sched0_migration_pending;"), 0)
 }
+
+// Owner legacy source fences, verbatim from the Mundus database (fixture).
+@(private = "file")
+SCHED0_OWNER_LEGACY_FENCES_SQL :: #load("../../../../tests/fixtures/owner_legacy_fences.sql", string)
+
+@(private = "file")
+SCHED0_OL_DIGEST :: "0000000000000000000000000000000000000000000000000000000000000000"
+
+// The boot mapping on a database with owner legacy source fences (v0.5.92 on
+// Mundus): every row of a 'frozen' or 'imported' chain is read-only, so a single
+// write there would abort the whole boot UoW and the mapping would never
+// commit. Those chains are skipped; every other chain is mapped as usual; the
+// fences are untouched.
+@(test)
+test_sched0_migration_skips_owner_legacy_frozen_chains :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	// Built as Mundus is: the fences predate 260, so 260 runs fence-aware.
+	fx, log, ok := lease_fixture(t, "sched0_owner_legacy", stop_before = "260_drop_fleet_roles.sql")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	if !testing.expect(t, sqlite.exec(&fx.conn, SCHED0_OWNER_LEGACY_FENCES_SQL), "install owner legacy fences") do return
+	migrated, merr := sqlite.run_migrations(&fx.conn)
+	if !testing.expect(t, migrated, merr.message) do return
+	testing.expect(t, sqlite.table_column_exists(&fx.conn, "task_leases", "review_role"), "fence-aware 260 keeps review_role")
+	notices := Sched0_Notices{lines = make([dynamic]string)}
+	fx.svc.notify_observer = sched0_notice_observer
+	fx.svc.notify_observer_ctx = &notices
+
+	live := seed_live_chain(t, fx, "chain_live")
+	seed_agent(fx, "agt_s")
+	seed_fleet(fx, live, "agt_w")
+	seed_fleet(fx, live, "agt_s")
+	_ = publish_task(t, fx, live, "t_live")
+	testing.expect(t, sqlite.exec(&fx.conn, `UPDATE tasks SET brief_json = '{"goal":"g","assignee":"agt_w","review_roles":["sec"]}' WHERE task_id = 't_live';`), "live task in pre-0b role form")
+
+	// Frozen and imported chains as the export leaves them (published, still
+	// active, quiescent): done and cancelled tasks plus an unassigned open task
+	// that would otherwise be held, all in pre-0b role form.
+	legacy_briefs := make(map[string]string)
+	for chain_id in ([]string{"chain_frozen", "chain_imported", "chain_drain"}) {
+		chain := seed_chain(t, fx, chain_id, true)
+		chain.coordinator_agent_instance_id = "inst_coord"
+		_, _, _ = iface.taskchain_save_chain(&fx.repo, chain)
+		seed_fleet(fx, chain, "agt_s")
+		for suffix in ([]string{"done", "cancelled", "open"}) {
+			id := fmt.tprintf("t_%s_%s", chain_id[len("chain_"):], suffix)
+			_ = seed_task(t, fx, chain, id)
+			state := "backlog" if suffix == "open" else suffix
+			testing.expect(t, sqlite.exec(&fx.conn, fmt.tprintf(`UPDATE tasks SET state = '%s', publish_state = 'published', brief_json = '{{"goal":"g","assignee":"","review_roles":["sec"]}}' WHERE task_id = '%s';`, state, id)), id)
+			legacy_briefs[id] = get_task(fx, id).brief_json
+		}
+	}
+	testing.expect(t, sqlite.exec(&fx.conn, `INSERT OR IGNORE INTO sched0_fleet_roles (chain_id, agent_id, roles_json, paused_roles_json) VALUES
+ ('chain_live', 'agt_w', '["worker"]', ''), ('chain_live', 'agt_s', '["sec"]', ''),
+ ('chain_frozen', 'agt_s', '["sec","worker"]', '["sec"]'), ('chain_imported', 'agt_s', '["sec"]', ''), ('chain_drain', 'agt_s', '["sec"]', '');
+INSERT OR IGNORE INTO sched0_migration_pending (singleton) VALUES (1);`), "re-arm migration 259 data snapshot")
+
+	d := SCHED0_OL_DIGEST
+	testing.expect(t, sqlite.exec(&fx.conn, fmt.tprintf(`INSERT INTO owner_legacy_source_generations (chain_id, account_id, generation) VALUES ('chain_drain', 'acct', 1), ('chain_frozen', 'acct', 1), ('chain_imported', 'acct', 1);
+INSERT INTO owner_legacy_migrations (migration_id, chain_id, account_id, owner_bridge_id, owner_key_id, selection_digest, state, revision, frozen_generation, quiescence_digest, manifest_digest, receipt_digest) VALUES
+ ('olm_drain', 'chain_drain', 'acct', 'brg_o', 'key_o', '%s', 'draining', 1, 0, '', '', ''),
+ ('olm_frozen', 'chain_frozen', 'acct', 'brg_o', 'key_o', '%s', 'frozen', 2, 1, '%s', '', ''),
+ ('olm_imported', 'chain_imported', 'acct', 'brg_o', 'key_o', '%s', 'imported', 3, 1, '%s', '%s', '%s');`, d, d, d, d, d, d, d)), "seed owner legacy migrations")
+	fences_before := scalar_text(fx, "SELECT count(*) || ':' || group_concat(name || '=' || sql, ';') FROM (SELECT name, sql FROM sqlite_master WHERE name LIKE 'owner_legacy%' ORDER BY name);")
+	// The fixture is live: a write to a frozen chain's task aborts.
+	testing.expect(t, !sqlite.exec(&fx.conn, "UPDATE tasks SET title = title WHERE task_id = 't_frozen_done';"), "frozen task rows are read-only")
+
+	boot(&fx.svc)
+
+	// The boot UoW committed: marker taken, snapshot cleared, live chain mapped.
+	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM sched0_migration_pending;"), 0)
+	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM sched0_fleet_roles;"), 0)
+	live_task := get_task(fx, "t_live")
+	testing.expect_value(t, sched0_reviewers(live_task.brief_json), `["agt_s"]`)
+	testing.expect(t, !jsonx.has_key(live_task.brief_json, "review_roles", true), "live task review_roles removed")
+	testing.expect_value(t, count_events(fx, "t_live", EV_SCHED0_MIGRATED), 1)
+
+	// Frozen and imported chains: nothing written, nothing held, no alert.
+	for chain in ([]string{"frozen", "imported"}) {
+		for suffix in ([]string{"done", "cancelled", "open"}) {
+			id := fmt.tprintf("t_%s_%s", chain, suffix)
+			task := get_task(fx, id)
+			testing.expect(t, task.brief_json == legacy_briefs[id], fmt.tprintf("%s brief untouched: %s", id, task.brief_json))
+			testing.expect_value(t, count_events(fx, id, EV_SCHED0_MIGRATED), 0)
+			testing.expect(t, !task_is_held(task), fmt.tprintf("%s not held", id))
+		}
+	}
+	// A draining chain is still the hub's canonical copy: mapped as usual (the
+	// fences only bump its source generation).
+	testing.expect(t, !jsonx.has_key(get_task(fx, "t_drain_done").brief_json, "review_roles", true), "draining chain mapped")
+	testing.expect(t, task_is_held(get_task(fx, "t_drain_open")), "draining chain's unassigned open task held")
+	testing.expect(t, scalar_int(fx, "SELECT generation FROM owner_legacy_source_generations WHERE chain_id = 'chain_drain';") > 1, "draining chain writes advance its source generation")
+	testing.expect_value(t, scalar_int(fx, "SELECT generation FROM owner_legacy_source_generations WHERE chain_id = 'chain_frozen';"), 1)
+	testing.expect_value(t, scalar_int(fx, "SELECT generation FROM owner_legacy_source_generations WHERE chain_id = 'chain_imported';"), 1)
+	for line in notices.lines {
+		testing.expect(t, !strings.contains(line, "t_frozen_") && !strings.contains(line, "t_imported_"), fmt.tprintf("no alert for a frozen chain: %s", line))
+	}
+	testing.expect_value(t, scalar_text(fx, "SELECT count(*) || ':' || group_concat(name || '=' || sql, ';') FROM (SELECT name, sql FROM sqlite_master WHERE name LIKE 'owner_legacy%' ORDER BY name);"), fences_before)
+
+	// A second boot changes nothing.
+	before := sched0_world_digest(fx)
+	boot(&fx.svc)
+	testing.expect_value(t, sched0_world_digest(fx), before)
+}

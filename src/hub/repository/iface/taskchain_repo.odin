@@ -98,6 +98,7 @@ Taskchain_Repository :: struct {
 	list_sched0_fleet_roles: Sched0_Fleet_Roles_List_Proc,
 	clear_sched0_fleet_roles: Sched0_Fleet_Roles_Clear_Proc,
 	sched0_normalize_reviews: Sched0_Normalize_Reviews_Proc,
+	list_owner_legacy_frozen_chains: Owner_Legacy_Frozen_Chains_Proc,
 	append_event: Task_Event_Append_Proc,
 	list_events_by_task: Task_Event_List_By_Task_Proc,
 	latest_event_id: Task_Event_Latest_ID_Proc,

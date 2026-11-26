@@ -18,6 +18,10 @@ Take_Sched0_Migration_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)
 Sched0_Fleet_Roles_List_Proc :: proc(ctx: rawptr) -> ([]domain.Sched0_Fleet_Roles, domain.Domain_Error)
 Sched0_Fleet_Roles_Clear_Proc :: proc(ctx: rawptr) -> domain.Domain_Error
 Sched0_Normalize_Reviews_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, attempt_no: int) -> (int, domain.Domain_Error)
+// Owner_Legacy_Frozen_Chains_Proc lists the chains whose hub copy the owner
+// legacy source fences made read-only (owner_legacy_migrations.state 'frozen'
+// or 'imported'). Empty on a database without the fences.
+Owner_Legacy_Frozen_Chains_Proc :: proc(ctx: rawptr) -> ([]domain.Task_Chain_ID, domain.Domain_Error)
 
 Task_Event_Append_Proc :: proc(ctx: rawptr, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error)
 Task_Event_Latest_ID_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (i64, domain.Domain_Error)
@@ -110,6 +114,13 @@ taskchain_clear_sched0_fleet_roles :: proc(repo: ^Taskchain_Repository) -> domai
 taskchain_sched0_normalize_reviews :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, attempt_no: int) -> (int, domain.Domain_Error) {
 	if repo == nil || repo.sched0_normalize_reviews == nil do return 0, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.sched0_normalize_reviews(repo.ctx, task_id, attempt_no)
+}
+
+// taskchain_list_owner_legacy_frozen_chains: a repository without the proc has
+// no owner legacy fences, so nothing is frozen.
+taskchain_list_owner_legacy_frozen_chains :: proc(repo: ^Taskchain_Repository) -> ([]domain.Task_Chain_ID, domain.Domain_Error) {
+	if repo == nil || repo.list_owner_legacy_frozen_chains == nil do return nil, {}
+	return repo.list_owner_legacy_frozen_chains(repo.ctx)
 }
 
 taskchain_append_event :: proc(repo: ^Taskchain_Repository, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error) {

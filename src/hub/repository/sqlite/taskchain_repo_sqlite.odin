@@ -55,6 +55,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		list_sched0_fleet_roles = taskchain_list_sched0_fleet_roles_sqlite,
 		clear_sched0_fleet_roles = taskchain_clear_sched0_fleet_roles_sqlite,
 		sched0_normalize_reviews = taskchain_sched0_normalize_reviews_sqlite,
+		list_owner_legacy_frozen_chains = taskchain_list_owner_legacy_frozen_chains_sqlite,
 		append_event = task_event_append_sqlite,
 		list_events_by_task = task_event_list_by_task_sqlite,
 		latest_event_id = task_event_latest_id_sqlite,
