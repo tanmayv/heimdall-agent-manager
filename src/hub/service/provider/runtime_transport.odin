@@ -42,19 +42,63 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
  if err.code!=.None do return err
  if !found do return domain.domain_error(.Not_Found,"bridge not found")
  defer domain.bridge_destroy(&bridge)
- if !contracts.bridge_supports_acp_runtime(bridge.capabilities_json) do return acp_unavailable_error(entry.provider,"unsupported_bridge","bridge does not support acp_runtime_v1 and piped hosting")
- statuses,serr:=iface.bridge_provider_status_list(service.repo,bridge_id)
- if serr.code!=.None do return serr
- defer domain.bridge_provider_statuses_destroy(statuses)
- for status in statuses {
-  if status.provider!=entry.provider || domain.profile_effective_id(status.provider,status.profile_id)!=entry.provider do continue
-  if acp_adapter_ready(status.acp_adapter_json,entry.acp_recipe_json,entry.provider) do return {}
-  if acp_adapter_state(status.acp_adapter_json)=="installing" do return domain.domain_error(.ACP_Installing,"ACP adapter installation is in progress")
-  // The HTTP settings handler starts a tracked install for installable states
-  // while keeping the settings unchanged until adapter readiness is verified.
-  return acp_unavailable_error(entry.provider,acp_adapter_state(status.acp_adapter_json),"ACP adapter is not ready")
+ adapter_json:=""
+ has_status:=false
+ // Only bridges that support ACP need their adapter status read.
+ if contracts.bridge_supports_acp_runtime(bridge.capabilities_json) {
+  statuses,serr:=iface.bridge_provider_status_list(service.repo,bridge_id)
+  if serr.code!=.None do return serr
+  defer domain.bridge_provider_statuses_destroy(statuses)
+  for status in statuses {
+   if status.provider!=entry.provider || domain.profile_effective_id(status.provider,status.profile_id)!=entry.provider do continue
+   adapter_json=strings.clone(status.acp_adapter_json,context.temp_allocator)
+   has_status=true
+   break
+  }
  }
- return acp_unavailable_error(entry.provider,"not_checked","ACP adapter has not been checked")
+ verdict:=classify_acp_availability(entry.provider,entry.acp_recipe_json,bridge.capabilities_json,adapter_json)
+ return acp_availability_error(entry.provider,verdict,adapter_json,has_status)
+}
+
+// classify_acp_availability is the single copy of the ACP readiness rules. It
+// is pure: the provider-status view and every launch/settings gate
+// (require_acp_ready) call it with the catalog recipe, the bridge's
+// capabilities_json and the provider-wide adapter report ("" when the bridge
+// has no status row for the provider).
+classify_acp_availability :: proc(provider, recipe_json, bridge_capabilities_json, adapter_json: string) -> contracts.ACP_Availability {
+ if !contracts.acp_provider_recipe_valid(provider,recipe_json) do return contracts.acp_availability_for(.No_Recipe)
+ if !contracts.bridge_supports_acp_runtime(bridge_capabilities_json) do return contracts.acp_availability_for(.Unsupported_Bridge)
+ if acp_adapter_ready(adapter_json,recipe_json,provider) do return contracts.acp_availability_for(.Ready)
+ switch acp_adapter_state(adapter_json) {
+ case "installing": return contracts.acp_availability_for(.Installing)
+ case "missing": return contracts.acp_availability_for(.Adapter_Missing)
+ case "missing_node": return contracts.acp_availability_for(.Adapter_Missing_Node)
+ case "error": return contracts.acp_availability_for(.Adapter_Error)
+ // A "ready" report that fails verification (version, runtime kind or
+ // identity mismatch) needs the pinned adapter reinstalled, like outdated.
+ case "outdated","ready": return contracts.acp_availability_for(.Adapter_Outdated)
+ }
+ return contracts.acp_availability_for(.Not_Checked)
+}
+
+// acp_availability_error maps a verdict to the launch/settings error. Error
+// codes and details are unchanged from before the classifier existed: the
+// detail state is the raw adapter state (e.g. "ready" for a mismatched report).
+acp_availability_error :: proc(provider: string, verdict: contracts.ACP_Availability, adapter_json: string, has_status: bool) -> domain.Domain_Error {
+ switch verdict.reason {
+ case .Ready: return {}
+ case .No_Recipe: return domain.domain_error(.ACP_Unavailable,"provider ACP recipe is invalid")
+ case .Unsupported_Bridge: return acp_unavailable_error(provider,"unsupported_bridge","bridge does not support acp_runtime_v1 and piped hosting")
+ case .Installing: return domain.domain_error(.ACP_Installing,"ACP adapter installation is in progress")
+ case .Not_Checked:
+  // A missing status row and a present-but-unchecked report keep their
+  // historical messages.
+  if !has_status do return acp_unavailable_error(provider,"not_checked","ACP adapter has not been checked")
+ case .Adapter_Missing,.Adapter_Outdated,.Adapter_Missing_Node,.Adapter_Error:
+ }
+ // The HTTP settings handler starts a tracked install for installable states
+ // while keeping the settings unchanged until adapter readiness is verified.
+ return acp_unavailable_error(provider,acp_adapter_state(adapter_json),"ACP adapter is not ready")
 }
 
 acp_adapter_ready :: proc(raw, recipe: string, provider: string = "claude") -> bool {

@@ -423,3 +423,20 @@ test('Codex app-server is an opt-in system runtime with PTY reset and Re-check',
     await h.cleanup();
   }
 });
+
+test('T2: provider-status rows carry the Hub ACP availability verdict unchanged, null from an older Hub', async () => {
+  const { normalizeAcpAvailability, normalizeProviderStatus } = await import('../src/ui/api/endpoints/bridgeSupport.ts');
+  assert.deepEqual(normalizeAcpAvailability({ available: true, reason: 'ready', fix: null }), { available: true, reason: 'ready', fix: null });
+  assert.deepEqual(normalizeAcpAvailability({ available: false, reason: 'unsupported_bridge', fix: 'update_bridge' }),
+    { available: false, reason: 'unsupported_bridge', fix: 'update_bridge' });
+  assert.equal(normalizeAcpAvailability(undefined), null);
+  assert.equal(normalizeAcpAvailability({ available: true, reason: 'future' }), null);
+  // available is only true for the ready reason; unknown fixes collapse to null.
+  assert.deepEqual(normalizeAcpAvailability({ available: true, reason: 'installing', fix: 'reboot' }), { available: false, reason: 'installing', fix: null });
+  const status = await normalizeProviderStatus({ bridge_id: 'b', providers: [
+    { provider: 'claude', display_name: 'Claude', acp_availability: { available: false, reason: 'adapter_missing', fix: 'install_adapter' } },
+    { provider: 'codex', display_name: 'Codex' },
+  ] });
+  assert.deepEqual(status.providers[0].acp_availability, { available: false, reason: 'adapter_missing', fix: 'install_adapter' });
+  assert.equal(status.providers[1].acp_availability, null);
+});
