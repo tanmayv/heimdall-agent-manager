@@ -145,6 +145,10 @@ Task_Chain :: struct {
 	completed_at:                  string,
 	is_pinned:                     bool,
 	pinned_at:                     string,
+	// Chain cap (spec SCHED REQ-SCHED-34): at most max_parallel non-coordinator
+	// instances occupied, review_reserve of them never taken by work. 0 = unlimited.
+	max_parallel:                  int,
+	review_reserve:                int,
 }
 
 // A revisioned invalidation entry for the encrypted Bridge search document feed.
@@ -319,6 +323,10 @@ Task_Chain_Fleet :: struct {
 	// paused roles, `["*"]` = every role. A paused role gets no new lease on
 	// this row; live leases are untouched.
 	paused_roles_json: string,
+	// paused (REQ-SCHED-2): no new lease of any kind for this agent in the chain.
+	// Persisted as task_chain_fleets.paused; derived from paused_roles_json on
+	// write until SCHED-0b removes the per-role field.
+	paused: bool,
 	created_at: string,
 	updated_at: string,
 }

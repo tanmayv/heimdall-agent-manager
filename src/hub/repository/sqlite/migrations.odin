@@ -785,6 +785,8 @@ MIGRATION_255_EXTENSION_VERSION_SYNC :: #load("migrations/255_extension_version_
 
 MIGRATION_256_EXTENSION_VERSION_SYNC :: #load("migrations/256_extension_version_sync_0_5_90.sql", string)
 
+MIGRATION_257_AGENT_ID_ASSIGNMENT :: #load("migrations/257_agent_id_assignment.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1078,6 +1080,7 @@ migration_order :: [?]string {
 	"254_fleet_applications.sql",
 	"255_extension_version_sync_0_5_89.sql",
 	"256_extension_version_sync_0_5_90.sql",
+	"257_agent_id_assignment.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1634,6 +1637,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "257_agent_id_assignment.sql" do return strings.clone(MIGRATION_257_AGENT_ID_ASSIGNMENT)
 	if name == "256_extension_version_sync_0_5_90.sql" do return strings.clone(MIGRATION_256_EXTENSION_VERSION_SYNC)
 	if name == "255_extension_version_sync_0_5_89.sql" do return strings.clone(MIGRATION_255_EXTENSION_VERSION_SYNC)
 	if name == "252_extension_version_sync_0_5_88.sql" do return strings.clone(MIGRATION_252_EXTENSION_VERSION_SYNC)

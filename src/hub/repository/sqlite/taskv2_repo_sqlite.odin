@@ -72,6 +72,86 @@ taskchain_take_boot_regate_sqlite :: proc(ctx: rawptr) -> (bool, domain.Domain_E
 	return false, domain.Domain_Error{}
 }
 
+// ---- SCHED-0a one-shot mapping (migration 257) -------------------------------
+
+// taskchain_take_sched0_migration_sqlite deletes the sched0_migration_pending
+// marker and reports whether it was there. Inside the boot UoW, so a rollback
+// keeps the marker for the next boot.
+taskchain_take_sched0_migration_sqlite :: proc(ctx: rawptr) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := prepare(impl, "DELETE FROM sched0_migration_pending WHERE singleton = 1 RETURNING singleton;", "sched0 marker take")
+	if err.code != .None do return false, err
+	defer sqlite3_finalize(stmt)
+	rc := sqlite3_step(stmt)
+	if rc == SQLITE_ROW do return true, domain.Domain_Error{}
+	if rc != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "failed to take the sched0 migration marker")
+	return false, domain.Domain_Error{}
+}
+
+taskchain_list_sched0_fleet_roles_sqlite :: proc(ctx: rawptr) -> ([]domain.Sched0_Fleet_Roles, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := prepare(impl, "SELECT chain_id, agent_id, roles_json, paused_roles_json FROM sched0_fleet_roles ORDER BY chain_id, agent_id;", "sched0 fleet roles list")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	out := make([dynamic]domain.Sched0_Fleet_Roles)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, domain.Sched0_Fleet_Roles{
+			chain_id = domain.Task_Chain_ID(column_text(stmt, 0)),
+			agent_id = column_text(stmt, 1),
+			roles_json = column_text(stmt, 2),
+			paused_roles_json = column_text(stmt, 3),
+		})
+	}
+	return out[:], domain.Domain_Error{}
+}
+
+taskchain_clear_sched0_fleet_roles_sqlite :: proc(ctx: rawptr) -> domain.Domain_Error {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := prepare(impl, "DELETE FROM sched0_fleet_roles;", "sched0 fleet roles clear")
+	if err.code != .None do return err
+	defer sqlite3_finalize(stmt)
+	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "failed to clear the sched0 fleet role snapshot")
+	return domain.Domain_Error{}
+}
+
+// taskchain_sched0_normalize_reviews_sqlite: one agent verdict per (attempt,
+// agent) under domain.SCHED0_REVIEW_ROLE. A request_changes wins over an approve
+// (fail closed); otherwise a row already under the target role, then the
+// earliest, is kept. Gate-approver rows (role coordinator / user) and user
+// verdicts are untouched. The task's review leases are moved to the same role.
+taskchain_sched0_normalize_reviews_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, attempt_no: int) -> (int, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	changed := 0
+	queries := [3]string{
+		"DELETE FROM task_reviews WHERE rowid IN (SELECT rid FROM (SELECT rowid AS rid, ROW_NUMBER() OVER (PARTITION BY reviewer_agent_id ORDER BY CASE verdict WHEN 'request_changes' THEN 0 ELSE 1 END, CASE role WHEN '" + domain.SCHED0_REVIEW_ROLE + "' THEN 0 ELSE 1 END, created_at, role) AS rn FROM task_reviews WHERE task_id = ?1 AND attempt_no = ?2 AND reviewer_kind = 'agent' AND role NOT IN ('coordinator', 'user')) WHERE rn > 1);",
+		"UPDATE task_reviews SET role = '" + domain.SCHED0_REVIEW_ROLE + "' WHERE task_id = ?1 AND attempt_no = ?2 AND reviewer_kind = 'agent' AND role NOT IN ('coordinator', 'user', '" + domain.SCHED0_REVIEW_ROLE + "');",
+		// A live review lease names the roles its verdict is written under;
+		// the lease upsert never changes it, so the mapping does it here.
+		"UPDATE task_leases SET review_role = '" + domain.SCHED0_REVIEW_ROLE + "' WHERE task_id = ?1 AND kind = 'review' AND review_role <> '" + domain.SCHED0_REVIEW_ROLE + "';",
+	}
+	for q in queries {
+		stmt, err := prepare(impl, q, "sched0 review normalize")
+		if err.code != .None do return changed, err
+		bind_text(stmt, 1, string(task_id))
+		// The lease statement has no ?2; binding it is a harmless SQLITE_RANGE.
+		sqlite3_bind_int(stmt, 2, c.int(attempt_no))
+		rc := sqlite3_step(stmt)
+		sqlite3_finalize(stmt)
+		if rc != SQLITE_DONE do return changed, domain.domain_error(.Internal_Error, "failed to normalize task reviews")
+		changed += int(sqlite3_changes(impl.conn.db))
+	}
+	return changed, domain.Domain_Error{}
+}
+
 // ---- events ----------------------------------------------------------------
 
 @(private = "file")

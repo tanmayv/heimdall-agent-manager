@@ -11,6 +11,13 @@ Task_List_By_State_Proc :: proc(ctx: rawptr, state: domain.Task_State) -> ([]dom
 // Take_Boot_Regate_Proc consumes the one-shot "re-evaluate every in-review
 // gate at boot" marker a gate-affecting migration leaves; true when it was set.
 Take_Boot_Regate_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)
+// SCHED-0a one-shot mapping (migration 257): take the marker, read and clear the
+// fleet role snapshot, and collapse a task attempt's agent verdicts to one row
+// per agent under domain.SCHED0_REVIEW_ROLE (its review leases move with them).
+Take_Sched0_Migration_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)
+Sched0_Fleet_Roles_List_Proc :: proc(ctx: rawptr) -> ([]domain.Sched0_Fleet_Roles, domain.Domain_Error)
+Sched0_Fleet_Roles_Clear_Proc :: proc(ctx: rawptr) -> domain.Domain_Error
+Sched0_Normalize_Reviews_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, attempt_no: int) -> (int, domain.Domain_Error)
 
 Task_Event_Append_Proc :: proc(ctx: rawptr, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error)
 Task_Event_Latest_ID_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (i64, domain.Domain_Error)
@@ -65,6 +72,27 @@ taskchain_list_tasks_by_state :: proc(repo: ^Taskchain_Repository, state: domain
 taskchain_take_boot_regate :: proc(repo: ^Taskchain_Repository) -> (bool, domain.Domain_Error) {
 	if repo == nil || repo.take_boot_regate == nil do return false, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.take_boot_regate(repo.ctx)
+}
+
+taskchain_take_sched0_migration :: proc(repo: ^Taskchain_Repository) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.take_sched0_migration == nil do return false, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.take_sched0_migration(repo.ctx)
+}
+
+taskchain_list_sched0_fleet_roles :: proc(repo: ^Taskchain_Repository) -> ([]domain.Sched0_Fleet_Roles, domain.Domain_Error) {
+	if repo == nil || repo.list_sched0_fleet_roles == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.list_sched0_fleet_roles(repo.ctx)
+}
+
+taskchain_clear_sched0_fleet_roles :: proc(repo: ^Taskchain_Repository) -> domain.Domain_Error {
+	if repo == nil || repo.clear_sched0_fleet_roles == nil do return domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.clear_sched0_fleet_roles(repo.ctx)
+}
+
+// taskchain_sched0_normalize_reviews returns how many rows it changed or removed.
+taskchain_sched0_normalize_reviews :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, attempt_no: int) -> (int, domain.Domain_Error) {
+	if repo == nil || repo.sched0_normalize_reviews == nil do return 0, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.sched0_normalize_reviews(repo.ctx, task_id, attempt_no)
 }
 
 taskchain_append_event :: proc(repo: ^Taskchain_Repository, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error) {

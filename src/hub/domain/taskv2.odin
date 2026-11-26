@@ -138,3 +138,19 @@ Workflow_Definition :: struct {
 	body_json:     string,
 	created_at:    string,
 }
+
+// Sched0_Fleet_Roles: one fleet row's role data, snapshotted by migration 257
+// (SCHED-0a) for the one-shot agent-id mapping at the next boot. It outlives the
+// role columns that SCHED-0b drops.
+Sched0_Fleet_Roles :: struct {
+	chain_id:          Task_Chain_ID,
+	agent_id:          string,
+	roles_json:        string,
+	paused_roles_json: string,
+}
+
+// SCHED0_REVIEW_ROLE is the task_reviews.role an agent verdict carries after the
+// SCHED-0a mapping. Until SCHED-0b replaces the gate it is the named-reviewer
+// role the pre-0b gate already requires (taskv2.NAMED_REVIEW_ROLE); SCHED-0b
+// renames it to "review".
+SCHED0_REVIEW_ROLE :: "named"
