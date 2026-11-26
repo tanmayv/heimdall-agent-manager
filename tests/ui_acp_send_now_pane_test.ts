@@ -332,7 +332,7 @@ test('ACP pane: a failed batch says so and Retry reuses its request_id for the m
 
 // Agent settings panel (agent_settings_panel experiment): the gear and the composer
 // settings chip open the panel (a drawer at jsdom's 1024px) instead of the modal, the
-// Runtime card shows this instance, and the interim configuration slot still applies.
+// Runtime card shows this instance, and the staged-changes footer applies the draft.
 test('Agent settings panel: flag on opens the panel from the gear and the composer chip; flag off keeps the modal', async () => {
   const hub: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] },
     experiments: [{ key: 'agent_settings_panel', enabled: true }] };
@@ -361,8 +361,8 @@ test('Agent settings panel: flag on opens the panel from the gear and the compos
     await act(async () => q('agent-panel-model-provider-codex')!.click());
     assert.equal(q('agent-panel-model-provider-codex')!.getAttribute('aria-checked'), 'true');
     assert.equal(hub.posts.length, 0, 'picking a provider posts nothing');
-    await wait(() => Boolean(q('agent-panel-legacy-apply-btn')) && !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'staged change can apply');
-    await act(async () => q('agent-panel-legacy-apply-btn')!.click());
+    await wait(() => Boolean(q('agent-panel-apply-btn')) && !(q('agent-panel-apply-btn') as HTMLButtonElement).disabled, 'staged change can apply');
+    await act(async () => q('agent-panel-apply-btn')!.click());
     await wait(() => hub.posts.length === 1, 'reconfiguration posted');
     assert.equal(hub.posts[0].body.provider, 'codex');
     assert.equal(hub.posts[0].body.expected_revision, 7);
@@ -380,7 +380,7 @@ test('Agent settings panel: flag on opens the panel from the gear and the compos
   });
 });
 
-test('Agent settings panel draft: connection and bypass stage, ACP gate blocks Apply, Apply sends only changed fields', async () => {
+test('Agent settings panel draft: connection and bypass stage, ACP gate blocks Apply, Apply sends the full destination', async () => {
   const hub: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] },
     experiments: [{ key: 'agent_settings_panel', enabled: true }],
     acpAvailability: { available: false, reason: 'adapter_missing', fix: 'install_adapter' } };
@@ -391,7 +391,7 @@ test('Agent settings panel draft: connection and bypass stage, ACP gate blocks A
       await wait(() => Boolean(q(id)), `${id} rendered`);
     }
     await wait(() => Boolean(q('agent-panel-model-provider-claude')), 'provider rows loaded');
-    assert.equal(q('agent-panel-legacy-apply-btn'), null, 'no staged change, no Apply');
+    assert.equal(q('agent-panel-apply-btn'), null, 'no staged change, no Apply');
 
     await act(async () => q('agent-panel-connection-acp')!.click());
     assert.equal(q('agent-panel-connection-acp')!.getAttribute('aria-checked'), 'true');
@@ -400,7 +400,7 @@ test('Agent settings panel draft: connection and bypass stage, ACP gate blocks A
     assert.match(q('agent-panel-connection-acp-alert')!.textContent || '', /ACP adapter isn't installed on b\./);
     assert.ok(q('agent-panel-connection-fix-install_adapter'), 'Install adapter action from fix');
     assert.equal(q('agent-panel-apply-blocked')!.textContent, 'Fix the connection above before applying.');
-    assert.equal((q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, true);
+    assert.equal((q('agent-panel-apply-btn') as HTMLButtonElement).disabled, true);
     assert.equal(q('conversation-reconfigure-apply-btn'), null, 'the open panel owns Apply: no second Apply in the composer');
 
     await act(async () => q('agent-panel-connection-pty')!.click());
@@ -408,13 +408,15 @@ test('Agent settings panel draft: connection and bypass stage, ACP gate blocks A
     await act(async () => q('agent-panel-permissions-toggle')!.click());
     assert.equal(q('agent-panel-permissions-toggle')!.getAttribute('aria-checked'), 'false');
     assert.equal(hub.posts.length, 0, 'nothing applies on click');
-    await wait(() => Boolean(q('agent-panel-legacy-apply-btn')) && !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'bypass change can apply');
-    await act(async () => q('agent-panel-legacy-apply-btn')!.click());
+    await wait(() => Boolean(q('agent-panel-apply-btn')) && !(q('agent-panel-apply-btn') as HTMLButtonElement).disabled, 'bypass change can apply');
+    await act(async () => q('agent-panel-apply-btn')!.click());
     await wait(() => hub.posts.length === 1, 'reconfiguration posted');
     assert.equal(hub.posts[0].body.permission_mode, 'ask');
-    assert.equal(hub.posts[0].body.runtime_transport, undefined, 'unchanged transport is not sent');
+    assert.equal(hub.posts[0].body.runtime_transport, 'pty', 'the full destination is always sent');
     assert.equal(hub.posts[0].body.provider, 'claude');
     assert.equal(hub.posts[0].body.model, 'opus');
+    assert.equal(hub.posts[0].body.apply, 'now');
+    assert.ok('project_id' in hub.posts[0].body, 'project_id is always resent');
   });
 
   const ready: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] },
@@ -425,11 +427,11 @@ test('Agent settings panel draft: connection and bypass stage, ACP gate blocks A
     await wait(() => Boolean(q('agent-panel-model-provider-claude')), 'provider rows loaded');
     await act(async () => q('agent-panel-connection-acp')!.click());
     assert.equal(q('agent-panel-connection-acp-alert'), null, 'ready: no alert');
-    await wait(() => Boolean(q('agent-panel-legacy-apply-btn')) && !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'ACP change can apply');
-    await act(async () => q('agent-panel-legacy-apply-btn')!.click());
+    await wait(() => Boolean(q('agent-panel-apply-btn')) && !(q('agent-panel-apply-btn') as HTMLButtonElement).disabled, 'ACP change can apply');
+    await act(async () => q('agent-panel-apply-btn')!.click());
     await wait(() => ready.posts.length === 1, 'reconfiguration posted');
     assert.equal(ready.posts[0].body.runtime_transport, 'acp');
-    assert.equal(ready.posts[0].body.permission_mode, undefined, 'unchanged bypass is not sent');
+    assert.equal(ready.posts[0].body.permission_mode, 'yolo', 'unchanged bypass is resent');
   });
 });
 

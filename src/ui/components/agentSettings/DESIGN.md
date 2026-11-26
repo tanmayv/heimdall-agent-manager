@@ -61,9 +61,8 @@ colour, never colour alone: Running/Restarting use the info tint, Stopped is neu
    the stage that records the adapter state `acp_availability` is classified from).
 5. **Permissions** (`PermissionsSection.tsx`, `agent-panel-permissions`): the @ui Toggle,
    per running instance only.
-6. Staged-changes footer: T7 (`agent-panel-apply`). Until then a minimal Discard/Apply
-   row (`agent-panel-interim-apply`) applies the draft through the existing
-   reconfiguration.
+6. **Staged changes** (`ApplyFooter.tsx`, `agent-panel-apply`): the sticky footer, see
+   "Staged changes and Apply" below.
 
 ## The draft
 
@@ -76,6 +75,40 @@ bridge's status arrives); picking a provider resets the model to its first model
 `applyBlockedReason` blocks Apply while ACP is selected and the hub's verdict for the
 draft bridge + provider is not `available` ("Fix the connection above before applying.").
 `AgentChatPane` stores the draft in its staged bridge/provider/model state plus staged
-transport and bypass, and sends `runtime_transport` / `permission_mode` only when they
-change. Radiogroups share `radioGroup.ts` (roving tab stop, arrow keys skip disabled
+transport and bypass. The old modal (flag off) still sends `runtime_transport` /
+`permission_mode` only when they change; the panel's Apply always sends the full
+destination (below). Radiogroups share `radioGroup.ts` (roving tab stop, arrow keys skip disabled
 rows). Selected rows use `bg-surface-overlay` (the spec's bg-300 token) and a gold check.
+
+## Staged changes and Apply
+
+`useApplyAgentSettings.ts` owns the request and its outcome; `ApplyFooter.tsx` renders
+`applyFooterView` (both unit-tested in `tests/ui_agent_settings_apply_test.ts`; the
+browser check is `tests/e2e/agent_settings_apply_browser_check.mjs`).
+
+- The footer appears while the draft differs from the instance, and while a change is
+  queued, restarting, failed or needs recovery. One chip per change
+  (`Bridge riverwood → dawnstar`): mono values, the arrow `aria-hidden` with an sr-only
+  "to".
+- Note: "Restarts the agent with a fresh session. The conversation stays."; a bridge
+  move names the bridge and the project's folder there; mid-turn (activity busy)
+  appends "It's mid-turn, so the restart waits for the turn to finish."; stopped:
+  "Starts the agent with these settings."
+- Buttons: Discard (ghost) + the gold primary "Apply and restart" | mid-turn "Restart
+  after this turn" plus a ghost "Restart now" | stopped "Apply and start" |
+  recovery_required "Retry change" (the existing retry endpoint). The ACP gate or a
+  destination issue disables the primary with its reason. Touch: Discard 1 part, the
+  primary 2 parts, 44px.
+- Apply sends the FULL destination (`bridge_id`, `project_id`, `provider`,
+  `provider_profile`, `model`, `runtime_transport`, `permission_mode`) with
+  `expected_revision` = `configuration_revision`, an idempotency key per intent (replayed
+  only after a 5xx or network failure) and `apply: 'after_turn'` mid-turn, else `'now'`.
+  Restart now is `'now'` with a new key, which supersedes the queued change.
+- 409: the instance is refetched, the draft is kept and the footer says "Changed since
+  you opened: …" (the configuration the draft started from vs the refreshed one). Any
+  other failure shows the hub's error; the draft is kept.
+- Accepted: "Restarting" (footer and Runtime card) until the instance reports running on
+  a new `launch_epoch` (WS agent_instance summary), or the operation fails.
+- `waiting_for_idle`: "Waiting for the turn to finish…" + Cancel (the cancel endpoint);
+  30 minutes after `waiting_since`, "Still waiting" + Restart now (the hub keeps waiting).
+- With the flag on, the composer shows no Reset/Apply pair: the panel owns Apply.

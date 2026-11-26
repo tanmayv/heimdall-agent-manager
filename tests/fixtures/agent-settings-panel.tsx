@@ -1,6 +1,8 @@
 // Browser-only fixture: the real AgentChatPane with the Agent settings panel against an
-// in-memory hub. ?state=running|stopped|restarting, ?acp=<acp_availability reason>
-// (claude's verdict on every bridge; default ready). No request leaves the page.
+// in-memory hub. ?state=running (mid-turn)|idle|stopped|restarting|waiting|still_waiting,
+// ?acp=<acp_availability reason> (claude's verdict on every bridge; default ready).
+// POST /reconfigurations is accepted in memory (the agent then shows Restarting).
+// No request leaves the page.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Provider } from 'react-redux';
@@ -46,12 +48,17 @@ const messages = [
 const instance = {
   agent_instance_id: 'inst_coord', agent_id: 'agt_coord', provider: 'claude', model: 'default', bridge_id: 'brg_riverwood',
   project_id: 'prj_heimdall', project_path: '/var/home/tanmay/heimdall-agent-manager', runtime_transport: 'pty', launch_epoch: 'ep1', configuration_revision: 7,
-  runtime_status: state === 'stopped' ? 'stopped' : 'running', activity_status: state === 'running' ? 'working' : 'idle',
+  runtime_status: state === 'stopped' ? 'stopped' : 'running',
+  activity_status: ['running', 'waiting', 'still_waiting'].includes(state) ? 'working' : 'idle',
   started_at: state === 'stopped' ? '' : startedAt, stop_reason: state === 'stopped' ? 'user_stop' : '', display_name: 'coordinator #41',
 };
-const operations = state === 'restarting'
-  ? [{ operation_id: 'op1', agent_instance_id: 'inst_coord', idempotency_key: 'k', phase: 'launching', revision: 3, source: {}, destination: {}, source_stopped: true, destination_committed: true, failure_code: '', failure_message: '' }]
-  : [];
+const operation = (phase: string, extra: Record<string, unknown> = {}) => ({ operation_id: 'op1', agent_instance_id: 'inst_coord', idempotency_key: 'k',
+  phase, revision: 3, source: {}, destination: {}, source_stopped: phase === 'launching', destination_committed: phase === 'launching',
+  failure_code: '', failure_message: '', ...extra });
+let operations: any[] = state === 'restarting' ? [operation('launching')]
+  : state === 'waiting' ? [operation('waiting_for_idle', { apply: 'after_turn', waiting_since: new Date(now - 4 * 60000).toISOString() })]
+    : state === 'still_waiting' ? [operation('waiting_for_idle', { apply: 'after_turn', waiting_since: new Date(now - 42 * 60000).toISOString() })]
+      : [];
 const bridge = (id: string, label: string, os: string, online: boolean) => ({ bridge_id: id, label, machine_hostname: label, machine_os: os,
   status: online ? 'online' : 'offline', runtime_connected: online, reconfiguration_supported: true });
 const bridges = [
@@ -86,6 +93,15 @@ window.fetch = async (input, init = {}) => {
   if (path.endsWith('/messages')) return json([...messages].reverse());
   if (path.endsWith('/send-now')) return json({ conversation_id: 'conv', runtime_transport: 'pty', launch_epoch: 'ep1', steering_supported: false, batch: null });
   if (/\/agent-instances\/[^/]+$/.test(path)) return json(instance);
+  if (path.endsWith('/reconfigurations') && String(init.method || 'GET').toUpperCase() === 'POST') {
+    const body = JSON.parse(String(init.body || '{}'));
+    (window as any).__reconfigurations = [...((window as any).__reconfigurations || []), body];
+    const accepted = operation(body.apply === 'after_turn' && instance.activity_status === 'working' ? 'waiting_for_idle' : 'prepared',
+      { operation_id: 'op_applied', idempotency_key: body.idempotency_key, apply: body.apply, waiting_since: new Date().toISOString(),
+        destination: { bridge_id: body.bridge_id, project_id: body.project_id, provider: body.provider, provider_profile: body.provider_profile, model: body.model } });
+    operations = [accepted];
+    return json(accepted);
+  }
   if (path.endsWith('/reconfigurations')) return json({ operations });
   if (path.endsWith('/provider-status') || path.endsWith('/providers')) return json(providerStatus);
   if (path.endsWith('/bridges')) return json(bridges);

@@ -20,14 +20,12 @@ import { useDispatch, useSelector, useStore } from 'react-redux';
 import { desktopUpdateFrozen, desktopUpdatePreparation } from '../../utils/desktopUpdatePreparation';
 import { writeClientStorageChecked, writeComposerDraftChecked } from '../../utils/clientPersistence';
 import {
-  Button,
   CommandPalette,
   Icon as UiIcon,
   IconButton as UiIconButton,
   Menu,
   Modal,
   StatusDot,
-  Text,
   runtimeStateFromStatus,
   runtimeStateLabel,
   runtimeStatusToTone,
@@ -1870,7 +1868,7 @@ export function AgentChatPane({
     reconfigure: async (args) => { const result = await lifecycle.reconfigure(args); setReconfigStatus(''); return result; },
     retry: async (args) => { const result = await lifecycle.retry(args); setReconfigStatus(''); return result; },
     cancel: (args) => lifecycleResult('reconfigure', () => cancelInstanceConfiguration(args).unwrap()),
-    refetchInstance: () => instanceQuery.refetch(),
+    refetchInstance: () => refetchIfStarted(instanceQuery),
     onAccepted: (accepted) => setAcceptedOperation(accepted),
   });
   function commitDraft(next: AgentConfig) {
