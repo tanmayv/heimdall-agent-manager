@@ -210,8 +210,9 @@ mcp_task_test_fixture :: proc(t:^testing.T,vector:string,catalog:bool,runtime:bo
 	testing.expectf(t,get.status==200 && get.sensitive && strings.contains(get.body,"HTTP private comment") && !strings.contains(get.body,"vault:v2:"),"task get: %s",get.body)
 	rows,_=iface.taskchain_list_comments_by_task(&g.repos.taskchains,"task_comment",domain.User_ID(v.request.owner))
 	testing.expect(t,len(rows)==2)
-	mcp_task_test_mutations(t,g,&h,headers,view)
-	mcp_task_test_placement(t,g,&h,headers,view)
+	// The mutation scenario runs inside the placement scenario: every task names
+	// its assignee (REQ-SCHED-3), and MCP requires that agent's explicit placement.
+	mcp_task_test_placement(t,g,&h,headers,view,mutations=true)
 	mcp_task_test_contract(t,g,&h,headers,view,input.body)
 	mcp_task_test_failed_commit(t,g,var_tokens.access_token,view,input.body,&attention_probe)
 	jobs:[4]MCP_Task_Comment_Race
@@ -236,7 +237,7 @@ mcp_task_test_fixture :: proc(t:^testing.T,vector:string,catalog:bool,runtime:bo
 
 // This is a real repository/engine lease match on synthetic machines. The
 // separate acceptance task still must prove execution on actual bridges.
-mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View) {
+mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View,mutations:=false) {
 	now:=mcp_task_test_now(nil)
 	g.repos.agents=sqlite.new_agent_repository(&g.sqlite_agents,&g.db)
 	g.repos.bridges=sqlite.new_bridge_repository(&g.sqlite_bridges,&g.db)
@@ -279,6 +280,21 @@ mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Ha
 	revision,_,_:=mcp.control_configuration(&service,chain)
 	fleet:=json.Object{"chain_id"=json.String(chain.chain_id),"request_id"=json.String("fleet_b"),"expected_revision"=json.String(revision),"action"=json.String("fleet"),"agent_id"=json.String("agt_placement"),"bridge_id"=json.String("brg_placement_b"),"provider"=json.String("codex"),"model"=json.String(model)}
 	if mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.configure",fleet))==nil do return
+	// SCHED-0c: fleet rows have no roles (refused by name); `paused` toggles the row.
+	for step in ([]struct{request_id:string,paused:bool,roles:bool}{{"fleet_roles",false,true},{"fleet_pause",true,false},{"fleet_resume",false,false}}) {
+		fresh_chain,_,_:=iface.taskchain_get_chain(&g.repos.taskchains,"chain_placement")
+		fresh_revision,_,_:=mcp.control_configuration(&service,fresh_chain)
+		change:=json.Object{"chain_id"=json.String(chain.chain_id),"request_id"=json.String(step.request_id),"expected_revision"=json.String(fresh_revision),"action"=json.String("fleet"),"agent_id"=json.String("agt_placement"),"bridge_id"=json.String("brg_placement_b"),"provider"=json.String("codex"),"model"=json.String(model)}
+		if step.roles {
+			change["roles"]=json.Array{json.String("worker")}
+			testing.expect(t,strings.contains(mcp_task_test_call(h,headers,"chains.configure",change).body,"fleet_roles_removed"),"chains.configure roles refused by name")
+			continue
+		}
+		change["paused"]=json.Boolean(step.paused)
+		if mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.configure",change))==nil do return
+		rows,_:=iface.taskchain_list_fleets_by_chain(&g.repos.taskchains,chain.chain_id,owner)
+		for row in rows do if row.agent_id=="agt_placement" do testing.expect_value(t,row.paused,step.paused)
+	}
 	testing.expect_value(t,mcp_task_target(g,owner,chain.chain_id,"agt_placement","brg_placement_b"),"")
 	testing.expect_value(t,mcp_task_target(g,owner,chain.chain_id,"agt_placement","brg_placement_a"),"placement_configuration_required")
 	testing.expect_value(t,mcp_task_target(g,owner,chain.chain_id,"agt_placement","brg_placement_offline"),"bridge_offline")
@@ -372,13 +388,26 @@ mcp_task_test_placement :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Ha
 	testing.expect(t,instance_a.provider=="claude" && instance_a.model==second_model && instance_a.run_count==1 && instance_a.start_ref==lease_a.lease_id)
 	testing.expect(t,instance_b.provider=="codex" && instance_b.model==model && instance_b.run_count==0 && instance_b.start_ref=="")
 	mcp_task_test_outcomes(t,g,h,headers,view,lease_b.task_id)
+	if mutations do mcp_task_test_mutations(t,g,h,headers,view,model)
 }
 
-mcp_task_test_mutations :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View) {
+// Needs mcp_task_test_placement's agent (agt_placement), online bridge
+// (brg_placement_b) and provider model: tasks name an assignee (REQ-SCHED-3).
+mcp_task_test_mutations :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,headers:[]contracts.HTTP_Header,view:mcp.Access_View,model:string) {
 	now:=mcp_task_test_now(nil)
 	_,saved,_:=iface.taskchain_save_chain(&g.repos.taskchains,{chain_id="chain_mutation",owner_user_id=domain.User_ID(view.owner),title="Synthetic mutation",kind="mixed_work",status=.Active,created_at=now,updated_at=now})
 	if !testing.expect(t,saved) do return
-	args:=json.Object{"chain_id"=json.String("chain_mutation"),"request_id"=json.String("create_retry"),"title"=json.String("Private task title"),"goal"=json.String("Private task goal"),"acceptance"=json.Array{json.String("Private criterion")},"requires_user_approval"=json.Boolean(true)}
+	{
+		service:=mcp.Control_Service{chains=&g.taskchains}
+		draft,_,_:=iface.taskchain_get_chain(&g.repos.taskchains,"chain_mutation")
+		revision,_,_:=mcp.control_configuration(&service,draft)
+		fleet:=json.Object{"chain_id"=json.String("chain_mutation"),"request_id"=json.String("mutation_fleet"),"expected_revision"=json.String(revision),"action"=json.String("fleet"),"agent_id"=json.String("agt_placement"),"bridge_id"=json.String("brg_placement_b"),"provider"=json.String("codex"),"model"=json.String(model)}
+		if mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.configure",fleet))==nil do return
+	}
+	// The assignee is required and named by its fix (REQ-SCHED-3).
+	unassigned:=json.Object{"chain_id"=json.String("chain_mutation"),"request_id"=json.String("create_unassigned"),"title"=json.String("No assignee"),"goal"=json.String("No assignee"),"acceptance"=json.Array{json.String("refused")}}
+	testing.expect(t,strings.contains(mcp_task_test_call(h,headers,"tasks.create",unassigned).body,"assignee_required"),"tasks.create without an assignee is refused by name")
+	args:=json.Object{"chain_id"=json.String("chain_mutation"),"request_id"=json.String("create_retry"),"title"=json.String("Private task title"),"goal"=json.String("Private task goal"),"acceptance"=json.Array{json.String("Private criterion")},"requires_user_approval"=json.Boolean(true),"assignee_agent_id"=json.String("agt_placement"),"bridge_id"=json.String("brg_placement_b")}
 	args["priority"]=json.String("p0")
 	first:=mcp_task_test_call(h,headers,"tasks.create",args)
 	output:=mcp_task_test_output(t,first)

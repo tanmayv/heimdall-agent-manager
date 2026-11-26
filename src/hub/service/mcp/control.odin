@@ -125,6 +125,13 @@ control_record_matches :: proc(expected,actual:json.Object,kind:Hosted_Record_Ki
 			items,typed:=value.(json.Array);expected_items,expected_typed:=expected[key].(json.Array)
 			if !typed || !expected_typed || len(items)!=len(expected_items) do return false
 			for item in items do if _,string_item:=item.(json.String);!string_item do return false
+		} else if kind==.Task_Detail && key=="review_focus" {
+			focus,typed:=value.(json.Object);expected_focus,expected_typed:=expected[key].(json.Object)
+			if !typed || !expected_typed || len(focus)!=len(expected_focus) do return false
+			for agent,item in focus {
+				if _,known:=expected_focus[agent];!known do return false
+				if _,string_item:=item.(json.String);!string_item do return false
+			}
 		} else if kind==.Artifact && key=="content_base64" {
 			text,ok:=value.(json.String);if !ok || !vault.control_artifact_base64_shape_ok(string(text)) do return false
 		} else if is_text {

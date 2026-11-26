@@ -14,7 +14,7 @@ mcp_task_write_arguments :: proc(tool:string,value:json.Value)->(mcp.Control_Arg
 	case "tasks.create":allowed=[]string{"chain_id","request_id","title","description","goal","acceptance","assignee_agent_id","bridge_id","reviewers","depends_on","requires_user_approval","priority"}
 	case "tasks.update":allowed=[]string{"chain_id","task_id","request_id","expected_revision","reason","title","description","goal","acceptance","assignee_agent_id","bridge_id","reviewers","depends_on","requires_user_approval","priority"}
 	case "tasks.control":allowed=[]string{"chain_id","task_id","request_id","expected_revision","action","reason"}
-	case "chains.configure":allowed=[]string{"chain_id","request_id","expected_revision","action","agent_id","bridge_id","provider","model","provider_profile","roles","capacity"}
+	case "chains.configure":allowed=[]string{"chain_id","request_id","expected_revision","action","agent_id","bridge_id","provider","model","provider_profile","roles","capacity","paused"}
 	case:return {},false
 	}
 	mask:u64
@@ -25,7 +25,7 @@ mcp_task_write_arguments :: proc(tool:string,value:json.Value)->(mcp.Control_Arg
 		for k,i in mcp.TASK_TOOL_KEYS do if key==k do mask|=u64(1)<<u64(i)
 		switch key {
 		case "capacity":n,ok:=v.(json.Integer);if !ok || n<1 || n>8 do return {},false
-		case "requires_user_approval":if _,ok:=v.(json.Boolean);!ok do return {},false
+		case "requires_user_approval","paused":if _,ok:=v.(json.Boolean);!ok do return {},false
 		case "acceptance","reviewers","depends_on","roles":
 			items,ok:=v.(json.Array)
 			if !ok || len(items)>100 || key=="acceptance" && (len(items)<1 || len(items)>20) do return {},false
@@ -69,7 +69,6 @@ mcp_task_write_arguments :: proc(tool:string,value:json.Value)->(mcp.Control_Arg
 		if args.action!="publish" && args.action!="fleet" do return {},false
 		if args.action=="fleet" && (args.agent_id=="" || args.bridge_id=="" || args.provider=="" || args.model=="") do return {},false
 		if args.action=="publish" && len(obj)!=4 do return {},false
-		if mcp.task_argument_present(args,"roles") && len(args.roles)==0 do return {},false
 	}
 	accepted=true
 	return {task_write=args},true

@@ -254,7 +254,6 @@ Task_Review_Wire :: struct {
 	reviewer:             string `json:"reviewer"`,
 	reviewer_kind:        string `json:"reviewer_kind"`,
 	reviewer_instance_id: string `json:"reviewer_instance_id"`,
-	role:                 string `json:"role"`,
 	verdict:              string `json:"verdict"`,
 	created_at:           string `json:"created_at"`,
 }
@@ -320,8 +319,6 @@ Task_Chain_Fleet_Wire :: struct {
 	bridge_id:              string                         `json:"bridge_id"`,
 	// REQ-SCHED-2: no new lease of any kind for this row.
 	paused:                 bool                           `json:"paused"`,
-	// warning: advisory text from fleet set.
-	warning:                string                         `json:"warning,omitempty"`,
 	restarted_instance_ids: Maybe([]string)                `json:"restarted_instance_ids,omitempty"`,
 	restart_failures:       Maybe([]Fleet_Restart_Failure) `json:"restart_failures,omitempty"`,
 	restart_results:        Maybe([]Fleet_Restart_Result) `json:"restart_results,omitempty"`,
@@ -518,10 +515,10 @@ make_task_review_wires :: proc(h: ^Taskchain_Handlers, t: domain.Task) -> []Task
 		// kind is agent | coordinator | user (a coordinator approving on the
 		// user's behalf records kind user).
 		reviewer := "user" if r.reviewer_kind == "user" else r.reviewer_agent_id
-		// One row per (attempt, role, reviewer): a repeat post replaces the verdict.
+		// One row per (attempt, reviewer): a repeat post replaces the verdict.
 		append(&out, Task_Review_Wire{
 			reviewer = reviewer, reviewer_kind = r.reviewer_kind, reviewer_instance_id = r.reviewer_instance_id,
-			role = r.role, verdict = r.verdict, created_at = r.created_at,
+			verdict = r.verdict, created_at = r.created_at,
 		})
 	}
 	return out[:]
@@ -1649,12 +1646,13 @@ create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	has_requires_user_approval := json_key_present(req.body, "requires_user_approval")
 	requires_user_approval, valid_requires_user_approval := json_bool_literal(req.body, "requires_user_approval")
 	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
-	assignee, reviewers, review_roles, has_roles, actor_err := task_actor_fields_from_body(req.body)
+	assignee, reviewers, actor_err := task_actor_fields_from_body(req.body)
 	if actor_err.code != .None do return respond_error(actor_err, req.request_id)
-	brief_json, _ := jsonx.extract_raw_object(req.body, "brief", top_level_only = true, allocator = context.temp_allocator)
+	brief_json, brief_err := task_brief_from_body(req.body)
+	if brief_err.code != .None do return respond_error(brief_err, req.request_id)
 	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{
 		chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"),
-		brief_json = brief_json, assignee_agent_id = assignee, reviewer_agent_ids = reviewers, review_roles = review_roles if has_roles else nil,
+		brief_json = brief_json, assignee_agent_id = assignee, reviewer_agent_ids = reviewers,
 		requires_user_approval = requires_user_approval, has_requires_user_approval = has_requires_user_approval, priority = priority, has_priority = has_priority, depends_on = deps, bridge_id = bridge_id,
 		kind = domain.task_kind_from_string(json_string(req.body, "kind")),
 	})
@@ -1686,9 +1684,10 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	has_requires_user_approval := json_key_present(req.body, "requires_user_approval")
 	requires_user_approval, valid_requires_user_approval := json_bool_literal(req.body, "requires_user_approval")
 	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
-	assignee, reviewers, review_roles, has_roles, actor_err := task_actor_fields_from_body(req.body)
+	assignee, reviewers, actor_err := task_actor_fields_from_body(req.body)
 	if actor_err.code != .None do return respond_error(actor_err, req.request_id)
-	brief_json, _ := jsonx.extract_raw_object(req.body, "brief", top_level_only = true, allocator = context.temp_allocator)
+	brief_json, brief_err := task_brief_from_body(req.body)
+	if brief_err.code != .None do return respond_error(brief_err, req.request_id)
 	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{
         require_requirements_context = true,
         expected_requirements_revision = i64(jsonx.extract_int(req.body, "expected_requirements_revision", 0, true)),
@@ -1697,7 +1696,7 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		title = json_string(req.body, "title"), description = json_string(req.body, "description"), brief_json = brief_json,
 		replace_brief = jsonx.extract_bool_literal(req.body, "replace_brief", true) or_else false,
 		assignee_agent_id = assignee, has_assignee = jsonx.has_key(req.body, "assignee", top_level_only = true) || jsonx.has_key(req.body, "assignee_ref", top_level_only = true),
-		review_roles = review_roles, has_review_roles = has_roles, reviewer_agent_ids = reviewers,
+		reviewer_agent_ids = reviewers,
 		has_reviewers = jsonx.has_key(req.body, "reviewers", top_level_only = true) || jsonx.has_key(req.body, "reviewer_refs", top_level_only = true),
 		requires_user_approval = requires_user_approval, has_requires_user_approval = has_requires_user_approval, priority = priority, has_priority = has_priority, depends_on = deps, has_depends_on = has_deps, bridge_id = bridge_pin,
 	})
@@ -2192,11 +2191,9 @@ write_fleet_json :: proc(
 	active_count: int = 0,
 	restarted_instance_ids: ^[]string = nil,
 	restart_failures: ^[]Fleet_Restart_Failure = nil,
-	warning: string = "",
 	restart_results: ^[]Fleet_Restart_Result = nil,
 ) {
 	wire := make_chain_fleet_wire(f, active_count, restarted_instance_ids, restart_failures)
-	wire.warning = warning
 	if restart_results != nil do wire.restart_results = restart_results^
 	data, _ := json.marshal(wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
 	strings.write_string(b, string(data))
@@ -2291,8 +2288,13 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 			}
 		}
 	}
+	// roles were removed (REQ-SCHED-1): the service refuses them with
+	// fleet_roles_removed. paused (REQ-SCHED-2) is the row's one pause switch.
 	roles := jsonx.extract_string_array(req.body, "roles", true, context.temp_allocator)
 	has_roles := jsonx.has_key(req.body, "roles", top_level_only = true)
+	has_paused := jsonx.has_key(req.body, "paused", top_level_only = true)
+	paused, paused_ok := json_bool_literal(req.body, "paused")
+	if has_paused && !paused_ok do return respond_error(domain.domain_error(.Validation_Failed, "paused must be a boolean"), req.request_id)
 	fleet_bridge_id, has_fleet_bridge := task_bridge_id_from_body(req.body)
 	fleet_bridge_ptr: ^string
 	if has_fleet_bridge do fleet_bridge_ptr = &fleet_bridge_id
@@ -2311,6 +2313,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		roles            = roles[:],
 		has_roles        = has_roles,
 		bridge_id        = fleet_bridge_ptr,
+		paused           = &paused if has_paused else nil,
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
 	restart_results := make([dynamic]Fleet_Restart_Result, context.temp_allocator)
@@ -2389,17 +2392,16 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		restarted_ptr = &restarted_out
 		failures_ptr = &failures_out
 	}
-	warning := ""
 	results_out := restart_results[:]
 	results_ptr: ^[]Fleet_Restart_Result
 	if restart_flag_ok do results_ptr = &results_out
-	write_fleet_json(&b, fleet, 0, restarted_ptr, failures_ptr, warning, results_ptr)
+	write_fleet_json(&b, fleet, 0, restarted_ptr, failures_ptr, results_ptr)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
-// POST …/fleets/{agent}/pause|resume  {roles?:[…]}  (REQ-TV2-5): stop or
-// restart new dispatch to the row (all roles, or the named ones). Live leases
-// are untouched.
+// POST …/fleets/{agent}/pause|resume (REQ-SCHED-2): stop or restart new work
+// and review leases to the whole row; no body. Live leases are untouched. A
+// body still naming `roles` is refused (fleet_roles_removed), never ignored.
 pause_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -2410,7 +2412,7 @@ pause_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if verb != "pause" && verb != "resume" do return respond_error(domain.domain_error(.Not_Found, "unknown fleet action"), req.request_id)
 	roles := jsonx.extract_string_array(req.body, "roles", true, context.temp_allocator)
 	fleet, err := taskchain_service.set_fleet_pause(h.taskchains, auth_ctx, taskchain_service.Fleet_Pause_Input{
-		chain_id = chain_id, agent_id = agent_id, roles = roles[:], paused = verb == "pause",
+		chain_id = chain_id, agent_id = agent_id, roles = roles[:], has_roles = jsonx.has_key(req.body, "roles", top_level_only = true), paused = verb == "pause",
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
@@ -2842,16 +2844,16 @@ task_matches_query :: proc(task: domain.Task, query: string) -> bool {
 
 // task_actor_fields_from_body reads the v2 task actor fields:
 //   assignee:      agent_id string  (or legacy assignee_ref {type: agent_id, agent_id})
-//   reviewers:     [agent_id]       (or legacy reviewer_refs [{type: agent_id, agent_id}])
-//   review_roles:  [role]
-// Instance refs are rejected (instance pins no longer exist); user refs are
-// rejected in favour of requires_user_approval.
-task_actor_fields_from_body :: proc(body: string) -> (assignee: string, reviewers: []string, review_roles: []string, has_roles: bool, err: domain.Domain_Error) {
+//   reviewers:     [agent_id | "user"] (or legacy reviewer_refs [{type: agent_id|user, …}])
+// Instance refs are rejected (instance pins no longer exist). review_roles was
+// removed (REQ-SCHED-8) and is refused with review_roles_removed, never ignored.
+task_actor_fields_from_body :: proc(body: string) -> (assignee: string, reviewers: []string, err: domain.Domain_Error) {
+	if jsonx.has_key(body, "review_roles", top_level_only = true) do return "", nil, taskv2.review_roles_removed_error()
 	assignee = strings.trim_space(json_string(body, "assignee"))
 	if assignee == "" {
 		if ref, ok := jsonx.extract_raw_object(body, "assignee_ref", top_level_only = true, allocator = context.temp_allocator); ok {
 			if jsonx.extract_string(ref, "agent_instance_id", "", true, context.temp_allocator) != "" {
-				return "", nil, nil, false, domain.domain_error(.Validation_Failed, "assignee must be an agent template id (agent_id); instance pins are not supported")
+				return "", nil, domain.domain_error(.Validation_Failed, "assignee must be an agent template id (agent_id); instance pins are not supported")
 			}
 			assignee = strings.trim_space(jsonx.extract_string(ref, "agent_id", "", true))
 		}
@@ -2864,20 +2866,44 @@ task_actor_fields_from_body :: proc(body: string) -> (assignee: string, reviewer
 				for item in arr {
 					obj, is_obj := item.(json.Object)
 					if !is_obj do continue
+					// {type: user} is the owner's approval: the literal `user` reviewer (6.2).
 					if t, tok := obj["type"].(json.String); tok && string(t) == "user" {
-						return "", nil, nil, false, domain.domain_error(.Validation_Failed, "user reviewer refs are not accepted; use requires_user_approval")
+						append(&revs, strings.clone("user"))
+						continue
 					}
 					if iid, iok := obj["agent_instance_id"].(json.String); iok {
-						return "", nil, nil, false, taskv2.reviewer_must_be_agent_id_error(string(iid))
+						return "", nil, taskv2.reviewer_must_be_agent_id_error(string(iid))
 					}
 					if a, aok := obj["agent_id"].(json.String); aok && string(a) != "" do append(&revs, strings.clone(string(a)))
 				}
 			}
 		}
 	}
-	roles := jsonx.extract_string_array(body, "review_roles", true)
-	has_roles = jsonx.has_key(body, "review_roles", top_level_only = true)
-	return assignee, revs[:], roles[:], has_roles, domain.Domain_Error{}
+	return assignee, revs[:], domain.Domain_Error{}
+}
+
+// task_brief_from_body is the request's `brief` object with a top-level
+// `review_focus` ({agent id: text}, 6.2) folded in, so task create and patch
+// accept it beside assignee/reviewers. A top-level value replaces the brief's
+// own review_focus. The brief schema validates the value.
+task_brief_from_body :: proc(body: string) -> (brief: string, err: domain.Domain_Error) {
+	brief, _ = jsonx.extract_raw_object(body, "brief", top_level_only = true, allocator = context.temp_allocator)
+	if !jsonx.has_key(body, "review_focus", top_level_only = true) do return brief, {}
+	focus, ok := jsonx.extract_raw_object(body, "review_focus", top_level_only = true, allocator = context.temp_allocator)
+	if !ok do return "", domain.domain_error(.Validation_Failed, "review_focus must be an object of agent id → text")
+	obj := make(json.Object, allocator = context.temp_allocator)
+	if strings.trim_space(brief) != "" {
+		parsed, perr := json.parse_string(brief, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+		parsed_obj, is_obj := parsed.(json.Object)
+		if perr != .None || !is_obj do return "", domain.domain_error(.Validation_Failed, "brief must be a JSON object")
+		obj = parsed_obj
+	}
+	focus_value, ferr := json.parse_string(focus, json.DEFAULT_SPECIFICATION, true, context.temp_allocator)
+	if ferr != .None do return "", domain.domain_error(.Validation_Failed, "review_focus must be an object of agent id → text")
+	obj["review_focus"] = focus_value
+	data, merr := json.marshal(obj, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
+	if merr != nil do return "", domain.domain_error(.Internal_Error, "encode brief")
+	return string(data), {}
 }
 
 // require_task_path_scope validates that the task exists, is owned by the caller,

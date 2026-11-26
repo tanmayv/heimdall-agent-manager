@@ -18,36 +18,36 @@ test_task_brief_json_from_flags :: proc(t: ^testing.T) {
 		"--acceptance", "retries 3x, with backoff", // comma kept: acceptance is prose
 		"--acceptance", "unit test covers 503",
 		"--input", "#evt_1,facet:t1:1:handoff",
-		"--review-role", "reviewer", "--review-role", "security",
+		"--review-focus", "agt_r=retry bounds", "--review-focus", "agt_s=no secrets in logs",
 	}
 	brief, ok := ctl_task_brief_json(args, "")
 	defer delete(brief)
 	testing.expect(t, ok, "brief present")
-	testing.expect_value(t, brief, `{"goal":"Retry transient 5xx","acceptance":["retries 3x, with backoff","unit test covers 503"],"inputs":["#evt_1","facet:t1:1:handoff"],"review_roles":["reviewer","security"]}`)
+	testing.expect_value(t, brief, `{"goal":"Retry transient 5xx","acceptance":["retries 3x, with backoff","unit test covers 503"],"inputs":["#evt_1","facet:t1:1:handoff"],"review_focus":{"agt_r":"retry bounds","agt_s":"no secrets in logs"}}`)
 }
 
 @(test)
 test_task_brief_json_file_base_flags_override :: proc(t: ^testing.T) {
-	file := `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"review_roles":["reviewer"],"assignee":"agt_w","budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`
+	file := `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"assignee":"agt_w","reviewers":["agt_r"],"budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`
 	// no flags: the whole file is carried; the unknown key is forwarded so the
 	// hub rejects it (unknown_brief_fields) instead of ham-ctl dropping it.
 	base, ok := ctl_task_brief_json([]string{"ham-ctl"}, file)
 	defer delete(base)
 	testing.expect(t, ok, "file alone is a brief")
-	testing.expect_value(t, base, `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"review_roles":["reviewer"],"assignee":"agt_w","budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`)
+	testing.expect_value(t, base, `{"goal":"from file","acceptance":["a1","a2"],"inputs":["#e9"],"assignee":"agt_w","reviewers":["agt_r"],"budget":{"max_attempts":3},"output":{"schema":"x"},"unknown":1}`)
 
 	// reviewers and explicit nulls from the file survive; --clear-<field> sends null.
-	rev, rok := ctl_task_brief_json([]string{"ham-ctl", "--clear-review-roles"}, `{"reviewers":["agt_r"],"budget":null}`)
+	rev, rok := ctl_task_brief_json([]string{"ham-ctl", "--clear-review-focus"}, `{"reviewers":["agt_r"],"budget":null}`)
 	defer delete(rev)
 	testing.expect(t, rok, "reviewers file is a brief")
-	testing.expect_value(t, rev, `{"review_roles":null,"reviewers":["agt_r"],"budget":null}`)
+	testing.expect_value(t, rev, `{"reviewers":["agt_r"],"review_focus":null,"budget":null}`)
 
 	// flags override field by field; untouched file fields survive
 	over, ok2 := ctl_task_brief_json([]string{"ham-ctl", "--goal", "from flag", "--acceptance", "only this"}, file)
 	defer delete(over)
 	testing.expect(t, ok2, "brief present")
 	testing.expect(t, strings.has_prefix(over, `{"goal":"from flag","acceptance":["only this"],"inputs":["#e9"],`), "flags win, file fills the rest")
-	testing.expect(t, strings.contains(over, `"review_roles":["reviewer"]`), "file review_roles kept")
+	testing.expect(t, strings.contains(over, `"reviewers":["agt_r"]`), "file reviewers kept")
 }
 
 @(test)
@@ -237,7 +237,6 @@ test_m3_ctl_params :: proc(t: ^testing.T) {
 	fleet_body, fleet_ok := ctl_v2_fleet_set_body([]string{
 		"ham-ctl", "task-chain", "fleet", "set", "ch_1",
 		"--capacity", "4", "--min-warm", "1", "--idle-ttl", "300",
-		"--roles", "worker,reviewer",
 		"--bridge", "br_main", "--provider", "claude", "--model", "opus",
 		"--bridge-models", `{"br_main":{"provider":"claude","model":"opus"}}`,
 	})
@@ -245,7 +244,7 @@ test_m3_ctl_params :: proc(t: ^testing.T) {
 	defer delete(fleet_b)
 	testing.expect(t, fleet_ok, "fleet set body ok")
 	testing.expect(t, strings.contains(fleet_b, `"capacity":4`), "capacity")
-	testing.expect(t, strings.contains(fleet_b, `"roles":["worker","reviewer"]`), "roles")
+	testing.expect(t, !strings.contains(fleet_b, `"roles"`), "fleet rows have no roles")
 	testing.expect(t, strings.contains(fleet_b, `"bridge_id":"br_main"`), "bridge_id")
 	testing.expect(t, strings.contains(fleet_b, `"bridge_models":{"br_main":`), "bridge_models")
 }
@@ -478,4 +477,53 @@ test_task_chain_summary_get_is_read_only :: proc(t: ^testing.T) {
 	by_pos := ctl_v2_task_chain_summary_get_params([]string{"get", "chain_y"}, []string{"ham-ctl", "task-chain", "summary", "get", "chain_y"})
 	defer delete(by_pos)
 	testing.expect_value(t, by_pos, `{"chain_id":"chain_y"}`)
+}
+
+// SCHED-0c (REQ-SCHED-8): removed role flags are refused by name with the
+// replacement; `--role` stays valid for chain membership.
+@(test)
+test_removed_role_flags_are_refused :: proc(t: ^testing.T) {
+	cases := []struct{ args: []string, flag, code: string }{
+		{[]string{"ham-ctl", "task", "create", "--title", "x", "--review-role", "reviewer"}, "--review-role", "review_roles_removed"},
+		{[]string{"ham-ctl", "task", "create", "--title", "x", "--review-roles", "a,b"}, "--review-roles", "review_roles_removed"},
+		{[]string{"ham-ctl", "task", "update", "t1", "--clear-review-roles"}, "--clear-review-roles", "review_roles_removed"},
+		{[]string{"ham-ctl", "task-chain", "fleet", "set", "c1", "--agent", "agt_a", "--roles", "worker"}, "--roles", "fleet_roles_removed"},
+		{[]string{"ham-ctl", "task-chain", "fleet", "pause", "c1", "--agent", "agt_a", "--role", "reviewer"}, "--role", "fleet_roles_removed"},
+		{[]string{"ham-ctl", "agents", "list", "--target-role", "x"}, "--target-role", "role_flag_removed"},
+	}
+	for c in cases {
+		cmd := command_tokens(c.args)
+		defer delete(cmd)
+		flag, code, message, found := ctl_removed_role_flag(cmd[:], c.args)
+		testing.expectf(t, found && flag == c.flag && code == c.code, "%v -> %s %s", c.args, flag, code)
+		testing.expect(t, message != "", "message names the replacement")
+		out := ctl_removed_role_flag_json(flag, code, message)
+		testing.expectf(t, strings.contains(out, `"ok":false`) && strings.contains(out, c.code), "json: %s", out)
+	}
+	ok_args := []string{"ham-ctl", "task-chains", "members", "--chain", "c1", "add", "--agent", "inst_1", "--role", "member"}
+	ok_cmd := command_tokens(ok_args)
+	defer delete(ok_cmd)
+	_, _, _, member_flagged := ctl_removed_role_flag(ok_cmd[:], ok_args)
+	testing.expect(t, !member_flagged, "members add --role stays valid")
+}
+
+// --review-focus must be <agent>=<text>; --reviewer accepts `user`;
+// task create requires --assignee unless a brief file names one.
+@(test)
+test_review_focus_reviewer_user_and_assignee_required :: proc(t: ^testing.T) {
+	_, bad_ok := ctl_review_focus_flags_valid([]string{"ham-ctl", "--review-focus", "no-equals"})
+	testing.expect(t, !bad_ok, "malformed review focus refused")
+	_, empty_ok := ctl_review_focus_flags_valid([]string{"ham-ctl", "--review-focus", "agt_a="})
+	testing.expect(t, !empty_ok, "empty review focus text refused")
+	_, good_ok := ctl_review_focus_flags_valid([]string{"ham-ctl", "--review-focus", "agt_a=check x=y"})
+	testing.expect(t, good_ok, "text may contain '='")
+	agent, text, split_ok := ctl_split_review_focus("agt_a=check x=y")
+	testing.expect(t, split_ok && agent == "agt_a" && text == "check x=y", "split at the first '='")
+
+	testing.expect(t, ctl_task_reviewer_flags_valid([]string{"ham-ctl", "--reviewer", "agt_a,user"}, false), "user reviewer accepted")
+	testing.expect(t, !ctl_task_reviewer_flags_valid([]string{"ham-ctl", "--reviewer", "user_proxy"}, false), "user_proxy refused")
+
+	testing.expect(t, ctl_task_create_assignee_valid([]string{"ham-ctl", "task", "create", "--assignee", "agt_w"}), "assignee given")
+	testing.expect(t, ctl_task_create_assignee_valid([]string{"ham-ctl", "task", "create", "--brief-file", "b.json"}), "brief file checked by the hub")
+	testing.expect(t, !ctl_task_create_assignee_valid([]string{"ham-ctl", "task", "create", "--title", "x"}), "missing assignee refused")
 }

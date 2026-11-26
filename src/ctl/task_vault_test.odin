@@ -21,7 +21,7 @@ test_task_user_approval_flags_serialize :: proc(t: ^testing.T) {
 	defer delete(updated)
 	testing.expect(t, strings.contains(updated, `"requires_user_approval":false`), "update must serialize the negative flag")
 	testing.expect(t, !ctl_task_reviewer_flags_valid([]string{"--require-user-approval", "--no-require-user-approval"}, true), "conflicting flags must fail")
-	testing.expect(t, !ctl_task_reviewer_flags_valid([]string{"--reviewer", "user"}, true), "legacy user reviewer alias must fail")
+	testing.expect(t, ctl_task_reviewer_flags_valid([]string{"--reviewer", "user"}, true), "`user` is a reviewer (owner approval), REQ-SCHED-4")
 	testing.expect(t, ctl_task_reviewer_flags_valid([]string{"--reviewer", "reviewer@chain"}, true), "agent reviewer IDs containing @ must remain valid")
 }
 

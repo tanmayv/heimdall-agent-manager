@@ -6,13 +6,13 @@ import "core:strings"
 import "core:testing"
 
 // Task System v2 wire: tasks carry `state` (not `status`) and a `brief` object
-// (goal/acceptance/verify/review_roles/assignee) instead of assignee_ref /
+// (goal/acceptance/verify/reviewers/assignee) instead of assignee_ref /
 // reviewer_refs. These tests pin the ctl's typed read of a task create response
 // in both the agent-mode (double `data`) and user-mode (single `data`) envelopes.
 
 @(test)
 test_task_created_wire_valid_populated :: proc(t: ^testing.T) {
-	raw := `{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_001","state":"backlog","kind":"work","attempt_no":0,"brief":{"goal":"ship it","acceptance":["a","b"],"verify":"make test","review_roles":["reviewer"],"assignee":"agt_worker_1"},"blocked_on":{"kind":"task","ref":"task_dep_a","reason":"dependency not done","since":"2026-10-03T18:00:00Z"},"requires_user_approval":true,"depends_on":["task_dep_a","task_dep_b"],"blocked":true,"bridge_id":"brg_host_1"}}}`
+	raw := `{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_001","state":"backlog","kind":"work","attempt_no":0,"brief":{"goal":"ship it","acceptance":["a","b"],"verify":"make test","reviewers":["agt_rev","user"],"assignee":"agt_worker_1"},"blocked_on":{"kind":"task","ref":"task_dep_a","reason":"dependency not done","since":"2026-10-03T18:00:00Z"},"requires_user_approval":true,"depends_on":["task_dep_a","task_dep_b"],"blocked":true,"bridge_id":"brg_host_1"}}}`
 	envelope: Task_Created_Envelope_Wire
 	err := json.unmarshal_string(raw, &envelope, json.DEFAULT_SPECIFICATION, context.temp_allocator)
 	testing.expect(t, err == nil, "unmarshal should succeed for populated response")
@@ -25,7 +25,7 @@ test_task_created_wire_valid_populated :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(envelope.data.data.brief.acceptance), 2)
 	// A legacy row's removed `verify` key is ignored by the typed read.
 	testing.expect_value(t, envelope.data.data.brief.assignee, "agt_worker_1")
-	testing.expect_value(t, len(envelope.data.data.brief.review_roles), 1)
+	testing.expect_value(t, len(envelope.data.data.brief.reviewers), 2)
 	testing.expect_value(t, envelope.data.data.blocked_on.kind, "task")
 	testing.expect_value(t, envelope.data.data.requires_user_approval, true)
 	testing.expect_value(t, len(envelope.data.data.depends_on), 2)
@@ -34,7 +34,7 @@ test_task_created_wire_valid_populated :: proc(t: ^testing.T) {
 
 	assignee, reviewers, deps_str, blocked_str, bridge_str := format_task_created_summary(envelope.data.data, context.temp_allocator)
 	testing.expect_value(t, assignee, "agt_worker_1")
-	testing.expect_value(t, reviewers, "reviewer")
+	testing.expect_value(t, reviewers, "agt_rev,user")
 	testing.expect_value(t, deps_str, `["task_dep_a","task_dep_b"]`)
 	testing.expect_value(t, blocked_str, "\x1b[31mtrue\x1b[0m (task)")
 	testing.expect_value(t, bridge_str, "brg_host_1")
@@ -56,7 +56,7 @@ test_task_created_wire_null_and_empty_brief :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_str1, "inherited")
 
 	// Case 2: empty brief object / empty arrays
-	raw_empty := `{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_empty","state":"backlog","brief":{"goal":"","acceptance":[],"review_roles":[]},"depends_on":[],"blocked":false,"bridge_id":""}}}`
+	raw_empty := `{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_empty","state":"backlog","brief":{"goal":"","acceptance":[],"reviewers":[]},"depends_on":[],"blocked":false,"bridge_id":""}}}`
 	envelope2: Task_Created_Envelope_Wire
 	err2 := json.unmarshal_string(raw_empty, &envelope2, json.DEFAULT_SPECIFICATION, context.temp_allocator)
 	testing.expect(t, err2 == nil, "unmarshal should succeed with empty fields")
@@ -70,13 +70,13 @@ test_task_created_wire_null_and_empty_brief :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_task_created_wire_multiple_review_roles :: proc(t: ^testing.T) {
-	raw := `{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_rr","state":"ready","brief":{"goal":"g","review_roles":["reviewer","security"],"assignee":"agt_w"},"blocked_on":null,"depends_on":[],"blocked":false,"bridge_id":""}}}`
+test_task_created_wire_multiple_reviewers :: proc(t: ^testing.T) {
+	raw := `{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_rr","state":"ready","brief":{"goal":"g","reviewers":["agt_a","agt_b"],"assignee":"agt_w"},"blocked_on":null,"depends_on":[],"blocked":false,"bridge_id":""}}}`
 	envelope: Task_Created_Envelope_Wire
 	err := json.unmarshal_string(raw, &envelope, json.DEFAULT_SPECIFICATION, context.temp_allocator)
 	testing.expect(t, err == nil, "unmarshal ok")
 	_, reviewers, _, _, _ := format_task_created_summary(envelope.data.data, context.temp_allocator)
-	testing.expect_value(t, reviewers, "reviewer,security")
+	testing.expect_value(t, reviewers, "agt_a,agt_b")
 }
 
 @(test)
@@ -113,7 +113,7 @@ test_task_created_wire_key_reordering_and_whitespace_tolerance :: proc(t: ^testi
 				"requires_user_approval": false,
 				"brief": {
 					"assignee": "agt_reorder_worker",
-					"review_roles": [ "reviewer" ],
+					"reviewers": [ "agt_rev" ],
 					"goal": "reorder"
 				},
 				"state": "in_progress",
@@ -140,7 +140,7 @@ test_task_created_wire_key_reordering_and_whitespace_tolerance :: proc(t: ^testi
 
 	assignee, reviewers, deps, blocked, bridge := format_task_created_summary(envelope.data.data, context.temp_allocator)
 	testing.expect_value(t, assignee, "agt_reorder_worker")
-	testing.expect_value(t, reviewers, "reviewer")
+	testing.expect_value(t, reviewers, "agt_rev")
 	testing.expect_value(t, deps, `["task_prior_1","task_prior_2"]`)
 	testing.expect_value(t, blocked, "\x1b[31mtrue\x1b[0m")
 	testing.expect_value(t, bridge, "brg_reordered_99")
@@ -155,9 +155,9 @@ test_task_created_wire_tracking_allocator_clean :: proc(t: ^testing.T) {
 	context.allocator = mem.tracking_allocator(&track)
 
 	payloads := [?]string{
-		`{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_t1","state":"backlog","brief":{"goal":"g","review_roles":["reviewer"],"assignee":"agt_t1"},"blocked_on":{"kind":"task","ref":"dep_t1"},"depends_on":["dep_t1"],"blocked":true,"bridge_id":"brg_t1"}}}`,
+		`{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_t1","state":"backlog","brief":{"goal":"g","reviewers":["agt_rev"],"assignee":"agt_t1"},"blocked_on":{"kind":"task","ref":"dep_t1"},"depends_on":["dep_t1"],"blocked":true,"bridge_id":"brg_t1"}}}`,
 		`{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_t2","state":"ready","brief":null,"blocked_on":null,"depends_on":[],"blocked":false,"bridge_id":""}}}`,
-		`{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_t3","state":"done","brief":{"assignee":"agt_t3","review_roles":[]},"blocked_on":null,"depends_on":["d1","d2"],"blocked":false,"bridge_id":"brg_t3"}}}`,
+		`{"v":1,"id":"ham-ctl-agent","ok":true,"data":{"data":{"task_id":"task_t3","state":"done","brief":{"assignee":"agt_t3","reviewers":[]},"blocked_on":null,"depends_on":["d1","d2"],"blocked":false,"bridge_id":"brg_t3"}}}`,
 	}
 
 	for p in payloads {
@@ -182,7 +182,7 @@ test_task_created_wire_tracking_allocator_clean :: proc(t: ^testing.T) {
 
 @(test)
 test_task_created_wire_user_mode_envelope :: proc(t: ^testing.T) {
-	raw_user := `{"data":{"task_id":"task_direct_hub","state":"backlog","brief":{"assignee":"agt_user_mode","review_roles":[]},"blocked_on":null,"depends_on":["dep_direct"],"blocked":false,"bridge_id":"brg_user"},"meta":{"request_id":"req_1","server_time":"2026-10-03T18:00:00Z"}}`
+	raw_user := `{"data":{"task_id":"task_direct_hub","state":"backlog","brief":{"assignee":"agt_user_mode","reviewers":[]},"blocked_on":null,"depends_on":["dep_direct"],"blocked":false,"bridge_id":"brg_user"},"meta":{"request_id":"req_1","server_time":"2026-10-03T18:00:00Z"}}`
 	user_env: struct {
 		data: Task_Created_Data_Wire `json:"data"`,
 	}

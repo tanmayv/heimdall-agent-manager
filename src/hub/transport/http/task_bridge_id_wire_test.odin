@@ -509,8 +509,10 @@ test_write_task_detail_emits_current_attempt_reviews :: proc(t: ^testing.T) {
 	defer strings.builder_destroy(&b)
 	write_task_detail_json(&b, &f.th, owner_auth, task, nil)
 	out := strings.to_string(b)
-	testing.expectf(t, strings.contains(out, `"reviewer":"agt_qa","reviewer_kind":"agent","reviewer_instance_id":"","role":"qa","verdict":"approve"`), "agent approve (got %s)", out)
-	testing.expectf(t, strings.contains(out, `"reviewer":"agt_sec","reviewer_kind":"agent","reviewer_instance_id":"","role":"security","verdict":"request_changes"`), "agent changes (got %s)", out)
-	testing.expectf(t, strings.contains(out, `"reviewer":"user","reviewer_kind":"user","reviewer_instance_id":"","role":"user","verdict":"approve"`), "user approve (got %s)", out)
+	testing.expectf(t, strings.contains(out, `"reviewer":"agt_qa","reviewer_kind":"agent","reviewer_instance_id":"","verdict":"approve"`), "agent approve (got %s)", out)
+	testing.expectf(t, strings.contains(out, `"reviewer":"agt_sec","reviewer_kind":"agent","reviewer_instance_id":"","verdict":"request_changes"`), "agent changes (got %s)", out)
+	testing.expectf(t, strings.contains(out, `"reviewer":"user","reviewer_kind":"user","reviewer_instance_id":"","verdict":"approve"`), "user approve (got %s)", out)
+	// Review rows carry no role (REQ-SCHED-6, spec 6.5).
+	testing.expectf(t, !strings.contains(out, `"role":`), "review wire has no role (got %s)", out)
 	testing.expectf(t, !strings.contains(out, "agt_old"), "earlier attempt's review is omitted (got %s)", out)
 }

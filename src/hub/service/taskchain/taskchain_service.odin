@@ -1940,6 +1940,9 @@ Upsert_Fleet_Input :: struct {
 	has_roles:        bool,
 	// bridge_id: placement; nil leaves the row's bridge untouched, "" clears it.
 	bridge_id:        ^string,
+	// paused (REQ-SCHED-2): nil keeps the row's pause switch; set, it is saved
+	// in the same write as the rest of the row.
+	paused:           ^bool,
 }
 
 list_fleets :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Fleet, domain.Domain_Error) {
@@ -2034,7 +2037,7 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		provider         = input.provider,
 		model             = input.model,
 		bridge_id        = bridge_id,
-		paused           = existing.paused,
+		paused           = input.paused^ if input.paused != nil else existing.paused,
 		created_at       = existing.created_at if existing.created_at != "" else now,
 		updated_at       = now,
 	}
@@ -2060,9 +2063,10 @@ fleet_roles_removed_error :: proc() -> domain.Domain_Error {
 Fleet_Pause_Input :: struct {
 	chain_id: domain.Task_Chain_ID,
 	agent_id: string,
-	// roles: REMOVED (REQ-SCHED-2, pause is one boolean per row); a non-empty
-	// list is refused.
+	// roles / has_roles: REMOVED (REQ-SCHED-2, pause is one boolean per row);
+	// any roles key, even an empty list, is refused.
 	roles:    []string,
+	has_roles: bool,
 	paused:   bool,
 }
 
@@ -2072,7 +2076,7 @@ Fleet_Pause_Input :: struct {
 set_fleet_pause_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Fleet_Pause_Input) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
 	trimmed_agent := strings.trim_space(input.agent_id)
 	if trimmed_agent == "" do return {}, domain.domain_error(.Validation_Failed, "agent_id is required")
-	if len(input.roles) > 0 do return {}, domain.domain_error(.Validation_Failed, "per-role pause was removed: pause or resume the whole fleet row", `{"code":"fleet_roles_removed","replacement":"paused"}`)
+	if input.has_roles || len(input.roles) > 0 do return {}, domain.domain_error(.Validation_Failed, "per-role pause was removed: pause or resume the whole fleet row", `{"code":"fleet_roles_removed","replacement":"paused"}`)
 	chain, ok, err := get_chain_for_owner_write(service, auth, input.chain_id)
 	if !ok do return {}, err
 	rows, rerr := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)

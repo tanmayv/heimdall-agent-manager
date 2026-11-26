@@ -2,6 +2,7 @@
 package http
 
 import "core:testing"
+import mcp "odin_test:hub/service/mcp"
 import "core:encoding/json"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -71,4 +72,27 @@ test_mcp_requirement_edit_requires_reason :: proc(t: ^testing.T) {
     obj["reason"]=json.String("   ")
     _,blank:=mcp_task_write_arguments("tasks.update",obj)
     testing.expect(t,!blank)
+}
+
+// chains.configure (SCHED-0c): `paused` is a boolean argument; `roles` still
+// parses so the mutation can refuse it by name (fleet_roles_removed).
+@(test)
+test_mcp_chains_configure_paused_and_roles_arguments :: proc(t: ^testing.T) {
+    base:=json.Object{
+        "chain_id"=json.String("chain_example"),"request_id"=json.String("fleet-one"),
+        "expected_revision"=json.String("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        "action"=json.String("fleet"),"agent_id"=json.String("agt_a"),"bridge_id"=json.String("brg_a"),
+        "provider"=json.String("claude"),"model"=json.String("sonnet"),
+    }
+    base["paused"]=json.Boolean(true)
+    parsed,ok:=mcp_task_write_arguments("chains.configure",base)
+    testing.expect(t,ok,"paused accepted")
+    testing.expect(t,parsed.task_write.paused && mcp.task_argument_present(parsed.task_write,"paused"),"paused carried and flagged present")
+    base["paused"]=json.String("yes")
+    _,bad:=mcp_task_write_arguments("chains.configure",base)
+    testing.expect(t,!bad,"paused must be a boolean")
+    delete_key(&base,"paused")
+    base["roles"]=json.Array{json.String("worker")}
+    roles,rok:=mcp_task_write_arguments("chains.configure",base)
+    testing.expect(t,rok && mcp.task_argument_present(roles.task_write,"roles"),"roles parses so the mutation refuses it by name")
 }

@@ -60,7 +60,7 @@ control_read_tasks :: proc(s:^Control_Service,owner,name:string,args:Control_Arg
             for key in ([]string{"revision","submitted_revision","submitted_head","checkpoint_required","acknowledgements","history","history_truncated"}) {
                 row[strings.concatenate({"requirements_",key},context.temp_allocator)]=req[key]
             }
-			for key in ([]string{"goal","acceptance","inputs","review_roles","reviewers"}) do if value,present:=obj[key];present && value!=nil do row[key]=value
+			for key in ([]string{"goal","acceptance","inputs","reviewers","review_focus"}) do if value,present:=obj[key];present && value!=nil do row[key]=value
 			if code:=control_task_attempt(s,task,&row);code!="" do return {},code
 		}
 		if task.blocked_on_json!="" {
