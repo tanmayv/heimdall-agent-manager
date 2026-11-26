@@ -74,5 +74,5 @@ test_placement_recovery_http_authority_guards_and_scope :: proc(t: ^testing.T) {
 	response := recover_card_placement_handler(&ch, wire_cookie_request(f, "POST", card_path, string(body)))
 	testing.expectf(t, response.status == 200, "%s", response.body)
 	duplicate := recover_task_placement_handler(&f.th, wire_cookie_request(f, "POST", path, string(body)))
-	testing.expect_value(t, duplicate.status, 409)
+	testing.expectf(t, duplicate.status == 409, "duplicate: %d %s", duplicate.status, duplicate.body)
 }

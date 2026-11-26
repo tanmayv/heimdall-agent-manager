@@ -1222,14 +1222,20 @@ update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		input.requirements_reason, input.requirements_request_id); req_err.code != .None {
 		return {}, false, req_err
 	}
+	old_brief := task.brief_json
 	task.brief_json = new_brief
 	if input.has_requires_user_approval {
 		task.requires_user_approval = input.requires_user_approval
 		append(&changed, "requires_user_approval")
 	}
-	// `user` in brief.reviewers is the same as requires_user_approval (6.2).
+	// `user` in brief.reviewers is the same as requires_user_approval (6.2):
+	// listing it turns approval on; removing it turns approval off unless the
+	// same request set requires_user_approval explicitly.
 	if taskv2.brief_lists_user(task.brief_json) && !task.requires_user_approval {
 		task.requires_user_approval = true
+		append(&changed, "requires_user_approval")
+	} else if !input.has_requires_user_approval && task.requires_user_approval && taskv2.brief_lists_user(old_brief) && !taskv2.brief_lists_user(task.brief_json) {
+		task.requires_user_approval = false
 		append(&changed, "requires_user_approval")
 	}
 	if input.has_priority { task.priority = input.priority; append(&changed, "priority") }

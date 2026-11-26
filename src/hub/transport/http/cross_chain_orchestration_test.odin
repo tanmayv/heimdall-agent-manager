@@ -48,7 +48,7 @@ xc_expect :: proc(t: ^testing.T,resp: Response,status: int) {
 xc_task :: proc(t: ^testing.T,c: ^Cross_Chain_HTTP_Fixture,id: string,published:=true) -> domain.Task {
 	task:=domain.Task{task_id=domain.Task_ID(id),chain_id=c.wire.chain_id,owner_user_id=c.wire.owner,
 		title=id,kind=.Task,publish_state=.Published if published else .Draft,state=.Backlog,
-		brief_json=`{"goal":"g","acceptance":["a"]}`}
+		brief_json=`{"goal":"g","acceptance":["a"],"assignee":"xc_worker"}`}
 	saved,ok,err:=iface.taskchain_save_task(&c.wire.tc_repo,task)
 	testing.expect(t,ok,err.message)
 	return saved

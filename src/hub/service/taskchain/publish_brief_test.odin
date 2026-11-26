@@ -130,6 +130,11 @@ test_fleet_rows_have_no_roles_and_reviewers_are_agents :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(task.brief_json, `"reviewers":["agt_rev","agt_sec","user"]`), fmt.tprintf("brief names the reviewers: %s", task.brief_json))
 	testing.expect(t, strings.contains(task.brief_json, `"review_focus":{"agt_sec":"check the token store"}`), "review_focus kept")
 	testing.expect(t, task.requires_user_approval, "`user` among the reviewers means user approval")
+	// Removing `user` from the reviewers turns user approval off again.
+	dropped, dok, derr := update_task(&svc, auth, task.task_id, Update_Task_Input{reviewer_agent_ids = []string{"agt_rev", "agt_sec"}, has_reviewers = true})
+	testing.expect(t, dok && !dropped.requires_user_approval, fmt.tprintf("user removed from reviewers: %s", derr.message))
+	readded, rok2, _ := update_task(&svc, auth, task.task_id, Update_Task_Input{reviewer_agent_ids = []string{"agt_rev", "user"}, has_reviewers = true})
+	testing.expect(t, rok2 && readded.requires_user_approval, "user listed again")
 	fleets, _ := iface.taskchain_list_fleets_by_chain(&tc_repo, chain.chain_id, chain.owner_user_id)
 	testing.expect_value(t, len(fleets), 3) // agt_sec, agt_w, agt_rev
 	// The assignee cannot review its own task.

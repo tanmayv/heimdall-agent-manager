@@ -18,7 +18,7 @@ test_recheck_http_routes_auth_and_result :: proc(t: ^testing.T) {
 	chain, _, _ := iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
 	chain.publish_state = .Published
 	_, _, _ = iface.taskchain_save_chain(&f.tc_repo, chain)
-	task := domain.Task{task_id = "task_recheck_http", chain_id = f.chain_id, owner_user_id = f.owner, title = "Re-check", publish_state = .Published, kind = .Task, state = .Ready, brief_json = `{"goal":"g"}`}
+	task := domain.Task{task_id = "task_recheck_http", chain_id = f.chain_id, owner_user_id = f.owner, title = "Re-check", publish_state = .Published, kind = .Task, state = .Ready, brief_json = `{"goal":"g","assignee":"agt_recheck"}`}
 	_, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
 	_, _, _ = taskv2.append_event(&f.tc_repo, &f.clock, task, taskv2.hub_actor(), taskv2.EV_PUBLISHED, `{}`)
 
@@ -40,7 +40,7 @@ test_recheck_http_routes_auth_and_result :: proc(t: ^testing.T) {
 	testing.expect_value(t, resp.status, 200)
 	testing.expect(t, strings.contains(resp.body, `"changed":true`), resp.body)
 	testing.expect(t, strings.contains(resp.body, `"actions":["placement failures reconciled"]`), resp.body)
-	testing.expect(t, strings.contains(resp.body, `no fleet row holds the worker role`), resp.body)
+	testing.expect(t, strings.contains(resp.body, `assignee agt_recheck has no row in the chain fleet`), resp.body)
 	testing.expect(t, strings.contains(resp.body, `"message":"placement failures reconciled"`), resp.body)
 	testing.expect(t, strings.contains(resp.body, `"task":{`), resp.body)
 

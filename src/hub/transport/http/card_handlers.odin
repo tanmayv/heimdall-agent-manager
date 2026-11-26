@@ -25,7 +25,7 @@ placement_recovery_input :: proc(body: string) -> (taskv2.Placement_Recovery_Inp
 	if json.unmarshal(transmute([]u8)body, &input, allocator = context.temp_allocator) != nil {
 		return {}, domain.domain_error(.Validation_Failed, "invalid placement recovery request")
 	}
-	for key in ([]string{"expected_attempt", "expected_assignment", "phase", "agent_id", "role", "fingerprint", "configuration", "scope", "action"}) {
+	for key in ([]string{"expected_attempt", "expected_assignment", "phase", "agent_id", "fingerprint", "configuration", "scope", "action"}) {
 		if !json_key_present(body, key) do return {}, domain.domain_error(.Validation_Failed, fmt.tprintf("%s is required", key))
 	}
 	return input, {}

@@ -29,6 +29,9 @@ test_placement_card_groups_preserves_attention_and_reconciles :: proc(t: ^testin
 	for part in ([]string{"agt_a", "agt_b", "br_off", "br_missing", "fp_a", "fp_b", "All tickets using this fleet", "change_reviewer"}) {
 		testing.expect(t, strings.contains(card.details_json, part), part)
 	}
+	// Agent-id model: a reviewer failure is fixed by changing the reviewer on
+	// the ticket; there is no fleet-role configuration action any more.
+	testing.expect(t, !strings.contains(card.details_json, "configure_fleet") && !strings.contains(card.details_json, `"fleet_configuration":true`), "no fleet-role recovery action")
 	still_question, _, _ := iface.card_get(&h.cards, question.card_id)
 	testing.expect_value(t, still_question.source_marker, question.source_marker)
 	testing.expect_value(t, still_question.status, question.status)

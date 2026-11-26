@@ -298,11 +298,12 @@ wire_teardown :: proc(f: ^wire_fixture) {
 test_cookie_task_bridge_id_create_and_patch :: proc(t: ^testing.T) {
 	f := wire_setup(t, "cookie")
 	defer wire_teardown(f)
+	_, _, _ = iface.agent_save(&f.ag_repo, domain.Agent{agent_id = "agt_wire_tb2", owner_user_id = f.owner, name = "Wire Worker", slug = "wire-worker", template_id = domain.TEMPLATE_EMPTY_ID, state = .Active})
 
 	list_path := fmt.tprintf("/api/v1/task-chains/%s/tasks", f.chain_id)
 
 	// 1. Create WITH a valid owner bridge: persisted + echoed by the serializer.
-	pin_body := wire_body([]string{`{"title":"Pinned via cookie","bridge_id":"`, f.bridge_pin, `"}`})
+	pin_body := wire_body([]string{`{"assignee":"agt_wire_tb2","title":"Pinned via cookie","bridge_id":"`, f.bridge_pin, `"}`})
 	defer delete(pin_body)
 	pin_resp := create_task_handler(&f.th, wire_cookie_request(f, "POST", list_path, pin_body))
 	testing.expect_value(t, pin_resp.status, 201)
@@ -312,7 +313,7 @@ test_cookie_task_bridge_id_create_and_patch :: proc(t: ^testing.T) {
 	testing.expect_value(t, wire_persisted_pin(t, f, pinned_id), f.bridge_pin)
 
 	// 2. Create WITHOUT the field: inherit — persisted empty, key still emitted.
-	inherit_resp := create_task_handler(&f.th, wire_cookie_request(f, "POST", list_path, `{"title":"Inherit via cookie"}`))
+	inherit_resp := create_task_handler(&f.th, wire_cookie_request(f, "POST", list_path, `{"assignee":"agt_wire_tb2","title":"Inherit via cookie"}`))
 	testing.expect_value(t, inherit_resp.status, 201)
 	testing.expectf(t, strings.contains(inherit_resp.body, `"bridge_id":""`), "absent bridge_id must still emit the key empty: %s", inherit_resp.body)
 	inherit_id := json_string(inherit_resp.body, "task_id")
@@ -340,9 +341,9 @@ test_cookie_task_bridge_id_create_and_patch :: proc(t: ^testing.T) {
 
 	// 6. Unknown + foreign pins on create: 404 and nothing persisted.
 	before := wire_count_tasks(f)
-	unknown_resp := create_task_handler(&f.th, wire_cookie_request(f, "POST", list_path, `{"title":"Unknown pin","bridge_id":"brg_wire_missing"}`))
+	unknown_resp := create_task_handler(&f.th, wire_cookie_request(f, "POST", list_path, `{"assignee":"agt_wire_tb2","title":"Unknown pin","bridge_id":"brg_wire_missing"}`))
 	testing.expect_value(t, unknown_resp.status, 404)
-	foreign_body := wire_body([]string{`{"title":"Foreign pin","bridge_id":"`, f.bridge_foreign, `"}`})
+	foreign_body := wire_body([]string{`{"assignee":"agt_wire_tb2","title":"Foreign pin","bridge_id":"`, f.bridge_foreign, `"}`})
 	defer delete(foreign_body)
 	foreign_resp := create_task_handler(&f.th, wire_cookie_request(f, "POST", list_path, foreign_body))
 	testing.expect_value(t, foreign_resp.status, 404)
@@ -360,9 +361,10 @@ test_cookie_task_bridge_id_create_and_patch :: proc(t: ^testing.T) {
 test_agent_action_task_bridge_id_create_and_update :: proc(t: ^testing.T) {
 	f := wire_setup(t, "agent")
 	defer wire_teardown(f)
+	_, _, _ = iface.agent_save(&f.ag_repo, domain.Agent{agent_id = "agt_wire_tb2", owner_user_id = f.owner, name = "Wire Worker", slug = "wire-worker", template_id = domain.TEMPLATE_EMPTY_ID, state = .Active})
 
 	// 1. Agent creates a task with a valid owner bridge: persisted + echoed.
-	create_body := wire_body([]string{`{"params":{"chain_id":"`, string(f.chain_id), `","title":"Agent pinned","bridge_id":"`, f.bridge_alt, `"}}`})
+	create_body := wire_body([]string{`{"params":{"assignee":"agt_wire_tb2","chain_id":"`, string(f.chain_id), `","title":"Agent pinned","bridge_id":"`, f.bridge_alt, `"}}`})
 	defer delete(create_body)
 	create_resp := agent_action_task_create_handler(&f.ah, wire_agent_request(f, "create", create_body))
 	testing.expect_value(t, create_resp.status, 201)
@@ -372,7 +374,7 @@ test_agent_action_task_bridge_id_create_and_update :: proc(t: ^testing.T) {
 	testing.expect_value(t, wire_persisted_pin(t, f, created_id), f.bridge_alt)
 
 	// 2. Agent create without the field: inherit.
-	inherit_body := wire_body([]string{`{"params":{"chain_id":"`, string(f.chain_id), `","title":"Agent inherit"}}`})
+	inherit_body := wire_body([]string{`{"params":{"assignee":"agt_wire_tb2","chain_id":"`, string(f.chain_id), `","title":"Agent inherit"}}`})
 	defer delete(inherit_body)
 	inherit_resp := agent_action_task_create_handler(&f.ah, wire_agent_request(f, "create", inherit_body))
 	testing.expect_value(t, inherit_resp.status, 201)
@@ -400,7 +402,7 @@ test_agent_action_task_bridge_id_create_and_update :: proc(t: ^testing.T) {
 
 	// 5. Unknown pin on create: 404, nothing persisted.
 	before := wire_count_tasks(f)
-	unknown_body := wire_body([]string{`{"params":{"chain_id":"`, string(f.chain_id), `","title":"Agent unknown","bridge_id":"brg_wire_missing"}}`})
+	unknown_body := wire_body([]string{`{"params":{"assignee":"agt_wire_tb2","chain_id":"`, string(f.chain_id), `","title":"Agent unknown","bridge_id":"brg_wire_missing"}}`})
 	defer delete(unknown_body)
 	unknown_resp := agent_action_task_create_handler(&f.ah, wire_agent_request(f, "create", unknown_body))
 	testing.expect_value(t, unknown_resp.status, 404)

@@ -195,7 +195,7 @@ startup_task_wake_replacement_has_fresh_receipt_and_confirms_lease :: proc(t: ^t
 	bridge, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_pin)
 	bridge.status = .Online
 	_, _, _ = iface.bridge_save_bridge(&f.br_repo, bridge)
-	task := domain.Task{task_id = "task_startup_http_wake", chain_id = f.chain_id, owner_user_id = f.owner, title = "Replacement", kind = .Task, publish_state = .Published, brief_json = `{"goal":"g"}`}
+	task := domain.Task{task_id = "task_startup_http_wake", chain_id = f.chain_id, owner_user_id = f.owner, title = "Replacement", kind = .Task, publish_state = .Published, brief_json = `{"goal":"g","assignee":"agt_wire_tb2"}`}
 	_, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
 	testing.expect_value(t, taskv2.task_created(&engine, task, taskv2.hub_actor()).code, domain.Error_Code.None)
 	task, _, _ = iface.taskchain_get_task(&f.tc_repo, task.task_id)
