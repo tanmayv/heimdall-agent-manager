@@ -108,6 +108,18 @@ Service :: struct {
 	content:              ^iface.Content_Repository,
 }
 
+// state_lock / state_unlock take Service.state_mutex. They are sync.mutex_lock
+// / unlock plus the opt-in lock-wait profile (dbtelemetry lock_profile.odin,
+// off by default: one relaxed atomic load). Pair them:
+// `held := state_lock(svc); defer state_unlock(svc, held)`.
+state_lock :: #force_inline proc(svc: ^Service) -> i64 {
+	return dbt.profiled_mutex_lock(&svc.state_mutex, .Taskv2_State)
+}
+
+state_unlock :: #force_inline proc(svc: ^Service, acquired: i64) {
+	dbt.profiled_mutex_unlock(&svc.state_mutex, .Taskv2_State, acquired)
+}
+
 new_service :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Service {
 	init_task_metrics()
 	return Service{repo = repo, agents = agents, bridges = bridges, clock = clock, ids = ids}

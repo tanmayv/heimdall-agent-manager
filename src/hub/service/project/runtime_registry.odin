@@ -6,6 +6,7 @@ import "core:strings"
 import "core:sync"
 import "core:time"
 import domain "odin_test:hub/domain"
+import dbt "odin_test:hub/platform/dbtelemetry"
 import metrics "odin_test:lib/metrics"
 import lockorder "odin_test:lib/lockorder"
 import ws "odin_test:lib/ws"
@@ -801,8 +802,12 @@ runtime_terminal_prune_locked :: proc(r: ^Bridge_Runtime_Registry, c: ^Bridge_Ru
 
 // connection_state_lock / unlock: the only way to take a connection's
 // state_mutex (lock-order bookkeeping, see the field comment).
+// Waits are counted by the opt-in lock profile (dbtelemetry lock_profile.odin;
+// off by default, one relaxed atomic load).
 connection_state_lock :: proc(c: ^Bridge_Runtime_Connection) {
+	t0 := dbt.profile_start()
 	sync.lock(&c.state_mutex)
+	if t0 != 0 do _ = dbt.profile_acquired(.Runtime_State, t0)
 	lockorder.state_mutex_enter()
 }
 

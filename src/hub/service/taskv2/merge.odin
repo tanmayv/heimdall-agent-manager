@@ -135,8 +135,8 @@ merge_job_run :: proc(data: rawptr) {
 // merge_inflight_begin marks `task_id`'s merge-back as running; false when a
 // job for it already is. In-memory on purpose: a restart drops the jobs too.
 merge_inflight_begin :: proc(svc: ^Service, task_id: string) -> bool {
-	sync.mutex_lock(&svc.state_mutex)
-	defer sync.mutex_unlock(&svc.state_mutex)
+	state_held := state_lock(svc)
+	defer state_unlock(svc, state_held)
 	if svc.merges_inflight == nil do svc.merges_inflight = make(map[string]struct{}, runtime.heap_allocator())
 	if task_id in svc.merges_inflight do return false
 	svc.merges_inflight[strings.clone(task_id, runtime.heap_allocator())] = {}
@@ -144,16 +144,16 @@ merge_inflight_begin :: proc(svc: ^Service, task_id: string) -> bool {
 }
 
 merge_inflight_end :: proc(svc: ^Service, task_id: string) {
-	sync.mutex_lock(&svc.state_mutex)
-	defer sync.mutex_unlock(&svc.state_mutex)
+	state_held := state_lock(svc)
+	defer state_unlock(svc, state_held)
 	if task_id not_in svc.merges_inflight do return
 	key, _ := delete_key(&svc.merges_inflight, task_id)
 	delete(key, runtime.heap_allocator())
 }
 
 merge_inflight :: proc(svc: ^Service, task_id: string) -> bool {
-	sync.mutex_lock(&svc.state_mutex)
-	defer sync.mutex_unlock(&svc.state_mutex)
+	state_held := state_lock(svc)
+	defer state_unlock(svc, state_held)
 	return task_id in svc.merges_inflight
 }
 

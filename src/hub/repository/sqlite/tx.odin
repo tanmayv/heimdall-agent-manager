@@ -74,6 +74,9 @@ tx_lock_token: dbt.Lock_Token
 tx_started: time.Tick
 @(private = "file")
 tx_acquired_nsec: i64
+// Opt-in lock profile acquire time (owner-written; 0 while the profile is off).
+@(private = "file")
+tx_profile_acquired: i64
 
 @(private = "file")
 Pending_After_Commit :: struct {
@@ -255,7 +258,9 @@ sqlite_uow_rollback :: proc(ctx: rawptr) {
 // outside it). Lock order and semantics are exactly sync.mutex_lock/unlock.
 @(private = "file")
 tx_lock :: proc(conn: ^Conn) {
+	profile_t0 := dbt.profile_start()
 	tx_lock_token = dbt.timed_lock(&tx_mutex, .Uow_Tx)
+	if profile_t0 != 0 do tx_profile_acquired = dbt.profile_acquired(.Uow_Tx, profile_t0)
 	if !tx_lock_token.timed do return
 	tx_started = time.tick_now()
 	sync.atomic_store(&tx_acquired_nsec, tx_started._nsec)
@@ -267,6 +272,10 @@ tx_lock :: proc(conn: ^Conn) {
 tx_unlock :: proc(conn: ^Conn, outcome: Tx_Outcome) {
 	token := tx_lock_token
 	tx_lock_token = {}
+	if tx_profile_acquired != 0 {
+		dbt.profile_released(.Uow_Tx, tx_profile_acquired)
+		tx_profile_acquired = 0
+	}
 	if token.timed {
 		kind := conn_kind_of(conn.db) if conn != nil else Conn_Kind.Other
 		tx_observe(kind, .Uow, tl_uow_wrote, outcome, tx_started)
