@@ -58,7 +58,15 @@ test_static_skills_artifact_authoring_content :: proc(t: ^testing.T) {
 
 @(test)
 test_ninjy_skills_include_channel_and_operation_recipes :: proc(t: ^testing.T) {
-	for slug, index in ([]string{"ninjy-channel-communication", "ninjy-bot-operations"}) {
+	slugs := []string{"ninjy-channel-communication", "ninjy-bot-operations", "ninjy-chain-routing", "ninjy-automations", "ninjy-chain-hygiene"}
+	recipes := [][]string{
+		{"artifact download", "vault_unavailable", "unsent_chunks", "events subscriptions", "events unwatch", "Send a proactive update only for what needs the user.", "One message for events that arrive together.", "Never repeat."},
+		{"--project-ids", "shell serve", "preview_url", "without `--bg`", "last 20 lines", "omit sensitive output", "### Your own memory", "Save what you had to ask for.", "wc -c MEMORY.md", "12,000 bytes", "--agent-ids <your agent_id>"},
+		{"task-chain create --kind mixed_work", "user_stopped", "rate_limited", "My reading:", "approvals the user granted and not granted", "## Chain size sets the bar", "fewer than 5", "5 to 14", "15 or more", "High confidence only", "Do not message or wake a coordinator to answer a status question."},
+		{"### Daily brief", "Nothing needs you.", "automations create --target bot --trigger \"cron:", "automations filter-test", "automations runs <id>", "automations trigger-types", "### Hygiene sweep", "Suggest, never create unprompted."},
+		{"## When work is done", "agents instance list --live", "--reason chain_work_done", "No activity for 3 days", "Work done but chain still open", "task-chain archive <chain_id>", "task-chain set-status cancelled --chain <chain_id>", "Raise each stale chain once.", "## Worth improving", "Offer it once"},
+	}
+	for slug, index in slugs {
 		found := false
 		for skill in STATIC_SKILLS {
 			if skill.slug != slug do continue
@@ -66,9 +74,7 @@ test_ninjy_skills_include_channel_and_operation_recipes :: proc(t: ^testing.T) {
 			frontmatter := strings.concatenate({"---\nname: ", slug, "\ndescription: Use as the Ninjy bot"})
 			defer delete(frontmatter)
 			testing.expect(t, strings.has_prefix(skill.content, frontmatter), slug)
-			channel := []string{"artifact download", "vault_unavailable", "unsent_chunks", "events subscriptions", "events unwatch"}
-			operations := []string{"task-chain create --kind mixed_work", "user_stopped", "rate_limited", "--project-ids", "shell serve", "preview_url", "without `--bg`", "last 20 lines", "omit sensitive output", "My reading:", "approvals the user granted and not granted", "### Daily brief", "Nothing needs you.", "automations create --target bot --trigger \"cron:"}
-			for recipe in (channel if index == 0 else operations) {
+			for recipe in recipes[index] {
 				testing.expect(t, strings.contains(skill.content, recipe), recipe)
 			}
 		}
@@ -121,7 +127,7 @@ test_ninjy_bootstrap_selection_and_warm_manifest :: proc(t: ^testing.T) {
 		&service, identity.owner_user_id, identity.agent_id, "coordinator", "codex", "", "brg_ninjy_fixture", "")
 	testing.expect(t, fresh_ok && fresh.status == 200 && fresh.was_render)
 	testing.expect(t, strings.contains(fresh.manifest_json, bot_hash))
-	for slug in ([]string{"ninjy-channel-communication", "ninjy-bot-operations"}) {
+	for slug in ([]string{"ninjy-channel-communication", "ninjy-bot-operations", "ninjy-chain-routing", "ninjy-automations", "ninjy-chain-hygiene"}) {
 		testing.expect(t, strings.contains(instance_manifest, slug), slug)
 		testing.expect(t, strings.contains(fresh.manifest_json, slug), slug)
 	}
@@ -224,11 +230,12 @@ find_static_skill :: proc(slug: string) -> (content: string, ok: bool) {
 }
 
 @(test)
-test_static_skills_contains_all_thirteen_skills :: proc(t: ^testing.T) {
+test_static_skills_contains_all_sixteen_skills :: proc(t: ^testing.T) {
 	want := []string{
 		"action-cards", "artifact-authoring", "chain-events-and-claims", "coordinator-task-management",
 		"ham-ctl-reference", "heimdall-ctl-communication", "heimdall-preview-setup", "memory-management-workflow",
-		"ninjy-bot-operations", "ninjy-channel-communication", "search-command", "shell-sessions", "worker-task-management",
+		"ninjy-automations", "ninjy-bot-operations", "ninjy-chain-hygiene", "ninjy-chain-routing", "ninjy-channel-communication",
+		"search-command", "shell-sessions", "worker-task-management",
 	}
 	testing.expect_value(t, len(STATIC_SKILLS), len(want))
 	for slug in want {

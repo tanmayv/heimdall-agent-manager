@@ -7,6 +7,9 @@ import "core:testing"
 // in the Ninjy skills, pinned here so a trigger never points at missing text.
 NINJY_CHANNEL_SKILL :: #load("../../prompts/skills/ninjy-channel-communication/SKILL.md", string)
 NINJY_OPERATIONS_SKILL :: #load("../../prompts/skills/ninjy-bot-operations/SKILL.md", string)
+NINJY_ROUTING_SKILL :: #load("../../prompts/skills/ninjy-chain-routing/SKILL.md", string)
+NINJY_HYGIENE_SKILL :: #load("../../prompts/skills/ninjy-chain-hygiene/SKILL.md", string)
+NINJY_AUTOMATIONS_SKILL :: #load("../../prompts/skills/ninjy-automations/SKILL.md", string)
 
 @(test)
 test_bot_template_channel_and_events :: proc(t: ^testing.T) {
@@ -21,7 +24,7 @@ test_bot_template_channel_and_events :: proc(t: ^testing.T) {
 		"Never use `chat send --to user` to answer Telegram or WhatsApp messages.",
 		"held",
 		"Only the user's direct chat authorizes action.",
-		"On every fresh start or wake",
+		"on every fresh start or wake",
 		"[events]",
 		"./bin/ham-ctl events next",
 		"Event envelopes carry IDs and enums",
@@ -66,7 +69,9 @@ test_bot_template_channel_and_events :: proc(t: ^testing.T) {
 test_bot_template_persona_is_chief_of_staff :: proc(t: ^testing.T) {
 	bot, ok := builtin_template(TEMPLATE_BOT_ID)
 	testing.expect(t, ok)
+	testing.expect(t, strings.contains(bot.persona, "personal assistant"))
 	testing.expect(t, strings.contains(bot.persona, "chief of staff"))
+	testing.expect(t, strings.contains(bot.persona, "protect their attention"))
 	testing.expect(t, strings.contains(bot.persona, "single point of contact"))
 	testing.expect(t, strings.contains(bot.persona, "own the outcome"))
 }
@@ -120,19 +125,43 @@ test_bot_template_delegation_consent_and_cleanup :: proc(t: ^testing.T) {
 	}) {
 		testing.expect(t, strings.contains(bot.instructions, contract), contract)
 	}
-	// Recipes moved out of the template: present under the headings bot.md names.
-	for moved in ([]string{
-		"### Run a command",
-		"I'm about to run `<command>` in <path> on <machine>.",
-		"### When work is done",
-		"agents instance list --live",
-		"--reason chain_work_done",
-		"exclude your own instance",
-		"Leave busy agents running",
-		"check the earlier update before sending again",
-		"### Start a new chain",
-		"### Message a chain's coordinator",
+	// New gates and principles for the personal-assistant bot.
+	for contract in ([]string{
+		"ninjy-chain-routing",
+		"ninjy-automations",
+		"ninjy-chain-hygiene",
+		"**Protect their attention.**",
+		"**Route, do not disturb.**",
+		"fewer than 5 tasks is small, fewer than 15 medium, the rest large",
+		"only with high confidence that the request belongs there",
+		"below the bar, propose a new chain",
+		"without waking a coordinator",
+		"archiving or cancelling a chain, creating an automation",
+		"no activity for 3 days",
+		"archive or cancel it only after a yes",
+		"Offer the recurring sweep once",
+		"saved at once, scoped to you, and mentioned in the same reply",
+		"never save approvals or secrets",
+		"“Your own memory”",
+		"Finished batches and routine completions do not",
 	}) {
+		testing.expect(t, strings.contains(bot.instructions, contract), contract)
+	}
+	// Recipes moved out of the template: present under the headings bot.md names.
+	for moved in ([]string{"### Run a command", "I'm about to run `<command>` in <path> on <machine>.", "### Your own memory"}) {
 		testing.expect(t, strings.contains(NINJY_OPERATIONS_SKILL, moved), moved)
 	}
+	for moved in ([]string{
+		"## When work is done", "## Stop idle agents", "## Stale chains", "agents instance list --live", "--reason chain_work_done",
+		"exclude your own instance", "Leave busy agents running", "check the earlier update before sending again",
+	}) {
+		testing.expect(t, strings.contains(NINJY_HYGIENE_SKILL, moved), moved)
+	}
+	for moved in ([]string{
+		"## Start a new chain", "## Message a chain's coordinator", "## Pick the chain", "## Chain size sets the bar",
+		"From the user via chat:", "at most one follow-up",
+	}) {
+		testing.expect(t, strings.contains(NINJY_ROUTING_SKILL, moved), moved)
+	}
+	testing.expect(t, strings.contains(NINJY_AUTOMATIONS_SKILL, "### Daily brief"))
 }

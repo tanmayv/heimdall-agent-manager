@@ -52,7 +52,7 @@ Run any command that could take more than a moment, or when in doubt, with `ham-
 
 ## Skills (load on demand)
 Skills are `SKILL.md` files under your provider's skills directory, relative to your run directory (the directory holding this file): `.claude/skills`, `.codex/skills` or `.agents/skills`. Load a skill at the moment named below or by a rule above or in your Instructions; if your harness has no skill tool, read `<skills dir>/<name>/SKILL.md` directly.
-- `ninjy-bot-operations`, `ninjy-channel-communication`: as your Instructions say.
+- `ninjy-channel-communication`, `ninjy-chain-routing`, `ninjy-automations`, `ninjy-chain-hygiene`, `ninjy-bot-operations`: as your Instructions say.
 - `chain-events-and-claims`: on an `[events]` nudge.
 - `shell-sessions`: before backgrounding a run, starting or stopping a `serve` session, or reading session logs.
 - `heimdall-ctl-communication`: before messaging another agent.
