@@ -131,7 +131,7 @@ secure_form_json_string :: proc(token: string) -> bool {
 	return true
 }
 
-@(private = "file")
+@(private)
 secure_form_object :: proc(raw: string, limit: int, allocator: mem.Allocator) -> (json.Object, bool) {
 	if len(raw) > limit || !utf8.valid_string(raw) do return nil, false
 	// Bound recursion and reject empty keys, which the core parser drops.
@@ -409,7 +409,6 @@ secure_form_hex :: proc(dst: []byte, s: string) -> bool {
 	return len(s) == len(dst) * 2 && vault.is_lower_hex(s) && vault.hex_decode_into(dst, s)
 }
 
-@(private = "file")
 secure_form_uint :: proc(s: string) -> (u64, bool) {
 	if len(s) == 0 || len(s) > 20 || (len(s) > 1 && s[0] == '0') do return 0, false
 	for c in s do if c < '0' || c > '9' do return 0, false

@@ -40,6 +40,7 @@ import metrics "odin_test:lib/metrics"
 import bots "odin_test:hub/service/bots"
 
 Bridge_Handlers :: struct {
+	secure_forms: Secure_Form_Routing,
 	// Always wired in production; nil only for in-memory repository doubles.
 	uow_factory: ^iface.Unit_Of_Work_Factory,
 	delivery: ^delivery.Service,
@@ -2412,6 +2413,10 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	context.allocator = frame_allocator
 
 	switch type {
+	case contracts.SECURE_FORM_REGISTER_FRAME:
+		secure_form_bridge_register(h, bridge_id, connection_generation, client, text)
+	case contracts.SECURE_FORM_ACK_FRAME, contracts.SECURE_FORM_CANCEL_FRAME:
+		secure_form_bridge_status(h, bridge_id, connection_generation, type, text)
 	case "provider_catalog_request":
 		payload, payload_ok := bridge_provider_catalog_payload(h.providers)
 		if payload_ok {
