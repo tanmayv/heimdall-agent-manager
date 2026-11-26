@@ -44,6 +44,53 @@ Resolve one absolute `HEIMDALL_BROWSER_PROFILE_DIR` from the bridge’s persiste
 
 Operator opens an existing compatible browser using its persistent-profile option, signs in interactively and closes it. Later agents use the same profile with that browser family. Use headed mode when a usable graphical session exists. Without a display, use supported headless persistent mode for already-authenticated work or return display-required for interactive login. Never launch a disposable fallback profile silently. Use the browser’s native exclusive profile mechanism. When the browser reports a locked profile or hands off launch to an existing process, the calling tool must stop and report busy; never remove a live lock, clone cookies or attach to an unrelated running browser. Same bridge agents share account-level access. Browser logout or owner cleanup revokes local reuse independently of vault lock. Phase 0 requires neither package installation nor a debugging port.
 
+### Form login with Puppeteer
+
+For a trusted application's username/password form, the owner saves one JSON object with string fields `username` and `password` in the masked value field. The trusted Node script receives that object on stdin. Use the installed browser, profile and credential backend from owner setup. The example assumes Chrome stable, the verified absolute profile path, a usable display and an application controlled by the owner at the illustrated origin. Adapt selectors and the signed-in marker to that application. Disable password saving, protocol debug logging, crash uploads, screenshots, video, tracing and request recording during login. Keep browser and page diagnostics out of task output.
+
+```bash
+set +x
+unset DEBUG NODE_DEBUG
+./bin/ham-ctl secrets run --id "$credential_ref" -- node login.mjs
+```
+
+```javascript
+import puppeteer from 'puppeteer';
+import { readFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
+
+const profile = process.env.HEIMDALL_BROWSER_PROFILE_DIR;
+const login = 'https://app.example.test/login';
+let browser;
+try {
+  if (!profile || !isAbsolute(profile)) throw new Error();
+  browser = await puppeteer.launch({
+    channel: 'chrome', headless: false, userDataDir: profile, pipe: true,
+    dumpio: false, ignoreDefaultArgs: ['--password-store=basic', '--use-mock-keychain'],
+  });
+  const page = await browser.newPage();
+  await page.goto(login);
+  if (page.url() !== login) throw new Error();
+  const { username, password } = JSON.parse(readFileSync(0, 'utf8'));
+  if (typeof username !== 'string' || typeof password !== 'string') throw new Error();
+  await page.type('#username', username);
+  await page.type('#password', password);
+  await page.click('button[type=submit]');
+  await page.waitForSelector('[data-signed-in]', { visible: true, timeout: 15000 });
+  if (new URL(page.url()).origin !== new URL(login).origin) throw new Error();
+} catch {
+  process.exitCode = 1;
+} finally {
+  await browser?.close();
+}
+```
+
+Only use this example on a trusted form whose scripts and submission destination the operator has verified. The application and browser receive the values in memory. Report only the runner result. The profile retains the authenticated session. [Puppeteer launch options](https://pptr.dev/api/puppeteer.launchoptions)
+
+### Sign in with Google
+
+Open the relying application in the same headed profile and check its signed-in state. If sign-in is needed, select **Sign in with Google** and hand the visible window to the user. Pause automation and capture while the user chooses the account, handles Google login and MFA, and decides whether to consent. Resume after the user returns control and the application confirms its own signed-in state. If the user cancels, the display is unavailable or the provider declines the automated browser, stop. The user can complete sign-in in the normal supported browser with that profile after the automated session closes. Keep passwords, MFA codes, cookies and OAuth callback URLs out of messages and logs. This flow uses the application's existing sign-in button and browser session.
+
 ## REQ-FUT-0 · Later boundaries
 
 A later policy layer can authorize an operation on a secret for a specified owner, bridge and agent until an absolute expiry; evaluate it at use time with revocation and trusted time. It needs independent design for existing general-purpose key access. No counts, grant records, cards, renewal or permission workflow ship in this slice. A future desktop service can identify an OS window and mediate capture and input with platform consent, focus and lifetime checks independently of browser vendor or debugging protocol. Streaming, remote input and capture are deferred.
@@ -55,7 +102,7 @@ A later policy layer can authorize an operation on a secret for a specified owne
 3. **Owner UI** depends on 1–2. Own settings navigation, signed endpoint client and editor. Test create, duplicate names, cursor paging, rename, replacement, stale edit/delete and retry after lost response. Exercise direct navigation, lock while loading, account switch and historical keys. Assert list responses omit payload, copy returns ID and persistent state contains no plaintext.
 4. **Bridge lookup and CLI runner** depend on 1–2. Exercise the actual CLI with synthetic markers and an offline child fixture that checks length and digest via stdin, including multiline values and trailing newlines. Inspect child argv and environment for the marker. Have the child reflect input to both output streams and exit successfully or unsuccessfully. Scan CLI output, shell transcript, result events and hub/bridge logs for markers and encoded equivalents. Test lock, revoke, missing and malformed references before launch, spawn failure, early pipe close and cancellation. Verify descriptors close and children are reaped.
 5. **Browser convention** can start independently. Own persistent path, launch/shell environment, busy handling and browser instructions. Exercise two agents, restart, two bridge registrations, occupied profile, crashed launcher with browser still running and no-display paths. With an already-installed supported browser, sign into a local test page, close, reopen from agent B and verify session continuity. Record platform and browser. Report unavailable platform coverage explicitly.
-6. **Skill distribution and integration** depend on 3–5. Add `src/prompts/skills/credential-and-browser-use/SKILL.md`, reference it from bootstrap, regenerate with `odin run tools/gen_static_skills -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin`. Verify `render_agent_manifest` in `src/hub/service/agent/agent_service.odin` and `bridge_bootstrap_render_skill` in `src/bridge/bootstrap_skill.odin` materialize the skill for supported providers. Run repository package checks for touched Odin packages, `npm test`, `npm run build` and `npm run test:e2e:vault`. Demonstrate owner creation through actual Settings, ID-only agent invocation, successful credential-fed child exit, lock/refusal, edit/conflict, delete/missing and profile reuse. Attach sanitized outcomes and query plans for merge review.
+6. **Skill distribution and integration** depend on 3–5. Add `src/prompts/skills/credential-and-browser-use/SKILL.md`, reference it from bootstrap, regenerate with `odin run tools/gen_static_skills -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin`. Verify `render_agent_manifest` in `src/hub/service/agent/agent_service.odin` and `bridge_bootstrap_render_skill` in `src/bridge/bootstrap_skill.odin` materialize the skill for supported providers. Run repository package checks for touched Odin packages, `npm test`, `npm run build` and `npm run test:e2e:vault`. Demonstrate owner creation through actual Settings, ID-only agent invocation, successful credential-fed child exit, lock/refusal, edit/conflict, delete/missing and profile reuse. Exercise the documented Puppeteer flow with synthetic fields on a local test form, reopen the profile and verify the authenticated marker. Check captured CLI, bridge and fixture logs for both markers and confirm no screenshot, trace or profile artifact was produced. Simulate the identity-provider handoff and cancellation on fixture pages, verify automation pauses throughout user interaction and resumes only on confirmed application login. Attach sanitized outcomes and query plans for merge review.
 
 The opaque reference eliminates a search index over names and removes any need to decrypt all labels for lookup. Splitting name and payload reduces read exposure. Product implementation starts only after independent review and approval.
 
