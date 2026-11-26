@@ -57,7 +57,7 @@ brief_contract_close :: proc(f: ^Brief_Contract_Fixture) {
 	os.remove(f.db_path)
 }
 
-FULL_BRIEF :: `{"goal":"original goal","acceptance":["a1","a2"],"inputs":["output:x"],"review_roles":[],"assignee":"agt_worker","reviewers":["agt_rev"],"budget":{"max_attempts":3},"output":"findings.v1"}`
+FULL_BRIEF :: `{"goal":"original goal","acceptance":["a1","a2"],"inputs":["output:x"],"assignee":"agt_worker","reviewers":["agt_rev"],"budget":{"max_attempts":3},"output":"findings.v1"}`
 
 @(test)
 test_brief_goal_only_update_preserves_other_fields :: proc(t: ^testing.T) {
@@ -72,8 +72,7 @@ test_brief_goal_only_update_preserves_other_fields :: proc(t: ^testing.T) {
 	testing.expect_value(t, jsonx.extract_string(b, "goal", "", true, context.temp_allocator), "new goal")
 	testing.expect_value(t, len(jsonx.extract_string_array(b, "acceptance", true)), 2)
 	testing.expect_value(t, jsonx.extract_string(b, "assignee", "", true, context.temp_allocator), "agt_worker")
-	testing.expect_value(t, len(taskv2.brief_named_reviewers(b, context.temp_allocator)), 1)
-	testing.expect(t, jsonx.has_key(b, "review_roles", top_level_only = true), "review_roles kept")
+	testing.expect_value(t, len(taskv2.brief_reviewer_agents(b, context.temp_allocator)), 1)
 	testing.expect_value(t, len(jsonx.extract_string_array(b, "inputs", true)), 1)
 	testing.expect_value(t, jsonx.extract_string(b, "output", "", true, context.temp_allocator), "findings.v1")
 	_, has_budget := jsonx.extract_raw_object(b, "budget", true, context.temp_allocator)
@@ -96,9 +95,12 @@ test_brief_null_clears_and_replace_brief_replaces :: proc(t: ^testing.T) {
 	testing.expect(t, !jsonx.has_key(cleared.brief_json, "budget", top_level_only = true), "budget removed by null")
 	testing.expect(t, !jsonx.has_key(cleared.brief_json, "reviewers", top_level_only = true), "reviewers removed by null")
 	testing.expect_value(t, jsonx.extract_string(cleared.brief_json, "goal", "", true, context.temp_allocator), "original goal")
-	replaced, rok, rerr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{brief_json = `{"goal":"only","acceptance":["x"]}`, replace_brief = true})
+	// A replacement brief must still name the assignee (REQ-SCHED-3).
+	_, nok, nerr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{brief_json = `{"goal":"only","acceptance":["x"]}`, replace_brief = true})
+	testing.expect(t, !nok && strings.contains(nerr.details_json, `"code":"assignee_required"`), "replace cannot drop the assignee")
+	replaced, rok, rerr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{brief_json = `{"goal":"only","acceptance":["x"],"assignee":"agt_rev"}`, replace_brief = true})
 	if !testing.expectf(t, rok, "replace: %s", rerr.message) do return
-	testing.expect(t, !jsonx.has_key(replaced.brief_json, "assignee", top_level_only = true), "replace drops assignee")
+	testing.expect_value(t, jsonx.extract_string(replaced.brief_json, "assignee", "", true, context.temp_allocator), "agt_rev")
 	testing.expect(t, !jsonx.has_key(replaced.brief_json, "inputs", top_level_only = true), "replace drops inputs")
 	testing.expect_value(t, jsonx.extract_string(replaced.brief_json, "goal", "", true, context.temp_allocator), "only")
 }
@@ -108,13 +110,13 @@ test_brief_file_reviewers_persist_and_unknown_keys_rejected :: proc(t: ^testing.
 	f: Brief_Contract_Fixture
 	if !brief_contract_open(t, &f, "reviewers_unknown") do return
 	defer brief_contract_close(&f)
-	task, ok, err := create_task(&f.svc, f.owner, Create_Task_Input{chain_id = f.chain.chain_id, title = "t", brief_json = `{"goal":"g","acceptance":["a"]}`})
+	task, ok, err := create_task(&f.svc, f.owner, Create_Task_Input{chain_id = f.chain.chain_id, title = "t", brief_json = `{"goal":"g","acceptance":["a"],"assignee":"agt_worker"}`})
 	if !testing.expectf(t, ok, "create: %s", err.message) do return
 	// reviewers in the brief (the --brief-file shape) persist.
 	withrev, wok, werr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{brief_json = `{"reviewers":["agt_rev","agt_rev2"]}`})
 	if !testing.expectf(t, wok, "brief reviewers: %s", werr.message) do return
 	stored, _, _ := iface.taskchain_get_task(&f.repo, task.task_id)
-	testing.expect_value(t, len(taskv2.brief_named_reviewers(stored.brief_json, context.temp_allocator)), 2)
+	testing.expect_value(t, len(taskv2.brief_reviewer_agents(stored.brief_json, context.temp_allocator)), 2)
 	testing.expect_value(t, withrev.brief_json, stored.brief_json)
 	// Unknown keys: 400 listing them, on update and on create; nothing saved.
 	_, bad, berr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{brief_json = `{"goal":"g2","descripton":"typo","extra":1}`})
@@ -134,10 +136,10 @@ test_brief_instance_reviewer_rejected_explicitly :: proc(t: ^testing.T) {
 	f: Brief_Contract_Fixture
 	if !brief_contract_open(t, &f, "inst_reviewer") do return
 	defer brief_contract_close(&f)
-	_, ok, err := create_task(&f.svc, f.owner, Create_Task_Input{chain_id = f.chain.chain_id, title = "t", brief_json = `{"goal":"g","acceptance":["a"],"reviewers":["inst_18e1abc"]}`})
+	_, ok, err := create_task(&f.svc, f.owner, Create_Task_Input{chain_id = f.chain.chain_id, title = "t", brief_json = `{"goal":"g","acceptance":["a"],"assignee":"agt_worker","reviewers":["inst_18e1abc"]}`})
 	testing.expect(t, !ok && err.code == .Validation_Failed, "inst_ reviewer rejected on create")
 	testing.expect(t, strings.contains(err.details_json, `"code":"reviewer_must_be_agent_id"`) && strings.contains(err.details_json, "inst_18e1abc"), err.details_json)
-	task, tok, terr := create_task(&f.svc, f.owner, Create_Task_Input{chain_id = f.chain.chain_id, title = "t", brief_json = `{"goal":"g","acceptance":["a"]}`})
+	task, tok, terr := create_task(&f.svc, f.owner, Create_Task_Input{chain_id = f.chain.chain_id, title = "t", brief_json = `{"goal":"g","acceptance":["a"],"assignee":"agt_worker"}`})
 	if !testing.expectf(t, tok, "create: %s", terr.message) do return
 	_, uok, uerr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{reviewer_agent_ids = []string{"inst_18e1abc"}, has_reviewers = true})
 	testing.expect(t, !uok && strings.contains(uerr.details_json, "reviewer_must_be_agent_id"), "inst_ reviewer flag rejected on update")
@@ -182,7 +184,7 @@ test_brief_null_clear_survives_convenience_fields :: proc(t: ^testing.T) {
 	g, gok, gerr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{brief_json = `{"goal":null}`, reviewer_agent_ids = []string{"agt_rev2"}, has_reviewers = true})
 	if !testing.expectf(t, gok, "clear goal + reviewer: %s", gerr.message) do return
 	testing.expect(t, !jsonx.has_key(g.brief_json, "goal", top_level_only = true), g.brief_json)
-	testing.expect_value(t, taskv2.brief_named_reviewers(g.brief_json, context.temp_allocator)[0], "agt_rev2")
+	testing.expect_value(t, taskv2.brief_reviewer_agents(g.brief_json, context.temp_allocator)[0], "agt_rev2")
 	// task update --clear-inputs --assignee agt_rev
 	i, iok, ierr := update_task(&f.svc, f.owner, task.task_id, Update_Task_Input{brief_json = `{"inputs":null}`, assignee_agent_id = "agt_rev", has_assignee = true})
 	if !testing.expectf(t, iok, "clear inputs + assignee: %s", ierr.message) do return

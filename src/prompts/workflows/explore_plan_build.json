@@ -13,6 +13,12 @@
       "type": "string",
       "required": true,
       "description": "High-level objective for the feature or change"
+    },
+    {
+      "name": "assignee",
+      "type": "string",
+      "required": true,
+      "description": "Agent id (agt_…) that works the task stages"
     }
   ],
   "defaults": {
@@ -26,12 +32,15 @@
       "depends_on": [],
       "brief": {
         "goal": "Explore the codebase and identify key files, constraints, and risks for: {{inputs.goal}}",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "Summary of relevant modules, entry points, and risks submitted as JSON output"
         ],
         "output": {
           "schema": "inline",
-          "required_fields": ["summary"]
+          "required_fields": [
+            "summary"
+          ]
         }
       }
     },
@@ -39,9 +48,12 @@
       "key": "plan",
       "kind": "task",
       "title": "Plan tasks for: {{inputs.goal}}",
-      "depends_on": ["explore"],
+      "depends_on": [
+        "explore"
+      ],
       "brief": {
         "goal": "Based on exploration ({{stage.explore.output.summary}}), decompose '{{inputs.goal}}' into concrete work items, each with a goal and checkable acceptance criteria.",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "Structured task_list.v1 output with a non-empty goal and acceptance criteria per item"
         ],
@@ -54,7 +66,9 @@
       "key": "approve_plan",
       "kind": "gate",
       "title": "Approve implementation plan",
-      "depends_on": ["plan"],
+      "depends_on": [
+        "plan"
+      ],
       "gate": {
         "approver": "user_or_coordinator",
         "prompt": "Approve the generated plan ({{stage.plan.output.summary}}) before building?"
@@ -64,11 +78,14 @@
       "key": "build",
       "kind": "task",
       "title": "Build: {{item.title}}",
-      "depends_on": ["approve_plan"],
+      "depends_on": [
+        "approve_plan"
+      ],
       "for_each": "plan.outputs[0].tasks",
       "max_parallel": 4,
       "brief": {
         "goal": "{{item.goal}}",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "Implementation for {{item.key}} is complete and meets its acceptance criteria; the checks run and their outcomes are reported in the submit summary"
         ]
@@ -78,9 +95,12 @@
       "key": "integrate",
       "kind": "task",
       "title": "Final integration review",
-      "depends_on": ["build"],
+      "depends_on": [
+        "build"
+      ],
       "brief": {
         "goal": "Integrate all built items for {{inputs.goal}} and check that they work together",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "All changes integrate cleanly; the integration checks chosen and their outcomes are reported in the submit summary"
         ]

@@ -21,7 +21,7 @@ test_reviewer_approve_alone_completes_task :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_approve_only")
 	seed_agent(fx, "agt_r")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["named-reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	_ = publish_task(t, fx, chain, "task_ao", brief = `{"goal":"write the design note","acceptance":["note covers the three options"],"reviewers":["agt_r"]}`)
@@ -64,16 +64,16 @@ test_d1_verify_waiting_task_gets_fresh_review_after_migration :: proc(t: ^testin
 	chain := seed_live_chain(t, fx, "chain_d1")
 	seed_agent(fx, "agt_r")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_d1", brief = `{"goal":"g","acceptance":["a"],"verify":"make test","require_independent_verify":true,"review_roles":["reviewer"]}`)
+	_ = publish_task(t, fx, chain, "task_d1", brief = `{"goal":"g","acceptance":["a"],"verify":"make test","require_independent_verify":true,"assignee":"agt_w","reviewers":["agt_r"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "done"})
 	if !testing.expect(t, sok, fmt.tprintf("submit d1: %s", serr.message)) do return
 	seed_fleet(fx, chain, "agt_w", capacity = 2)
 	seed_instance(fx, chain, "inst_w2", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_solo_cmd", brief = `{"goal":"g","acceptance":["a"],"verify":"make test","require_independent_verify":true,"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_solo_cmd", brief = `{"goal":"g","acceptance":["a"],"verify":"make test","require_independent_verify":true}`)
 	confirm_holder(fx, "inst_w2")
 	_, s2ok, s2err := lease_submit(&fx.svc, inst_auth("inst_w2"), Submit_Input{summary = "done"})
 	if !testing.expect(t, s2ok, fmt.tprintf("submit solo: %s", s2err.message)) do return
@@ -145,14 +145,14 @@ test_strip_removed_verify_keys :: proc(t: ^testing.T) {
 	testing.expect_value(t, verify_removed_warnings_json([]string{"verify"}), `[{"code":"verify_removed","fields":["verify"]}]`)
 }
 
-// A ticket with a goal and acceptance, no verify and no output contract, is
-// publishable; nothing else is required (the one publish validator).
+// A ticket with a goal, acceptance and an assignee, no verify and no output
+// contract, is publishable; nothing else is required (the one publish validator).
 @(test)
-test_publish_validator_needs_only_goal_and_acceptance :: proc(t: ^testing.T) {
+test_publish_validator_needs_goal_acceptance_and_assignee :: proc(t: ^testing.T) {
 	chain := domain.Task_Chain{chain_id = "c", owner_user_id = "u1"}
-	testing.expect_value(t, len(brief_publish_missing(nil, chain, .Task, `{"goal":"research","acceptance":["options compared"]}`)), 0)
+	testing.expect_value(t, len(brief_publish_missing(nil, chain, .Task, `{"goal":"research","acceptance":["options compared"],"assignee":"agt_w"}`)), 0)
 	missing := brief_publish_missing(nil, chain, .Task, `{"goal":"","verify":"make test","output":{"schema":"findings.v1"}}`)
-	testing.expect(t, len(missing) == 2 && missing[0] == "goal" && missing[1] == "acceptance", "a command or output never stands in for goal/acceptance")
+	testing.expect(t, len(missing) == 3 && missing[0] == "goal" && missing[1] == "acceptance" && missing[2] == "assignee", "a command or output never stands in for goal/acceptance/assignee")
 	testing.expect_value(t, len(brief_publish_missing(nil, chain, .Gate, `{}`)), 0)
 }
 
@@ -163,9 +163,17 @@ test_builtin_workflows_have_no_verify :: proc(t: ^testing.T) {
 	for tpl in workflow_builtin_templates() {
 		testing.expectf(t, !strings.contains(tpl.spec_json, `"verify"`) && !strings.contains(tpl.spec_json, "verify_cmd"), "%s has no verify keys", tpl.name)
 		testing.expectf(t, !strings.contains(tpl.title, "Verify"), "%s title", tpl.name)
-		_, ok, err := parse_and_validate_workflow_spec(tpl.spec_json)
+		parsed, ok, err := parse_and_validate_workflow_spec(tpl.spec_json)
 		testing.expectf(t, ok, "%s parses: %s", tpl.name, err.message)
+		// REQ-SCHED-7: every task stage names its assignee (a template input);
+		// no stage uses review_roles.
+		aerr := workflow_stage_assignment_problems(parsed.stages[:])
+		testing.expectf(t, aerr.code == .None, "%s stages name agents: %s", tpl.name, aerr.message)
+		testing.expectf(t, !strings.contains(tpl.spec_json, "review_roles"), "%s has no review_roles", tpl.name)
 	}
+	bad, _, _ := parse_and_validate_workflow_spec(`{"name":"roles","stages":[{"key":"a","brief":{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}},{"key":"b","brief":{"goal":"g","acceptance":["a"],"assignee":"agt_w"}}]}`)
+	berr := workflow_stage_assignment_problems(bad.stages[:])
+	testing.expect(t, strings.contains(berr.details_json, `"code":"review_roles_removed"`) && strings.contains(berr.details_json, `"review_roles_stages":["a"]`) && strings.contains(berr.details_json, `"unassigned_stages":["a"]`), berr.details_json)
 	_, ok, err := parse_and_validate_workflow_spec(`{"name":"bad","stages":[{"key":"a","brief":{"goal":"g","verify":"make test"}}]}`)
 	testing.expect(t, !ok && strings.contains(err.message, "acceptance"), "a verify command no longer satisfies a stage brief")
 }

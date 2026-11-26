@@ -46,7 +46,7 @@ test_shared_fleet_resolution_dispatch_pins_and_legacy_transition :: proc(t: ^tes
 	after := legacy; after.model = "claude-opus-5-5"
 	conflict := fleet.guard_legacy_write(&s, "u1", legacy, after)
 	testing.expect(t, conflict.code == .Conflict && strings.contains(conflict.details_json, "fleet_runtime_managed"))
-	after = legacy; after.capacity = 9; after.roles_json = `["worker","reviewer"]`; after.paused_roles_json = `["reviewer"]`
+	after = legacy; after.capacity = 9; after.paused = true
 	testing.expect(t, fleet.guard_legacy_write(&s, "u1", legacy, after).code == .None, "staffing and pause changes remain valid")
 	// Saving the complete snapshot removed the override; subsequent dispatch
 	// inherits the default without new startup traffic or an agent-side fetch.
@@ -54,7 +54,7 @@ test_shared_fleet_resolution_dispatch_pins_and_legacy_transition :: proc(t: ^tes
 	next, _, ne := fleet.save(&s, "u1", "br_1", draft)
 	testing.expect_value(t, ne.code, domain.Error_Code.None); domain.fleet_settings_destroy(next)
 	seed_instance(fx, chain, "shared_worker", "agt_w", "br_1", "stopped")
-	_ = publish_task(t, fx, chain, "shared_task", brief=`{"goal":"g","assignee":"agt_w","review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "shared_task", brief=`{"goal":"g","assignee":"agt_w"}`)
 	l, held := lease_of(fx, "shared_worker")
 	testing.expect(t, held && l.provider == "claude" && l.model == "claude-sonnet-5-5" && l.provider_profile == "claude", "dispatch history uses current shared settings")
 	inst, _, _ := iface.agent_get_instance(&fx.agents, "shared_worker")
@@ -148,7 +148,7 @@ test_shared_fleet_excluded_claim_preserves_runtime_and_manual_claim_promotes :: 
 		snapshot, _, e := fleet.save(&s, "u1", "br_1", {default_runtime={"claude","claude","claude-sonnet-5-5"}})
 		testing.expect_value(t, e.code, domain.Error_Code.None); domain.fleet_settings_destroy(snapshot)
 		// No fleet row: an explicit eligible claim remains the orchestration path.
-		task := publish_task(t, fx, chain, "shared_claim_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+		task := publish_task(t, fx, chain, "shared_claim_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
 		lease, granted, ge := t25_grant(t, fx, chain, task, inst)
 		testing.expect(t, granted && ge.code == .None, ge.message)
 		if granted {
@@ -196,12 +196,12 @@ shared_fleet_expect_recorded_runtime :: proc(t: ^testing.T, fx: ^Fixture, chain:
 }
 
 @(test)
-test_shared_fleet_inline_and_solo_claim_record_actual_runtime_until_launch :: proc(t: ^testing.T) {
+test_shared_fleet_inline_and_coordinator_claim_record_actual_runtime_until_launch :: proc(t: ^testing.T) {
 	for solo in ([]bool{false, true}) {
-		tag := "shared_inline_solo" if solo else "shared_inline_manual"
+		tag := "shared_inline_coord" if solo else "shared_inline_manual"
 		fx, log, ok := lease_fixture(t, tag)
 		if !ok {lease_fixture_close(fx, log); continue}
-		chain := solo_chain(t, fx, "shared_inline") if solo else seed_live_chain(t, fx, "shared_inline")
+		chain := seed_live_chain(t, fx, "shared_inline")
 		actual, desired := shared_fleet_claim_policies(t, log)
 		s := agent.fleet_service(&log.service)
 		snapshot, _, se := fleet.save(&s, "u1", "br_1", {default_runtime=desired})
@@ -211,9 +211,9 @@ test_shared_fleet_inline_and_solo_claim_record_actual_runtime_until_launch :: pr
 		task: domain.Task
 		if solo {
 			inst, _, _ = iface.agent_get_instance(&fx.agents, id)
-			task = publish_solo_task(t, fx, chain, "shared_inline_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_c","review_roles":[]}`)
+			task = publish_coordinator_task(t, fx, chain, "shared_inline_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_c","reviewers":["user"]}`)
 		} else {
-			task = publish_task(t, fx, chain, "shared_inline_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+			task = publish_task(t, fx, chain, "shared_inline_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
 			seed_fleet(fx, chain, "agt_w")
 			inst = seed_instance(fx, chain, id, "agt_w", "br_1", "running")
 		}
@@ -237,7 +237,7 @@ test_shared_fleet_inline_and_solo_claim_record_actual_runtime_until_launch :: pr
 			shared_fleet_expect_recorded_runtime(t, fx, chain, task, lease, current, actual, pack)
 			included, ce := iface.fleet_scope_get(&fx.bridges, current)
 			testing.expect(t, ce.code == .None && included, "eligible manual caller promotes transactionally")
-			if solo do testing.expect(t, get_task(fx, string(task.task_id)).requires_user_approval, "solo review gate remains required")
+			if solo do testing.expect(t, get_task(fx, string(task.task_id)).requires_user_approval, "the user review listed on the coordinator's task remains required")
 			ticket, te := agent.start_begin(&log.service, {kind=.Internal_User,user_id="u1"}, id, {if_live=.Relaunch})
 			testing.expect_value(t, te.code, domain.Error_Code.None)
 			if te.code == .None {
@@ -259,7 +259,7 @@ test_shared_fleet_excluded_bot_action_claims_ignore_conflicting_fleet_runtime ::
 			if !ok {lease_fixture_close(fx, log); continue}
 			chain := seed_live_chain(t, fx, "shared_excluded")
 			actual, desired := shared_fleet_claim_policies(t, log)
-			task := publish_task(t, fx, chain, "shared_excluded_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+			task := publish_task(t, fx, chain, "shared_excluded_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
 			seed_fleet(fx, chain, "agt_w")
 			rows, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, chain.chain_id, "u1")
 			rows[0].provider, rows[0].provider_profile, rows[0].model = "claude", "claude", "claude-sonnet-5-5"

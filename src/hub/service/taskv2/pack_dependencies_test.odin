@@ -90,7 +90,7 @@ test_pack_dependencies_carry_handoffs :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(build_pack_dependencies_probe(fx, chain, b), `"dependencies":[`), "build_pack_json splices the field")
 
 	// An output already listed in brief.inputs is referenced, not repeated.
-	b.brief_json = `{"goal":"g","review_roles":[],"inputs":["output:task_a"]}`
+	b.brief_json = `{"goal":"g","inputs":["output:task_a"]}`
 	_, _, _ = iface.taskchain_save_task(&fx.repo, b)
 	deps2 := dependencies_pack_json(&fx.svc, get_task(fx, "task_b"))
 	testing.expect(t, !strings.contains(deps2, `"output":{`) && strings.contains(deps2, `"output_ref":"output:task_a"`), deps2)

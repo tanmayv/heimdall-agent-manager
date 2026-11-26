@@ -83,7 +83,7 @@ metric_notice_dropped :: proc(trigger: string) {
 @(private = "file")
 notice_trigger_label :: proc(trigger: string) -> string {
 	switch trigger {
-	case "solo_task_ready", "agent_not_running", "budget_exhausted", "oscillation", "blocked_on human", "review_requested_from_user", "work_batch_finished", "ready_unclaimed", "review_stalled", "dependency_stalled", "hold_stale", "merge_conflict", "merge_failed", "workflow_trigger_failed", "migration_hold":
+	case "coordinator_item_ready", "agent_not_running", "budget_exhausted", "oscillation", "blocked_on human", "review_requested_from_user", "work_batch_finished", "ready_unclaimed", "review_stalled", "dependency_stalled", "hold_stale", "merge_conflict", "merge_failed", "workflow_trigger_failed", "migration_hold":
 		return trigger
 	}
 	return "other"

@@ -77,7 +77,7 @@ test_shared_fleet_scope_manual_legacy_promotion_and_exclusions :: proc(t: ^testi
 		included, se := iface.fleet_scope_get(&br, inst)
 		testing.expect(t, se.code == .None && included == (id == "explicit"), "empty mixed_work/coordinator alone is not task evidence")
 	}
-	_, _ = iface.taskchain_upsert_fleet(&tr, {task_chain_id=chain.chain_id, agent_id="a", capacity=1, roles_json=`["worker"]`, created_at="now", updated_at="now"})
+	_, _ = iface.taskchain_upsert_fleet(&tr, {task_chain_id=chain.chain_id, agent_id="a", capacity=1, created_at="now", updated_at="now"})
 	for id in ([]string{"unknown", "manual", "explicit", "bot", "test", "action", "bound_bot"}) {
 		inst, _, _ := iface.agent_get_instance(&ar, id)
 		included, se := iface.fleet_scope_get(&br, inst)

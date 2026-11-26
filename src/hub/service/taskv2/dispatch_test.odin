@@ -24,7 +24,7 @@ test_dispatch_exit_blocks_notifies_refunds_and_unblocks :: proc(t: ^testing.T) {
 			(^int)(ctx)^ += 1
 		}
 	}
-	_ = publish_task(t, fx, chain, "task_dispatch", brief = `{"goal":"g","review_roles":[],"budget":{"max_attempts":1}}`)
+	_ = publish_task(t, fx, chain, "task_dispatch", brief = `{"goal":"g","budget":{"max_attempts":1}}`)
 	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
 	inst.runtime_status = "failed"
 	inst.last_error_json = `{"message":"authentication failed","cause":"provider_not_logged_in"}`

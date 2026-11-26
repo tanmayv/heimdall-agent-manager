@@ -17,7 +17,7 @@ import jsonx "odin_test:lib/jsonx"
 //   set counts_toward_budget = 0; budget TASK_MAX_ATTEMPTS counts the rest.
 //   review_rounds = count of changes_requested; ≥ 3 → backlog · blocked_on human.
 //   block / budget exhaustion / no_reviewer_for_role → backlog + blocked_on badge.
-//   submit with review_roles = [] ∧ !requires_user_approval → done directly.
+//   submit with no reviewer agents ∧ no user approval → done directly.
 //   reopen(done|cancelled) → new attempt (counted at the next grant, non-counting).
 
 // Fold_Input carries the facts that live outside the task's own event stream.
@@ -27,8 +27,9 @@ Fold_Input :: struct {
 	deps_done:                  bool,
 	kind:                       domain.Task_Kind,
 	requires_user_approval:     bool,
-	// review_roles_count: len(brief.review_roles) + len(brief.reviewers).
-	review_roles_count:         int,
+	// reviewers_count: the reviewer agents in brief.reviewers (`user` excluded;
+	// it is requires_user_approval).
+	reviewers_count:            int,
 	// max_attempts: brief.budget.max_attempts, 0 → TASK_MAX_ATTEMPTS.
 	max_attempts:               int,
 }
@@ -44,7 +45,7 @@ Last_Release :: enum {
 	Dep_Added,
 	Reopened,
 	User_Stopped,
-	// a solo coordinator's lease expired (it is never stopped and re-pulls);
+	// a coordinator's lease expired (it is never stopped and re-pulls);
 	// non-counting like User_Stopped (REQ-SOLO-6).
 	Released_Noncounting,
 }
@@ -147,7 +148,7 @@ fold_task :: proc(events: []domain.Task_Event, input: Fold_Input) -> Task_View {
 			v.has_work_lease = false
 			v.last_release = .Submitted
 			is_gate := input.kind == .Gate || payload_bool(ev.payload_json, "gate")
-			if !is_gate && input.review_roles_count == 0 && !input.requires_user_approval {
+			if !is_gate && input.reviewers_count == 0 && !input.requires_user_approval {
 				v.done = true
 				v.in_review = false
 			} else {
@@ -199,7 +200,7 @@ fold_task :: proc(events: []domain.Task_Event, input: Fold_Input) -> Task_View {
 			case EXPIRE_DEP_ADDED: v.last_release = .Dep_Added
 			case EXPIRE_USER_STOPPED: v.last_release = .User_Stopped
 			case:
-				// The expiry records whether it counts: a solo coordinator's lapse
+				// The expiry records whether it counts: a coordinator's lapse
 				// (counting:false) is not a failed attempt (REQ-SOLO-6).
 				if c, cok := jsonx.extract_bool_literal(ev.payload_json, "counting", true); cok && !c {
 					v.last_release = .Released_Noncounting
@@ -427,23 +428,13 @@ fold_input_for_task :: proc(task: domain.Task, deps_done: bool) -> Fold_Input {
 	return Fold_Input{
 		deps_done = deps_done,
 		kind = task.kind,
-		requires_user_approval = task.requires_user_approval,
-		review_roles_count = brief_review_roles_count(task.brief_json),
+		requires_user_approval = task_requires_user(task),
+		// A pre-SCHED-0b brief still listing review_roles (not yet mapped by the
+		// one-shot boot migration) counts them, so a refold never completes a
+		// task that is waiting for role reviews.
+		reviewers_count = len(brief_reviewer_agents(task.brief_json, context.temp_allocator)) + len(jsonx.extract_string_array(task.brief_json, "review_roles", true, context.temp_allocator)),
 		max_attempts = brief_max_attempts(task.brief_json),
 	}
-}
-
-// brief_review_roles_count: how many agent review requirements the brief has,
-// counting review roles AND named reviewers (hybrid review model). 0 means no
-// agent reviews the task, so a submit with no user approval goes straight to done.
-brief_review_roles_count :: proc(brief_json: string) -> int {
-	roles := jsonx.extract_string_array(brief_json, "review_roles", true, context.temp_allocator)
-	named := jsonx.extract_string_array(brief_json, "reviewers", true, context.temp_allocator)
-	return len(roles) + len(named)
-}
-
-brief_review_roles :: proc(brief_json: string, allocator := context.allocator) -> [dynamic]string {
-	return jsonx.extract_string_array(brief_json, "review_roles", true, allocator)
 }
 
 brief_assignee :: proc(brief_json: string) -> string {

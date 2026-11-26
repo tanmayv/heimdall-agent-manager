@@ -22,7 +22,7 @@ expired :: proc(id: i64, reason: string) -> domain.Task_Event {
 
 @(private = "file")
 input_task :: proc(deps_done := true, roles := 0, user := false) -> Fold_Input {
-	return Fold_Input{deps_done = deps_done, kind = .Task, review_roles_count = roles, requires_user_approval = user}
+	return Fold_Input{deps_done = deps_done, kind = .Task, reviewers_count = roles, requires_user_approval = user}
 }
 
 @(test)
@@ -253,7 +253,7 @@ test_fold_property_invariants :: proc(t: ^testing.T) {
 			}
 			append(&evs, ev(i64(i + 1), kind, payload))
 		}
-		inp := Fold_Input{deps_done = rand.int31_max(2) == 0, kind = .Task, review_roles_count = int(rand.int31_max(2)), requires_user_approval = rand.int31_max(2) == 0}
+		inp := Fold_Input{deps_done = rand.int31_max(2) == 0, kind = .Task, reviewers_count = int(rand.int31_max(2)), requires_user_approval = rand.int31_max(2) == 0}
 		v := fold_task(evs[:], inp)
 		tag := fmt.tprintf("iter %d", iter)
 		switch v.state {

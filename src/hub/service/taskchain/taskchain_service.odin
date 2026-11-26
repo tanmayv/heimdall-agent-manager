@@ -114,7 +114,7 @@ Update_Chain_Input :: struct {
 }
 
 // Create_Task_Input (Task System v2). The brief carries goal/acceptance/
-// inputs/review_roles/assignee/budget; the convenience fields below are merged
+// inputs/assignee/reviewers/budget; the convenience fields below are merged
 // into it so ctl/UI callers that only know assignee + reviewers keep working.
 Create_Task_Input :: struct {
 	chain_id: domain.Task_Chain_ID,
@@ -125,10 +125,10 @@ Create_Task_Input :: struct {
 	brief_json: string,
 	// assignee_agent_id pins the worker TEMPLATE (brief.assignee). Instance pins are gone.
 	assignee_agent_id: string,
-	// review_roles: fleet roles whose rows must approve (brief.review_roles).
+	// review_roles: REMOVED (REQ-SCHED-8). Kept only so a caller that still sends
+	// it is refused with review_roles_removed instead of being ignored.
 	review_roles: []string,
-	// reviewer_agent_ids: templates to add to the chain fleet with the reviewer
-	// role (legacy `--reviewer agt_…` spelling); implies review_roles ⊇ ["reviewer"].
+	// reviewer_agent_ids: agent ids (or `user`) added to brief.reviewers.
 	reviewer_agent_ids: []string,
 	requires_user_approval: bool,
 	has_requires_user_approval: bool,
@@ -163,6 +163,8 @@ Update_Task_Input :: struct {
 	replace_brief: bool,
 	assignee_agent_id: string,
 	has_assignee: bool,
+	// review_roles / has_review_roles: REMOVED (REQ-SCHED-8); a caller that
+	// still sends them is refused with review_roles_removed.
 	review_roles: []string,
 	has_review_roles: bool,
 	reviewer_agent_ids: []string,
@@ -879,17 +881,12 @@ sync_chain_status_from_tasks :: proc(service: ^Taskchain_Service, chain_id: doma
 // brief object. An explicit brief_json wins; otherwise goal defaults to the
 // description (or the title) and acceptance stays empty until the publish
 // validator requires it. The removed verify keys are never carried over.
-build_brief_json :: proc(existing_brief, title, description, assignee_agent_id: string, has_assignee: bool, review_roles: []string, has_review_roles: bool, reviewers: []string = nil, has_reviewers := false) -> string {
+build_brief_json :: proc(existing_brief, title, description, assignee_agent_id: string, has_assignee: bool, reviewers: []string = nil, has_reviewers := false) -> string {
 	goal := jsonx.extract_string(existing_brief, "goal", "", true)
 	if goal == "" do goal = strings.trim_space(description)
 	if goal == "" do goal = strings.trim_space(title)
 	assignee := jsonx.extract_string(existing_brief, "assignee", "", true)
 	if has_assignee do assignee = strings.trim_space(assignee_agent_id)
-	roles := jsonx.extract_string_array(existing_brief, "review_roles", true)
-	if has_review_roles {
-		clear(&roles)
-		for r in review_roles do if strings.trim_space(r) != "" do append(&roles, strings.trim_space(r))
-	}
 	acceptance, acc_ok := jsonx.extract_raw_array(existing_brief, "acceptance", true)
 	if !acc_ok do acceptance = "[]"
 	inputs, in_ok := jsonx.extract_raw_array(existing_brief, "inputs", true)
@@ -900,34 +897,30 @@ build_brief_json :: proc(existing_brief, title, description, assignee_agent_id: 
 	taskv2.json_str(&o, "goal", goal)
 	taskv2.json_raw(&o, "acceptance", acceptance)
 	taskv2.json_raw(&o, "inputs", inputs)
-	rb := strings.builder_make()
-	defer strings.builder_destroy(&rb)
-	strings.write_byte(&rb, '[')
-	for r, i in roles {
-		if i > 0 do strings.write_byte(&rb, ',')
-		strings.write_byte(&rb, '"')
-		contracts.write_json_string(&rb, r)
-		strings.write_byte(&rb, '"')
-	}
-	strings.write_byte(&rb, ']')
-	taskv2.json_raw(&o, "review_roles", strings.to_string(rb))
 	if assignee != "" do taskv2.json_str(&o, "assignee", assignee)
-	// Named reviewers (hybrid review model): the agents that must approve THIS task.
-	named := taskv2.brief_named_reviewers(existing_brief, context.temp_allocator)
+	// Reviewers: the agents (and optionally `user`) that must approve THIS task.
+	listed := taskv2.brief_reviewer_entries(existing_brief, context.temp_allocator)
 	if has_reviewers {
-		clear(&named)
-		for r in reviewers do if id := strings.trim_space(r); id != "" do append(&named, id)
+		clear(&listed)
+		for r in reviewers {
+			id := strings.trim_space(r)
+			if id == "" do continue
+			dup := false
+			for l in listed do if l == id { dup = true; break }
+			if !dup do append(&listed, id)
+		}
 	}
-	if len(named) > 0 {
+	if len(listed) > 0 {
 		nb := strings.builder_make(context.temp_allocator)
 		strings.write_byte(&nb, '[')
-		for r, i in named {
+		for r, i in listed {
 			if i > 0 do strings.write_byte(&nb, ',')
 			strings.write_byte(&nb, '"'); contracts.write_json_string(&nb, r); strings.write_byte(&nb, '"')
 		}
 		strings.write_byte(&nb, ']')
 		taskv2.json_raw(&o, "reviewers", strings.to_string(nb))
 	}
+	if focus, fok := jsonx.extract_raw_object(existing_brief, "review_focus", true); fok do taskv2.json_raw(&o, "review_focus", focus)
 	if b_ok do taskv2.json_raw(&o, "budget", budget)
 	if output, ook := jsonx.extract_raw_object(existing_brief, "output", true); ook {
 		taskv2.json_raw(&o, "output", output)
@@ -951,7 +944,7 @@ is_brief_armored :: proc(s: string) -> bool {
 
 // brief_publish_problems lists what a task's brief is missing for publish. It
 // is taskv2.brief_publish_missing — the single publish validator (goal, ≥1
-// acceptance item, a fleet row per review role) — applied to a stored task.
+// acceptance item, an assignee) — applied to a stored task.
 brief_publish_problems :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, task: domain.Task) -> []string {
 	return taskv2.brief_publish_missing(service.repo, chain, task.kind, task.brief_json)
 }
@@ -959,7 +952,10 @@ brief_publish_problems :: proc(service: ^Taskchain_Service, chain: domain.Task_C
 @(private = "package")
 publish_problems_error :: proc(problems: map[string][]string) -> domain.Domain_Error {
 	b := strings.builder_make(context.temp_allocator)
-	strings.write_string(&b, `{"code":"brief_incomplete","tasks":[`)
+	assignee_missing := false
+	for _, missing in problems do for m in missing do if m == "assignee" do assignee_missing = true
+	// A missing assignee is reported under its own code (REQ-SCHED-3).
+	strings.write_string(&b, `{"code":"assignee_required","tasks":[` if assignee_missing else `{"code":"brief_incomplete","tasks":[`)
 	first := true
 	for task_id, missing in problems {
 		if !first do strings.write_byte(&b, ',')
@@ -972,67 +968,31 @@ publish_problems_error :: proc(problems: map[string][]string) -> domain.Domain_E
 		strings.write_string(&b, "]}")
 	}
 	strings.write_string(&b, "]}")
-	return domain.domain_error(.Validation_Failed, "brief incomplete: every published task needs a goal (≤2k), ≥1 acceptance item (≤20×200) and a fleet row per review role", strings.to_string(b))
+	return domain.domain_error(.Validation_Failed, "brief incomplete: every published task needs a goal (≤2k), ≥1 acceptance item (≤20×200) and an assignee agent", strings.to_string(b))
 }
 
-// ensure_fleet_role guarantees a fleet row for `agent_id` in the chain carrying
-// `role` (adding the role to an existing row when missing). Rows are the
-// placement policy the matcher grants from, so a template named on a task must
-// exist there (REQ-FLEET-DISPATCHER-1).
-ensure_fleet_role :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, agent_id, role: string) -> domain.Domain_Error {
+// ensure_fleet_row guarantees a fleet row (capacity 1, no roles — REQ-SCHED-1)
+// for an assignee or reviewer agent the task names, so the matcher can place and
+// launch it (REQ-FLEET-DISPATCHER-1). An existing row is left as it is. The
+// coordinator's agent gets none: it pulls its own items (spec SCHED 6.1).
+ensure_fleet_row :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, agent_id: string) -> domain.Domain_Error {
 	id := strings.trim_space(agent_id)
-	if id == "" do return domain.Domain_Error{}
+	if id == "" || id == taskv2.REVIEWER_USER do return domain.Domain_Error{}
 	if service.agents != nil {
 		if _, ok, _ := iface.agent_get(service.agents, id); !ok do return domain.domain_error(.Not_Found, strings.concatenate({"agent template not found: ", id}))
 	}
+	if coord := chain_coordinator_agent(service, chain); coord != "" && coord == id do return domain.Domain_Error{}
 	now := platform.clock_now(service.clock)
-	fleets, err := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
-	if err.code != .None do return err
-	for f in fleets {
-		if f.agent_id != id do continue
-		if fleet_has_role(f, role) do return domain.Domain_Error{}
-		updated := f
-		updated.roles_json = fleet_roles_with(f.roles_json, role)
-		updated.updated_at = now
-		_, uerr := iface.taskchain_upsert_fleet(service.repo, updated)
-		return uerr
-	}
-	roles := fleet_roles_with(`[]`, role)
-	fleet := domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = id, capacity = 1, min_warm = 0, idle_ttl_seconds = 600, roles_json = roles, created_at = now, updated_at = now}
+	fleet := domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = id, capacity = 1, min_warm = 0, idle_ttl_seconds = 600, created_at = now, updated_at = now}
 	return iface.taskchain_ensure_fleet(service.repo, fleet)
 }
 
-// ensure_fleet_row_for_named_reviewer gives a named reviewer a fleet row so the
-// matcher can place and launch it. An existing row (any roles) is enough; a new
-// one carries only FLEET_ROLE_NAMED_REVIEWER, which no task lists in
-// review_roles, so the agent is not pulled into other tasks' role reviews.
-ensure_fleet_row_for_named_reviewer :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, agent_id: string) -> domain.Domain_Error {
-	id := strings.trim_space(agent_id)
-	if id == "" do return domain.Domain_Error{}
-	fleets, err := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
-	if err.code != .None do return err
-	for f in fleets do if f.agent_id == id do return domain.Domain_Error{}
-	return ensure_fleet_role(service, chain, id, taskv2.FLEET_ROLE_NAMED_REVIEWER)
-}
-
-fleet_has_role :: proc(f: domain.Task_Chain_Fleet, role: string) -> bool {
-	roles := jsonx.decode_string_array(f.roles_json if f.roles_json != "" else domain.FLEET_ROLES_DEFAULT_JSON, context.temp_allocator)
-	for r in roles do if r == role do return true
-	return false
-}
-
-fleet_roles_with :: proc(roles_json, role: string) -> string {
-	roles := jsonx.decode_string_array(roles_json if roles_json != "" else domain.FLEET_ROLES_DEFAULT_JSON, context.temp_allocator)
-	b := strings.builder_make()
-	strings.write_byte(&b, '[')
-	for r, i in roles {
-		if i > 0 do strings.write_byte(&b, ',')
-		strings.write_byte(&b, '"'); contracts.write_json_string(&b, r); strings.write_byte(&b, '"')
-	}
-	if len(roles) > 0 do strings.write_byte(&b, ',')
-	strings.write_byte(&b, '"'); contracts.write_json_string(&b, role); strings.write_byte(&b, '"')
-	strings.write_byte(&b, ']')
-	return strings.to_string(b)
+// chain_coordinator_agent: the durable agent behind the chain's coordinator
+// instance ("" when unknown).
+chain_coordinator_agent :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -> string {
+	if service.agents == nil || chain.coordinator_agent_instance_id == "" do return ""
+	inst, ok, _ := iface.agent_get_instance(service.agents, chain.coordinator_agent_instance_id)
+	return inst.agent_id if ok else ""
 }
 
 require_manual_task :: proc(task: domain.Task) -> domain.Domain_Error {
@@ -1058,34 +1018,35 @@ create_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 	if input.title == "" do return domain.Task{}, false, domain.domain_error(.Validation_Failed, "task title is required")
 	if br_err := validate_task_bridge(service, chain.owner_user_id, input.bridge_id); br_err.code != .None do return domain.Task{}, false, br_err
 
-	review_roles := make([dynamic]string, context.temp_allocator)
-	for r in input.review_roles do append(&review_roles, r)
-	// Reviewer agent ids are NAMED reviewers of this task (hybrid review model):
-	// they join the brief's own named reviewers and do not add a chain-wide role.
-	named := taskv2.brief_named_reviewers(input.brief_json, context.temp_allocator)
+	if len(input.review_roles) > 0 do return domain.Task{}, false, taskv2.review_roles_removed_error()
+	// Reviewer agent ids (or `user`) join the brief's own reviewers.
+	listed := taskv2.brief_reviewer_entries(input.brief_json, context.temp_allocator)
 	for rid in input.reviewer_agent_ids {
 		id := strings.trim_space(rid)
 		dup := id == ""
-		for n in named do if n == id { dup = true; break }
-		if !dup do append(&named, id)
+		for n in listed do if n == id { dup = true; break }
+		if !dup do append(&listed, id)
 	}
-	has_named := len(input.reviewer_agent_ids) > 0
+	has_listed := len(input.reviewer_agent_ids) > 0
 	// M2: legacy verify keys are accepted and dropped (the handler warns).
 	brief, _ := taskv2.strip_removed_verify_keys(input.brief_json)
 	if serr := validate_brief_schema(brief); serr.code != .None do return domain.Task{}, false, serr
 	if strings.trim_space(brief) == "" || strings.trim_space(brief) == "{}" {
-		brief = build_brief_json("{}", input.title, input.description, input.assignee_agent_id, input.assignee_agent_id != "", review_roles[:], true, named[:], has_named)
-	} else if input.assignee_agent_id != "" || len(review_roles) > 0 || has_named {
-		brief = build_brief_json(brief, input.title, input.description, input.assignee_agent_id, input.assignee_agent_id != "", review_roles[:], len(review_roles) > 0, named[:], has_named)
+		brief = build_brief_json("{}", input.title, input.description, input.assignee_agent_id, input.assignee_agent_id != "", listed[:], has_listed)
+	} else if input.assignee_agent_id != "" || has_listed {
+		brief = build_brief_json(brief, input.title, input.description, input.assignee_agent_id, input.assignee_agent_id != "", listed[:], has_listed)
 	}
-	if verr := validate_named_reviewers(service, taskv2.brief_named_reviewers(brief, context.temp_allocator)[:]); verr.code != .None do return domain.Task{}, false, verr
-	// Fleet rows for every template the task names: worker for the assignee, a
-	// quiet named-reviewer row (placement only) for each named reviewer.
-	if a := taskv2.brief_assignee(brief); a != "" {
-		if ferr := ensure_fleet_role(service, chain, a, domain.FLEET_ROLE_WORKER); ferr.code != .None do return domain.Task{}, false, ferr
+	// Every task names its assignee agent and reviewer agents (REQ-SCHED-3/4);
+	// a gate is decided, not worked.
+	if input.kind != .Gate {
+		if aerr := taskv2.validate_brief_assignment(service.agents, brief); aerr.code != .None do return domain.Task{}, false, aerr
+	} else if verr := validate_named_reviewers(service, taskv2.brief_reviewer_entries(brief, context.temp_allocator)[:]); verr.code != .None {
+		return domain.Task{}, false, verr
 	}
-	for rid in taskv2.brief_named_reviewers(brief, context.temp_allocator) {
-		if ferr := ensure_fleet_row_for_named_reviewer(service, chain, rid); ferr.code != .None do return domain.Task{}, false, ferr
+	// Fleet rows for every agent the task names (no roles).
+	if ferr := ensure_fleet_row(service, chain, taskv2.brief_assignee(brief)); ferr.code != .None do return domain.Task{}, false, ferr
+	for rid in taskv2.brief_reviewer_agents(brief, context.temp_allocator) {
+		if ferr := ensure_fleet_row(service, chain, rid); ferr.code != .None do return domain.Task{}, false, ferr
 	}
 
 	now := platform.clock_now(service.clock)
@@ -1100,9 +1061,9 @@ create_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		kind = input.kind,
 		priority = input.has_priority ? input.priority : .P2,
 		brief_json = brief,
-		// Solo chains default to "the user reviews" (REQ-SOLO-1a); an explicit
-		// value from the caller always wins.
-		requires_user_approval = input.requires_user_approval if input.has_requires_user_approval else (service.engine != nil && taskv2.chain_is_solo(service.engine, chain)),
+		// The user reviews when asked explicitly or listed in brief.reviewers;
+		// there is no other default (spec SCHED 6.2).
+		requires_user_approval = (input.requires_user_approval if input.has_requires_user_approval else false) || taskv2.brief_lists_user(brief),
 		bridge_id = input.bridge_id,
 		created_at = now,
 		updated_at = now,
@@ -1194,16 +1155,14 @@ update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 	}
 	new_title := input.title if input.title != "" else task.title
 	new_description := input.description if input.description != "" else task.description
-	review_roles := make([dynamic]string, context.temp_allocator)
-	for r in input.review_roles do append(&review_roles, r)
-	has_roles := input.has_review_roles
-	// `reviewers` REPLACES the task's named reviewers (an empty list clears them).
+	if input.has_review_roles || len(input.review_roles) > 0 do return {}, false, taskv2.review_roles_removed_error()
+	// `reviewers` REPLACES the task's reviewers (an empty list clears them).
 	has_named := input.has_reviewers || len(input.reviewer_agent_ids) > 0
 	// The convenience fields set their own keys on the merged brief and touch
 	// nothing else: no create-time defaults (goal from title, empty
 	// acceptance/inputs), so an explicit null clear in the same update stands.
-	if input.has_assignee || has_roles || has_named {
-		applied, aerr := brief_apply_actor_fields(new_brief, input.assignee_agent_id, input.has_assignee, review_roles[:], has_roles, input.reviewer_agent_ids, has_named)
+	if input.has_assignee || has_named {
+		applied, aerr := brief_apply_actor_fields(new_brief, input.assignee_agent_id, input.has_assignee, input.reviewer_agent_ids, has_named)
 		if aerr.code != .None do return {}, false, aerr
 		new_brief = applied
 	}
@@ -1227,7 +1186,17 @@ update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		if input.bridge_id != nil && input.bridge_id^ != task.bridge_id do append(&offending, "bridge_id")
 		if len(offending) > 0 do return {}, false, leased_edit_error(offending[:])
 	}
-	if verr := validate_named_reviewers(service, taskv2.brief_named_reviewers(new_brief, context.temp_allocator)[:]); verr.code != .None do return {}, false, verr
+	// REQ-SCHED-3/4: an assignee is never removed, reviewers are agent ids or
+	// `user`, and the assignee is not a reviewer. A task that has no assignee
+	// yet (held by the SCHED-0 migration) can still be edited until it gets one.
+	if verr := validate_named_reviewers(service, taskv2.brief_reviewer_entries(new_brief, context.temp_allocator)[:]); verr.code != .None do return {}, false, verr
+	if task.kind != .Gate {
+		new_assignee := taskv2.brief_assignee(new_brief)
+		if new_assignee == "" && taskv2.brief_assignee(task.brief_json) != "" do return {}, false, taskv2.assignee_required_error()
+		if new_assignee != "" {
+			for id in taskv2.brief_reviewer_agents(new_brief, context.temp_allocator) do if id == new_assignee do return {}, false, taskv2.reviewer_is_assignee_error(id)
+		}
+	}
 
 	if new_title != task.title { task.title = new_title; append(&changed, "title") }
 	if new_description != task.description { task.description = new_description; append(&changed, "description") }
@@ -1236,7 +1205,6 @@ update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		append(&changed, "brief.acceptance" if only_acceptance else "brief")
 		for k in brief_keys {
 			if k == "assignee" do append(&changed, "assignee")
-			if k == "review_roles" do append(&changed, "review_roles")
 			if k == "reviewers" do append(&changed, "reviewers")
 		}
 	}
@@ -1259,6 +1227,11 @@ update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		task.requires_user_approval = input.requires_user_approval
 		append(&changed, "requires_user_approval")
 	}
+	// `user` in brief.reviewers is the same as requires_user_approval (6.2).
+	if taskv2.brief_lists_user(task.brief_json) && !task.requires_user_approval {
+		task.requires_user_approval = true
+		append(&changed, "requires_user_approval")
+	}
 	if input.has_priority { task.priority = input.priority; append(&changed, "priority") }
 	// bridge_id is presence-checked via the pointer: nil leaves the pin untouched,
 	// a non-nil pointer (including "") repins — "" clears back to inherit.
@@ -1267,11 +1240,15 @@ update_task_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		task.bridge_id = input.bridge_id^
 		append(&changed, "bridge_id")
 	}
-	if a := taskv2.brief_assignee(task.brief_json); a != "" {
-		if ferr := ensure_fleet_role(service, chain, a, domain.FLEET_ROLE_WORKER); ferr.code != .None do return domain.Task{}, false, ferr
-	}
-	for rid in taskv2.brief_named_reviewers(task.brief_json, context.temp_allocator) {
-		if ferr := ensure_fleet_row_for_named_reviewer(service, chain, rid); ferr.code != .None do return domain.Task{}, false, ferr
+	// Rows for newly named agents only; an update that leaves the assignee and
+	// reviewers alone does not re-check them.
+	named_changed := false
+	for k in brief_keys do if k == "assignee" || k == "reviewers" { named_changed = true; break }
+	if named_changed {
+		if ferr := ensure_fleet_row(service, chain, taskv2.brief_assignee(task.brief_json)); ferr.code != .None do return domain.Task{}, false, ferr
+		for rid in taskv2.brief_reviewer_agents(task.brief_json, context.temp_allocator) {
+			if ferr := ensure_fleet_row(service, chain, rid); ferr.code != .None do return domain.Task{}, false, ferr
+		}
 	}
 	task.updated_at = platform.clock_now(service.clock)
 	saved, save_ok, save_err := save_task(service, task)
@@ -1951,7 +1928,8 @@ Upsert_Fleet_Input :: struct {
 	idle_ttl_seconds: int,
 	provider:         string,
 	model:             string,
-	// roles: fleet roles (worker|reviewer); nil keeps the existing roles (default ["worker"]).
+	// roles / has_roles: REMOVED (REQ-SCHED-1, a fleet row has no roles). Kept
+	// only so a caller that still sends roles is refused, never ignored.
 	roles:            []string,
 	has_roles:        bool,
 	// bridge_id: placement; nil leaves the row's bridge untouched, "" clears it.
@@ -1966,17 +1944,11 @@ list_fleets :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, c
 
 list_chain_fleets :: list_fleets
 
-// implicit_solo_worker: the Soloist coordinator's implicit worker row (no fleet
-// row of its own), for read paths; false on a bare service or any other chain.
-implicit_solo_worker :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, fleets: []domain.Task_Chain_Fleet) -> (domain.Task_Chain_Fleet, bool) {
-	if service.engine == nil do return {}, false
-	return taskv2.implicit_solo_worker(service.engine, chain, fleets)
-}
-
 upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Upsert_Fleet_Input) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
 	input := input
 	trimmed_agent := strings.trim_space(input.agent_id)
 	if trimmed_agent == "" do return domain.Task_Chain_Fleet{}, domain.domain_error(.Validation_Failed, "agent_id is required")
+	if input.has_roles || len(input.roles) > 0 do return domain.Task_Chain_Fleet{}, fleet_roles_removed_error()
 	chain, ok, err := get_chain_for_owner_write(service, auth, input.chain_id)
 	if !ok do return domain.Task_Chain_Fleet{}, err
 
@@ -1998,7 +1970,7 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 	prior, prior_err := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if prior_err.code != .None do return {}, prior_err
 	defer delete(prior)
-	existing := domain.Task_Chain_Fleet{roles_json = domain.FLEET_ROLES_DEFAULT_JSON}
+	existing := domain.Task_Chain_Fleet{}
 	for row in prior { if row.agent_id == trimmed_agent { existing = row; break } }
 	if service.agent_service != nil {
 		s := agent.fleet_service(service.agent_service)
@@ -2033,26 +2005,6 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 			if !valid do return {}, validation_err
 		}
 	}
-	roles_json := existing.roles_json
-	if input.has_roles {
-		b := strings.builder_make()
-		strings.write_byte(&b, '[')
-		n := 0
-		seen := make(map[string]bool, context.temp_allocator)
-		for r in input.roles {
-			role := strings.trim_space(r)
-			if !domain.fleet_role_name_valid(role) do return {}, domain.domain_error(.Validation_Failed, "fleet roles must be 'worker' or a review role name (1-32 chars of a-z, 0-9, _ or -, starting with a letter)")
-			if seen[role] do continue
-			seen[role] = true
-			if n > 0 do strings.write_byte(&b, ',')
-			strings.write_byte(&b, '"'); contracts.write_json_string(&b, role); strings.write_byte(&b, '"')
-			n += 1
-		}
-		strings.write_byte(&b, ']')
-		if n == 0 do return {}, domain.domain_error(.Validation_Failed, "fleet roles must not be empty")
-		roles_json = strings.to_string(b)
-	}
-	if roles_json == "" do roles_json = domain.FLEET_ROLES_DEFAULT_JSON
 	bridge_id := existing.bridge_id
 	if input.bridge_id != nil {
 		if br_err := validate_task_bridge(service, chain.owner_user_id, input.bridge_id^); br_err.code != .None do return {}, br_err
@@ -2075,9 +2027,8 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		provider_profile = domain.profile_effective_id(input.provider,profile_id),
 		provider         = input.provider,
 		model             = input.model,
-		roles_json       = roles_json,
 		bridge_id        = bridge_id,
-		paused_roles_json = existing.paused_roles_json,
+		paused           = existing.paused,
 		created_at       = existing.created_at if existing.created_at != "" else now,
 		updated_at       = now,
 	}
@@ -2094,47 +2045,28 @@ upsert_fleet_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 
 upsert_chain_fleet :: upsert_fleet
 
-// fleet_roles_warning (REQ-TV2-5): a role set with no built-in role (worker,
-// reviewer) whose custom roles no brief in the chain requests is almost
-// certainly a mistake (e.g. `checkpoint` used to park an agent). Advisory
-// only; "" when there is nothing to say.
-fleet_roles_warning :: proc(service: ^Taskchain_Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, roles: []string) -> string {
-	if len(roles) == 0 do return ""
-	for r in roles {
-		role := strings.trim_space(r)
-		if role == domain.FLEET_ROLE_WORKER || role == domain.FLEET_ROLE_REVIEWER do return ""
-	}
-	tasks, terr := iface.taskchain_list_tasks_by_chain(service.repo, chain_id, owner)
-	if terr.code != .None do return ""
-	defer delete(tasks)
-	unrequested := make([dynamic]string, context.temp_allocator)
-	for r in roles {
-		role := strings.trim_space(r)
-		requested := false
-		for t in tasks {
-			for br in taskv2.brief_review_roles(t.brief_json, context.temp_allocator) do if br == role { requested = true; break }
-			if requested do break
-		}
-		if !requested do append(&unrequested, role)
-	}
-	if len(unrequested) == 0 do return ""
-	return fmt.tprintf("roles %s include no built-in role (worker, reviewer) and no task brief requests them, so this agent will never be granted work; to stop dispatch use `task-chain fleet pause`", strings.join(unrequested[:], ", ", context.temp_allocator))
+// fleet_roles_removed_error (REQ-SCHED-1/8): fleet rows have no roles; work
+// goes to a task's assignee and reviews to its listed reviewers.
+fleet_roles_removed_error :: proc() -> domain.Domain_Error {
+	return domain.domain_error(.Validation_Failed, "fleet roles were removed: assign work with the task's assignee and reviews with its reviewers; pause a row with `task-chain fleet pause`", `{"code":"fleet_roles_removed","replacement":"assignee/reviewers"}`)
 }
 
 Fleet_Pause_Input :: struct {
 	chain_id: domain.Task_Chain_ID,
 	agent_id: string,
-	// roles: the roles to pause/resume; empty = every role of the row.
+	// roles: REMOVED (REQ-SCHED-2, pause is one boolean per row); a non-empty
+	// list is refused.
 	roles:    []string,
 	paused:   bool,
 }
 
-// set_fleet_pause_impl (REQ-TV2-5): pause or resume new dispatch to a fleet row,
-// for all its roles or the named ones. Live leases are never touched; the
-// matcher simply grants no new lease of a paused role.
+// set_fleet_pause_impl (REQ-SCHED-2): pause or resume new dispatch to a fleet
+// row. Live leases are never touched; the matcher simply grants no new lease of
+// any kind to a paused row.
 set_fleet_pause_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Fleet_Pause_Input) -> (domain.Task_Chain_Fleet, domain.Domain_Error) {
 	trimmed_agent := strings.trim_space(input.agent_id)
 	if trimmed_agent == "" do return {}, domain.domain_error(.Validation_Failed, "agent_id is required")
+	if len(input.roles) > 0 do return {}, domain.domain_error(.Validation_Failed, "per-role pause was removed: pause or resume the whole fleet row", `{"code":"fleet_roles_removed","replacement":"paused"}`)
 	chain, ok, err := get_chain_for_owner_write(service, auth, input.chain_id)
 	if !ok do return {}, err
 	rows, rerr := iface.taskchain_list_fleets_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
@@ -2144,36 +2076,7 @@ set_fleet_pause_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_C
 	found := false
 	for f in rows do if f.agent_id == trimmed_agent { row = f; found = true; break }
 	if !found do return {}, domain.domain_error(.Not_Found, "fleet not found")
-	row_roles := jsonx.decode_string_array(row.roles_json if row.roles_json != "" else domain.FLEET_ROLES_DEFAULT_JSON, context.temp_allocator)
-	for r in input.roles {
-		role := strings.trim_space(r)
-		in_row := false
-		for rr in row_roles do if rr == role { in_row = true; break }
-		if !in_row do return {}, domain.domain_error(.Validation_Failed, fmt.tprintf("role %s is not one of this fleet row's roles", role))
-	}
-	// Normalise to the explicit set of paused roles of this row.
-	paused := make(map[string]bool, context.temp_allocator)
-	for rr in row_roles do if domain.fleet_role_paused(row, rr) do paused[rr] = true
-	if len(input.roles) == 0 {
-		for rr in row_roles do paused[rr] = input.paused
-	} else {
-		for r in input.roles do paused[strings.trim_space(r)] = input.paused
-	}
-	b := strings.builder_make()
-	n, all := 0, true
-	strings.write_byte(&b, '[')
-	for rr in row_roles {
-		if !paused[rr] { all = false; continue }
-		if n > 0 do strings.write_byte(&b, ',')
-		strings.write_byte(&b, '"'); contracts.write_json_string(&b, rr); strings.write_byte(&b, '"')
-		n += 1
-	}
-	strings.write_byte(&b, ']')
-	switch {
-	case n == 0: row.paused_roles_json = ""
-	case all: row.paused_roles_json = domain.FLEET_PAUSED_ALL_JSON
-	case: row.paused_roles_json = strings.to_string(b)
-	}
+	row.paused = input.paused
 	row.updated_at = platform.clock_now(service.clock)
 	saved, save_err := iface.taskchain_upsert_fleet(service.repo, row)
 	if save_err.code != .None do return saved, save_err

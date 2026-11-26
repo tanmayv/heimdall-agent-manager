@@ -20,7 +20,7 @@ ATTEMPT_COLS :: "task_id, attempt_no, chain_id, owner_user_id, started_at, ended
 @(private = "file")
 FACET_COLS :: "task_id, attempt_no, chain_id, owner_user_id, kind, v, body_json, writer, written_at"
 @(private = "file")
-LEASE_COLS :: "lease_id, task_id, chain_id, owner_user_id, attempt_no, holder_instance_id, kind, review_role, bridge_id, provider, model, granted_at, confirmed_at, expires_at, hard_deadline_at, last_beat_at, delivery, extended_at, provider_profile, phase"
+LEASE_COLS :: "lease_id, task_id, chain_id, owner_user_id, attempt_no, holder_instance_id, kind, bridge_id, provider, model, granted_at, confirmed_at, expires_at, hard_deadline_at, last_beat_at, delivery, extended_at, provider_profile, phase"
 @(private = "file")
 REVIEW_COLS :: "task_id, chain_id, owner_user_id, attempt_no, role, reviewer_kind, reviewer_agent_id, reviewer_instance_id, verdict, findings_json, created_at"
 
@@ -124,25 +124,21 @@ taskchain_clear_sched0_fleet_roles_sqlite :: proc(ctx: rawptr) -> domain.Domain_
 // agent) under domain.SCHED0_REVIEW_ROLE. A request_changes wins over an approve
 // (fail closed); otherwise a row already under the target role, then the
 // earliest, is kept. Gate-approver rows (role coordinator / user) and user
-// verdicts are untouched. The task's review leases are moved to the same role.
+// verdicts are untouched.
 taskchain_sched0_normalize_reviews_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, attempt_no: int) -> (int, domain.Domain_Error) {
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 
 	impl := (^Taskchain_Repo_SQLite)(ctx)
 	changed := 0
-	queries := [3]string{
+	queries := [2]string{
 		"DELETE FROM task_reviews WHERE rowid IN (SELECT rid FROM (SELECT rowid AS rid, ROW_NUMBER() OVER (PARTITION BY reviewer_agent_id ORDER BY CASE verdict WHEN 'request_changes' THEN 0 ELSE 1 END, CASE role WHEN '" + domain.SCHED0_REVIEW_ROLE + "' THEN 0 ELSE 1 END, created_at, role) AS rn FROM task_reviews WHERE task_id = ?1 AND attempt_no = ?2 AND reviewer_kind = 'agent' AND role NOT IN ('coordinator', 'user')) WHERE rn > 1);",
 		"UPDATE task_reviews SET role = '" + domain.SCHED0_REVIEW_ROLE + "' WHERE task_id = ?1 AND attempt_no = ?2 AND reviewer_kind = 'agent' AND role NOT IN ('coordinator', 'user', '" + domain.SCHED0_REVIEW_ROLE + "');",
-		// A live review lease names the roles its verdict is written under;
-		// the lease upsert never changes it, so the mapping does it here.
-		"UPDATE task_leases SET review_role = '" + domain.SCHED0_REVIEW_ROLE + "' WHERE task_id = ?1 AND kind = 'review' AND review_role <> '" + domain.SCHED0_REVIEW_ROLE + "';",
 	}
 	for q in queries {
 		stmt, err := prepare(impl, q, "sched0 review normalize")
 		if err.code != .None do return changed, err
 		bind_text(stmt, 1, string(task_id))
-		// The lease statement has no ?2; binding it is a harmless SQLITE_RANGE.
 		sqlite3_bind_int(stmt, 2, c.int(attempt_no))
 		rc := sqlite3_step(stmt)
 		sqlite3_finalize(stmt)
@@ -331,24 +327,23 @@ task_attempt_facet_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task
 @(private = "file")
 lease_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Lease {
 	return domain.Task_Lease{
-		lease_id = column_text(stmt, 0), phase = column_text(stmt, 19),
+		lease_id = column_text(stmt, 0), phase = column_text(stmt, 18),
 		task_id = domain.Task_ID(column_text(stmt, 1)),
 		chain_id = domain.Task_Chain_ID(column_text(stmt, 2)),
 		owner_user_id = domain.User_ID(column_text(stmt, 3)),
 		attempt_no = int(sqlite3_column_int64(stmt, 4)),
 		holder_instance_id = column_text(stmt, 5),
 		kind = column_text(stmt, 6),
-		review_role = column_text(stmt, 7),
-		bridge_id = column_text(stmt, 8),
-		provider = column_text(stmt, 9),provider_profile=column_text(stmt,18),
-		model = column_text(stmt, 10),
-		granted_at = column_text(stmt, 11),
-		confirmed_at = column_text(stmt, 12),
-		expires_at = column_text(stmt, 13),
-		hard_deadline_at = column_text(stmt, 14),
-		last_beat_at = column_text(stmt, 15),
-		delivery = column_text(stmt, 16),
-		extended_at = column_text(stmt, 17),
+		bridge_id = column_text(stmt, 7),
+		provider = column_text(stmt, 8), provider_profile = column_text(stmt, 17),
+		model = column_text(stmt, 9),
+		granted_at = column_text(stmt, 10),
+		confirmed_at = column_text(stmt, 11),
+		expires_at = column_text(stmt, 12),
+		hard_deadline_at = column_text(stmt, 13),
+		last_beat_at = column_text(stmt, 14),
+		delivery = column_text(stmt, 15),
+		extended_at = column_text(stmt, 16),
 	}
 }
 
@@ -363,16 +358,16 @@ task_lease_save_sqlite :: proc(ctx: rawptr, input: domain.Task_Lease) -> (domain
 	lease := input
 	if lease.phase == "" do lease.phase = domain.LEASE_PHASE_ACTIVE
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	stmt, err := prepare(impl, "INSERT INTO task_leases (" + LEASE_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(lease_id) DO UPDATE SET phase=excluded.phase, confirmed_at=excluded.confirmed_at, extended_at=excluded.extended_at, expires_at=excluded.expires_at, hard_deadline_at=excluded.hard_deadline_at, last_beat_at=excluded.last_beat_at, delivery=excluded.delivery, bridge_id=excluded.bridge_id, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model;", "task lease save")
+	stmt, err := prepare(impl, "INSERT INTO task_leases (" + LEASE_COLS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(lease_id) DO UPDATE SET phase=excluded.phase, confirmed_at=excluded.confirmed_at, extended_at=excluded.extended_at, expires_at=excluded.expires_at, hard_deadline_at=excluded.hard_deadline_at, last_beat_at=excluded.last_beat_at, delivery=excluded.delivery, bridge_id=excluded.bridge_id, provider_profile=excluded.provider_profile, provider=excluded.provider, model=excluded.model;", "task lease save")
 	if err.code != .None do return domain.Task_Lease{}, false, err
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, lease.lease_id); bind_text(stmt, 2, string(lease.task_id)); bind_text(stmt, 3, string(lease.chain_id)); bind_text(stmt, 4, string(lease.owner_user_id))
-	sqlite3_bind_int(stmt, 5, c.int(lease.attempt_no)); bind_text(stmt, 6, lease.holder_instance_id); bind_text(stmt, 7, lease.kind); bind_text(stmt, 8, lease.review_role)
-	bind_text(stmt, 9, lease.bridge_id); bind_text(stmt, 10, lease.provider); bind_text(stmt, 11, lease.model)
-	bind_text(stmt, 12, lease.granted_at); bind_text(stmt, 13, lease.confirmed_at); bind_text(stmt, 14, lease.expires_at); bind_text(stmt, 15, lease.hard_deadline_at); bind_text(stmt, 16, lease.last_beat_at)
-	bind_text(stmt, 17, lease.delivery if lease.delivery != "" else domain.LEASE_DELIVERY_WAKE)
-	bind_text(stmt, 18, lease.extended_at);bind_text(stmt,19,domain.profile_effective_id(lease.provider,lease.provider_profile))
-	bind_text(stmt,20,lease.phase if lease.phase != "" else "active")
+	sqlite3_bind_int(stmt, 5, c.int(lease.attempt_no)); bind_text(stmt, 6, lease.holder_instance_id); bind_text(stmt, 7, lease.kind)
+	bind_text(stmt, 8, lease.bridge_id); bind_text(stmt, 9, lease.provider); bind_text(stmt, 10, lease.model)
+	bind_text(stmt, 11, lease.granted_at); bind_text(stmt, 12, lease.confirmed_at); bind_text(stmt, 13, lease.expires_at); bind_text(stmt, 14, lease.hard_deadline_at); bind_text(stmt, 15, lease.last_beat_at)
+	bind_text(stmt, 16, lease.delivery if lease.delivery != "" else domain.LEASE_DELIVERY_WAKE)
+	bind_text(stmt, 17, lease.extended_at); bind_text(stmt, 18, domain.profile_effective_id(lease.provider, lease.provider_profile))
+	bind_text(stmt, 19, lease.phase if lease.phase != "" else "active")
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task_Lease{}, false, domain.domain_error(.Conflict, "lease conflicts with an existing lease (holder or task already leased)")
 	return lease, true, domain.Domain_Error{}
 }

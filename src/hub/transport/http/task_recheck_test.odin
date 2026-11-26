@@ -18,7 +18,7 @@ test_recheck_http_routes_auth_and_result :: proc(t: ^testing.T) {
 	chain, _, _ := iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
 	chain.publish_state = .Published
 	_, _, _ = iface.taskchain_save_chain(&f.tc_repo, chain)
-	task := domain.Task{task_id = "task_recheck_http", chain_id = f.chain_id, owner_user_id = f.owner, title = "Re-check", publish_state = .Published, kind = .Task, state = .Ready, brief_json = `{"goal":"g","review_roles":[]}`}
+	task := domain.Task{task_id = "task_recheck_http", chain_id = f.chain_id, owner_user_id = f.owner, title = "Re-check", publish_state = .Published, kind = .Task, state = .Ready, brief_json = `{"goal":"g"}`}
 	_, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
 	_, _, _ = taskv2.append_event(&f.tc_repo, &f.clock, task, taskv2.hub_actor(), taskv2.EV_PUBLISHED, `{}`)
 

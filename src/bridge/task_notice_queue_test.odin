@@ -30,7 +30,7 @@ notice_test_pty :: proc(socket, instance, task_id, target_role, human_message, t
     return !notice_test_fail
 }
 notice_test_n :: proc(text: string, now: i64 = 1000, instance: string = "inst_notice_test") -> Bridge_Task_Notice {
-    return {instance = instance, task = "task_notice", expected_state = "ready", origin = "solo_task_ready", text = text,
+    return {instance = instance, task = "task_notice", expected_state = "ready", origin = "coordinator_item_ready", text = text,
         queued_ms = now, due_ms = now+BRIDGE_TASK_NOTICE_WINDOW_MS}
 }
 

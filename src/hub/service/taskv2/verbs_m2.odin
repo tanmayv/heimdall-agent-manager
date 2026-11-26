@@ -187,7 +187,7 @@ lease_handoff :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Handof
 
 // review_checkpoint_handoff (REQ-TV2-5): a REVIEW holder answers a hold's
 // checkpoint request with `lease handoff`. Its lease is released with no
-// verdict (the attempt, its reviews and the review pairs it still owes are
+// verdict (the attempt, its reviews and the reviews still owed are
 // untouched), and the held task gets no new review lease until task_release.
 // handled=false: the caller holds no review lease (the work handoff applies).
 // A review lease on a task that is not held still ends only with review post.
@@ -206,7 +206,6 @@ review_checkpoint_handoff :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_C
 	p := json_begin()
 	json_str(&p, "lease_id", lease.lease_id)
 	json_str(&p, "kind", domain.LEASE_KIND_REVIEW)
-	json_str(&p, "review_role", lease.review_role)
 	json_int(&p, "attempt_no", i64(lease.attempt_no))
 	json_str(&p, "summary", truncate_utf8(strings.trim_space(input.summary), 4096))
 	fresh, _, rok, rerr := record_event(svc, u, current, Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}, EV_HANDOFF, json_end(&p))
@@ -223,7 +222,7 @@ review_checkpoint_handoff :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_C
 	return fresh, true, true, domain.Domain_Error{}
 }
 
-// ---- lease.switch (solo mode, REQ-SOLO-4) ----------------------------------------------
+// ---- lease.switch ----------------------------------------------------------------------
 
 Switch_Input :: struct {
 	lease_id:     string,
@@ -378,19 +377,21 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 		task := target_task
 		chain, cok, cerr := iface.taskchain_get_chain(svc.repo, task.chain_id)
 		if !cok { _, _ = end_uow(svc, &u, false); return {}, false, cerr }
-		if inst.agent_id != "coordinator" && !is_coordinator(svc, chain, inst.agent_instance_id) {
+		if !is_coordinator(svc, chain, inst.agent_instance_id) {
 			_, _ = end_uow(svc, &u, false)
 			return {}, false, domain.domain_error(.Forbidden, "only the coordinator may review a gate or on_behalf_of user")
-		}
-		// Solo mode: the coordinator did the work, so it may not approve it — not
-		// as the user, not at a plan gate (REQ-SOLO-5). The user reviews.
-		if chain_is_solo(svc, chain) {
-			_, _ = end_uow(svc, &u, false)
-			return {}, false, domain.domain_error(.Forbidden, "in solo mode the user reviews the coordinator's work", `{"code":"solo_self_review"}`)
 		}
 		if task.state != .In_Review {
 			_, _ = end_uow(svc, &u, false)
 			return {}, false, domain.domain_error(.Conflict, "task is not awaiting review")
+		}
+		// Nobody approves their own work (REQ-SCHED-16): the coordinator may
+		// not post for the user, or decide a gate, on an attempt its own agent
+		// authored. Checked after the state, so a task that is not in review
+		// gets "not awaiting review", not this error.
+		if inst.agent_id != "" && task_author_agent(svc, task) == inst.agent_id {
+			_, _ = end_uow(svc, &u, false)
+			return {}, false, domain.domain_error(.Forbidden, "the coordinator authored this attempt and may not review it; the user reviews", `{"code":"author_self_review"}`)
 		}
 		if rerr := requirements_review_guard(svc, task, input); rerr.code != .None {
 			_, _ = end_uow(svc, &u, false); return {}, false, rerr
@@ -411,7 +412,6 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 		actor := Actor{kind = ACTOR_COORDINATOR, id = inst.agent_instance_id}
 		p := json_begin()
 		json_int(&p, "attempt_no", i64(task.attempt_no))
-		json_str(&p, "role", rev_role)
 		if berr := requirements_review_binding(svc, task, &p); berr.code != .None {
 			_, _ = end_uow(svc, &u, false); return {}, false, berr
 		}
@@ -460,26 +460,20 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 	if !cok { _, _ = end_uow(svc, &u, false); return {}, false, cerr }
 	findings, _ := findings_json_capped(input.findings_json)
 	now := platform.clock_now(svc.clock)
-	// One lease covers every (agent, role) pair this reviewer owes on the task
-	// (hybrid review model); the verdict is recorded once per pair so the gate
-	// stays a strict AND over pairs.
-	lease_roles := split_review_roles(lease.review_role)
-	if len(lease_roles) == 0 do lease_roles = []string{lease.review_role}
-	for role in lease_roles {
-		review := domain.Task_Review{
-			task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, attempt_no = task.attempt_no,
-			role = role, reviewer_kind = "agent", reviewer_agent_id = inst.agent_id, reviewer_instance_id = inst.agent_instance_id,
-			verdict = input.verdict, findings_json = findings, created_at = now,
-		}
-		if _, sok, serr := iface.taskchain_save_review(svc.repo, review); !sok { _, _ = end_uow(svc, &u, false); return {}, false, serr }
+	// One verdict per (task, attempt, reviewer agent) (REQ-SCHED-6).
+	review := domain.Task_Review{
+		task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, attempt_no = task.attempt_no,
+		role = domain.REVIEW_ROLE_AGENT, reviewer_kind = "agent", reviewer_agent_id = inst.agent_id, reviewer_instance_id = inst.agent_instance_id,
+		verdict = input.verdict, findings_json = findings, created_at = now,
 	}
-	// Finish active review work while retaining the reviewer reservation.
-	if !claim_wait_in_uow(svc, lease) { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
-	metric_lease_released(lease.kind)
+	if _, sok, serr := iface.taskchain_save_review(svc.repo, review); !sok { _, _ = end_uow(svc, &u, false); return {}, false, serr }
+	// Finish active review work while retaining the reviewer reservation; the
+	// coordinator's lease is deleted instead (active-only, REQ-SCHED-14).
+	if !park_review_claim_in_uow(svc, &u, lease) { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
+	if !holder_is_coordinator(svc, task.chain_id, inst.agent_instance_id) do metric_lease_released(lease.kind)
 	actor := Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}
 	p := json_begin()
 	json_int(&p, "attempt_no", i64(task.attempt_no))
-	json_str(&p, "role", lease.review_role)
 	if berr := requirements_review_binding(svc, task, &p); berr.code != .None {
 		_, _ = end_uow(svc, &u, false); return {}, false, berr
 	}
@@ -545,7 +539,6 @@ user_review :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: domain
 	actor := Actor{kind = ACTOR_USER, id = auth.user_id}
 	p := json_begin()
 	json_int(&p, "attempt_no", i64(task.attempt_no))
-	json_str(&p, "role", "user")
 	if berr := requirements_review_binding(svc, task, &p); berr.code != .None {
 		_, _ = end_uow(svc, &u, false); return {}, false, berr
 	}
@@ -799,9 +792,9 @@ set_chain_proposal_json :: proc(defaults_json: string, proposal_obj_json: string
 // brief_publish_missing is THE publish validator (REQ-TV2-2), shared by
 // chain.propose/decide, workflow-free ticket publish and the taskchain
 // service: a worked ticket needs a non-empty goal (≤2k) and 1..20 acceptance
-// items (≤200 chars each). Nothing else is required — no verify command and no
-// output contract. Every review role must also have a fleet row to hold it, or
-// the task could never pass its gate. Gates are exempt (decided, not worked).
+// items (≤200 chars each) and an assignee agent (REQ-SCHED-3). Nothing else is
+// required — no verify command and no output contract. Gates are exempt
+// (decided, not worked).
 brief_publish_missing :: proc(repo: ^iface.Taskchain_Repository, chain: domain.Task_Chain, kind: domain.Task_Kind, brief: string) -> []string {
 	out := make([dynamic]string, context.temp_allocator)
 	if kind == .Gate do return out[:]
@@ -811,15 +804,7 @@ brief_publish_missing :: proc(repo: ^iface.Taskchain_Repository, chain: domain.T
 	acc_ok := len(acceptance) >= 1 && len(acceptance) <= BRIEF_ACCEPTANCE_MAX
 	for a in acceptance do if strings.trim_space(a) == "" || (len(a) > BRIEF_ACCEPTANCE_ITEM && !is_vault_armored(a)) do acc_ok = false
 	if !acc_ok do append(&out, "acceptance")
-	roles := jsonx.extract_string_array(brief, "review_roles", true, context.temp_allocator)
-	if len(roles) > 0 && repo != nil {
-		fleets, ferr := iface.taskchain_list_fleets_by_chain(repo, chain.chain_id, chain.owner_user_id)
-		for r in roles {
-			covered := false
-			if ferr.code == .None do for f in fleets do if fleet_row_has_role(f, r) { covered = true; break }
-			if !covered do append(&out, fmt.tprintf("review_role:%s", r))
-		}
-	}
+	if brief_assignee(brief) == "" do append(&out, "assignee")
 	return out[:]
 }
 
@@ -833,7 +818,7 @@ validate_brief_for_publish :: proc(svc: ^Service, chain: domain.Task_Chain, exis
 		if spec.explicit_brief {
 			if serr := validate_brief_schema(spec.brief_json); serr.code != .None do return false, serr
 		}
-		if rerr := validate_reviewer_agent_ids(svc.agents if svc != nil else nil, brief_named_reviewers(spec.brief_json, context.temp_allocator)[:]); rerr.code != .None do return false, rerr
+		if rerr := validate_brief_assignment(svc.agents if svc != nil else nil, spec.brief_json); rerr.code != .None do return false, rerr
 	}
 	b := strings.builder_make(context.temp_allocator)
 	strings.write_string(&b, `{"code":"brief_incomplete","tasks":[`)
@@ -871,7 +856,10 @@ validate_brief_for_publish :: proc(svc: ^Service, chain: domain.Task_Chain, exis
 	}
 	strings.write_string(&b, "]}")
 	if has_problem {
-		return false, domain.domain_error(.Validation_Failed, "brief incomplete: every published task needs a goal (≤2k), ≥1 acceptance item (≤20×200) and a fleet row per review role", strings.to_string(b))
+		details := strings.to_string(b)
+		// A missing assignee is reported under its own code (REQ-SCHED-3).
+		if strings.contains(details, `"assignee"`) do details, _ = strings.replace(details, `{"code":"brief_incomplete"`, `{"code":"assignee_required"`, 1, context.temp_allocator)
+		return false, domain.domain_error(.Validation_Failed, "brief incomplete: every published task needs a goal (≤2k), ≥1 acceptance item (≤20×200) and an assignee agent", details)
 	}
 	return true, domain.Domain_Error{}
 }
@@ -941,7 +929,7 @@ approve_and_publish_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain_in: domai
 			kind                   = .Task,
 			priority               = domain.task_priority_from_string(spec.priority),
 			brief_json             = spec.brief_json,
-			requires_user_approval = brief_user_approval(svc, chain, spec.brief_json),
+			requires_user_approval = brief_requires_user(spec.brief_json),
 			ready_since            = "",
 			created_at             = now,
 			updated_at             = now,
@@ -1251,6 +1239,9 @@ parse_proposed_tasks_json :: proc(raw_array: string) -> ([]Proposed_Task_Item, b
 				json_raw(&b, "acceptance", "[]")
 			}
 			json_str(&b, "role", role)
+			// Every task names its assignee (REQ-SCHED-3); the shorthand carries it too.
+			if assignee := strings.trim_space(jsonx.extract_string(item, "assignee", "", true, context.temp_allocator)); assignee != "" do json_str(&b, "assignee", assignee)
+			if reviewers_raw, has_reviewers := jsonx.extract_raw_array(item, "reviewers", true, context.temp_allocator); has_reviewers do json_raw(&b, "reviewers", reviewers_raw)
 			brief_raw = json_end(&b)
 		} else {
 			brief_raw, _ = strip_removed_verify_keys(brief_raw)

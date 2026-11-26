@@ -11,11 +11,11 @@ import jsonx "odin_test:lib/jsonx"
 // still goes out when it matters) and a negative test (it is suppressed when
 // it does not). Rules, as in the N1 brief:
 //   (a) task_id + expected state on every task notice, re-checked after commit
-//   (b) solo_task_ready after the matcher, for the soloist's tasks, once per Ready
+//   (b) coordinator_item_ready after the matcher, for the coordinator's items, once per transition
 //   (c) never to the actor about its own action
-//   (d) review_requested_from_user once per gate pass, never to a soloist
+//   (d) review_requested_from_user once per gate pass, never to the author coordinator
 //   (e) hold_stale back-off, cap, user routing, live-lease check
-//   (f) no ready_unclaimed in solo chains
+//   (f) no ready_unclaimed for a task assigned to the coordinator
 //   (g) no agent_not_running to the unreachable instance, no "ready" right after
 
 Notice_Log :: struct {
@@ -55,7 +55,7 @@ notice_count :: proc(log: ^Notice_Log, trigger: string, task_id := "") -> int {
 
 @(test)
 test_notice_payload_carries_task_and_expected_state :: proc(t: ^testing.T) {
-	body := agent_notice_command_json("cmd_1", "inst_coord", "chain_1", "solo_task_ready", "[taskv2] line", "task_1", "ready")
+	body := agent_notice_command_json("cmd_1", "inst_coord", "chain_1", "coordinator_item_ready", "[taskv2] line", "task_1", "ready")
 	defer delete(body)
 	testing.expect_value(t, jsonx.extract_string(body, "notice_task_id", "", true, context.temp_allocator), "task_1")
 	testing.expect_value(t, jsonx.extract_string(body, "expected_state", "", true, context.temp_allocator), "ready")
@@ -104,44 +104,44 @@ test_notice_dropped_when_task_left_expected_state :: proc(t: ^testing.T) {
 	testing.expect_value(t, notice_count(notices, "ready_unclaimed"), 0)
 }
 
-// ---- (b) solo_task_ready ------------------------------------------------------------
+// ---- (b) coordinator_item_ready ------------------------------------------------------------
 
 @(test)
-test_solo_task_ready_once_for_unassigned_task :: proc(t: ^testing.T) {
+test_coordinator_item_ready_once_per_ready :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "n1_b_pos")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_n1_b_pos")
+	chain := seed_live_chain(t, fx, "chain_n1_b_pos")
 	notices := notice_capture(fx)
-	_ = publish_solo_task(t, fx, chain, "task_1")
-	_ = publish_solo_task(t, fx, chain, "task_2", brief = `{"goal":"g","assignee":"agt_c","review_roles":[]}`)
-	testing.expect_value(t, notice_count(notices, "solo_task_ready", "task_1"), 1)
-	testing.expect_value(t, notice_count(notices, "solo_task_ready", "task_2"), 1)
+	_ = publish_coordinator_task(t, fx, chain, "task_1")
+	_ = publish_coordinator_task(t, fx, chain, "task_2", brief = `{"goal":"g","assignee":"agt_c"}`)
+	testing.expect_value(t, notice_count(notices, "coordinator_item_ready", "task_1"), 1)
+	testing.expect_value(t, notice_count(notices, "coordinator_item_ready", "task_2"), 1)
 	for r in notices.recipients do testing.expect_value(t, r, "inst_coord")
 	// Re-evaluations that leave the task Ready do not repeat it.
 	testing.expect(t, fleet_changed(&fx.svc, chain).code == .None, "fleet_changed")
 	testing.expect(t, task_updated(&fx.svc, get_task(fx, "task_1"), hub_actor(), []string{"title"}).code == .None, "task_updated")
-	testing.expect_value(t, notice_count(notices, "solo_task_ready", "task_1"), 1)
+	testing.expect_value(t, notice_count(notices, "coordinator_item_ready", "task_1"), 1)
 }
 
 @(test)
-test_solo_task_ready_suppressed_for_other_assignee_or_matched_task :: proc(t: ^testing.T) {
+test_coordinator_item_ready_suppressed_for_other_assignee :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "n1_b_neg")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_n1_b_neg")
+	chain := seed_live_chain(t, fx, "chain_n1_b_neg")
 	notices := notice_capture(fx)
-	// Assigned to another agent: not the soloist's task.
-	_ = publish_solo_task(t, fx, chain, "task_other", brief = `{"goal":"g","assignee":"agt_w","review_roles":[]}`)
-	testing.expect_value(t, notice_count(notices, "solo_task_ready", "task_other"), 0)
+	// Assigned to another agent: not the coordinator's task.
+	_ = publish_coordinator_task(t, fx, chain, "task_other", brief = `{"goal":"g","assignee":"agt_w"}`)
+	testing.expect_value(t, notice_count(notices, "coordinator_item_ready", "task_other"), 0)
 	// A worker the matcher grants in the same unit of work: claimed by commit.
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	matched := publish_solo_task(t, fx, chain, "task_matched")
+	matched := publish_coordinator_task(t, fx, chain, "task_matched", brief = `{"goal":"g","assignee":"agt_w"}`)
 	_, held := lease_of(fx, "inst_w1")
 	if !testing.expect(t, held, "the matcher grants the free worker") do return
 	testing.expect(t, matched.state != .Ready, "granted task is no longer ready")
-	testing.expect_value(t, notice_count(notices, "solo_task_ready", "task_matched"), 0)
+	testing.expect_value(t, notice_count(notices, "coordinator_item_ready", "task_matched"), 0)
 }
 
 // ---- (c) never notify the actor ----------------------------------------------------
@@ -181,13 +181,13 @@ test_worker_closing_last_task_tells_coordinator_batch_finished :: proc(t: ^testi
 }
 
 @(test)
-test_soloist_not_told_about_its_own_block :: proc(t: ^testing.T) {
+test_coordinator_not_told_about_its_own_block :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "n1_c_neg")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_n1_c_neg")
+	chain := seed_live_chain(t, fx, "chain_n1_c_neg")
 	notices := notice_capture(fx)
-	_ = publish_solo_task(t, fx, chain, "task_1")
+	_ = publish_coordinator_task(t, fx, chain, "task_1")
 	res, nok, nerr := lease_next(&fx.svc, inst_auth("inst_coord"), Lease_Next_Input{})
 	if !testing.expect(t, nok && res.status == "granted", fmt.tprintf("lease next: %s", nerr.message)) do return
 	_, bok, berr := lease_block(&fx.svc, inst_auth("inst_coord"), Block_Input{lease_id = res.lease.lease_id, waiting_on_json = `{"kind":"user","reason":"which API?"}`})
@@ -206,7 +206,7 @@ test_review_requested_once_per_gate_pass :: proc(t: ^testing.T) {
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	notices := notice_capture(fx)
-	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","review_roles":[]}`)
+	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","assignee":"agt_w"}`)
 	task.requires_user_approval = true
 	task.publish_state = .Published
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
@@ -223,13 +223,13 @@ test_review_requested_once_per_gate_pass :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_review_requested_not_sent_to_soloist :: proc(t: ^testing.T) {
+test_review_requested_not_sent_to_author_coordinator :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "n1_d_neg")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_n1_d_neg")
+	chain := seed_live_chain(t, fx, "chain_n1_d_neg")
 	notices := notice_capture(fx)
-	_ = publish_solo_task(t, fx, chain, "task_1")
+	_ = publish_coordinator_task(t, fx, chain, "task_1")
 	res, nok, _ := lease_next(&fx.svc, inst_auth("inst_coord"), Lease_Next_Input{})
 	if !testing.expect(t, nok && res.status == "granted", "lease next") do return
 	sub, sok, serr := lease_submit(&fx.svc, inst_auth("inst_coord"), Submit_Input{summary = "ready", vcs_json = GREEN_VCS})
@@ -321,7 +321,7 @@ test_hold_stale_skipped_while_a_lease_is_live :: proc(t: ^testing.T) {
 // ---- (f) ready_unclaimed ----------------------------------------------------------------
 
 @(test)
-test_ready_unclaimed_notifies_outside_solo :: proc(t: ^testing.T) {
+test_ready_unclaimed_notifies_for_worker_task :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "n1_f_pos")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
@@ -335,13 +335,13 @@ test_ready_unclaimed_notifies_outside_solo :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_ready_unclaimed_skipped_in_solo_chain :: proc(t: ^testing.T) {
+test_ready_unclaimed_skipped_for_coordinator_task :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "n1_f_neg")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_n1_f_neg")
+	chain := seed_live_chain(t, fx, "chain_n1_f_neg")
 	notices := notice_capture(fx)
-	_ = publish_solo_task(t, fx, chain, "task_1")
+	_ = publish_coordinator_task(t, fx, chain, "task_1")
 	fixture_advance(fx, READY_UNCLAIMED_SECONDS + 1)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, count_events(fx, "task_1", EV_READY_UNCLAIMED), 0)
@@ -375,10 +375,10 @@ test_agent_not_running_not_sent_to_the_unreachable_soloist :: proc(t: ^testing.T
 	fx, log, ok := lease_fixture(t, "n1_g_neg")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_n1_g_neg")
+	chain := seed_live_chain(t, fx, "chain_n1_g_neg")
 	notices := notice_capture(fx)
-	_ = publish_solo_task(t, fx, chain, "task_1")
-	testing.expect_value(t, notice_count(notices, "solo_task_ready", "task_1"), 1)
+	_ = publish_coordinator_task(t, fx, chain, "task_1")
+	testing.expect_value(t, notice_count(notices, "coordinator_item_ready", "task_1"), 1)
 	// The soloist's own agent cannot be started: the task parks on it.
 	u, _, _ := begin_uow(&fx.svc)
 	blocked := block_ready_agent_in_uow(&fx.svc, &u, get_task(fx, "task_1"), "agt_c", Placement{bridge_id = "br_1", provider = "claude", model = "claude-opus-5-5"}, "unreachable")
@@ -389,5 +389,5 @@ test_agent_not_running_not_sent_to_the_unreachable_soloist :: proc(t: ^testing.T
 	coord, _, _ := iface.agent_get_instance(&fx.agents, "inst_coord")
 	on_start_success(&fx.svc, coord)
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Ready)
-	testing.expect_value(t, notice_count(notices, "solo_task_ready", "task_1"), 1)
+	testing.expect_value(t, notice_count(notices, "coordinator_item_ready", "task_1"), 1)
 }

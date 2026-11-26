@@ -11,12 +11,15 @@ import jsonx "odin_test:lib/jsonx"
 
 // SCHED-0a migration tests (spec art_18eb828949cd9431, section 14.6).
 
-// sched0_rearm repeats migration 257's data snapshot on a database seeded
-// through the pre-0b engine, exactly as the migration does on an existing
-// database: derive `paused`, snapshot the role columns, set the marker.
+// SCHED0_REARM_SQL writes what migration 257 snapshots on an existing database:
+// the fleet role data (the role columns themselves are dropped by 258) and the
+// one-shot marker. The pre-0b role state of tasks, verdicts and pauses is
+// written directly, since the engine no longer has roles.
 @(private = "file")
-SCHED0_REARM_SQL :: `UPDATE task_chain_fleets SET paused = 1 WHERE trim(paused_roles_json) NOT IN ('', '[]');
-INSERT OR IGNORE INTO sched0_fleet_roles (chain_id, agent_id, roles_json, paused_roles_json) SELECT task_chain_id, agent_id, roles_json, paused_roles_json FROM task_chain_fleets;
+SCHED0_REARM_SQL :: `INSERT OR IGNORE INTO sched0_fleet_roles (chain_id, agent_id, roles_json, paused_roles_json) VALUES
+ ('chain_mixed', 'agt_w', '["worker"]', ''), ('chain_mixed', 'agt_s', '["sec"]', ''), ('chain_mixed', 'agt_u', '["ux"]', ''),
+ ('chain_mixed', 'agt_n', '["named-reviewer"]', ''), ('chain_mixed', 'agt_r', '["worker","reviewer"]', '["reviewer"]'),
+ ('chain_mixed', 'agt_p', '["worker"]', '["*"]'), ('chain_solo', 'agt_solo', '["worker"]', ''), ('chain_wf', 'agt_s', '["sec"]', '');
 INSERT OR IGNORE INTO sched0_migration_pending (singleton) VALUES (1);`
 
 @(private = "file")
@@ -31,9 +34,9 @@ sched0_notice_observer :: proc(ctx: rawptr, instance_id, trigger, line: string) 
 }
 
 @(private = "file")
-sched0_set_fleet :: proc(fx: ^Fixture, chain: domain.Task_Chain, agent_id, roles, paused_roles: string) {
+sched0_set_fleet :: proc(fx: ^Fixture, chain: domain.Task_Chain, agent_id: string, paused: bool) {
 	now := platform.clock_now(&fx.clock)
-	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = agent_id, capacity = 1, roles_json = roles, paused_roles_json = paused_roles, created_at = now, updated_at = now})
+	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = agent_id, capacity = 1, paused = paused, created_at = now, updated_at = now})
 }
 
 @(private = "file")
@@ -45,7 +48,7 @@ sched0_hold_reason :: proc(fx: ^Fixture, task_id: string) -> string {
 // holds, verdict rows, review lease roles, fleet pause, workflow snapshots).
 @(private = "file")
 sched0_world_digest :: proc(fx: ^Fixture) -> string {
-	return scalar_text(fx, `SELECT (SELECT count(*) FROM task_events WHERE kind IN ('sched0_migrated', 'held')) || '|' || coalesce((SELECT group_concat(task_id || brief_json, ';') FROM (SELECT * FROM tasks ORDER BY task_id)), '') || '|' || coalesce((SELECT group_concat(task_id || attempt_no || role || reviewer_agent_id || verdict, ';') FROM (SELECT * FROM task_reviews ORDER BY task_id, attempt_no, role, reviewer_agent_id)), '') || '|' || coalesce((SELECT group_concat(lease_id || review_role, ';') FROM (SELECT * FROM task_leases WHERE kind = 'review' ORDER BY lease_id)), '') || '|' || coalesce((SELECT group_concat(task_chain_id || agent_id || paused, ';') FROM (SELECT * FROM task_chain_fleets ORDER BY task_chain_id, agent_id)), '') || '|' || coalesce((SELECT group_concat(spec_json || revision, ';') FROM workflow_runs), '');`)
+	return scalar_text(fx, `SELECT (SELECT count(*) FROM task_events WHERE kind IN ('sched0_migrated', 'held')) || '|' || coalesce((SELECT group_concat(task_id || brief_json, ';') FROM (SELECT * FROM tasks ORDER BY task_id)), '') || '|' || coalesce((SELECT group_concat(task_id || attempt_no || role || reviewer_agent_id || verdict, ';') FROM (SELECT * FROM task_reviews ORDER BY task_id, attempt_no, role, reviewer_agent_id)), '') || '|' || coalesce((SELECT group_concat(lease_id || phase, ';') FROM (SELECT * FROM task_leases WHERE kind = 'review' ORDER BY lease_id)), '') || '|' || coalesce((SELECT group_concat(task_chain_id || agent_id || paused, ';') FROM (SELECT * FROM task_chain_fleets ORDER BY task_chain_id, agent_id)), '') || '|' || coalesce((SELECT group_concat(spec_json || revision, ';') FROM workflow_runs), '');`)
 }
 
 @(private = "file")
@@ -70,18 +73,19 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	_, _, _ = iface.taskchain_save_chain(&fx.repo, chain)
 	for id in ([]string{"agt_s", "agt_u", "agt_n", "agt_p"}) do seed_agent(fx, id)
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_s", roles = `["sec"]`)
-	seed_fleet(fx, chain, "agt_u", roles = `["ux"]`)
-	seed_fleet(fx, chain, "agt_n", roles = `["named-reviewer"]`)
-	sched0_set_fleet(fx, chain, "agt_r", `["worker","reviewer"]`, `["reviewer"]`) // partial pause
-	sched0_set_fleet(fx, chain, "agt_p", `["worker"]`, `["*"]`)                  // full pause
+	seed_fleet(fx, chain, "agt_s")
+	seed_fleet(fx, chain, "agt_u")
+	seed_fleet(fx, chain, "agt_n")
+	sched0_set_fleet(fx, chain, "agt_r", true) // partial pause (worker+reviewer, reviewer paused) in the snapshot
+	sched0_set_fleet(fx, chain, "agt_p", true) // full pause
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_s1", "agt_s", "br_1", "idle")
 	seed_instance(fx, chain, "inst_u1", "agt_u", "br_1", "idle")
 
 	// In review with one of two role approvals; the approving reviewer's lease
-	// is parked as a waiting claim by the pre-0b engine.
-	_ = publish_task(t, fx, chain, "t_review", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":["sec","ux"]}`)
+	// is parked as a waiting claim. Driven with agent reviewers, then rewritten
+	// to the pre-0b role form below.
+	_ = publish_task(t, fx, chain, "t_review", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_s","agt_u"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
@@ -91,15 +95,16 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	parked, has_parked := lease_of(fx, "inst_s1")
 	testing.expect(t, has_parked && parked.phase == domain.LEASE_PHASE_WAITING, "fixture: approving reviewer holds a parked claim")
 	live, has_live := lease_of(fx, "inst_u1")
-	testing.expect(t, has_live && live.phase == domain.LEASE_PHASE_ACTIVE && live.review_role == "ux", "fixture: pending reviewer holds a live role lease")
+	testing.expect(t, has_live && live.phase == domain.LEASE_PHASE_ACTIVE && live.kind == domain.LEASE_KIND_REVIEW, "fixture: pending reviewer holds a live review lease")
+	testing.expect(t, sqlite.exec(&fx.conn, `UPDATE tasks SET brief_json = '{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":["sec","ux"]}' WHERE task_id = 't_review'; UPDATE task_reviews SET role = 'sec' WHERE task_id = 't_review';`), "fixture: pre-0b role form")
 
 	named_brief := `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_n"]}`
 	_ = publish_task(t, fx, chain, "t_named", brief = named_brief)
-	_ = publish_task(t, fx, chain, "t_unassigned", brief = `{"goal":"g","review_roles":["sec"]}`)
+	_ = publish_task(t, fx, chain, "t_unassigned", brief = `{"goal":"g","assignee":"","review_roles":["sec"]}`)
 	_ = publish_task(t, fx, chain, "t_unheld", brief = `{"goal":"g","assignee":"agt_w","review_roles":["perf"]}`)
 	_ = publish_task(t, fx, chain, "t_ghost", brief = `{"goal":"g","assignee":"agt_ghost"}`)
 	_ = publish_task(t, fx, chain, "t_gone", brief = `{"goal":"g","assignee":"agt_w","reviewers":["agt_gone"]}`)
-	cancelled := publish_task(t, fx, chain, "t_cancelled", brief = `{"goal":"g","review_roles":["sec"]}`)
+	cancelled := publish_task(t, fx, chain, "t_cancelled", brief = `{"goal":"g","assignee":"","review_roles":["sec"]}`)
 	_, cok, cerr := task_cancel(&fx.svc, cancelled, Actor{kind = ACTOR_USER, id = "u1"}, Task_Cancel_Input{reason = "obsolete", request_id = "req_sched0_cancel"})
 	testing.expect(t, cok, fmt.tprintf("cancel: %s", cerr.message))
 	named_before := get_task(fx, "t_named").brief_json
@@ -111,11 +116,11 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	_, _, _ = iface.taskchain_save_chain(&fx.repo, solo)
 	seed_instance(fx, solo, "inst_solo", "agt_solo", "br_1", "running", "coordinator")
 	seed_fleet(fx, solo, "agt_solo")
-	_ = publish_task(t, fx, solo, "t_solo", brief = `{"goal":"g"}`)
+	_ = publish_task(t, fx, solo, "t_solo", brief = `{"goal":"g","assignee":""}`)
 
 	// ---- chain_wf: a running workflow run whose stage still names a role --------
 	wf_chain := seed_chain(t, fx, "chain_wf", false)
-	seed_fleet(fx, wf_chain, "agt_s", roles = `["sec"]`)
+	seed_fleet(fx, wf_chain, "agt_s")
 	now := platform.clock_now(&fx.clock)
 	wu, wuok, _ := begin_uow(&fx.svc)
 	testing.expect(t, wuok, "workflow fixture uow")
@@ -147,11 +152,11 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	testing.expect_value(t, review.state, domain.Task_State.In_Review)
 	testing.expect(t, !task_is_held(review), "a mappable task is not held")
 	// Exactly the missing approval is still needed: agt_s's verdict carried over.
-	testing.expect_value(t, scalar_text(fx, "SELECT group_concat(reviewer_agent_id || ':' || role || ':' || verdict, ',') FROM task_reviews WHERE task_id = 't_review' AND attempt_no = 1;"), "agt_s:named:approve")
+	testing.expect_value(t, scalar_text(fx, "SELECT group_concat(reviewer_agent_id || ':' || role || ':' || verdict, ',') FROM task_reviews WHERE task_id = 't_review' AND attempt_no = 1;"), "agt_s:review:approve")
 	_, still_parked := lease_of(fx, "inst_s1")
 	testing.expect(t, !still_parked, "parked review claim deleted")
 	moved, moved_ok := lease_of(fx, "inst_u1")
-	testing.expect(t, moved_ok && moved.phase == domain.LEASE_PHASE_ACTIVE && moved.review_role == domain.SCHED0_REVIEW_ROLE, fmt.tprintf("live review lease covers the agent's single verdict row: ok=%v phase=%s role=%s task=%s", moved_ok, moved.phase, moved.review_role, moved.task_id))
+	testing.expect(t, moved_ok && moved.phase == domain.LEASE_PHASE_ACTIVE && moved.kind == domain.LEASE_KIND_REVIEW, fmt.tprintf("live review lease kept for the agent's single verdict: ok=%v phase=%s task=%s", moved_ok, moved.phase, moved.task_id))
 	g2, g2ok, g2err := review_post(&fx.svc, inst_auth("inst_u1"), Review_Input{verdict = "approve", findings_json = "[]"})
 	if testing.expect(t, g2ok, fmt.tprintf("post-migration review: %s", g2err.message)) {
 		testing.expect_value(t, g2.gate, Gate_Result.Approved)
@@ -214,6 +219,15 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM sched0_migration_pending;"), 0)
 	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM sched0_fleet_roles;"), 0)
 
+	// SCHED-0b applies the recorded stage mapping when the running run creates
+	// the stage task; a stage that never named roles is left alone.
+	wf_run := domain.Workflow_Run{run_id = "wfr_sched0", owner_user_id = "u1"}
+	staged := workflow_apply_sched0_mapping(&fx.svc, wf_run, "build", `{"goal":"b","assignee":"agt_w","review_roles":["sec"]}`)
+	testing.expect(t, !jsonx.has_key(staged, "review_roles", true) && sched0_reviewers(staged) == `["agt_s"]`, fmt.tprintf("stage mapped at creation: %s", staged))
+	seed_fleet(fx, wf_chain, "agt_w")
+	testing.expect(t, workflow_validate_fleet(&fx.svc, wf_chain, staged).code == .None, fmt.tprintf("mapped stage validates: %s", staged))
+	testing.expect_value(t, workflow_apply_sched0_mapping(&fx.svc, wf_run, "check", `{"goal":"c","assignee":"agt_w"}`), `{"goal":"c","assignee":"agt_w"}`)
+
 	// A second boot changes nothing.
 	before := sched0_world_digest(fx)
 	clear(&notices.lines)
@@ -262,12 +276,13 @@ INSERT INTO task_chain_fleets (task_chain_id, agent_id, capacity, min_warm, idle
 	testing.expect(t, sqlite.exec(&fx.conn, `UPDATE tasks SET brief_json = '{"reviewers":["agt_x"]}' WHERE task_id = 't_257'; DELETE FROM tasks WHERE task_id = 't_257';`), "delete task")
 	testing.expect_value(t, scalar_int(fx, "SELECT count(*) FROM task_reviewers;"), 0)
 
-	// The fleet repository keeps `paused` derived from the per-role field until SCHED-0b.
-	_, ferr := iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_257", agent_id = "agt_b", capacity = 1, roles_json = `["worker","sec"]`, paused_roles_json = ""})
+	// 258 dropped the role columns; `paused` is the row's own field (SCHED-0b).
+	testing.expect(t, !sqlite.table_column_exists(&fx.conn, "task_chain_fleets", "roles_json") && !sqlite.table_column_exists(&fx.conn, "task_chain_fleets", "paused_roles_json") && !sqlite.table_column_exists(&fx.conn, "task_leases", "review_role"), "role columns dropped")
+	_, ferr := iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_257", agent_id = "agt_b", capacity = 1, paused = false})
 	testing.expect_value(t, ferr.code, domain.Error_Code.None)
 	fleets, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, "chain_257", "u1")
 	for f in fleets do if f.agent_id == "agt_b" do testing.expect(t, !f.paused, "resumed row reads unpaused")
-	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_257", agent_id = "agt_a", capacity = 1, paused_roles_json = domain.FLEET_PAUSED_ALL_JSON})
+	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = "chain_257", agent_id = "agt_a", capacity = 1, paused = true})
 	testing.expect_value(t, scalar_int(fx, "SELECT paused FROM task_chain_fleets WHERE agent_id = 'agt_a';"), 1)
 
 	// Chain caps round-trip through the repository.

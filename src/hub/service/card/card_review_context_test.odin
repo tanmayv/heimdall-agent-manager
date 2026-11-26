@@ -19,7 +19,7 @@ import taskv2 "odin_test:hub/service/taskv2"
 // amended to `revision` before that attempt was submitted with `head`.
 @(private = "file")
 ctx_review_task :: proc(t: ^testing.T, h: ^Projector_Harness, id: string, attempt: int, revision: int, head: string) -> domain.Task_ID {
-	task := domain.Task{task_id = domain.Task_ID(id), chain_id = PH_CHAIN, owner_user_id = PH_OWNER, title = "vault:v2:task-title", priority = .P1, publish_state = .Published, kind = .Task, state = .In_Review, attempt_no = attempt, requires_user_approval = true, brief_json = `{"goal":"g","review_roles":[]}`, created_at = "2026-10-01T00:00:00Z", updated_at = "2026-10-01T01:00:00Z"}
+	task := domain.Task{task_id = domain.Task_ID(id), chain_id = PH_CHAIN, owner_user_id = PH_OWNER, title = "vault:v2:task-title", priority = .P1, publish_state = .Published, kind = .Task, state = .In_Review, attempt_no = attempt, requires_user_approval = true, brief_json = `{"goal":"g"}`, created_at = "2026-10-01T00:00:00Z", updated_at = "2026-10-01T01:00:00Z"}
 	_, ok, err := iface.taskchain_save_task(&h.tasks, task)
 	testing.expectf(t, ok, "save review task: %s", err.message)
 	user := taskv2.Actor{kind = taskv2.ACTOR_USER, id = string(PH_OWNER)}

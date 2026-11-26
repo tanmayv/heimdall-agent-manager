@@ -84,7 +84,7 @@ az_chain :: proc(fx: ^Az_Fx, chain_id: string, publish := domain.Publish_State.P
 az_task :: proc(fx: ^Az_Fx, chain_id: string, task_id: string) -> domain.Task {
 	task := domain.Task{task_id = domain.Task_ID(task_id), chain_id = domain.Task_Chain_ID(chain_id), owner_user_id = AZ_OWNER,
 		title = "authz task", kind = .Task, publish_state = .Published, state = .Ready,
-		brief_json = `{"goal":"g","acceptance":["a"],"review_roles":[]}`}
+		brief_json = `{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`}
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
 	_, _, _ = iface.taskchain_append_event(&fx.repo, domain.Task_Event{task_id = task.task_id, chain_id = task.chain_id,
 		owner_user_id = AZ_OWNER, kind = taskv2.EV_MIGRATED, payload_json = `{"state":"ready","published":true}`})
@@ -218,16 +218,16 @@ test_cross_chain_publication_metadata_fleet_and_advertisement :: proc(t: ^testin
 	chain:=az_chain(&fx,"chain_authz",.Draft)
 	task:=az_task(&fx,string(chain.chain_id),"draft_task")
 	task.publish_state=.Draft
-	task.brief_json=`{"goal":"g","acceptance":["a"],"review_roles":["security"]}`
+	task.brief_json=`{"goal":"g","acceptance":["a"]}`
 	_,_,_=iface.taskchain_save_task(&fx.repo,task)
 
 	// Valid same-owner outsiders reach validation; rejected publication is atomic.
 	_,published,perr:=publish_chain(&fx.svc,outsider,chain.chain_id)
-	testing.expect(t,!published && perr.code==.Validation_Failed,"missing review role still blocks chain publish")
+	testing.expect(t,!published && perr.code==.Validation_Failed,"missing assignee still blocks chain publish")
 	stored,_,_:=iface.taskchain_get_chain(&fx.repo,chain.chain_id)
 	unchanged,_,_:=iface.taskchain_get_task(&fx.repo,task.task_id)
 	testing.expect(t,stored.publish_state==.Draft && unchanged.publish_state==.Draft,"failed publish leaves chain and task drafts")
-	task.brief_json=`{"goal":"g","acceptance":["a"],"review_roles":[]}`
+	task.brief_json=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`
 	_,_,_=iface.taskchain_save_task(&fx.repo,task)
 	published_chain: domain.Task_Chain
 	published_chain,published,perr=publish_chain(&fx.svc,outsider,chain.chain_id)
@@ -277,11 +277,11 @@ test_cross_chain_publication_metadata_fleet_and_advertisement :: proc(t: ^testin
 	_,badcap:=upsert_fleet(&fx.svc,outsider,Upsert_Fleet_Input{chain_id=chain.chain_id,agent_id="agt_authz",capacity=0})
 	testing.expect(t,badcap.code==.Validation_Failed,"fleet capacity still validated")
 	_,badrole:=set_fleet_pause(&fx.svc,outsider,Fleet_Pause_Input{chain_id=chain.chain_id,agent_id=row.agent_id,roles=[]string{"nonexistent"},paused=true})
-	testing.expect(t,badrole.code==.Validation_Failed,"unknown fleet role refused")
+	testing.expect(t,badrole.code==.Validation_Failed,"per-role pause refused")
 	paused,pauseerr:=set_fleet_pause(&fx.svc,outsider,Fleet_Pause_Input{chain_id=chain.chain_id,agent_id=row.agent_id,paused=true})
-	testing.expect(t,pauseerr.code==.None && paused.paused_roles_json!="","outsider pauses fleet")
+	testing.expect(t,pauseerr.code==.None && paused.paused,"outsider pauses fleet")
 	resumed,reserr:=set_fleet_pause(&fx.svc,outsider,Fleet_Pause_Input{chain_id=chain.chain_id,agent_id=row.agent_id,paused=false})
-	testing.expect(t,reserr.code==.None && resumed.paused_roles_json=="","outsider resumes fleet")
+	testing.expect(t,reserr.code==.None && !resumed.paused,"outsider resumes fleet")
 	deleted,delerr:=delete_fleet(&fx.svc,outsider,chain.chain_id,row.agent_id)
 	testing.expect(t,deleted,delerr.message)
 }

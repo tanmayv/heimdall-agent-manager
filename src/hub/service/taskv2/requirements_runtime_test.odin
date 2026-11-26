@@ -43,19 +43,19 @@ test_requirements_notice_retry_restart_rollback_and_ack :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_requirements")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	original, _ := lease_of(fx, "inst_w1")
 	probe := Requirements_Notice_Probe{fail = true}
 	fx.svc.bridge_command_sink = {ctx = &probe, send_runtime_command = requirements_test_send}
 	outer, begun, _ := iface.unit_of_work_begin(&fx.uow)
 	if !testing.expect(t, begun) do return
-	requirements_test_change(t, fx, "task_1", `{"goal":"rolled back","acceptance":["a"],"review_roles":[]}`, 1)
+	requirements_test_change(t, fx, "task_1", `{"goal":"rolled back","acceptance":["a"]}`, 1)
 	testing.expect_value(t, probe.attempts, 0)
 	iface.unit_of_work_rollback(&outer)
 	state, _ := requirements_read(&fx.repo, task)
 	testing.expect_value(t, state.revision, i64(1))
-	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a"],"review_roles":[]}`, 1)
+	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a"]}`, 1)
 	testing.expect_value(t, probe.attempts, 1)
 	for _ in 0..<100 do timers_arm(&fx.svc, .Requirements_Notice, "task_1", now_ms(&fx.clock) + 1000, "")
 	notice_timers := 0
@@ -93,7 +93,7 @@ test_requirements_notice_retry_restart_rollback_and_ack :: proc(t: ^testing.T) {
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	testing.expect_value(t, probe.attempts, 3)
 	// An edit racing an already-read context invalidates ack and submission.
-	requirements_test_change(t, fx, "task_1", `{"goal":"g3","acceptance":["a"],"review_roles":[]}`, 2)
+	requirements_test_change(t, fx, "task_1", `{"goal":"g3","acceptance":["a"]}`, 2)
 	_, stale_ack, _ := requirements_test_ack(fx, "inst_w1", 2)
 	testing.expect(t, !stale_ack)
 	_, stale_submit, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), {lease_id = original.lease_id, summary = "old work", requirements_revision = 2})
@@ -112,13 +112,13 @@ test_requirements_change_waiting_for_user_starts_rework :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_req_user_wait")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
 	confirm_holder(fx, "inst_w1")
 	_, submitted, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), {summary = "v1", vcs_json = `{"head":"h1"}`})
 	if !testing.expect(t, submitted) do return
-	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a"],"review_roles":[]}`, 1)
+	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a"]}`, 1)
 	worker, held := lease_of(fx, "inst_w1")
 	testing.expect(t, held && worker.attempt_no == 2, "no reviewer to checkpoint; rework starts immediately")
 	_, stale, _ := user_review(&fx.svc, user_auth(), task.task_id, {verdict = "approve"})
@@ -133,12 +133,12 @@ test_requirements_review_change_checkpoints_and_invalidates_verdicts :: proc(t: 
 	chain := seed_live_chain(t, fx, "chain_req_review")
 	seed_fleet(fx, chain, "agt_w")
 	seed_agent(fx, "agt_r2")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
-	seed_fleet(fx, chain, "agt_r2", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
+	seed_fleet(fx, chain, "agt_r2")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r2", "agt_r2", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
 	confirm_holder(fx, "inst_w1")
@@ -151,7 +151,7 @@ test_requirements_review_change_checkpoints_and_invalidates_verdicts :: proc(t: 
 	fx.svc.legacy_event_notices = false
 	probe: Requirements_Notice_Probe
 	fx.svc.bridge_command_sink = {ctx = &probe, send_runtime_command = requirements_test_send}
-	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a","new"],"review_roles":["reviewer"]}`, 1)
+	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a","new"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`, 1)
 	testing.expect_value(t, probe.attempts, 1)
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
 	review_lease, still := lease_of(fx, "inst_r2")

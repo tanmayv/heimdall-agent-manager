@@ -10,10 +10,11 @@ import json "core:encoding/json"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import jsonx "odin_test:lib/jsonx"
 
 // BRIEF_KEYS is the brief schema. The removed verification keys
 // (REMOVED_VERIFY_BRIEF_KEYS) are accepted and dropped separately.
-BRIEF_KEYS := [?]string{"goal", "acceptance", "inputs", "review_roles", "assignee", "reviewers", "budget", "output", "on_output", "requires_user_approval", "approver", "gate"}
+BRIEF_KEYS := [?]string{"goal", "acceptance", "inputs", "assignee", "reviewers", "review_focus", "budget", "output", "on_output", "requires_user_approval", "approver", "gate"}
 
 brief_key_known :: proc(key: string) -> bool {
 	for k in BRIEF_KEYS do if k == key do return true
@@ -64,7 +65,17 @@ validate_brief_schema :: proc(brief: string) -> domain.Domain_Error {
 	if err != nil do return domain.domain_error(.Validation_Failed, "brief must be a JSON object")
 	obj, ok := parsed.(json.Object)
 	if !ok do return domain.domain_error(.Validation_Failed, "brief must be a JSON object")
+	// Review roles are gone (REQ-SCHED-8): name the replacement, never ignore.
+	if _, has := obj["review_roles"]; has do return review_roles_removed_error()
 	if unknown := brief_unknown_fields(brief); len(unknown) > 0 do return unknown_brief_fields_error(unknown)
+	// review_focus: {agent id: what that reviewer should check}.
+	if value, has := obj["review_focus"]; has {
+		if _, is_null := value.(json.Null); !is_null {
+			focus, valid := value.(json.Object)
+			if !valid do return domain.domain_error(.Validation_Failed, "brief.review_focus must be an object of agent id → text")
+			for _, v in focus do if _, is_str := v.(json.String); !is_str do return domain.domain_error(.Validation_Failed, "brief.review_focus must be an object of agent id → text")
+		}
+	}
 	// acceptance: an array of strings, or null to clear it on update.
 	if value, has := obj["acceptance"]; has {
 		if _, is_null := value.(json.Null); !is_null {
@@ -93,11 +104,48 @@ reviewer_must_be_agent_id_error :: proc(id: string) -> domain.Domain_Error {
 validate_reviewer_agent_ids :: proc(agents: ^iface.Agent_Repository, reviewers: []string) -> domain.Domain_Error {
 	for raw in reviewers {
 		id := strings.trim_space(raw)
-		if id == "" do continue
+		if id == "" || id == REVIEWER_USER do continue
 		if strings.has_prefix(id, "inst_") do return reviewer_must_be_agent_id_error(id)
 		if agents != nil {
 			if _, ok, _ := iface.agent_get(agents, id); !ok do return reviewer_must_be_agent_id_error(id)
 		}
 	}
 	return domain.Domain_Error{}
+}
+
+// review_roles_removed_error (REQ-SCHED-8): a brief still sending review_roles.
+review_roles_removed_error :: proc() -> domain.Domain_Error {
+	return domain.domain_error(.Validation_Failed, "brief.review_roles was removed: list reviewer agent ids (agt_…) or `user` in brief.reviewers, and say what each should check in brief.review_focus", `{"code":"review_roles_removed","replacement":"reviewers"}`)
+}
+
+// assignee_required_error (REQ-SCHED-3): every task names its assignee agent.
+assignee_required_error :: proc() -> domain.Domain_Error {
+	return domain.domain_error(.Validation_Failed, "assignee is required: name the agent (agt_…) that works this task", `{"code":"assignee_required"}`)
+}
+
+// reviewer_is_assignee_error (REQ-SCHED-4): nobody reviews their own work.
+reviewer_is_assignee_error :: proc(id: string) -> domain.Domain_Error {
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, `{"code":"reviewer_is_assignee","reviewer":"`)
+	contracts.write_json_string(&b, id)
+	strings.write_string(&b, `"}`)
+	return domain.domain_error(.Validation_Failed, strings.concatenate({"the assignee cannot also be a reviewer: ", id}, context.temp_allocator), strings.to_string(b))
+}
+
+// validate_brief_assignment (REQ-SCHED-3/4): the brief names an assignee, its
+// reviewers are agent ids or `user`, and the assignee is not a reviewer.
+validate_brief_assignment :: proc(agents: ^iface.Agent_Repository, brief: string) -> domain.Domain_Error {
+	assignee := brief_assignee(brief)
+	if assignee == "" do return assignee_required_error()
+	if rerr := validate_reviewer_agent_ids(agents, brief_reviewer_entries(brief, context.temp_allocator)[:]); rerr.code != .None do return rerr
+	for id in brief_reviewer_agents(brief, context.temp_allocator) do if id == assignee do return reviewer_is_assignee_error(id)
+	return domain.Domain_Error{}
+}
+
+// brief_requires_user: the brief asks for the user's approval —
+// requires_user_approval: true, or `user` listed in reviewers (6.2). No other
+// default: a task without either is not waiting for the user.
+brief_requires_user :: proc(brief: string) -> bool {
+	if v, present := jsonx.extract_bool_literal(brief, "requires_user_approval", true); present && v do return true
+	return brief_lists_user(brief)
 }

@@ -163,7 +163,7 @@ test_taskchain_typed_wire_tracking_allocator_clean :: proc(t: ^testing.T) {
 			state         = .Ready,
 			kind          = .Task,
 			priority      = .P0,
-			brief_json    = `{"goal":"g","assignee":"agt_leak","review_roles":[]}`,
+			brief_json    = `{"goal":"g","assignee":"agt_leak"}`,
 			updated_at    = "2026-10-03T12:00:00Z",
 		}
 		write_task_json(&b, task)

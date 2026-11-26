@@ -13,7 +13,6 @@ Placement_Recovery_Input :: struct {
 	expected_attempt:       int,
 	phase:                  string,
 	agent_id:               string,
-	role:                   string,
 	fingerprint:            string,
 	configuration:          string,
 	expected_assignment:    string,
@@ -58,7 +57,7 @@ recover_placement_in_uow :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_Co
 	if !found do return {}, false, err
 	if string(task.owner_user_id) != auth.user_id do return {}, false, domain.domain_error(.Not_Found, "task not found")
 	if task.workflow_run_id != "" || task.stage_key != "" do return {}, false, domain.domain_error(.Conflict, "workflow placement must be changed through workflow configuration")
-	if input.fingerprint == "" || input.configuration == "" || input.role == "" || (input.phase != "work" && input.phase != "review") {
+	if input.fingerprint == "" || input.configuration == "" || (input.phase != "work" && input.phase != "review") {
 		return {}, false, domain.domain_error(.Validation_Failed, "placement target and observation guards are required")
 	}
 	if task.attempt_no != input.expected_attempt do return {}, false, domain.domain_error(.Conflict, "placement attempt changed; refresh the card")
@@ -86,7 +85,7 @@ recover_placement_in_uow :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_Co
 	current := false
 	current_source := ""
 	for f in failures {
-		if f.phase == input.phase && f.agent_id == input.agent_id && f.role == input.role && f.fingerprint == input.fingerprint && f.configuration == input.configuration { current = true; current_source = f.source; break }
+		if f.phase == input.phase && f.agent_id == input.agent_id && f.fingerprint == input.fingerprint && f.configuration == input.configuration { current = true; current_source = f.source; break }
 	}
 	if !current do return {}, false, domain.domain_error(.Conflict, "placement failure changed or resolved; refresh the card")
 	scope := "ticket" if worker || input.action != "change_bridge" else "chain_fleet"
@@ -109,21 +108,18 @@ recover_placement_in_uow :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_Co
 		}
 	case "change_assignee", "change_reviewer":
 		if (worker && input.action != "change_assignee") || (!worker && input.action != "change_reviewer") do return {}, false, domain.domain_error(.Validation_Failed, "action does not match placement phase")
-		if !worker && input.role != NAMED_REVIEW_ROLE do return {}, false, domain.domain_error(.Conflict, "role reviewers are configured in the chain fleet; keep the role requirement")
 		id := strings.trim_space(input.replacement_agent_id)
 		if !strings.has_prefix(id, "agt_") || id == input.agent_id do return {}, false, domain.domain_error(.Validation_Failed, "choose a different durable agent")
 		agent, exists, aerr := iface.agent_get(svc.agents, id)
 		if !exists || agent.owner_user_id != task.owner_user_id || agent.state != .Active do return {}, false, domain.domain_error(.Validation_Failed, "replacement must be an owned active durable agent")
 		if aerr.code != .None do return {}, false, aerr
 		replacement, eligible := fleet_row_for_agent(ctx.fleets[:], id)
-		if !eligible || (worker && !fleet_row_has_role(replacement, domain.FLEET_ROLE_WORKER)) || (!worker && !fleet_row_has_role(replacement, domain.FLEET_ROLE_REVIEWER) && !fleet_row_has_role(replacement, FLEET_ROLE_NAMED_REVIEWER)) {
-			return {}, false, domain.domain_error(.Validation_Failed, "replacement must have an eligible chain fleet role; configure the fleet first")
-		}
-		if (worker && domain.fleet_role_paused(replacement, domain.FLEET_ROLE_WORKER)) || (!worker && review_role_paused(replacement, NAMED_REVIEW_ROLE)) do return {}, false, domain.domain_error(.Validation_Failed, "replacement fleet role is paused")
+		if !eligible do return {}, false, domain.domain_error(.Validation_Failed, "replacement must have a chain fleet row; configure the fleet first")
+		if replacement.paused do return {}, false, domain.domain_error(.Validation_Failed, "replacement fleet row is paused")
 		if !worker {
-			if holder := last_attempt_holder(svc, task); holder != "" {
-				if author, known, _ := iface.agent_get_instance(svc.agents, holder); known && author.agent_id == id do return {}, false, domain.domain_error(.Validation_Failed, "the author cannot review its own work")
-			}
+			if task_author_agent(svc, task) == id || brief_assignee(task.brief_json) == id do return {}, false, domain.domain_error(.Validation_Failed, "the assignee cannot review its own work", `{"code":"reviewer_is_assignee"}`)
+		} else {
+			for reviewer in brief_reviewer_agents(task.brief_json, context.temp_allocator) do if reviewer == id do return {}, false, domain.domain_error(.Validation_Failed, "the replacement assignee is a reviewer of this task", `{"code":"reviewer_is_assignee"}`)
 		}
 		p, resolved := resolve_placement(&ctx, task, replacement, worker)
 		if reason, message := placement_problem(svc, &ctx, p, resolved, id); reason != "" do return {}, false, domain.domain_error(.Validation_Failed, message)
@@ -133,10 +129,10 @@ recover_placement_in_uow :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_Co
 		if worker {
 			root["assignee"] = json.String(id)
 		} else {
-			named := brief_named_reviewers(task.brief_json, context.temp_allocator)
+			listed := brief_reviewer_entries(task.brief_json, context.temp_allocator)
 			items := make(json.Array, context.temp_allocator)
-			for reviewer in named {
-				if reviewer == id do return {}, false, domain.domain_error(.Validation_Failed, "replacement is already a named reviewer")
+			for reviewer in listed {
+				if reviewer == id do return {}, false, domain.domain_error(.Validation_Failed, "replacement is already a reviewer")
 				append(&items, json.String(id if reviewer == input.agent_id else reviewer))
 			}
 			root["reviewers"] = items
@@ -154,7 +150,6 @@ recover_placement_in_uow :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_Co
 	json_str(&payload, "action", input.action)
 	json_str(&payload, "scope", input.scope)
 	json_str(&payload, "target_agent_id", input.agent_id)
-	json_str(&payload, "target_role", input.role)
 	json_str(&payload, "fingerprint", input.fingerprint)
 	json_str(&payload, "bridge_id", input.bridge_id)
 	json_str(&payload, "replacement_agent_id", input.replacement_agent_id)

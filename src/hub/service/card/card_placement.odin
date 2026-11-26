@@ -60,20 +60,17 @@ build_placement_card :: proc(s: ^Card_Service, task: domain.Task, failures: []ta
 	}
 	chain_tasks, terr := iface.taskchain_list_tasks_by_chain(s.taskchains.repo, task.chain_id, task.owner_user_id)
 	if terr.code != .None do return {}, terr
-	fleets, ferr := iface.taskchain_list_fleets_by_chain(s.taskchains.repo, task.chain_id, task.owner_user_id)
-	if ferr.code != .None do return {}, ferr
 	targets := make([dynamic]Target, context.temp_allocator)
 	for f in failures {
 		worker := f.phase == "work"
 		affected := make([dynamic]string, context.temp_allocator)
 		if !worker {
-			fleet, has_fleet := taskv2.fleet_row_for_agent(fleets, f.agent_id)
-			worker_row := has_fleet && taskv2.fleet_row_has_role(fleet, domain.FLEET_ROLE_WORKER)
+			// Work assigned to, or reviews owed by, the same agent use its fleet row.
 			for queued in chain_tasks {
 				if queued.publish_state != .Published do continue
-				uses_agent := worker_row && queued.state == .Ready && queued.bridge_id == "" && (taskv2.brief_assignee(queued.brief_json) == f.agent_id || taskv2.brief_assignee(queued.brief_json) == "")
+				uses_agent := queued.state == .Ready && queued.bridge_id == "" && taskv2.brief_assignee(queued.brief_json) == f.agent_id
 				if queued.state == .In_Review {
-					for pair in taskv2.required_review_pairs(queued, fleets, "") do if pair.agent_id == f.agent_id { uses_agent = true; break }
+					for id in taskv2.required_reviewers(queued, "") do if id == f.agent_id { uses_agent = true; break }
 				}
 				if uses_agent do append(&affected, string(queued.task_id))
 			}
@@ -82,17 +79,17 @@ build_placement_card :: proc(s: ^Card_Service, task: domain.Task, failures: []ta
 			failure = f,
 			guard = taskv2.Placement_Recovery_Input{
 				expected_attempt = task.attempt_no, phase = f.phase, agent_id = f.agent_id,
-				role = f.role, fingerprint = f.fingerprint, configuration = f.configuration,
+				fingerprint = f.fingerprint, configuration = f.configuration,
 				expected_assignment = taskv2.brief_assignee(task.brief_json) if worker else f.agent_id,
 				scope = "ticket" if worker else "chain_fleet",
 			},
 			bridge_action = "configure_coordinator" if f.source == "coordinator" else "change_bridge",
 			bridge_action_label = "Configure coordinator" if f.source == "coordinator" else "Change bridge",
 			bridge_scope_label = "This ticket" if worker else "All tickets using this fleet; existing leases keep their placement",
-			identity_action = "change_assignee" if worker else ("change_reviewer" if f.role == taskv2.NAMED_REVIEW_ROLE else "configure_fleet"),
-			identity_action_label = "Change assignee" if worker else ("Change reviewer" if f.role == taskv2.NAMED_REVIEW_ROLE else "Configure fleet role"),
-			identity_scope = "ticket" if worker || f.role == taskv2.NAMED_REVIEW_ROLE else "chain_fleet",
-			fleet_configuration = !worker && f.role != taskv2.NAMED_REVIEW_ROLE,
+			identity_action = "change_assignee" if worker else "change_reviewer",
+			identity_action_label = "Change assignee" if worker else "Change reviewer",
+			identity_scope = "ticket",
+			fleet_configuration = false,
 			affected_task_ids = affected[:],
 		})
 	}

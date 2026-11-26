@@ -53,9 +53,9 @@ brief_merge_patch :: proc(existing, patch: string) -> (string, domain.Domain_Err
 }
 
 // brief_apply_actor_fields sets the update convenience fields on a brief as
-// top-level keys: assignee ("" removes it), review_roles (replaced), reviewers
-// (replaced; an empty list removes the key). Other keys are left untouched.
-brief_apply_actor_fields :: proc(brief, assignee: string, has_assignee: bool, review_roles: []string, has_roles: bool, reviewers: []string, has_reviewers: bool) -> (string, domain.Domain_Error) {
+// top-level keys: assignee ("" removes it), reviewers (replaced; an empty list
+// removes the key). Other keys are left untouched.
+brief_apply_actor_fields :: proc(brief, assignee: string, has_assignee: bool, reviewers: []string, has_reviewers: bool) -> (string, domain.Domain_Error) {
 	base, berr := json.parse_string(brief if strings.trim_space(brief) != "" else "{}", allocator = context.temp_allocator)
 	if berr != nil do return "", domain.domain_error(.Internal_Error, "stored brief is not valid JSON")
 	root, rok := base.(json.Object)
@@ -78,7 +78,6 @@ brief_apply_actor_fields :: proc(brief, assignee: string, has_assignee: bool, re
 			delete_key(&root, "assignee")
 		}
 	}
-	if has_roles do root["review_roles"] = string_list(review_roles)
 	if has_reviewers {
 		named := string_list(reviewers)
 		if len(named) > 0 {

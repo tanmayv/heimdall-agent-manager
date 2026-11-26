@@ -579,7 +579,12 @@ test_task_v2_fields_sqlite_roundtrip :: proc(t: ^testing.T) {
 	for col in ([?]string{"state", "kind", "attempt_no", "brief_json", "blocked_on_json", "requires_user_approval", "ready_since", "stage_key", "stage_index", "generated_by_json"}) {
 		testing.expectf(t, table_column_exists(&conn, "tasks", col), "tasks.%s column exists", col)
 	}
-	testing.expect(t, table_column_exists(&conn, "task_chain_fleets", "roles_json"), "task_chain_fleets.roles_json column exists")
+	// SCHED-0b (migration 258): fleet roles, per-role pause and lease review
+	// roles are dropped.
+	testing.expect(t, !table_column_exists(&conn, "task_chain_fleets", "roles_json"), "task_chain_fleets.roles_json is dropped")
+	testing.expect(t, !table_column_exists(&conn, "task_chain_fleets", "paused_roles_json"), "task_chain_fleets.paused_roles_json is dropped")
+	testing.expect(t, !table_column_exists(&conn, "task_leases", "review_role"), "task_leases.review_role is dropped")
+	testing.expect(t, table_column_exists(&conn, "task_chain_fleets", "paused"), "task_chain_fleets.paused column exists")
 	testing.expect(t, table_column_exists(&conn, "task_chain_fleets", "bridge_id"), "task_chain_fleets.bridge_id column exists")
 	testing.expect(t, table_column_exists(&conn, "task_chains", "defaults_json"), "task_chains.defaults_json column exists")
 
@@ -701,20 +706,20 @@ COMMIT;`), "seed current workflow execution for generated gate")
     _, accepted_identity, _ := iface.taskchain_save_task(&repo, illegal)
     testing.expect(t, !accepted_identity, "generated stage identity cannot be rewritten")
 
-	// Fleet: roles_json + bridge_id round-trip through upsert, ensure and list.
+	// Fleet: paused + bridge_id round-trip through upsert, ensure and list.
 	_, f_err := iface.taskchain_upsert_fleet(&repo, domain.Task_Chain_Fleet{
 		task_chain_id    = cid,
 		agent_id         = "agt_reviewer",
 		capacity         = 2,
 		min_warm         = 0,
 		idle_ttl_seconds = 120,
-		roles_json       = `["worker","reviewer"]`,
+		paused           = true,
 		bridge_id        = "brg_fleet",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:00:00Z",
 	})
 	testing.expect_value(t, f_err.code, domain.Error_Code.None)
-	// ensure with an empty roles_json: the default ["worker"] is stored.
+	// ensure: an unpaused row with no bridge.
 	e_err := iface.taskchain_ensure_fleet(&repo, domain.Task_Chain_Fleet{
 		task_chain_id    = cid,
 		agent_id         = "agt_default",
@@ -731,22 +736,22 @@ COMMIT;`), "seed current workflow execution for generated gate")
 	for f in fleets {
 		switch f.agent_id {
 		case "agt_reviewer":
-			testing.expect_value(t, f.roles_json, `["worker","reviewer"]`)
+			testing.expect_value(t, f.paused, true)
 			testing.expect_value(t, f.bridge_id, "brg_fleet")
 		case "agt_default":
-			testing.expect_value(t, f.roles_json, domain.FLEET_ROLES_DEFAULT_JSON)
+			testing.expect_value(t, f.paused, false)
 			testing.expect_value(t, f.bridge_id, "")
 		case:
 			testing.expectf(t, false, "unexpected fleet row %s", f.agent_id)
 		}
 	}
-	// Upsert updates roles_json/bridge_id on the existing row.
+	// Upsert updates paused/bridge_id on the existing row.
 	_, f2_err := iface.taskchain_upsert_fleet(&repo, domain.Task_Chain_Fleet{
 		task_chain_id    = cid,
 		agent_id         = "agt_reviewer",
 		capacity         = 2,
 		idle_ttl_seconds = 120,
-		roles_json       = `["reviewer"]`,
+		paused           = false,
 		bridge_id        = "",
 		created_at       = "2026-10-01T10:00:00Z",
 		updated_at       = "2026-10-01T10:10:00Z",
@@ -755,7 +760,7 @@ COMMIT;`), "seed current workflow execution for generated gate")
 	fleets2, _ := iface.taskchain_list_fleets_by_chain(&repo, cid, owner)
 	defer delete(fleets2)
 	for f in fleets2 do if f.agent_id == "agt_reviewer" {
-		testing.expect_value(t, f.roles_json, `["reviewer"]`)
+		testing.expect_value(t, f.paused, false)
 		testing.expect_value(t, f.bridge_id, "")
 	}
 }

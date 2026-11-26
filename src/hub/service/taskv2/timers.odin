@@ -471,15 +471,17 @@ fire_ready_unclaimed :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	task, ok, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(t.key))
 	if !ok do return .Noop
 	if task.state != .Ready || task.ready_since != t.armed do return .Noop
-	// Solo chains: nudge_idle_soloist (solo_task_ready) replaces this alert,
-	// and the soloist pulls; nothing is waiting on a free worker (rule f).
-	if chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); cok && chain_is_solo(svc, chain) do return .Noop
+	// A task assigned to the coordinator's own agent: nudge_coordinator_item
+	// (coordinator_item_ready) replaces this alert and the coordinator pulls;
+	// nothing is waiting on a free worker (rule f).
+	if chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); cok {
+		if coord_agent := chain_coordinator_agent_id(svc, chain); coord_agent != "" && brief_assignee(task.brief_json) == coord_agent do return .Noop
+	}
 	p := json_begin()
 	json_str(&p, "since", task.ready_since)
-	paused := paused_worker_agents(svc, task)
 	reason := ""
-	if paused != "" {
-		reason = fmt.tprintf("worker fleet paused: %s", paused)
+	if assignee_fleet_paused(svc, task) {
+		reason = fmt.tprintf("assignee fleet row paused: %s", brief_assignee(task.brief_json))
 		json_str(&p, "reason", reason)
 	}
 	if _, aok, _ := append_event(svc.repo, svc.clock, task, hub_actor(), EV_READY_UNCLAIMED, json_end(&p)); !aok do return .Failed
@@ -490,21 +492,16 @@ fire_ready_unclaimed :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	return .Acted
 }
 
-// paused_worker_agents: the fleet agents that could work `task` (worker role,
-// matching any brief assignee) whose worker role is paused, comma-joined.
+// assignee_fleet_paused: the fleet row of the task's assignee is paused.
 @(private = "file")
-paused_worker_agents :: proc(svc: ^Service, task: domain.Task) -> string {
-	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, task.chain_id, task.owner_user_id)
-	if ferr.code != .None do return ""
-	defer delete(fleets)
+assignee_fleet_paused :: proc(svc: ^Service, task: domain.Task) -> bool {
 	assignee := brief_assignee(task.brief_json)
-	names := make([dynamic]string, context.temp_allocator)
-	for f in fleets {
-		if !fleet_row_has_role(f, domain.FLEET_ROLE_WORKER) do continue
-		if assignee != "" && f.agent_id != assignee do continue
-		if domain.fleet_role_paused(f, domain.FLEET_ROLE_WORKER) do append(&names, f.agent_id)
-	}
-	return strings.join(names[:], ", ", context.temp_allocator)
+	if assignee == "" do return false
+	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, task.chain_id, task.owner_user_id)
+	if ferr.code != .None do return false
+	defer delete(fleets)
+	f, ok := fleet_row_for_agent(fleets, assignee)
+	return ok && f.paused
 }
 
 // fire_rematch: the task is still Ready / In review (same state as when armed)
@@ -542,15 +539,15 @@ check_review_stalled :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task) {
 	reviews, rerr := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
 	if rerr.code != .None do return
 	for m in unmet {
-		// an owed pair (no review row yet) is the matcher's job, not a stall
-		if m.kind == "review" && review_needed_from(reviews, task, m.agent_id, m.role) do return
+		// an owed review (no verdict yet) is the matcher's job, not a stall
+		if m.kind == "review" && agent_review_owed(reviews, task, m.agent_id) do return
 	}
 	if awaits_user_review(svc, task) do return
 	p := json_begin()
 	json_raw(&p, "unmet", gate_unmet_json(unmet))
 	if _, aok, _ := append_event(svc.repo, svc.clock, task, hub_actor(), EV_REVIEW_STALLED, json_end(&p)); !aok do return
 	effect_publish_task(u, task, "review_stalled")
-	effect_notify_task(svc, u, task, "review_stalled", fmt.tprintf("[taskv2] review_stalled: task %s (%s) gate is waiting with no live lease and no review owed; unmet=%s. Recover with: ham-ctl review post %s --verdict approve|request_changes --on-behalf-of user, re-run the reviewer (task show %s), or adjust brief reviewers/review_roles", task.task_id, task.title, gate_unmet_json(unmet), task.task_id, task.task_id))
+	effect_notify_task(svc, u, task, "review_stalled", fmt.tprintf("[taskv2] review_stalled: task %s (%s) gate is waiting with no live lease and no review owed; unmet=%s. Recover with: ham-ctl review post %s --verdict approve|request_changes --on-behalf-of user, re-run the reviewer (task show %s), or adjust the brief reviewers", task.task_id, task.title, gate_unmet_json(unmet), task.task_id, task.task_id))
 	timers_arm(svc, .Rematch, string(task.task_id), now_ms(svc.clock) + REVIEW_STALLED_REALERT_SECONDS * 1000, domain.task_state_string(task.state))
 }
 

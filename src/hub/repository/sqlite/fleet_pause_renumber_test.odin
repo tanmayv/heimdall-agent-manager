@@ -8,7 +8,8 @@ import "core:testing"
 // applied as 130_fleet_pause.sql on some databases; fleet pause is now 131. Such
 // a database must still run the 0.4.44 extension sync (the ledger is keyed by
 // full file name), must not re-run the ALTER TABLE (a hard "duplicate column
-// name"), and must keep its paused roles.
+// name"), and must keep its pause (SCHED-0b: one `paused` boolean; the per-role
+// column is dropped by 258 and must not come back).
 
 FPR_SYNC :: "130_extension_version_sync_0_4_44.sql"
 FPR_PAUSE :: "131_fleet_pause.sql"
@@ -64,7 +65,8 @@ test_fleet_pause_renumber_after_legacy_130 :: proc(t: ^testing.T) {
 		testing.expectf(t, migration_applied(&conn, FPR_PAUSE), "%s: fleet pause recorded", pass)
 		testing.expectf(t, fpr_text(&conn, FPR_CATALOG) == want_catalog, "%s: catalog %s, want %s", pass, fpr_text(&conn, FPR_CATALOG), want_catalog)
 		testing.expectf(t, fpr_text(&conn, FPR_ETAG) == want_etag, "%s: etag %s, want %s", pass, fpr_text(&conn, FPR_ETAG), want_etag)
-		testing.expectf(t, fpr_text(&conn, "SELECT paused_roles_json FROM task_chain_fleets WHERE agent_id='agt_fpr';") == `["worker"]`, "%s: paused roles kept", pass)
+		testing.expectf(t, fpr_text(&conn, "SELECT paused FROM task_chain_fleets WHERE agent_id='agt_fpr';") == "1", "%s: pause kept", pass)
+		testing.expectf(t, !table_column_exists(&conn, "task_chain_fleets", "paused_roles_json"), "%s: paused_roles_json stays dropped", pass)
 		testing.expectf(t, fpr_text(&conn, "SELECT count(*) FROM schema_migrations WHERE version='" + FPR_LEGACY_PAUSE + "';") == "1", "%s: legacy ledger row kept", pass)
 	}
 }

@@ -23,7 +23,7 @@ test_explicit_claim_wire_rejects_missing_task :: proc(t: ^testing.T) {
 claim_wire_seed_task :: proc(f: ^wire_fixture, id, assignee: string) -> domain.Task {
     task := domain.Task{task_id = domain.Task_ID(id), chain_id = f.chain_id, owner_user_id = f.owner,
         title = "Claim authority", kind = .Task, publish_state = .Published, state = .Ready,
-        brief_json = fmt.tprintf(`{{"goal":"g","acceptance":["a"],"assignee":"%s","review_roles":[]}}`, assignee)}
+        brief_json = fmt.tprintf(`{{"goal":"g","acceptance":["a"],"assignee":"%s"}}`, assignee)}
     _, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
     _, _, _ = iface.taskchain_append_event(&f.tc_repo, domain.Task_Event{task_id = task.task_id,
         chain_id = task.chain_id, owner_user_id = f.owner, kind = taskv2.EV_MIGRATED,

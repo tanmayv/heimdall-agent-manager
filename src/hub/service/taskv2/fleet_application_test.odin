@@ -196,7 +196,7 @@ test_fleet_apply_active_claim_pack_generation_and_ready :: proc(t:^testing.T) {
 	i:=seed_instance(fx,chain,"fleet_holder","agt_w","br_1","running")
 	_=iface.fleet_scope_set(&fx.bridges,i,"chain")
 	_=iface.fleet_scope_set(&fx.bridges,seed_instance(fx,chain,"inst_coord","agt_c","br_1","running","coordinator"),"manual")
-	task:=publish_task(t,fx,chain,"fleet_task",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+	task:=publish_task(t,fx,chain,"fleet_task",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
 	task.requires_user_approval=true;_,_,_=iface.taskchain_save_task(&fx.repo,task)
 	l,held:=lease_of(fx,"fleet_holder");if !testing.expect(t,held && l.task_id==task.task_id) do return
 	before,_,_:=iface.agent_get_instance(&fx.agents,i.agent_instance_id)

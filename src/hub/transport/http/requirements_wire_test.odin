@@ -16,16 +16,16 @@ test_requirements_ack_and_submission_revision_wire :: proc(t: ^testing.T) {
     f.ah.task_engine = &engine
     task := domain.Task{task_id = "wire_requirements", chain_id = f.chain_id, owner_user_id = f.owner,
         title = "work", publish_state = .Published, state = .In_Progress, attempt_no = 1,
-        brief_json = `{"goal":"g","acceptance":["a"],"review_roles":[]}`,
+        brief_json = `{"goal":"g","acceptance":["a"]}`,
         created_at = "2026-10-01T00:00:00Z", updated_at = "2026-10-01T00:00:00Z"}
     _, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
     _, _, _ = iface.taskchain_append_event(&f.tc_repo, {task_id = task.task_id, chain_id = f.chain_id,
         owner_user_id = f.owner, kind = taskv2.EV_MIGRATED,
         payload_json = `{"state":"in_progress","published":true,"attempt_no":1}`})
     err := taskv2.requirements_record(&f.tc_repo, &f.clock, task,
-        `{"goal":"g2","acceptance":["a"],"review_roles":[]}`, {kind = "user", id = string(f.owner)}, 1, "change", "")
+        `{"goal":"g2","acceptance":["a"]}`, {kind = "user", id = string(f.owner)}, 1, "change", "")
     if !testing.expect(t, err.code == .None) do return
-    task.brief_json = `{"goal":"g2","acceptance":["a"],"review_roles":[]}`
+    task.brief_json = `{"goal":"g2","acceptance":["a"]}`
     _, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
     _, _, _ = iface.taskchain_save_lease(&f.tc_repo, {
         lease_id = "wire_req_lease", task_id = task.task_id, chain_id = f.chain_id,

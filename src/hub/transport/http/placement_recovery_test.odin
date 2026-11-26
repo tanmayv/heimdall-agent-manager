@@ -30,15 +30,15 @@ test_placement_recovery_http_authority_guards_and_scope :: proc(t: ^testing.T) {
 	alt, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_alt)
 	alt.status = .Online
 	_, _, _ = iface.bridge_save_bridge(&f.br_repo, alt)
-	_, _ = iface.taskchain_upsert_fleet(&f.tc_repo, domain.Task_Chain_Fleet{task_chain_id = f.chain_id, agent_id = "agt_repair", bridge_id = f.bridge_pin, roles_json = `["worker"]`, capacity = 1})
-	task := domain.Task{task_id = "task_http_repair", chain_id = f.chain_id, owner_user_id = f.owner, title = "Repair placement", state = .Backlog, publish_state = .Published, kind = .Task, brief_json = `{"goal":"g","assignee":"agt_repair","review_roles":[]}`}
+	_, _ = iface.taskchain_upsert_fleet(&f.tc_repo, domain.Task_Chain_Fleet{task_chain_id = f.chain_id, agent_id = "agt_repair", bridge_id = f.bridge_pin, capacity = 1})
+	task := domain.Task{task_id = "task_http_repair", chain_id = f.chain_id, owner_user_id = f.owner, title = "Repair placement", state = .Backlog, publish_state = .Published, kind = .Task, brief_json = `{"goal":"g","assignee":"agt_repair"}`}
 	_, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
 	testing.expect_value(t, taskv2.task_created(&engine, task, taskv2.hub_actor()).code, domain.Error_Code.None)
 	task, _, _ = iface.taskchain_get_task(&f.tc_repo, task.task_id)
 	failures, ferr := taskv2.placement_failures(&engine, task)
 	if !testing.expect(t, ferr.code == .None && len(failures) == 1, "current failed target") do return
 	failure := failures[0]
-	input := taskv2.Placement_Recovery_Input{expected_attempt = 0, phase = failure.phase, agent_id = failure.agent_id, role = failure.role, fingerprint = failure.fingerprint, configuration = failure.configuration, expected_assignment = "agt_repair", action = "change_bridge", bridge_id = f.bridge_alt, scope = "ticket"}
+	input := taskv2.Placement_Recovery_Input{expected_attempt = 0, phase = failure.phase, agent_id = failure.agent_id, fingerprint = failure.fingerprint, configuration = failure.configuration, expected_assignment = "agt_repair", action = "change_bridge", bridge_id = f.bridge_alt, scope = "ticket"}
 	body, _ := json.marshal(input, allocator = context.temp_allocator)
 	path := fmt.tprintf("/api/v1/tasks/%s/placement-recovery", task.task_id)
 	malformed := recover_task_placement_handler(&f.th, wire_cookie_request(f, "POST", path, `{}`))

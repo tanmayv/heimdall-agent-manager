@@ -36,8 +36,9 @@ test_leased_task_acceptance_patch_preserves_scope_and_refreshes_lease :: proc(t:
 	if !testing.expect(t, cok, "create chain") do return
 	chain.coordinator_agent_instance_id = "coord"
 	_, _, _ = iface.taskchain_save_chain(&repo, chain)
-	task, tok, _ := create_task(&svc, owner, Create_Task_Input{chain_id = chain.chain_id, title = "work", brief_json = `{"goal":"keep scope","acceptance":["original"],"verify":"odin test old","review_roles":[],"require_independent_verify":true,"auto_submit":true}`})
-	if !testing.expect(t, tok, "create task") do return
+	_, _, _ = iface.agent_save(&agents, domain.Agent{agent_id = "worker", owner_user_id = "owner", name = "worker", slug = "worker", created_at = "now", updated_at = "now"})
+	task, tok, terr := create_task(&svc, owner, Create_Task_Input{chain_id = chain.chain_id, title = "work", brief_json = `{"goal":"keep scope","acceptance":["original"],"assignee":"worker","verify":"odin test old","require_independent_verify":true,"auto_submit":true}`})
+	if !testing.expect(t, tok, terr.message) do return
 	for key in ([]string{`"verify"`, "require_independent_verify", "auto_submit"}) {
 		testing.expectf(t, !strings.contains(task.brief_json, key), "legacy key %s dropped at create", key)
 	}

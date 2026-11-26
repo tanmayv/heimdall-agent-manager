@@ -6,22 +6,22 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import jsonx "odin_test:lib/jsonx"
 
-// Review gate (plan §2.5). Evaluated inside the UoW after every review post,
-// reviewer/fleet change, and once at boot after a gate-affecting migration,
-// for a task in `in_review`:
+// Review gate (plan §2.5, spec SCHED 6.3). Evaluated inside the UoW after every
+// review post, reviewer/fleet change, and once at boot after a gate-affecting
+// migration, for a task in `in_review`:
 //
-//   needed = required_review_pairs: { (agent, "named") : agent ∈ brief.reviewers }
-//            ∪ { (fleet row, role) : role ∈ brief.review_roles ∧ row has role },
-//            minus the attempt's author template
-//   gate   = every needed pair has an `approve` review on THIS attempt
+//   needed = required_reviewers: the agents in brief.reviewers, minus the
+//            attempt's author agent
+//   gate   = every needed agent has an `approve` on THIS attempt
 //            ∧ no `request_changes` on this attempt
-//            ∧ (user approved on this attempt, if requires_user_approval)
+//            ∧ (user approved on this attempt, if requires_user_approval or
+//               `user` is listed in brief.reviewers)
 //
 // A verdict is the reviewer's judgment; no command evidence is required
-// (REQ-TV2-2). Strict AND per fleet row: two reviewer templates both review. Any
-// request_changes → EV_CHANGES_REQUESTED (task → ready, other review leases
-// expired); the oscillation guard (fold) parks the task after 3 rounds. A new
-// attempt invalidates prior reviews because reviews are keyed by attempt_no.
+// (REQ-TV2-2). Strict AND per reviewer agent. Any request_changes →
+// EV_CHANGES_REQUESTED (task → ready, other review leases parked); the
+// oscillation guard (fold) parks the task after 3 rounds. A new attempt
+// invalidates prior reviews because reviews are keyed by attempt_no.
 
 // Rejected: a request_changes on a GATE task (it is cancelled). Explicit-verdict
 // callers (review_post, user_review) then run gate_replan_in_uow; the fleet
@@ -52,7 +52,6 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 		if r.attempt_no != task.attempt_no || r.verdict != "request_changes" do continue
 		p := json_begin()
 		json_int(&p, "attempt_no", i64(task.attempt_no))
-		json_str(&p, "role", r.role)
 		json_str(&p, "reviewer", r.reviewer_agent_id if r.reviewer_kind == "agent" else "user")
 		json_str(&p, "reviewer_agent_id", r.reviewer_agent_id)
 		json_str(&p, "reviewer_instance_id", r.reviewer_instance_id)
@@ -67,7 +66,7 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 		if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code == .None {
 			for l in leases {
 				if l.kind != domain.LEASE_KIND_REVIEW do continue
-				if !claim_wait_in_uow(svc, l) do return .Waiting, false, domain.domain_error(.Internal_Error, "failed to drop a review lease")
+				if !park_review_claim_in_uow(svc, u, l) do return .Waiting, false, domain.domain_error(.Internal_Error, "failed to drop a review lease")
 			}
 		}
 		if task.kind == .Gate {
@@ -85,7 +84,7 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 			if approver == "user" {
 				if r.reviewer_kind == "user" && r.reviewer_instance_id == "" { gate_approved = true; break }
 			} else {
-				if r.reviewer_kind == "user" || r.role == "coordinator" || r.reviewer_agent_id == "coordinator" { gate_approved = true; break }
+				if r.reviewer_kind == "user" || r.role == "coordinator" { gate_approved = true; break }
 			}
 		}
 		if !gate_approved {
@@ -98,7 +97,7 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 		metric_gate_evaluated(.Approved)
 		return .Approved, true, domain.Domain_Error{}
 	}
-	// 2. every required agent (role) pair approved — shared with
+	// 2. every required reviewer agent approved — shared with
 	//    awaits_user_review (attention deck).
 	if sat, serr := agent_review_satisfied(svc, chain.chain_id, chain.owner_user_id, task, reviews); serr.code != .None {
 		return .Waiting, false, serr
@@ -106,7 +105,7 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 		metric_gate_evaluated(.Waiting)
 		return .Waiting, true, domain.Domain_Error{}
 	}
-	if task.requires_user_approval {
+	if task_requires_user(task) {
 		user_ok := false
 		for r in reviews do if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "user" { user_ok = true; break }
 		if !user_ok {
@@ -130,21 +129,10 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 }
 
 // agent_review_satisfied: step 2 of the gate for a non-gate task — every
-// required (agent, role) pair approved this attempt (named reviewers and holders
-// of each review role, review_pairs.odin). Read-only.
+// required reviewer agent approved this attempt. Read-only.
 agent_review_satisfied :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, task: domain.Task, reviews: []domain.Task_Review) -> (bool, domain.Domain_Error) {
-	author_agent := ""
-	if holder := last_attempt_holder(svc, task); holder != "" {
-		if inst, iok, _ := iface.agent_get_instance(svc.agents, holder); iok do author_agent = inst.agent_id
-	}
-	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, chain_id, owner)
-	if ferr.code != .None do return false, ferr
-	for pair in required_review_pairs(task, fleets, author_agent) {
-		approved := false
-		for r in reviews {
-			if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "agent" && r.role == pair.role && r.reviewer_agent_id == pair.agent_id { approved = true; break }
-		}
-		if !approved do return false, domain.Domain_Error{}
+	for agent_id in required_reviewers(task, task_author_agent(svc, task)) {
+		if !agent_approved(reviews, task, agent_id) do return false, domain.Domain_Error{}
 	}
 	return true, domain.Domain_Error{}
 }
@@ -154,16 +142,19 @@ agent_review_satisfied :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, ow
 // notify_user_review_requested (rule d): tell the coordinator once per gate
 // pass — once per (task, attempt) — that the task now waits on the user. The
 // gate is re-evaluated by every recheck, fleet change and reviewer edit; the
-// audit event user_review_requested makes repeats a no-op. In a solo chain
-// the coordinator is the author and the user's attention deck already shows
-// the review, so no agent is told (and nothing is recorded) — except a
-// workflow gate only the coordinator may approve, which no deck shows.
+// audit event user_review_requested makes repeats a no-op. When the
+// coordinator's own agent authored the attempt it may not approve it
+// (REQ-SCHED-16) and the user's attention deck already shows the review, so no
+// agent is told (and nothing is recorded) — except a workflow gate only the
+// coordinator may approve, which no deck shows.
 notify_user_review_requested :: proc(svc: ^Service, u: ^Uow, task: domain.Task, line: string) {
 	if svc == nil || u == nil do return
 	chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
 	if !cok do return
 	coordinator_only_gate := task.kind == .Gate && gate_approver_policy(task) == "coordinator"
-	if chain_is_solo(svc, chain) && !coordinator_only_gate do return
+	if !coordinator_only_gate {
+		if coord_agent := chain_coordinator_agent_id(svc, chain); coord_agent != "" && coord_agent == task_author_agent(svc, task) do return
+	}
 	evs, eerr := iface.taskchain_list_events_by_task(svc.repo, task.task_id, task.owner_user_id)
 	if eerr.code != .None do return
 	for e in evs {
@@ -182,7 +173,8 @@ User_Attention :: enum { None, Review, Blocked }
 //
 //   Review   — in_review and it is the user's turn: a gate the user may approve
 //              (approver user | user_or_coordinator) with no decision yet, or a
-//              requires_user_approval task whose agent reviews have passed
+//              task that needs the user (requires_user_approval or `user` in
+//              brief.reviewers) whose agent reviews have passed
 //              (the moment the coordinator is told
 //              review_requested_from_user) and the user has not approved this
 //              attempt.
@@ -219,7 +211,7 @@ awaits_user_review :: proc(svc: ^Service, task: domain.Task) -> bool {
 		policy := gate_approver_policy(task)
 		return policy == "user" || policy == "user_or_coordinator"
 	}
-	if !task.requires_user_approval do return false
+	if !task_requires_user(task) do return false
 	sat, serr := agent_review_satisfied(svc, task.chain_id, task.owner_user_id, task, reviews)
 	return serr.code == .None && sat
 }
@@ -254,21 +246,12 @@ reevaluate_gates_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain
 	return true, domain.Domain_Error{}
 }
 
-// review_needed_from: whether `agent_id` with `role` still owes a review on
-// the task's current attempt (matcher: one review lease per needed pair).
-review_needed_from :: proc(reviews: []domain.Task_Review, task: domain.Task, agent_id, role: string) -> bool {
-	for r in reviews {
-		if r.attempt_no == task.attempt_no && r.role == role && r.reviewer_kind == "agent" && r.reviewer_agent_id == agent_id do return false
-	}
-	return true
-}
-
-// regate_after_reviewer_change (F3): the task's named reviewers / review roles
-// changed while it awaits review. Review leases whose (agent, role) is no
-// longer owed are expired (`replaced`; expire stops the live holder, and a late
-// `review post` gets lease_lost). Then the gate is re-run: removing the last
-// owed reviewer can satisfy it, which nothing else would notice (no lease left
-// to post a verdict). The caller runs after_chain_change once afterwards.
+// regate_after_reviewer_change (F3): the task's reviewers changed while it
+// awaits review. Review leases whose agent no longer owes a review are expired
+// (`replaced`; expire stops the live holder, and a late `review post` gets
+// lease_lost). Then the gate is re-run: removing the last owed reviewer can
+// satisfy it, which nothing else would notice (no lease left to post a
+// verdict). The caller runs after_chain_change once afterwards.
 regate_after_reviewer_change :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task, actor: Actor) -> (bool, domain.Domain_Error) {
 	task, tok, terr := iface.taskchain_get_task(svc.repo, task_in.task_id)
 	if !tok do return false, terr
@@ -278,13 +261,7 @@ regate_after_reviewer_change :: proc(svc: ^Service, u: ^Uow, task_in: domain.Tas
 	if task.state != .In_Review && task.state != .Done do return true, domain.Domain_Error{}
 	chain, cok, cerr := iface.taskchain_get_chain(svc.repo, task.chain_id)
 	if !cok do return false, cerr
-	author_agent := ""
-	if holder := last_attempt_holder(svc, task); holder != "" {
-		if inst, iok, _ := iface.agent_get_instance(svc.agents, holder); iok do author_agent = inst.agent_id
-	}
-	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
-	if ferr.code != .None do return false, ferr
-	pairs := required_review_pairs(task, fleets, author_agent)
+	needed := required_reviewers(task, task_author_agent(svc, task))
 	leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
 	if lerr.code != .None do return false, lerr
 	for l in leases {
@@ -292,10 +269,7 @@ regate_after_reviewer_change :: proc(svc: ^Service, u: ^Uow, task_in: domain.Tas
 		agent_id := ""
 		if inst, iok, _ := iface.agent_get_instance(svc.agents, l.holder_instance_id); iok do agent_id = inst.agent_id
 		owed := false
-		for role in split_review_roles(l.review_role) {
-			for p in pairs do if p.agent_id == agent_id && p.role == role { owed = true; break }
-			if owed do break
-		}
+		for id in needed do if id == agent_id { owed = true; break }
 		if owed do continue
 		if expire_lease_in_uow(svc, u, l, EXPIRE_REPLACED, actor) == .Failed {
 			return false, domain.domain_error(.Internal_Error, "failed to expire a stale review lease")
@@ -309,13 +283,13 @@ regate_after_reviewer_change :: proc(svc: ^Service, u: ^Uow, task_in: domain.Tas
 }
 
 // Gate_Unmet: one missing component of a `.Waiting` gate (REQ-TV2-3a).
-// kind is "review" (agent_id/role owe an approve on this attempt) or
-// "user_approval" (requires_user_approval, or a gate's user/coordinator
-// approver, has not approved this attempt).
+// kind is "review" (agent_id owes an approve on this attempt) or
+// "user_approval" (the user — or, for a gate task, its approver policy in
+// `approver` — has not approved this attempt).
 Gate_Unmet :: struct {
 	kind:     string,
 	agent_id: string,
-	role:     string,
+	approver: string,
 }
 
 // gate_unmet_components lists why an in_review task's gate is still waiting.
@@ -328,23 +302,13 @@ gate_unmet_components :: proc(svc: ^Service, task: domain.Task) -> ([]Gate_Unmet
 	user_approved := false
 	for r in reviews do if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "user" { user_approved = true; break }
 	if task.kind == .Gate {
-		if !user_approved do append(&out, Gate_Unmet{kind = "user_approval", role = gate_approver_policy(task)})
+		if !user_approved do append(&out, Gate_Unmet{kind = "user_approval", approver = gate_approver_policy(task)})
 		return out[:], domain.Domain_Error{}
 	}
-	author_agent := ""
-	if holder := last_attempt_holder(svc, task); holder != "" {
-		if inst, iok, _ := iface.agent_get_instance(svc.agents, holder); iok do author_agent = inst.agent_id
+	for agent_id in required_reviewers(task, task_author_agent(svc, task)) {
+		if !agent_approved(reviews, task, agent_id) do append(&out, Gate_Unmet{kind = "review", agent_id = agent_id})
 	}
-	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, task.chain_id, task.owner_user_id)
-	if ferr.code != .None do return out[:], ferr
-	for pair in required_review_pairs(task, fleets, author_agent) {
-		approved := false
-		for r in reviews {
-			if r.attempt_no == task.attempt_no && r.verdict == "approve" && r.reviewer_kind == "agent" && r.role == pair.role && r.reviewer_agent_id == pair.agent_id { approved = true; break }
-		}
-		if !approved do append(&out, Gate_Unmet{kind = "review", agent_id = pair.agent_id, role = pair.role})
-	}
-	if task.requires_user_approval && !user_approved do append(&out, Gate_Unmet{kind = "user_approval", role = "user"})
+	if task_requires_user(task) && !user_approved do append(&out, Gate_Unmet{kind = "user_approval"})
 	return out[:], domain.Domain_Error{}
 }
 
@@ -357,33 +321,27 @@ gate_unmet_json :: proc(unmet: []Gate_Unmet) -> string {
 		p := json_begin()
 		json_str(&p, "kind", m.kind)
 		if m.agent_id != "" do json_str(&p, "agent_id", m.agent_id)
-		if m.role != "" do json_str(&p, "role", m.role)
+		if m.approver != "" do json_str(&p, "approver", m.approver)
 		strings.write_string(&b, json_end(&p))
 	}
 	strings.write_byte(&b, ']')
 	return strings.to_string(b)
 }
 
-// agent_owes_review_in_chain: whether `agent_id` still owes a review pair on
-// any in_review task of the chain that no live review lease of that agent
-// already covers (the reviewer lifecycle invariant, REQ-TV2-3a).
+// agent_owes_review_in_chain: whether `agent_id` still owes a review on any
+// in_review task of the chain that no live review lease of that agent already
+// covers (the reviewer lifecycle invariant, REQ-TV2-3a).
 agent_owes_review_in_chain :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, agent_id: string) -> bool {
 	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain_id, owner)
 	if terr.code != .None do return false
-	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, chain_id, owner)
-	if ferr.code != .None do return false
 	for t in tasks {
 		if t.state != .In_Review || t.kind == .Gate do continue
-		author_agent := ""
-		if holder := last_attempt_holder(svc, t); holder != "" {
-			if inst, iok, _ := iface.agent_get_instance(svc.agents, holder); iok do author_agent = inst.agent_id
-		}
-		if author_agent == agent_id do continue
-		pairs := required_review_pairs(t, fleets, author_agent)
-		if len(pairs) == 0 do continue
+		listed := false
+		for id in required_reviewers(t, task_author_agent(svc, t)) do if id == agent_id { listed = true; break }
+		if !listed do continue
 		reviews, rerr := iface.taskchain_list_reviews_by_task(svc.repo, t.task_id, t.owner_user_id)
 		if rerr.code != .None do continue
-		if len(owed_review_roles(pairs, reviews, t, agent_id)) == 0 do continue
+		if !agent_review_owed(reviews, t, agent_id) do continue
 		covered := false
 		if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, t.task_id); lerr.code == .None {
 			for l in leases {

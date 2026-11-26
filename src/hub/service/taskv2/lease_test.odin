@@ -133,9 +133,9 @@ seed_instance :: proc(fx: ^Fixture, chain: domain.Task_Chain, id, agent_id, brid
 	return saved
 }
 
-seed_fleet :: proc(fx: ^Fixture, chain: domain.Task_Chain, agent_id: string, roles := `["worker"]`, capacity := 1, bridge_id := "", idle_ttl := 0) {
+seed_fleet :: proc(fx: ^Fixture, chain: domain.Task_Chain, agent_id: string, capacity := 1, bridge_id := "", idle_ttl := 0, paused := false) {
 	now := platform.clock_now(&fx.clock)
-	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = agent_id, capacity = capacity, idle_ttl_seconds = idle_ttl, roles_json = roles, bridge_id = bridge_id, created_at = now, updated_at = now})
+	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = agent_id, capacity = capacity, idle_ttl_seconds = idle_ttl, bridge_id = bridge_id, paused = paused, created_at = now, updated_at = now})
 }
 
 seed_directory :: proc(fx: ^Fixture, chain: domain.Task_Chain, id, bridge_id: string, vcs_kind: string = "") {
@@ -159,7 +159,7 @@ seed_live_chain :: proc(t: ^testing.T, fx: ^Fixture, chain_id: string) -> domain
 
 // publish_task creates + publishes a task through the engine entry points
 // (created → published → match) and returns the fresh row.
-publish_task :: proc(t: ^testing.T, fx: ^Fixture, chain: domain.Task_Chain, id: string, brief := `{"goal":"g","review_roles":[]}`, priority := domain.Task_Priority.P2, kind := domain.Task_Kind.Task, bridge_pin := "") -> domain.Task {
+publish_task :: proc(t: ^testing.T, fx: ^Fixture, chain: domain.Task_Chain, id: string, brief := `{"goal":"g","assignee":"agt_w"}`, priority := domain.Task_Priority.P2, kind := domain.Task_Kind.Task, bridge_pin := "") -> domain.Task {
 	task := seed_task(t, fx, chain, id, brief)
 	task.priority = priority
 	task.kind = kind
@@ -641,12 +641,12 @@ test_unplaceable_reviewer_blocks_until_ready :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_rev_block")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	r := seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "stopped")
 	r.stopped_by = agent.STOPPED_BY_USER
 	_, _, _ = iface.agent_save_instance(&fx.agents, r)
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
@@ -910,12 +910,12 @@ test_review_lease_granted_excluding_author_template :: proc(t: ^testing.T) {
 	defer lease_fixture_close(fx, log)
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_rev")
-	seed_fleet(fx, chain, "agt_w", roles = `["worker","reviewer"]`, capacity = 2)
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_w", capacity = 2)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_w2", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":["reviewer"]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","assignee":"agt_w","reviewers":["agt_r"]}`)
 	testing.expect_value(t, task.state, domain.Task_State.In_Progress)
 	work, held := lease_of(fx, "inst_w1")
 	if !testing.expect(t, held, "w1 works") do return
@@ -927,7 +927,6 @@ test_review_lease_granted_excluding_author_template :: proc(t: ^testing.T) {
 	rl, rheld := lease_of(fx, "inst_r1")
 	if testing.expect(t, rheld, "reviewer leased") {
 		testing.expect_value(t, rl.kind, domain.LEASE_KIND_REVIEW)
-		testing.expect_value(t, rl.review_role, "reviewer")
 		testing.expect_value(t, rl.task_id, task.task_id)
 	}
 	testing.expect(t, wake_log_has_run(log, "inst_r1"), "reviewer woken")
@@ -1254,7 +1253,7 @@ test_explicit_claim_clears_user_stop :: proc(t: ^testing.T) {
  inst := seed_instance(fx, chain, "inst_stopped", "agt_w", "br_1", "stopped")
  inst.stopped_by = "user"
  _, _, _ = iface.agent_save_instance(&fx.agents, inst)
- task := publish_task(t, fx, chain, "task_claim_user_stop", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task := publish_task(t, fx, chain, "task_claim_user_stop", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  _, claimed, err := lease_claim(&fx.svc, inst_auth("inst_coord"), {task_id=task.task_id, instance_id=inst.agent_instance_id})
  if !testing.expect(t, claimed, err.message) do return
  current, _, _ := iface.agent_get_instance(&fx.agents, inst.agent_instance_id)
@@ -1293,7 +1292,7 @@ test_grant_rollback_cancels_ticket :: proc(t:^testing.T) {
  if !ok do return
  chain:=seed_live_chain(t,fx,"chain_t25_rollback")
  inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
- task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  _,granted,err:=t25_grant(t,fx,chain,task,inst,false)
  testing.expect(t,granted,err.message)
  current,_,_:=iface.agent_get_instance(&fx.agents,inst.agent_instance_id)
@@ -1361,7 +1360,7 @@ t25_refusal :: proc(t:^testing.T, kind:int) {
  }
  // A user stop is deliberately excluded by automatic placement; explicit grants
  // must still refuse for the launch reason without clearing that stop mark.
- task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  _,granted,err:=t25_grant(t,fx,chain,task,inst)
  testing.expect(t,!granted && err.code!=.None,err.message)
  wants:=[?]domain.Error_Code{.Plan_Limit_Reached,.Bridge_Offline,.Bridge_Busy,.ACP_Unavailable}
@@ -1553,7 +1552,7 @@ test_grant_race_with_manual_start :: proc(t:^testing.T) {
   inst,_,_:=iface.agent_get_instance(&fx.agents,"inst_t25")
   inst.runtime_status="stopped";inst.current_task_id="";inst.current_task_role=.None
   _,_,_=iface.agent_save_instance(&fx.agents,inst)
-  task:=publish_task(t,fx,chain,fmt.tprintf("task_race_%d",round),brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+  task:=publish_task(t,fx,chain,fmt.tprintf("task_race_%d",round),brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
   wake_log_reset(log)
   jobs: [2]T25_Race_Job
   jobs[0]={fx=fx,chain=chain,task=task,inst=inst,manual=true}
@@ -1738,7 +1737,7 @@ test_grant_chain_lookup_failure_settles_ticket :: proc(t:^testing.T) {
  if !ok do return
  chain:=seed_live_chain(t,fx,"chain_t25_chain_failure")
  inst:=seed_instance(fx,chain,"inst_t25","agt_w","br_1","stopped")
- task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_t25",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  u,opened,err:=begin_uow(&fx.svc)
  if !testing.expect(t,opened,err.message) do return
  lease,granted,gerr:=grant_in_uow(&fx.svc,&u,{explicit_identity=true,chain=chain,task=task,instance=inst,kind=domain.LEASE_KIND_WORK,delivery=domain.LEASE_DELIVERY_WAKE,placement={bridge_id="br_1",provider=inst.provider,model=inst.model},actor=hub_actor()})

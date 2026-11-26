@@ -17,7 +17,6 @@ FACET_PLACEMENT :: "placement"
 Placement_Failure :: struct {
 	phase:            string,
 	agent_id:         string,
-	role:             string,
 	bridge_id:        string,
 	directory_id:     string,
 	source:           string,
@@ -69,7 +68,6 @@ placement_failure_json :: proc(f: Placement_Failure, include_fingerprint := true
 	o := json_begin()
 	json_str(&o, "phase", f.phase)
 	json_str(&o, "agent_id", f.agent_id)
-	json_str(&o, "role", f.role)
 	json_str(&o, "bridge_id", f.bridge_id)
 	json_str(&o, "directory_id", f.directory_id)
 	json_str(&o, "source", f.source)
@@ -83,13 +81,12 @@ placement_failure_json :: proc(f: Placement_Failure, include_fingerprint := true
 	return json_end(&o)
 }
 
-append_placement_failure :: proc(out: ^[dynamic]Placement_Failure, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement, phase, role, reason, message: string, source := "") {
+append_placement_failure :: proc(out: ^[dynamic]Placement_Failure, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement, phase, reason, message: string, source := "") {
 	// Hash relevant configuration rather than task.updated_at (heartbeats and
 	// unrelated business events must not invalidate a placement operation).
 	c := json_begin()
 	json_str(&c, "phase", phase)
 	json_str(&c, "agent_id", fleet.agent_id)
-	json_str(&c, "role", role)
 	json_str(&c, "bridge_id", placement.bridge_id)
 	json_str(&c, "directory_id", placement.directory_id)
 	json_str(&c, "provider", placement.provider)
@@ -102,8 +99,7 @@ append_placement_failure :: proc(out: ^[dynamic]Placement_Failure, ctx: ^Match_C
 	json_str(&c, "task_bridge", task.bridge_id)
 	json_str(&c, "fleet_bridge", fleet.bridge_id)
 	json_int(&c, "fleet_capacity", i64(fleet.capacity))
-	json_str(&c, "fleet_roles", fleet.roles_json)
-	json_str(&c, "fleet_paused_roles", fleet.paused_roles_json)
+	json_bool(&c, "fleet_paused", fleet.paused)
 	json_str(&c, "fleet_models", fleet.bridge_models_json)
 	json_str(&c, "fleet_provider", fleet.provider)
 	json_str(&c, "fleet_model", fleet.model)
@@ -115,7 +111,7 @@ append_placement_failure :: proc(out: ^[dynamic]Placement_Failure, ctx: ^Match_C
 		json_str(&c, "directory_updated_at", d.updated_at)
 	}
 	f := Placement_Failure{
-		phase = phase, agent_id = fleet.agent_id, role = role,
+		phase = phase, agent_id = fleet.agent_id,
 		bridge_id = placement.bridge_id, directory_id = placement.directory_id,
 		source = source if source != "" else placement_source(ctx, task, fleet, phase == "work"),
 		reason = reason, message = message, provider = placement.provider, model = placement.model,
@@ -141,59 +137,48 @@ collect_placement_failures :: proc(svc: ^Service, ctx: ^Match_Context, task: dom
 			if cap := workflow_task_max_parallel_cached(svc, &caps, task); cap > 0 && stage_live_work_lease_count(ctx, task.workflow_run_id, task.workflow_execution_no, task.stage_key) >= cap do return out[:], {}
 		}
 		assignee := brief_assignee(task.brief_json)
-		if ctx.has_coordinator && chain_is_solo(svc, ctx.chain) && (assignee == "" || assignee == ctx.coordinator.agent_id) {
+		if assignee == "" {
+			append_placement_failure(&out, ctx, task, domain.Task_Chain_Fleet{}, {}, "work", "assignee_missing", "the task has no assignee", "unresolved")
+		} else if ctx.has_coordinator && assignee == ctx.coordinator.agent_id {
+			// The coordinator pulls its own work; only its bridge can be a problem.
 			if !ctx.held[ctx.coordinator.agent_instance_id] {
 				p := Placement{bridge_id = ctx.coordinator.bridge_id, directory_id = resolve_directory_for_bridge(ctx.dirs, ctx.coordinator.bridge_id), provider = ctx.coordinator.provider, model = ctx.coordinator.model}
 				if reason, message := placement_problem(svc, ctx, p, p.bridge_id != "", ctx.coordinator.agent_id); reason != "" {
-					append_placement_failure(&out, ctx, task, domain.Task_Chain_Fleet{agent_id = ctx.coordinator.agent_id}, p, "work", "worker", reason, message, "coordinator")
+					append_placement_failure(&out, ctx, task, domain.Task_Chain_Fleet{agent_id = ctx.coordinator.agent_id}, p, "work", reason, message, "coordinator")
 				}
 			}
-			return out[:], {}
-		}
-		rows := 0
-		queued := false
-		for f in ctx.fleets {
-			if ctx.has_coordinator && f.agent_id == ctx.coordinator.agent_id do continue
-			if !fleet_row_has_role(f, domain.FLEET_ROLE_WORKER) || (assignee != "" && f.agent_id != assignee) do continue
-			rows += 1
-			if domain.fleet_role_paused(f, domain.FLEET_ROLE_WORKER) { queued = true; continue }
+		} else if f, has_row := fleet_row_for_agent(ctx.fleets, assignee); !has_row {
+			append_placement_failure(&out, ctx, task, domain.Task_Chain_Fleet{agent_id = assignee}, {}, "work", "worker_missing", "the assignee has no row in the chain fleet", "unresolved")
+		} else if !f.paused {
 			p, resolved := resolve_placement(ctx, task, f, true)
-			if (!fleet_owns_task(ctx, task, f.agent_id) && placement_target_queued(svc, ctx, f, p)) || (p.directory_id != "" && directory_has_work_lease_ctx(ctx, p.directory_id)) { queued = true; continue }
-			reason, message := placement_problem(svc, ctx, p, resolved, f.agent_id)
-			if reason == "" { queued = true; continue }
-			append_placement_failure(&out, ctx, task, f, p, "work", "worker", reason, message)
+			queued := (!fleet_owns_task(ctx, task, f.agent_id) && placement_target_queued(svc, ctx, f, p)) || (p.directory_id != "" && directory_has_work_lease_ctx(ctx, p.directory_id))
+			if !queued {
+				if reason, message := placement_problem(svc, ctx, p, resolved, f.agent_id); reason != "" {
+					append_placement_failure(&out, ctx, task, f, p, "work", reason, message)
+				}
+			}
 		}
-		// An unassigned worker has alternatives. A usable queued alternative
-		// means placement is not what prevents this task from dispatching.
-		if assignee == "" && queued do return nil, {}
-		if rows == 0 do append_placement_failure(&out, ctx, task, domain.Task_Chain_Fleet{agent_id = assignee}, {}, "work", "worker", "worker_missing", "no eligible worker row in the chain fleet", "unresolved")
 	} else if task.state == .In_Review && !requirements_stale_review(svc, task) {
-		author := ""
-		if holder := last_attempt_holder(svc, task); holder != "" {
-			if inst, found, _ := iface.agent_get_instance(svc.agents, holder); found do author = inst.agent_id
-		}
-		pairs := required_review_pairs(task, ctx.fleets, author)
 		reviews, err := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
 		if err.code != .None do return nil, err
-		for id in distinct_review_agents(pairs) {
-			if review_lease_live_for(ctx, svc, task.task_id, id, "") do continue
+		for id in required_reviewers(task, task_author_agent(svc, task)) {
+			if !agent_review_owed(reviews, task, id) do continue
+			if review_lease_live_for(ctx, svc, task.task_id, id) do continue
+			if ctx.has_coordinator && id == ctx.coordinator.agent_id do continue // pulled by the coordinator
 			f, has_row := fleet_row_for_agent(ctx.fleets, id)
 			if !has_row do f.agent_id = id
-			owed := owed_review_roles(pairs, reviews, task, id)
-			if has_row do owed = unpaused_review_roles(f, owed)
-			if len(owed) == 0 do continue
+			if has_row && f.paused do continue
 			p, resolved := resolve_placement(ctx, task, f, false)
 			if has_row && placement_target_queued(svc, ctx, f, p) do continue
 			reason, message := placement_problem(svc, ctx, p, resolved, f.agent_id)
-			if !has_row { p = {}; reason, message = "reviewer_missing", "named reviewer has no chain fleet row" }
+			if !has_row { p = {}; reason, message = "reviewer_missing", "the reviewer has no row in the chain fleet" }
 			if reason == "" do continue
-			for role in owed do append_placement_failure(&out, ctx, task, f, p, "review", role, reason, message, "unresolved" if !has_row else "")
+			append_placement_failure(&out, ctx, task, f, p, "review", reason, message, "unresolved" if !has_row else "")
 		}
 	}
 	slice.sort_by(out[:], proc(a, b: Placement_Failure) -> bool {
 		if a.phase != b.phase do return a.phase < b.phase
-		if a.agent_id != b.agent_id do return a.agent_id < b.agent_id
-		return a.role < b.role
+		return a.agent_id < b.agent_id
 	})
 	return out[:], {}
 }
@@ -237,7 +222,7 @@ reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Ch
 		 if task.state == .Ready {
 		  if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
 		 } else if task.state == .In_Review {
-		  if review_lease_live_for(&ctx, svc, task.task_id, refusal.failure.agent_id, "") do continue
+		  if review_lease_live_for(&ctx, svc, task.task_id, refusal.failure.agent_id) do continue
 		 } else do continue
 		 append(&merged, refusal.failure)
 		}
@@ -248,7 +233,7 @@ reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Ch
 		  if task.state == .Ready {
 		   if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
 		  } else if task.state == .In_Review {
-		   if review_lease_live_for(&ctx, svc, task.task_id, previous.agent_id, "") do continue
+		   if review_lease_live_for(&ctx, svc, task.task_id, previous.agent_id) do continue
 		  } else do continue
 		  append(&merged, previous)
 		 }

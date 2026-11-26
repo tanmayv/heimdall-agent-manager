@@ -15,7 +15,7 @@ test_durable_ownership_survives_elapsed_time_without_heartbeat :: proc(t: ^testi
 	chain := seed_live_chain(t, fx, "chain_durable_elapsed")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_durable_elapsed", brief = `{"goal":"g","acceptance":["a"],"review_roles":[],"budget":{"hard_deadline":1}}`)
+	_ = publish_task(t, fx, chain, "task_durable_elapsed", brief = `{"goal":"g","acceptance":["a"],"budget":{"hard_deadline":1}}`)
 	confirm_holder(fx, "inst_w1")
 	before, held := lease_of(fx, "inst_w1")
 	if !testing.expect(t, held, "worker granted") do return
@@ -40,12 +40,12 @@ test_durable_ownership_review_rework_fencing_and_completion :: proc(t: ^testing.
 	chain := seed_live_chain(t, fx, "chain_durable_cycle")
 	seed_agent(fx, "agt_r2")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
-	seed_fleet(fx, chain, "agt_r2", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
+	seed_fleet(fx, chain, "agt_r2")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r2", "agt_r2", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_durable_cycle", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	task := publish_task(t, fx, chain, "task_durable_cycle", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
 	confirm_holder(fx, "inst_w1")
@@ -236,7 +236,6 @@ test_durable_ownership_migration_preserves_existing_claims :: proc(t: ^testing.T
 	testing.expect_value(t, worker.holder_instance_id, "inst_old_work")
 	testing.expect_value(t, worker.confirmed_at, "2026-01-01T00:00:01Z")
 	testing.expect_value(t, reviewer.holder_instance_id, "inst_old_review")
-	testing.expect_value(t, reviewer.review_role, "security")
 	// Running migrations again must preserve the upgraded claims too.
 	again, again_err := sqlite.run_migrations(&conn)
 	testing.expect(t, again, again_err.message)
@@ -249,10 +248,10 @@ test_durable_ownership_waiting_handoff_preserves_submission_and_verdict :: proc(
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_durable_wait_release")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_durable_wait_release", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	task := publish_task(t, fx, chain, "task_durable_wait_release", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
 	confirm_holder(fx, "inst_w1")

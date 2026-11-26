@@ -75,7 +75,6 @@ Task_Lease :: struct {
 	attempt_no:         int,
 	holder_instance_id: string,
 	kind:               string,
-	review_role:        string,
 	// Placement recorded at grant (task pin → fleet row → directory → coordinator).
 	bridge_id:          string,
 	provider:           string,
@@ -94,7 +93,8 @@ Task_Lease :: struct {
 	extended_at:        string,
 }
 
-// Task_Review: one verdict per (attempt, role, reviewer). verdict ∈ {approve,
+// Task_Review: one verdict per (attempt, role, reviewer); an agent verdict has
+// role REVIEW_ROLE_AGENT. verdict ∈ {approve,
 // request_changes}; findings_json stored verbatim.
 Task_Review :: struct {
 	task_id:              Task_ID,
@@ -149,8 +149,12 @@ Sched0_Fleet_Roles :: struct {
 	paused_roles_json: string,
 }
 
-// SCHED0_REVIEW_ROLE is the task_reviews.role an agent verdict carries after the
-// SCHED-0a mapping. Until SCHED-0b replaces the gate it is the named-reviewer
-// role the pre-0b gate already requires (taskv2.NAMED_REVIEW_ROLE); SCHED-0b
-// renames it to "review".
-SCHED0_REVIEW_ROLE :: "named"
+// REVIEW_ROLE_AGENT is the task_reviews.role every agent verdict carries
+// (SCHED-0b). task_reviews.role stays in the primary key; the other values are
+// "user" (a user verdict or a coordinator proxy) and "coordinator" (a gate
+// approval). The gate matches agent verdicts by reviewer agent, not by role.
+REVIEW_ROLE_AGENT :: "review"
+
+// SCHED0_REVIEW_ROLE: the role the one-shot SCHED-0a mapping collapses agent
+// verdicts to.
+SCHED0_REVIEW_ROLE :: REVIEW_ROLE_AGENT

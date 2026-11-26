@@ -22,9 +22,9 @@ test_chain_propose_and_decide_enforce_brief_contract :: proc(t: ^testing.T) {
 	coord := Actor{kind = ACTOR_AGENT, id = "inst_coord"}
 
 	bad_specs := [?]struct{name, tasks, code, needle: string}{
-		{"unknown key", `[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"bogus":1}}]`, "unknown_brief_fields", `"unknown_brief_fields":["bogus"]`},
-		{"instance reviewer", `[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"reviewers":["inst_bad"]}}]`, "reviewer_must_be_agent_id", "inst_bad"},
-		{"unknown reviewer", `[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"reviewers":["agt_nobody"]}}]`, "reviewer_must_be_agent_id", "agt_nobody"},
+		{"unknown key", `[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"assignee":"agt_w","bogus":1}}]`, "unknown_brief_fields", `"unknown_brief_fields":["bogus"]`},
+		{"instance reviewer", `[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["inst_bad"]}}]`, "reviewer_must_be_agent_id", "inst_bad"},
+		{"unknown reviewer", `[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_nobody"]}}]`, "reviewer_must_be_agent_id", "agt_nobody"},
 	}
 	for spec in bad_specs {
 		for auto in ([]bool{false, true}) {
@@ -40,7 +40,7 @@ test_chain_propose_and_decide_enforce_brief_contract :: proc(t: ^testing.T) {
 	// A proposal already pending with a bad brief (stored before this check)
 	// is refused on approval, not materialized.
 	stored, _, _ := iface.taskchain_get_chain(&fx.repo, chain.chain_id)
-	stored.defaults_json = set_chain_proposal_json(stored.defaults_json, `{"status":"pending","kind":"task","tasks":[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"reviewers":["inst_bad"]}}]}`)
+	stored.defaults_json = set_chain_proposal_json(stored.defaults_json, `{"status":"pending","kind":"task","tasks":[{"id":"bs_1","title":"T","brief":{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["inst_bad"]}}]}`)
 	_, _, _ = iface.taskchain_save_chain(&fx.repo, stored)
 	_, _, dok, derr := chain_proposal_decide(&fx.svc, chain.chain_id, "u1", Actor{kind = ACTOR_USER, id = "u1"}, "approve")
 	testing.expectf(t, !dok && strings.contains(derr.details_json, "reviewer_must_be_agent_id"), "pending bad proposal refused on approve: %s", derr.details_json)
@@ -50,10 +50,15 @@ test_chain_propose_and_decide_enforce_brief_contract :: proc(t: ^testing.T) {
 
 	// Valid: a durable reviewer agent, and the shorthand spec (no brief object).
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_rev", `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_rev")
 	_, gok, gerr := chain_propose(&fx.svc, chain.chain_id, "u1", coord, Propose_Input{kind = "task", auto_approve = true,
-		tasks_json = `[{"id":"bs_ok","title":"T","brief":{"goal":"g","acceptance":["a"],"reviewers":["agt_rev"]}},{"id":"bs_short","title":"Short","acceptance":["a"]}]`})
+		tasks_json = `[{"id":"bs_ok","title":"T","brief":{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_rev"]}},{"id":"bs_short","title":"Short","acceptance":["a"],"assignee":"agt_w"}]`})
 	testing.expectf(t, gok, "valid proposal: %s %s", gerr.message, gerr.details_json)
 	ok_task, has_ok, _ := iface.taskchain_get_task(&fx.repo, "bs_ok")
 	testing.expect(t, has_ok && strings.contains(ok_task.brief_json, "agt_rev"), "valid proposal materialized with its reviewer")
+	short_task, has_short, _ := iface.taskchain_get_task(&fx.repo, "bs_short")
+	testing.expect(t, has_short && brief_assignee(short_task.brief_json) == "agt_w", "the shorthand carries its assignee")
+	// A proposal without an assignee is refused with assignee_required.
+	_, nok, nerr := chain_propose(&fx.svc, chain.chain_id, "u1", coord, Propose_Input{kind = "task", auto_approve = true, tasks_json = `[{"id":"bs_none","title":"T","brief":{"goal":"g","acceptance":["a"]}}]`})
+	testing.expectf(t, !nok && strings.contains(nerr.details_json, `"code":"assignee_required"`), "proposal without an assignee: %s", nerr.details_json)
 }

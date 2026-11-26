@@ -282,7 +282,15 @@ seed_chain :: proc(t: ^testing.T, fx: ^Fixture, chain_id: string, published: boo
 	return chain
 }
 
-seed_task :: proc(t: ^testing.T, fx: ^Fixture, chain: domain.Task_Chain, task_id: string, brief := `{"goal":"g","review_roles":[]}`) -> domain.Task {
+// seed_task: every task names its assignee (REQ-SCHED-3), so a brief without an
+// "assignee" key gets the fixtures' worker agt_w. Pass "assignee":"" for an
+// unassigned (migration-held) task.
+seed_task :: proc(t: ^testing.T, fx: ^Fixture, chain: domain.Task_Chain, task_id: string, brief_in := `{"goal":"g","assignee":"agt_w"}`) -> domain.Task {
+	brief := brief_in
+	if trimmed := strings.trim_space(brief); strings.has_prefix(trimmed, "{") && !strings.contains(trimmed, `"assignee"`) {
+		inner := strings.trim_space(trimmed[1:len(trimmed)-1])
+		brief = `{"assignee":"agt_w"}` if inner == "" else fmt.tprintf(`{{"assignee":"agt_w",%s}}`, inner)
+	}
 	now := platform.clock_now(&fx.clock)
 	task := domain.Task{task_id = domain.Task_ID(task_id), chain_id = chain.chain_id, owner_user_id = chain.owner_user_id, title = task_id, publish_state = chain.publish_state, state = .Backlog, kind = .Task, priority = .P2, brief_json = brief, created_at = now, updated_at = now}
 	saved, ok, err := iface.taskchain_save_task(&fx.repo, task)

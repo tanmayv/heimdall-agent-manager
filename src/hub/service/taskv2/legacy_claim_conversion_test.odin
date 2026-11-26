@@ -9,15 +9,16 @@ import sqlite "odin_test:hub/repository/sqlite"
 
 @(test)
 test_legacy_claim_conversion_restores_free_owner_and_preserves_history :: proc(t:^testing.T) {
- for mode in ([]string{"free","conflict","stopped","held","unassigned","removed","reviewer_only","paused","named_no_fleet"}) {
+ for mode in ([]string{"free","conflict","stopped","held","paused","named_no_fleet","reassigned"}) {
   fx,log,ok:=lease_fixture(t,fmt.tprintf("legacy_conversion_%s",mode))
   if !ok {lease_fixture_close(fx,log);continue}
   chain:=seed_live_chain(t,fx,fmt.tprintf("chain_conversion_%s",mode))
   seed_fleet(fx,chain,"agt_w")
   seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
   brief:=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`
-  if mode=="unassigned" || mode=="removed" || mode=="reviewer_only" || mode=="paused" do brief=`{"goal":"g","acceptance":["a"]}`
-  restored:=mode=="free" || mode=="held" || mode=="unassigned" || mode=="paused" || mode=="named_no_fleet"
+  // Work belongs to the assignee only (REQ-SCHED-9): a paused row or a deleted
+  // fleet row does not revoke the assignee's retained responsibility.
+  restored:=mode=="free" || mode=="held" || mode=="paused" || mode=="named_no_fleet"
   task:=publish_task(t,fx,chain,"task_conversion",brief=brief)
   task.requires_user_approval=true
   _,_,_=iface.taskchain_save_task(&fx.repo,task)
@@ -32,17 +33,21 @@ test_legacy_claim_conversion_restores_free_owner_and_preserves_history :: proc(t
   inst.current_task_id="";inst.current_task_role=.None
   if mode=="stopped" {inst.stopped_by="user";inst.runtime_status="stopped"}
   _,_,_=iface.agent_save_instance(&fx.agents,inst)
-  if mode=="removed" || mode=="named_no_fleet" {
+  if mode=="reassigned" {
+   moved:=get_task(fx,"task_conversion")
+   moved.brief_json=`{"goal":"g","acceptance":["a"],"assignee":"agt_r"}`
+   _,_,_=iface.taskchain_save_task(&fx.repo,moved)
+  }
+  if mode=="named_no_fleet" {
    deleted,derr:=iface.taskchain_delete_fleet(&fx.repo,chain.chain_id,"agt_w","u1")
    testing.expect(t,deleted,derr.message)
   }
-  if mode=="reviewer_only" || mode=="paused" {
+  if mode=="paused" {
    fleets,_:=iface.taskchain_list_fleets_by_chain(&fx.repo,chain.chain_id,"u1")
    for fleet in fleets {
     if fleet.agent_id!="agt_w" do continue
     changed:=fleet
-    if mode=="reviewer_only" do changed.roles_json=`["reviewer"]`
-    if mode=="paused" do changed.paused_roles_json=`["worker"]`
+    changed.paused=true
     _,ferr:=iface.taskchain_upsert_fleet(&fx.repo,changed)
     testing.expect_value(t,ferr.code,domain.Error_Code.None)
    }
@@ -81,7 +86,7 @@ test_legacy_claim_conversion_restores_free_owner_and_preserves_history :: proc(t
    stopped,_,_:=iface.agent_get_instance(&fx.agents,"inst_w1")
    testing.expect_value(t,stopped.stopped_by,"user")
   }
-  if mode=="removed" || mode=="reviewer_only" do testing.expect(t,!owns,"ineligible fleet member is not restored")
+  if mode=="reassigned" do testing.expect(t,!owns,"a holder that is no longer the assignee is not restored")
   if mode=="held" do testing.expect(t,task_is_held(get_task(fx,"task_conversion")),"deliberate hold retained")
   testing.expect(t,!wake_log_has_run(log,"inst_w1"),"conversion never launches worker")
   testing.expect_value(t,get_task(fx,"task_conversion").state,domain.Task_State.In_Review)

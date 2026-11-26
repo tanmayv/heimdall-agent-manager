@@ -1,0 +1,48 @@
+#+private file
+package sqlite
+
+import "core:strings"
+import "core:testing"
+
+// SCHED-0b (migration 258): the role columns are dropped, a partial per-role
+// pause survives as the `paused` boolean, interim 'named' agent verdicts become
+// 'review', and a second boot neither re-adds the columns nor re-runs 131.
+
+S0B_DROP :: "258_drop_fleet_roles.sql"
+
+s0b_text :: proc(conn: ^Conn, query: string) -> string {
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(conn.db, strings.clone_to_cstring(query, context.temp_allocator), -1, &stmt, nil) != SQLITE_OK do return ""
+	defer sqlite3_finalize(stmt)
+	if sqlite3_step(stmt) != SQLITE_ROW do return ""
+	return strings.clone(column_text_unowned(stmt, 0), context.temp_allocator)
+}
+
+@(test)
+test_sched0b_drops_role_columns_once :: proc(t: ^testing.T) {
+	conn, path, ok := tmpl_open_file_prod(t, "s0b_drop")
+	if !ok do return
+	defer tmpl_remove_db(path)
+	defer close(&conn)
+	mig_ok, err := run_migrations(&conn, stop_before = S0B_DROP)
+	if !testing.expect(t, mig_ok, err.message) do return
+	testing.expect(t, table_column_exists(&conn, "task_chain_fleets", "roles_json"), "before 258: roles_json exists")
+	testing.expect(t, exec(&conn, "PRAGMA foreign_keys=OFF;"))
+	testing.expect(t, exec(&conn, `INSERT INTO task_chain_fleets (task_chain_id, agent_id, created_at, updated_at, roles_json, paused_roles_json) VALUES ('chain_s0b', 'agt_partial', 'now', 'now', '["worker","security"]', '["security"]');`))
+	testing.expect(t, exec(&conn, `INSERT INTO task_chain_fleets (task_chain_id, agent_id, created_at, updated_at, roles_json, paused_roles_json) VALUES ('chain_s0b', 'agt_live', 'now', 'now', '["worker"]', '');`))
+	testing.expect(t, exec(&conn, `INSERT INTO task_reviews (task_id, chain_id, owner_user_id, attempt_no, role, reviewer_kind, reviewer_agent_id, verdict, created_at) VALUES ('task_s0b', 'chain_s0b', 'user_s0b', 1, 'named', 'agent', 'agt_r', 'approve', 'now');`))
+	testing.expect(t, exec(&conn, "PRAGMA foreign_keys=ON;"))
+
+	for pass in ([]string{"upgrade", "restart"}) {
+		mig_ok, err = run_migrations(&conn)
+		if !testing.expectf(t, mig_ok, "%s: %s", pass, err.message) do return
+		testing.expectf(t, migration_applied(&conn, S0B_DROP), "%s: 258 recorded", pass)
+		testing.expectf(t, !table_column_exists(&conn, "task_chain_fleets", "roles_json"), "%s: roles_json stays dropped", pass)
+		testing.expectf(t, !table_column_exists(&conn, "task_chain_fleets", "paused_roles_json"), "%s: paused_roles_json stays dropped", pass)
+		testing.expectf(t, !table_column_exists(&conn, "task_leases", "review_role"), "%s: review_role stays dropped", pass)
+		testing.expectf(t, s0b_text(&conn, "SELECT paused FROM task_chain_fleets WHERE agent_id='agt_partial';") == "1", "%s: a partial pause is a full pause", pass)
+		testing.expectf(t, s0b_text(&conn, "SELECT paused FROM task_chain_fleets WHERE agent_id='agt_live';") == "0", "%s: an unpaused row stays unpaused", pass)
+		testing.expectf(t, s0b_text(&conn, "SELECT role FROM task_reviews WHERE task_id='task_s0b';") == "review", "%s: agent verdict role is review", pass)
+		testing.expectf(t, s0b_text(&conn, "SELECT count(*) FROM schema_migrations WHERE version='131_fleet_pause.sql';") == "1", "%s: 131 is not re-run", pass)
+	}
+}

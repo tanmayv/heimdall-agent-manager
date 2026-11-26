@@ -13,13 +13,13 @@ import platform "odin_test:hub/platform"
 // State-bearing kinds (the fold reacts to them):
 EV_MIGRATED          :: "migrated"           // {from_status, state, published, attempt_no, blocked_on?}
 EV_PUBLISHED         :: "published"          // {brief?}
-EV_LEASE_GRANTED     :: "lease_granted"      // {lease_id, kind, instance_id, attempt_no, bridge_id, provider, model, delivery, review_role?}
+EV_LEASE_GRANTED     :: "lease_granted"      // {lease_id, kind, instance_id, attempt_no, bridge_id, provider, model, delivery, agent_id}
 EV_SUBMITTED         :: "submitted"          // {lease_id, attempt_no, gate?}  (legacy rows may carry auto / verify / skip_verify_reason)
 EV_BLOCKED           :: "blocked"            // {lease_id?, kind?, attempt_no, dispatch_failed?, continuation?, infrastructure?, waiting_on:{kind, ref?, reason?, agent_id?, bridge_id?, provider?, model?}}
 EV_CLAIM_RELEASED    :: "claim_released" // Waiting ownership explicitly relinquished; no state transition.
 EV_HANDOFF           :: "handoff"            // {lease_id, attempt_no}
 EV_LEASE_EXPIRED     :: "lease_expired"      // {lease_id, kind, attempt_no, reason}
-EV_CHANGES_REQUESTED :: "changes_requested"  // {attempt_no, role, reviewer, reviewer_agent_id, reviewer_instance_id}
+EV_CHANGES_REQUESTED :: "changes_requested"  // {attempt_no, reviewer, reviewer_agent_id, reviewer_instance_id}
 EV_APPROVED          :: "approved"           // {attempt_no}
 EV_CANCELLED         :: "cancelled"          // {reason}
 EV_REOPENED          :: "reopened"           // {}
@@ -37,7 +37,7 @@ EV_LEASE_RESENT      :: "lease_resent"       // {lease_id}
 EV_LEASE_EXTENDED    :: "lease_extended"     // {lease_id, reason}  (clock-jump one-shot extension)
 EV_ATTEMPT_STARTED   :: "attempt_started"    // {attempt_no, vcs_base}
 EV_HEARTBEAT         :: "heartbeat"          // {lease_id, note}  (only when note is non-empty)
-EV_REVIEW_POSTED     :: "review_posted"      // {attempt_no, role, verdict, reviewer, reviewer_agent_id, reviewer_instance_id}
+EV_REVIEW_POSTED     :: "review_posted"      // {attempt_no, verdict, reviewer, reviewer_agent_id, reviewer_instance_id}
 EV_COMMENT           :: "comment"            // {comment_id}
 EV_READY_UNCLAIMED   :: "ready_unclaimed"    // {since}  — alert
 EV_REVIEW_STALLED    :: "review_stalled"     // {unmet}  — gate waiting, no lease, nothing owed (re-armed)

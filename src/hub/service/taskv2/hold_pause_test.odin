@@ -18,7 +18,7 @@ test_hold_leased_task_handoff_parks_until_release :: proc(t: ^testing.T) {
 	seed_fleet(fx, chain, "agt_w", capacity = 2)
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_w2", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	l1, leased := lease_of(fx, "inst_w1")
 	if !testing.expect(t, leased, "task_1 granted to inst_w1") do return
@@ -83,13 +83,13 @@ test_hold_unleased_task_never_dispatches :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_hold2")
 	seed_fleet(fx, chain, "agt_w")
-	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"]}`)
 	owner := actor_from_auth(user_auth())
 	_, hok, herr := task_hold(&fx.svc, task, owner, "fix brief first")
 	if !testing.expect(t, hok, fmt.tprintf("hold: %s", herr.message)) do return
 	// Publish + a free instance: still no lease while held.
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	row := get_task(fx, "task_1")
 	testing.expect_value(t, row.state, domain.Task_State.Backlog)
 	testing.expect(t, task_is_held(row), "held badge")
@@ -116,18 +116,18 @@ test_fleet_pause_stops_new_grants_keeps_live_work :: proc(t: ^testing.T) {
 	seed_fleet(fx, chain, "agt_w", capacity = 2)
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_w2", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, live := lease_of(fx, "inst_w1")
 	if !testing.expect(t, live, "task_1 granted before the pause") do return
 
-	set_paused :: proc(fx: ^Fixture, chain: domain.Task_Chain, paused: string) {
+	set_paused :: proc(fx: ^Fixture, chain: domain.Task_Chain, paused: bool) {
 		now := platform.clock_now(&fx.clock)
-		_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = "agt_w", capacity = 2, roles_json = `["worker"]`, paused_roles_json = paused, created_at = now, updated_at = now})
+		_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = "agt_w", capacity = 2, paused = paused, created_at = now, updated_at = now})
 		_ = fleet_changed(&fx.svc, chain)
 	}
-	set_paused(fx, chain, domain.FLEET_PAUSED_ALL_JSON)
-	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	set_paused(fx, chain, true)
+	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"]}`)
 	testing.expect_value(t, get_task(fx, "task_2").state, domain.Task_State.Ready)
 	_, w2 := lease_of(fx, "inst_w2")
 	testing.expect(t, !w2, "a paused row gets no new grant")
@@ -138,22 +138,10 @@ test_fleet_pause_stops_new_grants_keeps_live_work :: proc(t: ^testing.T) {
 	res, nok, _ := lease_next(&fx.svc, inst_auth("inst_w2"), Lease_Next_Input{})
 	testing.expect(t, nok && res.status == "none", fmt.tprintf("lease next while paused: %s", res.status))
 	_ = inst
-	// Pausing only a review role leaves work dispatch alone.
-	set_paused(fx, chain, `["reviewer"]`)
+	// Resume dispatches the queued work.
+	set_paused(fx, chain, false)
 	_, w2 = lease_of(fx, "inst_w2")
-	testing.expect(t, w2, "resume of the worker role dispatches task_2")
-}
-
-@(test)
-test_fleet_role_paused_helpers :: proc(t: ^testing.T) {
-	f := domain.Task_Chain_Fleet{roles_json = `["worker","security"]`}
-	testing.expect(t, !domain.fleet_paused_any(f) && !domain.fleet_role_paused(f, "worker"), "unpaused")
-	f.paused_roles_json = `["security"]`
-	testing.expect(t, domain.fleet_paused_any(f) && domain.fleet_role_paused(f, "security") && !domain.fleet_role_paused(f, "worker"), "one role paused")
-	f.paused_roles_json = domain.FLEET_PAUSED_ALL_JSON
-	testing.expect(t, domain.fleet_role_paused(f, "worker") && domain.fleet_role_paused(f, "security"), "all paused")
-	kept := unpaused_review_roles(domain.Task_Chain_Fleet{paused_roles_json = `["security"]`}, []string{"security", "style"})
-	testing.expect(t, len(kept) == 1 && kept[0] == "style", "paused review roles are not owed")
+	testing.expect(t, w2, "resume of the row dispatches task_2")
 }
 
 // Review holders get the checkpoint too: a hold on an in-review task nudges
@@ -168,12 +156,12 @@ test_hold_review_lease_handoff_parks_until_release :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_hold_review")
 	seed_agent(fx, "agt_r2")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
-	seed_fleet(fx, chain, "agt_r2", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
+	seed_fleet(fx, chain, "agt_r2")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r2", "agt_r2", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
@@ -226,53 +214,36 @@ test_hold_review_lease_handoff_parks_until_release :: proc(t: ^testing.T) {
 	assert_projection_matches_fold(t, fx, chain.chain_id, "u1", "review hold/release")
 }
 
-// Pause names FLEET roles; review leases carry lease roles. One mapping
-// (review_role_paused) serves wake and inline grants: a custom role is paused
-// only by its own name, a named review by reviewer / named-reviewer.
+// Pause is one boolean per row (REQ-SCHED-2): a paused reviewer row gets no
+// review lease by wake or by inline pull; resume dispatches the owed review.
 @(test)
-test_fleet_pause_review_role_mapping :: proc(t: ^testing.T) {
-	f := domain.Task_Chain_Fleet{roles_json = `["worker","reviewer","security"]`, paused_roles_json = `["reviewer"]`}
-	testing.expect(t, review_role_paused(f, NAMED_REVIEW_ROLE), "reviewer pause covers named reviews")
-	testing.expect(t, review_role_paused(f, "reviewer") && !review_role_paused(f, "security"), "reviewer pause leaves security")
-	f.paused_roles_json = `["named-reviewer"]`
-	testing.expect(t, review_role_paused(f, NAMED_REVIEW_ROLE) && !review_role_paused(f, "reviewer"), "named-reviewer pause covers named only")
-	f.paused_roles_json = domain.FLEET_PAUSED_ALL_JSON
-	testing.expect(t, review_role_paused(f, NAMED_REVIEW_ROLE) && review_role_paused(f, "security"), "* pauses every review")
-
-	fx, log, ok := lease_fixture(t, "pause_review_roles")
+test_fleet_pause_blocks_review_grants :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "pause_review_row")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_pause_review")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer","security"]`)
+	seed_fleet(fx, chain, "agt_r", paused = true)
 	now := platform.clock_now(&fx.clock)
-	set_r :: proc(fx: ^Fixture, chain: domain.Task_Chain, paused, now: string) {
-		_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = "agt_r", capacity = 1, roles_json = `["reviewer","security"]`, paused_roles_json = paused, created_at = now, updated_at = now})
+	set_r :: proc(fx: ^Fixture, chain: domain.Task_Chain, paused: bool, now: string) {
+		_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = "agt_r", capacity = 1, paused = paused, created_at = now, updated_at = now})
 		_ = fleet_changed(&fx.svc, chain)
 	}
-	set_r(fx, chain, `["reviewer"]`, now)
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["security"],"reviewers":["agt_r"]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
-	// Wake grant: security is not paused, the named review is.
-	rl, rheld := lease_of(fx, "inst_r1")
-	if !testing.expect(t, rheld, "reviewer pause does not suppress the security review (wake)") do return
-	testing.expect_value(t, rl.review_role, "security")
-	_, pok, _ := review_post(&fx.svc, inst_auth("inst_r1"), Review_Input{verdict = "approve"})
-	testing.expect(t, pok, "security approved")
-	// The owed named review stays undispatched: wake and inline pull.
-	waiting, retained := lease_of(fx, "inst_r1")
-	testing.expect(t, retained && waiting.phase == "waiting", "paused named review retains ownership without an active grant")
+	_, rheld := lease_of(fx, "inst_r1")
+	testing.expect(t, !rheld, "a paused reviewer row gets no review lease (wake)")
 	res, nok, _ := lease_next(&fx.svc, inst_auth("inst_r1"), Lease_Next_Input{})
-	testing.expect(t, nok && res.status == "waiting", fmt.tprintf("paused named review gets no inline grant: %s", res.status))
+	testing.expect(t, nok && res.status == "none", fmt.tprintf("paused reviewer gets no inline grant: %s", res.status))
+	testing.expect(t, res.refused_task_id == "task_1" && strings.contains(res.reason, "paused"), fmt.tprintf("the refusal names the task and the pause: %s %s", res.refused_task_id, res.reason))
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
-	// Resume: the named review is dispatched.
-	set_r(fx, chain, "", now)
-	rl, rheld = lease_of(fx, "inst_r1")
-	testing.expect(t, rheld && rl.review_role == NAMED_REVIEW_ROLE, "resume dispatches the named review")
+	set_r(fx, chain, false, now)
+	rl, rheld2 := lease_of(fx, "inst_r1")
+	testing.expect(t, rheld2 && rl.kind == domain.LEASE_KIND_REVIEW, "resume dispatches the owed review")
 }
 
 // A hold survives a concurrent infrastructure block (review round 2): one of
@@ -288,12 +259,12 @@ test_hold_with_infrastructure_block_keeps_checkpoint :: proc(t: ^testing.T) {
 		chain := seed_live_chain(t, fx, "chain_hold_infra")
 		seed_agent(fx, "agt_r2")
 		seed_fleet(fx, chain, "agt_w")
-		seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
-		seed_fleet(fx, chain, "agt_r2", roles = `["reviewer"]`)
+		seed_fleet(fx, chain, "agt_r")
+		seed_fleet(fx, chain, "agt_r2")
 		seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 		seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 		seed_instance(fx, chain, "inst_r2", "agt_r2", "br_1", "idle")
-		_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+		_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`)
 		confirm_holder(fx, "inst_w1")
 		_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 		if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
@@ -359,7 +330,7 @@ test_hold_is_not_user_attention :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_hold_att")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	owner := actor_from_auth(user_auth())
 
@@ -386,7 +357,7 @@ test_hold_is_not_user_attention :: proc(t: ^testing.T) {
 	testing.expect(t, kind == .Blocked && badge == "question", "the question returns on release")
 
 	// A bare hold (no other block) is never attention either.
-	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"]}`)
 	_, hok, _ = task_hold(&fx.svc, get_task(fx, "task_2"), owner, "later")
 	testing.expect(t, hok, "hold task_2")
 	row = get_task(fx, "task_2")
@@ -405,10 +376,10 @@ test_hold_keeps_user_review_attention :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_hold_rev")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	lease, leased := lease_of(fx, "inst_w1")
 	if !testing.expect(t, leased, "task_1 granted") do return
 	row := get_task(fx, "task_1")
@@ -442,7 +413,7 @@ test_hold_stale_reminds_coordinator :: proc(t: ^testing.T) {
 	fx.svc.notify_observer = proc(ctx: rawptr, coord_id, trigger, line: string) {
 		if trigger == "hold_stale" do append((^[dynamic]string)(ctx), strings.clone(line, context.temp_allocator))
 	}
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	// The coordinator places the hold, so the reminders are its own to act on
 	// (a user-placed hold is routed to the user: notice_relevance_test).
@@ -497,7 +468,7 @@ test_hold_stale_interval_is_configurable :: proc(t: ^testing.T) {
 	if !ok do return
 	fx.svc.hold_stale_seconds = 120
 	chain := seed_live_chain(t, fx, "chain_hold_stale_cfg")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	_, hok, _ := task_hold(&fx.svc, get_task(fx, "task_1"), actor_from_auth(user_auth()), "wait")
 	if !testing.expect(t, hok, "hold") do return
 	fixture_advance(fx, 60)
@@ -517,7 +488,7 @@ test_hold_stale_survives_restart_between_reminders :: proc(t: ^testing.T) {
 	defer lease_fixture_close(fx, log)
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_hold_stale_restart")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	_, hok, _ := task_hold(&fx.svc, get_task(fx, "task_1"), actor_from_auth(user_auth()), "wait")
 	if !testing.expect(t, hok, "hold") do return
 	fixture_advance(fx, HOLD_STALE_SECONDS + 1)

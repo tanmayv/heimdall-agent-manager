@@ -9,15 +9,15 @@ import agent "odin_test:hub/service/agent"
 import project "odin_test:hub/service/project"
 import sqlite "odin_test:hub/repository/sqlite"
 
-recovery_input :: proc(t: ^testing.T, fx: ^Fixture, task: domain.Task, id := "", role := "") -> Placement_Recovery_Input {
+recovery_input :: proc(t: ^testing.T, fx: ^Fixture, task: domain.Task, id := "", phase := "") -> Placement_Recovery_Input {
 	failures, err := placement_failures(&fx.svc, task)
 	testing.expect_value(t, err.code, domain.Error_Code.None)
 	for f in failures {
 		if id != "" && f.agent_id != id do continue
-		if role != "" && f.role != role do continue
+		if phase != "" && f.phase != phase do continue
 		return Placement_Recovery_Input{
 			expected_attempt = task.attempt_no, phase = f.phase, agent_id = f.agent_id,
-			role = f.role, fingerprint = f.fingerprint, configuration = f.configuration,
+			fingerprint = f.fingerprint, configuration = f.configuration,
 			expected_assignment = brief_assignee(task.brief_json) if f.phase == "work" else f.agent_id,
 			action = "change_bridge", bridge_id = "br_1", scope = "ticket" if f.phase == "work" else "chain_fleet",
 		}
@@ -35,25 +35,25 @@ test_placement_recovery_independent_review_targets_and_fleet_scope :: proc(t: ^t
 	seed_bridge(fx, "br_off", false)
 	for id in ([]string{"agt_a", "agt_b", "agt_d"}) do seed_agent(fx, id)
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_a", roles = `["reviewer"]`)
-	seed_fleet(fx, chain, "agt_b", roles = `["reviewer","security"]`, bridge_id = "br_off")
-	seed_fleet(fx, chain, "agt_d", roles = `["reviewer"]`, bridge_id = "br_off")
+	seed_fleet(fx, chain, "agt_a")
+	seed_fleet(fx, chain, "agt_b", bridge_id = "br_off")
+	seed_fleet(fx, chain, "agt_d", bridge_id = "br_off")
 	seed_instance(fx, chain, "inst_w", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_a", "agt_a", "br_1", "idle")
 	seed_instance(fx, chain, "inst_b", "agt_b", "br_1", "idle")
 	seed_instance(fx, chain, "inst_d", "agt_d", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_recover_parallel", brief = `{"goal":"g","review_roles":["reviewer","security"],"reviewers":["agt_b"]}`, bridge_pin = "br_1")
+	task := publish_task(t, fx, chain, "task_recover_parallel", brief = `{"goal":"g","assignee":"agt_w","reviewers":["agt_a","agt_b","agt_d"]}`, bridge_pin = "br_1")
 	confirm_holder(fx, "inst_w")
 	_, submitted, serr := lease_submit(&fx.svc, inst_auth("inst_w"), Submit_Input{summary = "ready", vcs_json = `{"head":"h","dirty":false}`})
 	if !testing.expect(t, submitted, serr.message) do return
 	task = get_task(fx, string(task.task_id))
-	input_b := recovery_input(t, fx, task, "agt_b", "security")
-	input_d := recovery_input(t, fx, task, "agt_d", "reviewer")
+	input_b := recovery_input(t, fx, task, "agt_b", "review")
+	input_d := recovery_input(t, fx, task, "agt_d", "review")
 	active_a, _ := lease_of(fx, "inst_a")
 	role_edit := input_b
 	role_edit.action, role_edit.replacement_agent_id, role_edit.scope = "change_reviewer", "agt_a", "ticket"
 	_, replaced_role, role_err := recover_placement(&fx.svc, user_auth(), task.task_id, role_edit)
-	testing.expect(t, !replaced_role && role_err.code == .Conflict, "role replacement routes to fleet configuration, never removes role")
+	testing.expect(t, !replaced_role && role_err.code == .Validation_Failed, "a replacement that is already a reviewer is refused")
 	_, fixed_b, berr := recover_placement(&fx.svc, user_auth(), task.task_id, input_b)
 	if !testing.expect(t, fixed_b, berr.message) do return
 	// The other failure was observed before this repair. An unrelated fleet
@@ -61,7 +61,7 @@ test_placement_recovery_independent_review_targets_and_fleet_scope :: proc(t: ^t
 	_, fixed_d, derr := recover_placement(&fx.svc, user_auth(), task.task_id, input_d)
 	testing.expect(t, fixed_d, derr.message)
 	_, duplicate_b, duplicate_err := recover_placement(&fx.svc, user_auth(), task.task_id, input_b)
-	testing.expect(t, !duplicate_b && duplicate_err.code == .Conflict, "old repaired role rejected")
+	testing.expect(t, !duplicate_b && duplicate_err.code == .Conflict, "old repaired target rejected")
 	after_a, held := lease_of(fx, "inst_a")
 	testing.expect(t, held && after_a.lease_id == active_a.lease_id, "unrelated active lease not migrated")
 	b, b_held := lease_of(fx, "inst_b")
@@ -87,7 +87,7 @@ test_placement_recovery_provider_and_owned_identity_validation :: proc(t: ^testi
 	})
 	testing.expect(t, foreign_saved, foreign_save_err.message)
 	seed_fleet(fx, chain, "agt_other", bridge_id = "br_1")
-	task := publish_task(t, fx, chain, "task_recover_provider", brief = `{"goal":"g","assignee":"agt_w","review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_recover_provider", brief = `{"goal":"g","assignee":"agt_w"}`)
 	input := recovery_input(t, fx, task)
 	input.action, input.replacement_agent_id = "change_assignee", "agt_other"
 	_, repaired, err := recover_placement(&fx.svc, user_auth(), task.task_id, input)
@@ -130,7 +130,7 @@ test_placement_recovery_owner_guards_and_duplicate :: proc(t: ^testing.T) {
 		case "assignment": bad.expected_assignment = "forged"
 		case "fingerprint": bad.fingerprint = "forged"
 		case "configuration": bad.configuration = "forged"
-		case "target": bad.role = "security"
+		case "target": bad.agent_id = "agt_forged"
 		case "scope": bad.scope = "chain_fleet"
 		}
 		_, repaired, err := recover_placement(&fx.svc, user_auth(), task.task_id, bad)
@@ -164,12 +164,12 @@ test_placement_recovery_named_reviewer_preserves_parallel_requirements :: proc(t
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w", "agt_w", "br_1", "idle")
 	for id in ([]string{"agt_a", "agt_b", "agt_done", "agt_new"}) {
-		seed_fleet(fx, chain, id, roles = `["named-reviewer"]`, bridge_id = "br_off" if id == "agt_b" else "br_1")
+		seed_fleet(fx, chain, id, bridge_id = "br_off" if id == "agt_b" else "br_1")
 	}
 	seed_instance(fx, chain, "inst_a", "agt_a", "br_1", "idle")
 	seed_instance(fx, chain, "inst_c", "agt_done", "br_1", "idle")
 	seed_instance(fx, chain, "inst_new", "agt_new", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_recover_named", brief = `{"goal":"g","acceptance":["x"],"review_roles":[],"reviewers":["agt_a","agt_b","agt_done"]}`)
+	task := publish_task(t, fx, chain, "task_recover_named", brief = `{"goal":"g","acceptance":["x"],"assignee":"agt_w","reviewers":["agt_a","agt_b","agt_done"]}`)
 	confirm_holder(fx, "inst_w")
 	_, submitted, serr := lease_submit(&fx.svc, inst_auth("inst_w"), Submit_Input{summary = "ready", vcs_json = `{"head":"h","dirty":false}`})
 	if !testing.expect(t, submitted, serr.message) do return
@@ -180,7 +180,7 @@ test_placement_recovery_named_reviewer_preserves_parallel_requirements :: proc(t
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
 	lease_a, _ := lease_of(fx, "inst_a")
 	before, _ := iface.taskchain_list_reviews_by_task(&fx.repo, task.task_id, "u1")
-	input := recovery_input(t, fx, task, "agt_b", NAMED_REVIEW_ROLE)
+	input := recovery_input(t, fx, task, "agt_b", "review")
 	input.action, input.replacement_agent_id, input.scope = "change_reviewer", "agt_new", "ticket"
 	fixed, repaired, err := recover_placement(&fx.svc, user_auth(), task.task_id, input)
 	if !testing.expect(t, repaired, err.message) do return
@@ -206,7 +206,7 @@ test_placement_recovery_validation_workflow_and_assignment :: proc(t: ^testing.T
 	seed_bridge(fx, "br_off", false)
 	seed_fleet(fx, chain, "agt_w", bridge_id = "br_off")
 	seed_fleet(fx, chain, "agt_new", bridge_id = "br_1")
-	task := publish_task(t, fx, chain, "task_recover_validation", brief = `{"goal":"g","assignee":"agt_w","review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_recover_validation", brief = `{"goal":"g","assignee":"agt_w"}`)
 	input := recovery_input(t, fx, task)
 	// Fresh target configuration changes invalidate even an unmodified facet.
 	seed_fleet(fx, chain, "agt_w", bridge_id = "br_off", capacity = 2)

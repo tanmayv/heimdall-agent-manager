@@ -44,10 +44,10 @@ test_start_agent_card_failure_preserves_block_and_retry_dispatches :: proc(t: ^t
 	// Offline placement has its own card. Start agent is reserved for process
 	// failure/explicit-stop consent, separate from placement outages.
 	_, _, _ = iface.bridge_save_bridge(&bridges, domain.Bridge{bridge_id = "br_anr", owner_user_id = PH_OWNER, status = .Online})
-	_, _ = iface.taskchain_upsert_fleet(&h.tasks, domain.Task_Chain_Fleet{task_chain_id = PH_CHAIN, agent_id = "agt_anr", bridge_id = "br_anr", capacity = 1, roles_json = "[\"worker\"]"})
+	_, _ = iface.taskchain_upsert_fleet(&h.tasks, domain.Task_Chain_Fleet{task_chain_id = PH_CHAIN, agent_id = "agt_anr", bridge_id = "br_anr", capacity = 1})
 	_, _, _ = iface.agent_save_instance(&h.agents, domain.Agent_Instance{agent_instance_id = "inst_anr", agent_id = "agt_anr", owner_user_id = PH_OWNER, chain_id = string(PH_CHAIN), bridge_id = "br_anr", provider = "claude", model = "claude-opus-5-5", runtime_status = "stopped", stopped_by = "user"})
 	task := ph_task("task_anr", .In_Progress, "2026-10-01T02:00:00Z")
-	task.brief_json = "{\"goal\":\"g\",\"review_roles\":[]}"
+	task.brief_json = "{\"goal\":\"g\",}"
 	task.state = .Backlog
 	_, _, _ = iface.taskchain_save_task(&h.tasks, task)
 	err := taskv2.task_created(&h.engine, task, taskv2.Actor{kind = taskv2.ACTOR_USER, id = string(PH_OWNER)})

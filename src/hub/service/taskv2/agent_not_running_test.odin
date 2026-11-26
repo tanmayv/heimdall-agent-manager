@@ -123,16 +123,16 @@ test_agent_not_running_unresolvable_provider_and_model :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_agent_not_running_solo_start_launches_only_on_user_action :: proc(t: ^testing.T) {
-	fx, log, ok := lease_fixture(t, "anr_solo")
+test_agent_not_running_coordinator_start_launches_only_on_user_action :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "anr_coord")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_anr_solo")
+	chain := seed_live_chain(t, fx, "chain_anr_coord")
 	coord, _, _ := iface.agent_get_instance(&fx.agents, "inst_coord")
 	coord.runtime_status = "stopped"
 	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
-	task := publish_solo_task(t, fx, chain, "task_solo_anr")
-	testing.expect(t, task.state == .Backlog && is_agent_not_running_block(task.blocked_on_json), "dead solo coordinator blocks ready work")
+	task := publish_coordinator_task(t, fx, chain, "task_coord_anr")
+	testing.expect(t, task.state == .Backlog && is_agent_not_running_block(task.blocked_on_json), "dead coordinator blocks ready work")
 	testing.expect(t, !wake_log_has_run(log, "inst_coord"), "no automatic coordinator wake")
 
 	pr_impl: sqlite.Project_Repo_SQLite
@@ -148,7 +148,7 @@ test_agent_not_running_solo_start_launches_only_on_user_action :: proc(t: ^testi
 	project.bridge_runtime_registry_mark_live(&registry, "br_1", false, "")
 	refuse := true
 	sink := project.Bridge_Command_Sink{ctx = &refuse, send_runtime_command = proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) {
-		if (^bool)(ctx)^ do return false, domain.domain_error(.Internal_Error, "solo launch refused")
+		if (^bool)(ctx)^ do return false, domain.domain_error(.Internal_Error, "coordinator launch refused")
 		return true, domain.Domain_Error{}
 	}}
 	ag_service := agent.new_agent_service_with_runtime(&fx.agents, &fx.bridges, &pr_repo, &co_repo, &fx.repo, sink, &registry, &fx.clock, &fx.ids)
@@ -157,37 +157,37 @@ test_agent_not_running_solo_start_launches_only_on_user_action :: proc(t: ^testi
 	fx.svc.agent_service = &ag_service
 	auth := contracts.Auth_Context{kind = .Session, user_id = "u1"}
 	started, err := start_task_agent(&fx.svc, auth, task.task_id)
-	testing.expect(t, !started && strings.contains(err.message, "solo launch refused"), "explicit failed launch returned")
-	task = get_task(fx, "task_solo_anr")
-	testing.expect(t, task.state == .Backlog && strings.contains(task.blocked_on_json, "solo launch refused"), "failed solo start remains blocked with updated reason")
+	testing.expect(t, !started && strings.contains(err.message, "coordinator launch refused"), "explicit failed launch returned")
+	task = get_task(fx, "task_coord_anr")
+	testing.expect(t, task.state == .Backlog && strings.contains(task.blocked_on_json, "coordinator launch refused"), "failed coordinator start remains blocked with updated reason")
 	refuse = false
 	started, err = start_task_agent(&fx.svc, auth, task.task_id)
-	testing.expect(t, started && err.code == .None, "explicit solo start succeeded")
+	testing.expect(t, started && err.code == .None, "explicit coordinator start succeeded")
 	coord, _, _ = iface.agent_get_instance(&fx.agents, "inst_coord")
 	testing.expect_value(t, coord.runtime_status, "launching")
-	task = get_task(fx, "task_solo_anr")
-	testing.expect(t, task.state == .Ready && task.blocked_on_json == "", "successful solo start clears block")
+	task = get_task(fx, "task_coord_anr")
+	testing.expect(t, task.state == .Ready && task.blocked_on_json == "", "successful coordinator start clears block")
 	_, held := lease_of(fx, "inst_coord")
 	testing.expect(t, !held && !wake_log_has_run(log, "inst_coord"), "matcher remains pull-only")
 	coord.runtime_status = "failed"
 	coord.last_error_json = `{"code":"provider_error","class":"fatal","message":"provider credentials expired"}`
 	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
 	u, begun, _ := begin_uow(&fx.svc)
-	if !testing.expect(t, begun, "rematch async solo failure") do return
+	if !testing.expect(t, begun, "rematch async coordinator failure") do return
 	matched, _ := match_chain_in_uow(&fx.svc, &u, chain, .Instance_Terminal)
 	_, _ = end_uow(&fx.svc, &u, matched)
-	task = get_task(fx, "task_solo_anr")
-	testing.expect(t, task.state == .Backlog, "async solo failure reblocks")
+	task = get_task(fx, "task_coord_anr")
+	testing.expect(t, task.state == .Backlog, "async coordinator failure reblocks")
 	reason := jsonx.extract_string(task.blocked_on_json, "reason", "", true, context.temp_allocator)
 	testing.expect(t, strings.contains(reason, "provider credentials expired"), "async provider error visible")
 	testing.expect(t, !strings.contains(reason, "{"), "provider error is readable text")
 	started, err = start_task_agent(&fx.svc, auth, task.task_id)
-	testing.expect(t, started && err.code == .None, "solo retry after async failure")
+	testing.expect(t, started && err.code == .None, "coordinator retry after async failure")
 	coord, _, _ = iface.agent_get_instance(&fx.agents, "inst_coord")
 	coord.runtime_status = "running"
 	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
 	res, pulled, _ := lease_next(&fx.svc, inst_auth("inst_coord"), Lease_Next_Input{})
-	testing.expect(t, pulled && res.status == "granted", "started solo coordinator pulls task")
+	testing.expect(t, pulled && res.status == "granted", "started coordinator pulls task")
 }
 
 @(test)
@@ -237,10 +237,10 @@ test_agent_not_running_reviewer_restart_preserves_rounds :: proc(t: ^testing.T) 
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_anr_reviewer")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_review_restart", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	task := publish_task(t, fx, chain, "task_review_restart", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, submitted, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, submitted, "first submission") do return
@@ -349,14 +349,14 @@ test_agent_not_running_reviewer_long_backoff_retries :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_review_backoff")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "failed")
 	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_r1")
 	inst.stopped_at = platform.clock_now(&fx.clock)
 	inst.last_error_json = `{"code":"bridge_busy","class":"retriable","message":"rate limited","retry_after_ms":900000,"attempt":1}`
 	_, _, _ = iface.agent_save_instance(&fx.agents, inst)
-	task := publish_task(t, fx, chain, "task_review_backoff", brief = `{"goal":"g","review_roles":["reviewer"]}`)
+	task := publish_task(t, fx, chain, "task_review_backoff", brief = `{"goal":"g","assignee":"agt_w","reviewers":["agt_r"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, submitted, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, submitted, "submit for review") do return
@@ -371,25 +371,25 @@ test_agent_not_running_reviewer_long_backoff_retries :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_agent_not_running_solo_hello_recovers_offline_coordinator :: proc(t: ^testing.T) {
-	fx, log, ok := lease_fixture(t, "anr_solo_hello")
+test_agent_not_running_coordinator_hello_recovers_offline_coordinator :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "anr_coord_hello")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
-	chain := solo_chain(t, fx, "chain_solo_hello")
+	chain := seed_live_chain(t, fx, "chain_coord_hello")
 	coord, _, _ := iface.agent_get_instance(&fx.agents, "inst_coord")
 	coord.runtime_status = "unreachable"
 	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
 	set_bridge_status(fx, "br_1", false)
-	task := publish_solo_task(t, fx, chain, "task_solo_hello")
-	testing.expect(t, task.state == .Ready && strings.contains(placement_body(fx, "task_solo_hello"), "bridge_offline"), "solo bridge absence recorded separately")
+	task := publish_coordinator_task(t, fx, chain, "task_coord_hello")
+	testing.expect(t, task.state == .Ready && strings.contains(placement_body(fx, "task_coord_hello"), "bridge_offline"), "coordinator bridge absence recorded separately")
 	set_bridge_status(fx, "br_1", true)
 	coord.runtime_status = "running"
 	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
 	on_bridge_hello(&fx.svc, "br_1", []string{"inst_coord"})
-	task = get_task(fx, "task_solo_hello")
-	testing.expect(t, task.state == .Ready && task.blocked_on_json == "", "hello clears solo offline block")
-	testing.expect_value(t, count_events(fx, "task_solo_hello", EV_ANSWERED), 0)
-	testing.expect(t, !wake_log_has_run(log, "inst_coord") && !wake_log_has_stop(log, "inst_coord"), "solo remains pull-only")
+	task = get_task(fx, "task_coord_hello")
+	testing.expect(t, task.state == .Ready && task.blocked_on_json == "", "hello clears coordinator offline block")
+	testing.expect_value(t, count_events(fx, "task_coord_hello", EV_ANSWERED), 0)
+	testing.expect(t, !wake_log_has_run(log, "inst_coord") && !wake_log_has_stop(log, "inst_coord"), "the coordinator remains pull-only")
 	res, pulled, _ := lease_next(&fx.svc, inst_auth("inst_coord"), Lease_Next_Input{})
 	testing.expect(t, pulled && res.status == "granted", "reconnected coordinator pulls without Start")
 }

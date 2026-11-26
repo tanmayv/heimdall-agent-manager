@@ -25,10 +25,10 @@ test_recheck_stale_gate_after_user_approval_removed_is_done :: proc(t: ^testing.
 	chain := seed_live_chain(t, fx, "chain_rc_gate")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
-	task = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	lease, leased := lease_of(fx, "inst_w1")
 	if !testing.expect(t, leased, "task_1 granted") do return
 	row := get_task(fx, "task_1")
@@ -69,10 +69,10 @@ test_task_updated_requires_user_approval_off_regates :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_rc_rua")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := seed_task(t, fx, chain, "task_1", `{"goal":"g","acceptance":["a"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	row := get_task(fx, "task_1")
 	row.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, row)
@@ -95,18 +95,18 @@ test_recheck_ready_unclaimed_with_capacity_dispatches :: proc(t: ^testing.T) {
 	defer lease_fixture_close(fx, log)
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_rc_disp")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Ready)
 	owner := actor_from_auth(user_auth())
 
 	// No worker row yet: the reason says so and nothing changes.
 	none, nok, _ := task_recheck(&fx.svc, get_task(fx, "task_1"), owner)
 	testing.expect(t, nok && !none.changed, "no fleet: no change")
-	testing.expect(t, recheck_reasons_contain(none, "no fleet row holds the worker role"), fmt.tprintf("%v", none.reasons))
+	testing.expect(t, recheck_reasons_contain(none, "assignee agt_w has no row in the chain fleet"), fmt.tprintf("%v", none.reasons))
 
 	// A row and an instance appear without a fleet trigger (missed event).
 	now := platform.clock_now(&fx.clock)
-	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = "agt_w", capacity = 2, roles_json = `["worker"]`, created_at = now, updated_at = now})
+	_, _ = iface.taskchain_upsert_fleet(&fx.repo, domain.Task_Chain_Fleet{task_chain_id = chain.chain_id, agent_id = "agt_w", capacity = 2, created_at = now, updated_at = now})
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	_, leased := lease_of(fx, "inst_w1")
 	testing.expect(t, !leased, "nothing re-ran the matcher yet")
@@ -130,8 +130,8 @@ test_recheck_reports_fleet_full :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_rc_full")
 	seed_fleet(fx, chain, "agt_w", capacity = 1)
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
-	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
+	_ = publish_task(t, fx, chain, "task_2", brief = `{"goal":"g","acceptance":["a"]}`)
 	testing.expect_value(t, get_task(fx, "task_2").state, domain.Task_State.Ready)
 	res, rok, _ := task_recheck(&fx.svc, get_task(fx, "task_2"), actor_from_auth(user_auth()))
 	testing.expect(t, rok && !res.changed, "full fleet: no change")
@@ -149,7 +149,7 @@ test_recheck_offline_bridge_reason_then_dispatch :: proc(t: ^testing.T) {
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	set_bridge_status(fx, "br_1", false)
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	owner := actor_from_auth(user_auth())
 	res, rok, rerr := task_recheck(&fx.svc, get_task(fx, "task_1"), owner)
 	if !testing.expect(t, rok, fmt.tprintf("recheck: %s", rerr.message)) do return
@@ -176,7 +176,7 @@ test_recheck_leaves_leased_task_untouched :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_rc_leased")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	before, leased := lease_of(fx, "inst_w1")
 	if !testing.expect(t, leased, "task_1 granted") do return
@@ -203,7 +203,7 @@ test_recheck_requires_owner_or_owners_agent :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_rc_authz")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	// REQ-AUTHZ-2: any agent instance of the chain's owner may re-check; an
 	// instance of another owner (or an unknown one) may not.
 	_, wok, werr := task_recheck(&fx.svc, task, Actor{kind = ACTOR_AGENT, id = "inst_w1"})
@@ -228,7 +228,7 @@ test_recheck_explains_merge_none_without_git_directory :: proc(t: ^testing.T) {
 	seed_directory(fx, chain, "dir_plain", "br_1", "")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	lease, leased := lease_of(fx, "inst_w1")
 	if !testing.expect(t, leased, "task_1 granted") do return
 	submit_via_release(t, fx, lease)
@@ -264,7 +264,7 @@ test_recheck_stale_gate_in_git_directory_queues_one_merge :: proc(t: ^testing.T)
 	seed_directory(fx, chain, "dir_git", "br_1", "git")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	row := get_task(fx, "task_1")
 	row.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, row)
@@ -309,7 +309,7 @@ test_merge_effect_dedupes_within_uow :: proc(t: ^testing.T) {
 	seed_directory(fx, chain, "dir_git", "br_1", "git")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	lease, leased := lease_of(fx, "inst_w1")
 	if !testing.expect(t, leased, "task_1 granted") do return
 	submit_via_release(t, fx, lease)

@@ -1,7 +1,5 @@
 package domain
 
-import "core:strings"
-
 Publish_State :: enum {
 	Draft,
 	Published,
@@ -131,7 +129,7 @@ Task_Chain :: struct {
 	coordinator_agent_instance_id: string,
 	// Workflow chains (M3b): the definition reference and the immutable snapshot
 	// `(def_id, version, inputs)` written once at `workflow.run`.
-	// defaults_json: chain-level defaults (review_roles descriptions, a pending proposal), JSON object.
+	// defaults_json: chain-level defaults (a pending proposal, …), JSON object.
 	defaults_json:                 string,
 	work_revision:                 i64,
 	completion_summary:            string,
@@ -275,31 +273,9 @@ Fleet_Bridge_Model :: struct {
 	model: string,
 }
 
-// Fleet roles (Task System v2 §4a). A fleet row is the per-(chain, template)
-// placement policy; `roles_json` lists which roles the template may be granted
-// for. The coordinator is NOT a fleet role (it is chain.coordinator / member role).
-FLEET_ROLE_WORKER :: "worker"
-FLEET_ROLE_REVIEWER :: "reviewer"
-FLEET_ROLES_DEFAULT_JSON :: `["worker"]`
-
-// fleet_role_name_valid: `worker` is the work role; every other role is a REVIEW
-// role a brief can require via review_roles (`reviewer`, `security`, `ux`, …).
-// Names are 1–32 chars of [a-z0-9_-] starting with a letter so they stay
-// readable in badges, attention lines and `review_role:<r>` publish errors.
-fleet_role_name_valid :: proc(role: string) -> bool {
-	if len(role) == 0 || len(role) > 32 do return false
-	for c, i in transmute([]u8)role {
-		switch c {
-		case 'a' ..= 'z':
-		case '0' ..= '9', '_', '-':
-			if i == 0 do return false
-		case:
-			return false
-		}
-	}
-	return true
-}
-
+// A fleet row is the per-(chain, agent) placement policy (spec SCHED
+// REQ-SCHED-1): it has no roles. Work goes to a task's assignee agent and reviews
+// to its listed reviewer agents. The coordinator is not a fleet row.
 Task_Chain_Fleet :: struct {
 	provider_profile: string,
 	task_chain_id:    Task_Chain_ID,
@@ -310,40 +286,18 @@ Task_Chain_Fleet :: struct {
 	// stop[] if it still holds no lease (coordinator exempt).
 	idle_ttl_seconds: int,
 	bridge_models_json: string,
-	// provider/model are the per-role provider selection for JIT-provisioned
+	// provider/model are the provider selection for JIT-provisioned
 	// instances. "" means inherit the standard resolution order.
 	provider:   string,
 	model:       string,
-	// roles_json: JSON array of role strings, default ["worker"].
-	roles_json: string,
 	// bridge_id: where instances of this template are placed. "" = resolve via
 	// chain directory → coordinator bridge.
 	bridge_id:  string,
-	// paused_roles_json (REQ-TV2-5): "" = not paused; a JSON array of the
-	// paused roles, `["*"]` = every role. A paused role gets no new lease on
-	// this row; live leases are untouched.
-	paused_roles_json: string,
-	// paused (REQ-SCHED-2): no new lease of any kind for this agent in the chain.
-	// Persisted as task_chain_fleets.paused; derived from paused_roles_json on
-	// write until SCHED-0b removes the per-role field.
+	// paused (REQ-SCHED-2): no new lease of any kind for this agent in the chain;
+	// live leases are untouched.
 	paused: bool,
 	created_at: string,
 	updated_at: string,
-}
-
-FLEET_PAUSED_ALL_JSON :: `["*"]`
-
-// fleet_role_paused: `role` (worker or a review role) is paused on the row.
-fleet_role_paused :: proc(fleet: Task_Chain_Fleet, role: string) -> bool {
-	raw := strings.trim_space(fleet.paused_roles_json)
-	if raw == "" || raw == "[]" do return false
-	return strings.contains(raw, `"*"`) || strings.contains(raw, strings.concatenate({`"`, role, `"`}, context.temp_allocator))
-}
-
-// fleet_paused_any: some role of the row is paused.
-fleet_paused_any :: proc(fleet: Task_Chain_Fleet) -> bool {
-	raw := strings.trim_space(fleet.paused_roles_json)
-	return raw != "" && raw != "[]"
 }
 
 task_is_workable :: proc(task: Task) -> bool {

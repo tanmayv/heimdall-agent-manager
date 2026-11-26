@@ -7,7 +7,7 @@ import domain "odin_test:hub/domain"
 // Revoke inst_old's claim (a running transfer to inst_new): leaves one pending fence.
 @(private = "file")
 seed_pending_stop :: proc(t:^testing.T,fx:^Fixture,chain:domain.Task_Chain,task_id:string) -> (domain.Task,bool) {
- task:=publish_task(t,fx,chain,task_id,brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,task_id,brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  _,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_old"),Lease_Claim_Input{task_id=task.task_id})
  if !testing.expect(t,claimed,fmt.tprintf("initial claim: %s",err.message)) do return {},false
  input:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_new",reason="move device",request_id=fmt.tprintf("transfer_%s",task_id),expected_generation=task_control_generation(&fx.svc,get_task(fx,task_id))}

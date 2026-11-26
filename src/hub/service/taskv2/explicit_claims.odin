@@ -62,19 +62,14 @@ lease_claim_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,input
   }
  }
  kind:=domain.LEASE_KIND_WORK
- review_role:=""
  if task.state==.In_Review {
   kind=domain.LEASE_KIND_REVIEW
   if requirements_stale_review(svc,task) do return {},false,domain.domain_error(.Conflict,"submission requirements are stale")
-  author:=""
-  if holder:=last_attempt_holder(svc,task);holder!="" {if h,hfound,_:=iface.agent_get_instance(svc.agents,holder);hfound do author=h.agent_id}
-  fleets,ferr:=iface.taskchain_list_fleets_by_chain(svc.repo,task.chain_id,task.owner_user_id)
-  if ferr.code!=.None do return {},false,ferr
+  listed:=false
+  for id in required_reviewers(task,task_author_agent(svc,task)) do if id==inst.agent_id {listed=true;break}
   reviews,rerr:=iface.taskchain_list_reviews_by_task(svc.repo,task.task_id,task.owner_user_id)
   if rerr.code!=.None do return {},false,rerr
-  owed:=owed_review_roles(required_review_pairs(task,fleets,author),reviews,task,inst.agent_id)
-  if len(owed)==0 do return {},false,domain.domain_error(.Forbidden,"target durable identity is not an eligible current reviewer")
-  review_role=join_review_roles(owed)
+  if !listed || !agent_review_owed(reviews,task,inst.agent_id) do return {},false,domain.domain_error(.Forbidden,"target durable identity is not an eligible current reviewer")
  } else if brief_assignee(task.brief_json)!=inst.agent_id {
   return {},false,domain.domain_error(.Forbidden,"target durable identity does not match the task assignee")
  }
@@ -90,7 +85,7 @@ lease_claim_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,input
  }
  delivery:=domain.LEASE_DELIVERY_INLINE
  if target!=auth.agent_instance_id do delivery=domain.LEASE_DELIVERY_WAKE
- lease,granted,gerr:=grant_in_uow(svc,u,Grant_Request{chain=chain,task=task,instance=inst,kind=kind,review_role=review_role,delivery=delivery,placement=Placement{bridge_id=inst.bridge_id,provider=inst.provider,model=inst.model,provider_profile=inst.provider_profile},actor=actor,trigger=.Lease_Next,explicit_identity=true})
+ lease,granted,gerr:=grant_in_uow(svc,u,Grant_Request{chain=chain,task=task,instance=inst,kind=kind,delivery=delivery,placement=Placement{bridge_id=inst.bridge_id,provider=inst.provider,model=inst.model,provider_profile=inst.provider_profile},actor=actor,trigger=.Lease_Next,explicit_identity=true})
  if !granted do return {},false,gerr
  fresh,_,_:=iface.taskchain_get_task(svc.repo,task.task_id)
  result:=Lease_Claim_Result{status="granted",lease=lease,task=fresh,target_instance_id=target,agent_id=inst.agent_id,role=kind,delivery=delivery}

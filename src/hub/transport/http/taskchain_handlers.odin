@@ -263,7 +263,6 @@ Task_Lease_Wire :: struct {
 	phase: string `json:"phase"`,
 	lease_id:           string `json:"lease_id"`,
 	kind:               string `json:"kind"`,
-	review_role:        string `json:"review_role"`,
 	holder_instance_id: string `json:"holder_instance_id"`,
 	attempt_no:         int    `json:"attempt_no"`,
 	bridge_id:          string `json:"bridge_id"`,
@@ -318,21 +317,16 @@ Task_Chain_Fleet_Wire :: struct {
 	updated_at:             string                         `json:"updated_at"`,
 	provider:               string                         `json:"provider"`,
 	model:                   string                         `json:"model"`,
-	roles:                  json.Value                     `json:"roles"`,
 	bridge_id:              string                         `json:"bridge_id"`,
-	// REQ-TV2-5: the row's roles that get no new lease; [] when not paused.
-	paused_roles:           []string                       `json:"paused_roles"`,
+	// REQ-SCHED-2: no new lease of any kind for this row.
 	paused:                 bool                           `json:"paused"`,
-	// warning: advisory text from fleet set (e.g. only unrequested custom roles).
+	// warning: advisory text from fleet set.
 	warning:                string                         `json:"warning,omitempty"`,
 	restarted_instance_ids: Maybe([]string)                `json:"restarted_instance_ids,omitempty"`,
 	restart_failures:       Maybe([]Fleet_Restart_Failure) `json:"restart_failures,omitempty"`,
 	restart_results:        Maybe([]Fleet_Restart_Result) `json:"restart_results,omitempty"`,
 	// What the matcher would apply for this row (plan REQ-UI-12); list only.
 	effective:              Maybe(taskchain_service.Effective_Placement) `json:"effective,omitempty"`,
-	// implicit: not a stored row — the Soloist coordinator works as the chain's
-	// worker without one (list only; editing it creates a real row).
-	implicit:               bool                           `json:"implicit,omitempty"`,
 }
 
 Task_Comment_Wire :: struct {
@@ -506,7 +500,7 @@ make_task_lease_wires :: proc(h: ^Taskchain_Handlers, t: domain.Task) -> []Task_
 	if err.code != .None do return out[:]
 	for l in leases {
 		append(&out, Task_Lease_Wire{
-			lease_id = l.lease_id, phase = l.phase, kind = l.kind, review_role = l.review_role, holder_instance_id = l.holder_instance_id,
+			lease_id = l.lease_id, phase = l.phase, kind = l.kind, holder_instance_id = l.holder_instance_id,
 			attempt_no = l.attempt_no, bridge_id = l.bridge_id, granted_at = l.granted_at, confirmed_at = l.confirmed_at,
 			expires_at = l.expires_at, hard_deadline_at = l.hard_deadline_at, delivery = l.delivery,
 		})
@@ -675,15 +669,6 @@ make_chain_directory_wire :: proc(dir: domain.Task_Chain_Directory) -> Task_Chai
 	}
 }
 
-// fleet_paused_roles lists the row's paused roles (`["*"]` expanded).
-fleet_paused_roles :: proc(f: domain.Task_Chain_Fleet) -> []string {
-	out := make([dynamic]string, context.temp_allocator)
-	for r in jsonx.decode_string_array(f.roles_json if f.roles_json != "" else domain.FLEET_ROLES_DEFAULT_JSON, context.temp_allocator) {
-		if domain.fleet_role_paused(f, r) do append(&out, r)
-	}
-	return out[:]
-}
-
 make_chain_fleet_wire :: proc(
 	f: domain.Task_Chain_Fleet,
 	active_count: int = 0,
@@ -713,10 +698,8 @@ make_chain_fleet_wire :: proc(
 		provider_profile=domain.profile_effective_id(f.provider,f.provider_profile),
 		provider               = f.provider,
 		model                   = f.model,
-		roles                  = json_value_or_empty_array(f.roles_json if f.roles_json != "" else domain.FLEET_ROLES_DEFAULT_JSON),
 		bridge_id              = f.bridge_id,
-		paused_roles           = fleet_paused_roles(f),
-		paused                 = domain.fleet_paused_any(f),
+		paused                 = f.paused,
 		restarted_instance_ids = restarted_ids_maybe,
 		restart_failures       = restart_failures_maybe,
 	}
@@ -2248,15 +2231,7 @@ list_chain_fleets_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain, chain_ok, _ := taskchain_service.get_chain_for_owner_write(h.taskchains, auth_ctx, chain_id)
 	members, _ := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
 	defer delete(members)
-	rows := make([dynamic]domain.Task_Chain_Fleet, 0, len(fleets) + 1, context.temp_allocator)
-	append(&rows, ..fleets)
-	implicit_agent := ""
-	if chain_ok {
-		if row, has := taskchain_service.implicit_solo_worker(h.taskchains, chain, fleets); has {
-			append(&rows, row)
-			implicit_agent = row.agent_id
-		}
-	}
+	rows := fleets
 	b := strings.builder_make()
 	strings.write_byte(&b, '[')
 	for f, i in rows {
@@ -2276,7 +2251,6 @@ list_chain_fleets_handler :: proc(ctx: rawptr, req: Request) -> Response {
 			}
 		}
 		wire := make_chain_fleet_wire(f, active_count)
-		wire.implicit = implicit_agent != "" && f.agent_id == implicit_agent
 		if chain_ok do wire.effective = taskchain_service.effective_placement(h.taskchains, chain, f)
 		data, _ := json.marshal(wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
 		strings.write_string(&b, string(data))
@@ -2416,7 +2390,6 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		failures_ptr = &failures_out
 	}
 	warning := ""
-	if has_roles do warning = taskchain_service.fleet_roles_warning(h.taskchains, fleet.task_chain_id, domain.User_ID(auth_ctx.user_id), roles[:])
 	results_out := restart_results[:]
 	results_ptr: ^[]Fleet_Restart_Result
 	if restart_flag_ok do results_ptr = &results_out
@@ -3235,45 +3208,6 @@ workflow_define_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, def.body_json)
 	strings.write_byte(&b, '}')
 	return respond_success(with_verify_removed_warnings(strings.to_string(b), workflow_spec_verify_removed_fields(spec_json)), req.request_id, auth_ctx_server_time(req), 201)
-}
-
-// ---- chain review roles (hybrid review model) ---------------------------------------
-
-// GET /api/v1/task-chains/{c}/review-roles
-list_chain_review_roles_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
-	if !ok do return auth_resp
-	roles, err := taskchain_service.list_review_roles(h.taskchains, auth_ctx, domain.Task_Chain_ID(path_part(req.path, 4)))
-	if err.code != .None do return respond_error(err, req.request_id)
-	data, _ := json.marshal(roles, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
-	return respond_list(string(data), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
-}
-
-// PUT /api/v1/task-chains/{c}/review-roles/{name}  {description}
-upsert_chain_review_role_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
-	if !ok do return auth_resp
-	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
-	if err := taskchain_service.set_review_role(h.taskchains, auth_ctx, chain_id, path_part(req.path, 6), json_string(req.body, "description")); err.code != .None {
-		return respond_error(err, req.request_id)
-	}
-	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
-	return respond_success(`{"ok":true}`, req.request_id, auth_ctx_server_time(req), 200)
-}
-
-// DELETE /api/v1/task-chains/{c}/review-roles/{name}
-delete_chain_review_role_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
-	if !ok do return auth_resp
-	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
-	if err := taskchain_service.delete_review_role(h.taskchains, auth_ctx, chain_id, path_part(req.path, 6)); err.code != .None {
-		return respond_error(err, req.request_id)
-	}
-	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
-	return respond_success(`{"ok":true}`, req.request_id, auth_ctx_server_time(req), 200)
 }
 
 // Cancellation retains task history and exposes operational cleanup.

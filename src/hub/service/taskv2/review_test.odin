@@ -20,7 +20,7 @@ test_budget_enforced_on_blocks_and_at_grant :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_budget")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","review_roles":[],"budget":{"max_attempts":3}}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","budget":{"max_attempts":3}}`)
 	testing.expect_value(t, task.state, domain.Task_State.In_Progress)
 	for round in 1..=3 {
 		lease, held := lease_of(fx, "inst_w1")

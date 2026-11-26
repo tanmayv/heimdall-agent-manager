@@ -151,11 +151,13 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		return false, domain.domain_error(.Conflict, "task is no longer waiting for its agent")
 	}
 	agent_id := jsonx.extract_string(task.blocked_on_json, "agent_id", "", true, context.temp_allocator)
-	if chain, chain_found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); chain_found && chain_is_solo(svc, chain) {
+	// An item for the coordinator's agent is pulled by the coordinator itself
+	// (REQ-SCHED-13): Start agent restarts that instance, never a fleet copy.
+	if chain, chain_found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); chain_found && chain.coordinator_agent_instance_id != "" {
 		if coord, coord_found, _ := iface.agent_get_instance(svc.agents, chain.coordinator_agent_instance_id); coord_found && coord.agent_id == agent_id {
 			_, cerr := end_uow(svc, &u, true)
 			if cerr.code != .None do return false, cerr
-			return start_solo_task_agent(svc, auth, task, coord)
+			return start_coordinator_task_agent(svc, auth, task, coord)
 		}
 	}
 	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
@@ -189,9 +191,9 @@ on_dispatch_failed :: proc(svc: ^Service, lease_id, detail: string) {
 	_, _ = end_uow(svc, &u, acted)
 }
 
-// Explicit user recovery for a pull-only solo coordinator. Launch outside the
+// Explicit user recovery for the pull-only coordinator. Launch outside the
 // transaction and clear its block only after the launch command succeeds.
-start_solo_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task: domain.Task, coord: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
+start_coordinator_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task: domain.Task, coord: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
 	stale := instance_is_live(coord) && now_ms(svc.clock) - to_ms(coord.last_seen_at) >= LEASE_TTL_SECONDS * 1000
 	started := (instance_is_live(coord) && !stale) || instance_is_pending(coord)
 	start_err: domain.Domain_Error

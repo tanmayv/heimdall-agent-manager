@@ -16,7 +16,7 @@ test_dispatch_unblock_http_coordinator_and_owner_auth :: proc(t: ^testing.T) {
 	chain, _, _ := iface.taskchain_get_chain(&f.tc_repo, f.chain_id)
 	chain.publish_state = .Published
 	_, _, _ = iface.taskchain_save_chain(&f.tc_repo, chain)
-	task := domain.Task{task_id = "task_dispatch_auth", chain_id = f.chain_id, owner_user_id = f.owner, title = "Dispatch auth", publish_state = .Published, kind = .Task, state = .Backlog, brief_json = `{"goal":"g","review_roles":[]}`, blocked_on_json = `{"kind":"dispatch","reason":"codex/model on bridge failed to start: exit 1"}`}
+	task := domain.Task{task_id = "task_dispatch_auth", chain_id = f.chain_id, owner_user_id = f.owner, title = "Dispatch auth", publish_state = .Published, kind = .Task, state = .Backlog, brief_json = `{"goal":"g"}`, blocked_on_json = `{"kind":"dispatch","reason":"codex/model on bridge failed to start: exit 1"}`}
 	_, _, _ = iface.taskchain_save_task(&f.tc_repo, task)
 	_, _, _ = taskv2.append_event(&f.tc_repo, &f.clock, task, taskv2.hub_actor(), taskv2.EV_PUBLISHED, `{}`)
 	_, _, _ = taskv2.append_event(&f.tc_repo, &f.clock, task, taskv2.hub_actor(), taskv2.EV_BLOCKED, `{"dispatch_failed":true,"waiting_on":{"kind":"dispatch","reason":"exit 1"}}`)

@@ -73,7 +73,6 @@ reuse_seed_dependents :: proc(t: ^testing.T, graph: ^app.App_Graph, user_id, bri
 		task_chain_id = REUSE_CHAIN_ID,
 		agent_id      = REUSE_AGENT_ID,
 		capacity      = 1,
-		roles_json    = `["worker"]`,
 		bridge_id     = bridge_id,
 		created_at    = REUSE_SEEDED_AT,
 		updated_at    = REUSE_SEEDED_AT,

@@ -13,6 +13,18 @@
       "type": "string",
       "required": true,
       "description": "Target directory or component to audit"
+    },
+    {
+      "name": "assignee",
+      "type": "string",
+      "required": true,
+      "description": "Agent id (agt_…) that works the task stages"
+    },
+    {
+      "name": "reviewer",
+      "type": "string",
+      "required": true,
+      "description": "Agent id (agt_…) that reviews each remediation"
     }
   ],
   "defaults": {
@@ -26,6 +38,7 @@
       "depends_on": [],
       "brief": {
         "goal": "Audit {{inputs.target}} for security vulnerabilities and emit structured findings.v1 output.",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "Structured findings.v1 output listing discovered issues with severity, summary, and location"
         ],
@@ -38,7 +51,9 @@
       "key": "triage",
       "kind": "gate",
       "title": "Triage security findings",
-      "depends_on": ["scan"],
+      "depends_on": [
+        "scan"
+      ],
       "gate": {
         "approver": "user_or_coordinator",
         "prompt": "Review security findings for {{inputs.target}} and approve remediation."
@@ -48,15 +63,20 @@
       "key": "remediate",
       "kind": "task",
       "title": "Remediate finding: {{item.summary}}",
-      "depends_on": ["triage"],
+      "depends_on": [
+        "triage"
+      ],
       "for_each": "scan.outputs[0].findings",
       "max_parallel": 4,
       "brief": {
         "goal": "Remediate {{item.severity}} security finding at {{item.location}}: {{item.summary}} ({{item.recommendation}})",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "Vulnerability remediated; the checks showing it is fixed are reported in the submit summary"
         ],
-        "review_roles": ["reviewer"]
+        "reviewers": [
+          "{{inputs.reviewer}}"
+        ]
       }
     }
   ]

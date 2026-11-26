@@ -12,7 +12,7 @@ test_integrated_answer_resumes_retained_blocked_worker :: proc(t:^testing.T) {
  if !ok do return
  chain:=seed_live_chain(t,fx,"chain_block_answer")
  seed_instance(fx,chain,"inst_worker","agt_w","br_1","running")
- task:=publish_task(t,fx,chain,"task_block_answer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_block_answer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  first,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_worker"),{task_id=task.task_id})
  if !testing.expect(t,claimed,err.message) do return
  _,blocked,berr:=lease_block(&fx.svc,inst_auth("inst_worker"),{lease_id=first.lease.lease_id,waiting_on_json=`{"kind":"human","reason":"choose target"}`})
@@ -39,7 +39,7 @@ test_integrated_transfer_cancel_late_receipt_never_revives_owner :: proc(t:^test
  chain:=seed_live_chain(t,fx,"chain_integrated_transfer_cancel")
  seed_instance(fx,chain,"inst_old","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_new","agt_w","br_1","running")
- task:=publish_task(t,fx,chain,"task_transfer_cancel",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_transfer_cancel",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  first,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_old"),{task_id=task.task_id})
  if !testing.expect(t,claimed,err.message) do return
  input:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_new",reason="move",request_id="move-once",expected_generation=task_control_generation(&fx.svc,get_task(fx,string(task.task_id)))}
@@ -77,8 +77,8 @@ test_integrated_cancel_backlog_ready_held_blocked_offline :: proc(t:^testing.T) 
   fx,log,ok:=lease_fixture(t,fmt.tprintf("integrated_cancel_%s",scenario))
   if !ok {lease_fixture_close(fx,log);continue}
   chain:=seed_live_chain(t,fx,"chain_cancel_matrix")
-  task:=seed_task(t,fx,chain,"task_matrix",`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
-  if scenario!="backlog" do task=publish_task(t,fx,chain,"task_matrix",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+  task:=seed_task(t,fx,chain,"task_matrix",`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
+  if scenario!="backlog" do task=publish_task(t,fx,chain,"task_matrix",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
   actor:=actor_from_auth(inst_auth("inst_coord"))
   if scenario=="held" {_,held,herr:=task_hold(&fx.svc,task,actor,"pause");testing.expect(t,held,herr.message)}
   if scenario=="blocked" {
@@ -124,7 +124,7 @@ test_integrated_reviewer_transfer_fences_verdict_and_stale_competitor :: proc(t:
  seed_instance(fx,chain,"inst_old","agt_r","br_1","running")
  seed_instance(fx,chain,"inst_new","agt_r","br_1","running")
  seed_instance(fx,chain,"inst_competing","agt_r","br_1","running")
- task:=publish_task(t,fx,chain,"task_review_stale",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[],"reviewers":["agt_r"]}`)
+ task:=publish_task(t,fx,chain,"task_review_stale",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
  _,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_author"),{task_id=task.task_id})
  if !testing.expect(t,claimed,err.message) do return
  _,submitted,serr:=lease_submit(&fx.svc,inst_auth("inst_author"),{summary="review result"})
@@ -157,7 +157,7 @@ test_integrated_stopped_projection_requires_receipt_then_retry_is_quiet :: proc(
  chain:=seed_live_chain(t,fx,"chain_stopped_transfer")
  seed_instance(fx,chain,"inst_old","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_new","agt_w","br_1","running")
- task:=publish_task(t,fx,chain,"task_stopped_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_stopped_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  _,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_old"),{task_id=task.task_id})
  if !testing.expect(t,claimed,err.message) do return
  old,_,_:=iface.agent_get_instance(&fx.agents,"inst_old")

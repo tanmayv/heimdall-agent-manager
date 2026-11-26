@@ -30,15 +30,8 @@ convert_legacy_review_claims_in_uow :: proc(svc: ^Service, u: ^Uow) -> (bool, do
   inst,found,ierr:=iface.agent_get_instance(svc.agents,holder)
   if ierr.code != .None && ierr.code != .Not_Found do return false,ierr
   assignee:=brief_assignee(task.brief_json)
+  // Work belongs to the assignee only (REQ-SCHED-9).
   worker_eligible:=assignee!="" && assignee==inst.agent_id
-  if assignee=="" {
-   fleets,ferr:=iface.taskchain_list_fleets_by_chain(svc.repo,task.chain_id,task.owner_user_id)
-   if ferr.code!=.None do return false,ferr
-   // Pausing new dispatch does not revoke retained responsibility.
-   for fleet in fleets {
-    if fleet.agent_id==inst.agent_id && fleet_row_has_role(fleet,domain.FLEET_ROLE_WORKER) do worker_eligible=true
-   }
-  }
   leases,lerr:=iface.taskchain_list_leases_by_task(svc.repo,task.task_id)
   if lerr.code != .None do return false,lerr
   for lease in leases do if lease.kind==domain.LEASE_KIND_WORK do reason="work_owner_already_present"

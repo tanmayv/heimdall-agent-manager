@@ -24,11 +24,16 @@ Lease_Next_Result :: struct {
 	lease:     domain.Task_Lease,
 	task:      domain.Task,
 	pack_json: string,
+	// status none with an item for the caller that could not be granted
+	// (REQ-SCHED-41): that task and the first refusal reason.
+	refused_task_id: domain.Task_ID,
+	reason:          string,
 }
 
 // lease_next (plan §2.5): idempotent. An instance holding a lease gets it back
-// (and the call confirms a wake-delivered lease); a lease-free chain worker is
-// granted inline (never woken) unless `input.peek` is set; the coordinator gets `none`.
+// (and the call confirms a wake-delivered lease); a lease-free instance — the
+// coordinator included — is granted inline (never woken) what its agent is
+// assigned or owes, unless `input.peek` is set (REQ-SCHED-12).
 lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Next_Input) -> (Lease_Next_Result, bool, domain.Domain_Error) {
 	inst, ok, err := instance_from_auth(svc, auth)
 	if !ok do return {}, false, err
@@ -51,7 +56,7 @@ lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Nex
 			if !found { _, _ = end_uow(svc, &u, false); return {}, false, err }
 			if !input.peek && ((lease.kind == domain.LEASE_KIND_WORK && task.state == .Ready) || (lease.kind == domain.LEASE_KIND_REVIEW && task.state == .In_Review && task.attempt_no != lease.attempt_no)) {
 				if chain, found, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); found {
-					if next, fresh, granted := grant_inline_for_instance(svc, &u, chain, inst, .Lease_Next); granted {
+					if next, fresh, granted, _ := grant_inline_for_instance(svc, &u, chain, inst, .Lease_Next); granted {
 						record_attempt_started(svc, fresh, next, input.vcs_base)
 						if err := requirements_present(svc, fresh, next); err.code != .None { _, _ = end_uow(svc, &u, false); return {}, false, err }
 						pack := build_pack_json(svc, chain, fresh, next, inst)
@@ -89,13 +94,16 @@ lease_next :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Lease_Nex
 		return {}, false, lease_lost_error()
 	} else if !input.peek && inst.chain_id != "" {
 		if chain, cok, _ := iface.taskchain_get_chain(svc.repo, domain.Task_Chain_ID(inst.chain_id)); cok {
-			if lease, task, granted := grant_inline_for_instance(svc, &u, chain, inst, .Lease_Next); granted {
+			if lease, task, granted, refusal := grant_inline_for_instance(svc, &u, chain, inst, .Lease_Next); granted {
 				record_attempt_started(svc, task, lease, input.vcs_base)
 				res = Lease_Next_Result{status = "granted", lease = lease, task = task}
 				if perr := requirements_present(svc, task, lease); perr.code != .None {
 					_, _ = end_uow(svc, &u, false)
 					return {}, false, perr
 				}
+			} else if refusal.task_id != "" {
+				res.refused_task_id = refusal.task_id
+				res.reason = refusal.reason
 			}
 		}
 	}

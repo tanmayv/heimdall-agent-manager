@@ -37,6 +37,7 @@ test_workflow_define_and_cycle_check :: proc(t: ^testing.T) {
 				"kind": "task",
 				"title": "Scan {{inputs.target}}",
 				"brief": {
+					"assignee": "agt_w",
 					"goal": "Scan {{inputs.target}}",
 					"acceptance": ["Produce task_list.v1"],
 					"output": {"schema": "task_list.v1"}
@@ -49,6 +50,7 @@ test_workflow_define_and_cycle_check :: proc(t: ^testing.T) {
 				"depends_on": ["scan"],
 				"for_each": "scan.outputs[0].tasks",
 				"brief": {
+					"assignee": "agt_w",
 					"goal": "{{item.goal}}",
 					"acceptance": ["Fixed"]
 				}
@@ -71,8 +73,8 @@ test_workflow_define_and_cycle_check :: proc(t: ^testing.T) {
 		"schema": "workflow.v1",
 		"name": "bad_cycle",
 		"stages": [
-			{"key": "a", "kind": "task", "depends_on": ["b"], "brief": {"goal": "g", "acceptance": ["a"]}},
-			{"key": "b", "kind": "task", "depends_on": ["a"], "brief": {"goal": "g", "acceptance": ["a"]}}
+			{"key": "a", "kind": "task", "depends_on": ["b"], "brief": {"assignee": "agt_w", "goal": "g", "acceptance": ["a"]}},
+			{"key": "b", "kind": "task", "depends_on": ["a"], "brief": {"assignee": "agt_w", "goal": "g", "acceptance": ["a"]}}
 		]
 	}`
 	_, cok, cerr := workflow_define(&fx.svc, "u1", cycle_spec)
@@ -83,8 +85,8 @@ test_workflow_define_and_cycle_check :: proc(t: ^testing.T) {
 		"schema": "workflow.v1",
 		"name": "bad_fe",
 		"stages": [
-			{"key": "a", "kind": "task", "brief": {"goal": "g", "acceptance": ["a"], "output": {"schema": "task_list.v1"}}},
-			{"key": "b", "kind": "task", "for_each": "a.outputs[0].tasks", "brief": {"goal": "g", "acceptance": ["a"]}}
+			{"key": "a", "kind": "task", "brief": {"assignee": "agt_w", "goal": "g", "acceptance": ["a"], "output": {"schema": "task_list.v1"}}},
+			{"key": "b", "kind": "task", "for_each": "a.outputs[0].tasks", "brief": {"assignee": "agt_w", "goal": "g", "acceptance": ["a"]}}
 		]
 	}`
 	_, feok, feerr := workflow_define(&fx.svc, "u1", bad_fe_spec)
@@ -95,7 +97,7 @@ test_workflow_define_and_cycle_check :: proc(t: ^testing.T) {
 		"schema": "workflow.v1",
 		"name": "bad_item",
 		"stages": [
-			{"key": "a", "kind": "task", "title": "Fix {{item.key}}", "brief": {"goal": "g", "acceptance": ["a"]}}
+			{"key": "a", "kind": "task", "title": "Fix {{item.key}}", "brief": {"assignee": "agt_w", "goal": "g", "acceptance": ["a"]}}
 		]
 	}`
 	_, iok, ierr := workflow_define(&fx.svc, "u1", bad_item_spec)
@@ -118,7 +120,7 @@ test_workflow_runs_share_chain_but_not_stage_identity :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_chain(t,fx,"chain_runs",true)
     seed_fleet(fx, chain, "agt_w")
-	workflow_example_definition(t,fx,"simple",`{"schema":"workflow.v1","name":"simple","stages":[{"key":"build","brief":{"goal":"Build","output":{"schema":"inline"},"review_roles":[]}}]}`)
+	workflow_example_definition(t,fx,"simple",`{"schema":"workflow.v1","name":"simple","stages":[{"key":"build","brief":{"assignee":"agt_w","goal":"Build","output":{"schema":"inline"}}}]}`)
 	first,aok,aerr := workflow_run(&fx.svc,"u1",Actor{kind=ACTOR_USER,id="u1"},Workflow_Run_Input{chain_id=string(chain.chain_id),ref="simple",request_id="one",inputs_json="{}"})
 	second,bok,berr := workflow_run(&fx.svc,"u1",Actor{kind=ACTOR_USER,id="u1"},Workflow_Run_Input{chain_id=string(chain.chain_id),ref="simple",request_id="two",inputs_json="{}"})
 	testing.expect(t,aok && bok,fmt.tprintf("%s / %s",aerr.message,berr.message))
@@ -139,7 +141,7 @@ test_workflow_retry_creates_fresh_generation_and_preserves_history :: proc(t: ^t
 	if !ok do return
 	chain := seed_chain(t,fx,"chain_retry",true)
     seed_fleet(fx, chain, "agt_w")
-	workflow_example_definition(t,fx,"retryable",`{"schema":"workflow.v1","name":"retryable","stages":[{"key":"build","brief":{"goal":"Build","output":{"schema":"inline"},"review_roles":[]}}]}`)
+	workflow_example_definition(t,fx,"retryable",`{"schema":"workflow.v1","name":"retryable","stages":[{"key":"build","brief":{"assignee":"agt_w","goal":"Build","output":{"schema":"inline"}}}]}`)
 	run,rok,rerr := workflow_run(&fx.svc,"u1",Actor{kind=ACTOR_USER,id="u1"},Workflow_Run_Input{chain_id=string(chain.chain_id),ref="retryable",request_id="one",inputs_json="{}"})
 	if !testing.expect(t,rok,rerr.message) do return
 	_,cancelled,cerr := workflow_cancel(&fx.svc,run.run_id,"u1",Actor{kind=ACTOR_USER,id="u1"},"change approach",1)
@@ -172,7 +174,7 @@ test_workflow_run_creation_request_is_idempotent :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_chain(t,fx,"chain_request",true)
     seed_fleet(fx, chain, "agt_w")
-	workflow_example_definition(t,fx,"once",`{"schema":"workflow.v1","name":"once","stages":[{"key":"build","brief":{"goal":"Build","output":{"schema":"inline"},"review_roles":[]}}]}`)
+	workflow_example_definition(t,fx,"once",`{"schema":"workflow.v1","name":"once","stages":[{"key":"build","brief":{"assignee":"agt_w","goal":"Build","output":{"schema":"inline"}}}]}`)
 	input := Workflow_Run_Input{chain_id=string(chain.chain_id),ref="once",request_id="same",inputs_json="{}"}
 	first,aok,_ := workflow_run(&fx.svc,"u1",Actor{kind=ACTOR_USER,id="u1"},input)
 	second,bok,_ := workflow_run(&fx.svc,"u1",Actor{kind=ACTOR_USER,id="u1"},input)
@@ -211,19 +213,25 @@ test_workflow_fleet_requires_worker_and_named_reviewer :: proc(t: ^testing.T) {
  if !ok do return
  chain := seed_chain(t,fx,"fleet_validation",true)
  err := workflow_validate_fleet(&fx.svc,chain,`{"goal":"g"}`)
- testing.expect(t,err.code==.Validation_Failed,"no worker rejected")
+ testing.expect(t,err.code==.Validation_Failed && strings.contains(err.details_json,`"code":"assignee_required"`),"a stage without an assignee is rejected")
+ err = workflow_validate_fleet(&fx.svc,chain,`{"goal":"g","assignee":"worker"}`)
+ testing.expect(t,err.code==.Validation_Failed,"an assignee without a fleet row is rejected")
  seed_fleet(fx,chain,"worker")
- err = workflow_validate_fleet(&fx.svc,chain,`{"goal":"g","reviewers":["named"]}`)
+ err = workflow_validate_fleet(&fx.svc,chain,`{"goal":"g","assignee":"worker","review_roles":["reviewer"]}`)
+ testing.expect(t,err.code==.Validation_Failed && strings.contains(err.details_json,`"code":"review_roles_removed"`),"review_roles is rejected")
+ err = workflow_validate_fleet(&fx.svc,chain,`{"goal":"g","assignee":"worker","reviewers":["named"]}`)
  testing.expect(t,err.code==.Validation_Failed,"missing named reviewer rejected")
- seed_fleet(fx,chain,"named",roles=`["named-reviewer"]`)
+ seed_fleet(fx,chain,"named")
  seed_agent(fx,"named")
- err = workflow_validate_fleet(&fx.svc,chain,`{"goal":"g","reviewers":["named"]}`)
- testing.expect(t,err.code==.None,"configured named reviewer accepted")
+ err = workflow_validate_fleet(&fx.svc,chain,`{"goal":"g","assignee":"worker","reviewers":["named","user"]}`)
+ testing.expect(t,err.code==.None,"configured reviewer and the user accepted")
+ err = workflow_validate_fleet(&fx.svc,chain,`{"goal":"g","assignee":"named","reviewers":["named"]}`)
+ testing.expect(t,err.code==.Validation_Failed && strings.contains(err.details_json,`"code":"reviewer_is_assignee"`),"the assignee cannot review")
  // REQ-TV2-4: a rendered inst_ or unknown reviewer gets the identity error,
  // even when a (stale) fleet row names it.
- seed_fleet(fx,chain,"agt_nobody",roles=`["named-reviewer"]`)
+ seed_fleet(fx,chain,"agt_nobody")
  for bad in ([]string{"agt_nobody","inst_18e1abc"}) {
-  err = workflow_validate_fleet(&fx.svc,chain,fmt.tprintf(`{{"goal":"g","reviewers":["%s"]}}`,bad))
+  err = workflow_validate_fleet(&fx.svc,chain,fmt.tprintf(`{{"goal":"g","assignee":"worker","reviewers":["%s"]}}`,bad))
   testing.expectf(t,err.code==.Validation_Failed && strings.contains(err.details_json,`"code":"reviewer_must_be_agent_id"`),"rendered reviewer %s: %s",bad,err.details_json)
  }
 }
@@ -236,9 +244,9 @@ test_workflow_cancel_waits_for_pending_merge :: proc(t: ^testing.T) {
  defer fixture_close(fx)
  if !ok do return
  chain := seed_chain(t,fx,"merge_fence",true)
- seed_fleet(fx,chain,"worker")
+ seed_fleet(fx,chain,"agt_w")
  seed_directory(fx,chain,"git_dir","br_1","git")
- workflow_example_definition(t,fx,"mergeable",`{"schema":"workflow.v1","name":"mergeable","stages":[{"key":"build","brief":{"goal":"Build","output":{"schema":"inline"},"review_roles":[]}}]}`)
+ workflow_example_definition(t,fx,"mergeable",`{"schema":"workflow.v1","name":"mergeable","stages":[{"key":"build","brief":{"assignee":"agt_w","goal":"Build","output":{"schema":"inline"}}}]}`)
  run, created, err := workflow_run(&fx.svc,"u1",Actor{kind=ACTOR_USER,id="u1"},Workflow_Run_Input{chain_id=string(chain.chain_id),ref="mergeable",request_id="one",inputs_json="{}"})
  if !testing.expect(t,created,err.message) do return
  wf, _, _ := workflow_context(&fx.svc,run.run_id,"u1")

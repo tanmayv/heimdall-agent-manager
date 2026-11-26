@@ -13,7 +13,7 @@ test_fleet_restart_coordinator_waiting_worker_and_active_reviewer :: proc(t: ^te
 	if !ok do return
 	chain := seed_live_chain(t, fx, "fleet_roles")
 	seed_fleet(fx, chain, "agt_w", bridge_id="br_1")
-	seed_fleet(fx, chain, "agt_r", roles=`["reviewer"]`, bridge_id="br_1")
+	seed_fleet(fx, chain, "agt_r", bridge_id="br_1")
 	seed_directory(fx, chain, "fleet_roles_dir", "br_1", "git")
 	for item in ([]struct {id, agent_id, role: string}{
 		{"inst_coord", "agt_c", "coordinator"},
@@ -23,7 +23,7 @@ test_fleet_restart_coordinator_waiting_worker_and_active_reviewer :: proc(t: ^te
 		i := seed_instance(fx, chain, item.id, item.agent_id, "br_1", "running", item.role)
 		testing.expect_value(t, iface.fleet_scope_set(&fx.bridges, i, "chain").code, domain.Error_Code.None)
 	}
-	task := publish_task(t, fx, chain, "fleet_review_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":["reviewer"],"reviewers":["agt_r"]}`)
+	task := publish_task(t, fx, chain, "fleet_review_task", brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
 	task.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, task)
 	confirm_holder(fx, "fleet_author")
@@ -60,7 +60,7 @@ test_fleet_restart_coordinator_waiting_worker_and_active_reviewer :: proc(t: ^te
 	}
 	for original in ([]domain.Task_Lease{worker, reviewer}) {
 		current, held := lease_of(fx, original.holder_instance_id)
-		testing.expect(t, held && current.lease_id==original.lease_id && current.attempt_no==original.attempt_no && current.phase==original.phase && current.kind==original.kind && current.review_role==original.review_role && current.model=="claude-sonnet-5-5")
+		testing.expect(t, held && current.lease_id==original.lease_id && current.attempt_no==original.attempt_no && current.phase==original.phase && current.kind==original.kind && current.model=="claude-sonnet-5-5")
 		packed := false
 		for cmd in p.commands do if strings.contains(cmd.body_json, original.lease_id) {
 			packed = strings.contains(cmd.body_json, "/srv/fleet_roles_dir/.heimdall/worktrees/fleet_review_task")

@@ -27,7 +27,7 @@ test_legacy_event_notice_catalog_switch :: proc(t: ^testing.T) {
 		"gate_rejected",
 		"workflow_budget",
 		"workflow_trigger_failed",
-		"solo_task_ready",
+		"coordinator_item_ready",
 		"merge_failed",
 	}
 	for trigger in migrated do testing.expect(t, legacy_event_notice_enabled(&svc, trigger), "unset defaults on")
@@ -46,7 +46,7 @@ test_legacy_requirements_notice_disabled_preserves_revision :: proc(t: ^testing.
 	chain := seed_live_chain(t, fx, "chain_requirements")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	probe: Requirements_Notice_Probe
 	fx.svc.bridge_command_sink = {
@@ -54,7 +54,7 @@ test_legacy_requirements_notice_disabled_preserves_revision :: proc(t: ^testing.
 		send_runtime_command = requirements_test_send,
 	}
 	fx.svc.legacy_event_notices = false
-	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a"],"review_roles":[]}`, 1)
+	requirements_test_change(t, fx, "task_1", `{"goal":"g2","acceptance":["a"]}`, 1)
 	testing.expect_value(t, probe.attempts, 0)
 	state, _ := requirements_read(&fx.repo, get_task(fx, "task_1"))
 	testing.expect_value(t, state.revision, i64(2))

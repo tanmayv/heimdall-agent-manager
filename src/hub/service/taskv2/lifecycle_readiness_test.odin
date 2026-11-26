@@ -20,11 +20,11 @@ test_review_post_keeps_reviewer_that_still_owes :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_o7")
 	seed_fleet(fx, chain, "agt_w", capacity = 2)
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_w2", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	brief := `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`
+	brief := `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`
 	_ = publish_task(t, fx, chain, "task_1", brief = brief)
 	_ = publish_task(t, fx, chain, "task_2", brief = brief)
 	confirm_holder(fx, "inst_w1")
@@ -69,12 +69,12 @@ test_review_post_waiting_lists_unmet :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_unmet")
 	seed_agent(fx, "agt_r2")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
-	seed_fleet(fx, chain, "agt_r2", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
+	seed_fleet(fx, chain, "agt_r2")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r2", "agt_r2", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`)
 	t_row := get_task(fx, "task_1")
 	t_row.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, t_row)
@@ -85,7 +85,7 @@ test_review_post_waiting_lists_unmet :: proc(t: ^testing.T) {
 	if !testing.expect(t, rok, fmt.tprintf("review: %s", rerr.message)) do return
 	testing.expect_value(t, res.gate, Gate_Result.Waiting)
 	body := gate_unmet_json(res.unmet)
-	testing.expect(t, strings.contains(body, `"agent_id":"agt_r2"`) && strings.contains(body, `"role":"reviewer"`), fmt.tprintf("missing r2 vote named: %s", body))
+	testing.expect(t, strings.contains(body, `{"kind":"review","agent_id":"agt_r2"}`), fmt.tprintf("missing r2 vote named: %s", body))
 	testing.expect(t, strings.contains(body, `"kind":"user_approval"`), "missing user approval named")
 	testing.expect(t, !strings.contains(body, `"agent_id":"agt_r"}`), "the approving reviewer is not unmet")
 	// r2 still owes the task: it keeps its lease
@@ -233,10 +233,10 @@ test_waiting_gate_with_nothing_owed_raises_review_stalled :: proc(t: ^testing.T)
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_stall")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, sok, "submit") do return

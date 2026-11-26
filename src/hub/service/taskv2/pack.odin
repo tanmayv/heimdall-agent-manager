@@ -78,10 +78,11 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 	l := json_begin()
 	json_str(&l, "lease_id", lease.lease_id)
 	json_str(&l, "kind", lease.kind)
-	json_str(&l, "review_role", lease.review_role)
-	// Hybrid review model: one review lease covers every role this agent owes
-	// on the task; each comes with what that role is asked to check.
-	if lease.kind == domain.LEASE_KIND_REVIEW do json_raw(&l, "review_roles", review_roles_pack_json(chain, lease.review_role))
+	// A reviewer gets what its agent is asked to check (brief.review_focus,
+	// spec SCHED 6.2); without one it reviews the task as a whole.
+	if lease.kind == domain.LEASE_KIND_REVIEW && inst.agent_id != "" {
+		if focus := review_focus_for(task.brief_json, inst.agent_id); focus != "" do json_str(&l, "review_focus", focus)
+	}
 	json_int(&l, "attempt_no", i64(lease.attempt_no))
 	json_int(&l, "max_attempts", i64(max_attempts))
 	json_int(&l, "review_round", i64(view.review_rounds))
@@ -117,8 +118,6 @@ build_pack_json :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 		summary, _, _ = build_mechanical_chain_summary(svc, chain)
 	}
 	json_str(&c, "summary", summary)
-	// Solo mode: the coordinator works its own chain (REQ-SOLO-1).
-	if chain_is_solo(svc, chain) do json_bool(&c, "solo", true)
 	json_raw(&o, "chain", json_end(&c))
 	json_str(&o, "chain_summary", summary)
 	if task.stage_key != "" {
@@ -416,7 +415,7 @@ open_findings_json :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_
 	reviews, err := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
 	if err.code != .None || len(reviews) == 0 do return "[]"
 	// Work: the LATEST request_changes round before this attempt — not simply
-	// attempt-1: a lapsed or handed-off attempt in between (solo re-pulls) must
+	// attempt-1: a lapsed or handed-off attempt in between (coordinator re-pulls) must
 	// not hide the findings the work is resuming from.
 	target_attempt := 0
 	if lease.kind == domain.LEASE_KIND_REVIEW {
@@ -449,7 +448,7 @@ open_findings_json :: proc(svc: ^Service, task: domain.Task, lease: domain.Task_
 			if jsonx.extract_int(ev.payload_json, "attempt_no", -1, true) != target_attempt do continue
 			summary := strings.trim_space(jsonx.extract_string(ev.payload_json, "summary", "", true, context.temp_allocator))
 			if summary == "" do continue
-			who := jsonx.extract_string(ev.payload_json, "role", "reviewer", true, context.temp_allocator)
+			who := jsonx.extract_string(ev.payload_json, "reviewer", "reviewer", true, context.temp_allocator)
 			if written > 0 do strings.write_byte(&b, ',')
 			f := json_begin()
 			json_str(&f, "severity", "blocking")

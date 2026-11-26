@@ -39,7 +39,7 @@ test_placement_worker_offline_is_durable_idempotent_and_recovers :: proc(t: ^tes
 	testing.expect_value(t, count_events(fx, string(task.task_id), EV_BLOCKED), 0)
 	facet, found := get_facet(&fx.svc, task, 0, FACET_PLACEMENT)
 	testing.expect(t, found && facet.writer == FACET_WRITER_HUB, "durable hub snapshot at pre-grant attempt")
-	for part in ([]string{`"phase":"work"`, `"role":"worker"`, `"agent_id":"agt_w"`, `"bridge_id":"br_1"`, `"source":"task"`, `"reason":"bridge_offline"`, `"fingerprint":`}) {
+	for part in ([]string{`"phase":"work"`, `"agent_id":"agt_w"`, `"bridge_id":"br_1"`, `"source":"task"`, `"reason":"bridge_offline"`, `"fingerprint":`}) {
 		testing.expect(t, strings.contains(facet.body_json, part), part)
 	}
 	fixture_advance(fx, 17) // elapsed time alone cannot change identity or version
@@ -70,15 +70,15 @@ test_placement_parallel_reviews_preserve_live_lease_and_verdict :: proc(t: ^test
 	for id in ([]string{"agt_a", "agt_b", "agt_c_review", "agt_d"}) do seed_agent(fx, id)
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	seed_fleet(fx, chain, "agt_a", roles = `["reviewer"]`, bridge_id = "br_1")
-	seed_fleet(fx, chain, "agt_b", roles = `["reviewer","security"]`, bridge_id = "br_off")
-	seed_fleet(fx, chain, "agt_c_review", roles = `["reviewer"]`, bridge_id = "br_1")
-	seed_fleet(fx, chain, "agt_d", roles = `["reviewer"]`, bridge_id = "br_off")
+	seed_fleet(fx, chain, "agt_a", bridge_id = "br_1")
+	seed_fleet(fx, chain, "agt_b", bridge_id = "br_off")
+	seed_fleet(fx, chain, "agt_c_review", bridge_id = "br_1")
+	seed_fleet(fx, chain, "agt_d", bridge_id = "br_off")
 	seed_instance(fx, chain, "inst_a", "agt_a", "br_1", "idle")
 	seed_instance(fx, chain, "inst_b", "agt_b", "br_off", "idle")
 	seed_instance(fx, chain, "inst_c", "agt_c_review", "br_1", "idle")
 	seed_instance(fx, chain, "inst_d", "agt_d", "br_off", "idle")
-	task := publish_task(t, fx, chain, "task_place_reviews", brief = `{"goal":"g","review_roles":["reviewer","security"],"reviewers":["agt_b"]}`, bridge_pin = "br_1")
+	task := publish_task(t, fx, chain, "task_place_reviews", brief = `{"goal":"g","assignee":"agt_w","reviewers":["agt_a","agt_b","agt_c_review","agt_d"]}`, bridge_pin = "br_1")
 	confirm_holder(fx, "inst_w1")
 	_, submitted, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "ready", vcs_json = `{"head":"h","dirty":false}`})
 	if !testing.expect(t, submitted, "submit") do return
@@ -89,7 +89,7 @@ test_placement_parallel_reviews_preserve_live_lease_and_verdict :: proc(t: ^test
 	before, _ := iface.taskchain_list_reviews_by_task(&fx.repo, task.task_id, "u1")
 	task = get_task(fx, string(task.task_id))
 	testing.expect(t, task.state == .In_Review && task.blocked_on_json == "", "parallel failures cannot block review")
-	testing.expect_value(t, placement_count(fx, string(task.task_id)), 4) // b: named/reviewer/security, d: reviewer
+	testing.expect_value(t, placement_count(fx, string(task.task_id)), 2) // b and d: one failure per reviewer agent
 	body := placement_body(fx, string(task.task_id))
 	testing.expect(t, strings.contains(body, `"bridge_id":"br_off"`) && strings.contains(body, `"source":"fleet"`), "review uses fleet bridge, never task pin")
 	testing.expect(t, !strings.contains(body, `"agent_id":"agt_a"`) && !strings.contains(body, `"agent_id":"agt_c_review"`), "active and approved targets excluded")
@@ -152,7 +152,7 @@ test_placement_capacity_and_pauses_do_not_report_offline :: proc(t: ^testing.T) 
 	_ = publish_task(t, fx, chain, "task_place_queued")
 	testing.expect_value(t, placement_count(fx, "task_place_queued"), 0)
 	fleets, _ := iface.taskchain_list_fleets_by_chain(&fx.repo, chain.chain_id, "u1")
-	fleets[0].paused_roles_json = `["worker"]`
+	fleets[0].paused = true
 	_, _ = iface.taskchain_upsert_fleet(&fx.repo, fleets[0])
 	_ = publish_task(t, fx, chain, "task_place_paused")
 	testing.expect_value(t, placement_count(fx, "task_place_paused"), 0)
@@ -172,7 +172,7 @@ test_placement_missing_named_reviewer_and_requirement_repair :: proc(t: ^testing
 	chain := seed_live_chain(t, fx, "chain_place_named")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	seed_fleet(fx, chain, "agt_r", roles = `["named-reviewer"]`, bridge_id = "br_absent")
+	seed_fleet(fx, chain, "agt_r", bridge_id = "br_absent")
 	task := publish_task(t, fx, chain, "task_place_named", brief = `{"goal":"g","reviewers":["agt_r"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, submitted, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "ready", vcs_json = `{"head":"h","dirty":false}`})
@@ -195,7 +195,7 @@ test_placement_missing_named_reviewer_and_requirement_repair :: proc(t: ^testing
 	testing.expect_value(t, task_updated(&fx.svc, task, actor_from_auth(user_auth()), []string{"reviewers"}).code, domain.Error_Code.None)
 	testing.expect_value(t, placement_count(fx, string(task.task_id)), 1)
 	// Restore the row and placement; the ordinary matcher grants the review.
-	seed_fleet(fx, chain, "agt_r", roles = `["named-reviewer"]`, bridge_id = "br_1")
+	seed_fleet(fx, chain, "agt_r", bridge_id = "br_1")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	testing.expect_value(t, fleet_changed(&fx.svc, chain).code, domain.Error_Code.None)
 	lease, held := lease_of(fx, "inst_r1")

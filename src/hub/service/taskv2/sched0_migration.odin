@@ -34,11 +34,34 @@ import jsonx "odin_test:lib/jsonx"
 // and after values. Taking the marker is the idempotence guard: a second boot
 // finds no marker and changes nothing.
 //
-// Interim (until SCHED-0b): the pre-0b engine still reads roles, so review rows
-// use domain.SCHED0_REVIEW_ROLE (the named-reviewer role the old gate requires),
-// the coordinator's fleet row is kept (the old engine needs it to grant the
-// coordinator its own tasks) and chain defaults_json.review_roles is left for
-// the registry that SCHED-0b deletes.
+// Agent verdicts are collapsed under domain.SCHED0_REVIEW_ROLE ("review", the
+// role every agent verdict carries since SCHED-0b). A fleet row the
+// coordinator's agent may still have is ignored for launching (spec 6.1), and
+// chain defaults_json.review_roles is no longer read by anything.
+
+// The pre-SCHED-0b role vocabulary, read only by this one-shot mapping.
+@(private = "file")
+SCHED0_LEGACY_NAMED_ROLE :: "named"
+@(private = "file")
+SCHED0_LEGACY_NAMED_REVIEWER_ROW :: "named-reviewer"
+@(private = "file")
+SCHED0_LEGACY_DEFAULT_ROLES_JSON :: `["worker"]`
+
+// sched0_legacy_brief_roles: a pre-0b brief's review_roles.
+@(private = "file")
+sched0_legacy_brief_roles :: proc(brief_json: string, allocator := context.allocator) -> [dynamic]string {
+	return jsonx.extract_string_array(brief_json, "review_roles", true, allocator)
+}
+
+// sched0_legacy_role_description: chain.defaults_json.review_roles.<name>.description.
+@(private = "file")
+sched0_legacy_role_description :: proc(defaults_json, role: string) -> string {
+	roles_obj, ok := jsonx.extract_raw_object(defaults_json, "review_roles", true, context.temp_allocator)
+	if !ok do return ""
+	entry, eok := jsonx.extract_raw_object(roles_obj, role, true, context.temp_allocator)
+	if !eok do return ""
+	return jsonx.extract_string(entry, "description", "", true, context.temp_allocator)
+}
 
 EV_SCHED0_MIGRATED :: "sched0_migrated" // {before, after, assigned_to_coordinator, causes}
 SCHED0_HOLD_PREFIX :: "sched0_migration: "
@@ -157,7 +180,7 @@ sched0_partial_pause :: proc(row: domain.Sched0_Fleet_Roles) -> (string, bool) {
 	if raw == "" || raw == "[]" do return "", false
 	paused := jsonx.decode_string_array(raw, context.temp_allocator)
 	for p in paused do if p == "*" do return "", false
-	roles := jsonx.decode_string_array(row.roles_json if strings.trim_space(row.roles_json) != "" else domain.FLEET_ROLES_DEFAULT_JSON, context.temp_allocator)
+	roles := jsonx.decode_string_array(row.roles_json if strings.trim_space(row.roles_json) != "" else SCHED0_LEGACY_DEFAULT_ROLES_JSON, context.temp_allocator)
 	all := true
 	for r in roles {
 		if !slice.contains(paused[:], r) { all = false; break }
@@ -170,7 +193,7 @@ sched0_partial_pause :: proc(row: domain.Sched0_Fleet_Roles) -> (string, bool) {
 sched0_holders :: proc(st: ^Sched0_Chain, role: string) -> [dynamic]string {
 	out := make([dynamic]string, context.temp_allocator)
 	for row in st.fleets {
-		roles := jsonx.decode_string_array(row.roles_json if strings.trim_space(row.roles_json) != "" else domain.FLEET_ROLES_DEFAULT_JSON, context.temp_allocator)
+		roles := jsonx.decode_string_array(row.roles_json if strings.trim_space(row.roles_json) != "" else SCHED0_LEGACY_DEFAULT_ROLES_JSON, context.temp_allocator)
 		if slice.contains(roles[:], role) && !slice.contains(out[:], row.agent_id) do append(&out, row.agent_id)
 	}
 	return out
@@ -207,7 +230,7 @@ sched0_mapped_brief :: proc(run: ^Sched0_Run, st: ^Sched0_Chain, task: domain.Ta
 		id := strings.trim_space(r)
 		if id != "" && !slice.contains(before.reviewers[:], id) do append(&before.reviewers, id)
 	}
-	before.review_roles = brief_review_roles(task.brief_json, context.temp_allocator)
+	before.review_roles = sched0_legacy_brief_roles(task.brief_json, context.temp_allocator)
 
 	after.assignee = before.assignee
 	after.focus = make(map[string]string, context.temp_allocator)
@@ -236,8 +259,8 @@ sched0_mapped_brief :: proc(run: ^Sched0_Run, st: ^Sched0_Chain, task: domain.Ta
 	for r in before.reviewers do add(&after.reviewers, r, after.assignee)
 	for role in before.review_roles {
 		role := strings.trim_space(role)
-		if role == "" || role == NAMED_REVIEW_ROLE || role == FLEET_ROLE_NAMED_REVIEWER do continue
-		desc := review_role_description(st.chain.defaults_json, role) if st.found else ""
+		if role == "" || role == SCHED0_LEGACY_NAMED_ROLE || role == SCHED0_LEGACY_NAMED_REVIEWER_ROW do continue
+		desc := sched0_legacy_role_description(st.chain.defaults_json, role) if st.found else ""
 		mapped := 0
 		for holder in sched0_holders(st, role) {
 			if holder == after.assignee do continue
@@ -451,7 +474,7 @@ sched0_map_workflow_runs :: proc(run: ^Sched0_Run, st: ^Sched0_Chain) -> (bool, 
 			unmapped := make([dynamic]string, context.temp_allocator)
 			for rv in roles_v {
 				role, rok := rv.(json.String)
-				if !rok || string(role) == "" || string(role) == NAMED_REVIEW_ROLE || string(role) == FLEET_ROLE_NAMED_REVIEWER do continue
+				if !rok || string(role) == "" || string(role) == SCHED0_LEGACY_NAMED_ROLE || string(role) == SCHED0_LEGACY_NAMED_REVIEWER_ROW do continue
 				if strings.contains(string(role), "{{") { append(&unmapped, string(role)); continue }
 				mapped := 0
 				for h in sched0_holders(st, string(role)) {

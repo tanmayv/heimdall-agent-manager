@@ -143,6 +143,7 @@ workflow_run_in_uow :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, actor
 	parsed := prep.parsed
 	definition_ref := prep.definition_ref
 	request_hash := prep.request_hash
+	if err := workflow_stage_assignment_problems(parsed.stages[:]); err.code != .None do return {}, false, err
 	for stage in parsed.stages {
 		if stage.kind != .Gate {
 			if err := workflow_validate_fleet(svc, chain, stage.brief_raw); err.code != .None do return {}, false, err

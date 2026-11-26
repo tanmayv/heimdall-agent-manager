@@ -21,6 +21,12 @@
       "required": false,
       "default": "true",
       "description": "Test command used to reproduce flaky tests"
+    },
+    {
+      "name": "assignee",
+      "type": "string",
+      "required": true,
+      "description": "Agent id (agt_…) that works the task stages"
     }
   ],
   "defaults": {
@@ -34,6 +40,7 @@
       "depends_on": [],
       "brief": {
         "goal": "Identify flaky tests in {{inputs.suite}} (using {{inputs.test_command}}), determine root causes, and emit a task_list.v1 of isolated fixes.",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "Structured task_list.v1 listing each flaky test with a root-cause goal and acceptance criteria"
         ],
@@ -46,11 +53,14 @@
       "key": "fix",
       "kind": "task",
       "title": "Fix flake: {{item.title}}",
-      "depends_on": ["reproduce"],
+      "depends_on": [
+        "reproduce"
+      ],
       "for_each": "reproduce.outputs[0].tasks",
       "max_parallel": 4,
       "brief": {
         "goal": "{{item.goal}}",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "Flake eliminated and the test passes deterministically; the repeated runs used to show this are reported in the submit summary"
         ]
@@ -60,9 +70,12 @@
       "key": "confirm",
       "kind": "task",
       "title": "Confirm suite stability: {{inputs.suite}}",
-      "depends_on": ["fix"],
+      "depends_on": [
+        "fix"
+      ],
       "brief": {
         "goal": "Check that the full {{inputs.suite}} suite is stable after all flake fixes (using {{inputs.test_command}}).",
+        "assignee": "{{inputs.assignee}}",
         "acceptance": [
           "The suite passes repeatedly without flakes; the runs and their outcomes are reported in the submit summary"
         ]

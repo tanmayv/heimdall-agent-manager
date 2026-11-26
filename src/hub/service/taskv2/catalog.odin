@@ -144,7 +144,7 @@ catalog_task_event :: proc(
 		return catalog_resolve(repo, clock, task, "review_request", id)
 	case EV_REVIEW_POSTED:
 		json_str(&data, "verdict", jsonx.extract_string(payload, "verdict", "", true, context.temp_allocator))
-		json_str(&data, "role", jsonx.extract_string(payload, "role", "", true, context.temp_allocator))
+		json_str(&data, "reviewer", jsonx.extract_string(payload, "reviewer", "", true, context.temp_allocator))
 		id, err := catalog_emit(
 			repo,
 			clock,

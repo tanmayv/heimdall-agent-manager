@@ -10,8 +10,8 @@ import jsonx "odin_test:lib/jsonx"
 // ---- task re-check (owner or coordinator) ----------------------------------------------
 //
 // task_recheck recomputes what the engine would have decided for one task had
-// every trigger fired: the review gate against the CURRENT reviewers, review
-// roles and user-approval flag; dependency readiness (refold + released task
+// every trigger fired: the review gate against the CURRENT reviewers and
+// user-approval flag; dependency readiness (refold + released task
 // blocks); a bridge_offline agent block whose bridge is back; the matcher
 // (dispatch); and a done task's pending or failed merge-back (never while a
 // merge job for it is still running). It is the safe alternative to
@@ -275,9 +275,9 @@ recheck_reasons :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 		unmet, _ := gate_unmet_components(svc, task)
 		for m in unmet {
 			if m.kind == "review" {
-				append(out, fmt.tprintf("waiting on review from %s (role %s)", m.agent_id, m.role))
+				append(out, fmt.tprintf("waiting on review from %s", m.agent_id))
 			} else {
-				append(out, fmt.tprintf("waiting on %s approval", m.role if m.role != "" else "user"))
+				append(out, fmt.tprintf("waiting on %s approval", m.approver if m.approver != "" else "user"))
 			}
 		}
 	case .In_Progress:

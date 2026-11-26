@@ -156,7 +156,7 @@ test_review_fix_blocked_card_pins_the_block :: proc(t: ^testing.T) {
 // ph_review_task saves a task awaiting the user's verdict (in_review, user
 // approval required, no agent review roles) and returns its id.
 ph_review_task :: proc(t: ^testing.T, h: ^Projector_Harness, id: string) -> domain.Task_ID {
-	task := domain.Task{task_id = domain.Task_ID(id), chain_id = PH_CHAIN, owner_user_id = PH_OWNER, title = "vault:v2:task-title", priority = .P1, publish_state = .Published, kind = .Task, state = .In_Review, attempt_no = 1, requires_user_approval = true, brief_json = `{"goal":"g","review_roles":[]}`, created_at = "2026-10-01T00:00:00Z", updated_at = "2026-10-01T01:00:00Z"}
+	task := domain.Task{task_id = domain.Task_ID(id), chain_id = PH_CHAIN, owner_user_id = PH_OWNER, title = "vault:v2:task-title", priority = .P1, publish_state = .Published, kind = .Task, state = .In_Review, attempt_no = 1, requires_user_approval = true, brief_json = `{"goal":"g"}`, created_at = "2026-10-01T00:00:00Z", updated_at = "2026-10-01T01:00:00Z"}
 	_, ok, err := iface.taskchain_save_task(&h.tasks, task)
 	testing.expectf(t, ok, "save review task: %s", err.message)
 	// The engine folds state from events: seed one that puts attempt 1 in review.

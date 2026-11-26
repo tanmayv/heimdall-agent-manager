@@ -24,7 +24,7 @@ test_explicit_claim_identity_cross_bridge_idempotency :: proc(t:^testing.T) {
  remote:=seed_instance(fx,chain,"inst_remote","agt_w","br_remote","running")
  remote.chain_id=""
  _,_,_=iface.agent_save_instance(&fx.agents,remote)
- task:=publish_task(t,fx,chain,"task_explicit",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`,bridge_pin="br_1")
+ task:=publish_task(t,fx,chain,"task_explicit",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`,bridge_pin="br_1")
  _,wrong,werr:=lease_claim(&fx.svc,inst_auth("inst_coord"),Lease_Claim_Input{task_id=task.task_id})
  testing.expect(t,!wrong && werr.code==.Forbidden,"coordinator self claim cannot bypass identity")
  first,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_remote"),Lease_Claim_Input{task_id=task.task_id})
@@ -47,7 +47,7 @@ test_explicit_claim_coordinator_target_and_transfer_stop_fence :: proc(t:^testin
  chain:=seed_live_chain(t,fx,"chain_transfer")
  seed_instance(fx,chain,"inst_old","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_new","agt_w","br_1","running")
- task:=publish_task(t,fx,chain,"task_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  first,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_old"),Lease_Claim_Input{task_id=task.task_id})
  if !testing.expect(t,claimed,fmt.tprintf("initial claim: %s",err.message)) do return
  input:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_new",reason="move device",request_id="transfer_once",expected_generation=task_control_generation(&fx.svc,get_task(fx,string(task.task_id)))}
@@ -89,7 +89,7 @@ test_explicit_transfer_waiting_worker_retains_role_and_reserves_target :: proc(t
  chain:=seed_live_chain(t,fx,"chain_waiting_transfer")
  seed_instance(fx,chain,"inst_old","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_new","agt_w","br_1","running")
- task:=publish_task(t,fx,chain,"task_waiting_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_waiting_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  task.requires_user_approval=true
  _,_,_=iface.taskchain_save_task(&fx.repo,task)
  first,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_old"),Lease_Claim_Input{task_id=task.task_id})
@@ -104,7 +104,7 @@ test_explicit_transfer_waiting_worker_retains_role_and_reserves_target :: proc(t
  testing.expect_value(t,pending.task.state,domain.Task_State.In_Review)
  next,nok,nerr:=lease_next(&fx.svc,inst_auth("inst_new"),Lease_Next_Input{})
  testing.expect(t,nok && next.status=="waiting",fmt.tprintf("pending target cannot execute: %s",nerr.message))
- unrelated:=publish_task(t,fx,chain,"task_unrelated_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ unrelated:=publish_task(t,fx,chain,"task_unrelated_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  _,stolen,sterr:=lease_claim(&fx.svc,inst_auth("inst_new"),Lease_Claim_Input{task_id=unrelated.task_id})
  testing.expect(t,!stolen && sterr.code==.Conflict,"target reserved against unrelated work")
  changed:=input;changed.reason="different"
@@ -127,7 +127,7 @@ test_explicit_transfer_active_reviewer_resumes_after_offline_stop :: proc(t:^tes
  seed_instance(fx,chain,"inst_author","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_review_old","agt_r","br_1","running")
  seed_instance(fx,chain,"inst_review_new","agt_r","br_1","running")
- task:=publish_task(t,fx,chain,"task_review_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[],"reviewers":["agt_r"]}`)
+ task:=publish_task(t,fx,chain,"task_review_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
  first,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_author"),Lease_Claim_Input{task_id=task.task_id})
  if !testing.expect(t,claimed,err.message) do return
  _,submitted,serr:=lease_submit(&fx.svc,inst_auth("inst_author"),Submit_Input{lease_id=first.lease.lease_id,summary="ready"})
@@ -166,7 +166,7 @@ test_explicit_transfer_waiting_reviewer_does_not_repeat_verdict :: proc(t:^testi
  seed_instance(fx,chain,"inst_author","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_review_old","agt_r","br_1","running")
  seed_instance(fx,chain,"inst_review_new","agt_r","br_1","running")
- task:=publish_task(t,fx,chain,"task_review_waiting_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[],"reviewers":["agt_r"]}`)
+ task:=publish_task(t,fx,chain,"task_review_waiting_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
  task.requires_user_approval=true
  _,_,_=iface.taskchain_save_task(&fx.repo,task)
  first,claimed,err:=lease_claim(&fx.svc,inst_auth("inst_author"),Lease_Claim_Input{task_id=task.task_id})
@@ -201,7 +201,7 @@ test_simple_transfer_without_generation_self_target_and_quiet_retries :: proc(t:
  seed_instance(fx,chain,"inst_old","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_new","agt_w","br_1","running")
  seed_instance(fx,chain,"inst_competitor","agt_w","br_1","running")
- task:=publish_task(t,fx,chain,"task_simple_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_simple_transfer",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  auth:=inst_auth("inst_coord")
  // Coordinator self target is eligible only when its durable identity matches.
  wrong:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_coord",reason="assign self",request_id="wrong-self"}
@@ -236,7 +236,7 @@ test_simple_transfer_without_generation_self_target_and_quiet_retries :: proc(t:
  _,stale,sterr:=lease_transfer(&fx.svc,auth,input)
  testing.expect(t,!stale && sterr.code==.Conflict,"same target with stale explicit generation rejected")
  // A matching coordinator may claim itself without fleet membership.
- self_task:=publish_task(t,fx,chain,"task_simple_self",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_c","review_roles":[]}`)
+ self_task:=publish_task(t,fx,chain,"task_simple_self",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_c"}`)
  self_input:=Lease_Claim_Input{task_id=self_task.task_id,instance_id="inst_coord",reason="work myself",request_id="self"}
  self,self_ok,self_err:=lease_transfer(&fx.svc,auth,self_input)
  testing.expect(t,self_ok && self.target_instance_id=="inst_coord" && self.pack_json!="",self_err.message)

@@ -86,7 +86,7 @@ Workflow_Stage_Spec :: struct {
 	approver:               string,
 	prompt:                 string,
 	requires_user_approval: bool,
-	// the spec SAID requires_user_approval (true or false); absent → the solo default.
+	// the spec SAID requires_user_approval (true or false); absent → false.
 	has_requires_user_approval: bool,
 	raw_json:               string,
 }
@@ -1002,6 +1002,7 @@ materialize_single_stage_in_uow :: proc(
 			brief_json = json_end(&gb)
 		} else {
 			brief_json = substitute_workflow_placeholders(st.brief_raw, snap, st.key, idx, total_count, item_json, stage_views, true, context.temp_allocator)
+			brief_json = workflow_apply_sched0_mapping(svc, chain.run, st.key, brief_json)
 		}
 
         if st.kind != .Gate {
@@ -1043,7 +1044,7 @@ materialize_single_stage_in_uow :: proc(
 			gen_by = json_end(&g)
 		}
 
-		req_user := solo_default_user_approval(svc, chain.chain, st.has_requires_user_approval, st.requires_user_approval)
+		req_user := (st.has_requires_user_approval && st.requires_user_approval) || brief_lists_user(brief_json)
 		if st.kind == .Gate && st.approver == "user" do req_user = true
 
 		tid := domain.Task_ID(platform.generate_id(svc.ids, "task_"))
@@ -1203,43 +1204,95 @@ collect_upstream_stage_task_ids :: proc(
 }
 
 // A workflow shares the chain fleet. It must never create or widen fleet rows.
+// A stage names its assignee and reviewer agents directly or through template
+// inputs (REQ-SCHED-7); the coordinator's agent needs no fleet row (it pulls).
 workflow_validate_fleet :: proc(svc: ^Service, chain: domain.Task_Chain, brief: string) -> domain.Domain_Error {
- fleets, err := iface.taskchain_list_fleets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
- if err.code != .None do return err
- if solo, implicit := implicit_solo_worker(svc, chain, fleets); implicit {
-  copy := make([dynamic]domain.Task_Chain_Fleet, context.temp_allocator)
-  append(&copy, ..fleets); append(&copy, solo); fleets = copy[:]
- }
- assignee := brief_assignee(brief)
- worker := false
- coordinator := chain_coordinator_agent_id(svc, chain)
- for fleet in fleets {
-  if fleet.capacity <= 0 || !fleet_row_has_role(fleet, domain.FLEET_ROLE_WORKER) do continue
-  if fleet.agent_id == coordinator && !chain_is_solo(svc, chain) do continue
-  if assignee == "" || strings.contains(assignee, "{{") || fleet.agent_id == assignee do worker = true
- }
- if !worker do return domain.domain_error(.Validation_Failed, "configure an eligible worker fleet row with positive capacity before starting the run")
- for reviewer in brief_named_reviewers(brief, context.temp_allocator) {
-  if strings.contains(reviewer, "{{") do continue
-  // Rendered reviewers get the same identity check as create/update (inst_ or
-  // unknown id -> reviewer_must_be_agent_id), then the fleet-eligibility check.
-  if ierr := validate_reviewer_agent_ids(svc.agents, {reviewer}); ierr.code != .None do return ierr
-  covered := false
-  for fleet in fleets do if fleet.agent_id == reviewer && fleet.agent_id != coordinator && fleet.capacity > 0 do covered = true
-  if !covered do return domain.domain_error(.Validation_Failed, fmt.tprintf("configure eligible fleet row for named workflow reviewer %s before starting the run", reviewer))
- }
- if assignee != "" && !strings.contains(assignee, "{{") {
-  covered := false
-  for fleet in fleets do if fleet.agent_id == assignee && fleet_row_has_role(fleet, domain.FLEET_ROLE_WORKER) do covered = true
-  if !covered do return domain.domain_error(.Validation_Failed, fmt.tprintf("configure worker fleet row for workflow assignee %s before starting the run", assignee))
- }
- for role in brief_review_roles(brief, context.temp_allocator) {
-  if strings.contains(role, "{{") do continue
-  covered := false
-  for fleet in fleets do if fleet.agent_id != coordinator && fleet.capacity > 0 && fleet_row_has_role(fleet, role) do covered = true
-  if !covered do return domain.domain_error(.Validation_Failed, fmt.tprintf("configure fleet review role %s before starting the run", role))
- }
- return domain.Domain_Error{}
+	if _, has := jsonx.extract_raw_array(brief, "review_roles", true, context.temp_allocator); has do return review_roles_removed_error()
+	assignee := brief_assignee(brief)
+	if assignee == "" do return assignee_required_error()
+	fleets, err := iface.taskchain_list_fleets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
+	if err.code != .None do return err
+	coordinator := chain_coordinator_agent_id(svc, chain)
+	templated := strings.contains(assignee, "{{")
+	if !templated && assignee != coordinator {
+		covered := false
+		for fleet in fleets do if fleet.agent_id == assignee && fleet.capacity > 0 do covered = true
+		if !covered do return domain.domain_error(.Validation_Failed, fmt.tprintf("configure a fleet row with positive capacity for workflow assignee %s before starting the run", assignee))
+	}
+	for reviewer in brief_reviewer_entries(brief, context.temp_allocator) {
+		if strings.contains(reviewer, "{{") || reviewer == REVIEWER_USER do continue
+		// Rendered reviewers get the same identity check as create/update (inst_ or
+		// unknown id -> reviewer_must_be_agent_id), then the fleet-eligibility check.
+		if ierr := validate_reviewer_agent_ids(svc.agents, {reviewer}); ierr.code != .None do return ierr
+		if !templated && reviewer == assignee do return reviewer_is_assignee_error(reviewer)
+		if reviewer == coordinator do continue
+		covered := false
+		for fleet in fleets do if fleet.agent_id == reviewer && fleet.capacity > 0 do covered = true
+		if !covered do return domain.domain_error(.Validation_Failed, fmt.tprintf("configure a fleet row for workflow reviewer %s before starting the run", reviewer))
+	}
+	return domain.Domain_Error{}
+}
+
+// workflow_apply_sched0_mapping: a run that was already running when SCHED-0a
+// migrated keeps its immutable spec, so a stage brief may still name
+// review_roles. The one-shot migration recorded the role → reviewer agent
+// mapping as a sched0_migrated run event; apply it to the rendered brief here.
+// A stage whose roles had no holder keeps review_roles and is refused by
+// workflow_validate_fleet (review_roles_removed), never silently unreviewed.
+workflow_apply_sched0_mapping :: proc(svc: ^Service, run: domain.Workflow_Run, stage_key, brief_json: string) -> string {
+	if !jsonx.has_key(brief_json, "review_roles", true) do return brief_json
+	events, err := iface.taskchain_list_workflow_run_events(svc.repo, run.run_id, run.owner_user_id)
+	if err.code != .None do return brief_json
+	for i := len(events) - 1; i >= 0; i -= 1 {
+		ev := events[i]
+		if ev.kind != EV_SCHED0_MIGRATED do continue
+		stages, sok := jsonx.extract_raw_object(ev.payload_json, "stages", true, context.temp_allocator)
+		if !sok do continue
+		entry, eok := jsonx.extract_raw_object(stages, stage_key, true, context.temp_allocator)
+		if !eok do continue
+		if unmapped := jsonx.extract_string_array(entry, "unmapped_roles", true, context.temp_allocator); len(unmapped) > 0 do return brief_json
+		reviewers, rok := jsonx.extract_raw_array(entry, "reviewers", true, context.temp_allocator)
+		if !rok do return brief_json
+		parsed, perr := json.parse_string(brief_json, allocator = context.temp_allocator)
+		if perr != nil do return brief_json
+		obj, is_obj := parsed.(json.Object)
+		if !is_obj do return brief_json
+		mapped, merr := json.parse_string(reviewers, allocator = context.temp_allocator)
+		if merr != nil do return brief_json
+		delete_key(&obj, "review_roles")
+		obj["reviewers"] = mapped
+		out, jerr := json.marshal(obj, allocator = context.temp_allocator)
+		if jerr != nil do return brief_json
+		return string(out)
+	}
+	return brief_json
+}
+
+// workflow_stage_assignment_problems (REQ-SCHED-7): the non-gate stages of a
+// template that use review_roles or name no assignee, as one error listing the
+// stages (nil when every stage is staffed by agent id).
+workflow_stage_assignment_problems :: proc(stages: []Workflow_Stage_Spec) -> domain.Domain_Error {
+	removed := make([dynamic]string, context.temp_allocator)
+	unassigned := make([dynamic]string, context.temp_allocator)
+	for st in stages {
+		if st.kind == .Gate do continue
+		if _, has := jsonx.extract_raw_array(st.brief_raw, "review_roles", true, context.temp_allocator); has do append(&removed, st.key)
+		if brief_assignee(st.brief_raw) == "" do append(&unassigned, st.key)
+	}
+	if len(removed) == 0 && len(unassigned) == 0 do return domain.Domain_Error{}
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, `{"code":"`)
+	strings.write_string(&b, "review_roles_removed" if len(removed) > 0 else "assignee_required")
+	strings.write_string(&b, `","review_roles_stages":`)
+	write_json_string_array(&b, removed[:])
+	strings.write_string(&b, `,"unassigned_stages":`)
+	write_json_string_array(&b, unassigned[:])
+	strings.write_byte(&b, '}')
+	msg := strings.builder_make(context.temp_allocator)
+	strings.write_string(&msg, "workflow stages must name agents:")
+	if len(removed) > 0 do fmt.sbprintf(&msg, " stages using review_roles (list reviewer agent ids in brief.reviewers instead): %s;", strings.join(removed[:], ", ", context.temp_allocator))
+	if len(unassigned) > 0 do fmt.sbprintf(&msg, " stages without brief.assignee: %s;", strings.join(unassigned[:], ", ", context.temp_allocator))
+	return domain.domain_error(.Validation_Failed, strings.to_string(msg), strings.to_string(b))
 }
 
 @(private = "file")

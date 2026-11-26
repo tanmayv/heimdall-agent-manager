@@ -25,7 +25,7 @@ test_submit_needs_no_command_evidence :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_v")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	lease, held := lease_of(fx, "inst_w1")
 	if !testing.expect(t, held, "leased") do return
@@ -66,7 +66,7 @@ test_submit_after_elapsed_time_succeeds :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_e409")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	lease, _ := lease_of(fx, "inst_w1")
 	fixture_advance(fx, LEASE_TTL_SECONDS + 1)
@@ -85,12 +85,12 @@ test_review_gate_strict_and_request_changes_user_approval :: proc(t: ^testing.T)
 	chain := seed_live_chain(t, fx, "chain_gate")
 	seed_agent(fx, "agt_r2")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
-	seed_fleet(fx, chain, "agt_r2", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
+	seed_fleet(fx, chain, "agt_r2")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r2", "agt_r2", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`)
 	t_row := get_task(fx, "task_1")
 	t_row.requires_user_approval = true
 	_, _, _ = iface.taskchain_save_task(&fx.repo, t_row)
@@ -143,10 +143,10 @@ test_oscillation_guard_parks_after_three_rounds :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_osc")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"],"budget":{"max_attempts":9}}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"],"budget":{"max_attempts":9}}`)
 	for round in 1..=3 {
 		confirm_holder(fx, "inst_w1")
 		l, h := lease_of(fx, "inst_w1")
@@ -181,28 +181,35 @@ test_oscillation_guard_parks_after_three_rounds :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_fleet_delete_reevaluates_gate :: proc(t: ^testing.T) {
+test_reviewer_removal_reevaluates_gate :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "m2_fleetgate")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_fg")
 	seed_agent(fx, "agt_r2")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", roles = `["reviewer"]`)
-	seed_fleet(fx, chain, "agt_r2", roles = `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
+	seed_fleet(fx, chain, "agt_r2")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 	// agt_r2 has no instance and br_1 cannot JIT (no agent service) → its review never arrives
-	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+	_ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r","agt_r2"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v", vcs_json = `{"head":"h1","dirty":false}`})
 	testing.expect(t, sok, "submit")
 	_, rok, _ := review_post(&fx.svc, inst_auth("inst_r1"), Review_Input{verdict = "approve"})
 	testing.expect(t, rok, "r1 approves")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review) // waiting for agt_r2
-	// the operator removes the agt_r2 fleet row → the gate is re-evaluated → done
+	// Deleting agt_r2's fleet row does not drop it from the task's reviewers
+	// (REQ-SCHED-5: the gate is over the listed agents, not fleet rows).
 	_, _ = iface.taskchain_delete_fleet(&fx.repo, chain.chain_id, "agt_r2", "u1")
 	testing.expect(t, fleet_changed(&fx.svc, chain).code == .None, "fleet_changed")
+	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.In_Review)
+	// Removing agt_r2 from the reviewers re-evaluates the gate → done.
+	edited := get_task(fx, "task_1")
+	edited.brief_json = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`
+	_, _, _ = iface.taskchain_save_task(&fx.repo, edited)
+	testing.expect(t, task_updated(&fx.svc, edited, Actor{kind = ACTOR_USER, id = "u1"}, []string{"reviewers"}).code == .None, "task_updated")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Done)
 }
 
@@ -215,7 +222,7 @@ test_handoff_keeps_attempt_and_block_parks :: proc(t: ^testing.T) {
 	seed_fleet(fx, chain, "agt_w", capacity = 2)
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	seed_instance(fx, chain, "inst_w2", "agt_w", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	confirm_holder(fx, "inst_w1")
 	l1, _ := lease_of(fx, "inst_w1")
 	testing.expect_value(t, l1.attempt_no, 1)
@@ -300,7 +307,7 @@ test_reopen_starts_new_noncounting_attempt :: proc(t: ^testing.T) {
 	chain := seed_live_chain(t, fx, "chain_ro")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+	task := publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
 	_, bad, berr := task_reopen(&fx.svc, get_task(fx, "task_1"), Actor{kind = ACTOR_USER, id = "u1"})
 	testing.expect(t, !bad && berr.code == .Conflict, "only terminal tasks reopen")
 	_ = cancel_task(&fx.svc, get_task(fx, "task_1"), Actor{kind = ACTOR_USER, id = "u1"}, "oops")
@@ -333,7 +340,7 @@ test_m2_review_fixes_peek_and_vault_caps :: proc(t: ^testing.T) {
 	t_draft := domain.Task{
 		task_id = "task_peek", chain_id = chain.chain_id, owner_user_id = "u1",
 		title = "t", kind = .Task, state = .Ready, publish_state = .Published, priority = .P1,
-		brief_json = `{"goal":"g","acceptance":["a"],"output":{"schema":"v1"},"review_roles":[]}`,
+		brief_json = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","output":{"schema":"v1"}}`,
 		ready_since = "2026-03-01T00:00:00Z", created_at = "2026-03-01T00:00:00Z", updated_at = "2026-03-01T00:00:00Z",
 	}
 	_, _, _ = iface.taskchain_save_task(&fx.repo, t_draft)
@@ -396,7 +403,7 @@ test_m3_r1_r2_r3_end_to_end :: proc(t: ^testing.T) {
 		kind        = "task",
 		rationale   = "initial 2-task plan",
 		alternative = "single monolith task",
-		tasks_json  = `[{"id":"t_base","title":"Base task","brief":{"goal":"produce output","acceptance":["ok"],"output":{"v":1},"review_roles":[]}},{"id":"t_indep","title":"Indep task","depends_on":["t_base"],"brief":{"goal":"integrate","acceptance":["ok"],"require_independent_verify":true,"auto_submit":true,"requires_user_approval":true,"inputs":["output:t_base","src/main.odin@abc1234"],"review_roles":[]}}]`,
+		tasks_json  = `[{"id":"t_base","title":"Base task","brief":{"goal":"produce output","acceptance":["ok"],"assignee":"agt_w","output":{"v":1}}},{"id":"t_indep","title":"Indep task","depends_on":["t_base"],"brief":{"goal":"integrate","acceptance":["ok"],"assignee":"agt_w","require_independent_verify":true,"auto_submit":true,"requires_user_approval":true,"inputs":["output:t_base","src/main.odin@abc1234"]}}]`,
 	})
 	if !testing.expect(t, pok, fmt.tprintf("chain_propose: %s", perr.message)) do return
 	testing.expect(t, strings.contains(chain_proposal_json(prop_chain), `"status":"pending"`), "proposal stored")
@@ -531,7 +538,7 @@ test_chain_propose_validation_and_auto_approve :: proc(t: ^testing.T) {
 		chain_id = chain.chain_id, agent_instance_id = "inst_coord", agent_id = "coordinator", owner_user_id = "u1", role = "coordinator", created_at = "2026-03-01T00:00:00Z",
 	})
 
-	valid_tasks := `[{"id":"tp_1","title":"Task 1","brief":{"goal":"build 1","acceptance":["a1"],"review_roles":[]}}]`
+	valid_tasks := `[{"id":"tp_1","title":"Task 1","brief":{"goal":"build 1","acceptance":["a1"],"assignee":"agt_w"}}]`
 
 	// 1. Non-coordinator agent rejected with 403 Forbidden (not_coordinator)
 	_, pok1, perr1 := chain_propose(&fx.svc, chain.chain_id, "u1", Actor{kind = ACTOR_AGENT, id = "inst_worker"}, Propose_Input{
@@ -545,7 +552,7 @@ test_chain_propose_validation_and_auto_approve :: proc(t: ^testing.T) {
 	_, pok2, perr2 := chain_propose(&fx.svc, chain.chain_id, "u1", Actor{kind = ACTOR_AGENT, id = "inst_coord"}, Propose_Input{
 		kind       = "task",
 		rationale  = "bad brief",
-		tasks_json = `[{"id":"tp_bad","title":"Bad task","brief":{"goal":"","acceptance":[]}}]`,
+		tasks_json = `[{"id":"tp_bad","title":"Bad task","brief":{"goal":"","acceptance":[],"assignee":"agt_w"}}]`,
 	})
 	testing.expect(t, !pok2 && perr2.code == .Validation_Failed && strings.contains(perr2.details_json, "brief_incomplete"), "incomplete brief rejected with brief_incomplete")
 
@@ -590,12 +597,12 @@ test_pack_full_sections_and_field_safe_cap :: proc(t: ^testing.T) {
 	if !ok do return
 	chain := seed_live_chain(t, fx, "chain_pf")
 	seed_fleet(fx, chain, "agt_w")
-	seed_fleet(fx, chain, "agt_r", `["reviewer"]`)
+	seed_fleet(fx, chain, "agt_r")
 	inst_w := seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
 	_ = seed_instance(fx, chain, "inst_r1", "agt_r", "br_1", "idle")
 
 	// 1. Complete an upstream task t_up so we have an event id and output:<task>
-	t_up := publish_task(t, fx, chain, "t_up", brief = `{"goal":"upstream","acceptance":["ok"],"output":{"v":1},"review_roles":[]}`)
+	t_up := publish_task(t, fx, chain, "t_up", brief = `{"goal":"upstream","acceptance":["ok"],"output":{"v":1}}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok_up, _ := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{
 		summary     = "upstream finished",
@@ -607,7 +614,7 @@ test_pack_full_sections_and_field_safe_cap :: proc(t: ^testing.T) {
 	ev_ref := fmt.tprintf("#%d", up_evs[0].event_id)
 
 	// 2. Publish task_pf with inputs referencing #<event_id>, output:t_up, and facet:task_pf:1:handoff
-	brief_pf := fmt.tprintf(`{{"goal":"full pack goal","acceptance":["a1"],"inputs":["%s","output:t_up","facet:task_pf:1:handoff"],"review_roles":["reviewer"]}}`, ev_ref)
+	brief_pf := fmt.tprintf(`{{"goal":"full pack goal","acceptance":["a1"],"inputs":["%s","output:t_up","facet:task_pf:1:handoff"],"assignee":"agt_w","reviewers":["agt_r"]}}`, ev_ref)
 	task := publish_task(t, fx, chain, "task_pf", brief = brief_pf)
 	confirm_holder(fx, "inst_w1")
 	_, _, _ = lease_heartbeat(&fx.svc, inst_auth("inst_w1"), Lease_Heartbeat_Input{note = "halfway through attempt 1"})
@@ -667,7 +674,7 @@ test_command_free_publish_and_submit :: proc(t: ^testing.T) {
  seed_fleet(fx, chain, "agt_w")
  seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
  briefs := []string{
-  `{"goal":"Document findings","acceptance":["Findings recorded"],"review_roles":[]}`,
+  `{"goal":"Document findings","acceptance":["Findings recorded"]}`,
   `{"goal":"Research options","acceptance":["Options compared","Recommendation stated"]}`,
  }
  for brief, i in briefs {

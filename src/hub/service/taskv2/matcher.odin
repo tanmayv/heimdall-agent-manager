@@ -154,10 +154,9 @@ destroy_match_context :: proc(ctx: ^Match_Context) {
 }
 
 @(private = "package")
-task_has_live_lease :: proc(ctx: ^Match_Context, task_id: domain.Task_ID, kind: string, review_role := "") -> bool {
+task_has_live_lease :: proc(ctx: ^Match_Context, task_id: domain.Task_ID, kind: string) -> bool {
 	for l in ctx.leases {
 		if l.phase == domain.LEASE_PHASE_WAITING || l.task_id != task_id || l.kind != kind do continue
-		if kind == domain.LEASE_KIND_REVIEW && review_role != "" && l.review_role != review_role do continue
 		return true
 	}
 	return false
@@ -205,55 +204,63 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 		if claim.task_id != task.task_id || claim.kind != domain.LEASE_KIND_WORK do continue
 		if owner, found, _ := iface.agent_get_instance(svc.agents, claim.holder_instance_id); found { assignee = owner.agent_id }
 	}
+	// Work goes only to the assignee (REQ-SCHED-9); a task without one waits
+	// (dispatch_blockers names it).
+	if assignee == "" do return
+	// A task for the coordinator's agent is served only by the coordinator,
+	// which pulls it with `lease next` (REQ-SCHED-13). It is never woken; an
+	// unavailable process gets the Start agent card.
+	if ctx.has_coordinator && assignee == ctx.coordinator.agent_id {
+		if reason := coordinator_unavailable_reason(svc, ctx); reason != "" {
+			block_ready_agent_in_uow(svc, u, task, ctx.coordinator.agent_id, coordinator_placement(ctx), reason)
+		}
+		return
+	}
+	fleet, has_row := fleet_row_for_agent(ctx.fleets[:], assignee)
+	if !has_row || fleet.paused do return
 	evs, _ := task_fold_events(svc, task)
 	view := fold_task(evs, fold_input_for_task(task, true))
 	prefer := ""
 	if view.last_release == .Changes_Requested || view.last_release == .Expired {
 		prefer = last_attempt_holder(svc, task)
 	}
-	failure, failed_agent := "", ""
-	failed_placement: Placement
-	queued := false
-	// Solo coordinators still pull their work; only an explicit user Start may
-	// launch one. Their unavailable process nevertheless needs a user card.
-	if ctx.has_coordinator && chain_is_solo(svc, ctx.chain) && (assignee == "" || assignee == ctx.coordinator.agent_id) {
-		if !bridge_online(svc, ctx.coordinator.bridge_id) {
-			queued = true // placement snapshot owns bridge absence; no business block
-		} else if instance_is_live(ctx.coordinator) || instance_is_pending(ctx.coordinator) {
-			queued = true
-		} else {
-			failure, failed_agent = instance_failure_reason(ctx.coordinator), ctx.coordinator.agent_id
-			failed_placement = Placement{bridge_id = ctx.coordinator.bridge_id, provider = ctx.coordinator.provider, model = ctx.coordinator.model}
-		}
-	}
-	for fleet in ctx.fleets {
-		if ctx.has_coordinator && fleet.agent_id == ctx.coordinator.agent_id do continue
-		if !fleet_row_has_role(fleet, domain.FLEET_ROLE_WORKER) do continue
-		if assignee != "" && fleet.agent_id != assignee do continue
-		if domain.fleet_role_paused(fleet, domain.FLEET_ROLE_WORKER) { queued = true; continue }
-		placement, pok := resolve_placement(ctx, task, fleet, true)
-		if placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id) { queued = true; continue }
-		if !fleet_owns_task(ctx, task, fleet.agent_id) && fleet_row_full(ctx, fleet, placement) { queued = true; continue }
-		if reason, _ := placement_problem(svc, ctx, placement, pok, fleet.agent_id); reason != "" do continue
-		inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.FLEET_ROLE_WORKER, prefer)
-		if !found {
-			if why != "" { failure, failed_agent, failed_placement = why, fleet.agent_id, placement } else { queued = true }
-			continue
-		}
-		lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
-			chain = ctx.chain, task = task, instance = inst,
-			kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_WAKE,
-			placement = placement, actor = hub_actor(), trigger = trigger,
-		})
-		if !gok {
-			record_grant_placement_failure(ctx, task, fleet, placement, "work", "worker", gerr)
-			continue
-		}
-		append(&ctx.leases, lease)
-		ctx.held[inst.agent_instance_id] = true
+	placement, pok := resolve_placement(ctx, task, fleet, true)
+	if placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id) do return
+	if !fleet_owns_task(ctx, task, fleet.agent_id) && fleet_row_full(ctx, fleet, placement) do return
+	if reason, _ := placement_problem(svc, ctx, placement, pok, fleet.agent_id); reason != "" do return
+	inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.LEASE_KIND_WORK, prefer)
+	if !found {
+		if why != "" do block_ready_agent_in_uow(svc, u, task, fleet.agent_id, placement, why)
 		return
 	}
-	if failure != "" && !queued do block_ready_agent_in_uow(svc, u, task, failed_agent, failed_placement, failure)
+	lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
+		chain = ctx.chain, task = task, instance = inst,
+		kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_WAKE,
+		placement = placement, actor = hub_actor(), trigger = trigger,
+	})
+	if !gok {
+		record_grant_placement_failure(ctx, task, fleet, placement, "work", gerr)
+		return
+	}
+	append(&ctx.leases, lease)
+	ctx.held[inst.agent_instance_id] = true
+}
+
+// coordinator_unavailable_reason: why the coordinator cannot pull an item
+// assigned to it ("" when it is running or starting, or its bridge is offline
+// — the placement snapshot owns bridge absence; no business block).
+@(private = "package")
+coordinator_unavailable_reason :: proc(svc: ^Service, ctx: ^Match_Context) -> string {
+	if !ctx.has_coordinator do return ""
+	coord := ctx.coordinator
+	if !bridge_online(svc, coord.bridge_id) do return ""
+	if instance_is_live(coord) || instance_is_pending(coord) do return ""
+	return instance_failure_reason(coord)
+}
+
+@(private = "package")
+coordinator_placement :: proc(ctx: ^Match_Context) -> Placement {
+	return Placement{bridge_id = ctx.coordinator.bridge_id, provider = ctx.coordinator.provider, model = ctx.coordinator.model}
 }
 
 // ---- review pass ---------------------------------------------------------------------
@@ -263,27 +270,29 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 	if requirements_stale_review(svc, task) do return
 	// A held task gets no new review lease (REQ-TV2-5).
 	if task_is_held(task) do return
-	author_agent := ""
-	if holder := last_attempt_holder(svc, task); holder != "" {
-		if inst, iok, _ := iface.agent_get_instance(svc.agents, holder); iok do author_agent = inst.agent_id
-	}
-	pairs := required_review_pairs(task, ctx.fleets[:], author_agent)
-	if len(pairs) == 0 do return
+	reviewers := required_reviewers(task, task_author_agent(svc, task))
+	if len(reviewers) == 0 do return
 	reviews, _ := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
 	failure, failed_agent := "", ""
 	failed_placement: Placement
-	// One review lease per AGENT covering every pair it still owes (hybrid model);
-	// the gate is a strict AND over the same pairs (gate.odin).
-	for agent_id in distinct_review_agents(pairs) {
+	// One review lease per (task, reviewer agent) (REQ-SCHED-6); the gate is a
+	// strict AND over the same agents (gate.odin).
+	for agent_id in reviewers {
+		if !agent_review_owed(reviews, task, agent_id) do continue
+		if review_lease_live_for(ctx, svc, task.task_id, agent_id) do continue
+		// The coordinator pulls a review it owes (REQ-SCHED-13).
+		if ctx.has_coordinator && agent_id == ctx.coordinator.agent_id {
+			if reason := coordinator_unavailable_reason(svc, ctx); reason != "" {
+				failure, failed_agent, failed_placement = reason, agent_id, coordinator_placement(ctx)
+			}
+			continue
+		}
 		fleet, has_row := fleet_row_for_agent(ctx.fleets[:], agent_id)
-		if !has_row do continue
-		owed := unpaused_review_roles(fleet, owed_review_roles(pairs, reviews, task, agent_id))
-		if len(owed) == 0 do continue
-		if review_lease_live_for(ctx, svc, task.task_id, agent_id, "") do continue
+		if !has_row || fleet.paused do continue
 		placement, pok := resolve_placement(ctx, task, fleet, false)
 		if !fleet_owns_task(ctx, task, fleet.agent_id) && fleet_row_full(ctx, fleet, placement) do continue
 		if reason, _ := placement_problem(svc, ctx, placement, pok, fleet.agent_id); reason != "" do continue
-		inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.FLEET_ROLE_REVIEWER, "")
+		inst, found, why := pick_instance(svc, u, ctx, task, fleet, placement, domain.LEASE_KIND_REVIEW, "")
 		if !found {
 			// Capacity and retriable backoff report no reason and simply wait.
 			if why != "" do failure, failed_agent, failed_placement = why, agent_id, placement
@@ -291,11 +300,11 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		}
 		lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
 			chain = ctx.chain, task = task, instance = inst,
-			kind = domain.LEASE_KIND_REVIEW, review_role = join_review_roles(owed), delivery = domain.LEASE_DELIVERY_WAKE,
+			kind = domain.LEASE_KIND_REVIEW, delivery = domain.LEASE_DELIVERY_WAKE,
 			placement = placement, actor = hub_actor(), trigger = trigger,
 		})
 		if !gok {
-			for role in owed do record_grant_placement_failure(ctx, task, fleet, placement, "review", role, gerr)
+			record_grant_placement_failure(ctx, task, fleet, placement, "review", gerr)
 			continue
 		}
 		append(&ctx.leases, lease)
@@ -310,25 +319,19 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 	block_ready_agent_in_uow(svc, u, task, failed_agent, failed_placement, failure)
 }
 
-// review_lease_live_for: an instance of `agent_id` already holds a review
-// lease on the task. One review lease per agent covers all its roles, so
-// `role` only narrows the check when non-empty.
+// review_lease_live_for: an instance of `agent_id` already holds an active
+// review lease on the task.
 @(private = "package")
-review_lease_live_for :: proc(ctx: ^Match_Context, svc: ^Service, task_id: domain.Task_ID, agent_id, role: string) -> bool {
+review_lease_live_for :: proc(ctx: ^Match_Context, svc: ^Service, task_id: domain.Task_ID, agent_id: string) -> bool {
 	for l in ctx.leases {
 		if l.phase == domain.LEASE_PHASE_WAITING || l.task_id != task_id || l.kind != domain.LEASE_KIND_REVIEW do continue
-		if role != "" {
-			covers := false
-			for r in split_review_roles(l.review_role) do if r == role { covers = true; break }
-			if !covers do continue
-		}
 		for inst in ctx.instances do if inst.agent_instance_id == l.holder_instance_id && inst.agent_id == agent_id do return true
 		if inst, ok, _ := iface.agent_get_instance(svc.agents, l.holder_instance_id); ok && inst.agent_id == agent_id do return true
 	}
 	return false
 }
 
-// Keep provider messages readable in both fleet and solo recovery cards.
+// Keep provider messages readable in both fleet and coordinator recovery cards.
 instance_failure_reason :: proc(inst: domain.Agent_Instance) -> string {
 	reason := fmt.tprintf("instance %s is %s", inst.agent_instance_id, inst.runtime_status)
 	if message := jsonx.extract_string(inst.last_error_json, "message", "", true, context.temp_allocator); message != "" {
@@ -344,16 +347,17 @@ instance_failure_reason :: proc(inst: domain.Agent_Instance) -> string {
 //   2. a live, lease-free instance of the template on that bridge;
 //   3. a stopped warm instance (same id re-bootstrapped by the wake);
 //   4. JIT: a new instance when live count < fleet capacity (default 1).
-// Coordinators are never candidates.
+// Coordinators are never candidates: an item for the coordinator's agent is
+// pulled by the coordinator, never woken or JIT-copied (REQ-SCHED-13).
 @(private = "file")
-pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement, role: string, prefer: string) -> (domain.Agent_Instance, bool, string) {
+pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement, kind: string, prefer: string) -> (domain.Agent_Instance, bool, string) {
 	if ctx.has_coordinator && fleet.agent_id == ctx.coordinator.agent_id do return {}, false, ""
 	// A waiting claim is a reservation for this exact instance, including rework.
 	for claim in ctx.leases {
 		if claim.task_id != task.task_id || claim.phase != domain.LEASE_PHASE_WAITING do continue
 		for inst in ctx.instances {
 			if inst.agent_instance_id != claim.holder_instance_id || inst.agent_id != fleet.agent_id do continue
-			if (role == domain.FLEET_ROLE_WORKER) != (claim.kind == domain.LEASE_KIND_WORK) do continue
+			if claim.kind != kind do continue
 			if inst.bridge_id != placement.bridge_id do return {}, false, "assigned instance is on another bridge"
 			if disposition := agent.failed_instance_disposition(inst, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {}, false, instance_failure_reason(inst)
 			if inst.stopped_by == agent.STOPPED_BY_USER do return {}, false, "assigned instance was stopped by the user"
@@ -362,14 +366,7 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		}
 	}
 
-	// The coordinator's own fleet row (solo mode) is pull-only: its agent
-	// takes work through `lease next`, never by a wake grant, and a JIT copy of
-	// it is never spawned (REQ-SOLO-2).
-	if ctx.has_coordinator && fleet.agent_id == ctx.coordinator.agent_id do return {}, false, ""
-	// Pause (REQ-TV2-5) is decided by the callers before a pick: grant_work
-	// checks the worker role and grant_reviews filters the owed review roles
-	// with unpaused_review_roles. `role` here is only the JIT spawn role, so a
-	// pause check on it would let a paused `reviewer` suppress `security`.
+	// Pause (REQ-SCHED-2) is decided by the callers before a pick.
 	failure := ""
 	live_count := 0
 	live_free := domain.Agent_Instance{}
@@ -446,13 +443,13 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 	if have_stopping do return stopping_free, true, ""
 	if !below_capacity do return {}, false, ""
 	if failure != "" do return {}, false, failure
-	return jit_prepare(svc, u, ctx, fleet, placement, role)
+	return jit_prepare(svc, u, ctx, fleet, placement, kind)
 }
 
 // jit_prepare creates a stopped instance. Only the subsequent grant opens
 // its generation and reserves launch quota; dispatch follows commit.
 @(private = "file")
-jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, placement: Placement, role: string) -> (domain.Agent_Instance, bool, string) {
+jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, placement: Placement, kind: string) -> (domain.Agent_Instance, bool, string) {
 	if svc.agent_service == nil do return {}, false, "agent launch service is unavailable"
 	provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model,placement.provider_profile)
 	defer delete(provider)
@@ -469,7 +466,7 @@ jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.T
 	}
 	inst, ok, err := agent.create_instance_stopped(svc.agent_service, auth, input)
 	if !ok {
-		fmt.eprintfln("[taskv2] match: JIT %s for agent %s on bridge %s failed: %s", role, fleet.agent_id, placement.bridge_id, err.message)
+		fmt.eprintfln("[taskv2] match: JIT %s instance for agent %s on bridge %s failed: %s", kind, fleet.agent_id, placement.bridge_id, err.message)
 		return {}, false, err.message
 	}
 	effect_instance_changed(u, inst.agent_instance_id, "created")
@@ -479,93 +476,112 @@ jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.T
 
 // ---- inline grant for a pulling instance (lease.next) ------------------------------
 
+// Inline_Refusal: the first item for a pulling instance that could not be
+// granted, and why (REQ-SCHED-41). Empty when nothing was available.
+Inline_Refusal :: struct {
+	task_id: domain.Task_ID,
+	reason:  string,
+}
+
 // grant_inline_for_instance is the matcher restricted to ONE candidate holder:
-// the instance that just called `lease.next`. Same ordering (review first, then
-// work by priority), same checks (grant_in_uow), delivery=inline so the caller
-// is never woken. Returns the lease and its task when something was granted.
-grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, inst: domain.Agent_Instance, trigger: Trigger) -> (domain.Task_Lease, domain.Task, bool) {
-	if chain.publish_state != .Published || chain.status != .Active do return {}, {}, false
-	coordinator := is_coordinator(svc, chain, inst.agent_instance_id)
-	if coordinator && !chain_is_solo(svc, chain) do return {}, {}, false
+// the instance that just called `lease.next`. delivery=inline, so the caller
+// is never woken. Order (REQ-SCHED-12, REQ-SCHED-35): a review its agent owes,
+// then rework on a task assigned to its agent, then new ready work assigned to
+// its agent. Every grant check lives in grant_in_uow. Returns the lease and its
+// task when something was granted; otherwise the first refusal, if any.
+grant_inline_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, inst: domain.Agent_Instance, trigger: Trigger) -> (domain.Task_Lease, domain.Task, bool, Inline_Refusal) {
+	refusal := Inline_Refusal{}
+	if chain.publish_state != .Published || chain.status != .Active do return {}, {}, false, refusal
 	metric_matcher_run(trigger)
 	ctx, ok, _ := load_match_context(svc, chain)
-	if !ok do return {}, {}, false
+	if !ok do return {}, {}, false, refusal
 	defer destroy_match_context(&ctx)
-	if ctx.held[inst.agent_instance_id] do return {}, {}, false
-	fleet, has_fleet := puller_fleet_row(&ctx, inst, coordinator)
-	if !has_fleet do return {}, {}, false
+	if ctx.held[inst.agent_instance_id] do return {}, {}, false, refusal
+	fleet, has_fleet := puller_fleet_row(&ctx, inst, is_coordinator(svc, chain, inst.agent_instance_id))
+	if !has_fleet do return {}, {}, false, refusal
+	actor := Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}
+	note_refusal :: proc(refusal: ^Inline_Refusal, task_id: domain.Task_ID, reason: string) {
+		if refusal.task_id == "" do refusal^ = Inline_Refusal{task_id = task_id, reason = reason}
+	}
 
-	// Review pass. A solo coordinator never reviews: its work is reviewed by
-	// the user (REQ-SOLO-5).
+	// Review pass: reviews this agent owes.
 	for task in ctx.sorted {
-		if coordinator do break
-		if task.state != .In_Review || task.kind == .Gate || task_is_held(task) || requirements_stale_review(svc, task) do continue
-		author_agent := ""
-		if holder := last_attempt_holder(svc, task); holder != "" {
-			if h, hok, _ := iface.agent_get_instance(svc.agents, holder); hok do author_agent = h.agent_id
-		}
-		if author_agent == inst.agent_id do continue
-		pairs := required_review_pairs(task, ctx.fleets[:], author_agent)
-		if len(pairs) == 0 do continue
+		if task.state != .In_Review || task.kind == .Gate do continue
+		listed := false
+		for id in required_reviewers(task, task_author_agent(svc, task)) do if id == inst.agent_id { listed = true; break }
+		if !listed do continue
 		reviews, _ := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id)
-		owed := unpaused_review_roles(fleet, owed_review_roles(pairs, reviews, task, inst.agent_id))
-		if len(owed) == 0 do continue
-		if review_lease_live_for(&ctx, svc, task.task_id, inst.agent_id, "") do continue
-		placement, pok := resolve_placement(&ctx, task, fleet, false)
-		if !pok do placement = Placement{bridge_id = inst.bridge_id}
-		placement.bridge_id = inst.bridge_id // the caller is where it is
-		placement.directory_id = resolve_directory_for_bridge(ctx.dirs, inst.bridge_id)
-		lease, gok, _ := grant_in_uow(svc, u, Grant_Request{
+		if !agent_review_owed(reviews, task, inst.agent_id) do continue
+		if review_lease_live_for(&ctx, svc, task.task_id, inst.agent_id) do continue
+		if fleet.paused { note_refusal(&refusal, task.task_id, "this agent's fleet row is paused"); continue }
+		if task_is_held(task) { note_refusal(&refusal, task.task_id, "task is held"); continue }
+		if requirements_stale_review(svc, task) { note_refusal(&refusal, task.task_id, "task requirements changed; the review waits for the worker"); continue }
+		placement := inline_placement(&ctx, task, fleet, inst, false)
+		lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
 			chain = chain, task = task, instance = inst,
-			kind = domain.LEASE_KIND_REVIEW, review_role = join_review_roles(owed), delivery = domain.LEASE_DELIVERY_INLINE,
-			placement = placement, actor = Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}, trigger = trigger,
+			kind = domain.LEASE_KIND_REVIEW, delivery = domain.LEASE_DELIVERY_INLINE,
+			placement = placement, actor = actor, trigger = trigger,
 		})
 		if gok {
 			fresh, _, _ := iface.taskchain_get_task(svc.repo, task.task_id)
-			return lease, fresh, true
+			return lease, fresh, true, {}
+		}
+		note_refusal(&refusal, task.task_id, gerr.message)
+	}
+	// Work passes: rework first (the task was worked before), then new work.
+	for rework in ([]bool{true, false}) {
+		for task in ctx.sorted {
+			if task.state != .Ready || task.kind == .Gate do continue
+			if (task.attempt_no > 0) != rework do continue
+			if brief_assignee(task.brief_json) != inst.agent_id do continue
+			if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+			if fleet.paused { note_refusal(&refusal, task.task_id, "this agent's fleet row is paused"); continue }
+			if task.bridge_id != "" && task.bridge_id != inst.bridge_id { note_refusal(&refusal, task.task_id, "task is pinned to another bridge"); continue }
+			placement, pok := resolve_placement(&ctx, task, fleet, true)
+			if !pok do placement = Placement{bridge_id = inst.bridge_id}
+			if placement.bridge_id != inst.bridge_id { note_refusal(&refusal, task.task_id, "task is placed on another bridge"); continue }
+			if placement.directory_id != "" && directory_has_work_lease_ctx(&ctx, placement.directory_id) { note_refusal(&refusal, task.task_id, "another work lease is live on this chain directory"); continue }
+			lease, gok, gerr := grant_in_uow(svc, u, Grant_Request{
+				chain = chain, task = task, instance = inst,
+				kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_INLINE,
+				placement = placement, actor = actor, trigger = trigger,
+			})
+			if gok {
+				fresh, _, _ := iface.taskchain_get_task(svc.repo, task.task_id)
+				return lease, fresh, true, {}
+			}
+			note_refusal(&refusal, task.task_id, gerr.message)
 		}
 	}
-	// Work pass.
-	if !fleet_row_has_role(fleet, domain.FLEET_ROLE_WORKER) do return {}, {}, false
-	if domain.fleet_role_paused(fleet, domain.FLEET_ROLE_WORKER) do return {}, {}, false
-	for task in ctx.sorted {
-		if task.state != .Ready || task.kind == .Gate do continue
-		if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
-		if assignee := brief_assignee(task.brief_json); assignee != "" && assignee != inst.agent_id do continue
-		if task.bridge_id != "" && task.bridge_id != inst.bridge_id do continue
-		placement, pok := resolve_placement(&ctx, task, fleet, true)
-		if !pok do placement = Placement{bridge_id = inst.bridge_id}
-		if placement.bridge_id != inst.bridge_id do continue
-		if placement.directory_id != "" && directory_has_work_lease_ctx(&ctx, placement.directory_id) do continue
-		lease, gok, _ := grant_in_uow(svc, u, Grant_Request{
-			chain = chain, task = task, instance = inst,
-			kind = domain.LEASE_KIND_WORK, delivery = domain.LEASE_DELIVERY_INLINE,
-			placement = placement, actor = Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}, trigger = trigger,
-		})
-		if gok {
-			fresh, _, _ := iface.taskchain_get_task(svc.repo, task.task_id)
-			return lease, fresh, true
-		}
-	}
-	return {}, {}, false
+	return {}, {}, false, refusal
+}
+
+// inline_placement: the caller is where it is — its bridge and that bridge's
+// chain directory, with the fleet row's runtime selection when it resolves.
+@(private = "file")
+inline_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, inst: domain.Agent_Instance, honour_pin: bool) -> Placement {
+	placement, pok := resolve_placement(ctx, task, fleet, honour_pin)
+	if !pok do placement = Placement{bridge_id = inst.bridge_id}
+	placement.bridge_id = inst.bridge_id
+	placement.directory_id = resolve_directory_for_bridge(ctx.dirs, inst.bridge_id)
+	return placement
 }
 
 // grant_inline_task_for_instance: the work pass of grant_inline_for_instance
 // restricted to ONE named task (lease switch). Returns why it cannot be granted.
 grant_inline_task_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, inst: domain.Agent_Instance, task_id: domain.Task_ID, trigger: Trigger) -> (domain.Task_Lease, domain.Task, bool, domain.Domain_Error) {
 	if chain.publish_state != .Published || chain.status != .Active do return {}, {}, false, domain.domain_error(.Conflict, "chain is not active")
-	if is_coordinator(svc, chain, inst.agent_instance_id) && !chain_is_solo(svc, chain) do return {}, {}, false, domain.domain_error(.Conflict, "the chain coordinator works tasks only in solo mode")
 	ctx, ok, err := load_match_context(svc, chain)
 	if !ok do return {}, {}, false, err
 	defer destroy_match_context(&ctx)
 	fleet, has_fleet := puller_fleet_row(&ctx, inst, is_coordinator(svc, chain, inst.agent_instance_id))
-	if !has_fleet || !fleet_row_has_role(fleet, domain.FLEET_ROLE_WORKER) do return {}, {}, false, domain.domain_error(.Conflict, "this agent is not a worker on the chain")
-	if domain.fleet_role_paused(fleet, domain.FLEET_ROLE_WORKER) do return {}, {}, false, domain.domain_error(.Conflict, "this agent's worker role is paused on the chain")
+	if !has_fleet do return {}, {}, false, domain.domain_error(.Conflict, "this agent has no fleet row in the chain")
+	if fleet.paused do return {}, {}, false, domain.domain_error(.Conflict, "this agent's fleet row is paused on the chain")
 	for task in ctx.sorted {
 		if task.task_id != task_id do continue
 		if task.state != .Ready || task.kind == .Gate do return {}, {}, false, domain.domain_error(.Conflict, "task is not ready")
 		if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do return {}, {}, false, domain.domain_error(.Conflict, "task is already held")
-		if assignee := brief_assignee(task.brief_json); assignee != "" && assignee != inst.agent_id do return {}, {}, false, domain.domain_error(.Conflict, "task is assigned to another agent")
+		if brief_assignee(task.brief_json) != inst.agent_id do return {}, {}, false, domain.domain_error(.Conflict, "task is assigned to another agent")
 		if task.bridge_id != "" && task.bridge_id != inst.bridge_id do return {}, {}, false, domain.domain_error(.Conflict, "task is pinned to another bridge")
 		placement, pok := resolve_placement(&ctx, task, fleet, true)
 		if !pok do placement = Placement{bridge_id = inst.bridge_id}
@@ -583,46 +599,16 @@ grant_inline_task_for_instance :: proc(svc: ^Service, u: ^Uow, chain: domain.Tas
 }
 
 // puller_fleet_row: the fleet row an instance pulling work (`lease next`) works
-// under. A solo coordinator without a row of its own (the built-in Soloist)
-// works under an implicit worker row on its own bridge.
+// under. The coordinator needs no row (6.1): it is eligible by assignment and
+// works under a row of its own agent on its own bridge, outside capacity.
 @(private = "file")
 puller_fleet_row :: proc(ctx: ^Match_Context, inst: domain.Agent_Instance, coordinator: bool) -> (domain.Task_Chain_Fleet, bool) {
+	if coordinator do return domain.Task_Chain_Fleet{task_chain_id = ctx.chain.chain_id, agent_id = inst.agent_id, capacity = 1}, true
 	for f in ctx.fleets do if f.agent_id == inst.agent_id do return f, true
-	if coordinator {
-		return domain.Task_Chain_Fleet{task_chain_id = ctx.chain.chain_id, agent_id = inst.agent_id, roles_json = `["worker"]`, capacity = 1}, true
-	}
 	return {}, false
 }
 
 // ---- helpers -----------------------------------------------------------------------------
-
-// review_role_paused maps a LEASE review role onto the FLEET role namespace
-// that pause uses (REQ-TV2-5). Review roles from brief.review_roles are fleet
-// roles verbatim (`reviewer`, `security`, …), so each is paused only by its own
-// name. A named review (NAMED_REVIEW_ROLE, a lease-only role) is paused by the
-// row's generic review roles: `reviewer` or `named-reviewer`. `["*"]` pauses all.
-review_role_paused :: proc(fleet: domain.Task_Chain_Fleet, lease_role: string) -> bool {
-	if lease_role == NAMED_REVIEW_ROLE {
-		return domain.fleet_role_paused(fleet, domain.FLEET_ROLE_REVIEWER) || domain.fleet_role_paused(fleet, FLEET_ROLE_NAMED_REVIEWER)
-	}
-	return domain.fleet_role_paused(fleet, lease_role)
-}
-
-// unpaused_review_roles drops the owed lease review roles paused on `fleet`.
-// The single pause rule for review grants: wake (grant_reviews) and inline
-// (grant_inline_for_instance) dispatch both filter through it.
-unpaused_review_roles :: proc(fleet: domain.Task_Chain_Fleet, owed: []string) -> []string {
-	if !domain.fleet_paused_any(fleet) do return owed
-	kept := make([dynamic]string, context.temp_allocator)
-	for r in owed do if !review_role_paused(fleet, r) do append(&kept, r)
-	return kept[:]
-}
-
-fleet_row_has_role :: proc(f: domain.Task_Chain_Fleet, role: string) -> bool {
-	roles := jsonx.decode_string_array(f.roles_json if f.roles_json != "" else domain.FLEET_ROLES_DEFAULT_JSON, context.temp_allocator)
-	for r in roles do if r == role do return true
-	return false
-}
 
 // last_attempt_holder: the holder of the highest-numbered attempt row.
 last_attempt_holder :: proc(svc: ^Service, task: domain.Task) -> string {
@@ -667,8 +653,8 @@ fleet_row_full :: proc(ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, plac
 // ---- dispatch diagnosis (task re-check) ------------------------------------------------
 
 // dispatch_blockers explains why a ready task holds no work lease after a
-// matcher pass: the same checks grant_work makes, in the same order, per
-// worker fleet row, but read-only (no JIT, no block event, no timer). Each
+// matcher pass: the same checks grant_work makes, in the same order, for the
+// assignee's fleet row, but read-only (no JIT, no block event, no timer). Each
 // entry is one human-readable reason; empty when nothing visible stops it.
 dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Task) -> []string {
 	out := make([dynamic]string, context.temp_allocator)
@@ -694,89 +680,85 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 		}
 	}
 	assignee := brief_assignee(task.brief_json)
-	if ctx.has_coordinator && chain_is_solo(svc, chain) && (assignee == "" || assignee == ctx.coordinator.agent_id) {
+	if assignee == "" {
+		append(&out, "the task has no assignee; set one with `ham-ctl task update <id> --assignee <agt_…>`")
+		return out[:]
+	}
+	if ctx.has_coordinator && assignee == ctx.coordinator.agent_id {
 		coord := ctx.coordinator
 		if !bridge_online(svc, coord.bridge_id) {
-			append(&out, fmt.tprintf("solo coordinator %s: bridge %s is offline", coord.agent_instance_id, coord.bridge_id))
+			append(&out, fmt.tprintf("coordinator %s: bridge %s is offline", coord.agent_instance_id, coord.bridge_id))
 		} else if ctx.held[coord.agent_instance_id] {
-			append(&out, fmt.tprintf("solo coordinator %s already holds a lease; it pulls this task after submitting", coord.agent_instance_id))
+			append(&out, fmt.tprintf("coordinator %s already holds a lease; it pulls this task after submitting", coord.agent_instance_id))
 		} else if instance_is_live(coord) || instance_is_pending(coord) {
-			append(&out, fmt.tprintf("solo chain: waiting for coordinator %s to pull it with `ham-ctl lease next`", coord.agent_instance_id))
+			append(&out, fmt.tprintf("assigned to the coordinator: waiting for %s to pull it with `ham-ctl lease next`", coord.agent_instance_id))
 		} else {
-			append(&out, fmt.tprintf("solo coordinator: %s", instance_failure_reason(coord)))
+			append(&out, fmt.tprintf("coordinator: %s", instance_failure_reason(coord)))
+		}
+		return out[:]
+	}
+	fleet, has_row := fleet_row_for_agent(ctx.fleets[:], assignee)
+	if !has_row {
+		append(&out, fmt.tprintf("assignee %s has no row in the chain fleet", assignee))
+		return out[:]
+	}
+	if fleet.paused {
+		append(&out, fmt.tprintf("%s: fleet row is paused", fleet.agent_id))
+		return out[:]
+	}
+	placement, pok := resolve_placement(&ctx, task, fleet, true)
+	if !pok {
+		append(&out, fmt.tprintf("%s: no bridge placement can be resolved (no task pin, fleet bridge, chain directory or coordinator bridge)", fleet.agent_id))
+		return out[:]
+	}
+	if placement.directory_id != "" && directory_has_work_lease_ctx(&ctx, placement.directory_id) {
+		vcs := ""
+		for d in ctx.dirs do if d.directory_id == placement.directory_id { vcs = d.vcs_kind; break }
+		append(&out, fmt.tprintf("%s: chain directory %s already has a live work lease (vcs_kind %q; parallel work needs a git directory)", fleet.agent_id, placement.directory_id, vcs))
+		return out[:]
+	}
+	held := 0
+	for inst in ctx.instances {
+		if inst.agent_id == fleet.agent_id && inst.bridge_id == placement.bridge_id && ctx.held[inst.agent_instance_id] do held += 1
+	}
+	if held >= max(1, fleet.capacity) {
+		append(&out, fmt.tprintf("%s: fleet full %d/%d on bridge %s", fleet.agent_id, held, max(1, fleet.capacity), placement.bridge_id))
+		return out[:]
+	}
+	if !bridge_online(svc, placement.bridge_id) {
+		append(&out, fmt.tprintf("%s: bridge %s is offline", fleet.agent_id, placement.bridge_id))
+		return out[:]
+	}
+	if svc.agent_service != nil && svc.agent_service.providers != nil {
+		provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model,placement.provider_profile)
+		_, valid, err := agent.validate_provider_model_intersection(svc.agent_service, placement.bridge_id, provider, model,placement.provider_profile)
+		delete(provider)
+		delete(model)
+		if !valid {
+			append(&out, fmt.tprintf("%s: %s", fleet.agent_id, err.message))
+			return out[:]
 		}
 	}
-	rows := 0
-	for fleet in ctx.fleets {
-		if ctx.has_coordinator && fleet.agent_id == ctx.coordinator.agent_id do continue
-		if !fleet_row_has_role(fleet, domain.FLEET_ROLE_WORKER) do continue
-		if assignee != "" && fleet.agent_id != assignee do continue
-		rows += 1
-		if domain.fleet_role_paused(fleet, domain.FLEET_ROLE_WORKER) {
-			append(&out, fmt.tprintf("%s: worker role is paused", fleet.agent_id))
+	instance_reason := ""
+	for inst in ctx.instances {
+		if inst.agent_id != fleet.agent_id || inst.bridge_id != placement.bridge_id || ctx.held[inst.agent_instance_id] do continue
+		if inst.stopped_by == agent.STOPPED_BY_USER {
+			instance_reason = fmt.tprintf("instance %s was stopped by the user", inst.agent_instance_id)
 			continue
 		}
-		placement, pok := resolve_placement(&ctx, task, fleet, true)
-		if !pok {
-			append(&out, fmt.tprintf("%s: no bridge placement can be resolved (no task pin, fleet bridge, chain directory or coordinator bridge)", fleet.agent_id))
+		disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
+		if disposition == .Dead || disposition == .Hold {
+			instance_reason = instance_failure_reason(inst)
 			continue
 		}
-		if placement.directory_id != "" && directory_has_work_lease_ctx(&ctx, placement.directory_id) {
-			vcs := ""
-			for d in ctx.dirs do if d.directory_id == placement.directory_id { vcs = d.vcs_kind; break }
-			append(&out, fmt.tprintf("%s: chain directory %s already has a live work lease (vcs_kind %q; parallel work needs a git directory)", fleet.agent_id, placement.directory_id, vcs))
-			continue
-		}
-		held := 0
-		for inst in ctx.instances {
-			if inst.agent_id == fleet.agent_id && inst.bridge_id == placement.bridge_id && ctx.held[inst.agent_instance_id] do held += 1
-		}
-		if held >= max(1, fleet.capacity) {
-			append(&out, fmt.tprintf("%s: fleet full %d/%d on bridge %s", fleet.agent_id, held, max(1, fleet.capacity), placement.bridge_id))
-			continue
-		}
-		if !bridge_online(svc, placement.bridge_id) {
-			append(&out, fmt.tprintf("%s: bridge %s is offline", fleet.agent_id, placement.bridge_id))
-			continue
-		}
-		if svc.agent_service != nil && svc.agent_service.providers != nil {
-			provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model,placement.provider_profile)
-			_, valid, err := agent.validate_provider_model_intersection(svc.agent_service, placement.bridge_id, provider, model,placement.provider_profile)
-			delete(provider)
-			delete(model)
-			if !valid {
-				append(&out, fmt.tprintf("%s: %s", fleet.agent_id, err.message))
-				continue
-			}
-		}
-		instance_reason := ""
-		for inst in ctx.instances {
-			if inst.agent_id != fleet.agent_id || inst.bridge_id != placement.bridge_id || ctx.held[inst.agent_instance_id] do continue
-			if inst.stopped_by == agent.STOPPED_BY_USER {
-				instance_reason = fmt.tprintf("instance %s was stopped by the user", inst.agent_instance_id)
-				continue
-			}
-			disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
-			if disposition == .Dead || disposition == .Hold {
-				instance_reason = instance_failure_reason(inst)
-				continue
-			}
-			instance_reason = ""
-			break
-		}
-		if instance_reason != "" {
-			append(&out, fmt.tprintf("%s: %s", fleet.agent_id, instance_reason))
-			continue
-		}
-		append(&out, fmt.tprintf("%s: a slot is free on bridge %s (%d/%d) but no lease was granted; see the hub log", fleet.agent_id, placement.bridge_id, held, max(1, fleet.capacity)))
+		instance_reason = ""
+		break
 	}
-	if rows == 0 && !(ctx.has_coordinator && chain_is_solo(svc, chain) && (assignee == "" || assignee == ctx.coordinator.agent_id)) {
-		if assignee != "" {
-			append(&out, fmt.tprintf("assignee %s has no worker row in the chain fleet", assignee))
-		} else {
-			append(&out, "no fleet row holds the worker role")
-		}
+	if instance_reason != "" {
+		append(&out, fmt.tprintf("%s: %s", fleet.agent_id, instance_reason))
+		return out[:]
 	}
+	append(&out, fmt.tprintf("%s: a slot is free on bridge %s (%d/%d) but no lease was granted; see the hub log", fleet.agent_id, placement.bridge_id, held, max(1, fleet.capacity)))
 	return out[:]
 }
 
@@ -791,9 +773,9 @@ fleet_owns_task :: proc(ctx: ^Match_Context, task: domain.Task, agent_id: string
 
 // A refused launch is a placement diagnostic, never an infrastructure block.
 // Keep it in this matching pass and persist it with the existing snapshot.
-record_grant_placement_failure :: proc(ctx:^Match_Context, task:domain.Task, fleet:domain.Task_Chain_Fleet, placement:Placement, phase, role:string, err:domain.Domain_Error) {
- failures:=make([dynamic]Placement_Failure,context.temp_allocator)
- reason:=jsonx.extract_string(err.details_json,"code","launch_refused",true,context.temp_allocator)
- append_placement_failure(&failures,ctx,task,fleet,placement,phase,role,reason,err.message,"grant")
- for failure in failures do append(&ctx.grant_failures,Grant_Placement_Failure{task.task_id,failure})
+record_grant_placement_failure :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.Task_Chain_Fleet, placement: Placement, phase: string, err: domain.Domain_Error) {
+	failures := make([dynamic]Placement_Failure, context.temp_allocator)
+	reason := jsonx.extract_string(err.details_json, "code", "launch_refused", true, context.temp_allocator)
+	append_placement_failure(&failures, ctx, task, fleet, placement, phase, reason, err.message, "grant")
+	for failure in failures do append(&ctx.grant_failures, Grant_Placement_Failure{task.task_id, failure})
 }

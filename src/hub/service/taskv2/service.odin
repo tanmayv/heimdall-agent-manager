@@ -635,12 +635,19 @@ notice_still_relevant :: proc(svc: ^Service, n: Coordinator_Notification) -> boo
 	if !found do return err.code != .None && err.code != .Not_Found
 	if n.expected_state != "" && domain.task_state_string(task.state) != n.expected_state do return false
 	switch n.trigger {
-	case "solo_task_ready":
-		// Still unclaimed after the matcher, and the soloist still free.
-		if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code == .None {
-			for l in leases do if l.kind == domain.LEASE_KIND_WORK do return false
-		}
+	case "coordinator_item_ready":
+		// Still available after the matcher, and the coordinator still free
+		// (REQ-SCHED-15): no lease of its own, and the item is not taken.
 		if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, n.coordinator_instance_id); held do return false
+		if task.state == .Ready {
+			if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code == .None {
+				for l in leases do if l.kind == domain.LEASE_KIND_WORK do return false
+			}
+		} else if task.state == .In_Review {
+			coord, cok, _ := iface.agent_get_instance(svc.agents, n.coordinator_instance_id)
+			if !cok do return true
+			if reviews, rerr := iface.taskchain_list_reviews_by_task(svc.repo, task.task_id, task.owner_user_id); rerr.code == .None && !agent_review_owed(reviews, task, coord.agent_id) do return false
+		}
 	case "hold_stale":
 		if !task_is_held(task) do return false
 	case "agent_not_running", "blocked_on human", "budget_exhausted", "oscillation":
@@ -800,35 +807,47 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 		}
 		if cerr := check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks); cerr.code != .None do return task, view, false, cerr
 		if saved.state == .Done && task.state != .Done do effect_merge_worktree(svc, u, saved, evs)
-		if saved.state == .Ready && task.state != .Ready do nudge_idle_soloist(svc, u, task, saved)
+		if (saved.state == .Ready || saved.state == .In_Review) && task.state != saved.state do nudge_coordinator_item(svc, u, task, saved)
 	}
 	return saved, view, true, domain.Domain_Error{}
 }
 
-// nudge_idle_soloist (solo mode): the hub never wakes a coordinator, so when a
-// task of a solo chain becomes ready (published, unblocked, changes
-// requested, handed back) while the soloist holds no lease, it is told at once
-// to pull — instead of the 10-minute ready_unclaimed alert.
+// nudge_coordinator_item (REQ-SCHED-15): the hub never wakes a coordinator, so
+// when an item for it becomes available — a task assigned to its agent becomes
+// ready (published, unblocked, changes requested, handed back), or a task that
+// lists its agent as a reviewer enters review — while it holds no lease, it is
+// told once to pull. Tasks assigned to other agents never notify it.
 //
-// Queued once per transition into Ready (refold_task calls it only on that
-// edge) and only when the task is the soloist's: no brief assignee, or the
-// coordinator's own agent. Whether it is still unclaimed — after
-// match_chain_in_uow has run and the transaction committed — is decided at
-// send time (notice_still_relevant, rule b). Not sent when the task just left
-// an agent_not_running block naming the soloist's own agent: that instance is
-// (re)starting and pulls on bootstrap (rule g).
-nudge_idle_soloist :: proc(svc: ^Service, u: ^Uow, before, task: domain.Task) {
-	if u == nil do return
+// Queued once per transition (refold_task calls it only on that edge). Whether
+// the item is still available — after match_chain_in_uow has run and the
+// transaction committed — is decided at send time (notice_still_relevant). Not
+// sent when the task just left an agent_not_running block naming the
+// coordinator's own agent: that instance is (re)starting and pulls on bootstrap.
+nudge_coordinator_item :: proc(svc: ^Service, u: ^Uow, before, task: domain.Task) {
+	if u == nil || task.kind == .Gate do return
 	chain, ok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id)
-	if !ok || !chain_is_solo(svc, chain) do return
+	if !ok do return
 	coord := chain.coordinator_agent_instance_id
 	if coord == "" do return
-	coord_agent := ""
-	if inst, iok, _ := iface.agent_get_instance(svc.agents, coord); iok do coord_agent = inst.agent_id
-	if assignee := brief_assignee(task.brief_json); assignee != "" && assignee != coord_agent do return
-	if coord_agent != "" && is_agent_not_running_block(before.blocked_on_json) && jsonx.extract_string(before.blocked_on_json, "agent_id", "", true, context.temp_allocator) == coord_agent do return
+	inst, iok, _ := iface.agent_get_instance(svc.agents, coord)
+	if !iok || inst.agent_id == "" do return
+	coord_agent := inst.agent_id
+	line := ""
+	switch task.state {
+	case .Ready:
+		if brief_assignee(task.brief_json) != coord_agent do return
+		if is_agent_not_running_block(before.blocked_on_json) && jsonx.extract_string(before.blocked_on_json, "agent_id", "", true, context.temp_allocator) == coord_agent do return
+		line = fmt.tprintf("[taskv2] ready for you: task %s (%s) — run `ham-ctl lease next`", task.task_id, task.title)
+	case .In_Review:
+		listed := false
+		for id in required_reviewers(task, task_author_agent(svc, task)) do if id == coord_agent { listed = true; break }
+		if !listed do return
+		line = fmt.tprintf("[taskv2] ready for you: review of task %s (%s) — run `ham-ctl lease next`", task.task_id, task.title)
+	case .Backlog, .In_Progress, .Done, .Cancelled:
+		return
+	}
 	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, coord); held do return
-	effect_notify_task(svc, u, task, "solo_task_ready", fmt.tprintf("[taskv2] solo: task %s (%s) is ready for you — run `ham-ctl lease next`", task.task_id, task.title))
+	effect_notify_task(svc, u, task, "coordinator_item_ready", line)
 }
 
 // block_names_coordinator: an agent_not_running block about the chain's own
@@ -867,8 +886,8 @@ check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, af
 		}
 	}
 	if after.state == .In_Review && before.state != .In_Review {
-		// Notify coordinator when user approval is required and all agent review roles are already satisfied (or empty).
-		if after.requires_user_approval && brief_review_roles_count(after.brief_json) == 0 {
+		// Notify coordinator when user approval is required and no reviewer agent is listed.
+		if task_requires_user(after) && len(brief_reviewer_agents(after.brief_json, context.temp_allocator)) == 0 {
 			notify_user_review_requested(svc, u, after, fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) is in_review and awaits user approval", after.task_id, after.title))
 		}
 	}
@@ -1013,7 +1032,7 @@ task_updated :: proc(svc: ^Service, task: domain.Task, actor: Actor, fields: []s
 	reviewers_changed := false
 	// Turning user approval off can satisfy a gate whose agent reviews are all
 	// in; nothing else would decide it (no review lease is left to post).
-	for f in fields do if f == "reviewers" || f == "review_roles" || f == "brief" || f == "requires_user_approval" { reviewers_changed = true; break }
+	for f in fields do if f == "reviewers" || f == "brief" || f == "requires_user_approval" { reviewers_changed = true; break }
 	if rok && reviewers_changed do rok, rerr = regate_after_reviewer_change(svc, &u, task, actor)
 	if rok do rok, rerr = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Task_Updated)
 	_, cerr := end_uow(svc, &u, rok)

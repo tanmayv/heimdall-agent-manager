@@ -16,7 +16,7 @@ test_coordinator_repairs_never_fabricate_user_approval :: proc(t: ^testing.T) {
     chain := seed_live_chain(t, fx, "chain_controls")
     seed_fleet(fx, chain, "agt_w")
     seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
-    _ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+    _ = publish_task(t, fx, chain, "task_1", brief = `{"goal":"g","acceptance":["a"]}`)
     row := get_task(fx, "task_1")
     row.requires_user_approval = true
     _, _, _ = iface.taskchain_save_task(&fx.repo, row)
@@ -51,7 +51,7 @@ test_coordinator_cancel_fences_worker_and_is_idempotent :: proc(t:^testing.T) {
     chain:=seed_live_chain(t,fx,"chain_cancel_control")
     seed_fleet(fx,chain,"agt_w")
     seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
-    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"]}`)
     confirm_holder(fx,"inst_w1")
     lease,held:=lease_of(fx,"inst_w1")
     if !testing.expect(t,held,"worker assigned") do return
@@ -84,7 +84,7 @@ test_coordinator_revision_conflict_and_completed_cancel_preserve_history :: proc
     chain:=seed_live_chain(t,fx,"chain_revision_control")
     seed_fleet(fx,chain,"agt_w")
     seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
-    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"]}`)
     confirm_holder(fx,"inst_w1")
     stale:=cancel_input(t,fx,"task_1","stale-cancel")
     _,submitted,serr:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{summary="completed",vcs_json=`{"head":"h1","dirty":false}`})
@@ -126,7 +126,7 @@ test_coordinator_reopen_fences_inflight_merge_callback :: proc(t:^testing.T) {
     chain:=seed_live_chain(t,fx,"chain_merge_control")
     seed_fleet(fx,chain,"agt_w")
     seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
-    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"]}`)
     confirm_holder(fx,"inst_w1")
     _,submitted,err:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{summary="completed",vcs_json=`{"head":"h1","dirty":false}`})
     if !testing.expect(t,submitted,err.message) do return
@@ -150,10 +150,10 @@ test_coordinator_cancel_review_revokes_all_participants_without_erasing_evidence
     if !ok do return
     chain:=seed_live_chain(t,fx,"chain_cancel_review_control")
     seed_fleet(fx,chain,"agt_w")
-    seed_fleet(fx,chain,"agt_r",roles=`["reviewer"]`)
+    seed_fleet(fx,chain,"agt_r")
     seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
     seed_instance(fx,chain,"inst_r1","agt_r","br_1","idle")
-    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":["reviewer"]}`)
+    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_r"]}`)
     confirm_holder(fx,"inst_w1")
     _,submitted,err:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{summary="review this",vcs_json=`{"head":"h1","dirty":false}`})
     if !testing.expect(t,submitted,err.message) do return
@@ -188,7 +188,7 @@ test_coordinator_cancel_completing_task_wins_over_inflight_merge :: proc(t:^test
     chain:=seed_live_chain(t,fx,"chain_cancel_merge_control")
     seed_fleet(fx,chain,"agt_w")
     seed_instance(fx,chain,"inst_w1","agt_w","br_1","idle")
-    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"],"review_roles":[]}`)
+    _=publish_task(t,fx,chain,"task_1",brief=`{"goal":"g","acceptance":["a"]}`)
     confirm_holder(fx,"inst_w1")
     _,submitted,err:=lease_submit(&fx.svc,inst_auth("inst_w1"),Submit_Input{summary="completed work",vcs_json=`{"head":"h1","dirty":false}`})
     if !testing.expect(t,submitted,err.message) do return
@@ -221,7 +221,7 @@ test_simple_cancel_without_generation_quiet_retry_and_authorization :: proc(t:^t
  if !ok do return
  chain:=seed_live_chain(t,fx,"chain_simple_cancel")
  seed_instance(fx,chain,"inst_worker","agt_w","br_1","running")
- task:=publish_task(t,fx,chain,"task_simple_cancel",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w","review_roles":[]}`)
+ task:=publish_task(t,fx,chain,"task_simple_cancel",brief=`{"goal":"g","acceptance":["a"],"assignee":"agt_w"}`)
  actor:=actor_from_auth(inst_auth("inst_coord"))
  input:=Task_Cancel_Input{reason="cancel obsolete work",request_id="simple-cancel"}
  // REQ-AUTHZ-2: cancel is owner-scoped; an instance of another owner is refused.
