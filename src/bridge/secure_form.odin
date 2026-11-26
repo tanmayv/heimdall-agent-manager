@@ -147,3 +147,20 @@ secure_form_waiter_register_frame :: proc(s: ^Secure_Form_Waiter_State, raw: str
 	ack, parsed := contracts.secure_form_parse_ack(payload)
 	return parsed && secure_form_waiter_register_ack(s, ack, now)
 }
+
+// The caller holds the waiter lock while resolving the race. Invalid and
+// stale frames cannot mutate the waiter or elicit an ACK for a different one.
+@(private)
+secure_form_waiter_decline_frame :: proc(s: ^Secure_Form_Waiter_State, raw: string, now: u64) -> (contracts.Secure_Form_Ack, bool) {
+	payload, ok := secure_form_frame_payload(raw, SECURE_FORM_DECLINE_FRAME, 1152)
+	if !ok do return {}, false
+	ref, parsed := contracts.secure_form_parse_reference(payload)
+	if !parsed || ref.request_id != s.binding.request_id || ref.generation != s.generation do return {}, false
+	if !s.registered do return {}, false
+	ack := contracts.Secure_Form_Ack{1, ref.request_id, ref.generation, "accepted", nil}
+	if s.consumed do return ack, true
+	_ = secure_form_waiter_end_pending(s, now, .Declined)
+	if !s.attempt.terminal do return {}, false
+	ack.state, ack.code = "final", s.attempt.code
+	return ack, true
+}

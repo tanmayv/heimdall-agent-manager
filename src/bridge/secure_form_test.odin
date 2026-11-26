@@ -78,3 +78,27 @@ test_secure_form_waiter_wires_registration_ack :: proc(t: ^testing.T) {
 	testing.expect(t, s.registered)
 	testing.expect(t, !secure_form_waiter_register_frame(&s, valid, 10_099))
 }
+
+@(test)
+test_secure_form_waiter_wires_decline_race :: proc(t: ^testing.T) {
+	id :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	stem :: `{"type":"secure_form_decline","protocol_version":1,"payload":{"version":1,"request_id":"` + id + `","generation":"`
+	frame :: stem + `2"}}`
+	s := secure_form_test_waiter()
+	s.binding.request_id = id
+	_, early := secure_form_waiter_decline_frame(&s, frame, 101)
+	testing.expect(t, !early && !s.attempt.terminal)
+	reg := contracts.Secure_Form_Ack{1, id, "2", "pending", nil}
+	testing.expect(t, secure_form_waiter_register_ack(&s, reg, 101))
+	_, stale := secure_form_waiter_decline_frame(&s, stem + `1"}}`, 102)
+	testing.expect(t, !stale && !s.attempt.terminal)
+	declined, consumed, expired := s, s, s
+	ack, ok := secure_form_waiter_decline_frame(&declined, frame, 103)
+	testing.expect(t, ok && ack.state == "final" && ack.code == contracts.Secure_Form_Exit.Declined)
+	testing.expect(t, !secure_form_waiter_consume(&declined, 102, 104))
+	testing.expect(t, secure_form_waiter_consume(&consumed, 102, 103))
+	ack, ok = secure_form_waiter_decline_frame(&consumed, frame, 104)
+	testing.expect(t, ok && ack.state == "accepted" && ack.code == nil)
+	ack, ok = secure_form_waiter_decline_frame(&expired, frame, expired.form_deadline)
+	testing.expect(t, ok && ack.state == "final" && ack.code == contracts.Secure_Form_Exit.Response_Expired)
+}
