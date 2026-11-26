@@ -51,22 +51,50 @@ test_fleet_integration_migration_registry_matches_disk_and_embedded_tail :: proc
 		embedded := migration_sql(name, "")
 		testing.expectf(t, len(embedded) > 0 && embedded == string(disk), "%s embeds the exact SQL file bytes", name)
 	}
+	// Later releases append migrations after the Fleet pair, so assert the published
+	// remote tip and both Fleet migrations stay contiguous and ordered, not that they end the list.
 	order := migration_order
-	tail := order[len(order)-7:]
-	for name, i in ([7]string{FMI_REMOTE[1], FMI_REMOTE[2], FMI_SETTINGS, FMI_APPLICATIONS, FMI_EXTENSION_089, FMI_EXTENSION_090, FMI_HOME_LAYOUTS}) {
-		testing.expect_value(t, tail[i], name)
+	expected := [7]string{FMI_REMOTE[1], FMI_REMOTE[2], FMI_SETTINGS, FMI_APPLICATIONS, FMI_EXTENSION_089, FMI_EXTENSION_090, FMI_HOME_LAYOUTS}
+	start := -1
+	for name, i in order {
+		if name == expected[0] {
+			start = i
+			break
+		}
+	}
+	if testing.expectf(t, start >= 0 && start + len(expected) <= len(order), "%s is registered with the Fleet pair after it", expected[0]) {
+		for name, i in expected do testing.expect_value(t, order[start + i], name)
 	}
 	testing.expect(t, !registered["251_shared_fleet_settings.sql"] && !registered["252_fleet_applications.sql"], "unpublished conflicting identities are absent")
 }
 
+// fmi_current_min_version derives the provider min_version from the newest
+// extension_version_sync migration, so release bumps do not break these tests.
+fmi_current_min_version :: proc() -> string {
+	MARKER :: `"min_version":"`
+	order := migration_order
+	#reverse for name in order {
+		if !strings.contains(name, "_extension_version_sync") do continue
+		sql := migration_sql(name, "")
+		at := strings.index(sql, MARKER)
+		if at < 0 do continue
+		rest := sql[at + len(MARKER):]
+		end := strings.index_byte(rest, '"')
+		if end > 0 do return rest[:end]
+	}
+	return ""
+}
+
 fmi_expect_schema :: proc(t: ^testing.T, conn: ^Conn) {
+	min_version := fmi_current_min_version()
+	testing.expect(t, min_version != "", "latest extension_version_sync migration names a min_version")
 	for name in migration_order {
 		testing.expect_value(t, fmi_text(conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", name)), "1")
 	}
 	testing.expect(t, table_column_exists(conn, "event_webhooks", "dedupe_header"))
 	testing.expect_value(t, fmi_text(conn, "SELECT transports || ':' || default_transport FROM provider_catalog WHERE provider='opencode';"), `["acp"]:acp`)
 	for provider in ([3]string{"antigravity", "claude", "codex"}) {
-		testing.expect_value(t, fmi_text(conn, fmt.tprintf("SELECT json_extract(extension,'$.min_version') FROM provider_catalog WHERE provider='%s';", provider)), "0.5.90")
+		testing.expect_value(t, fmi_text(conn, fmt.tprintf("SELECT json_extract(extension,'$.min_version') FROM provider_catalog WHERE provider='%s';", provider)), min_version)
 	}
 	for name in ([7]string{"bridge_fleet_settings", "bridge_fleet_agent_overrides", "instance_fleet_scope", "bridge_fleet_applications", "fleet_override_agent_delete_revision", "fleet_applications_active", "idx_fleet_actions_instance"}) {
 		testing.expectf(t, sqlite_object_exists(conn, name), "%s installed", name)

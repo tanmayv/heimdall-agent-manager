@@ -121,7 +121,8 @@ startup_profile_reaches_pty_argv_and_launch_fence :: proc(t: ^testing.T) {
 	if !testing.expect(t, ok) do return
 	defer bridge_pty_host_untrack_instance_provider("startup_profile_spawn")
 	prompt := req.argv[len(req.argv) - 1]
-	testing.expect(t, strings.contains(prompt, "AGENTS.md") && strings.contains(prompt, "HEIMDALL_AGENT_TOKEN"), "bootstrap/runtime text reaches PTY spawn")
+	// The seeded "Then read AGENTS.md" sentence is replaced by the lease/TASK.md instruction.
+	testing.expect(t, strings.contains(prompt, "lease next") && !strings.contains(prompt, "AGENTS.md") && strings.contains(prompt, "HEIMDALL_AGENT_TOKEN"), "startup/runtime text reaches PTY spawn")
 	testing.expect(t, !strings.contains(prompt, "start-success"), "expected extension omits startup instruction in actual argv")
 	key := bridge_local_hash_token("agent-secret")
 	saw_key, saw_original_env := false, false

@@ -32,10 +32,12 @@ test_home_layout_upgrade_reopen_and_owner_isolation :: proc(t: ^testing.T) {
 	testing.expect(t, !sqlite_object_exists(&conn, "user_home_layouts"))
 	testing.expect(t, migration_applied(&conn, "255_extension_version_sync_0_5_89.sql") && migration_applied(&conn, "256_extension_version_sync_0_5_90.sql"))
 	previous_ledger := home_layout_test_text(&conn, "SELECT group_concat(entry, '|') FROM (SELECT version || ':' || applied_at AS entry FROM schema_migrations ORDER BY version);")
+	// Later releases append migrations after 257; only the pre-257 ledger must stay untouched.
+	testing.expect(t, exec(&conn, "CREATE TEMP TABLE home_layout_prev AS SELECT version FROM schema_migrations;"))
 	migrated, err = run_migrations(&conn)
 	if !testing.expect(t, migrated, err.message) { close(&conn); return }
 	testing.expect(t, migration_applied(&conn, "254_fleet_applications.sql") && migration_applied(&conn, "257_user_home_layouts.sql"))
-	testing.expect_value(t, home_layout_test_text(&conn, "SELECT group_concat(entry, '|') FROM (SELECT version || ':' || applied_at AS entry FROM schema_migrations WHERE version != '257_user_home_layouts.sql' ORDER BY version);"), previous_ledger)
+	testing.expect_value(t, home_layout_test_text(&conn, "SELECT group_concat(entry, '|') FROM (SELECT version || ':' || applied_at AS entry FROM schema_migrations WHERE version IN (SELECT version FROM temp.home_layout_prev) ORDER BY version);"), previous_ledger)
 	_, found, read_err := iface.home_layout_get(&repo, "layout_a")
 	testing.expect(t, !found && read_err.code == .None)
 	testing.expect_value(t, home_layout_test_text(&conn, "SELECT count(*) FROM user_home_layouts;"), "0")
