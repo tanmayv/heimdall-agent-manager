@@ -14,7 +14,7 @@ mcp_task_write_arguments :: proc(tool:string,value:json.Value)->(mcp.Control_Arg
 	case "tasks.create":allowed=[]string{"chain_id","request_id","title","description","goal","acceptance","assignee_agent_id","bridge_id","reviewers","depends_on","requires_user_approval","priority"}
 	case "tasks.update":allowed=[]string{"chain_id","task_id","request_id","expected_revision","reason","title","description","goal","acceptance","assignee_agent_id","bridge_id","reviewers","depends_on","requires_user_approval","priority"}
 	case "tasks.control":allowed=[]string{"chain_id","task_id","request_id","expected_revision","action","reason"}
-	case "chains.configure":allowed=[]string{"chain_id","request_id","expected_revision","action","agent_id","bridge_id","provider","model","provider_profile","roles","capacity","paused"}
+	case "chains.configure":allowed=[]string{"chain_id","request_id","expected_revision","action","agent_id","bridge_id","provider","model","provider_profile","roles","capacity","paused","max_parallel","review_reserve"}
 	case:return {},false
 	}
 	mask:u64
@@ -25,6 +25,8 @@ mcp_task_write_arguments :: proc(tool:string,value:json.Value)->(mcp.Control_Arg
 		for k,i in mcp.TASK_TOOL_KEYS do if key==k do mask|=u64(1)<<u64(i)
 		switch key {
 		case "capacity":n,ok:=v.(json.Integer);if !ok || n<1 || n>8 do return {},false
+		// Ranges between the two caps are validated by the chain service.
+		case "max_parallel","review_reserve":n,ok:=v.(json.Integer);if !ok || n<0 || n>64 do return {},false
 		case "requires_user_approval","paused":if _,ok:=v.(json.Boolean);!ok do return {},false
 		case "acceptance","reviewers","depends_on","roles":
 			items,ok:=v.(json.Array)
@@ -66,7 +68,13 @@ mcp_task_write_arguments :: proc(tool:string,value:json.Value)->(mcp.Control_Arg
 		if !valid || (args.action=="hold" || args.action=="cancel" || args.action=="answer") && args.reason=="" do return {},false
 	}
 	if tool=="chains.configure" {
-		if args.action!="publish" && args.action!="fleet" do return {},false
+		if args.action!="publish" && args.action!="fleet" && args.action!="caps" do return {},false
+		has_caps:=mcp.task_argument_present(args,"max_parallel") || mcp.task_argument_present(args,"review_reserve")
+		if args.action!="caps" && has_caps do return {},false
+		if args.action=="caps" {
+			if !has_caps do return {},false
+			for key in obj do if key!="chain_id" && key!="request_id" && key!="expected_revision" && key!="action" && key!="max_parallel" && key!="review_reserve" do return {},false
+		}
 		if args.action=="fleet" && (args.agent_id=="" || args.bridge_id=="" || args.provider=="" || args.model=="") do return {},false
 		if args.action=="publish" && len(obj)!=4 do return {},false
 	}

@@ -277,6 +277,13 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("description", desc))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_description", json_object_from_slice(fields[:]))
+	case "update":
+		// Chain cap (REQ-SCHED-34): coordinator only, enforced hub-side.
+		fields := ctl_chain_cap_fields(args)
+		defer delete(fields)
+		if len(fields) == 0 { print_agent_help([]string{"task-chain"}); return }
+		if v := option_value(args, "--chain", pos(tokens, 1)); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.task_chain.update", json_object_from_slice(fields[:]))
 	case "set-status", "status":
 		status := option_value(args, "--status", pos(tokens, 1))
 		if status == "" { print_agent_help([]string{"task-chain"}); return }
@@ -2028,6 +2035,10 @@ print_help_task_chain :: proc() {
 	fmt.println("                                      Approve or reject a pending proposal on the chain.")
 	fmt.println("  set-status <active|cancelled|archived> [--chain <id>] Change chain status (any agent of the owner;")
 	fmt.println("                                      chain membership is not required).")
+	fmt.println("  update [<chain-id>] [--max-parallel <n>] [--review-reserve <n>]")
+	fmt.println("                                      Chain cap (coordinator only): at most n non-coordinator")
+	fmt.println("                                      instances occupied (n >= 2; 0 removes the cap), review-reserve")
+	fmt.println("                                      of them never taken by work (default 1, at most n - 1).")
 	fmt.println("  archive [<chain-id>]                Archive a task chain (any agent of the owner).")
 	fmt.println("  unarchive [<chain-id>]              Restore an archived task chain to active (any agent of the owner).")
 	fmt.println("  publish <chain-id>                  Publish a DRAFT chain of your owner. Validates briefs; cascades")

@@ -30,6 +30,7 @@ Control_Task_Command :: struct {
 	create:tc.Create_Task_Input,
 	update:tc.Update_Task_Input,
 	fleet:tc.Upsert_Fleet_Input,
+	caps:tc.Update_Chain_Input, // chains.configure action caps (REQ-SCHED-34)
 	applied_fields:[]string,
 }
 Control_Task_Mutate_Proc :: proc(ctx:rawptr,raw:string,view:Access_View,command:Control_Task_Command)->(result_id,error:string)

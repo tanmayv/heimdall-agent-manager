@@ -135,7 +135,7 @@ test_recheck_reports_fleet_full :: proc(t: ^testing.T) {
 	testing.expect_value(t, get_task(fx, "task_2").state, domain.Task_State.Ready)
 	res, rok, _ := task_recheck(&fx.svc, get_task(fx, "task_2"), actor_from_auth(user_auth()))
 	testing.expect(t, rok && !res.changed, "full fleet: no change")
-	testing.expect(t, recheck_reasons_contain(res, "agt_w: fleet full 1/1 on bridge br_1"), fmt.tprintf("%v", res.reasons))
+	testing.expect(t, recheck_reasons_contain(res, "agt_w: fleet full 1/1 over all bridges"), fmt.tprintf("%v", res.reasons))
 }
 
 // An offline bridge is a reason, not a silent wait; when the bridge is back

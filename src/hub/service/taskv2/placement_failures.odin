@@ -152,6 +152,9 @@ collect_placement_failures :: proc(svc: ^Service, ctx: ^Match_Context, task: dom
 		} else if !f.paused {
 			p, resolved := resolve_placement(ctx, task, f, true)
 			queued := (!fleet_owns_task(ctx, task, f.agent_id) && placement_target_queued(svc, ctx, f, p)) || (p.directory_id != "" && directory_has_work_lease_ctx(ctx, p.directory_id))
+			// An instance on another bridge can take it (REQ-SCHED-31): the
+			// base placement's problems do not stop the task.
+			if !queued do queued = reuse_scan_has_candidate(reuse_scan(svc, nil, ctx, task, f, placement_restriction(task, f, true), p.bridge_id, domain.LEASE_KIND_WORK, ""))
 			if !queued {
 				if reason, message := placement_problem(svc, ctx, p, resolved, f.agent_id); reason != "" {
 					append_placement_failure(&out, ctx, task, f, p, "work", reason, message)
@@ -170,6 +173,7 @@ collect_placement_failures :: proc(svc: ^Service, ctx: ^Match_Context, task: dom
 			if has_row && f.paused do continue
 			p, resolved := resolve_placement(ctx, task, f, false)
 			if has_row && placement_target_queued(svc, ctx, f, p) do continue
+			if has_row && reuse_scan_has_candidate(reuse_scan(svc, nil, ctx, task, f, placement_restriction(task, f, false), p.bridge_id, domain.LEASE_KIND_REVIEW, "")) do continue
 			reason, message := placement_problem(svc, ctx, p, resolved, f.agent_id)
 			if !has_row { p = {}; reason, message = "reviewer_missing", "the reviewer has no row in the chain fleet" }
 			if reason == "" do continue
@@ -290,12 +294,13 @@ placement_hash :: proc(raw: string) -> string {
 }
 
 // Pending runtime operations and transient provider retry windows are queueing,
-// including on a bridge that is temporarily away. Match pick_instance capacity.
+// including on a bridge that is temporarily away. Match pick_instance capacity,
+// which counts the agent's instances on every bridge (REQ-SCHED-33).
 placement_target_queued :: proc(svc: ^Service, ctx: ^Match_Context, fleet: domain.Task_Chain_Fleet, p: Placement) -> bool {
 	if fleet_row_full(ctx, fleet, p) do return true
 	waiting := 0
 	for inst in ctx.instances {
-		if inst.agent_id != fleet.agent_id || inst.bridge_id != p.bridge_id do continue
+		if inst.agent_id != fleet.agent_id do continue
 		if ctx.held[inst.agent_instance_id] { waiting += 1; continue }
 		if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None { waiting += 1; continue }
 		if inst.stopped_by == agent.STOPPED_BY_USER do continue

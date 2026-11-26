@@ -39,6 +39,9 @@ Grant_Request :: struct {
 	placement:   Placement,
 	actor:       Actor,
 	trigger:     Trigger,
+	// reuse_note: why the agent's existing instance was not reused for this
+	// grant (REQ-SCHED-31); recorded in the grant event as `reuse_skipped`.
+	reuse_note:  string,
 }
 
 // grant_in_uow performs every grant check, writes the lease + events + attempt,
@@ -241,6 +244,7 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	json_str(&p, "model", saved.model)
 	json_str(&p, "delivery", saved.delivery)
 	json_str(&p, "agent_id", inst.agent_id)
+	if req.reuse_note != "" do json_str(&p, "reuse_skipped", req.reuse_note)
 	if start_ticket != nil {
 	 json_int(&p, "start_run_count", i64(start_ticket.instance.run_count))
 	 json_bool(&p, "start_kept_live", start_ticket.kept_live)
@@ -371,7 +375,7 @@ STOP_REASON_REVIEW_POSTED :: "review_posted"
 STOP_REASON_IDLE_TTL :: "idle_ttl"
 
 lease_stop_reason :: proc(reason: string) -> bool {
-	return reason == STOP_REASON_TASK_COMPLETED || reason == STOP_REASON_REVIEW_POSTED || reason == STOP_REASON_IDLE_TTL
+	return reason == STOP_REASON_TASK_COMPLETED || reason == STOP_REASON_REVIEW_POSTED || reason == STOP_REASON_IDLE_TTL || reason == STOP_REASON_CAPACITY_YIELD
 }
 
 // stop_instance_in_uow records the stop intent, then queues the stop effect:

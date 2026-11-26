@@ -349,12 +349,16 @@ test_one_work_lease_per_directory :: proc(t: ^testing.T) {
 	seed_instance(fx, chain, "inst_w3", "agt_w", "br_2", "idle")
 	seed_fleet(fx, chain, "agt_w", capacity = 3) // fleet_changed trigger
 	testing.expect(t, fleet_changed(&fx.svc, chain).code == .None, "fleet_changed")
-	// task_2 has no pin: placement resolves to fleet bridge "" → first directory (br_1) → still busy.
-	testing.expect_value(t, get_task(fx, "task_2").state, domain.Task_State.Ready)
+	// task_2 has no pin: placement follows the reusable instance on br_2,
+	// whose directory is free (REQ-SCHED-31).
+	testing.expect_value(t, get_task(fx, "task_2").state, domain.Task_State.In_Progress)
+	l2, held := lease_of(fx, "inst_w3")
+	testing.expect(t, held && l2.bridge_id == "br_2" && l2.task_id == "task_2", "unpinned task placed on br_2's free directory")
+	// Both directories are now busy: a task pinned to either bridge waits.
 	t3 := publish_task(t, fx, chain, "task_3", bridge_pin = "br_2")
-	testing.expect_value(t, t3.state, domain.Task_State.In_Progress)
-	l3, held := lease_of(fx, "inst_w3")
-	testing.expect(t, held && l3.bridge_id == "br_2", "pinned task placed on br_2's directory")
+	testing.expect_value(t, t3.state, domain.Task_State.Ready)
+	leases, _ = iface.taskchain_list_leases_by_chain(&fx.repo, chain.chain_id)
+	testing.expect_value(t, len(leases), 2)
 }
 
 @(test)

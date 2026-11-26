@@ -1132,6 +1132,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_title_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-description", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_description_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-status", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_status_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/update", rawptr(&graph.agent_action_handlers), http.agent_action_chain_update_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/show", rawptr(&graph.agent_action_handlers), http.agent_action_chain_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/summary", rawptr(&graph.agent_action_handlers), http.agent_action_chain_summary_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/summary/set", rawptr(&graph.agent_action_handlers), http.agent_action_chain_summary_handler)

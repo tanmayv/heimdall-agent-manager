@@ -476,7 +476,20 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 			body.description = desc
 		}
 		body.status = option_value(args, "--status", "")
-		ctl_tasks_request(transport, {method = .PATCH, path = ctl_api("task-chains", chain_id), body = httpc.json_body(body)})
+		caps := ctl_chain_caps(args)
+		defer delete(caps)
+		if len(caps) == 0 {
+			ctl_tasks_request(transport, {method = .PATCH, path = ctl_api("task-chains", chain_id), body = httpc.json_body(body)})
+			return
+		}
+		// The caps accept 0 (remove the cap), so they are written explicitly
+		// rather than through omitempty struct fields.
+		obj := make(json.Object, context.temp_allocator)
+		if body.title != "" do obj["title"] = json.String(body.title)
+		if body.description != "" do obj["description"] = json.String(body.description)
+		if body.status != "" do obj["status"] = json.String(body.status)
+		for c in caps do obj[c.key] = json.Integer(c.value)
+		ctl_tasks_request(transport, {method = .PATCH, path = ctl_api("task-chains", chain_id), body = httpc.json_body(obj)})
 		return
 	}
 
