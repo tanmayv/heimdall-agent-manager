@@ -802,6 +802,8 @@ MIGRATION_262_EXTENSION_VERSION_SYNC :: #load("migrations/262_extension_version_
 
 MIGRATION_263_TASK_MERGE_PENDING :: #load("migrations/263_task_merge_pending.sql", string)
 
+MIGRATION_264_EXTENSION_VERSION_SYNC :: #load("migrations/264_extension_version_sync_0_5_94.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1102,6 +1104,7 @@ migration_order :: [?]string {
 	"261_extension_version_sync_0_5_92.sql",
 	"262_extension_version_sync_0_5_93.sql",
 	"263_task_merge_pending.sql",
+	"264_extension_version_sync_0_5_94.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1669,6 +1672,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "264_extension_version_sync_0_5_94.sql" do return strings.clone(MIGRATION_264_EXTENSION_VERSION_SYNC)
 	if name == "262_extension_version_sync_0_5_93.sql" do return strings.clone(MIGRATION_262_EXTENSION_VERSION_SYNC)
 	if name == "263_task_merge_pending.sql" do return strings.clone(MIGRATION_263_TASK_MERGE_PENDING)
 	if name == "261_extension_version_sync_0_5_92.sql" do return strings.clone(MIGRATION_261_EXTENSION_VERSION_SYNC)
