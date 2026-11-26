@@ -9,6 +9,7 @@ import "core:sync"
 import "core:testing"
 import "core:time"
 import contracts "odin_test:contracts"
+import agent_runtime "odin_test:lib/agent_runtime"
 
 // Generated 0.162 schema frames, with synthetic IDs/paths and no credentials.
 // T3 owns registry/catalog enablement; use a private descriptor on the T1 seam.
@@ -105,7 +106,8 @@ codex_driver_handshake_bootstrap_and_ask_yolo_policy :: proc(t: ^testing.T) {
     turn:=codex_test_write(t,&f,4,"turn/start")
     testing.expect(t,f.r.d.ready && f.r.d.starter_sent && f.r.d.phase=="prompt")
     inputs,_:=turn["input"].(json.Array); first,_:=inputs[0].(json.Object)
-    testing.expect_value(t,acp_event_string(first,"text"),"EXACT starter text")
+    // Codex has no seeded bootstrap sentence, so the lease instruction is appended once.
+    testing.expect_value(t,acp_event_string(first,"text"),"EXACT starter text Then " + agent_runtime.STARTUP_LEASE_INSTRUCTION)
     sandbox,_:=turn["sandboxPolicy"].(json.Object)
     testing.expect_value(t,acp_event_string(sandbox,"type"),"workspaceWrite")
     _,null:=turn["effort"].(json.Null); testing.expect(t,null)
