@@ -8,6 +8,8 @@ import domain "odin_test:hub/domain"
 
 Task_Chain_List_Published_Active_Proc :: proc(ctx: rawptr) -> ([]domain.Task_Chain, domain.Domain_Error)
 Task_List_By_State_Proc :: proc(ctx: rawptr, state: domain.Task_State) -> ([]domain.Task, domain.Domain_Error)
+// Done tasks whose latest completion has no merge outcome (tasks.merge_pending).
+Task_List_Merge_Pending_Done_Proc :: proc(ctx: rawptr) -> ([]domain.Task, domain.Domain_Error)
 // Take_Boot_Regate_Proc consumes the one-shot "re-evaluate every in-review
 // gate at boot" marker a gate-affecting migration leaves; true when it was set.
 Take_Boot_Regate_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)
@@ -81,6 +83,11 @@ taskchain_list_published_active_chains :: proc(repo: ^Taskchain_Repository) -> (
 taskchain_list_tasks_by_state :: proc(repo: ^Taskchain_Repository, state: domain.Task_State) -> ([]domain.Task, domain.Domain_Error) {
 	if repo == nil || repo.list_tasks_by_state == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.list_tasks_by_state(repo.ctx, state)
+}
+
+taskchain_list_merge_pending_done_tasks :: proc(repo: ^Taskchain_Repository) -> ([]domain.Task, domain.Domain_Error) {
+	if repo == nil || repo.list_merge_pending_done_tasks == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.list_merge_pending_done_tasks(repo.ctx)
 }
 
 taskchain_take_boot_regate :: proc(repo: ^Taskchain_Repository) -> (bool, domain.Domain_Error) {

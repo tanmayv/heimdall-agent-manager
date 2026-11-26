@@ -280,11 +280,13 @@ merge_pending :: proc(evs: []domain.Task_Event) -> bool {
 // requeue_pending_merges re-sends the merge-back of every done task whose work
 // ran on `bridge_id` and never got a merge outcome. Called on bridge hello;
 // the bridge side is idempotent (an already-merged branch is gone → no-op).
-// Scans done tasks of every chain: the chain of a task that just finished is
-// usually already `completed`, so active chains alone would miss it.
+// Covers done tasks of every chain: the chain of a task that just finished is
+// usually already `completed`, so active chains alone would miss it. Reads only
+// the tasks the merge_pending projection marks (migration 261), never the whole
+// Done history; merge_pending(evs) still decides on the loaded events.
 requeue_pending_merges :: proc(svc: ^Service, u: ^Uow, bridge_id: string) {
 	if !PER_LEASE_WORKTREES_ENABLED do return
-	tasks, terr := iface.taskchain_list_tasks_by_state(svc.repo, .Done)
+	tasks, terr := iface.taskchain_list_merge_pending_done_tasks(svc.repo)
 	if terr.code != .None do return
 	for t in tasks {
 		evs, eerr := iface.taskchain_list_events_by_task(svc.repo, t.task_id, t.owner_user_id)

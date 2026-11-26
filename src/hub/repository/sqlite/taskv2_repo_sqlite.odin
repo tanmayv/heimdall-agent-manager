@@ -170,6 +170,28 @@ task_event_append_sqlite :: proc(ctx: rawptr, event: domain.Task_Event) -> (doma
 	defer tx_repository_leave(guard)
 
 	impl := (^Taskchain_Repo_SQLite)(ctx)
+	pending, moves := merge_pending_after_event(event.kind)
+	if !moves do return task_event_insert(impl, event)
+	// The event and its merge_pending projection land together or not at all,
+	// inside a caller's UoW or on their own.
+	if !exec(impl.conn, "SAVEPOINT task_event_append;") do return domain.Task_Event{}, false, domain.domain_error(.Internal_Error, "task event could not be appended")
+	saved, ok, err := task_event_insert(impl, event)
+	if ok {
+		if perr := task_set_merge_pending(impl, event.task_id, pending); perr.code != .None do ok, err = false, perr
+	}
+	if !ok {
+		_ = exec(impl.conn, "ROLLBACK TO task_event_append; RELEASE task_event_append;")
+		return domain.Task_Event{}, false, err
+	}
+	if !exec(impl.conn, "RELEASE task_event_append;") {
+		_ = exec(impl.conn, "ROLLBACK TO task_event_append; RELEASE task_event_append;")
+		return domain.Task_Event{}, false, domain.domain_error(.Internal_Error, "task event could not be appended")
+	}
+	return saved, true, domain.Domain_Error{}
+}
+
+@(private = "file")
+task_event_insert :: proc(impl: ^Taskchain_Repo_SQLite, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error) {
 	stmt, err := prepare(impl, "INSERT INTO task_events (task_id, chain_id, owner_user_id, ts_ms, actor_kind, actor_id, kind, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING event_id;", "task event append")
 	if err.code != .None do return domain.Task_Event{}, false, err
 	defer sqlite3_finalize(stmt)
@@ -181,6 +203,46 @@ task_event_append_sqlite :: proc(ctx: rawptr, event: domain.Task_Event) -> (doma
 	saved := event
 	saved.event_id = sqlite3_column_int64(stmt, 0)
 	return saved, true, domain.Domain_Error{}
+}
+
+// merge_pending_after_event: how an event moves the tasks.merge_pending
+// projection (migration 261). It mirrors taskv2.merge_pending(events): the
+// latest of approved | submitted | merged | merge_conflict decides; every other
+// kind (merge_failed included: a failed merge is retried) leaves it as it is.
+merge_pending_after_event :: proc(kind: string) -> (pending: bool, moves: bool) {
+	switch kind {
+	case "approved", "submitted": return true, true
+	case "merged", "merge_conflict": return false, true
+	}
+	return false, false
+}
+
+// task_set_merge_pending runs inside the caller's transaction (the event
+// append), so the projection never disagrees with the committed event log.
+@(private = "file")
+task_set_merge_pending :: proc(impl: ^Taskchain_Repo_SQLite, task_id: domain.Task_ID, pending: bool) -> domain.Domain_Error {
+	stmt, err := prepare(impl, "UPDATE tasks SET merge_pending = ? WHERE task_id = ? AND merge_pending <> ?;", "task merge pending set")
+	if err.code != .None do return err
+	defer sqlite3_finalize(stmt)
+	v: i64 = 1 if pending else 0
+	sqlite3_bind_int64(stmt, 1, v)
+	bind_text(stmt, 2, string(task_id))
+	sqlite3_bind_int64(stmt, 3, v)
+	if sqlite3_step(stmt) != SQLITE_DONE do return domain.domain_error(.Internal_Error, "task merge pending could not be updated")
+	return domain.Domain_Error{}
+}
+
+// task_list_merge_pending_done_sqlite: Done tasks whose merge-back never
+// settled, through the partial index idx_tasks_merge_pending. Boot and bridge
+// hello read this instead of every Done task's event log.
+task_list_merge_pending_done_sqlite :: proc(ctx: rawptr) -> ([]domain.Task, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := prepare(impl, "SELECT " + TASK_COLS + " FROM tasks WHERE merge_pending = 1 AND state = 'done' ORDER BY created_at ASC;", "task list merge pending done")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	out := make([dynamic]domain.Task)
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, task_from_stmt(stmt))
+	return out[:], domain.Domain_Error{}
 }
 
 // Existing idx_task_events_task(task_id,event_id) serves a reverse seek. Read

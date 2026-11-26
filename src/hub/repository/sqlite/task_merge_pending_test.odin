@@ -1,0 +1,161 @@
+#+private file
+package sqlite
+
+import "core:fmt"
+import "core:strings"
+import "core:testing"
+import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
+
+// Scale B (migration 261): tasks.merge_pending mirrors taskv2.merge_pending
+// (events). The migration backfills it once from the event log, the event
+// append keeps it in sync in the same transaction, and the boot/hello lookup
+// returns only Done tasks that carry it.
+
+TMP_MIGRATION :: "261_task_merge_pending.sql"
+
+TMP_SEED :: `
+BEGIN;
+INSERT INTO users(user_id, name, display_name, status, created_at, updated_at) VALUES ('u1','u1','u1','active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+INSERT INTO task_chains(chain_id, owner_user_id, title, created_at, updated_at) VALUES ('chain_mp','u1','Merge pending','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+COMMIT;
+`
+
+tmp_text :: proc(conn: ^Conn, query: string, column := 0) -> string {
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(conn.db, strings.clone_to_cstring(query, context.temp_allocator), -1, &stmt, nil) != SQLITE_OK do return ""
+	defer sqlite3_finalize(stmt)
+	if sqlite3_step(stmt) != SQLITE_ROW do return ""
+	return strings.clone(column_text_unowned(stmt, column), context.temp_allocator)
+}
+
+tmp_task :: proc(conn: ^Conn, id, state: string, created: int) -> bool {
+	return exec(conn, fmt.tprintf(`INSERT INTO tasks(task_id, chain_id, owner_user_id, title, description, publish_state, state, kind, brief_json, created_at, updated_at)
+ VALUES ('%s','chain_mp','u1','t','','published','%s','task','{"goal":"g"}','2026-01-01T00:00:%02dZ','2026-01-01T00:00:00Z');`, id, state, created))
+}
+
+// Raw event rows bypass the repository, as a pre-261 database holds them.
+tmp_raw_events :: proc(conn: ^Conn, id: string, kinds: ..string) -> bool {
+	for k in kinds {
+		if !exec(conn, fmt.tprintf(`INSERT INTO task_events(task_id, chain_id, owner_user_id, ts_ms, kind, payload_json) VALUES ('%s','chain_mp','u1',1,'%s','{}');`, id, k)) do return false
+	}
+	return true
+}
+
+tmp_pending :: proc(conn: ^Conn, id: string) -> string {
+	return tmp_text(conn, fmt.tprintf("SELECT merge_pending FROM tasks WHERE task_id='%s';", id))
+}
+
+tmp_listed :: proc(t: ^testing.T, repo: ^iface.Taskchain_Repository) -> string {
+	tasks, err := iface.taskchain_list_merge_pending_done_tasks(repo)
+	testing.expect(t, err.code == .None, err.message)
+	ids := make([dynamic]string, context.temp_allocator)
+	for task in tasks do append(&ids, string(task.task_id))
+	return strings.join(ids[:], ",", context.temp_allocator)
+}
+
+@(test)
+test_merge_pending_backfill_from_events_once :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	conn, path, ok := tmpl_open_file_prod(t, "merge_pending_backfill")
+	if !ok do return
+	defer tmpl_remove_db(path)
+	defer close(&conn)
+	mig_ok, err := run_migrations(&conn, stop_before = TMP_MIGRATION)
+	if !testing.expect(t, mig_ok, err.message) do return
+	testing.expect(t, !table_column_exists(&conn, "tasks", "merge_pending"), "before 261: no column")
+	if !testing.expect(t, exec(&conn, TMP_SEED), "seed chain") do return
+	Case :: struct { id, state: string, kinds: []string, want: string }
+	cases := []Case{
+		{"t_pending",  "done",      {"created", "lease_granted", "submitted", "comment"}, "1"},
+		{"t_approved", "done",      {"submitted", "approved", "merge_snapshot"}, "1"},
+		{"t_merged",   "done",      {"submitted", "merged", "comment"}, "0"},
+		{"t_conflict", "done",      {"approved", "merge_conflict"}, "0"},
+		{"t_failed",   "done",      {"submitted", "merge_failed"}, "1"},
+		{"t_reopened", "done",      {"submitted", "merged", "reopened", "submitted"}, "1"},
+		{"t_late",     "done",      {"submitted", "merged", "late_merge_outcome"}, "0"},
+		{"t_never",    "done",      {"created"}, "0"},
+		{"t_review",   "in_review", {"submitted"}, "1"},
+	}
+	for c, i in cases {
+		if !testing.expect(t, tmp_task(&conn, c.id, c.state, i), c.id) do return
+		if !testing.expect(t, tmp_raw_events(&conn, c.id, ..c.kinds), c.id) do return
+	}
+	impl: Taskchain_Repo_SQLite
+	repo := new_taskchain_repository(&impl, &conn)
+	for pass in ([]string{"upgrade", "restart"}) {
+		mig_ok, err = run_migrations(&conn)
+		if !testing.expectf(t, mig_ok, "%s: %s", pass, err.message) do return
+		testing.expectf(t, tmp_text(&conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", TMP_MIGRATION)) == "1", "%s: 261 recorded once", pass)
+		for c in cases do testing.expectf(t, tmp_pending(&conn, c.id) == c.want, "%s: %s merge_pending=%s, want %s", pass, c.id, tmp_pending(&conn, c.id), c.want)
+		// Only Done rows are listed (in_review t_review is pending but not Done), oldest first.
+		testing.expect_value(t, tmp_listed(t, &repo), "t_pending,t_approved,t_failed,t_reopened")
+	}
+	// The lookup is served by the partial index, not a scan of every task.
+	plan := tmp_text(&conn, "EXPLAIN QUERY PLAN SELECT task_id FROM tasks WHERE merge_pending = 1 AND state = 'done' ORDER BY created_at ASC;", 3)
+	testing.expectf(t, strings.contains(plan, "idx_tasks_merge_pending"), "plan uses the partial index: %s", plan)
+}
+
+@(test)
+test_merge_pending_set_and_cleared_by_event_append :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	conn, path, ok := tmpl_open_file_prod(t, "merge_pending_sync")
+	if !ok do return
+	defer tmpl_remove_db(path)
+	defer close(&conn)
+	mig_ok, err := run_migrations(&conn)
+	if !testing.expect(t, mig_ok, err.message) do return
+	if !testing.expect(t, exec(&conn, TMP_SEED), "seed chain") do return
+	if !testing.expect(t, tmp_task(&conn, "t_a", "done", 1), "task a") do return
+	if !testing.expect(t, tmp_task(&conn, "t_b", "done", 2), "task b") do return
+	impl: Taskchain_Repo_SQLite
+	repo := new_taskchain_repository(&impl, &conn)
+	append_kind :: proc(t: ^testing.T, repo: ^iface.Taskchain_Repository, id, kind: string) {
+		_, ok, err := iface.taskchain_append_event(repo, domain.Task_Event{task_id = domain.Task_ID(id), chain_id = "chain_mp", owner_user_id = "u1", ts_ms = 1, kind = kind, payload_json = "{}"})
+		testing.expectf(t, ok, "append %s to %s: %s", kind, id, err.message)
+	}
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "0")
+	testing.expect_value(t, tmp_listed(t, &repo), "")
+
+	// Set: a completion makes the merge pending.
+	append_kind(t, &repo, "t_a", "submitted")
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "1")
+	testing.expect_value(t, tmp_listed(t, &repo), "t_a")
+	// Unrelated events and a failed merge (retried on hello) leave it set.
+	for k in ([]string{"comment", "merge_snapshot", "merge_failed", "late_merge_outcome"}) do append_kind(t, &repo, "t_a", k)
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "1")
+	// Clear: a merge outcome settles it.
+	append_kind(t, &repo, "t_a", "merged")
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "0")
+	testing.expect_value(t, tmp_listed(t, &repo), "")
+	// A reopen and a new approval set it again; a conflict clears it.
+	append_kind(t, &repo, "t_a", "approved")
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "1")
+	append_kind(t, &repo, "t_a", "merge_conflict")
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "0")
+	// Per task: b's completion does not touch a.
+	append_kind(t, &repo, "t_b", "approved")
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "0")
+	testing.expect_value(t, tmp_listed(t, &repo), "t_b")
+
+	// Same transaction: a rolled-back append leaves no projection behind.
+	testing.expect(t, exec(&conn, "BEGIN;"), "begin")
+	append_kind(t, &repo, "t_a", "submitted")
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "1")
+	testing.expect(t, exec(&conn, "ROLLBACK;"), "rollback")
+	testing.expect_value(t, tmp_pending(&conn, "t_a"), "0")
+
+	// A later task save (upsert) never resets the projection.
+	task, found, gerr := iface.taskchain_get_task(&repo, "t_b")
+	if !testing.expect(t, found, gerr.message) do return
+	task.title = "renamed"
+	_, sok, serr := iface.taskchain_save_task(&repo, task)
+	testing.expect(t, sok, serr.message)
+	testing.expect_value(t, tmp_pending(&conn, "t_b"), "1")
+
+	// A failed projection write fails the append (never a silent drift).
+	testing.expect(t, exec(&conn, "DROP INDEX idx_tasks_merge_pending; ALTER TABLE tasks DROP COLUMN merge_pending;"), "drop projection")
+	_, aok, _ := iface.taskchain_append_event(&repo, domain.Task_Event{task_id = "t_a", chain_id = "chain_mp", owner_user_id = "u1", ts_ms = 1, kind = "submitted", payload_json = "{}"})
+	testing.expect(t, !aok, "append fails closed without the projection")
+	testing.expect_value(t, tmp_text(&conn, "SELECT count(*) FROM task_events WHERE task_id='t_a' AND kind='submitted';"), "1")
+}

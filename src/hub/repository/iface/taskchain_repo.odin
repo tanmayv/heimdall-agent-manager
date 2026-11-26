@@ -93,6 +93,7 @@ Taskchain_Repository :: struct {
 	// Task System v2 engine tables (see taskv2_repo.odin).
 	list_published_active_chains: Task_Chain_List_Published_Active_Proc,
 	list_tasks_by_state: Task_List_By_State_Proc,
+	list_merge_pending_done_tasks: Task_List_Merge_Pending_Done_Proc,
 	take_boot_regate: Take_Boot_Regate_Proc,
 	take_sched0_migration: Take_Sched0_Migration_Proc,
 	list_sched0_fleet_roles: Sched0_Fleet_Roles_List_Proc,

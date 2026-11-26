@@ -299,9 +299,11 @@ rebuild_timers :: proc(svc: ^Service) {
 	if irerr.code == .None {
 		for t in in_review do arm_task_timers(svc, t)
 	}
-	// Done tasks whose merge never settled (dependency_stalled); the same scan
-	// bridge hello does for requeue_pending_merges.
-	if done, derr := iface.taskchain_list_tasks_by_state(svc.repo, .Done); derr.code == .None {
+	// Done tasks whose merge never settled (dependency_stalled); the same
+	// lookup bridge hello does for requeue_pending_merges. The merge_pending
+	// projection keeps boot independent of Done history: only those tasks'
+	// event logs are read, and merge_pending(evs) still decides.
+	if done, derr := iface.taskchain_list_merge_pending_done_tasks(svc.repo); derr.code == .None {
 		for t in done {
 			evs, eerr := iface.taskchain_list_events_by_task(svc.repo, t.task_id, t.owner_user_id)
 			if eerr.code != .None || !merge_pending(evs) do continue
