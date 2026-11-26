@@ -99,6 +99,7 @@ jobs:
           security unlock-keychain -p e2e "$kc"
           security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
           security default-keychain -d user -s "$kc"
+          echo "HEIMDALL_E2E_P5_KEYCHAIN=$kc" >> "$GITHUB_ENV"
       - name: Build hub, NATS and the conversion bundle (test build, version 0.9.0)
         shell: bash
         run: |

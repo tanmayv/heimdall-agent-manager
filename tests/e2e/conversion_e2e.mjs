@@ -454,6 +454,23 @@ async function main() {
   await step(`P5 ${OLDEST} installer re-run converts`, async () => {
     hooks();
     const L5 = await installLegacy(hub, acct, OLDEST, `c5${suffix}`);
+    // The released legacy bridge and the ad hoc test bundle have different
+    // macOS signing identities. Grant the staged CDHash access only to P5's
+    // records in the dedicated, disposable CI keychain.
+    const fixtureKeychain = process.env.HEIMDALL_E2E_P5_KEYCHAIN;
+    if (MAC && fixtureKeychain) {
+      expect(process.env.GITHUB_ACTIONS === 'true' &&
+        fixtureKeychain === path.join(process.env.RUNNER_TEMP || '', 'e2e.keychain-db'),
+        'P5: Keychain pre-authorization is confined to the CI fixture');
+      const signature = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', NEW_BRIDGE], { encoding: 'utf8', timeout: 10_000 });
+      const cdHash = signature.stderr?.match(/^CDHash=([a-f0-9]{40})$/im)?.[1];
+      expect(signature.status === 0 && cdHash, 'P5: identified the staged runtime CDHash');
+      const partitions = 'teamid:8TSXLYJZN3,cdhash:' + cdHash;
+      const acl = spawnSync('/usr/bin/security', ['set-generic-password-partition-list',
+        '-a', L5.bridgeId, '-S', partitions, '-k', 'e2e', fixtureKeychain],
+      { encoding: 'utf8', timeout: 15_000 });
+      expect(acl.status === 0, 'P5: pre-authorized staged runtime for fixture items (status ' + acl.status + ', error ' + (acl.error?.code || 'none') + ')');
+    }
     const pidBefore = runtimePid(L5);
     const args = ['--hub', hub.base, '--profile', L5.name, '--bundle', RELEASE.assetPath, '--checksum-file', RELEASE.sumsPath];
     let r;
@@ -507,7 +524,7 @@ async function main() {
         });
         if (!seen.has(summary)) {
           seen.add(summary);
-          console.log('    P5 startup sample:', summary);
+
         }
       };
       let stdout = '', stderr = '';
@@ -525,7 +542,8 @@ async function main() {
         clearInterval(interval);
         clearTimeout(timeout);
       }
-      if (collectMac) {
+      if (r.status !== 0) for (const summary of seen) console.log('    P5 startup sample:', summary);
+      if (collectMac && r.status !== 0) {
         if (sampleRun) macReports['runtime-sample'] = await sampleRun;
         macReports['securityd-log'] = commandReport('/usr/bin/log', ['show', '--last', '3m', '--style', 'compact', '--predicate', 'process == "securityd" AND (eventMessage CONTAINS[c] "ACL" OR eventMessage CONTAINS[c] "interaction" OR eventMessage CONTAINS[c] "prompt")']);
       }
