@@ -1,6 +1,7 @@
 // Browser-only fixture: the real AgentChatPane with the Agent settings panel against an
 // in-memory hub. ?state=running (mid-turn)|idle|stopped|restarting|waiting|still_waiting,
-// ?acp=<acp_availability reason> (claude's verdict on every bridge; default ready).
+// ?acp=<acp_availability reason> (claude's verdict on every bridge; default ready),
+// ?flag=off (agent_settings_panel disabled: the old Agent settings modal).
 // POST /reconfigurations is accepted in memory (the agent then shows Restarting).
 // No request leaves the page.
 import React from 'react';
@@ -18,6 +19,7 @@ import '../../src/ui/styles.css';
 const params = new URLSearchParams(location.search);
 const state = params.get('state') || 'running';
 const acpReason = params.get('acp') || 'ready';
+const panelFlag = params.get('flag') !== 'off';
 const ACP_FIX: Record<string, string | null> = { ready: null, no_recipe: null, unsupported_bridge: 'update_bridge', adapter_missing: 'install_adapter',
   adapter_outdated: 'install_adapter', adapter_missing_node: 'install_adapter', adapter_error: 'install_adapter', installing: null, not_checked: 'check_now' };
 const now = Date.now();
@@ -90,7 +92,7 @@ const providerStatus = {
 window.fetch = async (input, init = {}) => {
   const path = new URL(String(input), location.origin).pathname;
   const json = (data: any, status = 200) => new Response(JSON.stringify({ data }), { status, headers: { 'content-type': 'application/json' } });
-  if (path.endsWith('/me/experiments')) return json({ experiments: [{ key: 'agent_settings_panel', enabled: true }] });
+  if (path.endsWith('/me/experiments')) return json({ experiments: [{ key: 'agent_settings_panel', enabled: panelFlag }] });
   if (path.includes('/chats/by-instance/')) return json({ conversation_id: 'conv', agent_instance_id: 'inst_coord', agent_id: 'agt_coord', title: 'coordinator #41', project_id: 'prj_heimdall', runtime_status: instance.runtime_status });
   if (path.endsWith('/messages')) return json([...messages].reverse());
   if (path.endsWith('/send-now')) return json({ conversation_id: 'conv', runtime_transport: 'pty', launch_epoch: 'ep1', steering_supported: false, batch: null });

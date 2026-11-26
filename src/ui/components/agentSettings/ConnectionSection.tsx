@@ -102,7 +102,11 @@ export function ConnectionSection({ selected, onSelect, acp, onFix, fixPending =
       ) : null}
       {showAcp && acp.kind === 'problem' ? (
         <Alert tone="warning" role="alert" data-debug-id="agent-panel-connection-acp-alert">
-          <p>{acp.text}</p>
+          {/* Lead in the warning ink, the hub-mapped reason in primary ink (design PNGs). */}
+          <p data-debug-id="agent-panel-connection-acp-alert-text">
+            <span className="font-semibold">ACP isn&apos;t available.</span>{' '}
+            <span className="text-primary">{acp.text}</span>
+          </p>
           {acp.action ? (
             <Button
               variant="secondary"

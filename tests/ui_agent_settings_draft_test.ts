@@ -346,7 +346,7 @@ test('Connection: two radio cards; ACP alert role=alert with the hub fix; instal
     await render(React.createElement(ConnectionSection, { ...props, selected: 'acp' }));
     const alert = q(doc, 'agent-panel-connection-acp-alert')!;
     assert.equal(alert.getAttribute('role'), 'alert');
-    assert.match(alert.textContent || '', /dawnstar runs a bridge version without ACP support\. Update it to the latest release\./);
+    assert.match(alert.textContent || '', /^ACP isn't available\. dawnstar runs a bridge version without ACP support\. Update it to the latest release\./);
     await act(async () => q(doc, 'agent-panel-connection-fix-update_bridge')!.click());
     assert.deepEqual(events, ['acp', 'fix:update_bridge']);
 
