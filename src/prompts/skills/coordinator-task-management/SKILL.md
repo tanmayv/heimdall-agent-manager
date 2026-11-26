@@ -1,11 +1,11 @@
 ---
 name: coordinator-task-management
-description: How a task-chain COORDINATOR (or soloist) runs a chain with ham-ctl — choose tickets or workflow runs, propose and publish tasks with complete briefs, set the fleet and review roles, curate the chain summary, react to `[taskv2]` notices (`blocked_on human`, `budget_exhausted`, `oscillation`, `ready_unclaimed`, `review_requested_from_user`, `merge_conflict`, `gate_rejected`, `work_batch_finished`, `workflow_complete`, …), record user verdicts (`review post --on-behalf-of user`), amend or replace tasks, and close the chain. Covers Solo mode, where the coordinator also does the work. Load whenever you coordinate a chain.
+description: How a task-chain COORDINATOR runs a chain with ham-ctl — choose tickets or workflow runs, propose and publish tasks with complete briefs (every task names its assignee agent and its reviewer agents), set the fleet, curate the chain summary, react to `[taskv2]` notices (`blocked_on human`, `budget_exhausted`, `oscillation`, `ready_unclaimed`, `review_requested_from_user`, `merge_conflict`, `gate_rejected`, `work_batch_finished`, `workflow_complete`, …), record user verdicts (`review post --on-behalf-of user`), amend or replace tasks, and close the chain. Covers the coordinator as an ordinary assignee and reviewer of its own chain. Load whenever you coordinate a chain.
 ---
 
 # Coordinator task management (Tickets)
 
-You plan, triage, publish and steer. Leased **workers** and **reviewers** do the work, unless the chain runs in **Solo mode** (§8), where you are also the worker and the user reviews.
+You plan, triage, publish and steer. Every task names an **assignee** agent that works it and the **reviewer** agents (and optionally the user) that review it. Usually those are other agents; when a task names your own agent, you are its assignee or reviewer and pull it yourself (§8).
 
 The Hub owns task state: active work claims make tasks `in_progress`, submits `in_review`, passing reviews `done`. There is no status verb for tasks. Commands use `./bin/ham-ctl`; exact flags are in `ham-ctl-reference` or `ham-ctl <group> --help`.
 
@@ -14,7 +14,7 @@ Any authenticated agent instance of the same owner may do these coordinator oper
 ## 1. Choose the next work item, not a chain type
 Every task chain is `mixed_work`; you stay coordinator of the same chain, team and directories throughout. Add ordinary tickets when their briefs are known; add workflow runs for recurring recipes or discovery followed by fan-out. Reassess as work evolves; neither choice creates a second chain.
 
-Ordinary tickets remain editable. Workflow-generated stage tasks are engine-managed: inspect their run and use whole-run retry/cancel rather than editing stage identities. Configure shared fleet roles before starting a recipe; runs never widen the fleet.
+Ordinary tickets remain editable. Workflow-generated stage tasks are engine-managed: inspect their run and use whole-run retry/cancel rather than editing stage identities. Name the assignee and reviewer agents in the run's inputs (recipes take an `assignee` input); a run whose stage has no assignee is refused at start with the stages listed.
 
 ```bash
 ./bin/ham-ctl workflow templates
@@ -55,7 +55,8 @@ cat > proposal.json <<'EOF'
     {"id": "t_api", "title": "Commit-diff endpoint", "priority": "p1",
      "brief": {"goal": "Expose paginated commit-diff for chain directories.",
                "acceptance": ["GET …/vcs/commit-diff returns <= 200 hunks", "taskchain unit tests cover pagination and pass"],
-               "assignee": "agt_worker_odin", "review_roles": ["reviewer"]}},
+               "assignee": "agt_worker_odin", "reviewers": ["agt_reviewer"],
+               "review_focus": {"agt_reviewer": "pagination bounds and error paths"}}},
     {"id": "t_ui", "title": "Diff viewer", "depends_on": ["t_api"],
      "brief": {"goal": "Render the commit diff in the task panel.", "acceptance": ["diff renders per file with hunk headers", "UI tests for the viewer pass"],
                "assignee": "agt_worker_ui", "requires_user_approval": true}}
@@ -65,26 +66,28 @@ EOF
 ./bin/ham-ctl task-chain propose --file proposal.json [--auto-approve]
 ./bin/ham-ctl task-chain decide <chain-id> --decision approve|reject [--reason <text>]
 ```
-- Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
+- Per-task fields: `id`, `title`, `description`, `priority`, `depends_on`, `brief`. **Put `assignee`, `reviewers`, `review_focus` and `requires_user_approval` inside `brief`**; top-level copies are ignored.
+- `assignee` is required: one durable agent id (`agt_…`). `reviewers` lists agent ids and optionally the literal `user` (the same as `requires_user_approval: true`); it may not contain the assignee (`reviewer_is_assignee`). Every listed reviewer must approve the current attempt. A task with no reviewers is done on submit. `review_focus` (`{agent id: text}`) tells each reviewer what to check; it reaches that reviewer's `TASK.md`.
 - Without `--auto-approve` the proposal waits for an explicit decision. Existing work continues.
-- Single tasks: `task create --title … --goal … --acceptance … (repeat) [--assignee agt_…] [--reviewer agt_…] [--review-role <role>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`.
+- Single tasks: `task create --title … --assignee agt_… --goal … --acceptance … (repeat) [--reviewer agt_…|user] [--review-focus agt_…=<what to check>] [--require-user-approval] [--input <ref>] [--depends-on <ids>]`, then `task publish <task-id>` or `task-chain publish <chain-id>`. A missing assignee is refused with `assignee_required`.
 - Same-owner agents may publish chains and ordinary draft tasks. Single-task publication requires an already published chain; unpublish is unsupported.
-- Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task, including `review_role:<r>` when no fleet row holds a role the brief asks for.
+- Publish refuses incomplete briefs with `422 brief_incomplete` listing what is missing per task (`assignee_required` when a task has no assignee).
 
 **A good brief** is self-contained: a goal a newcomer can act on and checkable acceptance items (the hub requires only a non-empty goal and at least one acceptance item). Also state limits (scope, files not to touch), a stop condition and the approval scope: which external or destructive actions the user has approved, if any. Do not prescribe a verification command: the worker chooses and reports checks, and reviewers judge correctness from the diff and that evidence. Add `inputs` (`output:<task>`, `<path>@<rev>`) only for context beyond what dependencies already bring: a task automatically receives the handoff of every task it waits for.
 
-## 3. Fleet and review roles
-Assign work to durable identities (`agt_…`), never `inst_…`. Same-owner agents may list/configure, pause/resume or delete fleets; referenced durable agents and bridges must belong to that owner, and capacity, role and placement checks still apply. `fleet pause`/`resume` stop/start new leases while current work continues. Fleet deletion is `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; no fleet delete CLI verb exists.
+## 3. Fleet
+Assign work to durable identities (`agt_…`), never `inst_…`. A fleet row sets only capacity, placement and a pause switch: work goes only to a task's assignee and reviews only to its listed reviewers. A row (capacity 1) is created automatically for every assignee or reviewer that has none; your own agent needs no row. Same-owner agents may list/configure, pause/resume or delete fleets; referenced durable agents and bridges must belong to that owner, and capacity and placement checks still apply. `fleet pause`/`resume` stop/start new work and review leases to the whole row while current work continues. Fleet deletion is `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; no fleet delete CLI verb exists.
 ```bash
 ./bin/ham-ctl task-chain fleet list [<chain-id>]
 ./bin/ham-ctl task-chain fleet set <chain-id> --agent agt_worker_odin \
-  --capacity 2 --roles worker,reviewer [--min-warm 1] [--idle-ttl 300] \
-  [--bridge brg_main]
+  --capacity 2 [--min-warm 1] [--idle-ttl 300] [--bridge brg_main]
+./bin/ham-ctl task-chain fleet pause [<chain-id>] --agent agt_worker_odin
+./bin/ham-ctl task-chain fleet resume [<chain-id>] --agent agt_worker_odin
 ```
 - Runtime defaults and durable-agent overrides are shared across chains per bridge. Use Home Fleet or `bridge fleet show|apply|status|retry` (see `ham-ctl-reference`). Apply restarts changed running task agents, including active claim holders, while preserving claims/workdirs/review gates. Read status for acknowledged readiness; saved settings alone do not prove ready.
 - On a bridge that has completed its first Apply, omit runtime fields from chain staffing writes; attempts to change/clear legacy provider/profile/model or `bridge_models` return `fleet_runtime_managed`. Staffing/placement-only updates preserve legacy audit fields. Legacy runtime flags remain usable only on unconfigured bridges. Future launches resolve shared policy locally in the Hub with no additional Fleet startup network read.
-- Roles: `worker`, `reviewer`, or a custom review role (`security`, `perf`, …). A brief's `review_roles` asks every agent holding that role to review. Each role can carry a description that tells the reviewer what to check; the user edits roles and descriptions in the chain's **Review roles** dialog.
-- Reviewers named on one task (`brief.reviewers` / `--reviewer`) review that task only.
+- To have an agent review, list it in the task's `reviewers`; to say what it checks, use `review_focus`.
+- An agent with capacity 1 that is both an assignee and a reviewer in the chain can only do one at a time; give it capacity 2 or use a separate reviewer agent.
 - Each agent's bridge comes from: the task's bridge pin, then its fleet row's bridge, then the chain's first directory, then your own bridge.
 
 ## 4. Share learnings across the chain
@@ -119,7 +122,7 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 | `budget_exhausted` | read the attempts (`task fetch <id> facet:<id>:<n>:handoff`), then sharpen or split the brief (`task update`) or `workflow retry` |
 | `oscillation` | review rounds keep bouncing: read the open findings (`task show`) and the handoff, make `acceptance` unambiguous |
 | `hold_stale` | a task you (or the user) held has had no live lease for a while. If the hold's reason is resolved, `task release <id>`; otherwise leave it held. Repeats once per interval until released |
-| `ready_unclaimed` | no eligible worker: check `task-chain fleet list` and `bridge list`, fix capacity, roles or bridge |
+| `ready_unclaimed` | the assignee cannot get a lease: check `task-chain fleet list` and `bridge list`, fix capacity, a paused row or the bridge |
 | `agent_not_running` | A ready task cannot obtain a running agent, or a claim holder exited or its runtime became unavailable. `task show <id>` shows `blocked_on.kind=agent_not_running` (legacy `dispatch` is equivalent), with agent/provider/model/bridge/error. The user can choose **Start agent** in the attention deck or chat tray; a failed start stays blocked and shows its error inline for retry. Fix the cause, then use the card or `task unblock <id> [--note <reason>]`; editing the affected fleet row also clears the block. No work attempt budget is spent. Full fleet rows remain queued without blocking |
 | stuck `ready` / `in_review` / merge | A task looks stuck: `ready_unclaimed` with free fleet capacity, `in_review` although every owed review is in (e.g. after `--no-require-user-approval`), or a done task whose merge is `pending`/`failed`/`none`. Run `task recheck <id>`: it re-runs the gate, readiness, dispatch and merge-back without approving or touching a live lease, and its `reasons` name what still holds (waiting reviewer, `fleet full n/m`, bridge offline, directory without git). Prefer it to `task hold` + `task release`, which also asks a lease holder to checkpoint (see §5 "Pausing vs deferring") |
 | `review_requested_from_user` | summarise the evidence and point the user to the existing task review UI; if they explicitly decide in chat, record their verdict (§6). No task approval action card is required |
@@ -133,7 +136,7 @@ Routine events stay quiet. You get one line, `[taskv2] <trigger>: …`, only whe
 
 | Intent | Command |
 |---|---|
-| Work on something else first (solo) | `lease switch <other_task> --summary …`; the current task returns to `ready` |
+| Work on something else first (a task assigned to you) | `lease switch <other_task> --summary …`; the current task returns to `ready` |
 | Stop now; someone continues later | `lease handoff --summary … --next-steps …` |
 | This task must run after another | `task update <id> --depends-on <id>` (or `task depend`) |
 | This task is less urgent | `task update <id> --priority p2` |
@@ -158,13 +161,13 @@ Rules: never hold a task just to postpone it, and never hold when the user's inp
 - Cancel terminally abandoned work, then exclude it with `task-chain scope --chain <id> --item task:<id>|workflow_run:<id> --action exclude --reason "<why>"`. Exclusion is auditable and never makes a failed prerequisite successful.
 - Unrelated bugs: search `issue list --query …`, vote `issue vote <id>`, or file `issue create --title … --description …`.
 
-## 8. Solo mode
-The chain is solo when you are the Soloist or hold a worker fleet row yourself. Then:
-- You pull work with `lease next` (nothing is pushed), work it per `worker-task-management`, and `lease submit`. Claims never lapse with time; runtime loss retains ownership while recovery is pending.
-- New tasks default to `requires_user_approval`; the user reviews from their attention deck. To opt a task out: `task update <id> --no-require-user-approval`.
-- You never review your own work (`403 solo_self_review`).
-- `[taskv2] solo: task … is ready for you` means pull it with `lease next`.
-- Urgent request mid-task: create the task, then `lease switch <task_id> --summary "<where you left off>"`.
+## 8. You as assignee and reviewer
+Your agent is an ordinary assignee and reviewer: assign a task to it (`brief.assignee`) or list it in `reviewers`, and you serve that item yourself. Nothing is pushed to you and you are never started, stopped or restarted for a task:
+- `[taskv2] ready for you: task …` or `… review of task …` means run `lease next`. It returns, in order: your active lease, a review you owe, rework on a task assigned to you, new ready work assigned to you, otherwise `none` (with the task and the first refusal reason when an item exists but cannot be granted).
+- Work an assigned task per `worker-task-management` and `lease submit`. Your lease is deleted on submit or block, so you can pull the next item at once; rework comes back as a ready task assigned to you.
+- Review per `worker-task-management` §7 and `review post`. Nobody approves their own work: you may not review, or post `--on-behalf-of user` for, an attempt your agent authored (`author_self_review`).
+- `requires_user_approval` has no default; list `user` in `reviewers` (or pass `--require-user-approval`) when the user must review.
+- Urgent request mid-task: create the task assigned to your agent, then `lease switch <task_id> --summary "<where you left off>"`.
 
 ## 9. Live requirement amendments and significant changes
 
@@ -185,7 +188,7 @@ For a significant change to objective, deliverable or approach that invalidates 
 
 1. Record the decision on the original task: rationale, old/new scope, retained work and original task disposition.
 2. Create a self-contained replacement task linked to the original, with current acceptance and required approvals; record the replacement ID on the original.
-3. Checkpoint active work before redirecting it. In solo mode, `lease switch <replacement-id> --summary "..."` preserves progress. Explicitly rewire future dependencies. Terminal tasks need an explicit reopen for further work, and workflow-managed stage identities stay under workflow lifecycle controls. A reference link preserves provenance; a dependency should exist only when the new task actually requires successful completion of the old one.
+3. Checkpoint active work before redirecting it. For a task you hold yourself, `lease switch <replacement-id> --summary "..."` preserves progress. Explicitly rewire future dependencies. Terminal tasks need an explicit reopen for further work, and workflow-managed stage identities stay under workflow lifecycle controls. A reference link preserves provenance; a dependency should exist only when the new task actually requires successful completion of the old one.
 
 Do not overwrite the original into an unrelated assignment or treat the scope change as approval of unfinished work.
 

@@ -185,7 +185,7 @@ Plain types and errors, no I/O: `agent.odin`, `bridge.odin`, `taskchain.odin` (`
 | [push](../src/hub/service/push) | Web Push enrollment, VAPID, payload encryption and send. |
 | [search](../src/hub/service/search) | Cross-entity search service over the FTS indexes. |
 | [shell_session](../src/hub/service/shell_session) | Interactive/background shell sessions: create, viewers, output fan-out, snapshots, retention, reaping. |
-| [taskchain](../src/hub/service/taskchain) | Task chains (coordinator-owned groups of tasks): brief contract, control policy, review roles, placement recovery. |
+| [taskchain](../src/hub/service/taskchain) | Task chains (coordinator-owned groups of tasks): brief contract (assignee and reviewer agents), control policy, placement recovery. |
 | [taskv2](../src/hub/service/taskv2) | The Task System v2 engine: event-sourced task fold, leases, matcher/placement, review gate, merge-back, timers, workflows, wake effects. |
 | [user](../src/hub/service/user) | User records and conversation launch preferences. |
 | [vault_directory](../src/hub/service/vault_directory) | Server-side view of the device/vault directory (statements are verified, never decrypted). |

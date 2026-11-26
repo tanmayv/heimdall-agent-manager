@@ -1,5 +1,7 @@
 # Mixed work inside a task chain
 
+> **Superseded in part (SCHED-0, spec art_18eb828949cd9431):** fleet roles, review roles (`review_roles`, `--roles`, `--review-role`, the Review Roles dialog) and solo mode no longer exist. Every task names a required `assignee` agent and a `reviewers` list (agent ids, optionally `user`), with optional per-reviewer `review_focus`; a fleet row has only capacity, placement and one `paused` switch; the coordinator is an ordinary assignee and reviewer that pulls with `lease next`. Statements below about roles or solo mode describe the earlier design.
+
 Implementation plan and infrastructure handoff, 2026-10-19.
 
 Current scope: backend, persistence, REST/agent actions, Bridge, CLI, bootstrap/context, and the subsequently authorized minimal read-only task-pane integration. Workflow authoring UI remains deferred. Independent review, automated tests, migration execution and manual testing have not been performed for the final cutover. Earlier foundation pass counts below describe an older implementation state only.

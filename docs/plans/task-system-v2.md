@@ -1,5 +1,7 @@
 # Task System v2 — specification and implementation status
 
+> **Superseded in part (SCHED-0, spec art_18eb828949cd9431):** fleet roles, review roles (`review_roles`, `--roles`, `--review-role`, the Review Roles dialog) and solo mode no longer exist. Every task names a required `assignee` agent and a `reviewers` list (agent ids, optionally `user`), with optional per-reviewer `review_focus`; a fleet row has only capacity, placement and one `paused` switch; the coordinator is an ordinary assignee and reviewer that pulls with `lease next`. Statements below about roles or solo mode describe the earlier design.
+
 Status date: 2026‑10‑16 · Branch `feat/task-v2` (cut from `main` @ 70e66b16) · Owner: tanmayvijay
 Supersedes `docs/fsm_task_chain_engine.md` (never implemented) and the level‑triggered `reconcile_chain` engine (deleted in the first commit of this branch).
 

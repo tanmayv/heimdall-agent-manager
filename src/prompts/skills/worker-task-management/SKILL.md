@@ -1,11 +1,11 @@
 ---
 name: worker-task-management
-description: How a worker, reviewer or soloist works a lease with ham-ctl — read `TASK.md`, work in the Workdir, choose and report your own checks, `lease submit|handoff|block|switch` with decisions and dead ends, `task fetch`, `review post`, and sharing what you learned with later tasks. Load whenever you are a worker or reviewer on a chain, and before your first submit, handoff, block or verdict.
+description: How a worker or reviewer (including a coordinator that is a task's assignee or reviewer) works a lease with ham-ctl — read `TASK.md`, work in the Workdir, choose and report your own checks, `lease submit|handoff|block|switch` with decisions and dead ends, `task fetch`, `review post`, and sharing what you learned with later tasks. Load whenever you are a worker or reviewer on a chain, and before your first submit, handoff, block or verdict.
 ---
 
 # Worker & reviewer task management (Tickets)
 
-The Hub gives you a **durable claim** on one task, using the compatibility command name `lease`. Claims have no expiry or hard deadline. An active work claim permits execution; a waiting claim retains the task and role but does not permit work. You never set task status: active work *is* `in_progress`; `lease submit` moves the task to `in_review` (or `done` when nobody reviews it). Work only on the leased task; route scope questions to the coordinator (task comment, or `ham-ctl chat send --to <coordinator-instance-id>`).
+The Hub gives you a **durable claim** on one task, using the compatibility command name `lease`. Claims have no expiry or hard deadline. An active work claim permits execution; a waiting claim retains the task and your claim on it but does not permit work. You never set task status: active work *is* `in_progress`; `lease submit` moves the task to `in_review` (or `done` when nobody reviews it). Work only on the leased task; route scope questions to the coordinator (task comment, or `ham-ctl chat send --to <coordinator-instance-id>`).
 
 All commands use `./bin/ham-ctl`. Exact flags: the `ham-ctl-reference` skill or `ham-ctl <group> --help`.
 
@@ -13,7 +13,7 @@ All commands use `./bin/ham-ctl`. Exact flags: the `ham-ctl-reference` skill or 
 | Situation | Command |
 |---|---|
 | Woken, or unsure what you hold | read `TASK.md`, then `lease next` |
-| Idle and want work (solo mode, or after finishing) | `lease next` |
+| Idle and want work (after finishing, or as a coordinator) | `lease next` |
 | Need context `TASK.md` omitted or points to | `task fetch <task-id> <ref>` |
 | Optional progress update | `lease heartbeat --note "<progress>"` (optional progress; no renewal required) |
 | Made a choice others might re-open, or hit a dead end | note it now; pass it at submit/handoff as `--decision` / `--dead-end` |
@@ -28,11 +28,11 @@ All commands use `./bin/ham-ctl`. Exact flags: the `ham-ctl-reference` skill or 
 | Woken with `changes_requested` | address every Open Finding, re-check what changed, submit |
 | Woken with **Your Block Was Answered** | continue with the answer; no need to ask again |
 | Any command returns `409 lease_lost` | stop at once; touch nothing |
-| Woken as a reviewer | read the role description (`lease next`), inspect the head and the worker's reported checks, run your own checks only where a concrete concern remains, then `review post` |
+| Woken as a reviewer | read the brief, its acceptance and your **Review focus** in `TASK.md`, inspect the head and the worker's reported checks, run your own checks only where a concrete concern remains, then `review post` |
 | Review: everything checks out | `review post --verdict approve` |
 | Review: something is wrong | `review post --verdict request_changes --summary … [--findings-file …]` |
-| Want to postpone this task or do something else first | `lease switch <task_id> --summary …` (solo) or `lease handoff --summary … --next-steps …`; never ask for a hold to postpone work (a hold is the coordinator's pause, and the user cannot answer a held task) |
-| Solo: an urgent task arrives mid-task | `lease switch <task_id> --summary "<where you left off>"` |
+| Want to postpone this task or do something else first | `lease switch <task_id> --summary …` (a task assigned to you) or `lease handoff --summary … --next-steps …`; never ask for a hold to postpone work (a hold is the coordinator's pause, and the user cannot answer a held task) |
+| An urgent task assigned to you arrives mid-task | `lease switch <task_id> --summary "<where you left off>"` |
 | Found an unrelated bug | `issue list --query …`, then `issue vote <id>` or `issue create`; do not fix it in this task |
 
 Never: set task status by hand, review your own work, or keep working after `lease_lost`.
@@ -43,11 +43,10 @@ The Bridge writes `<run_dir>/TASK.md` before your turn. It is your authoritative
 | Section | What it tells you |
 |---|---|
 | Header | `lease_id`, attempt `n/max`, `review_rounds`, ownership phase, placement (bridge, directory, provider, model) and the **Workdir** + branch |
-| Solo Mode | you are the chain's coordinator *and* worker (see §8) |
 | Your Block Was Answered | the question you blocked on and the user's answer |
 | Rejected At The Gate | why a workflow gate rejected your previous output |
 | Merge Conflict | your finished branch did not merge; reconcile it (see §2) |
-| Brief | goal and acceptance checklist (`ham-ctl task show <id>` has the full brief) |
+| Brief | goal and acceptance checklist; for a review, your **Review focus** (what your agent is asked to check). `ham-ctl task show <id>` has the full brief |
 | Chain Summary | done tasks (+ commit), open tasks, **dead ends from every attempt in the chain**, coordinator notes |
 | From The Tasks This One Waits For | each dependency's handoff summary, decisions, dead ends, next steps, last commit, output |
 | Resolved Inputs | the refs your brief lists in `inputs`, resolved |
@@ -57,7 +56,7 @@ The Bridge writes `<run_dir>/TASK.md` before your turn. It is your authoritative
 | Protocol Rules | the 11-rule card; follow it |
 
 `ham-ctl lease next` returns your lease (`status: current` when active, `waiting` when waiting), grants a ready task
-(`granted`, rewrites `TASK.md`) or returns `none`. Its JSON also carries what each review role must check (`lease.review_roles[].description`).
+(`granted`, rewrites `TASK.md`) or returns `none` (with the task and the first refusal reason when an item for you exists but cannot be granted). A review lease's JSON carries `lease.review_focus` when the brief names one for your agent.
 
 ## 2. Work in the Workdir
 In a git directory every task gets its own checkout: `<dir>/.heimdall/worktrees/<task_id>` on branch `heimdall/<task_id>`. **`cd` to the Workdir and do all edits and commits there.** `lease submit` runs there automatically. When the task is `done` the Hub merges your branch into the directory's branch. Work from tasks you depend on is already merged into your starting point.
@@ -124,7 +123,7 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 
 ## 7. Reviewing
 When `TASK.md` says `reviewer` (a review lease):
-1. Read the brief, the submitted attempt (summary with the checks the worker reported, handoff) and the role description in `lease next` (`lease.review_roles[].description`): it says what *your* role must check.
+1. Read the brief and its acceptance, the submitted attempt (summary with the checks the worker reported, handoff) and your **Review focus** in `TASK.md` (`lease.review_focus`): it says what *your* agent is asked to check. Without one, review the task as a whole against its acceptance.
 2. Inspect the change at the submitted head (`git show --stat <head>`, or `task fetch <task-id> "<path>@<head>"`).
 3. Judge correctness yourself. Read the diff against the acceptance items and the worker's reported checks. Run your own checks (for example in a detached worktree at the submitted head) only where a concrete concern remains; say what you checked in `--summary` or findings. Your verdict needs no command evidence.
 4. Post the verdict:
@@ -133,15 +132,15 @@ When `TASK.md` says `reviewer` (a review lease):
 
    cat > findings.json <<'EOF'
    [{"path": "src/hub/service/taskv2/gate.odin", "line": 142, "severity": "blocker",
-     "text": "request_changes from a role reviewer must keep the gate closed"}]
+     "text": "request_changes from one listed reviewer must keep the gate closed"}]
    EOF
    ./bin/ham-ctl review post --verdict request_changes \
-     --summary "a role reviewer's request_changes is ignored" --findings-file findings.json
+     --summary "one reviewer's request_changes is ignored" --findings-file findings.json
    ```
-   Findings use `path`, `line`, `severity`, `text`. `request_changes` needs `--summary` or findings. The response says `gate: waiting|approved|changes_requested`. When every required review passes, the task is `done`, its branch is merged and its dependents become ready.
+   Findings use `path`, `line`, `severity`, `text`. `request_changes` needs `--summary` or findings. The response says `gate: waiting|approved|changes_requested`. Posting ends your review lease. When every listed reviewer (and the user, if listed) has approved, the task is `done`, its branch is merged and its dependents become ready. You may not review an attempt your own agent authored.
 
-## 8. Solo mode
-When `TASK.md` has a **Solo Mode** section you are the coordinator and the worker; the user reviews. Pull work with `lease next` (nothing is pushed to you), submit, and retain this task while its claim is waiting. Once the task finishes or ownership is explicitly released, pull another task. To take an urgent task mid-way: `ham-ctl lease switch <task_id> --summary "<where you left the current one>"` (the current task returns to `ready`; the attempt is not counted). You never review your own work; the Hub refuses it.
+## 8. When you are the coordinator
+A coordinator is an ordinary assignee and reviewer: a task assigned to its agent, or a review it owes, is pulled with `lease next` (nothing is pushed to it). `[taskv2] ready for you: …` means run `lease next`. A coordinator's lease is deleted on submit or block, so it can pull the next item at once; rework returns as a ready task assigned to it. To take an urgent task mid-way: `ham-ctl lease switch <task_id> --summary "<where you left the current one>"` (the current task returns to `ready`; the attempt is not counted). Nobody reviews their own work; the Hub refuses it.
 
 ### Unavailable fleet instances
 
@@ -157,4 +156,4 @@ If the change substantially replaces the objective, deliverable or approach, ask
 
 ## Events, claims, transfer and cancel
 
-On an `[events]` nudge (`events next` / `events ack`), or to claim, transfer or cancel a task, load `chain-events-and-claims`: "Event inbox and migration notices" and "Durable claims, cancellation and transfer". In solo mode the coordinator side of event handling is in `coordinator-task-management` §5.
+On an `[events]` nudge (`events next` / `events ack`), or to claim, transfer or cancel a task, load `chain-events-and-claims`: "Event inbox and migration notices" and "Durable claims, cancellation and transfer". The coordinator side of event handling is in `coordinator-task-management` §5.
