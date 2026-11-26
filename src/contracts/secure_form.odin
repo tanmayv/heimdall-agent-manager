@@ -216,9 +216,14 @@ secure_form_choice :: proc(f: Secure_Form_Field, id: string) -> bool {
 
 // Callers provide a protected and scrubbed allocator for secret material.
 // The local stdin document wraps the resulting map as {"version":1,"values":{...}}.
-secure_form_parse_values :: proc(raw: string, schema: Secure_Form_Schema, allocator: mem.Allocator) -> (json.Object, bool) {
+secure_form_parse_values :: proc(raw: string, schema: Secure_Form_Schema, allocator: mem.Allocator) -> (value: json.Object, valid: bool) {
 	o, ok := secure_form_object(raw, SECURE_FORM_PLAINTEXT_MAX, allocator)
-	if !ok || len(o) != len(schema.fields) do return nil, false
+	if !ok do return nil, false
+	defer if !valid {
+		vault.control_wipe_value(o)
+		json.destroy_value(o, allocator)
+	}
+	if len(o) != len(schema.fields) do return nil, false
 	for f in schema.fields {
 		if f.type == "multiple" {
 			rows, rows_ok := o[f.id].(json.Array)
