@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import agent_runtime "odin_test:lib/agent_runtime"
 import contracts "odin_test:contracts"
 
 // Wire shapes follow `codex app-server generate-json-schema` (0.162.0).
@@ -150,7 +151,7 @@ acp_codex_ready :: proc(r: ^ACP_Runtime) {
     bridge_startup_accept(r.rec,bridge_runtime_now_ms()); bridge_runtime_mark_start_success(r.instance)
     if !r.d.starter_sent {
         r.d.starter_sent = true
-        acp_runtime_prompt(r,{id="starter",text=r.d.starter},bootstrap=true)
+        acp_runtime_prompt(r,{id="starter",text=agent_runtime.render_acp_starter_prompt(r.d.starter,false)},bootstrap=true)
     } else { acp_runtime_drain(r) }
 }
 

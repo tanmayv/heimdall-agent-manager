@@ -50,10 +50,13 @@
  * dropdown opened inside a Drawer/Modal paints on top of it.
  *
  * Escape hatch: `className` merges onto the root wrapper `<div>`.
+ * `mobileSheet` opts a caller into Drawer below 768px: focus moves to the
+ * listbox inside the dialog, and only that listbox owns active-descendant.
  */
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Icon from './Icon';
+import { Drawer } from '../composites/Drawer';
 import { readAppViewportHeight } from '../../../utils/appViewportHeight';
 import type {
   ChangeHandler,
@@ -234,6 +237,7 @@ export interface SelectProps
   value: string;
   /** Fired with the new string value. */
   onChange: ChangeHandler<string>;
+  'data-debug-id'?: string;
   /**
    * The `<option>` / `<optgroup>` elements to choose from. Optional when
    * `options` (the data prop) is supplied instead; provide exactly one.
@@ -253,6 +257,10 @@ export interface SelectProps
   placeholder?: string;
   /** Optional form field name (mirrored to a hidden input for form submission). */
   name?: string;
+  /** Opt in to the application's modal choice sheet below 768px. */
+  mobileSheet?: boolean;
+  /** Surviving control to focus if a sheet's trigger was removed or made inert. */
+  sheetFocusFallback?: () => HTMLElement | null;
 }
 
 export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function Select(
@@ -267,6 +275,8 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
     disabled = false,
     placeholder,
     name,
+    mobileSheet = false,
+    sheetFocusFallback,
     className,
     ...rest
   },
@@ -284,12 +294,39 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
   const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
 
   const [open, setOpen] = useState(false);
+  const [narrow, setNarrow] = useState(() => mobileSheet && typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches);
+  const sheet = mobileSheet && narrow;
   const [coords, setCoords] = useState<PopupCoords | null>(null);
   const [activeIndex, setActiveIndex] = useState(selectedIndex >= 0 ? selectedIndex : enabledIndexes[0] ?? 0);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const listboxRef = useRef<HTMLUListElement | null>(null);
   const typeahead = useRef<{ str: string; at: number }>({ str: '', at: 0 });
+  const fallbackRef = useRef(sheetFocusFallback);
+  fallbackRef.current = sheetFocusFallback;
+
+  useEffect(() => {
+    if (!mobileSheet) return;
+    const query = window.matchMedia('(max-width: 767px)');
+    const update = () => { setOpen(false); setNarrow(query.matches); };
+    setNarrow(query.matches);
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, [mobileSheet]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  useEffect(() => {
+    if (!open || !mobileSheet) return;
+    const trigger = buttonRef.current;
+    return () => {
+      // Drawer restores its captured trigger first. Removal/collapse can make
+      // that node unusable; let the scoped caller supply a surviving control.
+      queueMicrotask(() => {
+        if (!trigger?.isConnected || trigger.closest('[inert], [aria-hidden="true"]') || trigger.disabled) {
+          fallbackRef.current?.()?.focus({ preventScroll: true });
+        }
+      });
+    };
+  }, [open, mobileSheet]);
 
   const baseId = useId();
   const listboxId = `${baseId}-listbox`;
@@ -304,16 +341,17 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
 
   function openList(toIndex?: number) {
     if (disabled) return;
-    setActiveIndex(toIndex ?? (selectedIndex >= 0 ? selectedIndex : enabledIndexes[0] ?? 0));
+    setActiveIndex(toIndex ?? (selectedIndex >= 0 && (!sheet || !selected?.disabled) ? selectedIndex : enabledIndexes[0] ?? 0));
     setOpen(true);
   }
 
   function closeList(restoreFocus = true) {
     setOpen(false);
-    if (restoreFocus) buttonRef.current?.focus();
+    if (restoreFocus && !sheet) buttonRef.current?.focus();
   }
 
   function commit(index: number) {
+    if (sheet && !open) return;
     const opt = options[index];
     if (!opt || opt.disabled) return;
     onChange(opt.value);
@@ -380,7 +418,7 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
         closeList();
         break;
       case 'Tab':
-        closeList(false);
+        if (!sheet) closeList(false);
         break;
       default:
         if (key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) onTypeahead(key);
@@ -390,7 +428,7 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
   // Close on outside pointer-down. The listbox lives in a body portal, so it is
   // NOT inside rootRef — both subtrees count as "inside".
   useEffect(() => {
-    if (!open) return;
+    if (!open || sheet) return;
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       const inside =
@@ -399,13 +437,13 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [open]);
+  }, [open, sheet]);
 
   // Pin the popup to the trigger while open. Layout effect so the first paint is
   // already in the right place; capture-phase scroll so scrolling ANY ancestor
   // (a drawer body, a scrollable card) re-places it, not just the window.
   useLayoutEffect(() => {
-    if (!open) {
+    if (!open || sheet) {
       setCoords(null);
       return;
     }
@@ -420,19 +458,23 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
       window.removeEventListener('scroll', update, true);
       window.removeEventListener('resize', update);
     };
-  }, [open]);
+  }, [open, sheet]);
 
   // Keep the active option scrolled into view. `popupMounted` is load-bearing in the
   // dep list: the listbox is gated on `coords`, which the layout effect above sets in a
   // SECOND commit, and React flushes this passive effect after the first one. Without it
   // the effect runs while `listboxRef.current` is still null and the active option is
   // never revealed on open.
-  const popupMounted = coords !== null;
+  const popupMounted = sheet || coords !== null;
   useEffect(() => {
     if (!open || !popupMounted) return;
     const el = listboxRef.current?.querySelector<HTMLElement>(`#${CSS.escape(optionDomId(activeIndex))}`);
     el?.scrollIntoView({ block: 'nearest' });
   }, [open, popupMounted, activeIndex]);
+
+  useEffect(() => {
+    if (open && sheet) listboxRef.current?.focus({ preventScroll: true });
+  }, [open, sheet]);
 
   const triggerClassName = [
     TRIGGER_BASE,
@@ -484,12 +526,14 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
         role="option"
         aria-selected={isSelected}
         aria-disabled={opt.disabled || undefined}
+        data-debug-id={rest['data-debug-id'] ? `${rest['data-debug-id']}-option-${index}` : undefined}
         onMouseEnter={() => !opt.disabled && setActiveIndex(index)}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => commit(index)}
         className={[
           'flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5',
           'text-[length:var(--text-body-sm-size)]',
+          sheet ? 'min-h-12 py-3' : '',
           opt.disabled ? 'cursor-not-allowed opacity-50' : '',
           isActive && !opt.disabled ? 'bg-surface-raised' : '',
           isSelected ? 'text-accent' : 'text-primary',
@@ -497,7 +541,7 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
           .filter(Boolean)
           .join(' ')}
       >
-        <span className="truncate">{opt.label}</span>
+        <span className={sheet ? 'min-w-0 break-words whitespace-normal [overflow-wrap:anywhere]' : 'truncate'}>{opt.label}</span>
         {isSelected ? <Icon name="check" size="sm" className="text-accent" /> : null}
       </li>
     );
@@ -510,10 +554,10 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
         ref={setButtonRef}
         type="button"
         role="combobox"
-        aria-haspopup="listbox"
+        aria-haspopup={sheet ? 'dialog' : 'listbox'}
         aria-expanded={open}
-        aria-controls={open ? listboxId : undefined}
-        aria-activedescendant={open ? optionDomId(activeIndex) : undefined}
+        aria-controls={open ? (sheet ? `${baseId}-sheet` : listboxId) : undefined}
+        aria-activedescendant={open && !sheet && options[activeIndex] ? optionDomId(activeIndex) : undefined}
         aria-invalid={invalid || undefined}
         disabled={disabled}
         onClick={() => (open ? closeList(false) : openList())}
@@ -528,7 +572,18 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
 
       {name ? <input type="hidden" name={name} value={value} /> : null}
 
-      {open && coords && typeof document !== 'undefined'
+      {sheet && <Drawer open={open} onOpenChange={setOpen} side="bottom" variant="sheet"
+        title={rest['aria-label'] || 'Choose an option'} id={`${baseId}-sheet`}
+        autoFocus={false} returnFocusRef={buttonRef} data-debug-id={rest['data-debug-id'] ? `${rest['data-debug-id']}-sheet` : undefined}>
+        <ul ref={listboxRef} id={listboxId} role="listbox" tabIndex={0}
+          aria-label={rest['aria-label']} aria-labelledby={rest['aria-labelledby']}
+          aria-activedescendant={open && options[activeIndex] && !options[activeIndex].disabled ? optionDomId(activeIndex) : undefined}
+          onKeyDown={onKeyDown} className="px-2 pb-4 outline-none">
+          {rows.length ? rows : <li role="presentation" className="px-3 py-3 text-muted">No options available</li>}
+        </ul>
+      </Drawer>}
+
+      {open && !sheet && coords && typeof document !== 'undefined'
         ? createPortal(
             <ul
               ref={listboxRef}

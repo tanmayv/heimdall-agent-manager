@@ -34,6 +34,8 @@ export const HEIMDALL_TAG_TYPES = [
   'ChainMembers',
   'Bridges',
   'BridgeProviders',
+  'BridgeFleetSettings',
+  'BridgeFleetApplication',
   'ProjectBridgePaths',
   // Provider extension (ham.ext.v1): timeline events/rollups and the in-memory agent
   // blockers (permission cards), per instance id.

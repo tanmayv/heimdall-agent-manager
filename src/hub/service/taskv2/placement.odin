@@ -3,9 +3,8 @@ package taskv2
 import "core:encoding/json"
 import "core:strings"
 import domain "odin_test:hub/domain"
-import iface "odin_test:hub/repository/iface"
 import agent "odin_test:hub/service/agent"
-import provider_service "odin_test:hub/service/provider"
+import fleet_settings "odin_test:hub/service/fleet_settings"
 
 // fleet_model_on_bridge returns the fleet row's provider/model for a bridge,
 // honouring a per-bridge override in bridge_models_json.
@@ -26,19 +25,13 @@ fleet_model_on_bridge :: proc(fleet: domain.Task_Chain_Fleet, bridge_id: string)
 resolve_launch_model :: proc(agent_service: ^agent.Agent_Service, bridge_id, provider, model: string,provider_profile:string = "") -> (string, string) {
 	if provider != "" && model != "" do return strings.clone(provider), strings.clone(model)
 	if agent_service == nil || agent_service.providers == nil do return strings.clone(provider), strings.clone(model)
-	catalog, err := iface.provider_catalog_list(agent_service.providers)
+	// Compatibility/catalog helper only. Callers with chain identity resolve
+	// shared authority first; nil bridges deliberately means no settings read.
+	s := fleet_settings.Service{agents = agent_service.agents, providers = agent_service.providers}
+	r, err := fleet_settings.resolve(&s, "", bridge_id, "", {provider, provider_profile, model})
 	if err.code != .None do return strings.clone(provider), strings.clone(model)
-	defer domain.provider_catalog_destroy(catalog)
-	for &entry in catalog {
-		if entry.state != "active" || (provider != "" && entry.provider != provider) do continue
-		if err := provider_service.apply_effective_models(agent_service.providers,bridge_id,&entry,provider_profile); err.code != .None do continue
-		for candidate in entry.models {
-			if candidate.state != "active" || (model != "" && candidate.model_id != model) do continue
-			_, ok, _ := agent.validate_provider_model_intersection(agent_service, bridge_id, entry.provider, candidate.model_id,provider_profile)
-			if ok do return strings.clone(entry.provider), strings.clone(candidate.model_id)
-		}
-	}
-	return strings.clone(provider), strings.clone(model)
+	delete(r.runtime.provider_profile)
+	return r.runtime.provider, r.runtime.model
 }
 
 // A provider override deliberately discards the instance's old model. Empty

@@ -24,7 +24,7 @@ export interface WorkflowPipelineViewProps {
   /** The card to scroll into view once mounted; cleared through onScrolled. */
   scrollTaskId?: string | null;
   onScrolled?: () => void;
-  onOpenFleetDrawer?: () => void;
+  onOpenStaffing?: () => void;
   onOpenReviewRoles?: () => void;
   /** Rendered directly under the summary bar (the chain overview mounts its Active servers panel here). */
   summarySlot?: React.ReactNode;
@@ -107,7 +107,7 @@ export const WorkflowPipelineView: React.FC<WorkflowPipelineViewProps> = ({
   onSelectTask,
   scrollTaskId,
   onScrolled,
-  onOpenFleetDrawer,
+  onOpenStaffing,
   onOpenReviewRoles,
   summarySlot,
   names = EMPTY_TASK_NAMES,
@@ -158,7 +158,7 @@ export const WorkflowPipelineView: React.FC<WorkflowPipelineViewProps> = ({
         workflowStatus={workflowStatus}
         summaryText={chain?.summary}
         menuItems={[
-          ...(onOpenFleetDrawer ? [{ label: 'Fleet', onClick: onOpenFleetDrawer }] : []),
+          ...(onOpenStaffing ? [{ label: 'Chain staffing', onClick: onOpenStaffing }] : []),
           ...(onOpenReviewRoles ? [{ label: 'Review roles', onClick: onOpenReviewRoles }] : []),
           ...(!run ? [{
             label: 'Retry a stage…',

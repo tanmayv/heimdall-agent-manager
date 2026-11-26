@@ -14,7 +14,9 @@ Static_Skill :: struct {
 }
 
 STATIC_SKILLS := []Static_Skill{
+	{"action-cards", #load("../../../prompts/skills/action-cards/SKILL.md", string)},
 	{"artifact-authoring", #load("../../../prompts/skills/artifact-authoring/SKILL.md", string)},
+	{"chain-events-and-claims", #load("../../../prompts/skills/chain-events-and-claims/SKILL.md", string)},
 	{"coordinator-task-management", #load("../../../prompts/skills/coordinator-task-management/SKILL.md", string)},
 	{"ham-ctl-reference", #load("../../../prompts/skills/ham-ctl-reference/SKILL.md", string)},
 	{"heimdall-ctl-communication", #load("../../../prompts/skills/heimdall-ctl-communication/SKILL.md", string)},
@@ -23,5 +25,6 @@ STATIC_SKILLS := []Static_Skill{
 	{"ninjy-bot-operations", #load("../../../prompts/skills/ninjy-bot-operations/SKILL.md", string)},
 	{"ninjy-channel-communication", #load("../../../prompts/skills/ninjy-channel-communication/SKILL.md", string)},
 	{"search-command", #load("../../../prompts/skills/search-command/SKILL.md", string)},
+	{"shell-sessions", #load("../../../prompts/skills/shell-sessions/SKILL.md", string)},
 	{"worker-task-management", #load("../../../prompts/skills/worker-task-management/SKILL.md", string)},
 }

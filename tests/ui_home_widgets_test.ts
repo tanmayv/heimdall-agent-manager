@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
+import './ui_bridge_fleet_test.ts';
+import './ui_home_task_chains_test.ts';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 import {
   activeWidgetChains, activityLevel, chainProgress, chainWidgetPage, summarizeActivity, activityFromWire, uptimeFromWire, fleetFromWire,
@@ -68,7 +70,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
       chain_id: 'chain-' + index, title: 'Chain ' + index, status: index === 8 ? 'completed' : index === 7 ? 'archived' : 'active',
       updated_at: '2026-11-' + (10 + index), task_count: 4, completed_task_count: 1,
     }));
-    else if (/\/task-chains\/chain-\d/.test(url)) data = { chain_id: 'chain-1', tasks: [{ task_id: 'a', state: 'done' }, { task_id: 'b', state: 'in_review' }, { task_id: 'c', state: 'in_progress' }, { task_id: 'd', state: 'ready' }] };
+    else if (/\/task-chains\/chain-\d/.test(url)) data = { chain_id: url.match(/\/task-chains\/(chain-\d+)/)![1], members: [], tasks: [{ task_id: 'a', state: 'done' }, { task_id: 'b', state: 'in_review' }, { task_id: 'c', state: 'in_progress' }, { task_id: 'd', state: 'ready' }] };
     const text = JSON.stringify({ data });
     return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => JSON.parse(text), text: async () => text } as any;
   };
@@ -95,7 +97,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     let edits = 0;
     await render(React.createElement(React.Fragment, null,
       React.createElement(HomeHeader, { editing: false, onEdit: () => edits++ }),
-      React.createElement(ActivityWidget), React.createElement(UptimeWidget), React.createElement(FleetWidget), React.createElement(TaskChainsWidget),
+      React.createElement(ActivityWidget), React.createElement(UptimeWidget), React.createElement(FleetWidget, { resource: { status: 'ready', data: fleetFromWire(fleetFixture()) } }), React.createElement(TaskChainsWidget),
     ));
     assert.equal(get('home-new-shell').getAttribute('href'), '#/new?intent=shell');
     assert.equal(get('home-new-conversation').getAttribute('href'), '#/new?intent=agent');
@@ -116,7 +118,7 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     assert.equal(doc.querySelectorAll('.home-uptime-bar').length, 90);
     const fleet = get('home-widget-fleet');
     assert.equal(fleet.querySelectorAll('.home-fleet-override').length, 2);
-    await click('home-fleet-remove-mock-worker');
+    await click('home-fleet-remove-mock-bridge-0-mock-worker');
     assert.equal(fleet.querySelectorAll('.home-fleet-override').length, 1);
     await click('home-fleet-add-override-mock-bridge-0');
     assert.equal(fleet.querySelectorAll('.home-fleet-override').length, 2);
@@ -125,12 +127,18 @@ test('Widget DOM: metrics, readouts, independent failures, overrides, tooltips a
     assert.ok(codex); await act(async () => codex.click());
     assert.match(get('home-fleet-default-mock-bridge-0-model').textContent!, /gpt-6.1-sol/);
     await click('home-fleet-expand-mock-bridge-1');
-    assert.match(doc.getElementById('home-fleet-overrides-mock-bridge-1')!.textContent!, /No overrides/);
+    const secondBridgeToggle = get('home-fleet-expand-mock-bridge-1');
+    const secondBridgePanel = doc.getElementById(secondBridgeToggle.getAttribute('aria-controls')!);
+    assert.ok(secondBridgePanel, 'bridge toggle controls its complete disclosure panel');
+    assert.equal(secondBridgeToggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(secondBridgePanel.getAttribute('aria-hidden'), 'false');
+    assert.equal(secondBridgePanel.hasAttribute('inert'), false);
+    assert.match(secondBridgePanel.textContent!, /No overrides/);
     assert.equal(get('home-widget-chains').querySelectorAll('article').length, 3);
     assert.match(get('home-widget-chains').textContent!, /7 active/);
     assert.match(get('home-widget-chains').querySelector('article')!.textContent!, /Running/);
     assert.match(get('home-widget-chains').textContent!, /1–3 of 7/);
-    assert.match(get('home-widget-chains').querySelector('.home-chain-progress')!.getAttribute('aria-label')!, /1 of 6 tickets done, 1 in review, 2 in progress/);
+    assert.match(get('home-widget-chains').querySelector('.home-chain-progress')!.getAttribute('aria-label')!, /1 of 4 tickets done, 1 in review, 1 in progress/);
     await click('home-chains-next'); assert.match(get('home-widget-chains').textContent!, /4–6 of 7/);
     await click('home-chains-next'); assert.equal(get('home-widget-chains').querySelectorAll('article').length, 1);
     assert.equal((get('home-chains-next') as HTMLButtonElement).disabled, true);

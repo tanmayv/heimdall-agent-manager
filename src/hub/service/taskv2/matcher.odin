@@ -9,6 +9,7 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import agent "odin_test:hub/service/agent"
 import jsonx "odin_test:lib/jsonx"
+import fleet_settings "odin_test:hub/service/fleet_settings"
 
 // match_chain_in_uow is the matcher for one chain (plan §2.4/§2.5): a pure
 // function of (tasks, leases, fleets, instances, bridges) that grants leases.
@@ -70,6 +71,7 @@ Grant_Placement_Failure :: struct {
 }
 
 Match_Context :: struct {
+	service: ^Service,
  grant_failures: [dynamic]Grant_Placement_Failure,
 
 	chain:     domain.Task_Chain,
@@ -89,6 +91,7 @@ Match_Context :: struct {
 @(private = "package")
 load_match_context :: proc(svc: ^Service, chain: domain.Task_Chain) -> (Match_Context, bool, domain.Domain_Error) {
 	ctx := Match_Context{chain = chain, now_ms = now_ms(svc.clock), grant_failures=make([dynamic]Grant_Placement_Failure,context.temp_allocator)}
+	ctx.service = svc
 	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
 	if terr.code != .None do return ctx, false, terr
 	ctx.tasks = tasks
@@ -173,10 +176,20 @@ resolve_placement :: proc(ctx: ^Match_Context, task: domain.Task, fleet: domain.
 	if bridge_id == "" && ctx.has_coordinator do bridge_id = ctx.coordinator.bridge_id
 	if bridge_id == "" do return Placement{}, false
 	provider, model := fleet_model_on_bridge(fleet, bridge_id)
+	profile := fleet_profile_on_bridge(fleet, bridge_id)
+	runtime_error: domain.Domain_Error
+	if ctx.service != nil && ctx.service.agent_service != nil {
+		s := agent.fleet_service(ctx.service.agent_service)
+		r, err := fleet_settings.resolve(&s, ctx.chain.owner_user_id, bridge_id, fleet.agent_id, fleet_settings.legacy_runtime(fleet, bridge_id), catalog_fallback = false)
+		runtime_error = err
+		if err.code == .None do provider, profile, model = strings.clone(r.runtime.provider, context.temp_allocator), strings.clone(r.runtime.provider_profile, context.temp_allocator), strings.clone(r.runtime.model, context.temp_allocator)
+		domain.fleet_runtime_destroy(r.runtime)
+	}
 	return Placement{
+		runtime_error = runtime_error,
 		bridge_id    = bridge_id,
 		directory_id = resolve_directory_for_bridge(ctx.dirs, bridge_id),
-		provider_profile=fleet_profile_on_bridge(fleet,bridge_id),
+		provider_profile=profile,
 		provider     = provider,
 		model        = model,
 	}, true
@@ -448,6 +461,7 @@ jit_prepare :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, fleet: domain.T
 	if ctx.has_coordinator do project_id = ctx.coordinator.project_id
 	auth := contracts.Auth_Context{user_id = string(ctx.chain.owner_user_id), kind = .Internal_User, bridge_id = placement.bridge_id}
 	input := agent.Create_Instance_Input{
+		fleet_scope = "chain",
 		agent_id = fleet.agent_id, bridge_id = placement.bridge_id,
 		provider = provider, model = model,provider_profile=placement.provider_profile,
 		chain_id = string(ctx.chain.chain_id), project_id = project_id,

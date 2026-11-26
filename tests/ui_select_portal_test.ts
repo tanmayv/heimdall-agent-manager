@@ -22,13 +22,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readAppViewportHeight } from '../src/ui/utils/appViewportHeight.ts';
+import './helpers/vaultEndpointHarness.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 
 const SELECT_PATH = 'src/ui/components/ui/primitives/Select.tsx';
-const FLEET_DRAWER_PATH = 'src/ui/components/tasks/FleetManagementDrawer.tsx';
 
 function readSource(relPath: string): string {
   const abs = path.join(REPO_ROOT, relPath);
@@ -37,6 +37,86 @@ function readSource(relPath: string): string {
 }
 
 const selectSrc = readSource(SELECT_PATH);
+
+test('Home opt-in choice sheet preserves controlled choices, keyboard, dismissal, focus and resize; other Selects retain popups', async () => {
+  const { JSDOM } = await import('jsdom');
+  const React = await import('react');
+  const { act } = React;
+  const dom = new JSDOM('<!doctype html><div id="root"></div><button id="fallback">Home</button>', { url: 'http://localhost/' });
+  const win = dom.window as any;
+  let narrow = true;
+  const listeners = new Set<() => void>();
+  win.matchMedia = () => ({ get matches() { return narrow; }, addEventListener(_type: string, cb: () => void) { listeners.add(cb); }, removeEventListener(_type: string, cb: () => void) { listeners.delete(cb); } });
+  win.HTMLElement.prototype.scrollIntoView = function () {};
+  win.CSS = { escape: (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, (c: string) => '\\' + c) };
+  const saved = new Map(['window', 'document', 'HTMLElement', 'Node', 'CSS', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [key, (globalThis as any)[key]]));
+  Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement, Node: win.Node, CSS: win.CSS, IS_REACT_ACT_ENVIRONMENT: true });
+  const { createRoot } = await import('react-dom/client');
+  const { Select } = await import('../src/ui/components/ui/primitives/Select.tsx');
+  const root = createRoot(win.document.getElementById('root'));
+  const doc = win.document;
+  let value = 'unavailable';
+  const changes: string[] = [];
+  let opts = [{ value: 'unavailable', label: 'Saved profile (unavailable)', disabled: true }, { value: 'a', label: 'Profile A' }, { value: 'disabled', label: 'Disabled', disabled: true }, { value: 'b', label: 'Profile B with a very long model label' }];
+  const render = () => act(async () => root.render(React.createElement(React.Fragment, null,
+    React.createElement(Select, { value, options: opts, mobileSheet: true, name: 'runtime', 'aria-label': 'Default provider', 'data-debug-id': 'home-test', sheetFocusFallback: () => doc.getElementById('fallback'), onChange: (next: string) => { changes.push(next); value = next; } }),
+    React.createElement(Select, { value: 'a', options: opts, 'aria-label': 'Unrelated', 'data-debug-id': 'other-test', onChange() {} }))));
+  const trigger = () => doc.querySelector('[data-debug-id="home-test"]') as HTMLButtonElement;
+  const list = () => doc.querySelector('[role="listbox"]') as HTMLElement;
+  const open = () => act(async () => { trigger().focus(); trigger().click(); });
+  const key = (name: string) => act(async () => doc.activeElement!.dispatchEvent(new win.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true })));
+  const finish = () => act(async () => { doc.querySelector('[role="dialog"]')?.dispatchEvent(new win.Event('animationend', { bubbles: true })); });
+  try {
+    await render(); await open();
+    const dialog = doc.querySelector('[role="dialog"]')!;
+    assert.equal(dialog.getAttribute('aria-modal'), 'true');
+    assert.ok(dialog.textContent!.includes('Default provider'));
+    assert.equal(doc.body.style.overflow, 'hidden');
+    assert.equal(doc.activeElement, list());
+    assert.equal(trigger().hasAttribute('aria-activedescendant'), false, 'trigger never references a choice while focus is in the sheet');
+    assert.equal(doc.getElementById(list().getAttribute('aria-activedescendant')!).textContent, 'Profile A');
+    assert.equal(list().querySelector('[aria-selected="true"]')!.getAttribute('aria-disabled'), 'true');
+    await key('ArrowDown');
+    assert.match(doc.getElementById(list().getAttribute('aria-activedescendant')!).textContent, /Profile B/);
+    await key('Home'); await key('End'); await key('Enter'); await render();
+    assert.deepEqual(changes, ['b'], 'single choice commits once');
+    assert.equal(trigger().getAttribute('aria-expanded'), 'false');
+    assert.equal(doc.activeElement, trigger());
+    assert.equal(doc.querySelector('input[name="runtime"]').value, 'b');
+    assert.equal(doc.body.style.overflow, '');
+    await finish(); await open(); await key('ArrowUp'); await key('Escape'); await finish();
+    assert.deepEqual(changes, ['b'], 'Escape leaves value unchanged');
+    await open();
+    await act(async () => doc.querySelector('[role="dialog"]')!.parentElement!.dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true })));
+    await finish(); assert.deepEqual(changes, ['b'], 'backdrop leaves value unchanged');
+    await open();
+    await act(async () => { narrow = false; listeners.forEach((cb) => cb()); });
+    assert.equal(doc.querySelector('[role="dialog"]'), null);
+    assert.equal(doc.querySelector('[role="listbox"]'), null);
+    assert.equal(doc.body.style.overflow, '');
+    await open();
+    assert.equal(doc.querySelector('[role="dialog"]'), null);
+    assert.equal(list().style.position, 'fixed', 'desktop stays anchored');
+    await key('Escape');
+    await act(async () => { narrow = true; listeners.forEach((cb) => cb()); });
+    await act(async () => (doc.querySelector('[data-debug-id="other-test"]') as HTMLElement).click());
+    assert.equal(doc.querySelector('[role="dialog"]'), null, 'unrelated mobile consumer keeps the popup');
+    await act(async () => (doc.querySelector('[data-debug-id="other-test"]') as HTMLElement).dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    opts = []; await render(); await open();
+    assert.match(list().textContent!, /No options available/);
+    assert.equal(list().hasAttribute('aria-activedescendant'), false);
+    await key('Enter'); assert.deepEqual(changes, ['b']);
+    await act(async () => root.unmount());
+    assert.equal(doc.querySelector('[role="dialog"]'), null);
+    assert.equal(doc.body.style.overflow, '');
+    assert.equal(doc.activeElement, doc.getElementById('fallback'));
+    assert.equal(listeners.size, 0);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    for (const [key, previous] of saved) (globalThis as any)[key] = previous;
+  }
+});
 
 // -----------------------------------------------------------------------------
 // Helpers: slice a top-level function out of the source by brace matching.

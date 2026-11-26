@@ -145,6 +145,14 @@ Bridge_Reconcile_Plan_Proc :: proc(ctx: rawptr, owner: domain.User_ID, max_bridg
 Bridge_List_Owners_Proc :: proc(ctx: rawptr) -> ([]string, domain.Domain_Error)
 
 Bridge_Repository :: struct {
+	fleet_settings_get: Fleet_Settings_Get_Proc,
+	fleet_application_get: Fleet_Application_Get_Proc,
+	fleet_application_put: Fleet_Application_Put_Proc,
+	fleet_application_list: Fleet_Application_List_Proc,
+	fleet_application_operation: Fleet_Application_Operation_Proc,
+	fleet_settings_save: Fleet_Settings_Save_Proc,
+	fleet_scope_get: Fleet_Scope_Get_Proc,
+	fleet_scope_set: Fleet_Scope_Set_Proc,
 	create_limited: Bridge_Create_Limited_Proc,
 	delete_pending_restoring_sunset: Bridge_Delete_Pending_Restoring_Sunset_Proc,
 	count_active_by_owner: Bridge_Count_Active_Proc,

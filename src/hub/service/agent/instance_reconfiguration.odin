@@ -77,7 +77,7 @@ reconfiguration_require_idle :: proc(service: ^Agent_Service, instance_id: strin
 	return true, {}
 }
 
-begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Operation_Input, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
+begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Operation_Input, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil, guard_factory: ^iface.Unit_Of_Work_Factory = nil) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
 	inst, found, err := get_instance(service, auth, instance_id)
 	if !found do return {}, false, err
 	defer domain.agent_instance_destroy(&inst)
@@ -150,6 +150,16 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	defer project_service.bridge_runtime_instance_cancel_reservation(service.bridge_runtime_registry, next.bridge_id, generation, next.agent_instance_id)
+	// Fleet binds its live authority, captured claim and generation check to the
+	// native reservation write. Commit before any lifecycle event or command.
+	acceptance: iface.Unit_Of_Work
+	accepting := false
+	if guard_factory != nil {
+		acceptance, accepting, err = iface.unit_of_work_begin(guard_factory)
+		if !accepting do return {}, false, err
+	}
+	defer if accepting do iface.unit_of_work_rollback(&acceptance)
+	if accepting && acceptance.nested do return {},false,domain.domain_error(.Conflict,"native Fleet acceptance requires its own transaction")
 	// Delegated callers may revoke authorization while remote path preflight is
 	// waiting. Recheck at the native acceptance boundary before persisting/sending.
 	if guard!=nil {if err:=guard(guard_ctx);err.code!=.None do return {},false,err}
@@ -164,8 +174,14 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge disconnected during preflight; reconnect it before Apply","update source and destination bridges before applying configuration changes")
 	now := platform.clock_now(service.clock)
 	op := domain.Instance_Reconfiguration{operation_id = platform.generate_id(service.ids, "reconfig_"), owner_user_id = string(inst.owner_user_id), agent_instance_id = inst.agent_instance_id, conversation_id = inst.conversation_id, actor_user_id = auth.user_id, idempotency_key = input.idempotency_key, expected_revision = input.expected_revision, revision = 1, phase = .Prepared, source = configuration_snapshot(service, inst), destination = configuration_snapshot(service, next), stop_command_id = platform.generate_id(service.ids, "cmd_reconfig_stop_"), launch_command_id = platform.generate_id(service.ids, "cmd_reconfig_launch_"), launch_epoch = platform.generate_id(service.ids, "launch_"), created_at = now, updated_at = now}
+	op.source_launch_epoch = inst.launch_epoch; op.source_run_count = inst.run_count
 	stored, saved, save_err := iface.instance_reconfiguration_begin(service.agents, op)
 	if !saved do return {}, false, save_err
+	if accepting {
+		accepting = false
+		committed, commit_err := iface.unit_of_work_commit(&acceptance)
+		if !committed {domain.instance_reconfiguration_destroy(&stored); return {}, false, commit_err}
+	}
 	reconfiguration_notify(service, stored, "created", false)
 	defer domain.instance_reconfiguration_destroy(&stored)
 	// Check the runtime registry at the last possible point because project-path
@@ -174,11 +190,11 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	return reconfiguration_start_stop(service, stored)
 }
 
-reconfiguration_advance :: proc(service: ^Agent_Service, op: domain.Instance_Reconfiguration, phase: domain.Instance_Reconfiguration_Phase, stopped, committed: bool, failure_code: string = "", failure_message: string = "") -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
+reconfiguration_advance :: proc(service: ^Agent_Service, op: domain.Instance_Reconfiguration, phase: domain.Instance_Reconfiguration_Phase, stopped, committed: bool, failure_code: string = "", failure_message: string = "", notify := true) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
 	next := op; next.phase = phase; next.revision += 1; next.updated_at = platform.clock_now(service.clock)
 	next.source_stopped = stopped; next.destination_committed = committed; next.failure_code = failure_code; next.failure_message = failure_message
 	advanced, accepted, err := iface.instance_reconfiguration_advance(service.agents, next, op.revision)
-	if accepted do reconfiguration_notify(service, advanced, reconfiguration_change_name(advanced.phase), committed && !op.destination_committed)
+	if accepted && notify do reconfiguration_notify(service, advanced, reconfiguration_change_name(advanced.phase), committed && !op.destination_committed)
 	return advanced, accepted, err
 }
 
@@ -205,6 +221,14 @@ reconfiguration_notify :: proc(service: ^Agent_Service, op: domain.Instance_Reco
 reconfiguration_start_stop :: proc(service: ^Agent_Service, op: domain.Instance_Reconfiguration) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
 	stopping, accepted, err := reconfiguration_advance(service, op, .Stopping, false, false)
 	if !accepted do return {}, false, err
+	return reconfiguration_send_stop(service, stopping)
+}
+
+// Takes ownership of an already committed Stopping record. Explicit Fleet
+// retries bind authorization and this transition in one acceptance transaction.
+reconfiguration_send_stop :: proc(service: ^Agent_Service, stopping: domain.Instance_Reconfiguration) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
+	stopping := stopping
+	op := stopping
 	command := project_service.Runtime_Command{bridge_id = op.source.bridge_id, command_id = op.stop_command_id, body_json = stop_command_json(op.stop_command_id, op.agent_instance_id, "configuration_change")}
 	if sent, _ := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent {
 		defer domain.instance_reconfiguration_destroy(&stopping)
@@ -256,10 +280,12 @@ reconfiguration_launch_destination :: proc(service: ^Agent_Service, op: domain.I
 		return
 	}
 	defer domain.instance_reconfiguration_destroy(&launching)
-	next.launch_epoch = op.launch_epoch
-	if sent, _ := send_frozen_instance_launch(service, op.launch_command_id, next); !sent {
-		failed, _, _ := reconfiguration_advance(service, launching, .Recovery_Required, true, true, "launch_unconfirmed", "Source is stopped; destination launch could not be confirmed.")
-		domain.instance_reconfiguration_destroy(&failed)
+	if sent, _ := send_reconfiguration_launch(service, launching); !sent {
+		fresh,found,_:=iface.instance_reconfiguration_get(service.agents,op.owner_user_id,op.agent_instance_id,op.idempotency_key)
+		if found {
+			failed, _, _ := reconfiguration_advance(service, fresh, .Recovery_Required, true, true, "launch_unconfirmed", "Source is stopped; destination launch could not be confirmed.")
+			domain.instance_reconfiguration_destroy(&failed);domain.instance_reconfiguration_destroy(&fresh)
+		}
 	}
 }
 
@@ -363,7 +389,7 @@ reconcile_instance_reconfigurations :: proc(service: ^Agent_Service, bridge_id: 
 					failed, _, _ := reconfiguration_advance(service, op, .Recovery_Required, true, true, "startup_failed", "Destination startup needs attention; conversation remains read-only."); domain.instance_reconfiguration_destroy(&failed)
 				}
 				if resend && bridge_id == op.destination.bridge_id && inst.launch_epoch == op.launch_epoch && (inst.runtime_status == "launching" || inst.runtime_status == "unreachable") {
-					_, _ = send_frozen_instance_launch(service, op.launch_command_id, inst)
+					_, _ = send_reconfiguration_launch(service, op)
 				}
 				domain.agent_instance_destroy(&inst)
 			}
@@ -398,9 +424,19 @@ reconfiguration_json :: proc(op: domain.Instance_Reconfiguration) -> string {
 	return string(data)
 }
 
-retry_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id, key: string, expected_revision: int, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
+retry_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id, key: string, expected_revision: int, guard_ctx:rawptr=nil, guard:proc(ctx:rawptr)->domain.Domain_Error=nil, guard_factory:^iface.Unit_Of_Work_Factory=nil) -> (domain.Instance_Reconfiguration, bool, domain.Domain_Error) {
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
+	acceptance: iface.Unit_Of_Work
+	accepting := false
+	if guard_factory != nil {
+		begun: bool; e: domain.Domain_Error
+		acceptance, begun, e = iface.unit_of_work_begin(guard_factory)
+		if !begun do return {},false,e
+		accepting = true
+	}
+	defer if accepting do iface.unit_of_work_rollback(&acceptance)
+	if accepting && acceptance.nested do return {},false,domain.domain_error(.Conflict,"native Fleet retry requires its own transaction")
 	if guard!=nil {if err:=guard(guard_ctx);err.code!=.None do return {},false,err}
 	inst, found, err := get_instance(service, auth, instance_id)
 	if !found do return {}, false, err
@@ -418,22 +454,70 @@ retry_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 		next := op; next.stop_command_id = platform.generate_id(service.ids, "cmd_reconfig_stop_retry_")
 		// Reuse the same disconnect-aware path as a new request. A source that
 		// vanished while the operation awaited recovery is fenced and superseded.
-		return reconfiguration_start_stop(service, next)
+		stopping, saved, se := reconfiguration_advance(service, next, .Stopping, false, false, notify=!accepting)
+		if !saved do return {},false,se
+		if e:=reconfiguration_commit_acceptance(&acceptance,&accepting);e.code!=.None {domain.instance_reconfiguration_destroy(&stopping);return {},false,e}
+		if guard_factory!=nil do reconfiguration_notify(service,stopping,"progress",false)
+		return reconfiguration_send_stop(service, stopping)
 	}
 	if !op.destination_committed {
-		stopped, saved, save_err := reconfiguration_advance(service, op, .Source_Stopped, true, false)
+		stopped, saved, save_err := reconfiguration_advance(service, op, .Source_Stopped, true, false, notify=!accepting)
 		if !saved do return {}, false, save_err
 		defer domain.instance_reconfiguration_destroy(&stopped)
+		if e:=reconfiguration_commit_acceptance(&acceptance,&accepting);e.code!=.None do return {},false,e
+		if guard_factory!=nil do reconfiguration_notify(service,stopped,"progress",false)
 		reconfiguration_launch_destination(service, stopped)
 		return iface.instance_reconfiguration_get(service.agents, op.owner_user_id, instance_id, key)
 	}
 	// Keep the launch epoch: an alive destination with that assertion is reused,
 	// not restarted. A new command id lets an earlier failed result be retried.
 	next := op; next.launch_command_id = platform.generate_id(service.ids, "cmd_reconfig_launch_retry_")
-	launching, saved, save_err := reconfiguration_advance(service, next, .Launching, true, true)
+	next.launch_json = ""
+	launching, saved, save_err := reconfiguration_advance(service, next, .Launching, true, true, notify=!accepting)
 	if !saved do return {}, false, save_err
-	_, _ = send_frozen_instance_launch(service, launching.launch_command_id, inst)
-	return launching, true, {}
+	if e:=reconfiguration_commit_acceptance(&acceptance,&accepting);e.code!=.None {domain.instance_reconfiguration_destroy(&launching);return {},false,e}
+	if guard_factory!=nil do reconfiguration_notify(service,launching,"progress",false)
+	_, _ = send_reconfiguration_launch(service, launching)
+	domain.instance_reconfiguration_destroy(&launching)
+	return iface.instance_reconfiguration_get(service.agents,op.owner_user_id,instance_id,key)
+}
+
+reconfiguration_commit_acceptance :: proc(u:^iface.Unit_Of_Work, active:^bool)->domain.Domain_Error {
+	if !active^ do return {}
+	active^=false
+	committed, err:=iface.unit_of_work_commit(u)
+	if !committed && err.code==.None do return domain.domain_error(.Internal_Error,"native Fleet acceptance commit failed")
+	return err
+}
+
+// The commit trigger owns the generation increment. Read its committed row,
+// freeze one complete frame durably, then use the existing command transport.
+send_reconfiguration_launch :: proc(service: ^Agent_Service, op: domain.Instance_Reconfiguration) -> (bool, domain.Domain_Error) {
+	inst, found, err := iface.agent_get_instance(service.agents,op.agent_instance_id)
+	if !found do return false,err
+	defer domain.agent_instance_destroy(&inst)
+	if inst.launch_epoch!=op.launch_epoch || inst.configuration_revision!=op.expected_revision+1 do return false,domain.domain_error(.Conflict,"reconfiguration launch generation changed")
+	if transport_err := validate_frozen_runtime_transport(service, inst); transport_err.code != .None do return false, transport_err
+	frame := op.launch_json
+	if frame=="" {
+		lease: Start_Lease
+		has_lease := false
+		if service.hooks.launch_context!=nil {
+			lease,has_lease,err=service.hooks.launch_context(service.hooks.ctx,inst)
+			if err.code!=.None do return false,err
+		}
+		defer {delete(lease.task_id);delete(lease.role);delete(lease.lease_id);delete(lease.pack_json);delete(lease.permission_mode)}
+		ptr: ^Start_Lease
+		if has_lease do ptr=&lease
+		frame=start_launch_json(service,{instance=inst,command_id=op.launch_command_id},ptr)
+		defer delete(frame)
+		next:=op;next.launch_json=frame;next.revision+=1
+		stored, saved, se:=iface.instance_reconfiguration_advance(service.agents,next,op.revision)
+		if !saved do return false,se
+		domain.instance_reconfiguration_destroy(&stored)
+		return start_command_send(service,inst.bridge_id,op.launch_command_id,inst.chain_id,{{bridge_id=inst.bridge_id,deliver=contracts.START_DELIVER_LAUNCH,launch_json=frame}},nil)
+	}
+	return start_command_send(service,inst.bridge_id,op.launch_command_id,inst.chain_id,{{bridge_id=inst.bridge_id,deliver=contracts.START_DELIVER_LAUNCH,launch_json=frame}},nil)
 }
 
 validate_instance_message_configuration :: proc(service: ^Agent_Service, owner: domain.User_ID, instance_id: string) -> (bool, domain.Domain_Error) {

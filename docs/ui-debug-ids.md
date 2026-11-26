@@ -42,9 +42,9 @@ All of the following element types must have `data-debug-id`:
 | `AgentsPanel` | `agents-add-agent-btn`, `agents-create-name-input`, `agents-create-template-select`, `agents-create-instructions-toggle-btn`, `agents-create-instructions-input`, `agents-create-bridge-scope`, `agents-create-provider-scope`, `agents-create-provider-select`, `agents-create-tier-select`, `agents-create-submit-btn`, `agents-create-header-cancel-btn`, `agents-create-footer-cancel-btn`, `agents-no-capabilities-warning`, `agents-no-capabilities-bridges-link`, `agents-no-capabilities-providers-link`, `agents-agent-row-${agentId}`, `agents-agent-open-btn-${agentId}`, `agents-agent-launch-btn-${agentId}`, `agents-agent-archive-btn-${agentId}` |
 | `AgentsManagementSurface` | `agents-management-surface`, `agents-management-back-btn`, `agents-management-create-card`, `agents-management-create-identity-btn`, `agents-management-create-hint`, `agents-management-new-proxy-btn`, `agents-management-list`, `agents-management-agent-${agentId}`, `agents-management-open-btn-${agentId}`, `agents-management-manage-btn-${agentId}`, `agents-management-launch-btn-${agentId}`, `agents-management-delete-btn-${agentId}` |
 | `TaskChainsSurface` | `task-chains-surface`, `task-chains-back-btn`, `task-chains-new-btn`, `task-chains-active-list`, `task-chains-active-row-${chainId}`, `task-chains-completed-list`, `task-chains-completed-row-${chainId}` |
-| `TicketBoard` (AuxPane > Tickets) | `ticket-board-view`, `ticket-board-header`, `ticket-board-headline`, `ticket-board-subline`, `ticket-board-menu-btn`, `task-board-review-roles-btn`, `task-board-fleet-btn`, `task-board-publish-chain-btn`, `task-board-new-task-btn`, `task-board-empty-new-task-btn`, `ticket-board-progress`, `ticket-board-progress-caption`, `ticket-board-filter-${open\|finished\|all}`, `ticket-board-filter-empty`, `ticket-board-vault-locked`, `ticket-board-vault-locked-unlock`, `task-board-section-${groupKey}`, `ticket-board-finished-order`, `ticket-board-finished-row-${taskId}`, `task-board-finished-toggle` |
+| `TicketBoard` (AuxPane > Tickets) | `ticket-board-view`, `ticket-board-header`, `ticket-board-headline`, `ticket-board-subline`, `ticket-board-menu-btn`, `task-board-review-roles-btn`, `task-board-staffing-btn`, `task-board-publish-chain-btn`, `task-board-new-task-btn`, `task-board-empty-new-task-btn`, `ticket-board-progress`, `ticket-board-progress-caption`, `ticket-board-filter-${open\|finished\|all}`, `ticket-board-filter-empty`, `ticket-board-vault-locked`, `ticket-board-vault-locked-unlock`, `task-board-section-${groupKey}`, `ticket-board-finished-order`, `ticket-board-finished-row-${taskId}`, `task-board-finished-toggle` |
 | `BoardTicketCard` | `task-card-${taskId}`, `task-card-toggle-${taskId}`, `task-card-ask-${taskId}`, `task-card-more-${taskId}`, `task-card-edit-${field}-${taskId}`, `task-menu-${actionId}-${taskId}`, `task-card-status-${taskId}`, `task-card-hold-${taskId}`, `task-card-requirements-line-${taskId}`, `task-card-rework-${taskId}`, `task-card-replaced-by-${taskId}`, `task-action-${actionId}-${taskId}` |
-| `TicketFleetTable` | `ticket-board-fleet`, `ticket-board-fleet-summary`, `ticket-board-manage-fleet-btn`, `ticket-board-fleet-machine-${bridgeId\|any}`, `ticket-board-fleet-row-${instanceId\|agentId-slot-n}` |
+| `TicketFleetTable` | `ticket-board-fleet`, `ticket-board-fleet-summary`, `ticket-board-staffing-btn`, `ticket-board-home-fleet`, `ticket-board-fleet-machine-${bridgeId\|any}`, `ticket-board-fleet-row-${instanceId\|agentId-slot-n}` |
 | `TicketView` (aux tab `ticket__<chainId>:<taskId>`) | `ticket-view-${taskId}`, `ticket-view-loading`, `ticket-view-missing`, `ticket-view-back-to-board-btn`, `ticket-view-toolbar`, `ticket-view-back-btn`, `ticket-view-breadcrumb-tickets`, `ticket-view-prev-btn`, `ticket-view-next-btn`, `ticket-view-copy-link-btn`, `ticket-view-more-btn`, `ticket-view-edit-${field}`, `ticket-view-edit-bridge`, `ticket-view-menu-${actionId}`, `ticket-view-header`, `ticket-view-title`, `ticket-view-state-btn`, `ticket-view-state-${actionId}`, `ticket-view-workflow-lock`, `ticket-view-quick-actions`, `ticket-view-change-requirements-btn`, `ticket-view-hold-btn`, `ticket-view-release-btn`, `ticket-view-reopen-btn`, `ticket-view-add-dependency-btn`, `ticket-view-action-error`, `ticket-view-vault-locked`, `ticket-view-requirements-changed-notice`, `ticket-view-see-what-changed-notice`, `your-review-block`, `ticket-view-rework-notice`, `your-review-summary`, `ticket-view-votes`, `your-review-composer`, `your-review-approved`, `ticket-view-approve-btn`, `ticket-view-request-changes-btn`, `answer-blocker-block`, `answer-question`, `answer-composer`, `answer-send-btn`, `task-hold-block`, `task-hold-reason`, `task-hold-meta`, `task-hold-release-btn`, `ticket-view-agent-down`, `ticket-view-draft`, `ticket-view-publish-btn`, `ticket-view-side-column`, `ticket-view-agents`, `ticket-view-agent-${rowId}`, `ticket-view-requirements`, `task-requirements-status`, `ticket-view-requirements-current`, `ticket-view-requirements-changes`, `ticket-view-requirements-diff`, `ticket-view-see-what-changed`, `task-details-goal`, `ticket-view-acceptance`, `ticket-view-requirements-readers`, `ticket-view-requirements-change-btn`, `ticket-view-linked`, `ticket-view-linked-${taskId}`, `ticket-view-unblocks-${taskId}`, `ticket-view-attempts`, `ticket-view-attempt-${n}`, `task-details-changes`, `ticket-view-changes-toggle`, `ticket-view-changed-file-${path}`, `task-details-output`, `ticket-view-details`, `ticket-view-details-toggle`, `ticket-view-detail-${priority\|bridge\|attempt\|replaces\|replaced-by\|more}`, `ticket-view-priority-select`, `ticket-view-priority-error`, `ticket-view-bridge-select`, `ticket-view-replaces-link`, `ticket-view-replaced-by-link`, `ticket-view-more-fields-btn`, `ticket-view-copy-id-btn`, `comment-composer`, `ticket-view-comment-send-btn`, `ticket-view-sticky-composer` |
 | `TicketActivity` | `ticket-activity`, `ticket-activity-tab-${all\|comments\|requirements\|handoffs\|raw}`, `ticket-activity-feed-${all\|handoffs\|raw}`, `task-timeline-event`, `task-requirements-history`, `ticket-requirement-change-${revision}` |
 | `RequirementsEditorModal` | `task-requirements-modal`, `task-requirements-modal-close-btn`, `task-requirements-editor`, `task-requirements-mode-amend`, `task-requirements-mode-replace`, `task-requirements-new-title`, `task-requirements-goal`, `task-requirements-acceptance`, `task-requirements-acceptance-${index}`, `task-requirements-acceptance-remove-${index}`, `task-requirements-acceptance-add`, `task-requirements-reason`, `task-requirements-preview`, `task-requirements-conflict`, `task-requirements-rebase`, `task-requirements-status`, `task-requirements-cancel`, `task-requirements-save` |
@@ -120,9 +120,36 @@ All of the following element types must have `data-debug-id`:
 `-refresh`, `-select`, `-scope`, `-affected`, `-confirmation`, `-review`,
 `-apply`, `-cancel`, `-error`, `-configuration`, `-affected-list`, and
 `-affected-<taskId>`. Selects have associated labels and
-target-specific accessible names. `fleet-drawer-recovery-role` identifies the
-failed role context in the native fleet editor. Attachment removal in
+target-specific accessible names. The `-runtime` link focuses the failed bridge
+and durable agent in Home Fleet. Attachment removal in
 `AttentionComposer` uses `<debugId>-remove-<localId>`.
+
+### Home Fleet and chain staffing
+
+Home Fleet uses `home-fleet-bridge-${bridgeId}`, `home-fleet-expand-${bridgeId}`,
+`home-fleet-default-${bridgeId}-provider` / `-model`,
+`home-fleet-add-override-${bridgeId}`,
+`home-fleet-override-${bridgeId}-${agentId}-agent` / `-provider` / `-model`,
+and `home-fleet-remove-${bridgeId}-${agentId}`. Bridge footer controls use
+`home-fleet-apply-${bridgeId}`, `home-fleet-reset-${bridgeId}`,
+`home-fleet-preview-retry-${bridgeId}`, `home-fleet-scope-${bridgeId}`,
+`home-fleet-conflict-${bridgeId}`, `home-fleet-error-${bridgeId}`,
+`home-fleet-result-${bridgeId}`, `home-fleet-status-refresh-${bridgeId}`,
+`home-fleet-retry-${bridgeId}`, and `home-fleet-target-${instanceId}`.
+
+The retired drawer's board actions are replaced by `task-board-staffing-btn`,
+`ticket-board-staffing-btn` and `ticket-board-home-fleet`.
+Chain staffing uses `chain-staffing-agent`, `chain-staffing-add-worker`,
+`chain-staffing-refresh`, `chain-staffing-home-fleet`, `chain-staffing-close`,
+`chain-staffing-error`, and per-agent `chain-staffing-row-${agentId}`,
+`chain-staffing-capacity-${agentId}`, `chain-staffing-warm-${agentId}`,
+`chain-staffing-ttl-${agentId}`, `chain-staffing-save-${agentId}`,
+`chain-staffing-pause-${agentId}`, `chain-staffing-remove-${agentId}`,
+`chain-staffing-bridge-${agentId}`.
+
+Replacement dialogs expose `chain-staffing-modal` and `review-roles-modal`.
+Review recovery context uses `review-roles-recovery-context`; role membership
+pickers use `review-role-add-agent-${roleName}`.
 
 ### Shared component: SearchableSelect
 

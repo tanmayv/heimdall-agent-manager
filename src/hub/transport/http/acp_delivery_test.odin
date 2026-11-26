@@ -2,6 +2,7 @@ package http
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:mem"
 import "core:mem/virtual"
 import "core:strings"
 import "core:testing"
@@ -14,28 +15,28 @@ import project_service "odin_test:hub/service/project"
 // Hub-side ACP delivery evidence and conversation-level Send now. Uses the real
 // SQLite schema (including acp_delivery_001), unit of work and HTTP handlers.
 
-Ad_Sink :: struct { commands: [dynamic]string, offline: bool }
-ad_sink: Ad_Sink
+Ad_Sink :: struct { commands: [dynamic]string, offline: bool, allocator: mem.Allocator }
 ad_sink_send :: proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
-    if ad_sink.offline do return false, domain.domain_error(.Bridge_Offline, "offline")
-    append(&ad_sink.commands, strings.clone(command.body_json))
+    sink := (^Ad_Sink)(ctx)
+    if sink.offline do return false, domain.domain_error(.Bridge_Offline, "offline")
+    append(&sink.commands, strings.clone(command.body_json, sink.allocator))
     return true, {}
 }
-ad_cmd :: proc(kind: string, n: int) -> string {
+ad_cmd :: proc(f: ^ACP_Chat_Fixture, kind: string, n: int) -> string {
     i := 0
-    for c in ad_sink.commands do if strings.contains(c, kind) { if i == n do return c; i += 1 }
+    for c in f.delivery_sink.commands do if strings.contains(c, kind) { if i == n do return c; i += 1 }
     return ""
 }
-ad_count :: proc(kind: string) -> int {
+ad_count :: proc(f: ^ACP_Chat_Fixture, kind: string) -> int {
     n := 0
-    for c in ad_sink.commands do if strings.contains(c, kind) do n += 1
+    for c in f.delivery_sink.commands do if strings.contains(c, kind) do n += 1
     return n
 }
 
 ad_open :: proc(t: ^testing.T, f: ^ACP_Chat_Fixture) {
     acp_chat_open(t, f)
-    ad_sink = {commands = make([dynamic]string)}
-    f.mq.svc.bridge_command_sink = {ctx = nil, send_runtime_command = ad_sink_send}
+    f.delivery_sink = {commands = make([dynamic]string), allocator = context.allocator}
+    f.mq.svc.bridge_command_sink = {ctx = &f.delivery_sink, send_runtime_command = ad_sink_send}
 }
 
 ad_send :: proc(t: ^testing.T, f: ^ACP_Chat_Fixture, text: string) -> string {
@@ -83,6 +84,27 @@ ad_batch_of :: proc(body: string) -> (string, string, i64) {
 }
 
 ad_arena :: proc() -> virtual.Arena { a: virtual.Arena; _ = virtual.arena_init_growing(&a); return a }
+
+@(test)
+ad_delivery_sinks_have_independent_lifetimes :: proc(t: ^testing.T) {
+    first := ad_arena()
+    second := ad_arena(); defer virtual.arena_destroy(&second)
+    a, b: ACP_Chat_Fixture
+    a.delivery_sink = {commands=make([dynamic]string, virtual.arena_allocator(&first)), allocator=virtual.arena_allocator(&first)}
+    b.delivery_sink = {commands=make([dynamic]string, virtual.arena_allocator(&second)), allocator=virtual.arena_allocator(&second)}
+    // A callback can run with a different ambient allocator. Its fixture owns
+    // both the command buffer and bytes, independent of the other fixture.
+    context.allocator = virtual.arena_allocator(&first)
+    _, _ = ad_sink_send(&a.delivery_sink, {body_json="first"})
+    _, _ = ad_sink_send(&b.delivery_sink, {body_json="second"})
+    testing.expect_value(t, ad_count(&a,"first"), 1)
+    testing.expect_value(t, ad_count(&b,"first"), 0)
+    virtual.arena_destroy(&first)
+    context.allocator = virtual.arena_allocator(&second)
+    _, _ = ad_sink_send(&b.delivery_sink, {body_json="second later"})
+    testing.expect_value(t, ad_count(&b,"second"), 2)
+    testing.expect_value(t, ad_cmd(&b,"second",0), "second")
+}
 
 @(test)
 ad_status_path_sent_queued_delivered_read_and_pty_unchanged :: proc(t: ^testing.T) {
@@ -145,8 +167,8 @@ ad_hold_reasons_only_turn_active_is_tray_eligible_and_sticky :: proc(t: ^testing
     // Send now ignores everything that is not turn-held.
     r = ad_send_now(&f, "req_only_held")
     testing.expect(t, r.status == 202, r.body)
-    testing.expect_value(t, ad_count("acp_send_now_batch"), 1)
-    testing.expect(t, strings.contains(ad_cmd("acp_send_now_batch",0), held) && !strings.contains(ad_cmd("acp_send_now_batch",0), idle) && !strings.contains(ad_cmd("acp_send_now_batch",0), offline))
+    testing.expect_value(t, ad_count(&f,"acp_send_now_batch"), 1)
+    testing.expect(t, strings.contains(ad_cmd(&f,"acp_send_now_batch",0), held) && !strings.contains(ad_cmd(&f,"acp_send_now_batch",0), idle) && !strings.contains(ad_cmd(&f,"acp_send_now_batch",0), offline))
 }
 
 @(test)
@@ -189,9 +211,9 @@ ad_send_now_snapshot_fifo_cutoff_duplicate_and_empty :: proc(t: ^testing.T) {
     testing.expect(t, r.status == 202, r.body)
     outcome, batch, attempt := ad_batch_of(r.body)
     testing.expect_value(t, outcome, "accepted"); testing.expect_value(t, attempt, 1)
-    testing.expect_value(t, ad_count("acp_send_now_batch"), 1)
+    testing.expect_value(t, ad_count(&f,"acp_send_now_batch"), 1)
     cmd: contracts.ACP_Send_Now_Batch_Command
-    testing.expect(t, json.unmarshal_string(ad_cmd("acp_send_now_batch",0), &cmd) == nil)
+    testing.expect(t, json.unmarshal_string(ad_cmd(&f,"acp_send_now_batch",0), &cmd) == nil)
     testing.expect(t, len(cmd.message_ids) == 2 && cmd.message_ids[0] == a && cmd.message_ids[1] == b, "FIFO snapshot within the cutoff")
     testing.expect_value(t, cmd.command_id, fmt.tprintf("cmd_sn_%s_a1", batch))
     testing.expect_value(t, ad_row(&f, a).batch_id, batch)
@@ -201,7 +223,7 @@ ad_send_now_snapshot_fifo_cutoff_duplicate_and_empty :: proc(t: ^testing.T) {
     testing.expect_value(t, outcome, "duplicate")
     r = ad_send_now(&f, "req_2"); outcome, _, _ = ad_batch_of(r.body)
     testing.expect_value(t, outcome, "duplicate")
-    testing.expect_value(t, ad_count("acp_send_now_batch"), 1)
+    testing.expect_value(t, ad_count(&f,"acp_send_now_batch"), 1)
     // Bridge delivers the batch as one prompt.
     r = ad_report(&f, {launch_epoch = "epoch", report_seq = 2, batch_id = batch, batch_attempt = 1, batch_state = "delivered",
         inputs = {{message_id = a, state = "delivered", mode = "prompt", turn_id = "T", batch_id = batch}, {message_id = b, state = "delivered", mode = "prompt", turn_id = "T", batch_id = batch}}})
@@ -210,7 +232,7 @@ ad_send_now_snapshot_fifo_cutoff_duplicate_and_empty :: proc(t: ^testing.T) {
     testing.expect_value(t, outcome, "delivered")
     // A new request now covers only c, the later arrival.
     r = ad_send_now(&f, "req_3"); testing.expect(t, r.status == 202, r.body)
-    testing.expect(t, strings.contains(ad_cmd("acp_send_now_batch",1), c) && !strings.contains(ad_cmd("acp_send_now_batch",1), a))
+    testing.expect(t, strings.contains(ad_cmd(&f,"acp_send_now_batch",1), c) && !strings.contains(ad_cmd(&f,"acp_send_now_batch",1), a))
     // Nothing queued: empty, no command, no cancellation.
     r = ad_report(&f, {launch_epoch = "epoch", report_seq = 3, inputs = {{message_id = c, state = "delivered", mode = "prompt", turn_id = "U"}}})
     r = ad_send_now(&f, "req_4"); outcome, _, _ = ad_batch_of(r.body)
@@ -229,25 +251,25 @@ ad_send_now_retry_stale_offline_and_ownership :: proc(t: ^testing.T) {
     r = ad_send_now(&f, "req_o", owner = "other-user"); testing.expect(t, r.status == 403 || r.status == 404, r.body)
     r = ad_send_now(&f, ""); testing.expect_value(t, r.status, 400)
     // Bridge offline: honest failure, then an explicit retry gets attempt 2.
-    ad_sink.offline = true
+    f.delivery_sink.offline = true
     r = ad_send_now(&f, "req_r"); testing.expect_value(t, r.status, 503)
     outcome, batch, _ := ad_batch_of(r.body); testing.expect_value(t, outcome, "failed")
-    ad_sink.offline = false
+    f.delivery_sink.offline = false
     // Meanwhile the agent actually reads b: retry excludes it.
     req := mq_http_req(f.mq.base, "/api/v1/agent-actions/chat/read", `{"agent_instance_id":"inst_mq","params":{"unread_only":false}}`)
     req.headers = {{name = "Authorization", value = fmt.tprintf("Bearer %s", f.mq.base.bridge_token)}, {name = "X-Heimdall-Instance-Token", value = "hit_inst_mq~epoch"}}
     sb, _, _ := iface.content_get_input_delivery(&f.mq.repo, a)
     _ = sb
-    rows_before := ad_count("acp_inputs_read")
+    rows_before := ad_count(&f,"acp_inputs_read")
     r = agent_action_chat_read_handler(&f.mq.agent_handlers, req); testing.expect(t, r.status == 200, r.body)
-    testing.expect(t, ad_count("acp_inputs_read") == rows_before+1, "bridge is told to drop read inputs")
+    testing.expect(t, ad_count(&f,"acp_inputs_read") == rows_before+1, "bridge is told to drop read inputs")
     testing.expect_value(t, ad_row(&f, b).mode, "read")
     testing.expect_value(t, ad_row(&f, a).mode, "read")
     // Both read: the retry has nothing left and sends nothing.
     attempt: i64
     r = ad_send_now(&f, "req_r"); outcome, _, attempt = ad_batch_of(r.body)
     testing.expect_value(t, outcome, "empty"); testing.expect_value(t, attempt, 2)
-    testing.expect_value(t, ad_count("acp_send_now_batch"), 0)
+    testing.expect_value(t, ad_count(&f,"acp_send_now_batch"), 0)
     _ = batch
     // Retry after a bridge-reported failure re-sends with an attempt-specific id.
     c := ad_send(t, &f, "c"); r = ad_queued(&f, 2, c)
@@ -257,7 +279,7 @@ ad_send_now_retry_stale_offline_and_ownership :: proc(t: ^testing.T) {
     // A late report for an older attempt never overrides the retry.
     r = ad_send_now(&f, "req_t"); outcome, _, attempt = ad_batch_of(r.body)
     testing.expect_value(t, outcome, "accepted"); testing.expect_value(t, attempt, 2)
-    testing.expect(t, strings.contains(ad_cmd("acp_send_now_batch", ad_count("acp_send_now_batch")-1), fmt.tprintf("cmd_sn_%s_a2", batch)))
+    testing.expect(t, strings.contains(ad_cmd(&f,"acp_send_now_batch", ad_count(&f,"acp_send_now_batch")-1), fmt.tprintf("cmd_sn_%s_a2", batch)))
     r = ad_report(&f, {launch_epoch = "epoch", report_seq = 4, batch_id = batch, batch_attempt = 1, batch_state = "delivered"})
     got, _, _ := iface.content_get_send_now_batch(&f.mq.repo, batch)
     testing.expect_value(t, got.state, "sent")
@@ -278,7 +300,7 @@ ad_relaunch_reopens_never_dispatched_and_discards_inflight :: proc(t: ^testing.T
     _, _ = content_service.mark_messages_read_by_ids(&f.mq.svc, {kind = .Session, user_id = "tanmay"}, {a, b})
     inst, _, _ := iface.agent_get_instance(&f.mq.base.ag_repo, "inst_mq")
     inst.launch_epoch = "epoch2"; inst.run_count += 1; _, _, _ = iface.agent_save_instance(&f.mq.base.ag_repo, inst)
-    notes := ad_count("notify_agent_message")
+    notes := ad_count(&f,"notify_agent_message")
     r = ad_report(&f, {launch_epoch = "epoch2", report_seq = 1, steering_supported = true}, "hit_inst_mq~epoch2")
     testing.expect(t, r.status == 200, r.body)
     ra := ad_row(&f, a)
@@ -289,7 +311,7 @@ ad_relaunch_reopens_never_dispatched_and_discards_inflight :: proc(t: ^testing.T
     testing.expect_value(t, ad_row(&f, b).error, "agent_restarted")
     got, _, _ := iface.content_get_send_now_batch(&f.mq.repo, batch)
     testing.expect(t, got.state == "failed" && got.error == "agent_restarted")
-    testing.expect(t, ad_count("notify_agent_message") > notes, "bridge gets a fetch edge for re-admission")
+    testing.expect(t, ad_count(&f,"notify_agent_message") > notes, "bridge gets a fetch edge for re-admission")
     rt, have, _ := iface.content_get_input_runtime(&f.mq.repo, "inst_mq")
     testing.expect(t, have && rt.steering_supported && rt.launch_epoch == "epoch2")
     // A late report from the old epoch cannot touch the reopened row.
@@ -361,13 +383,13 @@ ad_default_unread_agent_read_after_bridge_admission_is_read_evidence :: proc(t: 
     testing.expect(t, !content_service.acp_delivery_turn_held(row), "read clears tray eligibility")
     testing.expect(t, strings.contains(ad_message_json(&f, held), `"status":"read"`))
     testing.expect_value(t, ad_row(&f, prompted).agent_read_at, "")
-    testing.expect_value(t, ad_count(contracts.ACP_INPUTS_READ_COMMAND), 1)
-    testing.expect(t, strings.contains(ad_cmd(contracts.ACP_INPUTS_READ_COMMAND, 0), held), "bridge drops the read input from its queue")
+    testing.expect_value(t, ad_count(&f,contracts.ACP_INPUTS_READ_COMMAND), 1)
+    testing.expect(t, strings.contains(ad_cmd(&f,contracts.ACP_INPUTS_READ_COMMAND, 0), held), "bridge drops the read input from its queue")
     // Send now no longer selects it; a repeat default read returns nothing new.
     r = ad_send_now(&f, "req_after_read")
     outcome, _, _ := ad_batch_of(r.body)
     testing.expect_value(t, outcome, "empty")
     r = agent_action_chat_read_handler(&f.mq.agent_handlers, ad_agent_req(&f, "/api/v1/agent-actions/chat/read", `{"agent_instance_id":"inst_mq","params":{}}`))
     testing.expect(t, r.status == 200 && !strings.contains(r.body, held), r.body)
-    testing.expect_value(t, ad_count(contracts.ACP_INPUTS_READ_COMMAND), 1)
+    testing.expect_value(t, ad_count(&f,contracts.ACP_INPUTS_READ_COMMAND), 1)
 }

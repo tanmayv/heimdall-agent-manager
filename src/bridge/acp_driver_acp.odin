@@ -5,6 +5,7 @@ import "core:encoding/json"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import agent_runtime "odin_test:lib/agent_runtime"
 import contracts "odin_test:contracts"
 
 ACP_INITIALIZE_PARAMS :: `{"protocolVersion":1,"clientInfo":{"name":"heimdall","version":"`+contracts.APP_VERSION+`"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}`
@@ -58,7 +59,7 @@ acp_driver_acp_ready :: proc(r: ^ACP_Runtime) {
     bridge_runtime_mark_start_success(r.instance)
     if !r.d.starter_sent {
         r.d.starter_sent = true
-        acp_runtime_prompt(r, {id = "starter", text = r.d.starter}, bootstrap = true)
+        acp_runtime_prompt(r, {id = "starter", text = agent_runtime.render_acp_starter_prompt(r.d.starter, !r.d.embedded_context)}, bootstrap = true)
     } else {
         acp_runtime_drain(r)
     }

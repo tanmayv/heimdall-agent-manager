@@ -32,8 +32,8 @@ import { usePaneVisible, visiblePollInterval } from '../workbench/paneVisibility
 import {
   useListAgentIdentitiesQuery,
 } from '../../api/endpoints/agents';
-import { formatFleetRoleName } from '../tasks/FleetManagementDrawer';
-import ArtifactViewer from '../ArtifactViewer';
+import { formatFleetRoleName } from '../tasks/fleetNames';
+import { openArtifactPage } from '../../utils/artifactPage';
 import { ChainTokenUsageSection } from '../taskchain/ChainTokenUsage';
 import { HolderName } from '../tasks/HolderName';
 import { buildTaskNames } from '../tasks/taskNames';
@@ -58,16 +58,6 @@ import {
 function workHolder(task: any): string {
   const lease = (Array.isArray(task?.leases) ? task.leases : []).find((l: any) => (l?.kind || 'work') === 'work');
   return String(lease?.holder_instance_id || '');
-}
-
-function canUseAmbientApiAuth(): boolean {
-  if (typeof window === 'undefined') return false;
-  return window.location.protocol === 'http:' || window.location.protocol === 'https:';
-}
-
-function getArtifactViewerSession(session: any) {
-  if (canUseAmbientApiAuth()) return { daemonUrl: '', clientToken: 'v1' };
-  return { daemonUrl: String(session?.daemonUrl || ''), clientToken: String(session?.clientToken || 'v1') };
 }
 
 export interface ChainOverviewPanelProps {
@@ -332,8 +322,6 @@ export default function ChainOverviewPanel({
 }: ChainOverviewPanelProps) {
   const authUser = useAuthUser();
   const username = String(authUser?.user_id || '').trim();
-  const session = useSelector((state: any) => state.chat?.session || {});
-  const viewerSession = getArtifactViewerSession(session);
 
   // Collapsed sections state with client persistence (default open)
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(() =>
@@ -391,7 +379,6 @@ export default function ChainOverviewPanel({
   const lifecycleError = lifecycleResult?.status === 'failed' ? lifecycleResult.message : null;
 
   // Local interaction state
-  const [activeArtifactId, setActiveArtifactId] = useState<string>('');
   const [expandedAttentionTaskId, setExpandedAttentionTaskId] = useState<string | null>(null);
 
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
@@ -935,7 +922,7 @@ export default function ChainOverviewPanel({
                   <div
                     key={artId}
                     data-debug-id={`chain-overview-artifact-${artId}`}
-                    onClick={() => setActiveArtifactId(artId)}
+                    onClick={() => openArtifactPage(artId)}
                     className="flex items-center justify-between gap-2 rounded-[var(--radius-lg)] border border-subtle bg-surface-raised px-3 py-2 transition-colors hover:bg-neutral-soft cursor-pointer"
                   >
                     <div className="flex items-center gap-2 min-w-0">
@@ -1099,15 +1086,6 @@ export default function ChainOverviewPanel({
       </section>
       ) : null}
 
-      {/* ArtifactViewer Modal Overlay */}
-      {activeArtifactId && (
-        <ArtifactViewer
-          artifactId={activeArtifactId}
-          daemonUrl={viewerSession.daemonUrl}
-          clientToken={viewerSession.clientToken || 'v1'}
-          onClose={() => setActiveArtifactId('')}
-        />
-      )}
     </div>
   );
 }

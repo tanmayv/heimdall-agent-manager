@@ -1,30 +1,65 @@
 ---
 name: ham-ctl-reference
-description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, issue, chat, memory, artifact, shell, extension, context, start-success) with exact verbs, flags, and valid values. Also covers shell sessions as a way to put a running process in front of the user — they can watch its stdout live and, if it serves HTTP on a declared port, open its UI as a preview in Heimdall — no inbound port on either machine, and it works when the Hub is on a different host. Includes how two services in separate sessions call each other through the Hub. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
+description: Authoritative reference for exact ham-ctl syntax, for all roles — flags, positional ids and valid values for bridge, agents, task-chain (create, propose, publish, directory, fleet, token-usage, graph/scope/complete), task (authoring and control), lease, review, workflow, issue, automations, webhooks, extension and context. Load when you need a flag or valid value you do not remember. Chat, shell, events, claims, memory, artifact and action-card detail is owned by other skills (pointer table inside).
 ---
 
 # ham-ctl command reference
 
-`ham-ctl` is the agent control CLI for Heimdall. Every command is callable with your
-agent token (already configured) via the managed wrapper in your run directory:
+`ham-ctl` is the agent control CLI for Heimdall, called with your agent token (already configured) through the managed wrapper in your run directory:
 
 ```
 ./bin/ham-ctl <group> <verb> [<positional-id>] [--flags]
 ```
 
-Conventions used below:
-- `<id>` positional args come right after the verb; most commands need only the
-  positional id (task/chain ids are globally unique, so `--chain` is usually optional).
+Conventions:
+- `<id>` positional args come right after the verb; task and chain ids are globally unique, so `--chain` is usually optional.
 - Each command prints a single JSON response line.
-- Run `./bin/ham-ctl <group> --help` for the built-in reference of any group;
-  `./bin/ham-ctl --help` lists all groups.
+- `./bin/ham-ctl <group> --help` is the built-in reference of any group; `./bin/ham-ctl --help` lists all groups.
 
-Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`, `issue`, `chat`, `memory`, `artifact`,
-`shell`, `events`, `extension`, `context`, `start-success`.
+Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`, `issue`, `chat`, `memory`, `artifact`, `shell`, `events`, `automations`, `extension`, `context`, `start-success`.
+
+Groups documented elsewhere (the owner holds every verb, flag and valid value; do not look here):
+
+| Group | Owning skill and heading |
+| --- | --- |
+| `chat read`/`send`, `set-title` | `heimdall-ctl-communication` "## 2. Read", "## 3. Send" |
+| `chat send --questions-file`, delivered answers | `heimdall-ctl-communication` "## 4. Asking questions" |
+| `start-success` | `heimdall-ctl-communication` "## 1. Startup" |
+| `shell` run, serve, start, list, log, capture, signal, restart, set-port, kill | `shell-sessions` "## Commands", "## Other verbs" |
+| `/proxy/<session_id>/` from this host | `shell-sessions` "## Calling a server session from this host" |
+| preview, `preview_url`, tunnel behaviour | `heimdall-preview-setup` "## Start and share", "## Backend behavior through the tunnel" |
+| `events next`, `ack`, `watch`, `unwatch`, `subscriptions`, `[events]` nudges | `chain-events-and-claims` "## Event inbox and migration notices", "## Subscriptions, watches and limits" |
+| `lease <task-id>`, `lease transfer`, `task cancel` | `chain-events-and-claims` "## Durable claims, cancellation and transfer" |
+| acknowledging a requirements revision | `chain-events-and-claims` "## Requirement revisions: acknowledging on your own claim" |
+| amending requirements (`task update --expected-requirements-revision`), MCP `tasks.update` | `coordinator-task-management` "## 9. Live requirement amendments and significant changes" |
+| `artifact` list, show, content, download, create, html-bundle | `artifact-authoring` "## 3. Upload"; flags: `ham-ctl artifact --help` |
+| `memory` list, show, content, propose, scope flags | `memory-management-workflow` "## Scope", "## Commands" |
+| `action create` and card payloads | `action-cards` "## From an agent: `ham-ctl action create`" |
+| `search` | `search-command` "## Parameters (CLI flag / RPC field)" |
+| lease and review procedure, `task fetch` | `worker-task-management` "## 5. Submit, hand off, or block — and share what you learned", "## 6. Fetch omitted or referenced context", "## 7. Reviewing" (signatures below) |
 
 ---
 
 ## bridge — discover bridges and their providers
+
+Shared bridge runtime policy applies to task coordinators/workers/reviewers
+across chains. It does not change staffing, placement or review gates.
+
+- `bridge fleet show|defaults|overrides <bridge-id>` — complete revisioned settings.
+- `bridge fleet apply <bridge-id> --draft-file <file>` — complete JSON object with
+  `request_id`, `expected_revision`, `default_runtime` and full `overrides`.
+  Saves atomically, then restarts changed running task agents, including claim
+  holders. Reuse the identical ID/draft after an ambiguous response.
+- `bridge fleet status <bridge-id> <application-id>` — durable per-target outcomes;
+  saved settings and acknowledged runtime readiness are separate.
+- `bridge fleet retry <bridge-id> <application-id>` — retry eligible failures with
+  stable native keys; ready targets are skipped.
+
+MCP parity: `fleet.read`/`fleet.status` require `mcp:instances:read`;
+`fleet.apply`/`fleet.retry` require `mcp:instances:control`. Fleet Apply supports
+active-task holders, preserving claims and review gates. Existing idle guards
+for unrelated instance tools remain. Live grant/scope/cancellation checks apply
+before new native work and recovery. See `docs/fleet-management.md`.
 - `bridge list [--scope hub|configured|all]` — bridges you can target. Default `all` =
   Hub-registered + locally-configured peers + this host (self).
 - `bridge providers --bridge <id>` — that bridge's providers and their models: `providers[].provider` (with `enabled`) and `providers[].models[].model_id`. These are the `--provider` / `--model` values a launch accepts. Without `--bridge` it returns the bridge list only (no providers or models); use `bridge list` to find bridge ids.
@@ -39,6 +74,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `workflow`, `lease`, `review`,
 - `agents start <instance-id>` — start a STOPPED instance (errors if already running).
 - `agents stop <instance-id> [--reason <t>]` — stop a running instance.
 - `agents restart <instance-id>` — restart (stop-then-start) an instance.
+
 
 ## task-chain — your task chains
 Authenticated agent instances may perform the following operations on **any chain of their owner**;
@@ -93,6 +129,7 @@ access never substitutes for a verdict. Unpublish is unsupported.
 - `task-chain archive [<chain-id>]` / `unarchive [<chain-id>]` — archive or restore a chain (any agent instance of the chain's owner).
 - `task-chain pin <chain-id>` / `unpin <chain-id>` — pin a chain to the top of the sidebar.
 
+
 ### Relevant directories (`task-chain directory`)
 Any authenticated agent of the owner may list/add/update/remove relevant directories; referenced bridges must belong to that owner.
 
@@ -123,37 +160,23 @@ Fields:
 - `vcs_kind`: Version control system kind (`git`, `citc`, `jj`, or empty).
 - `vcs`: Object containing VCS-specific details (branch, commit, status, etc.).
 
-#### Command examples
-```bash
-# List directories for the current chain
-ham-ctl task-chain directory list
-
-# List directories for a specific chain
-ham-ctl task-chain directory list --chain chain_18d711c5384a0119
-
-# Add a directory to the chain
-ham-ctl task-chain directory add --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop --bridge brg_18d03379a7d6d47b --vcs-kind git
-
-# Add a directory to a specific chain
-ham-ctl task-chain directory add --chain chain_18d711c5384a0119 --path /google/src/cloud/tanmayvijay/heimdall --vcs-kind citc
-
-# Update an existing directory's path or bridge
-ham-ctl task-chain directory update dir_18d7a123bc45de67 --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop-v2
-
-# Remove a directory from the chain
-ham-ctl task-chain directory remove dir_18d7a123bc45de67
-
-# View chain details with embedded directories
-ham-ctl task-chain show chain_18d711c5384a0119
-```
 
 ### Token usage (`task-chain token-usage`)
 - `task-chain token-usage [<chain-id>]` — per-agent (with its instances) and chain-total token usage, JSON (defaults to your chain). Each `lifetime` is `{total_tokens, context_tokens, est_tool_tokens, output_tokens, runs}`: counted runs (added at each hub stop/restart) plus the latest run when not counted yet; `total_tokens` = context (sum of runs) + output. An agent's `context` is the highest current % of window among its live instances. `has_data:false` when nothing was reported. A context figure is the provider's (`context_source` = its usage source) or, when the provider reports none, an estimate (`context_source:"estimate"`, `estimated_context_tokens` = tool-traffic tokens × 1.5; `context_tokens` stays provider-only). `usage_supported:false` means the provider cannot report context; absent means unknown. `warn_pct` / `rollover_pct` come from the bridge's shipped config, per row.
+
 
 ### Fleet management (`task-chain fleet`)
 Any authenticated agent of the chain owner may configure, inspect, pause/resume or delete fleet rows without chain membership/coordinator status. Referenced durable agents and bridges must share that owner; capacity, role and placement validation still apply. Deletion uses `DELETE /api/v1/task-chains/{chain-id}/fleets/{agent-id}`; there is no dedicated `task-chain fleet delete` CLI verb.
 
 Configure and inspect agent concurrency caps and placement (fleets) for a task chain. Fleets allow tasks to be assigned to durable agent types (`agt_...`) instead of individual instances (`inst_...`). Heimdall dynamically routes or provisions worker and reviewer instances to satisfy fleet capacity and placement rules.
+
+Runtime selection belongs to shared bridge Fleet (`bridge fleet …`, above).
+After a bridge's first Apply, omit `--provider`, `--model` and `--bridge-models`
+from chain staffing updates. Legacy runtime changes/clears return
+`fleet_runtime_managed`; capacity, roles, pause and bridge placement still work
+and preserve audit runtime fields. Legacy flags below remain compatibility
+controls for unconfigured bridges. Listing legacy fields is not the effective
+runtime policy on a configured bridge.
 
 - `task-chain fleet list [<chain-id>]` — list fleet capacities, placement (`roles`, `bridge_id`, `provider`, `model`, `bridge_models`), and live active worker counts for a chain (defaults to current chain if omitted).
 - `task-chain fleet set <chain-id> --agent <agent_id> --capacity <N> [--min-warm <M>] [--idle-ttl <seconds>] [--roles worker,reviewer] [--bridge <bridge_id>] [--provider <p>] [--model <m>] [--bridge-models <json>] [--bridge-models-file <path>]` — configure fleet capacity and placement for an agent class on the chain.
@@ -191,24 +214,11 @@ Fields:
 - `min_warm`: Minimum warm standby instances to maintain.
 - `idle_ttl_seconds`: Time before idle instances are stopped or decommissioned.
 - `roles`: Allowed lease roles for this fleet row (`["worker"]`, `["reviewer"]`, or `["worker", "reviewer"]`).
-- `bridge_id`, `provider`, `model`, `bridge_models`: Optional placement and model overrides.
+- `bridge_id`: Optional chain staffing placement. `provider`, `model`, `bridge_models`: Legacy runtime audit/fallback values, authoritative only until that bridge's first shared Apply.
 
-#### Command examples
-```bash
-# List fleets for the current chain
-ham-ctl task-chain fleet list
-
-# Set worker fleet capacity and placement
-ham-ctl task-chain fleet set chain_18d711c5384a0119 --agent agt_worker --capacity 4 --roles worker --bridge brg_main
-
-# Set reviewer fleet capacity with warm standby and idle timeout
-ham-ctl task-chain fleet set chain_18d711c5384a0119 --agent agt_reviewer --capacity 2 --min-warm 1 --idle-ttl 600 --roles reviewer
-```
-
-## task, lease, review — Tickets
+## task — ticket authoring and control
 Tickets are the work items in a chain. The CLI, API and events keep the technical name `task`: `ham-ctl task …` verbs, `task_…` ids, `/tasks/` routes and `[taskv2]` notifications.
-A positional `<task-id>` identifies the task and is enough on its own (task ids are
-globally unique — you rarely need `--chain`).
+A positional `<task-id>` identifies the task and is enough on its own (task ids are globally unique; you rarely need `--chain`).
 
 - `task list [--chain <id>]` — your chain's tasks. Each carries a `comment_summary`
   (count, last_comment_at, author, preview) — NOT full comment bodies.
@@ -216,7 +226,7 @@ globally unique — you rarely need `--chain`).
 - `task comments <task-id> [--last N]` — fetch comment BODIES; `--last N` = newest N (max 100).
 - `task create --title <t> [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--chain <id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval] [--brief-file <path.json>]` — create a task.
   `--assignee` and `--reviewer` take durable agent IDs (`agt_...`) only.
-- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>]` — edit an existing task. Any agent instance of the task's owner may update it (chain membership is not required); dependency edits (`--depends-on`) use the same owner policy while preserving same-chain endpoints, DAG and started-input/consumption guards.
+- `task update <task-id> [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <agt_id>] [--reviewer <agt_id,agt_id,...>] [--depends-on <id,id>] [--bridge <bridge-id>] [--goal <g>] [--acceptance <a>]... [--input <ref>]... [--review-role <r>]... [--output-schema <task_list.v1|findings.v1>] [--on-output-workflow <name>] [--require-user-approval | --no-require-user-approval] [--brief-file <path.json>] [--expected-requirements-revision <n> --reason <text>]` — edit an existing task. `--goal` and `--acceptance` amend native requirements with optimistic concurrency: pass the revision just read from `task show` (`requirements_revision`) as `--expected-requirements-revision` with a `--reason`; acceptance flags replace the whole list; on conflict reread and reconcile. Existing ownership, terminal-task and workflow-stage restrictions still apply. Any agent instance of the task's owner may update it (chain membership is not required); dependency edits (`--depends-on`) use the same owner policy while preserving same-chain endpoints, DAG and started-input/consumption guards.
 - `task publish <task-id>` — any authenticated agent of the owner may publish an ordinary draft task in a published chain after validating its brief and requested review roles. A brief needs a non-empty `goal` and at least one `acceptance` item; nothing else is required (`422 brief_incomplete` lists what is missing).
 - `task unblock <task-id> [--note <reason>]` — the owner or any of its agent instances clears a block and retries matching. Unavailable agents carry `blocked_on.kind=agent_not_running` (legacy `dispatch` is supported) and an agent/provider/model/bridge/error reason. Fix the cause first. The user can click **Start agent** (`agent.start {task_id}`) on the attention card or chat tray; failures keep the block, update its reason and show the error inline for retry. Updating the affected fleet row also clears its blocks. Infrastructure failures do not consume work attempt budget; a full fleet row is normal queueing. A solo coordinator remains pull-only: an explicit user Start launches it before clearing the block, then it pulls the ready task.
 - `task recheck <task-id>` — owner or any of its agent instances: recompute what the Hub would decide for the task now — the review gate against the CURRENT reviewers, review roles and user-approval flag; dependency readiness; a `bridge_offline` agent block whose bridge is back; dispatch against fleet capacity, roles, pause and bridge state; and a done task's pending/failed merge-back (only when the task was already done and no merge job for it is still running; a task the re-check itself moves to done gets its one merge from that transition). Never approves (it only counts verdicts already posted), never touches a task with a live lease, never spends an attempt; a call that changes nothing records nothing. Prints `{task, changed, actions[], reasons[], message}`: `actions` say what changed (`state: in_review → done`, `dispatched: work lease …`, `merge-back re-queued …`), `reasons` say what still holds it (`waiting on review from agt_x (role reviewer)`, `agt_w: fleet full 2/2 on bridge …`, `agt_w: bridge … is offline`, `chain directory … already has a live work lease (vcs_kind "")`, `merge pending: the merge-back is in flight on bridge …`, `merge none: chain directory … has vcs_kind ""`). Use it instead of `task hold` + `task release` to unstick a task. Also `POST /api/v1/tasks/{id}/recheck` and the **Re-check** item in the task card menu.
@@ -224,15 +234,17 @@ globally unique — you rarely need `--chain`).
 - `task release <task-id>` — owner or any of its agent instances: clear a hold. The task can be dispatched again, and an `in_review` task has its gate re-evaluated. Release itself never changes the attempt number. A task that was handed off at a checkpoint continues as the same attempt, and review leases keep the current attempt. A fresh work grant still counts as usual: the first lease of a task that was never leased, or a new claim after ownership was explicitly released, starts a new attempt. Releasing an unheld task is a no-op.
 - `task comment <task-id> --body <t>` (or `--stdin`) `[--notify <id,id>]` — add a comment.
 - `task depend <task-id> --on <task-id>|task:<task-id>|workflow_run:<run-id> [--chain <id>]` — add one prerequisite to a ticket. A `workflow_run:` prerequisite becomes a chain-level graph edge on the whole run (the ticket stays ineligible until that run succeeds). Other typed refs (stage keys, `workflow:` names, issues) are rejected with guidance; use `task-chain depend` for run-on-ticket or run-on-run edges. `--depends-on` on `task create`/`task update` takes ticket ids only (`task:<id>` accepted) and `update --depends-on` replaces the whole list.
-- `task fetch <task-id> <ref>` — fetch one event (`#<event_id>`), output (`output:<task_id>`), facet (`facet:<task_id>:<attempt_no>:<kind>`), or file-at-commit (`dir:<dir_id>:<rev>:<path>`, `<path>@<rev>`, or `<path>`) referenced by `TASK.md`.
-- `lease next` — inspect the claim you hold (status `current` when active, `waiting` when waiting) or claim the next ready task inline (status `granted`), updating `<run_dir>/TASK.md`; returns `none` when idle.
-- `lease heartbeat [--note <text>]` — record optional progress metadata; ownership never expires. On `409 lease_lost`, stop immediately without touching the working tree.
-- `lease submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>] [--artifacts <json>] [--lease <id>]` — finish the attempt (task → `in_review`, retaining a waiting claim, or `done` with no review gates). Nothing is executed or gated on a command: report the checks you chose, their exact commands and outcomes in `--summary`. Validates `output` against the brief's output contract (`task_list.v1`, `findings.v1`).
-- `lease handoff --summary <s> [handoff flags] [--lease <id>]` — stop without finishing; the task returns to `ready` and the next holder gets your handoff.
-- `lease switch <task_id> --summary <s> [handoff flags]` — solo mode: hand off the current task (attempt not counted) and take `<task_id>` (must be `ready`) in one step.
-- **Handoff flags** (submit, handoff, switch): `--decision <text>` and `--dead-end <text>` (repeat per item), `--next-steps <text>`; or `--handoff-file <json>` (`{"decisions":[…],"dead_ends":[…],"next_steps":"…"}`) instead, not both. Decisions and dead ends reach every task that waits for this one and the next attempt; dead ends also go into the chain summary for all tasks.
-- `lease block --waiting-on <kind> --reason <text> [--ref <id>] [--summary <s>]` — park the task in `backlog` on a blocker, retaining a waiting claim. `<kind>` is free text: `user` (the user must answer; the answer appears in `TASK.md`), `task`, or an external system.
-- `review post [<task-id>] --verdict approve|request_changes [--summary <reason>] [--findings-file <json>] [--task <id>] [--on-behalf-of user]` — record a review verdict. Findings: `[{"path","line","severity","text"}]`. `request_changes` needs `--summary` or findings. Response: `gate: waiting|approved|changes_requested`. The verdict is your judgment and needs no command evidence; `--summary` is optional on approve. Coordinators pass `--on-behalf-of user` to record the user's verdict on tasks that require user approval (or gates whose approver is `user`); refused in solo mode for your own work.
+- `task cancel <task-id>`: `chain-events-and-claims` "## Durable claims, cancellation and transfer".
+- `task fetch <task-id> <ref>` — fetch one event (`#<event_id>`), `output:<task_id>`, `facet:<task_id>:<attempt_no>:<kind>`, or a file: `dir:<dir_id>:<rev>:<path>`, `<path>@<rev>`, or bare `<path>`; refs are referenced by `TASK.md`.
+
+### lease and review: signatures only
+Procedure, decisions and dead ends, checks and reviewing are owned by `worker-task-management`; claims and transfer by `chain-events-and-claims`. Exact signatures:
+- `lease next` · `lease heartbeat [--note <text>] [--lease <id>] [--acknowledge-requirements-revision <n>]` (on `409 lease_lost` stop at once, touch nothing)
+- `lease submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>] [--artifacts <json>] [--lease <id>]` — validates `output` against the brief's output contract (`task_list.v1`, `findings.v1`)
+- `lease handoff --summary <s> [handoff flags] [--lease <id>]` — stop without finishing; the task returns to `ready` and the next holder gets your handoff · `lease switch <task_id> --summary <s> [handoff flags]` — solo mode: hand off the current task (attempt not counted) and take `<task_id>` (must be `ready`) in one step
+- Handoff flags: `--decision <text>` and `--dead-end <text>` (repeatable), `--next-steps <text>`, or `--handoff-file <json>` (`{"decisions":[…],"dead_ends":[…],"next_steps":"…"}`), not both.
+- `lease block --waiting-on <kind> --reason <text> [--ref <id>] [--summary <s>]` — `<kind>` is free text: `user`, `task`, or an external system.
+- `review post [<task-id>] --verdict approve|request_changes [--summary <reason>] [--findings-file <json>] [--task <id>] [--on-behalf-of user]` — findings `[{"path","line","severity","text"}]`; response `gate: waiting|approved|changes_requested`; coordinators pass `--on-behalf-of user` to record the user's verdict on tasks that require user approval (or gates whose approver is `user`); refused in solo mode for your own work (`coordinator-task-management` "## 6. Recording the user's verdict").
 
 ### Task states
 A task carries a `state`: `backlog`, `ready`, `in_progress`, `in_review`, `done`, `cancelled`.
@@ -276,7 +288,6 @@ Same verbs and flags in agent mode and user mode. The chain is positional (`task
 - `task-chain scope [<chain-id>] --item task:<id>|workflow_run:<id> --action include|exclude --reason <text>` records a scope decision. Exclusion requires terminal work and does not unblock dependents.
 - `task-chain complete <chain-id> --expected-work-revision <n> --summary <text>` explicitly accepts the final result. Every included item must succeed with required merges resolved, at least one success, no leases and no pending proposal; excluded work must be terminal. Read a fresh graph revision first (a stale one is a `work_changed` conflict). Finishing a batch never closes the chain automatically.
 - Generated stage tasks cannot be manually created, edited, reopened, or cancelled; use run controls. Historical executions remain readable.
-
 ## issue — track, discuss, and vote on issues and blockers
 Manage defects, toolchain quirks, environment problems, and out-of-scope bugs across
 the system. Supports lean list views, detail inspect with threaded comments, voting
@@ -306,191 +317,19 @@ A positional `<issue-id>` identifies the issue right after the verb.
   - `bridge_id` (alias `bridge`) — host/bridge-specific issues (`--target-id` specifies bridge ID).
 
 ### Issue JSON shapes
-
-#### Lean list shape (`issue list`)
+`issue list` returns the lean shape; `issue show`, `issue create` and `issue update` return the detail shape.
 ```json
 {
-  "issue_id": "iss_18d7a123bc45de67",
-  "title": "Compiler segfault on empty generic struct",
+  "issue_id": "iss_18d7a123bc45de67", "title": "Compiler segfault on empty generic struct",
   "description_preview": "Reproduces when compiling with -vet-unused...",
-  "status": "new",
-  "scope_type": "project",
-  "target_id": "proj_18c6879e443756f1",
-  "chain_id": "chain_18d711c5384a0119",
-  "created_by": "inst_18d78eed201a0bcf",
-  "created_at": "2026-09-22T14:00:00Z",
-  "updated_at": "2026-09-22T14:05:00Z",
-  "closed_at": "",
-  "vote_count": 3,
-  "comment_count": 2,
-  "has_voted": false
+  "status": "new", "scope_type": "project", "target_id": "proj_18c6879e443756f1",
+  "chain_id": "chain_18d711c5384a0119", "created_by": "inst_18d78eed201a0bcf",
+  "created_at": "2026-09-22T14:00:00Z", "updated_at": "2026-09-22T14:05:00Z", "closed_at": "",
+  "vote_count": 3, "comment_count": 2, "has_voted": false
 }
 ```
-
-#### Detail shape (`issue show`, `issue create`, `issue update`)
-```json
-{
-  "issue_id": "iss_18d7a123bc45de67",
-  "title": "Compiler segfault on empty generic struct",
-  "description": "Full reproduction logs and stack trace...",
-  "status": "new",
-  "scope_type": "project",
-  "target_id": "proj_18c6879e443756f1",
-  "chain_id": "chain_18d711c5384a0119",
-  "created_by": "inst_18d78eed201a0bcf",
-  "created_at": "2026-09-22T14:00:00Z",
-  "updated_at": "2026-09-22T14:05:00Z",
-  "closed_at": "",
-  "vote_count": 3,
-  "comment_count": 2,
-  "has_voted": true,
-  "comments": [
-    {
-      "comment_id": "icmt_18d7a9876543210f",
-      "issue_id": "iss_18d7a123bc45de67",
-      "author_id": "inst_18d78eed201a0bcf",
-      "author_name": "worker #42",
-      "body": "Confirmed also on NixOS 24.05 with odin-nightly.",
-      "created_at": "2026-09-22T14:02:00Z",
-      "updated_at": "2026-09-22T14:02:00Z"
-    }
-  ]
-}
-```
-
-### Command examples
-```bash
-# Search for existing issues to avoid filing duplicates
-ham-ctl issue list --query "compiler segfault"
-
-# Vote on an existing issue
-ham-ctl issue vote iss_18d7a123bc45de67
-
-# Retract a vote
-ham-ctl issue unvote iss_18d7a123bc45de67
-
-# Create a new issue scoped to a project
-ham-ctl issue create --title "Broken libsqlite3 dependency" \
-  --description "Fails to link on Ubuntu 22.04 with missing symbol sqlite3_column_table_name" \
-  --scope project --target-id proj_18c6879e443756f1
-
-# View issue details including threaded comments
-ham-ctl issue show iss_18d7a123bc45de67
-
-# Add a diagnostic comment to an issue
-ham-ctl issue comment iss_18d7a123bc45de67 --body "Workaround: export CGO_CFLAGS=-DSQLITE_ENABLE_COLUMN_METADATA"
-
-# Resolve an issue
-ham-ctl issue update iss_18d7a123bc45de67 --status fixed
-```
-
-## chat — inbox and sending
-- `chat read [--limit N] [--since T] [--include-read] [--transcript]` — read messages.
-- `chat send --to <user|agent-instance-id> --body <t> [--options <a,b> | --questions-file <path>] [--actions <id,...>]` (or `--stdin` for the body) — send a message.
-  `--to` is REQUIRED: `user` for the bound user, or an exact agent-instance-id for
-  agent-to-agent.
-- `chat set-title <title>` — DEPRECATED: conversation titles are no longer used. Do not
-  call it; name your work with `task-chain set-title` for a chain of your owner instead.
-
-### Grouped questions (`chat send --questions-file`)
-Use one grouped message for a set of questions. For one simple choice, flat
-`--options "Option A,Option B"` (or repeated `--option`) remains available.
-
-Write `questions.json` as a UTF-8 JSON **object**, not a bare array:
-```json
-{
-  "version": 1,
-  "questions": [
-    {
-      "id": "target",
-      "text": "Where should the release go?",
-      "selection_mode": "single",
-      "options": [
-        {"id": "staging", "label": "Staging"},
-        {"id": "production", "label": "Production"}
-      ]
-    },
-    {
-      "id": "checks",
-      "text": "Which checks should run?",
-      "selection_mode": "multiple",
-      "options": [
-        {"id": "smoke", "label": "Smoke tests"},
-        {"id": "integration", "label": "Integration tests"}
-      ]
-    }
-  ]
-}
-```
-```bash
-./bin/ham-ctl chat send --to user --body "Choose the release settings." --questions-file questions.json
-```
-
-The CLI validates the file and vault-encrypts the body, question `text`, and option
-`label`; encryption fails closed. Supply plaintext in the local file, not vault
-envelopes. This flag is user-only and cannot be combined with flat `--options`
-or its aliases. Optional `--actions` can accompany the group for unrelated
-operations; task approval uses the normal task review flow.
-
-Schema and validation:
-- `version` is required and must be `1`; `questions` contains 1–12 questions.
-- Each question requires `id`, nonempty `text`, and 1–12 `options`, each with
-  `id` and nonempty `label`. `selection_mode` is optional: `single` (default)
-  accepts one selection; `multiple` accepts one or more.
-- IDs are stable, nonempty, at most 64 ASCII letters, digits, `_`, or `-`.
-  Question IDs are unique in the group; option IDs are unique within a question.
-- Plain question text is limited to 8192 bytes and option labels to 2048 bytes.
-  The JSON group is limited to 256 KiB. Unknown fields are rejected.
-- Every question always offers a typed custom answer **instead of** selections;
-  do not add an "Other" option or a custom-label field to enable it.
-- Every question requires an answer. Selecting an option only updates the draft;
-  the user explicitly submits the entire group once.
-
-**Last-message-only rule:** Flat options and grouped-question controls remain
-available only while their source is the **LAST durable user-visible message**
-in that agent conversation. Any newer user or agent message expires the controls;
-the content remains readable. Agent-to-agent messages do not count. Freshness is
-based on durable insertion order, independent of timestamps, history pagination,
-or synthetic UI rows. Keep related questions in one message and avoid follow-up
-messages while waiting for answers.
-
-### Delivered grouped answers
-`chat read` receives a normal `user_to_agent` inbox message with
-`message_type: "multi_question_answer"`. Its `body` is a readable summary of every
-question and answer; its structured metadata links the source and preserves IDs.
-For the example above, the decrypted relevant fields can be:
-```json
-{
-  "direction": "user_to_agent",
-  "message_type": "multi_question_answer",
-  "body": "Where should the release go? Staging\nWhich checks should run? Run the full release suite.",
-  "metadata": {
-    "multi_question_answer": {
-      "version": 1,
-      "source_message_id": "msg_source",
-      "idempotency_key": "client_generated_uuid_kept_for_retries",
-      "answers": [
-        {"question_id": "target", "option_ids": ["staging"]},
-        {"question_id": "checks", "custom_text": "Run the full release suite."}
-      ]
-    }
-  }
-}
-```
-The summary wording is illustrative. A multiple-choice answer could instead use
-`{"question_id":"checks","option_ids":["smoke","integration"]}`.
-Each question appears exactly once. A custom answer uses nonempty `custom_text`
-with `option_ids` omitted or empty; mixing text and selections is invalid.
-The CLI decrypts structured `text`, `label`, and `custom_text` as well as the body.
-
-On the wire, the summary body and custom text are vault v2 encrypted. The user
-client submits the complete version-1 answer with a stable `idempotency_key`;
-the Hub atomically records one answer per source and delivers one inbox message.
-A same-key retry replays success without a second delivery; a different key after
-success returns `question_answered` (409). An unanswered source superseded by a
-newer visible message returns `question_stale` (409). Preserve drafts on errors.
-Answer selection or silence never constitutes task approval: use the task review
-UI or record an explicit user verdict with `review post --on-behalf-of user`.
+The detail shape replaces `description_preview` with the full `description` and adds `comments[]`, each `{comment_id: "icmt_…", issue_id, author_id, author_name, body, created_at, updated_at}`.
+Search before filing (`issue list --query "<text>"`) and vote (`issue vote <id>`) instead of filing a duplicate.
 
 ## extension — harness extension hooks (provider hooks → ham.ext.v1)
 Provider plugins call these from their hook processes; agents rarely run them by hand.
@@ -509,309 +348,8 @@ Provider plugins call these from their hook processes; agents rarely run them by
 - Without `HEIMDALL_BRIDGE_ENDPOINT` / `HEIMDALL_AGENT_TOKEN`, `hook` and `event` exit 0 with no
   output, so a provider is never blocked.
 
-## shell — run commands and long-lived sessions on the Bridge host
-THE THREE KINDS, enforced by the hub:
-- `run` — a one-shot command with captured output. **AGENT ONLY.** FOREGROUND by default:
-  it BLOCKS until the command exits and prints the output inline, and sends NO
-  notification because you already hold the result. A run is NEVER moved to the
-  background on its own, however long it takes. Bounded by a 30-minute cap.
-- `server` — a long-running process with captured output and an OPTIONAL port. Startable
-  by an agent or a user. Returns as soon as it is up. NOT subject to the 30-minute cap.
-- `shell` — an interactive terminal. **USER ONLY**, no output capture.
-
-The retired spellings `interactive`, `command` and `agent` are REJECTED by the hub, not
-aliased. There is no separate command-execution group any more: `shell run` is how an agent
-runs a command, and it is the only way.
-
-- `shell run --cmd <command> [--cwd <dir>] [--label <lbl>] [--bg]` — run a command and
-  WAIT for it. `--bg` instead returns a session id immediately and notifies you on
-  completion; only backgrounded runs notify. Ctrl-C does not stop a run — it keeps going
-  and stays reachable with `shell log` and `shell kill`. Bridge, agent, conversation and
-  project come from your own context; the conversation cannot be overridden.
-- `shell serve --cmd <command> [--port <n>] [--cwd <dir>] [--label <lbl>]` — start a
-  long-running process. `--port` is OPTIONAL; a portless server is valid and simply
-  exposes nothing. Two live sessions cannot hold the same port on one bridge — the second
-  is refused, naming the holder.
-- `shell background <session_id>` — move a running FOREGROUND run to the background.
-  Releases whoever is waiting on it and notifies on completion from then on. One-way.
-- `shell start --bridge <id> [--kind run|shell|server] [--cmd <cmd>]
-  [--cwd <dir>] [--label <lbl>] [--port <n>] [--project <id>] [--chain <id>]` — launch a
-  session explicitly. Scope is per kind and enforced by the hub: `server` needs `--chain`,
-  `run` needs `--agent`, `shell` needs neither. Returns `{session_id, status, pid}`.
-  - `--port <n>` declares the port the process binds. A declared port is what makes the
-    session reachable over HTTP (see below), whatever its `--kind`. It does not have to
-    be declared at start — see `shell set-port`.
-- `shell list --bridge <id> | --chain <id> [--project <id>] [--status <s>]` — one of
-  `--bridge` or `--chain` is REQUIRED. `--project` alone fails with
-  `chain_id query parameter is required`. Columns: session_id, kind, label, status, pid,
-  server_port, uptime.
-- `shell log <session_id> [--offset N] [--limit N] [--grep <pattern>]` — returns
-  `{lines, truncated, total_lines}`. `--offset` skips lines from the HEAD of the log and
-  `--limit` caps how many come back; there is no tail mode, so "the end of the log" is an
-  explicit offset.
-- `shell capture <session_id>` — snapshot of the current terminal screen.
-- `shell signal <session_id> --signal <int>` — send a POSIX signal (e.g. 2 = SIGINT).
-- `shell restart <session_id>` — stop then start; returns `{session_id, pid, status}`.
-- `shell set-port <session_id> --port <n> | --clear` — declare (or clear) the port of a
-  session that is ALREADY running, for the usual case: you open an interactive terminal,
-  then decide to run a server in it, so there was nothing to declare at start. Takes
-  effect immediately on both access paths, with no restart. `--port 0` and `--clear` are
-  the same request. Refused with 409 on a session that has exited, and 404 on one you do
-  not own. Returns the updated session.
-- `shell kill <session_id>` — terminate the session.
-
-### Sending an HTTP request to a server session, via the Bridge
-A `--kind server --port N` session is reachable from this host through the Bridge's
-local endpoint — the same endpoint `ham-ctl` itself talks to. No inbound port is opened
-and no user token or browser session is involved:
-
-```
-http://127.0.0.1:<local_endpoint_port>/proxy/<session_id>/<path>
-```
-
-The Bridge relays over the WebSocket it already holds to the Hub; the Hub splices it to
-the Bridge that owns `<session_id>`, and that Bridge dials `127.0.0.1:<declared port>`.
-Method, path, query string and body are all forwarded.
-
-**Size limits.** Request bodies up to **64 MiB** (67,108,864 bytes) are streamed with
-bounded memory; the request must carry `Content-Length`. A larger `Content-Length` is
-refused at once with `413`, and a `Transfer-Encoding: chunked` body with `411`, before
-anything reaches the Hub. Responses have no size limit; they stream as the target sends
-them. Throughput is far below a direct connection (tens of MB take tens of seconds), so
-compress large payloads, such as audio, before sending them.
-
-Find the local endpoint port (TCP fallback; default `49324`) with
-`bridge list --scope configured` -> `{"local_endpoint_port": 49324}`. The unix socket
-path is in `$HEIMDALL_BRIDGE_ENDPOINT` (`unix:/path/to/bridge.sock`).
-
-```bash
-# start a server session
-ham-ctl shell start --bridge brg_abc --kind server --port 8000 \
-  --cwd /srv/site --cmd 'python3 -m http.server 8000 --bind 127.0.0.1'
-# -> {"session_id":"sh_123","status":"running","pid":...}
-
-# reach it over TCP
-curl http://127.0.0.1:49324/proxy/sh_123/index.html
-
-# or: an interactive session you started a server inside afterwards
-ham-ctl shell set-port sh_456 --port 3000
-curl http://127.0.0.1:49324/proxy/sh_456/
-
-# or over the unix socket ham-ctl already uses
-curl --unix-socket "${HEIMDALL_BRIDGE_ENDPOINT#unix:}" \
-  http://localhost/proxy/sh_123/index.html
-```
-
-The target must be `status=running`, have a declared port, and be owned by you. Any
-session kind qualifies — an interactive shell you started a server inside is reachable
-too, whether the port was declared with `start --port` or later with `set-port`.
-Refusals come back as JSON `{"error":"<reason>"}`:
-
-| status | reason | meaning |
-| --- | --- | --- |
-| 404 | `session_not_found` | no such session, or it is not yours |
-| 409 | `session_not_running` | session has exited |
-| 409 | `no_server_port` | no port declared — use `shell set-port` |
-| 403 | `cross_owner` | belongs to another user |
-| 503 | `unavailable` | Bridge cannot reach the Hub |
-| 413 | `request_body_too_large` | `Content-Length` over 64 MiB |
-| 411 | `request_body_chunked` | chunked request body; send `Content-Length` instead |
-| 504 | `upload_stalled` | the Bridge lost its Hub connection mid-upload (nothing drained for 30 s) |
-
-Any process on this host that can reach the local endpoint can use this path and acts
-with the Bridge owner's authority; it is disabled by `--no-local-proxy` or
-`[bridge] local_proxy_enabled=false`.
-
-### Showing a running process to the user
-A session serves two user-facing surfaces at once, and both are live:
-
-- **stdout** — any session, no port needed. The user sees it in the session pane; you
-  read the same stream with `shell log <session_id>`.
-- **a preview** — any session with a declared port. The Hub serves it to the user's
-  browser at `<hub-origin>/api/v1/preview/<session_id>/`, tunnelled to the Bridge that
-  owns the session. Nothing is exposed: no inbound port is opened on the Bridge host or
-  the Hub, and it works with the Hub on a different machine.
-
-So `shell start --port N` is the way to hand someone a dev server, a report, a
-dashboard, or any HTTP UI running on a Bridge host they cannot reach directly.
-
-### Two sessions calling each other through the Hub
-Every preview lives under the same parent path, so a page in one session reaches a
-service in another with a **relative** URL — no host, no port, no Hub name in the page:
-
-```js
-// page served at <hub>/api/v1/preview/<FE_SESSION>/
-const api = (p) => new URL(`../${BACKEND_SESSION}/${p}`, location.href).toString();
-//   -> <hub>/api/v1/preview/<BACKEND_SESSION>/<p>
-```
-
-Both sessions are then same-origin with the Hub and with each other, so this needs no
-CORS headers and triggers no preflight. The same relative form also resolves correctly
-under the Bridge-local `/proxy/<session_id>/` path above, because that path has the same
-`<prefix>/<session_id>/` shape — which means you can verify a browser flow server-side
-with `curl` before anyone opens it.
-
-Verified end to end: `POST` crosses the tunnel with method and body intact, responses
-carry real server state across calls, and non-2xx statuses propagate unchanged (a 404
-from the target arrives as a 404, not as a tunnel error).
-
-**Limitation — no service discovery.** A session id does not exist until
-`shell start` returns, and it is *not* injected into the process environment. There is no
-name resolution between sessions. Start the callee first and pass its id to the caller
-(env var, config file, or generated markup); or start the caller, then bind the port
-later with `set-port`. Two services that must reference each other need one of them to
-learn the other's id after the fact.
-
-### Limitations when a session is previewed in a browser
-The Hub strips `/api/v1/preview/<session_id>` before forwarding and does **not** rewrite
-HTML. Your process therefore sees ordinary root-relative paths, while the browser sees
-the prefix. That asymmetry is behind every problem below.
-
-- **Absolute URLs break.** A page emitting `/assets/app.js` makes the browser resolve it
-  against the Hub root, not your session — the preview renders blank. Emit
-  **relative** URLs (`./assets/app.js`) and it works at any prefix, unchanged.
-- **Emitting the prefix instead is not enough on its own.** Telling a dev server its
-  public base is `/api/v1/preview/<id>/` fixes the HTML, but that server will then `404`
-  the stripped paths the Hub forwards. Satisfying both ends needs a small reverse proxy
-  on the declared port that re-adds the prefix before the dev server sees it (and relays
-  `Upgrade`, or HMR dies).
-- **Path-routed SPAs match no route.** The app reads `location.pathname` and gets
-  `/api/v1/preview/<id>/`. Hash routing avoids this — but check the no-hash fallback:
-  Heimdall's own UI falls back to the real pathname when the hash is empty
-  (`src/ui/utils/appLocation.ts`), and the preview URL carries no hash, so it must be
-  seeded (`location.replace(location.pathname + '#/')`) before app code runs.
-- **A previewed page is same-origin with the Hub.** Its own absolute `/api/v1/...`
-  requests go to the **Hub**, authenticated as the viewing user — not to your session,
-  and not through any proxy your dev server configures, because those requests never
-  reach your dev server at all. Use the relative `../<session_id>/` form above to address
-  a session deliberately.
-
-## artifact — create / read / download artifacts
-- `artifact list [--kind <k>] [--project <id>] [--task <id>] [--chain <id>] [--limit <n>]`, `artifact show <id> [--with-content]`, `artifact content <id>`, `artifact download <id> --dir <dir>`.
-- `artifact create --name <n> [--kind <k>] (--content <text> | --file <path> | --stdin)`: a single-file artifact (sealed with your vault key).
-- `artifact create --name <n> --kind html-bundle (--directory <dir> | --file <bundle.zip>) [--entry <page.html>]`: a static multi-page site (HTML/CSS/local images/fonts; `.js`/`.mjs` are accepted but **never run**; **no remote resources**; other file types are rejected) that the user browses in the Artifact Viewer. Relative paths are kept, symlinks are skipped, and `heimdall-artifact.json` (`{"format_version":1,"entrypoint":…}`) is generated or validated. Give exactly one of `--directory` or `--file`; a `--file` ZIP must hold the site at its root (e.g. `(cd site && zip -r ../site.zip .)`). The entry is the manifest `entrypoint` or `--entry` (they must agree if both are set), else the root `index.html`, else the only HTML file; otherwise `--entry` is required. Limits: 15 MB archive (15 MiB = 15,728,640 bytes, the artifact limit), 50 MiB expanded, 1000 files, 15 MiB per file. Format: `docs/html-bundle-artifacts.md`.
-
-## memory — durable memories
-- `memory list [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>] [--status <s>] [--type <t>] [--limit <n>]` — list memories (metadata only).
-- `memory show <memory-id>` — full memory details (body + evidence).
-- `memory content <memory-id>` — print the raw memory body.
-- `memory propose --type <t> --title <t> [--description <t>] [--body <t>] [--evidence <t>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]` — propose a durable memory.
-
-### Memory scope (FOUR dimensions — there is no `--scope` word-flag)
-Scope is set by four id-list dimensions, each accepting singular/plural spellings and
-either repeated flags or comma-separated values:
-
-| Dimension | Accepted flag spellings |
-|-----------|-------------------------|
-| agent     | `--agent-id` / `--agent-ids` / `--agent` / `--agents` |
-| project   | `--project-id` / `--project-ids` / `--project` / `--projects` |
-| bridge    | `--bridge-id` / `--bridge-ids` / `--bridge` / `--bridges` |
-| template  | `--template-id` / `--template-ids` / `--template` / `--templates` |
-
-An OMITTED dimension applies broadly (to all); the agent dimension defaults to the
-caller's own agent. "Global" scope = omit the scope flags. Repeatable or comma-separated:
-`--project-ids proj_1,proj_2` and `--project proj_1 --project proj_2` are equivalent.
-
 ## context — instance snapshot
-- `context` — one-shot snapshot of this instance: chain, current task, and unread counts.
-  Takes no arguments.
-
-## start-success — startup signal
-- `start-success` — signal this instance is ready. Run once at startup; idempotent.
-
-## Live requirement revisions
-
-- `task show <task-id>` exposes `requirements_revision`, submitted revision/head, checkpoint state, acknowledgements and recent decrypted history when the signed detail capability is available.
-- `task update <task-id> --goal <text> --acceptance <text> --expected-requirements-revision <n> --reason <text>` amends native goal/acceptance with optimistic concurrency. Acceptance flags replace the whole list. Use the revision just read; on conflict reread and reconcile. Existing ownership, terminal-task and workflow-stage restrictions still apply.
-- `lease next` refreshes the context pack and `TASK.md`. After reading it, `lease heartbeat --lease <id> --acknowledge-requirements-revision <n>` acknowledges that exact revision on the caller's lease. Ordinary heartbeats do not acknowledge.
-- Submit/review evidence is revision-bound. Changes after submission require worker rework and fresh review; comments cannot substitute for a native amendment or acknowledgement.
-- UI: **Change requirements** edits goal/acceptance with a reason; task details show revision/read status and **Requirement changes** history.
-- MCP: `tasks.get` returns an opaque `revision`; pass it as `expected_revision` to `tasks.update`, with `reason` and `request_id`. This is distinct from the CLI's numeric `requirements_revision`. Replay identical arguments/request ID after an ambiguous response; reread on conflict. MCP cannot acknowledge another agent's lease or approve reviews.
-
-For significant changes to the objective/deliverable/approach, see the coordinator skill: record the decision on the original task and create a self-contained linked replacement, preserving the audit trail and required approvals.
-
-## Durable claims, cancellation and transfer
-
-Claims do not expire or require renewal. Active ownership permits execution;
-waiting ownership retains task, role and owner through review and blocking.
-Submission and verdicts retain responsibility until completion or explicit release.
-
-```bash
-ham-ctl lease <task-id>
-ham-ctl lease <task-id> --instance <instance-id>
-ham-ctl lease transfer <task-id> --instance <instance-id>
-ham-ctl task cancel <task-id>
-```
-
-- A plain claim requests work for the calling instance. Its durable agent ID must
-  match the assignee or an eligible reviewer; the server derives the role from
-  current task state. Repeating a claim returns existing responsibility.
-- A coordinator can name an eligible instance, including itself when its own
-  durable identity matches. Context goes to that instance; assigning another
-  instance does not overwrite the coordinator's task context.
-- Claims do not silently replace another holder. Use explicit transfer. The old
-  writer is fenced immediately; replacement execution waits for the exact process
-  stop receipt. Offline cleanup remains `stop_pending`.
-- Any agent instance of the task's owner may cancel it; chain membership or the
-  coordinator role is not required (cross-owner tasks are refused).
-- Cancellation preserves history and revokes work/review ownership. It can finish
-  while process cleanup is pending; late callbacks cannot revive the task.
-- No prior inspection or manual generation/request ID is needed. The CLI supplies
-  request identity and a default audit reason. Use `--reason` to explain intent;
-  optional explicit request IDs and generation checks serve advanced callers.
-- Existing `task hold`, `task release`, `task unblock` and `task recheck` retain
-  their established meanings. `task release` clears a hold.
-- `lease next` refreshes current responsibility. Stay with a waiting task rather
-  than pulling unrelated work. `lease heartbeat` only reports progress or
-  acknowledges requirements; it does not renew ownership.
-
-## events — durable task-chain inbox
-- `events next [--wait 30s] [--limit 20]` — pull live events belonging to this agent instance (not your durable agent identity: another instance of the same agent has its own subscriptions). Default wait is `0s`; maximum `30s`. The limit is `1..100`. Wait accepts seconds or milliseconds.
-- `events ack <event_id...>` — acknowledge `1..100` delivered events after handling them.
-- `events watch --chain <id>` / `events unwatch --chain <id>` — add/remove an explicit watch on a chain owned by your user.
-- `events subscriptions` — list this instance's subscriptions, including automatic role defaults.
-
-Subscriptions belong to an agent instance. Coordinator defaults belong to the chain's coordinator instance and follow chain membership. Work-claim defaults belong to the claim holder, receive only that task's requirements changes and remain while the claim is waiting; they end when ownership ends or moves. Explicit watches belong to the instance that ran `events watch` and receive chain state, human review requests, human blocks, and work-finished events. `[events]` notices go only to the owning instance, never to another instance or chain, and are counted and rate-limited per instance. An idle-stopped instance, or one that crashed and is relaunched in place, keeps its subscriptions (a wake-worthy event can start it). When the instance is stopped by the user, or replaced (its roles move to another instance after it died), all of its subscriptions and pending events are deleted. Every new subscription, including the fresh ones after a restart, a coordinator reassignment or a claim transfer, starts at its creation: events from before it are never replayed.
-
-Delivery is at least once. Deduplicate by `event_id`, acknowledge after handling, and expect unacknowledged events again after five minutes. After ten attempts the hub republishes to `ev.dlq.<owner>…`. State events roll up to the latest state. Stale resolvable events are skipped; a previously delivered event later resolved or superseded produces a `resolved` notice with `resolved_event_id`. `resolved` notices need no acknowledgement; acking one is accepted as a no-op. Events contain metadata, so fetch the current task when details are needed.
-
-Delivery metadata has a 14-day retention window matching the stream. The hub keeps the most recent 256 completed acknowledgement receipts per subscription for idempotent retries. Each subscription admits at most 4,096 delivery records; at capacity, pull leaves additional events queued until you acknowledge or resolve existing events. An acknowledgement outside the retained receipt window may return not found.
-
-## Event inbox and migration notices
-
-On an `[events]` nudge, pull the durable inbox:
-
-```bash
-./bin/ham-ctl events next --limit 20
-# After handling each returned event:
-./bin/ham-ctl events ack <event_id...>
-```
-
-Process events within your current role and task scope. Fetch current task/chain
-state before acting; envelopes contain IDs and enums, not instructions or message
-bodies. Deduplicate by `event_id`: delivery is at least once, and unacked events
-return after five minutes (up to ten attempts). Acknowledge only after handling
-or recording the required follow-up durably. A resolved notice closes an earlier
-request; do not repeat the resolved action. Drain further batches as needed;
-`events next --wait 30s` is available when waiting for work.
-
-Coordinators handle review requests, human blocks, merge conflicts and finished
-batches using the existing task controls and required user gates. Workers refresh
-with `lease next`, read `TASK.md`, reconcile requirements, and acknowledge the
-exact requirements revision with `lease heartbeat --lease <lease-id>
---acknowledge-requirements-revision <n>`. Event acknowledgement does not acknowledge
-requirements. Only work leases subscribe to requirements-change events.
-Reviewers learn about mid-review changes from the `[taskv2]` checkpoint nudge
-(which remains enabled regardless of the legacy-notice flag) and `lease next`.
-Reviewers refresh their pack and checkpoint with `lease handoff` rather than
-posting a stale verdict.
-
-During migration, existing `[taskv2]` notices remain enabled. Handle them with
-their existing instructions, and deduplicate follow-up against inbox events using
-current task state. Other taskv2 triggers still use that path. The hub flag
-`--legacy-event-notices true|false` defaults to true and controls only catalog
-triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
-
+- `context` — one-shot snapshot of this instance: chain, current task, and unread counts. Takes no arguments.
 
 ## automations — event and cron rules
 

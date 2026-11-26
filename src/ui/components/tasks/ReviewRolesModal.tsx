@@ -18,6 +18,7 @@ export interface ReviewRolesModalProps {
   open: boolean;
   onClose: () => void;
   names?: TaskNames;
+  focusRole?: string;
 }
 
 /**
@@ -26,7 +27,7 @@ export interface ReviewRolesModalProps {
  * has a description (handed to the reviewing agent) and members (agents whose
  * fleet row holds the role). People mostly name reviewer agents on the task.
  */
-export const ReviewRolesModal: React.FC<ReviewRolesModalProps> = ({ chainId, open, onClose, names = EMPTY_TASK_NAMES }) => {
+export const ReviewRolesModal: React.FC<ReviewRolesModalProps> = ({ chainId, open, onClose, names = EMPTY_TASK_NAMES, focusRole }) => {
   const { data: roles = [] } = useListChainReviewRolesQuery({ chainId }, { skip: !open });
   const { data: fleets = [] } = useGetTaskChainFleetsQuery({ chainId }, { skip: !open });
   const { data: identitiesData } = useListAgentIdentitiesQuery(undefined, { skip: !open });
@@ -67,8 +68,6 @@ export const ReviewRolesModal: React.FC<ReviewRolesModalProps> = ({ chainId, ope
         capacity: row?.capacity || 1,
         minWarm: row?.min_warm,
         idleTtlSeconds: row?.idle_ttl_seconds,
-        provider: row?.provider || '',
-        model: row?.model || '',
         bridgeId: row?.bridge_id ?? '',
         roles: roles.length ? roles : ['named-reviewer'],
       }).unwrap();
@@ -151,6 +150,7 @@ export const ReviewRolesModal: React.FC<ReviewRolesModalProps> = ({ chainId, ope
                 ...candidates.map((a) => ({ value: String(a.agent_id || a.agentId), text: String(a.name || a.display_name || agentName(a.agent_id)) })),
               ]}
               aria-label={`Add an agent to ${role.name}`}
+              data-debug-id={`review-role-add-agent-${role.name}`}
             />
           )}
         </div>
@@ -159,8 +159,11 @@ export const ReviewRolesModal: React.FC<ReviewRolesModalProps> = ({ chainId, ope
   };
 
   return (
-    <Modal open={open} onOpenChange={(o) => !o && onClose()} title="Review roles" size="md">
+    <Modal open={open} onOpenChange={(o) => !o && onClose()} title="Review roles" size="md" data-debug-id="review-roles-modal">
       <ModalBody className="space-y-4 text-xs">
+        {focusRole && <Text as="p" role="caption" tone="warning" data-debug-id="review-roles-recovery-context">
+          Configure {focusRole} holders for the whole chain ({chainId}). Other reviewers, required roles and user approval stay required. This does not reassign this ticket.
+        </Text>}
         <Text as="p" role="caption" tone="muted">
           Optional. Name reviewer agents on each ticket for most work. A role asks every agent holding it to review, which
           suits templates and coordinators. Its description tells the reviewer what to check.

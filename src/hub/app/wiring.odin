@@ -22,6 +22,7 @@ import mcp_service "odin_test:hub/service/mcp"
 import bots_service "odin_test:hub/service/bots"
 import channel "odin_test:hub/service/channel"
 import agent_service "odin_test:hub/service/agent"
+import fleet_application "odin_test:hub/service/fleet_application"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_log_service "odin_test:hub/service/bridge_log"
 import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
@@ -126,6 +127,8 @@ App_Graph :: struct {
 	bridge_update_catalog: bridge_service.Bridge_Update_Catalog,
 	bridges: bridge_service.Bridge_Service,
 	agents: agent_service.Agent_Service,
+	fleet: fleet_application.Service,
+	fleet_handlers: http.Fleet_Handlers,
 	bots: bots_service.Bots_Service,
 	bots_runtime: bots_service.Bots_Runtime,
 	telegram: channel.Telegram_Adapter,
@@ -482,12 +485,15 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		on_terminal      = task_engine_on_instance_terminal,
 		on_activity      = task_engine_on_instance_activity,
 		on_start_success = task_engine_on_start_success,
+		launch_context = task_engine_launch_context,
 		on_user_stopped  = task_engine_on_user_stopped,
 	}
 	graph.agents.resource_events = agent_service.Resource_Event_Hooks{
 		ctx                        = rawptr(graph),
 		on_reconfiguration_changed = agents_on_reconfiguration_changed,
 	}
+	graph.fleet = fleet_application.Service{settings=agent_service.fleet_service(&graph.agents),agents=&graph.agents,factory=&graph.uow_factory,clock=&graph.clock,ids=&graph.ids,event_ctx=graph,on_changed=fleet_on_changed,authority_ctx=graph,authority_check=fleet_authority_check}
+	graph.fleet_handlers = http.Fleet_Handlers{auth=&graph.auth,service=&graph.fleet}
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
 		public_key = config.vapid_public_key,
@@ -877,6 +883,12 @@ register_routes :: proc(graph: ^App_Graph) {
 	// registered before the /* wildcard so first-match-wins selects it correctly.
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/lsp-servers", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_create_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/lsp-servers", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_list_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/launch-defaults", rawptr(&graph.fleet_handlers), http.fleet_settings_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/agent-overrides", rawptr(&graph.fleet_handlers), http.fleet_settings_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fleet/apply", rawptr(&graph.fleet_handlers), http.fleet_apply_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fleet/preview", rawptr(&graph.fleet_handlers), http.fleet_preview_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/fleet/applications/*", rawptr(&graph.fleet_handlers), http.fleet_application_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fleet/applications/*/retry", rawptr(&graph.fleet_handlers), http.fleet_retry_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/lsp-servers/resolve", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_resolve_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/lsp-servers/*", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_get_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bridges/*/lsp-servers/*", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_delete_handler)
@@ -1511,7 +1523,7 @@ action_agent_create :: proc(ctx:rawptr,owner,agent_id,project_id:string,c:placem
  graph:=(^App_Graph)(ctx)
  context.allocator=context.temp_allocator
  inst,ok,err:=agent_service.create_instance_stopped(&graph.agents,{kind=.Internal_User,user_id=owner},
-  {agent_id=agent_id,project_id=domain.Project_ID(project_id),bridge_id=c.bridge_id,provider=c.provider,provider_profile=c.provider_profile,model=c.model})
+  {fleet_scope="excluded",agent_id=agent_id,project_id=domain.Project_ID(project_id),bridge_id=c.bridge_id,provider=c.provider,provider_profile=c.provider_profile,model=c.model})
  if !ok {
   if err.code==.None do err=domain.domain_error(.Internal_Error,"instance creation refused")
   return "","",err

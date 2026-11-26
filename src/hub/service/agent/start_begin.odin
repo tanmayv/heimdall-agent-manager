@@ -114,6 +114,14 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	}
 	if req.model != "" do next.model = req.model
 	if req.profile != "" do next.provider_profile = req.profile
+	managed, scope_err := iface.fleet_scope_get(service.bridges, inst)
+	if scope_err.code != .None do return {}, scope_err
+	if managed {
+		runtime, e := chain_fleet_runtime(service, inst.owner_user_id, inst.chain_id, inst.bridge_id, inst.agent_id, {next.provider, next.provider_profile, next.model})
+		if e.code != .None do return {}, e
+		defer domain.fleet_runtime_destroy(runtime)
+		next.provider, next.provider_profile, next.model = strings.clone(runtime.provider, context.temp_allocator), strings.clone(runtime.provider_profile, context.temp_allocator), strings.clone(runtime.model, context.temp_allocator)
+	}
 	_, valid, validation_err := validate_pinned_provider_model(service, auth, next, next.provider, next.model)
 	if !valid do return {}, validation_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)

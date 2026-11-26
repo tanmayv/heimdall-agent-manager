@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
-import { ButtonLink, IconButton, Link, StatusDot, StatusPill, Text } from '@ui';
-import type { ChainListItem } from '../../api/endpoints/tasks';
-import { useGetHomeTaskChainsQuery, useGetHomeChainDetailQuery } from '../../api/endpoints/home';
+import { useState } from 'react';
+import { Button, ButtonLink, IconButton, Link, StatusDot, StatusPill, Text } from '@ui';
+import { useFetchHomeTaskChainsQuery, useFetchTaskChainDetailQuery, type ChainListItem } from '../../api/endpoints/tasks';
+import { useGetHomeFleetQuery } from '../../api/endpoints/home';
+import { chainConversationRoute, coordinatorFromChainDetail } from '../../utils/chainConversation';
+import { buildRouteHash } from '../../utils/appLocation';
 import { VaultText } from '../vault/VaultText';
 import { activeWidgetChains, chainProgress, chainWidgetPage, type ChainProgress, type WidgetResource } from './widgetData';
 import { Legend, WidgetHeading, WidgetState } from './WidgetShared';
@@ -20,27 +22,42 @@ function updatedLabel(value: string) {
   return `${Math.floor(minutes / 1440)}d ago`;
 }
 function TaskChainCard({ chain }: { chain: ChainListItem }) {
-  const detail = useGetHomeChainDetailQuery(chain.chainId);
-  const counts = detail.data ? chainProgress(detail.data.tasks || []) : null;
-  const review = chain.hasUserValidation || chain.status === 'needs_review' || chain.status === 'in_review';
-  const coordinator = detail.data?.members?.find((member: { role: string }) => member.role === 'coordinator');
+  // Only the visible page mounts these shared subscriptions. Task WS events patch
+  // this same detail cache; chain changes invalidate it through existing tags.
+  const detail = useFetchTaskChainDetailQuery({ chainId: chain.chainId });
+  const record = detail.currentData?.chain;
+  const unavailable = detail.isError || (detail.isSuccess && (!detail.currentData?.hasCompleteSnapshot || record?.chainId !== chain.chainId));
+  const counts = record && !unavailable ? chainProgress(record.tasks) : null;
+  const review = chain.hasUserValidation;
+  const coordinatorId = record ? coordinatorFromChainDetail(record) : chain.coordinatorAgentInstanceId;
+  const coordinator = record?.members?.find((member: { agentInstanceId: string }) => member.agentInstanceId === coordinatorId);
+  const bridges = useGetHomeFleetQuery(undefined, { skip: !coordinator?.bridgeId || Boolean(coordinator?.bridgeLabel) });
+  const bridge = coordinator?.bridgeLabel || bridges.currentData?.find((item) => item.id === coordinator?.bridgeId)?.label;
+  const chainHref = buildRouteHash(`/chains/${encodeURIComponent(chain.chainId)}`, '');
+  // A failed lookup is not evidence of an absent coordinator. Keep the chain
+  // conversation destination until a successful detail proves there is none.
+  const href = record && !unavailable && !coordinatorId ? chainHref : buildRouteHash(chainConversationRoute(chain.chainId), '');
   return <article className="home-chain-card">
-    <div className="home-row home-chain-title-row"><Link href={`#/chains/${encodeURIComponent(chain.chainId)}`} tone="muted" variant="standalone" className="home-chain-title" data-debug-id={`home-chain-open-${chain.chainId}`}><Text role="title"><VaultText value={chain.title} fallback="Task chain" /></Text></Link>
+    <div className="home-row home-chain-title-row"><Link href={href} tone="muted" variant="standalone" className="home-chain-title" data-debug-id={`home-chain-open-${chain.chainId}`}><Text role="title"><VaultText value={chain.title} fallback="Task chain" /></Text></Link>
       <StatusPill tone={review ? 'warning' : 'info'}><StatusDot size="sm" tone={review ? 'warning' : 'info'} label={review ? 'Needs review' : 'Running'} />{review ? 'Needs review' : 'Running'}</StatusPill><Text role="caption" tone="muted">{updatedLabel(chain.updatedAt)}</Text>
     </div>
-    <div className="home-chain-meta"><Text role="body-sm" tone="muted">{chain.projectName || 'No project'}</Text>{coordinator?.display_name && <Text role="code-sm" tone="muted">{coordinator.display_name}@{coordinator.bridge_label || 'bridge'}</Text>}</div>
+    <div className="home-chain-meta"><Text role="body-sm" tone="muted"><VaultText value={chain.projectName} fallback="No project" /></Text>{coordinator?.displayName && <Text role="code-sm" tone="muted"><VaultText value={coordinator.displayName} fallback="Coordinator" />{bridge && <>@<VaultText value={bridge} fallback="Bridge" /></>}</Text>}</div>
     {counts ? <div className="home-chain-progress-row"><ChainProgressBar counts={counts} /><Text role="caption" tone="muted">{counts.done} of {counts.total} tickets done</Text></div>
-      : <Text role="caption" tone="muted">{detail.isError ? 'Ticket progress unavailable' : 'Loading ticket progress…'}</Text>}
+      : <div role="status"><Text role="caption" tone="muted">{unavailable ? 'Ticket progress and coordinator unavailable' : 'Loading ticket progress…'}</Text>{unavailable && <>
+        <Button variant="ghost" size="sm" disabled={detail.isFetching} data-debug-id={`home-chain-retry-${chain.chainId}`} onClick={() => { void detail.refetch(); }}>Retry</Button>
+        <Link href={chainHref} data-debug-id={`home-chain-details-${chain.chainId}`}>Chain details</Link>
+      </>}</div>}
   </article>;
 }
 export function TaskChainsWidget({ resource: supplied, onRetry }: { resource?: WidgetResource<ChainListItem[]>; onRetry?: () => void } = {}) {
   const [pageIndex, setPageIndex] = useState(0);
-  const query = useGetHomeTaskChainsQuery({ page: pageIndex }, { skip: Boolean(supplied) });
-  const resource: WidgetResource<ChainListItem[]> = supplied || (query.isError ? { status: 'error', message: 'Unable to load task chains' } : query.data ? { status: 'ready', data: query.data.chains.map((chain) => ({ chainId: chain.chain_id, title: chain.title, status: chain.status, projectName: chain.project_name, updatedAt: chain.updated_at, hasUserValidation: Boolean(chain.user_validation_count) } as ChainListItem)) } : { status: 'loading' });
+  const query = useFetchHomeTaskChainsQuery(undefined, { skip: Boolean(supplied) });
+  const resource: WidgetResource<ChainListItem[]> = supplied || (query.isError ? { status: 'error', message: 'Unable to load task chains' } : query.currentData ? { status: 'ready', data: query.currentData.chains } : { status: 'loading' });
   const chains = resource.status === 'ready' ? activeWidgetChains(resource.data) : [];
-  const total = supplied ? chains.length : query.data?.total || 0;
-  const page = supplied ? chainWidgetPage(chains, pageIndex) : { index: pageIndex, rows: chains, start: total ? pageIndex * 3 + 1 : 0, end: Math.min(pageIndex * 3 + chains.length, total) };
-  useEffect(() => { if (total && pageIndex * 3 >= total) setPageIndex(Math.ceil(total / 3) - 1); }, [total, pageIndex]);
+  const total = chains.length;
+  const page = chainWidgetPage(chains, pageIndex);
+  // Clamp during render so a shrinking snapshot never mounts an empty/stale page.
+  if (resource.status === 'ready' && page.index !== pageIndex) setPageIndex(page.index);
   return <section data-debug-id="home-widget-chains" className="home-chains" aria-labelledby="home-chains-title">
     <WidgetHeading id="home-chains-title" title="Task chains"><Text role="body-sm" tone="muted">{total ? `${total} active` : 'None running'}</Text><Link variant="standalone" href="#/chains" data-debug-id="home-chains-all">All chains</Link></WidgetHeading>
     <div className="home-card">

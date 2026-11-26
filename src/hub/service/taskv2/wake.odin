@@ -37,6 +37,19 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
  ticket := ticket
  if u == nil || svc.agent_service == nil do return
  if ticket == nil {
+	current,found,_:=iface.agent_get_instance(svc.agents,lease.holder_instance_id)
+	if found {
+		blocked,ready_ref:=fleet_runtime_operation(svc,current)
+		if blocked {domain.agent_instance_destroy(&current);return}
+		if ready_ref!="" && instance_is_live(current) {
+			ticket=new(agent.Start_Ticket)
+			ticket^=agent.Start_Ticket{instance=domain.agent_instance_clone(current),command_id=strings.concatenate({"fleet_notice_",ready_ref}),kept_live=true,reused=true,allocator=context.allocator}
+			append(&u.effects.tickets,ticket)
+		}
+		domain.agent_instance_destroy(&current)
+	}
+ }
+ if ticket == nil {
   reused, ok, ended, err := agent.start_reuse(svc.agent_service, lease.holder_instance_id, lease.lease_id)
   if !ok && err.code == .None {
    // A kept-live grant intentionally leaves start_ref untouched. Its durable

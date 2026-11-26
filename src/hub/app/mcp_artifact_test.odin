@@ -31,7 +31,7 @@ mcp_artifact_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers
 	g.issues=issue.new_issue_service(&g.repos.issues,&g.clock,&g.ids)
 	h.control=mcp_resource_control(g);h.mutate_resource=mcp_mutate_resource
 	listed:=http.mcp_control_handler(h,{method="POST",path="/api/v1/mcp",headers=headers,body=strings.clone(`{"jsonrpc":"2.0","id":50,"method":"tools/list"}`,context.temp_allocator)})
-	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(listed.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),46)
+	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(listed.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),50)
 	create:=json.Object{"request_id"=json.String("artifact_create"),"name"=json.String("Private result.md"),"description"=json.String("Private summary"),"content"=json.String("# Private result\nTask finished."),"content_type"=json.String("text/markdown"),"task_id"=json.String("task_comment"),"agent_id"=json.String("agt_placement")}
 	response:=mcp_resource_heap_call(h,headers,"artifacts.create",create);result:=mcp_task_test_output(t,response);if result==nil do return
 	id:=result["resource_id"].(json.String);testing.expect(t,result["link"].(json.String)==json.String(strings.concatenate({"artifact://",string(id)},context.temp_allocator)))

@@ -62,6 +62,9 @@ Lifecycle_Hooks :: struct {
 	on_terminal:      proc(ctx: rawptr, instance_id: string),
 	on_activity:      proc(ctx: rawptr, instance_id, activity_status: string),
 	on_start_success: proc(ctx: rawptr, inst: domain.Agent_Instance),
+	// Returned strings are owned by the caller. Existing task holders keep their
+	// context through the native reconfiguration launch, without bootstrap RPCs.
+	launch_context: proc(ctx: rawptr, inst: domain.Agent_Instance) -> (Start_Lease, bool, domain.Domain_Error),
 	// on_user_stopped: a person stopped the instance (stopped_by is already
 	// persisted). The engine releases its lease without spending an attempt and
 	// hands the task to another instance — BEFORE the stop is sent, so the later
@@ -153,6 +156,8 @@ List_Instances_Filter :: struct {
 }
 
 Create_Instance_Input :: struct {
+	// Trusted server paths only; never populated from a generic launch body.
+	fleet_scope: string,
 	provider_profile: string,
 	agent_id: string,
 	bridge_id: string,
@@ -340,6 +345,7 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 // membership. It never opens a generation or reserves launch quota; only
 // create_instance_stopped calls it. The legacy generation result is always zero.
 prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input, default_title_override:string="") -> (inst: domain.Agent_Instance, generation: int, ok: bool, err: domain.Domain_Error) {
+	input := input
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return domain.Agent_Instance{}, 0, false, owner_err
 	agent, agent_ok, agent_err := get_agent(service, auth, input.agent_id)
@@ -355,6 +361,12 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	if bridge.owner_user_id != owner || bridge.owner_user_id != agent.owner_user_id do return domain.Agent_Instance{}, 0, false, domain.domain_error(.Not_Found, "bridge not found")
 	ps:=agent_placement(service)
  if eligible,reason:=placement.bridge_eligible(&ps,bridge,{owner=string(owner)}); !eligible do return {},0,false,agent_placement_error(&ps,bridge,reason,"bridge is offline")
+	if input.fleet_scope == "chain" {
+		runtime, e := chain_fleet_runtime(service, owner, input.chain_id, bridge.bridge_id, agent.agent_id, {input.provider, input.provider_profile, input.model})
+		if e.code != .None do return {}, 0, false, e
+		defer domain.fleet_runtime_destroy(runtime)
+		input.provider, input.provider_profile, input.model = strings.clone(runtime.provider, context.temp_allocator), strings.clone(runtime.provider_profile, context.temp_allocator), strings.clone(runtime.model, context.temp_allocator)
+	}
 	resolved, resolved_ok, resolved_err := resolve_provider_model(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, model = input.model,provider_profile=input.provider_profile})
 	if !resolved_ok do return domain.Agent_Instance{}, 0, false, resolved_err
 	transport, transport_err := resolve_launch_transport(service,bridge.bridge_id,resolved.provider)
@@ -382,6 +394,9 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	instance := domain.Agent_Instance{runtime_transport=transport,agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, provider_profile=domain.profile_effective_id(resolved.provider,input.provider_profile), model = resolved.model, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "stopped", startup_status = "stopped", activity_status = "unknown", last_applied_seq = 0, run_count = 0, created_at = now, updated_at = now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, instance)
 	if !saved_ok do return domain.Agent_Instance{}, 0, false, save_err
+	scope := input.fleet_scope
+	if scope == "" do scope = "manual"
+	if e := iface.fleet_scope_set(service.bridges, saved, scope); e.code != .None do return {}, 0, false, e
 	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved, default_title)
 	if !conv_ok do return domain.Agent_Instance{}, 0, false, conv_err
 	if saved.conversation_id == "" { saved.conversation_id = conv.conversation_id; saved, saved_ok, save_err = iface.agent_save_instance(service.agents, saved); if !saved_ok do return domain.Agent_Instance{}, 0, false, save_err }

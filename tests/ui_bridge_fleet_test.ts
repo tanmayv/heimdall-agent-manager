@@ -1,0 +1,216 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import React from 'react';
+import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
+import { fleetApplyInput, fleetDraftKey, validFleetDraft } from '../src/ui/components/home/fleetDraft.ts';
+
+test('Fleet drafts preserve profile and durable agent identity, canonical override order and removal', () => {
+  const runtime = { provider: 'codex', provider_profile: 'work', model: 'm' };
+  const draft = { bridge_id: 'b', revision: 4, default_runtime: runtime, overrides: [{ agent_id: 'a', runtime }, { agent_id: 'b', runtime }] };
+  assert.equal(fleetDraftKey(draft), fleetDraftKey({ ...draft, overrides: [...draft.overrides].reverse() }));
+  assert.notEqual(fleetDraftKey(draft), fleetDraftKey({ ...draft, default_runtime: { ...runtime, provider_profile: 'personal' } }));
+  assert.equal(validFleetDraft(draft, [{ provider: 'codex', profile_id: 'work', models: ['m'] }]), true);
+  assert.equal(validFleetDraft({ ...draft, overrides: [draft.overrides[0], draft.overrides[0]] }, [{ provider: 'codex', profile_id: 'work', models: ['m'] }]), false);
+  assert.deepEqual(fleetApplyInput({ ...draft, overrides: [] }, 'request'), { request_id: 'request', expected_revision: 4, default_runtime: runtime, overrides: [] });
+});
+
+test('Chain staffing mutations omit runtime policy and preserve explicit legacy clears', async () => {
+  const { taskChainsApi } = await import('../src/ui/api/endpoints/taskChains.ts');
+  const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+  const store = await makeVaultStore();
+  const oldFetch = globalThis.fetch;
+  const requests: { path: string; body: any }[] = [];
+  globalThis.fetch = async (input: any, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body || '{}'));
+    requests.push({ path: String(input), body });
+    return new Response(JSON.stringify({ data: { agent_id: 'a', capacity: body.capacity || 2, roles: body.roles || ['worker'] } }), { status: 200 });
+  };
+  try {
+    await store.dispatch(taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', agentId: 'a', capacity: 2, roles: ['worker', 'security'], minWarm: 1, idleTtlSeconds: 600, bridgeId: 'b' })).unwrap();
+    assert.deepEqual(requests[0].body, { capacity: 2, roles: ['worker', 'security'], min_warm: 1, idle_ttl_seconds: 600, bridge_id: 'b' });
+    await store.dispatch(taskChainsApi.endpoints.updateTaskChainFleet.initiate({ chainId: 'chain', agentId: 'a', capacity: 2, provider: '', model: '' })).unwrap();
+    assert.deepEqual(requests[1].body, { capacity: 2, provider: '', model: '' });
+    await store.dispatch(taskChainsApi.endpoints.setTaskChainStaffingPaused.initiate({ chainId: 'chain', agentId: 'a', paused: false, roles: ['worker'] })).unwrap();
+    assert.match(requests[2].path, /\/fleets\/a\/resume$/);
+    assert.deepEqual(requests[2].body, { roles: ['worker'] });
+  } finally { store.dispatch(heimdallApi.util.resetApiState()); globalThis.fetch = oldFetch; }
+});
+
+test('Live Fleet: stale previews, conflict preservation, duplicate/lost Apply, retry and scoped WS freshness', async () => {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost/' });
+  const win = dom.window as any;
+  win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  win.HTMLElement.prototype.scrollIntoView = function () {};
+  win.CSS = { escape: (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, (char: string) => String.fromCharCode(92) + char) };
+  const keys = ['window', 'document', 'HTMLElement', 'Node', 'KeyboardEvent', 'MouseEvent', 'localStorage', 'CSS'] as const;
+  const saved = new Map(keys.map((key) => [key, (globalThis as any)[key]]));
+  const savedFetch = globalThis.fetch;
+  const savedAct = (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  for (const key of keys) (globalThis as any)[key] = key === 'window' ? win : key === 'document' ? win.document : win[key];
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const runtime = (model: string) => ({ provider: 'codex', provider_profile: 'work', model });
+  let settings = { bridge_id: 'b1', revision: 1, default_runtime: runtime('m1'), overrides: [{ agent_id: 'a', runtime: runtime('m2') }] };
+  let application: any;
+  const calls: { path: string; body: any }[] = [];
+  let holdPreview = true;
+  const previews: { body: any; resolve: (response: Response) => void }[] = [];
+  let applyMode: 'conflict' | 'lost' | 'success' = 'conflict';
+  const response = (data: any, status = 200) => new Response(JSON.stringify({ data }), { status });
+  globalThis.fetch = async (input: any, init?: RequestInit) => {
+    const path = new URL(String(input?.url ?? input), 'http://localhost').pathname;
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ path, body });
+    if (path === '/api/v1/bridges') return response([{ bridge_id: 'b1', label: 'First bridge', status: 'online', machine_os: 'Linux' }, { bridge_id: 'b2', label: 'Unavailable bridge', status: 'offline' }]);
+    if (path === '/api/v1/agents') return response([{ agent_id: 'a', name: 'Same name', state: 'active' }, { agent_id: 'b', name: 'Same name', state: 'active' }]);
+    if (path.endsWith('/fleets')) return response([]);
+    if (path.includes('/b2/')) return new Response(JSON.stringify({ error: { message: 'Bridge choices unavailable' } }), { status: 503 });
+    if (path.endsWith('/provider-status')) return response({ providers: [{ provider: 'codex', profile_id: 'work', label: 'Work', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'm1', state: 'active' }, { model_id: 'm2', state: 'active' }] }] });
+    if (path.endsWith('/launch-defaults')) return response(settings);
+    if (path.endsWith('/fleet/preview')) {
+      if (holdPreview) return new Promise<Response>((resolve) => previews.push({ body, resolve }));
+      return response({ bridge_id: 'b1', expected_revision: body.expected_revision, affected_instances: 1 });
+    }
+    if (path.endsWith('/fleet/apply')) {
+      if (applyMode === 'conflict') {
+        settings = { ...settings, revision: 2 };
+        return new Response(JSON.stringify({ error: { message: 'Fleet settings revision changed', details: { code: 'fleet_revision_conflict' } } }), { status: 409 });
+      }
+      settings = { ...settings, revision: 3, default_runtime: body.default_runtime, overrides: body.overrides };
+      application = { application_id: 'app', bridge_id: 'b1', request_id: body.request_id, settings_revision: 3, revision: 1, settings_saved: true, cancelled: false, state: 'partial_failure', targets: [
+        { agent_instance_id: 'i-ready', agent_id: 'a', state: 'ready', retryable: false },
+        { agent_instance_id: 'i-accepted', agent_id: 'a', state: 'restarting', retryable: false },
+        { agent_instance_id: 'i-failed', agent_id: 'b', state: 'failed', error_message: 'Bridge offline', retryable: true },
+      ] };
+      if (applyMode === 'lost') { applyMode = 'success'; throw new TypeError('Network response lost'); }
+      return response(application, 202);
+    }
+    if (path.endsWith('/retry')) {
+      application = { ...application, revision: 2, state: 'restarting', targets: application.targets.map((t: any) => t.state === 'failed' ? { ...t, state: 'restarting', error_message: '' } : t) };
+      return response(application, 202);
+    }
+    if (path.includes('/applications/')) return response(application);
+    throw new Error('Unexpected request: ' + path);
+  };
+  const { act } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const { Provider } = await import('react-redux');
+  const { FleetWidget } = await import('../src/ui/components/home/FleetWidget.tsx');
+  const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+  const { handleUserWsEvent, flushQueuedInvalidations, resetQueuedInvalidations } = await import('../src/ui/api/wsInvalidation.ts');
+  const { taskChainsApi } = await import('../src/ui/api/endpoints/taskChains.ts');
+  const store = await makeVaultStore();
+  const root = createRoot(win.document.getElementById('root'));
+  const get = (id: string) => win.document.querySelector('[data-debug-id="' + id + '"]') as HTMLElement;
+  const settle = async () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)); });
+  const click = async (id: string) => { assert.ok(get(id), id); await act(async () => get(id).click()); await settle(); };
+  const choose = async (id: string, label: string) => {
+    await click(id);
+    const option = [...win.document.querySelectorAll('[role="option"]')].find((o: any) => o.textContent === label) as HTMLElement;
+    assert.ok(option, label); await act(async () => option.click()); await settle();
+  };
+  const countCalls = (suffix: string) => calls.filter((c) => c.path.endsWith(suffix)).length;
+  try {
+    await act(async () => root.render(React.createElement(Provider, { store }, React.createElement(FleetWidget))));
+    // Provider-status normalization and the shared identity query complete
+    // asynchronously; wait for both bridges rather than one fixed 150ms tick.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await settle();
+      if (get('home-fleet-apply-b1') && /Could not load settings/.test(get('home-widget-fleet').textContent || '')) break;
+    }
+    assert.match(get('home-widget-fleet').textContent!, /First bridge/);
+    assert.match(get('home-widget-fleet').textContent!, /Could not load settings/);
+    assert.equal(countCalls('/agents'), 1, 'all bridges share the owner identity query');
+    assert.equal((get('home-fleet-apply-b1') as HTMLButtonElement).disabled, true);
+    assert.match(get('home-fleet-scope-b1').textContent!, /Checking/);
+    await choose('home-fleet-default-b1-model', 'm2');
+    assert.equal(previews.length, 2);
+    await act(async () => previews[1].resolve(response({ bridge_id: 'b1', expected_revision: 1, affected_instances: 0 })));
+    await settle();
+    assert.match(get('home-fleet-scope-b1').textContent!, /0 running/);
+    await act(async () => previews[0].resolve(response({ bridge_id: 'b1', expected_revision: 1, affected_instances: 99 })));
+    await settle();
+    assert.doesNotMatch(get('home-fleet-scope-b1').textContent!, /99/);
+    holdPreview = false;
+    await click('home-fleet-apply-b1');
+    assert.match(get('home-fleet-error-b1').textContent!, /revision changed/);
+    assert.match(get('home-fleet-default-b1-model').textContent!, /m2/, 'conflict keeps draft');
+    assert.match(get('home-fleet-conflict-b1').textContent!, /Reset/);
+    const conflictCalls = calls.length;
+    await click('home-fleet-expand-b1');
+    assert.equal(get('home-fleet-body-b1').getAttribute('aria-hidden'), 'true');
+    await click('home-fleet-expand-b1');
+    assert.match(get('home-fleet-default-b1-model').textContent!, /m2/);
+    assert.match(get('home-fleet-error-b1').textContent!, /revision changed/);
+    assert.match(get('home-fleet-conflict-b1').textContent!, /Reset/);
+    assert.equal(calls.length, conflictCalls, 'disclosure preserves preview subscription and never mutates settings');
+    await click('home-fleet-reset-b1');
+    assert.match(get('home-fleet-default-b1-model').textContent!, /m1/);
+    await choose('home-fleet-default-b1-model', 'm2');
+    applyMode = 'lost';
+    const before = countCalls('/fleet/apply');
+    await act(async () => { get('home-fleet-apply-b1').click(); get('home-fleet-apply-b1').click(); });
+    await settle();
+    assert.equal(countCalls('/fleet/apply'), before + 1, 'rapid double-click sends once');
+    assert.match(get('home-fleet-scope-b1').textContent!, /unknown/);
+    const lost = calls.filter((c) => c.path.endsWith('/fleet/apply')).at(-1)!.body;
+    await click('home-fleet-apply-b1');
+    assert.deepEqual(calls.filter((c) => c.path.endsWith('/fleet/apply')).at(-1)!.body, lost, 'recovery replays exact request ID/revision/draft');
+    assert.match(get('home-fleet-result-b1').textContent!, /Settings saved.*Some agents could not restart/s);
+    assert.match(get('home-fleet-target-i-failed').textContent!, /Bridge offline/);
+    assert.match(get('home-fleet-target-i-accepted').textContent!, /restarting/);
+    assert.match(get('home-fleet-result-b1').textContent!, /1 ready.*1 pending.*1 failed/);
+    assert.doesNotMatch(get('home-fleet-result-b1').textContent!, /All affected agents ready/,
+      'HTTP 202 and an accepted restart do not establish runtime readiness');
+    await click('home-fleet-retry-b1');
+    assert.equal(countCalls('/applications/app/retry'), 1);
+    assert.match(get('home-fleet-target-i-ready').textContent!, /ready/);
+    await click('home-fleet-expand-b1');
+    assert.equal(get('home-fleet-body-b1').hasAttribute('inert'), true);
+    const reads = countCalls('/launch-defaults'), previewReads = countCalls('/fleet/preview');
+    await act(async () => handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'i-failed', change: 'status_changed', summary: { bridge_id: 'b1', runtime_status: 'running' } }, {}));
+    await settle();
+    assert.equal(countCalls('/launch-defaults'), reads);
+    assert.equal(countCalls('/fleet/preview'), previewReads, 'startup causes no Fleet reads');
+    application = { ...application, revision: 3, state: 'ready', targets: application.targets.map((t: any) => ({ ...t, state: 'ready' })) };
+    await act(async () => {
+      handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge_fleet_application', resource_id: 'app', summary: application }, {});
+      flushQueuedInvalidations();
+    });
+    await settle();
+    assert.equal(get('home-fleet-expand-b1').getAttribute('aria-expanded'), 'false', 'live results update without opening the panel');
+    await click('home-fleet-expand-b1');
+    assert.match(get('home-fleet-result-b1').textContent!, /All affected agents ready/);
+    assert.equal(countCalls('/launch-defaults'), reads, 'application progress does not reload settings');
+    assert.equal(countCalls('/fleet/preview'), previewReads, 'ready event does not refetch preview');
+    const chains = ['chain-one', 'chain-two'].map((chainId) => store.dispatch(taskChainsApi.endpoints.getTaskChainFleets.initiate({ chainId })));
+    await act(async () => { await Promise.all(chains); });
+    const fleetReads = countCalls('/fleets');
+    await act(async () => {
+      handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'bridge_fleet_settings', resource_id: 'b1', summary: { bridge_id: 'b1', revision: 3 } }, {});
+      flushQueuedInvalidations();
+    });
+    await settle();
+    assert.equal(countCalls('/fleets'), fleetReads + 2, 'settings refresh all chain-keyed effective placements');
+    chains.forEach((query) => query.unsubscribe());
+    // Same display labels remain distinct stable IDs, with duplicates omitted.
+    await click('home-fleet-add-override-b1');
+    const agentControl = get('home-fleet-override-b1-b-agent');
+    assert.ok(agentControl);
+    await click('home-fleet-override-b1-b-agent');
+    assert.equal(win.document.querySelectorAll('[role="option"]').length, 1);
+    await act(async () => win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await settle();
+    const sent = lost.overrides[0];
+    assert.equal(sent.agent_id, 'a'); assert.equal(sent.runtime.provider_profile, 'work');
+  } finally {
+    for (const p of previews) p.resolve(response({ bridge_id: 'b1', expected_revision: 1, affected_instances: 0 }));
+    await act(async () => root.unmount());
+    store.dispatch(heimdallApi.util.resetApiState());
+    resetQueuedInvalidations();
+    dom.window.close();
+    for (const [key, value] of saved) (globalThis as any)[key] = value;
+    globalThis.fetch = savedFetch;
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = savedAct;
+  }
+});

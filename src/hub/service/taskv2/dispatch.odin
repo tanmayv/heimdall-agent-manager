@@ -18,6 +18,9 @@ dispatch_failed_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease,
 // too. Only send-failure callbacks require an unconfirmed wake (a late error
 // must never revoke an already confirmed lease).
 agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, failure: string, unconfirmed_only := false) -> Expire_Result {
+	if inst,found,_:=iface.agent_get_instance(svc.agents,lease.holder_instance_id);found {
+		if protected,_:=fleet_runtime_operation(svc,inst);protected do return .Gone
+	}
 	detail := failure
 	current, held, err := iface.taskchain_get_lease(svc.repo, lease.lease_id)
 	if !held do return .Gone if err.code == .None || err.code == .Not_Found else .Failed

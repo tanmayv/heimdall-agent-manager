@@ -132,6 +132,8 @@ pos :: proc(tokens: []string, i: int) -> string {
 ctl_v2_bridge :: proc(endpoint, token: string, tokens, args: []string) {
 	verb := pos(tokens, 0)
 	switch verb {
+	case "fleet":
+		ctl_bridge_fleet(pos(tokens,1),option_value(args,"--bridge",pos(tokens,2)),option_value(args,"--application",pos(tokens,3)),args)
 	case "", "list":
 		scope := option_value(args, "--scope", "all")
 		ctl_agent_call(endpoint, token, "agent.bridge.list", json_object(json_kv("scope", scope)))
@@ -1943,6 +1945,9 @@ print_help_bridge :: proc() {
 	fmt.println("  list [--scope hub|configured|all]   List bridges. default all: Hub-registered")
 	fmt.println("                                      + locally-configured peers + this host (self).")
 	fmt.println("  providers --bridge <id>             Providers (+ models) of one Hub bridge; no --bridge lists bridges only.")
+	fmt.println("  fleet show|defaults|overrides <bridge-id>   Read the complete revisioned Fleet snapshot.")
+	fmt.println("  fleet apply <bridge-id> --draft-file <json> Save snapshot and restart changed running task agents.")
+	fmt.println("  fleet status|retry <bridge-id> <application-id>   Inspect/retry durable restart outcomes.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl bridge list")

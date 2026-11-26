@@ -52,6 +52,8 @@ scope_allows_tool :: proc(scope,tool:string)->bool {
 	case "agents.list","agents.get":capability="mcp:agents:read"
 	case "agents.create","agents.update","agents.archive":capability="mcp:agents:write"
 	case "instances.list","instances.get","instances.operations","bridges.list","providers.list":capability="mcp:instances:read"
+	case "fleet.read","fleet.status":capability="mcp:instances:read"
+	case "fleet.apply","fleet.retry":capability="mcp:instances:control"
 	case "chains.create","instances.create","instances.start","instances.stop","instances.reconfigure":capability="mcp:instances:control"
 	case "memories.list","memories.get":capability="mcp:memories:read"
 	case "memories.create","memories.update","memories.archive":capability="mcp:memories:write"

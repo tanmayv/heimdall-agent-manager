@@ -481,7 +481,7 @@ test('board render: header, filter, fleet, groups and finished rows; no rails or
       onOpenAgent: () => {},
       onEditTicket: () => {},
       onNewTask: () => {},
-      onOpenFleetDrawer: () => {},
+      onOpenStaffing: () => {},
     }),
   );
   assert.match(html, /data-debug-id="ticket-board-headline"[^>]*>1 ticket needs you</);

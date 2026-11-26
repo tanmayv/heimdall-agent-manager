@@ -38,13 +38,57 @@ acp_config_selection :: proc(raw, category, value: string, selected := false) ->
     return strings.clone(id), true
 }
 
+// Profile inventories use the same category and exact value IDs as selection.
+acp_model_options_append :: proc(values: json.Array, models: ^[dynamic]Bridge_Discovered_Model, depth := 0) -> bool {
+    if depth > 8 do return false
+    for item in values {
+        obj, ok := item.(json.Object); if !ok do return false
+        if nested, present := obj["options"]; present {
+            group, ok := nested.(json.Array); if !ok || !acp_model_options_append(group, models, depth + 1) do return false
+        } else {
+            value, ok := obj["value"].(json.String); if !ok do return false
+            label, _ := obj["name"].(json.String)
+            if !bridge_models_append(models, string(value), string(label) if label != "" else string(value), "") do return false
+        }
+    }
+    return true
+}
+
+acp_model_options :: proc(result: json.Object, category: string, models: ^[dynamic]Bridge_Discovered_Model) -> string {
+    raw, present := result["configOptions"]
+    if !present do return "unsupported"
+    options, ok := raw.(json.Array); if !ok do return "invalid_response"
+    count := 0
+    for item in options {
+        option, ok := item.(json.Object); if !ok do return "invalid_response"
+        cat, _ := option["category"].(json.String); if string(cat) != category do continue
+        count += 1
+        kind, _ := option["type"].(json.String)
+        id, _ := option["id"].(json.String)
+        choices, valid := option["options"].(json.Array)
+        if count != 1 || kind != "select" || id == "" || !valid ||
+           !acp_model_options_append(choices, models) { return "invalid_response" }
+    }
+    return "success" if count == 1 && len(models) > 0 else "unsupported"
+}
+
 acp_bootstrap_communication :: "Messages and answers arrive in session prompts. Your natural assistant text reaches user chat automatically. Use `./bin/ham-ctl` for task, lease, artifact, shell, memory, agent-to-agent communication, and structured questions/actions. Do not echo ordinary answers with chat send."
 
-acp_bootstrap_original_communication :: "Messages from the user arrive through Heimdall, NOT your terminal. Read them with\n`./bin/ham-ctl chat read`; ALWAYS reply with\n`./bin/ham-ctl chat send --to user --body \"<your reply>\"`. Text you print to\nthe terminal is never delivered to the user. Load the `heimdall-ctl-communication` skill\nfor the full messaging workflow (agent-to-agent messages)."
+// The PTY communication paragraph in src/prompts/bootstrap_agents.md starts with
+// this line and ends at the next blank line. Matching on the start marker (not the
+// whole paragraph text) survives rewording of the paragraph; the real-frame test
+// t7_acp_bootstrap_real_frame_drops_pty_reply_rule fails if the marker drifts.
+acp_bootstrap_communication_marker :: "Messages from the user arrive through Heimdall"
 
 bridge_bootstrap_acp_instructions :: proc(body: string) -> string {
-    // replace_all returns `body` itself when nothing matched; the caller owns it.
-    rendered, allocated := strings.replace_all(body, acp_bootstrap_original_communication, acp_bootstrap_communication)
+    rendered := body
+    allocated := false
+    if start := strings.index(body, acp_bootstrap_communication_marker); start >= 0 {
+        end := len(body)
+        if gap := strings.index(body[start:], "\n\n"); gap >= 0 do end = start + gap
+        rendered = strings.concatenate({body[:start], acp_bootstrap_communication, body[end:]})
+        allocated = true
+    }
     defer if allocated do delete(rendered)
     // This marker identifies the exact locally generated bootstrap used by the
     // conservative embedded-resource fallback for adapter 0.108.0.

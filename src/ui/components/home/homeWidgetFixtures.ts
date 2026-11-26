@@ -88,6 +88,7 @@ export function fleetFixture(): FleetWire {
     { id: 'mock-bridge-2', label: 'kamsharm-mn4988.linkedin.biz', os: 'macOS', agents: 1, online: true, provider: 'claude', model: 'claude-sonnet-5-5', overrides: [] },
   ];
   return {
+    providers: MOCK_PROVIDERS.map((p) => ({ provider: p.id, profile_id: p.id, label: p.label, models: p.models })),
     bridges: bridges.map((bridge) => ({ bridge_id: bridge.id, label: bridge.label, machine_os: bridge.os, status: 'online', agent_count: bridge.agents })),
     defaults: Object.fromEntries(bridges.map((bridge) => [bridge.id, { bridge_id: bridge.id, provider: bridge.provider, model: bridge.model, updated_at: '2026-11-25T00:00:00Z' }])),
     overrides: Object.fromEntries(bridges.map((bridge) => [bridge.id, bridge.overrides.map((item) => ({ bridge_id: bridge.id, agent_id: item.id, provider: item.provider, model: item.model, updated_at: '2026-11-25T00:00:00Z' }))])),

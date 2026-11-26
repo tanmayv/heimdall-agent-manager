@@ -5,7 +5,7 @@ import { useCreateTaskMutation } from '../../api/endpoints/tasks';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { taskBridgeOptions } from '../../utils/taskBridgePin';
-import { formatFleetRoleName } from './FleetManagementDrawer';
+import { formatFleetRoleName } from './fleetNames';
 import { useAuthUser } from '../auth/AuthUserContext';
 import { BRIEF_ACCEPTANCE_ITEM_MAX, BRIEF_ACCEPTANCE_MAX, BRIEF_GOAL_MAX, buildTaskBrief } from '../../utils/taskBrief';
 

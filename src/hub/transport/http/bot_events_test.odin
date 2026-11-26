@@ -7,6 +7,7 @@ import virtual "core:mem/virtual"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -25,6 +26,31 @@ import natstest "odin_test:lib/natstest"
 http_nats_test_mutex: sync.Mutex
 http_nats_test_lock :: proc() { sync.mutex_lock(&http_nats_test_mutex) }
 http_nats_test_unlock :: proc() { sync.mutex_unlock(&http_nats_test_mutex) }
+
+Bot_Event_Pull_Probe :: struct {
+	factory: ^iface.Unit_Of_Work_Factory,
+	calls: int,
+	wait, longest_wait: time.Duration,
+}
+bot_event_probe_begin :: proc(ctx: rawptr) -> (iface.Unit_Of_Work, bool, domain.Domain_Error) {
+	p := (^Bot_Event_Pull_Probe)(ctx)
+	started := time.tick_now()
+	u, ok, err := iface.unit_of_work_begin(p.factory)
+	wait := time.tick_since(started)
+	p.calls += 1; p.wait += wait; p.longest_wait = max(p.longest_wait, wait)
+	return u, ok, err
+}
+
+// Inspect the specific review event, not just whether some outbox row moved.
+// Returned text belongs to the fixture arena. Never change delivery state here.
+bot_event_outbox_snapshot :: proc(t: ^testing.T, conn: ^sqlite.Conn) -> string {
+	query := "SELECT json_object('event_id',event_id,'subject',subject,'envelope',json(envelope_json),'published_at',COALESCE(published_at,''),'deliveries',(SELECT count(*) FROM event_deliveries d WHERE d.event_id=o.event_id)) FROM event_outbox o WHERE json_extract(envelope_json,'$.type')='task.review_requested_from_user' AND json_extract(envelope_json,'$.entity.id')='task_bot_review';"
+	stmt: sqlite.sqlite3_stmt
+	if !testing.expect_value(t, sqlite.sqlite3_prepare_v2(conn.db,cstring(raw_data(query)),-1,&stmt,nil),sqlite.SQLITE_OK) do return ""
+	defer sqlite.sqlite3_finalize(stmt)
+	if !testing.expect_value(t,sqlite.sqlite3_step(stmt),sqlite.SQLITE_ROW) do return ""
+	return strings.clone(string(sqlite.sqlite3_column_text(stmt,0)))
+}
 
 // Script a bot's authenticated create/message/pull/ack actions against the real
 // service and HTTP handlers, SQLite outbox relay and an isolated JetStream.
@@ -167,12 +193,39 @@ bot_events_scenario :: proc(t: ^testing.T) {
 		url        = server.url,
 		timeout_ms = 1000,
 	}
+	published := bot_event_outbox_snapshot(t, &f.conn)
+	published_value, published_err := json.parse_string(published,parse_integers=true)
+	if !testing.expect_value(t,published_err,nil) do return
+	defer json.destroy_value(published_value)
+	published_object := published_value.(json.Object)
+	event_id := published_object["event_id"].(json.String)
+	subject := published_object["subject"].(json.String)
+	testing.expect(t,published_object["published_at"].(json.String)!="","the specific review event was published")
+	probe_conn, probe_err := nats.connect(inbox.options)
+	if !testing.expect_value(t,probe_err.status,i32(0)) do return
+	defer nats.destroy(probe_conn)
+	stored, sequence, stored_err := nats.stream_next(probe_conn,"HEIM_EVENTS",string(subject),1)
+	if !testing.expect(t,stored_err.status==0 && stored!=nil,"published review event exists in JetStream") do return
+	stored_value, stored_parse_err := json.parse(nats.message_data(stored),parse_integers=true)
+	nats.message_destroy(stored)
+	if !testing.expect_value(t,stored_parse_err,nil) do return
+	defer json.destroy_value(stored_value)
+	testing.expect_value(t,stored_value.(json.Object)["event_id"].(json.String),event_id)
+	bindings, bindings_err := eventinbox.subscriptions(&inbox,string(f.owner),f.instance_id)
+	if !testing.expect_value(t,bindings_err.code,domain.Error_Code.None) do return
+	defer eventinbox.subscription_rows_destroy(bindings)
+	pull_probe := Bot_Event_Pull_Probe{factory=&factory}
+	probe_factory := iface.Unit_Of_Work_Factory{ctx=&pull_probe,begin=bot_event_probe_begin}
+	inbox.factory=&probe_factory
 	handlers := Event_Inbox_Handlers {
 		agent_actions = &f.ah,
 		inbox         = &inbox,
 	}
 	// Same authenticated action contract as ham-ctl events next and ack.
+	pull_started:=time.tick_now()
 	resp := event_next_handler(&handlers, wire_agent_request(f, "events", `{"params":{}}`))
+	pull_elapsed:=time.tick_since(pull_started)
+	inbox.factory=&factory
 	testing.expectf(t, resp.status == 200, "%s", resp.body)
 	wire: struct {
 		data: struct {
@@ -184,6 +237,11 @@ bot_events_scenario :: proc(t: ^testing.T) {
 		},
 	}
 	if !testing.expect_value(t, json.unmarshal_string(resp.body, &wire), nil) do return
+	fmt.eprintf("BOT_EVENT_PULL event=%s stream_seq=%d elapsed_ms=%d uow_calls=%d uow_wait_ms=%d longest_wait_ms=%d provision_calls=%d received=%d outbox=%s\n",event_id,sequence,pull_elapsed/time.Millisecond,pull_probe.calls,pull_probe.wait/time.Millisecond,pull_probe.longest_wait/time.Millisecond,inbox.provision_calls,len(wire.data.events),bot_event_outbox_snapshot(t,&f.conn))
+	for binding in bindings {
+		state,state_err:=nats.consumer_state(probe_conn,"HEIM_EVENTS",binding.consumer_name)
+		fmt.eprintf("BOT_EVENT_BINDING subscription=%s instance=%s chain=%s consumer=%s filters=%s created_at=%s state=%v status=%d jetstream=%d\n",binding.subscription_id,binding.subscriber_instance_id,binding.chain_id,binding.consumer_name,binding.filter_subjects,binding.created_at,state,state_err.status,state_err.jetstream)
+	}
 	testing.expect_value(t, len(wire.data.events), 1)
 	if len(wire.data.events) != 1 do return
 	ev := wire.data.events[0]

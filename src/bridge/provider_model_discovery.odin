@@ -11,6 +11,7 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
+import contracts "odin_test:contracts"
 import ws "odin_test:lib/ws"
 
 BRIDGE_MODEL_LIMIT :: 512
@@ -253,7 +254,14 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	args := make([dynamic]string, context.temp_allocator)
 	append(&args, binary)
 	request := ""
-	switch provider {
+	descriptor, acp := bridge_models_acp_descriptor(provider)
+	if acp {
+		if binary == "" do return models, "absent"
+		argv, built := acp_provider_launch_argv(descriptor, "", binary)
+		if !built do return
+		resize(&args, 0); append(&args, ..argv)
+		request = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"heimdall-model-discovery","version":"1"}}}`
+	} else { switch provider {
 	case "claude":
 		append(&args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--tools", "", "--settings", `{"disableAllHooks":true}`)
 		request = `{"type":"control_request","request_id":"models","request":{"subtype":"initialize"}}`
@@ -268,6 +276,7 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	case: return models, "unsupported"
 	}
 	append(&args, ..launch_args)
+	}
 	if binary == "" do return models, "absent"
 	if !bridge_process_slot_try_acquire() do return models, "busy"
 	defer bridge_process_slot_release()
@@ -286,6 +295,7 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	clean_env := make([dynamic]string, context.temp_allocator)
 	for e in env {
 		if strings.has_prefix(e, "CLAUDECODE=") || strings.has_prefix(e, "COPILOT_AUTO_UPDATE=") do continue
+		if acp && strings.has_prefix(strings.to_upper(e, context.temp_allocator), "HEIMDALL_") do continue
 		append(&clean_env, e)
 	}
 	append(&clean_env, "COPILOT_AUTO_UPDATE=false")
@@ -306,7 +316,8 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	}
 	if request != "" && !bridge_models_write_request(in_w, request, framed) do return
 	buffer := make([dynamic]byte); defer delete(buffer)
-	total, expected_id := 0, 2
+	total, expected_id := 0, 1 if acp else 2
+	acp_cleanup, inventory_state := "", "error"
 	deadline := time.time_add(time.now(), timeout)
 	for time.diff(time.now(), deadline) > 0 {
 		ready, err := os.pipe_has_data(out_r)
@@ -348,6 +359,54 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 				} else if len(buffer) > 4096 do return
 			} else if newline := strings.index_byte(string(buffer[:]), '\n'); newline >= 0 { consumed = newline+1; message = string(buffer[:newline]) }
 			if consumed == 0 do break
+			if acp {
+				value, parse_err := json.parse_string(message, allocator = context.temp_allocator)
+				obj, object := value.(json.Object)
+				if parse_err != nil || !object do return models, "invalid_response"
+				id, has_id := obj["id"].(json.Float)
+				_, server_method := obj["method"]
+				if has_id && !server_method && id == json.Float(expected_id) {
+					if expected_id == 3 {
+						if _, failed := obj["error"].(json.Object); failed do return models, "error"
+						if _, result_present := obj["result"]; !result_present do return models, "invalid_response"
+						return models, inventory_state
+					}
+					if rpc_error, failed := obj["error"].(json.Object); failed {
+						code, _ := rpc_error["code"].(json.Float)
+						return models, "authentication_required" if code == -32000 else "invalid_response"
+					}
+					result, valid := obj["result"].(json.Object)
+					if !valid do return models, "invalid_response"
+					if expected_id == 1 {
+						version, _ := result["protocolVersion"].(json.Float)
+						if version != 1 do return models, "unsupported"
+						caps, _ := result["agentCapabilities"].(json.Object)
+						session_caps, _ := caps["sessionCapabilities"].(json.Object)
+						if _, can_delete := session_caps["delete"].(json.Object); can_delete { acp_cleanup = "session/delete" }
+						else if _, can_close := session_caps["close"].(json.Object); can_close { acp_cleanup = "session/close" }
+						cwd_json, marshal_err := json.marshal(cwd, allocator = context.temp_allocator)
+						if marshal_err != nil do return
+						body := strings.concatenate({`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":`, string(cwd_json), `,"mcpServers":[]}}`}, context.temp_allocator)
+						if !bridge_models_write_request(in_w, body, false) do return
+						expected_id = 2
+					} else {
+						sid := bridge_model_string(result, "sessionId")
+						if sid == "" || len(sid) > 4096 do return models, "invalid_response"
+						inventory_state = acp_model_options(result, descriptor.model_category, &models)
+						if inventory_state == "success" && descriptor.agent_default_model != "" {
+							if !bridge_models_append(&models, descriptor.agent_default_model, fmt.tprintf("%s default", descriptor.display_name), "") do inventory_state = "output_limit"
+						}
+						if acp_cleanup == "" do return models, inventory_state
+						sid_json, marshal_err := json.marshal(sid, allocator = context.temp_allocator)
+						if marshal_err != nil do return
+						body := strings.concatenate({`{"jsonrpc":"2.0","id":3,"method":"`, acp_cleanup, `","params":{"sessionId":`, string(sid_json), `}}`}, context.temp_allocator)
+						if !bridge_models_write_request(in_w, body, false) do return
+						expected_id = 3
+					}
+				}
+				copy(buffer[:], buffer[consumed:]); resize(&buffer, len(buffer)-consumed)
+				continue
+			}
 			matched, valid, cursor, auth := bridge_models_parse_reply(provider, message, expected_id, &models)
 			if matched {
 				defer delete(cursor)
@@ -365,7 +424,13 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	return models, "timeout"
 }
 
+bridge_models_acp_descriptor :: proc(provider: string) -> (contracts.ACP_Provider_Descriptor, bool) {
+	d, found := contracts.acp_provider_descriptor(provider)
+	return d, found && d.discover_models_via_acp && d.protocol == .ACP && d.launch == .System
+}
+
 bridge_models_source :: proc(provider: string) -> string {
+	if _, acp := bridge_models_acp_descriptor(provider); acp do return "acp_v1"
 	switch provider {
 	case "claude": return "claude_control"
 	case "codex": return "codex_app_server"
@@ -411,6 +476,11 @@ bridge_models_refresh_worker :: proc(th: ^thread.Thread) {
 	job.previous = {}
 	remaining := time.Duration(job.deadline_ns - time.to_unix_nanoseconds(time.now()))
 	env, env_ok := profile_child_env(&job.profile)
+	if d, acp := bridge_models_acp_descriptor(job.provider); acp && env_ok {
+		plan := Profile_Env_Plan{}
+		for pair in d.env do append(&plan.set, pair)
+		env = profile_apply_env_plan(env, plan)
+	}
 	models := make([dynamic]Bridge_Discovered_Model)
 	state := "error"
 	if env_ok {

@@ -1460,6 +1460,7 @@ create_chain_with_prepared_coordinator :: proc(h: ^Taskchain_Handlers, auth_ctx:
 		return {}, {}, err
 	}
 	input := inst_input
+	input.fleet_scope = "chain"
 	input.chain_id = string(chain.chain_id)
 	inst, prepared, prepare_err := agent_service.create_instance_stopped(h.agents, auth_ctx, input)
 	if !prepared do return {}, {}, prepare_err
@@ -2322,6 +2323,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	fleet_bridge_ptr: ^string
 	if has_fleet_bridge do fleet_bridge_ptr = &fleet_bridge_id
 	fleet, err := taskchain_service.upsert_fleet(h.taskchains, auth_ctx, taskchain_service.Upsert_Fleet_Input{
+		has_runtime = jsonx.has_key(req.body, "provider", true) || jsonx.has_key(req.body, "model", true),
 		chain_id         = chain_id,
 		agent_id         = agent_id,
 		capacity         = capacity,

@@ -110,9 +110,11 @@ async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
     if (url.pathname.endsWith('/agent-instances')) return json([{ agent_instance_id: 'inst_second', agent_id: 'agt_second' }]);
     if (url.pathname.endsWith('/bridges')) return json({ bridges });
     if (url.pathname.endsWith('/provider-status')) return json({ providers: [{ provider: 'codex', enabled: true, state: 'present', catalog_state: 'active', models: (opts.providerModels || ['gpt-test']).map((model_id) => ({ model_id, state: 'active' })) }] });
+    if (url.pathname.endsWith('/launch-defaults')) return json({ bridge_id: url.pathname.split('/')[4], revision: 0, default_runtime: { provider: '', provider_profile: '', model: '' }, overrides: [] });
+    if (url.pathname.endsWith('/review-roles')) return json([{ name: 'security', description: 'Review security', holders: ['agt_failed'], open_task_count: 1 }]);
     if (url.pathname.endsWith('/bridge-support')) return json({ entries: [] });
     if (url.pathname.endsWith('/fleets')) return json(opts.fleets || fleets);
-    if (url.pathname.endsWith('/task-chains/chain_recovery')) return json({ task_chain_id: 'chain_recovery', tasks: [currentTask, { ...currentTask, task_id: 'task_other', title: 'Other queued ticket' }] });
+    if (url.pathname.endsWith('/task-chains/chain_recovery')) return json({ chain_id: 'chain_recovery', members: [], tasks: [currentTask, { ...currentTask, task_id: 'task_other', title: 'Other queued ticket' }] });
     if (url.pathname.endsWith('/tasks/task_recovery')) return json(currentTask);
     return json({});
   };
@@ -229,13 +231,17 @@ test('deck: workflow, live target lease and unavailable provider remain visible 
   });
 });
 
-test('deck: role review routes to native fleet configuration without task assignment', async () => {
+test('deck: role review retains failed role and chain context without changing ticket gates', async () => {
   await withRecovery({ items: [placement([target('agt_failed', 'review', 'security')])] }, async (h) => {
     const rolePrefix = 'attention-placement-review-agt_failed-security';
     assert.equal(h.q(`${rolePrefix}-identity`), null);
     assert.match(h.text(), /cannot assign a single replacement.*Other role requirements/);
     await h.click(`${rolePrefix}-fleet`);
-    assert.match(h.q('fleet-drawer-recovery-role').textContent, /security.*whole chain/);
+    assert.match(h.q('review-roles-recovery-context').textContent, /security.*whole chain.*chain_recovery.*Other reviewers.*user approval.*does not reassign/);
+    assert.ok(h.q('review-role-security'));
+    assert.deepEqual(task.brief.reviewers, ['agt_failed', 'agt_second']);
+    assert.deepEqual(task.brief.review_roles, ['security']);
+    assert.equal(task.requires_user_approval, true);
     assert.equal(h.hits.filter((r: any) => r.path.endsWith('/placement-recovery')).length, 0);
   });
 });
@@ -287,7 +293,7 @@ test('deck: failed stale refresh keeps selection and disables replay until a suc
   });
 });
 
-test('deck: native dropdown and portaled fleet editor own their keyboard events', async () => {
+test('deck: native dropdown and portaled Review Roles own their keyboard events', async () => {
   await withRecovery({ items: [placement([target('agt_failed', 'review', 'security')])] }, async (h) => {
     const prefix = 'attention-placement-review-agt_failed-security';
     const select = h.q(`${prefix}-select`);
@@ -299,7 +305,7 @@ test('deck: native dropdown and portaled fleet editor own their keyboard events'
     assert.equal(h.q('attention-snooze-menu'), null);
     assert.ok(h.q(prefix));
     await h.click(`${prefix}-fleet`);
-    const drawer = h.q('fleet-management-drawer');
+    const drawer = h.q('review-roles-modal');
     assert.ok(drawer);
     await act(async () => {
       drawer.focus();
@@ -308,7 +314,7 @@ test('deck: native dropdown and portaled fleet editor own their keyboard events'
     assert.equal(h.q('attention-snooze-menu'), null);
     await act(async () => drawer.dispatchEvent(new h.dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     await h.drain();
-    assert.equal(h.closed(), 0, 'Escape closes the fleet editor without closing the deck');
+    assert.equal(h.closed(), 0, 'Escape closes Review Roles without closing the deck');
     assert.ok(h.q(prefix));
   });
 });

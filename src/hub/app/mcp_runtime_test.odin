@@ -86,7 +86,7 @@ mcp_runtime_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Handlers,
 		iface.bridge_provider_setting_upsert(&g.provider_repo,{bridge_id=bridge_id,provider="claude",enabled=true})
 	}
 	list:=http.mcp_control_handler(h,{method="POST",path="/api/v1/mcp",headers=headers,body=strings.clone(`{"jsonrpc":"2.0","id":50,"method":"tools/list"}`,context.temp_allocator)})
-	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(list.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),25)
+	tools:struct {result:struct {tools:[]struct {name:string}}};json.unmarshal_string(list.body,&tools,.JSON,context.temp_allocator);testing.expect_value(t,len(tools.result.tools),29)
 	for bad in ([]struct {tool:string,args:json.Object}{
 		{"instances.start",json.Object{"agent_instance_id"=json.String("agt_wrong"),"request_id"=json.String("x"),"expected_revision"=json.String(strings.repeat("a",64,context.temp_allocator))}},
 		{"instances.stop",json.Object{"agent_instance_id"=json.String("inst_a"),"request_id"=json.String("x"),"expected_revision"=json.String(strings.repeat("a",64,context.temp_allocator)),"force"=json.Boolean(true)}},

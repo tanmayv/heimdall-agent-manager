@@ -1,6 +1,6 @@
 ---
 name: worker-task-management
-description: How a WORKER or REVIEWER agent works a ticket lease with ham-ctl — read TASK.md, work in the per-task Workdir, heartbeat, choose and report your own checks, submit / hand off / block (`lease submit|handoff|block`) with decisions and dead ends, fetch referenced context (`task fetch`), and post structured reviews (`review post`). Also how to share what you learned with the tasks that come after yours. Load whenever you are a worker or reviewer on a chain.
+description: How a worker, reviewer or soloist works a lease with ham-ctl — read `TASK.md`, work in the Workdir, choose and report your own checks, `lease submit|handoff|block|switch` with decisions and dead ends, `task fetch`, `review post`, and sharing what you learned with later tasks. Load whenever you are a worker or reviewer on a chain, and before your first submit, handoff, block or verdict.
 ---
 
 # Worker & reviewer task management (Tickets)
@@ -116,8 +116,9 @@ The tasks after yours see only their `TASK.md`. What you write here is what they
 ```bash
 ./bin/ham-ctl task fetch <task-id> "#123"                          # an event (integer id)
 ./bin/ham-ctl task fetch <task-id> "output:<other-task-id>"        # another task's output
-./bin/ham-ctl task fetch <task-id> "facet:<task-id>:1:handoff"     # handoff|vcs|output|runtime|artifacts
+./bin/ham-ctl task fetch <task-id> "facet:<task_id>:<attempt_no>:<kind>"  # kind: handoff|vcs|output|runtime|artifacts, e.g. facet:<task-id>:1:handoff
 ./bin/ham-ctl task fetch <task-id> "src/main.odin@<rev>"           # a file at a revision
+./bin/ham-ctl task fetch <task-id> "src/main.odin"                 # a file at the default revision (bare <path>)
 ./bin/ham-ctl task fetch <task-id> "dir:<directory-id>:<rev>:src/main.odin"
 ```
 
@@ -148,86 +149,12 @@ A user-stopped, terminated, or failed fleet instance prevents an automatic repla
 
 ## 9. Requirements changed while you work or review
 
-On a requirement-change notice, refresh with `lease next` and read the latest `TASK.md`, including the changed goal, acceptance and revision. Reconcile your work and checks with the amendment, then acknowledge exactly the revision and lease you read:
-
-```bash
-./bin/ham-ctl lease heartbeat --lease <lease-id> --acknowledge-requirements-revision <n>
-```
-
-Only the holder may acknowledge its lease; an ordinary heartbeat or comment is not acknowledgement. If requirements change again, reread and acknowledge the newer revision. Submit binds the current lease/revision; a stale or unread revision must be reconciled before submission. Report scope decisions and any changed verification in task comments and the handoff.
+On a requirement-change notice, refresh with `lease next`, read the latest `TASK.md`, reconcile your work and checks, and acknowledge the exact revision on your own lease: see `chain-events-and-claims` "Requirement revisions: acknowledging on your own claim". Report scope decisions and any changed verification in task comments and the handoff.
 
 For review, inspect the submitted requirements revision, attempt and commit. If a change requires a checkpoint, hand off the review rather than approving stale work. After worker rework, assess the new submission; do not reuse an obsolete verdict.
 
 If the change substantially replaces the objective, deliverable or approach, ask the coordinator to record the decision on the original and create a linked replacement. Preserve completed work and checkpoint/handoff context; do not silently repurpose your task.
 
-## Durable claims, cancellation and transfer
+## Events, claims, transfer and cancel
 
-Claims do not expire or require renewal. Active ownership permits execution;
-waiting ownership retains task, role and owner through review and blocking.
-Submission and verdicts retain responsibility until completion or explicit release.
-
-```bash
-ham-ctl lease <task-id>
-ham-ctl lease <task-id> --instance <instance-id>
-ham-ctl lease transfer <task-id> --instance <instance-id>
-ham-ctl task cancel <task-id>
-```
-
-- A plain claim requests work for the calling instance. Its durable agent ID must
-  match the assignee or an eligible reviewer; the server derives the role from
-  current task state. Repeating a claim returns existing responsibility.
-- A coordinator can name an eligible instance, including itself when its own
-  durable identity matches. Context goes to that instance; assigning another
-  instance does not overwrite the coordinator's task context.
-- Claims do not silently replace another holder. Use explicit transfer. The old
-  writer is fenced immediately; replacement execution waits for the exact process
-  stop receipt. Offline cleanup remains `stop_pending`.
-- Any agent instance of the task's owner may cancel it; chain membership or the
-  coordinator role is not required (cross-owner tasks are refused).
-- Cancellation preserves history and revokes work/review ownership. It can finish
-  while process cleanup is pending; late callbacks cannot revive the task.
-- No prior inspection or manual generation/request ID is needed. The CLI supplies
-  request identity and a default audit reason. Use `--reason` to explain intent;
-  optional explicit request IDs and generation checks serve advanced callers.
-- Existing `task hold`, `task release`, `task unblock` and `task recheck` retain
-  their established meanings. `task release` clears a hold.
-- `lease next` refreshes current responsibility. Stay with a waiting task rather
-  than pulling unrelated work. `lease heartbeat` only reports progress or
-  acknowledges requirements; it does not renew ownership.
-
-## Event inbox and migration notices
-
-On an `[events]` nudge, pull the durable inbox:
-
-```bash
-./bin/ham-ctl events next --limit 20
-# After handling each returned event:
-./bin/ham-ctl events ack <event_id...>
-```
-
-Process events within your current role and task scope. Fetch current task/chain
-state before acting; envelopes contain IDs and enums, not instructions or message
-bodies. Deduplicate by `event_id`: delivery is at least once, and unacked events
-return after five minutes (up to ten attempts). Acknowledge only after handling
-or recording the required follow-up durably. A resolved notice closes an earlier
-request; do not repeat the resolved action. Drain further batches as needed;
-`events next --wait 30s` is available when waiting for work.
-
-Coordinators handle review requests, human blocks, merge conflicts and finished
-batches using the existing task controls and required user gates. Workers refresh
-with `lease next`, read `TASK.md`, reconcile requirements, and acknowledge the
-exact requirements revision with `lease heartbeat --lease <lease-id>
---acknowledge-requirements-revision <n>`. Event acknowledgement does not acknowledge
-requirements. Only work leases subscribe to requirements-change events.
-Reviewers learn about mid-review changes from the `[taskv2]` checkpoint nudge
-(which remains enabled regardless of the legacy-notice flag) and `lease next`.
-Reviewers refresh their pack and checkpoint with `lease handoff` rather than
-posting a stale verdict.
-
-During migration, existing `[taskv2]` notices remain enabled. Handle them with
-their existing instructions, and deduplicate follow-up against inbox events using
-current task state. Other taskv2 triggers still use that path. The hub flag
-`--legacy-event-notices true|false` defaults to true and controls only catalog
-triggers #3/#4/#5/#7/#8; leave it on until staging parity is approved.
-
-Catalog events use v2: `entity.kind` and `entity.id` identify the entity; task events carry the parent in `data.chain_id`. There are no top-level `chain_id` or `task_id` fields.
+On an `[events]` nudge (`events next` / `events ack`), or to claim, transfer or cancel a task, load `chain-events-and-claims`: "Event inbox and migration notices" and "Durable claims, cancellation and transfer". In solo mode the coordinator side of event handling is in `coordinator-task-management` §5.

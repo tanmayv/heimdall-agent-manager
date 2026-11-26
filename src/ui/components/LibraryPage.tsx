@@ -10,7 +10,7 @@ import { useListProjectsQuery } from '../api/endpoints/projects';
 import { selectIsVaultUnlocked, selectActiveVaultKey } from '../store/vaultSlice';
 import { decryptProjectList } from '../utils/vaultProjects';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
-import ArtifactViewer from './ArtifactViewer';
+import { openArtifactPage } from '../utils/artifactPage';
 import { VaultText } from './vault/VaultText';
 import { isVaultArmored, getActiveVaultKey } from '../utils/vaultContent.ts';
 
@@ -104,7 +104,6 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
   const [agentFilter, setAgentFilter] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [chainFilter, setChainFilter] = useState('');
-  const [activeArtifactId, setActiveArtifactId] = useState('');
   const [renamingId, setRenamingId] = useState('');
   const [renameName, setRenameName] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState('');
@@ -192,7 +191,6 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
     try {
       await deleteArtifact({ artifactId: id, ...artifactRequestAuth }).unwrap();
       setDeleteConfirmId('');
-      if (activeArtifactId === id) setActiveArtifactId('');
     } catch {
       // ignore
     }
@@ -269,7 +267,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
               const id = artifactId(a);
               return (
                 <div key={id} data-debug-id={`library-card-${id}`} className="group relative overflow-hidden rounded-2xl border border-subtle bg-surface p-3 transition hover:border-strong hover:bg-surface-raised">
-                  <button type="button" data-debug-id={`library-card-open-${id}`} onClick={() => setActiveArtifactId(id)} className="block w-full text-left">
+                  <button type="button" data-debug-id={`library-card-open-${id}`} onClick={() => openArtifactPage(id)} className="block w-full text-left">
                     <div className="mb-2 flex h-24 items-center justify-center overflow-hidden rounded-xl bg-surface-raised">
                       {isImage(a) ? (
                         <ArtifactThumbnail artifactId={id} session={session} alt={a?.name || id} />
@@ -324,7 +322,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
               const project = projectsList.find((p: any) => (p.project_id || p.id) === projectId(a));
               return (
                 <div key={id} data-debug-id={`library-row-${id}`} className="grid grid-cols-[1fr_5rem_5rem_6rem_7rem_3rem] items-center gap-2 border-b border-subtle px-3 py-2 text-sm hover:bg-surface-raised">
-                  <button type="button" data-debug-id={`library-row-open-${id}`} onClick={() => setActiveArtifactId(id)} className="flex min-w-0 items-center gap-2 text-left">
+                  <button type="button" data-debug-id={`library-row-open-${id}`} onClick={() => openArtifactPage(id)} className="flex min-w-0 items-center gap-2 text-left">
                     {isImage(a) ? (
                       <span className="h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-subtle bg-surface-raised">
                         <ArtifactThumbnail artifactId={id} session={session} alt={a?.name || id} />
@@ -351,15 +349,6 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
         )}
       </div>
 
-      {/* Fullscreen viewer */}
-      {activeArtifactId && clientToken ? (
-        // Hub-only: the artifact endpoints resolve clientToken==='v1' (and
-        // Electron/browser-ambient) to the /api/v1 cookie path, so an empty
-        // daemonUrl is expected and correct. Gating the viewer on daemonUrl
-        // (always '' on the hub) silently no-oped opening — so it's dropped.
-        // Mirrors AppShell's /library/artifacts route mount.
-        <ArtifactViewer artifactId={activeArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setActiveArtifactId('')} />
-      ) : null}
     </div>
   );
 }

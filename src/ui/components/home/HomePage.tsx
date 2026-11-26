@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Button, ButtonLink, Icon, Menu, Text } from '@ui';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Button, ButtonLink, Drawer, Icon, Menu, Text } from '@ui';
 import NewConversationPage from '../chat/NewConversationPage';
 import { useAuthUser } from '../auth/AuthUserContext';
 import type { LauncherIntent } from '../../store/workspaceLayoutSlice';
@@ -7,6 +7,7 @@ import ActivityWidget from './ActivityWidget';
 import TaskChainsWidget from './TaskChainsWidget';
 import UptimeWidget from './UptimeWidget';
 import FleetWidget from './FleetWidget';
+import { getRouteSearch } from '../../utils/appLocation';
 import { HOME_WIDGETS, visibleHomeWidgets, moveHomeWidget, packHomeRows, setWidgetHidden, type HomeLayoutAdapter, type HomeWidgetId } from './homeLayout';
 import { useHomeLayout } from './useHomeLayout';
 import { WidgetLayoutContext } from './WidgetLayoutChrome';
@@ -55,24 +56,55 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
   const [target, setTarget] = useState<HomeWidgetId | null>(null);
   const dragSource = useRef<HomeWidgetId | null>(null);
   const [announcement, announce] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
+  const addTriggerRef = useRef<HTMLButtonElement>(null);
+  const reorderFocus = useRef<HTMLButtonElement | null>(null);
   const definitions = HOME_WIDGETS.filter((item) => !mobile || item.id !== 'activity');
-  const visible = visibleHomeWidgets(layout, mobile);
+  // Recovery links must work even when Fleet was removed from the saved layout.
+  // Reveal it for this route without rewriting the user's layout preference.
+  const requestedFleet = new URLSearchParams(getRouteSearch()).get('widget') === 'fleet';
+  const visible = visibleHomeWidgets(requestedFleet ? setWidgetHidden(layout, 'fleet', false) : layout, mobile);
   const hidden = definitions.filter((definition) => layout.widgets.find((item) => item.id === definition.id)?.hidden);
   const endDrag = () => { dragSource.current = null; setDragging(null); setTarget(null); };
-  useEffect(() => { endDrag(); }, [editing, mobile]);
+  useEffect(() => { endDrag(); setAddOpen(false); }, [editing, mobile]);
+  useEffect(() => {
+    if (!addOpen || !mobile) return;
+    const button = addTriggerRef.current;
+    return () => queueMicrotask(() => {
+      if (!button?.isConnected) document.querySelector<HTMLButtonElement>('[data-debug-id="home-layout-edit"]')?.focus({ preventScroll: true });
+    });
+  }, [addOpen, mobile]);
+  useLayoutEffect(() => {
+    const button = reorderFocus.current;
+    reorderFocus.current = null;
+    if (!button?.isConnected) return;
+    // The last step disables the activated arrow. Keep focus on its enabled sibling.
+    const next = button.disabled ? button.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)') : button;
+    next?.focus({ preventScroll: true });
+  }, [layout]);
   const move = (id: HomeWidgetId, to: HomeWidgetId) => {
+    if (mobile && document.activeElement?.tagName === 'BUTTON') reorderFocus.current = document.activeElement as HTMLButtonElement;
     edit((value) => moveHomeWidget(value, id, to, mobile));
-    announce(`${HOME_WIDGETS.find((item) => item.id === id)!.name} moved.`);
+    announce(`${HOME_WIDGETS.find((item) => item.id === id)!.name} moved to position ${visible.findIndex((item) => item.id === to) + 1} of ${visible.length}.`);
   };
-  const addMenu = <Menu align="end" label="Home widgets" className="home-layout-menu home-add-menu" trigger={
-    <Button variant="ghost" leading={<Icon name="grid" size="sm" />} data-debug-id="home-layout-add-menu">Add widget</Button>
-  }>
-    {definitions.map((item) => <Menu.CheckboxItem key={item.id} checked={!layout.widgets.find((widget) => widget.id === item.id)?.hidden}
+  const addRows = definitions.map((item) => <Menu.CheckboxItem key={item.id} keepOpen={mobile} checked={!layout.widgets.find((widget) => widget.id === item.id)?.hidden}
       description={item.description} data-debug-id={`home-layout-toggle-${item.id}`}
       onClick={() => edit((value) => setWidgetHidden(value, item.id, !value.widgets.find((widget) => widget.id === item.id)!.hidden))}>
       {item.name}
-    </Menu.CheckboxItem>)}
-  </Menu>;
+    </Menu.CheckboxItem>);
+  const addTrigger = <Button ref={addTriggerRef} variant="ghost" leading={<Icon name="grid" size="sm" />} data-debug-id="home-layout-add-menu"
+    aria-haspopup={mobile ? 'dialog' : 'menu'} aria-expanded={addOpen} onClick={() => setAddOpen((value) => !value)}>Add widget</Button>;
+  const addMenu = mobile ? <>
+    {addTrigger}
+    <Drawer open={addOpen} onOpenChange={setAddOpen} side="bottom" variant="sheet" title="Home widgets"
+      hideHeader aria-label="Home widgets" autoFocus={false} returnFocusRef={addTriggerRef} data-debug-id="home-layout-add-sheet">
+      <Menu.Panel key={String(addOpen)} label="Home widgets" onClose={() => setAddOpen(false)} variant="sheet" autoFocus={addOpen}
+        data-debug-id="home-layout-add-options" className="home-add-sheet-options px-2 pb-4 pt-1">
+        {addRows}
+      </Menu.Panel>
+    </Drawer>
+  </> : <Menu align="end" label="Home widgets" open={addOpen} onOpenChange={setAddOpen}
+    className="home-layout-menu home-add-menu" trigger={addTrigger}>{addRows}</Menu>;
   const packed = packHomeRows<{ id: HomeWidgetId | 'add'; width: 1 | 2 }>([
     ...visible, ...(editing ? [{ id: 'add' as const, width: 1 as const }] : []),
   ]);

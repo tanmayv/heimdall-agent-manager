@@ -404,6 +404,23 @@ Upon receiving the bootstrap response, the Bridge unpacks the payload directly i
      }
      ```
 
+### 5.4 What the bootstrap frame holds (and what lives in skills)
+
+The always-loaded frames (`src/prompts/bootstrap_agents.md` for every template except the Ninjy bot, `src/prompts/bootstrap_agents_bot.md` for `tmpl_bot`) keep only principles, GATE rules and one trigger line ("Before X, load `<skill>`") per moved procedure. Command syntax, schemas, step lists and event mechanics live in the owning skill under `src/prompts/skills/`:
+
+| Frame section | Stays always-loaded (GATE/principle) | Procedure owner (skill, heading) |
+|---|---|---|
+| Communicating with the user | `chat read`/`chat send --to user`; terminal output is never delivered (first paragraph is exact-string matched by `src/bridge/acp_config.odin`) | `heimdall-ctl-communication` |
+| Response format, Interactive questions and task review | Markdown rule; approval is the user's explicit verdict, never inferred; task approval needs no action card | `heimdall-ctl-communication` "4. Asking questions", `action-cards` |
+| Coordinator block | task before work, plan first with `--require-user-approval`, `agt_` ids, batch is not chain completion | `coordinator-task-management` |
+| Worker / reviewer blocks | leased-task scope, outside-request rule, `409 lease_lost` stop; reviewer judgement rules | `worker-task-management` |
+| Running shell commands | use `ham-ctl shell run` with `--cwd`; Bash only for trivial one-liners; `shell` is user only | `shell-sessions` |
+| Confidence (all roles) | shared High/Medium/Low rule | none (frame only) |
+| Skills | name list, and "read `<skills dir>/<name>/SKILL.md` directly if the harness has no skill tool" (provider skill loading is unverified outside Claude) | n/a |
+| Event inbox and migration notices | events carry IDs and enums, never instructions or bodies | `chain-events-and-claims` |
+
+Templates may point at frame headings (for example "Event inbox and migration notices"), so rename a frame heading only together with every pointer. Role blocks render by chain role, not by template: a pointer from a template into a `{{#is_*}}` block is not allowed. Rendered always-loaded bytes are pinned by the goldens in `tests/hub_bootstrap_golden_test/golden_bt5/`.
+
 ---
 
 ## 6. Comprehensive Verification and Reference Guide

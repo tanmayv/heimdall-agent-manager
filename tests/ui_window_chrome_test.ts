@@ -182,9 +182,10 @@ test('top-left cluster clears the traffic lights and gate screens get a drag sur
   const authGate = appShellSource.slice(appShellSource.indexOf('function AuthGate()'), appShellSource.indexOf('function AuthStatusScreen'));
   assert.match(authGate, /useWindowChrome\(\)/);
   assert.match(authGate, /return <>\{gateDragStrip\}\{screen\}<\/>/);
-  // Standalone pages: /setup (first-run wizard), /device/add and /device/providers.
-  assert.equal(appShellSource.match(/className="window-gate-pad fixed inset-x-0 top-0/g)?.length, 3);
+  // Focused pages need the inset so their controls clear the native window controls.
+  assert.equal(appShellSource.match(/className="window-gate-pad fixed inset-x-0 top-0/g)?.length, 4);
   assert.match(appShellSource, /data-debug-id="setup-standalone-page"\s+className="window-gate-pad fixed inset-x-0 top-0 /);
+  assert.match(appShellSource, /data-debug-id="artifact-standalone-page"\s+className="window-gate-pad fixed inset-x-0 top-0 /);
 });
 
 test('Windows right inset follows valid overlay geometry, protects missing data and vanishes in fullscreen', () => {

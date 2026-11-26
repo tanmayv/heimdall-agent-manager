@@ -50,10 +50,10 @@ export interface UptimeBridge {
   id: string; label: string; online: boolean; uptimePercent: number; connectedFor: string; incidents: number; days: UptimeDay[];
 }
 export interface UptimeData { connected: number; total: number; uptimePercent: number; bridges: UptimeBridge[] }
-export interface FleetOverride { id: string; agent: string; provider: string; model: string }
-export interface FleetBridge { id: string; label: string; os: string; agents: number; online: boolean; provider: string; model: string; overrides: FleetOverride[]; availableAgents?: { agent_id: string; name: string }[] }
+export interface FleetOverride { id: string; agent: string; provider: string; provider_profile?: string; model: string }
+export interface FleetBridge { id: string; label: string; os: string; agents: number; online: boolean; provider: string; provider_profile?: string; model: string; overrides: FleetOverride[]; availableAgents?: { agent_id: string; name: string }[]; catalog?: import('../tasks/fleetSelection').FleetProviderCapability[] }
 export function activeWidgetChains(chains: ChainListItem[]): ChainListItem[] {
-  return chains.filter((chain) => ['active', 'running', 'needs_review', 'in_review'].includes(chain.status.toLowerCase()))
+  return chains.filter((chain) => chain.status.toLowerCase() === 'active')
     .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0) || a.chainId.localeCompare(b.chainId));
 }
 export function chainWidgetPage(chains: ChainListItem[], page: number) {
@@ -77,6 +77,7 @@ export interface UptimeWire {
   bridges: { bridge_id: string; label: string; status: string; connected_since: string; uptime_pct: number; incidents: number; days: { date: string; down_s: number; state: UptimeDay['state'] }[] }[];
 }
 export interface FleetWire {
+  providers?: import('../tasks/fleetSelection').FleetProviderCapability[];
   bridges: { bridge_id: string; label: string; machine_os: string; status: string; agent_count: number }[];
   defaults: Record<string, { bridge_id: string; provider: string; model: string; updated_at: string }>;
   overrides: Record<string, { bridge_id: string; agent_id: string; provider: string; model: string; updated_at: string }[]>;
@@ -117,6 +118,7 @@ export function fleetFromWire(data: FleetWire): FleetBridge[] {
   return data.bridges.map((bridge) => ({
     id: bridge.bridge_id, label: bridge.label, os: bridge.machine_os, online: bridge.status === 'online', agents: bridge.agent_count,
     provider: data.defaults[bridge.bridge_id].provider, model: data.defaults[bridge.bridge_id].model,
+    catalog: data.providers,
     availableAgents: data.agents.find((entry) => entry.bridge_id === bridge.bridge_id)?.agents || [],
     overrides: (data.overrides[bridge.bridge_id] || []).map((item) => ({
       id: item.agent_id, agent: data.agents.find((entry) => entry.bridge_id === bridge.bridge_id)?.agents.find((agent) => agent.agent_id === item.agent_id)?.name || 'Agent',

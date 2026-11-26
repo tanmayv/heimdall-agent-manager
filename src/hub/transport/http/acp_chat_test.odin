@@ -12,6 +12,7 @@ import sqlite "odin_test:hub/repository/sqlite"
 import vault "odin_test:lib/vault"
 
 ACP_Chat_Fixture :: struct {
+    delivery_sink: Ad_Sink,
     mq: MQ_HTTP_Fixture,
     repos: iface.Repositories,
     impl: sqlite.SQLite_Unit_Of_Work_Factory,

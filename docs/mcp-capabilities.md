@@ -264,7 +264,7 @@ runtime/startup state, user-stop flag and current task binding. Ordinary heartbe
 timestamps do not invalidate them. This revision differs from the native numeric
 `configuration_revision`, which the move adapter supplies internally.
 
-An active task lease or task binding returns `active_task_lease`. Explicitly hold
+For these individual instance lifecycle tools, an active task lease or task binding returns `active_task_lease`. Explicitly hold
 the task and wait for its native checkpoint/lease handoff before controlling its
 runtime. Lifecycle writes do not silently release or transfer active task work.
 The prepared lifecycle intent and lease check share a transaction. Both automatic
@@ -318,6 +318,49 @@ do not claim exactly-once physical execution across process/network failures.
 Repository integration uses synthetic bridge transports to verify lifecycle,
 cross-provider moves, command ordering, recovery, lease isolation and revocation.
 Physical cross-machine execution remains the separate acceptance task.
+
+### Shared bridge Fleet policy
+
+Home Fleet and the delegated Fleet tools use the same owner-scoped bridge policy
+and durable Apply service. Defaults and overrides keyed by durable `agent_id`
+apply across task chains on that bridge. Placement, staffing and review gates
+remain chain/task controls. See [Fleet contracts](fleet-management.md) for REST,
+CLI, states, errors and scope exclusions.
+
+| Tool | Scope | Arguments |
+| --- | --- | --- |
+| `fleet.read` | `mcp:instances:read` | `bridge_id` |
+| `fleet.apply` | `mcp:instances:control` | `bridge_id`, `request_id`, numeric `expected_revision`, `default_runtime`, complete `overrides` |
+| `fleet.status` | `mcp:instances:read` | `bridge_id`, `application_id` |
+| `fleet.retry` | `mcp:instances:control` | `bridge_id`, `application_id` |
+
+Read returns one complete settings snapshot. Fleet's numeric settings revision
+is distinct from opaque instance/task revisions. Runtime objects contain
+`provider`, optional `provider_profile` and `model`; each override contains
+`agent_id` and `runtime`. Empty `overrides` removes all overrides. Unknown fields
+are rejected. Reuse the identical request ID and complete draft after an
+ambiguous Apply response; changed arguments conflict. Retry continues the
+original application/native keys and skips successful targets.
+
+Explicit launch retry can use fresh command/message IDs while preserving native
+operation/epoch, runtime generation, claim/worktree and review gates. Redelivery
+of the same accepted command is byte-frozen. An acknowledged source stop is
+never repeated by a destination launch retry.
+
+Fleet Apply is explicitly authorized to restart eligible **active-task holders**
+with `mcp:instances:control`; it preserves claim, context/worktree and review
+gates. It does not require a task hold or another capability. It only targets
+changed running task coordinators/workers/reviewers on the selected bridge;
+stopped instances, bots/actions and plain conversations stay outside fan-out.
+Read-only preview is a REST UI seam, not an additional MCP tool.
+
+`settings_saved` and runtime `ready` are separate outcomes. A 202/accepted result
+can still be restarting or partially failed; observe `fleet.status`. Live grant,
+scope, owner/directory binding and cancellation checks fence every new native
+acceptance, including after remote preflight and on recovery. A cancellation
+after settings commit keeps that policy and prevents new target work. Already
+accepted native work continues its existing lifecycle; revocation does not undo
+the settings commit. Recovery stores public grant bindings, never raw tokens.
 
 ## Memories, projects and issues
 
@@ -442,18 +485,24 @@ Outer rollback and failed commit also discard queued engine effects and release
 their launch reservations; a nested savepoint release does not transfer cleanup
 responsibility away from the outer transaction.
 
-To offload work, configure a fleet row with `chains.configure` action `fleet`,
-an owned durable `agent_id`, explicit owned online `bridge_id`, and a provider,
-profile and model supported on that bridge. Then create the task with matching
+To offload work, configure chain staffing with `chains.configure` action `fleet`,
+an owned durable `agent_id` and explicit owned online `bridge_id`. On a bridge
+with shared Fleet policy, omit provider/profile/model and `bridge_models` runtime
+fields: runtime changes through this compatibility surface return
+`fleet_runtime_managed`. Set shared runtime with `fleet.apply`; precedence is
+bridge-agent override, bridge default, then legacy chain selection only until
+that bridge's first Apply, then catalog fallback for missing legacy values.
+Then create the task with matching
 `assignee_agent_id` and `bridge_id`. A draft chain retains draft tasks; publishing
 the chain through action `publish` validates briefs and activates native
 dispatch. Creating on a live chain publishes immediately and can dispatch.
 The native matcher retains its capacity, eligibility, review and lease rules.
-Fleet configuration preserves existing per-bridge selections and writes an
-explicit selection for the chosen bridge. The same durable agent can therefore
-receive bridge-pinned tasks on multiple configured machines. A task targeting a
-bridge without an explicit fleet selection returns
-`placement_configuration_required` rather than inheriting another target.
+Staffing-only configuration preserves existing legacy runtime selections.
+For an unconfigured bridge, legacy explicit provider/profile/model selections
+remain supported and an unconfigured target without a selection can return
+`placement_configuration_required`. A configured bridge instead uses its shared
+policy across chains. The same durable agent can receive bridge-pinned tasks on
+multiple configured machines without copying one bridge's policy to another.
 Disabled agent/bridge support is also respected. Offline, unsupported and foreign targets return
 explicit errors (`bridge_offline`, `provider_unavailable`, `not_found`). An
 archived agent returns `agent_archived`. No alternate target is silently chosen.

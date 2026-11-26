@@ -85,7 +85,7 @@ startup_activation_is_catalog_driven :: proc(t: ^testing.T) {
 	}
 	profile.extension_expected = true
 	out := agent_runtime.render_starter_prompt_for_agent(bridge_agent_runtime_profile(profile), "", "tok", "inst")
-	testing.expect(t, !strings.contains(out, "start-success") && strings.contains(out, "AGENTS.md"), "expectation reaches runtime profile")
+	testing.expect(t, !strings.contains(out, "start-success") && strings.contains(out, "lease next"), "expectation reaches runtime profile")
 }
 
 @(test)
@@ -365,4 +365,12 @@ startup_typed_terminal_rejection_does_not_retry_and_late_stop_does_not_complete 
     key := bridge_startup_receipt_key(rec)
     defer delete(key)
     testing.expect_value(t, bridge_retry_status(key).state, Bridge_Operation_State.Cancelled)
+}
+
+@(test)
+startup_bootstrap_read_kept_only_for_unverified_providers :: proc(t: ^testing.T) {
+	for name in ([]string{"claude", "codex", "copilot", "pi", "kiro", "opencode"}) {
+		testing.expect(t, !bridge_provider_keeps_bootstrap_read(name), name)
+	}
+	testing.expect(t, bridge_provider_keeps_bootstrap_read("antigravity"), "antigravity keeps the bootstrap read")
 }

@@ -943,9 +943,9 @@ test('M3 Fleet Placement: top-level provider/model edit triggers restart confirm
   assert.equal(affected[0].agentId, 'agt_worker');
 });
 
-test('M3 Fleet Placement UI & API contract: FleetManagementDrawer.tsx and taskChains.ts wire roles, bridge_id, provider, model, and delete', () => {
+test('Chain staffing preserves placement and capacity while runtime editors live in Home Fleet', () => {
   const drawerSrc = fs.readFileSync(
-    path.join(REPO_ROOT, 'src/ui/components/tasks/FleetManagementDrawer.tsx'),
+    path.join(REPO_ROOT, 'src/ui/components/tasks/ChainStaffingModal.tsx'),
     'utf8'
   );
   const taskChainsSrc = fs.readFileSync(
@@ -957,29 +957,11 @@ test('M3 Fleet Placement UI & API contract: FleetManagementDrawer.tsx and taskCh
     'utf8'
   );
 
-  // Verify FleetManagementDrawer renders controls for roles, placement bridge, default provider/model, min_warm, idle_ttl, and remove
-  assert.ok(
-    drawerSrc.includes('fleet-role-toggle-'),
-    'FleetManagementDrawer must render role toggle buttons (worker / reviewer)'
-  );
-  assert.ok(
-    drawerSrc.includes('fleet-bridge-select-'),
-    'FleetManagementDrawer must render placement bridge selector'
-  );
-  assert.ok(
-    drawerSrc.includes('fleet-default-provider-select-') &&
-      drawerSrc.includes('fleet-default-model-select-'),
-    'FleetManagementDrawer must render top-level provider and model selectors'
-  );
-  assert.ok(
-    drawerSrc.includes('fleet-min-warm-input-') &&
-      drawerSrc.includes('fleet-idle-ttl-input-'),
-    'FleetManagementDrawer must render min_warm and idle_ttl_seconds inputs'
-  );
-  assert.ok(
-    drawerSrc.includes('fleet-delete-role-btn-'),
-    'FleetManagementDrawer must render a Remove button per fleet role card'
-  );
+  assert.ok(drawerSrc.includes('chain-staffing-bridge-'));
+  assert.ok(drawerSrc.includes('chain-staffing-capacity-') && drawerSrc.includes('chain-staffing-warm-') && drawerSrc.includes('chain-staffing-ttl-'));
+  assert.ok(drawerSrc.includes('chain-staffing-add-worker') && drawerSrc.includes('chain-staffing-pause-'));
+  assert.doesNotMatch(drawerSrc, /provider:|model:|restartLiveInstances/);
+  assert.equal(fs.existsSync(path.join(REPO_ROOT, 'src/ui/components/tasks/FleetManagementDrawer.tsx')), false);
 
   // Verify taskChains.ts normalizes and sends roles and bridge_id, and exposes deleteTaskChainFleet
   assert.ok(
