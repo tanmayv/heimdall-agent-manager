@@ -1070,7 +1070,7 @@ export function reconfigurationSettled(
   if (!previous || !isSettledReconfiguration(next)) return false;
   return previous.operation_id !== next.operation_id || !isSettledReconfiguration(previous);
 }
-function normalizeInstanceReconfiguration(raw: any): InstanceReconfiguration {
+export function normalizeInstanceReconfiguration(raw: any): InstanceReconfiguration {
   // Index order matches the Hub enum (ordinal payloads); waiting_for_idle was appended.
   const phases = ['prepared', 'stopping', 'source_stopped', 'launching', 'ready', 'failed', 'recovery_required', 'waiting_for_idle'];
   const phase = typeof raw?.phase === 'number' ? phases[raw.phase] : String(raw?.phase || '').toLowerCase();

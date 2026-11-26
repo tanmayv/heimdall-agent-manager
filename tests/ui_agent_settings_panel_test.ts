@@ -277,8 +277,11 @@ test('runtime view: restarting while applying, starting or stopping; stopped rea
 });
 
 test('waiting_for_idle reconfigurations are not coerced to recovery_required', async () => {
-  const { default: src } = await import('node:fs').then((fs) => ({ default: fs.readFileSync(new URL('../src/ui/api/endpoints/agents.ts', import.meta.url), 'utf8') }));
-  assert.match(src, /phase === 'waiting_for_idle'\) return \{ \.\.\.raw, phase \}/);
+  const { normalizeInstanceReconfiguration } = await import('../src/ui/api/endpoints/agents.ts');
+  // The hub sends the phase as its enum ordinal (waiting_for_idle was appended: 7) or as a string.
+  assert.equal(normalizeInstanceReconfiguration({ phase: 'waiting_for_idle' }).phase, 'waiting_for_idle');
+  assert.equal(normalizeInstanceReconfiguration({ phase: 7 }).phase, 'waiting_for_idle');
+  assert.equal(normalizeInstanceReconfiguration({ phase: 'bogus' }).phase, 'recovery_required');
 });
 
 // ---------------------------------------------------------------- runtime rendering
