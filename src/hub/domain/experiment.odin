@@ -11,6 +11,10 @@ PROJECT_VCS_EXPERIMENT_KEY :: "project_vcs"
 // Off until the user enables it; existing users are never auto-enabled.
 ACTIONS_EXPERIMENT_KEY :: "actions"
 BOTS_EXPERIMENT_KEY :: "bots"
+// AGENT_SETTINGS_PANEL_EXPERIMENT_KEY swaps the Agent settings modal for the docked
+// Agent settings panel. UI-only: no route is gated on it. Default on; turning it off
+// in Settings -> Experimental falls back to the old modal.
+AGENT_SETTINGS_PANEL_EXPERIMENT_KEY :: "agent_settings_panel"
 
 // EXPERIMENTAL_FEATURE_DISABLED_CODE is error.details.code on the 403 a gated route
 // answers while the owner's flag is off (REQ-EXP-GATE-3). error.code stays "forbidden".
@@ -19,7 +23,7 @@ EXPERIMENTAL_FEATURE_DISABLED_CODE :: "experimental_feature_disabled"
 // EXPERIMENTS_DEFAULT_ON are experiments a user gets when they have never set them.
 // Every other key is off until enabled. A stored row always wins, so turning one of
 // these off in Settings -> Experimental is respected.
-EXPERIMENTS_DEFAULT_ON :: [?]string{STREAMING_TERMINAL_PANE_EXPERIMENT_KEY}
+EXPERIMENTS_DEFAULT_ON :: [?]string{STREAMING_TERMINAL_PANE_EXPERIMENT_KEY, AGENT_SETTINGS_PANEL_EXPERIMENT_KEY}
 
 // experiment_default_enabled is the value of `key` for a user with no stored row.
 experiment_default_enabled :: proc(key: string) -> bool {
@@ -48,6 +52,7 @@ experiment_feature_label :: proc(key: string) -> string {
 	case BOTS_EXPERIMENT_KEY: return "Bots"
 	case ACTIONS_EXPERIMENT_KEY:     return "Actions"
 	case STREAMING_TERMINAL_PANE_EXPERIMENT_KEY: return "Streaming Terminal Pane"
+	case AGENT_SETTINGS_PANEL_EXPERIMENT_KEY: return "Agent settings panel"
 	}
 	return key
 }

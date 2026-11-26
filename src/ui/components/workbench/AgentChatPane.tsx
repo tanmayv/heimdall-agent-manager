@@ -22,6 +22,7 @@ import { writeClientStorageChecked, writeComposerDraftChecked } from '../../util
 import {
   CommandPalette,
   Icon as UiIcon,
+  IconButton as UiIconButton,
   Menu,
   Modal,
   StatusDot,
@@ -121,6 +122,11 @@ import { useSettleWithoutReveal, type StreamRevealOptions } from '../chat/stream
 import InstanceReconfigurationProgress from '../chat/InstanceReconfigurationProgress';
 import { MessageComposerInput, MessageComposerActions, MessageComposerStatus, useComposerDockInset, useComposerExpanded } from '../chat/MessageComposer';
 import RuntimeConfigurationOptions from '../chat/RuntimeConfigurationOptions';
+import { AgentPanelSection, AgentSettingsPanel } from '../agentSettings/AgentSettingsPanel';
+import { RuntimeSection, runtimeSectionView } from '../agentSettings/RuntimeSection';
+import { useAgentSettingsPanelState } from '../agentSettings/useAgentSettingsPanelState';
+import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
+import { AGENT_SETTINGS_PANEL_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
 import { usePaneDeferredRefresh, usePaneMarkRead, usePanePollPolicy, usePaneVisible, visiblePollInterval } from './paneVisibility';
 import {
   CONVERSATION_MESSAGES_READ_EVENT,
@@ -950,8 +956,29 @@ export function AgentChatPane({
   const [providerProfile, setProviderProfile] = useState('');
   const [model, setModel] = useState('');
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  // Agent settings: the docked panel (agent_settings_panel experiment, default on) or,
+  // with the experiment off or not loaded yet, the previous modal.
+  const experimentsQuery = useFetchExperimentsQuery();
+  const settingsPanelEnabled =
+    !isAuxSubagent &&
+    resolveExperimentFlag(experimentsQuery.data?.flags, AGENT_SETTINGS_PANEL_EXPERIMENT_KEY) === 'enabled';
+  const settingsPanel = useAgentSettingsPanelState({ enabled: settingsPanelEnabled });
+  const openAgentSettings = () => {
+    if (settingsPanelEnabled) settingsPanel.setOpen(true);
+    else setRuntimeMenuOpen(true);
+  };
+  // The Runtime card's uptime ticks while the panel is open.
+  const [panelNow, setPanelNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!settingsPanel.open) return;
+    setPanelNow(Date.now());
+    const timer = setInterval(() => setPanelNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [settingsPanel.open]);
+  // Either settings surface is open: provider status is fetched live only then.
+  const settingsOpen = runtimeMenuOpen || settingsPanel.open;
   const editingRuntime =
-    runtimeMenuOpen ||
+    settingsOpen ||
     stagedBridgeId !== null ||
     Boolean(provider && provider !== instanceProvider) ||
     Boolean(providerProfile && providerProfile !== (instance?.provider_profile || instanceProvider)) ||
@@ -1253,6 +1280,11 @@ export function AgentChatPane({
   }, [chainDetailQuery.data, chainId]);
 
   const chainAgentOptions = chainAgentGroups[0]?.conversations || [];
+  // "<agent> #<n>" as the breadcrumb and the Agent settings subtitle show it.
+  const agentBreadcrumbLabel =
+    chainAgentGroups[0]?.conversations.find((member) => member.agentInstanceId === agentInstanceId)?.title ||
+    agentDisplayName ||
+    agentId;
   const canOpenChainAgentSwitcher = (
     variant === 'main'
     && isFocusedPane
@@ -1564,7 +1596,7 @@ export function AgentChatPane({
   // while the settings panel is open).
   const instanceProvidersQuery = useListBridgeProvidersQuery(
     { bridgeId: instanceBridgeId },
-    { skip: !instanceBridgeId || !runtimeMenuOpen },
+    { skip: !instanceBridgeId || !settingsOpen },
   );
   const instanceCatalogExtension = useMemo(
     () =>
@@ -2385,6 +2417,13 @@ export function AgentChatPane({
     if (result.status === 'accepted') setReconfigStatus('Force stop requested. Waiting for confirmed termination…');
   }
 
+  async function restartRuntime() {
+    if (!agentId || !agentInstanceId || runtimeActionBusy || needsStart) return;
+    setReconfigStatus('Restarting…');
+    const result = await lifecycle.restart({ agentId, instanceId: agentInstanceId });
+    if (result.status === 'accepted') setReconfigStatus('');
+  }
+
   function resetRuntimeConfiguration() {
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
@@ -2416,57 +2455,61 @@ export function AgentChatPane({
       runtimeActionBusy || operationBlocksInput || isStarting || runtimeStopping || !agentInstanceId,
     pendingChanges: pendingReconfig,
   });
-  const runtimeControls = (
-    <div data-debug-id="conversation-runtime-controls" className="text-left">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle p-3">
-        <span className="inline-flex items-center gap-2 text-sm text-primary">
-          <StatusDot
-            size="sm"
-            tone={runtimeStatusToTone(runtimeStatus)}
-            label={needsStart ? 'Stopped' : 'Running'}
-          />
-          {needsStart
-            ? 'Stopped'
-            : runtimeStopping
-            ? 'Stopping…'
-            : isStarting
-            ? 'Starting…'
-            : 'Running'}
-        </span>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            data-debug-id="conversation-runtime-modal-toggle-btn"
-            disabled={
-              !agentInstanceId ||
-              runtimeActionBusy ||
-              runtimeStopping ||
-              operationBlocksInput ||
-              (needsStart && conversationReadOnly)
-            }
-            onClick={() => void toggleRuntime()}
-            className="min-h-11 rounded-xl border border-subtle px-3 text-sm text-primary disabled:opacity-40"
-          >
-            {needsStart ? 'Start agent' : 'Stop agent'}
-          </button>
-          <button
-            type="button"
-            data-debug-id="conversation-runtime-force-stop-btn"
-            disabled={
-              !agentInstanceId ||
-              (needsStart && !operationBlocksInput) ||
-              lifecycle.isPending('stop') ||
-              lifecycle.isPending('reconfigure') ||
-              lifecycle.isPending('retry') ||
-              instanceBridge?.runtime_connected !== true
-            }
-            onClick={() => void forceStopRuntime()}
-            className="min-h-11 rounded-xl border border-danger/30 px-3 text-sm text-danger disabled:opacity-40"
-          >
-            Force stop
-          </button>
-        </div>
+  const runtimeStatusCard = (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle p-3">
+      <span className="inline-flex items-center gap-2 text-sm text-primary">
+        <StatusDot
+          size="sm"
+          tone={runtimeStatusToTone(runtimeStatus)}
+          label={needsStart ? 'Stopped' : 'Running'}
+        />
+        {needsStart
+          ? 'Stopped'
+          : runtimeStopping
+          ? 'Stopping…'
+          : isStarting
+          ? 'Starting…'
+          : 'Running'}
+      </span>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          data-debug-id="conversation-runtime-modal-toggle-btn"
+          disabled={
+            !agentInstanceId ||
+            runtimeActionBusy ||
+            runtimeStopping ||
+            operationBlocksInput ||
+            (needsStart && conversationReadOnly)
+          }
+          onClick={() => void toggleRuntime()}
+          className="min-h-11 rounded-xl border border-subtle px-3 text-sm text-primary disabled:opacity-40"
+        >
+          {needsStart ? 'Start agent' : 'Stop agent'}
+        </button>
+        <button
+          type="button"
+          data-debug-id="conversation-runtime-force-stop-btn"
+          disabled={
+            !agentInstanceId ||
+            (needsStart && !operationBlocksInput) ||
+            lifecycle.isPending('stop') ||
+            lifecycle.isPending('reconfigure') ||
+            lifecycle.isPending('retry') ||
+            instanceBridge?.runtime_connected !== true
+          }
+          onClick={() => void forceStopRuntime()}
+          className="min-h-11 rounded-xl border border-danger/30 px-3 text-sm text-danger disabled:opacity-40"
+        >
+          Force stop
+        </button>
       </div>
+    </div>
+  );
+  // Bypass, project and bridge/provider/model pickers: the old modal's body, also the
+  // panel's interim configuration slot until T6 lands sections 2-5.
+  const runtimeConfigControls = (
+    <>
       {permissionToggle.visible ? (
         <div
           data-debug-id="conversation-permission-toggle"
@@ -2553,7 +2596,8 @@ export function AgentChatPane({
           ))}
         </ul>
       ) : null}
-      {reconfigStatus ? (
+      {/* In the panel the Runtime card shows this message. */}
+      {reconfigStatus && !settingsPanel.open ? (
         <div
           data-debug-id="conversation-reconfigure-status"
           className="px-2 pt-1 text-caption text-muted"
@@ -2561,6 +2605,60 @@ export function AgentChatPane({
           {reconfigStatus}
         </div>
       ) : null}
+    </>
+  );
+  const runtimeSection = settingsPanel.open ? (
+    <RuntimeSection
+      view={runtimeSectionView({
+        runtimeStatus,
+        startupStatus,
+        activityStatus,
+        startedAt: String(instance?.started_at || instance?.startedAt || ''),
+        stopReason: String(instance?.stop_reason || ''),
+        operations: operationQuery.data?.operations,
+        operationInFlight,
+        restartPending: lifecycle.isPending('restart'),
+        now: panelNow,
+      })}
+      bridgeLabel={bridgeLabel}
+      provider={instanceProvider}
+      model={instanceModel}
+      transport={instance?.runtime_transport === 'acp' ? 'acp' : 'pty'}
+      folder={String(instance?.project_path || '')}
+      agentLabel={agentBreadcrumbLabel}
+      touch={settingsPanel.mode === 'page'}
+      actionsDisabled={
+        !agentInstanceId ||
+        runtimeActionBusy ||
+        runtimeStopping ||
+        operationBlocksInput ||
+        (needsStart && conversationReadOnly)
+      }
+      forceStopDisabled={
+        !agentInstanceId ||
+        (needsStart && !operationBlocksInput) ||
+        lifecycle.isPending('stop') ||
+        lifecycle.isPending('reconfigure') ||
+        lifecycle.isPending('retry') ||
+        instanceBridge?.runtime_connected !== true
+      }
+      pendingAction={
+        lifecycle.isPending('restart') ? 'restart'
+          : lifecycle.isPending('start') ? 'start'
+            : lifecycle.isPending('stop') ? 'stop'
+              : null
+      }
+      statusMessage={reconfigStatus}
+      onStart={() => void toggleRuntime()}
+      onStop={() => void toggleRuntime()}
+      onRestart={() => void restartRuntime()}
+      onForceStop={() => void forceStopRuntime()}
+    />
+  ) : null;
+  const runtimeControls = (
+    <div data-debug-id="conversation-runtime-controls" className="text-left">
+      {runtimeStatusCard}
+      {runtimeConfigControls}
     </div>
   );
 
@@ -2643,7 +2741,7 @@ export function AgentChatPane({
       compactModel: isSmallComposer,
       provider: activeProvider,
       model: instanceModel,
-      onSettings: () => setRuntimeMenuOpen(true),
+      onSettings: openAgentSettings,
       onUpload: openAttachmentPicker,
       uploadDisabled: normalSendBusy || (trayModeItem ? false : configurationInputBlocked),
       onRecord: () => { if (!desktopUpdateFrozen()) void voice.recorder.start(); },
@@ -2884,7 +2982,7 @@ export function AgentChatPane({
                 <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => setRuntimeMenuOpen(true)}
+                    onClick={openAgentSettings}
                     aria-haspopup="dialog"
                     aria-label="Change bridge, provider or model"
                     data-debug-id="conversation-composer-bridge-chip"
@@ -3075,8 +3173,13 @@ export function AgentChatPane({
   return (
     <div
       data-debug-id={`workbench-agent-chat-pane-${agentInstanceId}`}
-      className="relative flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas text-left"
+      className="relative flex h-full w-full min-h-0 min-w-0 flex-1 flex-row overflow-hidden bg-canvas text-left"
     >
+      {/* Conversation column; the Agent settings panel is its flex sibling. */}
+      <div
+        data-debug-id="conversation-thread-column"
+        className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+      >
       {/* Scoped top bar in Chat Pane (absent in an aux sub-agent tab: transcript + composer only) */}
       {!isAuxSubagent ? (
       <header
@@ -3215,16 +3318,7 @@ export function AgentChatPane({
                   />
                 ) : null}
                 <span className="truncate">
-                  <VaultText
-                    value={
-                      chainAgentGroups[0]?.conversations.find(
-                        (member) => member.agentInstanceId === agentInstanceId,
-                      )?.title ||
-                      agentDisplayName ||
-                      agentId
-                    }
-                    fallback="Agent"
-                  />
+                  <VaultText value={agentBreadcrumbLabel} fallback="Agent" />
                 </span>
                 <Icon name="chevron-down" size={13} className="shrink-0 text-muted" />
               </button>
@@ -3254,6 +3348,18 @@ export function AgentChatPane({
           ) : null}
 
           {headerTrailing}
+          {settingsPanelEnabled ? (
+            <UiIconButton
+              ref={settingsPanel.gearRef}
+              icon="gear"
+              label="Agent settings"
+              variant={settingsPanel.open ? 'solid' : 'ghost'}
+              size={isMobile ? 'md' : 'sm'}
+              aria-expanded={settingsPanel.open}
+              data-debug-id="conversation-agent-settings-btn"
+              onClick={settingsPanel.toggle}
+            />
+          ) : null}
           <Menu
             align="end"
             label="Conversation options"
@@ -3290,7 +3396,7 @@ export function AgentChatPane({
               data-debug-id="conversation-thread-settings-action"
               onClick={() => {
                 setHeaderActionsOpen(false);
-                setRuntimeMenuOpen(true);
+                openAgentSettings();
               }}
             >
               <Icon name="gear" size={15} />
@@ -3553,6 +3659,49 @@ export function AgentChatPane({
           )}
         </FloatingComposerDock>
       </div>
+      </div>
+
+      <AgentSettingsPanel
+        state={settingsPanel}
+        agentLabel={<VaultText value={agentBreadcrumbLabel} fallback="Agent" />}
+        projectLabel={projectId ? <VaultText value={projectName} fallback="Project" /> : undefined}
+        runtime={runtimeSection}
+      >
+        {/* T6 slot: Runs on · Model · Connection · Permissions (agent-panel-bridge,
+            -model, -connection, -permissions). Until T6 lands, the previous modal's
+            configuration controls keep these settings reachable. */}
+        <AgentPanelSection id="configuration" label="Configuration">
+          <div className="rounded-[12px] border border-subtle bg-surface-raised p-4 text-left">
+            {runtimeConfigControls}
+            {/* T7 slot: the staged-changes footer (agent-panel-apply) replaces these buttons. */}
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                data-debug-id="agent-panel-legacy-reset-btn"
+                disabled={!pendingReconfig || runtimeActionBusy || operationBlocksInput}
+                onClick={resetRuntimeConfiguration}
+                className="min-h-11 rounded-xl border border-subtle px-4 py-2 text-sm text-primary disabled:opacity-40"
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                data-debug-id="agent-panel-legacy-apply-btn"
+                disabled={
+                  !pendingReconfig ||
+                  runtimeActionBusy ||
+                  (operation?.phase !== 'recovery_required' && (isStarting || runtimeStopping)) ||
+                  stagedConfigurationIssues.length > 0
+                }
+                onClick={() => void applyReconfigure()}
+                className="min-h-11 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg disabled:opacity-40"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </AgentPanelSection>
+      </AgentSettingsPanel>
 
       <Modal
         open={runtimeMenuOpen}

@@ -16,6 +16,8 @@ export type {
 export {
   useViewport,
   useIsMobile,
+  useViewportWidth,
+  DOCK_MIN,
   MOBILE_MAX,
   TABLET_MAX,
   TOUCH_TARGET_CLASS,

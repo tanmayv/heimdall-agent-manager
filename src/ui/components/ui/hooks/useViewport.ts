@@ -16,11 +16,15 @@
  * working unchanged and there is still exactly one implementation.
  *
  * Breakpoints (arch doc §6D): <768px mobile, 768–1024px tablet, >1024px desktop.
+ * `DOCK_MIN` (1280px) is the narrowest viewport where a side panel docks beside the
+ * main content instead of overlaying it as a drawer (the Agent settings panel).
  */
 import { useEffect, useState } from 'react';
 
 export const MOBILE_MAX = 767;
 export const TABLET_MAX = 1023;
+/** Narrowest viewport (px) where a side panel docks; below it the panel is a drawer. */
+export const DOCK_MIN = 1280;
 
 export type Viewport = 'mobile' | 'tablet' | 'desktop';
 
@@ -41,6 +45,19 @@ export function useViewport(): Viewport {
     return () => window.removeEventListener('resize', update);
   }, []);
   return viewport;
+}
+
+/** The current `window.innerWidth`, updated on resize (1440 outside a browser). */
+export function useViewportWidth(): number {
+  const read = () => (typeof window === 'undefined' ? 1440 : window.innerWidth);
+  const [width, setWidth] = useState<number>(read);
+  useEffect(() => {
+    const update = () => setWidth(read());
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  return width;
 }
 
 export function useIsMobile(): boolean {
