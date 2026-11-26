@@ -330,8 +330,12 @@ test_durable_delivery :: proc(t: ^testing.T) {
 	// Leave it unacked; ack_wait must redeliver, independently of nak.
 	batch_destroy(batch)
 	time.sleep(180 * time.Millisecond)
+	redelivery_started := time.tick_now()
 	batch, err = fetch(pull, 1, 1000)
-	if !testing.expect(t, err.status == 0) do return
+	redelivery_elapsed_ns := i64(time.tick_since(redelivery_started))
+	if !testing.expectf(t, err.status == 0,
+		"ack-wait redelivery: status=%d jetstream=%d error=%s elapsed_ns=%d",
+		err.status, err.jetstream, error_text(err), redelivery_elapsed_ns) do return
 	msg = batch_message(batch, 0)
 	m3: Metadata
 	m3, err = message_metadata(msg)
@@ -635,8 +639,18 @@ feature_destroy :: proc(f: ^Feature_Fixture) {
 	pull_destroy(f.pull); destroy(f.conn); server.destroy(&f.srv)
 }
 feature_publish :: proc(t: ^testing.T, f: ^Feature_Fixture, subject: string, headers: []Header = nil) -> Pub_Ack {
+	started := time.tick_now()
 	a, err := publish(f.conn, subject, test_bytes("payload"), "", headers)
-	testing.expectf(t, err.status == 0, "feature publish %s: %v", subject, err)
+	elapsed_ns := i64(time.tick_since(started))
+	pattern := ""
+	if err.status != 0 {
+		for header in headers {
+			if header.key == "Nats-Schedule" {pattern = header.value; break}
+		}
+	}
+	testing.expectf(t, err.status == 0,
+		"feature publish %s schedule=%q: status=%d jetstream=%d error=%s elapsed_ns=%d",
+		subject, pattern, err.status, err.jetstream, error_text(err), elapsed_ns)
 	return a
 }
 feature_schedule :: proc(t: ^testing.T, f: ^Feature_Fixture, pattern: string, extra: []Header = nil) {
