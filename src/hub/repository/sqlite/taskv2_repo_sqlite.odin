@@ -35,9 +35,17 @@ prepare :: proc(impl: ^Taskchain_Repo_SQLite, query: string, what: string) -> (s
 
 // ---- chains / tasks (v2 queries) -------------------------------------------
 
+// The chains the engine sweeps (boot recovery, bridge reconnect, placement).
+// A chain the owner legacy source export froze or imported is not live on this
+// hub and its rows are read-only (owner_legacy_guard_* triggers), so it is left
+// out: one aborted write would roll back the sweep's whole UoW.
 taskchain_list_published_active_chains_sqlite :: proc(ctx: rawptr) -> ([]domain.Task_Chain, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	stmt, err := prepare(impl, "SELECT " + CHAIN_COLS + " FROM task_chains WHERE publish_state = 'published' AND status = 'active' ORDER BY created_at ASC;", "active chain list")
+	query := "SELECT " + CHAIN_COLS + " FROM task_chains WHERE publish_state = 'published' AND status = 'active' ORDER BY created_at ASC;"
+	if owner_legacy_fences_present(impl.conn) {
+		query = "SELECT " + CHAIN_COLS + " FROM task_chains WHERE publish_state = 'published' AND status = 'active' AND chain_id NOT IN (SELECT chain_id FROM owner_legacy_migrations WHERE state IN ('frozen', 'imported')) ORDER BY created_at ASC;"
+	}
+	stmt, err := prepare(impl, query, "active chain list")
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
 	out := make([dynamic]domain.Task_Chain)
@@ -146,6 +154,25 @@ taskchain_sched0_normalize_reviews_sqlite :: proc(ctx: rawptr, task_id: domain.T
 		changed += int(sqlite3_changes(impl.conn.db))
 	}
 	return changed, domain.Domain_Error{}
+}
+
+// taskchain_list_owner_legacy_frozen_chains_sqlite: chains whose rows the owner
+// legacy source fences (owner_legacy_guard_* triggers) make read-only. The
+// table exists only on databases that ran the bridge-owned legacy chain export.
+taskchain_list_owner_legacy_frozen_chains_sqlite :: proc(ctx: rawptr) -> ([]domain.Task_Chain_ID, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	if !owner_legacy_fences_present(impl.conn) do return nil, {}
+	stmt, err := prepare(impl, "SELECT chain_id FROM owner_legacy_migrations WHERE state IN ('frozen', 'imported') ORDER BY chain_id;", "owner legacy frozen chains")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	out := make([dynamic]domain.Task_Chain_ID)
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW do return nil, domain.domain_error(.Internal_Error, "failed to list owner legacy frozen chains")
+		append(&out, domain.Task_Chain_ID(column_text(stmt, 0)))
+	}
+	return out[:], {}
 }
 
 // ---- events ----------------------------------------------------------------

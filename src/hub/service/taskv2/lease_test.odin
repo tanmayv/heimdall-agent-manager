@@ -72,8 +72,8 @@ wake_log_has_stop :: proc(log: ^Wake_Log, inst: string) -> bool {
 	return false
 }
 
-lease_fixture :: proc(t: ^testing.T, tag: string) -> (^Fixture, ^Wake_Log, bool) {
-	fx, ok := fixture_open(t, tag)
+lease_fixture :: proc(t: ^testing.T, tag: string, stop_before := "") -> (^Fixture, ^Wake_Log, bool) {
+	fx, ok := fixture_open(t, tag, stop_before)
 	log := new(Wake_Log)
 	log.allocator = context.allocator
 	log.cmds = make([dynamic]Wake_Command)
