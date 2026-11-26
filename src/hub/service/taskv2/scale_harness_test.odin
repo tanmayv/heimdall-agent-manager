@@ -448,6 +448,7 @@ scale_worker_proc :: proc(wk: ^Scale_Worker) {
 		if scale_bridge_offline(wk.w, inst.bridge) do continue
 		scale_step(svc, inst, &wk.samples, false)
 		done += 1
+		if done % 25 == 0 do fmt.printf("scale: caller %p %d/%d events\n", wk, done, wk.ops)
 		free_all(context.temp_allocator)
 	}
 }
@@ -706,9 +707,11 @@ scale_load :: proc(t: ^testing.T, cfg: Scale_Config, out: ^strings.Builder) -> b
 	read_counter_install(w.fx, counter)
 	counter.calls = make([dynamic]string, runtime.heap_allocator())
 	serial := make([dynamic]Scale_Sample)
+	serial_t0 := time.tick_now()
 	for i := 0; i < cfg.serial_ops; i += 1 {
 		scale_step(&w.fx.svc, w.instances[(i * 7) % len(w.instances)], &serial, true)
 		free_all(context.temp_allocator)
+		if (i + 1) % 25 == 0 do fmt.printf("scale: serial %d/%d events (%.0f s)\n", i + 1, cfg.serial_ops, time.duration_seconds(time.tick_since(serial_t0)))
 	}
 	read_counter_uninstall(w.fx, counter)
 	strings.write_string(out, `,"serial":`)
