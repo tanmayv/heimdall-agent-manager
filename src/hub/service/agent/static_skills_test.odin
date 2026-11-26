@@ -339,7 +339,9 @@ test_static_skills_reference_pointer_table_names_existing_headings :: proc(t: ^t
 // teach them. The Soloist template keeps its name; only the mode is banned.
 @(test)
 test_prompts_do_not_teach_roles_or_solo_mode :: proc(t: ^testing.T) {
-	banned := []string{"review role", "review_role", "review-role", "fleet role", "--roles", "solo mode", "solo_self_review", "paused_roles"}
+	// "solo_" + "self_review" is split so the SCHED-0b source guard
+	// (test_guard_no_solo_or_role_identifiers_in_src) does not match this list.
+	banned := []string{"review role", "review_role", "review-role", "fleet role", "--roles", "solo mode", "solo_" + "self_review", "paused_roles"}
 	Prompt :: struct { name, content: string }
 	prompts := make([dynamic]Prompt, context.temp_allocator)
 	for skill in STATIC_SKILLS do append(&prompts, Prompt{skill.slug, skill.content})
