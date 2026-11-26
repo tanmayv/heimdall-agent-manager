@@ -3,7 +3,7 @@ import { useDispatch } from 'react-redux';
 import { Link, Text } from '@ui';
 import { useGetHomeFleetQuery } from '../../api/endpoints/home';
 import { normalizeBridgeCapabilities, useListBridgeProvidersQuery } from '../../api/endpoints/bridgeSupport';
-import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
+import { useListAgentIdentitiesQuery, useListAgentInstancesQuery } from '../../api/endpoints/agents';
 import {
   bridgeFleetApi, useApplyBridgeFleetMutation, useGetBridgeFleetApplicationQuery,
   useGetBridgeFleetSettingsQuery, useRetryBridgeFleetApplicationMutation,
@@ -11,7 +11,7 @@ import {
 } from '../../api/endpoints/bridgeFleet';
 import { queryErrorStatus } from '../../api/cookieFetch';
 import { getExpectedUserId } from '../../utils/expectedUser';
-import { fleetApplyInput } from './fleetDraft';
+import { fleetApplyInput, fleetExcludedCounts } from './fleetDraft';
 import { FleetBridgeEditor } from './FleetBridgeEditor';
 import { type FleetBridge, type WidgetLoader, type WidgetResource } from './widgetData';
 import { useWidgetData, WidgetHeading, WidgetState } from './WidgetShared';
@@ -38,12 +38,16 @@ function LiveFleetBridge({ bridge, initiallyExpanded }: { bridge: FleetBridge; i
   const status = useGetBridgeFleetApplicationQuery({ bridgeId: bridge.id, applicationId: tracked.applicationId || '' }, { skip: !tracked.applicationId });
   const [accepted, setAccepted] = useState<FleetApplication>();
   const application = status.currentData && (!accepted || status.currentData.application_id === accepted.application_id && status.currentData.revision >= accepted.revision) ? status.currentData : accepted;
+  // Optional bounded client view; failures must not hide the durable application.
+  const instances = useListAgentInstancesQuery({ bridgeId: bridge.id, limit: 200 }, { skip: !application });
   if (!settings.data || !providers.data || !identities.data) {
     const failed = settings.isError || providers.isError || identities.isError;
     return <div className="home-fleet-result"><Text role="body-sm">{bridge.label}</Text><WidgetState status={failed ? 'error' : 'loading'} name={`Fleet ${bridge.label}`} message={failed ? 'Could not load settings, provider catalog or agent identities' : undefined} onRetry={() => { void settings.refetch(); void providers.refetch(); void identities.refetch(); }} /></div>;
   }
   const agents = (identities.data.agents || []).filter((a: any) => !a.archived_at && (!a.state || String(a.state).toLowerCase() === 'active')).map((a: any) => ({ agent_id: String(a.agent_id || a.id), name: String(a.name || a.display_name || a.agent_id) }));
   return <FleetBridgeEditor bridge={bridge} settings={settings.data} catalog={normalizeBridgeCapabilities(providers.data)} agents={agents} initiallyExpanded={initiallyExpanded}
+    excludedCounts={application && !instances.isError && instances.currentData ? fleetExcludedCounts(instances.currentData.instances, settings.data, application) : undefined}
+    excludedCountsUnavailable={!!application && instances.isError}
     restoredInput={tracked.input} replay={!!tracked.input} application={application}
     applicationError={status.isError ? 'Could not refresh restart results. Last known outcomes are shown.' : undefined}
     onRefreshApplication={() => void status.refetch()}

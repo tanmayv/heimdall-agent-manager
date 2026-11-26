@@ -465,13 +465,14 @@ export const agentsApi = heimdallApi.injectEndpoints({
       invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    listAgentInstances: build.query<any, { agentId?: string; projectId?: string; limit?: number; cursor?: string } | void>({
+    listAgentInstances: build.query<any, { agentId?: string; projectId?: string; bridgeId?: string; limit?: number; cursor?: string } | void>({
       queryFn: async (arg) => {
         try {
           const params = new URLSearchParams();
           const opts = (arg && typeof arg === 'object') ? arg : undefined;
           if (opts?.agentId) params.set('agent_id', opts.agentId);
           if (opts?.projectId) params.set('project_id', opts.projectId);
+          if (opts?.bridgeId) params.set('bridge_id', opts.bridgeId);
           if (opts?.limit) params.set('limit', String(opts.limit));
           if (opts?.cursor) params.set('cursor', opts.cursor);
           const qs = params.toString() ? `?${params.toString()}` : '';

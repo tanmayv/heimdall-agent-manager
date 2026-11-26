@@ -1,4 +1,4 @@
-import type { FleetApplyInput, FleetRuntime, FleetSettings } from '../../api/endpoints/bridgeFleet';
+import type { FleetApplication, FleetApplyInput, FleetRuntime, FleetSettings } from '../../api/endpoints/bridgeFleet';
 import type { FleetProviderCapability } from '../tasks/fleetSelection';
 
 export function runtimeKey(runtime: FleetRuntime): string {
@@ -25,4 +25,24 @@ export function fleetFocusHref(bridgeId = '', agentId = ''): string {
   if (bridgeId) search.set('bridge', bridgeId);
   if (agentId) search.set('agent', agentId);
   return `#/?${search}`;
+}
+
+/** A bounded client view, not historical server outcomes or eligibility decisions. */
+export function fleetExcludedCounts(
+  instances: { agent_instance_id: string; bridge_id: string; agent_id: string; runtime_status: string; provider: string; provider_profile?: string; model: string }[],
+  settings: FleetSettings,
+  application: FleetApplication,
+) {
+  const targets = new Set(application.targets.map((target) => target.agent_instance_id));
+  const seen = new Set<string>();
+  const counts = { unchanged: 0, notRunning: 0, other: 0 };
+  for (const instance of instances) {
+    if (!instance.agent_instance_id || instance.bridge_id !== application.bridge_id || targets.has(instance.agent_instance_id) || seen.has(instance.agent_instance_id)) continue;
+    seen.add(instance.agent_instance_id);
+    if (instance.runtime_status !== 'running') { counts.notRunning += 1; continue; }
+    const desired = settings.overrides.find((override) => override.agent_id === instance.agent_id)?.runtime || settings.default_runtime;
+    if (runtimeKey({ provider: instance.provider, provider_profile: instance.provider_profile || instance.provider, model: instance.model }) === runtimeKey(desired)) counts.unchanged += 1;
+    else counts.other += 1;
+  }
+  return counts;
 }
