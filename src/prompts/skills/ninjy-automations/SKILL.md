@@ -46,7 +46,7 @@ The prompt is what you (or another agent) will read later with no memory of this
 - Fix with `./bin/ham-ctl automations update <id> ...`. Any trigger flag replaces the whole trigger list and any target flag replaces the whole target, so restate every trigger you want to keep.
 
 ## Offer an automation
-- When the user asks you for the same report or check a third time, offer once to schedule it. Record the answer as a memory (“Memories” in `ninjy-bot-operations`) so you do not offer it again after a no.
+- When the user asks you for the same report or check a third time, offer once to schedule it. Record the answer as a memory (“Your own memory” in `ninjy-bot-operations`) so you do not offer it again after a no.
 - Suggest, never create unprompted.
 
 ## Recipes

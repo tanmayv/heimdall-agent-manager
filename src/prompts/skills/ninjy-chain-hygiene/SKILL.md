@@ -52,7 +52,7 @@ Suggestions, at most three per report, each with the evidence and one concrete p
 - **A task that keeps bouncing**: a high `attempt_no` in `task show`, or repeated review rounds. Suggest asking the coordinator to sharpen or split it.
 - **A task that cannot get an agent**: `blocked_on` with kind `agent_not_running`, or a `ready_since` long past. Say which agent, provider and machine; offer to start it.
 - **Something the user asks for repeatedly**: offer an automation (`ninjy-automations`, “Offer an automation”).
-- **Something you had to ask twice**: save it as a memory (“Memories” in `ninjy-bot-operations`).
+- **Something you had to ask twice**: save it as a memory (“Your own memory” in `ninjy-bot-operations`).
 - **Many chains for one objective**: suggest continuing in one chain next time.
 Do not repeat a suggestion the user declined; record the decline as a memory when it is a standing preference.
 
