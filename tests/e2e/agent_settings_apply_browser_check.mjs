@@ -65,7 +65,7 @@ try {
 
     const footer = q('agent-panel-apply');
     await footer.waitFor();
-    if (c.edit) {
+    if (c.edit || c.cancel) {
       const chips = await q('agent-panel-apply-chip').allTextContents();
       assert.ok(chips.length >= 1, `${label}: one chip per change`);
       const arrow = await q('agent-panel-apply-chip').first().locator('[aria-hidden="true"]').textContent();

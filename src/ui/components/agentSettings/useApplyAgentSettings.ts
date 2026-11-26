@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ApplyInstanceConfigurationInput,
+  InstanceConfiguration,
   InstanceReconfiguration,
   ReconfigurationApply,
 } from '../../api/endpoints/agents';
@@ -118,6 +119,22 @@ export interface ApplyFlowState {
   conflict: DraftChange[];
   /** The queued operation's waiting_since (waiting). */
   waitingSince: string;
+  /** What the queued operation changes (waiting), for its chips when no draft is staged. */
+  queued: DraftChange[];
+}
+
+/** An operation's destination as a config, falling back to `current` for what it omits. */
+export function configFromDestination(destination: Partial<InstanceConfiguration> | undefined, current: AgentConfig): AgentConfig {
+  const d = destination || {};
+  const transport = d.runtime_transport_override || d.runtime_transport;
+  return {
+    bridgeId: d.bridge_id || current.bridgeId,
+    provider: d.provider || current.provider,
+    providerProfile: d.provider_profile || d.provider || current.providerProfile,
+    model: d.model || current.model,
+    transport: transport === 'acp' || transport === 'pty' ? transport : current.transport,
+    bypass: d.permission_mode === 'yolo' ? true : d.permission_mode === 'ask' ? false : current.bypass,
+  };
 }
 
 export function conflictMessage(changes: DraftChange[]): string {
@@ -194,7 +211,8 @@ export function applyFooterView(input: ApplyFooterViewInput): ApplyFooterView {
     return {
       ...hidden,
       visible: true,
-      chips: changes,
+      // Say what is queued even when no draft is staged here (queued elsewhere, or reloaded).
+      chips: changes.length ? changes : flow.queued,
       status: still ? FOOTER_COPY.stillWaiting : FOOTER_COPY.waiting,
       cancel: { disabled: input.busy },
       restartNow: still ? { disabled: input.busy || input.stopped } : null,
@@ -325,9 +343,12 @@ export function useApplyAgentSettings(input: UseApplyAgentSettingsInput): UseApp
   }, [tracked, launched, cancelled, opFailed, ownOp?.failure_message, ownOp?.failure_code]);
 
   let state: ApplyFlowState;
-  const none = { error: '', conflict: [], waitingSince: '' };
+  const none = { error: '', conflict: [], waitingSince: '', queued: [] };
   if (submitting) state = { ...none, phase: 'submitting' };
-  else if (op?.phase === 'waiting_for_idle') state = { ...none, phase: 'waiting', waitingSince: op.waiting_since || '' };
+  else if (op?.phase === 'waiting_for_idle') {
+    state = { ...none, phase: 'waiting', waitingSince: op.waiting_since || '',
+      queued: draftDiff(input.current, configFromDestination(op.destination, input.current), input.labels) };
+  }
   else if (op?.phase === 'recovery_required') state = { ...none, phase: 'recovery', error: failure?.error || '' };
   else if (tracked && !launched && !cancelled && !opFailed) state = { ...none, phase: 'restarting' };
   else if (failure?.kind === 'conflict') {

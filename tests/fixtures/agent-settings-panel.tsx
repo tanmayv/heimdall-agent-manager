@@ -52,8 +52,10 @@ const instance = {
   activity_status: ['running', 'waiting', 'still_waiting'].includes(state) ? 'working' : 'idle',
   started_at: state === 'stopped' ? '' : startedAt, stop_reason: state === 'stopped' ? 'user_stop' : '', display_name: 'coordinator #41',
 };
+const config = { bridge_id: 'brg_riverwood', bridge_label: 'riverwood', project_id: 'prj_heimdall', project_label: 'heimdall-agent-manager (3)',
+  project_path: '/var/home/tanmay/heimdall-agent-manager', provider: 'claude', provider_profile: 'claude', model: 'default' };
 const operation = (phase: string, extra: Record<string, unknown> = {}) => ({ operation_id: 'op1', agent_instance_id: 'inst_coord', idempotency_key: 'k',
-  phase, revision: 3, source: {}, destination: {}, source_stopped: phase === 'launching', destination_committed: phase === 'launching',
+  phase, revision: 3, source: config, destination: { ...config, provider: 'codex', provider_profile: 'codex', model: 'gpt-5' }, source_stopped: phase === 'launching', destination_committed: phase === 'launching',
   failure_code: '', failure_message: '', ...extra });
 let operations: any[] = state === 'restarting' ? [operation('launching')]
   : state === 'waiting' ? [operation('waiting_for_idle', { apply: 'after_turn', waiting_since: new Date(now - 4 * 60000).toISOString() })]
@@ -98,7 +100,7 @@ window.fetch = async (input, init = {}) => {
     (window as any).__reconfigurations = [...((window as any).__reconfigurations || []), body];
     const accepted = operation(body.apply === 'after_turn' && instance.activity_status === 'working' ? 'waiting_for_idle' : 'prepared',
       { operation_id: 'op_applied', idempotency_key: body.idempotency_key, apply: body.apply, waiting_since: new Date().toISOString(),
-        destination: { bridge_id: body.bridge_id, project_id: body.project_id, provider: body.provider, provider_profile: body.provider_profile, model: body.model } });
+        destination: { ...config, bridge_id: body.bridge_id, project_id: body.project_id, provider: body.provider, provider_profile: body.provider_profile, model: body.model } });
     operations = [accepted];
     return json(accepted);
   }

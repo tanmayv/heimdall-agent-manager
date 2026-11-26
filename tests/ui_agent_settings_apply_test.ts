@@ -68,7 +68,7 @@ test('buildApplyRequest sends the full destination, always including project_id,
 function viewInput(overrides: Record<string, unknown> = {}): any {
   return {
     changes: [{ field: 'model', label: 'Model', from: 'opus', to: 'sonnet' }],
-    flow: { phase: 'idle', error: '', conflict: [], waitingSince: '' },
+    flow: { phase: 'idle', error: '', conflict: [], waitingSince: '', queued: [] },
     midTurn: false, stopped: false, destinationBridge: 'riverwood', destinationFolder: '', blockedMessage: '', issues: [],
     busy: false, now: Date.parse('2026-11-26T12:00:00Z'), ...overrides,
   };
@@ -130,7 +130,7 @@ test('footer view: waiting, still waiting after 30 min, restarting, conflict, fa
   assert.ok(still.restartNow);
   assert.ok(still.cancel);
 
-  const restarting = applyFooterView(viewInput({ flow: { phase: 'restarting', error: '', conflict: [], waitingSince: '' } }));
+  const restarting = applyFooterView(viewInput({ flow: { phase: 'restarting', error: '', conflict: [], waitingSince: '', queued: [] } }));
   assert.equal(restarting.status, 'Restarting the agent…');
   assert.equal(restarting.primary, null);
 
@@ -139,11 +139,11 @@ test('footer view: waiting, still waiting after 30 min, restarting, conflict, fa
   assert.equal(conflict.conflict, 'Changed since you opened: Model opus → haiku.');
   assert.ok(conflict.primary && !conflict.primary.disabled, 'the draft can be applied again');
 
-  const failed = applyFooterView(viewInput({ flow: { phase: 'failed', error: 'bridge refused', conflict: [], waitingSince: '' } }));
+  const failed = applyFooterView(viewInput({ flow: { phase: 'failed', error: 'bridge refused', conflict: [], waitingSince: '', queued: [] } }));
   assert.equal(failed.error, 'bridge refused');
   assert.equal(failed.primary?.label, 'Apply and restart');
 
-  const recovery = applyFooterView(viewInput({ changes: [], flow: { phase: 'recovery', error: '', conflict: [], waitingSince: '' } }));
+  const recovery = applyFooterView(viewInput({ changes: [], flow: { phase: 'recovery', error: '', conflict: [], waitingSince: '', queued: [] } }));
   assert.equal(recovery.visible, true);
   assert.equal(recovery.primary?.kind, 'retry');
 });
@@ -334,6 +334,11 @@ test('ApplyFooter renders chips with mono values, a hidden arrow and an sr-only 
     const footer = q(doc, 'agent-panel-apply');
     assert.ok(footer);
     const chip = q(doc, 'agent-panel-apply-chip')!;
+    assert.match(chip.className, /rounded-\[var\(--radius-sm\)\]/, 'chips use radius-sm, not the pill radius');
+    assert.doesNotMatch(chip.className, /rounded-full/);
+    // The status region is mounted (empty) before anything happens, so its text changes are announced.
+    assert.equal(q(doc, 'agent-panel-apply-status')!.getAttribute('role'), 'status');
+    assert.equal(q(doc, 'agent-panel-apply-status')!.textContent, '');
     assert.equal(chip.textContent, 'Bridgeriverwood→todawnstar');
     assert.equal(chip.querySelectorAll('code').length, 2);
     assert.equal(chip.querySelector('[aria-hidden="true"]')?.textContent, '→');
@@ -357,22 +362,55 @@ test('ApplyFooter renders chips with mono values, a hidden arrow and an sr-only 
     await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ blockedMessage: 'Fix the connection above before applying.' })), ...handlers }));
     assert.equal((q(doc, 'agent-panel-apply-btn') as HTMLButtonElement).disabled, true);
     assert.equal(q(doc, 'agent-panel-apply-blocked')!.textContent, 'Fix the connection above before applying.');
+    assert.equal(q(doc, 'agent-panel-apply-btn')!.getAttribute('aria-describedby'), q(doc, 'agent-panel-apply-blocked')!.id, 'disabled Apply is tied to its reason');
 
     // Waiting -> Cancel; still waiting -> Restart now too.
     await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ flow: { phase: 'waiting', error: '', conflict: [], waitingSince: '2026-11-26T10:00:00Z' } })), ...handlers }));
     assert.equal(q(doc, 'agent-panel-apply-status')!.textContent, 'Still waiting');
     assert.equal(q(doc, 'agent-panel-apply-btn'), null);
+    assert.equal(q(doc, 'agent-panel-apply-cancel')!.getAttribute('aria-label'), 'Cancel restart');
     await click(q(doc, 'agent-panel-apply-cancel'));
     await click(q(doc, 'agent-panel-apply-restart-now'));
     assert.deepEqual(calls.slice(-2), ['cancel', 'now']);
 
     // Failure and conflict alerts.
-    await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ flow: { phase: 'failed', error: 'bridge refused', conflict: [], waitingSince: '' } })), ...handlers }));
+    await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ flow: { phase: 'failed', error: 'bridge refused', conflict: [], waitingSince: '', queued: [] } })), ...handlers }));
     assert.equal(q(doc, 'agent-panel-apply-error')!.getAttribute('role'), 'alert');
     assert.match(q(doc, 'agent-panel-apply-error')!.textContent || '', /bridge refused/);
 
     // Clean draft: nothing rendered.
     await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ changes: [] })), ...handlers }));
     assert.equal(q(doc, 'agent-panel-apply'), null);
+  });
+});
+
+test('ApplyFooter: focus moves to the status line when the focused primary button unmounts', async () => {
+  await withDom(async ({ doc, render }) => {
+    const { applyFooterView } = await mod();
+    const { ApplyFooter } = await import('../src/ui/components/agentSettings/ApplyFooter.tsx');
+    const noop = { onApply() {}, onRestartNow() {}, onCancel() {}, onDiscard() {} };
+    await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput()), ...noop }));
+    const status = q(doc, 'agent-panel-apply-status')!;
+    q(doc, 'agent-panel-apply-btn')!.focus();
+    assert.equal(doc.activeElement, q(doc, 'agent-panel-apply-btn'));
+    await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ flow: { phase: 'restarting', error: '', conflict: [], waitingSince: '', queued: [] } })), ...noop }));
+    assert.equal(q(doc, 'agent-panel-apply-status'), status, 'the same live region, only its text changed');
+    assert.equal(status.textContent, 'Restarting the agent…');
+    assert.equal(doc.activeElement, status, 'focus is not lost to <body>');
+  });
+});
+
+test('waiting with no staged draft shows what the queued operation changes', async () => {
+  const { applyFooterView, configFromDestination } = await mod();
+  assert.deepEqual(configFromDestination({ provider: 'codex', model: 'gpt-5', runtime_transport_override: 'acp', permission_mode: 'yolo' } as any, CURRENT),
+    { bridgeId: 'riverwood', provider: 'codex', providerProfile: 'codex', model: 'gpt-5', transport: 'acp', bypass: true });
+  await withDom(async ({ render }) => {
+    const h = await hookHarness(render);
+    await h.update({ draft: CURRENT, operation: op({ phase: 'waiting_for_idle', waiting_since: '2026-11-26T11:00:00Z',
+      destination: { bridge_id: 'riverwood', provider: 'claude', provider_profile: 'claude', model: 'haiku' } }) });
+    assert.equal(h.api.state.phase, 'waiting');
+    assert.deepEqual(h.api.state.queued.map((c: any) => [c.field, c.from, c.to]), [['model', 'opus', 'haiku']]);
+    const view = applyFooterView(viewInput({ changes: [], flow: h.api.state }));
+    assert.deepEqual(view.chips.map((c: any) => c.to), ['haiku']);
   });
 });

@@ -8,7 +8,7 @@
  * state ("Waiting for the turn to finish…" + Cancel, later "Still waiting" +
  * Restart now). Touch: Discard takes 1 part and the primary 2, every control 44px.
  */
-import React from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { Alert, Button, Text } from '@ui';
 import type { ApplyFooterView } from './useApplyAgentSettings';
 
@@ -25,7 +25,7 @@ function Chip({ label, from, to }: { label: string; from: string; to: string }) 
   return (
     <li
       data-debug-id="agent-panel-apply-chip"
-      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-subtle bg-surface-raised px-2.5 py-1 text-[length:var(--text-label-size)] text-primary"
+      className="inline-flex max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-subtle bg-surface-raised px-2.5 py-1 text-[length:var(--text-label-size)] text-primary"
     >
       <span className="shrink-0 text-muted">{label}</span>
       <code className="truncate font-mono text-code-sm">{from}</code>
@@ -37,6 +37,19 @@ function Chip({ label, from, to }: { label: string; from: string; to: string }) 
 }
 
 export function ApplyFooter({ view, touch = false, onApply, onRestartNow, onCancel, onDiscard }: ApplyFooterProps) {
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  const blockedId = useId();
+  const hasPrimary = Boolean(view.primary);
+  const hadPrimary = useRef(hasPrimary);
+  // Apply/Restart now unmount the button that had focus (the footer switches to its
+  // status line): hand focus to the status line instead of letting it fall to <body>.
+  useEffect(() => {
+    const was = hadPrimary.current;
+    hadPrimary.current = hasPrimary;
+    if (!was || hasPrimary || !statusRef.current) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) statusRef.current.focus();
+  }, [hasPrimary]);
   if (!view.visible) return null;
   const control = touch ? 'min-h-11' : '';
   const reason = view.blocked || '';
@@ -62,18 +75,25 @@ export function ApplyFooter({ view, touch = false, onApply, onRestartNow, onCanc
         <Alert tone="warning" role="alert" data-debug-id="agent-panel-apply-conflict">{view.conflict}</Alert>
       ) : null}
       {reason ? (
-        <Text as="p" role="body-sm" tone="muted" data-debug-id="agent-panel-apply-blocked">{reason}</Text>
+        <Text as="p" role="body-sm" tone="muted" id={blockedId} data-debug-id="agent-panel-apply-blocked">{reason}</Text>
       ) : null}
       {view.issues.length ? (
         <ul data-debug-id="agent-panel-destination-validation" className="list-disc space-y-1 pl-5 text-caption text-danger">
           {view.issues.map((issue) => <li key={issue}>{issue}</li>)}
         </ul>
       ) : null}
-      {view.status ? (
-        <Text as="p" role="body-sm" className="text-primary" aria-live="polite" data-debug-id="agent-panel-apply-status">
-          {view.status}
-        </Text>
-      ) : null}
+      {/* Always mounted while the footer is, so a change of its text is announced
+          (a live region that appears together with its text usually is not). */}
+      <p
+        ref={statusRef}
+        role="status"
+        aria-live="polite"
+        tabIndex={-1}
+        data-debug-id="agent-panel-apply-status"
+        className={view.status ? 'text-[length:var(--text-body-sm-size)] text-primary outline-none' : 'sr-only'}
+      >
+        {view.status}
+      </p>
       {view.cancel || (view.restartNow && !view.primary) ? (
         <div className="flex flex-wrap justify-end gap-2">
           {view.restartNow && !view.primary ? (
@@ -84,7 +104,7 @@ export function ApplyFooter({ view, touch = false, onApply, onRestartNow, onCanc
           ) : null}
           {view.cancel ? (
             <Button variant="ghost" className={control} data-debug-id="agent-panel-apply-cancel"
-              disabled={view.cancel.disabled} onClick={onCancel}>
+              aria-label="Cancel restart" disabled={view.cancel.disabled} onClick={onCancel}>
               Cancel
             </Button>
           ) : null}
@@ -109,6 +129,7 @@ export function ApplyFooter({ view, touch = false, onApply, onRestartNow, onCanc
             className={touch ? `${control} ${view.discard ? 'col-span-2' : 'col-span-3'}` : ''}
             data-debug-id="agent-panel-apply-btn"
             data-apply-kind={view.primary.kind}
+            aria-describedby={reason ? blockedId : undefined}
             disabled={view.primary.disabled}
             loading={view.primary.loading}
             onClick={onApply}

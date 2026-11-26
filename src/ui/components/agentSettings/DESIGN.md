@@ -88,8 +88,9 @@ browser check is `tests/e2e/agent_settings_apply_browser_check.mjs`).
 
 - The footer appears while the draft differs from the instance, and while a change is
   queued, restarting, failed or needs recovery. One chip per change
-  (`Bridge riverwood → dawnstar`): mono values, the arrow `aria-hidden` with an sr-only
-  "to".
+  (`Bridge riverwood → dawnstar`, radius-sm like Badge, not the pill radius): mono
+  values, the arrow `aria-hidden` with an sr-only "to". While a change is queued with no
+  draft staged here, the chips come from the queued operation's destination.
 - Note: "Restarts the agent with a fresh session. The conversation stays."; a bridge
   move names the bridge and the project's folder there; mid-turn (activity busy)
   appends "It's mid-turn, so the restart waits for the turn to finish."; stopped:
@@ -109,6 +110,11 @@ browser check is `tests/e2e/agent_settings_apply_browser_check.mjs`).
   other failure shows the hub's error; the draft is kept.
 - Accepted: "Restarting" (footer and Runtime card) until the instance reports running on
   a new `launch_epoch` (WS agent_instance summary), or the operation fails.
-- `waiting_for_idle`: "Waiting for the turn to finish…" + Cancel (the cancel endpoint);
-  30 minutes after `waiting_since`, "Still waiting" + Restart now (the hub keeps waiting).
+- `waiting_for_idle`: "Waiting for the turn to finish…" + Cancel (accessible name
+  "Cancel restart"; the cancel endpoint); 30 minutes after `waiting_since`, "Still
+  waiting" + Restart now (the hub keeps waiting).
+- Accessibility: the status line is one `role="status"` region mounted with the footer
+  (empty until needed), so "Restarting the agent…" / "Waiting…" are announced; when the
+  focused primary button unmounts, focus moves to that line. A disabled Apply is tied to
+  its reason with `aria-describedby`.
 - With the flag on, the composer shows no Reset/Apply pair: the panel owns Apply.
