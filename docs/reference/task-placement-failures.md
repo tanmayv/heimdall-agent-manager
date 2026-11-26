@@ -1,5 +1,7 @@
 # Native placement-failure snapshots
 
+> **Superseded in part (SCHED-0, spec art_18eb828949cd9431):** fleet roles, review roles (`review_roles`, `--roles`, `--review-role`, the Review Roles dialog) and solo mode no longer exist. Every task names a required `assignee` agent and a `reviewers` list (agent ids, optionally `user`), with optional per-reviewer `review_focus`; a fleet row has only capacity, placement and one `paused` switch; the coordinator is an ordinary assignee and reviewer that pulls with `lease next`. Statements below about roles or solo mode describe the earlier design.
+
 Implements REQ-PLACE-1 and the engine reconciliation portion of REQ-PLACE-3 from
 [the approved plan](../plans/placement-attention-recovery.md). Cards, recovery APIs
 and UI controls are separate follow-on work.

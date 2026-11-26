@@ -190,7 +190,8 @@ SKILL_OWNED_TOPICS := []Skill_Owned_Topic{
 	{"artifact-authoring",
 		{"## 3. Upload", "## 5. Deliver it"},
 		{"artifact create", "--kind html-bundle", "artifact download", "artifact://"}},
-	// "## 8. Solo mode" is deliberately in both task-management skills: each keeps only its half (design §6.2 row 18).
+	// Section 8 differs per skill: the coordinator's half ("You as assignee and reviewer") and the
+	// worker's half ("When you are the coordinator") (design §6.2 row 18; SCHED-3).
 	{"worker-task-management",
 		{},
 		{"lease submit", "lease handoff", "lease block", "review post", "task fetch"}},
@@ -330,4 +331,30 @@ test_static_skills_reference_pointer_table_names_existing_headings :: proc(t: ^t
 	testing.expect(t, strings.contains(comm, "not vault envelopes"), "comm skill must say plaintext, not vault envelopes")
 	art, _ := find_static_skill("artifact-authoring")
 	testing.expect(t, !strings.contains(art, "or the `ham-ctl-reference` skill"), "artifact-authoring must not point back at the reference")
+}
+
+// SCHED-3 (spec art_18eb828949cd9431, 4.6 and section 5): fleet roles, review
+// roles and solo mode are gone, so no skill, template or bootstrap guidance may
+// teach them. The Soloist template keeps its name; only the mode is banned.
+@(test)
+test_prompts_do_not_teach_roles_or_solo_mode :: proc(t: ^testing.T) {
+	banned := []string{"review role", "review_role", "review-role", "fleet role", "--roles", "solo mode", "solo_self_review", "paused_roles"}
+	Prompt :: struct { name, content: string }
+	prompts := make([dynamic]Prompt, context.temp_allocator)
+	for skill in STATIC_SKILLS do append(&prompts, Prompt{skill.slug, skill.content})
+	append(&prompts,
+		Prompt{"templates/coordinator.md", domain.TEMPLATE_MD_COORDINATOR},
+		Prompt{"templates/worker.md", domain.TEMPLATE_MD_WORKER},
+		Prompt{"templates/reviewer.md", domain.TEMPLATE_MD_REVIEWER},
+		Prompt{"templates/soloist.md", domain.TEMPLATE_MD_SOLOIST},
+		Prompt{"templates/bot.md", domain.TEMPLATE_MD_BOT},
+		Prompt{"templates/empty.md", domain.TEMPLATE_MD_EMPTY},
+		Prompt{"templates/curator.md", #load("../../../templates/curator.md", string)},
+		Prompt{"prompts/bootstrap_profile_guidance.md", #load("../../../prompts/bootstrap_profile_guidance.md", string)},
+		Prompt{"prompts/bootstrap_agents.md", BOOTSTRAP_AGENTS_TEMPLATE},
+	)
+	for p in prompts {
+		lower := strings.to_lower(p.content, context.temp_allocator)
+		for term in banned do testing.expectf(t, !strings.contains(lower, term), "%s still mentions %q", p.name, term)
+	}
 }

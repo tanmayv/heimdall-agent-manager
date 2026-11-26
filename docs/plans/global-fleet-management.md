@@ -1,5 +1,7 @@
 # Global Fleet management for chain agents
 
+> **Superseded in part (SCHED-0, spec art_18eb828949cd9431):** fleet roles, review roles (`review_roles`, `--roles`, `--review-role`, the Review Roles dialog) and solo mode no longer exist. Every task names a required `assignee` agent and a `reviewers` list (agent ids, optionally `user`), with optional per-reviewer `review_focus`; a fleet row has only capacity, placement and one `paused` switch; the coordinator is an ordinary assignee and reviewer that pulls with `lease next`. Statements below about roles or solo mode describe the earlier design.
+
 Replace the per-chain Fleet drawer with the Home Fleet widget as the shared place to configure chain-agent runtimes. Each bridge has a default provider/profile/model and overrides for durable agent identities. Apply saves the bridge's changes and restarts affected running chain agents across chains. This plan follows the approved T6–T8 push to `origin/main` at `b47305d20732bce5f98e534c47764e64fb85345a`.
 
 Status: proposed for approval in `task_18eb3d3e3e58a28b`. Implementation has not started.

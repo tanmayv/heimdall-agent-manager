@@ -3,8 +3,10 @@
 The Hub owns task-agent runtime policy in SQLite. A bridge has one complete,
 owner-scoped, versioned snapshot: a provider/profile/model default and overrides
 keyed by durable `agent_id`. It applies across chains on that bridge. Bridge
-placement, task pins, roles, review requirements, capacity and pause remain chain
-or task controls. Updating runtime policy does not change those controls.
+placement, task pins, task assignees and reviewers, capacity and the per-row pause
+switch remain chain or task controls. Updating runtime policy does not change those
+controls. (Fleet rows have had no roles since SCHED-0: work goes to a task's
+`assignee` agent and reviews to its listed `reviewers`.)
 
 ## Persistence and transition (REQ-FLEET-2, 4, 5, 6, 9)
 
@@ -34,9 +36,9 @@ been configured. On a managed bridge, changing a legacy runtime selection return
 409 with `fleet_runtime_managed`, directing the caller to Home Fleet. Root runtime
 changes are refused when they could affect a managed bridge; per-bridge changes
 on unconfigured bridges remain valid. Staffing/placement-only updates continue
-to work and preserve existing legacy runtime fields. Fresh role rows need no
-runtime selection. Roles, capacity, pause and required review gates retain their
-existing contracts.
+to work and preserve existing legacy runtime fields. Fresh rows (created for an
+assignee or reviewer) need no runtime selection. Capacity, pause and required
+review gates retain their existing contracts.
 
 ## Local runtime resolution
 
@@ -70,7 +72,8 @@ An inline claim promotes eligible task scope without replacing its running
 process. Its lease, context-pack placement (including `provider_profile`) and
 grant history record the actual instance tuple, even when the saved policy
 differs. Shared settings take effect at a subsequent real launch. This preserves
-the solo coordinator's pull-only behavior and required review gate.
+the coordinator's pull-only behavior for tasks assigned to it and the required
+review gate.
 
 All policy reads are indexed SQLite reads inside existing Hub orchestration.
 There are **zero new Fleet-settings HTTP/RPC calls on startup or restart**, no
@@ -94,7 +97,7 @@ participation without changing owner/bridge/chain/live-instance enumeration:
 
 `iface.fleet_scope_get` is the one local classifier for existing starts and F2
 Apply target enumeration. Unknown legacy instances require normal agent kind,
-same-owner task-role membership on their chain, and persisted task/workflow/claim
+same-owner chain membership, and persisted task/workflow/claim
 or explicit fleet/directory evidence. An empty private `mixed_work` chain and
 coordinator membership alone are insufficient. Known bot/action bindings and
 provider-test/non-agent kinds are excluded even if they have chain bindings.
@@ -279,11 +282,11 @@ refetch settings or preview. Counts can be refreshed explicitly; no Home polling
 is added.
 
 The per-chain runtime drawer is retired. Chain staffing retains holder capacity,
-warm count, idle TTL, pause/resume and bridge placement. Review Roles retains
-review membership and requirements. Staffing writes omit runtime fields so
+warm count, idle TTL, pause/resume and bridge placement. Reviewers are named
+per task (`brief.reviewers`). Staffing writes omit runtime fields so
 managed bridge settings cannot be cleared accidentally. Placement recovery
-opens the relevant bridge/agent in Home Fleet for runtime errors, Review Roles
-for role requirements, and chain staffing for worker/named-holder setup.
+opens the relevant bridge/agent in Home Fleet for runtime errors and the task's
+assignee or reviewer for agent setup.
 Recovery links reveal a hidden Fleet widget for that route without rewriting the
 saved Home layout. Runtime changes never replace task assignees or reviewers.
 

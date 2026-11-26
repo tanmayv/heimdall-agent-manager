@@ -151,6 +151,11 @@ Replacement dialogs expose `chain-staffing-modal` and `review-roles-modal`.
 Review recovery context uses `review-roles-recovery-context`; role membership
 pickers use `review-role-add-agent-${roleName}`.
 
+> The review-roles ids (`task-board-review-roles-btn`, `review-roles-modal`,
+> `review-roles-recovery-context`, `review-role-add-agent-*`) belong to the Review
+> Roles dialog, which SCHED-0d removes with the rest of the role UI (spec
+> art_18eb828949cd9431, 4.5). Delete them from this list when that UI goes.
+
 ### Shared component: SearchableSelect
 
 `SearchableSelect` is the scalable single-select used where option lists can be large (10–50+), e.g. the New chat agent/project pickers. It requires a `debugId` and derives child IDs: `${debugId}` (trigger button), `${debugId}-popover`, `${debugId}-search-input`, `${debugId}-list`, `${debugId}-option-${value}`, `${debugId}-empty`, `${debugId}-loading`, and `${debugId}-count`. Each option renders title + optional tag + subtitle + monospace id, and search matches title/tag/subtitle/id/keywords. Current callers: `new-convo-agent-select`, `new-convo-project-select`.
