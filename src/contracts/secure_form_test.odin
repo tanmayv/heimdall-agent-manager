@@ -31,8 +31,7 @@ secure_form_fixture_request :: proc(f: json.Object) -> Secure_Form_Request {
 	return {
 		mq_string(o, "owner"), mq_string(o, "bridge"), mq_string(o, "generation"),
 		mq_string(o, "instance"), mq_string(o, "task"), mq_string(o, "conversation"),
-		mq_string(o, "request_id"), mq_string(o, "deadline"), mq_string(o, "manifest_digest"),
-		mq_string(o, "destination"), mq_string(o, "script_name"), mq_string(o, "schema_digest"),
+		mq_string(o, "request_id"), mq_string(o, "deadline"), mq_string(o, "script"), mq_string(o, "schema_digest"),
 		mq_string(o, "recipient_key"),
 	}
 }
@@ -45,13 +44,6 @@ secure_form_fixture_answer :: proc(f: json.Object) -> Secure_Form_Answer {
 		mq_string(o, "directory_head"), mq_string(o, "sender_key"), mq_string(o, "nonce"),
 		mq_string(o, "ciphertext"), mq_string(o, "signature"),
 	}
-}
-
-@(private = "file")
-secure_form_fixture_entry :: proc(f: json.Object) -> ([]Secure_Form_Entry, bool) {
-	entry, err := json.marshal(f["entry"], allocator = context.temp_allocator)
-	if err != nil do return nil, false
-	return secure_form_parse_manifest(strings.concatenate({`{"version":1,"entries":[`, string(entry), `]}`}, context.temp_allocator))
 }
 
 @(private = "file")
@@ -68,16 +60,11 @@ test_secure_form_display_and_placement :: proc(t: ^testing.T) {
 	f := secure_form_fixture()
 	r := secure_form_fixture_request(f)
 	schema := mq_string(f, "schema")
-	entries, parsed := secure_form_fixture_entry(f)
-	if !testing.expect(t, parsed && len(entries) == 1) do return
-	e := entries[0]
-	manifest, m_ok := secure_form_manifest_transcript(e)
-	testing.expect(t, m_ok && string(manifest) == string(secure_form_fixture_hex(mq_string(f, "manifest_transcript"))))
-	testing.expect(t, secure_form_display_matches(r, e, schema))
+	testing.expect(t, secure_form_display_matches(r, schema))
 	without_logo, _ := strings.replace_all(schema, `"logo":"heimdall",`, "", context.temp_allocator)
 	_, no_logo_ok := secure_form_parse_schema(without_logo)
-	testing.expect(t, no_logo_ok && !secure_form_display_matches(r, e, without_logo))
-	registration := Secure_Form_Registration{1, r, e, schema, mq_string(f, "request_signature")}
+	testing.expect(t, no_logo_ok && !secure_form_display_matches(r, without_logo))
+	registration := Secure_Form_Registration{1, r, schema, mq_string(f, "request_signature")}
 	raw_registration, reg_err := json.marshal(registration, allocator = context.temp_allocator)
 	_, registration_ok := secure_form_parse_registration(string(raw_registration))
 	testing.expect(t, reg_err == nil && registration_ok)
@@ -86,16 +73,18 @@ test_secure_form_display_and_placement :: proc(t: ^testing.T) {
 	_, substituted := secure_form_parse_registration(string(bad_bytes))
 	testing.expect(t, !substituted)
 
-	for invalid in ([]string{"https://example.test:443", "https://example.test/path", "https://127.1", "https://[invalid]", "https://:"}) {
-		testing.expect(t, !secure_form_origin_valid(invalid), invalid)
+	for invalid in ([]string{"login.sh", "/", "/scripts/", "/scripts//login.sh", "/scripts/../login.sh", "/scripts/./login.sh"}) {
+		changed := r
+		changed.script = invalid
+		_, valid := secure_form_request_transcript(changed)
+		testing.expect(t, !valid, invalid)
 	}
-	for valid in ([]string{"https://example.test:8443", "https://127.0.0.1", "https://[::1]", "https://example.test"}) {
-		testing.expect(t, secure_form_origin_valid(valid), valid)
+	for obsolete in ([]string{`"entry":{}`, `"destination":"https://example.test"`, `"manifest_digest":"00"`}) {
+		deprecated := strings.concatenate({"{", obsolete, ",", string(raw_registration[1:])}, context.temp_allocator)
+		_, valid := secure_form_parse_registration(deprecated)
+		testing.expect(t, !valid, obsolete)
 	}
 
-	changed := e
-	changed.script = "/other/login.sh"
-	testing.expect(t, !secure_form_display_matches(r, changed, schema))
 	msg, ok := secure_form_request_transcript(r)
 	testing.expect(t, ok && string(msg) == string(secure_form_fixture_hex(mq_string(f, "request_transcript"))))
 	testing.expect(t, secure_form_fixture_verify(mq_string(f, "bridge_public"), mq_string(f, "request_signature"), msg))
@@ -119,7 +108,7 @@ test_secure_form_display_and_placement :: proc(t: ^testing.T) {
 	_, unknown_code_ok := secure_form_parse_ack(make_ack(r.request_id, "final", "127"))
 	testing.expect(t, !unknown_code_ok)
 
-	for i in 0..<5 {
+	for i in 0..<6 {
 		substitution := r
 		switch i {
 		case 0: substitution.owner = "other"
@@ -127,6 +116,7 @@ test_secure_form_display_and_placement :: proc(t: ^testing.T) {
 		case 2: substitution.instance = "other"
 		case 3: substitution.generation = "12"
 		case 4: substitution.request_id = strings.repeat("01", 32, context.temp_allocator)
+		case 5: substitution.script = "/other/login.sh"
 		}
 		testing.expect(t, !secure_form_admit_initial(substitution, r, 1700000179999, .Pending))
 		other_msg, other_ok := secure_form_request_transcript(substitution)
@@ -273,27 +263,13 @@ test_secure_form_answer_trust_and_crypto :: proc(t: ^testing.T) {
 test_secure_form_retry_binding_and_expiry :: proc(t: ^testing.T) {
 	f := secure_form_fixture()
 	r := secure_form_fixture_request(f)
-	entries, parsed := secure_form_fixture_entry(f)
-	if !testing.expect(t, parsed && len(entries) == 1) do return
-
-	// Resolve the same approved manifest entry anew after a body edit. The
-	// snapshot digest changes but is deliberately not part of the binding.
-	resolved, resolved_ok := secure_form_fixture_entry(f)
-	if !testing.expect(t, resolved_ok && len(resolved) == 1) do return
-	original_manifest, original_ok := secure_form_manifest_transcript(entries[0])
-	edited_manifest, edited_ok := secure_form_manifest_transcript(resolved[0])
-	testing.expect(t, original_ok && edited_ok && string(original_manifest) == string(edited_manifest))
-	before := secure_form_digest(transmute([]byte)string("exit 1"))
-	after := secure_form_digest(transmute([]byte)string("exit 0"))
-	testing.expect(t, before != after)
-	binding := proc(entry: Secure_Form_Entry, r: Secure_Form_Request, manifest: []byte) -> Secure_Form_Retry_Binding {
-		digest := secure_form_digest(manifest)
-		return {r.request_id, vault.hex_encode_lower(digest[:], context.temp_allocator),
-			entry.script, entry.purpose, r.owner, r.bridge, r.instance, r.task}
+	binding := proc(req: Secure_Form_Request) -> Secure_Form_Retry_Binding {
+		return {req.request_id, req.schema_digest, req.script, req.owner, req.bridge, req.instance, req.task}
 	}
-	b := binding(entries[0], r, original_manifest)
-	edited := binding(resolved[0], r, edited_manifest)
-	testing.expect(t, b.manifest_digest == r.manifest_digest && b == edited)
+	b := binding(r)
+	// Script bytes are intentionally absent from the retry identity.
+	edited := binding(secure_form_fixture_request(f))
+	testing.expect(t, b == edited)
 
 	retry_bytes, _ := json.marshal(Secure_Form_Retry_Command{1, r.request_id, "1"}, allocator = context.temp_allocator)
 	_, retry_ok := secure_form_parse_retry(string(retry_bytes))
@@ -322,6 +298,9 @@ test_secure_form_retry_binding_and_expiry :: proc(t: ^testing.T) {
 	testing.expect(t, discarded.action == .Reject && discarded.code == .Retention_Expired)
 	changed := b
 	changed.script = "/other/login.sh"
+	testing.expect(t, secure_form_retry(b, changed, 100, 101, 1, true, failed).code == .Unauthorized)
+	changed = b
+	changed.schema_digest = strings.repeat("00", 32, context.temp_allocator)
 	testing.expect(t, secure_form_retry(b, changed, 100, 101, 1, true, failed).code == .Unauthorized)
 	changed = b
 	changed.task = "other_task"

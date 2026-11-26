@@ -23,15 +23,9 @@ function frame(...parts: (string | Uint8Array)[]) {
   return result;
 }
 
-function manifest(entry = v.entry) {
-  const files = [...entry.files].sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
-  return frame("heimdall.secure-form.manifest.v1", entry.id, entry.purpose, entry.destination, entry.script,
-    entry.interpreter, entry.controller, String(files.length), ...files.flatMap(({ path, sha256 }) => [path, sha256]));
-}
-
 function request(r = v.request) {
   return frame("heimdall.secure-form.request.v1", r.owner, r.bridge, r.generation, r.instance, r.task, r.conversation,
-    hex(r.request_id), r.deadline, hex(r.manifest_digest), r.destination, r.script_name, hex(r.schema_digest),
+    hex(r.request_id), r.deadline, r.script, hex(r.schema_digest),
     hex(r.recipient_key));
 }
 
@@ -47,31 +41,21 @@ async function signingKey(key: string) {
 const verify = (key: CryptoKey, sig: string, data: Uint8Array<ArrayBuffer>) =>
   subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, hex(sig), data);
 
-test("exact manifest and signed display bytes bind the approved script and request placement", async () => {
-  assert.equal(toHex(manifest()), v.manifest_transcript);
-  assert.equal(toHex(await subtle.digest("SHA-256", manifest())), v.request.manifest_digest);
+test("signed schema and canonical script path bind the request placement", async () => {
   assert.equal(toHex(await subtle.digest("SHA-256", enc.encode(v.schema))), v.request.schema_digest);
   assert.equal(toHex(request()), v.request_transcript);
 
   const k = await signingKey(v.bridge_public);
   assert.equal(await verify(k, v.request_signature, request()), true);
-  for (const key of ["owner", "bridge", "generation", "instance", "task", "conversation", "request_id", "destination", "script_name"]) {
-    const changed = key === "request_id" ? "01".repeat(32) : key === "generation" ? "12" : "other";
+  for (const key of ["owner", "bridge", "generation", "instance", "task", "conversation", "request_id", "script"]) {
+    const changed = key === "request_id" ? "01".repeat(32) : key === "generation" ? "12" : key === "script" ? "/other/login.sh" : "other";
     assert.equal(await verify(k, v.request_signature, request({ ...v.request, [key]: changed })), false, key);
   }
   for (const raw of [v.schema.replace("Sign in", "Sign out"), v.schema.replace('"logo":"heimdall",', "")]) {
     const digest = toHex(await subtle.digest("SHA-256", enc.encode(raw)));
     assert.equal(await verify(k, v.request_signature, request({ ...v.request, schema_digest: digest })), false);
   }
-  for (const entry of [
-    { ...v.entry, id: "other" },
-    { ...v.entry, purpose: "Another purpose." },
-    { ...v.entry, script: "/other/login.sh" },
-    { ...v.entry, files: v.entry.files.map((f: { path: string }) => ({ ...f, sha256: "00".repeat(32) })) },
-  ]) {
-    const digest = toHex(await subtle.digest("SHA-256", manifest(entry)));
-    assert.equal(await verify(k, v.request_signature, request({ ...v.request, manifest_digest: digest })), false);
-  }
+
 });
 
 test("valid device signature binds the directory and the ciphertext to this request", async () => {

@@ -6,8 +6,6 @@ import "core:crypto/sha2"
 import "core:encoding/base64"
 import "core:encoding/json"
 import "core:mem"
-import "core:net"
-import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:unicode/utf8"
@@ -17,8 +15,6 @@ SECURE_FORM_SCHEMA_MAX :: 32768
 SECURE_FORM_PLAINTEXT_MAX :: 32768
 SECURE_FORM_ENVELOPE_MAX :: 65536
 SECURE_FORM_PROOF_MAX :: 262144
-SECURE_FORM_SCRIPT_MAX :: 32768
-SECURE_FORM_MANIFEST_MAX :: 262144
 SECURE_FORM_FIELDS_MAX :: 12
 SECURE_FORM_CHOICES_MAX :: 12
 SECURE_FORM_VALUE_MAX :: 8192
@@ -27,7 +23,6 @@ SECURE_FORM_PURPOSE_MAX :: 200
 SECURE_FORM_RETENTION_MS :: 300_000
 SECURE_FORM_TOMBSTONE_GRACE_MS :: 60_000
 SECURE_FORM_LOGO :: "heimdall"
-SECURE_FORM_MANIFEST :: "heimdall.secure-form.manifest.v1"
 SECURE_FORM_REQUEST :: "heimdall.secure-form.request.v1"
 SECURE_FORM_ANSWER :: "heimdall.secure-form.answer.v1"
 
@@ -54,7 +49,6 @@ Secure_Form_Exit :: enum int {
 Secure_Form_Registration :: struct {
 	version: int,
 	request: Secure_Form_Request,
-	entry: Secure_Form_Entry,
 	schema, signature: string,
 }
 Secure_Form_Submission :: struct {
@@ -81,7 +75,7 @@ Secure_Form_Retry_Command :: struct {
 }
 Secure_Form_Request :: struct {
 	owner, bridge, generation, instance, task, conversation, request_id, deadline: string,
-	manifest_digest, destination, script_name, schema_digest, recipient_key: string,
+	script, schema_digest, recipient_key: string,
 }
 Secure_Form_Answer :: struct {
 	request_digest, device, directory_sequence, directory_head, sender_key, nonce, ciphertext, signature: string,
@@ -96,11 +90,6 @@ Secure_Form_Schema :: struct {
 	purpose: string,
 	logo: string `json:"logo,omitempty"`,
 	fields: []Secure_Form_Field,
-}
-Secure_Form_File :: struct { path, sha256: string }
-Secure_Form_Entry :: struct {
-	id, purpose, destination, script, interpreter, controller: string,
-	files: []Secure_Form_File,
 }
 
 // Core accepts some JSON5-like escapes even in its JSON specification.
@@ -251,7 +240,6 @@ secure_form_parse_values :: proc(raw: string, schema: Secure_Form_Schema, alloca
 	return o, true
 }
 
-@(private = "file")
 secure_form_path :: proc(path: string) -> bool {
 	if len(path) < 2 || len(path) > 4096 || path[0] != '/' || !utf8.valid_string(path) do return false
 	for c in path do if c < 32 || c == 127 do return false
@@ -263,107 +251,6 @@ secure_form_path :: proc(path: string) -> bool {
 		if i < 0 do return true
 		rest = rest[i + 1:]
 	}
-}
-
-// Compare the original string, never repair or normalize input. The UI
-// still compares with the browser URL serializer before displaying the form.
-secure_form_origin_valid :: proc(origin: string) -> bool {
-	if !strings.has_prefix(origin, "https://") || len(origin) > 255 || len(origin) <= 8 do return false
-	authority := origin[8:]
-	host, suffix: string
-	if authority[0] == '[' {
-		end := strings.index_byte(authority, ']')
-		if end < 0 do return false
-		host, suffix = authority[1:end], authority[end + 1:]
-		ip, ok := net.parse_ip6_address(host)
-		if !ok || net.address_to_string(ip) != host do return false
-	} else {
-		end := strings.index_byte(authority, ':')
-		host = authority if end < 0 else authority[:end]
-		if end >= 0 do suffix = authority[end:]
-		if len(host) == 0 do return false
-		domain := host
-		if domain[len(domain) - 1] == '.' do domain = domain[:len(domain) - 1]
-		for {
-			dot := strings.index_byte(domain, '.')
-			label := domain if dot < 0 else domain[:dot]
-			if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label) - 1] == '-' do return false
-			numeric := true
-			for c in label {
-				if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') do return false
-				if c < '0' || c > '9' do numeric = false
-			}
-			if dot < 0 {
-				// Browsers reinterpret numeric-ending names as IPv4.
-				if numeric || strings.has_prefix(label, "0x") {
-					ip, ok := net.parse_ip4_address(host)
-					if !ok || net.address_to_string(ip) != host do return false
-				}
-				break
-			}
-			domain = domain[dot + 1:]
-		}
-	}
-	if suffix != "" {
-		if suffix[0] != ':' do return false
-		port, ok := secure_form_uint(suffix[1:])
-		if !ok || port == 443 || port > 65535 do return false
-	}
-	return true
-}
-
-@(private = "file")
-secure_form_entry_valid :: proc(e: Secure_Form_Entry) -> bool {
-	if !secure_form_origin_valid(e.destination) do return false
-	if !multi_question_valid_id(e.id) || !secure_form_text(e.purpose, SECURE_FORM_PURPOSE_MAX) || !secure_form_path(e.script) ||
-	   !secure_form_path(e.interpreter) || (e.controller != "" && !secure_form_path(e.controller)) {
-		return false
-	}
-	if len(e.files) < 1 || len(e.files) > 64 do return false
-	has_interpreter, has_controller := false, e.controller == ""
-	for f, i in e.files {
-		if !secure_form_path(f.path) || f.path == e.script || len(f.sha256) != 64 || !vault.is_lower_hex(f.sha256) do return false
-		for prev in e.files[:i] do if prev.path == f.path do return false
-		if f.path == e.interpreter do has_interpreter = true
-		if f.path == e.controller do has_controller = true
-	}
-	return has_interpreter && has_controller
-}
-
-@(private = "file")
-secure_form_parse_entry :: proc(value: json.Value, allocator: mem.Allocator) -> (Secure_Form_Entry, bool) {
-	e, e_ok := value.(json.Object)
-	if !e_ok || !mq_known_fields(e, {"id", "purpose", "destination", "script", "interpreter", "controller", "files"}) do return {}, false
-	controller, c_ok := e["controller"].(json.String)
-	rows_files, f_ok := e["files"].(json.Array)
-	if !c_ok || !f_ok || len(rows_files) > 64 do return {}, false
-	entry := Secure_Form_Entry{
-		mq_string(e, "id"), mq_string(e, "purpose"), mq_string(e, "destination"), mq_string(e, "script"),
-		mq_string(e, "interpreter"), string(controller), make([]Secure_Form_File, len(rows_files), allocator),
-	}
-	for file, j in rows_files {
-		f, file_ok := file.(json.Object)
-		if !file_ok || !mq_known_fields(f, {"path", "sha256"}) do return {}, false
-		entry.files[j] = {mq_string(f, "path"), mq_string(f, "sha256")}
-	}
-	if !secure_form_entry_valid(entry) do return {}, false
-	return entry, true
-}
-
-secure_form_parse_manifest :: proc(raw: string, allocator := context.temp_allocator) -> ([]Secure_Form_Entry, bool) {
-	o, ok := secure_form_object(raw, SECURE_FORM_MANIFEST_MAX, allocator)
-	if !ok || !mq_known_fields(o, {"version", "entries"}) do return nil, false
-	version, _ := o["version"].(json.Integer)
-	rows, rows_ok := o["entries"].(json.Array)
-	if version != 1 || !rows_ok || len(rows) > 64 do return nil, false
-	entries := make([]Secure_Form_Entry, len(rows), allocator)
-	for row, i in rows {
-		entry, entry_ok := secure_form_parse_entry(row, allocator)
-		if !entry_ok do return nil, false
-		for prev in entries[:i] do if prev.id == entry.id || prev.script == entry.script do return nil, false
-		entries[i] = entry
-	}
-	return entries, true
 }
 
 @(private = "file")
@@ -382,26 +269,6 @@ secure_form_frame :: proc(parts: [][]byte, allocator: mem.Allocator) -> []byte {
 		i += 4 + len(part)
 	}
 	return out
-}
-
-secure_form_manifest_transcript :: proc(e: Secure_Form_Entry, allocator := context.temp_allocator) -> ([]byte, bool) {
-	if !secure_form_entry_valid(e) do return nil, false
-	ordered: [64]Secure_Form_File
-	copy(ordered[:], e.files)
-	slice.sort_by(ordered[:len(e.files)], proc(a, b: Secure_Form_File) -> bool {
-		return bytes.compare(transmute([]byte)a.path, transmute([]byte)b.path) < 0
-	})
-	count: [24]byte
-	parts: [136][]byte
-	for s, i in ([]string{SECURE_FORM_MANIFEST, e.id, e.purpose, e.destination, e.script,
-		e.interpreter, e.controller, strconv.write_uint(count[:], u64(len(e.files)), 10)}) {
-		parts[i] = transmute([]byte)s
-	}
-	for f, i in ordered[:len(e.files)] {
-		parts[8 + i * 2] = transmute([]byte)f.path
-		parts[9 + i * 2] = transmute([]byte)f.sha256
-	}
-	return secure_form_frame(parts[:8 + len(e.files) * 2], allocator), true
 }
 
 @(private = "file")
@@ -441,17 +308,17 @@ secure_form_request_transcript :: proc(r: Secure_Form_Request, allocator := cont
 	gen, g_ok := secure_form_uint(r.generation)
 	deadline, d_ok := secure_form_uint(r.deadline)
 	if !g_ok || gen == 0 || !d_ok || deadline == 0 do return nil, false
-	id, manifest, schema: [32]byte
+	id, schema: [32]byte
 	pub: [65]byte
-	if !secure_form_hex(id[:], r.request_id) || !secure_form_hex(manifest[:], r.manifest_digest) ||
+	if !secure_form_hex(id[:], r.request_id) ||
 	   !secure_form_hex(schema[:], r.schema_digest) || !secure_form_point(&pub, r.recipient_key) {
 		return nil, false
 	}
-	if !secure_form_text(r.destination, 255) || !secure_form_text(r.script_name, 4096) do return nil, false
+	if !secure_form_path(r.script) do return nil, false
 	return secure_form_frame({
 		transmute([]byte)string(SECURE_FORM_REQUEST), transmute([]byte)r.owner, transmute([]byte)r.bridge,
 		transmute([]byte)r.generation, transmute([]byte)r.instance, transmute([]byte)r.task, transmute([]byte)r.conversation,
-		id[:], transmute([]byte)r.deadline, manifest[:], transmute([]byte)r.destination, transmute([]byte)r.script_name,
+		id[:], transmute([]byte)r.deadline, transmute([]byte)r.script,
 		schema[:], pub[:],
 	}, allocator), true
 }
@@ -481,30 +348,27 @@ secure_form_answer_transcript :: proc(e: Secure_Form_Answer, allocator := contex
 }
 
 secure_form_parse_registration :: proc(raw: string, allocator := context.temp_allocator) -> (Secure_Form_Registration, bool) {
-	o, ok := secure_form_object(raw, 6 * SECURE_FORM_SCHEMA_MAX + 512 * 1024, allocator)
-	if !ok || !mq_known_fields(o, {"version", "request", "entry", "schema", "signature"}) do return {}, false
+	o, ok := secure_form_object(raw, 6 * (SECURE_FORM_SCHEMA_MAX + 4096) + 4096, allocator)
+	if !ok || !mq_known_fields(o, {"version", "request", "schema", "signature"}) do return {}, false
 	version, _ := o["version"].(json.Integer)
 	req, req_ok := o["request"].(json.Object)
 	if version != 1 || !req_ok || !mq_known_fields(req, {"owner", "bridge", "generation", "instance",
-		"task", "conversation", "request_id", "deadline", "manifest_digest", "destination",
-		"script_name", "schema_digest", "recipient_key"}) {
+		"task", "conversation", "request_id", "deadline", "script", "schema_digest", "recipient_key"}) {
 		return {}, false
 	}
 	r := Secure_Form_Request{
 		mq_string(req, "owner"), mq_string(req, "bridge"), mq_string(req, "generation"),
 		mq_string(req, "instance"), mq_string(req, "task"), mq_string(req, "conversation"),
-		mq_string(req, "request_id"), mq_string(req, "deadline"), mq_string(req, "manifest_digest"),
-		mq_string(req, "destination"), mq_string(req, "script_name"), mq_string(req, "schema_digest"),
+		mq_string(req, "request_id"), mq_string(req, "deadline"), mq_string(req, "script"), mq_string(req, "schema_digest"),
 		mq_string(req, "recipient_key"),
 	}
-	entry, entry_ok := secure_form_parse_entry(o["entry"], allocator)
 	schema, signature := mq_string(o, "schema"), mq_string(o, "signature")
 	_, sig_ok := secure_form_raw_signature(signature)
-	if !entry_ok || !sig_ok || !secure_form_display_matches(r, entry, schema, allocator) do return {}, false
+	if !sig_ok || !secure_form_display_matches(r, schema, allocator) do return {}, false
 	t, t_ok := secure_form_request_transcript(r, allocator)
 	if !t_ok do return {}, false
 	delete(t, allocator)
-	return {1, r, entry, schema, signature}, true
+	return {1, r, schema, signature}, true
 }
 
 // Parse the inner envelope independently of its directory proof attachment.
@@ -601,16 +465,11 @@ secure_form_digest :: proc(data: []byte) -> (digest: [32]byte) {
 	return
 }
 
-secure_form_display_matches :: proc(r: Secure_Form_Request, e: Secure_Form_Entry, raw: string, allocator := context.temp_allocator) -> bool {
-	schema, ok := secure_form_parse_schema(raw, allocator)
-	if !ok || r.destination != e.destination || schema.purpose != e.purpose do return false
-	name := e.script
-	for c, i in e.script do if c == '/' do name = e.script[i + 1:]
-	if name != r.script_name do return false
-	manifest, m_ok := secure_form_manifest_transcript(e, allocator)
-	s, m: [32]byte
-	return m_ok && secure_form_hex(s[:], r.schema_digest) && secure_form_hex(m[:], r.manifest_digest) &&
-		secure_form_digest(transmute([]byte)raw) == s && secure_form_digest(manifest) == m
+secure_form_display_matches :: proc(r: Secure_Form_Request, raw: string, allocator := context.temp_allocator) -> bool {
+	_, ok := secure_form_parse_schema(raw, allocator)
+	schema: [32]byte
+	return ok && secure_form_path(r.script) && secure_form_hex(schema[:], r.schema_digest) &&
+		secure_form_digest(transmute([]byte)raw) == schema
 }
 
 Secure_Form_Hub_State :: enum { Pending, Forwarding, Accepted, Final }
@@ -653,7 +512,7 @@ secure_form_directory_matches :: proc(e: Secure_Form_Answer, digest: [32]byte, s
 }
 
 Secure_Form_Retry_Binding :: struct {
-	request_id, manifest_digest, script, purpose, owner, bridge, instance, task: string,
+	request_id, schema_digest, script, owner, bridge, instance, task: string,
 }
 Secure_Form_Attempt :: struct { number: u64, terminal: bool, code: Secure_Form_Exit }
 Secure_Form_Retry_Action :: enum { Reject, Join, Start }
