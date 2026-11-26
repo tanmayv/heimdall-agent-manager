@@ -469,6 +469,12 @@ async function main() {
       const acl = spawnSync('/usr/bin/security', ['set-generic-password-partition-list',
         '-a', L5.bridgeId, '-S', partitions, '-k', 'e2e', fixtureKeychain],
       { encoding: 'utf8', timeout: 15_000 });
+      if (acl.status !== 0) {
+        const found = spawnSync('/usr/bin/security', ['find-generic-password', '-a', L5.bridgeId, fixtureKeychain],
+          { encoding: 'utf8', timeout: 5_000 });
+        console.log('    P5 security set-generic-password-partition-list stderr:', acl.stderr?.trim());
+        console.log('    P5 fixture item lookup:', found.status, found.stderr?.trim());
+      }
       expect(acl.status === 0, 'P5: pre-authorized staged runtime for fixture items (status ' + acl.status + ', error ' + (acl.error?.code || 'none') + ')');
     }
     const pidBefore = runtimePid(L5);
