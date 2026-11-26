@@ -586,6 +586,7 @@ update_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		// MEM-6 #9: notify the newly-designated coordinator.
 		if input.coordinator_agent_instance_id != "" do notify_coordinator_assigned(service, auth, chain, input.coordinator_agent_instance_id)
 	}
+	status_reopened := false
 	status_closed := false
 	closed_status: domain.Task_Chain_Status
 	if input.status != "" {
@@ -595,6 +596,7 @@ update_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
         }
 		if st != chain.status {
 			if !valid_chain_transition(chain.status, st) do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "invalid chain status transition")
+			status_reopened = st == .Active
 			chain.status = st
 			if st == .Completed || st == .Cancelled {
 				chain.completed_at = platform.clock_now(service.clock)
@@ -632,6 +634,7 @@ update_chain_impl :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Cont
 		engine_chain_closed(service, auth, saved, closed_status)
 		broadcast_chain_closed(service, auth, saved, closed_status)
 	}
+	if save_ok && status_reopened do broadcast_chain_status_notice(service, auth, saved, .Active)
 	return saved, save_ok, save_err
 }
 
@@ -731,6 +734,7 @@ change_chain_status_impl :: proc(service: ^Taskchain_Service, auth: contracts.Au
   if err := taskv2.work_require_chain_merges_settled(service.engine, chain); err.code != .None do return {}, false, err
  }
 	if !valid_chain_transition(chain.status, next) do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "invalid chain status transition")
+	status_reopened := next == .Active && chain.status != .Active
 	now := platform.clock_now(service.clock)
 	chain.status = next
 	chain.updated_at = now
@@ -749,6 +753,7 @@ change_chain_status_impl :: proc(service: ^Taskchain_Service, auth: contracts.Au
 		engine_chain_closed(service, auth, saved, next)
 		broadcast_chain_closed(service, auth, saved, next)
 	}
+	if save_ok && status_reopened do broadcast_chain_status_notice(service, auth, saved, .Active)
 	if save_ok && next == .Active && service.engine != nil {
 		// Reopening a chain re-evaluates it (nothing restarts by itself; the
 		// matcher grants whatever is ready).
@@ -766,22 +771,30 @@ engine_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 }
 
 // broadcast_chain_closed wakes every live member of a just-closed chain with a
-// human-readable [Chain Closed] notice so their loops/tasks stop. Fire-and-forget;
+// human-readable [Chain Closed] notice. Current chain/lease state is authoritative;
 // the actor (closer) is not woken. MEM-6 spec §4 #10.
 broadcast_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain: domain.Task_Chain, next: domain.Task_Chain_Status) {
+	broadcast_chain_status_notice(service, auth, chain, next)
+}
+
+// Close and reopen notices share recipient selection and transport.
+broadcast_chain_status_notice :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain: domain.Task_Chain, next: domain.Task_Chain_Status) {
 	if service.bridge_command_sink.send_runtime_command == nil || service.agents == nil do return
 	actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
 	members, merr := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if merr.code != .None do return
 
-	verb := "completed" if next == .Completed else ("cancelled" if next == .Cancelled else "archived")
+	reopened := next == .Active
+	action := "chain_reopened" if reopened else "chain_closed"
+	label := "[Chain Reopened]" if reopened else "[Chain Closed]"
+	verb := "reopened" if reopened else "completed" if next == .Completed else ("cancelled" if next == .Cancelled else "archived")
 	actor_display := resolve_actor_display(service, actor)
 	defer delete(actor_display)
 	title := strings.trim_space(chain.title)
 	if title == "" do title = string(chain.chain_id)
 	title_disp := truncate_runes(title, NOTICE_TITLE_MAX_RUNES)
 	defer delete(title_disp)
-	human_message := strings.concatenate({`[Chain Closed] Task chain "`, title_disp, `" (`, string(chain.chain_id), ") was marked ", verb, " by ", actor_display, ". All task activities halted."})
+	human_message := strings.concatenate({label, ` Task chain "`, title_disp, `" (`, string(chain.chain_id), ") was marked ", verb, " by ", actor_display, ". This notice may be stale. Run ham-ctl task-chain show ", string(chain.chain_id), " and ham-ctl lease next; current chain status and lease state are authoritative. Halt task activities only while the chain is closed; if active, continue according to your current lease."})
 	defer delete(human_message)
 
 	seen := make(map[string]bool)
@@ -794,7 +807,9 @@ broadcast_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 		if !inst_ok || inst.bridge_id == "" do continue
 		cmd_id := platform.generate_id(service.ids, "cmd_")
 		b := strings.builder_make()
-		strings.write_string(&b, `{"type":"notify_task_nudge","origin":"chain_closed","command_id":"`)
+		strings.write_string(&b, `{"type":"notify_task_nudge","origin":"`)
+		contracts.write_json_string(&b, action)
+		strings.write_string(&b, `","command_id":"`)
 		contracts.write_json_string(&b, cmd_id)
 		strings.write_string(&b, `","agent_instance_id":"`)
 		contracts.write_json_string(&b, id)
@@ -802,7 +817,9 @@ broadcast_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 		contracts.write_json_string(&b, string(chain.chain_id))
 		strings.write_string(&b, `","target_instance_id":"`)
 		contracts.write_json_string(&b, id)
-		strings.write_string(&b, `","target_role":"member","action":"chain_closed","message":"`)
+		strings.write_string(&b, `","target_role":"member","action":"`)
+		contracts.write_json_string(&b, action)
+		strings.write_string(&b, `","message":"`)
 		contracts.write_json_string(&b, human_message)
 		strings.write_string(&b, `","human_message":"`)
 		contracts.write_json_string(&b, human_message)
