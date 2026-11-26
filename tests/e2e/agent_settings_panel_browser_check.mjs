@@ -42,7 +42,9 @@ try {
       const m = await page.evaluate(() => {
         const panel = document.querySelector('[data-debug-id="agent-panel"]').getBoundingClientRect();
         const small = width => [...document.querySelectorAll('[data-debug-id="agent-panel"] button')]
-          .filter((b) => b.offsetParent !== null).map((b) => [b.getAttribute('data-debug-id') || b.textContent.trim(), Math.round(b.getBoundingClientRect().height)])
+          .filter((b) => b.offsetParent !== null).map((b) => [b.getAttribute('data-debug-id') || b.textContent.trim(), Math.round(b.getBoundingClientRect().height)
+            // The bypass switch's hit target is its ::after, 8px past the track on every side.
+            + (b.getAttribute('role') === 'switch' && getComputedStyle(b, '::after').position === 'absolute' ? 16 : 0)])
           .filter(([, h]) => h < 44);
         return { viewport: window.innerWidth, document: document.documentElement.scrollWidth, panelWidth: Math.round(panel.width), small: small() };
       });

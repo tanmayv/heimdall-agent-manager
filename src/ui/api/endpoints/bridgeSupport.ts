@@ -514,6 +514,20 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
     }),
+    // ACP adapter install for one provider on a bridge (the Agent settings panel's
+    // "Install adapter" fix). Progress arrives as provider_status_changed, which
+    // refetches the bridge's provider status (acp_availability reason `installing`).
+    installAcpAdapter: build.mutation<{ command_id?: string }, { bridgeId: string; provider: string }>({
+      queryFn: async ({ bridgeId, provider }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(provider)}/acp-adapter`, 'POST', { action: 'install' });
+          return { data };
+        } catch (error: any) {
+          return { error: customQueryError(error) as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
+    }),
     getProviderExtensionInstall: build.query<ProviderExtensionCommand, { bridgeId: string; provider: string; commandId: string; profileId?: string; kind?: ExtensionCommandKind }>({
       queryFn: async ({ bridgeId, provider, commandId, kind, profileId }) => {
         try {
@@ -590,6 +604,7 @@ export const {
   useUninstallBridgeMutation,
   useInstallProviderExtensionMutation,
   useUninstallProviderExtensionMutation,
+  useInstallAcpAdapterMutation,
   useGetProviderExtensionInstallQuery,
   useListBridgeProvidersQuery,
   useRefreshBridgeModelsMutation,

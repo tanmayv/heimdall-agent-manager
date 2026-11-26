@@ -47,7 +47,34 @@ colour, never colour alone: Running/Restarting use the info tint, Stopped is neu
 1. **Runtime** (`RuntimeSection.tsx`, `agent-panel-runtime`): status pill
    (`role="status"`), detail line, `<bridge> · Provider · <model> · PTY|ACP`, the folder,
    Restart / Stop / "…" → Force stop (confirmed by `ForceStopDialog.tsx`), or Start.
-2. Runs on, 3. Model, 4. Connection, 5. Permissions: T6 (`agent-panel-bridge`,
-   `-model`, `-connection`, `-permissions`). Until then the panel's "Configuration" slot
-   hosts the old modal's controls so nothing becomes unreachable.
-6. Staged-changes footer: T7 (`agent-panel-apply`).
+2. **Runs on** (`BridgeSection.tsx`, `agent-panel-bridge`): radiogroup of owned,
+   non-revoked bridges ("N of M connected"); offline bridges and bridges without the
+   project's folder (its bridge path, else the project default path) are disabled at 45%.
+   "Manage project folders" links to the project's edit page (its bridge paths).
+3. **Model** (`ModelSection.tsx`, `agent-panel-model`): provider radiogroup for the
+   DRAFT bridge's provider status, then "Model for <Provider> on <bridge>". Refresh
+   re-runs discovery on the draft bridge (`refreshBridgeModels`).
+4. **Connection** (`ConnectionSection.tsx`, `agent-panel-connection`): PTY / ACP cards
+   (`runtime_transport`). The ACP alert is mapped from the hub's `acp_availability`
+   only (`acpAvailabilityCopy.ts`); fixes call the existing endpoints (bridge update,
+   ACP adapter install, discovery).
+5. **Permissions** (`PermissionsSection.tsx`, `agent-panel-permissions`): the @ui Toggle,
+   per running instance only.
+6. Staged-changes footer: T7 (`agent-panel-apply`). Until then a minimal Discard/Apply
+   row (`agent-panel-interim-apply`) applies the draft through the existing
+   reconfiguration.
+
+## The draft
+
+Every control in sections 2-5 edits a draft; nothing applies on click. The rules live
+in `agentSettingsDraft.ts` (pure, unit-tested in `tests/ui_agent_settings_draft_test.ts`):
+picking a bridge whose provider status says the draft provider is not installed there
+switches to the first installed provider and its first model (applied when that
+bridge's status arrives); picking a provider resets the model to its first model;
+`draftDiff` gives `{field, label, from, to}` per change for the footer;
+`applyBlockedReason` blocks Apply while ACP is selected and the hub's verdict for the
+draft bridge + provider is not `available` ("Fix the connection above before applying.").
+`AgentChatPane` stores the draft in its staged bridge/provider/model state plus staged
+transport and bypass, and sends `runtime_transport` / `permission_mode` only when they
+change. Radiogroups share `radioGroup.ts` (roving tab stop, arrow keys skip disabled
+rows). Selected rows use `bg-surface-overlay` (the spec's bg-300 token) and a gold check.

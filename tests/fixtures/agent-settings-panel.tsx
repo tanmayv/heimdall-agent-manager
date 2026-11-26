@@ -1,5 +1,6 @@
 // Browser-only fixture: the real AgentChatPane with the Agent settings panel against an
-// in-memory hub. ?state=running|stopped|restarting. No request leaves the page.
+// in-memory hub. ?state=running|stopped|restarting, ?acp=<acp_availability reason>
+// (claude's verdict on every bridge; default ready). No request leaves the page.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { Provider } from 'react-redux';
@@ -12,7 +13,11 @@ import { importKeyring, serializeKeyringBytes } from '../../src/ui/utils/vaultKe
 import { setActiveVaultKey } from '../../src/ui/utils/vaultCrypto';
 import '../../src/ui/styles.css';
 
-const state = new URLSearchParams(location.search).get('state') || 'running';
+const params = new URLSearchParams(location.search);
+const state = params.get('state') || 'running';
+const acpReason = params.get('acp') || 'ready';
+const ACP_FIX: Record<string, string | null> = { ready: null, no_recipe: null, unsupported_bridge: 'update_bridge', adapter_missing: 'install_adapter',
+  adapter_outdated: 'install_adapter', adapter_missing_node: 'install_adapter', adapter_error: 'install_adapter', installing: null, not_checked: 'check_now' };
 const now = Date.now();
 const startedAt = new Date(now - (2 * 60 + 14) * 60000).toISOString();
 
@@ -47,7 +52,31 @@ const instance = {
 const operations = state === 'restarting'
   ? [{ operation_id: 'op1', agent_instance_id: 'inst_coord', idempotency_key: 'k', phase: 'launching', revision: 3, source: {}, destination: {}, source_stopped: true, destination_committed: true, failure_code: '', failure_message: '' }]
   : [];
-const bridges = [{ bridge_id: 'brg_riverwood', label: 'riverwood', machine_hostname: 'riverwood', machine_os: 'Fedora Atomic', status: 'online', runtime_connected: true, reconfiguration_supported: true }];
+const bridge = (id: string, label: string, os: string, online: boolean) => ({ bridge_id: id, label, machine_hostname: label, machine_os: os,
+  status: online ? 'online' : 'offline', runtime_connected: online, reconfiguration_supported: true });
+const bridges = [
+  bridge('brg_riverwood', 'riverwood', 'Fedora Atomic', true),
+  bridge('brg_dawnstar', 'dawnstar', 'Linux', true),
+  bridge('brg_kamsharm', 'kamsharm-mn4988.linkedin.biz', 'macOS', true),
+  bridge('brg_macbook', 'Tanmays-MacBook-Pro.local', 'macOS', false),
+  bridge('brg_laptop', 'LAPTOP-KLN2J0EM', 'Windows', false),
+];
+const bridgePaths = [
+  { bridge_id: 'brg_riverwood', path: '/var/home/tanmay/heimdall-agent-manager' },
+  { bridge_id: 'brg_dawnstar', path: '/home/tanmay/heimdall-agent-manager' },
+  { bridge_id: 'brg_kamsharm', path: '/Users/kamsharm/heimdall-agent-manager' },
+];
+const checkedAt = new Date(now - 30 * 60000).toISOString();
+const providerStatus = {
+  providers: [
+    { provider: 'claude', display_name: 'Claude Code', enabled: true, state: 'present', catalog_state: 'active', version_text: '2.1.0', checked_at: checkedAt,
+      models: [{ model_id: 'default', state: 'active' }, { model_id: 'claude-sonnet-5-5', state: 'active' }, { model_id: 'claude-opus-5-5', state: 'active' }],
+      acp_availability: { available: acpReason === 'ready', reason: acpReason, fix: ACP_FIX[acpReason] ?? null } },
+    { provider: 'codex', display_name: 'Codex', enabled: true, state: 'present', catalog_state: 'active', version_text: '0.98.0', checked_at: checkedAt,
+      models: [{ model_id: 'gpt-5', state: 'active' }], acp_availability: { available: true, reason: 'ready', fix: null } },
+    { provider: 'gemini', display_name: 'Gemini CLI', enabled: false, state: 'absent', catalog_state: 'active', version_text: '', models: [] },
+  ],
+};
 
 window.fetch = async (input, init = {}) => {
   const path = new URL(String(input), location.origin).pathname;
@@ -58,12 +87,9 @@ window.fetch = async (input, init = {}) => {
   if (path.endsWith('/send-now')) return json({ conversation_id: 'conv', runtime_transport: 'pty', launch_epoch: 'ep1', steering_supported: false, batch: null });
   if (/\/agent-instances\/[^/]+$/.test(path)) return json(instance);
   if (path.endsWith('/reconfigurations')) return json({ operations });
-  if (path.endsWith('/provider-status') || path.endsWith('/providers')) return json({ providers: [
-    { provider: 'claude', display_name: 'Claude Code', enabled: true, state: 'present', catalog_state: 'active', version_text: '2.1.0', models: [{ model_id: 'default', state: 'active' }, { model_id: 'claude-sonnet-5-5', state: 'active' }] },
-    { provider: 'codex', display_name: 'Codex', enabled: true, state: 'present', catalog_state: 'active', version_text: '0.98.0', models: [{ model_id: 'gpt-5', state: 'active' }] },
-  ] });
+  if (path.endsWith('/provider-status') || path.endsWith('/providers')) return json(providerStatus);
   if (path.endsWith('/bridges')) return json(bridges);
-  if (/\/projects\/[^/]+$/.test(path)) return json({ project: { project_id: 'prj_heimdall', name: 'heimdall-agent-manager (3)', state: 'active', status: 'active' } });
+  if (/\/projects\/[^/]+$/.test(path)) return json({ project: { project_id: 'prj_heimdall', name: 'heimdall-agent-manager (3)', state: 'active', status: 'active', bridge_paths: bridgePaths }, bridge_paths: bridgePaths });
   if (/\/agents\/[^/]+$/.test(path)) return json({ agent_id: 'agt_coord', name: 'coordinator' });
   if (path.endsWith('/attention')) return json({ items: [] });
   return json([]);

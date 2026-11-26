@@ -40,7 +40,9 @@ const agentRow = (id: string, sec: number, inputIds: string[] = []) => ({
 type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: string; body: any }>; sendNowReply: { status: number; body: any }; gets?: string[];
   configuration?: { operations: any[]; response?: { status: number; body: any } | 'network' };
   /** /me/experiments rows; omitted keeps the flags unloaded (the old settings modal). */
-  experiments?: Array<{ key: string; enabled: boolean }> };
+  experiments?: Array<{ key: string; enabled: boolean }>;
+  /** providers[].acp_availability for claude on provider-status (T6 panel); omitted = older hub. */
+  acpAvailability?: any };
 
 async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/#/conversations/worker', pretendToBeVisual: true });
@@ -101,7 +103,8 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
       runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
     else if (path.endsWith('/reconfigurations')) data = { operations: hub.configuration?.operations || [] };
     else if (path.endsWith('/provider-status')) data = { providers: [
-      { provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }] },
+      { provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }],
+        ...(hub.acpAvailability ? { acp_availability: hub.acpAvailability } : {}) },
       ...(hub.configuration ? [{ provider: 'codex', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'smart', state: 'active' }] }] : []),
     ] };
     else if (path.endsWith('/bridges')) data = [{ bridge_id: 'b', status: 'online', runtime_connected: true, reconfiguration_supported: Boolean(hub.configuration) }];
@@ -347,9 +350,12 @@ test('Agent settings panel: flag on opens the panel from the gear and the compos
     await act(async () => q('conversation-runtime-menu-btn')!.click());
     await wait(() => Boolean(q('agent-panel')), 'composer chip opens the panel');
     assert.equal(q('conversation-runtime-modal'), null);
-    await wait(() => Boolean(q('conversation-provider-option-codex')) && !q('conversation-provider-option-codex')!.disabled, 'interim configuration slot loaded');
-    await act(async () => q('conversation-provider-option-codex')!.click());
-    await wait(() => !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'staged change can apply');
+    // T6: the Model section's provider radiogroup edits the draft (nothing applies on click).
+    await wait(() => q('agent-panel-model-provider-codex')?.getAttribute('aria-disabled') !== 'true' && Boolean(q('agent-panel-model-provider-codex')), 'Model section loaded');
+    await act(async () => q('agent-panel-model-provider-codex')!.click());
+    assert.equal(q('agent-panel-model-provider-codex')!.getAttribute('aria-checked'), 'true');
+    assert.equal(hub.posts.length, 0, 'picking a provider posts nothing');
+    await wait(() => Boolean(q('agent-panel-legacy-apply-btn')) && !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'staged change can apply');
     await act(async () => q('agent-panel-legacy-apply-btn')!.click());
     await wait(() => hub.posts.length === 1, 'reconfiguration posted');
     assert.equal(hub.posts[0].body.provider, 'codex');
@@ -365,5 +371,57 @@ test('Agent settings panel: flag on opens the panel from the gear and the compos
     await act(async () => q('conversation-runtime-menu-btn')!.click());
     await wait(() => Boolean(q('conversation-runtime-modal')), 'old modal opens');
     assert.equal(q('agent-panel'), null);
+  });
+});
+
+test('Agent settings panel draft: connection and bypass stage, ACP gate blocks Apply, Apply sends only changed fields', async () => {
+  const hub: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] },
+    experiments: [{ key: 'agent_settings_panel', enabled: true }],
+    acpAvailability: { available: false, reason: 'adapter_missing', fix: 'install_adapter' } };
+  await fixture(hub, async ({ q, wait }) => {
+    await wait(() => Boolean(q('conversation-agent-settings-btn')), 'gear rendered');
+    await act(async () => q('conversation-agent-settings-btn')!.click());
+    for (const id of ['agent-panel-bridge', 'agent-panel-model', 'agent-panel-connection', 'agent-panel-permissions']) {
+      await wait(() => Boolean(q(id)), `${id} rendered`);
+    }
+    await wait(() => Boolean(q('agent-panel-model-provider-claude')), 'provider rows loaded');
+    assert.equal(q('agent-panel-legacy-apply-btn'), null, 'no staged change, no Apply');
+
+    await act(async () => q('agent-panel-connection-acp')!.click());
+    assert.equal(q('agent-panel-connection-acp')!.getAttribute('aria-checked'), 'true');
+    await wait(() => Boolean(q('agent-panel-connection-acp-alert')), 'ACP alert');
+    assert.equal(q('agent-panel-connection-acp-alert')!.getAttribute('role'), 'alert');
+    assert.match(q('agent-panel-connection-acp-alert')!.textContent || '', /ACP adapter isn't installed on b\./);
+    assert.ok(q('agent-panel-connection-fix-install_adapter'), 'Install adapter action from fix');
+    assert.equal(q('agent-panel-apply-blocked')!.textContent, 'Fix the connection above before applying.');
+    assert.equal((q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, true);
+
+    await act(async () => q('agent-panel-connection-pty')!.click());
+    assert.equal(q('agent-panel-connection-acp-alert'), null);
+    await act(async () => q('agent-panel-permissions-toggle')!.click());
+    assert.equal(q('agent-panel-permissions-toggle')!.getAttribute('aria-checked'), 'false');
+    assert.equal(hub.posts.length, 0, 'nothing applies on click');
+    await wait(() => Boolean(q('agent-panel-legacy-apply-btn')) && !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'bypass change can apply');
+    await act(async () => q('agent-panel-legacy-apply-btn')!.click());
+    await wait(() => hub.posts.length === 1, 'reconfiguration posted');
+    assert.equal(hub.posts[0].body.permission_mode, 'ask');
+    assert.equal(hub.posts[0].body.runtime_transport, undefined, 'unchanged transport is not sent');
+    assert.equal(hub.posts[0].body.provider, 'claude');
+    assert.equal(hub.posts[0].body.model, 'opus');
+  });
+
+  const ready: Hub = { transport: 'pty', messages: [], posts: [], sendNowReply: { status: 202, body: {} }, configuration: { operations: [] },
+    experiments: [{ key: 'agent_settings_panel', enabled: true }], acpAvailability: { available: true, reason: 'ready', fix: null } };
+  await fixture(ready, async ({ q, wait }) => {
+    await wait(() => Boolean(q('conversation-agent-settings-btn')), 'gear rendered');
+    await act(async () => q('conversation-agent-settings-btn')!.click());
+    await wait(() => Boolean(q('agent-panel-model-provider-claude')), 'provider rows loaded');
+    await act(async () => q('agent-panel-connection-acp')!.click());
+    assert.equal(q('agent-panel-connection-acp-alert'), null, 'ready: no alert');
+    await wait(() => Boolean(q('agent-panel-legacy-apply-btn')) && !(q('agent-panel-legacy-apply-btn') as HTMLButtonElement).disabled, 'ACP change can apply');
+    await act(async () => q('agent-panel-legacy-apply-btn')!.click());
+    await wait(() => ready.posts.length === 1, 'reconfiguration posted');
+    assert.equal(ready.posts[0].body.runtime_transport, 'acp');
+    assert.equal(ready.posts[0].body.permission_mode, undefined, 'unchanged bypass is not sent');
   });
 });

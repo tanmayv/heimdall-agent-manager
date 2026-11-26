@@ -20,12 +20,14 @@ import { useDispatch, useSelector, useStore } from 'react-redux';
 import { desktopUpdateFrozen, desktopUpdatePreparation } from '../../utils/desktopUpdatePreparation';
 import { writeClientStorageChecked, writeComposerDraftChecked } from '../../utils/clientPersistence';
 import {
+  Button,
   CommandPalette,
   Icon as UiIcon,
   IconButton as UiIconButton,
   Menu,
   Modal,
   StatusDot,
+  Text,
   runtimeStateFromStatus,
   runtimeStateLabel,
   runtimeStatusToTone,
@@ -60,14 +62,19 @@ import {
   useListInstanceReconfigurationsQuery,
   type InstanceReconfiguration,
   reconfigurationSettled,
+  agentErrorText,
 } from '../../api/endpoints/agents';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import {
   normalizeBridgeCapabilities,
   useBridgeProviderStatus,
+  useInstallAcpAdapterMutation,
   useListBridgeProvidersQuery,
   useListBridgesQuery,
+  useRefreshBridgeModelsMutation,
+  useUpdateBridgeMutation,
+  type AcpAvailabilityFix,
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
 import {
@@ -122,8 +129,26 @@ import { useSettleWithoutReveal, type StreamRevealOptions } from '../chat/stream
 import InstanceReconfigurationProgress from '../chat/InstanceReconfigurationProgress';
 import { MessageComposerInput, MessageComposerActions, MessageComposerStatus, useComposerDockInset, useComposerExpanded } from '../chat/MessageComposer';
 import RuntimeConfigurationOptions from '../chat/RuntimeConfigurationOptions';
-import { AgentPanelSection, AgentSettingsPanel } from '../agentSettings/AgentSettingsPanel';
-import { RuntimeSection, runtimeSectionView } from '../agentSettings/RuntimeSection';
+import { AgentSettingsPanel } from '../agentSettings/AgentSettingsPanel';
+import { RuntimeSection, providerDisplayName, runtimeSectionView } from '../agentSettings/RuntimeSection';
+import { BridgeSection } from '../agentSettings/BridgeSection';
+import { ModelSection } from '../agentSettings/ModelSection';
+import { ConnectionSection } from '../agentSettings/ConnectionSection';
+import { PermissionsSection } from '../agentSettings/PermissionsSection';
+import { acpAvailabilityCopy } from '../agentSettings/acpAvailabilityCopy';
+import {
+  applyBlockedReason,
+  bridgeRowsView,
+  draftDiff,
+  lastCheckedAt,
+  providerOptionsFromStatus,
+  reconcileDraftProviders,
+  reduceAgentDraft,
+  type AgentConfig,
+  type AgentDraftAction,
+  type RuntimeTransport,
+} from '../agentSettings/agentSettingsDraft';
+import { projectEditHref } from '../projects/projectModel';
 import { useAgentSettingsPanelState } from '../agentSettings/useAgentSettingsPanelState';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import { AGENT_SETTINGS_PANEL_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
@@ -134,7 +159,7 @@ import {
   reconcileOlderPages,
   type ConversationMessagesRead,
 } from '../../api/conversationMessageEvents';
-import { permissionToggleRequest, permissionToggleState } from './permissionToggleModel';
+import { effectivePermissionMode, permissionToggleRequest, permissionToggleState } from './permissionToggleModel';
 import { type TaskLike } from '../chat/chainTaskInference';
 import { groupTranscriptMessages, isAgentStartMessage } from '../chat/transcriptGrouping';
 import type { ChatDeliveryStatus, ChatMessage } from '../chat/types';
@@ -955,6 +980,13 @@ export function AgentChatPane({
   const [provider, setProvider] = useState('');
   const [providerProfile, setProviderProfile] = useState('');
   const [model, setModel] = useState('');
+  // Agent settings panel draft (T6): transport and bypass staged like bridge/provider/
+  // model above; null follows the running instance.
+  const [stagedTransport, setStagedTransport] = useState<RuntimeTransport | null>(null);
+  const [stagedBypass, setStagedBypass] = useState<boolean | null>(null);
+  // A bridge picked in the panel whose provider status has not answered yet: once it
+  // does, the draft falls back to an installed provider (reconcileDraftProviders).
+  const [draftBridgeCheck, setDraftBridgeCheck] = useState<string | null>(null);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   // Agent settings: the docked panel (agent_settings_panel experiment, default on) or,
   // with the experiment off or not loaded yet, the previous modal.
@@ -1648,6 +1680,9 @@ export function AgentChatPane({
     observedOperationRef.current = undefined;
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
+    setStagedTransport(null);
+    setStagedBypass(null);
+    setDraftBridgeCheck(null);
     setAcceptedOperation(null);
     setProvider(instanceProvider);
     setProviderProfile(String(instance?.provider_profile || instanceProvider));
@@ -1680,6 +1715,9 @@ export function AgentChatPane({
     if (operation.phase !== 'ready') return;
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
+    setStagedTransport(null);
+    setStagedBypass(null);
+    setDraftBridgeCheck(null);
     setProvider(operation.destination.provider);
     setProviderProfile(operation.destination.provider_profile || operation.destination.provider);
     setModel(operation.destination.model);
@@ -1752,6 +1790,89 @@ export function AgentChatPane({
       (effectiveProvider && effectiveProvider !== instanceProvider) ||
       effectiveProfile !== instanceProfile ||
       (effectiveModel && effectiveModel !== instanceModel));
+  // ---- Agent settings panel draft (T6; rules in agentSettings/agentSettingsDraft.ts).
+  const instanceTransport: RuntimeTransport = instance?.runtime_transport === 'acp' ? 'acp' : 'pty';
+  const instanceBypass = effectivePermissionMode(instance) === 'yolo';
+  const currentConfig: AgentConfig = {
+    bridgeId: instanceBridgeId, provider: instanceProvider, providerProfile: instanceProfile,
+    model: instanceModel, transport: instanceTransport, bypass: instanceBypass,
+  };
+  const draftConfig: AgentConfig = {
+    bridgeId: destinationBridgeId, provider: effectiveProvider, providerProfile: effectiveProfile,
+    model: effectiveModel, transport: stagedTransport ?? instanceTransport, bypass: stagedBypass ?? instanceBypass,
+  };
+  // Provider rows (installed or not, versions, models, acp_availability) for the DRAFT
+  // bridge. provider_status_changed on the user WebSocket refetches it (live installs).
+  const draftProvidersQuery = useListBridgeProvidersQuery(
+    { bridgeId: destinationBridgeId },
+    { skip: !destinationBridgeId || !settingsPanel.open },
+  );
+  const draftProviderOptions = useMemo(
+    () => providerOptionsFromStatus(draftProvidersQuery.currentData),
+    [draftProvidersQuery.currentData],
+  );
+  const draftProvidersLoaded = Boolean(draftProvidersQuery.currentData) || draftProvidersQuery.isError;
+  const bridgeLabelOf = (id: string) => {
+    const row = bridges.find((b: any) => bridgeId(b) === id);
+    return String(row?.label || row?.machine_hostname || id || '');
+  };
+  const providerLabelOf = (config: AgentConfig) =>
+    draftProviderOptions.find((p) => p.id === (config.providerProfile || config.provider))?.label
+      || providerDisplayName(config.provider);
+  const draftChanges = agentInstanceId
+    ? draftDiff(currentConfig, draftConfig, { bridgeLabel: bridgeLabelOf, providerLabel: providerLabelOf })
+    : [];
+  // Model refresh and the ACP fixes act on the DRAFT bridge through the existing paths.
+  const [refreshBridgeModels, refreshModelsState] = useRefreshBridgeModelsMutation();
+  const [updateBridgeRequest, updateBridgeState] = useUpdateBridgeMutation();
+  const [installAcpAdapter, installAcpState] = useInstallAcpAdapterMutation();
+  const [draftRefreshError, setDraftRefreshError] = useState('');
+  const [draftFixError, setDraftFixError] = useState('');
+  useEffect(() => { setDraftRefreshError(''); setDraftFixError(''); }, [destinationBridgeId]);
+  async function refreshDraftModels() {
+    if (!destinationBridgeId) return;
+    setDraftRefreshError('');
+    try { await refreshBridgeModels({ bridgeId: destinationBridgeId }).unwrap(); }
+    catch (err) { setDraftRefreshError(agentErrorText(err, 'Could not check models.')); }
+  }
+  async function fixDraftConnection(fix: AcpAvailabilityFix) {
+    if (!destinationBridgeId) return;
+    setDraftFixError('');
+    try {
+      if (fix === 'update_bridge') await updateBridgeRequest({ bridgeId: destinationBridgeId }).unwrap();
+      else if (fix === 'install_adapter') await installAcpAdapter({ bridgeId: destinationBridgeId, provider: draftConfig.provider }).unwrap();
+      else await refreshBridgeModels({ bridgeId: destinationBridgeId }).unwrap();
+    } catch (err) {
+      setDraftFixError(agentErrorText(err, 'The request failed.'));
+    }
+  }
+  // The panel's gate. The old modal (panel closed, flag off) keeps its own rules: the
+  // draft bridge's provider status is not even fetched there.
+  const draftApplyBlocked = settingsPanel.open
+    ? applyBlockedReason(draftConfig, draftProvidersLoaded ? draftProviderOptions : null)
+    : null;
+  function commitDraft(next: AgentConfig) {
+    settingsEditedRef.current = true;
+    setStagedBridgeId(next.bridgeId === instanceBridgeId ? null : next.bridgeId);
+    setProvider(next.provider);
+    setProviderProfile(next.providerProfile || next.provider);
+    setModel(next.model);
+    setStagedTransport(next.transport === instanceTransport ? null : next.transport);
+    setStagedBypass(next.bypass === instanceBypass ? null : next.bypass);
+  }
+  function dispatchDraft(action: AgentDraftAction) {
+    const next = reduceAgentDraft(draftConfig, action);
+    if (action.type === 'bridge' && next.bridgeId !== draftConfig.bridgeId) setDraftBridgeCheck(next.bridgeId);
+    if (next !== draftConfig) commitDraft(next);
+  }
+  // A picked bridge's provider status arrived: keep the provider if it is installed
+  // there, else switch to the first installed one and its first model.
+  useEffect(() => {
+    if (!draftBridgeCheck || draftBridgeCheck !== destinationBridgeId || !draftProvidersQuery.currentData) return;
+    setDraftBridgeCheck(null);
+    const next = reconcileDraftProviders(draftConfig, draftProviderOptions);
+    if (next !== draftConfig) commitDraft(next);
+  }, [draftBridgeCheck, destinationBridgeId, draftProvidersQuery.currentData]);
   const validityInput = {
     instanceLoaded: Boolean(instance),
     instanceError: instanceQuery.isError,
@@ -2359,6 +2480,16 @@ export function AgentChatPane({
       setReconfigStatus('Choose a provider and model first.');
       return;
     }
+    if (draftApplyBlocked) {
+      setReconfigStatus(draftApplyBlocked.message);
+      return;
+    }
+    // The panel's draft also stages the connection and bypass; send them only when
+    // they change, so the old modal's requests stay exactly as before.
+    const draftExtras = {
+      ...(draftConfig.transport !== instanceTransport ? { runtime_transport: draftConfig.transport } : {}),
+      ...(draftConfig.bypass !== instanceBypass ? { permission_mode: draftConfig.bypass ? 'yolo' as const : 'ask' as const } : {}),
+    };
     setRuntimeMenuOpen(false);
     setReconfigStatus(
       `Applying configuration on ${bridgeLabel || instanceBridgeId || 'this bridge'}…`,
@@ -2370,10 +2501,11 @@ export function AgentChatPane({
       provider: nextProvider,
       provider_profile: effectiveProfile,
       model: nextModel,
+      ...draftExtras,
       expected_revision: Number(instance?.configuration_revision || 0),
       idempotency_key: configurationIntentKey({
         instanceId: agentInstanceId, bridge_id: destinationBridgeId, project_id: destinationProjectId,
-        provider: nextProvider, provider_profile: effectiveProfile, model: nextModel,
+        provider: nextProvider, provider_profile: effectiveProfile, model: nextModel, ...draftExtras,
         expected_revision: Number(instance?.configuration_revision || 0),
       }),
     });
@@ -2428,6 +2560,9 @@ export function AgentChatPane({
   function resetRuntimeConfiguration() {
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
+    setStagedTransport(null);
+    setStagedBypass(null);
+    setDraftBridgeCheck(null);
     setProvider(instanceProvider);
     setProviderProfile(String(instance?.provider_profile || instanceProvider));
     setModel(instanceModel);
@@ -2435,7 +2570,7 @@ export function AgentChatPane({
   }
 
   const pendingReconfig =
-    selectionChangesConfig || operation?.phase === 'recovery_required';
+    selectionChangesConfig || draftChanges.length > 0 || operation?.phase === 'recovery_required';
   // Morphing composer: a 56px pill that grows into the full card while focused or while
   // anything below holds it open (MessageComposer.tsx useComposerExpanded).
   const composerExpansion = useComposerExpanded({
@@ -2655,6 +2790,105 @@ export function AgentChatPane({
       onRestart={() => void restartRuntime()}
       onForceStop={() => void forceStopRuntime()}
     />
+  ) : null;
+  // Sections 2-5 (T6): every control edits the draft above; nothing applies on click.
+  const draftBridgeLabel = bridgeLabelOf(destinationBridgeId);
+  const draftProviderOption = draftProviderOptions.find((p) => p.id === (draftConfig.providerProfile || draftConfig.provider));
+  const draftControlsDisabled = !agentInstanceId || runtimeActionBusy || operationBlocksInput || isStarting;
+  const panelTouch = settingsPanel.mode === 'page';
+  const settingsSections = settingsPanel.open ? (
+    <>
+      <BridgeSection
+        view={bridgeRowsView({
+          bridges,
+          currentBridgeId: instanceBridgeId,
+          projectId,
+          bridgePaths: projectQuery.data?.bridge_paths || [],
+          defaultPath: String(projectQuery.data?.project?.default_path || ''),
+          currentFolder: String(instance?.project_path || ''),
+        })}
+        selected={destinationBridgeId}
+        onSelect={(id) => dispatchDraft({ type: 'bridge', bridgeId: id, providers: null })}
+        manageFoldersHref={projectId ? projectEditHref(projectId) : undefined}
+        disabled={draftControlsDisabled}
+        loading={!bridgesQuery.data}
+        touch={panelTouch}
+      />
+      <ModelSection
+        providers={draftProviderOptions}
+        loaded={draftProvidersLoaded}
+        selectedProvider={draftConfig.providerProfile || draftConfig.provider}
+        selectedModel={draftConfig.model}
+        bridgeLabel={draftBridgeLabel}
+        onSelectProvider={(id) => dispatchDraft({ type: 'provider', id, providers: draftProviderOptions })}
+        onSelectModel={(next) => dispatchDraft({ type: 'model', model: next })}
+        onRefresh={() => void refreshDraftModels()}
+        refreshing={refreshModelsState.isLoading}
+        checkedAt={lastCheckedAt(draftProviderOptions)}
+        refreshError={draftRefreshError}
+        disabled={draftControlsDisabled}
+        touch={panelTouch}
+      />
+      <ConnectionSection
+        selected={draftConfig.transport}
+        onSelect={(transport) => dispatchDraft({ type: 'transport', transport })}
+        acp={acpAvailabilityCopy(draftProviderOption?.acp, {
+          provider: providerLabelOf(draftConfig),
+          bridge: draftBridgeLabel,
+        })}
+        onFix={(fix) => void fixDraftConnection(fix)}
+        fixPending={refreshModelsState.isLoading || updateBridgeState.isLoading || installAcpState.isLoading}
+        fixError={draftFixError}
+        disabled={draftControlsDisabled}
+        touch={panelTouch}
+      />
+      <PermissionsSection
+        bypass={draftConfig.bypass}
+        transport={draftConfig.transport}
+        providerLabel={providerLabelOf(draftConfig)}
+        onChange={(bypass) => dispatchDraft({ type: 'bypass', bypass })}
+        disabled={draftControlsDisabled}
+        touch={panelTouch}
+      />
+      {/* Interim Discard/Apply until T7's staged-changes footer (agent-panel-apply). */}
+      {pendingReconfig ? (
+        <div data-debug-id="agent-panel-interim-apply" className="flex flex-col gap-2">
+          {draftApplyBlocked ? (
+            <Text role="body-sm" tone="muted" data-debug-id="agent-panel-apply-blocked">{draftApplyBlocked.message}</Text>
+          ) : null}
+          {stagedConfigurationIssues.length ? (
+            <ul data-debug-id="agent-panel-destination-validation" className="list-disc space-y-1 pl-5 text-caption text-danger">
+              {stagedConfigurationIssues.map((issue) => <li key={issue}>{issue}</li>)}
+            </ul>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              data-debug-id="agent-panel-legacy-reset-btn"
+              className="min-h-11"
+              disabled={runtimeActionBusy || operationBlocksInput}
+              onClick={resetRuntimeConfiguration}
+            >
+              Discard
+            </Button>
+            <Button
+              variant="primary"
+              data-debug-id="agent-panel-legacy-apply-btn"
+              className="min-h-11"
+              disabled={
+                runtimeActionBusy ||
+                (operation?.phase !== 'recovery_required' && (isStarting || runtimeStopping)) ||
+                stagedConfigurationIssues.length > 0 ||
+                Boolean(draftApplyBlocked)
+              }
+              onClick={() => void applyReconfigure()}
+            >
+              Apply
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </>
   ) : null;
   const runtimeControls = (
     <div data-debug-id="conversation-runtime-controls" className="text-left">
@@ -3668,40 +3902,7 @@ export function AgentChatPane({
         projectLabel={projectId ? <VaultText value={projectName} fallback="Project" /> : undefined}
         runtime={runtimeSection}
       >
-        {/* T6 slot: Runs on · Model · Connection · Permissions (agent-panel-bridge,
-            -model, -connection, -permissions). Until T6 lands, the previous modal's
-            configuration controls keep these settings reachable. */}
-        <AgentPanelSection id="configuration" label="Configuration">
-          <div className="rounded-[var(--radius-lg)] border border-subtle bg-surface-raised p-4 text-left">
-            {runtimeConfigControls}
-            {/* T7 slot: the staged-changes footer (agent-panel-apply) replaces these buttons. */}
-            <div className="mt-3 flex justify-end gap-2">
-              <button
-                type="button"
-                data-debug-id="agent-panel-legacy-reset-btn"
-                disabled={!pendingReconfig || runtimeActionBusy || operationBlocksInput}
-                onClick={resetRuntimeConfiguration}
-                className="min-h-11 rounded-xl border border-subtle px-4 py-2 text-sm text-primary disabled:opacity-40"
-              >
-                Reset
-              </button>
-              <button
-                type="button"
-                data-debug-id="agent-panel-legacy-apply-btn"
-                disabled={
-                  !pendingReconfig ||
-                  runtimeActionBusy ||
-                  (operation?.phase !== 'recovery_required' && (isStarting || runtimeStopping)) ||
-                  stagedConfigurationIssues.length > 0
-                }
-                onClick={() => void applyReconfigure()}
-                className="min-h-11 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg disabled:opacity-40"
-              >
-                Apply
-              </button>
-            </div>
-          </div>
-        </AgentPanelSection>
+        {settingsSections}
       </AgentSettingsPanel>
 
       <Modal
