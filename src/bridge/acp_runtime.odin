@@ -413,6 +413,7 @@ acp_profile_child_env :: proc(pp: ^Provider_Profile) -> ([]string, bool) {
 acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^Provider_Profile) -> (Pty_Host_Spawn_Request, bool) {
     context.allocator = context.temp_allocator
     env, ok := acp_profile_child_env(pp); if !ok do return {}, false
+    // Use the same authoritative profile and desktop context as the TUI path.
     bootstrap := bridge_prespawn_env(r.run_dir, endpoint, token, r.instance)
     defer { for e in bootstrap do delete(e); delete(bootstrap) }
     plan := Profile_Env_Plan{}

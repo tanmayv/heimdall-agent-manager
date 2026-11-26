@@ -372,3 +372,41 @@ bridge_os_is_executable :: proc(path: string) -> bool {
 	c_path := strings.clone_to_cstring(path, context.temp_allocator)
 	return posix.access(c_path, {.X_OK}) == .OK
 }
+
+// Walk by directory descriptors. Never follow a symlink or create a directory
+// below a parent writable by a different unprivileged account.
+bridge_os_browser_profile_dir :: proc(root, id: string) -> string {
+	if !strings.has_prefix(root, "/") || !bridge_browser_registration_valid(id) do return ""
+	path := strings.concatenate({strings.trim_right(root, "/"), "/browser-profiles/", id, "/browser-profile"}, context.temp_allocator)
+	flags := posix.O_Flags{.DIRECTORY, .NOFOLLOW, .CLOEXEC}
+	fd := posix.open("/", flags)
+	if fd < 0 do return ""
+	defer posix.close(fd)
+	uid := posix.geteuid()
+	private := posix.mode_t{.IRUSR, .IWUSR, .IXUSR}
+	parts := strings.split(path[1:], "/", context.temp_allocator)
+	for part, i in parts {
+		if part == "" || part == "." || part == ".." || strings.index_byte(part, 0) >= 0 do return ""
+		name := strings.clone_to_cstring(part, context.temp_allocator)
+		next := posix.openat(fd, name, flags)
+		if next < 0 && posix.errno() == .ENOENT {
+			_ = posix.mkdirat(fd, name, private)
+			next = posix.openat(fd, name, flags)
+		}
+		if next < 0 do return ""
+		_ = posix.close(fd)
+		fd = next
+		info: posix.stat_t
+		if posix.fstat(fd, &info) != .OK do return ""
+		if i >= len(parts)-3 {
+			if info.st_uid != uid || info.st_mode & (posix.S_IRWXU | posix.S_IRWXG | posix.S_IRWXO) != private do return ""
+		} else {
+			if info.st_uid != uid && info.st_uid != 0 do return ""
+			if (.IWGRP in info.st_mode || .IWOTH in info.st_mode) &&
+			   !(info.st_uid == 0 && .ISVXT in info.st_mode) {
+				return ""
+			}
+		}
+	}
+	return strings.clone(path)
+}

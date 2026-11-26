@@ -1556,3 +1556,35 @@ bridge_shell_session_exec_status_str :: proc(s: ^Bridge_Shell_Session) -> string
 	}
 	return "failed"
 }
+
+// The caller owns these pairs. Browser profile overrides cannot bypass the
+// bridge's path verification, even when a session supplies a custom env map.
+bridge_shell_child_env :: proc(kind: Bridge_Shell_Session_Kind, supplied: [][2]string = nil, config: ^Bridge_Config = nil) -> [][2]string {
+	out := make([dynamic][2]string)
+	for pair in supplied {
+		if profile_env_name_equal(pair[0], BRIDGE_BROWSER_PROFILE_ENV) do continue
+		when ODIN_OS == .Linux {
+			desktop := false
+			for name in BRIDGE_BROWSER_SESSION_ENV do if pair[0] == name do desktop = true
+			if desktop do continue
+		}
+		append(&out, [2]string{strings.clone(pair[0]), strings.clone(pair[1])})
+	}
+	// REQ-PAGER-1/2/3: keep one-shot runs from blocking on interactive pagers.
+	if kind == .Run {
+		pagers := [?]string{"PAGER", "GIT_PAGER", "SYSTEMD_PAGER"}
+		for pager in pagers {
+			found := false
+			for pair in out do if profile_env_name_equal(pair[0], pager) do found = true
+			if !found do append(&out, [2]string{strings.clone(pager), strings.clone("cat")})
+		}
+	}
+	settings := config if config != nil else &bridge_config
+	append(&out, [2]string{strings.clone(BRIDGE_BROWSER_PROFILE_ENV), bridge_browser_profile_dir(settings.data_dir, settings.daemon_id)})
+	when ODIN_OS == .Linux {
+		for name in BRIDGE_BROWSER_SESSION_ENV {
+			append(&out, [2]string{strings.clone(name), os.get_env_alloc(name, context.allocator)})
+		}
+	}
+	return out[:]
+}

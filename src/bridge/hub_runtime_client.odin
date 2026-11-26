@@ -5183,18 +5183,6 @@ bridge_shell_error_result_json :: proc(result_type, session_id, command_id, caus
 	return strings.to_string(b)
 }
 
-// REQ-PAGER-1, REQ-PAGER-2, REQ-PAGER-3: inject non-interactive pager overrides into
-// kind=run sessions so interactive pagers (less) do not block one-shot commands on stdin.
-// Caller owns the returned slice and its cloned strings; bridge_pty_host_spawn_request_delete
-// frees both.
-bridge_shell_run_env :: proc() -> [][2]string {
-	out := make([][2]string, 3)
-	out[0] = [2]string{strings.clone("PAGER"), strings.clone("cat")}
-	out[1] = [2]string{strings.clone("GIT_PAGER"), strings.clone("cat")}
-	out[2] = [2]string{strings.clone("SYSTEMD_PAGER"), strings.clone("cat")}
-	return out
-}
-
 // ---- T4: hub→bridge WS runtime command handlers (REQ-SH-CONTRACT §3) ----
 
 // bridge_hub_handle_shell_start handles the "shell_start" command.
@@ -5293,7 +5281,6 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	cmd := spec.cmd
 	cwd := spec.cwd
 	decrypted_env := spec.env
-	has_decrypted_env := spec.has_env
 
 	// T11-BUG-3: an interactive `shell` has no command of its own — it *is* the
 	// user's login shell. Default to $SHELL (falling back to /bin/sh; PowerShell on
@@ -5428,29 +5415,7 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// T11-BUG-1: pty-host cannot tee into a directory that does not exist yet. The
 	// path itself comes from bridge_shell_output_path (src/bridge/shell_common.odin),
 	// which is also what the log and retention paths resolve, so the three agree.
-	spawn_env: [][2]string = nil
-	if has_decrypted_env {
-		dyn_env := make([dynamic][2]string, context.allocator)
-		for pair in decrypted_env {
-			append(&dyn_env, [2]string{strings.clone(pair[0]), strings.clone(pair[1])})
-		}
-		if kind == .Run {
-			has_pager := false
-			has_git_pager := false
-			has_systemd_pager := false
-			for pair in dyn_env {
-				if pair[0] == "PAGER" do has_pager = true
-				if pair[0] == "GIT_PAGER" do has_git_pager = true
-				if pair[0] == "SYSTEMD_PAGER" do has_systemd_pager = true
-			}
-			if !has_pager do append(&dyn_env, [2]string{strings.clone("PAGER"), strings.clone("cat")})
-			if !has_git_pager do append(&dyn_env, [2]string{strings.clone("GIT_PAGER"), strings.clone("cat")})
-			if !has_systemd_pager do append(&dyn_env, [2]string{strings.clone("SYSTEMD_PAGER"), strings.clone("cat")})
-		}
-		spawn_env = dyn_env[:]
-	} else if kind == .Run {
-		spawn_env = bridge_shell_run_env()
-	}
+	spawn_env := bridge_shell_child_env(kind, decrypted_env)
 
 	// The PTY host appends the session's output to tee_path; make sure its
 	// directory exists before the request (a fresh install's first session
@@ -6020,7 +5985,7 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 		argv             = cloned_argv,
 		has_cwd          = cwd_resolved != "",
 		cwd              = strings.clone(cwd_resolved),
-		env              = sess.kind == .Run ? bridge_shell_run_env() : nil,
+		env              = bridge_shell_child_env(sess.kind),
 		rows             = PTY_HOST_DEFAULT_ROWS,
 		cols             = PTY_HOST_DEFAULT_COLS,
 		display_name     = strings.clone(sess.label),

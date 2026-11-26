@@ -102,7 +102,11 @@ bridge_prespawn_env_has_all_heimdall_vars :: proc(t: ^testing.T) {
 	env := bridge_prespawn_env("/tmp/run/inst_abc", "unix:/tmp/bridge.sock", "hlat_tok_1", "inst_abc")
 	defer { for e in env do delete(e); delete(env) }
 
-	testing.expect_value(t, len(env), 4)
+	when ODIN_OS == .Linux {
+		testing.expect_value(t, len(env), 5 + len(BRIDGE_BROWSER_SESSION_ENV))
+	} else {
+		testing.expect_value(t, len(env), 5)
+	}
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_BRIDGE_ENDPOINT=unix:/tmp/bridge.sock"), "endpoint entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_TOKEN=hlat_tok_1"), "token entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_INSTANCE_ID=inst_abc"), "instance entry")
@@ -136,7 +140,11 @@ bridge_prespawn_env_omits_vault_key :: proc(t: ^testing.T) {
 	)
 	defer { for e in env do delete(e); delete(env) }
 
-	testing.expect_value(t, len(env), 4)
+	when ODIN_OS == .Linux {
+		testing.expect_value(t, len(env), 5 + len(BRIDGE_BROWSER_SESSION_ENV))
+	} else {
+		testing.expect_value(t, len(env), 5)
+	}
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_BRIDGE_ENDPOINT=unix:/tmp/bridge.sock"), "endpoint entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_TOKEN=hlat_tok_1"), "token entry")
 	testing.expect(t, bridge_prespawn_test_env_has(env, "HEIMDALL_AGENT_INSTANCE_ID=inst_abc"), "instance entry")
@@ -349,4 +357,82 @@ wake_launch_command_json_forwards_lease_and_pack :: proc(t: ^testing.T) {
 	plain := bridge_wake_launch_command_json("cmd_4", "inst_p", "", "worker", "", "", "agt_p", "coder", "chain_p", "P", "", "", "")
 	defer delete(plain)
 	testing.expect(t, !strings.contains(plain, "lease_id") && !strings.contains(plain, "\"pack\""), "no lease keys without a lease")
+}
+
+// nix develop can mount its private /tmp as uid nobody. That is correctly
+// rejected by the resolver, so give these cases a real owner-controlled root.
+bridge_browser_test_root :: proc() -> (string, os.Error) {
+	dir, err := os.get_working_directory(context.temp_allocator)
+	if err != nil do return "", err
+	return os.make_directory_temp(dir, "ham-browser-fixture-*", context.allocator)
+}
+
+@(test)
+bridge_browser_profile_persists_and_separates_registrations :: proc(t: ^testing.T) {
+	root, err := bridge_browser_test_root()
+	if !testing.expect(t, err == nil) do return
+	defer { _ = os.remove_all(root); delete(root) }
+	first := bridge_os_browser_profile_dir(root, "brg_a")
+	defer delete(first)
+	second := bridge_os_browser_profile_dir(root, "brg_b")
+	defer delete(second)
+	if !testing.expect(t, first != "" && second != "" && first != second) do return
+	marker := fmt.tprintf("%s/fixture", first)
+	if !testing.expect(t, os.write_entire_file_from_string(marker, "local-only") == nil) do return
+	reopened := bridge_os_browser_profile_dir(root, "brg_a")
+	defer delete(reopened)
+	contents, read_err := os.read_entire_file(fmt.tprintf("%s/fixture", reopened), context.temp_allocator)
+	testing.expect(t, first == reopened && read_err == nil && string(contents) == "local-only")
+	_, other_err := os.stat(fmt.tprintf("%s/fixture", second), context.temp_allocator)
+	testing.expect(t, other_err != nil)
+}
+
+@(test)
+bridge_browser_profile_refuses_symlinks_and_unsafe_mode :: proc(t: ^testing.T) {
+	root, err := bridge_browser_test_root()
+	if !testing.expect(t, err == nil) do return
+	defer { _ = os.remove_all(root); delete(root) }
+	first := bridge_os_browser_profile_dir(root, "brg_a")
+	defer delete(first)
+	if !testing.expect(t, first != "") do return
+	link := strings.clone_to_cstring(fmt.tprintf("%s/browser-profiles/brg_b", root), context.temp_allocator)
+	target := strings.clone_to_cstring(fmt.tprintf("%s/browser-profiles/brg_a", root), context.temp_allocator)
+	if !testing.expect(t, posix.symlink(target, link) == .OK) do return
+	bad := bridge_os_browser_profile_dir(root, "brg_b")
+	defer delete(bad)
+	testing.expect_value(t, bad, "")
+	if !testing.expect(t, posix.chmod(strings.clone_to_cstring(first, context.temp_allocator), posix.S_IRWXU | posix.S_IRWXG) == .OK) do return
+	wide := bridge_os_browser_profile_dir(root, "brg_a")
+	defer delete(wide)
+	testing.expect_value(t, wide, "")
+}
+
+@(test)
+bridge_browser_profile_matches_in_agent_and_shell_children :: proc(t: ^testing.T) {
+	root, err := bridge_browser_test_root()
+	if !testing.expect(t, err == nil) do return
+	defer { _ = os.remove_all(root); delete(root) }
+	config := Bridge_Config{data_dir = root, daemon_id = "brg_fixture"}
+	expected := fmt.tprintf("%s/browser-profiles/brg_fixture/browser-profile", root)
+	argv := [?]string{"/bin/sh", "-c", `printf '%s' "$HEIMDALL_BROWSER_PROFILE_DIR"`}
+
+	instances := [?]string{"agent_a", "agent_b"}
+	for instance in instances {
+		env := bridge_prespawn_env(root, "", "", instance, &config)
+		defer { for e in env do delete(e); delete(env) }
+		state, stdout, stderr, exec_err := os.process_exec({command = argv[:], env = env}, context.temp_allocator)
+		testing.expect(t, exec_err == nil && state.exit_code == 0, string(stderr))
+		testing.expect_value(t, string(stdout), expected)
+	}
+
+	kinds := [?]Bridge_Shell_Session_Kind{.Run, .Shell, .Server}
+	for kind in kinds {
+		env := bridge_shell_child_env(kind, {{BRIDGE_BROWSER_PROFILE_ENV, "/unrelated"}}, &config)
+		defer bridge_pty_host_spawn_request_delete({env = env})
+		child_env := make([]string, len(env), context.temp_allocator)
+		for pair, i in env do child_env[i] = fmt.tprintf("%s=%s", pair[0], pair[1])
+		state, stdout, stderr, exec_err := os.process_exec({command = argv[:], env = child_env}, context.temp_allocator)
+		testing.expect(t, exec_err == nil && state.exit_code == 0, string(stderr))
+		testing.expect_value(t, string(stdout), expected)
+	}
 }

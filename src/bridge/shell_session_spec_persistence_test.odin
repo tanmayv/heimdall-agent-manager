@@ -258,7 +258,7 @@ test_shell_session_spec_zero_tracking_allocator_leaks :: proc(t: ^testing.T) {
 
 @(test)
 test_shell_run_env_key_values :: proc(t: ^testing.T) {
-	env := bridge_shell_run_env()
+	env := bridge_shell_child_env(.Run)
 	defer {
 		for kv in env {
 			delete(kv[0])
@@ -267,8 +267,7 @@ test_shell_run_env_key_values :: proc(t: ^testing.T) {
 		delete(env)
 	}
 
-	testing.expect_value(t, len(env), 3)
-	if len(env) == 3 {
+	if testing.expect(t, len(env) >= 4) {
 		testing.expect_value(t, env[0][0], "PAGER")
 		testing.expect_value(t, env[0][1], "cat")
 		testing.expect_value(t, env[1][0], "GIT_PAGER")
@@ -290,7 +289,7 @@ test_shell_run_env_cleanly_freed_by_spawn_request_delete :: proc(t: ^testing.T) 
 
 	{
 		req := Pty_Host_Spawn_Request{
-			env = bridge_shell_run_env(),
+			env = bridge_shell_child_env(.Run),
 		}
 		bridge_pty_host_spawn_request_delete(req)
 	}
@@ -304,24 +303,24 @@ test_shell_run_env_cleanly_freed_by_spawn_request_delete :: proc(t: ^testing.T) 
 
 @(test)
 test_shell_env_kind_branching :: proc(t: ^testing.T) {
-	run_env := Bridge_Shell_Session_Kind.Run == .Run ? bridge_shell_run_env() : nil
+	run_env := bridge_shell_child_env(.Run)
 	testing.expect(t, run_env != nil, "Run env must not be nil")
-	testing.expect_value(t, len(run_env), 3)
+	testing.expect_value(t, run_env[3][0], BRIDGE_BROWSER_PROFILE_ENV)
 
 	req_run := Pty_Host_Spawn_Request{
 		env = run_env,
 	}
 	bridge_pty_host_spawn_request_delete(req_run)
 
-	shell_env := Bridge_Shell_Session_Kind.Shell == .Run ? bridge_shell_run_env() : nil
-	testing.expect(t, shell_env == nil, "Shell env must remain nil")
+	shell_env := bridge_shell_child_env(.Shell)
+	testing.expect(t, shell_env[0][0] == BRIDGE_BROWSER_PROFILE_ENV, "Shell must get profile without pager defaults")
 	req_shell := Pty_Host_Spawn_Request{
 		env = shell_env,
 	}
 	bridge_pty_host_spawn_request_delete(req_shell)
 
-	server_env := Bridge_Shell_Session_Kind.Server == .Run ? bridge_shell_run_env() : nil
-	testing.expect(t, server_env == nil, "Server env must remain nil")
+	server_env := bridge_shell_child_env(.Server)
+	testing.expect(t, server_env[0][0] == BRIDGE_BROWSER_PROFILE_ENV, "Server must get profile without pager defaults")
 	req_server := Pty_Host_Spawn_Request{
 		env = server_env,
 	}

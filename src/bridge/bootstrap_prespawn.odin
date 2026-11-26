@@ -87,11 +87,43 @@ bridge_prespawn_rmdir_all :: proc(dir: string) {
 	_ = os.remove(dir)
 }
 
+BRIDGE_BROWSER_PROFILE_ENV :: "HEIMDALL_BROWSER_PROFILE_DIR"
+
+// A detached PTY host can outlive the bridge and retain a stale desktop
+// environment. Send the current service values with each browser-capable child.
+BRIDGE_BROWSER_SESSION_ENV :: [?]string{
+	"DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
+	"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+}
+
+// Empty means unavailable. The authoritative value always replaces an inherited
+// value, including on failure, so a tool cannot accidentally use a stale profile.
+bridge_browser_profile_dir :: proc(data_dir, registration: string) -> string {
+	root := strings.trim_space(data_dir)
+	if root == "" || (ODIN_OS == .Windows && root == "~/.local/share/heimdall") {
+		root = bridge_os_default_data_dir()
+		defer if root != "~/.local/share/heimdall" do delete(root)
+		return bridge_os_browser_profile_dir(root, registration)
+	}
+	expanded := bridge_expand_home(root)
+	defer if raw_data(expanded) != raw_data(root) do delete(expanded)
+	return bridge_os_browser_profile_dir(expanded, registration)
+}
+
+bridge_browser_registration_valid :: proc(id: string) -> bool {
+	if len(id) == 0 || len(id) > 128 do return false
+	for c in id {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') do return false
+	}
+	return true
+}
+
 // bridge_prespawn_env builds the HEIMDALL_* environment the agent process (and the
 // in-run-dir ham-ctl shim) inherit, as "KEY=VALUE" entries:
 //   HEIMDALL_BRIDGE_ENDPOINT   — local bridge socket the ctl shim dials
 //   HEIMDALL_AGENT_TOKEN       — this instance's agent token
 //   HEIMDALL_AGENT_INSTANCE_ID — the agent instance id
+//   HEIMDALL_BROWSER_PROFILE_DIR — verified profile path, empty if unavailable
 //   HEIMDALL_CTL_BIN           — absolute path to the materialized ham-ctl shim
 //
 // The vault keyring is deliberately NOT injected here. It used to be, but the env is
@@ -104,7 +136,7 @@ bridge_prespawn_rmdir_all :: proc(dir: string) {
 // so it is always live; $HEIMDALL_VAULT_KEYRING remains only as an explicit override.
 //
 // The caller owns the returned slice and each string.
-bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: string) -> []string {
+bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: string, config: ^Bridge_Config = nil) -> []string {
 	ctl_bin := bridge_prespawn_ctl_bin_path(run_dir)
 	defer delete(ctl_bin)
 	out := make([dynamic]string)
@@ -112,6 +144,16 @@ bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: 
 	append(&out, strings.concatenate({"HEIMDALL_AGENT_TOKEN=", agent_token}))
 	append(&out, strings.concatenate({"HEIMDALL_AGENT_INSTANCE_ID=", instance_id}))
 	append(&out, strings.concatenate({"HEIMDALL_CTL_BIN=", ctl_bin}))
+	settings := config if config != nil else &bridge_config
+	profile := bridge_browser_profile_dir(settings.data_dir, settings.daemon_id)
+	defer delete(profile)
+	append(&out, strings.concatenate({BRIDGE_BROWSER_PROFILE_ENV, "=", profile}))
+	when ODIN_OS == .Linux {
+		for name in BRIDGE_BROWSER_SESSION_ENV {
+			value := os.get_env(name, context.temp_allocator)
+			append(&out, strings.concatenate({name, "=", value}))
+		}
+	}
 	return out[:]
 }
 

@@ -375,3 +375,132 @@ bridge_os_is_executable :: proc(path: string) -> bool {
 	ext := strings.to_lower(path[max(strings.last_index_byte(path, '.'), 0):], context.temp_allocator)
 	return ext == ".exe" || ext == ".cmd" || ext == ".bat" || ext == ".com"
 }
+
+foreign import profile_advapi "system:Advapi32.lib"
+
+@(default_calling_convention="system")
+foreign profile_advapi {
+	GetNamedSecurityInfoW :: proc(path: win.LPCWSTR, object_type, info: win.DWORD, owner, group: ^win.PSID, dacl, sacl: ^win.PACL, descriptor: ^rawptr) -> win.DWORD ---
+	ConvertStringSecurityDescriptorToSecurityDescriptorW :: proc(text: win.LPCWSTR, revision: win.DWORD, descriptor: ^rawptr, size: ^win.DWORD) -> win.BOOL ---
+	EqualSid :: proc(a, b: win.PSID) -> win.BOOL ---
+	GetAce :: proc(acl: win.PACL, index: win.DWORD, ace: ^rawptr) -> win.BOOL ---
+	GetSecurityDescriptorControl :: proc(descriptor: rawptr, control: ^u16, revision: ^win.DWORD) -> win.BOOL ---
+	ConvertStringSidToSidW :: proc(text: win.LPCWSTR, sid: ^win.PSID) -> win.BOOL ---
+}
+
+bridge_os_browser_profile_dir :: proc(root, id: string) -> string {
+	if !bridge_browser_registration_valid(id) || len(root) < 4 || root[1] != ':' ||
+	   !('A' <= root[0] && root[0] <= 'Z' || 'a' <= root[0] && root[0] <= 'z') ||
+	   (root[2] != '/' && root[2] != '\\') || strings.index_byte(root, 0) >= 0 {
+		return ""
+	}
+	path, _ := strings.replace_all(root, "/", "\\", context.temp_allocator)
+	path = strings.trim_right(path, "\\")
+	parts := strings.split(path[3:], "\\", context.temp_allocator)
+	prefix := path[:2]
+	for component in parts {
+		if component == "" || component == "." || component == ".." ||
+		   strings.contains_any(component, ":*?\"<>|") || strings.trim_right(component, ". ") != component {
+			return ""
+		}
+		prefix = strings.concatenate({prefix, "\\", component}, context.temp_allocator)
+		wire := win.utf8_to_wstring(prefix, context.temp_allocator)
+		attrs := win.GetFileAttributesW(wire)
+		if attrs == win.INVALID_FILE_ATTRIBUTES {
+			_ = win.CreateDirectoryW(wire, nil)
+			attrs = win.GetFileAttributesW(wire)
+		}
+		if !bridge_browser_windows_real_dir(attrs) do return ""
+	}
+
+	token: win.HANDLE
+	if !win.OpenProcessToken(win.GetCurrentProcess(), win.TOKEN_QUERY, &token) do return ""
+	defer win.CloseHandle(token)
+	bytes: win.DWORD
+	win.GetTokenInformation(token, .TokenUser, nil, 0, &bytes)
+	if bytes == 0 || bytes > 4096 do return ""
+	buffer := make([]uintptr, (int(bytes) + size_of(uintptr) - 1) / size_of(uintptr), context.temp_allocator)
+	if !win.GetTokenInformation(token, .TokenUser, raw_data(buffer), bytes, &bytes) do return ""
+	sid := (^win.PSID)(raw_data(buffer))^
+	if sid == nil do return ""
+	if !bridge_browser_windows_safe_root(win.utf8_to_wstring(prefix, context.temp_allocator), sid) do return ""
+	text_sid: win.LPCWSTR
+	if !win.ConvertSidToStringSidW(cast(^win.SID)sid, &text_sid) do return ""
+	defer win.LocalFree(cast(rawptr)text_sid)
+	sid_string, sid_err := win.wstring_to_utf8(cast(win.wstring)text_sid, -1, context.temp_allocator)
+	if sid_err != nil do return ""
+	// Disable ACL inheritance onto this directory. Descendants inherit access
+	// for only the service account. Explicit ownership rules out foreign owners.
+	sddl := fmt.tprintf("O:%sD:P(A;OICI;0x001F01FF;;;%s)", sid_string, sid_string)
+	descriptor: rawptr
+	if !ConvertStringSecurityDescriptorToSecurityDescriptorW(win.utf8_to_wstring(sddl, context.temp_allocator), 1, &descriptor, nil) do return ""
+	defer win.LocalFree(descriptor)
+	attrs := win.SECURITY_ATTRIBUTES{nLength = size_of(win.SECURITY_ATTRIBUTES), lpSecurityDescriptor = descriptor}
+	managed := [?]string{"browser-profiles", id, "browser-profile"}
+	for component in managed {
+		prefix = strings.concatenate({prefix, "\\", component}, context.temp_allocator)
+		wire := win.utf8_to_wstring(prefix, context.temp_allocator)
+		_ = win.CreateDirectoryW(wire, &attrs)
+		if !bridge_browser_windows_real_dir(win.GetFileAttributesW(wire)) do return ""
+		owner: win.PSID
+		dacl: win.PACL
+		existing: rawptr
+		// SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION.
+		if GetNamedSecurityInfoW(wire, 1, 5, &owner, nil, &dacl, nil, &existing) != 0 do return ""
+		defer win.LocalFree(existing)
+		if owner == nil || !EqualSid(owner, sid) || dacl == nil || dacl.AceCount != 1 do return ""
+		ace: rawptr
+		if !GetAce(dacl, 0, &ace) || ace == nil do return ""
+		control: u16
+		revision: win.DWORD
+		if !GetSecurityDescriptorControl(existing, &control, &revision) || control & 0x1000 == 0 do return ""
+		header := (^Bridge_Browser_Ace)(ace)
+		// ACCESS_ALLOWED_ACE_TYPE with OBJECT_INHERIT and CONTAINER_INHERIT only.
+		if header.kind != 0 || header.flags != 3 || header.mask != 0x001F01FF ||
+		   !EqualSid(cast(win.PSID)&header.sid_start, sid) {
+			return ""
+		}
+	}
+	return strings.clone(prefix)
+}
+
+bridge_browser_windows_real_dir :: proc(attrs: win.DWORD) -> bool {
+	return attrs != win.INVALID_FILE_ATTRIBUTES && attrs & win.FILE_ATTRIBUTE_DIRECTORY != 0 &&
+	       attrs & win.FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+Bridge_Browser_Ace :: struct {
+	kind, flags: u8,
+	size: u16,
+	mask: u32,
+	sid_start: u32,
+}
+
+bridge_browser_windows_safe_root :: proc(path: win.LPCWSTR, sid: win.PSID) -> bool {
+	owner: win.PSID
+	dacl: win.PACL
+	descriptor: rawptr
+	if GetNamedSecurityInfoW(path, 1, 5, &owner, nil, &dacl, nil, &descriptor) != 0 do return false
+	defer win.LocalFree(descriptor)
+	if owner == nil || !EqualSid(owner, sid) || dacl == nil do return false
+
+	system, admins: win.PSID
+	if !ConvertStringSidToSidW(win.utf8_to_wstring("S-1-5-18", context.temp_allocator), &system) do return false
+	defer win.LocalFree(system)
+	if !ConvertStringSidToSidW(win.utf8_to_wstring("S-1-5-32-544", context.temp_allocator), &admins) do return false
+	defer win.LocalFree(admins)
+	// An untrusted principal with DELETE_CHILD could substitute the private
+	// child directory, irrespective of the child's own ACL.
+	mutation :: 0x500D0046 // generic write/all, owner/DACL-write, delete, delete-child, create
+	for i in 0 ..< win.DWORD(dacl.AceCount) {
+		ace: rawptr
+		if !GetAce(dacl, i, &ace) || ace == nil do return false
+		header := (^Bridge_Browser_Ace)(ace)
+		if header.kind == 1 || header.flags & 8 != 0 do continue // deny or inherit-only
+		if header.kind != 0 do return false // unknown allow semantics
+		if header.mask & mutation == 0 do continue
+		who := cast(win.PSID)&header.sid_start
+		if !EqualSid(who, sid) && !EqualSid(who, system) && !EqualSid(who, admins) do return false
+	}
+	return true
+}
