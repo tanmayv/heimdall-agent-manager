@@ -1042,7 +1042,10 @@ test_boot_heals_leaseless_in_progress_and_rearms :: proc(t: ^testing.T) {
 	fx.svc.timers = Timer_Service{}
 	boot(&fx.svc)
 	testing.expect_value(t, count_events(fx, "task_1", EV_LEASE_EXPIRED), 1)
-	testing.expect(t, timers_armed_count(&fx.svc) == 0, "confirmed durable assignment needs no expiration timers")
+	// No expiration timers; the only one rebuilt is the lease's stall watch
+	// (lease_stall.odin), which reports silence and never expires the lease.
+	testing.expect(t, timers_armed_count(&fx.svc) == 1, "confirmed durable assignment arms only its stall watch")
+	for timer in fx.svc.timers.heap do testing.expect(t, timer.kind == .Lease_Stalled && timer.key == l2.lease_id, "only the stall watch is armed")
 	l3, held3 := lease_of(fx, "inst_w1")
 	testing.expect(t, held3 && l3.lease_id == l2.lease_id, "live lease untouched by boot")
 }
