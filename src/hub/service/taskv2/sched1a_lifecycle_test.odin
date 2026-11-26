@@ -576,6 +576,74 @@ test_sched1a_row19_bridge_reconnect_honours_grace_window :: proc(t: ^testing.T) 
 	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "the coordinator is never touched")
 }
 
+// Row 19 through a real disconnect: during on_bridge_hello the reported-active
+// instances still read `unreachable` (the heartbeat reconcile runs later), so
+// the sweep must take the bridge's report as liveness. A grace reviewer inside
+// its window is kept; past it, it is stopped, as is a lease-free orphan with
+// no window at all. Claim holders and the coordinator are untouched.
+@(test)
+test_sched1a_row19_reconnect_after_disconnect_stops_unreachable_orphans :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "s1a_r19d")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := s1a_setup(t, fx, "s1a_r19d", idle_ttl = 120)
+	_ = publish_task(t, fx, chain, "task_1", brief = BRIEF_ONE_REVIEWER)
+	if !s1a_submit(t, fx, "inst_w1", "v1") do return
+	if _, rok := s1a_review(t, fx, "inst_r1", "request_changes"); !rok do return
+	confirm_holder(fx, "inst_w1")
+	testing.expect_value(t, s1a_inst(fx, "inst_r2").idle_since, "") // seeded, never started: no window
+	bridge_disconnect(fx, "br_1")
+	for id in ([]string{"inst_w1", "inst_r1", "inst_r2"}) do testing.expect_value(t, s1a_inst(fx, id).runtime_status, "unreachable")
+	_, w_held := lease_of(fx, "inst_w1")
+	testing.expect(t, w_held, "disconnect alone keeps the worker's lease")
+	live := []string{"inst_w1", "inst_r1", "inst_r2", "inst_coord"}
+	// Reconnect inside r1's window: the bridge is online, statuses not yet reconciled.
+	set_bridge_status(fx, "br_1", true)
+	wake_log_reset(log)
+	on_bridge_hello(&fx.svc, "br_1", live)
+	testing.expect(t, !wake_log_has_stop(log, "inst_r1"), "inside its window: kept even while unreachable")
+	testing.expect_value(t, s1a_inst(fx, "inst_r1").stop_reason, "")
+	s1a_expect_stopped(t, fx, log, "inst_r2", STOP_REASON_IDLE_TTL, "unreachable orphan with no window")
+	// Another outage; reconnect after the window ended.
+	bridge_disconnect(fx, "br_1")
+	fixture_advance(fx, 121)
+	set_bridge_status(fx, "br_1", true)
+	wake_log_reset(log)
+	on_bridge_hello(&fx.svc, "br_1", live)
+	testing.expect_value(t, s1a_inst(fx, "inst_r1").runtime_status, "unreachable")
+	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_IDLE_TTL, "unreachable grace reviewer past its window")
+	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "the claim holder is kept")
+	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "the coordinator is never touched")
+}
+
+// Spec SCHED 12 (bridge offline): the grace timer fires while the bridge is
+// offline (the instance reads `unreachable`, nothing can be sent), and the
+// stop is delivered on reconnect.
+@(test)
+test_sched1a_grace_timer_while_offline_stops_on_reconnect :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "s1a_offline")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := s1a_setup(t, fx, "s1a_offline", idle_ttl = 120)
+	_ = publish_task(t, fx, chain, "task_1", brief = BRIEF_ONE_REVIEWER)
+	if !s1a_submit(t, fx, "inst_w1", "v1") do return
+	if _, rok := s1a_review(t, fx, "inst_r1", "request_changes"); !rok do return
+	since := s1a_inst(fx, "inst_r1").idle_since
+	bridge_disconnect(fx, "br_1")
+	fixture_advance(fx, 121)
+	wake_log_reset(log)
+	_ = fire_due(&fx.svc, now_ms(&fx.clock))
+	testing.expect(t, !wake_log_has_stop(log, "inst_r1"), "no stop while the bridge is offline")
+	_, armed := s1a_idle_timer(&fx.svc, "inst_r1")
+	testing.expect(t, !armed, "the timer has fired")
+	testing.expect_value(t, s1a_inst(fx, "inst_r1").idle_since, since)
+	set_bridge_status(fx, "br_1", true)
+	wake_log_reset(log)
+	on_bridge_hello(&fx.svc, "br_1", []string{"inst_w1", "inst_r1", "inst_coord"})
+	s1a_expect_stopped(t, fx, log, "inst_r1", STOP_REASON_IDLE_TTL, "stop delivered on reconnect")
+	testing.expect(t, !wake_log_has_stop(log, "inst_coord"), "the coordinator is never touched")
+}
+
 // Coordinator column of rows 4 and 6: the coordinator as a listed reviewer
 // pulls the review, posts, loses the lease and is neither stopped nor timed out.
 @(test)

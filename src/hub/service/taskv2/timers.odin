@@ -452,6 +452,9 @@ fire_idle_ttl :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	inst, iok, _ := iface.agent_get_instance(svc.agents, t.key)
 	if !iok do return .Noop
 	if inst.idle_since == "" || inst.idle_since != t.armed do return .Noop // re-leased and released again: the newer timer owns it (S4)
+	// Not running (or `unreachable` behind an offline bridge): nothing to stop
+	// now. idle_since is unchanged, so the reconnect sweep finds the window
+	// over and delivers the stop (spec SCHED 12, bridge offline).
 	if !instance_is_live(inst) && !instance_is_pending(inst) do return .Noop
 	// The grace window ended with no lease (REQ-SCHED-23/26): point reads only.
 	// A worker waiting for review or blocked holds a waiting claim, so it is

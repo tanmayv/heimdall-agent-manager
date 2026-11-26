@@ -375,9 +375,11 @@ lease_stop_reason :: proc(reason: string) -> bool {
 // stop_instance_in_uow records the stop intent, then queues the stop effect:
 // the intent commits with the unit of work before the bridge sees the stop,
 // and a late runtime report cannot authorize a delayed restart (REQ-SCHED-28,
-// the LIFE-6 fence). An instance that is not running needs no stop.
-stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance, chain_id: string, reason: string) -> (bool, domain.Domain_Error) {
-	if !instance_is_live(inst) && !instance_is_pending(inst) do return true, {}
+// the LIFE-6 fence). An instance that is not running needs no stop, unless
+// `reported_live`: its bridge has just reported it active, which outranks the
+// stored status (still `unreachable` from the disconnect during on_bridge_hello).
+stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance, chain_id: string, reason: string, reported_live := false) -> (bool, domain.Domain_Error) {
+	if !reported_live && !instance_is_live(inst) && !instance_is_pending(inst) do return true, {}
 	if recorded, err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, reason); !recorded {
 		if err.code == .None do return false, domain.domain_error(.Internal_Error, "failed to record stop intent")
 		return false, err
@@ -395,7 +397,12 @@ stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance
 // its grace window it is kept and its timer re-armed; past it, it is stopped
 // (spec SCHED 8.1 row 19). An instance with no idle_since never had a window
 // the hub knows of (REQ-SCHED-27 gives every lease-free instance one), so it
-// is an orphan and is stopped. False when a stop intent could not be recorded.
+// is an orphan and is stopped. Every id here was reported active by the
+// bridge, so the stop is sent whatever the stored runtime status says: after a
+// disconnect it still reads `unreachable` while the hello is handled, and an
+// Idle_TTL that fired while the bridge was offline was a no-op, so this is
+// where that stop is delivered (spec SCHED 12, bridge offline). False when a
+// stop intent could not be recorded.
 sweep_idle_instances_in_uow :: proc(svc: ^Service, u: ^Uow, bridge_id: string, active_instance_ids: []string) -> bool {
 	now := platform.clock_now(svc.clock)
 	ok := true
@@ -412,7 +419,7 @@ sweep_idle_instances_in_uow :: proc(svc: ^Service, u: ^Uow, bridge_id: string, a
 			arm_idle_ttl(svc, id, ttl, inst.idle_since)
 			continue
 		}
-		if stopped, _ := stop_instance_in_uow(svc, u, inst, inst.chain_id, STOP_REASON_IDLE_TTL); !stopped do ok = false
+		if stopped, _ := stop_instance_in_uow(svc, u, inst, inst.chain_id, STOP_REASON_IDLE_TTL, reported_live = true); !stopped do ok = false
 	}
 	return ok
 }
