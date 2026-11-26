@@ -1,6 +1,8 @@
 package taskv2
 
+import "base:runtime"
 import "core:fmt"
+import "core:mem/virtual"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -17,14 +19,17 @@ import platform "odin_test:hub/platform"
 // fail_marker: while set, sends whose body names it are refused (a stop the
 // live source never confirmed). Preflight counters observe bridge round-trips
 // that native starts may wait on, and how many overlap.
-Fleet_Probe :: struct {commands:[dynamic]project.Runtime_Command,under_tx:bool,fx:^Fixture,mutex:sync.Mutex,fail_marker:string,preflights,preflight_in_flight,preflight_max:int}
+Fleet_Probe :: struct {commands:[dynamic]project.Runtime_Command,under_tx:bool,fx:^Fixture,mutex:sync.Mutex,fail_marker:string,preflights,preflight_in_flight,preflight_max:int,allocator:runtime.Allocator}
 fleet_probe_send :: proc(ctx:rawptr,cmd:project.Runtime_Command)->(bool,domain.Domain_Error) {
 	p:=(^Fleet_Probe)(ctx)
 	u,ok,_:=iface.unit_of_work_begin(&p.fx.uow)
 	if ok {p.under_tx=p.under_tx || u.nested;iface.unit_of_work_rollback(&u)}
 	sync.mutex_guard(&p.mutex)
 	if p.fail_marker!="" && strings.contains(cmd.body_json,p.fail_marker) do return false,domain.domain_error(.Bridge_Offline,"injected send failure")
-	append(&p.commands,project.Runtime_Command{bridge_id=strings.clone(cmd.bridge_id),command_id=strings.clone(cmd.command_id),body_json=strings.clone(cmd.body_json)})
+	// Like a real sink, keep what outlives the call on an explicit allocator:
+	// sends may run on a Fleet worker whose own arena is gone after the pass.
+	a:=p.allocator if p.allocator.procedure!=nil else context.allocator
+	append(&p.commands,project.Runtime_Command{bridge_id=strings.clone(cmd.bridge_id,a),command_id=strings.clone(cmd.command_id,a),body_json=strings.clone(cmd.body_json,a)})
 	return true,{}
 }
 fleet_probe_validate :: proc(ctx:rawptr,cmd:project.Validate_Project_Path_Command)->(project.Project_Path_Validation_Result,bool,domain.Domain_Error) {
@@ -41,7 +46,8 @@ fleet_probe_validate :: proc(ctx:rawptr,cmd:project.Validate_Project_Path_Comman
 	return {type="validate_project_path",command_id=cmd.command_id,project_id=cmd.project_id,path=cmd.path,ok=true},true,{}
 }
 fleet_probe_close :: proc(p:^Fleet_Probe) {
-	for c in p.commands {delete(c.bridge_id);delete(c.command_id);delete(c.body_json)}
+	a:=p.allocator if p.allocator.procedure!=nil else context.allocator
+	for c in p.commands {delete(c.bridge_id,a);delete(c.command_id,a);delete(c.body_json,a)}
 	delete(p.commands)
 }
 fleet_test_service :: proc(t:^testing.T,fx:^Fixture,log:^Wake_Log,p:^Fleet_Probe)->(fleet.Service,bool) {
@@ -58,6 +64,8 @@ fleet_test_service :: proc(t:^testing.T,fx:^Fixture,log:^Wake_Log,p:^Fleet_Probe
 	}
 	if !testing.expectf(t,found && oe.code==.None && owner.user_id=="u1" && owner.status==.Active,"Fleet fixture owner verification: %v %s",oe.code,oe.message) do return {},false
 	p.fx=fx
+	if p.allocator.procedure==nil do p.allocator=context.allocator
+	if p.commands==nil do p.commands=make([dynamic]project.Runtime_Command,p.allocator)
 	log.service.bridge_command_sink={ctx=p,send_runtime_command=fleet_probe_send}
 	log.service.hooks={ctx=&fx.svc,on_terminal=proc(ctx:rawptr,id:string){on_instance_terminal((^Service)(ctx),id)},launch_context=proc(ctx:rawptr,i:domain.Agent_Instance)->(agent.Start_Lease,bool,domain.Domain_Error){return reconfiguration_launch_context((^Service)(ctx),i)}}
 	return {settings=agent.fleet_service(&log.service),agents=&log.service,factory=&fx.uow,clock=&fx.clock,ids=&fx.ids},true
@@ -398,4 +406,43 @@ test_fleet_reconcile_skips_settled_partial_failure :: proc(t:^testing.T) {
 	testing.expect(t,le.code==.None && len(rows)==1,"a retried application is in flight again")
 	for &row in rows do domain.fleet_application_record_destroy(&row)
 	delete(rows)
+}
+
+// Hub callers (reaper passes, request threads) run Fleet on a per-pass arena
+// that is not thread-safe. A parallel pass under such a caller must keep every
+// worker allocation off that arena, and its outcome must survive the arena.
+@(test)
+test_fleet_parallel_pass_under_caller_arena :: proc(t:^testing.T) {
+	fx,log,ok:=lease_fixture(t,"fleet_arena");defer lease_fixture_close(fx,log);if !ok do return
+	chain:=seed_live_chain(t,fx,"fleet_arena");fleet_feature_bridge(fx,"br_1")
+	p:Fleet_Probe;defer fleet_probe_close(&p);s,sok:=fleet_test_service(t,fx,log,&p);if !sok do return
+	n:=3*fleet.FLEET_RESTART_CONCURRENCY
+	for k in 0..<n {
+		name:=fmt.tprintf("fleet_arena_fail_%d",k) if k%4==0 else fmt.tprintf("fleet_arena_ok_%d",k)
+		_=iface.fleet_scope_set(&fx.bridges,seed_instance(fx,chain,name,"agt_w","br_1","running"),"chain")
+	}
+	p.fail_marker="fleet_arena_fail_"
+	application_id:string
+	{
+		scratch:virtual.Arena
+		if !testing.expect(t,virtual.arena_init_growing(&scratch)==nil) do return
+		defer virtual.arena_destroy(&scratch)
+		context.allocator=virtual.arena_allocator(&scratch)
+		r,accepted,e:=fleet_test_apply(&s,"arena")
+		if !testing.expectf(t,accepted && e.code==.None,"arena apply: %s",e.message) do return
+		testing.expect_value(t,len(r.application.targets),n)
+		application_id=strings.clone(r.application.application_id,context.temp_allocator)
+		p.fail_marker=""
+		retried,rok,re:=fleet.retry_application(&s,{user_id="u1"},"br_1",application_id)
+		testing.expectf(t,rok && re.code==.None && retried.application.state=="restarting","arena retry: %s",re.message)
+		fleet.reconcile(&s)
+	}
+	// Read back on the test's own allocator after the caller arena is gone.
+	status,found,_:=fleet.read_application(&s,{user_id="u1"},"br_1",application_id)
+	if !testing.expect(t,found) do return
+	defer domain.fleet_application_record_destroy(&status)
+	testing.expect_value(t,status.application.state,"restarting")
+	testing.expect_value(t,status.application.revision,3)
+	for target in status.application.targets do testing.expect(t,target.state=="restarting" && target.error_code=="" && target.error_message=="" && !target.retryable,target.agent_instance_id)
+	testing.expect_value(t,len(p.commands),n)
 }

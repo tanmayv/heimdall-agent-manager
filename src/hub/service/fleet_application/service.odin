@@ -2,6 +2,7 @@ package fleet_application
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:mem/virtual"
 import "core:slice"
 import "core:strings"
 import "core:sync"
@@ -132,7 +133,7 @@ apply :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, inpu
 	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances)
 	if te.code != .None do return {}, false, te
 	// One lease read for the whole snapshot instead of one lookup per target.
-	holders, he := lease_ids_by_holder(s, len(targets))
+	holders, he := lease_ids_by_holder(s, targets)
 	if he.code != .None do return {}, false, he
 	for &target in targets {
 		target.lease_id = holders[target.agent_instance_id]
@@ -216,19 +217,33 @@ guard_target :: proc(ctx: rawptr) -> domain.Domain_Error {
 FLEET_RESTART_CONCURRENCY :: 8
 
 Native_Step :: enum {None, Begin, Retry}
-Native_Job :: struct {s: ^Service, r: ^domain.Fleet_Application_Record, t: ^domain.Fleet_Application_Target, step: Native_Step, op_revision: int, authorization: Authorization}
+Native_Job :: struct {s: ^Service, r: ^domain.Fleet_Application_Record, t: ^domain.Fleet_Application_Target, step: Native_Step, op_revision: int, authorization: Authorization, result: domain.Fleet_Application_Target}
 Native_Pool :: struct {jobs: []Native_Job, next: int}
+Native_Worker :: struct {pool: ^Native_Pool, arena: virtual.Arena}
 
-// lease_ids_by_holder maps instance -> held lease with one read, replacing a
-// per-target taskchain_get_lease_by_holder.
-lease_ids_by_holder :: proc(s: ^Service, targets: int) -> (map[string]string, domain.Domain_Error) {
-	holders := make(map[string]string, targets, context.temp_allocator)
-	if targets == 0 || s.agents.taskchains == nil do return holders, {}
-	leases, err := iface.taskchain_list_all_leases(s.agents.taskchains)
+// lease_ids_by_holder maps each target instance -> held lease with one read,
+// replacing a per-target taskchain_get_lease_by_holder. The listing is hub-wide
+// and its rows are owned heap clones, so it is read in a scratch arena that is
+// released here; only this snapshot's holders are copied (temp allocator) and
+// other owners' leases never leave the arena.
+lease_ids_by_holder :: proc(s: ^Service, targets: []domain.Fleet_Application_Target) -> (map[string]string, domain.Domain_Error) {
+	holders := make(map[string]string, len(targets), context.temp_allocator)
+	if len(targets) == 0 || s.agents.taskchains == nil do return holders, {}
+	for t in targets do holders[t.agent_instance_id] = ""
+	scratch: virtual.Arena
+	if e := virtual.arena_init_growing(&scratch); e != nil do return holders, domain.domain_error(.Internal_Error, "Fleet lease scratch unavailable")
+	defer virtual.arena_destroy(&scratch)
+	err: domain.Domain_Error
+	{
+		context.allocator = virtual.arena_allocator(&scratch)
+		leases: []domain.Task_Lease
+		leases, err = iface.taskchain_list_all_leases(s.agents.taskchains)
+		if err.code == .None do for l in leases {
+			if l.holder_instance_id == "" || l.holder_instance_id not_in holders do continue
+			holders[l.holder_instance_id] = strings.clone(l.lease_id, context.temp_allocator)
+		}
+	}
 	if err.code != .None && err.code != .Not_Found do return holders, err
-	// Lease rows are owned like taskchain_get_lease_by_holder results were.
-	defer delete(leases)
-	for l in leases do if l.holder_instance_id != "" do holders[l.holder_instance_id] = l.lease_id
 	return holders, {}
 }
 
@@ -287,12 +302,14 @@ plan_target :: proc(s: ^Service, r: ^domain.Fleet_Application_Record, t: ^domain
 	return .None, 0
 }
 
-// run_native performs one target's guarded native start. It only writes its
-// own target; the shared record is read-only apart from the atomic cancel flag.
+// run_native performs one target's guarded native start. It never writes the
+// shared record: the outcome goes to job.result (allocated with the running
+// thread's allocator) and the caller folds it after every job finished. The
+// record is otherwise read-only to workers apart from the atomic cancel flag.
 run_native :: proc(job: ^Native_Job) {
-	s, r, t := job.s, job.r, job.t
+	s, r, t, out := job.s, job.r, job.t, &job.result
 	g := Guard{s,r,t,job.step == .Retry,job.authorization}
-	if e := guard_target(&g); e.code != .None {fail(t,"target_changed",e.message,false); return}
+	if e := guard_target(&g); e.code != .None {fail(out,"target_changed",e.message,false); return}
 	auth := contracts.Auth_Context{kind=.Internal_User,user_id=string(r.owner_user_id)}
 	op: domain.Instance_Reconfiguration; accepted: bool; ne: domain.Domain_Error
 	if job.step == .Begin {
@@ -300,17 +317,31 @@ run_native :: proc(job: ^Native_Job) {
 	} else {
 		op, accepted, ne = agent.retry_instance_reconfiguration(s.agents, auth, t.agent_instance_id, t.operation_key, job.op_revision, &g, guard_target, s.factory)
 	}
-	if !accepted {fail(t,domain.error_code_string(ne.code),ne.message); return}
+	if !accepted {fail(out,domain.error_code_string(ne.code),ne.message); return}
 	defer domain.instance_reconfiguration_destroy(&op)
-	target_apply_phase(t, op)
+	target_apply_phase(out, op)
+}
+
+// fold_native_results copies each outcome into its target with the caller's
+// allocator. free_results releases outcomes made with that same allocator
+// (inline path); worker outcomes live in worker arenas freed by the caller.
+fold_native_results :: proc(jobs: []Native_Job, free_results: bool) {
+	for &job in jobs {
+		t, out := job.t, &job.result
+		set_text(&t.state,out.state); set_text(&t.error_code,out.error_code); set_text(&t.error_message,out.error_message); t.retryable = out.retryable
+		if free_results {delete(out.state); delete(out.error_code); delete(out.error_message); out^ = {}}
+	}
 }
 
 native_worker :: proc(data: rawptr) {
-	p := (^Native_Pool)(data)
+	w := (^Native_Worker)(data)
+	// Hub callers run on per-request/per-pass arenas that are not thread-safe;
+	// each worker allocates only from its own arena, released by the caller.
+	context.allocator = virtual.arena_allocator(&w.arena)
 	for {
-		i := sync.atomic_add(&p.next, 1)
-		if i >= len(p.jobs) do return
-		run_native(&p.jobs[i])
+		i := sync.atomic_add(&w.pool.next, 1)
+		if i >= len(w.pool.jobs) do return
+		run_native(&w.pool.jobs[i])
 		free_all(context.temp_allocator)
 	}
 }
@@ -318,6 +349,9 @@ native_worker :: proc(data: rawptr) {
 // A pass entered from inside the caller's unit of work must stay on that
 // thread: workers would block on the tx_mutex the joining caller holds (and a
 // nested native acceptance is refused anyway). Unknown -> stay inline.
+// Unit_Of_Work_Factory exposes no "in transaction" probe, so this opens and
+// rolls back an empty unit: one BEGIN/ROLLBACK per parallel pass (>=2 native
+// starts), against at least two acceptance transactions it parallelises.
 native_starts_inline :: proc(factory: ^iface.Unit_Of_Work_Factory) -> bool {
 	if factory == nil do return true
 	u, begun, _ := iface.unit_of_work_begin(factory)
@@ -331,25 +365,41 @@ native_starts_inline :: proc(factory: ^iface.Unit_Of_Work_Factory) -> bool {
 // time and returns after all of them finished, so the caller folds every
 // per-target result into one application write.
 run_native_jobs :: proc(s: ^Service, jobs: []Native_Job) {
-	workers := min(len(jobs), FLEET_RESTART_CONCURRENCY)
-	if workers <= 1 || native_starts_inline(s.factory) {
+	count := min(len(jobs), FLEET_RESTART_CONCURRENCY)
+	if count <= 1 || native_starts_inline(s.factory) {
 		for &job in jobs do run_native(&job)
+		fold_native_results(jobs, true)
 		return
 	}
 	pool := Native_Pool{jobs=jobs}
-	// Fresh per-thread temp allocators; shared (thread-safe) heap allocator so
-	// target strings set by workers are owned like the rest of the record.
-	ctx := runtime.default_context()
-	ctx.allocator = context.allocator; ctx.logger = context.logger
-	threads := make([dynamic]^thread.Thread, 0, workers, context.temp_allocator)
-	for _ in 0..<workers {
-		th := thread.create_and_start_with_data(&pool, native_worker, init_context=ctx)
-		if th == nil do break
-		append(&threads, th)
+	workers := make([]Native_Worker, count, context.temp_allocator)
+	ready := 0
+	for &w in workers {
+		if virtual.arena_init_growing(&w.arena) != nil do break
+		w.pool = &pool; ready += 1
 	}
-	// Thread creation failure degrades to the serial path; never drops a job.
-	if len(threads) == 0 do native_worker(&pool)
-	for th in threads {thread.join(th); thread.destroy(th)}
+	threads := make([dynamic]^thread.Thread, 0, count, context.temp_allocator)
+	{
+		// context changes are block-scoped: the fold below runs with the
+		// caller's allocator again. Thread records must not live in the caller's arena (see the app
+		// thread-spawn guard); workers start with heap + fresh temp allocators.
+		context.allocator = runtime.heap_allocator()
+		ctx := runtime.default_context()
+		ctx.allocator = runtime.heap_allocator(); ctx.logger = context.logger
+		for k in 0..<ready {
+			th := thread.create_and_start_with_data(&workers[k], native_worker, init_context=ctx)
+			if th == nil do break
+			append(&threads, th)
+		}
+		for th in threads {thread.join(th); thread.destroy(th)}
+	}
+	// Started workers drain every job. Spawn/arena failure (no worker ran)
+	// degrades to the serial path; a job is never dropped.
+	if len(threads) == 0 {
+		for &job in jobs do run_native(&job)
+		fold_native_results(jobs, true)
+	} else do fold_native_results(jobs, false)
+	for &w in workers[:ready] do virtual.arena_destroy(&w.arena)
 }
 
 application_in_flight :: proc(a: domain.Fleet_Application) -> bool {
@@ -370,7 +420,7 @@ reconcile_one :: proc(s: ^Service, owner: domain.User_ID, bridge_id, id: string,
 	jobs := make([dynamic]Native_Job, 0, len(r.application.targets), context.temp_allocator)
 	for &t in r.application.targets {
 		step, revision := plan_target(s,&r,&t,retry && t.retryable,&active)
-		if step != .None do append(&jobs, Native_Job{s,&r,&t,step,revision,authorization})
+		if step != .None do append(&jobs, Native_Job{s=s,r=&r,t=&t,step=step,op_revision=revision,authorization=authorization})
 	}
 	run_native_jobs(s, jobs[:])
 	pending, failed, restarting := false, false, false
