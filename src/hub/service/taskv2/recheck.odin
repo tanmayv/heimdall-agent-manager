@@ -116,6 +116,8 @@ task_recheck_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task, actor:
 				}
 			}
 			// 3. Readiness, task blocks and dispatch: the shared trigger path.
+			// An explicit recheck re-matches the whole chain.
+			match_scope_note_full(chain.chain_id)
 			if ok do ok, err = after_chain_change(svc, u, chain.chain_id, chain.owner_user_id, .Task_Updated)
 		}
 		// 4. Merge-back of a task that was ALREADY done (the chain may be

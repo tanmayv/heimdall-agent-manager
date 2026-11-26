@@ -21,7 +21,7 @@ revoke_claim_in_uow :: proc(svc:^Service,u:^Uow,task:domain.Task,lease:domain.Ta
  event_kind:=EV_LEASE_EXPIRED
  if lease.phase==domain.LEASE_PHASE_WAITING do event_kind=EV_CLAIM_RELEASED
  if lease.phase==domain.LEASE_PHASE_WAITING {
-  if deleted,derr:=iface.taskchain_delete_lease(svc.repo,lease.lease_id);!deleted do return false,derr
+  if deleted,derr:=delete_claim(svc, lease);!deleted do return false,derr
   if _,_,written,werr:=record_event(svc,u,task,actor,event_kind,json_end(&release));!written do return false,werr
   mark_instance_idle(svc,u,inst.agent_instance_id,platform.clock_now(svc.clock))
  } else {

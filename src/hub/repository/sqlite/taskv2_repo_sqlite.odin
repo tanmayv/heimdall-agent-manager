@@ -322,6 +322,24 @@ task_attempt_facet_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task
 	return out[:], domain.Domain_Error{}
 }
 
+// Through the chain's task ids (idx_tasks_chain_owner) and the facet primary
+// key, so the read never scans other chains' facets and needs no new index.
+task_attempt_facet_list_summary_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := prepare(impl, "SELECT " + FACET_COLS + " FROM task_attempt_facets WHERE task_id IN (SELECT task_id FROM tasks WHERE chain_id = ? AND owner_user_id = ?) AND owner_user_id = ? AND kind IN ('handoff', 'vcs') ORDER BY task_id ASC, attempt_no ASC, kind ASC;", "chain summary facet list")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(chain_id)); bind_text(stmt, 2, string(owner_user_id)); bind_text(stmt, 3, string(owner_user_id))
+	out := make([dynamic]domain.Task_Attempt_Facet)
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW do return out[:], domain.domain_error(.Internal_Error, "chain summary facet list failed")
+		append(&out, facet_from_stmt(stmt))
+	}
+	return out[:], domain.Domain_Error{}
+}
+
 // ---- leases ----------------------------------------------------------------
 
 @(private = "file")

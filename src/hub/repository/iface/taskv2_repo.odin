@@ -37,6 +37,9 @@ Task_Attempt_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, own
 
 Task_Attempt_Facet_Save_Proc :: proc(ctx: rawptr, facet: domain.Task_Attempt_Facet) -> (bool, domain.Domain_Error)
 Task_Attempt_Facet_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error)
+// The handoff and vcs facets of every task of one chain, in one read (the
+// mechanical chain summary).
+Task_Attempt_Facet_List_Summary_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error)
 
 Task_Lease_Save_Proc :: proc(ctx: rawptr, lease: domain.Task_Lease) -> (domain.Task_Lease, bool, domain.Domain_Error)
 Task_Lease_Get_Proc :: proc(ctx: rawptr, lease_id: string) -> (domain.Task_Lease, bool, domain.Domain_Error)
@@ -153,6 +156,14 @@ taskchain_save_facet :: proc(repo: ^Taskchain_Repository, facet: domain.Task_Att
 taskchain_list_facets_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error) {
 	if repo == nil || repo.list_facets_by_task == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.list_facets_by_task(repo.ctx, task_id, owner_user_id)
+}
+
+// taskchain_list_summary_facets_by_chain: ok=false when the repository does
+// not provide the batched read (callers fall back to per-task reads).
+taskchain_list_summary_facets_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, bool, domain.Domain_Error) {
+	if repo == nil || repo.list_summary_facets_by_chain == nil do return nil, false, {}
+	out, err := repo.list_summary_facets_by_chain(repo.ctx, chain_id, owner_user_id)
+	return out, err.code == .None, err
 }
 
 taskchain_save_lease :: proc(repo: ^Taskchain_Repository, lease: domain.Task_Lease) -> (domain.Task_Lease, bool, domain.Domain_Error) {

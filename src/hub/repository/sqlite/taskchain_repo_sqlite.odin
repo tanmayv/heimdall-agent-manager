@@ -64,6 +64,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		list_attempts_by_task = task_attempt_list_by_task_sqlite,
 		save_facet = task_attempt_facet_save_sqlite,
 		list_facets_by_task = task_attempt_facet_list_by_task_sqlite,
+		list_summary_facets_by_chain = task_attempt_facet_list_summary_by_chain_sqlite,
 		save_lease = task_lease_save_sqlite,
 		get_lease = task_lease_get_sqlite,
 		get_lease_by_holder = task_lease_get_by_holder_sqlite,

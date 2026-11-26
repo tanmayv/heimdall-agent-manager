@@ -146,7 +146,7 @@ lease_handoff :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Handof
 		if input.lease_id != "" && input.lease_id != claim.lease_id { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
 		task, found, err := iface.taskchain_get_task(svc.repo, claim.task_id)
 		if !found { _, _ = end_uow(svc, &u, false); return {}, false, err }
-		if deleted, _ := iface.taskchain_delete_lease(svc.repo, claim.lease_id); !deleted { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
+		if deleted, _ := delete_claim(svc, claim); !deleted { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
 		p := json_begin()
 		json_str(&p, "lease_id", claim.lease_id); json_str(&p, "kind", claim.kind)
 		json_str(&p, "summary", strings.trim_space(input.summary))
@@ -206,7 +206,7 @@ review_checkpoint_handoff :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_C
 	current, tok, terr := iface.taskchain_get_task(svc.repo, lease.task_id)
 	if !tok do return {}, true, false, terr
 	if !task_is_held(current) && !requirements_stale_review(svc, current) do return {}, true, false, domain.domain_error(.Conflict, "a review lease ends with `review post`; `lease handoff` is only for a requested checkpoint")
-	if deleted, _ := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted do return {}, true, false, lease_lost_error()
+	if deleted, _ := delete_claim(svc, lease); !deleted do return {}, true, false, lease_lost_error()
 	metric_lease_released(lease.kind)
 	p := json_begin()
 	json_str(&p, "lease_id", lease.lease_id)
@@ -479,7 +479,7 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 	// below does the same for every other reviewer of the task. The
 	// coordinator is never stopped or timed out (REQ-SCHED-17).
 	if input.verdict == "approve" {
-		if deleted, _ := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
+		if deleted, _ := delete_claim(svc, lease); !deleted { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
 		metric_lease_released(lease.kind)
 		mark_instance_idle(svc, &u, inst.agent_instance_id, now)
 		if !holder_is_coordinator(svc, task.chain_id, inst.agent_instance_id) {

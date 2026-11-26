@@ -22,34 +22,204 @@ import fleet_settings "odin_test:hub/service/fleet_settings"
 // Every grant check lives in grant_in_uow; a failed grant is a skip, never an
 // error for the chain (the DB uniques are the backstop under any race).
 match_chain_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, trigger: Trigger) -> (bool, domain.Domain_Error) {
+	// A full pass covers everything this unit of work recorded so far.
+	{
+		taken := match_scope_take(chain.chain_id)
+		match_scope_take_destroy(&taken)
+	}
+	match_last_pass = .Full
 	if chain.publish_state != .Published || chain.status != .Active do return reconcile_placement_in_uow(svc, u, chain)
 	metric_matcher_run(trigger)
 	ctx, ok, err := load_match_context(svc, chain)
 	if !ok do return false, err
 	defer destroy_match_context(&ctx)
+	match_passes(svc, u, &ctx, ctx.sorted, trigger)
+	return reconcile_placement_in_uow(svc, u, chain, ctx.grant_failures[:], true)
+}
 
+// match_passes runs the review pass, then the work passes, over `sorted`
+// (priority, then ready_since order; the whole chain or an affected subset).
+@(private = "file")
+match_passes :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, sorted: []domain.Task, trigger: Trigger) {
 	// Review pass.
-	for task in ctx.sorted {
+	for task in sorted {
 		if task.state != .In_Review || task.kind == .Gate do continue
-		grant_reviews(svc, u, &ctx, task, trigger)
+		grant_reviews(svc, u, ctx, task, trigger)
 	}
 	// Work passes: rework (a task worked before) ahead of new work
 	// (REQ-SCHED-35), each by priority then age.
 	stage_caps := make(map[string]map[string]int, context.temp_allocator)
 	for rework in ([]bool{true, false}) {
-		for task in ctx.sorted {
+		for task in sorted {
 			if task.state != .Ready || task.kind == .Gate do continue
 			if (task.attempt_no > 0) != rework do continue
-			if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+			if task_has_live_lease(ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
 			if task.stage_key != "" {
 				if cap := workflow_task_max_parallel_cached(svc, &stage_caps, task); cap > 0 {
-					if stage_live_work_lease_count(&ctx, task.workflow_run_id, task.workflow_execution_no, task.stage_key) >= cap do continue
+					if stage_live_work_lease_count(ctx, task.workflow_run_id, task.workflow_execution_no, task.stage_key) >= cap do continue
 				}
 			}
-			grant_work(svc, u, &ctx, task, trigger)
+			grant_work(svc, u, ctx, task, trigger)
 		}
 	}
-	return reconcile_placement_in_uow(svc, u, chain, ctx.grant_failures[:], true)
+}
+
+// match_task_less is the matcher's order: priority, then ready_since (empty
+// last), created_at, task_id (the same order as the `lease next` lookups).
+@(private = "package")
+match_task_less :: proc(a, b: domain.Task) -> bool {
+	if a.priority != b.priority do return a.priority < b.priority
+	ra, rb := a.ready_since, b.ready_since
+	if ra != rb {
+		if ra == "" do return false
+		if rb == "" do return true
+		return ra < rb
+	}
+	if a.created_at != b.created_at do return a.created_at < b.created_at
+	return a.task_id < b.task_id
+}
+
+// ---- incremental match (Scale A) --------------------------------------------------
+
+Match_Pass :: enum { None, Full, Incremental }
+
+// match_last_pass: which pass this thread's last match ran (tests).
+@(thread_local)
+match_last_pass: Match_Pass
+
+// MATCH_AGENT_CANDIDATE_LIMIT bounds one affected agent's index lookups. An
+// agent with more owed reviews or ready tasks than this falls back to the full
+// pass, which never misses an item behind the limit.
+MATCH_AGENT_CANDIDATE_LIMIT :: 1024
+
+// match_trigger_is_full: triggers that may change any task's eligibility at
+// once (boot, a bridge coming back, a whole chain going live) or that are the
+// periodic safety net (Rematch and other timers).
+match_trigger_is_full :: proc(trigger: Trigger) -> bool {
+	#partial switch trigger {
+	case .Boot, .Bridge_Hello, .Chain_Published, .Timer: return true
+	}
+	return false
+}
+
+// match_chain_scoped_in_uow is the matcher after a chain event: it re-matches
+// only what the unit of work's writes can affect (match_scope.odin), so its
+// cost follows the event, not the chain size. `known`: the chain's tasks when
+// the caller already holds them (after_chain_change's refold), else nil.
+//
+// Affected set:
+//   - every touched task (new events, projection moved: a completed
+//     dependency makes its dependents ready);
+//   - every owed review and ready task of an agent whose capacity or
+//     availability changed (a freed claim's holder, an instance that ended or
+//     came up, a fleet row change), from the task_reviewers and
+//     tasks.assignee_agent_id indexes;
+//   - every fleet agent's items when a freed claim releases a shared slot (a
+//     chain cap is set, or a work claim on an exclusive directory);
+//   - the ready tasks of a workflow stage whose work claim was freed.
+// Everything else was matched by the event that last changed it and is
+// unchanged. A chain the scope did not see, a scope marked full, a full
+// trigger, an inactive chain or an over-long lookup take the full pass.
+match_chain_scoped_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, trigger: Trigger, known: []domain.Task = nil) -> (bool, domain.Domain_Error) {
+	scope := match_scope_take(chain.chain_id)
+	defer match_scope_take_destroy(&scope)
+	if !scope.known || scope.chain.full || match_trigger_is_full(trigger) || chain.publish_state != .Published || chain.status != .Active {
+		return match_chain_in_uow(svc, u, chain, trigger)
+	}
+	ctx, ok, err := load_match_context(svc, chain, with_tasks = false)
+	if !ok do return false, err
+	defer destroy_match_context(&ctx)
+	candidates, bounded, cerr := match_candidates(svc, &ctx, &scope.chain, known)
+	if cerr.code != .None do return false, cerr
+	if !bounded do return match_chain_in_uow(svc, u, chain, trigger)
+	metric_matcher_run(trigger)
+	match_last_pass = .Incremental
+	match_passes(svc, u, &ctx, candidates, trigger)
+	ids := make([]domain.Task_ID, len(candidates), context.temp_allocator)
+	for t, i in candidates do ids[i] = t.task_id
+	return reconcile_placement_for_tasks_in_uow(svc, u, chain, ids, ctx.grant_failures[:])
+}
+
+// match_candidates: the affected tasks in matcher order. bounded=false asks
+// for the full pass (a lookup reached MATCH_AGENT_CANDIDATE_LIMIT, or a stage
+// slot was freed with no task list at hand).
+@(private = "file")
+match_candidates :: proc(svc: ^Service, ctx: ^Match_Context, scope: ^Match_Scope_Chain, known: []domain.Task) -> ([]domain.Task, bool, domain.Domain_Error) {
+	chain := ctx.chain
+	by_id := make(map[domain.Task_ID]domain.Task, context.temp_allocator)
+	known_by_id := make(map[domain.Task_ID]int, context.temp_allocator)
+	for t, i in known do known_by_id[t.task_id] = i
+	lookup :: proc(svc: ^Service, known: []domain.Task, known_by_id: map[domain.Task_ID]int, id: domain.Task_ID) -> (domain.Task, bool) {
+		if i, found := known_by_id[id]; found do return known[i], true
+		t, found, _ := iface.taskchain_get_task(svc.repo, id)
+		return t, found
+	}
+	add :: proc(by_id: ^map[domain.Task_ID]domain.Task, chain: domain.Task_Chain, t: domain.Task) {
+		if t.chain_id != chain.chain_id || t.owner_user_id != chain.owner_user_id || t.kind == .Gate do return
+		if t.state != .Ready && t.state != .In_Review do return
+		by_id[t.task_id] = t
+	}
+	for id in scope.tasks {
+		if t, found := lookup(svc, known, known_by_id, id); found do add(&by_id, chain, t)
+	}
+
+	agents := make(map[string]bool, context.temp_allocator)
+	for a in scope.freed_agents do agents[a] = true
+	for holder in scope.freed_holders {
+		agent_id := ""
+		for inst in ctx.instances do if inst.agent_instance_id == holder { agent_id = inst.agent_id; break }
+		if agent_id == "" {
+			if inst, found, _ := iface.agent_get_instance(svc.agents, holder); found do agent_id = inst.agent_id
+		}
+		if agent_id != "" do agents[agent_id] = true
+	}
+	// Shared slots: the chain cap counts every claim; an exclusive directory
+	// holds one live work claim. Either frees a slot any agent may take.
+	cap_set, _ := chain_cap_limits(chain)
+	freed_any := len(scope.freed_holders) > 0
+	shared := (cap_set > 0 && freed_any) || (len(scope.freed_work_tasks) > 0 && chain_has_exclusive_directory(ctx))
+	if shared {
+		for f in ctx.fleets do agents[f.agent_id] = true
+	}
+	// A workflow stage's max_parallel is shared by the stage's tasks.
+	for id in scope.freed_work_tasks {
+		t, found := lookup(svc, known, known_by_id, id)
+		if !found || t.stage_key == "" do continue
+		if known == nil do return nil, false, {}
+		for k in known {
+			if k.workflow_run_id == t.workflow_run_id && k.workflow_execution_no == t.workflow_execution_no && k.stage_key == t.stage_key do add(&by_id, chain, k)
+		}
+	}
+
+	ordered := make([dynamic]string, 0, len(agents), context.temp_allocator)
+	for a in agents do append(&ordered, a)
+	slice.sort(ordered[:])
+	for agent_id in ordered {
+		owed, oerr := iface.taskchain_list_owed_reviews(svc.repo, chain.chain_id, chain.owner_user_id, agent_id, MATCH_AGENT_CANDIDATE_LIMIT)
+		if oerr.code != .None do return nil, false, oerr
+		assigned, aerr := iface.taskchain_list_assigned_ready(svc.repo, chain.chain_id, chain.owner_user_id, agent_id, MATCH_AGENT_CANDIDATE_LIMIT)
+		if aerr.code != .None do return nil, false, aerr
+		if len(owed) >= MATCH_AGENT_CANDIDATE_LIMIT || len(assigned) >= MATCH_AGENT_CANDIDATE_LIMIT do return nil, false, {}
+		for t in owed do add(&by_id, chain, t)
+		for t in assigned do add(&by_id, chain, t)
+	}
+
+	out := make([]domain.Task, len(by_id), context.temp_allocator)
+	i := 0
+	for _, t in by_id { out[i] = t; i += 1 }
+	slice.sort_by(out, match_task_less)
+	return out, true, {}
+}
+
+// chain_has_exclusive_directory: some chain directory allows only one live
+// work claim at a time (directory_has_work_lease_ctx).
+@(private = "file")
+chain_has_exclusive_directory :: proc(ctx: ^Match_Context) -> bool {
+	for d in ctx.dirs {
+		if PER_LEASE_WORKTREES_ENABLED && d.vcs_kind == "git" do continue
+		return true
+	}
+	return false
 }
 
 @(private = "package")
@@ -114,17 +284,7 @@ load_match_context :: proc(svc: ^Service, chain: domain.Task_Chain, with_tasks :
 		ctx.tasks_loaded = true
 		ctx.tasks = tasks
 		ctx.sorted = slice.clone(tasks)
-		slice.sort_by(ctx.sorted, proc(a, b: domain.Task) -> bool {
-			if a.priority != b.priority do return a.priority < b.priority
-			ra, rb := a.ready_since, b.ready_since
-			if ra != rb {
-				if ra == "" do return false
-				if rb == "" do return true
-				return ra < rb
-			}
-			if a.created_at != b.created_at do return a.created_at < b.created_at
-			return a.task_id < b.task_id
-		})
+		slice.sort_by(ctx.sorted, match_task_less)
 	}
 	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
 	if ferr.code != .None do return ctx, false, ferr

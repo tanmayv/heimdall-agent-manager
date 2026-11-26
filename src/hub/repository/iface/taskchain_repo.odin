@@ -107,6 +107,7 @@ Taskchain_Repository :: struct {
 	list_attempts_by_task: Task_Attempt_List_By_Task_Proc,
 	save_facet: Task_Attempt_Facet_Save_Proc,
 	list_facets_by_task: Task_Attempt_Facet_List_By_Task_Proc,
+	list_summary_facets_by_chain: Task_Attempt_Facet_List_Summary_By_Chain_Proc,
 	save_lease: Task_Lease_Save_Proc,
 	get_lease: Task_Lease_Get_Proc,
 	get_lease_by_holder: Task_Lease_Get_By_Holder_Proc,

@@ -407,7 +407,7 @@ sched0_map_review_leases :: proc(run: ^Sched0_Run) -> (bool, domain.Domain_Error
 	for lease in leases {
 		if lease.kind != domain.LEASE_KIND_REVIEW do continue
 		if lease.phase == domain.LEASE_PHASE_WAITING {
-			if _, derr := iface.taskchain_delete_lease(svc.repo, lease.lease_id); derr.code != .None do return false, derr
+			if _, derr := delete_claim(svc, lease); derr.code != .None do return false, derr
 			if inst, iok, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id); iok && inst.current_task_id == string(lease.task_id) {
 				mark_instance_idle(svc, u, lease.holder_instance_id, platform.clock_now(svc.clock))
 			}

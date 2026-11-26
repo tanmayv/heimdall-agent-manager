@@ -116,6 +116,9 @@ fixture_clone_migrated :: proc(t: ^testing.T) -> (sqlite.Conn, bool) {
 // template) or, when `stop_before` is set, a fresh database that really runs the
 // migrations up to `stop_before`.
 fixture_open :: proc(t: ^testing.T, tag: string, stop_before := "") -> (^Fixture, bool) {
+	// Tests share a thread: a scope a previous test left open (begin_uow
+	// without end_uow) must not shadow this test's matches.
+	match_scope_reset()
 	fx := new(Fixture)
 	fx.path = ""
 	if stop_before == "" {

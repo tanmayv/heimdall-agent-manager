@@ -213,6 +213,23 @@ reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Ch
 	return true, {}
 }
 
+// reconcile_placement_for_tasks_in_uow: the placement snapshots of the tasks
+// an incremental match considered (match_chain_scoped_in_uow), re-read after
+// its grants. It reads the chain's fleet, directories, leases and instances
+// and those tasks, never the chain's tasks.
+reconcile_placement_for_tasks_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, task_ids: []domain.Task_ID, grant_failures: []Grant_Placement_Failure) -> (bool, domain.Domain_Error) {
+	if len(task_ids) == 0 do return true, {}
+	ctx, ok, err := load_match_context(svc, chain, with_tasks = false)
+	if !ok do return false, err
+	defer destroy_match_context(&ctx)
+	for id in task_ids {
+		task, found, _ := iface.taskchain_get_task(svc.repo, id)
+		if !found do continue
+		if rok, rerr := reconcile_task_placement_in_uow(svc, u, &ctx, task, grant_failures, true); !rok do return false, rerr
+	}
+	return true, {}
+}
+
 // reconcile_placement_for_task_in_uow: the placement snapshot of ONE task, for
 // an inline grant (`lease next`, spec SCHED 10.1). It reads the chain's fleet,
 // directories, leases and instances, never its tasks (REQ-SCHED-38).
