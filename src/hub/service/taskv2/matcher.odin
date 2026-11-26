@@ -129,22 +129,27 @@ match_chain_scoped_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Cha
 	ctx, ok, err := load_match_context(svc, chain, with_tasks = false)
 	if !ok do return false, err
 	defer destroy_match_context(&ctx)
-	candidates, bounded, cerr := match_candidates(svc, &ctx, &scope.chain, known)
+	candidates, touched, bounded, cerr := match_candidates(svc, &ctx, &scope.chain, known)
 	if cerr.code != .None do return false, cerr
 	if !bounded do return match_chain_in_uow(svc, u, chain, trigger)
 	metric_matcher_run(trigger)
 	match_last_pass = .Incremental
 	match_passes(svc, u, &ctx, candidates, trigger)
-	ids := make([]domain.Task_ID, len(candidates), context.temp_allocator)
-	for t, i in candidates do ids[i] = t.task_id
-	return reconcile_placement_for_tasks_in_uow(svc, u, chain, ids, ctx.grant_failures[:])
+	// Placement snapshots: every candidate, and every touched task whatever
+	// its state (a task that left Ready or In_Review drops its diagnostic).
+	ids := make([dynamic]domain.Task_ID, 0, len(candidates) + len(touched), context.temp_allocator)
+	seen := make(map[domain.Task_ID]bool, context.temp_allocator)
+	for t in candidates { append(&ids, t.task_id); seen[t.task_id] = true }
+	for id in touched do if !seen[id] { append(&ids, id); seen[id] = true }
+	return reconcile_placement_for_tasks_in_uow(svc, u, chain, ids[:], ctx.grant_failures[:])
 }
 
-// match_candidates: the affected tasks in matcher order. bounded=false asks
-// for the full pass (a lookup reached MATCH_AGENT_CANDIDATE_LIMIT, or a stage
-// slot was freed with no task list at hand).
+// match_candidates: the affected tasks in matcher order, and the touched
+// tasks of this chain in any state. bounded=false asks for the full pass (a
+// lookup reached MATCH_AGENT_CANDIDATE_LIMIT, or a stage slot was freed with
+// no task list at hand).
 @(private = "file")
-match_candidates :: proc(svc: ^Service, ctx: ^Match_Context, scope: ^Match_Scope_Chain, known: []domain.Task) -> ([]domain.Task, bool, domain.Domain_Error) {
+match_candidates :: proc(svc: ^Service, ctx: ^Match_Context, scope: ^Match_Scope_Chain, known: []domain.Task) -> ([]domain.Task, []domain.Task_ID, bool, domain.Domain_Error) {
 	chain := ctx.chain
 	by_id := make(map[domain.Task_ID]domain.Task, context.temp_allocator)
 	known_by_id := make(map[domain.Task_ID]int, context.temp_allocator)
@@ -159,8 +164,12 @@ match_candidates :: proc(svc: ^Service, ctx: ^Match_Context, scope: ^Match_Scope
 		if t.state != .Ready && t.state != .In_Review do return
 		by_id[t.task_id] = t
 	}
+	touched := make([dynamic]domain.Task_ID, 0, len(scope.tasks), context.temp_allocator)
 	for id in scope.tasks {
-		if t, found := lookup(svc, known, known_by_id, id); found do add(&by_id, chain, t)
+		t, found := lookup(svc, known, known_by_id, id)
+		if !found || t.chain_id != chain.chain_id || t.owner_user_id != chain.owner_user_id do continue
+		append(&touched, t.task_id)
+		add(&by_id, chain, t)
 	}
 
 	agents := make(map[string]bool, context.temp_allocator)
@@ -185,7 +194,7 @@ match_candidates :: proc(svc: ^Service, ctx: ^Match_Context, scope: ^Match_Scope
 	for id in scope.freed_work_tasks {
 		t, found := lookup(svc, known, known_by_id, id)
 		if !found || t.stage_key == "" do continue
-		if known == nil do return nil, false, {}
+		if known == nil do return nil, nil, false, {}
 		for k in known {
 			if k.workflow_run_id == t.workflow_run_id && k.workflow_execution_no == t.workflow_execution_no && k.stage_key == t.stage_key do add(&by_id, chain, k)
 		}
@@ -196,10 +205,10 @@ match_candidates :: proc(svc: ^Service, ctx: ^Match_Context, scope: ^Match_Scope
 	slice.sort(ordered[:])
 	for agent_id in ordered {
 		owed, oerr := iface.taskchain_list_owed_reviews(svc.repo, chain.chain_id, chain.owner_user_id, agent_id, MATCH_AGENT_CANDIDATE_LIMIT)
-		if oerr.code != .None do return nil, false, oerr
+		if oerr.code != .None do return nil, nil, false, oerr
 		assigned, aerr := iface.taskchain_list_assigned_ready(svc.repo, chain.chain_id, chain.owner_user_id, agent_id, MATCH_AGENT_CANDIDATE_LIMIT)
-		if aerr.code != .None do return nil, false, aerr
-		if len(owed) >= MATCH_AGENT_CANDIDATE_LIMIT || len(assigned) >= MATCH_AGENT_CANDIDATE_LIMIT do return nil, false, {}
+		if aerr.code != .None do return nil, nil, false, aerr
+		if len(owed) >= MATCH_AGENT_CANDIDATE_LIMIT || len(assigned) >= MATCH_AGENT_CANDIDATE_LIMIT do return nil, nil, false, {}
 		for t in owed do add(&by_id, chain, t)
 		for t in assigned do add(&by_id, chain, t)
 	}
@@ -208,7 +217,7 @@ match_candidates :: proc(svc: ^Service, ctx: ^Match_Context, scope: ^Match_Scope
 	i := 0
 	for _, t in by_id { out[i] = t; i += 1 }
 	slice.sort_by(out, match_task_less)
-	return out, true, {}
+	return out, touched[:], true, {}
 }
 
 // chain_has_exclusive_directory: some chain directory allows only one live

@@ -71,6 +71,14 @@ run_incremental_scenario :: proc(t: ^testing.T, tag: string, chain_tasks: int) -
 		if _, sok, serr := iface.taskchain_save_lease(&fx.repo, lease); !testing.expectf(t, sok, "background lease: %s", serr.message) do return out, false
 	}
 
+	// The SQL-seeded rows have no events: one full pass (as at boot) folds
+	// their projections, so the measured events see a settled chain.
+	if bu, bok, _ := begin_uow(&fx.svc); testing.expect(t, bok, "settle uow") {
+		sok, serr := after_chain_change(&fx.svc, &bu, chain.chain_id, "u1", .Boot)
+		testing.expectf(t, sok, "settle: %s", serr.message)
+		_, _ = end_uow(&fx.svc, &bu, sok)
+	}
+
 	counter := new(Read_Counter, context.temp_allocator)
 	read_counter_install(fx, counter)
 	defer read_counter_uninstall(fx, counter)
