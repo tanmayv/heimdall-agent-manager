@@ -32,7 +32,21 @@ set +x
 ./bin/ham-ctl secrets run --id "$credential_ref" -- openssl pkey -in encrypted-key.pem -passin stdin -check -noout
 ```
 
-Only the opaque reference enters the task. The CLI resolves the program locally, starts it with an anonymous pipe as standard input, writes the exact UTF-8 bytes and closes the pipe at EOF. Preserve embedded and trailing newlines, with no added delimiter. Choose a trusted executable whose input format fits the value. The example consumes a single line. The program inherits the caller’s working directory. Discard child stdout and stderr by default and report success or a fixed failure class through the CLI exit status and a short local message. The caller can branch on success.
+Only the opaque reference enters the task. The CLI resolves the program locally, starts it with an anonymous pipe as standard input, writes the exact UTF-8 bytes and closes the pipe at EOF. Preserve embedded and trailing newlines, with no added delimiter. Choose a trusted executable whose input format fits the value. The example consumes a single line. The program inherits the caller’s working directory. Always discard child stdout and stderr. Phase 0 has no output override. A trusted child needing to return data can write a named file of its choosing. Reflected credentials can persist in that file, so the child must select and validate the fields it writes.
+
+The runner emits a fixed local message for each exit code. The first failed stage determines the result. After a successful stdin write and close, map any nonzero child exit or signal to code 26.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Child succeeded after credential delivery |
+| 20 | Reference missing |
+| 21 | Vault locked |
+| 22 | Access denied |
+| 23 | Child failed to spawn |
+| 24 | Stdin delivery failed, including a broken pipe |
+| 25 | Invalid invocation or malformed reference |
+| 26 | Child failed, including a rejected form login |
+| 27 | Lookup transport, envelope validation or authenticated open failed |
 
 The CLI sends only the ID through an instance-authenticated local RPC. Validate the instance and bridge binding, fetch the sealed payload using the approved bridge identity and return ciphertext plus authenticated-opening metadata to the CLI. Open locally with the live bridge keyring via the existing agent.vault.get path. Validate bounds and context before spawning. Keep values out of command strings, shell expansions, argv, environment, temporary files and generic response formatters. Close unused pipe ends, handle early closure, reap the child on cancellation or write failure and wipe owned mutable plaintext buffers on every exit. Map lookup, locked, denied, spawn, write and child failures to fixed diagnostics. Never interpolate payloads or child diagnostics into errors.
 
@@ -46,7 +60,7 @@ Operator opens an existing compatible browser using its persistent-profile optio
 
 ### Form login with Puppeteer
 
-For a trusted application's username/password form, the owner saves one JSON object with string fields `username` and `password` in the masked value field. The trusted Node script receives that object on stdin. Use the installed browser, profile and credential backend from owner setup. The example assumes Chrome stable, the verified absolute profile path, a usable display and an application controlled by the owner at the illustrated origin. Adapt selectors and the signed-in marker to that application. Disable password saving, protocol debug logging, crash uploads, screenshots, video, tracing and request recording during login. Keep browser and page diagnostics out of task output.
+For a trusted application's username/password form, the owner saves one JSON object with string fields `username` and `password` in the masked value field. The trusted Node script receives that object on stdin. Use the installed browser, profile and credential backend from owner setup. The example assumes an existing puppeteer-core installation, Chrome stable, the verified absolute profile path, a usable display and an application controlled by the owner at the illustrated origin. Adapt selectors and the signed-in marker to that application. Have the operator decline any Chrome password-saving prompt. If the profile automatically saves credentials, turn that setting off before login. Disable protocol debug logging, crash uploads, screenshots, video, tracing and request recording during login. Keep browser and page diagnostics out of task output.
 
 ```bash
 set +x
@@ -55,7 +69,7 @@ unset DEBUG NODE_DEBUG
 ```
 
 ```javascript
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
 import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
@@ -100,9 +114,9 @@ A later policy layer can authorize an operation on a secret for a specified owne
 1. **Envelope contract and persistence.** Own shared vault primitives, UI crypto helpers, SQLite migration, repository interface and implementation. Deliver vectors and transactional operations described above. Test migration from previous head and fresh DB. Seed multiple owners and vaults with at least 100k rows including a dominant owner. Inspect EXPLAIN QUERY PLAN for first/deep page, detail, update and delete. Require composite-key SEARCH, no scan or temporary sort; measure SQLite VM steps at first/deep cursors for a fixed page size and verify work stays proportional to page size plus tree seek. Race two edits and edit/delete from separate connections; exactly one conditional mutation succeeds.
 2. **Owner and bridge endpoints** depend on 1. Own hub service, auth, route registration and invalidation. Exercise actual HTTP handlers with two owners, two bridges, approved/revoked devices, wrong principals, stale revisions/epochs, malformed oversized envelopes and replayed signatures. Verify foreign and missing responses match. Inspect captured responses and seeded storage for cleartext markers. Reset and rotate concurrently with writes.
 3. **Owner UI** depends on 1–2. Own settings navigation, signed endpoint client and editor. Test create, duplicate names, cursor paging, rename, replacement, stale edit/delete and retry after lost response. Exercise direct navigation, lock while loading, account switch and historical keys. Assert list responses omit payload, copy returns ID and persistent state contains no plaintext.
-4. **Bridge lookup and CLI runner** depend on 1–2. Exercise the actual CLI with synthetic markers and an offline child fixture that checks length and digest via stdin, including multiline values and trailing newlines. Inspect child argv and environment for the marker. Have the child reflect input to both output streams and exit successfully or unsuccessfully. Scan CLI output, shell transcript, result events and hub/bridge logs for markers and encoded equivalents. Test lock, revoke, missing and malformed references before launch, spawn failure, early pipe close and cancellation. Verify descriptors close and children are reaped.
+4. **Bridge lookup and CLI runner** depend on 1–2. Exercise the actual CLI with synthetic markers and an offline child fixture that checks length and digest via stdin, including multiline values and trailing newlines. Inspect child argv and environment for the marker. Have the child reflect input to both output streams and exit successfully or unsuccessfully. Scan CLI output, shell transcript, result events and hub/bridge logs for markers and encoded equivalents. Test lock, revoke, missing and malformed references before launch, spawn failure, early pipe close and cancellation. Verify descriptors close and children are reaped. Assert each documented runner code (0 and 20–27) with its fixed message. Include child exit 21 mapping to 26, a forced pipe-write error mapping to 24 and an actual locked vault mapping to 21.
 5. **Browser convention** can start independently. Own persistent path, launch/shell environment, busy handling and browser instructions. Exercise two agents, restart, two bridge registrations, occupied profile, crashed launcher with browser still running and no-display paths. With an already-installed supported browser, sign into a local test page, close, reopen from agent B and verify session continuity. Record platform and browser. Report unavailable platform coverage explicitly.
-6. **Skill distribution and integration** depend on 3–5. Add `src/prompts/skills/credential-and-browser-use/SKILL.md`, reference it from bootstrap, regenerate with `odin run tools/gen_static_skills -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin`. Verify `render_agent_manifest` in `src/hub/service/agent/agent_service.odin` and `bridge_bootstrap_render_skill` in `src/bridge/bootstrap_skill.odin` materialize the skill for supported providers. Run repository package checks for touched Odin packages, `npm test`, `npm run build` and `npm run test:e2e:vault`. Demonstrate owner creation through actual Settings, ID-only agent invocation, successful credential-fed child exit, lock/refusal, edit/conflict, delete/missing and profile reuse. Exercise the documented Puppeteer flow with synthetic fields on a local test form, reopen the profile and verify the authenticated marker. Check captured CLI, bridge and fixture logs for both markers and confirm no screenshot, trace or profile artifact was produced. Simulate the identity-provider handoff and cancellation on fixture pages, verify automation pauses throughout user interaction and resumes only on confirmed application login. Attach sanitized outcomes and query plans for merge review.
+6. **Skill distribution and integration** depend on 3–5. Add `src/prompts/skills/credential-and-browser-use/SKILL.md`, reference it from bootstrap, regenerate with `odin run tools/gen_static_skills -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin`. Verify `render_agent_manifest` in `src/hub/service/agent/agent_service.odin` and `bridge_bootstrap_render_skill` in `src/bridge/bootstrap_skill.odin` materialize the skill for supported providers. Run repository package checks for touched Odin packages, `npm test`, `npm run build` and `npm run test:e2e:vault`. Demonstrate owner creation through actual Settings, ID-only agent invocation, successful credential-fed child exit, lock/refusal, edit/conflict, delete/missing and profile reuse. Exercise the documented Puppeteer flow with synthetic fields on a local test form, reopen the profile and verify the authenticated marker. Check captured CLI, bridge and fixture logs for both markers and confirm no screenshot, trace or profile artifact was produced. Redirect the fixture login to a second local origin before field entry. Assert runner exit 26 and verify neither input received a keystroke or value on the redirect target. Simulate the identity-provider handoff and cancellation on fixture pages, verify automation pauses throughout user interaction and resumes only on confirmed application login. Attach sanitized outcomes and query plans for merge review.
 
 The opaque reference eliminates a search index over names and removes any need to decrypt all labels for lookup. Splitting name and payload reduces read exposure. Product implementation starts only after independent review and approval.
 
@@ -116,7 +130,7 @@ The opaque reference eliminates a search index over names and removes any need t
 
 ## Data flow and storage lifecycle
 
-1. Create: unlocked owner UI → seal name and typed payload at revision 1 → signed POST → hub checks owner, root namespace and epoch → insert both rows atomically → UI shows ID.
+1. Create: unlocked owner UI → seal name and credential value at revision 1 → signed POST → hub checks owner, root namespace and epoch → insert both rows atomically → UI shows ID.
 2. List: owner UI → signed cursor GET → indexed metadata page → decrypt only displayed labels locally.
 3. Edit/delete: signed single-record GET → local edit and reseal → conditional PUT or DELETE → atomic two-table update or cascade. Conflict triggers refetch.
 4. Use: agent supplies ID and local command → instance-authenticated lookup → indexed bridge ciphertext fetch → authenticated CLI open → child stdin → local exit result. Test lock and revocation before child launch.
