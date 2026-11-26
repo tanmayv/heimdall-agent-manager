@@ -298,6 +298,13 @@ Fleet_Restart_Failure :: struct {
 	message:     string `json:"message"`,
 }
 
+// PUT-only candidate accounting. Accepted means launch request accepted, not ready.
+Fleet_Restart_Result :: struct {
+	instance_id: string `json:"instance_id"`,
+	outcome:     string `json:"outcome"`, // accepted | unchanged | ineligible | failed
+	message:     string `json:"message"`,
+}
+
 Task_Chain_Fleet_Wire :: struct {
 	provider_profile: string `json:"provider_profile"`,
 	bridge_models: map[string]domain.Fleet_Bridge_Model `json:"bridge_models"`,
@@ -320,6 +327,7 @@ Task_Chain_Fleet_Wire :: struct {
 	warning:                string                         `json:"warning,omitempty"`,
 	restarted_instance_ids: Maybe([]string)                `json:"restarted_instance_ids,omitempty"`,
 	restart_failures:       Maybe([]Fleet_Restart_Failure) `json:"restart_failures,omitempty"`,
+	restart_results:        Maybe([]Fleet_Restart_Result) `json:"restart_results,omitempty"`,
 	// What the matcher would apply for this row (plan REQ-UI-12); list only.
 	effective:              Maybe(taskchain_service.Effective_Placement) `json:"effective,omitempty"`,
 	// implicit: not a stored row — the Soloist coordinator works as the chain's
@@ -2202,9 +2210,11 @@ write_fleet_json :: proc(
 	restarted_instance_ids: ^[]string = nil,
 	restart_failures: ^[]Fleet_Restart_Failure = nil,
 	warning: string = "",
+	restart_results: ^[]Fleet_Restart_Result = nil,
 ) {
 	wire := make_chain_fleet_wire(f, active_count, restarted_instance_ids, restart_failures)
 	wire.warning = warning
+	if restart_results != nil do wire.restart_results = restart_results^
 	data, _ := json.marshal(wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
 	strings.write_string(b, string(data))
 }
@@ -2298,7 +2308,8 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if restart_flag_ok && restart_live_instances {
 		role := strings.trim_space(agent_id)
 		prior_fleets, prior_err := taskchain_service.list_fleets(h.taskchains, auth_ctx, chain_id)
-		defer if prior_err.code == .None do delete(prior_fleets)
+		if prior_err.code != .None do return respond_error(prior_err, req.request_id)
+		defer delete(prior_fleets)
 		for prior in prior_fleets {
 			if prior.agent_id == role {
 				restart_role_instances = fleet_provider_model_changed(prior.provider, prior.model, provider, model) || domain.profile_effective_id(prior.provider,prior.provider_profile)!=domain.profile_effective_id(provider,provider_profile) || (bridge_models_present && prior.bridge_models_json != bridge_models)
@@ -2328,6 +2339,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		bridge_id        = fleet_bridge_ptr,
 	})
 	if err.code != .None do return respond_error(err, req.request_id)
+	restart_results := make([dynamic]Fleet_Restart_Result, context.temp_allocator)
 	restarted_ids := make([dynamic]string)
 	defer delete(restarted_ids)
 	restart_failures := make([dynamic]Fleet_Restart_Failure)
@@ -2335,36 +2347,62 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	defer {
 		for failure in restart_failures do delete(failure.message)
 	}
-	if restart_role_instances && h.agents != nil {
+	if restart_flag_ok && restart_live_instances {
 		members, members_err := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
 		defer delete(members)
 		role := strings.trim_space(agent_id)
 		if members_err.code == .None {
 			for m in members {
 				if m.agent_id != role do continue
-				// Unresolvable members (get_instance miss) are skipped silently, and the
-				// liveness check matches the fleet list's active_count predicate.
-				inst, inst_ok, _ := agent_service.get_instance(h.agents, auth_ctx, m.agent_instance_id)
-				if !inst_ok || !fleet_restart_instance_live(inst.runtime_status) do continue
+				if h.agents == nil {
+					message := "Agent service is unavailable"
+					append(&restart_results, Fleet_Restart_Result{instance_id = m.agent_instance_id, outcome = "failed", message = message})
+					append(&restart_failures, Fleet_Restart_Failure{instance_id = m.agent_instance_id, message = strings.clone(message)})
+					continue
+				}
+				inst, inst_ok, lookup_err := agent_service.get_instance(h.agents, auth_ctx, m.agent_instance_id)
+				if !inst_ok || lookup_err.code != .None {
+					message := lookup_err.message if lookup_err.message != "" else "Fleet member instance was not found"
+					append(&restart_results, Fleet_Restart_Result{instance_id = m.agent_instance_id, outcome = "failed", message = strings.clone(message, context.temp_allocator)})
+					append(&restart_failures, Fleet_Restart_Failure{instance_id = m.agent_instance_id, message = strings.clone(message)})
+					continue
+				}
+				defer domain.agent_instance_destroy(&inst)
+				if !fleet_restart_instance_live(inst.runtime_status) {
+					append(&restart_results, Fleet_Restart_Result{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), outcome = "ineligible", message = "Instance is not live"})
+					continue
+				}
+				if !restart_role_instances {
+					append(&restart_results, Fleet_Restart_Result{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), outcome = "unchanged"})
+					continue
+				}
 				// relaunch_instance is the primitive that persists the NEW provider/model
 				// verbatim on the same instance id ("" resolves through the standard
 				// inheritance order) and re-sends the launch command.
 				selected_provider, selected_model := taskchain_service.fleet_model_on_bridge(fleet, inst.bridge_id)
-				launch_provider, launch_model := taskchain_service.resolve_fleet_launch_model(h.taskchains, inst.bridge_id, selected_provider, selected_model,taskchain_service.fleet_profile_on_bridge(fleet,inst.bridge_id))
+				launch_provider, launch_model := taskchain_service.resolve_fleet_launch_model(h.taskchains, inst.bridge_id, selected_provider, selected_model, taskchain_service.fleet_profile_on_bridge(fleet, inst.bridge_id))
 				defer delete(launch_provider)
 				defer delete(launch_model)
-				selected_profile:=domain.profile_effective_id(launch_provider,taskchain_service.fleet_profile_on_bridge(fleet,inst.bridge_id))
-				if inst.provider == launch_provider && inst.model == launch_model && domain.profile_effective_id(inst.provider,inst.provider_profile)==selected_profile do continue
-				inst.provider_profile=selected_profile
-				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, launch_provider, launch_model,selected_profile); relaunched {
-					append(&restarted_ids, inst.agent_instance_id)
+				selected_profile := domain.profile_effective_id(launch_provider, taskchain_service.fleet_profile_on_bridge(fleet, inst.bridge_id))
+				if inst.provider == launch_provider && inst.model == launch_model && domain.profile_effective_id(inst.provider, inst.provider_profile) == selected_profile {
+					append(&restart_results, Fleet_Restart_Result{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), outcome = "unchanged"})
+					continue
+				}
+				// Preserve the fetched snapshot for start admission's expected-state fence.
+				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, launch_provider, launch_model, selected_profile); relaunched {
+					append(&restarted_ids, strings.clone(inst.agent_instance_id, context.temp_allocator))
+					append(&restart_results, Fleet_Restart_Result{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), outcome = "accepted"})
+					defer domain.agent_instance_destroy(&relaunched_inst)
 					// New provider/model and run state are persisted: refresh the instance.
 					publish_instance_changed(h.event_bus, relaunched_inst, "config_changed")
 				} else {
+					append(&restart_results, Fleet_Restart_Result{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), outcome = "failed", message = strings.clone(relaunch_err.message, context.temp_allocator)})
 					// Clone: relaunch path messages can come from fmt.tprintf (temp memory).
-					append(&restart_failures, Fleet_Restart_Failure{instance_id = inst.agent_instance_id, message = strings.clone(relaunch_err.message)})
+					append(&restart_failures, Fleet_Restart_Failure{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), message = strings.clone(relaunch_err.message)})
 				}
 			}
+		} else {
+			append(&restart_failures, Fleet_Restart_Failure{message = strings.clone(fmt.tprintf("Fleet saved, but restart candidates could not be listed: %s", members_err.message))})
 		}
 	}
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
@@ -2379,7 +2417,10 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 	warning := ""
 	if has_roles do warning = taskchain_service.fleet_roles_warning(h.taskchains, fleet.task_chain_id, domain.User_ID(auth_ctx.user_id), roles[:])
-	write_fleet_json(&b, fleet, 0, restarted_ptr, failures_ptr, warning)
+	results_out := restart_results[:]
+	results_ptr: ^[]Fleet_Restart_Result
+	if restart_flag_ok do results_ptr = &results_out
+	write_fleet_json(&b, fleet, 0, restarted_ptr, failures_ptr, warning, results_ptr)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 

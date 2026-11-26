@@ -1187,8 +1187,7 @@ after_chain_change :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_I
 	if !mok do return false, merr
 	// After the matcher (a re-granted instance holds a lease): stop instances
 	// whose tasks are all done or cancelled (T8: stop on completion only).
-	stop_finished_instances_in_uow(svc, u, chain)
-	return true, domain.Domain_Error{}
+	return stop_finished_instances_in_uow(svc, u, chain)
 }
 
 // Catalog v1 migration switch. Other attention triggers remain on the old path.

@@ -20,7 +20,6 @@ import {
   activeTasksByRole,
   changedFleetEntries,
   fleetApplyRequests,
-  fleetProviderCapabilities,
   flattenProviderModelDrafts,
   getOriginalFleetCapacity,
   getOriginalProviderModel,
@@ -280,37 +279,6 @@ test('modelOptionsForProvider returns the selected provider models and none for 
   assert.deepEqual(modelOptionsForProvider(CAPABILITIES, 'claude'), ['opus', 'sonnet']);
   assert.deepEqual(modelOptionsForProvider(CAPABILITIES, ''), []);
   assert.deepEqual(modelOptionsForProvider(CAPABILITIES, 'unknown'), []);
-});
-
-test('fleetProviderCapabilities maps the live bridge providers payload (name + models) to models', () => {
-  const payload = {
-    bridge_id: 'brg_x',
-    default_provider: 'claude',
-    default_model: 'normal',
-    providers: [
-      { name: 'claude', enabled: true, models: { cheap: '', normal: 'claude-sonnet', smart: 'claude-opus' } },
-      { name: 'codex', enabled: true, models: { cheap: '', normal: '', smart: '' } },
-      { name: 'disabled-one', enabled: false, models: { normal: 'x' } },
-    ],
-  };
-  assert.deepEqual(fleetProviderCapabilities(payload), [
-    { provider: 'claude', models: ['normal', 'smart'] },
-    { provider: 'codex', models: [] },
-  ]);
-});
-
-test('fleetProviderCapabilities maps the explicit models payload shape unchanged', () => {
-  const payload = {
-    bridge_id: 'brg_x',
-    default_provider: 'qoder',
-    default_model: 'smart',
-    providers: [{ provider: 'qoder', models: ['smart', 'max'], default_model: 'smart' }],
-  };
-  assert.deepEqual(fleetProviderCapabilities(payload), [
-    { provider: 'qoder', models: ['smart', 'max'] },
-  ]);
-  assert.deepEqual(fleetProviderCapabilities({ providers: [] }), []);
-  assert.deepEqual(fleetProviderCapabilities(undefined), []);
 });
 
 test('nextModelOnProviderChange keeps a model the new provider offers, otherwise resets to ""', () => {
@@ -628,24 +596,6 @@ test('drawer decision end-to-end: only the role with a live instance gets the re
   );
 });
 
-test('model options derived from a live bridge payload drive model selection end-to-end', () => {
-  const livePayload = {
-    bridge_id: 'brg_x',
-    default_provider: 'claude',
-    default_model: 'normal',
-    providers: [
-      { name: 'claude', enabled: true, models: { cheap: '', normal: 'claude-sonnet', smart: 'claude-opus' } },
-      { name: 'codex', enabled: true, models: { cheap: '', normal: 'gpt-5-codex', smart: '' } },
-    ],
-  };
-  const caps = fleetProviderCapabilities(livePayload);
-  // Provider selected from the live names; models follow the selected provider.
-  assert.deepEqual(modelOptionsForProvider(caps, 'claude'), ['normal', 'smart']);
-  assert.deepEqual(modelOptionsForProvider(caps, 'codex'), ['normal']);
-  // A model from one provider is reset when switching to a provider without it.
-  assert.equal(nextModelOnProviderChange('smart', 'codex', caps), '');
-  assert.equal(nextModelOnProviderChange('normal', 'codex', caps), 'normal');
-});
 
 // -----------------------------------------------------------------------------
 // REQ-FLEET-UI-EXPANDABLE-1 & REQ-FLEET-PER-BRIDGE-1: per-bridge runtime config
@@ -1026,3 +976,25 @@ test('Chain staffing preserves placement and capacity while runtime editors live
   );
 });
 
+
+test('fleet candidate accounting counts acceptance without claiming readiness and keeps partial failures', () => {
+  const summary = summarizeFleetRestartResults([{
+    agentId: 'worker',
+    restarted_instance_ids: ['ignored-legacy-count'],
+    restart_results: [
+      { instance_id: 'accepted', outcome: 'accepted', message: '' },
+      { instance_id: 'same', outcome: 'unchanged', message: '' },
+      { instance_id: 'stopped', outcome: 'ineligible', message: 'Instance is not live' },
+      { instance_id: 'offline', outcome: 'failed', message: 'Bridge offline' },
+    ],
+    restart_failures: [
+      { instance_id: 'offline', message: 'Bridge offline' },
+      { instance_id: '', message: 'Fleet saved, but candidates could not be listed' },
+    ],
+  }]);
+  assert.deepEqual(summary.restartedByRole, [
+    { agentId: 'worker', count: 1, unchanged: 1, ineligible: 1 },
+  ]);
+  assert.equal(summary.failures.length, 2);
+  assert.equal(summary.failures[1].instance_id, '');
+});

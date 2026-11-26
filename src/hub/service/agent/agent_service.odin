@@ -861,8 +861,11 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 	return iface.agent_save_instance(service.agents, inst)
 }
 
-restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
- inst, _, ok, err := start(service, auth, instance_id, {if_live=.Relaunch})
+restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: contracts.Restart_Instance_Input = {expected_run_count=-1}) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+ req := Start_Request{if_live=.Relaunch, require_live=input.expected_run_count >= 0 || auth.kind == .Instance_Token && auth.agent_instance_id == instance_id}
+ expected_run_count := input.expected_run_count
+ if expected_run_count >= 0 do req.expected_run_count = &expected_run_count
+ inst, _, ok, err := start(service, auth, instance_id, req)
  return inst, ok, err
 }
 

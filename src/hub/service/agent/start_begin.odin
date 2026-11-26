@@ -20,6 +20,8 @@ Start_Request :: struct {
 	ref: string,
 	provider, model, profile: string,
 	expected: ^domain.Agent_Instance,
+	expected_run_count: ^int,
+	require_live: bool,
 	guard: proc(ctx: rawptr) -> domain.Domain_Error,
 	guard_ctx: rawptr,
 }
@@ -81,12 +83,16 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	inst, found, read_err := get_instance(service, auth, instance_id)
 	if !found do return {}, read_err
 	defer domain.agent_instance_destroy(&inst)
+	// Automatic self-restarts cannot revive a completed/user-stopped process.
+	// Check before ref reuse and admission (manual start lock or task transaction).
+	if req.expected_run_count != nil && inst.run_count != req.expected_run_count^ do return {}, domain.domain_error(.Conflict, "superseded restart generation", `{"code":"start_raced"}`)
+	if req.require_live && (inst.stopped_by != "" || inst.stop_reason != "" || inst.runtime_status == "stopping" || !runtime_expected_active(inst.runtime_status)) do return {}, domain.domain_error(.Conflict, "instance stop superseded restart", `{"code":"start_raced"}`)
 	if req.ref != "" && inst.start_ref == req.ref && runtime_expected_active(inst.runtime_status) {
 		return start_ticket_for_row(service, inst, req.ref, false, true), {}
 	}
 	if req.expected != nil {
 		e := req.expected
-		if inst.run_count != e.run_count || inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id do return {}, domain.domain_error(.Conflict, "instance changed before runtime action", `{"code":"start_raced"}`)
+		if inst.run_count != e.run_count || inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id || inst.stopped_by != e.stopped_by || inst.stop_reason != e.stop_reason || inst.runtime_status == "stopping" && e.runtime_status != "stopping" do return {}, domain.domain_error(.Conflict, "instance changed before runtime action", `{"code":"start_raced"}`)
 	}
 	if runtime_expected_active(inst.runtime_status) {
 		switch req.if_live {

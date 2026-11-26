@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import { useSelector } from 'react-redux';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
 import { VaultText } from '../vault/VaultText';
@@ -29,9 +30,6 @@ import {
 import { useListArtifactsQuery } from '../../api/endpoints/artifacts';
 import { usePaneVisible, visiblePollInterval } from '../workbench/paneVisibility';
 import {
-  useStartInstanceMutation,
-  useStopAgentInstanceMutation,
-  useRestartAgentInstanceMutation,
   useListAgentIdentitiesQuery,
 } from '../../api/endpoints/agents';
 import { formatFleetRoleName } from '../tasks/fleetNames';
@@ -376,14 +374,11 @@ export default function ChainOverviewPanel({
     { skip: !projectVcsEnabled || !projectId, pollingInterval: slowPoll }
   );
 
-  const [startInstanceMutation] = useStartInstanceMutation();
-  const [stopInstanceMutation] = useStopAgentInstanceMutation();
-  const [restartInstanceMutation] = useRestartAgentInstanceMutation();
+  const [lifecycleResult, setLifecycleResult] = useState<LifecycleResult | null>(null);
+  const { start, stop, restart, isPending } = useAgentLifecycle({ inline: setLifecycleResult });
+  const lifecycleError = lifecycleResult?.status === 'failed' ? lifecycleResult.message : null;
 
   // Local interaction state
-  const [startingInstanceId, setStartingInstanceId] = useState<string | null>(null);
-  const [stoppingInstanceId, setStoppingInstanceId] = useState<string | null>(null);
-  const [restartingInstanceId, setRestartingInstanceId] = useState<string | null>(null);
   const [expandedAttentionTaskId, setExpandedAttentionTaskId] = useState<string | null>(null);
 
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
@@ -483,55 +478,23 @@ export default function ChainOverviewPanel({
     [names, resolveAgentName],
   );
 
-  // Handle start agent instance
   const handleStartAgent = useCallback(
     async (instanceId: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      try {
-        setStartingInstanceId(instanceId);
-        await startInstanceMutation(instanceId);
-        refetchChain();
-      } catch (err) {
-        console.error('Failed to start agent:', err);
-      } finally {
-        setStartingInstanceId(null);
-      }
-    },
-    [startInstanceMutation, refetchChain]
+      await start({ instanceId, chainId });
+    }, [start, chainId]
   );
-
-  // Handle stop agent instance
   const handleStopAgent = useCallback(
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      try {
-        setStoppingInstanceId(instanceId);
-        await stopInstanceMutation({ instanceId, agentId: agentId || '' });
-        refetchChain();
-      } catch (err) {
-        console.error('Failed to stop agent:', err);
-      } finally {
-        setStoppingInstanceId(null);
-      }
-    },
-    [stopInstanceMutation, refetchChain]
+      await stop({ instanceId, agentId: agentId || '', chainId });
+    }, [stop, chainId]
   );
-
-  // Handle restart agent instance
   const handleRestartAgent = useCallback(
     async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
       e?.stopPropagation();
-      try {
-        setRestartingInstanceId(instanceId);
-        await restartInstanceMutation({ instanceId, agentId });
-        refetchChain();
-      } catch (err) {
-        console.error('Failed to restart agent:', err);
-      } finally {
-        setRestartingInstanceId(null);
-      }
-    },
-    [restartInstanceMutation, refetchChain]
+      await restart({ instanceId, agentId, chainId });
+    }, [restart, chainId]
   );
 
   // Open the agent's chat (the aux host opens a sub-agent tab) or navigate to it.
@@ -556,6 +519,12 @@ export default function ChainOverviewPanel({
         <div className="flex items-center justify-center py-8 text-xs text-muted gap-2">
           <Spinner size="sm" /> Loading chain overview…
         </div>
+      )}
+
+      {lifecycleError && (
+        <p role="alert" data-debug-id="chain-overview-lifecycle-error" className="text-xs text-danger">
+          {lifecycleError}
+        </p>
       )}
 
       {/* SECTION 1: Chain Agents */}
@@ -594,9 +563,9 @@ export default function ChainOverviewPanel({
                 const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
                 const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
                 const isRunning = rawStatus === 'running' || rawStatus === 'idle' || rawStatus === 'ready';
-                const isStarting = startingInstanceId === instId || rawStatus === 'starting';
-                const isStopping = stoppingInstanceId === instId;
-                const isRestarting = restartingInstanceId === instId;
+                const isStarting = isPending('start', instId) || rawStatus === 'starting';
+                const isStopping = isPending('stop', instId);
+                const isRestarting = isPending('restart', instId);
                 const currentTask = memberCurrentTaskMap.get(instId);
                 const isSelected = Boolean(agentInstanceId && instId === agentInstanceId);
 

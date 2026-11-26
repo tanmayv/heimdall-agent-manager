@@ -1,5 +1,5 @@
-import { refreshBridgeProviderCatalog } from '../../components/providers/providerSetupApi';
-import { normalizeModelCatalog } from '../../components/providers/modelCatalogStatus';
+import { normalizeProviderExtension, type ProviderExtensionStatus } from '../../components/extension/extensionBadgeModel';
+import { normalizeModelCatalog, type ModelCatalogMetadata } from '../../components/providers/modelCatalogStatus';
 import { normalizeProviderRuntime, type ProviderRuntimeFields } from '../../components/providers/providerRuntime';
 import * as daemonApi from '../daemonApi';
 import { heimdallApi, heimdallApiDispatch, withSessionQuery } from '../heimdallApi';
@@ -122,7 +122,85 @@ export type BridgeCapability = Partial<ProviderRuntimeFields> & {
   models: string[];
 };
 
+export interface ProviderModelStatus { model_id: string; label: string; state: string; resolved_model?: string }
+export interface ProviderStatusRow extends ModelCatalogMetadata, ProviderRuntimeFields {
+  profile_id?: string; label?: string; label_enc?: string; accent?: string; profile_state?: string;
+  provider: 'claude' | 'codex' | 'copilot' | 'antigravity' | 'pi' | 'kiro' | 'opencode';
+  display_name: string; icon_url: string; catalog_state: string;
+  state: 'absent' | 'present'; binary_path: string; version_text: string; checked_at: string | null;
+  enabled: boolean; models: ProviderModelStatus[];
+  /** REQ-EXT-DET-1/2: the bridge's probe of the provider's Heimdall extension; null = provider has none. */
+  extension: ProviderExtensionStatus | null;
+}
+function normalizeProviderStatusRow(raw: any): ProviderStatusRow {
+  return {
+    ...raw,
+    provider: String(raw?.provider || '') as ProviderStatusRow['provider'],
+    profile_id: String(raw?.profile_id || raw?.provider || ''), label_enc: String(raw?.label_enc || ''), accent: String(raw?.accent || ''), profile_state: String(raw?.profile_state || ''),
+    display_name: String(raw?.display_name || raw?.provider || ''), icon_url: String(raw?.icon_url || ''),
+    catalog_state: String(raw?.catalog_state || ''),
+    state: raw?.state === 'present' ? 'present' : 'absent', binary_path: String(raw?.binary_path || ''),
+    version_text: String(raw?.version_text || ''), checked_at: raw?.checked_at ? String(raw.checked_at) : null,
+    enabled: Boolean(raw?.enabled),
+    ...normalizeProviderRuntime(raw),
+    ...normalizeModelCatalog(raw),
+    extension: normalizeProviderExtension(raw?.extension),
+    models: Array.isArray(raw?.models) ? raw.models.map((model: any) => ({
+      ...model,
+      model_id: String(model?.model_id || ''), label: String(model?.label || model?.model_id || ''),
+      state: String(model?.state || ''),
+      resolved_model: model?.resolved_model ? String(model.resolved_model) : undefined,
+    })) : [],
+  };
+}
+
+
+/** Preserve every status row and model; launch filtering happens only in selectors. */
+export async function normalizeProviderStatus(raw: any, bridgeId = '') {
+  const providers = await Promise.all((Array.isArray(raw?.providers) ? raw.providers : []).map(async (entry: any) => ({
+    ...normalizeProviderStatusRow(entry),
+    label: await profileLabel(entry, entry.profile_id === entry.provider || !entry.profile_id ? entry.display_name : ''),
+  })));
+  return { ...raw, bridge_id: String(raw?.bridge_id || bridgeId), providers };
+}
+
+export function selectLaunchableProviderCapabilities(status: any): BridgeCapability[] {
+  return (Array.isArray(status?.providers) ? status.providers : [])
+    .filter((entry: any) => entry.enabled === true && entry.state === 'present' && entry.catalog_state === 'active')
+    .map((entry: any) => ({
+      ...entry,
+      models: (Array.isArray(entry.models) ? entry.models : [])
+        .filter((model: any) => model.state === 'active')
+        .map((model: any) => String(model.model_id || '')).filter(Boolean),
+    })).filter((entry: any) => Boolean(entry.provider));
+}
+
+/** The caller already scopes status to one bridge. */
+export function selectBridgeProvider(status: any, provider: string, profileId?: string) {
+  return status?.providers?.find((entry: any) =>
+    entry.provider === provider && (entry.profile_id || entry.provider) === (profileId || provider));
+}
+
+export function invalidateBridgeProviderStatus(bridgeId: string) {
+  heimdallApiDispatch()?.(heimdallApi.util.invalidateTags([{ type: 'BridgeProviders', id: bridgeId }]));
+}
+
+export async function readBridgeProviderStatus(bridgeId: string, options: { fresh?: boolean } = {}) {
+  const dispatch = heimdallApiDispatch();
+  if (!dispatch) return normalizeProviderStatus(await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/provider-status`), bridgeId);
+  const request = dispatch(bridgeSupportApi.endpoints.listBridgeProviders.initiate({ bridgeId }, { forceRefetch: Boolean(options.fresh) }));
+  try {
+    return await request.unwrap();
+  } catch (error: any) {
+    if (error?.status === 'CUSTOM_ERROR') throw new ApiError(error.error, error.originalStatus, error.code, undefined, undefined, error.details);
+    throw error;
+  } finally {
+    request.unsubscribe();
+  }
+}
+
 export function normalizeBridgeCapabilities(raw: any): BridgeCapability[] {
+  if (Array.isArray(raw?.providers)) return selectLaunchableProviderCapabilities(raw);
   const caps = raw?.capabilities || raw?.capability_report || raw?.provider_capabilities || raw || [];
   const source = Array.isArray(caps)
     ? caps
@@ -438,7 +516,10 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
     // nothing and has no enrollment rows to list or revoke.
     refreshBridgeModels: build.mutation<any, { bridgeId: string }>({
       queryFn: async ({ bridgeId }) => {
-        try { return { data: await refreshBridgeProviderCatalog(bridgeId) }; }
+        try {
+          const { refreshBridgeProviderCatalog } = await import('../../components/providers/providerSetupApi');
+          return { data: await refreshBridgeProviderCatalog(bridgeId) };
+        }
         catch (error: any) { return { error: customQueryError(error) as any }; }
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
@@ -448,25 +529,7 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
         if (!bridgeId) return { data: { bridge_id: '', providers: [] } };
         try {
           const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/provider-status`);
-          const providers = await Promise.all((Array.isArray(data?.providers) ? data.providers : [])
-            .filter((entry: any) => entry?.enabled && entry?.state === 'present' && entry?.catalog_state === 'active')
-            .map(async (entry: any) => ({
-              ...(entry?.profile_id ? { profile_id: String(entry.profile_id), label: await profileLabel(entry, entry.profile_id === entry.provider ? entry.display_name : ''), accent: String(entry.accent || '') } : {}),
-              provider: String(entry?.provider || ''),
-              enabled: true,
-              models: (Array.isArray(entry?.models) ? entry.models : [])
-                .filter((model: any) => model?.state === 'active')
-                .map((model: any) => String(model?.model_id || ''))
-                .filter(Boolean),
-              // REQ-EXT-DET-1: the catalog's extension descriptor + measured state
-              // (null when the provider ships no extension).
-              extension: entry?.extension ?? null,
-              ...normalizeModelCatalog(entry),
-              ...normalizeProviderRuntime(entry),
-            })));
-          return { data: { bridge_id: data?.bridge_id || bridgeId, providers,
-            acp_runtime_supported: data?.acp_runtime_supported === true,
-            extension_commands: Array.isArray(data?.extension_commands) ? data.extension_commands : [] } };
+          return { data: await normalizeProviderStatus(data, bridgeId) };
         } catch (error: any) {
           return { error: customQueryError(error) as any };
         }

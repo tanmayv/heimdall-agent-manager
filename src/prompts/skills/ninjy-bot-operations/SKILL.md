@@ -23,6 +23,7 @@ Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “R
 - Create when the user asks you to remember something: `./bin/ham-ctl memory create --type <fact|habit|episode|expertise|skill> --title "<short title>" --body "<the fact>"`. Use `fact` unless the user describes a habit, an event, a skill or expertise. A memory without scope flags applies to all agents. Add `--project-ids <project_id>` or `--agent-ids <agent_id>` only when the user names a project or an agent.
 - Change: `./bin/ham-ctl memory update <memory_id> [--title "<title>"] [--body "<text>"] [--type <type>]`.
 - Archive (confirm first): `./bin/ham-ctl memory archive <memory_id>`.
+- When the user states a standing preference or corrects you the same way twice, offer to remember it; create it only after they agree.
 - Before creating, run `./bin/ham-ctl memory list` and update an existing memory on the same subject instead of creating a duplicate.
 
 ### Your own memory

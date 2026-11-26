@@ -415,3 +415,32 @@ test('aux PTY tab + chain overview open 60s: integration-head cadences vs this b
   assert.ok(baseline.requests >= 7, JSON.stringify(baseline.byRoute));
   assert.equal(final.requests, 0);
 });
+
+test('live provider polling pauses while hidden and resumes when focused', async () => {
+  const a = await api();
+  const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
+  const store = await makeStore();
+  const net = installNet();
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const sub = store.dispatch(a.bridgeSupportApi.endpoints.listBridgeProviders.initiate(
+    { bridgeId: 'brg_1' },
+    { subscriptionOptions: { pollingInterval: 1000, skipPollingIfUnfocused: true } },
+  ));
+  try {
+    await flush();
+    await advance(2000, 100);
+    assert.ok(net.reqs.length > 1, 'visible live subscription polls');
+    store.dispatch(heimdallApi.internalActions.onFocusLost());
+    await flush();
+    net.reqs.length = 0;
+    await advance(4000, 100);
+    assert.equal(net.reqs.length, 0, 'hidden tab sends no polls');
+    store.dispatch(heimdallApi.internalActions.onFocus());
+    await advance(2000, 100);
+    assert.ok(net.reqs.length > 0, 'polling resumes after focus returns');
+  } finally {
+    sub.unsubscribe();
+    store.dispatch(heimdallApi.util.resetApiState());
+    net.restore();
+  }
+});

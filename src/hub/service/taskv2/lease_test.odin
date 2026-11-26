@@ -208,6 +208,38 @@ last_event_payload :: proc(fx: ^Fixture, task_id, kind: string) -> string {
 
 // ---- matcher: grants + wake ---------------------------------------------------------
 
+@(test)
+test_start_success_wins_late_dispatch_failure_without_new_generation :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t,"life6_readiness")
+	defer lease_fixture_close(fx,log)
+	if !ok do return
+	chain := seed_live_chain(t,fx,"chain_life6_readiness")
+	seed_fleet(fx,chain,"agt_w")
+	seed_instance(fx,chain,"inst_w1","agt_w","br_1","stopped")
+	_ = publish_task(t,fx,chain,"task_1")
+	before, held := lease_of(fx,"inst_w1")
+	if !testing.expect(t,held) do return
+	inst, _, _ := iface.agent_get_instance(&fx.agents,"inst_w1")
+	testing.expect_value(t,inst.run_count,1)
+	testing.expect_value(t,len(log.cmds),1)
+	first_command := strings.clone(log.cmds[0].body_json)
+	defer delete(first_command)
+	testing.expect(t,strings.contains(first_command,`"run_count":1`))
+	on_start_success(&fx.svc,inst)
+	wake_log_reset(log)
+	on_dispatch_failed(&fx.svc,before.lease_id,"delayed send error after readiness")
+	after, still_held := lease_of(fx,"inst_w1")
+	testing.expect(t,still_held)
+	testing.expect_value(t,after.lease_id,before.lease_id)
+	testing.expect(t,after.confirmed_at!="")
+	testing.expect_value(t,after.phase,"active")
+	testing.expect_value(t,get_task(fx,"task_1").state,domain.Task_State.In_Progress)
+	current, _, _ := iface.agent_get_instance(&fx.agents,"inst_w1")
+	testing.expect_value(t,current.run_count,1)
+	testing.expect_value(t,len(log.cmds),0)
+	testing.expect_value(t,log.registry.active_instances,1)
+}
+
 // Ports test_dynamic_fleet_scheduling_and_queuing_lifecycle: an idle warm
 // worker gets the lease (wake run[] with lease_id + pack), capacity 1 queues the
 // rest, and when the slot frees the P0 task goes first.

@@ -97,7 +97,7 @@ export function ProviderSetupSurface({ bridgeId, mode, variant = 'full', onApply
 
   const refreshAfterExtensionInstall = useCallback(() => {
     if (!bridgeId) return;
-    void providerSetupApi.get(bridgeId).then(
+    void providerSetupApi.get(bridgeId, false, true).then(
       (response) => { if (mounted.current && activeBridge.current === bridgeId) setPayload(response); },
       () => { if (mounted.current && activeBridge.current === bridgeId) setNotice('Could not refresh provider details after installation. Scan again to retry.'); },
     );

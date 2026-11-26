@@ -323,7 +323,8 @@ export default function NewConversationPage({ embedded = false, footer, onLaunch
       launchAnimation.current = composer.animate([{ transform: 'translateY(0)' }, { transform: `translateY(${distance}px)` }], { duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'forwards' });
     }
     try {
-      const result = await launch({ agentId, projectId: projectId || undefined, bridgeId: runtime.bridgeId, provider: runtime.provider, providerProfile: runtime.providerProfile, model: runtime.model, body: draft.trim() || 'Please review the attached files.', artifactIds: attachments.map(a => a.id!).filter(Boolean) }).unwrap();
+      const selection = { projectId: projectId || undefined, bridgeId: runtime.bridgeId, provider: runtime.provider, providerProfile: runtime.providerProfile, model: runtime.model };
+      const result = await launch({ agentId, ...selection, body: draft.trim() || 'Please review the attached files.', artifactIds: attachments.map(a => a.id!).filter(Boolean) }).unwrap();
       const id = result.instance?.agent_instance_id || result.conversation?.agent_instance_id;
       if (!id) throw new Error('Launch did not return an agent instance ID.');
       await launchAnimation.current?.finished.catch(() => undefined);
