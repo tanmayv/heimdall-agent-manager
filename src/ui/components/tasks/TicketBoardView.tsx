@@ -24,7 +24,6 @@ export interface TicketBoardViewProps {
   onScrolled?: () => void;
   onNewTask?: () => void;
   onOpenStaffing?: () => void;
-  onOpenReviewRoles?: () => void;
   /** Shown while the chain itself is still a draft (plan REQ-UI-9). */
   onPublishChain?: () => void;
   publishingChain?: boolean;
@@ -119,7 +118,6 @@ export const TicketBoardView: React.FC<TicketBoardViewProps> = ({
   onScrolled,
   onNewTask,
   onOpenStaffing,
-  onOpenReviewRoles,
   onPublishChain,
   publishingChain = false,
   publishError,
@@ -169,7 +167,6 @@ export const TicketBoardView: React.FC<TicketBoardViewProps> = ({
         onToggleNeedsYou={hasWorkflowRuns ? undefined : () => setNeedsYouOnly((v) => !v)}
         menuItems={[
           ...(onOpenStaffing ? [{ label: 'Chain staffing', onClick: onOpenStaffing, debugId: 'task-board-staffing-btn' }] : []),
-          ...(onOpenReviewRoles ? [{ label: 'Review roles', onClick: onOpenReviewRoles, debugId: 'task-board-review-roles-btn' }] : []),
           ...(onPublishChain && onNewTask ? [{ label: 'New ticket', onClick: onNewTask, debugId: 'task-board-new-task-menu' }] : []),
         ]}
         primaryAction={

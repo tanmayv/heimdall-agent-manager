@@ -71,7 +71,9 @@ export class ReviewVoteMap extends Map<string, ReviewVerdict> {
  */
 export const SUPERSEDED_REVIEW_ROLE_PREFIX = 'legacy-verify:';
 
-export function isSupersededReview(r: Pick<TaskReviewWire, 'role'> | null | undefined): boolean {
+// The current review wire has no role (REQ-SCHED-6); only a legacy payload can
+// still carry the superseded marker.
+export function isSupersededReview(r: (Partial<TaskReviewWire> & { role?: string }) | null | undefined): boolean {
   return String(r?.role || '').startsWith(SUPERSEDED_REVIEW_ROLE_PREFIX);
 }
 

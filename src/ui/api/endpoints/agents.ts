@@ -132,7 +132,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     listAgentIdentities: build.query<{ agents: any[] }, { limit?: number; cursor?: string } | void>({
-      // Callers treat this as THE identity set (pickers, the fleet filter, isSolo), but
+      // Callers treat this as THE identity set (pickers, the fleet filter), but
       // the hub pages it (default 50, max 200 per page; agent_handlers.odin
       // list_agents_handler). Without an explicit cursor the queryFn follows
       // page.has_more so an owner with more than one page loses no agents; `limit`

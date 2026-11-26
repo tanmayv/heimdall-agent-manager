@@ -50,11 +50,9 @@ export interface TaskChainFleet {
   provider_profile?: string;
   provider?: string;
   model?: string;
-  roles?: string[];
-  /** REQ-TV2-5: roles that get no new lease (`task-chain fleet pause`); live work continues. */
-  paused_roles?: string[];
+  /** REQ-SCHED-2: the row's one pause switch; no new lease of any kind, live leases continue. */
   paused?: boolean;
-  /** Advisory text from a fleet PUT (e.g. only unrequested custom roles). */
+  /** Advisory text from a fleet PUT. */
   warning?: string;
   /** What the matcher would apply for this row (hub-resolved, plan REQ-UI-12). */
   effective?: EffectivePlacement | null;
@@ -69,15 +67,32 @@ export interface TaskChainFleet {
   updated_at?: string;
 }
 
-/** A chain review role (hybrid review model). */
-export interface ChainReviewRole {
-  name: string;
-  /** What the role checks; handed to the reviewing agent. */
-  description: string;
-  /** Agent template ids whose fleet row holds the role. */
-  holders: string[];
-  /** Open tasks whose brief requires the role (delete is refused while > 0). */
-  openTaskCount: number;
+/**
+ * Chain cap (REQ-SCHED-34). `max_parallel` 0 means unlimited; otherwise it is
+ * at least 2 and `review_reserve` is between 1 and max_parallel - 1. Same rule
+ * as the hub's apply_chain_caps.
+ */
+export interface ChainCaps {
+  maxParallel: number;
+  reviewReserve: number;
+}
+
+export function readChainCaps(chain: any): ChainCaps {
+  const m = Number(chain?.max_parallel ?? 0);
+  const r = Number(chain?.review_reserve ?? 0);
+  return {
+    maxParallel: Number.isInteger(m) && m > 0 ? m : 0,
+    reviewReserve: Number.isInteger(r) && r > 0 ? r : 0,
+  };
+}
+
+/** Returns a message for invalid caps, or '' when the hub would accept them. */
+export function chainCapsError({ maxParallel, reviewReserve }: ChainCaps): string {
+  if (!Number.isInteger(maxParallel) || !Number.isInteger(reviewReserve)) return 'Use whole numbers.';
+  if (maxParallel === 0) return reviewReserve === 0 ? '' : 'A review reserve needs a parallel limit.';
+  if (maxParallel < 2) return 'The parallel limit is 0 (unlimited) or at least 2.';
+  if (reviewReserve < 1 || reviewReserve > maxParallel - 1) return `The review reserve must be between 1 and ${maxParallel - 1}.`;
+  return '';
 }
 
 export interface EffectivePlacement {
@@ -93,12 +108,6 @@ export interface EffectivePlacement {
 }
 
 export function normalizeFleet(f: any): TaskChainFleet {
-  const rawRoles: string[] = Array.isArray(f?.roles)
-    // `worker` or any review role name (`reviewer`, `security`, …) — same rule as
-    // the hub's fleet_role_name_valid; custom review roles must survive the read.
-    ? f.roles.map((r: any) => String(r || '').trim().toLowerCase()).filter((r: string) => /^[a-z][a-z0-9_-]{0,31}$/.test(r))
-    : [];
-  const roles: string[] = rawRoles.length > 0 ? Array.from(new Set(rawRoles)) : ['worker', 'reviewer'];
   const bridgeId = String(f?.bridge_id ?? f?.bridgeId ?? '');
 
   return {
@@ -117,10 +126,8 @@ export function normalizeFleet(f: any): TaskChainFleet {
     provider: f?.provider || '',
     provider_profile: f?.provider_profile || f?.provider || '',
     model: f?.model || '',
-    roles,
     bridge_id: bridgeId,
     bridgeId,
-    paused_roles: Array.isArray(f?.paused_roles) ? f.paused_roles.map((r: any) => String(r)) : [],
     paused: f?.paused === true,
     warning: typeof f?.warning === 'string' && f.warning ? f.warning : undefined,
     effective: f?.effective && typeof f.effective === 'object' ? (f.effective as EffectivePlacement) : null,
@@ -169,60 +176,6 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
       providesTags: (_result, _error, { chainId }) => [{ type: 'TaskChainFleets' as const, id: chainId }],
     }),
 
-    // Hybrid review model: chain review roles (optional, for templates and
-    // coordinators). Members are the fleet rows holding the role, so these share
-    // the fleets tag and refresh together.
-    listChainReviewRoles: build.query<ChainReviewRole[], { chainId: string }>({
-      queryFn: async ({ chainId }) => {
-        try {
-          const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}/review-roles`);
-          const list = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
-          return {
-            data: list.map((r: any) => ({
-              name: String(r?.name || ''),
-              description: String(r?.description || ''),
-              holders: Array.isArray(r?.holders) ? r.holders.map(String) : [],
-              openTaskCount: Number(r?.open_task_count || 0),
-            })),
-          };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      providesTags: (_result, _error, { chainId }) => [{ type: 'TaskChainFleets' as const, id: chainId }],
-    }),
-
-    upsertChainReviewRole: build.mutation<any, { chainId: string; name: string; description: string }>({
-      queryFn: async ({ chainId, name, description }) => {
-        try {
-          const data = await cookieMutation(
-            `/task-chains/${encodeURIComponent(chainId)}/review-roles/${encodeURIComponent(name)}`,
-            'PUT',
-            { description },
-          );
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'TaskChainFleets' as const, id: chainId }],
-    }),
-
-    deleteChainReviewRole: build.mutation<any, { chainId: string; name: string }>({
-      queryFn: async ({ chainId, name }) => {
-        try {
-          const data = await cookieMutation(
-            `/task-chains/${encodeURIComponent(chainId)}/review-roles/${encodeURIComponent(name)}`,
-            'DELETE',
-          );
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'TaskChainFleets' as const, id: chainId }],
-    }),
-
     updateTaskChainFleet: build.mutation<TaskChainFleet, {
       chainId: string;
       agentId: string;
@@ -234,10 +187,9 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
       provider_profile?: string;
       provider?: string;
       model?: string;
-      roles?: string[];
       bridgeId?: string;
       bridge_id?: string;
-      /** Ask the hub to relaunch this role's live instances with the new provider/model. */
+      /** Ask the hub to relaunch this row's live instances with the new provider/model. */
       restartLiveInstances?: boolean;
       bridgeModels?: Record<string, { provider: string; provider_profile?: string; model: string }>;
       bridge_models?: Record<string, { provider: string; provider_profile?: string; model: string }>;
@@ -253,7 +205,6 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
         provider,
         provider_profile,
         model,
-        roles,
         bridgeId,
         bridge_id,
         restartLiveInstances,
@@ -271,7 +222,6 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
           if (resolvedMinWarm !== undefined) body.min_warm = resolvedMinWarm;
           const resolvedIdleTtl = idleTtlSeconds ?? idle_ttl_seconds;
           if (resolvedIdleTtl !== undefined) body.idle_ttl_seconds = resolvedIdleTtl;
-          if (roles !== undefined) body.roles = roles;
           const resolvedBridgeId = bridgeId !== undefined ? bridgeId : bridge_id;
           if (resolvedBridgeId !== undefined) body.bridge_id = resolvedBridgeId;
           // Only a true flag reaches the wire: flag-less bodies stay byte-identical
@@ -294,9 +244,13 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
-    setTaskChainStaffingPaused: build.mutation<TaskChainFleet, { chainId: string; agentId: string; paused: boolean; roles?: string[] }>({
-      queryFn: async ({ chainId, agentId, paused, roles }) => {
-        try { return { data: normalizeFleet(await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/fleets/${encodeURIComponent(agentId)}/${paused ? 'pause' : 'resume'}`, 'POST', roles ? { roles } : {})) }; }
+    // REQ-SCHED-2: pause and resume take no body; the whole row is paused.
+    setTaskChainStaffingPaused: build.mutation<TaskChainFleet, { chainId: string; agentId: string; paused: boolean }>({
+      queryFn: async ({ chainId, agentId, paused }) => {
+        try {
+          const raw = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/fleets/${encodeURIComponent(agentId)}/${paused ? 'pause' : 'resume'}`, 'POST');
+          return { data: normalizeFleet(raw?.data !== undefined ? raw.data : raw) };
+        }
         catch (error: any) { return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any }; }
       },
       invalidatesTags: (_r, _e, { chainId }) => [{ type: 'TaskChainFleets', id: chainId }, { type: 'Attention', id: 'ALL' }],
@@ -317,6 +271,26 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { chainId }) => [
         { type: 'TaskChainFleets' as const, id: chainId },
         { type: 'Chain' as const, id: chainId },
+      ],
+    }),
+
+    // REQ-SCHED-34: chain cap. Only the keys given are sent; the hub validates
+    // with the same rule as chainCapsError.
+    updateTaskChainCaps: build.mutation<any, { chainId: string; maxParallel?: number; reviewReserve?: number }>({
+      queryFn: async ({ chainId, maxParallel, reviewReserve }) => {
+        try {
+          const body: Record<string, number> = {};
+          if (maxParallel !== undefined) body.max_parallel = maxParallel;
+          if (reviewReserve !== undefined) body.review_reserve = reviewReserve;
+          const raw = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}`, 'PATCH', body);
+          return { data: raw?.data !== undefined ? raw.data : raw };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId }) => [
+        { type: 'Chain' as const, id: chainId },
+        { type: 'TaskChainFleets' as const, id: chainId },
       ],
     }),
 
@@ -479,9 +453,8 @@ export const taskChainsApi = heimdallApi.injectEndpoints({
 });
 
 export const {
-  useListChainReviewRolesQuery,
-  useUpsertChainReviewRoleMutation,
-  useDeleteChainReviewRoleMutation,
+  useUpdateTaskChainCapsMutation,
+  useGetTaskChainQuery,
   useGetTaskChainFleetsQuery,
   useLazyGetTaskChainFleetsQuery,
   useGetTaskChainTokenUsageQuery,

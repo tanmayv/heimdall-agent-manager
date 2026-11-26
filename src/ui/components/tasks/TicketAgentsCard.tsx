@@ -42,11 +42,11 @@ export function TicketAgentsCard({
       instanceId: lease.holderInstanceId,
     });
   } else {
-    const agentId = people.assignee || people.workers[0] || '';
+    const agentId = people.assignee;
     const slot = agentId ? slotForAgent(agentId) : null;
     rows.push({
-      id: `assignee-${agentId || 'any'}`,
-      name: people.assignee ? names.agent(people.assignee) : 'Any worker',
+      id: `assignee-${agentId || 'none'}`,
+      name: agentId ? names.agent(agentId) : 'No assignee',
       sub: (state === 'done' ? 'Assignee · finished' : state === 'in_review' ? 'Assignee · handed off' : 'Assignee · waiting for the lease') + offline(slot),
       state: slot ? (slot.state === 'working' || slot.state === 'reviewing' ? 'working' : slot.state) : 'not_running',
       instanceId: slot?.instanceId || '',
@@ -63,7 +63,7 @@ export function TicketAgentsCard({
       id: `reviewer-${agentId}`,
       name: names.agent(agentId),
       sub: (holder
-        ? `Reviewer · ${reviewingSentenceRest(holder.role, holder.phase, holder.waitReason)}`
+        ? `Reviewer · ${reviewingSentenceRest(holder.phase, holder.waitReason)}`
         : verdict
           ? `Reviewer · ${verdict === 'approve' ? 'approved' : 'requested changes'}`
           : state === 'in_review'

@@ -103,7 +103,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const badges = getTaskBadges(task, chainFleets, now, names).filter((b) => b.kind !== 'lease' && b.kind !== 'bridge');
   const holderLease = workLeaseHolder(task, now);
   const reviewing = reviewLeaseHolders(task, now);
-  const people = getTaskPeople(task, chainFleets);
+  const people = getTaskPeople(task);
   // Instance ids nothing maps yet are looked up, so votes match by durable id (REQ-TV2-6).
   const reviewNames = useLookupNames(names, reviewParticipantIds(task, people.reviewers));
   const votes = reviewVotes(task, reviewNames);
@@ -114,11 +114,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const dispatch = useDispatch();
   const { primary, more } = getTaskActions(task);
 
-  const workerLabel = people.assignee
-    ? names.agent(people.assignee)
-    : people.workers.length
-      ? people.workers.map(names.agent).join(', ')
-      : 'no worker in fleet';
+  const workerLabel = people.assignee ? names.agent(people.assignee) : 'no assignee';
   const deps = task.depends_on || [];
 
   const runAction = async (id: TaskActionId) => {
@@ -264,9 +260,9 @@ export const TaskCard: React.FC<TaskCardProps> = ({
               // resolves through <HolderName> (non-member/JIT instances too).
               <>
                 {reviewing.map((h, i) => (
-                  <React.Fragment key={`${h.instanceId}-${h.role}-${i}`}>
+                  <React.Fragment key={`${h.instanceId}-${i}`}>
                     {i > 0 ? '; ' : ''}
-                    <HolderName instanceId={h.instanceId} names={names} /> {reviewingSentenceRest(h.role, h.phase, h.waitReason)}
+                    <HolderName instanceId={h.instanceId} names={names} /> {reviewingSentenceRest(h.phase, h.waitReason)}
                   </React.Fragment>
                 ))}
                 {task.requires_user_approval ? '; then you' : ''}
@@ -293,7 +289,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                 <HolderName instanceId={people.holder} names={names} className="text-primary" />
               </PersonChip>
             ) : (
-              <PersonChip name={workerLabel} tone={people.assignee || people.workers.length ? 'default' : 'missing'} title="Assignee" />
+              <PersonChip name={workerLabel} tone={people.assignee ? 'default' : 'missing'} title="Assignee" />
             )}
             {(people.reviewers.length > 0 || people.userApproval) && (
               <span className="inline-flex items-center gap-1.5">

@@ -20,11 +20,10 @@ import type { TaskLeaseWire, TaskWire } from '../src/ui/api/taskWire.ts';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 
-function lease(holder: string, kind: 'work' | 'review', reviewRole = ''): TaskLeaseWire {
+function lease(holder: string, kind: 'work' | 'review'): TaskLeaseWire {
   return {
     lease_id: `lease_${holder}_${kind}`,
     kind,
-    review_role: reviewRole,
     holder_instance_id: holder,
     attempt_no: 1,
     bridge_id: '',
@@ -59,8 +58,8 @@ function makeTask(id: string, overrides: Partial<TaskWire> = {}): TaskWire {
 const workTask = makeTask('task-work', { state: 'in_progress', leases: [lease('inst-worker', 'work')] });
 const reviewTask = makeTask('task-review', {
   state: 'in_review',
-  brief: { review_roles: ['security', 'code'] } as any,
-  leases: [lease('inst-sec', 'review', 'security'), lease('inst-code', 'review', 'code')],
+  brief: { assignee: 'agt_worker', reviewers: ['agt_sec', 'agt_code'] },
+  leases: [lease('inst-sec', 'review'), lease('inst-code', 'review')],
 });
 
 test('buildMemberCurrentTaskMap maps work and review lease holders across members', () => {
@@ -68,18 +67,17 @@ test('buildMemberCurrentTaskMap maps work and review lease holders across member
   assert.deepEqual([...map.keys()].sort(), ['inst-code', 'inst-sec', 'inst-worker']);
   assert.equal(map.get('inst-worker')?.task.task_id, 'task-work');
   assert.equal(map.get('inst-worker')?.kind, 'work');
-  assert.equal(map.get('inst-worker')?.reviewRole, '');
   assert.equal(map.get('inst-sec')?.task.task_id, 'task-review');
   assert.equal(map.get('inst-sec')?.kind, 'review');
-  assert.equal(map.get('inst-sec')?.reviewRole, 'security');
-  assert.equal(map.get('inst-code')?.reviewRole, 'code');
+  assert.equal(map.get('inst-code')?.kind, 'review');
+  assert.equal('reviewRole' in (map.get('inst-sec') || {}), false, 'REQ-SCHED-6: a review lease has no role');
   assert.equal(map.get('inst-nobody'), undefined);
 });
 
 test('buildMemberCurrentTaskMap ignores legacy fields and terminal tasks; work beats review', () => {
   const legacy = makeTask('task-legacy', { status: 'in_progress', assignee_ref: { agent_instance_id: 'inst-legacy' } });
   const done = makeTask('task-done', { state: 'done', leases: [lease('inst-done', 'work')] });
-  const alsoReviewing = makeTask('task-other', { state: 'in_review', leases: [lease('inst-worker', 'review', 'code')] });
+  const alsoReviewing = makeTask('task-other', { state: 'in_review', leases: [lease('inst-worker', 'review')] });
   const map = buildMemberCurrentTaskMap([alsoReviewing, legacy, done, workTask]);
   assert.equal(map.has('inst-legacy'), false);
   assert.equal(map.has('inst-done'), false);
@@ -87,10 +85,10 @@ test('buildMemberCurrentTaskMap ignores legacy fields and terminal tasks; work b
   assert.equal(map.get('inst-worker')?.kind, 'work');
 });
 
-test('memberTicketText names work, review (with role) and no ticket', () => {
+test('memberTicketText names work, review and no ticket', () => {
   const map = buildMemberCurrentTaskMap([workTask, reviewTask]);
   assert.equal(memberTicketText(map.get('inst-worker')), 'Title task-work');
-  assert.equal(memberTicketText(map.get('inst-sec')), 'Reviewing: Title task-review (security)');
+  assert.equal(memberTicketText(map.get('inst-sec')), 'Reviewing: Title task-review');
   assert.equal(memberTicketText(undefined), 'No ticket');
 });
 
@@ -107,16 +105,16 @@ test('ongoing and attention helpers read v2 state, including in_review', () => {
   const approved = makeTask('t-ok', {
     state: 'in_review',
     requires_user_approval: true,
-    reviews: [{ reviewer: 'user', reviewer_kind: 'user', reviewer_instance_id: '', role: '', verdict: 'approve', created_at: '' }],
+    reviews: [{ reviewer: 'user', reviewer_kind: 'user', reviewer_instance_id: '', verdict: 'approve', created_at: '' }],
   });
   assert.equal(isAttentionNeeded(approved), false, 'you already approved');
   const noReviewer = makeTask('t-none', { state: 'in_review' });
   assert.equal(isAttentionNeeded(noReviewer), true);
   assert.equal(attentionReason(noReviewer), 'No reviewer assigned');
   assert.equal(isAttentionNeeded(makeTask('t-legacy', { status: 'validated_not_good' })), false);
-  // Named reviewer only (brief.reviewers, no review_roles, no user gate).
+  // Reviewer agent only (brief.reviewers, no user gate).
   const named = makeTask('t-named', { state: 'in_review' });
-  named.brief = { review_roles: [], reviewers: ['agt_reviewer'] } as TaskWire['brief'];
+  named.brief = { reviewers: ['agt_reviewer'] } as TaskWire['brief'];
   assert.equal(isAttentionNeeded(named), false, 'named reviewer: not on you');
   assert.equal(attentionReason(named), 'Review required by you', 'named reviewer: not unassigned');
   const namedLive = { ...named, task_id: 't-named-live', leases: [lease('inst-named', 'review')] };
@@ -129,7 +127,7 @@ test('ongoing and attention helpers read v2 state, including in_review', () => {
   assert.deepEqual(reviewHolders(workTask), []);
 });
 
-test('ChainOverviewPanel shows each member\'s ticket from leases: work title, Reviewing (role), No ticket', async () => {
+test('ChainOverviewPanel shows each member\'s ticket from leases: work title, Reviewing, No ticket', async () => {
   const React = (await import('react')).default;
   const { Provider } = await import('react-redux');
   const { renderToStaticMarkup } = await import('react-dom/server');
@@ -163,9 +161,8 @@ test('ChainOverviewPanel shows each member\'s ticket from leases: work title, Re
   };
   assert.match(ticketCell('inst-worker'), /Title task-work/);
   assert.doesNotMatch(ticketCell('inst-worker'), /Reviewing/);
-  assert.match(ticketCell('inst-sec'), /title="Reviewing: Title task-review \(security\)"/);
+  assert.match(ticketCell('inst-sec'), /title="Reviewing: Title task-review"/);
   assert.match(ticketCell('inst-sec'), />Reviewing: <\/span>/);
-  assert.match(ticketCell('inst-sec'), /\(security\)/);
   assert.match(ticketCell('inst-idle'), /No ticket/);
   // Both leased tasks count as ongoing, the in_review one under its v2 label.
   assert.match(html, /Ongoing Tasks \(<!-- -->2<!-- -->\)|Ongoing Tasks \(2\)/);

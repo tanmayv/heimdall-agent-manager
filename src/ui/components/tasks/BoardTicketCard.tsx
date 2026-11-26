@@ -211,7 +211,7 @@ export const BoardTicketCard = React.memo(function BoardTicketCard({
         ) : state === 'in_review' ? (
           <Text as="p" role="body-sm" tone="muted" data-debug-id={`task-card-status-${id}`}>
             {reviewing.length
-              ? reviewing.map((h) => `${names.instance(h.instanceId) || 'A reviewer'} ${reviewingSentenceRest(h.role, h.phase, h.waitReason)}`).join(' · ')
+              ? reviewing.map((h) => `${names.instance(h.instanceId) || 'A reviewer'} ${reviewingSentenceRest(h.phase, h.waitReason)}`).join(' · ')
               : 'Waiting for a reviewer'}
             {attempt.no > 1 || attempt.exhausted ? ` · ${attempt.label}` : ''}
           </Text>

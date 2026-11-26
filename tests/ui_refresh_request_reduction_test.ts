@@ -306,13 +306,11 @@ test('closed task modals and chain staffing send no requests; opening fetches', 
     '/workflows/definitions': { body: { data: { definitions: [] } } },
   }, async ({ hits, render }) => {
     const { CreateChainModal } = await import('../src/ui/components/taskchain/CreateChainModal.tsx');
-    const { ReviewRolesModal } = await import('../src/ui/components/tasks/ReviewRolesModal.tsx');
     const { TaskEditModal } = await import('../src/ui/components/tasks/TaskEditModal.tsx');
     const { ChainStaffingModal } = await import('../src/ui/components/tasks/ChainStaffingModal.tsx');
     const task: any = { task_id: 't1', chain_id: 'ch1', state: 'ready', brief: {}, depends_on: [] };
     const tree = (open: boolean) => React.createElement(React.Fragment, null,
       React.createElement(CreateChainModal, { isOpen: open, onClose: () => {} }),
-      React.createElement(ReviewRolesModal, { chainId: 'ch1', open: false, onClose: () => {} }),
       React.createElement(TaskEditModal, { chainId: 'ch1', task, field: null, onClose: () => {} }),
       React.createElement(ChainStaffingModal, { chainId: 'ch1', open: false, onClose: () => {} }),
     );

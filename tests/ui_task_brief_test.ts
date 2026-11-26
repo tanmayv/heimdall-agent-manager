@@ -23,7 +23,6 @@ test('buildTaskBrief produces the hub brief shape from form fields', () => {
   const { brief, errors, missing } = buildTaskBrief({
     goal: '  Ship the endpoint  ',
     acceptanceText: 'returns 201\n\n  covers the error path \n',
-    reviewRolesText: 'reviewer, security,reviewer',
     assignee: 'agt_worker',
   });
   assert.deepEqual(errors, []);
@@ -31,55 +30,60 @@ test('buildTaskBrief produces the hub brief shape from form fields', () => {
   assert.deepEqual(brief, {
     goal: 'Ship the endpoint',
     acceptance: ['returns 201', 'covers the error path'],
-    review_roles: ['reviewer', 'security'],
     assignee: 'agt_worker',
   });
   // JSON-serialisable exactly as the wire body expects.
-  assert.equal(JSON.stringify({ brief }), '{"brief":{"goal":"Ship the endpoint","acceptance":["returns 201","covers the error path"],"review_roles":["reviewer","security"],"assignee":"agt_worker"}}');
+  assert.equal(JSON.stringify({ brief }), '{"brief":{"goal":"Ship the endpoint","acceptance":["returns 201","covers the error path"],"assignee":"agt_worker"}}');
 });
 
-test('buildTaskBrief omits assignee when unset and never emits an output key without one', () => {
-  const { brief } = buildTaskBrief({ goal: 'g', acceptanceText: 'a' });
+test('buildTaskBrief requires an assignee, omits it when unset and never emits removed role keys', () => {
+  const { brief, missing, errors } = buildTaskBrief({ goal: 'g', acceptanceText: 'a' });
   assert.ok(!('assignee' in brief));
   assert.ok(!('output' in brief));
-  assert.deepEqual(brief.review_roles, []);
+  // REQ-SCHED-3 / REQ-SCHED-8: assignee required; review_roles never sent.
+  assert.deepEqual(missing, ['assignee']);
+  assert.match(errors[0], /assignee/i);
+  assert.ok(!('review_roles' in brief));
+  const legacy = buildTaskBrief({ goal: 'g', acceptanceText: 'a', assignee: 'agt_w', reviewRolesText: 'security' } as any);
+  assert.ok(!('review_roles' in legacy.brief));
 });
 
 test('buildTaskBrief mirrors the hub publish rules', () => {
   const empty = buildTaskBrief({ goal: '', acceptanceText: '' });
-  assert.deepEqual(empty.missing, ['goal', 'acceptance']);
-  assert.equal(empty.errors.length, 2);
+  assert.deepEqual(empty.missing, ['goal', 'acceptance', 'assignee']);
+  assert.equal(empty.errors.length, 3);
 
-  const longGoal = buildTaskBrief({ goal: 'x'.repeat(BRIEF_GOAL_MAX + 1), acceptanceText: 'a' });
+  const assignee = 'agt_worker';
+  const longGoal = buildTaskBrief({ goal: 'x'.repeat(BRIEF_GOAL_MAX + 1), acceptanceText: 'a', assignee });
   assert.deepEqual(longGoal.missing, ['goal']);
-  const maxGoal = buildTaskBrief({ goal: 'x'.repeat(BRIEF_GOAL_MAX), acceptanceText: 'a' });
+  const maxGoal = buildTaskBrief({ goal: 'x'.repeat(BRIEF_GOAL_MAX), acceptanceText: 'a', assignee });
   assert.deepEqual(maxGoal.missing, []);
 
-  const tooMany = buildTaskBrief({ goal: 'g', acceptanceText: Array.from({ length: BRIEF_ACCEPTANCE_MAX + 1 }, (_, i) => `item ${i}`).join('\n') });
+  const tooMany = buildTaskBrief({ goal: 'g', acceptanceText: Array.from({ length: BRIEF_ACCEPTANCE_MAX + 1 }, (_, i) => `item ${i}`).join('\n'), assignee });
   assert.deepEqual(tooMany.missing, ['acceptance']);
-  const longItem = buildTaskBrief({ goal: 'g', acceptanceText: `ok\n${'y'.repeat(BRIEF_ACCEPTANCE_ITEM_MAX + 1)}` });
+  const longItem = buildTaskBrief({ goal: 'g', acceptanceText: `ok\n${'y'.repeat(BRIEF_ACCEPTANCE_ITEM_MAX + 1)}`, assignee });
   assert.deepEqual(longItem.missing, ['acceptance']);
   assert.match(longItem.errors[0], /criterion 2/);
 
-  // REQ-TV2-2: goal + ≥1 acceptance item is all a publish needs. A
-  // command-free planning ticket publishes with no output contract.
-  const planning = buildTaskBrief({ goal: 'Plan the migration', acceptanceText: 'A written plan with risks' });
+  // REQ-TV2-2 / REQ-SCHED-3: goal, ≥1 acceptance item and an assignee are all a
+  // publish needs. A command-free planning ticket publishes with no output contract.
+  const planning = buildTaskBrief({ goal: 'Plan the migration', acceptanceText: 'A written plan with risks', assignee });
   assert.deepEqual(planning.missing, []);
   assert.deepEqual(planning.errors, []);
   assert.ok(!('output' in planning.brief));
   // An output contract is still carried when given, never required.
-  const withOutput = buildTaskBrief({ goal: 'g', acceptanceText: 'a', output: { schema: 'report/v1' } });
+  const withOutput = buildTaskBrief({ goal: 'g', acceptanceText: 'a', assignee, output: { schema: 'report/v1' } });
   assert.deepEqual(withOutput.missing, []);
   assert.deepEqual(withOutput.brief.output, { schema: 'report/v1' });
 });
 
 test('buildTaskBrief never emits removed verification keys, even from a legacy caller', () => {
-  const legacy = buildTaskBrief({ goal: 'g', acceptanceText: 'a', verify: 'npm test', auto_submit: true, require_independent_verify: true } as any);
+  const legacy = buildTaskBrief({ goal: 'g', acceptanceText: 'a', assignee: 'agt_w', verify: 'npm test', auto_submit: true, require_independent_verify: true } as any);
   assert.deepEqual(legacy.missing, []);
   for (const key of ['verify', 'auto_submit', 'require_independent_verify']) assert.ok(!(key in legacy.brief), key);
 });
 
-test('list parsers trim, drop blanks and de-duplicate roles', () => {
+test('list parsers trim, drop blanks and de-duplicate', () => {
   assert.deepEqual(parseLineList(' a \r\n\n b\n'), ['a', 'b']);
   assert.deepEqual(parseLineList(undefined), []);
   assert.deepEqual(parseCommaList('a, b,,a\nc'), ['a', 'b', 'c']);
@@ -90,12 +94,12 @@ test('briefIncompleteMessage words each task with its title, falling back to the
     code: 'brief_incomplete' as const,
     tasks: [
       { task_id: 'tsk_1', missing: ['goal', 'acceptance'] },
-      { task_id: 'tsk_2', missing: ['review_role:security'] },
+      { task_id: 'tsk_2', missing: ['assignee'] },
     ],
   };
   assert.equal(
     briefIncompleteMessage(details, { tsk_1: 'Ship endpoint' }),
-    'Ticket Ship endpoint: missing goal, acceptance\nTicket tsk_2: missing no fleet row for review role "security"',
+    'Ticket Ship endpoint: missing goal, acceptance\nTicket tsk_2: missing an assignee',
   );
 });
 

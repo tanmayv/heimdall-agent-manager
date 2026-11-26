@@ -6,8 +6,6 @@ import { normalizeTaskState } from '../tasks/taskV2Types';
 export interface MemberCurrentTask {
   task: TaskWire;
   kind: 'work' | 'review';
-  /** The review role of a review lease ('' for work). */
-  reviewRole: string;
 }
 
 /**
@@ -27,7 +25,7 @@ export function buildMemberCurrentTaskMap(tasks: readonly TaskWire[]): Map<strin
       const kind = (lease.kind || 'work') === 'review' ? 'review' : 'work';
       const existing = map.get(holder);
       if (existing && (existing.kind === 'work' || kind === 'review')) continue;
-      map.set(holder, { task, kind, reviewRole: kind === 'review' ? String(lease.review_role || '') : '' });
+      map.set(holder, { task, kind });
     }
   }
   return map;
@@ -38,7 +36,7 @@ export function memberTicketText(current: MemberCurrentTask | undefined): string
   if (!current) return 'No ticket';
   const title = String(current.task.title || current.task.task_id || '');
   if (current.kind === 'work') return title;
-  return `Reviewing: ${title}${current.reviewRole ? ` (${current.reviewRole})` : ''}`;
+  return `Reviewing: ${title}`;
 }
 
 /** Tasks someone is on: being worked (in_progress) or reviewed (in_review). */
@@ -61,13 +59,12 @@ export function attentionReason(task: TaskWire): string {
 }
 
 /**
- * Someone is assigned to review: you, a review role, a named reviewer
+ * Someone is assigned to review: you, a listed reviewer agent
  * (brief.reviewers), a gate, or an agent already holding a review lease.
  */
 function hasReviewer(task: TaskWire): boolean {
   return (
     Boolean(task.requires_user_approval) ||
-    (task.brief?.review_roles || []).length > 0 ||
     (task.brief?.reviewers || []).length > 0 ||
     task.kind === 'gate' ||
     reviewHolders(task).length > 0

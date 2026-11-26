@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Button, Checkbox, FormField, Icon, IconButton, Input, Modal, ModalBody, ModalFooter, Select, StatusPill, Textarea } from '@ui';
+import { Button, Checkbox, FormField, Input, Modal, ModalBody, ModalFooter, Select, StatusPill, Textarea } from '@ui';
 import { TASK_STATE_LABELS, TASK_STATE_TONE, normalizeTaskState } from './taskV2Types';
 import { useCreateTaskMutation } from '../../api/endpoints/tasks';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
@@ -8,6 +8,7 @@ import { taskBridgeOptions } from '../../utils/taskBridgePin';
 import { formatFleetRoleName } from './fleetNames';
 import { useAuthUser } from '../auth/AuthUserContext';
 import { BRIEF_ACCEPTANCE_ITEM_MAX, BRIEF_ACCEPTANCE_MAX, BRIEF_GOAL_MAX, buildTaskBrief } from '../../utils/taskBrief';
+import { ReviewerPicker } from './ReviewerPicker';
 
 export interface CreateTaskModalProps {
   chainId: string;
@@ -43,52 +44,40 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   // rules (utils/taskBrief) so a human-created task is publishable as-is.
   const [goal, setGoal] = useState('');
   const [acceptanceText, setAcceptanceText] = useState('');
-  const [reviewRolesText, setReviewRolesText] = useState('');
-  const [assigneeMode, setAssigneeMode] = useState<'agent' | 'unassigned' | 'user'>('agent');
   // REQ-TB-5: '' = Inherit (coordinator bridge) — the default create pins nothing.
   const [bridgeId, setBridgeId] = useState('');
-  // REQ-AUTO-4: no literal placeholder default — the user picks a real durable
-  // identity from the catalog, or the actor stays unassigned.
-  const [assigneeAgentId, setAssigneeAgentId] = useState('');
-  const [assigneeUserId, setAssigneeUserId] = useState('');
-
-  const [stagedReviewers, setStagedReviewers] = useState<any[]>([]);
-  const [reviewerAgentId, setReviewerAgentId] = useState('');
+  // REQ-SCHED-3: every task names its assignee agent. REQ-AUTO-4: no literal
+  // placeholder default — the user picks a real durable identity.
+  const [assigneeAgentId, setAssigneeAgentIdRaw] = useState('');
+  // REQ-SCHED-4: reviewer agents, plus the user through requires_user_approval.
+  const [reviewerAgentIds, setReviewerAgentIds] = useState<string[]>([]);
   const [requiresUserApproval, setRequiresUserApproval] = useState(false);
+  // The assignee cannot review its own work (reviewer_is_assignee).
+  const setAssigneeAgentId = (id: string) => {
+    setAssigneeAgentIdRaw(id);
+    setReviewerAgentIds((prev) => prev.filter((r) => r !== id));
+  };
 
   const [dependsOnIds, setDependsOnIds] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Agent identities options with clean display names (no raw IDs). The empty
-  // placeholder is always first so no actor is ever pre-selected: with no
-  // catalog entries the only choice is to leave the field unassigned.
+  const agentName = (id: string) => {
+    const found = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === id);
+    return String(found?.name || found?.display_name || formatFleetRoleName(id, agentIdentities));
+  };
+  // Active agent identities with clean display names (no raw IDs). The empty
+  // placeholder is always first so no actor is ever pre-selected.
   const agentOptions = useMemo(() => {
     return [
-      { value: '', label: 'Select agent identity…' },
-      ...agentIdentities.map((a: any) => {
-        const id = String(a.agent_id || a.agentId || a.id || '');
-        const displayName = a.name || a.display_name || formatFleetRoleName(id, agentIdentities);
-        return { value: id, label: displayName };
-      }),
+      { value: '', label: 'Select an agent…', disabled: true },
+      ...agentIdentities
+        .filter((a: any) => String(a.state || 'active').toLowerCase() === 'active')
+        .map((a: any) => {
+          const id = String(a.agent_id || a.agentId || a.id || '');
+          return { value: id, label: a.name || a.display_name || formatFleetRoleName(id, agentIdentities) };
+        }),
     ];
   }, [agentIdentities]);
-
-  const handleAddReviewer = () => {
-    if (!reviewerAgentId) return;
-    if (stagedReviewers.some((r) => r.agent_id === reviewerAgentId)) return;
-    setStagedReviewers((prev) => [
-      ...prev,
-      {
-        type: 'agent_id',
-        agent_id: reviewerAgentId,
-        display_name: formatFleetRoleName(reviewerAgentId, agentIdentities),
-      },
-    ]);
-  };
-
-  const handleRemoveReviewer = (index: number) => {
-    setStagedReviewers((prev) => prev.filter((_, i) => i !== index));
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,32 +88,12 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       return;
     }
 
-    let assigneeRef: any = undefined;
-    if (assigneeMode === 'agent') {
-      if (!assigneeAgentId) {
-        setErrorMsg('Please select an agent role.');
-        return;
-      }
-      assigneeRef = {
-        type: 'agent_id',
-        agent_id: assigneeAgentId,
-        display_name: formatFleetRoleName(assigneeAgentId, agentIdentities),
-      };
-    } else if (assigneeMode === 'user') {
-      const uid = assigneeUserId.trim();
-      if (!uid) {
-        setErrorMsg('Please enter a user ID.');
-        return;
-      }
-      assigneeRef = { type: 'user', user_id: uid };
+    if (!assigneeAgentId) {
+      setErrorMsg('Choose the agent that works on this ticket.');
+      return;
     }
 
-    const briefBuild = buildTaskBrief({
-      goal,
-      acceptanceText,
-      reviewRolesText,
-      assignee: assigneeMode === 'agent' ? assigneeAgentId : '',
-    });
+    const briefBuild = buildTaskBrief({ goal, acceptanceText, assignee: assigneeAgentId });
     // Allow draft creation when brief fields are still being sketched; reject only
     // when provided values exceed hub caps.
     const hardBriefError = briefBuild.errors.find((msg) => msg.includes('exceeds') || msg.includes('at most'));
@@ -142,12 +111,10 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
         bridgeId,
         requiresUserApproval,
         brief: briefBuild.brief,
+        assigneeRef: { type: 'agent_id', agent_id: assigneeAgentId },
       };
-      if (assigneeRef !== undefined) {
-        payload.assigneeRef = assigneeRef;
-      }
-      if (stagedReviewers.length > 0) {
-        payload.reviewerRefs = stagedReviewers;
+      if (reviewerAgentIds.length > 0) {
+        payload.reviewerRefs = reviewerAgentIds.map((agent_id) => ({ type: 'agent_id', agent_id }));
       }
       if (dependsOnIds.length > 0) {
         payload.dependsOn = dependsOnIds;
@@ -159,11 +126,9 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       setDesc('');
       setGoal('');
       setAcceptanceText('');
-      setReviewRolesText('');
-      setAssigneeMode('agent');
-      setAssigneeAgentId('');
+      setAssigneeAgentIdRaw('');
       setBridgeId('');
-      setStagedReviewers([]);
+      setReviewerAgentIds([]);
       setRequiresUserApproval(false);
       setDependsOnIds([]);
       onSuccess?.();
@@ -175,7 +140,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
 
   // Typed work is never thrown away silently: Esc, the backdrop and the close
   // button all ask first when the form has content (audit finding).
-  const dirty = Boolean(title.trim() || desc.trim() || goal.trim() || acceptanceText.trim() || reviewRolesText.trim());
+  const dirty = Boolean(title.trim() || desc.trim() || goal.trim() || acceptanceText.trim() || assigneeAgentId || reviewerAgentIds.length || requiresUserApproval);
   const requestClose = (next: boolean) => {
     if (next) return;
     if (dirty && !window.confirm('Discard this new ticket?')) return;
@@ -185,7 +150,7 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
   return (
     <Modal open={isOpen} onOpenChange={requestClose} title="New ticket" size="lg" data-debug-id="create-task-modal">
       <ModalBody>
-        <p className="mb-4 text-caption text-muted">A goal and acceptance criteria make it publishable as-is.</p>
+        <p className="mb-4 text-caption text-muted">A goal, acceptance criteria and an assignee make it publishable as-is.</p>
         <form id="create-task-form" onSubmit={handleSubmit} className="space-y-4 text-xs">
           {/* Title */}
           <FormField label="Title" required>
@@ -247,18 +212,6 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
               />
             </FormField>
 
-            <FormField
-              label="Review roles (optional)"
-              hint="Comma-separated. Each role needs someone in this chain's fleet, or publishing is rejected."
-            >
-              <Input
-                data-debug-id="create-task-review-roles-input"
-                value={reviewRolesText}
-                onChange={setReviewRolesText}
-                placeholder="e.g. reviewer, security"
-                width="full"
-              />
-            </FormField>
           </div>
 
           {/* Bridge (REQ-TB-5) */}
@@ -276,135 +229,38 @@ export const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
             </p>
           </div>
 
-          {/* Assignee Section */}
+          {/* Assignee (REQ-SCHED-3): required, an agent. */}
           <div className="space-y-2.5 border-t border-subtle pt-3">
-            <label className="block font-semibold text-primary">Initial Assignee</label>
-            <div data-debug-id="create-task-assignee-mode" className="flex gap-1 rounded bg-surface p-1">
-              <Button
-                type="button"
-                size="sm"
-                variant={assigneeMode === 'agent' ? 'primary' : 'ghost'}
-                aria-pressed={assigneeMode === 'agent'}
-                data-debug-id="create-task-assignee-mode-agent"
-                onClick={() => setAssigneeMode('agent')}
-              >
-                Agent
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={assigneeMode === 'unassigned' ? 'primary' : 'ghost'}
-                aria-pressed={assigneeMode === 'unassigned'}
-                data-debug-id="create-task-assignee-mode-unassigned"
-                onClick={() => setAssigneeMode('unassigned')}
-              >
-                Unassigned
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={assigneeMode === 'user' ? 'primary' : 'ghost'}
-                aria-pressed={assigneeMode === 'user'}
-                data-debug-id="create-task-assignee-mode-user"
-                onClick={() => setAssigneeMode('user')}
-              >
-                User
-              </Button>
-            </div>
-
-            {assigneeMode === 'agent' && (
-              <div>
-                <Select
-                  data-debug-id="create-task-assignee-agentid-select"
-                  width="full"
-                  value={assigneeAgentId}
-                  onChange={setAssigneeAgentId}
-                  options={agentOptions}
-                />
-                <p className="text-[11px] text-muted mt-1">
-                  The ticket will automatically dispatch to an idle worker or JIT-provision up to fleet capacity.
-                </p>
-              </div>
-            )}
-
-            {assigneeMode === 'user' && (
-              <div>
-                <Input
-                  data-debug-id="create-task-assignee-userid-input"
-                  value={assigneeUserId}
-                  onChange={setAssigneeUserId}
-                  placeholder="User id"
-                  aria-label="Assignee user id"
-                  width="full"
-                />
-              </div>
-            )}
+            <FormField label="Assignee" required hint="The agent that works on this ticket. It is added to the chain staffing if needed.">
+              <Select
+                data-debug-id="create-task-assignee-agentid-select"
+                width="full"
+                value={assigneeAgentId}
+                onChange={setAssigneeAgentId}
+                options={agentOptions}
+              />
+            </FormField>
           </div>
 
-          {/* Reviewers Section */}
+          {/* Reviewers (REQ-SCHED-4): agents and/or the user; each must approve. */}
           <div className="space-y-2.5 border-t border-subtle pt-3">
-            <div className="flex items-center justify-between">
-              <label className="font-semibold text-primary">
-                Reviewers ({stagedReviewers.length})
-              </label>
-            </div>
-
-            <Checkbox
-              data-debug-id="create-task-require-user-approval-checkbox"
-              checked={requiresUserApproval}
-              onChange={setRequiresUserApproval}
-              disabled={!username}
-              label={username ? `Require approval from You (@${username})` : 'Loading your identity…'}
+            <label className="font-semibold text-primary">
+              Reviewers ({reviewerAgentIds.length + (requiresUserApproval ? 1 : 0)})
+            </label>
+            <ReviewerPicker
+              agents={agentIdentities}
+              assignee={assigneeAgentId}
+              reviewers={reviewerAgentIds}
+              onReviewersChange={setReviewerAgentIds}
+              userApproval={requiresUserApproval}
+              onUserApprovalChange={setRequiresUserApproval}
+              userLabel={username ? `you, @${username}` : ''}
+              agentName={agentName}
+              debugPrefix="create-task"
             />
-
-            {stagedReviewers.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 rounded border border-subtle bg-surface p-2">
-                {stagedReviewers.map((r, idx) => {
-                  const label = r.display_name || r.agent_id || r.user_id;
-                  return (
-                    <span
-                      key={r.agent_id || r.user_id || idx}
-                      data-debug-id={`create-task-reviewer-chip-${idx}`}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-surface-raised border border-subtle px-2.5 py-0.5 text-xs text-primary"
-                    >
-                      <Icon name="check" size={11} className="text-accent" />
-                      <span>{label}</span>
-                      <IconButton
-                        icon="close"
-                        label="Remove reviewer"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleRemoveReviewer(idx)}
-                        className="ml-0.5"
-                      />
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-
-            <div className="border-t border-subtle pt-2 space-y-2">
-              <span className="text-caption text-muted">Add Reviewer Role:</span>
-              <div className="flex items-center gap-2">
-                <Select
-                  data-debug-id="create-task-reviewer-agentid-select"
-                  width="full"
-                  value={reviewerAgentId}
-                  onChange={setReviewerAgentId}
-                  options={agentOptions}
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  data-debug-id="create-task-add-reviewer-btn"
-                  onClick={handleAddReviewer}
-                  className="shrink-0"
-                >
-                  Add reviewer
-                </Button>
-              </div>
-            </div>
+            {reviewerAgentIds.length === 0 && !requiresUserApproval ? (
+              <p className="text-[11px] text-muted">Without reviewers the ticket is done as soon as it is submitted.</p>
+            ) : null}
           </div>
 
           {/* Depends On Section */}

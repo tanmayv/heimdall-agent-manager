@@ -137,7 +137,7 @@ export const RequirementsEditorModal: React.FC<RequirementsEditorModalProps> = (
             acceptance: cleanItems,
             ...(task.brief?.assignee ? { assignee: task.brief.assignee } : {}),
             ...(task.brief?.reviewers?.length ? { reviewers: task.brief.reviewers } : {}),
-            ...(task.brief?.review_roles?.length ? { review_roles: task.brief.review_roles } : {}),
+            ...(task.brief?.review_focus && Object.keys(task.brief.review_focus).length ? { review_focus: task.brief.review_focus } : {}),
           },
           requiresUserApproval: Boolean(task.requires_user_approval),
           dependsOn: task.depends_on || [],

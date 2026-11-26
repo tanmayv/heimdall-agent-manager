@@ -1,7 +1,7 @@
 // Tickets (M2): pure helpers for the task brief — the create-modal payload
 // builder, client-side validation that mirrors the hub's single publish
-// validator (taskv2.brief_publish_missing: a goal and at least one acceptance
-// item, nothing else; REQ-TV2-2),
+// validator (taskv2.brief_publish_missing: a goal, at least one acceptance
+// item and an assignee agent; REQ-TV2-2, REQ-SCHED-3),
 // and the wording of a 422 `brief_incomplete` publish error.
 //
 // Deliberately free of ANY import so it loads under plain `node --test`
@@ -17,9 +17,7 @@ export interface TaskBriefFormInput {
   goal: string;
   /** One acceptance item per line (blank lines ignored). */
   acceptanceText: string;
-  /** Comma / newline separated review roles. */
-  reviewRolesText?: string;
-  /** Durable agent template id (agt_…) or ''. */
+  /** Durable agent template id (agt_…); required to publish (REQ-SCHED-3). */
   assignee?: string;
   /** Optional output contract. Never required to publish. */
   output?: Record<string, unknown>;
@@ -29,7 +27,7 @@ export interface TaskBriefBuildResult {
   brief: TaskBriefWire;
   /** Human-readable problems, empty when the brief is publishable. */
   errors: string[];
-  /** Hub-style missing keys: goal | acceptance. */
+  /** Hub-style missing keys: goal | acceptance | assignee. */
   missing: string[];
 }
 
@@ -54,13 +52,12 @@ export function parseCommaList(text: string | undefined | null): string[] {
 
 /**
  * Build the `brief` object for a task create/patch body and validate it the way
- * the hub will at publish time. Review-role fleet coverage is hub-only (it
- * needs the chain's fleet rows) and is NOT checked here.
+ * the hub will at publish time. Reviewers travel outside the brief (`reviewers`
+ * on the create body), so they are not part of this result.
  */
 export function buildTaskBrief(input: TaskBriefFormInput): TaskBriefBuildResult {
   const goal = String(input.goal ?? '').trim();
   const acceptance = parseLineList(input.acceptanceText);
-  const reviewRoles = parseCommaList(input.reviewRolesText);
   const assignee = String(input.assignee ?? '').trim();
   const hasOutput = Boolean(input.output && typeof input.output === 'object' && !Array.isArray(input.output));
 
@@ -89,7 +86,12 @@ export function buildTaskBrief(input: TaskBriefFormInput): TaskBriefBuildResult 
     }
   }
 
-  const brief: TaskBriefWire = { goal, acceptance, review_roles: reviewRoles };
+  if (!assignee) {
+    errors.push('An assignee agent is required.');
+    missing.push('assignee');
+  }
+
+  const brief: TaskBriefWire = { goal, acceptance };
   if (assignee) brief.assignee = assignee;
   if (hasOutput) brief.output = input.output;
 
@@ -106,8 +108,7 @@ export function isBriefIncompleteDetails(details: unknown): details is BriefInco
 }
 
 function wordMissing(key: string): string {
-  if (key.startsWith('review_role:')) return `no fleet row for review role "${key.slice('review_role:'.length)}"`;
-  return key;
+  return key === 'assignee' ? 'an assignee' : key;
 }
 
 /**

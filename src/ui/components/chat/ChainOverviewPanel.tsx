@@ -605,7 +605,6 @@ export default function ChainOverviewPanel({
                         <>
                           {currentTask.kind === 'review' && <span className="text-info">Reviewing: </span>}
                           <VaultText value={currentTask.task.title || currentTask.task.task_id} as="span" className="truncate" />
-                          {currentTask.reviewRole && <span className="text-faint"> ({currentTask.reviewRole})</span>}
                         </>
                       ) : (
                         <span className="text-faint">No ticket</span>

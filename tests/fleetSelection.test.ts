@@ -11,18 +11,12 @@ import {
   changedFleetEntries,
   resolvedFleetProviderModel,
   seedPerBridgeProviderModelDrafts,
-  normalizeFleetRoles,
-  toggleFleetRole,
-  formatFleetRolesBadge,
-  seedFleetRolesDrafts,
   seedFleetBridgeIdDrafts,
   seedFleetMinWarmDrafts,
   seedFleetIdleTtlDrafts,
-  getOriginalFleetRoles,
   getOriginalFleetBridgeId,
   getOriginalFleetMinWarm,
   getOriginalFleetIdleTtl,
-  fleetRolesEqual,
   type FleetProviderModel,
   type ChangedFleetEntry,
 } from '../src/ui/components/tasks/fleetSelection.ts';
@@ -424,41 +418,14 @@ test('summarizeFleetRestartResults aggregates restarted instances and failure me
 });
 
 // ---------------------------------------------------------------------------
-// Task System v2 M3: Fleet placement roles, bridge_id, provider, model, min_warm, idle_ttl_seconds
+// Task System v2 M3: Fleet placement bridge_id, provider, model, min_warm, idle_ttl_seconds (no roles, REQ-SCHED-1)
 // ---------------------------------------------------------------------------
 
-test('normalizeFleetRoles and toggleFleetRole enforce valid non-empty roles in canonical order', () => {
-  assert.deepEqual(normalizeFleetRoles(undefined), ['worker', 'reviewer']);
-  assert.deepEqual(normalizeFleetRoles([]), ['worker', 'reviewer']);
-  assert.deepEqual(normalizeFleetRoles(['reviewer']), ['reviewer']);
-  assert.deepEqual(normalizeFleetRoles(['reviewer', 'worker', 'Not Valid!']), ['worker', 'reviewer']);
-  // Custom review roles survive (after the canonical pair), de-duplicated and lowercased
-  assert.deepEqual(normalizeFleetRoles(['security', 'reviewer', 'Security']), ['reviewer', 'security']);
-  assert.deepEqual(normalizeFleetRoles(['1st', 'has space', '']), ['worker', 'reviewer']);
-
-  // Toggling adds a missing role and removes an existing role when >1 selected
-  assert.deepEqual(toggleFleetRole(['worker'], 'reviewer'), ['worker', 'reviewer']);
-  assert.deepEqual(toggleFleetRole(['worker', 'reviewer'], 'worker'), ['reviewer']);
-  // Cannot deselect the last remaining role
-  assert.deepEqual(toggleFleetRole(['worker'], 'worker'), ['worker']);
-  assert.deepEqual(toggleFleetRole(['reviewer'], 'reviewer'), ['reviewer']);
-
-  assert.equal(formatFleetRolesBadge(['worker']), 'worker');
-  assert.equal(formatFleetRolesBadge(['reviewer']), 'reviewer');
-  assert.equal(formatFleetRolesBadge(['reviewer', 'worker']), 'worker + reviewer');
-  assert.equal(formatFleetRolesBadge(['security', 'reviewer']), 'reviewer + security');
-  // Custom roles toggle like the built-ins
-  assert.deepEqual(toggleFleetRole(['reviewer'], 'security'), ['reviewer', 'security']);
-  assert.deepEqual(toggleFleetRole(['reviewer', 'security'], 'security'), ['reviewer']);
-  assert.deepEqual(toggleFleetRole(['reviewer'], 'Bad Role'), ['reviewer']);
-});
-
-test('seedFleetRolesDrafts, seedFleetBridgeIdDrafts, seedFleetMinWarmDrafts, and seedFleetIdleTtlDrafts seed from server rows', () => {
+test('seedFleetBridgeIdDrafts, seedFleetMinWarmDrafts, and seedFleetIdleTtlDrafts seed from server rows', () => {
   const fleets = [
     {
       agent_id: 'agt_worker',
       capacity: 2,
-      roles: ['worker', 'reviewer'],
       bridge_id: 'brg_alpha',
       min_warm: 1,
       idle_ttl_seconds: 900,
@@ -469,10 +436,6 @@ test('seedFleetRolesDrafts, seedFleetBridgeIdDrafts, seedFleetMinWarmDrafts, and
     },
   ];
 
-  assert.deepEqual(seedFleetRolesDrafts(fleets), {
-    agt_worker: ['worker', 'reviewer'],
-    agt_reviewer: ['worker', 'reviewer'],
-  });
   assert.deepEqual(seedFleetBridgeIdDrafts(fleets), {
     agt_worker: 'brg_alpha',
     agt_reviewer: '',
@@ -486,22 +449,17 @@ test('seedFleetRolesDrafts, seedFleetBridgeIdDrafts, seedFleetMinWarmDrafts, and
     agt_reviewer: 600,
   });
 
-  assert.deepEqual(getOriginalFleetRoles(fleets, 'agt_worker'), ['worker', 'reviewer']);
-  assert.equal(getOriginalFleetRoles(fleets, 'agt_unknown'), null);
   assert.equal(getOriginalFleetBridgeId(fleets, 'agt_worker'), 'brg_alpha');
   assert.equal(getOriginalFleetBridgeId(fleets, 'agt_unknown'), '');
   assert.equal(getOriginalFleetMinWarm(fleets, 'agt_worker'), 1);
   assert.equal(getOriginalFleetIdleTtl(fleets, 'agt_worker'), 900);
-  assert.equal(fleetRolesEqual(['worker', 'reviewer'], ['reviewer', 'worker']), true);
-  assert.equal(fleetRolesEqual(['worker'], ['reviewer']), false);
 });
 
-test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bridgeId, top-level provider/model, minWarm, and idleTtlSeconds', () => {
+test('changedFleetEntries and fleetApplyRequests detect and serialize bridgeId, top-level provider/model, minWarm, and idleTtlSeconds', () => {
   const rawFleets = [
     {
       agent_id: 'agt_worker',
       capacity: 2,
-      roles: ['worker'],
       bridge_id: '',
       provider: '',
       model: '',
@@ -511,7 +469,6 @@ test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bri
     {
       agent_id: 'agt_reviewer',
       capacity: 1,
-      roles: ['reviewer'],
       bridge_id: 'brg_alpha',
       provider: 'claude',
       model: 'sonnet',
@@ -525,7 +482,6 @@ test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bri
   // Unchanged placement -> 0 entries
   assert.deepEqual(
     changedFleetEntries(rawFleets, { agt_worker: 2, agt_reviewer: 1 }, drafts, rawFleets, 'brg_alpha', {
-      roles: { agt_worker: ['worker'], agt_reviewer: ['reviewer'] },
       bridgeIds: { agt_worker: '', agt_reviewer: 'brg_alpha' },
       topLevelProviderModels: {
         agt_worker: { provider: '', model: '' },
@@ -537,7 +493,7 @@ test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bri
     []
   );
 
-  // Edit roles, bridgeId, top-level provider/model, minWarm, and idleTtlSeconds on agt_worker
+  // Edit bridgeId, top-level provider/model, minWarm, and idleTtlSeconds on agt_worker
   const changed = changedFleetEntries(
     rawFleets,
     { agt_worker: 2, agt_reviewer: 1 },
@@ -545,7 +501,6 @@ test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bri
     rawFleets,
     'brg_alpha',
     {
-      roles: { agt_worker: ['worker', 'reviewer'], agt_reviewer: ['reviewer'] },
       bridgeIds: { agt_worker: 'brg_beta', agt_reviewer: 'brg_alpha' },
       topLevelProviderModels: {
         agt_worker: { provider: 'claude', model: 'opus' },
@@ -558,7 +513,7 @@ test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bri
 
   assert.equal(changed.length, 1);
   assert.equal(changed[0].agentId, 'agt_worker');
-  assert.deepEqual(changed[0].roles, ['worker', 'reviewer']);
+  assert.equal('roles' in changed[0], false);
   assert.equal(changed[0].bridgeId, 'brg_beta');
   assert.equal(changed[0].provider, 'claude');
   assert.equal(changed[0].model, 'opus');
@@ -573,7 +528,6 @@ test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bri
     provider: 'claude',
     model: 'opus',
     bridgeModels: {},
-    roles: ['worker', 'reviewer'],
     bridgeId: 'brg_beta',
     minWarm: 1,
     idleTtlSeconds: 1200,
@@ -581,9 +535,11 @@ test('changedFleetEntries and fleetApplyRequests detect and serialize roles, bri
 });
 
 
-test('normalizeFleet keeps custom review roles from the wire', async () => {
+test('normalizeFleet drops removed role fields from the wire and keeps the one pause switch', async () => {
   const { normalizeFleet } = await import('../src/ui/api/endpoints/taskChains.ts');
-  assert.deepEqual(normalizeFleet({ agent_id: 'agt_sec', capacity: 1, roles: ['security'] }).roles, ['security']);
-  assert.deepEqual(normalizeFleet({ agent_id: 'agt_x', capacity: 1, roles: ['reviewer', 'Security', 'bad role'] }).roles, ['reviewer', 'security']);
-  assert.deepEqual(normalizeFleet({ agent_id: 'agt_y', capacity: 1 }).roles, ['worker', 'reviewer']);
+  const row: any = normalizeFleet({ agent_id: 'agt_sec', capacity: 1, roles: ['security'], paused_roles: ['security'], paused: true });
+  assert.equal('roles' in row, false);
+  assert.equal('paused_roles' in row, false);
+  assert.equal(row.paused, true);
+  assert.equal(normalizeFleet({ agent_id: 'agt_y', capacity: 1 }).paused, false);
 });

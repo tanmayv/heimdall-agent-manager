@@ -15,9 +15,8 @@ import { useFetchChainWorkflowRunsQuery } from '../../api/endpoints/workflowRuns
 import { CreateTaskModal } from '../tasks/CreateTaskModal';
 import { TaskBoardSkeleton } from '../tasks/TaskBoardSkeleton';
 import { ChainStaffingModal } from '../tasks/ChainStaffingModal';
-import { ReviewRolesModal } from '../tasks/ReviewRolesModal';
 import { useOpenAgentChat } from '../auxiliary/openAgentChatContext';
-import { useFetchAgentInstanceQuery, useFetchAgentIdentityQuery, useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
+import { useFetchAgentInstanceQuery, useFetchAgentIdentityQuery } from '../../api/endpoints/agents';
 import { actionErrorMessage } from '../tasks/useTaskActions';
 import { useIsMobile } from '../shell/responsive';
 import type { WorkflowRunView } from '../../api/endpoints/workflowRuns';
@@ -112,7 +111,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [inlineTicket, setInlineTicket] = useState<{ taskId: string; focus?: TicketOpenFocus } | null>(focusTaskId && !onOpenTicket ? { taskId: focusTaskId } : null);
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
   const [showStaffing, setShowStaffing] = useState(false);
-  const [showReviewRoles, setShowReviewRoles] = useState(false);
   const [editing, setEditing] = useState<{ taskId: string; field: TaskEditField } | null>(null);
   const [publishChain, publishChainState] = usePublishTaskChainMutation();
   const [publishError, setPublishError] = useState('');
@@ -151,18 +149,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   });
   const workflowRuns = workflowRunsQuery.currentData?.runs || [];
 
-  const { data: identitiesData } = useListAgentIdentitiesQuery();
-  // Solo mode: the coordinator also does the work — it is the
-  // built-in Soloist, or its own agent has a worker row in the fleet.
-  const coordinatorId = ctx.coordinatorInstanceId;
-  const { data: coordinatorData } = useFetchAgentInstanceQuery({ instanceId: coordinatorId }, { skip: !coordinatorId });
-  const coordinatorAgentId = String((coordinatorData as any)?.instance?.agent_id || (coordinatorData as any)?.instance?.agentId || '');
-  const isSolo = React.useMemo(() => {
-    if (!coordinatorAgentId) return false;
-    const agent: any = (identitiesData?.agents || []).find((a: any) => (a?.agent_id || a?.agentId) === coordinatorAgentId);
-    if (agent && (agent.slug === 'soloist' || agent.template_id === 'tmpl_soloist' || agent.templateId === 'tmpl_soloist')) return true;
-    return fleets.some((f: any) => (f?.agent_id || f?.agentId) === coordinatorAgentId && String(f?.roles_json || JSON.stringify(f?.roles || ['worker'])).includes('worker'));
-  }, [coordinatorAgentId, identitiesData, fleets]);
 
   // Gap G2: a replacement is recorded as a comment; the last comment's preview
   // is the only place the board sees it without fetching every thread.
@@ -236,11 +222,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             </Text>
             <Badge tone="neutral">Mixed work</Badge>
             {chainIsDraft && <Badge tone="neutral">Draft</Badge>}
-            {isSolo && (
-              <span title="Solo mode: the coordinator works the tickets itself (pulling them one at a time) and you review each one.">
-                <Badge tone="info">Solo</Badge>
-              </span>
-            )}
           </div>
           {onClose && <IconButton icon="close" label="Close task chain" data-debug-id="taskchain-close-btn" variant="ghost" size="sm" onClick={onClose} />}
         </header>
@@ -263,7 +244,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             onEditTicket={editTicket}
             onNewTask={() => setShowNewTaskModal(true)}
             onOpenStaffing={() => setShowStaffing(true)}
-            onOpenReviewRoles={() => setShowReviewRoles(true)}
             onPublishChain={chainIsDraft ? handlePublishChain : undefined}
             publishingChain={publishChainState.isLoading}
             publishError={publishError}
@@ -305,7 +285,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         <TaskEditModal chainId={chainId} task={editingTask} field={editing.field} onClose={() => setEditing(null)} tasks={tickets} chainFleets={fleets} names={names} />
       )}
 
-      <ReviewRolesModal chainId={chainId} open={showReviewRoles} onClose={() => setShowReviewRoles(false)} names={names} />
 
       <ChainStaffingModal chainId={chainId} open={showStaffing} onClose={() => setShowStaffing(false)} />
     </div>

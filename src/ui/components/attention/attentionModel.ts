@@ -123,25 +123,22 @@ export function isPlacementItem(item: AttentionItem): boolean {
   return item.kind === 'task' && item.details.attention === 'placement';
 }
 
-/** Stable across observation refreshes; each review requirement has its own draft. */
+/** Stable across observation refreshes; each failed worker or reviewer agent has its own draft. */
 export function placementTargetKey(cardId: string, target: PlacementTarget): string {
   const f = target.failure;
-  return [cardId, f.phase, f.agent_id, f.role].join(':');
+  return [cardId, f.phase, f.agent_id].join(':');
 }
 
-/** No instance/template fallback: native recovery requires an existing fleet role. */
+/**
+ * Same rule as the hub's placement recovery: the replacement is an active
+ * durable agent with a chain fleet row that is not paused (REQ-SCHED-1/2).
+ */
 export function placementIdentityCandidates(target: PlacementTarget, fleets: readonly any[], agents: readonly any[], excluded: readonly string[] = []): ReviewerCandidate[] {
-  const worker = target.failure.phase === 'work';
-  const role = target.failure.role;
   return agents.filter((a) => {
     const id = String(a.agent_id || a.id || '');
     if (!id.startsWith('agt_') || id === target.failure.agent_id || excluded.includes(id) || (a.state || 'active') !== 'active') return false;
     const row = fleets.find((f) => (f.agent_id || f.agentId) === id);
-    if (!row) return false;
-    const roles: string[] = row.roles || ['worker', 'reviewer'];
-    const paused: string[] = row.paused_roles || [];
-    const required = worker ? ['worker'] : target.identity_action === 'configure_fleet' ? [role] : ['reviewer', 'named-reviewer'];
-    return required.some((r) => roles.includes(r)) && !paused.includes('*') && !required.some((r) => paused.includes(r));
+    return Boolean(row) && row.paused !== true;
   }).map((a) => ({ agentId: String(a.agent_id || a.id), name: String(a.name || a.display_name || a.slug || 'Agent'), source: 'fleet' as const }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -150,13 +147,13 @@ export function placementIdentityCandidates(target: PlacementTarget, fleets: rea
 export function placementRecoveryInput(target: PlacementTarget, action: 'bridge' | 'identity', destination: string): PlacementRecoveryInput {
   const g = target.guard;
   const guard = {
-    expected_attempt: g.expected_attempt, phase: g.phase, agent_id: g.agent_id, role: g.role,
+    expected_attempt: g.expected_attempt, phase: g.phase, agent_id: g.agent_id,
     fingerprint: g.fingerprint, configuration: g.configuration, expected_assignment: g.expected_assignment,
   };
   if (action === 'bridge' && target.bridge_action === 'change_bridge') {
     return { ...guard, action: 'change_bridge', scope: g.phase === 'work' ? 'ticket' : 'chain_fleet', bridge_id: destination };
   }
-  if (action === 'identity' && target.identity_action !== 'configure_fleet') {
+  if (action === 'identity') {
     return { ...guard, action: target.identity_action, scope: 'ticket', replacement_agent_id: destination };
   }
   throw new Error('Use the native fleet or coordinator configuration for this target');
