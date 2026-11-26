@@ -393,7 +393,9 @@ stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance
 // coordinators, private conversations and other bridges' instances are never
 // touched (review S8). Each is decided with point reads (REQ-SCHED-26): inside
 // its grace window it is kept and its timer re-armed; past it, it is stopped
-// (spec SCHED 8.1 row 19). False when a stop intent could not be recorded.
+// (spec SCHED 8.1 row 19). An instance with no idle_since never had a window
+// the hub knows of (REQ-SCHED-27 gives every lease-free instance one), so it
+// is an orphan and is stopped. False when a stop intent could not be recorded.
 sweep_idle_instances_in_uow :: proc(svc: ^Service, u: ^Uow, bridge_id: string, active_instance_ids: []string) -> bool {
 	now := platform.clock_now(svc.clock)
 	ok := true
@@ -406,13 +408,7 @@ sweep_idle_instances_in_uow :: proc(svc: ^Service, u: ^Uow, bridge_id: string, a
 		if chain.kind != domain.CHAIN_KIND_MIXED_WORK do continue
 		ttl, managed := instance_stop_managed(svc, chain, inst)
 		if !managed do continue
-		if inst.idle_since == "" {
-			// Lease-free with no window yet (REQ-SCHED-27): start one now.
-			mark_instance_idle(svc, u, id, now)
-			arm_idle_ttl(svc, id, ttl, now)
-			continue
-		}
-		if to_ms(inst.idle_since) + i64(ttl) * 1000 > to_ms(now) {
+		if inst.idle_since != "" && to_ms(inst.idle_since) + i64(ttl) * 1000 > to_ms(now) {
 			arm_idle_ttl(svc, id, ttl, inst.idle_since)
 			continue
 		}

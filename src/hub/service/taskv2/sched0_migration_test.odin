@@ -83,15 +83,20 @@ test_sched0_migration_maps_production_shaped_database :: proc(t: ^testing.T) {
 	seed_instance(fx, chain, "inst_u1", "agt_u", "br_1", "idle")
 
 	// In review with one of two role approvals; the approving reviewer's lease
-	// is parked as a waiting claim. Driven with agent reviewers, then rewritten
-	// to the pre-0b role form below.
+	// is parked as a waiting claim (legacy data: since SCHED-1a a posted review
+	// deletes the lease, so the parked row is re-seeded directly). Driven with
+	// agent reviewers, then rewritten to the pre-0b role form below.
 	_ = publish_task(t, fx, chain, "t_review", brief = `{"goal":"g","acceptance":["a"],"assignee":"agt_w","reviewers":["agt_s","agt_u"]}`)
 	confirm_holder(fx, "inst_w1")
 	_, sok, serr := lease_submit(&fx.svc, inst_auth("inst_w1"), Submit_Input{summary = "v1", vcs_json = `{"head":"h1","dirty":false}`})
 	if !testing.expect(t, sok, fmt.tprintf("submit: %s", serr.message)) do return
+	s1_review, s1_held := lease_of(fx, "inst_s1")
+	if !testing.expect(t, s1_held && s1_review.kind == domain.LEASE_KIND_REVIEW, "fixture: reviewer s1 holds its review lease") do return
 	g1, g1ok, g1err := review_post(&fx.svc, inst_auth("inst_s1"), Review_Input{verdict = "approve", findings_json = "[]"})
 	if !testing.expect(t, g1ok, fmt.tprintf("review: %s", g1err.message)) do return
 	testing.expect_value(t, g1.gate, Gate_Result.Waiting)
+	s1_review.phase = domain.LEASE_PHASE_WAITING
+	_, _, _ = iface.taskchain_save_lease(&fx.repo, s1_review)
 	parked, has_parked := lease_of(fx, "inst_s1")
 	testing.expect(t, has_parked && parked.phase == domain.LEASE_PHASE_WAITING, "fixture: approving reviewer holds a parked claim")
 	live, has_live := lease_of(fx, "inst_u1")

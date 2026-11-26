@@ -72,9 +72,9 @@ test_durable_ownership_review_rework_fencing_and_completion :: proc(t: ^testing.
 	reviewer_first, _ := lease_of(fx, "inst_r1")
 	_, approved, aerr := review_post(&fx.svc, inst_auth("inst_r1"), Review_Input{lease_id = reviewer_first.lease_id, verdict = "approve"})
 	if !testing.expect(t, approved, fmt.tprintf("review: %s", aerr.message)) do return
-	reviewer_waiting, reviewer_retained := lease_of(fx, "inst_r1")
-	testing.expect(t, reviewer_retained && reviewer_waiting.lease_id == reviewer_first.lease_id, "reviewer remains assigned while other verdicts are pending")
-	testing.expect_value(t, reviewer_waiting.phase, "waiting")
+	// A posted review deletes the reviewer's lease (REQ-SCHED-21); approve stops it.
+	_, reviewer_retained := lease_of(fx, "inst_r1")
+	testing.expect(t, !reviewer_retained, "a posted review is not parked as a waiting claim")
 	_, rejected, rerr := review_post(&fx.svc, inst_auth("inst_r2"), Review_Input{verdict = "request_changes", summary = "fix the edge case"})
 	if !testing.expect(t, rejected, fmt.tprintf("request changes: %s", rerr.message)) do return
 	second, reactivated := lease_of(fx, "inst_w1")
@@ -92,9 +92,11 @@ test_durable_ownership_review_rework_fencing_and_completion :: proc(t: ^testing.
 		_, rok, review_err := review_post(&fx.svc, inst_auth(id), Review_Input{lease_id = current.lease_id, verdict = "approve"})
 		if !testing.expect(t, rok, fmt.tprintf("re-review %s: %s", id, review_err.message)) do return
 	}
-	for id in ([]string{"inst_w1", "inst_r1", "inst_r2"}) {
-		claim, present := lease_of(fx, id)
-		testing.expect(t, present && claim.task_id == task.task_id, "claims retained through remaining user approval")
+	claim, present := lease_of(fx, "inst_w1")
+	testing.expect(t, present && claim.task_id == task.task_id, "worker claim retained through remaining user approval")
+	for id in ([]string{"inst_r1", "inst_r2"}) {
+		_, reviewer_present := lease_of(fx, id)
+		testing.expect(t, !reviewer_present, "reviewers hold no claim after their verdicts")
 	}
 	testing.expect_value(t, get_task(fx, string(task.task_id)).state, domain.Task_State.In_Review)
 	_, user_ok, user_err := user_review(&fx.svc, user_auth(), task.task_id, Review_Input{verdict = "approve"})
@@ -261,7 +263,11 @@ test_durable_ownership_waiting_handoff_preserves_submission_and_verdict :: proc(
 	_, approved, review_err := review_post(&fx.svc, inst_auth("inst_r1"), Review_Input{verdict = "approve"})
 	if !testing.expect(t, approved, review_err.message) do return
 	before := get_task(fx, string(task.task_id))
-	for id in ([]string{"inst_w1", "inst_r1"}) {
+	// The approving reviewer's lease is already deleted (REQ-SCHED-21); only
+	// the worker has a waiting claim to relinquish.
+	_, reviewer_held := lease_of(fx, "inst_r1")
+	testing.expect(t, !reviewer_held, "approve leaves the reviewer no claim")
+	for id in ([]string{"inst_w1"}) {
 		claim, held := lease_of(fx, id)
 		if !testing.expect(t, held && claim.phase == domain.LEASE_PHASE_WAITING, "caller owns waiting claim") do return
 		_, released, err := lease_handoff(&fx.svc, inst_auth(id), Handoff_Input{lease_id = claim.lease_id, summary = "release assignment while user reviews"})
