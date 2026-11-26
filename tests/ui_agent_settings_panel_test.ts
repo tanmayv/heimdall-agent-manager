@@ -141,9 +141,66 @@ test('drawer (<1280): Esc and the scrim close it; opening is not persisted', asy
     assert.equal(doc.activeElement, q(doc, 'gear'));
 
     await click(q(doc, 'gear'));
-    const scrim = q(doc, 'agent-panel-scrim')!;
-    await act(async () => { scrim.dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true })); });
-    assert.equal(q(doc, 'agent-panel'), null, 'scrim closes the drawer');
+    const backdrop = q(doc, 'agent-panel-dialog')!.parentElement!;
+    await act(async () => { backdrop.dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true })); });
+    assert.equal(q(doc, 'agent-panel'), null, 'the backdrop closes the drawer');
+    assert.equal(doc.activeElement, q(doc, 'gear'));
+  });
+});
+
+for (const width of [1180, 390]) {
+  test(`${width === 390 ? 'page' : 'drawer'} is modal: role=dialog, aria-modal, and Tab stays inside the panel`, async () => {
+    await withDom(width, async ({ doc, render, win }) => {
+      // jsdom has no layout; the trap skips elements without an offsetParent.
+      Object.defineProperty(win.HTMLElement.prototype, 'offsetParent', { configurable: true, get() { return this.parentNode; } });
+      await loadPanelModules();
+      const { useAgentSettingsPanelState, AgentSettingsPanel } = (globalThis as any).__panelModules;
+      function WithControls() {
+        const state = useAgentSettingsPanelState({ enabled: true });
+        return React.createElement('div', null,
+          React.createElement('button', { ref: state.gearRef, 'data-debug-id': 'gear', onClick: state.toggle }, 'Agent settings'),
+          React.createElement('textarea', { 'data-debug-id': 'composer' }),
+          React.createElement(AgentSettingsPanel, { state, agentLabel: 'coordinator #41',
+            runtime: React.createElement('button', { 'data-debug-id': 'first-control' }, 'Restart'),
+            children: React.createElement('button', { 'data-debug-id': 'last-control' }, 'Apply') }),
+        );
+      }
+      await render(React.createElement(WithControls));
+      await click(q(doc, 'gear'));
+      const dialog = q(doc, 'agent-panel-dialog')!;
+      assert.equal(dialog.getAttribute('role'), 'dialog');
+      assert.equal(dialog.getAttribute('aria-modal'), 'true');
+      assert.ok(dialog.contains(q(doc, 'agent-panel')));
+      assert.equal(doc.activeElement?.tagName, 'H2', 'focus starts on the heading');
+
+      const last = q(doc, 'last-control')!;
+      last.focus();
+      const tab = new win.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      await act(async () => { last.dispatchEvent(tab); });
+      assert.equal(tab.defaultPrevented, true, 'Tab from the last control is trapped');
+      assert.ok(dialog.contains(doc.activeElement), 'focus stays inside the panel');
+      assert.notEqual(doc.activeElement, q(doc, 'composer'));
+
+      const first = doc.activeElement as HTMLElement;
+      const back = new win.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+      await act(async () => { first.dispatchEvent(back); });
+      assert.equal(back.defaultPrevented, true, 'Shift+Tab from the first control wraps');
+      assert.equal(doc.activeElement, last);
+
+      await act(async () => { doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+      assert.equal(q(doc, 'agent-panel'), null);
+      assert.equal(doc.activeElement, q(doc, 'gear'), 'focus returns to the gear');
+    });
+  });
+}
+
+test('docked panel is not modal (an inspector beside the conversation)', async () => {
+  await withDom(1440, async ({ doc, render }) => {
+    await loadPanelModules();
+    await render(React.createElement(Harness));
+    await click(q(doc, 'gear'));
+    assert.equal(q(doc, 'agent-panel-dialog'), null);
+    assert.equal(doc.querySelector('[aria-modal="true"]'), null);
   });
 });
 
@@ -165,7 +222,7 @@ test('mobile page (<768): full-screen page with a 44px back button, Agent settin
     await click(q(doc, 'gear'));
     const panel = q(doc, 'agent-panel')!;
     assert.equal(panel.getAttribute('data-mode'), 'page');
-    assert.match(panel.className, /fixed/);
+    assert.match(q(doc, 'agent-panel-dialog')!.className, /!max-w-none/, 'full width');
     const back = q(doc, 'agent-panel-back')!;
     assert.match(back.className, /\bh-11\b/, 'back button is 44px');
     assert.equal(back.getAttribute('aria-label'), 'Back to the conversation');
@@ -301,6 +358,15 @@ test('Force stop sits in the … menu with its note and is confirmed in a dialog
     const { props, calls } = runtimeProps();
     await render(React.createElement(RuntimeSection, props));
     assert.equal(q(doc, 'agent-panel-runtime-force-stop'), null, 'hidden until the menu opens');
+    await click(q(doc, 'agent-panel-runtime-more'));
+    assert.ok(q(doc, 'agent-panel-runtime-force-stop'));
+    let reachedDocument = false;
+    const spy = () => { reachedDocument = true; };
+    doc.addEventListener('keydown', spy, true);
+    await act(async () => { doc.activeElement!.dispatchEvent(new (doc.defaultView as any).KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    doc.removeEventListener('keydown', spy, true);
+    assert.equal(q(doc, 'agent-panel-runtime-force-stop'), null, 'Esc closes the menu');
+    assert.equal(reachedDocument, false, 'and does not reach a hosting Drawer');
     await click(q(doc, 'agent-panel-runtime-more'));
     const item = q(doc, 'agent-panel-runtime-force-stop')!;
     assert.match(item.textContent || '', /Force stop/);

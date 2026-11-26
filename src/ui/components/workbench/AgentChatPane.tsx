@@ -3672,7 +3672,7 @@ export function AgentChatPane({
             -model, -connection, -permissions). Until T6 lands, the previous modal's
             configuration controls keep these settings reachable. */}
         <AgentPanelSection id="configuration" label="Configuration">
-          <div className="rounded-[12px] border border-subtle bg-surface-raised p-4 text-left">
+          <div className="rounded-[var(--radius-lg)] border border-subtle bg-surface-raised p-4 text-left">
             {runtimeConfigControls}
             {/* T7 slot: the staged-changes footer (agent-panel-apply) replaces these buttons. */}
             <div className="mt-3 flex justify-end gap-2">

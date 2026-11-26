@@ -4,20 +4,21 @@
  *
  * Hosted by AgentChatPane as a flex sibling of the transcript (not an AuxDock tab):
  *   - docked  (>= 1280px): a 400px (max 440px) column with a left border;
- *   - drawer  (< 1280px):  the same column over the conversation, with a scrim; Esc
- *     and the scrim close it;
- *   - page    (< 768px):   a full-screen page with a 44px back button.
+ *   - drawer  (< 1280px):  the same column in the @ui Drawer (modal: focus trap,
+ *     Esc and backdrop close, focus restored to the gear);
+ *   - page    (< 768px):   a full-screen Drawer page with a 44px back button.
  *
  * Sections, top to bottom: Runtime (T5), then the slots for Runs on / Model /
  * Connection / Permissions (T6) and the staged-changes footer (T7). The panel owns
  * only the frame; the pane passes each section in.
  */
 import React, { useId } from 'react';
-import { IconButton, Text } from '@ui';
+import { Drawer, IconButton, Text } from '@ui';
 import type { AgentSettingsPanelState } from './useAgentSettingsPanelState';
 
 export interface AgentSettingsPanelProps {
-  state: Pick<AgentSettingsPanelState, 'open' | 'mode' | 'setOpen' | 'headingRef'>;
+  state: Pick<AgentSettingsPanelState, 'open' | 'mode' | 'setOpen' | 'headingRef'> &
+    Partial<Pick<AgentSettingsPanelState, 'gearRef'>>;
   /** "<agent name> #<n>", e.g. "coordinator #41". */
   agentLabel: React.ReactNode;
   /** The project name (may be a VaultText). Omitted from the subtitle when absent. */
@@ -101,11 +102,9 @@ export function AgentSettingsPanel({ state, agentLabel, projectLabel, runtime, c
       data-mode={mode}
       aria-labelledby={headingId}
       className={
-        mode === 'page'
-          ? 'fixed inset-x-0 top-0 app-viewport-height z-overlay flex w-full flex-col bg-surface text-primary'
-          : mode === 'drawer'
-            ? 'absolute inset-y-0 right-0 z-overlay flex w-[min(440px,100%)] flex-col border-l border-subtle bg-surface text-primary shadow-overlay'
-            : 'flex h-full min-h-0 w-full max-w-[440px] shrink-0 grow-0 basis-[400px] flex-col border-l border-subtle bg-surface text-primary'
+        mode === 'docked'
+          ? 'flex h-full min-h-0 w-full max-w-[440px] shrink-0 grow-0 basis-[400px] flex-col border-l border-subtle bg-surface text-primary'
+          : 'flex h-full min-h-0 w-full flex-col bg-surface text-primary'
       }
     >
       {header}
@@ -117,20 +116,26 @@ export function AgentSettingsPanel({ state, agentLabel, projectLabel, runtime, c
     </aside>
   );
 
-  if (mode === 'drawer') {
-    return (
-      <>
-        <div
-          aria-hidden="true"
-          data-debug-id="agent-panel-scrim"
-          className="absolute inset-0 z-overlay bg-backdrop"
-          onMouseDown={close}
-        />
-        {aside}
-      </>
-    );
-  }
-  return aside;
+  if (mode === 'docked') return aside;
+  // Drawer and page cover the conversation, so they are modal: the @ui Drawer gives
+  // role=dialog + aria-modal, the focus trap, Esc, backdrop close, scroll lock and
+  // focus restore to the gear (useDialogA11y). The panel focuses its own heading.
+  return (
+    <Drawer
+      open
+      onOpenChange={(next) => state.setOpen(next)}
+      title="Agent settings"
+      hideHeader
+      side="right"
+      size="md"
+      autoFocus={false}
+      returnFocusRef={state.gearRef}
+      data-debug-id="agent-panel-dialog"
+      className={mode === 'page' ? '!max-w-none border-l-0 shadow-none' : '!max-w-[440px]'}
+    >
+      {aside}
+    </Drawer>
+  );
 }
 
 /** A labelled section slot (overline label + optional trailing header content). */

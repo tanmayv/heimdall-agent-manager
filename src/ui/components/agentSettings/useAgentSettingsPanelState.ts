@@ -96,7 +96,9 @@ export function useAgentSettingsPanelState(options: { enabled?: boolean; width?:
     if (target === 'gear' && !open) gearRef.current?.focus();
   }, [open]);
 
-  // Esc closes the drawer and the mobile page, never the docked panel.
+  // Esc closes the drawer and the mobile page, never the docked panel. The @ui Drawer
+  // hosting those modes handles Esc itself (capture phase); this is the fallback for
+  // hosts that render the panel without it.
   useEffect(() => {
     if (!open || mode === 'docked' || typeof document === 'undefined') return;
     const onKey = (event: KeyboardEvent) => {

@@ -11,12 +11,12 @@ export interface ForceStopDialogProps {
   onConfirm: () => void;
   /** Agent label shown in the question, e.g. "coordinator #41". */
   agentLabel?: string;
-  busy?: boolean;
 }
 
 export const FORCE_STOP_NOTE = 'Kills the process now. The current turn is lost.';
 
-export function ForceStopDialog({ open, onOpenChange, onConfirm, agentLabel, busy = false }: ForceStopDialogProps) {
+/** Confirming closes the dialog at once; progress shows in the Runtime card. */
+export function ForceStopDialog({ open, onOpenChange, onConfirm, agentLabel }: ForceStopDialogProps) {
   return (
     <Modal
       open={open}
@@ -35,7 +35,6 @@ export function ForceStopDialog({ open, onOpenChange, onConfirm, agentLabel, bus
         <Button
           variant="danger"
           data-debug-id="agent-panel-force-stop-confirm"
-          loading={busy}
           onClick={() => {
             onConfirm();
             onOpenChange(false);

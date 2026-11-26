@@ -21,8 +21,8 @@ model, its connection protocol (PTY or ACP) and its permissions.
 | Viewport            | Mode     | Behaviour |
 | ------------------- | -------- | --------- |
 | >= 1280px (`DOCK_MIN`) | docked | Flex sibling of the transcript in `AgentChatPane` (not an AuxDock tab), `flex-basis` 400px, max 440px, 1px left border. Esc does not close it. Open/closed persists per user (`userScopedStorageKey('agentSettingsPanel.open')`). |
-| 768–1279px          | drawer   | The same column over the conversation with a scrim. Esc or the scrim closes it. Always starts closed; opening it is not persisted. |
-| < 768px             | page     | Full-screen page: 44px back button, title "Agent settings", subtitle "<agent> · <project>". Controls are >= 44px. Starts closed; not persisted. |
+| 768–1279px          | drawer   | The same column in the `@ui` `Drawer` (right edge, max 440px): modal (`role="dialog"`, `aria-modal`, focus trap), Esc or the backdrop closes it, focus returns to the gear. Always starts closed; opening it is not persisted. |
+| < 768px             | page     | A full-width `Drawer`: 44px back button, title "Agent settings", subtitle "<agent> · <project>". Controls are >= 44px. Modal like the drawer. Starts closed; not persisted. |
 
 The gear `IconButton` in the conversation header (`aria-label="Agent settings"`,
 `aria-expanded`) toggles it; the "Agent settings" item in the ⋮ menu and the composer's

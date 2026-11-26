@@ -8,7 +8,7 @@
  *
  * `runtimeSectionView` is the pure status model (exported for tests).
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Button, Icon, IconButton, Menu, StatusPill, Text, type Tone } from '@ui';
 import { agentStopReasonLabel } from '../../utils/agentStatus';
 import { FORCE_STOP_NOTE, ForceStopDialog } from './ForceStopDialog';
@@ -118,7 +118,7 @@ export interface RuntimeSectionProps {
   actionsDisabled?: boolean;
   forceStopDisabled?: boolean;
   /** Which action this client is waiting on, for the button spinner. */
-  pendingAction?: 'start' | 'stop' | 'restart' | 'force' | null;
+  pendingAction?: 'start' | 'stop' | 'restart' | null;
   /** Inline feedback from the last action (hub error or acknowledgement). */
   statusMessage?: string;
   /** Touch layout: every control at least 44px. */
@@ -133,6 +133,19 @@ export function RuntimeSection(props: RuntimeSectionProps) {
   const { view, touch = false, actionsDisabled = false, pendingAction = null } = props;
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Inside the drawer/page (a modal @ui Drawer), the Drawer takes Esc in the document
+  // capture phase. While the "…" menu is open, Esc closes only the menu.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      event.preventDefault();
+      setMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [menuOpen]);
   const controlSize = touch ? 'min-h-11' : 'min-h-9';
   const stopped = view.state === 'stopped';
   const configParts = [
@@ -151,7 +164,7 @@ export function RuntimeSection(props: RuntimeSectionProps) {
       <Text as="h3" role="overline" tone="muted" id="agent-panel-runtime-heading" className="sr-only">
         Runtime
       </Text>
-      <div className="rounded-[12px] border border-subtle bg-surface-raised p-4">
+      <div className="rounded-[var(--radius-lg)] border border-subtle bg-surface-raised p-4">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <StatusPill
             role="status"
@@ -271,7 +284,6 @@ export function RuntimeSection(props: RuntimeSectionProps) {
         onOpenChange={setConfirmOpen}
         onConfirm={props.onForceStop}
         agentLabel={props.agentLabel}
-        busy={pendingAction === 'force'}
       />
     </section>
   );
