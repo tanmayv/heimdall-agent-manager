@@ -44,12 +44,15 @@ Agent_Action_Handlers :: struct {
 	task_engine: ^taskv2.Service,
 }
 
-// Lease_Next_Wire is the `lease.next` response: status ∈ granted|current|none.
+// Lease_Next_Wire is the `lease.next` response: status ∈ granted|current|waiting|none.
+// pack_version identifies the pack (REQ-SCHED-39); when the request's
+// pack_version still matches, pack is null and the caller keeps its TASK.md.
 Lease_Next_Wire :: struct {
 	status: string          `json:"status"`,
 	lease:  Maybe(Task_Lease_Wire) `json:"lease"`,
 	task:   Maybe(Simple_Task_Wire) `json:"task"`,
 	pack:   json.Value      `json:"pack"`,
+	pack_version: string    `json:"pack_version,omitempty"`,
 }
 
 make_lease_wire :: proc(l: domain.Task_Lease) -> Task_Lease_Wire {
@@ -60,7 +63,7 @@ make_lease_wire :: proc(l: domain.Task_Lease) -> Task_Lease_Wire {
 	}
 }
 
-// POST /api/v1/agent-actions/lease/next  params: {vcs_base?, peek?}
+// POST /api/v1/agent-actions/lease/next  params: {vcs_base?, peek?, pack_version?}
 agent_action_lease_next_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, _, ok, resp := require_instance_action_auth(h, req)
@@ -68,13 +71,14 @@ agent_action_lease_next_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if h.task_engine == nil do return respond_error(domain.domain_error(.Internal_Error, "task engine is not configured"), req.request_id)
 	params := json_object_raw(req.body, "params")
 	peek, _ := jsonx.extract_bool_literal(params, "peek", true)
-	res, rok, err := taskv2.lease_next(h.task_engine, auth, taskv2.Lease_Next_Input{vcs_base = json_string(params, "vcs_base"), peek = peek})
+	res, rok, err := taskv2.lease_next(h.task_engine, auth, taskv2.Lease_Next_Input{vcs_base = json_string(params, "vcs_base"), peek = peek, pack_version = json_string(params, "pack_version")})
 	if !rok do return respond_error(err, req.request_id)
 	wire := Lease_Next_Wire{status = res.status}
 	if res.status != "none" {
 		wire.lease = make_lease_wire(res.lease)
 		wire.task = make_simple_task_wire(res.task)
 		wire.pack = json_value_or_null(res.pack_json)
+		wire.pack_version = res.pack_version
 	}
 	data, _ := json.marshal(wire, JSON_MARSHAL_OPT, allocator = context.temp_allocator)
 	return respond_success(string(data), req.request_id, auth_ctx_server_time(req), 200)

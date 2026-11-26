@@ -760,9 +760,10 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 	all_tasks := tasks
 	all_deps := deps
 	if all_tasks == nil {
-		loaded, err := iface.taskchain_list_tasks_by_chain(svc.repo, task.chain_id, task.owner_user_id)
+		// Only this task's parents, never the whole chain (REQ-SCHED-38).
+		parents, parent_deps, err := task_parent_rows(svc, task, all_deps)
 		if err.code != .None do return task, Task_View{}, false, err
-		all_tasks = loaded
+		all_tasks, all_deps = parents, parent_deps
 	}
 	have_deps := all_deps != nil
 	if !have_deps do all_deps, have_deps = fold_cache_deps(task.chain_id, task.owner_user_id)
@@ -805,7 +806,9 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 		if domain.task_state_is_terminal(task.state) != domain.task_state_is_terminal(saved.state) {
 			effect_tasks_changed(u, saved.chain_id, saved.owner_user_id)
 		}
-		if cerr := check_coordinator_attention_on_refold(svc, u, task, saved, view, all_tasks); cerr.code != .None do return task, view, false, cerr
+		// `tasks` (the caller's chain rows, or nil): all_tasks may hold only this
+		// task's parents, which cannot say whether the whole batch finished.
+		if cerr := check_coordinator_attention_on_refold(svc, u, task, saved, view, tasks); cerr.code != .None do return task, view, false, cerr
 		if saved.state == .Done && task.state != .Done do effect_merge_worktree(svc, u, saved, evs)
 		if (saved.state == .Ready || saved.state == .In_Review) && task.state != saved.state do nudge_coordinator_item(svc, u, task, saved)
 	}
@@ -866,8 +869,9 @@ block_names_coordinator :: proc(svc: ^Service, task: domain.Task) -> bool {
 }
 
 @(private = "file")
-check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, after: domain.Task, view: Task_View, all_tasks: []domain.Task) -> domain.Domain_Error {
+check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, after: domain.Task, view: Task_View, tasks_in: []domain.Task) -> domain.Domain_Error {
 	if u == nil do return {}
+	all_tasks := tasks_in
 	// A hold nested under another block is not a change of that block.
 	if after.blocked_on_json != "" && blocked_on_without_hold(after.blocked_on_json) != blocked_on_without_hold(before.blocked_on_json) {
 		if is_agent_not_running_block(after.blocked_on_json) {
@@ -889,6 +893,15 @@ check_coordinator_attention_on_refold :: proc(svc: ^Service, u: ^Uow, before, af
 		// Notify coordinator when user approval is required and no reviewer agent is listed.
 		if task_requires_user(after) && len(brief_reviewer_agents(after.brief_json, context.temp_allocator)) == 0 {
 			notify_user_review_requested(svc, u, after, fmt.tprintf("[taskv2] review_requested_from_user: task %s (%s) is in_review and awaits user approval", after.task_id, after.title))
+		}
+	}
+	if domain.task_state_is_terminal(after.state) && !domain.task_state_is_terminal(before.state) {
+		// Only on the terminal edge: read the chain's tasks when the caller did
+		// not pass them (refold_task of one task reads its parents only).
+		if all_tasks == nil {
+			loaded, err := iface.taskchain_list_tasks_by_chain(svc.repo, after.chain_id, after.owner_user_id)
+			if err.code != .None do return err
+			all_tasks = loaded
 		}
 	}
 	if domain.task_state_is_terminal(after.state) && !domain.task_state_is_terminal(before.state) && len(all_tasks) > 0 {

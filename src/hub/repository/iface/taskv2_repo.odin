@@ -46,6 +46,20 @@ Task_Lease_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_I
 Task_Lease_List_All_Proc :: proc(ctx: rawptr) -> ([]domain.Task_Lease, domain.Domain_Error)
 Task_Lease_Delete_Proc :: proc(ctx: rawptr, lease_id: string) -> (bool, domain.Domain_Error)
 
+// `lease next` lookups (spec SCHED 10.1, REQ-SCHED-38): bounded by the
+// caller's own work, served by the SCHED-0a projections, never a chain scan.
+// Task_List_Owed_Reviews_Proc: in-review, non-gate tasks of the chain that list
+// `agent_id` as a reviewer (task_reviewers), on whose current attempt the agent
+// has posted no agent verdict and whose current attempt it did not author;
+// priority, then ready_since (empty last), created_at, task_id; at most `limit`.
+Task_List_Owed_Reviews_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, agent_id: string, limit: int) -> ([]domain.Task, domain.Domain_Error)
+// Task_List_Assigned_Ready_Proc: ready, non-gate tasks of the chain whose
+// assignee is `agent_id` (idx_tasks_chain_assignee_state); rework (attempt_no > 0)
+// first, then priority, ready_since (empty last), created_at, task_id; at most `limit`.
+Task_List_Assigned_Ready_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, agent_id: string, limit: int) -> ([]domain.Task, domain.Domain_Error)
+// Task_Dependency_List_By_Task_Proc: the legacy depends_on edges of ONE dependent task.
+Task_Dependency_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Dependency, domain.Domain_Error)
+
 Task_Review_Save_Proc :: proc(ctx: rawptr, review: domain.Task_Review) -> (domain.Task_Review, bool, domain.Domain_Error)
 Task_Review_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Review, domain.Domain_Error)
 
@@ -204,4 +218,19 @@ taskchain_save_workflow_definition :: proc(repo: ^Taskchain_Repository, def: dom
 taskchain_list_workflow_definitions_by_owner :: proc(repo: ^Taskchain_Repository, owner_user_id: domain.User_ID) -> ([]domain.Workflow_Definition, domain.Domain_Error) {
 	if repo == nil || repo.list_workflow_definitions_by_owner == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.list_workflow_definitions_by_owner(repo.ctx, owner_user_id)
+}
+
+taskchain_list_owed_reviews :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, agent_id: string, limit: int) -> ([]domain.Task, domain.Domain_Error) {
+	if repo == nil || repo.list_owed_reviews == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.list_owed_reviews(repo.ctx, chain_id, owner_user_id, agent_id, limit)
+}
+
+taskchain_list_assigned_ready :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, agent_id: string, limit: int) -> ([]domain.Task, domain.Domain_Error) {
+	if repo == nil || repo.list_assigned_ready == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.list_assigned_ready(repo.ctx, chain_id, owner_user_id, agent_id, limit)
+}
+
+taskchain_list_dependencies_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Dependency, domain.Domain_Error) {
+	if repo == nil || repo.list_dependencies_by_task == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
+	return repo.list_dependencies_by_task(repo.ctx, task_id, owner_user_id)
 }

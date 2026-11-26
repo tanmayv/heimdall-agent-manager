@@ -11,6 +11,15 @@ taskchain_insert_work_dependency :: proc(repo: ^Taskchain_Repository, record: do
 
 List_Work_Dependencies_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Work_Dependency, domain.Domain_Error)
 
+// List_Work_Dependencies_By_Dependent_Proc: the edges (active and removed) whose
+// dependent is `item` (idx_work_dependencies_active / chain scan avoided).
+List_Work_Dependencies_By_Dependent_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, item: domain.Work_Item_Ref) -> ([]domain.Work_Dependency, domain.Domain_Error)
+
+taskchain_list_work_dependencies_by_dependent :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, item: domain.Work_Item_Ref) -> ([]domain.Work_Dependency, domain.Domain_Error) {
+	if repo == nil || repo.list_work_dependencies_by_dependent == nil do return nil, domain.domain_error(.Internal_Error, "mixed-work repository is not configured")
+	return repo.list_work_dependencies_by_dependent(repo.ctx, chain_id, owner_user_id, item)
+}
+
 taskchain_list_work_dependencies :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Work_Dependency, domain.Domain_Error) {
 	if repo == nil || repo.list_work_dependencies == nil do return nil, domain.domain_error(.Internal_Error, "mixed-work repository is not configured")
 	return repo.list_work_dependencies(repo.ctx, chain_id, owner_user_id)

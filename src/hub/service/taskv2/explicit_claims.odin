@@ -197,10 +197,15 @@ lease_transfer_in_uow :: proc(svc:^Service,u:^Uow,auth:contracts.Auth_Context,in
 
 // Only an originally active reservation resumes execution. A worker waiting for
 // review and a reviewer whose verdict is already posted remain waiting.
-transfer_reservation_needs_activation :: proc(svc:^Service,task:domain.Task,lease:domain.Task_Lease)->bool {
+// known_events: the task's events when the caller already read them (`lease next`).
+transfer_reservation_needs_activation :: proc(svc:^Service,task:domain.Task,lease:domain.Task_Lease,known_events:[]domain.Task_Event=nil)->bool {
  if lease.phase!=domain.LEASE_PHASE_WAITING do return false
- events,err:=iface.taskchain_list_events_by_task(svc.repo,task.task_id,task.owner_user_id)
- if err.code!=.None do return false
+ events:=known_events
+ if events==nil {
+  loaded,err:=iface.taskchain_list_events_by_task(svc.repo,task.task_id,task.owner_user_id)
+  if err.code!=.None do return false
+  events=loaded
+ }
  for ev in events {
   if ev.kind==EV_OWNERSHIP_TRANSFER_REQUESTED &&
      jsonx.extract_string(ev.payload_json,"reservation_lease_id","",true,context.temp_allocator)==lease.lease_id &&

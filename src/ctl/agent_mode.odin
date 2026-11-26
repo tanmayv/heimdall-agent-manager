@@ -2345,11 +2345,7 @@ ctl_v2_lease :: proc(endpoint, token: string, tokens, args: []string) {
         if tid == "" { print_help_lease(); return }
         ctl_agent_call_task(endpoint, token, strings.concatenate({"agent.lease.", action}, context.temp_allocator), ctl_v2_lease_claim_params(tid, args), args)
     case "next":
-		fields := make([dynamic]string)
-		if v := option_value(args, "--vcs-base", ""); v != "" do append(&fields, json_kv("vcs_base", v))
-		// cwd lets the bridge find the repo for its vcs_base enrichment.
-		append(&fields, ctl_agent_cwd_field())
-		ctl_agent_call_task(endpoint, token, "agent.lease.next", json_object_from_slice(fields[:]), args)
+		ctl_agent_call_task(endpoint, token, "agent.lease.next", ctl_v2_lease_next_params(args, ctl_agent_cwd()), args)
 	case "heartbeat":
 		ctl_agent_call(endpoint, token, "agent.lease.heartbeat", ctl_v2_heartbeat_params(args))
 	case "submit":
@@ -2380,6 +2376,8 @@ print_help_lease :: proc() {
 	fmt.println("  next                       Return the lease you hold (status=current) or claim the next task")
 	fmt.println("                             for you (status=granted); status=none when nothing is available.")
 	fmt.println("                             status=waiting retains task/role through review or a block; only active permits work.")
+	fmt.println("      TASK.md is rewritten only when the pack changed (pack_version); pack=null means")
+	fmt.println("      TASK.md is current. --refresh forces a fresh pack and TASK.md.")
 	fmt.println("  heartbeat [--note <text>]  Compatibility progress/requirements acknowledgement; no renewal needed.")
 	fmt.println("      After reading refreshed TASK.md: --lease <id> --acknowledge-requirements-revision <n>.")
 	fmt.println("  submit --summary <s> [handoff flags] [--output-file <json>] [--artifacts-file <json>]")

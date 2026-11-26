@@ -186,7 +186,7 @@ work_refold_dependent_in_uow :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Ta
 work_dependencies_ready_in_uow :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, item: domain.Work_Item_Ref) -> (bool, domain.Domain_Error) {
 	context.allocator = context.temp_allocator
 	if _, ok, err := work_item_snapshot(svc, chain_id, owner, item); !ok do return false, err
-	edges, err := iface.taskchain_list_work_dependencies(svc.repo, chain_id, owner)
+	edges, err := iface.taskchain_list_work_dependencies_by_dependent(svc.repo, chain_id, owner, item)
 	if err.code != .None do return false, err
 	for edge in edges {
 		if edge.removed_at != "" || edge.dependent != item do continue
@@ -205,9 +205,9 @@ work_dependencies_ready_in_uow :: proc(svc: ^Service, chain_id: domain.Task_Chai
 task_dependencies_ready :: proc(svc: ^Service, task: domain.Task, all_tasks: []domain.Task = nil, all_deps: []domain.Task_Dependency = nil) -> (bool, domain.Domain_Error) {
 	tasks, deps := all_tasks, all_deps
 	if tasks == nil {
-		loaded, err := iface.taskchain_list_tasks_by_chain(svc.repo, task.chain_id, task.owner_user_id)
+		parents, parent_deps, err := task_parent_rows(svc, task, deps)
 		if err.code != .None do return false, err
-		tasks = loaded
+		tasks, deps = parents, parent_deps
 	}
 	have_deps := deps != nil
 	if !have_deps do deps, have_deps = fold_cache_deps(task.chain_id, task.owner_user_id)
@@ -241,6 +241,35 @@ task_dependencies_ready :: proc(svc: ^Service, task: domain.Task, all_tasks: []d
 	return work_dependencies_ready_in_uow(svc, task.chain_id, task.owner_user_id, domain.Work_Item_Ref{kind = domain.WORK_ITEM_TASK, id = string(task.task_id)})
 }
 
+// task_parent_rows: the rows deps_done_for needs for ONE task — its legacy
+// depends_on edges (from `deps` or the pass cache when given, else the by-task
+// lookup) and the parent tasks of the same chain — instead of every task of the
+// chain (spec SCHED 10.2, REQ-SCHED-38). Temp-allocated.
+task_parent_rows :: proc(svc: ^Service, task: domain.Task, deps: []domain.Task_Dependency = nil) -> ([]domain.Task, []domain.Task_Dependency, domain.Domain_Error) {
+	all := deps
+	if all == nil do all, _ = fold_cache_deps(task.chain_id, task.owner_user_id)
+	// Never nil (callers treat nil as "not loaded" and fall back to a chain read).
+	own := make([dynamic]domain.Task_Dependency, 0, 4, context.temp_allocator)
+	if all != nil {
+		for d in all do if d.task_id == task.task_id do append(&own, d)
+	} else {
+		loaded, err := iface.taskchain_list_dependencies_by_task(svc.repo, task.task_id, task.owner_user_id)
+		if err.code != .None do return nil, nil, err
+		for d in loaded do if d.chain_id == task.chain_id do append(&own, d)
+	}
+	parents := make([dynamic]domain.Task, context.temp_allocator)
+	append(&parents, task)
+	for d in own {
+		parent, found, err := iface.taskchain_get_task(svc.repo, d.depends_on_task_id)
+		if !found {
+			if err.code != .None && err.code != .Not_Found do return nil, nil, err
+			continue
+		}
+		if parent.chain_id == task.chain_id && parent.owner_user_id == task.owner_user_id do append(&parents, parent)
+	}
+	return parents[:], own[:], domain.Domain_Error{}
+}
+
 @(private = "file")
 ticket_in :: proc(tasks: []domain.Task, ref: domain.Work_Item_Ref) -> (domain.Task, bool) {
 	if ref.kind != domain.WORK_ITEM_TASK do return {}, false
@@ -268,7 +297,7 @@ work_capture_inputs_in_uow :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID
 	consumer, cok, cerr := work_item_snapshot(svc, chain_id, owner, item)
 	if !cok do return false, cerr
 	if !consumer.started || consumer.terminal do return false, domain.domain_error(.Conflict, "consumer must be starting")
-	edges, err := iface.taskchain_list_work_dependencies(svc.repo, chain_id, owner)
+	edges, err := iface.taskchain_list_work_dependencies_by_dependent(svc.repo, chain_id, owner, item)
 	if err.code != .None do return false, err
 	receipts, rerr := iface.taskchain_list_work_receipts_by_dependent(svc.repo, chain_id, owner, item)
 	if rerr.code != .None do return false, rerr
