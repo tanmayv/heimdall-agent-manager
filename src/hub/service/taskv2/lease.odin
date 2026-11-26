@@ -547,6 +547,7 @@ confirm_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease) -> bool
 	next.confirmed_at = now
 	next.last_beat_at = now
 	if _, ok, _ := iface.taskchain_save_lease(svc.repo, next); !ok do return false
+	arm_lease_stall(svc, next)
 	if task, tok, _ := iface.taskchain_get_task(svc.repo, lease.task_id); tok {
 		p := json_begin()
 		json_str(&p, "lease_id", lease.lease_id)

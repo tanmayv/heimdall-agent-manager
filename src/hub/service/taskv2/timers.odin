@@ -50,6 +50,10 @@ Timer_Kind :: enum {
 	// instance's user-activity stamp; X only while its chains are completed.
 	Coordinator_Idle_Completed, // key = instance_id, armed = user_activity_at
 	Coordinator_Idle,           // key = instance_id, armed = user_activity_at
+	// Lease_Stalled (lease_stall.odin): a confirmed, active work lease whose
+	// holder shows no activity for a window is nudged once, then reported to
+	// the coordinator. Never expires the lease. One pending timer per lease.
+	Lease_Stalled,              // key = lease_id,    armed = "" (activity is re-read on fire)
 }
 
 Timer :: struct {
@@ -107,6 +111,18 @@ timers_arm :: proc(svc: ^Service, kind: Timer_Kind, key: string, due_ms: i64, ar
 	// completion; one pending timer per (kind, instance, stamp) is enough.
 	if kind == .Coordinator_Idle_Completed || kind == .Coordinator_Idle {
 		for timer in ts.heap do if timer.kind == kind && timer.key == key && timer.armed == armed && timer.due_ms <= due_ms do return
+	}
+	// Lease_Stalled is armed at grant, confirm, rebuild and by its own fire:
+	// keep exactly one per lease, at the earliest requested due time (a fire
+	// that finds recent activity re-arms itself for the later window).
+	if kind == .Lease_Stalled {
+		for &timer, i in ts.heap do if timer.kind == kind && timer.key == key {
+			if due_ms < timer.due_ms {
+				timer.due_ms = due_ms
+				heap_up(ts.heap[:], i)
+			}
+			return
+		}
 	}
 	if ts.heap == nil do ts.heap = make([dynamic]Timer, runtime.heap_allocator())
 	ts.seq += 1
@@ -217,6 +233,7 @@ arm_lease_timers :: proc(svc: ^Service, lease: domain.Task_Lease) {
 	if lease.phase != domain.LEASE_PHASE_WAITING && lease.confirmed_at == "" {
 		timers_arm(svc, .Grant_Unconfirmed, lease.lease_id, to_ms(lease.granted_at) + GRANT_UNCONFIRMED_SECONDS * 1000, lease.granted_at)
 	}
+	arm_lease_stall(svc, lease)
 }
 
 // arm_idle_ttl: `idle_since` (= the release time written to the instance row)
@@ -356,6 +373,7 @@ fire_timer :: proc(svc: ^Service, t: Timer, now_ms: i64, jump_detected: bool) {
 	case .Coordinator_Idle_Completed, .Coordinator_Idle:
 		idle_stop, has_idle_stop = fire_coordinator_idle(svc, t, now_ms)
 		if has_idle_stop do r = .Acted
+	case .Lease_Stalled:    r = fire_lease_stalled(svc, &u, t, now_ms)
 	}
 	if r == .Failed {
 		fmt.eprintfln("[taskv2] timer %v for %s failed; rolled back", t.kind, t.key)

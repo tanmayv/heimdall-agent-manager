@@ -167,6 +167,20 @@ per-chain override:
 - the user's verdict on a chain task;
 - the user changing a chain task's requirements.
 
+**Silent work leases** are reported, never expired. When a confirmed work lease shows no holder
+activity for one window, the hub nudges the holder once; if the holder is still silent one window
+after the nudge, the chain coordinator gets a `task.lease_stalled` event and a `[taskv2] lease_stalled`
+notice naming the task, the holder and the last activity time.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `--lease-stall-seconds` / `HEIMDALL_LEASE_STALL_SECONDS` | `1200` | Silence window before the nudge, and again before the coordinator notice. `0` disables. |
+
+A chain can override the window with a positive `lease_stall_seconds` in its defaults; the hub-wide
+`0` still disables it. Activity is any of: the lease grant or confirmation, a `lease heartbeat`, or any
+task event recorded by the holder (task comments, heartbeat notes, requirement acknowledgements).
+Submit, handoff and block end the watch.
+
 A stop is deferred while the coordinator is busy, holds a task lease, or has unread user input.
 The instance then shows *Stopped automatically* with the reason.
 

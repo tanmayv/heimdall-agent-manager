@@ -195,6 +195,24 @@ catalog_task_event :: proc(
 			true,
 		)
 		return err
+	case EV_LEASE_STALLED:
+		// Occurrence, not resolvable: the lease is never expired by the hub, and
+		// any holder activity simply re-opens a fresh silence window.
+		json_str(&data, "lease_id", jsonx.extract_string(payload, "lease_id", "", true, context.temp_allocator))
+		json_str(&data, "holder_instance_id", jsonx.extract_string(payload, "holder_instance_id", "", true, context.temp_allocator))
+		json_str(&data, "last_activity_at", jsonx.extract_string(payload, "last_activity_at", "", true, context.temp_allocator))
+		_, err := catalog_emit(
+			repo,
+			clock,
+			task.owner_user_id,
+			task.chain_id,
+			task.task_id,
+			"task.lease_stalled",
+			"occurrence",
+			json_end(&data),
+			"hub",
+		)
+		return err
 	case EV_MERGED:
 		return catalog_resolve(repo, clock, task, "merge_conflict", event_id)
 	case EV_CANCELLED:

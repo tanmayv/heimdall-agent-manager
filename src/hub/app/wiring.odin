@@ -460,6 +460,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.task_engine.legacy_event_notices = config.legacy_event_notices
 	graph.task_engine.coordinator_idle_completed_seconds = config.coordinator_idle_completed_seconds
 	graph.task_engine.coordinator_idle_seconds = config.coordinator_idle_seconds
+	// Hub_Config 0 = disabled; the engine reads 0 as "default", < 0 as disabled.
+	graph.task_engine.lease_stall_seconds = config.lease_stall_seconds if config.lease_stall_seconds > 0 else -1
 	graph.task_engine.content = &graph.repos.content
 	graph.content.uow_factory = &graph.uow_factory
 	graph.content.vault_directory = &graph.vault_directory_repo

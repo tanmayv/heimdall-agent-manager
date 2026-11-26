@@ -44,6 +44,8 @@ EV_REVIEW_STALLED    :: "review_stalled"     // {unmet}  — gate waiting, no le
 EV_DEPENDENCY_STALLED :: "dependency_stalled" // {prerequisite, merge, detail?} — backlog only on a merge (re-armed)
 EV_BLOCKED_REALERT   :: "blocked_realert"    // {since}  — 24 h re-alert
 EV_HOLD_STALE        :: "hold_stale"         // {since_ms, age_minutes, reminder, routed_to} — held, unleased task: reminder (back-off, max HOLD_STALE_MAX_REMINDERS)
+EV_LEASE_STALL_NUDGED :: "lease_stall_nudged" // {lease_id, holder_instance_id, last_activity_ms, last_activity_at} — confirmed work lease silent one window: holder nudged once
+EV_LEASE_STALLED     :: "lease_stalled"      // {lease_id, holder_instance_id, last_activity_ms, last_activity_at, nudged_at} — still silent a window after the nudge: coordinator told (lease kept)
 EV_USER_REVIEW_REQUESTED :: "user_review_requested" // {attempt_no} — coordinator told review_requested_from_user for this attempt (once per gate pass)
 EV_SUMMARY_OVERFLOW  :: "summary_overflow"
 EV_STARTED_WORKFLOW  :: "started_workflow"   // {chain_id}

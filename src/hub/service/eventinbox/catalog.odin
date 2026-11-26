@@ -92,7 +92,7 @@ catalog_read :: proc(conn: ^nats.Connection, owner, chain, cursor: string, limit
 				typ, type_ok := obj["type"].(json.String)
 				catalog := false
 				switch string(typ) {
-				case "chain.state", "task.state", "task.review_requested_from_user", "task.blocked_on_human", "task.requirements_changed", "task.review_verdict", "task.merge_conflict", "chain.work_finished": catalog = true
+				case "chain.state", "task.state", "task.review_requested_from_user", "task.blocked_on_human", "task.requirements_changed", "task.review_verdict", "task.merge_conflict", "task.lease_stalled", "chain.work_finished": catalog = true
 				}
 				if object && tenant_ok && string(tenant) == owner && chain_ok && (chain == "" || string(event_chain) == chain) && type_ok && catalog {
 					append(&page.events, value)

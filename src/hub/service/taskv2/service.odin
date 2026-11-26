@@ -91,6 +91,10 @@ Service :: struct {
 	// between) hold_stale reminders to the coordinator; <= 0 uses
 	// HOLD_STALE_SECONDS.
 	hold_stale_seconds:  int,
+	// lease_stall_seconds: silence window before a confirmed work lease's
+	// holder is nudged, and again before the coordinator is told
+	// (lease_stall.odin). 0 uses LEASE_STALL_SECONDS; < 0 disables.
+	lease_stall_seconds: int,
 	// Coordinator idle-stop timers (coordinator_idle.odin, REQ-CIS-1): seconds
 	// after the last user event; 0 disables. Wiring copies Hub_Config.
 	coordinator_idle_completed_seconds: int,
@@ -650,6 +654,8 @@ notice_still_relevant :: proc(svc: ^Service, n: Coordinator_Notification) -> boo
 		}
 	case "hold_stale":
 		if !task_is_held(task) do return false
+	case "lease_stalled":
+		if !lease_stall_notice_relevant(svc, task) do return false
 	case "agent_not_running", "blocked_on human", "budget_exhausted", "oscillation":
 		if strings.trim_space(task.blocked_on_json) == "" do return false
 	case "review_requested_from_user":

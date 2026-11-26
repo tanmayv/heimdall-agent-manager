@@ -115,6 +115,11 @@ Hub_Config :: struct {
 	// chain status. 0 disables the timer. Defaults 3600 / 21600.
 	coordinator_idle_completed_seconds: int,
 	coordinator_idle_seconds:           int,
+	// Silence window (seconds) before a confirmed work lease's holder is
+	// nudged, and again before the coordinator gets a lease_stalled notice.
+	// 0 disables; default DEFAULT_LEASE_STALL_SECONDS (20 min). A chain may
+	// override it with defaults_json.lease_stall_seconds.
+	lease_stall_seconds: int,
 	// VAPID keypair for Web Push (WP-STORE-2). Both keys are unpadded base64url;
 	// the public key is the uncompressed P-256 point served to clients, the
 	// private key is the 32-byte scalar used to sign VAPID JWTs. The private key
@@ -193,6 +198,7 @@ default_config :: proc() -> Hub_Config {
 		title_nudge_cooldown_seconds = 3600,
 		coordinator_idle_completed_seconds = DEFAULT_COORDINATOR_IDLE_COMPLETED_SECONDS,
 		coordinator_idle_seconds = DEFAULT_COORDINATOR_IDLE_SECONDS,
+		lease_stall_seconds = DEFAULT_LEASE_STALL_SECONDS,
 		vapid_subject = "mailto:12tanmayvijay@gmail.com",
 		public_app_origin = "https://heimdall.mundus.in",
 		metrics_addr = "",
@@ -500,6 +506,7 @@ app_whatsapp_config_state :: proc(config: Hub_Config) -> (configured: bool, prob
 
 DEFAULT_COORDINATOR_IDLE_COMPLETED_SECONDS :: 60 * 60
 DEFAULT_COORDINATOR_IDLE_SECONDS           :: 6 * 60 * 60
+DEFAULT_LEASE_STALL_SECONDS                :: 20 * 60
 
 // parse_idle_seconds parses a coordinator idle-stop setting: a nonnegative
 // integer number of seconds, where 0 disables the timer (REQ-CIS-1).

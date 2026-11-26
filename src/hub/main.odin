@@ -357,6 +357,11 @@ parse_args :: proc(config: ^app.Hub_Config) {
 				config.coordinator_idle_seconds = parsed
 			}
 			i += 1
+		} else if arg == "--lease-stall-seconds" && i + 1 < len(os.args) {
+			parsed, ok := app.parse_idle_seconds(os.args[i + 1])
+			if !ok { fmt.eprintln(arg, "must be a nonnegative integer (0 disables)"); os.exit(2) }
+			config.lease_stall_seconds = parsed
+			i += 1
 		} else if arg == "--title-nudge-cooldown-seconds" && i + 1 < len(os.args) {
 			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.title_nudge_cooldown_seconds = int(parsed)
 			i += 1
@@ -484,12 +489,13 @@ apply_paddle_env :: proc(config: ^app.Hub_Config) {
 	}
 }
 
-// apply_coordinator_idle_env: the coordinator idle-stop timers resolve
+// apply_coordinator_idle_env: the coordinator idle-stop timers (and the
+// lease stall window, HEIMDALL_LEASE_STALL_SECONDS) resolve
 // default -> env -> flag (REQ-CIS-1). A malformed value fails loudly rather
 // than silently disabling or shortening the timer.
 apply_coordinator_idle_env :: proc(config: ^app.Hub_Config) {
-	names := [2]string{"HEIMDALL_COORDINATOR_IDLE_COMPLETED_SECONDS", "HEIMDALL_COORDINATOR_IDLE_SECONDS"}
-	targets := [2]^int{&config.coordinator_idle_completed_seconds, &config.coordinator_idle_seconds}
+	names := [3]string{"HEIMDALL_COORDINATOR_IDLE_COMPLETED_SECONDS", "HEIMDALL_COORDINATOR_IDLE_SECONDS", "HEIMDALL_LEASE_STALL_SECONDS"}
+	targets := [3]^int{&config.coordinator_idle_completed_seconds, &config.coordinator_idle_seconds, &config.lease_stall_seconds}
 	for name, i in names {
 		v := os.get_env_alloc(name, context.temp_allocator)
 		if v == "" do continue
