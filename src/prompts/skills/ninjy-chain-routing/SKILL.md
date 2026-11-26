@@ -5,7 +5,7 @@ description: Use as the Ninjy bot before answering a question about a chain, sen
 
 # Ninjy chain routing
 
-Approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”). Cleanup after work ends: `ninjy-chain-hygiene`. Channel replies and chain events: `ninjy-channel-communication`.
+Approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”). How to word what you send the user (names instead of IDs, short messages): “Writing replies” in `ninjy-channel-communication`. Cleanup after work ends: `ninjy-chain-hygiene`. Channel replies and chain events: `ninjy-channel-communication`.
 
 ## Chains and tasks
 - `./bin/ham-ctl task-chain list`, `./bin/ham-ctl task-chain show <chain_id>`, `./bin/ham-ctl task list --chain <chain_id>`, `./bin/ham-ctl task show <task_id>`.
@@ -19,7 +19,7 @@ Approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”). Cleanup after w
    - `status` is `active`.
 3. Prefer the chain the user was just talking about (channel history), then the one with the latest `updated_at`.
 4. Check the chain's size before forwarding (next section). Forward only when your confidence meets the bar for that size.
-5. One match that clears the bar: use it and name it in your reply. Several candidates, or none that clears the bar: do not guess and do not forward. Propose a new chain (“When a new chain is right”), naming the closest existing chain as the alternative, or list up to five candidates as “name (id)” and ask which one.
+5. One match that clears the bar: use it and name it in your reply. Several candidates, or none that clears the bar: do not guess and do not forward. Propose a new chain (“When a new chain is right”), naming the closest existing chain as the alternative, or list up to five candidates by name and ask which one.
 
 ## Chain size sets the bar
 A request forwarded into a chain becomes work for its coordinator and competes with everything already planned there. The larger the chain, the more a wrong forward costs, so the more certain you must be that the request belongs to it. Size is `task_count` from `task-chain list`:
@@ -31,7 +31,7 @@ A request forwarded into a chain becomes work for its coordinator and competes w
 | Large | 15 or more | High confidence only: the user named the chain, or was just discussing it, or the request refers to a specific task, change or result that exists in that chain |
 
 - High confidence means evidence you can point to (the user's words, a task ID or title, the chain's stated objective), not a similar-sounding topic. Say what the evidence is in your brief (“My reading:”).
-- Below the bar, do not forward. Create a new chain instead (it still needs the user's go-ahead, “Start a new chain”). When the closest chain is medium or large, say so: “This looks separate from <chain title> (<id>, <n> tasks). Start a new chain for it?”
+- Below the bar, do not forward. Create a new chain instead (it still needs the user's go-ahead, “Start a new chain”). When the closest chain is medium or large, say so: “This looks separate from <chain title> (<n> tasks). Start a new chain for it?”
 - The bar applies to new work and corrections. A status question never forwards anything (“Do not disturb running work”), so size does not matter for it.
 - When the user names the chain, use it whatever its size.
 
@@ -61,9 +61,9 @@ A request forwarded into a chain becomes work for its coordinator and competes w
 - Reply with the chain title and say the message was sent.
 
 ## Start a new chain
-- Work out the project and title. Use `./bin/ham-ctl projects list` and `./bin/ham-ctl projects show <project_id>`; if the project is ambiguous, list up to five candidates as “name (id)” and ask which one. Ask for a title if it is missing.
-- Run `./bin/ham-ctl agents list`. If the user names a coordinator, use that agent. Otherwise, if exactly one agent has `template_id` equal to `tmpl_coordinator`, use it. If several or none match, ask which agent should coordinate, listing up to five agents as “name (id)”. Never invent a default.
+- Work out the project and title. Use `./bin/ham-ctl projects list` and `./bin/ham-ctl projects show <project_id>`; if the project is ambiguous, list up to five candidates by name and ask which one. Ask for a title if it is missing.
+- Run `./bin/ham-ctl agents list`. If the user names a coordinator, use that agent. Otherwise, if exactly one agent has `template_id` equal to `tmpl_coordinator`, use it. If several or none match, ask which agent should coordinate, listing up to five agents by name. Never invent a default.
 - Resolve the project's path and bridge from `bridge_paths` as in “Servers and preview links” in `ninjy-bot-operations`; ask if placement is ambiguous.
-- Send “I am about to start chain <title> in project <name> (<id>) with coordinator <agent name> (<agent_id>). Go ahead?” and stop. Approval works as in “Confirm first” in CLAUDE.md/AGENTS.md.
+- Send “I am about to start chain <title> in project <name> with coordinator <agent name>. Go ahead?” and stop. Approval works as in “Confirm first” in CLAUDE.md/AGENTS.md.
 - Once approved, run `./bin/ham-ctl task-chain create --kind mixed_work --title "<title>" --project <project_id> --coordinator <agent_id> --bridge <bridge_id>`. Find the new chain's `coordinator_agent_instance_id` in the result or `task-chain show <chain_id>`.
-- Send the coordinator the brief as in “Message a chain's coordinator” and handle the `wake` result the same way. Reply with the title and chain id.
+- Send the coordinator the brief as in “Message a chain's coordinator” and handle the `wake` result the same way. Reply with the title.

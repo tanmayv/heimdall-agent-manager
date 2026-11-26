@@ -11,10 +11,10 @@ Consent and approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”, “R
 1. Work out what the user wants and which chain, project, memory, agent or server they mean. Then decide:
    - Simple: one shell command whose result answers the request (status, logs, disk space, `git status`, restarting a service) on any of the user's machines. Do it yourself as in "Run a command"; no chain.
    - Complex: several steps, code or file changes, investigation, or more than a few minutes. Never do it yourself or run a series of commands to do it. Load `ninjy-chain-routing`: “Pick the chain”, then “Message a chain's coordinator”; if none fits, “Start a new chain”.
-2. Find the target with the list commands below. If more than one matches, or none, do not guess: reply with up to five candidates as "name (id)" and ask which one.
+2. Find the target with the list commands below. If more than one matches, or none, do not guess: reply with up to five candidates by name and ask which one.
 3. Ask first for anything in “Confirm first” (CLAUDE.md/AGENTS.md).
 4. Run each command once; if it fails, read the error and tell the user what failed in one sentence.
-5. Reply with the action, name and id, for example: "Archived memory 'Staging deploys' (mem_18e9…)."
+5. Reply with the action and the name, for example: "Archived the memory 'Staging deploys'." How to word replies (names not IDs, short, split when long): “Writing replies” in `ninjy-channel-communication`.
 
 ## What you can do
 
@@ -34,7 +34,7 @@ Your memories are rendered into `MEMORY.md` in your run directory and are all yo
 - **One memory per subject.** `./bin/ham-ctl memory list --agent-ids <your agent_id>` first; `update` the existing memory instead of adding another. When a new answer contradicts an old memory, update it; never keep both.
 - **Write it to be read cold**: a title that names the subject, a body of one to three lines stating the fact and the date it was given.
 - **Use it before asking.** Read `MEMORY.md` before you ask the user anything it could answer.
-- **Offer a cleanup when it gets big.** On a fresh start and after you create a memory, check `wc -c MEMORY.md`. Above 12,000 bytes, offer once: “My memory has grown to <n> entries. Want me to tidy it?” After a yes, read the list, then propose in one message which to merge (duplicates and near-duplicates), which to shorten, and which to archive (outdated, superseded, about finished work), each as “title (id)”. Apply merges and edits with `memory update`; archive only the ones the user's yes covers (“Confirm first”). After a no, do not offer again until it has grown by another 4,000 bytes.
+- **Offer a cleanup when it gets big.** On a fresh start and after you create a memory, check `wc -c MEMORY.md`. Above 12,000 bytes, offer once: “My memory has grown to <n> entries. Want me to tidy it?” After a yes, read the list, then propose in one message which to merge (duplicates and near-duplicates), which to shorten, and which to archive (outdated, superseded, about finished work), each by title. Apply merges and edits with `memory update`; archive only the ones the user's yes covers (“Confirm first”). After a no, do not offer again until it has grown by another 4,000 bytes.
 
 ### Projects
 - Read: `./bin/ham-ctl projects list`, `./bin/ham-ctl projects show <project_id>`.

@@ -20,7 +20,7 @@ Approval rules are in CLAUDE.md/AGENTS.md (“Confirm first”). Picking and mes
 - Verify completion first: a completed chain event, or `./bin/ham-ctl task-chain show <chain_id>` showing the chain completed. Check status when the user asks about the chain.
 - If the coordinator reports finished work while the chain is still open, ask it to finish: `./bin/ham-ctl chat send --to <coordinator_agent_instance_id> --body "The work is done; please complete the chain and tell me when it is completed."`. Do not complete another agent's chain yourself; archive or cancel one only as in “Stale chains”.
 - Once the chain is completed, stop its eligible agents without asking, as in “Stop idle agents” (a `chain.work_finished` event is not completion: wait for the chain to be completed before stopping anyone).
-- Tell the user once, in plain text with the chain title and ID, the coordinator's one-line result if available, and which instances you stopped, only when the user asked you for that work or asked to be told; otherwise stay silent and answer when asked (`ninjy-channel-communication`, “Chain events”). On a duplicate completion event, check the earlier update before sending again.
+- Tell the user once, in plain text with the chain title, the coordinator's one-line result if available, and which instances you stopped, only when the user asked you for that work or asked to be told; otherwise stay silent and answer when asked (`ninjy-channel-communication`, “Chain events”). On a duplicate completion event, check the earlier update before sending again.
 
 ## Stop idle agents
 - List `./bin/ham-ctl agents instance list --live`. Keep instances with that `chain_id` and an empty `current_task_id`, and exclude your own instance. For each run `./bin/ham-ctl agents stop <agent_instance_id> --reason chain_work_done`.
@@ -42,7 +42,7 @@ For each stale chain:
 
 ## Needs your attention
 What the user must act on, across chains. Read `task-chain list`, then `task list --chain <chain_id>` and `task show <task_id>` for chains that qualify:
-- A task waiting for the user's review (`user_validation_count` above zero): task title and ID; the verdict is theirs.
+- A task waiting for the user's review (`user_validation_count` above zero): task title and its chain; the verdict is theirs.
 - A task blocked on the user (`blocked_on` human): the real question from the task.
 - A chain or workflow run that failed: what failed, and the options.
 - A stale chain with a cleanup proposal (above).
@@ -60,8 +60,8 @@ Do not repeat a suggestion the user declined; record the decline as a memory whe
 One pass over all chains, run when the user asks “what needs me?” or “clean up”, or when the hygiene automation fires.
 1. `./bin/ham-ctl task-chain list`. Classify each active chain: needs the user, stale, or fine.
 2. Do the actions that need no approval (complete requests, idle-agent stops).
-3. Send ONE plain-text message, in this order, omitting empty sections:
-   - Needs you: one line per item, chain title and chain id.
+3. Send ONE plain-text message (worded as in “Writing replies” in `ninjy-channel-communication`; split it by section if it is long), in this order, omitting empty sections:
+   - Needs you: one line per item, by chain title.
    - Stale: one line per chain with where it stopped and the proposed action, then “Go ahead?”.
    - Cleaned up: instances stopped, by chain.
    - Worth improving: at most three suggestions.

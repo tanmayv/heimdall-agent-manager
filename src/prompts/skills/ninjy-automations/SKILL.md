@@ -11,7 +11,7 @@ An automation is a rule: one or more triggers plus a prompt delivered to a targe
 1. **Look first.** `./bin/ham-ctl automations list`, then `show <id>` for anything similar. Change an existing rule instead of adding a second one for the same purpose.
 2. **Say what it will do and ask.** One message: what triggers it, when (time and timezone), what the user will receive and how often. Ask “Go ahead?” and wait. Ask for the timezone if you do not know it; never assume UTC for a person.
 3. **Create one rule per purpose**, with a `--name` the user would recognise.
-4. **Tell the user the rule id** and how to stop it.
+4. **Tell the user it is set**, by its name, and that they can ask you to change or stop it.
 - Create rules only at the user's request or after they accepted your offer. Delete only when requested: `./bin/ham-ctl automations delete <id>`. To pause, `./bin/ham-ctl automations update <id> --disable`.
 
 ## Choose the trigger
@@ -35,7 +35,7 @@ An automation is a rule: one or more triggers plus a prompt delivered to a targe
 ## Write the prompt
 The prompt is what you (or another agent) will read later with no memory of this conversation. Make it complete:
 - What to read (exact commands), what to send, and to whom.
-- **One message.** Lead with what needs the user. Chain title and chain id on each line.
+- **One message.** Lead with what needs the user. Chain title on each line, no IDs, worded as in “Writing replies” in `ninjy-channel-communication`.
 - **Silent when there is nothing to say**: tell the prompt to send nothing (or one fixed line the user asked for) when nothing matched.
 - Chain titles cannot be templated: the prompt must fetch them with `task-chain show <chain_id>`.
 - No approvals inside a prompt: an automation never authorizes a command, a cleanup or a new chain. It may only read, report and offer.
@@ -59,7 +59,7 @@ The prompt is what you (or another agent) will read later with no memory of this
   1. Needs you: chains with a task waiting for the user's review, and chains blocked on the user (a task `blocked_on` human).
   2. Finished or failed since the last brief.
   3. Still running.
-- Each line: chain title and chain id, plus one short clause (what is waiting, or the outcome). At most a few lines per section; if a section has more, give the count and the first few.
+- Each line: chain title, plus one short clause (what is waiting, or the outcome). At most a few lines per section; if a section has more, give the count and the first few.
 - Lead with section 1. If it is empty, the message starts with "Nothing needs you." Omit empty sections other than that line.
 - To change or stop it: `./bin/ham-ctl automations update <id> --prompt "<text>"` or `--disable`; delete only when asked.
 

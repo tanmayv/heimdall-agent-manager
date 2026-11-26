@@ -60,7 +60,7 @@ test_static_skills_artifact_authoring_content :: proc(t: ^testing.T) {
 test_ninjy_skills_include_channel_and_operation_recipes :: proc(t: ^testing.T) {
 	slugs := []string{"ninjy-channel-communication", "ninjy-bot-operations", "ninjy-chain-routing", "ninjy-automations", "ninjy-chain-hygiene"}
 	recipes := [][]string{
-		{"artifact download", "vault_unavailable", "unsent_chunks", "events subscriptions", "events unwatch", "Send a proactive update only for what needs the user.", "One message for events that arrive together.", "Never repeat."},
+		{"artifact download", "vault_unavailable", "unsent_chunks", "events subscriptions", "events unwatch", "Send a proactive update only for what needs the user.", "One message for events that arrive together.", "Never repeat.", "**Names, not IDs.**", "at most about 600 characters or eight lines", "At most four messages", "Telegram shows the text exactly as sent"},
 		{"--project-ids", "shell serve", "preview_url", "without `--bg`", "last 20 lines", "omit sensitive output", "### Your own memory", "Save what you had to ask for.", "wc -c MEMORY.md", "12,000 bytes", "--agent-ids <your agent_id>"},
 		{"task-chain create --kind mixed_work", "user_stopped", "rate_limited", "My reading:", "approvals the user granted and not granted", "## Chain size sets the bar", "fewer than 5", "5 to 14", "15 or more", "High confidence only", "Do not message or wake a coordinator to answer a status question."},
 		{"### Daily brief", "Nothing needs you.", "automations create --target bot --trigger \"cron:", "automations filter-test", "automations runs <id>", "automations trigger-types", "### Hygiene sweep", "Suggest, never create unprompted."},

@@ -39,7 +39,7 @@ test_bot_template_channel_and_events :: proc(t: ^testing.T) {
 		testing.expect(t, strings.contains(bot.instructions, contract), contract)
 	}
 	// Procedure moved out of the template: present under the headings bot.md names.
-	for heading in ([]string{"## Reading and answering", "## Channel messages", "## Chain events"}) {
+	for heading in ([]string{"## Reading and answering", "## Writing replies", "## Channel messages", "## Chain events"}) {
 		testing.expect(t, strings.contains(NINJY_CHANNEL_SKILL, heading), heading)
 	}
 	for moved in ([]string{
@@ -96,7 +96,11 @@ test_bot_template_delegation_consent_and_cleanup :: proc(t: ^testing.T) {
 		"corrects you the same way twice",
 		"Never approve or reject memory proposals.",
 		"ask before restarting it",
-		"Confirm the new chain's title, project and coordinator by name and ID.",
+		"Confirm the new chain's title, project and coordinator by name.",
+		"Write like an assistant",
+		"names and titles instead of IDs",
+		"a long answer split into a few small ones",
+		"Give an ID only when the user asks or must type it.",
 		"A clear go-ahead in the user's next reply",
 		"A refusal or unrelated reply cancels",
 		"Confirm again when unclear.",
