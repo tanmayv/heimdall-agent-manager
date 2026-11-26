@@ -457,6 +457,13 @@ async function main() {
     const pidBefore = runtimePid(L5);
     const args = ['--hub', hub.base, '--profile', L5.name, '--bundle', RELEASE.assetPath, '--checksum-file', RELEASE.sumsPath];
     let r;
+    const macReports = {};
+    const collectMac = MAC && Boolean(process.env.HEIMDALL_E2E_P5_DIAGNOSTICS && process.env.HEIMDALL_E2E_P5_PUBLIC_KEY);
+    const commandReport = (cmd, args) => {
+      const probe = spawnSync(cmd, args, { encoding: 'utf8', timeout: 8_000 });
+      return JSON.stringify({ status: probe.status, error: probe.error?.code, stdout: probe.stdout, stderr: probe.stderr });
+    };
+    if (collectMac) macReports['codesign-legacy'] = commandReport('/usr/bin/codesign', ['-dv', '--verbose=4', L5.bin]);
     if (WIN) {
       const ps = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(REPO_ROOT, 'scripts', 'install.ps1'), '-Hub', hub.base, '-Profile', L5.name, '-Bundle', RELEASE.assetPath, '-ChecksumFile', RELEASE.sumsPath];
       const env = { ...ENV }; delete env.PSModulePath;
@@ -465,6 +472,9 @@ async function main() {
       // Observe the managed runtime before rollback can remove its process records.
       const child = spawn('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, stdio: ['ignore', 'pipe', 'pipe'] });
       const seen = new Set();
+      let sampleRun;
+      let samplePid;
+
       const observe = () => {
         const root = L5.data;
         const procs = readJson(path.join(root, 'supervisor', 'procs.json'));
@@ -472,6 +482,24 @@ async function main() {
         const control = readJson(path.join(root, 'run', 'supervisor-control.json'));
         let logBytes = null;
         try { logBytes = fs.statSync(path.join(root, 'logs', 'runtime.log')).size; } catch {}
+        const managed = procs?.procs?.find((proc) => proc.role === 'runtime');
+        if (collectMac && managed?.pid && !sampleRun && control?.pid !== managed.pid) {
+          if (samplePid !== managed.pid) {
+            samplePid = managed.pid;
+            macReports['codesign-managed'] = commandReport('/usr/bin/codesign', ['-dv', '--verbose=4', path.join(root, 'releases', managed.tree, 'bin', 'ham-bridge')]);
+          } else {
+            // This is a CI-owned runtime. Wait for a second observation before sampling.
+            const sampled = spawn('/usr/bin/sample', [String(managed.pid), '3', '10'], { stdio: ['ignore', 'pipe', 'pipe'] });
+            let output = '';
+            sampled.stdout.on('data', (chunk) => { output += chunk; });
+            sampled.stderr.on('data', (chunk) => { output += chunk; });
+            const limit = setTimeout(() => sampled.kill(), 10_000);
+            sampleRun = new Promise((resolve) => {
+              sampled.once('error', (err) => { clearTimeout(limit); resolve(String(err)); });
+              sampled.once('close', (code) => { clearTimeout(limit); resolve('exit ' + code + '\n' + output); });
+            });
+          }
+        }
         const summary = JSON.stringify({
           processes: (procs?.procs || []).map(({ role, pid }) => ({ role, pid })),
           runtimePid: runtime?.pid, connected: runtime?.connected,
@@ -496,6 +524,10 @@ async function main() {
       } finally {
         clearInterval(interval);
         clearTimeout(timeout);
+      }
+      if (collectMac) {
+        if (sampleRun) macReports['runtime-sample'] = await sampleRun;
+        macReports['securityd-log'] = commandReport('/usr/bin/log', ['show', '--last', '3m', '--style', 'compact', '--predicate', 'process == "securityd" AND (eventMessage CONTAINS[c] "ACL" OR eventMessage CONTAINS[c] "interaction" OR eventMessage CONTAINS[c] "prompt")']);
       }
     } else {
       r = spawnSync('bash', [path.join(REPO_ROOT, 'scripts', 'install.sh'), ...args], { env: ENV, encoding: 'utf8', timeout: 900_000, input: '' });
@@ -524,6 +556,7 @@ async function main() {
         collect(name + '-launcher-status', path.join(L5.data, name, 'launcher-status.json'));
       }
       if (MAC) {
+        for (const [name, report] of Object.entries(macReports)) save(name, report);
         save('installer.stdout', r.stdout || '');
         save('installer.stderr', r.stderr || '');
       }
