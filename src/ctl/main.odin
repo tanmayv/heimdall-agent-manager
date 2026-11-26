@@ -27,6 +27,11 @@ main :: proc() {
 		return
 	}
 
+	if flag, code, message, removed := ctl_removed_role_flag(cmd[:], os.args); removed {
+		fmt.println(ctl_removed_role_flag_json(flag, code, message))
+		os.exit(1)
+	}
+
 	if cmd[0] == "health" {
 		url := hub_user_mode_url(os.args)
 		if url == "" do url = "http://127.0.0.1:49328"

@@ -27,7 +27,7 @@ test_task_wire_escaped_characters_and_markdown :: proc(t: ^testing.T) {
 		priority               = .P1,
 		attempt_no             = 2,
 		bridge_id              = "brg_123",
-		brief_json             = `{"goal":"g","acceptance":[],"inputs":[],"review_roles":["reviewer"],"assignee":"agt_worker_1"}`,
+		brief_json             = `{"goal":"g","acceptance":[],"inputs":[],"reviewers":["agt_rev"],"assignee":"agt_worker_1"}`,
 		blocked_on_json        = `{"kind":"human","reason":"decide"}`,
 		requires_user_approval = true,
 		ready_since            = "2026-10-03T11:59:00Z",
@@ -76,8 +76,8 @@ test_task_wire_escaped_characters_and_markdown :: proc(t: ^testing.T) {
 			assignee, a_ok := brief["assignee"].(json.String)
 			testing.expect(t, a_ok, "brief.assignee must be a string")
 			testing.expect_value(t, string(assignee), "agt_worker_1")
-			roles, r_ok := brief["review_roles"].(json.Array)
-			testing.expect(t, r_ok && len(roles) == 1, "brief.review_roles must be an array of one role")
+			reviewers, r_ok := brief["reviewers"].(json.Array)
+			testing.expect(t, r_ok && len(reviewers) == 1, "brief.reviewers must be an array of one agent id")
 		}
 		blocked_on, bo_ok := obj["blocked_on"].(json.Object)
 		testing.expect(t, bo_ok, "blocked_on must be spliced as an object when set")
@@ -118,7 +118,7 @@ test_task_matches_query_state_kind_assignee :: proc(t: ^testing.T) {
 		task_id    = domain.Task_ID("task_1"),
 		state      = .In_Progress,
 		kind       = .Task,
-		brief_json = `  { "goal": "g",  "assignee": "agt_123", "review_roles": ["reviewer"] }  `,
+		brief_json = `  { "goal": "g",  "assignee": "agt_123", "reviewers": ["agt_rev"] }  `,
 	}
 
 	// 1. Exact matches work despite whitespace and key ordering in the brief
@@ -179,34 +179,52 @@ test_taskchain_typed_wire_tracking_allocator_clean :: proc(t: ^testing.T) {
 }
 
 // Task System v2 create/patch bodies: `assignee` (agent_id), `reviewers`
-// ([agent_id]) and `review_roles`; the legacy `assignee_ref` / `reviewer_refs`
+// ([agent_id | user]); the legacy `assignee_ref` / `reviewer_refs`
 // spellings map onto the same fields when they carry agent_id refs, and
-// instance / user refs are rejected.
+// instance refs are rejected; a {type: user} ref is the literal `user`
+// reviewer; review_roles is refused with review_roles_removed (REQ-SCHED-8).
 @(test)
 test_task_actor_fields_from_body_v2_and_legacy :: proc(t: ^testing.T) {
-	assignee, reviewers, roles, has_roles, err := task_actor_fields_from_body(`{"title":"t","assignee":"agt_w","reviewers":["agt_r1","agt_r2"],"review_roles":["reviewer","qa"]}`)
-	defer { delete(reviewers); delete(roles) }
+	assignee, reviewers, err := task_actor_fields_from_body(`{"title":"t","assignee":"agt_w","reviewers":["agt_r1","agt_r2","user"]}`)
+	defer delete(reviewers)
 	testing.expect_value(t, err.code, domain.Error_Code.None)
 	testing.expect_value(t, assignee, "agt_w")
-	testing.expect_value(t, len(reviewers), 2)
-	if len(reviewers) == 2 { testing.expect_value(t, reviewers[0], "agt_r1"); testing.expect_value(t, reviewers[1], "agt_r2") }
-	testing.expect(t, has_roles, "review_roles present must be flagged")
-	testing.expect_value(t, len(roles), 2)
+	testing.expect_value(t, len(reviewers), 3)
+	if len(reviewers) == 3 { testing.expect_value(t, reviewers[0], "agt_r1"); testing.expect_value(t, reviewers[1], "agt_r2"); testing.expect_value(t, reviewers[2], "user") }
 
-	l_assignee, l_reviewers, l_roles, l_has_roles, l_err := task_actor_fields_from_body(`{"title":"t","assignee_ref":{"type":"agent_id","agent_id":"agt_legacy"},"reviewer_refs":[{"type":"agent_id","agent_id":"agt_rev"}]}`)
-	defer { delete(l_reviewers); delete(l_roles) }
+	l_assignee, l_reviewers, l_err := task_actor_fields_from_body(`{"title":"t","assignee_ref":{"type":"agent_id","agent_id":"agt_legacy"},"reviewer_refs":[{"type":"agent_id","agent_id":"agt_rev"},{"type":"user","user_id":"alice"}]}`)
+	defer delete(l_reviewers)
 	testing.expect_value(t, l_err.code, domain.Error_Code.None)
 	testing.expect_value(t, l_assignee, "agt_legacy")
-	testing.expect_value(t, len(l_reviewers), 1)
-	if len(l_reviewers) == 1 do testing.expect_value(t, l_reviewers[0], "agt_rev")
-	testing.expect(t, !l_has_roles, "absent review_roles must not be flagged")
+	testing.expect_value(t, len(l_reviewers), 2)
+	if len(l_reviewers) == 2 { testing.expect_value(t, l_reviewers[0], "agt_rev"); testing.expect_value(t, l_reviewers[1], "user") }
 
-	_, _, _, _, inst_err := task_actor_fields_from_body(`{"title":"t","assignee_ref":{"type":"agent_instance","agent_instance_id":"inst_x"}}`)
+	_, _, inst_err := task_actor_fields_from_body(`{"title":"t","assignee_ref":{"type":"agent_instance","agent_instance_id":"inst_x"}}`)
 	testing.expect_value(t, inst_err.code, domain.Error_Code.Validation_Failed)
-	_, _, _, _, inst_rev_err := task_actor_fields_from_body(`{"title":"t","reviewer_refs":[{"type":"agent_instance","agent_instance_id":"inst_x"}]}`)
+	_, _, inst_rev_err := task_actor_fields_from_body(`{"title":"t","reviewer_refs":[{"type":"agent_instance","agent_instance_id":"inst_x"}]}`)
 	testing.expect_value(t, inst_rev_err.code, domain.Error_Code.Validation_Failed)
-	_, _, _, _, user_err := task_actor_fields_from_body(`{"title":"t","reviewer_refs":[{"type":"user","user_id":"alice"}]}`)
-	testing.expect_value(t, user_err.code, domain.Error_Code.Validation_Failed)
+	// Removed field: refused by name, even when empty.
+	for body in ([]string{`{"title":"t","assignee":"agt_w","review_roles":["reviewer"]}`, `{"title":"t","assignee":"agt_w","review_roles":[]}`}) {
+		_, _, roles_err := task_actor_fields_from_body(body)
+		testing.expect_value(t, roles_err.code, domain.Error_Code.Validation_Failed)
+		testing.expect(t, strings.contains(roles_err.details_json, `"code":"review_roles_removed"`), "review_roles names its replacement")
+	}
+}
+
+// task_brief_from_body folds a top-level review_focus into the brief (6.5).
+@(test)
+test_task_brief_from_body_review_focus :: proc(t: ^testing.T) {
+	brief, err := task_brief_from_body(`{"brief":{"goal":"g"},"review_focus":{"agt_r":"check retries"}}`)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	testing.expect_value(t, brief, `{"goal":"g","review_focus":{"agt_r":"check retries"}}`)
+	only, oerr := task_brief_from_body(`{"title":"t","review_focus":{"agt_r":"x"}}`)
+	testing.expect_value(t, oerr.code, domain.Error_Code.None)
+	testing.expect_value(t, only, `{"review_focus":{"agt_r":"x"}}`)
+	plain, perr := task_brief_from_body(`{"brief":{"goal":"g"}}`)
+	testing.expect_value(t, perr.code, domain.Error_Code.None)
+	testing.expect_value(t, plain, `{"goal":"g"}`)
+	_, bad := task_brief_from_body(`{"review_focus":"not an object"}`)
+	testing.expect_value(t, bad.code, domain.Error_Code.Validation_Failed)
 }
 
 @(test)
@@ -493,7 +511,7 @@ test_write_chain_json_pinned :: proc(t: ^testing.T) {
 		status                        = .Active,
 		kind                          = domain.CHAIN_KIND_MIXED_WORK,
 		coordinator_agent_instance_id = "inst_coord",
-		defaults_json                 = `{"review_roles":{}}`,
+		defaults_json                 = `{"budget":{}}`,
 		created_at                    = "2026-09-21T09:00:00Z",
 		updated_at                    = "2026-09-21T09:10:00Z",
 		is_pinned                     = true,
@@ -506,6 +524,15 @@ test_write_chain_json_pinned :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"is_pinned":true`), "must serialize is_pinned true")
 	testing.expect(t, strings.contains(out, `"pinned_at":"2026-09-21T09:10:00Z"`), "must serialize pinned_at")
 	testing.expect(t, strings.contains(out, `"kind":"mixed_work"`), "must serialize kind")
-	testing.expect(t, strings.contains(out, `"defaults":{"review_roles":{}}`), "must splice defaults as an object")
+	testing.expect(t, strings.contains(out, `"defaults":{"budget":{}}`), "must splice defaults as an object")
 	testing.expect(t, !strings.contains(out, `default_reviewer_refs`), "v2 chain wire must not carry default_reviewer_refs")
+}
+
+// Review and lease wires carry no role (REQ-SCHED-6).
+@(test)
+test_review_and_lease_wire_have_no_role :: proc(t: ^testing.T) {
+	review, _ := json.marshal(Task_Review_Wire{reviewer = "agt_r", reviewer_kind = "agent", verdict = "approve"}, allocator = context.temp_allocator)
+	testing.expectf(t, !strings.contains(string(review), `"role"`), "review wire: %s", string(review))
+	lease, _ := json.marshal(make_lease_wire(domain.Task_Lease{lease_id = "l1", kind = "review"}), allocator = context.temp_allocator)
+	testing.expectf(t, !strings.contains(string(lease), "role"), "lease wire: %s", string(lease))
 }

@@ -30,6 +30,18 @@ control_worker_cross_runtime_flow :: proc(t:^testing.T,vector_json:string) {
 	sealed_fields["owner_user_id"]=json.String(v.job.owner)
 	opened_fields,fields_ok:=control_record_json(&kr,.Task_Detail,sealed_fields)
 	testing.expect(t,fields_ok && strings.contains(opened_fields,"private task goal") && strings.contains(opened_fields,"private task acceptance"))
+	// review_focus replaces review_roles in the detail projection (SCHED-0c).
+	sealed_fields["review_focus"]=json.Object{"agt_r"=json.String("check retry bounds")}
+	focus_fields,focus_ok:=control_record_json(&kr,.Task_Detail,sealed_fields)
+	testing.expect(t,focus_ok && strings.contains(focus_fields,`"review_focus":{"agt_r":"check retry bounds"}`),"review_focus projected")
+	sealed_fields["review_roles"]=json.Array{json.String("reviewer")}
+	no_roles,no_roles_ok:=control_record_json(&kr,.Task_Detail,sealed_fields)
+	testing.expect(t,no_roles_ok && !strings.contains(no_roles,"review_roles"),"review_roles is not projected")
+	delete_key(&sealed_fields,"review_roles")
+	sealed_fields["review_focus"]=json.String("not an object")
+	_,bad_focus:=control_record_json(&kr,.Task_Detail,sealed_fields)
+	testing.expect(t,!bad_focus,"review_focus must be an object")
+	delete_key(&sealed_fields,"review_focus")
 	legacy_fields,legacy_ok:=control_record_json(&kr,.Task,sealed_fields)
 	testing.expect(t,legacy_ok && !strings.contains(legacy_fields,"private task"))
 	fields["owner_user_id"]=json.String("not an encryptable field")

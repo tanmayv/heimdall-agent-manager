@@ -177,7 +177,7 @@ Task :: struct {
 	// attempt_no is the current attempt (0 until the first work lease is granted).
 	attempt_no:             int,
 	// brief_json: the task brief (goal, acceptance[], inputs[],
-	// review_roles[], reviewers[], assignee?, budget{…}, output?, …) as a JSON object.
+	// assignee, reviewers[], review_focus{…}, budget{…}, output?, …) as a JSON object.
 	brief_json:             string,
 	// blocked_on_json: `{"kind": "human"|"task"|"bridge"|…, "ref": …, "reason": …,
 	// "since": ts}` while the task sits in backlog with the blocked badge; "" when

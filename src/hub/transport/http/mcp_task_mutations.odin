@@ -87,9 +87,11 @@ mcp_task_write_call :: proc(h:^MCP_Control_Handlers,id:json.Value,raw:string,vie
 	bridge:=new(string,context.temp_allocator);bridge^=args.bridge_id
 	if mcp.task_argument_present(args,"bridge_id") do command.update.bridge_id=bridge
 	capacity:=args.capacity;if capacity==0 do capacity=1
-	roles:=args.roles;if len(roles)==0 do roles=[]string{"worker"}
+	// Fleet rows have no roles (REQ-SCHED-1/8): refuse them by name, never ignore.
+	if tool=="chains.configure" && mcp.task_argument_present(args,"roles") do return mcp_tool_result(id,"fleet_roles_removed",true)
 	profile:=args.provider_profile;if profile=="" do profile=args.provider
-	command.fleet={chain_id=command.chain_id,agent_id=args.agent_id,bridge_id=bridge,provider=args.provider,model=args.model,provider_profile=profile,has_provider_profile=true,capacity=capacity,roles=roles,has_roles=true}
+	command.fleet={chain_id=command.chain_id,agent_id=args.agent_id,bridge_id=bridge,provider=args.provider,model=args.model,provider_profile=profile,has_provider_profile=true,capacity=capacity}
+	command.fleet_paused=args.paused;command.has_fleet_paused=mcp.task_argument_present(args,"paused")
 	applied:=make([dynamic]string,context.temp_allocator)
 	for key in mcp.TASK_TOOL_KEYS do if mcp.task_argument_present(args,key) && key!="chain_id" && key!="task_id" && key!="request_id" && key!="expected_revision" do append(&applied,key)
 	command.applied_fields=applied[:]

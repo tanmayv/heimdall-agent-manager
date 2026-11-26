@@ -61,7 +61,7 @@ export async function verifyMcpWorkerJob(j: McpWorkerJob, identity: DeviceIdenti
 }
 const chainFields = ['chain_id', 'title', 'description', 'status', 'kind', 'project_id', 'work_revision', 'task_count', 'completed_task_count', 'user_validation_count', 'created_at', 'updated_at', 'configuration_revision', 'fleet'];
 const taskFields = ['task_id', 'title', 'description', 'state', 'kind', 'attempt_no', 'requires_user_approval', 'reviews', 'updated_at'];
-const taskDetailFields = [...taskFields, 'chain_id', 'goal', 'acceptance', 'inputs', 'review_roles', 'reviewers', 'assignee_agent_id', 'bridge_id', 'depends_on', 'publish_state', 'priority', 'revision', 'blocked_kind', 'blocked_ref', 'blocked_reason', 'blocked_since', 'blocked_since_ms', 'hold_reason', 'hold_since_ms', 'hold_by', 'checkpoint_requested', 'allowed_actions', 'latest_attempt_no', 'latest_attempt_holder_instance_id', 'latest_attempt_outcome', 'latest_attempt_started_at', 'latest_attempt_ended_at', 'latest_attempt_summary', 'latest_attempt_summary_error', 'requirements_revision', 'requirements_submitted_revision', 'requirements_submitted_head', 'requirements_checkpoint_required', 'requirements_acknowledgements', 'requirements_history', 'requirements_history_truncated'];
+const taskDetailFields = [...taskFields, 'chain_id', 'goal', 'acceptance', 'inputs', 'reviewers', 'review_focus', 'assignee_agent_id', 'bridge_id', 'depends_on', 'publish_state', 'priority', 'revision', 'blocked_kind', 'blocked_ref', 'blocked_reason', 'blocked_since', 'blocked_since_ms', 'hold_reason', 'hold_since_ms', 'hold_by', 'checkpoint_requested', 'allowed_actions', 'latest_attempt_no', 'latest_attempt_holder_instance_id', 'latest_attempt_outcome', 'latest_attempt_started_at', 'latest_attempt_ended_at', 'latest_attempt_summary', 'latest_attempt_summary_error', 'requirements_revision', 'requirements_submitted_revision', 'requirements_submitted_head', 'requirements_checkpoint_required', 'requirements_acknowledgements', 'requirements_history', 'requirements_history_truncated'];
 const commentFields = ['comment_id', 'chain_id', 'task_id', 'body', 'created_at', 'author_kind', 'author_user_id', 'author_agent_instance_id', 'delegated_client_id', 'delegated_grant_id', 'body_error', 'body_bytes'];
 const catalogFields: Record<string, { fields: string[]; text: string[] }> = {
   ...resourceSpecs,
@@ -197,7 +197,7 @@ export async function transformMcpWorkerJob(job: McpWorkerJob, keyring: VaultKey
   if (input.tasks) out.tasks = await Promise.all(input.tasks.map(async (r: Record<string, unknown>) => {
     const details = job.tool === 'tasks.get' || job.tool === 'tasks.list';
     // Acceptance items need the same strict text transform as individual fields.
-    const { acceptance, inputs, ...rest } = r;
+    const { acceptance, inputs, review_focus, ...rest } = r;
     const result = await readable(details ? rest : r, details ? taskDetailFields : taskFields, details ? ['title', 'description', 'goal', 'blocked_reason', 'hold_reason', 'latest_attempt_summary', 'requirements_history'] : ['title', 'description'], keyring, job.owner);
     for (const [key, value] of [['acceptance', acceptance], ['inputs', inputs]] as const) if (details && value !== undefined) {
       if (!Array.isArray(value)) throw new Error('Invalid task text list');
@@ -205,6 +205,16 @@ export async function transformMcpWorkerJob(job: McpWorkerJob, keyring: VaultKey
         if (typeof body !== 'string') throw new Error('Invalid task acceptance');
         return (await readable({ body }, commentFields, ['body'], keyring, job.owner)).body;
       }));
+    }
+    // review_focus: {agent id: text}, each value opened like a text field (mirrors lib/vault).
+    if (details && review_focus !== undefined && review_focus !== null) {
+      if (typeof review_focus !== 'object' || Array.isArray(review_focus)) throw new Error('Invalid task review focus');
+      const focus: Record<string, unknown> = {};
+      for (const [agent, body] of Object.entries(review_focus as Record<string, unknown>)) {
+        if (typeof body !== 'string') throw new Error('Invalid task review focus');
+        focus[agent] = (await readable({ body }, commentFields, ['body'], keyring, job.owner)).body;
+      }
+      result.review_focus = focus;
     }
     return result;
   }));

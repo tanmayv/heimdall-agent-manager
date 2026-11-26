@@ -361,11 +361,11 @@ BRIDGE_TASK_MD_DESCRIPTION_MIN_HEAD :: 2_000
 // Everything bridge_taskv2_render_task_md has extracted (and decrypted) from a
 // pack. The size cap flips the drop_* / truncation fields and renders again.
 Bridge_Task_Md_Doc :: struct {
-	task_id, title, role_label, lease_id, phase:                                  string,
+	task_id, title, kind_label, lease_id, phase:                                  string,
 	bridge_id, directory_id, provider, model, why, workdir, branch:               string,
 	merge_conflict, gate_feedback:                                                string,
 	attempt_no, max_attempts, review_rounds:                                      int,
-	goal:                                                                         string,
+	goal, review_focus:                                                           string,
 	acceptance:                                                                   []string,
 	description:                                                                  string,
 	description_truncated:                                                        bool,
@@ -400,7 +400,7 @@ bridge_taskv2_utf8_head :: proc(s: string, n: int) -> string {
 
 bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.temp_allocator) -> string {
 	b := strings.builder_make(alloc)
-	fmt.sbprintf(&b, "# Task %s: %s (%s, attempt #%d)\n\n", d.task_id, d.title, d.role_label, d.attempt_no)
+	fmt.sbprintf(&b, "# Task %s: %s (%s, attempt #%d)\n\n", d.task_id, d.title, d.kind_label, d.attempt_no)
 	fmt.sbprintf(&b, "- **Claim**: `%s` (%s, attempt %d/%d, review_rounds: %d). Durable; does not expire.\n", d.lease_id, d.phase, d.attempt_no, d.max_attempts, d.review_rounds)
 	if d.phase == "waiting" {
 		strings.write_string(&b, "- **Waiting**: You retain this task and your role while review or dependencies are pending. Wait for this task to resume or for explicit coordinator direction; do not pull unrelated work.\n")
@@ -428,6 +428,8 @@ bridge_taskv2_build_task_md :: proc(d: ^Bridge_Task_Md_Doc, alloc := context.tem
 			fmt.sbprintf(&b, "- %s\n", a)
 		}
 	}
+	// A reviewer's brief.review_focus: what its agent is asked to check.
+	if d.review_focus != "" do fmt.sbprintf(&b, "**Review focus**: %s\n", d.review_focus)
 
 	if strings.trim_space(d.description) != "" {
 		strings.write_string(&b, "\n## Description\n")
@@ -554,8 +556,9 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 	lease_id := jsonx.extract_string(pack_json, "lease_id", jsonx.extract_string(lease_obj, "lease_id", "", true, context.temp_allocator), true, context.temp_allocator)
 	task_id := jsonx.extract_string(pack_json, "task_id", jsonx.extract_string(task_obj, "task_id", "", true, context.temp_allocator), true, context.temp_allocator)
 	lease_kind := jsonx.extract_string(lease_obj, "kind", "work", true, context.temp_allocator)
-	review_role := jsonx.extract_string(lease_obj, "review_role", "", true, context.temp_allocator)
-	role_label := review_role if (lease_kind == "review" && review_role != "") else ("reviewer" if lease_kind == "review" else "worker")
+	// The heading names the lease kind; there are no review roles (REQ-SCHED-6).
+	kind_label := "reviewer" if lease_kind == "review" else "worker"
+	review_focus := bridge_taskv2_decrypt_field(jsonx.extract_string(lease_obj, "review_focus", "", true, context.temp_allocator), context.temp_allocator) if lease_kind == "review" else ""
 	attempt_no := jsonx.extract_int(pack_json, "attempt_no", jsonx.extract_int(lease_obj, "attempt_no", 1, true), true)
 	max_attempts := jsonx.extract_int(pack_json, "max_attempts", jsonx.extract_int(lease_obj, "max_attempts", 3, true), true)
 	review_rounds := jsonx.extract_int(pack_json, "review_rounds", jsonx.extract_int(lease_obj, "review_rounds", 0, true), true)
@@ -659,10 +662,6 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 	}
 	if gate_feedback != "" do gate_feedback = strings.concatenate({"\n## Rejected At The Gate\n", gate_feedback}, context.temp_allocator)
 	if answer_section != "" do gate_feedback = strings.concatenate({answer_section, gate_feedback}, context.temp_allocator)
-	// Solo mode: say how this chain works, ahead of the other notices.
-	if solo, sok := jsonx.extract_bool_literal(chain_obj, "solo", true); sok && solo {
-		gate_feedback = strings.concatenate({"\n## Solo Mode\nYou are this chain's coordinator AND its worker; the user reviews every task. Inspect or pull work with `ham-ctl lease next`, submit with `ham-ctl lease submit`, switch with `ham-ctl lease switch <task> --summary …`. After submit, retain your task and role while waiting for review; do not automatically pull unrelated work. Use explicit coordinator controls (`lease <task-id> --instance <id>`, `lease transfer`) when ownership must change. Never set task status by hand; never review your own work.\n", gate_feedback}, context.temp_allocator)
-	}
 
 	raw_title := jsonx.extract_string(task_obj, "title", "", true, context.temp_allocator)
 	raw_desc := jsonx.extract_string(task_obj, "description", "", true, context.temp_allocator)
@@ -788,12 +787,12 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 	if goal == description do description = ""
 
 	doc := Bridge_Task_Md_Doc{
-		task_id = task_id, title = title, role_label = role_label, lease_id = lease_id,
+		task_id = task_id, title = title, kind_label = kind_label, lease_id = lease_id,
 		phase = phase,
 		bridge_id = bridge_id, directory_id = directory_id, provider = provider, model = model,
 		why = why, workdir = workdir, branch = branch, merge_conflict = merge_conflict, gate_feedback = gate_feedback,
 		attempt_no = attempt_no, max_attempts = max_attempts, review_rounds = review_rounds,
-		goal = goal, acceptance = acceptance[:],
+		goal = goal, review_focus = review_focus, acceptance = acceptance[:],
 		description = description,
 		chain_summary = chain_summary,
 		inputs = inputs[:],

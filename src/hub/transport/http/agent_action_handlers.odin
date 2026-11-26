@@ -138,7 +138,7 @@ agent_action_lease_handoff_handler :: proc(ctx: rawptr, req: Request) -> Respons
 }
 
 // POST /api/v1/agent-actions/lease/switch  params: {lease_id?, task_id, summary, handoff?}
-// Solo mode (REQ-SOLO-4): hand the current task off and take `task_id` in one
+// lease switch (REQ-SOLO-4): hand the current task off and take `task_id` in one
 // step. The response has the lease-next shape (status "granted" + pack), so
 // the bridge materialises TASK.md for the new task.
 agent_action_lease_switch_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -922,9 +922,10 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	has_requires_user_approval := json_key_present(params, "requires_user_approval")
 	requires_user_approval, valid_requires_user_approval := json_bool_literal(params, "requires_user_approval")
 	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
-	assignee, reviewers, review_roles, has_roles, actor_err := task_actor_fields_from_body(params)
+	assignee, reviewers, actor_err := task_actor_fields_from_body(params)
 	if actor_err.code != .None do return respond_error(actor_err, req.request_id)
-	brief_json, _ := jsonx.extract_raw_object(params, "brief", top_level_only = true, allocator = context.temp_allocator)
+	brief_json, brief_err := task_brief_from_body(params)
+	if brief_err.code != .None do return respond_error(brief_err, req.request_id)
 	task, created, err := taskchain_service.create_task(h.taskchains, auth, taskchain_service.Create_Task_Input{
 		chain_id = domain.Task_Chain_ID(chain_id),
 		title = json_string(params, "title"),
@@ -932,7 +933,6 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		brief_json = brief_json,
 		assignee_agent_id = assignee,
 		reviewer_agent_ids = reviewers,
-		review_roles = review_roles if has_roles else nil,
 		requires_user_approval = requires_user_approval,
 		has_requires_user_approval = has_requires_user_approval,
 		priority = priority,
@@ -976,9 +976,10 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	has_requires_user_approval := json_key_present(params, "requires_user_approval")
 	requires_user_approval, valid_requires_user_approval := json_bool_literal(params, "requires_user_approval")
 	if has_requires_user_approval && !valid_requires_user_approval do return respond_error(domain.domain_error(.Validation_Failed, "requires_user_approval must be a boolean"), req.request_id)
-	assignee, reviewers, review_roles, has_roles, actor_err := task_actor_fields_from_body(params)
+	assignee, reviewers, actor_err := task_actor_fields_from_body(params)
 	if actor_err.code != .None do return respond_error(actor_err, req.request_id)
-	brief_json, _ := jsonx.extract_raw_object(params, "brief", top_level_only = true, allocator = context.temp_allocator)
+	brief_json, brief_err := task_brief_from_body(params)
+	if brief_err.code != .None do return respond_error(brief_err, req.request_id)
 	task, updated, err := taskchain_service.update_task(h.taskchains, auth, task_id, taskchain_service.Update_Task_Input{
         require_requirements_context = true,
         expected_requirements_revision = i64(jsonx.extract_int(params, "expected_requirements_revision", 0, true)),
@@ -990,8 +991,6 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		replace_brief = jsonx.extract_bool_literal(params, "replace_brief", true) or_else false,
 		assignee_agent_id = assignee,
 		has_assignee = jsonx.has_key(params, "assignee", top_level_only = true) || jsonx.has_key(params, "assignee_ref", top_level_only = true),
-		review_roles = review_roles,
-		has_review_roles = has_roles,
 		reviewer_agent_ids = reviewers,
 		has_reviewers = jsonx.has_key(params, "reviewers", top_level_only = true) || jsonx.has_key(params, "reviewer_refs", top_level_only = true),
 		requires_user_approval = requires_user_approval,

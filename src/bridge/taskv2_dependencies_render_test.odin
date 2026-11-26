@@ -5,12 +5,14 @@ import "core:testing"
 
 @(test)
 test_bridge_taskv2_render_durable_waiting_claim :: proc(t: ^testing.T) {
-	pack := `{"task_id":"task_wait","expires_at":"LEGACY_EXPIRY","hard_deadline_at":"LEGACY_DEADLINE","lease":{"lease_id":"claim_wait","kind":"review","review_role":"security","phase":"waiting"},"task":{"title":"Waiting task"},"protocol":{"rules":[]}}`
+	pack := `{"task_id":"task_wait","expires_at":"LEGACY_EXPIRY","hard_deadline_at":"LEGACY_DEADLINE","lease":{"lease_id":"claim_wait","kind":"review","review_role":"security","review_focus":"FOCUS_ON_RETRIES","phase":"waiting"},"task":{"title":"Waiting task"},"protocol":{"rules":[]}}`
 	md := bridge_taskv2_render_task_md(pack, 32_000)
 	defer delete(md)
-	for guidance in ([]string{"security", "**Claim**: `claim_wait` (waiting", "Durable; does not expire", "You retain this task and your role", "do not pull unrelated work", "acknowledges requirements revisions", "lease <task-id>", "lease transfer"}) {
+	for guidance in ([]string{"(reviewer, attempt", "**Review focus**: FOCUS_ON_RETRIES", "**Claim**: `claim_wait` (waiting", "Durable; does not expire", "You retain this task and your role", "do not pull unrelated work", "acknowledges requirements revisions", "lease <task-id>", "lease transfer"}) {
 		testing.expectf(t, strings.contains(md, guidance), "waiting claim guidance is present: %s", guidance)
 	}
+	// No review-role label (REQ-SCHED-6): a stale pack's review_role is ignored.
+	testing.expect(t, !strings.contains(md, "security"), "no review-role label in TASK.md")
 	for obsolete in ([]string{"Deadlines", "LEGACY_EXPIRY", "LEGACY_DEADLINE"}) {
 		testing.expectf(t, !strings.contains(md, obsolete), "legacy timing does not render: %s", obsolete)
 	}
@@ -87,4 +89,16 @@ test_bridge_taskv2_render_legacy_verify_pack_ignored :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, strings.contains(md, "Choose and run checks appropriate to the change; report the commands and their outcomes"), "fallback rules ask for chosen, reported checks")
 	testing.expect(t, strings.contains(md, "run checks appropriate to the change, and submit with the commands and outcomes in the summary"), "merge-conflict notice asks for chosen, reported checks")
+}
+
+// SCHED-0c: solo mode is gone. Even a stale pack flagging `chain.solo` renders
+// no "## Solo Mode" block, and a work lease shows no review focus.
+@(test)
+test_bridge_taskv2_render_has_no_solo_mode_block :: proc(t: ^testing.T) {
+	pack := `{"task_id":"task_solo","lease":{"lease_id":"claim_s","kind":"work","review_focus":"IGNORED_FOR_WORK","phase":"active"},"chain":{"solo":true,"summary":""},"task":{"title":"Solo task"},"protocol":{"rules":[]}}`
+	md := bridge_taskv2_render_task_md(pack, 32_000)
+	defer delete(md)
+	testing.expect(t, strings.contains(md, "(worker, attempt"), "heading names the lease kind")
+	testing.expect(t, !strings.contains(md, "Solo Mode"), "no Solo Mode block")
+	testing.expect(t, !strings.contains(md, "IGNORED_FOR_WORK"), "review focus only renders for a review lease")
 }
