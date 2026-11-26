@@ -346,6 +346,11 @@ SELECT task_id, chain_id, owner_user_id, %d, 'hub', '', '%s', %s FROM tasks WHER
 // scale_step drives one instance one step: lease next, then submit or review
 // what it holds. Returns the samples (1 or 2).
 scale_step :: proc(svc: ^Service, inst: Scale_Instance, out: ^[dynamic]Scale_Sample, serial: bool) {
+	// One arena per step, as the hub runs each HTTP request (server.odin);
+	// without it every engine allocation of the run would stay live.
+	scratch: Scratch
+	context.allocator = scratch_begin(&scratch)
+	defer scratch_end(&scratch)
 	auth := inst_auth(inst.id)
 	res: Lease_Next_Result
 	ok: bool
@@ -460,6 +465,8 @@ scale_chaos_proc :: proc(ch: ^Scale_Chaos) {
 	round := 0
 	for !sync.atomic_load(&ch.stop) {
 		time.sleep(40 * time.Millisecond)
+		scratch: Scratch
+		context.allocator = scratch_begin(&scratch)
 		b := round % w.bridges
 		bridge := scale_bridge_id(b)
 		// A bridge drops: callers on it go quiet, its instances turn
@@ -477,6 +484,8 @@ scale_chaos_proc :: proc(ch: ^Scale_Chaos) {
 		append(&ch.samples, hello)
 		sync.atomic_store(&w.offline[b], false)
 		round += 1
+		scratch_end(&scratch)
+		context.allocator = runtime.heap_allocator()
 		free_all(context.temp_allocator)
 	}
 }
@@ -770,7 +779,11 @@ scale_boot :: proc(t: ^testing.T, cfg: Scale_Config, done: int, out: ^strings.Bu
 	if !scale_seed(t, w, chains, Scale_Mix{done = per_chain, ready = 10, in_review = 10}) do return false
 	// Confirm the pushed grants (in_progress work with live leases).
 	for inst in w.instances {
+		scratch: Scratch
+		context.allocator = scratch_begin(&scratch)
 		_, _, _ = lease_next(&w.fx.svc, inst_auth(inst.id), {})
+		scratch_end(&scratch)
+		context.allocator = runtime.heap_allocator()
 		free_all(context.temp_allocator)
 	}
 	heap := runtime.heap_allocator()
