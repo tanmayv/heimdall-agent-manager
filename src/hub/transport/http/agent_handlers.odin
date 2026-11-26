@@ -277,7 +277,10 @@ create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 agent_instance_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Users and bridge-relayed instance tokens (ham-ctl reconfigure reads the
+	// current configuration). get_instance -> require_owner keeps the same-owner
+	// boundary: another owner's instance token gets Not_Found.
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	instance_id := path_part(req.path, 4)
 	if strings.contains(instance_id, "/") do return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)

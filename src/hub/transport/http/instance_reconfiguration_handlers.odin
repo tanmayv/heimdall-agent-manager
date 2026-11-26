@@ -10,7 +10,10 @@ import jsonx "odin_test:lib/jsonx"
 
 create_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth, authorized, auth_response := require_auth(h.auth, req)
+	// Users and bridge-relayed instance tokens (ham-ctl). get_instance ->
+	// require_owner keeps the same-owner boundary: another owner's instance
+	// token gets Not_Found.
+	auth, authorized, auth_response := require_auth_any(h.auth, req)
 	if !authorized do return auth_response
 	// This is an explicit full destination, unlike the legacy partial PATCH.
 	// Optional fields: permission_mode (yolo|ask) and runtime_transport (pty|acp);
@@ -40,7 +43,10 @@ create_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Re
 
 list_instance_reconfigurations_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth, authorized, auth_response := require_auth(h.auth, req)
+	// Users and bridge-relayed instance tokens (ham-ctl). get_instance ->
+	// require_owner keeps the same-owner boundary: another owner's instance
+	// token gets Not_Found.
+	auth, authorized, auth_response := require_auth_any(h.auth, req)
 	if !authorized do return auth_response
 	instance_id := path_part(req.path, 4)
 	inst, found, err := agent_service.get_instance(h.agents, auth, instance_id)
@@ -79,7 +85,10 @@ retry_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Res
 // (waiting_for_idle) operation; any other phase is 409 conflict.
 cancel_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth, authorized, auth_response := require_auth(h.auth, req)
+	// Users and bridge-relayed instance tokens (ham-ctl). get_instance ->
+	// require_owner keeps the same-owner boundary: another owner's instance
+	// token gets Not_Found.
+	auth, authorized, auth_response := require_auth_any(h.auth, req)
 	if !authorized do return auth_response
 	key := json_string(req.body, "idempotency_key")
 	defer delete(key)
