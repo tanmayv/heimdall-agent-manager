@@ -792,14 +792,15 @@ MIGRATION_259_AGENT_ID_ASSIGNMENT :: #load("migrations/259_agent_id_assignment.s
 
 MIGRATION_260_DROP_FLEET_ROLES :: #load("migrations/260_drop_fleet_roles.sql", string)
 
+// Applied under the 260 ledger name on a database with owner legacy source
+// fences; see owner_legacy_fences_present and the file header.
+MIGRATION_260_DROP_FLEET_ROLES_OWNER_LEGACY :: #load("migration_variants/260_drop_fleet_roles_owner_legacy.sql", string)
+
 MIGRATION_261_EXTENSION_VERSION_SYNC :: #load("migrations/261_extension_version_sync_0_5_92.sql", string)
 
-MIGRATION_262_TASK_MERGE_PENDING :: #load("migrations/262_task_merge_pending.sql", string)
+MIGRATION_262_EXTENSION_VERSION_SYNC :: #load("migrations/262_extension_version_sync_0_5_93.sql", string)
 
-// 262 for a database with the owner legacy source fences: the backfill skips
-// frozen/imported legacy chains, whose task rows the owner_legacy_guard_*
-// triggers make read-only (see the variant's header).
-MIGRATION_262_TASK_MERGE_PENDING_OWNER_LEGACY :: #load("migration_variants/262_task_merge_pending_owner_legacy.sql", string)
+MIGRATION_263_TASK_MERGE_PENDING :: #load("migrations/263_task_merge_pending.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1099,7 +1100,8 @@ migration_order :: [?]string {
 	"259_agent_id_assignment.sql",
 	"260_drop_fleet_roles.sql",
 	"261_extension_version_sync_0_5_92.sql",
-	"262_task_merge_pending.sql",
+	"262_extension_version_sync_0_5_93.sql",
+	"263_task_merge_pending.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1118,6 +1120,10 @@ run_migrations :: proc(
 	if conn == nil || conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "database connection is not open")
 	}
+	if !owner_legacy_frozen_view_create(conn) {
+		return false, domain.domain_error(.Internal_Error, "failed to prepare the owner legacy frozen chain view")
+	}
+	defer owner_legacy_frozen_view_drop(conn)
 	for name in migration_order {
 		if stop_before != "" && name == stop_before do return true, domain.Domain_Error{}
         // 211 is transactional; repair only a committed schema/ledger gap.
@@ -1608,9 +1614,12 @@ run_migrations :: proc(
         // Ensure that prerequisite before migrating their default profile IDs.
         if name=="169_provider_profiles.sql" && !upgrade_task_chain_fleets_schema(conn) do return false,domain.domain_error(.Internal_Error,"fleet profile migration prerequisite failed")
 		sql := migration_sql(name, migrations_dir)
-		if name == "262_task_merge_pending.sql" && sqlite_object_exists(conn, "owner_legacy_migrations") {
+		// 260 on a database with owner legacy source fences: a fence trigger
+		// reads task_leases.review_role, so the variant that keeps that column
+		// runs under the same ledger name.
+		if name == "260_drop_fleet_roles.sql" && owner_legacy_fences_present(conn) {
 			delete(sql)
-			sql = strings.clone(MIGRATION_262_TASK_MERGE_PENDING_OWNER_LEGACY)
+			sql = strings.clone(MIGRATION_260_DROP_FLEET_ROLES_OWNER_LEGACY)
 		}
 		if sql == "" {
 			return false, domain.domain_error(
@@ -1619,7 +1628,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "262_task_merge_pending.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_task_merge_pending.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1660,7 +1669,8 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
-	if name == "262_task_merge_pending.sql" do return strings.clone(MIGRATION_262_TASK_MERGE_PENDING)
+	if name == "262_extension_version_sync_0_5_93.sql" do return strings.clone(MIGRATION_262_EXTENSION_VERSION_SYNC)
+	if name == "263_task_merge_pending.sql" do return strings.clone(MIGRATION_263_TASK_MERGE_PENDING)
 	if name == "261_extension_version_sync_0_5_92.sql" do return strings.clone(MIGRATION_261_EXTENSION_VERSION_SYNC)
 	if name == "260_drop_fleet_roles.sql" do return strings.clone(MIGRATION_260_DROP_FLEET_ROLES)
 	if name == "259_agent_id_assignment.sql" do return strings.clone(MIGRATION_259_AGENT_ID_ASSIGNMENT)
@@ -2046,6 +2056,32 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 		return table_column_exists(conn, "memories", "expires_at")
 	}
 	return false
+}
+
+// owner_legacy_fences_present: the database carries the owner legacy source
+// fences (bridge-owned legacy chain export; origin/main has no migration for
+// them). Their guard triggers make every row of a chain whose
+// owner_legacy_migrations.state is 'frozen' or 'imported' read-only, so a data
+// migration must leave those chains' rows alone.
+owner_legacy_fences_present :: proc(conn: ^Conn) -> bool {
+	return sqlite_object_exists(conn, "owner_legacy_migrations")
+}
+
+// owner_legacy_frozen_view_create provides, for the duration of one
+// run_migrations, the TEMP view owner_legacy_frozen_chains(chain_id): the
+// chains a data migration must not write (see owner_legacy_fences_present).
+// Without the fences it is empty, so a migration can always reference it.
+// Rebuilt on every run, because the fences can appear between runs.
+owner_legacy_frozen_view_create :: proc(conn: ^Conn) -> bool {
+	owner_legacy_frozen_view_drop(conn)
+	if owner_legacy_fences_present(conn) {
+		return exec(conn, "CREATE TEMP VIEW owner_legacy_frozen_chains AS SELECT chain_id FROM main.owner_legacy_migrations WHERE state IN ('frozen', 'imported');")
+	}
+	return exec(conn, "CREATE TEMP VIEW owner_legacy_frozen_chains AS SELECT '' AS chain_id WHERE 0;")
+}
+
+owner_legacy_frozen_view_drop :: proc(conn: ^Conn) {
+	_ = exec(conn, "DROP VIEW IF EXISTS temp.owner_legacy_frozen_chains;")
 }
 
 mark_migration_applied :: proc(conn: ^Conn, version: string) {

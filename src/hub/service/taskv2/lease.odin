@@ -163,7 +163,7 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	}
 	if prior, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held {
 		if prior.phase != domain.LEASE_PHASE_WAITING || prior.task_id != task.task_id || prior.kind != req.kind do return {}, false, domain.domain_error(.Conflict, "instance already owns a task")
-		if deleted, err := iface.taskchain_delete_lease(svc.repo, prior.lease_id); !deleted do return {}, false, err
+		if deleted, err := delete_claim(svc, prior); !deleted do return {}, false, err
 	}
 	if !bridge_online(svc, req.placement.bridge_id) do return {}, false, domain.domain_error(.Bridge_Offline, "placement bridge is offline")
 	if req.kind == domain.LEASE_KIND_WORK && req.placement.directory_id != "" {
@@ -320,11 +320,12 @@ release_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, actor: 
 	if (event_kind == EV_SUBMITTED || event_kind == EV_BLOCKED || outcome == "dispatch_failed") && !(coordinator && outcome != "dispatch_failed") {
 		waiting := lease; waiting.phase = domain.LEASE_PHASE_WAITING
 		if _, saved, err := iface.taskchain_save_lease(svc.repo, waiting); !saved do return {}, false, err
+		match_scope_note_claim_freed(lease)
 		refolded, _, ok, err := record_event(svc, u, task, actor, event_kind, payload_json)
 		if ok do close_attempt(svc, u, lease, outcome)
 		return refolded, ok, err
 	}
-	if deleted, derr := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted {
+	if deleted, derr := delete_claim(svc, lease); !deleted {
 		if derr.code != .None do return {}, false, derr
 		return {}, false, domain.domain_error(.Conflict, "lease_lost")
 	}
@@ -492,7 +493,7 @@ expire_lease_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, re
 	if coordinator && lease.kind == domain.LEASE_KIND_WORK do json_bool(&p, "counting", false)
 	if _, still, _ := iface.taskchain_get_lease(svc.repo, lease.lease_id); !still do return .Gone
 	if _, _, rok, _ := record_event(svc, u, task, actor, EV_LEASE_EXPIRED, json_end(&p)); !rok do return .Failed
-	if deleted, derr := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted {
+	if deleted, derr := delete_claim(svc, lease); !deleted {
 		if derr.code != .None do return .Failed
 		return .Failed // vanished between the check and the delete: roll back, the other writer owns it
 	}
@@ -600,6 +601,7 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string) {
 	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); held && lease.phase != domain.LEASE_PHASE_WAITING {
 		acted = agent_not_running_in_uow(svc, &u, lease, "lease holder is no longer running") == .Expired
 		chain_id, owner = lease.chain_id, lease.owner_user_id
+		match_scope_note_instance(chain_id, instance_id)
 	}
 	if acted do acted, _ = after_chain_change(svc, &u, chain_id, owner, .Instance_Terminal)
 	_, _ = end_uow(svc, &u, acted)
@@ -623,7 +625,7 @@ on_instance_user_stopped :: proc(svc: ^Service, instance_id: string) {
 	if lease.phase == domain.LEASE_PHASE_WAITING {
 		task, found, _ := iface.taskchain_get_task(svc.repo, lease.task_id)
 		if !found { _, _ = end_uow(svc, &u, false); return }
-		deleted, _ := iface.taskchain_delete_lease(svc.repo, lease.lease_id)
+		deleted, _ := delete_claim(svc, lease)
 		if deleted {
 			p := json_begin(); json_str(&p, "lease_id", lease.lease_id); json_str(&p, "kind", lease.kind); json_str(&p, "reason", EXPIRE_USER_STOPPED)
 			_, saved, _ := append_event(svc.repo, svc.clock, task, Actor{kind = ACTOR_USER}, EV_CLAIM_RELEASED, json_end(&p))
@@ -686,6 +688,8 @@ on_start_success :: proc(svc: ^Service, inst: domain.Agent_Instance) {
 	// pulls on bootstrap, so nothing this recovery queues is addressed to it
 	// (rules c and g: no "ready for you" right after agent_not_running).
 	u.actor_instance_id = inst.agent_instance_id
+	// Its agent has a live instance now: re-match that agent's items.
+	match_scope_note_instance(domain.Task_Chain_ID(inst.chain_id), inst.agent_instance_id)
 	// The ready hook runs after the agent save. A concurrent grant can have
 	// replaced that child before this transaction acquired the lease lock.
 	current, found, _ := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
@@ -703,7 +707,7 @@ on_start_success :: proc(svc: ^Service, inst: domain.Agent_Instance) {
 			if acted && answered {
 				acted, _ = after_chain_change(svc, &u, chain.chain_id, chain.owner_user_id, .Start_Success)
 			} else if acted {
-				acted, _ = match_chain_in_uow(svc, &u, chain, .Start_Success)
+				acted, _ = match_chain_scoped_in_uow(svc, &u, chain, .Start_Success)
 			}
 			// Came up with nothing to do: it still gets a grace window (REQ-SCHED-27).
 			if acted do ensure_idle_timer_in_uow(svc, &u, chain, inst.agent_instance_id)
@@ -1200,7 +1204,7 @@ _ :: fmt
 // window is granted to the same live process; when the timer fires with no
 // lease, fire_idle_ttl stops it. The coordinator is never timed out.
 release_review_to_grace_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease) -> bool {
-	if deleted, _ := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted do return false
+	if deleted, _ := delete_claim(svc, lease); !deleted do return false
 	metric_lease_released(lease.kind)
 	now := platform.clock_now(svc.clock)
 	mark_instance_idle(svc, u, lease.holder_instance_id, now)
@@ -1220,7 +1224,7 @@ clear_task_claims_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task) -> b
 	if err.code != .None do return false
 	now := platform.clock_now(svc.clock)
 	for claim in claims {
-		if deleted, _ := iface.taskchain_delete_lease(svc.repo, claim.lease_id); !deleted do return false
+		if deleted, _ := delete_claim(svc, claim); !deleted do return false
 		mark_instance_idle(svc, u, claim.holder_instance_id, now)
 		if holder_is_coordinator(svc, task.chain_id, claim.holder_instance_id) do continue
 		inst, found, _ := iface.agent_get_instance(svc.agents, claim.holder_instance_id)

@@ -35,9 +35,17 @@ prepare :: proc(impl: ^Taskchain_Repo_SQLite, query: string, what: string) -> (s
 
 // ---- chains / tasks (v2 queries) -------------------------------------------
 
+// The chains the engine sweeps (boot recovery, bridge reconnect, placement).
+// A chain the owner legacy source export froze or imported is not live on this
+// hub and its rows are read-only (owner_legacy_guard_* triggers), so it is left
+// out: one aborted write would roll back the sweep's whole UoW.
 taskchain_list_published_active_chains_sqlite :: proc(ctx: rawptr) -> ([]domain.Task_Chain, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	stmt, err := prepare(impl, "SELECT " + CHAIN_COLS + " FROM task_chains WHERE publish_state = 'published' AND status = 'active' ORDER BY created_at ASC;", "active chain list")
+	query := "SELECT " + CHAIN_COLS + " FROM task_chains WHERE publish_state = 'published' AND status = 'active' ORDER BY created_at ASC;"
+	if owner_legacy_fences_present(impl.conn) {
+		query = "SELECT " + CHAIN_COLS + " FROM task_chains WHERE publish_state = 'published' AND status = 'active' AND chain_id NOT IN (SELECT chain_id FROM owner_legacy_migrations WHERE state IN ('frozen', 'imported')) ORDER BY created_at ASC;"
+	}
+	stmt, err := prepare(impl, query, "active chain list")
 	if err.code != .None do return nil, err
 	defer sqlite3_finalize(stmt)
 	out := make([dynamic]domain.Task_Chain)
@@ -148,6 +156,25 @@ taskchain_sched0_normalize_reviews_sqlite :: proc(ctx: rawptr, task_id: domain.T
 	return changed, domain.Domain_Error{}
 }
 
+// taskchain_list_owner_legacy_frozen_chains_sqlite: chains whose rows the owner
+// legacy source fences (owner_legacy_guard_* triggers) make read-only. The
+// table exists only on databases that ran the bridge-owned legacy chain export.
+taskchain_list_owner_legacy_frozen_chains_sqlite :: proc(ctx: rawptr) -> ([]domain.Task_Chain_ID, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	if !owner_legacy_fences_present(impl.conn) do return nil, {}
+	stmt, err := prepare(impl, "SELECT chain_id FROM owner_legacy_migrations WHERE state IN ('frozen', 'imported') ORDER BY chain_id;", "owner legacy frozen chains")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	out := make([dynamic]domain.Task_Chain_ID)
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW do return nil, domain.domain_error(.Internal_Error, "failed to list owner legacy frozen chains")
+		append(&out, domain.Task_Chain_ID(column_text(stmt, 0)))
+	}
+	return out[:], {}
+}
+
 // ---- events ----------------------------------------------------------------
 
 @(private = "file")
@@ -206,7 +233,7 @@ task_event_insert :: proc(impl: ^Taskchain_Repo_SQLite, event: domain.Task_Event
 }
 
 // merge_pending_after_event: how an event moves the tasks.merge_pending
-// projection (migration 262). It mirrors taskv2.merge_pending(events): the
+// projection (migration 263). It mirrors taskv2.merge_pending(events): the
 // latest of approved | submitted | merged | merge_conflict decides; every other
 // kind (merge_failed included: a failed merge is retried) leaves it as it is.
 merge_pending_after_event :: proc(kind: string) -> (pending: bool, moves: bool) {
@@ -381,6 +408,24 @@ task_attempt_facet_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task
 	bind_text(stmt, 1, string(task_id)); bind_text(stmt, 2, string(owner_user_id))
 	out := make([dynamic]domain.Task_Attempt_Facet)
 	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, facet_from_stmt(stmt))
+	return out[:], domain.Domain_Error{}
+}
+
+// Through the chain's task ids (idx_tasks_chain_owner) and the facet primary
+// key, so the read never scans other chains' facets and needs no new index.
+task_attempt_facet_list_summary_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := prepare(impl, "SELECT " + FACET_COLS + " FROM task_attempt_facets WHERE task_id IN (SELECT task_id FROM tasks WHERE chain_id = ? AND owner_user_id = ?) AND owner_user_id = ? AND kind IN ('handoff', 'vcs') ORDER BY task_id ASC, attempt_no ASC, kind ASC;", "chain summary facet list")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(chain_id)); bind_text(stmt, 2, string(owner_user_id)); bind_text(stmt, 3, string(owner_user_id))
+	out := make([dynamic]domain.Task_Attempt_Facet)
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW do return out[:], domain.domain_error(.Internal_Error, "chain summary facet list failed")
+		append(&out, facet_from_stmt(stmt))
+	}
 	return out[:], domain.Domain_Error{}
 }
 

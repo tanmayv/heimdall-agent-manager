@@ -75,6 +75,9 @@ read_counter_install :: proc(fx: ^Fixture, counter: ^Read_Counter) {
 	r.list_facets_by_task = proc(ctx: rawptr, id: domain.Task_ID, o: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error) {
 		rc_note("list_facets_by_task"); return read_counter.inner.list_facets_by_task(ctx, id, o)
 	}
+	r.list_summary_facets_by_chain = proc(ctx: rawptr, c: domain.Task_Chain_ID, o: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error) {
+		rc_note("list_summary_facets_by_chain"); return read_counter.inner.list_summary_facets_by_chain(ctx, c, o)
+	}
 	r.get_lease = proc(ctx: rawptr, id: string) -> (domain.Task_Lease, bool, domain.Domain_Error) {
 		rc_note("get_lease"); return read_counter.inner.get_lease(ctx, id)
 	}

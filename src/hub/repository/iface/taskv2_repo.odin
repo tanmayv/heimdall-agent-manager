@@ -20,6 +20,10 @@ Take_Sched0_Migration_Proc :: proc(ctx: rawptr) -> (bool, domain.Domain_Error)
 Sched0_Fleet_Roles_List_Proc :: proc(ctx: rawptr) -> ([]domain.Sched0_Fleet_Roles, domain.Domain_Error)
 Sched0_Fleet_Roles_Clear_Proc :: proc(ctx: rawptr) -> domain.Domain_Error
 Sched0_Normalize_Reviews_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, attempt_no: int) -> (int, domain.Domain_Error)
+// Owner_Legacy_Frozen_Chains_Proc lists the chains whose hub copy the owner
+// legacy source fences made read-only (owner_legacy_migrations.state 'frozen'
+// or 'imported'). Empty on a database without the fences.
+Owner_Legacy_Frozen_Chains_Proc :: proc(ctx: rawptr) -> ([]domain.Task_Chain_ID, domain.Domain_Error)
 
 Task_Event_Append_Proc :: proc(ctx: rawptr, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error)
 Task_Event_Latest_ID_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (i64, domain.Domain_Error)
@@ -39,6 +43,9 @@ Task_Attempt_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, own
 
 Task_Attempt_Facet_Save_Proc :: proc(ctx: rawptr, facet: domain.Task_Attempt_Facet) -> (bool, domain.Domain_Error)
 Task_Attempt_Facet_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error)
+// The handoff and vcs facets of every task of one chain, in one read (the
+// mechanical chain summary).
+Task_Attempt_Facet_List_Summary_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error)
 
 Task_Lease_Save_Proc :: proc(ctx: rawptr, lease: domain.Task_Lease) -> (domain.Task_Lease, bool, domain.Domain_Error)
 Task_Lease_Get_Proc :: proc(ctx: rawptr, lease_id: string) -> (domain.Task_Lease, bool, domain.Domain_Error)
@@ -116,6 +123,13 @@ taskchain_sched0_normalize_reviews :: proc(repo: ^Taskchain_Repository, task_id:
 	return repo.sched0_normalize_reviews(repo.ctx, task_id, attempt_no)
 }
 
+// taskchain_list_owner_legacy_frozen_chains: a repository without the proc has
+// no owner legacy fences, so nothing is frozen.
+taskchain_list_owner_legacy_frozen_chains :: proc(repo: ^Taskchain_Repository) -> ([]domain.Task_Chain_ID, domain.Domain_Error) {
+	if repo == nil || repo.list_owner_legacy_frozen_chains == nil do return nil, {}
+	return repo.list_owner_legacy_frozen_chains(repo.ctx)
+}
+
 taskchain_append_event :: proc(repo: ^Taskchain_Repository, event: domain.Task_Event) -> (domain.Task_Event, bool, domain.Domain_Error) {
 	if repo == nil || repo.append_event == nil do return domain.Task_Event{}, false, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.append_event(repo.ctx, event)
@@ -160,6 +174,14 @@ taskchain_save_facet :: proc(repo: ^Taskchain_Repository, facet: domain.Task_Att
 taskchain_list_facets_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, domain.Domain_Error) {
 	if repo == nil || repo.list_facets_by_task == nil do return nil, domain.domain_error(.Internal_Error, NOT_CONFIGURED)
 	return repo.list_facets_by_task(repo.ctx, task_id, owner_user_id)
+}
+
+// taskchain_list_summary_facets_by_chain: ok=false when the repository does
+// not provide the batched read (callers fall back to per-task reads).
+taskchain_list_summary_facets_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Attempt_Facet, bool, domain.Domain_Error) {
+	if repo == nil || repo.list_summary_facets_by_chain == nil do return nil, false, {}
+	out, err := repo.list_summary_facets_by_chain(repo.ctx, chain_id, owner_user_id)
+	return out, err.code == .None, err
 }
 
 taskchain_save_lease :: proc(repo: ^Taskchain_Repository, lease: domain.Task_Lease) -> (domain.Task_Lease, bool, domain.Domain_Error) {

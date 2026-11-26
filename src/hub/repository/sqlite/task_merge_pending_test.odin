@@ -7,12 +7,12 @@ import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
-// Scale B (migration 262): tasks.merge_pending mirrors taskv2.merge_pending
+// Scale B (migration 263): tasks.merge_pending mirrors taskv2.merge_pending
 // (events). The migration backfills it once from the event log, the event
 // append keeps it in sync in the same transaction, and the boot/hello lookup
 // returns only Done tasks that carry it.
 
-TMP_MIGRATION :: "262_task_merge_pending.sql"
+TMP_MIGRATION :: "263_task_merge_pending.sql"
 
 TMP_SEED :: `
 BEGIN;
@@ -34,7 +34,7 @@ tmp_task :: proc(conn: ^Conn, id, state: string, created: int) -> bool {
  VALUES ('%s','chain_mp','u1','t','','published','%s','task','{"goal":"g"}','2026-01-01T00:00:%02dZ','2026-01-01T00:00:00Z');`, id, state, created))
 }
 
-// Raw event rows bypass the repository, as a pre-262 database holds them.
+// Raw event rows bypass the repository, as a pre-263 database holds them.
 tmp_raw_events :: proc(conn: ^Conn, id: string, kinds: ..string) -> bool {
 	for k in kinds {
 		if !exec(conn, fmt.tprintf(`INSERT INTO task_events(task_id, chain_id, owner_user_id, ts_ms, kind, payload_json) VALUES ('%s','chain_mp','u1',1,'%s','{}');`, id, k)) do return false
@@ -63,9 +63,9 @@ test_merge_pending_backfill_from_events_once :: proc(t: ^testing.T) {
 	defer close(&conn)
 	mig_ok, err := run_migrations(&conn, stop_before = TMP_MIGRATION)
 	if !testing.expect(t, mig_ok, err.message) do return
-	testing.expect(t, !table_column_exists(&conn, "tasks", "merge_pending"), "before 262: no column")
-	// A database already on release 0.5.92 (its 261) picks 262 up cleanly.
-	testing.expect(t, migration_applied(&conn, "261_extension_version_sync_0_5_92.sql"), "release 261 applied first")
+	testing.expect(t, !table_column_exists(&conn, "tasks", "merge_pending"), "before 263: no column")
+	// A database already on release 0.5.93 (its 262) picks 263 up cleanly.
+	testing.expect(t, migration_applied(&conn, "262_extension_version_sync_0_5_93.sql"), "release 262 applied first")
 	if !testing.expect(t, exec(&conn, TMP_SEED), "seed chain") do return
 	Case :: struct { id, state: string, kinds: []string, want: string }
 	cases := []Case{
@@ -88,7 +88,7 @@ test_merge_pending_backfill_from_events_once :: proc(t: ^testing.T) {
 	for pass in ([]string{"upgrade", "restart"}) {
 		mig_ok, err = run_migrations(&conn)
 		if !testing.expectf(t, mig_ok, "%s: %s", pass, err.message) do return
-		testing.expectf(t, tmp_text(&conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", TMP_MIGRATION)) == "1", "%s: 262 recorded once", pass)
+		testing.expectf(t, tmp_text(&conn, fmt.tprintf("SELECT count(*) FROM schema_migrations WHERE version='%s';", TMP_MIGRATION)) == "1", "%s: 263 recorded once", pass)
 		for c in cases do testing.expectf(t, tmp_pending(&conn, c.id) == c.want, "%s: %s merge_pending=%s, want %s", pass, c.id, tmp_pending(&conn, c.id), c.want)
 		// Only Done rows are listed (in_review t_review is pending but not Done), oldest first.
 		testing.expect_value(t, tmp_listed(t, &repo), "t_pending,t_approved,t_failed,t_reopened")
@@ -164,7 +164,7 @@ test_merge_pending_set_and_cleared_by_event_append :: proc(t: ^testing.T) {
 
 // A database carrying the owner legacy source fences (bridge-owned legacy
 // chain export, as on Mundus): the owner_legacy_guard_* triggers make every
-// row of a 'frozen' / 'imported' chain read-only. 262's backfill skips those
+// row of a 'frozen' / 'imported' chain read-only. 263's backfill skips those
 // chains (they cannot have a live merge), 'draining' and unfenced chains are
 // backfilled as usual, and the fences are left untouched.
 
@@ -196,7 +196,8 @@ INSERT INTO task_events(task_id, chain_id, owner_user_id, ts_ms, kind, payload_j
 		if !testing.expect(t, seeded, chain) do return
 	}
 	// A fenced database keeps task_leases.review_role (owner_legacy_no_replaced_lease
-	// reads it, so 260's fenced variant does not drop it).
+	// reads it, so 260's fenced variant does not drop it). The fences go in after
+	// 260 ran unfenced here, so restore the column the real fenced schema has.
 	if !table_column_exists(&conn, "task_leases", "review_role") {
 		if !testing.expect(t, exec(&conn, "ALTER TABLE task_leases ADD COLUMN review_role TEXT NOT NULL DEFAULT '';"), "fenced schema keeps review_role") do return
 	}
@@ -218,7 +219,7 @@ INSERT INTO owner_legacy_migrations (migration_id, chain_id, account_id, owner_b
 	for pass in ([]string{"upgrade", "restart"}) {
 		mig_ok, err = run_migrations(&conn)
 		if !testing.expectf(t, mig_ok, "%s: %s", pass, err.message) do return
-		testing.expectf(t, migration_applied(&conn, TMP_MIGRATION), "%s: 262 recorded", pass)
+		testing.expectf(t, migration_applied(&conn, TMP_MIGRATION), "%s: 263 recorded", pass)
 		testing.expectf(t, tmp_pending(&conn, "t_chain_live") == "1", "%s: unfenced chain backfilled", pass)
 		testing.expectf(t, tmp_pending(&conn, "t_chain_drain") == "1", "%s: draining chain backfilled", pass)
 		testing.expectf(t, tmp_pending(&conn, "t_chain_frozen") == "0", "%s: frozen chain untouched", pass)
@@ -226,6 +227,7 @@ INSERT INTO owner_legacy_migrations (migration_id, chain_id, account_id, owner_b
 		testing.expect_value(t, tmp_listed(t, &repo), "t_chain_live,t_chain_drain")
 		testing.expectf(t, tmp_ol_fences_digest(&conn) == fences, "%s: fence tables and triggers unchanged", pass)
 		testing.expectf(t, tmp_text(&conn, "SELECT generation FROM owner_legacy_source_generations WHERE chain_id='chain_frozen';") == "1", "%s: frozen generation unchanged", pass)
+		testing.expectf(t, tmp_text(&conn, "SELECT count(*) FROM sqlite_temp_master WHERE name='owner_legacy_frozen_chains';") == "0", "%s: migration view dropped", pass)
 	}
 
 	// At runtime the projection write rides on the event insert: a frozen

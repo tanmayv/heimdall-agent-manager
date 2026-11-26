@@ -6,8 +6,12 @@
 -- 1. Fleet row pause is one boolean. The repository keeps it derived from
 --    paused_roles_json until SCHED-0b; a row paused for only some roles becomes
 --    fully paused (fail closed) and is reported to the coordinator at boot.
+--    Rows of owner legacy frozen/imported chains are read-only (fence triggers)
+--    and are skipped; owner_legacy_frozen_chains is the TEMP view run_migrations
+--    provides (empty on a database without the fences).
 ALTER TABLE task_chain_fleets ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;
-UPDATE task_chain_fleets SET paused = 1 WHERE trim(paused_roles_json) NOT IN ('', '[]');
+UPDATE task_chain_fleets SET paused = 1 WHERE trim(paused_roles_json) NOT IN ('', '[]')
+  AND task_chain_id NOT IN (SELECT chain_id FROM owner_legacy_frozen_chains);
 
 -- 2. Chain cap (SCHED-1b). 0 = unlimited.
 ALTER TABLE task_chains ADD COLUMN max_parallel INTEGER NOT NULL DEFAULT 0;

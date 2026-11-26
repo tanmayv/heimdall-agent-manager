@@ -8,12 +8,18 @@
 -- merge_conflict after it. merge_failed does not clear it (a failed merge is
 -- retried on bridge hello). task_event_append_sqlite keeps it in sync in the
 -- same transaction as the event; this migration backfills it once.
+--
+-- The backfill leaves out owner legacy frozen/imported chains (the TEMP view
+-- owner_legacy_frozen_chains run_migrations provides; empty without the
+-- fences): their rows are read-only under the owner_legacy_guard_* triggers
+-- and cannot have a live merge.
 -- One transaction: a failed backfill leaves no half-applied column behind.
 BEGIN;
 ALTER TABLE tasks ADD COLUMN merge_pending INTEGER NOT NULL DEFAULT 0;
 
 UPDATE tasks SET merge_pending = 1
-WHERE (
+WHERE tasks.chain_id NOT IN (SELECT chain_id FROM owner_legacy_frozen_chains)
+AND (
   SELECT e.kind FROM task_events e
   WHERE e.task_id = tasks.task_id
     AND e.kind IN ('approved', 'submitted', 'merged', 'merge_conflict')

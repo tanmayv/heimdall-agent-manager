@@ -166,6 +166,8 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		return false, reset_err
 	}
 	_, _, acted, aerr := record_event(svc, &u, task, actor_from_auth(auth), EV_ANSWERED, `{}`)
+	// The agent's instances were reset: its other waiting items may run too.
+	match_scope_note_agent(task.chain_id, agent_id)
 	if acted do acted, aerr = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Fleet_Changed)
 	_, cerr := end_uow(svc, &u, acted)
 	if !acted do return false, aerr
@@ -220,6 +222,7 @@ start_coordinator_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context
 		acted = block_ready_agent_in_uow(svc, &u, current, coord.agent_id, Placement{bridge_id = coord.bridge_id, provider = coord.provider, model = coord.model}, start_err.message)
 	} else {
 		_, _, acted, err = record_event(svc, &u, current, actor_from_auth(auth), EV_ANSWERED, "{}")
+		match_scope_note_agent(task.chain_id, coord.agent_id)
 		if acted do acted, err = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Fleet_Changed)
 	}
 	_, cerr := end_uow(svc, &u, acted)

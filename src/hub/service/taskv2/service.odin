@@ -271,6 +271,8 @@ Uow :: struct {
 	// change and already knows (rule c). Borrowed from the caller; only read
 	// while the UoW is open.
 	actor_instance_id: string,
+	// scope: the match scope this unit of work owns (nil when nested).
+	scope: ^Match_Scope,
 }
 
 // begin_uow opens the engine's unit of work (process-wide exclusive). A service
@@ -290,12 +292,17 @@ begin_uow :: proc(svc: ^Service) -> (Uow, bool, domain.Domain_Error) {
 	u.effects.instances = make([dynamic]Instance_Effect)
 	if svc.uow_factory == nil {
 		lockorder.assert_tx_mutex_allowed()
+		u.scope = match_scope_begin()
 		return u, true, domain.Domain_Error{}
 	}
 	tx, ok, err := iface.unit_of_work_begin(svc.uow_factory)
 	if !ok do return u, false, err
 	u.tx = tx
 	u.has_tx = true
+	// An outermost transaction never inherits a scope: one left behind by a
+	// caller that skipped end_uow would otherwise shadow every later match.
+	if !tx.nested do match_scope_reset()
+	u.scope = match_scope_begin()
 	return u, true, domain.Domain_Error{}
 }
 
@@ -332,6 +339,8 @@ end_uow :: proc(svc: ^Service, u: ^Uow, ok: bool) -> (bool, domain.Domain_Error)
 	if committed && !nested do flush_effects(svc, &u.effects)
 	else if !committed do cancel_reservations(svc, &u.effects)
 	destroy_effects(&u.effects)
+	match_scope_end(u.scope)
+	u.scope = nil
 	return committed, err
 }
 
@@ -793,6 +802,7 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 	}
 	saved, ok, err := iface.taskchain_save_task(svc.repo, next)
 	if !ok do return task, view, false, err
+	match_scope_note_task(saved.chain_id, saved.task_id)
 	fold_cache_settle(saved, fold_key_for(saved, evs, input))
 	if cerr := catalog_task_projection(svc, task, saved, evs); cerr.code != .None do return task, view, false, cerr
 	if saved.state != task.state {
@@ -1109,6 +1119,10 @@ fleet_changed :: proc(svc: ^Service, chain: domain.Task_Chain, agent_id := "") -
 			}
 		}
 	}
+	// A row change affects that agent's items; a chain-level change (caps,
+	// every row) affects any task.
+	if agent_id != "" do match_scope_note_agent(chain.chain_id, agent_id)
+	else do match_scope_note_full(chain.chain_id)
 	// A fleet row added/removed changes who must review: re-evaluate the gate
 	// of every in_review task before matching (plan §2.4).
 	rok, rerr := reevaluate_gates_in_uow(svc, &u, chain)
@@ -1209,7 +1223,7 @@ after_chain_change :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_I
 		if !changed do break
 	}
 	mark = dbt.phase_mark()
-	_, rok, rerr := refold_chain(svc, u, chain)
+	settled, rok, rerr := refold_chain(svc, u, chain)
 	dbt.phase_record(&phases, .Refold, mark)
 	if !rok do return false, rerr
 	#partial switch trigger {
@@ -1219,7 +1233,9 @@ after_chain_change :: proc(svc: ^Service, u: ^Uow, chain_id: domain.Task_Chain_I
 		dbt.phase_record(&phases, .Summary, mark)
 	}
 	mark = dbt.phase_mark()
-	mok, merr := match_chain_in_uow(svc, u, chain, trigger)
+	// Only what this unit of work's writes can affect is re-matched
+	// (match_chain_scoped_in_uow); the refold's rows serve its lookups.
+	mok, merr := match_chain_scoped_in_uow(svc, u, chain, trigger, settled)
 	dbt.phase_record(&phases, .Match, mark)
 	when FOLD_VERIFY { if mok do fold_verify_full_refold_is_noop(svc, chain_id, owner) }
 	if !mok do return false, merr

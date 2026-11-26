@@ -502,8 +502,29 @@ build_mechanical_chain_summary :: proc(svc: ^Service, chain: domain.Task_Chain, 
 	open_lines := make([dynamic]string, context.temp_allocator)
 	dead_end_lines := make([dynamic]string, context.temp_allocator)
 
+	// One batched read of the chain's handoff/vcs facets, not one per task
+	// (the summary is rebuilt on every release and review).
+	by_task := make(map[domain.Task_ID][dynamic]domain.Task_Attempt_Facet, context.temp_allocator)
+	batched, have_batch, _ := iface.taskchain_list_summary_facets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
+	if have_batch {
+		for f in batched {
+			list, found := &by_task[f.task_id]
+			if !found {
+				by_task[f.task_id] = make([dynamic]domain.Task_Attempt_Facet, context.temp_allocator)
+				list = &by_task[f.task_id]
+			}
+			append(list, f)
+		}
+	}
+
 	for t in tasks {
-		facets, ferr := iface.taskchain_list_facets_by_task(svc.repo, t.task_id, t.owner_user_id)
+		facets: []domain.Task_Attempt_Facet
+		ferr: domain.Domain_Error
+		if have_batch {
+			if list, found := by_task[t.task_id]; found do facets = list[:]
+		} else {
+			facets, ferr = iface.taskchain_list_facets_by_task(svc.repo, t.task_id, t.owner_user_id)
+		}
 		latest_summary := ""
 		latest_attempt := -1
 		latest_head := ""

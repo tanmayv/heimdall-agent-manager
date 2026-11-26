@@ -111,6 +111,7 @@ append_event :: proc(repo: ^iface.Taskchain_Repository, clock: ^platform.Clock, 
 	saved, ok, err := iface.taskchain_append_event(repo, ev)
 	if ok {
 		fold_cache_note_appended(saved)
+		match_scope_note_task(task.chain_id, task.task_id)
 		if cerr := catalog_task_event(repo, clock, task, actor, kind, payload_json, saved.event_id); cerr.code != .None do return saved, false, cerr
 	}
 	return saved, ok, err
