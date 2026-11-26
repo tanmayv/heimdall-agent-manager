@@ -335,7 +335,9 @@ test_durable_delivery :: proc(t: ^testing.T) {
 	redelivery_elapsed_ns := i64(time.tick_since(redelivery_started))
 	if !testing.expectf(t, err.status == 0,
 		"ack-wait redelivery: status=%d jetstream=%d error=%s elapsed_ns=%d",
-		err.status, err.jetstream, error_text(err), redelivery_elapsed_ns) do return
+		err.status, err.jetstream, error_text(err), redelivery_elapsed_ns) {
+		return
+	}
 	msg = batch_message(batch, 0)
 	m3: Metadata
 	m3, err = message_metadata(msg)
