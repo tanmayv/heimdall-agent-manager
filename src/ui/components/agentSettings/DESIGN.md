@@ -89,8 +89,9 @@ browser check is `tests/e2e/agent_settings_apply_browser_check.mjs`).
 - The footer appears while the draft differs from the instance, and while a change is
   queued, restarting, failed or needs recovery. One chip per change
   (`Bridge riverwood → dawnstar`, radius-sm like Badge, not the pill radius): mono
-  values, the arrow `aria-hidden` with an sr-only "to". While a change is queued with no
-  draft staged here, the chips come from the queued operation's destination.
+  values, the arrow `aria-hidden` with an sr-only "to". While a change is queued the
+  chips always come from the queued operation's destination, and the draft controls are
+  locked (Cancel to edit again).
 - Note: "Restarts the agent with a fresh session. The conversation stays."; a bridge
   move names the bridge and the project's folder there; mid-turn (activity busy)
   appends "It's mid-turn, so the restart waits for the turn to finish."; stopped:
@@ -104,10 +105,13 @@ browser check is `tests/e2e/agent_settings_apply_browser_check.mjs`).
   `provider_profile`, `model`, `runtime_transport`, `permission_mode`) with
   `expected_revision` = `configuration_revision`, an idempotency key per intent (replayed
   only after a 5xx or network failure) and `apply: 'after_turn'` mid-turn, else `'now'`.
-  Restart now is `'now'` with a new key, which supersedes the queued change.
+  Restart now is `'now'` with a new key, which supersedes the queued change; while a
+  change is queued it re-sends THAT change's destination (never the pane's draft, which
+  equals the current configuration after a reload).
 - 409: the instance is refetched, the draft is kept and the footer says "Changed since
-  you opened: …" (the configuration the draft started from vs the refreshed one). Any
-  other failure shows the hub's error; the draft is kept.
+  you opened: …" (the configuration the draft started from vs the refreshed one); a 409
+  with no visible change (already queued, reused key, archived, bridge update needed)
+  shows the hub's message. Any other failure shows the hub's error; the draft is kept.
 - Accepted: "Restarting" (footer and Runtime card) until the instance reports running on
   a new `launch_epoch` (WS agent_instance summary), or the operation fails.
 - `waiting_for_idle`: "Waiting for the turn to finish…" + Cancel (accessible name

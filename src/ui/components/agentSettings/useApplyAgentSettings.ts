@@ -137,8 +137,14 @@ export function configFromDestination(destination: Partial<InstanceConfiguration
   };
 }
 
-export function conflictMessage(changes: DraftChange[]): string {
-  if (!changes.length) return FOOTER_COPY.conflictFallback;
+/**
+ * A 409's footer text. The hub also answers 409 for conflicts that are not a changed
+ * configuration (a change already queued, a reused idempotency key, an archived
+ * agent/project, a bridge that needs updating): with no visible change, its own
+ * message says what happened.
+ */
+export function conflictMessage(changes: DraftChange[], hubMessage = ''): string {
+  if (!changes.length) return hubMessage || FOOTER_COPY.conflictFallback;
   return `Changed since you opened: ${changes.map((c) => `${c.label} ${c.from} → ${c.to}`).join(', ')}.`;
 }
 
@@ -211,8 +217,8 @@ export function applyFooterView(input: ApplyFooterViewInput): ApplyFooterView {
     return {
       ...hidden,
       visible: true,
-      // Say what is queued even when no draft is staged here (queued elsewhere, or reloaded).
-      chips: changes.length ? changes : flow.queued,
+      // What is actually queued (Restart now sends exactly that), not the pane's draft.
+      chips: flow.queued.length ? flow.queued : changes,
       status: still ? FOOTER_COPY.stillWaiting : FOOTER_COPY.waiting,
       cancel: { disabled: input.busy },
       restartNow: still ? { disabled: input.busy || input.stopped } : null,
@@ -232,7 +238,8 @@ export function applyFooterView(input: ApplyFooterViewInput): ApplyFooterView {
   if (!changes.length && flow.phase !== 'failed' && flow.phase !== 'conflict') return hidden;
   if (!changes.length) {
     // The failure outlived the draft (e.g. it was discarded): still say what happened.
-    return { ...hidden, visible: true, error: flow.error, conflict: flow.phase === 'conflict' ? conflictMessage(flow.conflict) : '' };
+    if (flow.phase === 'conflict') return { ...hidden, visible: true, conflict: conflictMessage(flow.conflict, flow.error) };
+    return { ...hidden, visible: true, error: flow.error };
   }
 
   const bridgeChange = changes.find((c) => c.field === 'bridge');
@@ -253,7 +260,7 @@ export function applyFooterView(input: ApplyFooterViewInput): ApplyFooterView {
     blocked,
     issues: input.issues,
     error: flow.phase === 'failed' ? flow.error : '',
-    conflict: flow.phase === 'conflict' ? conflictMessage(flow.conflict) : '',
+    conflict: flow.phase === 'conflict' ? conflictMessage(flow.conflict, flow.error) : '',
     primary: { kind, label: PRIMARY_LABEL[kind], disabled, loading: submitting },
     restartNow: kind === 'after_turn' ? { disabled } : null,
     discard: { disabled: input.busy || submitting },
@@ -352,16 +359,23 @@ export function useApplyAgentSettings(input: UseApplyAgentSettingsInput): UseApp
   else if (op?.phase === 'recovery_required') state = { ...none, phase: 'recovery', error: failure?.error || '' };
   else if (tracked && !launched && !cancelled && !opFailed) state = { ...none, phase: 'restarting' };
   else if (failure?.kind === 'conflict') {
-    state = { ...none, phase: 'conflict', conflict: failure.base ? draftDiff(failure.base, input.current, input.labels) : [] };
+    state = { ...none, phase: 'conflict', error: failure.error, conflict: failure.base ? draftDiff(failure.base, input.current, input.labels) : [] };
   } else if (failure) state = { ...none, phase: 'failed', error: failure.error };
   else state = { ...none, phase: 'idle' };
 
-  const send = useCallback(async (apply: ReconfigurationApply) => {
+  const send = useCallback(async (apply: ReconfigurationApply, queued?: InstanceReconfiguration) => {
     const cur = latest.current;
     if (!cur.instanceId) return;
     const base = baseline.current;
+    // Restart now on a queued change re-sends THAT change (its destination), not the
+    // pane's draft: after a reload the draft equals the current configuration, and
+    // superseding with it would silently drop what the user queued.
     const request = buildApplyRequest({
-      instanceId: cur.instanceId, projectId: cur.projectId, draft: cur.draft, revision: cur.revision, apply,
+      instanceId: cur.instanceId,
+      projectId: queued ? (queued.destination?.project_id ?? cur.projectId) : cur.projectId,
+      draft: queued ? configFromDestination(queued.destination, cur.current) : cur.draft,
+      revision: cur.revision,
+      apply,
     });
     const signature = JSON.stringify(request);
     if (intent.current?.signature !== signature) intent.current = { signature, key: newKey() };
@@ -389,7 +403,10 @@ export function useApplyAgentSettings(input: UseApplyAgentSettingsInput): UseApp
   }, []);
 
   const apply = useCallback(() => send(latest.current.midTurn ? 'after_turn' : 'now'), [send]);
-  const restartNow = useCallback(() => send('now'), [send]);
+  const restartNow = useCallback(() => {
+    const operation = latest.current.operation;
+    return send('now', operation?.phase === 'waiting_for_idle' ? operation : undefined);
+  }, [send]);
 
   const operationCall = useCallback(async (call: 'cancel' | 'retry') => {
     const cur = latest.current;

@@ -119,13 +119,13 @@ test('footer view: ACP block and destination issues disable Apply', async () => 
 test('footer view: waiting, still waiting after 30 min, restarting, conflict, failure, recovery', async () => {
   const { applyFooterView } = await mod();
   const now = Date.parse('2026-11-26T12:00:00Z');
-  const waiting = applyFooterView(viewInput({ flow: { phase: 'waiting', error: '', conflict: [], waitingSince: '2026-11-26T11:45:00Z' }, now }));
+  const waiting = applyFooterView(viewInput({ flow: { phase: 'waiting', error: '', conflict: [], waitingSince: '2026-11-26T11:45:00Z', queued: [] }, now }));
   assert.equal(waiting.status, 'Waiting for the turn to finish…');
   assert.ok(waiting.cancel);
   assert.equal(waiting.restartNow, null);
   assert.equal(waiting.primary, null);
 
-  const still = applyFooterView(viewInput({ flow: { phase: 'waiting', error: '', conflict: [], waitingSince: '2026-11-26T11:30:00Z' }, now }));
+  const still = applyFooterView(viewInput({ flow: { phase: 'waiting', error: '', conflict: [], waitingSince: '2026-11-26T11:30:00Z', queued: [] }, now }));
   assert.equal(still.status, 'Still waiting');
   assert.ok(still.restartNow);
   assert.ok(still.cancel);
@@ -365,7 +365,7 @@ test('ApplyFooter renders chips with mono values, a hidden arrow and an sr-only 
     assert.equal(q(doc, 'agent-panel-apply-btn')!.getAttribute('aria-describedby'), q(doc, 'agent-panel-apply-blocked')!.id, 'disabled Apply is tied to its reason');
 
     // Waiting -> Cancel; still waiting -> Restart now too.
-    await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ flow: { phase: 'waiting', error: '', conflict: [], waitingSince: '2026-11-26T10:00:00Z' } })), ...handlers }));
+    await render(React.createElement(ApplyFooter, { view: applyFooterView(viewInput({ flow: { phase: 'waiting', error: '', conflict: [], waitingSince: '2026-11-26T10:00:00Z', queued: [] } })), ...handlers }));
     assert.equal(q(doc, 'agent-panel-apply-status')!.textContent, 'Still waiting');
     assert.equal(q(doc, 'agent-panel-apply-btn'), null);
     assert.equal(q(doc, 'agent-panel-apply-cancel')!.getAttribute('aria-label'), 'Cancel restart');
@@ -412,5 +412,48 @@ test('waiting with no staged draft shows what the queued operation changes', asy
     assert.deepEqual(h.api.state.queued.map((c: any) => [c.field, c.from, c.to]), [['model', 'opus', 'haiku']]);
     const view = applyFooterView(viewInput({ changes: [], flow: h.api.state }));
     assert.deepEqual(view.chips.map((c: any) => c.to), ['haiku']);
+  });
+});
+
+test('Restart now on a queued change re-sends the queued destination, not the (clean) draft', async () => {
+  await withDom(async ({ render }) => {
+    const h = await hookHarness(render);
+    const queued = op({ phase: 'waiting_for_idle', idempotency_key: 'k-queued', revision: 2, waiting_since: '2026-11-26T10:00:00Z',
+      destination: { bridge_id: 'dawnstar', project_id: 'p2', provider: 'codex', provider_profile: 'codex', model: 'gpt-5',
+        runtime_transport_override: 'acp', permission_mode: 'yolo' } });
+    // After a reload the draft equals the current configuration.
+    await h.update({ draft: CURRENT, operation: queued });
+    assert.equal(h.api.state.phase, 'waiting');
+    h.replies.reconfigure.push(accepted(op({ operation_id: 'op_now', phase: 'prepared' })));
+    await act(async () => { await h.api.restartNow(); });
+    const sent = h.calls.reconfigure[0];
+    assert.deepEqual(
+      { bridge_id: sent.bridge_id, project_id: sent.project_id, provider: sent.provider, provider_profile: sent.provider_profile, model: sent.model,
+        runtime_transport: sent.runtime_transport, permission_mode: sent.permission_mode, apply: sent.apply, expected_revision: sent.expected_revision },
+      { bridge_id: 'dawnstar', project_id: 'p2', provider: 'codex', provider_profile: 'codex', model: 'gpt-5',
+        runtime_transport: 'acp', permission_mode: 'yolo', apply: 'now', expected_revision: 3 });
+    assert.notEqual(sent.idempotency_key, 'k-queued', 'a new key supersedes the queued operation');
+
+    // With a different draft staged, the waiting chips still show what is queued.
+    const { applyFooterView } = await mod();
+    await h.update({ draft: { ...CURRENT, model: 'haiku' }, operation: queued });
+    const view = applyFooterView(viewInput({ changes: h.api.changes, flow: h.api.state }));
+    assert.deepEqual(view.chips.map((c: any) => c.field), ['bridge', 'provider', 'model', 'connection', 'bypass']);
+    assert.ok(!view.chips.some((c: any) => c.to === 'haiku'));
+  });
+});
+
+test('a 409 with no visible change shows the hub message, not "changed since you opened"', async () => {
+  const { applyFooterView, conflictMessage } = await mod();
+  assert.equal(conflictMessage([], 'A configuration change is already queued after this turn.'), 'A configuration change is already queued after this turn.');
+  assert.match(conflictMessage([{ field: 'model', label: 'Model', from: 'a', to: 'b' } as any], 'ignored'), /^Changed since you opened: Model a → b\.$/);
+  await withDom(async ({ render }) => {
+    const h = await hookHarness(render);
+    h.replies.reconfigure.push(failed(409, 'Idempotency key already belongs to another configuration.'));
+    await act(async () => { await h.api.apply(); });
+    await h.update();
+    assert.equal(h.api.state.phase, 'conflict');
+    const view = applyFooterView(viewInput({ changes: h.api.changes, flow: h.api.state }));
+    assert.equal(view.conflict, 'Idempotency key already belongs to another configuration.');
   });
 });

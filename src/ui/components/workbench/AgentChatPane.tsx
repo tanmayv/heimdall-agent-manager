@@ -2816,7 +2816,10 @@ export function AgentChatPane({
   // Sections 2-5 (T6): every control edits the draft above; nothing applies on click.
   const draftBridgeLabel = bridgeLabelOf(destinationBridgeId);
   const draftProviderOption = draftProviderOptions.find((p) => p.id === (draftConfig.providerProfile || draftConfig.provider));
-  const draftControlsDisabled = !agentInstanceId || runtimeActionBusy || operationBlocksInput || isStarting;
+  // A change queued after this turn locks the draft: the footer shows and Restart now
+  // sends exactly what is queued; Cancel it to edit again.
+  const draftControlsDisabled = !agentInstanceId || runtimeActionBusy || operationBlocksInput || isStarting
+    || operation?.phase === 'waiting_for_idle';
   const panelTouch = settingsPanel.mode === 'page';
   const settingsSections = settingsPanel.open ? (
     <>

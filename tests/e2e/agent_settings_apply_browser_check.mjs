@@ -110,6 +110,17 @@ try {
     }
     await footer.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(evidence, `t7-${c.width}-${c.name}.png`) });
+    if (c.cancel) {
+      // A queued change locks the draft; Restart now re-sends exactly what is queued.
+      assert.equal(await q('agent-panel-model-provider-codex').getAttribute('aria-disabled'), 'true', `${label}: draft locked while queued`);
+      if (c.restartNow) {
+        await q('agent-panel-apply-restart-now').click();
+        await page.waitForFunction(() => (window.__reconfigurations || []).length === 1);
+        const [sent] = await page.evaluate(() => window.__reconfigurations);
+        assert.deepEqual([sent.provider, sent.model, sent.bridge_id, sent.project_id, sent.apply], ['codex', 'gpt-5', 'brg_riverwood', 'prj_heimdall', 'now'],
+          `${label}: Restart now sends the queued destination`);
+      }
+    }
     results.push({ case: label, viewport: m.viewport, document: m.document, buttons: m.buttons.map((b) => `${b.id}:${b.w}x${b.h}`).join(' ') });
     await page.close();
   }
