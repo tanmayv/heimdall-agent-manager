@@ -466,16 +466,26 @@ async function main() {
       const cdHash = signature.stderr?.match(/^CDHash=([a-f0-9]{40})$/im)?.[1];
       expect(signature.status === 0 && cdHash, 'P5: identified the staged runtime CDHash');
       const partitions = 'teamid:8TSXLYJZN3,cdhash:' + cdHash;
-      const acl = spawnSync('/usr/bin/security', ['set-generic-password-partition-list',
-        '-a', L5.bridgeId, '-S', partitions, '-k', 'e2e', fixtureKeychain],
-      { encoding: 'utf8', timeout: 15_000 });
-      if (acl.status !== 0) {
-        const found = spawnSync('/usr/bin/security', ['find-generic-password', '-a', L5.bridgeId, fixtureKeychain],
-          { encoding: 'utf8', timeout: 5_000 });
-        console.log('    P5 security set-generic-password-partition-list stderr:', acl.stderr?.trim());
-        console.log('    P5 fixture item lookup:', found.status, found.stderr?.trim());
+      const security = (args) => spawnSync('/usr/bin/security', args, { encoding: 'utf8', timeout: 15_000 });
+      // Metadata only. Never use dump-keychain -d or find-generic-password -g/-w.
+      const dump = security(['dump-keychain']);
+      const fixtureRecords = (dump.stdout || '').split(/(?=^keychain: )/m).flatMap((entry) => {
+        const keychain = entry.match(/^keychain: "([^"]+)"/m)?.[1];
+        const service = entry.match(/^\s*"svce"<blob>="(works\.earendil\.heimdall-bridge\.vault-[a-z-]+)"\s*$/m)?.[1];
+        const account = entry.match(/^\s*"acct"<blob>="([^"]+)"\s*$/m)?.[1];
+        return keychain && service && account ? [{ keychain, service, account }] : [];
+      });
+      console.log('    P5 Keychain fixture metadata:', JSON.stringify(fixtureRecords), 'expected account:', L5.bridgeId);
+      expect(dump.status === 0, 'P5: read Keychain metadata via the CI search list (' + (dump.stderr?.trim() || dump.status) + ')');
+      const records = fixtureRecords.filter((record) => record.account === L5.bridgeId);
+      expect(records.length > 0, 'P5: found legacy vault items for the fixture account');
+      for (const { keychain, service, account } of records) {
+        expect(keychain === fixtureKeychain, 'P5: ' + service + ' is in the disposable CI Keychain (' + keychain + ')');
+        const acl = security(['set-generic-password-partition-list', '-a', account, '-s', service,
+          '-S', partitions, '-k', 'e2e', keychain]);
+        expect(acl.status === 0, 'P5: pre-authorized ' + service + ' (status ' + acl.status +
+          ', stderr ' + (acl.stderr?.trim() || acl.error?.code || 'none') + ')');
       }
-      expect(acl.status === 0, 'P5: pre-authorized staged runtime for fixture items (status ' + acl.status + ', error ' + (acl.error?.code || 'none') + ')');
     }
     const pidBefore = runtimePid(L5);
     const args = ['--hub', hub.base, '--profile', L5.name, '--bundle', RELEASE.assetPath, '--checksum-file', RELEASE.sumsPath];
