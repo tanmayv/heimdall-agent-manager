@@ -204,7 +204,25 @@ reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Ch
 	if !ok do return false, err
 	defer destroy_match_context(&ctx)
 	for task in ctx.tasks {
-		failures, perr := collect_placement_failures(svc, &ctx, task)
+		if rok, rerr := reconcile_task_placement_in_uow(svc, u, &ctx, task, grant_failures, matcher_pass); !rok do return false, rerr
+	}
+	return true, {}
+}
+
+// reconcile_placement_for_task_in_uow: the placement snapshot of ONE task, for
+// an inline grant (`lease next`, spec SCHED 10.1). It reads the chain's fleet,
+// directories, leases and instances, never its tasks (REQ-SCHED-38).
+reconcile_placement_for_task_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, task: domain.Task) -> (bool, domain.Domain_Error) {
+	ctx, ok, err := load_match_context(svc, chain, with_tasks = false)
+	if !ok do return false, err
+	defer destroy_match_context(&ctx)
+	return reconcile_task_placement_in_uow(svc, u, &ctx, task, nil, false)
+}
+
+@(private = "file")
+reconcile_task_placement_in_uow :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, grant_failures: []Grant_Placement_Failure, matcher_pass: bool) -> (bool, domain.Domain_Error) {
+	{
+		failures, perr := collect_placement_failures(svc, ctx, task)
 		if perr.code != .None do return false, perr
 		facets, ferr := iface.taskchain_list_facets_by_task(svc.repo, task.task_id, task.owner_user_id)
 		if ferr.code != .None do return false, ferr
@@ -220,9 +238,9 @@ reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Ch
 		for refusal in grant_failures {
 		 if refusal.task_id != task.task_id do continue
 		 if task.state == .Ready {
-		  if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+		  if task_has_live_lease(ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
 		 } else if task.state == .In_Review {
-		  if review_lease_live_for(&ctx, svc, task.task_id, refusal.failure.agent_id) do continue
+		  if review_lease_live_for(ctx, svc, task.task_id, refusal.failure.agent_id) do continue
 		 } else do continue
 		 append(&merged, refusal.failure)
 		}
@@ -231,17 +249,17 @@ reconcile_placement_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Ch
 		if !matcher_pass && exists {
 		 for previous in placement_saved_grant_failures(old.body_json) {
 		  if task.state == .Ready {
-		   if task_has_live_lease(&ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
+		   if task_has_live_lease(ctx, task.task_id, domain.LEASE_KIND_WORK) do continue
 		  } else if task.state == .In_Review {
-		   if review_lease_live_for(&ctx, svc, task.task_id, previous.agent_id) do continue
+		   if review_lease_live_for(ctx, svc, task.task_id, previous.agent_id) do continue
 		  } else do continue
 		  append(&merged, previous)
 		 }
 		}
 		failures = merged[:]
-		if len(failures) == 0 && !exists do continue
+		if len(failures) == 0 && !exists do return true, {}
 		body := placement_snapshot_json(failures)
-		if exists && old.body_json == body do continue
+		if exists && old.body_json == body do return true, {}
 		if saved, serr := save_facet_verbatim(svc, task, task.attempt_no, FACET_PLACEMENT, body, FACET_WRITER_HUB, u); !saved do return false, serr
 		effect_attention(u, task)
 	}

@@ -760,9 +760,10 @@ refold_task :: proc(svc: ^Service, u: ^Uow, task: domain.Task, tasks: []domain.T
 	all_tasks := tasks
 	all_deps := deps
 	if all_tasks == nil {
-		loaded, err := iface.taskchain_list_tasks_by_chain(svc.repo, task.chain_id, task.owner_user_id)
+		// Only this task's parents, never the whole chain (REQ-SCHED-38).
+		parents, parent_deps, err := task_parent_rows(svc, task, all_deps)
 		if err.code != .None do return task, Task_View{}, false, err
-		all_tasks = loaded
+		all_tasks, all_deps = parents, parent_deps
 	}
 	have_deps := all_deps != nil
 	if !have_deps do all_deps, have_deps = fold_cache_deps(task.chain_id, task.owner_user_id)

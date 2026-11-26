@@ -227,8 +227,18 @@ bridge_agent_lease_local_rpc :: proc(request_id, method: string, hub_path: []str
 	// safely retry. A relay failure after sending stays retryable_unavailable —
 	// the hub may have committed it (F2).
 	if !sync.atomic_load(&bridge_hub_runtime_up) do return bridge_local_response_error(request_id, "hub_unreachable", "Hub is unreachable; the request was not sent")
-	eff := bridge_taskv2_enrich_lease_params(method, params, rec)
-	defer delete(eff)
+	enriched := bridge_taskv2_enrich_lease_params(method, params, rec)
+	defer delete(enriched)
+	// REQ-SCHED-39: send the version of the pack TASK.md was written from, so
+	// an unchanged pack is neither rebuilt by the hub nor rewritten here.
+	eff := enriched
+	run_dir := bridge_taskv2_lease_run_dir(rec)
+	sent_version := ""
+	injected := false
+	if method == "agent.lease.next" {
+		eff, sent_version, injected = bridge_taskv2_inject_pack_version(enriched, run_dir)
+	}
+	defer if injected do delete(eff)
 	relay := bridge_local_relay_agent_envelope(hub_path, method, eff, rec)
 	if !relay.ok do return bridge_local_relay_failure(request_id, "Hub relay failed", relay)
 	if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
@@ -238,22 +248,20 @@ bridge_agent_lease_local_rpc :: proc(request_id, method: string, hub_path: []str
 		if !peek {
 			data_obj, has_data := jsonx.extract_raw_object(relay.body, "data", true, context.temp_allocator)
 			target := data_obj if has_data else relay.body
+			version := jsonx.extract_string(target, "pack_version", "", true, context.temp_allocator)
 			if pack_obj, has_pack := jsonx.extract_raw_object(target, "pack", true, context.temp_allocator); has_pack && strings.has_prefix(strings.trim_space(pack_obj), "{") {
-				run_dir := ""
-				if launch, has_launch := bridge_runtime_get_launch(rec.agent_instance_id); has_launch && strings.trim_space(launch.run_dir) != "" {
-					run_dir = strings.clone(launch.run_dir, context.temp_allocator)
-				} else if strings.trim_space(rec.agent_instance_id) != "" {
-					run_dir = bridge_runtime_default_run_dir(rec.agent_instance_id)
-					defer delete(run_dir)
-				}
 				// The task's checkout must exist before the agent reads TASK.md
 				// and cds into it.
 				bridge_taskv2_ensure_pack_worktree(pack_obj)
 				if strings.trim_space(run_dir) != "" {
-					if !bridge_taskv2_materialize_task_md(run_dir, pack_obj) {
+					if !bridge_taskv2_materialize_task_md(run_dir, pack_obj, pack_version = version) {
 						return bridge_local_response_error(request_id, "task_context_unavailable", "Could not refresh TASK.md; retry lease next before acknowledging requirements")
 					}
 				}
+			} else if sent_version != "" && version != sent_version && strings.trim_space(run_dir) != "" {
+				// No pack although the version moved: never keep a version that
+				// no longer describes TASK.md; the next call gets a full pack.
+				bridge_taskv2_store_pack_version(run_dir, "")
 			}
 		}
 	}
@@ -853,7 +861,10 @@ bridge_taskv2_render_task_md :: proc(pack_json: string, max_bytes: int = BRIDGE_
 bridge_taskv2_task_md_mutex: sync.Mutex
 
 // Publish a complete context file; a reader never sees a partially written brief.
-bridge_taskv2_materialize_task_md :: proc(run_dir, pack_json: string, max_bytes: int = BRIDGE_TASK_MD_MAX_BYTES) -> bool {
+// pack_version is the hub's version of this pack (REQ-SCHED-39); it is stored
+// beside TASK.md, and cleared when a pack arrives without one (a wake), so the
+// stored version always describes the TASK.md on disk.
+bridge_taskv2_materialize_task_md :: proc(run_dir, pack_json: string, max_bytes: int = BRIDGE_TASK_MD_MAX_BYTES, pack_version := "") -> bool {
 	clean := strings.trim_right(strings.trim_space(run_dir), "/")
 	if clean == "" || !strings.has_prefix(strings.trim_space(pack_json), "{") do return false
 	_ = bridge_make_directory_all(clean)
@@ -863,7 +874,67 @@ bridge_taskv2_materialize_task_md :: proc(run_dir, pack_json: string, max_bytes:
 	path := strings.concatenate({clean, "/TASK.md"})
 	defer delete(path)
 	sync.mutex_guard(&bridge_taskv2_task_md_mutex)
-	return bridge_retry_atomic_write(path, transmute([]byte)md)
+	// Drop the old version first: a crash between the two writes then costs one
+	// rebuild, never a stale TASK.md behind a matching version.
+	version_path := strings.concatenate({clean, "/", BRIDGE_TASK_MD_VERSION_FILE}, context.temp_allocator)
+	if os.exists(version_path) do _ = os.remove(version_path)
+	if !bridge_retry_atomic_write(path, transmute([]byte)md) do return false
+	if strings.trim_space(pack_version) != "" do _ = bridge_retry_atomic_write(version_path, transmute([]byte)strings.trim_space(pack_version))
+	return true
+}
+
+// BRIDGE_TASK_MD_VERSION_FILE holds the pack_version TASK.md was rendered from.
+BRIDGE_TASK_MD_VERSION_FILE :: "TASK.md.version"
+
+// bridge_taskv2_lease_run_dir: where the instance's TASK.md lives (temp).
+bridge_taskv2_lease_run_dir :: proc(rec: Bridge_Local_Agent_Token_Record) -> string {
+	if launch, has_launch := bridge_runtime_get_launch(rec.agent_instance_id); has_launch && strings.trim_space(launch.run_dir) != "" {
+		return strings.clone(launch.run_dir, context.temp_allocator)
+	}
+	if strings.trim_space(rec.agent_instance_id) == "" do return ""
+	dir := bridge_runtime_default_run_dir(rec.agent_instance_id)
+	defer delete(dir)
+	return strings.clone(dir, context.temp_allocator)
+}
+
+// bridge_taskv2_stored_pack_version: the version beside TASK.md, "" when either
+// file is missing (temp).
+bridge_taskv2_stored_pack_version :: proc(run_dir: string) -> string {
+	clean := strings.trim_right(strings.trim_space(run_dir), "/")
+	if clean == "" do return ""
+	sync.mutex_guard(&bridge_taskv2_task_md_mutex)
+	if !os.exists(strings.concatenate({clean, "/TASK.md"}, context.temp_allocator)) do return ""
+	raw, err := os.read_entire_file(strings.concatenate({clean, "/", BRIDGE_TASK_MD_VERSION_FILE}, context.temp_allocator), context.temp_allocator)
+	if err != nil do return ""
+	return strings.trim_space(string(raw))
+}
+
+// bridge_taskv2_store_pack_version replaces (or with "" removes) the stored version.
+bridge_taskv2_store_pack_version :: proc(run_dir, version: string) {
+	clean := strings.trim_right(strings.trim_space(run_dir), "/")
+	if clean == "" do return
+	sync.mutex_guard(&bridge_taskv2_task_md_mutex)
+	path := strings.concatenate({clean, "/", BRIDGE_TASK_MD_VERSION_FILE}, context.temp_allocator)
+	if strings.trim_space(version) == "" {
+		if os.exists(path) do _ = os.remove(path)
+		return
+	}
+	_ = bridge_retry_atomic_write(path, transmute([]byte)strings.trim_space(version))
+}
+
+// bridge_taskv2_inject_pack_version adds the stored pack_version to a non-peek
+// `lease next` unless the caller already sent one (`ham-ctl lease next
+// --refresh` sends ""). Returns params (the same string when unchanged, else an
+// owned one, injected=true) and the version sent.
+bridge_taskv2_inject_pack_version :: proc(params, run_dir: string) -> (out: string, sent: string, injected: bool) {
+	if peek, _ := jsonx.extract_bool_literal(params, "peek", true); peek do return params, "", false
+	if v, has := jsonx.extract_string_found(params, "pack_version", true, context.temp_allocator); has do return params, v, false
+	version := bridge_taskv2_stored_pack_version(run_dir)
+	if version == "" do return params, "", false
+	quoted := bridge_local_json_escaped(version)
+	defer delete(quoted)
+	raw := strings.concatenate({"\"", quoted, "\""}, context.temp_allocator)
+	return bridge_taskv2_params_inject(params, "pack_version", raw), version, true
 }
 
 // bridge_taskv2_worktree_add_detached creates an ephemeral detached git worktree at `rev`

@@ -473,6 +473,19 @@ ctl_lease_work_dir :: proc(endpoint, token: string) -> string {
 	return ctl_lease_dir_or(lease.directory_path, cwd)
 }
 
+// ctl_v2_lease_next_params: `lease next` params. cwd lets the bridge find the
+// repo for its vcs_base enrichment. The bridge sends the pack_version stored
+// beside TASK.md (REQ-SCHED-39) unless the params already carry one; --refresh
+// sends an empty pack_version, so the hub builds the pack and TASK.md is
+// rewritten. Pure.
+ctl_v2_lease_next_params :: proc(args: []string, cwd: string) -> string {
+	fields := make([dynamic]string, context.temp_allocator)
+	if v := option_value(args, "--vcs-base", ""); v != "" do append(&fields, json_kv("vcs_base", v))
+	append(&fields, json_kv("cwd", cwd))
+	if has_flag(args, "--refresh") do append(&fields, json_kv("pack_version", ""))
+	return json_object_from_slice(fields[:])
+}
+
 ctl_agent_cwd_field :: proc() -> string {
 	return json_kv("cwd", ctl_agent_cwd())
 }

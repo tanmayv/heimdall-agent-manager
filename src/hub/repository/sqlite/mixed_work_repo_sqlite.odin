@@ -239,3 +239,24 @@ complete_work_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, 
 	if rc != SQLITE_DONE || changed != 1 do return false, domain.domain_error(.Conflict,"work changed; refresh before finishing", `{"code":"work_changed"}`)
 	return true, domain.Domain_Error{}
 }
+
+// The edges of ONE dependent item (spec SCHED 10.2): `lease next` and a grant
+// read only these, never every edge of the chain.
+list_work_dependencies_by_dependent_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, item: domain.Work_Item_Ref) -> ([]domain.Work_Dependency, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt, err := mixed_work_prepare(impl, "SELECT dependency_id, chain_id, owner_user_id, dependent_kind, dependent_id, prerequisite_kind, prerequisite_id, created_by_kind, created_by_id, created_at, removed_at, removed_by_kind, removed_by_id, removal_reason FROM work_dependencies WHERE chain_id = ? AND dependent_kind = ? AND dependent_id = ? AND owner_user_id = ? ORDER BY created_at, dependency_id;", "list_work_dependencies_by_dependent")
+	if err.code != .None do return nil, err
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(chain_id))
+	bind_text(stmt, 2, item.kind)
+	bind_text(stmt, 3, item.id)
+	bind_text(stmt, 4, string(owner_user_id))
+	out := make([dynamic]domain.Work_Dependency)
+	for {
+		rc := sqlite3_step(stmt)
+		if rc == SQLITE_DONE do break
+		if rc != SQLITE_ROW do return out[:], domain.domain_error(.Internal_Error, "list_work_dependencies_by_dependent failed")
+		append(&out, work_dependency_from_stmt(stmt))
+	}
+	return out[:], domain.Domain_Error{}
+}
