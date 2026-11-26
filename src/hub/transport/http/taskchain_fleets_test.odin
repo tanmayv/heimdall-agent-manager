@@ -381,3 +381,55 @@ test_fleet_result_profile_only_edit_preserves_launch_identity :: proc(t: ^testin
 	testing.expect_value(t, len(c.commands), 1)
 	if len(c.commands) == 1 do testing.expect(t, strings.contains(c.commands[0], `"provider_profile":"work"`))
 }
+
+// SCHED-0c contracts (spec 6.5): fleet rows have no roles. A PUT or pause
+// body naming `roles` is refused with fleet_roles_removed; PUT takes `paused`;
+// pause/resume take no body; the wire has no roles, paused_roles or warning.
+@(test)
+test_fleet_contract_roles_removed_and_paused :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	f := c.f
+
+	roles := fleet_result_put(t, c, `{"capacity":2,"provider":"claude","model":"old","roles":["worker"]}`)
+	testing.expectf(t, roles.status == 400 && strings.contains(roles.body, "fleet_roles_removed"), "PUT roles: %d %s", roles.status, roles.body)
+	empty_roles := fleet_result_put(t, c, `{"capacity":2,"provider":"claude","model":"old","roles":[]}`)
+	testing.expectf(t, empty_roles.status == 400 && strings.contains(empty_roles.body, "fleet_roles_removed"), "PUT empty roles: %d %s", empty_roles.status, empty_roles.body)
+	bad_paused := fleet_result_put(t, c, `{"capacity":2,"provider":"claude","model":"old","paused":"yes"}`)
+	testing.expect_value(t, bad_paused.status, 400)
+
+	paused := fleet_result_put(t, c, `{"capacity":2,"provider":"claude","model":"old","paused":true}`)
+	testing.expectf(t, paused.status == 200 && strings.contains(paused.body, `"paused":true`), "PUT paused: %d %s", paused.status, paused.body)
+	for key in ([]string{`"roles"`, `"paused_roles"`, `"warning"`, `"implicit"`}) {
+		testing.expectf(t, !strings.contains(paused.body, key), "fleet wire has no %s: %s", key, paused.body)
+	}
+
+	base := fmt.tprintf("/api/v1/task-chains/%s/fleets/agt_wake/", f.chain_id)
+	resumed := pause_chain_fleet_handler(&f.th, wire_cookie_request(f, "POST", strings.concatenate({base, "resume"}), ""))
+	testing.expectf(t, resumed.status == 200 && strings.contains(resumed.body, `"paused":false`), "resume: %d %s", resumed.status, resumed.body)
+	paused_again := pause_chain_fleet_handler(&f.th, wire_cookie_request(f, "POST", strings.concatenate({base, "pause"}), ""))
+	testing.expectf(t, paused_again.status == 200 && strings.contains(paused_again.body, `"paused":true`), "pause: %d %s", paused_again.status, paused_again.body)
+	for verb in ([]string{"pause", "resume"}) {
+		for body in ([]string{`{"roles":["reviewer"]}`, `{"roles":[]}`}) {
+			role_pause := pause_chain_fleet_handler(&f.th, wire_cookie_request(f, "POST", strings.concatenate({base, verb}), body))
+			testing.expectf(t, role_pause.status == 400 && strings.contains(role_pause.body, "fleet_roles_removed"), "%s %s: %d %s", verb, body, role_pause.status, role_pause.body)
+		}
+	}
+
+	// paused is saved in the same write as the row: a refused PUT saves neither.
+	refused := fleet_result_put(t, c, `{"capacity":0,"provider":"claude","model":"old","paused":false}`)
+	testing.expectf(t, refused.status == 400, "capacity 0 is refused: %d %s", refused.status, refused.body)
+	rows, _ := iface.taskchain_list_fleets_by_chain(&f.tc_repo, f.chain_id, f.owner)
+	for row in rows do if row.agent_id == "agt_wake" do testing.expect(t, row.paused && row.capacity == 2, "refused PUT left the row (paused, capacity) unchanged")
+}
+
+// Task create/patch refuse review_roles by name (REQ-SCHED-8).
+@(test)
+test_task_create_refuses_review_roles :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := coordinator_wake_fixture(t); defer coordinator_wake_fixture_destroy(c)
+	f := c.f
+	path := fmt.tprintf("/api/v1/task-chains/%s/tasks", f.chain_id)
+	resp := create_task_handler(&f.th, wire_cookie_request(f, "POST", path, `{"title":"t","assignee":"agt_wake","review_roles":["reviewer"]}`))
+	testing.expectf(t, resp.status == 400 && strings.contains(resp.body, "review_roles_removed"), "create review_roles: %d %s", resp.status, resp.body)
+}

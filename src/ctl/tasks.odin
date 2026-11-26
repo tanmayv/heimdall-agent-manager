@@ -13,7 +13,7 @@ import httpc "odin_test:lib/httpc"
 Task_Brief_Wire :: struct {
 	goal:         string   `json:"goal"`,
 	acceptance:   []string `json:"acceptance"`,
-	review_roles: []string `json:"review_roles"`,
+	reviewers:    []string `json:"reviewers"`,
 	assignee:     string   `json:"assignee"`,
 }
 
@@ -28,7 +28,7 @@ Task_Blocked_On_Wire :: struct {
 
 // Task_Created_Data_Wire is the subset of the Task System v2 task wire that the
 // `tasks create` summary reads back: `state` replaces the old `status`, and
-// `brief.assignee` / `brief.review_roles` replace assignee_ref / reviewer_refs.
+// `brief.assignee` / `brief.reviewers` replace assignee_ref / reviewer_refs.
 Task_Created_Data_Wire :: struct {
 	task_id:                string               `json:"task_id"`,
 	state:                  string               `json:"state"`,
@@ -56,8 +56,8 @@ format_task_created_summary :: proc(task: Task_Created_Data_Wire, allocator := c
 	}
 
 	reviewers = "\x1b[31mNONE\x1b[0m"
-	if len(task.brief.review_roles) > 0 {
-		reviewers = strings.join(task.brief.review_roles, ",", allocator)
+	if len(task.brief.reviewers) > 0 {
+		reviewers = strings.join(task.brief.reviewers, ",", allocator)
 	}
 
 	deps_str = "none"
@@ -237,10 +237,10 @@ ctl_task_chains_fleet_command :: proc(transport: Ctl_Transport, tokens: []string
 		if chain_id == "" do chain_id = resolve_chain_id(transport, args)
 		agent_id := option_value(args, "--agent", option_value(args, "--agent-id", ""))
 		if chain_id == "" || agent_id == "" {
-			fmt.printfln("usage: ham-ctl task-chains fleet %s <chain-id> --agent <agent_id> [--roles <worker,reviewer>]", sub)
+			fmt.printfln("usage: ham-ctl task-chains fleet %s <chain-id> --agent <agent_id>", sub)
 			return
 		}
-		ctl_tasks_request(transport, {method = .POST, path = ctl_api("task-chains", chain_id, "fleets", agent_id, sub), body = httpc.json_body(ctl_v2_fleet_pause_body(args))})
+		ctl_tasks_request(transport, {method = .POST, path = ctl_api("task-chains", chain_id, "fleets", agent_id, sub)})
 		return
 	}
 	if sub == "set" {
@@ -251,7 +251,7 @@ ctl_task_chains_fleet_command :: proc(transport: Ctl_Transport, tokens: []string
 		bm_file, _ := ctl_read_json_file_flag(args, "--bridge-models-file")
 		body, body_ok := ctl_v2_fleet_set_body(args, bm_file)
 		if chain_id == "" || agent_id == "" || !body_ok {
-			fmt.println("usage: ham-ctl task-chains fleet set <chain-id> --agent <agent_id> --capacity <N> [--roles <worker,reviewer>] [--bridge <id>] [--provider <p>] [--model <m>] [--bridge-models <json>]")
+			fmt.println("usage: ham-ctl task-chains fleet set <chain-id> --agent <agent_id> --capacity <N> [--bridge <id>] [--provider <p>] [--model <m>] [--bridge-models <json>]")
 			return
 		}
 		ctl_tasks_request(transport, {method = .PUT, path = ctl_api("task-chains", chain_id, "fleets", agent_id), body = httpc.json_body(body)})
@@ -652,10 +652,11 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 	if action == "create" {
 		title := option_value(args, "--title", "")
 		if chain_id == "" || title == "" {
-			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] [--assignee <id>] [--reviewer <agent-id,...>] [--require-user-approval] [--depends-on <id,id>] [--bridge <bridge-id>]")
+			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] --assignee <agent-id> [--reviewer <agent-id|user,...>] [--review-focus <agent-id>=<text>] [--require-user-approval] [--depends-on <id,id>] [--bridge <bridge-id>]")
 			return
 		}
 		if !ctl_task_reviewer_flags_valid(args, false) do return
+		if !ctl_task_create_assignee_valid(args) do return
 		desc := option_value(args, "--description", "")
 		keyring := ctl_vault_keyring_for_write(args)
 		if !is_vault_armored(title) {
@@ -711,7 +712,7 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		assignee, reviewers, deps_str, blocked_str, bridge_str := format_task_created_summary(envelope.data.data, context.temp_allocator)
 
 		fmt.printf("Task created successfully (ID: %s)\n", t_id)
-		fmt.printf("State: %s | Assignee: %s | Review roles: %s | Depends on: %s | Blocked: %s\n", t_state, assignee, reviewers, deps_str, blocked_str)
+		fmt.printf("State: %s | Assignee: %s | Reviewers: %s | Depends on: %s | Blocked: %s\n", t_state, assignee, reviewers, deps_str, blocked_str)
 		if goal := strings.trim_space(envelope.data.data.brief.goal); goal != "" do fmt.printf("Goal: %s\n", goal)
 		fmt.printf("Bridge: %s | Requires user approval: %t\n", bridge_str, envelope.data.data.requires_user_approval)
 		return

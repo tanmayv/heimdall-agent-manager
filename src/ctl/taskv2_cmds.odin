@@ -94,7 +94,7 @@ ctl_collect_repeated :: proc(args: []string, names: ..string) -> [dynamic]string
 // (REQ-TV2-4), in the order ham-ctl writes them. The hub owns validation: keys
 // outside it are forwarded and the hub rejects them with unknown_brief_fields
 // instead of ham-ctl dropping them silently.
-CTL_BRIEF_KEYS :: [?]string{"goal", "acceptance", "inputs", "review_roles", "assignee", "reviewers", "budget", "output", "on_output", "requires_user_approval", "approver", "gate"}
+CTL_BRIEF_KEYS :: [?]string{"goal", "acceptance", "inputs", "assignee", "reviewers", "review_focus", "budget", "output", "on_output", "requires_user_approval", "approver", "gate"}
 
 // ctl_brief_clear_flag: `--clear-<field>` sends `"<field>":null`, which the
 // hub's top-level merge reads as "remove this key".
@@ -106,7 +106,7 @@ ctl_brief_clear_flag :: proc(key: string) -> string {
 // ctl_task_brief_flags_present reports whether any brief flag was given, so
 // `task update` without them does not send an (empty) brief.
 ctl_task_brief_flags_present :: proc(args: []string) -> bool {
-	for f in ([?]string{"--goal", "--acceptance", "--input", "--inputs", "--review-role", "--review-roles", "--on-output-workflow", "--output-schema", "--brief-file"}) {
+	for f in ([?]string{"--goal", "--acceptance", "--input", "--inputs", "--review-focus", "--on-output-workflow", "--output-schema", "--brief-file"}) {
 		if has_flag(args, f) do return true
 	}
 	for k in CTL_BRIEF_KEYS do if has_flag(args, ctl_brief_clear_flag(k)) do return true
@@ -126,7 +126,7 @@ ctl_task_brief_json :: proc(args: []string, brief_file_text: string) -> (string,
 	fields := make([dynamic]string)
 	defer delete(fields)
 	for e in entries {
-		raw, merr := json.marshal(e.value, allocator = context.temp_allocator)
+		raw, merr := json.marshal(e.value, {sort_maps_by_key = true}, context.temp_allocator)
 		if merr != nil do continue
 		append(&fields, json_kv_raw(e.key, string(raw)))
 	}
@@ -168,8 +168,7 @@ ctl_task_brief_entries :: proc(args: []string, brief_file_text: string) -> ([]Ct
 	if len(acceptance) > 0 do values["acceptance"] = ctl_json_string_array_value(acceptance[:])
 	inputs := ctl_multi_values(args, "--input", "--inputs")
 	if len(inputs) > 0 do values["inputs"] = ctl_json_string_array_value(inputs)
-	roles := ctl_multi_values(args, "--review-role", "--review-roles")
-	if len(roles) > 0 do values["review_roles"] = ctl_json_string_array_value(roles)
+	if focus, has_focus := ctl_review_focus_value(args); has_focus do values["review_focus"] = focus
 	if out_schema := strings.trim_space(option_value(args, "--output-schema", "")); out_schema != "" do values["output"] = json.String(out_schema)
 	if on_wf := strings.trim_space(option_value(args, "--on-output-workflow", "")); on_wf != "" {
 		on_output := make(json.Object, allocator = context.temp_allocator)
@@ -192,6 +191,41 @@ ctl_task_brief_entries :: proc(args: []string, brief_file_text: string) -> ([]Ct
 	slice.sort(extra[:])
 	for k in extra do append(&entries, Ctl_Brief_Entry{key = k, value = values[k]})
 	return entries[:], true
+}
+
+// ctl_review_focus_value builds brief.review_focus ({agent id: text}) from every
+// `--review-focus <agt_…>=<text>` (repeatable; a later entry for the same agent
+// wins). Malformed entries are refused earlier by ctl_review_focus_flags_valid.
+ctl_review_focus_value :: proc(args: []string) -> (json.Value, bool) {
+	entries := ctl_collect_repeated(args, "--review-focus")
+	defer delete(entries)
+	if len(entries) == 0 do return nil, false
+	obj := make(json.Object, allocator = context.temp_allocator)
+	for e in entries {
+		agent, text, ok := ctl_split_review_focus(e)
+		if ok do obj[agent] = json.String(text)
+	}
+	return obj, true
+}
+
+// ctl_split_review_focus splits `<agt_…>=<text>`; both sides must be non-empty. Pure.
+ctl_split_review_focus :: proc(entry: string) -> (agent: string, text: string, ok: bool) {
+	eq := strings.index_byte(entry, '=')
+	if eq <= 0 do return "", "", false
+	agent = strings.trim_space(entry[:eq])
+	text = strings.trim_space(entry[eq + 1:])
+	return agent, text, agent != "" && text != ""
+}
+
+// ctl_review_focus_flags_valid reports the first malformed --review-focus
+// (nothing after `=`, or no agent before it) so it is refused, never dropped.
+ctl_review_focus_flags_valid :: proc(args: []string) -> (bad: string, ok: bool) {
+	entries := ctl_collect_repeated(args, "--review-focus")
+	defer delete(entries)
+	for e in entries {
+		if _, _, eok := ctl_split_review_focus(e); !eok do return e, false
+	}
+	return "", true
 }
 
 // ctl_json_string_array_value is a json.Array of strings (temp-allocated).
@@ -328,7 +362,7 @@ ctl_brief_incomplete_render :: proc(response: string) -> (string, bool) {
 			strings.write_byte(&b, '\n')
 		}
 	}
-	strings.write_string(&b, "rules: goal (≤2000 chars); 1..20 acceptance items (≤200 chars each); every review_role needs a fleet row carrying that role.\n")
+	strings.write_string(&b, "rules: goal (≤2000 chars); 1..20 acceptance items (≤200 chars each); every task names an assignee agent; reviewers are agent ids or `user`, never the assignee.\n")
 	return strings.to_string(b), true
 }
 
@@ -541,7 +575,7 @@ ctl_v2_lease_handoff :: proc(endpoint, token: string, args: []string) {
 	ctl_agent_call_task(endpoint, token, "agent.lease.handoff", json_object_from_slice(fields[:]), args)
 }
 
-// ctl_v2_lease_switch (solo mode): hand the current task off and take another
+// ctl_v2_lease_switch: hand the current task off and take another
 // ready task in one step. `ham-ctl lease switch <task_id> --summary <s>`.
 ctl_v2_lease_switch :: proc(endpoint, token: string, args: []string, positional_task := "") {
 	task_id := strings.trim_space(option_value(args, "--task", ""))
@@ -821,23 +855,12 @@ ctl_v2_task_chain_propose :: proc(endpoint, token: string, tokens, args: []strin
 	ctl_agent_call_task(endpoint, token, "agent.task_chain.propose", params, args)
 }
 
-// Ctl_Fleet_Pause_Body: `{"roles":[…]}` from --role/--roles (empty = every
-// role of the row).
-Ctl_Fleet_Pause_Body :: struct {
-	roles: []string `json:"roles"`,
-}
-
-ctl_v2_fleet_pause_body :: proc(args: []string) -> Ctl_Fleet_Pause_Body {
-	return {roles = ctl_multi_values(args, "--role", "--roles")}
-}
-
 // Ctl_Fleet_Set_Body: PUT /api/v1/task-chains/<id>/fleets/<agent>. Placement
 // fields are presence-checked (an explicit empty value is sent).
 Ctl_Fleet_Set_Body :: struct {
 	capacity:         int           `json:"capacity"`,
 	min_warm:         Maybe(int)    `json:"min_warm,omitempty"`,
 	idle_ttl_seconds: Maybe(int)    `json:"idle_ttl_seconds,omitempty"`,
-	roles:            []string      `json:"roles,omitempty"`,
 	bridge_id:        Maybe(string) `json:"bridge_id,omitempty"`,
 	provider:         Maybe(string) `json:"provider,omitempty"`,
 	model:            Maybe(string) `json:"model,omitempty"`,
@@ -846,8 +869,7 @@ Ctl_Fleet_Set_Body :: struct {
 
 ctl_v2_fleet_set_body :: proc(args: []string, bridge_models_file_json := "") -> (body: Ctl_Fleet_Set_Body, ok: bool) {
 	capacity_str := option_value(args, "--capacity", "")
-	roles := ctl_multi_values(args, "--role", "--roles")
-	has_placement := len(roles) > 0 || has_flag(args, "--bridge") || has_flag(args, "--bridge-id") || has_flag(args, "--provider") || has_flag(args, "--model") || has_flag(args, "--bridge-models") || bridge_models_file_json != ""
+	has_placement := has_flag(args, "--bridge") || has_flag(args, "--bridge-id") || has_flag(args, "--provider") || has_flag(args, "--model") || has_flag(args, "--bridge-models") || bridge_models_file_json != ""
 	if capacity_str == "" && !has_placement do return {}, false
 
 	// The value is sent as given: the hub rejects capacity < 1 and names the
@@ -864,7 +886,6 @@ ctl_v2_fleet_set_body :: proc(args: []string, bridge_models_file_json := "") -> 
 	if ttl := option_value(args, "--idle-ttl", option_value(args, "--idle-ttl-seconds", "")); ttl != "" {
 		if v, v_ok := strconv_parse_int_agent(ttl); v_ok do body.idle_ttl_seconds = v
 	}
-	body.roles = roles
 	if has_flag(args, "--bridge") || has_flag(args, "--bridge-id") {
 		body.bridge_id = option_value(args, "--bridge", option_value(args, "--bridge-id", ""))
 	}

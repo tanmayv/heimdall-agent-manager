@@ -28,7 +28,12 @@ mcp_task_error :: proc(err:domain.Domain_Error)->string {
 	case .Conflict:return "conflict"
 	case .Bridge_Offline:return "bridge_offline"
 	case .Provider_Unavailable:return "provider_unavailable"
-	case .Validation_Failed,.Unprocessable_Entity:return "invalid_arguments"
+	case .Validation_Failed,.Unprocessable_Entity:
+		// Agent-id assignment refusals name their fix (REQ-SCHED-3/4/8).
+		for code in ([]string{"assignee_required","reviewer_is_assignee","review_roles_removed","fleet_roles_removed"}) {
+			if strings.contains(err.details_json,strings.concatenate({`"code":"`,code,`"`},context.temp_allocator)) do return code
+		}
+		return "invalid_arguments"
 	case:return "request_failed"
 	}
 }

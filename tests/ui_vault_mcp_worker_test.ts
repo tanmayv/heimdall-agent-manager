@@ -67,13 +67,16 @@ test('task comment worker requires signed write scope and binds the tool in its 
 test('extended task reads open only typed brief fields and retain legacy projection', async () => {
   const f = await mcpWorkerFixture(Date.now(), 'mcp:chains mcp:tasks:read');
   const token = JSON.parse(f.job.payload).chain.title;
-  const payload = JSON.stringify({ tasks: [{ owner_user_id: f.job.owner, task_id: 'task_a', chain_id: 'chain_a', title: token, description: '', goal: token, acceptance: [token], assignee_agent_id: 'agt_a', bridge_id: 'brg_a', arbitrary_secret: 'omitted' }] });
+  const payload = JSON.stringify({ tasks: [{ owner_user_id: f.job.owner, task_id: 'task_a', chain_id: 'chain_a', title: token, description: '', goal: token, acceptance: [token], review_focus: { agt_r: token }, review_roles: ['reviewer'], assignee_agent_id: 'agt_a', bridge_id: 'brg_a', arbitrary_secret: 'omitted' }] });
   const job = { ...f.job, tool: 'tasks.get', payload };
   job.digest = await mcpJobDigest(job);
   await verifyMcpWorkerJob(job, f.identity, f.chain, job.resource, f.now);
   const result = JSON.parse(await transformMcpWorkerJob(job, f.keyring));
   assert.equal(result.tasks[0].goal, 'worker secret title');
   assert.deepEqual(result.tasks[0].acceptance, ['worker secret title']);
+  // review_focus replaces review_roles (SCHED-0c): its values open like text fields.
+  assert.deepEqual(result.tasks[0].review_focus, { agt_r: 'worker secret title' });
+  assert.equal(result.tasks[0].review_roles, undefined);
   assert.equal(result.tasks[0].bridge_id, 'brg_a');
   assert.equal(result.tasks[0].arbitrary_secret, undefined);
   const legacy = JSON.parse(await transformMcpWorkerJob({ ...job, tool: undefined }, f.keyring));
@@ -81,6 +84,8 @@ test('extended task reads open only typed brief fields and retain legacy project
   assert.equal(legacy.tasks[0].acceptance, undefined);
   const malformed = JSON.parse(payload); malformed.tasks[0].acceptance = [{}];
   await assert.rejects(transformMcpWorkerJob({ ...job, payload: JSON.stringify(malformed) }, f.keyring));
+  const badFocus = JSON.parse(payload); badFocus.tasks[0].review_focus = 'not an object';
+  await assert.rejects(transformMcpWorkerJob({ ...job, payload: JSON.stringify(badFocus) }, f.keyring));
 });
 
 test('task detail worker retains typed hold, attempt, provenance and comment paging metadata', async () => {

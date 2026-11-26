@@ -151,7 +151,12 @@ lease_handoff :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Handof
 		json_str(&p, "lease_id", claim.lease_id); json_str(&p, "kind", claim.kind)
 		json_str(&p, "summary", strings.trim_space(input.summary))
 		_, saved, event_err := append_event(svc.repo, svc.clock, task, Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}, EV_CLAIM_RELEASED, json_end(&p))
-		if saved { mark_instance_idle(svc, &u, inst.agent_instance_id, platform.clock_now(svc.clock)); effect_publish_task(&u, task, EV_CLAIM_RELEASED) }
+		if saved {
+			mark_instance_idle(svc, &u, inst.agent_instance_id, platform.clock_now(svc.clock))
+			effect_publish_task(&u, task, EV_CLAIM_RELEASED)
+			// Lease-free now: its grace window starts (REQ-SCHED-27).
+			if chain, cok, _ := iface.taskchain_get_chain(svc.repo, task.chain_id); cok do ensure_idle_timer_in_uow(svc, &u, chain, inst.agent_instance_id)
+		}
 		_, cerr := end_uow(svc, &u, saved)
 		if !saved do return {}, false, event_err
 		return task, cerr.code == .None, cerr
@@ -212,8 +217,8 @@ review_checkpoint_handoff :: proc(svc: ^Service, u: ^Uow, auth: contracts.Auth_C
 	if !rok do return {}, true, false, rerr
 	now := platform.clock_now(svc.clock)
 	mark_instance_idle(svc, u, inst.agent_instance_id, now)
-	// The reviewer keeps its process across a checkpoint (no restart per
-	// review round); it is stopped when its tasks finish.
+	// A checkpoint is not a verdict: the reviewer keeps its process for the
+	// grace window, like request-changes (spec SCHED 8.1 row 13).
 	if !holder_is_coordinator(svc, current.chain_id, inst.agent_instance_id) {
 		arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, current.chain_id, current.owner_user_id, inst.agent_id), now)
 	}
@@ -467,10 +472,24 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 		verdict = input.verdict, findings_json = findings, created_at = now,
 	}
 	if _, sok, serr := iface.taskchain_save_review(svc.repo, review); !sok { _, _ = end_uow(svc, &u, false); return {}, false, serr }
-	// Finish active review work while retaining the reviewer reservation; the
-	// coordinator's lease is deleted instead (active-only, REQ-SCHED-14).
-	if !park_review_claim_in_uow(svc, &u, lease) { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
-	if !holder_is_coordinator(svc, task.chain_id, inst.agent_instance_id) do metric_lease_released(lease.kind)
+	// Posting a review deletes the reviewer's lease (REQ-SCHED-21). Approve
+	// stops the reviewer at once (REQ-SCHED-22), before the matcher runs, so a
+	// review granted to it in this unit of work relaunches a fresh process.
+	// Request-changes keeps it for the grace window (REQ-SCHED-23); the gate
+	// below does the same for every other reviewer of the task. The
+	// coordinator is never stopped or timed out (REQ-SCHED-17).
+	if input.verdict == "approve" {
+		if deleted, _ := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted { _, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error() }
+		metric_lease_released(lease.kind)
+		mark_instance_idle(svc, &u, inst.agent_instance_id, now)
+		if !holder_is_coordinator(svc, task.chain_id, inst.agent_instance_id) {
+			if stopped, serr := stop_instance_in_uow(svc, &u, inst, string(task.chain_id), STOP_REASON_REVIEW_POSTED); !stopped { _, _ = end_uow(svc, &u, false); return {}, false, serr }
+			// Should the stop never land, the idle timer stops it again (REQ-SCHED-27).
+			arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, task.chain_id, task.owner_user_id, inst.agent_id), now)
+		}
+	} else if !release_review_to_grace_in_uow(svc, &u, lease) {
+		_, _ = end_uow(svc, &u, false); return {}, false, lease_lost_error()
+	}
 	actor := Actor{kind = ACTOR_AGENT, id = inst.agent_instance_id}
 	p := json_begin()
 	json_int(&p, "attempt_no", i64(task.attempt_no))
@@ -485,19 +504,9 @@ review_post :: proc(svc: ^Service, auth: contracts.Auth_Context, input: Review_I
 	if strings.trim_space(input.summary) != "" do json_str(&p, "summary", strings.trim_space(input.summary))
 	refolded, _, rok, rerr := record_event(svc, &u, task, actor, EV_REVIEW_POSTED, json_end(&p))
 	if !rok { _, _ = end_uow(svc, &u, false); return {}, false, rerr }
-	// Retain the reviewer reservation until task completion or explicit release.
 	gate, gok, gerr := evaluate_gate_in_uow(svc, &u, chain, refolded, actor)
 	if gok && gate == .Rejected do gok, gerr = gate_replan_in_uow(svc, &u, chain, refolded, actor)
 	if gok do gok, gerr = after_chain_change(svc, &u, task.chain_id, task.owner_user_id, .Review_Posted)
-	// Reviewer lifecycle (REQ-TV2-3a): posting a verdict never stops the
-	// reviewer (no restart per review round). Re-granted → keeps running. Not
-	// re-granted → stays alive under the idle TTL; after_chain_change above has
-	// already stopped it if every task it worked on is done or cancelled.
-	if gok {
-		if _, regranted, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); !regranted {
-			arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, task.chain_id, task.owner_user_id, inst.agent_id), now)
-		}
-	}
 	_, cerr2 := end_uow(svc, &u, gok)
 	if !gok do return {}, false, gerr
 	if cerr2.code != .None do return {}, false, cerr2

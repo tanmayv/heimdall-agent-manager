@@ -207,14 +207,14 @@ test_agent_transport_relays_structured_request :: proc(t: ^testing.T) {
 	defer fake_bridge_stop(fb)
 	transport := Ctl_Transport{kind = .Agent, agent_endpoint = fb.endpoint, agent_token = "tok"}
 
-	ctl_task_chains_fleet_command(transport, []string{"pause", "ch 1/x"}, []string{"ham-ctl", "task-chains", "fleet", "pause", "ch 1/x", "--agent", "agt?1", "--roles", "worker"})
+	ctl_task_chains_fleet_command(transport, []string{"pause", "ch 1/x"}, []string{"ham-ctl", "task-chains", "fleet", "pause", "ch 1/x", "--agent", "agt?1"})
 	ctl_tasks_request_and_decrypt(transport, ctl_task_fetch_request("ch_1", "t_1", "src/a b.odin@HEAD"), []string{"ham-ctl"})
 	testing.expect_value(t, fb.served, 2)
 
 	pause := fake_bridge_request(fb, 0)
 	testing.expectf(t, strings.contains(pause, `"method":"agent.rest.request"`), "relay method: %s", pause)
 	testing.expectf(t, strings.contains(pause, `"http_method":"POST"`) && strings.contains(pause, `"path":"/api/v1/task-chains/ch%201%2Fx/fleets/agt%3F1/pause"`), "pause target: %s", pause)
-	testing.expectf(t, strings.contains(pause, `"body":"{\"roles\":[\"worker\"]}"`), "pause body: %s", pause)
+	testing.expectf(t, strings.contains(pause, `"body":""`), "pause takes no body: %s", pause)
 	fetch := fake_bridge_request(fb, 1)
 	testing.expectf(t, strings.contains(fetch, `"http_method":"GET"`) && strings.contains(fetch, `"path":"/api/v1/task-chains/ch_1/tasks/t_1/fetch?ref=src%2Fa`) && strings.contains(fetch, `"body":""`), "fetch: %s", fetch)
 }

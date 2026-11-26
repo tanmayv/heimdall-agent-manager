@@ -10,11 +10,12 @@ import iface "odin_test:hub/repository/iface"
 // REQ-TV2-3 (T6): reviewer lifecycle (O7), dependency readiness with a pending
 // merge (O2) and chain completion errors / merge snapshot at Done (O15).
 
-// O7: a reviewer that approves one task while it still owes another must not
-// be stopped, even when the matcher cannot re-grant it right now (its bridge
-// dropped); once the owed review is granted and posted it is stopped.
+// O7, superseded by SCHED-1a (REQ-SCHED-20/22): approve stops the reviewer
+// even while its agent still owes another review (no keep-alive exception);
+// the owed review, granted once the bridge returns, relaunches the same
+// instance with a fresh process, and that approve stops it again.
 @(test)
-test_review_post_keeps_reviewer_that_still_owes :: proc(t: ^testing.T) {
+test_review_post_stops_reviewer_that_still_owes :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "t6_o7")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
@@ -43,19 +44,22 @@ test_review_post_keeps_reviewer_that_still_owes :: proc(t: ^testing.T) {
 	testing.expect_value(t, res.gate, Gate_Result.Approved)
 	_, regranted := lease_of(fx, "inst_r1")
 	testing.expect(t, !regranted, "nothing granted while the bridge is down")
-	testing.expect(t, !wake_log_has_stop(log, "inst_r1"), "a reviewer that still owes a review is not stopped")
+	r_gen := iface_run_count(fx, "inst_r1")
+	stopped_inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_r1")
+	testing.expect_value(t, stopped_inst.stop_reason, STOP_REASON_REVIEW_POSTED)
 	// the bridge returns: the owed review is granted to the same reviewer
 	set_bridge_status(fx, "br_1", true)
 	fixture_advance(fx, REMATCH_DELAYS_SECONDS[2] + 1)
 	_ = fire_due(&fx.svc, now_ms(&fx.clock))
 	next, still := lease_of(fx, "inst_r1")
 	if !testing.expect(t, still && string(next.task_id) == other, "the owed review is re-granted") do return
+	testing.expect_value(t, iface_run_count(fx, "inst_r1"), r_gen + 1)
 	confirm_holder(fx, "inst_r1")
 	// last review: nothing is owed any more, so now it is stopped
 	wake_log_reset(log)
 	_, lok, lerr := review_post(&fx.svc, inst_auth("inst_r1"), Review_Input{verdict = "approve", findings_json = "[]"})
 	testing.expect(t, lok, fmt.tprintf("second review: %s", lerr.message))
-	testing.expect(t, wake_log_has_stop(log, "inst_r1"), "a reviewer owing nothing is stopped")
+	testing.expect(t, wake_log_has_stop(log, "inst_r1"), "approve stops the reviewer")
 	testing.expect_value(t, get_task(fx, "task_1").state, domain.Task_State.Done)
 	testing.expect_value(t, get_task(fx, "task_2").state, domain.Task_State.Done)
 }
@@ -327,4 +331,10 @@ test_done_merge_snapshot_fails_closed :: proc(t: ^testing.T) {
 	berr := backfill_merge_snapshot(&fx.svc, done_a, legacy[:])
 	testing.expect(t, berr.code != .None, "backfill reports the failed read")
 	testing.expect_value(t, count_events(fx, "task_a", EV_MERGE_SNAPSHOT), 1)
+}
+
+@(private = "file")
+iface_run_count :: proc(fx: ^Fixture, inst: string) -> int {
+	cur, _, _ := iface.agent_get_instance(&fx.agents, inst)
+	return cur.run_count
 }

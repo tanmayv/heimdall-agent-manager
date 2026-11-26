@@ -98,6 +98,18 @@ control_record_json :: proc(kr:^Vault_Keyring,kind:Control_Record_Kind,record:js
 			}
 			out[key]=readable
 		}
+		// review_focus: {agent id: free text} (REQ-SCHED-7 replaces review roles).
+		if value,present:=out["review_focus"];present && value!=nil {
+			focus,typed:=value.(json.Object)
+			if !typed do return "",false
+			readable:=make(json.Object,len(focus),context.temp_allocator)
+			for agent,item in focus {
+				text,valid:=item.(json.String);if !valid do return "",false
+				plain,ok:=control_text(kr,string(text));if !ok do return "",false
+				append(&opened,plain);readable[agent]=json.String(plain)
+			}
+			out["review_focus"]=readable
+		}
 	}
 	if kind==.Provider {
 		if value,present:=out["models"];present {

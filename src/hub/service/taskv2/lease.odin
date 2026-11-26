@@ -212,8 +212,10 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 		if svc.agent_service == nil do return {}, false, domain.domain_error(.Internal_Error, "agent launch service is unavailable")
 		current, found, read_err := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
 		if !found do return {}, false, read_err
+		// A recorded stop intent (task done, review approved, grace window
+		// over) means the next responsibility gets a fresh process (REQ-SCHED-25).
 		policy := agent.Start_If_Live.Relaunch
-		if wake_reuses_live_child(current, model_changed || stopping) do policy = .Keep
+		if wake_reuses_live_child(current, model_changed || stopping || current.stop_reason != "") do policy = .Keep
 		domain.agent_instance_destroy(&current)
 		ticket, start_err := agent.start_begin(svc.agent_service, contracts.Auth_Context{user_id=string(task.owner_user_id), kind=.Internal_User}, inst.agent_instance_id, {ref=lease.lease_id, if_live=policy, expected=&inst})
 		if start_err.code != .None do return {}, false, start_err
@@ -223,10 +225,9 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	}
 	saved, ok, err := iface.taskchain_save_lease(svc.repo, lease)
 	if !ok do return {}, false, err
-	// A new grant may reuse a process that has not yet observed its completion
-	// stop. New responsibility supersedes that completion intent, without opening
-	// another generation; a user stop is never cleared here.
-	if inst.stop_reason == "task_completed" {
+	// New responsibility supersedes the lease system's own stop intent (the
+	// wake above relaunched the process); a user stop is never cleared here.
+	if lease_stop_reason(inst.stop_reason) {
 		if cleared, clear_err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, ""); !cleared do return {}, false, clear_err
 	}
 	p := json_begin()
@@ -295,14 +296,13 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 // release_in_uow is the SHARED release path for submit / block / handoff (M2 adds
 // the verbs on top): delete the lease, append `event_kind`, refold, close the
 // attempt row, clear the pointer, arm idle_ttl for the released instance.
-// Callers then run match_chain (after_chain_change), which also stops the
-// instances whose tasks all finished (stop_finished_instances_in_uow).
+// Callers then run match_chain (after_chain_change).
 //
-// The holder keeps its process by default: an agent is not stopped or
-// re-bootstrapped per attempt or review round, only when its task completes
-// (or its context rolls over on the bridge). stop_holder=true is for the
-// agent's own `lease handoff` (it asked for a fresh context window) and for a
-// dispatch failure on a live-but-broken child.
+// The holder keeps its process by default: a worker is not stopped or
+// re-bootstrapped per attempt or review round, only when its task becomes done
+// or cancelled (clear_task_claims_in_uow) or its context rolls over on the
+// bridge. stop_holder=true is for the agent's own `lease handoff` (it asked for
+// a fresh context window) and for a dispatch failure on a live-but-broken child.
 release_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, actor: Actor, event_kind: string, payload_json: string, outcome: string, stop_holder := false) -> (domain.Task, bool, domain.Domain_Error) {
 	task, tok, terr := iface.taskchain_get_task(svc.repo, lease.task_id)
 	if !tok do return {}, false, terr
@@ -355,80 +355,107 @@ wake_reuses_live_child :: proc(inst: domain.Agent_Instance, needs_new_child: boo
 	return !needs_new_child && instance_is_live(inst) && inst.stopped_by == ""
 }
 
-// ---- instance lifetime: stop when the task completes (T8) ----------------------
-// An instance's "tasks" are the tasks it is the latest work holder of and the
-// tasks it reviewed. It is stopped only when all of them are done or
-// cancelled and it holds no lease; until then it keeps its process between
-// attempts and review rounds (waiting for review, blocked, re-granted).
+// ---- instance lifetime: event-driven stops (spec SCHED 8, REQ-SCHED-19..28) ----
+// A worker or reviewer is stopped by the event that ends its responsibility:
+// its task becomes done or cancelled (clear_task_claims_in_uow), it approves
+// (review_post), or its grace window ends with no lease (fire_idle_ttl, the
+// bridge sweep). No stop decision scans the chain: each is a point lookup on
+// the instance (instance_stop_managed).
 
-Instance_Task_Work :: struct {
-	open:     bool, // involved in a task that is not done/cancelled
-	finished: bool, // involved in at least one done/cancelled task
+// Stop intents the lease system records (agent_instances.stop_reason). A new
+// grant to the instance supersedes them; a user stop is never one of them.
+STOP_REASON_TASK_COMPLETED :: "task_completed"
+STOP_REASON_REVIEW_POSTED :: "review_posted"
+STOP_REASON_IDLE_TTL :: "idle_ttl"
+
+lease_stop_reason :: proc(reason: string) -> bool {
+	return reason == STOP_REASON_TASK_COMPLETED || reason == STOP_REASON_REVIEW_POSTED || reason == STOP_REASON_IDLE_TTL
 }
 
-// chain_instance_work folds the chain's tasks into per-instance involvement.
-// The map lives in the temp allocator.
-chain_instance_work :: proc(svc: ^Service, chain: domain.Task_Chain) -> (map[string]Instance_Task_Work, bool) {
-	work := make(map[string]Instance_Task_Work, context.temp_allocator)
-	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
-	if terr.code != .None do return work, false
-	note :: proc(work: ^map[string]Instance_Task_Work, id: string, terminal: bool) {
-		if id == "" do return
-		w := work[id]
-		if terminal do w.finished = true
-		else do w.open = true
-		work[id] = w
+// stop_instance_in_uow records the stop intent, then queues the stop effect:
+// the intent commits with the unit of work before the bridge sees the stop,
+// and a late runtime report cannot authorize a delayed restart (REQ-SCHED-28,
+// the LIFE-6 fence). An instance that is not running needs no stop, unless
+// `reported_live`: its bridge has just reported it active, which outranks the
+// stored status (still `unreachable` from the disconnect during on_bridge_hello).
+stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance, chain_id: string, reason: string, reported_live := false) -> (bool, domain.Domain_Error) {
+	if !reported_live && !instance_is_live(inst) && !instance_is_pending(inst) do return true, {}
+	if recorded, err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, reason); !recorded {
+		if err.code == .None do return false, domain.domain_error(.Internal_Error, "failed to record stop intent")
+		return false, err
 	}
-	for t in tasks {
-		terminal := t.state == .Done || t.state == .Cancelled
-		note(&work, last_attempt_holder(svc, t), terminal)
-		reviews, rerr := iface.taskchain_list_reviews_by_task(svc.repo, t.task_id, t.owner_user_id)
-		if rerr.code != .None do return work, false
-		for r in reviews do if r.reviewer_kind == "agent" do note(&work, r.reviewer_instance_id, terminal)
-	}
-	return work, true
-}
-
-// instance_has_open_work: true when the instance is still involved in an
-// unfinished task of its chain (or the read failed — never stop on doubt).
-instance_has_open_work :: proc(svc: ^Service, chain: domain.Task_Chain, instance_id: string) -> bool {
-	work, ok := chain_instance_work(svc, chain)
-	if !ok do return true
-	return work[instance_id].open
-}
-
-// stop_finished_instances_in_uow stops every live, lease-free, non-coordinator
-// fleet instance of the chain whose tasks are all done or cancelled. Runs at
-// the end of after_chain_change, after the matcher, so an instance the matcher
-// just re-granted holds a lease and is kept.
-stop_finished_instances_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain) -> (bool, domain.Domain_Error) {
-	if svc.agents == nil || u == nil do return true, {}
-	insts, ierr := iface.agent_list_instances_by_chain(svc.agents, chain.owner_user_id, string(chain.chain_id))
-	if ierr.code != .None do return true, {}
-	candidates := make([dynamic]domain.Agent_Instance, context.temp_allocator)
-	for inst in insts {
-		if !instance_is_live(inst) && !instance_is_pending(inst) do continue
-		if is_coordinator(svc, chain, inst.agent_instance_id) do continue
-		if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held do continue
-		if !instance_is_fleet_member(svc, chain, inst) do continue
-		append(&candidates, inst)
-	}
-	if len(candidates) == 0 do return true, {}
-	work, ok := chain_instance_work(svc, chain)
-	if !ok do return true, {}
-	for inst in candidates {
-		w := work[inst.agent_instance_id]
-		if !w.finished || w.open do continue
-		// A reviewer whose agent still owes a review the matcher could not place
-		// (e.g. its bridge was offline) stays under the idle TTL (REQ-TV2-3a).
-		if agent_owes_review_in_chain(svc, chain.chain_id, chain.owner_user_id, inst.agent_id) do continue
-		// Commit stop intent before sending its effect. Runtime status remains a
-		// bridge projection: preserve warm-grant/idle-TTL policy. Late reports cannot
-		// overwrite this reason, so they cannot authorize a delayed rollover.
-		if recorded, reason_err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, "task_completed"); !recorded do return false, reason_err
-		effect_stop(u, inst.bridge_id, string(chain.chain_id), inst.agent_instance_id)
-	}
+	effect_stop(u, inst.bridge_id, chain_id, inst.agent_instance_id)
 	return true, {}
+}
+
+// sweep_idle_instances_in_uow is the bridge-reconnect orphan sweep. It looks
+// ONLY at instances the lease system itself would have launched — on THIS
+// bridge, members of an Active ticket/workflow chain, whose agent has a fleet
+// row in that chain — and that hold no lease. Human-chat members,
+// coordinators, private conversations and other bridges' instances are never
+// touched (review S8). Each is decided with point reads (REQ-SCHED-26): inside
+// its grace window it is kept and its timer re-armed; past it, it is stopped
+// (spec SCHED 8.1 row 19). An instance with no idle_since never had a window
+// the hub knows of (REQ-SCHED-27 gives every lease-free instance one), so it
+// is an orphan and is stopped. Every id here was reported active by the
+// bridge, so the stop is sent whatever the stored runtime status says: after a
+// disconnect it still reads `unreachable` while the hello is handled, and an
+// Idle_TTL that fired while the bridge was offline was a no-op, so this is
+// where that stop is delivered (spec SCHED 12, bridge offline). False when a
+// stop intent could not be recorded.
+sweep_idle_instances_in_uow :: proc(svc: ^Service, u: ^Uow, bridge_id: string, active_instance_ids: []string) -> bool {
+	now := platform.clock_now(svc.clock)
+	ok := true
+	for id in active_instance_ids {
+		if strings.trim_space(id) == "" do continue
+		inst, iok, _ := iface.agent_get_instance(svc.agents, id)
+		if !iok || inst.chain_id == "" || inst.bridge_id != bridge_id do continue
+		chain, cok, _ := iface.taskchain_get_chain(svc.repo, domain.Task_Chain_ID(inst.chain_id))
+		if !cok || chain.status != .Active || chain.publish_state != .Published do continue
+		if chain.kind != domain.CHAIN_KIND_MIXED_WORK do continue
+		ttl, managed := instance_stop_managed(svc, chain, inst)
+		if !managed do continue
+		if inst.idle_since != "" && to_ms(inst.idle_since) + i64(ttl) * 1000 > to_ms(now) {
+			arm_idle_ttl(svc, id, ttl, inst.idle_since)
+			continue
+		}
+		if stopped, _ := stop_instance_in_uow(svc, u, inst, inst.chain_id, STOP_REASON_IDLE_TTL, reported_live = true); !stopped do ok = false
+	}
+	return ok
+}
+
+// instance_stop_managed (REQ-SCHED-26) is the point-lookup part of every idle
+// stop decision: the instance holds no lease (active or waiting), is not the
+// chain's coordinator, and its agent has a fleet row in the chain. `ttl` is
+// that row's grace window. Any failed read answers false: an instance is never
+// stopped on doubt (REQ-SCHED-28).
+instance_stop_managed :: proc(svc: ^Service, chain: domain.Task_Chain, inst: domain.Agent_Instance) -> (ttl: int, managed: bool) {
+	if inst.agent_id == "" do return 0, false
+	if _, held, err := iface.taskchain_get_lease_by_holder(svc.repo, inst.agent_instance_id); held || (err.code != .None && err.code != .Not_Found) do return 0, false
+	if is_coordinator(svc, chain, inst.agent_instance_id) do return 0, false
+	fleets, ferr := iface.taskchain_list_fleets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
+	if ferr.code != .None do return 0, false
+	for f in fleets {
+		if f.agent_id != inst.agent_id do continue
+		return f.idle_ttl_seconds if f.idle_ttl_seconds > 0 else IDLE_TTL_DEFAULT_SECONDS, true
+	}
+	return 0, false
+}
+
+// ensure_idle_timer_in_uow (REQ-SCHED-27): a live, lease-free, managed
+// instance always has idle_since and an armed Idle_TTL, including one that
+// came up with nothing to do.
+ensure_idle_timer_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, instance_id: string) {
+	inst, ok, _ := iface.agent_get_instance(svc.agents, instance_id)
+	if !ok || (!instance_is_live(inst) && !instance_is_pending(inst)) do return
+	ttl, managed := instance_stop_managed(svc, chain, inst)
+	if !managed do return
+	since := inst.idle_since
+	if since == "" {
+		since = platform.clock_now(svc.clock)
+		mark_instance_idle(svc, u, instance_id, since)
+	}
+	arm_idle_ttl(svc, instance_id, ttl, since)
 }
 
 // expire_lease_in_uow explicitly invalidates a claim for lifecycle recovery.
@@ -671,6 +698,8 @@ on_start_success :: proc(svc: ^Service, inst: domain.Agent_Instance) {
 			} else if acted {
 				acted, _ = match_chain_in_uow(svc, &u, chain, .Start_Success)
 			}
+			// Came up with nothing to do: it still gets a grace window (REQ-SCHED-27).
+			if acted do ensure_idle_timer_in_uow(svc, &u, chain, inst.agent_instance_id)
 		}
 	}
 	_, _ = end_uow(svc, &u, acted)
@@ -745,26 +774,7 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 			}
 		}
 	}
-	// Orphans: ONLY instances the lease system itself would have launched —
-	// on THIS bridge, members of an Active ticket/workflow chain, whose
-	// template has a fleet row (worker/reviewer) in that chain — and that hold
-	// no lease. Human-chat members, coordinators, private conversations and
-	// other bridges' instances are never touched (review S8).
-	for id in active_instance_ids {
-		if strings.trim_space(id) == "" do continue
-		if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, id); held do continue
-		inst, iok, _ := iface.agent_get_instance(svc.agents, id)
-		if !iok || inst.chain_id == "" || inst.bridge_id != bridge_id do continue
-		chain, cok, _ := iface.taskchain_get_chain(svc.repo, domain.Task_Chain_ID(inst.chain_id))
-		if !cok || chain.status != .Active || chain.publish_state != .Published do continue
-		if chain.kind != domain.CHAIN_KIND_MIXED_WORK do continue
-		if is_coordinator(svc, chain, id) do continue
-		if !instance_is_fleet_member(svc, chain, inst) do continue
-		// Waiting for review, blocked, or between attempts: keep it (T8).
-		if instance_has_open_work(svc, chain, id) do continue
-		effect_stop(&u, inst.bridge_id, inst.chain_id, id)
-	}
-	ok_all := true
+	ok_all := sweep_idle_instances_in_uow(svc, &u, bridge_id, active_instance_ids)
 	chains, cerr := iface.taskchain_list_published_active_chains(svc.repo)
 	requeue_pending_merges(svc, &u, bridge_id)
 	if cerr.code == .None {
@@ -787,19 +797,6 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 		}
 	}
 	_, _ = end_uow(svc, &u, ok_all)
-}
-
-// instance_is_fleet_member: the instance's template has a fleet row in the
-// chain with any role — worker or a review role (the only kind of instance the
-// matcher ever grants to or launches).
-instance_is_fleet_member :: proc(svc: ^Service, chain: domain.Task_Chain, inst: domain.Agent_Instance) -> bool {
-	fleets, err := iface.taskchain_list_fleets_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
-	if err.code != .None do return false
-	for f in fleets {
-		if f.agent_id != inst.agent_id do continue
-		return true // upsert_fleet rejects an empty role list; a missing one defaults to worker
-	}
-	return false
 }
 
 @(private = "file")
@@ -1190,36 +1187,40 @@ lease_lost_error :: proc() -> domain.Domain_Error {
 
 _ :: fmt
 
-claim_wait_in_uow :: proc(svc: ^Service, lease: domain.Task_Lease) -> bool {
-	waiting := lease; waiting.phase = domain.LEASE_PHASE_WAITING
-	_, ok, _ := iface.taskchain_save_lease(svc.repo, waiting)
-	return ok
-}
-
-// park_review_claim_in_uow ends active review work on a lease: an ordinary
-// reviewer keeps a waiting claim; the coordinator's lease is deleted, because
-// its leases are active-only (REQ-SCHED-14) and a parked claim would stop it
-// pulling anything else.
-park_review_claim_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease) -> bool {
-	if !holder_is_coordinator(svc, lease.chain_id, lease.holder_instance_id) do return claim_wait_in_uow(svc, lease)
+// release_review_to_grace_in_uow (REQ-SCHED-21/23) deletes a review lease
+// (a review lease is never parked as waiting) and starts the holder's grace
+// window: idle_since = now and an armed Idle_TTL. A re-review inside the
+// window is granted to the same live process; when the timer fires with no
+// lease, fire_idle_ttl stops it. The coordinator is never timed out.
+release_review_to_grace_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease) -> bool {
 	if deleted, _ := iface.taskchain_delete_lease(svc.repo, lease.lease_id); !deleted do return false
 	metric_lease_released(lease.kind)
-	mark_instance_idle(svc, u, lease.holder_instance_id, platform.clock_now(svc.clock))
+	now := platform.clock_now(svc.clock)
+	mark_instance_idle(svc, u, lease.holder_instance_id, now)
+	if holder_is_coordinator(svc, lease.chain_id, lease.holder_instance_id) do return true
+	if inst, found, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id); found {
+		arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, lease.chain_id, lease.owner_user_id, inst.agent_id), now)
+	}
 	return true
 }
 
+// clear_task_claims_in_uow (REQ-SCHED-20): the task is done (merge settled)
+// or cancelled. Every claim on it is deleted and every non-coordinator holder
+// is stopped in the same unit of work, with no exception for a review its
+// agent owes elsewhere: a later review grant relaunches it fresh.
 clear_task_claims_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task) -> bool {
 	claims, err := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
 	if err.code != .None do return false
+	now := platform.clock_now(svc.clock)
 	for claim in claims {
 		if deleted, _ := iface.taskchain_delete_lease(svc.repo, claim.lease_id); !deleted do return false
-		mark_instance_idle(svc, u, claim.holder_instance_id, platform.clock_now(svc.clock))
-		if !holder_is_coordinator(svc, task.chain_id, claim.holder_instance_id) {
-			if inst, found, _ := iface.agent_get_instance(svc.agents, claim.holder_instance_id); found {
-				if claim.kind != domain.LEASE_KIND_REVIEW || !agent_owes_review_in_chain(svc, task.chain_id, task.owner_user_id, inst.agent_id) do effect_stop(u, inst.bridge_id, string(task.chain_id), inst.agent_instance_id)
-				arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, task.chain_id, task.owner_user_id, inst.agent_id), platform.clock_now(svc.clock))
-			}
-		}
+		mark_instance_idle(svc, u, claim.holder_instance_id, now)
+		if holder_is_coordinator(svc, task.chain_id, claim.holder_instance_id) do continue
+		inst, found, _ := iface.agent_get_instance(svc.agents, claim.holder_instance_id)
+		if !found do continue
+		if stopped, _ := stop_instance_in_uow(svc, u, inst, string(task.chain_id), STOP_REASON_TASK_COMPLETED); !stopped do return false
+		// Should the stop never land, the idle timer stops it again.
+		arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, task.chain_id, task.owner_user_id, inst.agent_id), now)
 	}
 	return true
 }

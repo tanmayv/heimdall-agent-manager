@@ -55,20 +55,20 @@ startup_wake_grant_generation_is_transactional_and_retries_reuse_it :: proc(t: ^
 	current, _, _ = iface.agent_get_instance(&fx.agents, "inst_w1")
 	testing.expect_value(t, current.run_count, 8)
 	testing.expect(t, !wake_log_has_run(log, "inst_w1"), "live notification has no run effect")
-	// T8: once the child is running, a subsequent grant keeps it: no new
-	// generation, and the wake asks the bridge to nudge the live child.
+	// SCHED-1a (REQ-SCHED-25): the worker's next task gets a fresh process even
+	// while the completed task's child is still running: exactly one more
+	// generation, delivered as a launch, never a nudge.
 	current.runtime_status = "running"
 	_, _, _ = iface.agent_save_instance(&fx.agents, current)
 	submit_via_release(t, fx, lease)
 	wake_log_reset(log)
 	_ = publish_task(t, fx, chain, "task_startup_wake_next")
 	current, _, _ = iface.agent_get_instance(&fx.agents, "inst_w1")
-	testing.expect_value(t, current.run_count, 8)
-	testing.expect_value(t, current.runtime_status, "running")
+	testing.expect_value(t, current.run_count, 9)
 	if !testing.expect(t, len(log.cmds) > 0, "next grant is delivered") do return
 	body := log.cmds[len(log.cmds)-1].body_json
-	testing.expect(t, strings.contains(body, `"run_count":8`) && strings.contains(body, `"deliver":"nudge"`), "live child is nudged on its own generation")
-	// A stopped child is launched again with exactly one more generation.
+	testing.expect(t, strings.contains(body, `"run_count":9`) && !strings.contains(body, `"deliver"`), "next task relaunches on one more generation")
+	// A stopped child is likewise launched again with exactly one more generation.
 	next, _ := lease_of(fx, "inst_w1")
 	current.runtime_status = "stopped"
 	_, _, _ = iface.agent_save_instance(&fx.agents, current)
@@ -76,7 +76,7 @@ startup_wake_grant_generation_is_transactional_and_retries_reuse_it :: proc(t: ^
 	wake_log_reset(log)
 	_ = publish_task(t, fx, chain, "task_startup_wake_third")
 	current, _, _ = iface.agent_get_instance(&fx.agents, "inst_w1")
-	testing.expect_value(t, current.run_count, 9)
+	testing.expect_value(t, current.run_count, 10)
 	if !testing.expect(t, len(log.cmds) > 0, "third grant is delivered") do return
 	testing.expect(t, !strings.contains(log.cmds[len(log.cmds)-1].body_json, `"deliver"`), "a launch is not a nudge")
 }

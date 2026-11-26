@@ -452,17 +452,18 @@ fire_idle_ttl :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	inst, iok, _ := iface.agent_get_instance(svc.agents, t.key)
 	if !iok do return .Noop
 	if inst.idle_since == "" || inst.idle_since != t.armed do return .Noop // re-leased and released again: the newer timer owns it (S4)
+	// Not running (or `unreachable` behind an offline bridge): nothing to stop
+	// now. idle_since is unchanged, so the reconnect sweep finds the window
+	// over and delivers the stop (spec SCHED 12, bridge offline).
 	if !instance_is_live(inst) && !instance_is_pending(inst) do return .Noop
-	if inst.chain_id != "" {
-		if chain, cok, _ := iface.taskchain_get_chain(svc.repo, domain.Task_Chain_ID(inst.chain_id)); cok {
-			if is_coordinator(svc, chain, inst.agent_instance_id) do return .Noop
-			// Idle TTL stops only an instance whose tasks are all done or
-			// cancelled — never one waiting for review or blocked (T8). Its
-			// task's completion stops it later (stop_finished_instances_in_uow).
-			if instance_has_open_work(svc, chain, inst.agent_instance_id) do return .Noop
-		}
-	}
-	effect_stop(u, inst.bridge_id, inst.chain_id, inst.agent_instance_id)
+	// The grace window ended with no lease (REQ-SCHED-23/26): point reads only.
+	// A worker waiting for review or blocked holds a waiting claim, so it is
+	// never stopped here; an instance outside any chain fleet is not managed.
+	if inst.chain_id == "" do return .Noop
+	chain, cok, _ := iface.taskchain_get_chain(svc.repo, domain.Task_Chain_ID(inst.chain_id))
+	if !cok do return .Noop
+	if _, managed := instance_stop_managed(svc, chain, inst); !managed do return .Noop
+	if stopped, _ := stop_instance_in_uow(svc, u, inst, inst.chain_id, STOP_REASON_IDLE_TTL); !stopped do return .Failed
 	return .Acted
 }
 

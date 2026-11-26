@@ -177,19 +177,19 @@ test_explicit_transfer_waiting_reviewer_does_not_repeat_verdict :: proc(t:^testi
  if !testing.expect(t,reviewed,rerr.message) do return
  _,approved,aerr:=review_post(&fx.svc,inst_auth("inst_review_old"),Review_Input{verdict="approve",findings_json="[]"})
  if !testing.expect(t,approved,aerr.message) do return
+ // A posted verdict deletes the review lease (REQ-SCHED-21): there is no
+ // waiting reviewer claim to move, and the agent owes no further review.
+ _,old_held:=lease_of(fx,"inst_review_old")
+ testing.expect(t,!old_held,"approving reviewer holds no claim")
  input:=Lease_Claim_Input{task_id=task.task_id,instance_id="inst_review_new",reason="move waiting reviewer",request_id="waiting_review_once",expected_generation=task_control_generation(&fx.svc,get_task(fx,string(task.task_id)))}
- pending,accepted,terr:=lease_transfer(&fx.svc,inst_auth("inst_coord"),input)
- if !testing.expect(t,accepted && pending.status=="stop_pending",terr.message) do return
- old,_,_:=iface.agent_get_instance(&fx.agents,"inst_review_old")
- old.runtime_status="stopped";_,_,_=iface.agent_save_instance(&fx.agents,old)
- on_instance_terminal(&fx.svc,"inst_review_old")
- confirm_pending_ownership_stop_for_test(t,fx,task,"inst_review_old")
- result,finished,ferr:=lease_transfer(&fx.svc,inst_auth("inst_coord"),input)
- testing.expect(t,finished && result.status=="waiting" && result.role==domain.LEASE_KIND_REVIEW,fmt.tprintf("completed reviewer remains waiting: %s",ferr.message))
- next,nok,nerr:=lease_next(&fx.svc,inst_auth("inst_review_new"),Lease_Next_Input{})
- testing.expect(t,nok && next.status=="waiting",nerr.message)
+ _,accepted,_:=lease_transfer(&fx.svc,inst_auth("inst_coord"),input)
+ testing.expect(t,!accepted,"nothing to transfer once the verdict is posted")
+ _,new_held:=lease_of(fx,"inst_review_new")
+ testing.expect(t,!new_held,"the replacement is not handed a review")
  _,again,again_err:=review_post(&fx.svc,inst_auth("inst_review_new"),Review_Input{verdict="approve"})
- testing.expect(t,!again && again_err.code==.Conflict,"replacement cannot post a second verdict through waiting ownership")
+ testing.expect(t,!again && again_err.code==.Conflict,"replacement cannot post a second verdict")
+ reviews,_:=iface.taskchain_list_reviews_by_task(&fx.repo,task.task_id,"u1")
+ testing.expect_value(t,len(reviews),1)
 }
 
 @(test)

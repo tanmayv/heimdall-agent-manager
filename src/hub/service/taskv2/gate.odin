@@ -19,7 +19,7 @@ import jsonx "odin_test:lib/jsonx"
 //
 // A verdict is the reviewer's judgment; no command evidence is required
 // (REQ-TV2-2). Strict AND per reviewer agent. Any request_changes →
-// EV_CHANGES_REQUESTED (task → ready, other review leases parked); the
+// EV_CHANGES_REQUESTED (task → ready, other review leases deleted); the
 // oscillation guard (fold) parks the task after 3 rounds. A new attempt
 // invalidates prior reviews because reviews are keyed by attempt_no.
 
@@ -62,12 +62,15 @@ evaluate_gate_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, t
 			if fresh, fok, _ := iface.taskchain_get_task(svc.repo, task.task_id); fok do task = fresh
 			if _, _, ok, err := record_event(svc, u, task, actor, EV_CANCELLED, json_end(&cp)); !ok do return .Waiting, false, err
 		}
-		// other review leases on the task are dropped (reason changes_requested)
+		// Every other review lease on the task is deleted and its holder kept
+		// for the grace window (REQ-SCHED-21/23); none is parked as waiting.
 		if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); lerr.code == .None {
 			for l in leases {
 				if l.kind != domain.LEASE_KIND_REVIEW do continue
-				if !park_review_claim_in_uow(svc, u, l) do return .Waiting, false, domain.domain_error(.Internal_Error, "failed to drop a review lease")
+				if !release_review_to_grace_in_uow(svc, u, l) do return .Waiting, false, domain.domain_error(.Internal_Error, "failed to drop a review lease")
 			}
+		} else {
+			return .Waiting, false, lerr
 		}
 		if task.kind == .Gate {
 			metric_gate_evaluated(.Rejected)
@@ -326,30 +329,4 @@ gate_unmet_json :: proc(unmet: []Gate_Unmet) -> string {
 	}
 	strings.write_byte(&b, ']')
 	return strings.to_string(b)
-}
-
-// agent_owes_review_in_chain: whether `agent_id` still owes a review on any
-// in_review task of the chain that no live review lease of that agent already
-// covers (the reviewer lifecycle invariant, REQ-TV2-3a).
-agent_owes_review_in_chain :: proc(svc: ^Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, agent_id: string) -> bool {
-	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain_id, owner)
-	if terr.code != .None do return false
-	for t in tasks {
-		if t.state != .In_Review || t.kind == .Gate do continue
-		listed := false
-		for id in required_reviewers(t, task_author_agent(svc, t)) do if id == agent_id { listed = true; break }
-		if !listed do continue
-		reviews, rerr := iface.taskchain_list_reviews_by_task(svc.repo, t.task_id, t.owner_user_id)
-		if rerr.code != .None do continue
-		if !agent_review_owed(reviews, t, agent_id) do continue
-		covered := false
-		if leases, lerr := iface.taskchain_list_leases_by_task(svc.repo, t.task_id); lerr.code == .None {
-			for l in leases {
-				if l.kind != domain.LEASE_KIND_REVIEW do continue
-				if inst, iok, _ := iface.agent_get_instance(svc.agents, l.holder_instance_id); iok && inst.agent_id == agent_id { covered = true; break }
-			}
-		}
-		if !covered do return true
-	}
-	return false
 }
