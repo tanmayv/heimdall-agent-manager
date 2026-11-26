@@ -491,6 +491,7 @@ bridge_bot_test_watch :: proc(s: ^Bridge_Bot_Test) -> ^Bridge_Bot_Worker {
  w := bridge_bot_test_worker(s)
  w.phase = .Notified
  w.notified_ms = s.now
+ w.dispatched_ms = s.now
  w.frame.timers = {launch_ready_ms = 2000, read_ms = 60_000, read_extend_ms = 60_000, read_max_extends = 4, idle_no_reply_ms = 120_000, reply_cap_ms = 1_800_000, progress_interval_ms = 30_000}
  return w
 }
@@ -576,6 +577,58 @@ bridge_bot_test_silent_notice :: proc(instance: string) -> bool {
  s := bridge_bot_test
  if s.activity == "waiting_user" do s.w.read_seen_ms = s.now
  return true
+}
+
+bridge_bot_test_queued_notice :: proc(instance: string) -> bool {
+ bridge_bot_test.w.notice_waits_for_dispatch = true
+ return true
+}
+
+@(test)
+test_watch_bot_queue_expiry_ends_attempt_without_switch_or_backoff :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s)
+ bridge_bot_notice_proc = bridge_bot_test_queued_notice
+ started := s.now
+ bridge_bot_run(w)
+ testing.expect_value(t, s.now - started, w.frame.timers.reply_cap_ms)
+ testing.expect_value(t, len(s.switches), 1)
+ if testing.expect_value(t, len(w.outcomes), 1) do testing.expect_value(t, w.outcomes[0].outcome, "not_dispatched")
+ for c in w.frame.candidates do testing.expect(t, !bridge_bot_candidate_backoff_active(c, s.now))
+ if testing.expect(t, len(s.reports) > 0) do testing.expect(t, strings.contains(s.reports[len(s.reports)-1], `"reason":"not_dispatched"`))
+}
+
+@(test)
+test_watch_bot_read_deadline_starts_at_first_matching_dispatch :: proc(t: ^testing.T) {
+ s: Bridge_Bot_Test; bridge_bot_test_begin(&s); defer bridge_bot_test_end(&s)
+ w := bridge_bot_test_watch(&s)
+ w.dispatched_ms = 0
+ sync.mutex_lock(&bridge_bot_workers_mutex)
+ if bridge_bot_workers == nil do bridge_bot_workers = make(map[string]^Bridge_Bot_Worker, runtime.heap_allocator())
+ bridge_bot_workers[w.frame.attempt_id] = w
+ sync.mutex_unlock(&bridge_bot_workers_mutex)
+ defer {
+  sync.mutex_lock(&bridge_bot_workers_mutex)
+  delete_key(&bridge_bot_workers, w.frame.attempt_id)
+  sync.mutex_unlock(&bridge_bot_workers_mutex)
+ }
+ s.now += 2*w.frame.timers.read_ms
+ _, done := bridge_bot_test_step(w); testing.expect(t, !done)
+ id := fmt.tprintf("%s%s", ACP_BOT_INPUT_PREFIX, w.frame.attempt_id)
+ bridge_bot_note_dispatch(w.frame.agent_instance_id, "bot_older", s.now)
+ bridge_bot_note_dispatch("inst_other", id, s.now)
+ sync.atomic_store(&w.cancel, true)
+ bridge_bot_note_dispatch(w.frame.agent_instance_id, id, s.now)
+ testing.expect_value(t, sync.atomic_load(&w.dispatched_ms), 0)
+ sync.atomic_store(&w.cancel, false)
+ bridge_bot_note_dispatch(w.frame.agent_instance_id, id, s.now)
+ s.now += w.frame.timers.read_ms - 1
+ bridge_bot_note_dispatch(w.frame.agent_instance_id, id, s.now)
+ _, done = bridge_bot_test_step(w); testing.expect(t, !done)
+ s.now += 1
+ result: string
+ result, done = bridge_bot_test_step(w)
+ testing.expect(t, done && result == "not_read")
 }
 @(test)
 test_watch_failure_records_backoff :: proc(t: ^testing.T) {

@@ -14,6 +14,12 @@ ACP_INBOX_CAP_MS :: 10000
 ACP_INBOX_MAX_BYTES :: 128*256*1024
 ACP_INBOX_DIGEST_BYTES :: 512*1024
 ACP_INBOX_NOTICE_SLOTS :: 112
+ACP_BOT_KIND :: "bot"
+ACP_BOT_INPUT_PREFIX :: "bot_"
+
+acp_inbox_next_turn_only :: proc(kind: string) -> bool {
+    return kind == "append_next_turn" || kind == ACP_BOT_KIND
+}
 
 acp_inbox_interval :: proc() -> i64 {
     raw := os.get_env("HEIMDALL_ACP_NOTICE_INTERVAL_MS", context.temp_allocator)
@@ -25,6 +31,7 @@ acp_inbox_interval :: proc() -> i64 {
 acp_inbox_lane :: proc(kind: string, interrupt := false) -> ACP_Input_Lane {
     if interrupt do return .Steer
     switch kind {
+    case ACP_BOT_KIND: return .Steer
     case "review_requested_from_user", "hold_stale", "work_batch_finished", "agent_not_running", "title_nudge": return .Digest
     case: return .Batch
     }
@@ -49,17 +56,28 @@ acp_inbox_accept :: proc(r: ^ACP_Runtime, c: ^ACP_RPC_Client, argument: string) 
     if !acp_runtime_current(r) || r.d.error != "" || r.d.exit_pending || len(argument) > 512*1024 do return false
     input: ACP_Runtime_Input
     if json.unmarshal_string(argument, &input) != nil || !acp_inbox_input_valid(input) { acp_inbox_input_delete(input); return false }
-    duplicate := input.id == r.d.current_input || input.id == r.d.steering_input.id
+    dispatched := input.id == r.d.current_input
+    for id in r.d.completed_inputs do if id == input.id do dispatched = true
+    duplicate := dispatched || input.id == r.d.steering_input.id
     for entry in r.d.queue do if entry.id == input.id do duplicate = true
-    for id in r.d.completed_inputs do if id == input.id do duplicate = true
     for id in c.state.queued_input_message_ids do if id == input.id do duplicate = true
     // A batch member may live only inside the combined batch input.
     if acp_send_now_member(r, input.id) do duplicate = true
-    if duplicate { acp_inbox_input_delete(input); return true }
+    if duplicate {
+        // A retried worker may have missed the dispatch hook during restart.
+        if dispatched && input.kind == ACP_BOT_KIND do bridge_bot_note_dispatch(r.instance, input.id, acp_rpc_now(c))
+        acp_inbox_input_delete(input); return true
+    }
+    // A superseded worker might already be waiting on the runtime dispatcher.
+    // It must not replace a newer notice just because its call arrived later.
+    if input.kind == ACP_BOT_KIND && bridge_bot_notice_superseded(r.instance, input.id) {
+        acp_inbox_input_delete(input); return false
+    }
     replace := -1
     bytes := len(input.text) + len(r.d.steering_input.text)
     for entry, i in r.d.queue {
-        if input.lane != .Steer && entry.lane != .Steer && input.key != "" && entry.key == input.key && entry.kind == input.kind { replace = i }
+        if (input.kind == ACP_BOT_KIND || (input.lane != .Steer && entry.lane != .Steer)) &&
+           input.key != "" && entry.key == input.key && entry.kind == input.kind { replace = i }
         bytes += len(entry.text)
     }
     if replace >= 0 do bytes -= len(r.d.queue[replace].text)
@@ -128,7 +146,7 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
             return
         }
         driver := acp_runtime_driver(r)
-        steerable := r.d.steering_supported && front.kind != "append_next_turn" && (driver.can_steer == nil || driver.can_steer(r))
+        steerable := r.d.steering_supported && !acp_inbox_next_turn_only(front.kind) && (driver.can_steer == nil || driver.can_steer(r))
         if !steerable {
             if batch do acp_send_now_hold_or_cancel(r, front)
             return

@@ -246,7 +246,7 @@ acp_send_now_apply :: proc(r: ^ACP_Runtime, req: ACP_Send_Now_Request) -> bool {
     for id in req.message_ids {
         for i := 0; i < len(r.d.queue); i += 1 {
             input := r.d.queue[i]
-            if input.id != id || input.lane != .Steer do continue
+            if input.id != id || input.lane != .Steer || input.kind == ACP_BOT_KIND do continue
             append(&selected, input); ordered_remove(&r.d.queue, i)
             break
         }
@@ -316,7 +316,7 @@ acp_send_now_collect :: proc(r: ^ACP_Runtime) -> ACP_Runtime_Input {
 // cancel the running turn once, and the batch becomes the next prompt.
 acp_send_now_hold_or_cancel :: proc(r: ^ACP_Runtime, front: ACP_Runtime_Input) {
     if r.d.cancelling do return
-    if r.d.steering_supported && front.kind != "append_next_turn" && r.driver == &acp_protocol_codex_driver && r.d.codex.turn_id == "" {
+    if r.d.steering_supported && !acp_inbox_next_turn_only(front.kind) && r.driver == &acp_protocol_codex_driver && r.d.codex.turn_id == "" {
         acp_send_now_set_state(r, "waiting")
         return
     }
