@@ -134,6 +134,37 @@ test('Fake 409 and storage errors roll back all pending changes to the last acce
   }
 });
 
+test('Navigation during a slow save flushes the final edit only while the captured account remains valid', async () => {
+  for (const switched of [false, true]) {
+    let currentAccount = 'alice';
+    const requests: { value: HomeLayout; resolve: (value: HomeLayout) => void }[] = [];
+    const adapter: HomeLayoutAdapter = {
+      load: async () => defaultHomeLayout(),
+      save: async (userId, value) => {
+        assert.equal(userId, 'alice');
+        return new Promise((resolve) => requests.push({ value, resolve }));
+      },
+    };
+    let notifications = 0;
+    const session = new HomeLayoutSession(adapter, 'alice', () => { notifications++; }, 500, () => currentAccount === 'alice');
+    await session.load();
+    session.edit((value) => setWidgetHidden(value, 'chains', true));
+    const saving = session.flush();
+    session.edit((value) => setWidgetHidden(value, 'fleet', true));
+    if (switched) currentAccount = 'bob';
+    session.dispose();
+    const count = notifications;
+    requests[0].resolve({ ...requests[0].value, version: 1 }); await saving; await drain();
+    assert.equal(notifications, count);
+    assert.equal(requests.length, switched ? 1 : 2);
+    if (!switched) {
+      assert.equal(requests[1].value.version, 1);
+      assert.equal(requests[1].value.widgets.find(({ id }) => id === 'fleet')!.hidden, true);
+      requests[1].resolve({ ...requests[1].value, version: 2 }); await drain();
+    }
+  }
+});
+
 test('Dashboard edit controls: keyboard menu reorder/width, removal, checkbox menu, handle-only drop and reload isolation', async () => {
   const { JSDOM } = await import('jsdom');
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost/' });
@@ -204,7 +235,7 @@ test('Dashboard edit controls: keyboard menu reorder/width, removal, checkbox me
     await drag('home-layout-slot-uptime', 'drop');
     assert.deepEqual(order(), ['fleet', 'uptime', 'chains']);
     assert.equal(doc.querySelector('.is-dragging'), null);
-    // Flush-on-navigation persists only Alice's layout; Bob gets untouched defaults.
+    // Fixture navigation flushes Alice's per-user local adapter; Bob gets defaults.
     await render('bob');
     assert.deepEqual(order(), ['activity', 'chains', 'uptime', 'fleet']);
     await render('alice');

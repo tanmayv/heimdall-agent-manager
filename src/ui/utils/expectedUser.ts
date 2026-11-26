@@ -7,13 +7,21 @@ export const ACCOUNT_MISMATCH_EVENT = 'heimdall:account-mismatch';
 export const ACCOUNT_MISMATCH_CODE = 'account_mismatch';
 
 let expectedUserId = '';
+let expectedUserGeneration = 0;
 
 export function setExpectedUserId(userId: string | null | undefined): void {
-  expectedUserId = String(userId || '').trim();
+  const next = String(userId || '').trim();
+  if (next !== expectedUserId) expectedUserGeneration++;
+  expectedUserId = next;
 }
 
 export function getExpectedUserId(): string {
   return expectedUserId;
+}
+
+/** Fence work from an earlier sign-in even after switching back to the same ID. */
+export function getExpectedUserGeneration(): number {
+  return expectedUserGeneration;
 }
 
 /** Endpoints that decide or change which account is active must see the real session. */

@@ -51,7 +51,7 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
 }) {
   const [editing, setEditing] = useState(false);
   const mobile = useMobileHome();
-  const { layout, status, edit, reload } = useHomeLayout(userId, adapter);
+  const { layout, status, error, canEdit, edit, reload } = useHomeLayout(userId, adapter);
   const [dragging, setDragging] = useState<HomeWidgetId | null>(null);
   const [target, setTarget] = useState<HomeWidgetId | null>(null);
   const dragSource = useRef<HomeWidgetId | null>(null);
@@ -67,6 +67,7 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
   const hidden = definitions.filter((definition) => layout.widgets.find((item) => item.id === definition.id)?.hidden);
   const endDrag = () => { dragSource.current = null; setDragging(null); setTarget(null); };
   useEffect(() => { endDrag(); setAddOpen(false); }, [editing, mobile]);
+  useEffect(() => { if (!canEdit) setEditing(false); }, [canEdit]);
   useEffect(() => {
     if (!addOpen || !mobile) return;
     const button = addTriggerRef.current;
@@ -109,9 +110,9 @@ export function HomeDashboard({ userId, adapter, widgets = widgetContent }: {
     ...visible, ...(editing ? [{ id: 'add' as const, width: 1 as const }] : []),
   ]);
   return <div data-debug-id="home-page" className="home-dashboard" data-home-editing={editing}>
-    <HomeHeader editing={editing} busy={status === 'loading'} addWidget={addMenu} onEdit={() => setEditing((value) => !value)} />
+    <HomeHeader editing={editing} busy={!canEdit} addWidget={addMenu} onEdit={() => setEditing((value) => !value)} />
     {(status === 'conflict' || status === 'error') && <div className="home-layout-feedback" role="alert" data-debug-id="home-layout-error">
-      <Text role="body-sm">{status === 'conflict' ? 'Your layout changed elsewhere. Your last saved layout has been restored.' : 'Your layout could not be saved. Your last saved layout has been restored.'}</Text>
+      <Text role="body-sm">{status === 'conflict' ? 'Your layout changed elsewhere. Your last saved layout has been restored.' : error}</Text>
       <Button variant="secondary" size="sm" data-debug-id="home-layout-reload" onClick={reload}>Reload saved layout</Button>
     </div>}
     <span className="sr-only" aria-live="polite" data-debug-id="home-layout-announcement">{announcement}</span>
