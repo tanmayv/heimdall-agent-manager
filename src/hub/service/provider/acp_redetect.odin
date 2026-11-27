@@ -1,7 +1,6 @@
 package provider
 
 import "base:runtime"
-import "core:encoding/json"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -206,27 +205,23 @@ acp_gate_redetect :: proc(r: ^ACP_Redetector, bridge: domain.Bridge, provider, a
 	return acp_request_redetect(r, bridge.bridge_id, provider, acp_redetect_kind(provider, adapter_json), now)
 }
 
-// acp_report_stale is true for a report whose checked_at is older than
-// ACP_STATUS_STALE_AFTER (or unreadable). No report is not stale: provider
-// scans create the first one.
-acp_report_stale :: proc(adapter_json: string, now: time.Time) -> bool {
+// acp_report_stale is true for a report the Hub received more than
+// ACP_STATUS_STALE_AFTER ago, judged by received_at (the Hub's clock, set on
+// upsert), never the bridge-reported checked_at, which can be skewed. A report
+// with no receipt time (stored before it was recorded, or unreadable) is
+// stale. No report is not stale: provider scans create the first one.
+acp_report_stale :: proc(adapter_json, received_at: string, now: time.Time) -> bool {
 	if adapter_json == "" do return false
-	value, err := json.parse_string(adapter_json, allocator = context.temp_allocator)
-	if err != nil do return true
-	obj, ok := value.(json.Object)
-	if !ok do return true
-	checked, cok := obj["checked_at"].(json.String)
-	if !cok do return true
-	at, consumed := time.rfc3339_to_time_utc(string(checked))
+	at, consumed := time.rfc3339_to_time_utc(received_at)
 	if consumed == 0 do return true
 	return time.diff(at, now) > ACP_STATUS_STALE_AFTER
 }
 
 // acp_read_redetect is the provider-status read's request for one provider
 // row: an ACP-capable, online bridge with a stale report is re-detected.
-acp_read_redetect :: proc(r: ^ACP_Redetector, bridge: domain.Bridge, provider, transports_json, recipe_json, adapter_json: string, now: time.Time) -> bool {
+acp_read_redetect :: proc(r: ^ACP_Redetector, bridge: domain.Bridge, provider, transports_json, recipe_json, adapter_json, received_at: string, now: time.Time) -> bool {
 	if bridge.status != .Online || !contracts.bridge_supports_acp_runtime(bridge.capabilities_json) do return false
 	if !contracts.provider_supports_transport(transports_json, "acp") || !contracts.acp_provider_recipe_valid(provider, recipe_json) do return false
-	if !acp_report_stale(adapter_json, now) do return false
+	if !acp_report_stale(adapter_json, received_at, now) do return false
 	return acp_request_redetect(r, bridge.bridge_id, provider, acp_redetect_kind(provider, adapter_json), now)
 }

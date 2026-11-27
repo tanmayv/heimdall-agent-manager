@@ -809,6 +809,7 @@ MIGRATION_265_EXTENSION_VERSION_SYNC :: #load("migrations/265_extension_version_
 MIGRATION_266_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE :: #load("migrations/266_instance_runtime_transport_override.sql", string)
 
 MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE :: #load("migrations/267_reconfiguration_waiting_for_idle.sql", string)
+MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT :: #load("migrations/268_bridge_provider_acp_received_at.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1114,6 +1115,7 @@ migration_order :: [?]string {
 	"265_extension_version_sync_0_5_95.sql",
 	"266_instance_runtime_transport_override.sql",
 	"267_reconfiguration_waiting_for_idle.sql",
+	"268_bridge_provider_acp_received_at.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1623,6 +1625,11 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		// 268 is one atomic ALTER before its ledger row; its column proves completion.
+		if name == "268_bridge_provider_acp_received_at.sql" && table_column_exists(conn, "bridge_provider_status", "acp_adapter_received_at") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 110 commits atomically before its ledger row; its column proves completion.
 		if name == "110_provider_ask_args.sql" && table_column_exists(conn, "provider_catalog", "ask_args") {
 			mark_migration_applied(conn, name)
@@ -1698,6 +1705,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "268_bridge_provider_acp_received_at.sql" do return strings.clone(MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT)
 	if name == "267_reconfiguration_waiting_for_idle.sql" do return strings.clone(MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE)
 	if name == "266_instance_runtime_transport_override.sql" do return strings.clone(MIGRATION_266_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE)
 	if name == "265_extension_version_sync_0_5_95.sql" do return strings.clone(MIGRATION_265_EXTENSION_VERSION_SYNC)

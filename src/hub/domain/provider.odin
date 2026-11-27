@@ -44,6 +44,9 @@ Provider_Icon :: struct {
 
 Bridge_Provider_Status :: struct {
 	acp_adapter_json: string,
+	// When the Hub stored acp_adapter_json, on the Hub's clock (RFC 3339 UTC);
+	// set by the repository on upsert, "" for rows received before it existed.
+	acp_adapter_received_at: string,
 	profile_id: string,
 	bridge_id: string,
 	provider: string,
@@ -110,7 +113,7 @@ provider_icon_destroy :: proc(icon: Provider_Icon) {
 }
 
 bridge_provider_status_destroy :: proc(value: Bridge_Provider_Status) {
-	delete(value.acp_adapter_json)
+	delete(value.acp_adapter_json); delete(value.acp_adapter_received_at)
 	delete(value.profile_id); delete(value.bridge_id); delete(value.provider); delete(value.binary_path)
 	delete(value.version_text); delete(value.state); delete(value.checked_at)
 	delete(value.extension_state); delete(value.extension_version); delete(value.extension_checked_at)

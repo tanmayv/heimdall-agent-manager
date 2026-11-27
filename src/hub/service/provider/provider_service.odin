@@ -40,6 +40,7 @@ Provider_Catalog_Result :: struct {
 
 Bridge_Provider_View :: struct {
 	transport, effective_transport, acp_adapter_json: string,
+	acp_adapter_received_at: string, // Hub clock; see Bridge_Provider_Status
 	profile_id: string,
 	profile_state: string,
 	label_enc: string,
@@ -60,7 +61,7 @@ Bridge_Provider_View :: struct {
 }
 
 bridge_provider_view_destroy :: proc(value: Bridge_Provider_View) {
-	delete(value.transport); delete(value.effective_transport); delete(value.acp_adapter_json)
+	delete(value.transport); delete(value.effective_transport); delete(value.acp_adapter_json); delete(value.acp_adapter_received_at)
 	delete(value.profile_id); delete(value.profile_state); delete(value.label_enc); delete(value.accent)
 	domain.provider_catalog_entry_destroy(value.catalog)
 	delete(value.models_source); delete(value.models_checked_at); delete(value.models_attempted_at); delete(value.models_state)
@@ -389,7 +390,7 @@ list_bridge_providers :: proc(service: ^Provider_Service, bridge_id: string) -> 
   v.enabled=v.enabled && p.enabled && p.state!="missing"
   for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.provider {v.transport=strings.clone(setting.transport);break}
   v.effective_transport=strings.clone(v.transport if v.transport!="" else contracts.runtime_transport_or_pty(entry.default_transport))
-  for status in statuses do if status.provider==p.provider && domain.profile_effective_id(status.provider,status.profile_id)==p.provider {v.acp_adapter_json=strings.clone(status.acp_adapter_json);break}
+  for status in statuses do if status.provider==p.provider && domain.profile_effective_id(status.provider,status.profile_id)==p.provider {v.acp_adapter_json=strings.clone(status.acp_adapter_json);v.acp_adapter_received_at=strings.clone(status.acp_adapter_received_at);break}
   observation,oerr:=effective_model_observation(service.repo,bridge_id,&v.catalog,p.profile_id)
   if oerr.code!=.None {bridge_provider_view_destroy(v);bridge_provider_views_destroy(views);return nil,oerr}
   v.models_source=strings.clone(observation.models_source if observation.has_snapshot else "static_fallback")

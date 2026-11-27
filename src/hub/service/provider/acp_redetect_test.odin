@@ -109,21 +109,25 @@ test_acp_stale_status_read_redetects_once :: proc(t: ^testing.T) {
 	f: Redetect_Fixture; redetect_setup(&f); defer redetect_teardown(&f)
 	now, _ := time.rfc3339_to_time_utc("2026-11-27T12:00:00Z")
 	bridge := domain.Bridge{bridge_id = "b", capabilities_json = `{"features":["acp_runtime_v1"]}`}
-	stale := `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-27T11:00:00Z","adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}`
-	fresh := `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-27T11:55:00Z","adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}`
-	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, fresh, now))
-	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, "", now), "no report yet: scans create it")
-	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty"]`, TRANSPORT_TEST_RECIPE, stale, now))
+	// The bridge's checked_at is deliberately skewed: only the Hub receipt time counts.
+	report := `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2030-01-01T00:00:00Z","adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}`
+	stale := report; stale_at := "2026-11-27T11:00:00Z"
+	fresh := report; fresh_at := "2026-11-27T11:55:00Z"
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, fresh, fresh_at, now))
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, "", "", now), "no report yet: scans create it")
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty"]`, TRANSPORT_TEST_RECIPE, stale, stale_at, now))
 	offline := bridge; offline.status = .Offline
-	testing.expect(t, !acp_read_redetect(&f.r, offline, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
+	testing.expect(t, !acp_read_redetect(&f.r, offline, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, stale_at, now))
 	no_acp := bridge; no_acp.capabilities_json = `{"features":[]}`
-	testing.expect(t, !acp_read_redetect(&f.r, no_acp, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
+	testing.expect(t, !acp_read_redetect(&f.r, no_acp, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, stale_at, now))
 	testing.expect_value(t, len(f.calls), 0)
-	testing.expect(t, acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
-	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, time.time_add(now, time.Second)), "deduplicated")
+	testing.expect(t, acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, stale_at, now))
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, stale_at, time.time_add(now, time.Second)), "deduplicated")
 	testing.expect_value(t, len(f.calls), 1)
 	if len(f.calls) == 1 do testing.expect_value(t, f.calls[0], "b/claude/discover")
-	testing.expect(t, acp_report_stale(`{"state":"ready","checked_at":"not a time"}`, now))
+	testing.expect(t, acp_report_stale(report, "", now), "no Hub receipt time: stale once")
+	testing.expect(t, acp_report_stale(report, "not a time", now))
+	testing.expect(t, !acp_report_stale(report, fresh_at, now))
 	testing.expect_value(t, acp_redetect_kind("kiro", `{"state":"outdated"}`), ACP_Redetect_Kind.Recheck)
 	testing.expect_value(t, acp_redetect_kind("kiro", stale), ACP_Redetect_Kind.Discover)
 	testing.expect_value(t, acp_redetect_kind("claude", `{"state":"missing"}`), ACP_Redetect_Kind.Discover)
