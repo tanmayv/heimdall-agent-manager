@@ -56,7 +56,7 @@ r2_acp_adapter_node_npm_detected_live_with_install_commands :: proc(t: ^testing.
     acp_adapter_runner = r2_runner; acp_adapter_probe_hook = t4_adapter_fake_probe
     acp_adapter_cli_probe_hook = t4_adapter_fake_claude_probe; acp_adapter_binding_hook = t4_adapter_fake_binding
     acp_host_has_hook = r2_host_has
-    r2_host = {"dnf"}; r2_node = ""; r2_npm = false; r2_npm_install_fails = false; r2_npm_installs = 0
+    r2_host = {"pacman"}; r2_node = ""; r2_npm = false; r2_npm_install_fails = false; r2_npm_installs = 0
     snapshot := bridge_provider_catalog_snapshot
     snapshot.etag = "sha256:r2"
     snapshot.providers[0].acp_recipe = {command = "claude-agent-acp", protocol_version = 1,
@@ -67,27 +67,27 @@ r2_acp_adapter_node_npm_detected_live_with_install_commands :: proc(t: ^testing.
     // Missing Node.js.
     status := acp_adapter_status("claude")
     testing.expect_value(t, status.state, "missing_node")
-    testing.expect_value(t, status.install_command, "sudo dnf install -y nodejs npm")
-    testing.expect_value(t, status.error, "Node.js 22 or newer is required on the bridge host to run the Claude ACP adapter; install it with: sudo dnf install -y nodejs npm")
+    testing.expect_value(t, status.install_command, "sudo pacman -S --needed nodejs npm")
+    testing.expect_value(t, status.error, "Node.js 22 or newer is required on the bridge host to run the Claude ACP adapter; install it with: sudo pacman -S --needed nodejs npm")
     status_json := acp_adapter_status_json("claude")
-    testing.expect(t, strings.contains(status_json, `"install_command":"sudo dnf install -y nodejs npm"`) && strings.contains(status_json, `"diagnostic":null`), status_json)
+    testing.expect(t, strings.contains(status_json, `"install_command":"sudo pacman -S --needed nodejs npm"`) && strings.contains(status_json, `"diagnostic":null`), status_json)
     ok, reason := acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
     testing.expect(t, !ok && reason == "acp_adapter_missing_node" && r2_npm_installs == 0)
     frame := acp_adapter_install_result_json("cmd_r2", ok, reason, acp_adapter_status("claude").error)
-    testing.expect(t, strings.contains(frame, "sudo dnf install -y nodejs npm"), frame)
+    testing.expect(t, strings.contains(frame, "sudo pacman -S --needed nodejs npm"), frame)
 
     // Too old Node.js reports what was found.
     r2_node = "v18.19.1\n"
     status = acp_adapter_status("claude")
     testing.expect(t, status.state == "missing_node" && status.node_version == "v18.19.1")
-    testing.expect_value(t, status.error, "Node.js 22 or newer is required on the bridge host to run the Claude ACP adapter (found v18.19.1); upgrade it with: sudo dnf install -y nodejs npm")
+    testing.expect_value(t, status.error, "Node.js 22 or newer is required on the bridge host to run the Claude ACP adapter (found v18.19.1); upgrade it with: sudo pacman -S --needed nodejs npm")
 
     // Node.js installed without npm: a separate state with its own command.
     r2_node = "v22.3.0\n"
     status = acp_adapter_status("claude")
     testing.expect(t, status.state == "missing_npm" && status.node_version == "v22.3.0")
-    testing.expect_value(t, status.install_command, "sudo dnf install -y npm")
-    testing.expect_value(t, status.error, "npm is required on the bridge host to install the Claude ACP adapter; install it with: sudo dnf install -y npm")
+    testing.expect_value(t, status.install_command, "sudo pacman -S --needed npm")
+    testing.expect_value(t, status.error, "npm is required on the bridge host to install the Claude ACP adapter; install it with: sudo pacman -S --needed npm")
     ok, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
     testing.expect(t, !ok && reason == "acp_adapter_missing_npm" && r2_npm_installs == 0)
 
@@ -192,25 +192,44 @@ r2_acp_host_install_command_per_os_and_package_manager :: proc(t: ^testing.T) {
     acp_host_has_hook = r2_host_has
     Case :: struct { os: string, host: []string, node, npm: string }
     cases := []Case{
-        {"linux", {"/etc/NIXOS", "nix", "apt-get"}, "nix profile install nixpkgs#nodejs_22", "nix profile install nixpkgs#nodejs_22"},
-        {"linux", {"apt-get"}, "sudo apt-get install -y nodejs npm", "sudo apt-get install -y npm"},
+        {"linux", {"/etc/NIXOS", "nix", "apt-get"}, "nix-env -iA nixos.nodejs_22", "nix-env -iA nixos.nodejs_22"},
         {"linux", {"pacman"}, "sudo pacman -S --needed nodejs npm", "sudo pacman -S --needed npm"},
-        {"linux", {"apk"}, "sudo apk add nodejs npm", "sudo apk add npm"},
-        {"linux", {"nix"}, "nix profile install nixpkgs#nodejs_22", "nix profile install nixpkgs#nodejs_22"},
-        {"darwin", {"brew", "apt-get"}, "brew install node@22", "brew install node@22"},
+        {"linux", {"apk"}, "sudo apk add nodejs-current npm", "sudo apk add npm"},
+        {"linux", {"nix"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
+        // Debian/Ubuntu/Fedora/openSUSE packages can be older than 22: no command.
+        {"linux", {"apt-get"}, "", ""},
+        {"linux", {"dnf"}, "", ""},
+        {"linux", {"zypper"}, "", ""},
+        {"linux", {"apt-get", "nix"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
+        // node@22 is keg-only (not on PATH); `node` is current and links.
+        {"darwin", {"brew", "apt-get"}, "brew install node", "brew install node"},
+        {"darwin", {"port"}, "sudo port install nodejs22 npm10", "sudo port install npm10"},
         {"windows", {"winget"}, "winget install OpenJS.NodeJS.LTS", "winget install OpenJS.NodeJS.LTS"},
         {"linux", {"brew"}, "", ""},
         {"freebsd", {"pkg"}, "", ""},
     }
     for c in cases {
         r2_host = c.host
-        testing.expectf(t, acp_host_install_command(.Node, c.os) == c.node, "%v node", c)
-        testing.expectf(t, acp_host_install_command(.Npm, c.os) == c.npm, "%v npm", c)
+        node, _ := acp_host_install_command(.Node, 22, c.os)
+        npm, _ := acp_host_install_command(.Npm, 22, c.os)
+        testing.expectf(t, node == c.node, "%v node: %s", c, node)
+        testing.expectf(t, npm == c.npm, "%v npm: %s", c, npm)
+    }
+    // The major version comes from the descriptor, never a constant.
+    r2_host = {"/etc/NIXOS"}
+    command, note := acp_host_install_command(.Node, 24, "linux")
+    testing.expect(t, command == "nix-env -iA nixos.nodejs_24" && note == "or add nodejs_24 to environment.systemPackages and run nixos-rebuild switch", note)
+    when ODIN_OS == .Linux {
+        // A too-old distribution package points at nodejs.org with the reason.
+        r2_host = {"apt-get"}
+        message, cmd := acp_host_tool_requirement(.Node, "Claude", 22)
+        testing.expect_value(t, cmd, "")
+        testing.expect_value(t, message, "Node.js 22 or newer is required on the bridge host to run the Claude ACP adapter (the apt nodejs package can be older than Node.js 22; use the NodeSource or official packages); install it from https://nodejs.org/en/download")
     }
     // No detected package manager: point at the official download page.
     r2_host = {}
-    message, command := acp_host_tool_requirement(.Node, "Claude", 22)
-    testing.expect(t, command == "" && strings.has_suffix(message, "install it from https://nodejs.org/en/download"), message)
+    fallback, fallback_command := acp_host_tool_requirement(.Node, "Claude", 22)
+    testing.expect(t, fallback_command == "" && strings.has_suffix(fallback, "install it from https://nodejs.org/en/download"), fallback)
 }
 
 @(test)

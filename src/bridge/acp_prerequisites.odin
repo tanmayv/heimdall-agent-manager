@@ -11,23 +11,30 @@ import "core:strings"
 // commands; System runtimes (user-installed CLIs) need neither tool.
 ACP_Host_Tool :: enum { Node, Npm }
 
+// {N} is replaced with the descriptor's node_min_major (G7: never hardcoded).
+// node/npm are commands that yield Node.js {N}+ (or npm for it) on PATH; ""
+// when the packaged Node.js can be older than {N}, so the user is pointed at
+// nodejs.org instead of a command that leaves them stuck. note adds context.
 ACP_Host_Installer :: struct {
     os: string,     // lowercased ODIN_OS this row applies to
     detect: string, // an absolute marker path, or an executable looked up on PATH
-    node, npm: string,
+    node, npm, note: string,
 }
 
-// First match wins: distribution markers before generic package managers.
+// First match with a command wins: distribution markers before generic package
+// managers. A matching row without a command keeps looking (e.g. nix on a
+// Debian host) and contributes its note to the nodejs.org fallback.
 ACP_HOST_INSTALLERS := [?]ACP_Host_Installer{
-    {os = "linux", detect = "/etc/NIXOS", node = "nix profile install nixpkgs#nodejs_22", npm = "nix profile install nixpkgs#nodejs_22"},
-    {os = "linux", detect = "apt-get", node = "sudo apt-get install -y nodejs npm", npm = "sudo apt-get install -y npm"},
-    {os = "linux", detect = "dnf", node = "sudo dnf install -y nodejs npm", npm = "sudo dnf install -y npm"},
+    {os = "linux", detect = "/etc/NIXOS", node = "nix-env -iA nixos.nodejs_{N}", npm = "nix-env -iA nixos.nodejs_{N}",
+        note = "or add nodejs_{N} to environment.systemPackages and run nixos-rebuild switch"},
     {os = "linux", detect = "pacman", node = "sudo pacman -S --needed nodejs npm", npm = "sudo pacman -S --needed npm"},
-    {os = "linux", detect = "zypper", node = "sudo zypper install -y nodejs22 npm22", npm = "sudo zypper install -y npm22"},
-    {os = "linux", detect = "apk", node = "sudo apk add nodejs npm", npm = "sudo apk add npm"},
-    {os = "linux", detect = "nix", node = "nix profile install nixpkgs#nodejs_22", npm = "nix profile install nixpkgs#nodejs_22"},
-    {os = "darwin", detect = "brew", node = "brew install node@22", npm = "brew install node@22"},
-    {os = "darwin", detect = "port", node = "sudo port install nodejs22 npm10", npm = "sudo port install npm10"},
+    {os = "linux", detect = "apk", node = "sudo apk add nodejs-current npm", npm = "sudo apk add npm"},
+    {os = "linux", detect = "nix", node = "nix-env -iA nixpkgs.nodejs_{N}", npm = "nix-env -iA nixpkgs.nodejs_{N}"},
+    {os = "linux", detect = "apt-get", note = "the apt nodejs package can be older than Node.js {N}; use the NodeSource or official packages"},
+    {os = "linux", detect = "dnf", note = "the dnf nodejs package can be older than Node.js {N}; use the official packages"},
+    {os = "linux", detect = "zypper", note = "the zypper nodejs package can be older than Node.js {N}; use the official packages"},
+    {os = "darwin", detect = "brew", node = "brew install node", npm = "brew install node"},
+    {os = "darwin", detect = "port", node = "sudo port install nodejs{N} npm10", npm = "sudo port install npm10"},
     {os = "windows", detect = "winget", node = "winget install OpenJS.NodeJS.LTS", npm = "winget install OpenJS.NodeJS.LTS"},
 }
 
@@ -44,29 +51,39 @@ acp_host_has :: proc(detect: string) -> bool {
     return path != ""
 }
 
-// acp_host_install_command is the command that installs tool on this bridge
-// host, or "" when no supported package manager was detected.
-acp_host_install_command :: proc(tool: ACP_Host_Tool, host_os: string = "") -> string {
+// acp_host_install_command is the command that installs tool (for Node.js
+// node_min_major or newer) on this bridge host, or "" when no package manager
+// that ships a recent enough Node.js was detected; note is the matching rows'
+// extra guidance.
+acp_host_install_command :: proc(tool: ACP_Host_Tool, node_min_major: int, host_os: string = "") -> (command, note: string) {
+    context.allocator = context.temp_allocator
     host_os := host_os
-    if host_os == "" do host_os = strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator)
+    if host_os == "" do host_os = strings.to_lower(fmt.tprintf("%v", ODIN_OS))
+    major := fmt.tprintf("%d", node_min_major)
     for row in ACP_HOST_INSTALLERS {
         if row.os != host_os || !acp_host_has_hook(row.detect) do continue
-        return row.node if tool == .Node else row.npm
+        if note == "" do note, _ = strings.replace_all(row.note, "{N}", major)
+        template := row.node if tool == .Node else row.npm
+        if template == "" do continue
+        command, _ = strings.replace_all(template, "{N}", major)
+        return
     }
-    return ""
+    return
 }
 
 // acp_host_tool_requirement is the status message and install command for a
 // missing (found == "") or too old tool. Messages carry no environment values.
 acp_host_tool_requirement :: proc(tool: ACP_Host_Tool, display_name: string, node_min_major: int, found: string = "") -> (message, command: string) {
     context.allocator = context.temp_allocator
-    command = acp_host_install_command(tool)
+    note: string
+    command, note = acp_host_install_command(tool, node_min_major)
     what := fmt.tprintf("Node.js %d or newer is required on the bridge host to run the %s ACP adapter", node_min_major, display_name)
     if tool == .Npm do what = fmt.tprintf("npm is required on the bridge host to install the %s ACP adapter", display_name)
     if found != "" do what = fmt.tprintf("%s (found %s)", what, found)
     verb := "upgrade" if found != "" else "install"
-    if command != "" do return fmt.tprintf("%s; %s it with: %s", what, verb, command), command
-    return fmt.tprintf("%s; %s it from %s", what, verb, ACP_NODE_DOWNLOAD_URL), ""
+    suffix := fmt.tprintf(" (%s)", note) if note != "" else ""
+    if command != "" do return fmt.tprintf("%s%s; %s it with: %s", what, suffix, verb, command), command
+    return fmt.tprintf("%s%s; %s it from %s", what, suffix, verb, ACP_NODE_DOWNLOAD_URL), ""
 }
 
 // Install failures surface npm's own diagnostics, bounded and redacted: the
