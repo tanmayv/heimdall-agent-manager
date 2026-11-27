@@ -1,6 +1,9 @@
+#+feature dynamic-literals
+
 package contracts
 
 import "core:encoding/json"
+import "core:strconv"
 import "core:strings"
 import "core:unicode/utf8"
 
@@ -197,6 +200,194 @@ stream_decode_control :: proc(raw: string, received_ms: u64, allocator := contex
 		}
 	}
 	return nil, false
+}
+
+
+STREAM_MAX_INPUT_BYTES :: 200 * 1024
+STREAM_MAX_INPUT_EVENTS :: 32
+STREAM_MAX_INPUT_TEXT_BYTES :: 1024
+STREAM_MAX_INPUT_KEY_BYTES :: 128
+STREAM_MAX_INPUT_WHEEL_DELTA :: 100_000
+
+// Button uses DOM numbering (-1 means no changed button on move).
+// The optional held-buttons mask uses DOM bits, and modifiers uses CDP bits.
+Stream_Input_Pointer :: struct {
+	action: string,
+	button: int,
+	x, y: f64,
+	buttons: Maybe(int),
+}
+Stream_Input_Wheel :: struct {dx, dy, x, y: f64} // Deltas are CSS pixels.
+Stream_Input_Key :: struct {action, key, code: string, modifiers: int}
+Stream_Input_Text :: struct {text: string}
+Stream_Input_Event :: union {
+	Stream_Input_Pointer, Stream_Input_Wheel, Stream_Input_Key, Stream_Input_Text,
+}
+Stream_Input :: struct {stream_id: string, events: []Stream_Input_Event}
+
+@(private = "file")
+stream_input_event_valid :: proc(event: Stream_Input_Event) -> bool {
+	switch e in event {
+	case Stream_Input_Pointer:
+		buttons, has_buttons := e.buttons.?
+		return (e.action == "down" || e.action == "up" || e.action == "move") &&
+			e.button >= (-1 if e.action == "move" else 0) && e.button <= 4 &&
+			(!has_buttons || buttons >= 0 && buttons <= 31) &&
+			e.x >= 0 && e.x <= 1 && e.y >= 0 && e.y <= 1
+	case Stream_Input_Wheel:
+		// Positive range checks also reject NaN and infinities.
+		return e.dx >= -STREAM_MAX_INPUT_WHEEL_DELTA && e.dx <= STREAM_MAX_INPUT_WHEEL_DELTA &&
+			e.dy >= -STREAM_MAX_INPUT_WHEEL_DELTA && e.dy <= STREAM_MAX_INPUT_WHEEL_DELTA &&
+			e.x >= 0 && e.x <= 1 && e.y >= 0 && e.y <= 1
+	case Stream_Input_Key:
+		return (e.action == "down" || e.action == "up") && e.modifiers >= 0 && e.modifiers <= 15 &&
+			len(e.key) > 0 && len(e.key) <= STREAM_MAX_INPUT_KEY_BYTES && utf8.valid_string(e.key) &&
+			len(e.code) <= STREAM_MAX_INPUT_KEY_BYTES && utf8.valid_string(e.code)
+	case Stream_Input_Text:
+		return len(e.text) <= STREAM_MAX_INPUT_TEXT_BYTES && utf8.valid_string(e.text)
+	}
+	return false
+}
+
+@(private = "file")
+stream_input_event_object :: proc(event: Stream_Input_Event) -> json.Object {
+	switch e in event {
+	case Stream_Input_Pointer:
+		o := json.Object{
+			"kind" = "pointer", "action" = e.action, "button" = i64(e.button),
+			"x" = e.x, "y" = e.y,
+		}
+		if buttons, present := e.buttons.?; present do o["buttons"] = i64(buttons)
+		return o
+	case Stream_Input_Wheel:
+		return {"kind" = "wheel", "dx" = e.dx, "dy" = e.dy, "x" = e.x, "y" = e.y}
+	case Stream_Input_Key:
+		return {
+			"kind" = "key", "action" = e.action, "key" = e.key,
+			"code" = e.code, "modifiers" = i64(e.modifiers),
+		}
+	case Stream_Input_Text:
+		return {"kind" = "text", "text" = e.text}
+	}
+	return nil
+}
+
+// Caller owns the result. Nil denotes an invalid batch.
+stream_encode_input :: proc(input: Stream_Input, allocator := context.allocator) -> []byte {
+	if !stream_id_valid(input.stream_id) || len(input.events) < 1 ||
+	   len(input.events) > STREAM_MAX_INPUT_EVENTS {
+		return nil
+	}
+	for event in input.events {
+		if !stream_input_event_valid(event) do return nil
+	}
+	events := make(json.Array, 0, len(input.events))
+	defer delete(events)
+	defer {
+		for event in events do delete(event.(json.Object))
+	}
+	for event in input.events do append(&events, stream_input_event_object(event))
+	payload := json.Object{"stream_id" = input.stream_id, "events" = events}
+	defer delete(payload)
+	envelope := json.Object{"type" = "stream_input", "protocol_version" = i64(STREAM_PROTOCOL_VERSION), "payload" = payload}
+	defer delete(envelope)
+	raw, err := json.unparse(envelope, {spec = .JSON}, allocator)
+	if err != nil do return nil
+	return transmute([]byte)raw
+}
+
+@(private = "file")
+stream_input_number :: proc(v: json.Value) -> (f64, bool) {
+	#partial switch n in v {
+	case json.Integer: return f64(n), true
+	case json.Float: return n, true
+	}
+	return 0, false
+}
+
+@(private = "file")
+stream_input_parse_event :: proc(o: json.Object) -> (Stream_Input_Event, bool) {
+	switch mq_string(o, "kind") {
+	case "pointer":
+		x, x_ok := stream_input_number(o["x"])
+		y, y_ok := stream_input_number(o["y"])
+		button, button_ok := o["button"].(json.Integer)
+		buttons: Maybe(int)
+		members := 5
+		if value, present := o["buttons"]; present {
+			n, ok := value.(json.Integer)
+			if !ok || n < 0 || n > 31 do return nil, false
+			buttons = int(n)
+			members += 1
+		}
+		if len(o) != members || !x_ok || !y_ok || !button_ok || button < -1 || button > 4 do return nil, false
+		return Stream_Input_Pointer{mq_string(o, "action"), int(button), x, y, buttons}, true
+	case "wheel":
+		x, x_ok := stream_input_number(o["x"])
+		y, y_ok := stream_input_number(o["y"])
+		dx, dx_ok := stream_input_number(o["dx"])
+		dy, dy_ok := stream_input_number(o["dy"])
+		if len(o) != 5 || !x_ok || !y_ok || !dx_ok || !dy_ok do return nil, false
+		return Stream_Input_Wheel{dx, dy, x, y}, true
+	case "key":
+		modifiers, m_ok := o["modifiers"].(json.Integer)
+		code, c_ok := o["code"].(json.String)
+		if len(o) != 5 || !c_ok || !m_ok || modifiers < 0 || modifiers > 15 do return nil, false
+		return Stream_Input_Key{mq_string(o, "action"), mq_string(o, "key"), string(code), int(modifiers)}, true
+	case "text":
+		value, ok := o["text"].(json.String)
+		if len(o) != 2 || !ok do return nil, false
+		return Stream_Input_Text{string(value)}, true
+	}
+	return nil, false
+}
+
+@(private = "file")
+stream_input_members_valid :: proc(raw: string, expected: int) -> bool {
+	t := json.make_tokenizer(raw, .JSON, true)
+	count := 0
+	for {
+		tok, err := json.get_token(&t)
+		if err == .EOF do return count == expected
+		if err != nil do return false
+		// Map parsing collapses duplicate keys and may ignore integer overflow.
+		// No valid integer here needs more than seven characters (-100000).
+		if tok.kind == .Colon do count += 1
+		if tok.kind == .Integer && len(tok.text) > 7 do return false
+		if tok.kind == .Float {
+			// The generic JSON parser discards float conversion failures.
+			_, valid := strconv.parse_f64(tok.text)
+			if !valid do return false
+		}
+	}
+}
+
+// Use a temporary/arena allocator for the parsed JSON, event slice and strings.
+// The caller authenticates the viewer and binds stream_id to its session.
+stream_decode_input :: proc(raw: string, allocator := context.temp_allocator) -> (Stream_Input, bool) {
+	if len(raw) > STREAM_MAX_INPUT_BYTES || strings.contains(raw, "\x00") do return {}, false
+	o, ok := secure_form_object(raw, STREAM_MAX_INPUT_BYTES, allocator)
+	if !ok || len(o) != 3 || mq_string(o, "type") != "stream_input" do return {}, false
+	version, v_ok := o["protocol_version"].(json.Integer)
+	p, p_ok := o["payload"].(json.Object)
+	if !v_ok || version != STREAM_PROTOCOL_VERSION || !p_ok || len(p) != 2 do return {}, false
+	id := mq_string(p, "stream_id")
+	rows, r_ok := p["events"].(json.Array)
+	if !stream_id_valid(id) || !r_ok || len(rows) < 1 || len(rows) > STREAM_MAX_INPUT_EVENTS do return {}, false
+	events: [STREAM_MAX_INPUT_EVENTS]Stream_Input_Event
+	members := 5 // Envelope and payload members, plus those in every event.
+	for row, i in rows {
+		event, e_ok := row.(json.Object)
+		if !e_ok do return {}, false
+		decoded, valid := stream_input_parse_event(event)
+		if !valid || !stream_input_event_valid(decoded) do return {}, false
+		events[i] = decoded
+		members += len(event)
+	}
+	if !stream_input_members_valid(raw, members) do return {}, false
+	result := make([]Stream_Input_Event, len(rows), allocator)
+	copy(result, events[:len(rows)])
+	return {id, result}, true
 }
 
 // Session-envelope-compatible binary layout. The ID slot carries stream_id.

@@ -141,3 +141,122 @@ test_stream_piece_rejects_invalid_frames :: proc(t: ^testing.T) {
 	piece.data = data[:]
 	testing.expect(t, stream_encode_piece(piece, context.temp_allocator) == nil)
 }
+
+@(private = "file")
+TEST_STREAM_INPUT_PREFIX :: `{"type":"stream_input","protocol_version":1,"payload":{"stream_id":"` + TEST_STREAM_ID + `","events":[`
+@(private = "file")
+TEST_STREAM_INPUT_SUFFIX :: `]}}`
+
+@(test)
+test_stream_input_round_trip :: proc(t: ^testing.T) {
+	events := [?]Stream_Input_Event{
+		Stream_Input_Pointer{"down", 0, 0, 1, 1},
+		Stream_Input_Pointer{"move", -1, 0.35, 0.75, nil},
+		Stream_Input_Pointer{"up", 4, 1, 0, 0},
+		Stream_Input_Wheel{-100_000, 1.25, 0.5, 1},
+		Stream_Input_Key{"down", "a", "KeyA", 15},
+		Stream_Input_Key{"up", "é", "", 0},
+		Stream_Input_Text{"漢字: \"hello\"\n\x00"},
+		Stream_Input_Text{""},
+	}
+	raw := stream_encode_input({TEST_STREAM_ID, events[:]}, context.temp_allocator)
+	if !testing.expect(t, len(raw) > 0) do return
+	got, ok := stream_decode_input(string(raw))
+	if !testing.expect(t, ok && got.stream_id == TEST_STREAM_ID && len(got.events) == len(events)) do return
+	for want, i in events {
+		testing.expect_value(t, got.events[i], want)
+	}
+	// Viewer JSON can contain both integer and fractional/exponential numbers.
+	browser := TEST_STREAM_INPUT_PREFIX + `{"kind":"wheel","dx":0,"dy":1e2,"x":1,"y":0.5}` + TEST_STREAM_INPUT_SUFFIX
+	wheel, wheel_ok := stream_decode_input(browser)
+	if testing.expect(t, wheel_ok && len(wheel.events) == 1) {
+		testing.expect_value(t, wheel.events[0], Stream_Input_Event(Stream_Input_Wheel{0, 100, 1, 0.5}))
+	}
+}
+
+@(test)
+test_stream_input_rejects_malformed_and_out_of_range :: proc(t: ^testing.T) {
+	rows := [?]string{
+		``,
+		`null`,
+		`{"kind":"unknown"}`,
+		`{"kind":"text","text":null}`,
+		`{"kind":"text","text":"\uD800"}`,
+		`{"kind":"text","text":"x","x":0}`,
+		`{"kind":"text","text":"x","text":"y"}`,
+		`{"kind":"text","text":"x","te\u0078t":"y"}`,
+		`{"kind":"text","text":"x","":0}`,
+		`{"kind":"text","text":"x"},`,
+		`{"kind":"pointer","action":"cancel","button":0,"x":0,"y":0}`,
+		`{"kind":"pointer","action":"down","button":-1,"x":0,"y":0}`,
+		`{"kind":"pointer","action":"down","button":18446744073709551616,"x":0,"y":0}`,
+		`{"kind":"pointer","action":"move","button":-1,"buttons":32,"x":0,"y":1}`,
+		`{"kind":"pointer","action":"move","button":-1,"buttons":null,"x":0,"y":1}`,
+		`{"kind":"pointer","action":"move","button":-1,"buttons":0,"x":0,"unknown":1}`,
+		`{"kind":"pointer","action":"move","button":-1,"x":-0.01,"y":1}`,
+		`{"kind":"pointer","action":"move","button":-1,"x":0,"y":1.01}`,
+		`{"kind":"pointer","action":"move","button":-1,"x":0,"y":NaN}`,
+		`{"kind":"pointer","action":"move","button":-1,"x":0,"y":1e999}`,
+		`{"kind":"wheel","dx":100001,"dy":0,"x":0,"y":0}`,
+		`{"kind":"wheel","dx":0,"dy":"0","x":0,"y":0}`,
+		`{"kind":"key","action":"move","key":"x","code":"","modifiers":0}`,
+		`{"kind":"key","action":"down","key":"","code":"","modifiers":0}`,
+		`{"kind":"key","action":"down","key":"x","code":false,"modifiers":0}`,
+		`{"kind":"key","action":"down","key":"x","code":"","modifiers":16}`,
+		`{"kind":"key","action":"down","key":"x","code":"","modifiers":0.5}`,
+		`{"kind":"key","action":"down","key":"x","code":"","modifiers":0,"y":0}`,
+	}
+	for row in rows {
+		_, ok := stream_decode_input(strings.concatenate({TEST_STREAM_INPUT_PREFIX, row, TEST_STREAM_INPUT_SUFFIX}, context.temp_allocator))
+		testing.expect(t, !ok, row)
+	}
+	valid :: TEST_STREAM_INPUT_PREFIX + `{"kind":"text","text":"x"}` + TEST_STREAM_INPUT_SUFFIX
+	bad_envelopes := [?]string{
+		valid + "{}",
+		valid + "\x00",
+		strings.replace_all(valid, `"protocol_version":1`, `"protocol_version":1,"protocol_version":1`, context.temp_allocator) or_else "",
+		strings.replace_all(valid, `"protocol_version":1`, `"protocol_version":2`, context.temp_allocator) or_else "",
+		strings.replace_all(valid, `"protocol_version":1`, `"protocol_version":1,"extra":true`, context.temp_allocator) or_else "",
+		strings.replace_all(valid, `"events":[`, `"extra":true,"events":[`, context.temp_allocator) or_else "",
+		strings.replace_all(valid, TEST_STREAM_ID, "not-a-stream-id", context.temp_allocator) or_else "",
+	}
+	for bad in bad_envelopes {
+		_, ok := stream_decode_input(bad)
+		testing.expect(t, !ok, bad)
+	}
+}
+
+@(test)
+test_stream_input_bounds :: proc(t: ^testing.T) {
+	max_text := strings.repeat("é", STREAM_MAX_INPUT_TEXT_BYTES / 2, context.temp_allocator)
+	full: [STREAM_MAX_INPUT_EVENTS + 1]Stream_Input_Event
+	for &event in full do event = Stream_Input_Text{max_text}
+	raw := stream_encode_input({TEST_STREAM_ID, full[:STREAM_MAX_INPUT_EVENTS]}, context.temp_allocator)
+	got, ok := stream_decode_input(string(raw))
+	testing.expect(t, ok && len(got.events) == STREAM_MAX_INPUT_EVENTS)
+	// The raw cap must also fit a full batch when JSON expands each byte.
+	escaped := strings.repeat("\x01", STREAM_MAX_INPUT_TEXT_BYTES, context.temp_allocator)
+	for &event in full do event = Stream_Input_Text{escaped}
+	escaped_raw := stream_encode_input({TEST_STREAM_ID, full[:STREAM_MAX_INPUT_EVENTS]}, context.temp_allocator)
+	escaped_batch, escaped_ok := stream_decode_input(string(escaped_raw))
+	if testing.expect(t, escaped_ok && len(escaped_batch.events) == STREAM_MAX_INPUT_EVENTS) {
+		testing.expect_value(t, escaped_batch.events[STREAM_MAX_INPUT_EVENTS - 1], Stream_Input_Event(Stream_Input_Text{escaped}))
+	}
+	testing.expect(t, len(stream_encode_input({TEST_STREAM_ID, full[:]}, context.temp_allocator)) == 0)
+	testing.expect(t, len(stream_encode_input({TEST_STREAM_ID, nil}, context.temp_allocator)) == 0)
+	text_too_long := strings.concatenate({max_text, "x"}, context.temp_allocator)
+	bad_event := [?]Stream_Input_Event{Stream_Input_Text{text_too_long}}
+	testing.expect(t, len(stream_encode_input({TEST_STREAM_ID, bad_event[:]}, context.temp_allocator)) == 0)
+	key_too_long := strings.repeat("é", STREAM_MAX_INPUT_KEY_BYTES / 2 + 1, context.temp_allocator)
+	too_many := strings.repeat(`{"kind":"text","text":"x"},`, STREAM_MAX_INPUT_EVENTS, context.temp_allocator)
+	bad_frames := [?]string{
+		strings.concatenate({TEST_STREAM_INPUT_PREFIX, `{"kind":"text","text":"`, text_too_long, `"}`, TEST_STREAM_INPUT_SUFFIX}, context.temp_allocator),
+		strings.concatenate({TEST_STREAM_INPUT_PREFIX, `{"kind":"key","action":"down","key":"x","code":"`, key_too_long, `","modifiers":0}`, TEST_STREAM_INPUT_SUFFIX}, context.temp_allocator),
+		strings.concatenate({TEST_STREAM_INPUT_PREFIX, too_many, `{"kind":"text","text":"x"}`, TEST_STREAM_INPUT_SUFFIX}, context.temp_allocator),
+		strings.concatenate({string(raw), strings.repeat(" ", STREAM_MAX_INPUT_BYTES, context.temp_allocator)}, context.temp_allocator),
+	}
+	for bad in bad_frames {
+		_, accepted := stream_decode_input(bad)
+		testing.expect(t, !accepted)
+	}
+}
