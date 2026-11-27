@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -62,10 +63,12 @@ test_stream_headless_capture :: proc(t: ^testing.T) {
 	profile := fmt.tprintf("%s/profile", root)
 	html := fmt.tprintf("%s/fixture.html", root)
 	body := string(`<!doctype html><body><script>
-let i=0;function draw(){document.body.style.background = (i++%2 ? '#114477' : '#ee3344');requestAnimationFrame(draw)}draw()
+window.animate=true;let i=0;function draw(){if(window.animate)document.body.style.background = (i++%2 ? '#114477' : '#ee3344');requestAnimationFrame(draw)}draw()
 </script>`)
 	if !testing.expect(t, os.write_entire_file(html, transmute([]byte)body) == nil) do return
-	argv := []string{binary, "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox",
+	mode := os.get_env("HEIMDALL_TEST_STREAM_BROWSER_MODE", context.temp_allocator)
+	browser_mode := "--headless" if mode != "headed" else "--ozone-platform=wayland"
+	argv := []string{binary, browser_mode, "--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox",
 		"--no-first-run", "--disable-background-networking", "--disable-component-update", "--disable-sync",
 		"--enable-automation", "--remote-debugging-port=0", fmt.tprintf("--user-data-dir=%s", profile), fmt.tprintf("file://%s", html)}
 	child, launch_err := os.process_start({command = argv})
@@ -116,6 +119,47 @@ let i=0;function draw(){document.body.style.background = (i++%2 ? '#114477' : '#
 		piece, valid := contracts.stream_decode_piece(wire)
 		testing.expect(t, valid && len(piece.data) == len(data))
 	}
+
+	if os.get_env("HEIMDALL_TEST_STREAM_LONG", context.temp_allocator) == "1" {
+		// Keep the fixture controller separate from the capture's CDP session.
+		sent_attach := stream_cdp_command(&conn, 12, "", "Target.attachToTarget",
+			struct {targetId: string, flatten: bool}{tabs[0].id, true})
+		if !testing.expect(t, sent_attach) do return
+		attached, controlled := stream_cdp_wait(&conn, 12)
+		if !testing.expect(t, controlled) do return
+		// Drive the same drain cadence with an isolated sink. The 5-second
+		// windows include a second tab, a static page, and resumed animation.
+		for window in 0..<6 {
+			if window == 2 {
+				opened := stream_cdp_command(&conn, 11, "", "Target.createTarget",
+					struct {url: string, background: bool}{"about:blank", false})
+				if !testing.expect(t, opened) do return
+				if _, opened := stream_cdp_wait(&conn, 11); !testing.expect(t, opened) do return
+			}
+			if window == 3 || window == 4 {
+				expression := "window.animate=false" if window == 3 else "window.animate=true"
+				id := 20 + window
+				evaluated := stream_cdp_command(&conn, id, attached.result.sessionId, "Runtime.evaluate",
+					struct {expression: string}{expression})
+				if !testing.expect(t, evaluated) do return
+				if _, evaluated := stream_cdp_wait(&conn, id); !testing.expect(t, evaluated) do return
+			}
+			start = time.tick_now()
+			before, after: u64
+			sync.mutex_lock(&stream_mu)
+			before = live.ack_stats.sent
+			sync.mutex_unlock(&stream_mu)
+			for time.tick_since(start) < 5 * time.Second {
+				sync.mutex_lock(&stream_mu)
+				more := stream_send_piece(nil, &live, stream_test_accept_piece)
+				after = live.ack_stats.sent
+				sync.mutex_unlock(&stream_mu)
+				time.sleep(1 * time.Millisecond if more else 25 * time.Millisecond)
+			}
+			fmt.eprintfln("stream fixture: window=%d frames_sent=%d", window + 1, after - before)
+			if window != 3 do testing.expect(t, after > before, "animated capture stopped producing frames")
+		}
+	}
 	stream_test_stop_worker(&live, worker)
 	worker = nil
 	if !testing.expect_value(t, live.reason, "") do return
@@ -163,6 +207,75 @@ stream_test_stop_worker :: proc(live: ^Stream_Live, worker: ^thread.Thread) {
 stream_test_decode_piece :: proc(_: ^ws.Connection, wire: []byte) -> bool {
 	piece, ok := contracts.stream_decode_piece(wire)
 	return ok && piece.piece_count == 2 && piece.data[0] == 0x42
+}
+
+Stream_Test_CDP_Start :: struct { messages, frame_acks: int }
+
+stream_test_cdp_start_read :: proc(conn: ^httpc.WebSocket, buf: ^[dynamic]byte) -> (bool, bool) {
+	fake := cast(^Stream_Test_CDP_Start)conn
+	fake.messages += 1
+	switch fake.messages {
+	case 1, 2:
+		append(buf, ..transmute([]byte)string(`{"method":"Page.screencastFrame","sessionId":"tab","params":{"sessionId":7,"data":"Qg=="}}`))
+	case 3:
+		append(buf, ..transmute([]byte)string(`{"id":5,"sessionId":"tab","result":{}}`))
+	case:
+		return false, false
+	}
+	return true, true
+}
+
+stream_test_cdp_start_event :: proc(_: ^httpc.WebSocket, state: rawptr, event: Stream_CDP_Message) -> bool {
+	fake := cast(^Stream_Test_CDP_Start)state
+	if event.method == "Page.screencastFrame" && event.sessionId == "tab" {
+		if id, ok := event.params["sessionId"].(json.Integer); ok && id == 7 do fake.frame_acks += 1
+	}
+	return true
+}
+
+@(test)
+test_stream_start_reply_does_not_drop_early_frame_credits :: proc(t: ^testing.T) {
+	fake: Stream_Test_CDP_Start
+	_, started := stream_cdp_wait(cast(^httpc.WebSocket)&fake, 5, stream_test_cdp_start_event, &fake, stream_test_cdp_start_read)
+	testing.expect(t, started)
+	testing.expect_value(t, fake.frame_acks, 2)
+}
+
+stream_test_accept_piece :: proc(_: ^ws.Connection, wire: []byte) -> bool {
+	_, ok := contracts.stream_decode_piece(wire)
+	return ok
+}
+
+@(test)
+test_stream_budget_refusal_retries_without_a_new_frame :: proc(t: ^testing.T) {
+	live := Stream_Live{reg = {stream_id = "0123456789abcdef0123456789abcdef"}}
+	defer { delete(live.pending, runtime.heap_allocator()); delete(live.sending, runtime.heap_allocator()) }
+	tick := time.Tick{_nsec = i64(time.Second)}
+	testing.expect(t, stream_budget_admit(&live.budget, tick, contracts.STREAM_MAX_BYTES_PER_SECOND))
+	frame := make([]byte, 1, runtime.heap_allocator())
+	testing.expect_value(t, stream_offer_frame(&live, frame, 7), 0)
+	tick._nsec += i64(999 * time.Millisecond)
+	testing.expect(t, !stream_send_piece(nil, &live, stream_test_accept_piece, tick))
+	testing.expect_value(t, live.acked, 0)
+	tick._nsec += i64(time.Millisecond)
+	testing.expect(t, stream_send_piece(nil, &live, stream_test_accept_piece, tick))
+	testing.expect_value(t, live.acked, 1)
+	testing.expect_value(t, live.ack_session, 7)
+}
+
+@(test)
+test_stream_preserves_same_screencast_ack_credits_between_polls :: proc(t: ^testing.T) {
+	live := Stream_Live{reg = {stream_id = "0123456789abcdef0123456789abcdef"}}
+	defer { delete(live.pending, runtime.heap_allocator()); delete(live.sending, runtime.heap_allocator()) }
+	tick := time.Tick{_nsec = i64(time.Second)}
+	for _ in 0..<2 {
+		frame := make([]byte, 1, runtime.heap_allocator())
+		testing.expect_value(t, stream_offer_frame(&live, frame, 7), 0)
+		testing.expect(t, stream_send_piece(nil, &live, stream_test_accept_piece, tick))
+		tick._nsec += i64(time.Second / contracts.STREAM_MAX_FPS)
+	}
+	testing.expect_value(t, live.acked, 2)
+	testing.expect_value(t, live.ack_session, 7)
 }
 
 @(test)

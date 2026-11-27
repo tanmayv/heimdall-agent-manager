@@ -135,16 +135,20 @@ stream_cdp_read :: proc(conn: ^httpc.WebSocket, buf: ^[dynamic]byte) -> (complet
 	return info.bytes_left == 0 && !info.continuation, true
 }
 
-stream_cdp_wait :: proc(conn: ^httpc.WebSocket, id: int) -> (Stream_CDP_Message, bool) {
+Stream_CDP_Event_Handler :: proc(conn: ^httpc.WebSocket, state: rawptr, event: Stream_CDP_Message) -> bool
+
+stream_cdp_wait :: proc(conn: ^httpc.WebSocket, id: int, on_event: Stream_CDP_Event_Handler = nil,
+	state: rawptr = nil, read := stream_cdp_read) -> (Stream_CDP_Message, bool) {
 	buf := make([dynamic]byte, context.temp_allocator)
 	start := time.tick_now()
 	for time.tick_since(start) < 750 * time.Millisecond {
-		complete, ok := stream_cdp_read(conn, &buf)
+		complete, ok := read(conn, &buf)
 		if !ok do break
 		if !complete { time.sleep(2 * time.Millisecond); continue }
 		reply: Stream_CDP_Message
 		err := json.unmarshal(buf[:], &reply, allocator = context.temp_allocator)
 		if err == nil && reply.id == id do return reply, reply.error.code == 0
+		if err == nil && reply.method != "" && on_event != nil && !on_event(conn, state, reply) do return {}, false
 		clear(&buf)
 	}
 	return {}, false
@@ -213,33 +217,45 @@ stream_capture_worker :: proc(data: rawptr) {
 	if !stream_cdp_command(&conn, 4, session, "Emulation.setFocusEmulationEnabled", struct {enabled: bool}{true}) do return
 	if _, enabled := stream_cdp_wait(&conn, 4); !enabled do return
 	stage = "start"
+	capture := Stream_CDP_Capture{live = live, session = session, request_id = 5, first_frame = true}
 	if !stream_cdp_command(&conn, 5, session, "Page.startScreencast",
 		struct {format: string, quality, maxWidth, maxHeight: int}{"jpeg", 60, contracts.STREAM_MAX_WIDTH, contracts.STREAM_MAX_HEIGHT}) { return }
-	if _, started := stream_cdp_wait(&conn, 5); !started do return
+	if _, started := stream_cdp_wait(&conn, 5, stream_cdp_capture_event, &capture); !started {
+		if capture.stage != "" do stage = capture.stage
+		if capture.closed do reason = "source_closed"
+		return
+	}
 	fmt.eprintln("bridge stream: screencast started")
-	defer _ = stream_cdp_command(&conn, 6, session, "Page.stopScreencast", struct {}{})
+	defer _ = stream_cdp_command(&conn, capture.request_id + 1, session, "Page.stopScreencast", struct {}{})
 
 	buf := make([dynamic]byte)
 	defer delete(buf)
 	stage = "receive"
-	request_id := 6
-	first_frame := true
 	first_frame_wait := time.tick_now()
+	last_ack_report := first_frame_wait
 	reported_wait := false
 	for {
 		sync.mutex_lock(&stream_mu)
 		stop := live.worker_stop
 		acked, ack_session := live.acked, live.ack_session
 		live.acked = 0
+		stats := live.ack_stats
 		sync.mutex_unlock(&stream_mu)
 		if stop do return
-		if first_frame && !reported_wait && time.tick_since(first_frame_wait) >= 5 * time.Second {
+		if time.tick_since(last_ack_report) >= 10 * time.Second {
+			age := i64(-1)
+			if stats.last_frame._nsec != 0 do age = i64(time.tick_since(stats.last_frame) / time.Millisecond)
+			fmt.eprintfln("bridge stream: frame counts received=%d offered=%d sent=%d acked=%d discarded=%d budget_refused=%d last_frame_age_ms=%d",
+				stats.received, stats.offered, stats.sent, stats.acked, stats.discarded, stats.budget_refused, age)
+			last_ack_report = time.tick_now()
+		}
+		if capture.first_frame && !reported_wait && time.tick_since(first_frame_wait) >= 5 * time.Second {
 			fmt.eprintln("bridge stream: waiting for first screencast frame")
 			reported_wait = true
 		}
 		for _ in 0..<acked {
-			request_id += 1
-			if !stream_cdp_ack(&conn, request_id, session, ack_session) do return
+			capture.request_id += 1
+			if !stream_cdp_ack(&conn, live, capture.request_id, session, ack_session) do return
 		}
 		complete, read_ok := stream_cdp_read(&conn, &buf)
 		if !read_ok { stage = "read"; return }
@@ -249,35 +265,66 @@ stream_capture_worker :: proc(data: rawptr) {
 		parse_err := json.unmarshal(buf[:], &message, allocator = context.temp_allocator)
 		clear(&buf)
 		if parse_err != nil { stage = "parse"; return }
-		if message.method == "Target.detachedFromTarget" || message.method == "Inspector.detached" {
-			reason = "source_closed"
+		if !stream_cdp_capture_event(&conn, &capture, message) {
+			if capture.stage != "" do stage = capture.stage
+			if capture.closed do reason = "source_closed"
 			return
-		}
-		if message.method != "Page.screencastFrame" || message.sessionId != session do continue
-		encoded, has_data := message.params["data"].(json.String)
-		frame_session, has_session := message.params["sessionId"].(json.Integer)
-		if !has_data || !has_session || frame_session <= 0 { stage = "frame_metadata"; return }
-		data, decode_err := base64.decode(string(encoded), allocator = runtime.heap_allocator())
-		discard_session := 0
-		if decode_err != nil || len(data) == 0 || len(data) > contracts.STREAM_MAX_BYTES_PER_SECOND {
-			delete(data, runtime.heap_allocator())
-			discard_session = int(frame_session)
-		} else {
-			discard_session = stream_offer_frame(live, data, int(frame_session))
-			if first_frame {
-				fmt.eprintln("bridge stream: first screencast frame")
-				first_frame = false
-			}
-		}
-		if discard_session != 0 {
-			request_id += 1
-			if !stream_cdp_ack(&conn, request_id, session, discard_session) do return
 		}
 	}
 }
 
-stream_cdp_ack :: proc(conn: ^httpc.WebSocket, id: int, session: string, frame_session: int) -> bool {
-	return stream_cdp_command(conn, id, session, "Page.screencastFrameAck", struct {sessionId: int}{frame_session})
+Stream_CDP_Capture :: struct {
+	live: ^Stream_Live,
+	session, stage: string,
+	request_id: int,
+	first_frame, closed: bool,
+}
+
+// CDP events are independent of command replies. Route frames through this
+// same path even if they arrive before the start command's reply.
+stream_cdp_capture_event :: proc(conn: ^httpc.WebSocket, state: rawptr, message: Stream_CDP_Message) -> bool {
+	capture := cast(^Stream_CDP_Capture)state
+	live := capture.live
+	if message.method == "Target.detachedFromTarget" || message.method == "Inspector.detached" {
+		capture.closed = true
+		return false
+	}
+	if message.method != "Page.screencastFrame" || message.sessionId != capture.session do return true
+	frame_session, has_session := message.params["sessionId"].(json.Integer)
+	if !has_session || frame_session <= 0 { capture.stage = "frame_metadata"; return false }
+	sync.mutex_lock(&stream_mu)
+	live.ack_stats.received += 1
+	live.ack_stats.last_frame = time.tick_now()
+	sync.mutex_unlock(&stream_mu)
+	encoded, _ := message.params["data"].(json.String)
+	data, decode_err := base64.decode(string(encoded), allocator = runtime.heap_allocator())
+	discard_session := 0
+	if decode_err != nil || len(data) == 0 || len(data) > contracts.STREAM_MAX_BYTES_PER_SECOND {
+		sync.mutex_lock(&stream_mu)
+		live.ack_stats.discarded += 1
+		sync.mutex_unlock(&stream_mu)
+		delete(data, runtime.heap_allocator())
+		discard_session = int(frame_session)
+	} else {
+		discard_session = stream_offer_frame(live, data, int(frame_session))
+		if capture.first_frame {
+			fmt.eprintln("bridge stream: first screencast frame")
+			capture.first_frame = false
+		}
+	}
+	if discard_session == 0 do return true
+	capture.request_id += 1
+	if stream_cdp_ack(conn, live, capture.request_id, capture.session, discard_session) do return true
+	capture.stage = "frame_ack"
+	return false
+}
+
+stream_cdp_ack :: proc(conn: ^httpc.WebSocket, live: ^Stream_Live, id: int, session: string, frame_session: int) -> bool {
+	if !stream_cdp_command(conn, id, session, "Page.screencastFrameAck", struct {sessionId: int}{frame_session}) do return false
+	sync.mutex_lock(&stream_mu)
+	live.ack_stats.acked += 1
+	sync.mutex_unlock(&stream_mu)
+	return true
 }
 
 stream_cdp_title :: proc(raw_title: string) -> string {

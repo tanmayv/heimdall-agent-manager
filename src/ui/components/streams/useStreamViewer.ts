@@ -4,7 +4,7 @@ import { createFrameAssembler } from './streamFrames.ts';
 
 export type StreamStatus = 'loading' | 'waiting' | 'live' | 'paused' | 'ended' | 'expired' | 'unavailable' | 'unauthorized' | 'error';
 type Metadata = { title: string; expires: number };
-const FRAME_IDLE_MS = 5_000;
+const FRAME_IDLE_MS = 10_000;
 
 class StreamRequestError extends Error {
   readonly status: number;
@@ -50,7 +50,7 @@ export function useStreamViewer(id: string) {
     let known: Metadata | undefined;
     let finished = false;
     let opened = false;
-    const assembler = createFrameAssembler(id);
+    let retried = false;
     const path = `/api/v1/streams/${id}`;
     const clearImage = () => {
       if (imageUrl) URL.revokeObjectURL(imageUrl);
@@ -89,10 +89,24 @@ export function useStreamViewer(id: string) {
       }
     };
 
-    void (async () => {
+    const onIdle = () => {
+      if (finished || signal.aborted) return;
+      setStatus('paused');
+      if (retried) return;
+      retried = true;
+      if (socket) {
+        socket.onopen = socket.onmessage = socket.onclose = null;
+        socket.close();
+      }
+      void connect();
+    };
+
+    const connect = async () => {
       try {
+        opened = false;
+        const assembler = createFrameAssembler(id);
         const data = await fetchStreamJson(path, { signal }) as Metadata;
-        if (signal.aborted) return;
+        if (signal.aborted || finished) return;
         if (!data || typeof data.title !== 'string' || !Number.isFinite(data.expires)) {
           finish('error');
           return;
@@ -104,6 +118,7 @@ export function useStreamViewer(id: string) {
           finish('expired');
           return;
         }
+        clearTimeout(expiry);
         expiry = setTimeout(() => finish('expired'), remaining);
         const reply = await fetchStreamJson('/api/v1/me/ws-ticket', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
@@ -120,8 +135,8 @@ export function useStreamViewer(id: string) {
           if (signal.aborted || finished) return;
           opened = true;
           clearTimeout(connectionDeadline);
-          setStatus('waiting');
-          idle = setTimeout(() => setStatus('paused'), FRAME_IDLE_MS);
+          setStatus(retried ? 'paused' : 'waiting');
+          idle = setTimeout(onIdle, FRAME_IDLE_MS);
         };
         socket.onmessage = ({ data: wire }) => {
           if (signal.aborted || finished || !(wire instanceof ArrayBuffer)) return;
@@ -133,13 +148,14 @@ export function useStreamViewer(id: string) {
           setImage(next);
           setStatus('live');
           clearTimeout(idle);
-          idle = setTimeout(() => setStatus('paused'), FRAME_IDLE_MS);
+          idle = setTimeout(onIdle, FRAME_IDLE_MS);
         };
         socket.onclose = () => { void afterDisconnect(); };
       } catch (error) {
         finish(streamFailure(error instanceof StreamRequestError ? error.status : undefined, known));
       }
-    })();
+    };
+    void connect();
 
     return () => {
       abort.abort();

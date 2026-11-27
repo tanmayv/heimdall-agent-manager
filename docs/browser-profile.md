@@ -18,10 +18,11 @@ resulting path is checked before use.
   Chromium calls this directory its **user data directory**, not its individual
   `Default` profile directory. Check the application's signed-in account before
   reusing its session.
-- Launch headless by default so the shared browser does not depend on desktop
-  focus or a graphical session. A step that requires direct desktop interaction
-  needs a working display and the owner's coordination. Do not replace an
-  already-running shared browser to switch modes.
+- Launch headless by default, including when sharing a tab, so the shared
+  browser does not depend on desktop focus or a graphical session. A step
+  that requires direct desktop interaction needs a working display and the
+  owner's coordination. Do not replace an already-running shared browser to
+  switch modes.
 - On Linux, the bridge forwards nonempty desktop and session-bus variables.
   Explicit shell session values take precedence, including an explicit empty
   value. Absent or empty bridge values leave the launch environment alone.
@@ -68,3 +69,19 @@ Agents on one registration share authenticated access as the same OS account.
 Never attach the profile, cookies or diagnostics containing session data to an
 artifact, transcript or agent-shared backup. Browser logout or owner cleanup
 revokes local reuse independently of the credential vault.
+
+## If a shared tab stops updating
+
+The viewer keeps the last image when a connected stream has no complete
+frame for about 10 seconds. It shows **Paused** and reconnects once. If it
+stays paused, **Reconnect** remains available. A static page can stop
+producing frames without a tab or connection failure.
+
+While a viewer is attached, the Bridge reports cumulative frame counts and
+the time since the last CDP frame about every 10 seconds. These diagnostics
+contain no tab identifiers, URLs, titles, or images. Compare consecutive
+samples. If received frames stop and all received frames have an ACK, no
+frame credit is outstanding. If frames keep being received and sent but the
+viewer is paused, check the relay and viewer transport. A short-lived gap
+between received frames and ACK commands is expected while a frame is queued
+or being sent.

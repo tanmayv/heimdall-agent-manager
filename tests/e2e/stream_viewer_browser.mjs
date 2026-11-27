@@ -18,6 +18,7 @@ const statuses = new Map();
 let mode = '';
 let pendingMetadata;
 let latestSocket;
+let connections = 0;
 const sockets = new WebSocketServer({ noServer: true });
 const respond = (res, status, data) => {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -70,7 +71,7 @@ const server = await createServer({
         if (url.pathname !== prefix + stream + '/view') return;
         assert.equal(url.searchParams.get('ticket'), 'synthetic-ticket');
         statuses.set('view', url.pathname);
-        sockets.handleUpgrade(req, sock, head, ws => { latestSocket = ws; });
+        sockets.handleUpgrade(req, sock, head, ws => { latestSocket = ws; connections++; });
       });
     },
   }],
@@ -100,11 +101,38 @@ try {
       const revoke = URL.revokeObjectURL;
       window.revokedStreamUrls = [];
       URL.revokeObjectURL = url => { window.revokedStreamUrls.push(url); revoke(url); };
+      const timers = new Map();
+      let timerId = -1;
+      const nativeSet = window.setTimeout.bind(window);
+      const nativeClear = window.clearTimeout.bind(window);
+      const nativeFetch = window.fetch.bind(window);
+      let metadataFetches = 0;
+      window.fetch = (url, ...args) => {
+        if (typeof url === 'string' && /\/api\/v1\/streams\/[a-f0-9]{32}$/.test(url)) metadataFetches++;
+        return nativeFetch(url, ...args);
+      };
+      window.streamMetadataFetches = () => metadataFetches;
+      window.setTimeout = (callback, delay, ...args) => {
+        // The viewer's frame-idle callback is named in the unminified fixture.
+        // Keep connection timeouts and unrelated app timers real.
+        if (callback?.name !== 'onIdle' || delay !== 10_000) return nativeSet(callback, delay, ...args);
+        const id = timerId--;
+        timers.set(id, () => callback(...args));
+        return id;
+      };
+      window.clearTimeout = id => timers.delete(id) || nativeClear(id);
+      window.streamPendingTimers = () => timers.size;
+      window.advanceStreamTimers = () => {
+        const due = [...timers.values()];
+        if (due.length !== 1) throw new Error(`Expected one armed stream-idle timeout, got ${due.length}`);
+        timers.clear();
+        due.forEach(run => run());
+      };
     });
     const goto = () => page.goto(origin + prefix + '/#/streams/' + id, { waitUntil: 'domcontentloaded' });
     const capture = async (label, name) => {
-      await page.waitForFunction(label => [...document.querySelectorAll('main [role="status"]')]
-        .some(el => el.textContent.startsWith(label)), {}, label);
+      await page.waitForFunction(label => [...document.querySelectorAll('main [role="status"], main [aria-live="polite"]')]
+        .some(el => el.textContent.startsWith(label) || el.getAttribute('aria-label') === label), {}, label);
       assert.ok(await page.$eval('main', el => el.scrollWidth <= el.clientWidth), `${name} fits at ${width}`);
       await page.screenshot({ path: path.join(evidence, `${width}-${name}.png`) });
     };
@@ -132,42 +160,68 @@ try {
         }
         return canvas.toDataURL('image/jpeg', 0.55).split(',')[1];
       }), 'base64');
-      const count = Math.ceil(jpg.length / 12288);
-      for (let i = 0; i < count; i++) {
-        const header = Buffer.alloc(59);
-        header.set([4, 0, 0, 32]);
-        header.write(id, 4);
-        header.writeBigUInt64BE(1n, 36);
-        header.writeUInt16BE(i, 44);
-        header.writeUInt16BE(count, 46);
-        header[48] = 10;
-        header.write('image/jpeg', 49);
-        latestSocket.send(Buffer.concat([header, jpg.subarray(i * 12288, (i + 1) * 12288)]));
-      }
-      await page.waitForFunction(() => document.querySelector('img[alt="Latest image of the shared tab"]')?.naturalWidth > 0);
-      await capture('Live', 'live');
-      const frameUrl = await page.$eval('img[alt="Latest image of the shared tab"]', img => img.src);
-      latestSocket.close();
+      const image = 'img[alt="Latest image of the shared tab"]';
+      const sendJpeg = () => {
+        const count = Math.ceil(jpg.length / 12288);
+        for (let i = 0; i < count; i++) {
+          const header = Buffer.alloc(59);
+          header.set([4, 0, 0, 32]);
+          header.write(id, 4);
+          header.writeBigUInt64BE(1n, 36); // A new connection can start at sequence 1.
+          header.writeUInt16BE(i, 44);
+          header.writeUInt16BE(count, 46);
+          header[48] = 10;
+          header.write('image/jpeg', 49);
+          latestSocket.send(Buffer.concat([header, jpg.subarray(i * 12288, (i + 1) * 12288)]));
+        }
+      };
+      sendJpeg();
+      await page.waitForFunction(selector => document.querySelector(selector)?.naturalWidth > 0, {}, image);
+      await page.screenshot({ path: path.join(evidence, `${width}-live.png`) });
+      const frameUrl = await page.$eval(image, img => img.src);
+      const attached = connections;
+      const original = latestSocket;
+
+      // Leave the socket open and silent. A transport close must not be what
+      // drives this state. Advance only viewer timers, not request/paint clocks.
+      await page.evaluate(() => window.advanceStreamTimers());
       await capture('Paused', 'paused');
-      await page.keyboard.press('Tab');
-      assert.equal(await page.evaluate(() => document.activeElement?.textContent.trim()), 'Skip to content');
-      await page.keyboard.press('Enter');
-      assert.equal(await page.evaluate(() => document.activeElement?.id), 'main-content');
+      await page.waitForFunction(() => window.streamPendingTimers() > 0);
+      assert.equal(connections, attached + 1);
+      assert.notEqual(latestSocket, original);
+      assert.equal(await page.$eval(image, img => img.src), frameUrl, 'retain last frame during auto-retry');
+      assert.ok(await page.$eval('button[aria-label="Reconnect"]', el => el.classList.contains('bg-surface-raised')));
+      const advanceWithoutRetry = async () => {
+        const [before, after] = await page.evaluate(() => {
+          const before = window.streamMetadataFetches();
+          window.advanceStreamTimers();
+          return [before, window.streamMetadataFetches()];
+        });
+        assert.equal(after, before, 'the retry must not fetch metadata again');
+        assert.equal(connections, attached + 1, 'there is only one automatic reconnect');
+      };
+      await advanceWithoutRetry();
+      sendJpeg();
+      await page.waitForFunction((selector, previous) => {
+        const img = document.querySelector(selector);
+        return img?.naturalWidth > 0 && img.src !== previous &&
+          !document.querySelector('button[aria-label="Reconnect"]').classList.contains('bg-surface-raised');
+      }, {}, image, frameUrl);
+      await advanceWithoutRetry();
+      await capture('Paused', 'paused-after-recovery');
       assert.equal(new URL(page.url()).hash, '#/streams/' + id);
-      for (let i = 0; i < 4; i++) {
-        await page.keyboard.press('Tab');
-        if (await page.evaluate(() => document.activeElement?.textContent.trim() === 'Reconnect')) break;
-      }
-      assert.equal(await page.evaluate(() => document.activeElement?.textContent.trim()), 'Reconnect');
+      await page.focus('button[aria-label="Back"]');
+      await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Reconnect');
       await page.keyboard.press('Enter');
-      await page.waitForFunction(() => document.querySelector('main [role="status"]')?.textContent.startsWith('Waiting'));
+      await page.waitForFunction(() => [...document.querySelectorAll('main [aria-live="polite"]')].some(el => el.textContent === 'Waiting'));
       assert.ok(await page.evaluate(url => window.revokedStreamUrls.includes(url), frameUrl));
       mode = 'ended';
       latestSocket.close();
       await capture('Ended', 'ended');
 
       for (const [scenario, label] of [
-        ['expired', 'Expired'], ['unavailable', 'Unavailable'], ['unauthorized', 'Access required'], ['error', 'Connection error'],
+        ['expired', 'Expired'], ['unavailable', 'Unavailable'], ['unauthorized', 'Unauthorized'], ['error', 'Disconnected'],
       ]) {
         mode = scenario;
         await page.reload({ waitUntil: 'domcontentloaded' });
@@ -178,7 +232,7 @@ try {
       assert.equal(statuses.get('ticket'), prefix + '/api/v1/me/ws-ticket');
       assert.equal(statuses.get('view'), prefix + stream + '/view');
       assert.deepEqual(failures, []);
-      console.log(`PASS ${width}×${height}: 9 states, prefix routing, decoded JPEG, keyboard reconnect and blob URL cleanup`);
+      console.log(`PASS ${width}×${height}: viewer states, one idle reconnect, frame recovery, keyboard reconnect and blob URL cleanup`);
     } catch (error) {
       console.error({ failures, badResponses, consoleErrors, body: (await page.$eval('body', el => el.innerText)).slice(0, 700) });
       throw error;

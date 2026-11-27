@@ -76,7 +76,10 @@ export default function StreamViewerPage({ streamId, onBack }: { streamId: strin
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas">
       <ViewerHeader title={title} onBack={onBack}>
-        <IconButton icon="refresh" label="Reconnect" disabled={status === 'loading'} onClick={() => {
+        <div role="status" className={status === 'paused' ? undefined : 'sr-only'}>
+          {status === 'paused' && <Text role="label" tone="muted">{labels.paused}</Text>}
+        </div>
+        <IconButton icon="refresh" label="Reconnect" variant={status === 'paused' ? 'solid' : 'ghost'} disabled={status === 'loading'} onClick={() => {
           stopDrag();
           setNatural(undefined);
           setView(previous => ({ ...previous, pan: centeredPan }));
@@ -113,7 +116,7 @@ export default function StreamViewerPage({ streamId, onBack }: { streamId: strin
           ) : (
             <div className="grid h-full place-items-center">
               {status === 'loading' ? <Spinner size="lg" label="Connecting" /> :
-                <Text role="body-sm" tone="muted" aria-live="polite">{labels[status]}</Text>}
+                status !== 'paused' && <Text role="body-sm" tone="muted" aria-live="polite">{labels[status]}</Text>}
             </div>
           )}
         </div>

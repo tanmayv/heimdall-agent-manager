@@ -30,6 +30,12 @@ Stream_Live :: struct {
 	acked, ack_session, piece: int,
 	seq: u64,
 	budget: Stream_Budget,
+	ack_stats: Stream_Ack_Stats,
+}
+
+Stream_Ack_Stats :: struct {
+	received, offered, sent, acked, discarded, budget_refused: u64,
+	last_frame: time.Tick,
 }
 
 stream_mu: sync.Mutex
@@ -315,6 +321,7 @@ stream_hub_drain :: proc(conn: ^ws.Connection, send_control := stream_send_contr
 			if live.worker == nil {
 				live.worker_stop = false
 				live.worker_watching = !live.attached
+				live.ack_stats = {}
 				if capture := stream_capture_provider(live.reg.source.kind); capture != nil {
 					live.worker = thread.create_and_start_with_data(live, capture)
 				}
@@ -326,11 +333,14 @@ stream_hub_drain :: proc(conn: ^ws.Connection, send_control := stream_send_contr
 	return more
 }
 
-stream_send_piece :: proc(conn: ^ws.Connection, live: ^Stream_Live, send := bridge_hub_send_binary) -> bool {
+stream_send_piece :: proc(conn: ^ws.Connection, live: ^Stream_Live, send := bridge_hub_send_binary, now: time.Tick = {}) -> bool {
 	if live.sending == nil {
 		if live.pending == nil do return false
-		now := time.tick_now()
-		if !stream_budget_admit(&live.budget, now, len(live.pending)) do return false
+		tick := time.tick_now() if now._nsec == 0 else now
+		if !stream_budget_admit(&live.budget, tick, len(live.pending)) {
+			live.ack_stats.budget_refused += 1
+			return false
+		}
 		live.seq += 1
 		live.sending, live.sending_session = live.pending, live.pending_session
 		live.pending = nil
@@ -346,6 +356,9 @@ stream_send_piece :: proc(conn: ^ws.Connection, live: ^Stream_Live, send := brid
 	}
 	live.piece += 1
 	if stop == len(live.sending) {
+		live.ack_stats.sent += 1
+		// Chromium shares one session ID across all frames from a given
+		// startScreencast. Keep the count, not just the latest ID.
 		live.ack_session = live.sending_session
 		live.acked += 1
 		delete(live.sending, runtime.heap_allocator())
@@ -386,15 +399,18 @@ stream_offer_frame :: proc(live: ^Stream_Live, data: []byte, session: int) -> in
 	sync.mutex_lock(&stream_mu)
 	defer sync.mutex_unlock(&stream_mu)
 	if live.worker_stop {
+		live.ack_stats.discarded += 1
 		delete(data, runtime.heap_allocator())
 		return session
 	}
 	discard := 0
 	if live.pending != nil {
+		live.ack_stats.discarded += 1
 		discard = live.pending_session
 		delete(live.pending, runtime.heap_allocator())
 	}
 	live.pending, live.pending_session = data, session
+	live.ack_stats.offered += 1
 	return discard
 }
 
