@@ -350,10 +350,10 @@ test_runtime_transport_resolves_per_profile_precedence :: proc(t:^testing.T) {
  testing.expect(t,serr.code==.None && selected=="acp");delete(selected)
 }
 
-// ACP readiness for a non-default profile: the provider-wide install (the
-// default profile's report) decides first; then the profile's own report must
-// show the bridge can launch it (ready, or installed and certified by the
-// bridge's probe at launch). Without a profile report the default verdict stands.
+// ACP readiness for a non-default profile: its own report decides (ready, or
+// installed and certified by the bridge's probe at launch); only host-wide
+// facts come from the provider level. Without a profile report the default
+// verdict stands.
 @(test)
 test_require_acp_ready_checks_the_selected_profile :: proc(t:^testing.T) {
  ready:=`{"installed":true,"state":"ready","version":"1.0.120","checked_at":"2026-11-27T00:00:00Z","provider":"copilot","runtime_kind":"system","adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
@@ -364,7 +364,7 @@ test_require_acp_ready_checks_the_selected_profile :: proc(t:^testing.T) {
  entry:=domain.Provider_Catalog_Entry{provider="copilot",acp_recipe_json=COPILOT_TRANSPORT_TEST_RECIPE}
  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.None)
  // Installed but not yet probed for this profile: the bridge probes it at launch.
- store.work_adapter=`{"installed":true,"state":"error","error":"ACP initialize probe is required for the selected profile; use Re-check","checked_at":"2026-11-27T00:00:00Z"}`
+ store.work_adapter=`{"installed":true,"state":"error","error":"ACP initialize probe is required for the selected profile; use Re-check","checked_at":"2026-11-27T00:00:00Z","adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.None)
  // The profile's own CLI is missing or below the minimum: that profile cannot use ACP...
  for state in ([]string{"missing","outdated","error"}) {
@@ -381,9 +381,29 @@ test_require_acp_ready_checks_the_selected_profile :: proc(t:^testing.T) {
  // No report for the profile yet: the provider-wide verdict stands.
  store.work_adapter=""
  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.None)
- // A non-ready provider-wide install blocks every profile, whatever the profile reports.
- store.adapter=`{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`;store.work_adapter=ready
+ // G6: the default profile's own state does not decide another profile. A
+ // default profile without a CLI, or unauthenticated (error), leaves `work`
+ // launchable on its own report, ready or installed-but-unprobed.
+ for default_state in ([]string{"missing","error","outdated"}) {
+  store.adapter=strings.concatenate({`{"installed":false,"state":"`,default_state,`","checked_at":"2026-11-27T00:00:00Z"}`},context.temp_allocator)
+  store.work_adapter=ready
+  testing.expectf(t,require_acp_ready(&svc,"bridge",entry,"work").code==.None,"default %s, work ready",default_state)
+  store.work_adapter=`{"installed":true,"state":"error","error":"ACP initialize probe is required for the selected profile; use Re-check","checked_at":"2026-11-27T00:00:00Z","adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
+  testing.expectf(t,require_acp_ready(&svc,"bridge",entry,"work").code==.None,"default %s, work installed",default_state)
+  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"").code,domain.Error_Code.ACP_Unavailable)
+  // The provider-status row for `work` shows the same verdict.
+  row,_:=classify_acp_profile_availability("copilot",COPILOT_TRANSPORT_TEST_RECIPE,store.features,store.adapter,"work",store.work_adapter)
+  testing.expect_value(t,row.reason,contracts.ACP_Availability_Reason.Ready)
+ }
+ // Host-wide facts still come from the provider level.
+ store.work_adapter=ready
+ store.adapter=`{"installed":false,"state":"missing_node","checked_at":"2026-11-27T00:00:00Z"}`
  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.ACP_Unavailable)
+ store.adapter=`{"installed":false,"state":"installing","checked_at":"2026-11-27T00:00:00Z"}`
+ testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.ACP_Installing)
+ store.features=""
+ testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.ACP_Unavailable)
+ store.features=`{"features":["acp_runtime_v1"]}`
  // The resolver applies the same per-profile gate.
  store.adapter=ready;store.work_override="acp"
  store.work_adapter=`{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`

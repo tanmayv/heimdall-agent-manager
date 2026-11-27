@@ -87,21 +87,24 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
 }
 
 // classify_acp_profile_availability is the ACP verdict for launching one
-// profile, and the report it came from. The adapter install (or system CLI
-// check) of the default profile decides first, through
-// classify_acp_availability. A non-default profile then needs its own report,
-// stored per profile row, to show it can run: the bridge reports each
-// profile's status, and certifies the profile's probe receipt itself when it
-// first launches it (acp_adapter_ensure_profile). So a profile report that is
-// installed but not yet probed is launchable, mirroring the bridge's own launch
-// precondition (acp_runtime_launch); one that is not installed (a system CLI
-// missing or below the minimum for that profile) or still installing gets its
+// profile, and the report it came from. The default profile is judged by its
+// own report (classify_acp_availability). Another profile is judged by its own
+// report too, as the bridge does (acp_runtime_launch checks only the selected
+// profile's status, then certifies its probe receipt at the first launch,
+// acp_adapter_ensure_profile): only host-wide facts come from the provider
+// level, namely recipe validity, bridge support, an install in progress and a
+// missing Node.js or npm. So ACP for `work` does not depend on the default
+// profile being authenticated or having a CLI (G6). A profile report that is
+// ready, or installed but not yet probed, is launchable; any other gets its
 // own verdict. With no profile report yet (not scanned since the Hub stored
 // per-profile reports), the default profile's verdict stands, as before.
 classify_acp_profile_availability :: proc(provider, recipe_json, bridge_capabilities_json, adapter_json, profile_id, profile_adapter_json: string) -> (contracts.ACP_Availability, string) {
  verdict:=classify_acp_availability(provider,recipe_json,bridge_capabilities_json,adapter_json)
- if verdict.reason!=.Ready || domain.profile_effective_id(provider,profile_id)==provider || profile_adapter_json=="" do return verdict,adapter_json
- if acp_profile_report_launchable(profile_adapter_json) do return verdict,adapter_json
+ if domain.profile_effective_id(provider,profile_id)==provider || profile_adapter_json=="" do return verdict,adapter_json
+ #partial switch verdict.reason {
+ case .No_Recipe,.Unsupported_Bridge,.Installing,.Adapter_Missing_Node,.Adapter_Missing_Npm: return verdict,adapter_json
+ }
+ if acp_profile_report_launchable(profile_adapter_json) do return contracts.acp_availability_for(.Ready),profile_adapter_json
  return classify_acp_availability(provider,recipe_json,bridge_capabilities_json,profile_adapter_json),profile_adapter_json
 }
 
