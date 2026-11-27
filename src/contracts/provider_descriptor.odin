@@ -106,8 +106,7 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		program_names = {"copilot", "github-copilot", "gh"},
 		log_sym = .copilot, binary = "copilot",
 		version_format = .Labelled, version_label = "GitHub Copilot CLI ",
-		// config_dir_default unknown in code (GitHub documents ~/.copilot); left empty.
-		config_field = .Config_Dir, config_dir_env = "COPILOT_HOME",
+		config_field = .Config_Dir, config_dir_env = "COPILOT_HOME", config_dir_default = ".copilot",
 		profile_launch_args = true, profile_custom_models = true,
 		model_probe = .Copilot_Rpc,
 		install_hint = "install GitHub Copilot CLI (npm package @github/copilot)",
@@ -151,8 +150,8 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		program_names = {"kiro-cli"},
 		log_sym = .kiro, binary = "kiro-cli",
 		version_format = .Labelled, version_label = "kiro-cli ",
-		// config_dir_default unknown in code (without a profile dir the user's own login is inherited).
-		config_field = .Config_Dir, config_dir_env = "KIRO_HOME",
+		// Without a profile dir the CLI's own default (~/.kiro) and login are inherited.
+		config_field = .Config_Dir, config_dir_env = "KIRO_HOME", config_dir_default = ".kiro",
 		config_dir_derived_env = {{"XDG_DATA_HOME", "data"}},
 		profile_launch_args = true, profile_custom_models = true,
 		model_probe = .ACP,
@@ -164,6 +163,9 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		program_names = {"opencode"},
 		log_sym = .opencode, binary = "opencode",
 		version_format = .Bare,
+		// The global config dir is $XDG_CONFIG_HOME/opencode (default below).
+		// OPENCODE_CONFIG_DIR adds an extra directory, it does not replace this one.
+		config_dir_default = ".config/opencode",
 		profile_launch_args = true, profile_custom_models = true,
 		model_probe = .ACP,
 		install_hint = "install OpenCode (opencode) 1.19.6 or newer",

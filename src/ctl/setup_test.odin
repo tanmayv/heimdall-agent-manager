@@ -45,8 +45,12 @@ test_setup_harnesses_from_provider_registry :: proc(t: ^testing.T) {
 			testing.expect_value(t, h.config_file, "/home/u/.pi/agent/extensions")
 		case "kiro":
 			testing.expect_value(t, h.config_dir_env, "KIRO_HOME")
-			testing.expect_value(t, h.config_path, "") // no default: the user's own login
+			testing.expect_value(t, h.config_path, "/home/u/.kiro")
 			testing.expect_value(t, h.config_file, "")
+		case "copilot":
+			testing.expect_value(t, h.config_path, "/home/u/.copilot")
+		case "opencode":
+			testing.expect_value(t, h.config_path, "/home/u/.config/opencode")
 		}
 	}
 

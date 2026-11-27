@@ -123,7 +123,32 @@ provider_config_dir_precedence :: proc(t: ^testing.T) {
 	pi, _ := provider_descriptor("pi")
 	testing.expect_value(t, provider_config_dir_resolve(pi, "/p", "/env", "/home/u"), "/home/u/.pi/agent")
 	opencode, _ := provider_descriptor("opencode")
-	testing.expect_value(t, provider_config_dir_resolve(opencode, "/p", "/env", "/home/u"), "")
+	testing.expect_value(t, provider_config_dir_resolve(opencode, "/p", "/env", "/home/u"), "/home/u/.config/opencode")
+}
+
+// Copilot and Kiro: profile dir, else the env var value, else the home default.
+@(test)
+provider_config_dir_copilot :: proc(t: ^testing.T) {
+	copilot, _ := provider_descriptor("copilot")
+	testing.expect_value(t, provider_config_dir_resolve(copilot, "/p", "/env", "/home/u"), "/p")
+	testing.expect_value(t, provider_config_dir_resolve(copilot, "", "/env", "/home/u"), "/env")
+	testing.expect_value(t, provider_config_dir_resolve(copilot, "", "", "/home/u"), "/home/u/.copilot")
+}
+
+@(test)
+provider_config_dir_kiro :: proc(t: ^testing.T) {
+	kiro, _ := provider_descriptor("kiro")
+	testing.expect_value(t, provider_config_dir_resolve(kiro, "/p", "/env", "/home/u"), "/p")
+	testing.expect_value(t, provider_config_dir_resolve(kiro, "", "/env", "/home/u"), "/env")
+	testing.expect_value(t, provider_config_dir_resolve(kiro, "", "", "/home/u"), "/home/u/.kiro")
+}
+
+// OpenCode has no profile field or env var: only ~/.config/opencode applies.
+@(test)
+provider_config_dir_opencode :: proc(t: ^testing.T) {
+	opencode, _ := provider_descriptor("opencode")
+	testing.expect_value(t, provider_config_dir_resolve(opencode, "", "", "/home/u"), "/home/u/.config/opencode")
+	testing.expect_value(t, provider_config_dir_resolve(opencode, "", "", ""), "")
 }
 
 @(test)
@@ -160,6 +185,7 @@ provider_config_file_per_provider :: proc(t: ^testing.T) {
 	bad.config_file = "/abs"
 	testing.expect(t, !provider_descriptor_shape_valid(bad))
 	no_dir, _ := provider_descriptor("opencode")
+	no_dir.config_dir_default = ""
 	no_dir.config_file = "x.json"
 	testing.expect(t, !provider_descriptor_shape_valid(no_dir))
 }
