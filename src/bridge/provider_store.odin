@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import contracts "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
 import agent_runtime "odin_test:lib/agent_runtime"
 import jsonx "odin_test:lib/jsonx"
@@ -214,8 +215,8 @@ bridge_provider_startup_log :: proc() {
 
 // Providers whose harness is NOT known to load the bootstrap file into context
 // by itself keep the explicit "read your bootstrap file" step in their startup
-// prompt. Claude (CLAUDE.md), Codex, Copilot, pi, Kiro and opencode (AGENTS.md)
-// load theirs; Antigravity's loading of AGENTS.md could not be confirmed.
+// prompt; the registry's keeps_bootstrap_read trait records which ones.
 bridge_provider_keeps_bootstrap_read :: proc(name: string) -> bool {
-	return bridge_extension_canonical_provider(name) == "antigravity"
+	d, known := contracts.provider_descriptor(strings.trim_space(name))
+	return known && d.keeps_bootstrap_read
 }

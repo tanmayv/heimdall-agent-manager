@@ -18,6 +18,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:time"
+import contracts "odin_test:contracts"
 import local_socket "odin_test:lib/local_socket"
 import ext "extension"
 
@@ -194,11 +195,10 @@ ctl_extension_install_result_json :: proc(provider: string, ok: bool, message: s
 }
 
 ctl_resolve_bundled_extension_path :: proc(provider: string, allocator := context.temp_allocator) -> string {
-	prov := strings.trim_space(provider)
-	variants := make([dynamic]string, context.temp_allocator)
-	append(&variants, prov)
-	if prov == "claude" do append(&variants, "claude-code")
-	else if prov == "claude-code" do append(&variants, "claude")
+	// The registry's extension_dir names the bundle variant (aliases resolve to
+	// the same descriptor); providers without an extension have no bundle.
+	d, known := contracts.provider_descriptor(strings.trim_space(provider))
+	if !known || d.extension == .None do return ""
 
 	bases := make([dynamic]string, context.temp_allocator)
 	if env_dir := strings.trim_space(os.get_env("HEIMDALL_BRIDGE_DATA_DIR", context.temp_allocator)); env_dir != "" {
@@ -240,12 +240,10 @@ ctl_resolve_bundled_extension_path :: proc(provider: string, allocator := contex
 
 	for base in bases {
 		if base == "" do continue
-		for variant in variants {
-			candidate := ctl_path_join({base, variant})
-			if os.is_dir(candidate) {
-				abs, err := filepath.abs(candidate, allocator)
-				return abs if err == nil else strings.clone(candidate, allocator)
-			}
+		candidate := ctl_path_join({base, d.extension_dir})
+		if os.is_dir(candidate) {
+			abs, err := filepath.abs(candidate, allocator)
+			return abs if err == nil else strings.clone(candidate, allocator)
 		}
 	}
 	return ""
@@ -253,21 +251,14 @@ ctl_resolve_bundled_extension_path :: proc(provider: string, allocator := contex
 
 ctl_extension_install_local :: proc(provider, path_override: string) -> (bool, string) {
 	prov := strings.trim_space(provider)
-	if prov != ext.ANTIGRAVITY_PROVIDER && prov != ext.CLAUDE_PROVIDER && prov != "claude-code" && prov != ext.CODEX_PROVIDER {
-		return false, fmt.tprintf("unsupported provider %q (supported: antigravity, claude, codex)", prov)
+	d, known := contracts.provider_descriptor(prov)
+	if !known || d.extension == .None {
+		return false, fmt.tprintf("unsupported provider %q (supported: %s)", prov, ctl_extension_installable_providers())
 	}
-
-	bin_name := ""
-	switch prov {
-	case ext.ANTIGRAVITY_PROVIDER: bin_name = "agy"
-	case ext.CLAUDE_PROVIDER, "claude-code": bin_name = "claude"
-	case ext.CODEX_PROVIDER: bin_name = "codex"
-	}
-
-	bin_path, has_bin := ctl_extension_install_resolve_binary(bin_name)
+	bin_path, has_bin := ctl_extension_install_resolve_binary(d.binary)
 	defer delete(bin_path)
 	if !has_bin {
-		return false, fmt.tprintf("provider binary %q not found on PATH", bin_name)
+		return false, fmt.tprintf("provider binary %q not found on PATH", d.binary)
 	}
 
 	ext_path := ""
@@ -284,7 +275,10 @@ ctl_extension_install_local :: proc(provider, path_override: string) -> (bool, s
 	}
 
 	deadline := time.time_add(time.now(), 55 * time.Second)
-	if prov == ext.CODEX_PROVIDER {
+	switch d.extension {
+	case .None:
+	case .Antigravity_Plugin:
+	case .Codex_Plugin:
 		root := ext_path
 		metadata := ctl_path_join({root, ".agents", "plugins", "marketplace.json"})
 		if !os.exists(metadata) {
@@ -296,7 +290,7 @@ ctl_extension_install_local :: proc(provider, path_override: string) -> (bool, s
 		}
 		_, err_msg, registered := ctl_extension_install_step({bin_path, "plugin", "marketplace", "add", root}, deadline)
 		if !registered do return false, err_msg
-	} else if prov == ext.CLAUDE_PROVIDER || prov == "claude-code" {
+	case .Claude_Plugin:
 		// Older Claude Code releases reject `plugin install --marketplace` and
 		// `-y`; register the marketplace, then install by plugin id.
 		root := ext_path
@@ -308,22 +302,30 @@ ctl_extension_install_local :: proc(provider, path_override: string) -> (bool, s
 		if !registered do return false, err_msg
 	}
 
+	plugin_id := fmt.tprintf("heimdall@%s", d.extension_marketplace)
 	argv: []string
-	if prov == ext.ANTIGRAVITY_PROVIDER {
-		argv = []string{bin_path, "plugin", "install", ext_path}
-	} else if prov == ext.CLAUDE_PROVIDER || prov == "claude-code" {
-		argv = []string{bin_path, "plugin", "install", "heimdall@heimdall"}
-	} else {
-		argv = []string{bin_path, "plugin", "add", "heimdall@heimdall-codex"}
+	switch d.extension {
+	case .None:
+	case .Antigravity_Plugin: argv = []string{bin_path, "plugin", "install", ext_path}
+	case .Claude_Plugin:      argv = []string{bin_path, "plugin", "install", plugin_id}
+	case .Codex_Plugin:       argv = []string{bin_path, "plugin", "add", plugin_id}
 	}
 	output, err_msg, installed := ctl_extension_install_step(argv, deadline)
 	if !installed do return false, err_msg
-	if (prov == ext.CLAUDE_PROVIDER || prov == "claude-code") && strings.contains(strings.to_lower(output, context.temp_allocator), "already installed") {
-		_, update_error, updated := ctl_extension_install_step({bin_path, "plugin", "update", "heimdall@heimdall"}, deadline)
+	if d.extension == .Claude_Plugin && strings.contains(strings.to_lower(output, context.temp_allocator), "already installed") {
+		_, update_error, updated := ctl_extension_install_step({bin_path, "plugin", "update", plugin_id}, deadline)
 		if !updated do return false, update_error
 	}
 
 	return true, fmt.tprintf("Extension for %s installed successfully.", prov)
+}
+
+// ctl_extension_installable_providers lists the registry providers that have a
+// Heimdall extension, comma separated, in registry order.
+ctl_extension_installable_providers :: proc() -> string {
+	names := make([dynamic]string, context.temp_allocator)
+	for d in contracts.provider_descriptors() do if d.extension != .None do append(&names, d.provider)
+	return strings.join(names[:], ", ", context.temp_allocator)
 }
 
 @(private="file")

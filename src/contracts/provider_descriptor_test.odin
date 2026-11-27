@@ -119,9 +119,11 @@ provider_config_dir_precedence :: proc(t: ^testing.T) {
 	kiro, _ := provider_descriptor("kiro")
 	testing.expect(t, kiro.config_field == .Config_Dir && kiro.config_dir_env == "KIRO_HOME" &&
 		len(kiro.config_dir_derived_env) == 1 && kiro.config_dir_derived_env[0] == [2]string{"XDG_DATA_HOME", "data"})
-	// No env var: an env value is never consulted.
+	// No env var or config field: only the home default (~/.pi/agent) applies.
 	pi, _ := provider_descriptor("pi")
-	testing.expect_value(t, provider_config_dir_resolve(pi, "/p", "/env", "/home/u"), "")
+	testing.expect_value(t, provider_config_dir_resolve(pi, "/p", "/env", "/home/u"), "/home/u/.pi/agent")
+	opencode, _ := provider_descriptor("opencode")
+	testing.expect_value(t, provider_config_dir_resolve(opencode, "/p", "/env", "/home/u"), "")
 }
 
 @(test)
@@ -140,5 +142,50 @@ provider_extension_and_profile_traits :: proc(t: ^testing.T) {
 	testing.expect_value(t, secrets, 1)
 	for d in provider_descriptors() do if d.provider != "antigravity" {
 		testing.expect(t, d.profile_launch_args && d.profile_custom_models && len(d.profile_env_fields) == 0 && len(d.profile_auth_methods) == 0)
+	}
+}
+
+// The config file `ham-ctl setup` checks for a managed read-only symlink.
+@(test)
+provider_config_file_per_provider :: proc(t: ^testing.T) {
+	want := [][2]string{{"claude", "settings.json"}, {"codex", "config.toml"}, {"antigravity", "hooks.json"}, {"pi", "extensions"}}
+	for d in provider_descriptors() {
+		expected := ""
+		for w in want do if w[0] == d.provider do expected = w[1]
+		testing.expectf(t, d.config_file == expected, "%s config_file %q", d.provider, d.config_file)
+	}
+	bad, _ := provider_descriptor("claude")
+	bad.config_file = "../escape"
+	testing.expect(t, !provider_descriptor_shape_valid(bad))
+	bad.config_file = "/abs"
+	testing.expect(t, !provider_descriptor_shape_valid(bad))
+	no_dir, _ := provider_descriptor("opencode")
+	no_dir.config_file = "x.json"
+	testing.expect(t, !provider_descriptor_shape_valid(no_dir))
+}
+
+// Only Antigravity keeps the explicit bootstrap-read step.
+@(test)
+provider_keeps_bootstrap_read_trait :: proc(t: ^testing.T) {
+	for d in provider_descriptors() {
+		testing.expectf(t, d.keeps_bootstrap_read == (d.provider == "antigravity"), "%s keeps_bootstrap_read %v", d.provider, d.keeps_bootstrap_read)
+	}
+	testing.expect(t, !provider_descriptor_or_generic("custom").keeps_bootstrap_read)
+}
+
+// The registry's ACP model probe and the ACP recipe's opt-in never disagree:
+// a provider probes models over ACP exactly when its ACP recipe is a
+// system-launched ACP session that opts in to metadata-only discovery.
+@(test)
+provider_model_probe_agrees_with_acp_recipe :: proc(t: ^testing.T) {
+	for d in provider_descriptors() {
+		acp, found := acp_provider_descriptor(d.provider)
+		recipe_discovers := found && acp.discover_models_via_acp && acp.protocol == .ACP && acp.launch == .System
+		testing.expectf(t, (d.model_probe == .ACP) == recipe_discovers, "%s: model_probe %v, ACP recipe discovers %v", d.provider, d.model_probe, recipe_discovers)
+	}
+	for acp in acp_provider_descriptors {
+		if !acp.discover_models_via_acp do continue
+		d, known := provider_descriptor(acp.provider)
+		testing.expectf(t, known && d.model_probe == .ACP, "%s opts in to ACP discovery but its registry probe is %v", acp.provider, d.model_probe)
 	}
 }

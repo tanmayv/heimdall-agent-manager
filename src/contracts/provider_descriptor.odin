@@ -51,10 +51,17 @@ Provider_Descriptor :: struct {
 	config_dir_env:         string,
 	config_dir_default:     string,
 	config_dir_derived_env: [][2]string,
+	// The provider's primary config file (or directory) relative to its config
+	// directory; `ham-ctl setup` checks it for a read-only managed symlink
+	// (Nix/home-manager) that needs an overlay instead of an in-place edit.
+	config_file:            string,
 	profile_env_fields:     []Provider_Profile_Env_Field,
 	profile_auth_methods:   []string,
 	profile_launch_args:    bool,
 	profile_custom_models:  bool,
+	// The harness is not known to load its bootstrap file (CLAUDE.md /
+	// AGENTS.md) by itself, so the startup prompt keeps an explicit read step.
+	keeps_bootstrap_read:   bool,
 	extension:              Provider_Extension_Kind,
 	extension_dir:          string, // variant directory under the extensions bundle
 	extension_marketplace:  string,
@@ -74,6 +81,7 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		log_sym = .claude, binary = "claude",
 		version_format = .Leading_Numeric,
 		config_field = .Config_Dir, config_dir_env = "CLAUDE_CONFIG_DIR", config_dir_default = ".claude",
+		config_file = "settings.json",
 		profile_launch_args = true, profile_custom_models = true,
 		extension = .Claude_Plugin, extension_dir = "claude-code", extension_marketplace = "heimdall",
 		model_probe = .Claude_Control,
@@ -86,6 +94,7 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		log_sym = .codex, binary = "codex",
 		version_format = .Labelled, version_label = "codex-cli ",
 		config_field = .Home_Path, config_dir_env = "CODEX_HOME", config_dir_default = ".codex",
+		config_file = "config.toml",
 		profile_launch_args = true, profile_custom_models = true,
 		extension = .Codex_Plugin, extension_dir = "codex", extension_marketplace = "heimdall-codex",
 		model_probe = .Codex_App_Server,
@@ -111,6 +120,9 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		version_format = .Raw, // `agy --version` output format not verified
 		// No profile field sets it; extension detection reads it.
 		config_dir_env = "GEMINI_CONFIG_DIR", config_dir_default = ".gemini",
+		config_file = "hooks.json",
+		// Its loading of AGENTS.md could not be confirmed.
+		keeps_bootstrap_read = true,
 		profile_env_fields = {
 			{field = "api_key", env = "GEMINI_API_KEY", secret = true},
 			{field = "gcp_project", env = "GOOGLE_CLOUD_PROJECT"},
@@ -127,6 +139,8 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		program_names = {"pi"},
 		log_sym = .pi, binary = "pi",
 		version_format = .Raw, // `pi --version` output format not verified
+		// Pi's agent directory; no profile field or env var sets it.
+		config_dir_default = ".pi/agent", config_file = "extensions",
 		profile_launch_args = true, profile_custom_models = true,
 		model_probe = .Pi_Rpc,
 		install_hint = "install @earendil-works/pi-coding-agent (npm) or via nix",
@@ -248,6 +262,10 @@ provider_descriptor_shape_valid :: proc(d: Provider_Descriptor) -> bool {
 	if d.config_field != .None && d.config_dir_env == "" do return false
 	if len(d.config_dir_derived_env) > 0 && d.config_field == .None do return false
 	for pair in d.config_dir_derived_env do if pair[0] == "" || pair[1] == "" do return false
+	if d.config_file != "" {
+		if d.config_dir_env == "" && d.config_dir_default == "" do return false
+		if strings.has_prefix(d.config_file, "/") || strings.contains(d.config_file, "..") do return false
+	}
 	if (d.extension == .None) != (d.extension_dir == "") do return false
 	if d.extension == .None && d.extension_marketplace != "" do return false
 	binary_listed := false

@@ -214,3 +214,58 @@ test_ctl_install_path :: proc(parts: []string) -> string {
 	path, _ := filepath.join(parts, context.temp_allocator)
 	return path
 }
+
+// The registry drives install: binary and bundle directory come from the
+// descriptor (aliases included); providers without an extension are refused.
+@(test)
+test_ctl_extension_install_uses_descriptor :: proc(t: ^testing.T) {
+	sync.mutex_lock(&test_ctl_install_mu)
+	defer sync.mutex_unlock(&test_ctl_install_mu)
+	original_runner := ctl_extension_install_runner
+	original_binary := ctl_extension_install_resolve_binary
+	defer {
+		ctl_extension_install_runner = original_runner
+		ctl_extension_install_resolve_binary = original_binary
+	}
+	ctl_extension_install_runner = test_ctl_install_runner
+	ctl_extension_install_resolve_binary = test_ctl_install_binary
+	root := test_ctl_install_fixture(t)
+	defer _ = os.remove_all(root)
+	test_ctl_install_fail_step = 0
+	test_ctl_install_already = false
+
+	cases := []struct{provider, binary: string}{{"antigravity", "/fake/agy"}, {"claude-code", "/fake/claude"}, {"codex", "/fake/codex"}}
+	for c in cases {
+		test_ctl_install_calls = make([dynamic][]string, context.temp_allocator)
+		variant := "claude-code" if c.provider == "claude-code" else c.provider
+		ok, message := ctl_extension_install_local(c.provider, test_ctl_install_path({root, variant}))
+		testing.expectf(t, ok, "%s: %s", c.provider, message)
+		for call in test_ctl_install_calls do testing.expect_value(t, call[0], c.binary)
+	}
+	// The last case (codex): marketplace add, then add by the registry's plugin id.
+	testing.expect_value(t, len(test_ctl_install_calls), 2)
+	if len(test_ctl_install_calls) == 2 do testing.expect_value(t, test_ctl_install_calls[1][3], "heimdall@heimdall-codex")
+
+	for provider in ([]string{"copilot", "kiro", "pi", "opencode", "gemini"}) {
+		test_ctl_install_calls = make([dynamic][]string, context.temp_allocator)
+		ok, message := ctl_extension_install_local(provider, root)
+		testing.expectf(t, !ok, "%s must be refused", provider)
+		testing.expect(t, strings.contains(message, "supported: claude, codex, antigravity"))
+		testing.expect_value(t, len(test_ctl_install_calls), 0)
+		testing.expect_value(t, ctl_resolve_bundled_extension_path(provider), "")
+	}
+
+	// Bundle lookup uses extension_dir for the canonical id and its alias.
+	previous := os.get_env("HEIMDALL_BRIDGE_DATA_DIR", context.temp_allocator)
+	defer _ = os.set_env("HEIMDALL_BRIDGE_DATA_DIR", previous)
+	data := test_ctl_install_path({root, "data"})
+	testing.expect(t, os.make_directory(data) == nil)
+	testing.expect(t, os.make_directory(test_ctl_install_path({data, "extensions"})) == nil)
+	for dir in ([]string{"claude-code", "codex", "antigravity"}) {
+		testing.expect(t, os.make_directory(test_ctl_install_path({data, "extensions", dir})) == nil)
+	}
+	testing.expect(t, os.set_env("HEIMDALL_BRIDGE_DATA_DIR", data) == nil)
+	for c in ([][2]string{{"claude", "claude-code"}, {"claude-code", "claude-code"}, {"codex", "codex"}, {"antigravity", "antigravity"}}) {
+		testing.expect_value(t, ctl_resolve_bundled_extension_path(c[0]), test_ctl_install_path({data, "extensions", c[1]}))
+	}
+}

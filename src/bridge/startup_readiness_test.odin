@@ -397,4 +397,6 @@ startup_bootstrap_read_kept_only_for_unverified_providers :: proc(t: ^testing.T)
 		testing.expect(t, !bridge_provider_keeps_bootstrap_read(name), name)
 	}
 	testing.expect(t, bridge_provider_keeps_bootstrap_read("antigravity"), "antigravity keeps the bootstrap read")
+	testing.expect(t, bridge_provider_keeps_bootstrap_read(" antigravity "), "the id is trimmed")
+	testing.expect(t, !bridge_provider_keeps_bootstrap_read("custom-harness"), "unknown providers do not")
 }
