@@ -119,10 +119,11 @@ function label(status: FormStatus, expired: boolean, sent: boolean): [string, To
   return expired ? ['Expired', 'warning'] : ['Awaiting your input', 'pending'];
 }
 
-function SecureFormCard({ card, decide, decided }: {
+function SecureFormCard({ card, decide, decided, standalone = false }: {
   card: Card;
   decide: (id: string, body: unknown, action: 'submit' | 'decline') => Promise<void>;
   decided: React.MutableRefObject<Set<string>>;
+  standalone?: boolean;
 }) {
   const { form, status, signer } = card;
   const { request: r, schema } = form;
@@ -197,24 +198,18 @@ function SecureFormCard({ card, decide, decided }: {
   }
 
   return (
-    <Panel aria-labelledby={titleId} className="min-w-0">
+    <Panel aria-labelledby={titleId} padding="sm" className="min-w-0">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          {schema.logo ? <img src={logo} alt="" className="h-6 w-6" /> : <Icon name="lock" />}
-          <Text id={titleId} as="h2" role="heading">Secure request</Text>
+        <div className="flex min-w-0 items-center gap-2">
+          {schema.logo ? <img src={logo} alt="" className="h-5 w-5 shrink-0" /> : <Icon name="lock" />}
+          <Text id={titleId} as="h2" role="title" className="break-words">{standalone ? 'Secure request' : schema.purpose}</Text>
         </div>
         <StatusPill aria-live="polite" tone={tone}>{busy && !sent ? 'Preparing decision' : state}</StatusPill>
       </div>
-      <div className="mt-3 grid gap-2">
-        <Text role="title" className="break-words">{schema.purpose}</Text>
-        <Text role="body-sm" tone="muted">Requested by agent <Text role="code-sm" className="break-all">{r.instance}</Text></Text>
-        <Text role="body-sm" tone="muted">Bridge <Text role="code-sm" className="break-all">{r.bridge}</Text></Text>
-        <Text role="body-sm" tone="muted">Script <Text role="code-sm" className="break-all">{r.script}</Text></Text>
-        <Text role="body-sm" tone="muted">Deadline <time dateTime={new Date(Number(r.deadline)).toISOString()}>{new Date(Number(r.deadline)).toLocaleString()}</time></Text>
-      </div>
-      {error && <Alert tone="danger" className="mt-3">{error}</Alert>}
+      <Text as="p" role="body-sm" tone="muted" className="mt-2">Script <Text role="code-sm" className="break-all">{r.script}</Text></Text>
+      {error && <Alert tone="danger" className="mt-2">{error}</Alert>}
       {status.state === 'pending' && !expired && !sent && (
-        <form aria-labelledby={titleId} autoComplete="off" className="mt-4 grid gap-4" onSubmit={(event) => void send('submit', event)}>
+        <form aria-labelledby={titleId} autoComplete="off" className="mt-3 grid gap-2" onSubmit={(event) => void send('submit', event)}>
           {schema.fields.map((field, index) => {
             const value = Object.hasOwn(values, field.id) ? values[field.id] : '';
             const fieldError = Object.hasOwn(fieldErrors, field.id) ? fieldErrors[field.id] : undefined;
@@ -222,7 +217,7 @@ function SecureFormCard({ card, decide, decided }: {
               const selected = Array.isArray(value) ? value : [];
               const fieldId = fieldsId + '-' + index;
               return <fieldset key={field.id} aria-labelledby={fieldId} aria-describedby={fieldError ? fieldId + '-error' : undefined} className="grid min-w-0 gap-2" disabled={busy}>
-                <Text id={fieldId} role="label" className="break-words">{field.label} (choose at least one)</Text>
+                <Text id={fieldId} role="label" className="break-words">{field.label}</Text>
                 {field.choices?.map((choice) => <Checkbox key={choice.id} label={choice.label}
                   checked={selected.includes(choice.id)} aria-describedby={fieldError ? fieldId + '-error' : undefined}
                   onChange={(checked) => set(field.id, checked ? [...selected, choice.id] : selected.filter((id) => id !== choice.id))} />)}
@@ -238,7 +233,7 @@ function SecureFormCard({ card, decide, decided }: {
                     autoCapitalize="off" maxLength={8192} required onChange={(next) => set(field.id, next)} />}
             </FormField>;
           })}
-          <Text role="body-sm" tone="muted">Your browser encrypts these values for the named script. Heimdall does not save them to persistent storage. The Bridge keeps an encrypted copy in memory for up to 5 minutes. During that time the agent can edit and rerun this script for the shown purpose without asking you again.</Text>
+          <Text role="caption" tone="muted">Encrypted in your browser · not stored on the Ninjy server</Text>
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="secondary" type="button" disabled={busy} onClick={() => void send('decline')}>Decline</Button>
             <Button variant="primary" type="submit" disabled={busy}>Encrypt and send</Button>
@@ -471,7 +466,7 @@ function LinkedSecureForm({ owner, id }: { owner: string; id: string }) {
         setNotice('');
         setRevision((value) => value + 1);
       }}>Try again</Button>}
-    </Alert> : card ? <SecureFormCard card={card} decide={decide} decided={decided} />
+    </Alert> : card ? <SecureFormCard card={card} decide={decide} decided={decided} standalone />
       : <div className="grid place-items-center"><Spinner label="Checking secure request" /></div>}
   </SecureFormPageLayout>;
 }
