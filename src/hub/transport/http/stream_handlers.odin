@@ -257,6 +257,18 @@ stream_view_input :: proc(h: ^Bridge_Handlers, owner, id: string, serial: u64, r
 	input, valid := contracts.stream_decode_input(raw, allocator)
 	if !valid || input.stream_id != id do return
 
+	// Prepare every group before touching the socket. Each stays within the
+	// Bridge's 16-bit frame limit, even with six-byte escapes for each text byte.
+	wire := make([dynamic]byte, 0, len(raw), allocator)
+	for i := 0; i < len(input.events); i += 8 {
+		payload := contracts.stream_encode_input({id, input.events[i:min(i + 8, len(input.events))]}, allocator)
+		if len(payload) == 0 || len(payload) > ws.WS_16BIT_MAX_PAYLOAD do return
+		header: [4]byte
+		header_len := ws.server_frame_header(header[:], len(payload))
+		append(&wire, ..header[:header_len])
+		append(&wire, ..payload)
+	}
+
 	if !sync.mutex_try_lock(&h.stream_controls) do return
 	defer sync.unlock(&h.stream_controls)
 	sync.lock(&h.streams.mu)
@@ -273,17 +285,10 @@ stream_view_input :: proc(h: ^Bridge_Handlers, owner, id: string, serial: u64, r
 	defer sync.unlock(&c.writer_mutex)
 	if sync.atomic_load(&c.retired) || c.owner_id != owner do return
 
-	// Browser ingress may use extended lengths. Keep Bridge egress within
-	// its 16-bit frame limit, even with six-byte escapes for every text byte.
-	started := time.tick_now()
-	for i := 0; i < len(input.events); i += 8 {
-		payload := contracts.stream_encode_input({id, input.events[i:min(i + 8, len(input.events))]}, allocator)
-		remaining := 10 * time.Millisecond - time.tick_since(started)
-		if len(payload) == 0 || remaining <= 0 do return
-		_, result := ws.write_server_opcode_counted(c.socket, 0x1, string(payload), false, remaining, record_timeout = false)
-		if result == .Desynchronised do _ = net.shutdown(net.Any_Socket(c.socket), .Both)
-		if result != .Ok do return
-	}
+	// Drop on contention before the first byte. Once the batch starts, use the
+	// ordinary write deadline so transient stalls do not cut a frame or batch.
+	sent, ok := ws.send_socket_bytes(c.socket, wire[:], record_timeout = false, start_timeout = 10 * time.Millisecond)
+	if !ok && sent > 0 do _ = net.shutdown(net.Any_Socket(c.socket), .Both)
 }
 
 // One socket handler owns all writes to its viewer. Bridge ingestion never

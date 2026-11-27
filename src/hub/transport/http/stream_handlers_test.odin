@@ -290,8 +290,9 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	if !testing.expect(t, strings.contains(stream_test_http_header(first.peer), "101 Switching Protocols")) do return
 	testing.expect(t, strings.contains(secure_form_test_read_text(bridge.peer), "stream_attach"))
 
-	input_events := []contracts.Stream_Input_Event{contracts.Stream_Input_Text{text = STREAM_TEST_INPUT_MARKER}}
-	input_wire := contracts.stream_encode_input({STREAM_TEST_ID, input_events})
+	input_events: [9]contracts.Stream_Input_Event
+	for &input, i in input_events do input = contracts.Stream_Input_Text{text = fmt.tprintf("%s-%d", STREAM_TEST_INPUT_MARKER, i)}
+	input_wire := contracts.stream_encode_input({STREAM_TEST_ID, input_events[:]})
 	masked := http_test_masked_text_frame(string(input_wire), {1, 2, 3, 4})
 	// Send from the wrong transport while an owner viewer is already active.
 	// If it relays the canary, the next read carries the wrong event.
@@ -304,12 +305,27 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	_, probe_sent := ws.send_socket_bytes(first.peer, probe[:])
 	_, input_sent := ws.send_socket_bytes(first.peer, masked[:])
 	testing.expect(t, probe_sent && input_sent)
-	forwarded := secure_form_test_read_text(bridge.peer)
-	decoded, input_ok := contracts.stream_decode_input(forwarded)
-	if testing.expect(t, input_ok) {
+	// Read the two frames without consuming bytes from the next frame. Both
+	// groups must arrive, in order, even when TCP coalesces their bytes.
+	offset := 0
+	for expected_count in ([]int{8, 1}) {
+		header: [4]byte
+		if !testing.expect(t, stream_test_read_exact(bridge.peer, header[:2]) && header[0] == 0x81 && header[1] <= 126) do return
+		length := int(header[1])
+		if length == 126 {
+			if !testing.expect(t, stream_test_read_exact(bridge.peer, header[2:])) do return
+			length = int(header[2]) * 256 + int(header[3])
+		}
+		payload := make([]byte, length, context.temp_allocator)
+		if !testing.expect(t, stream_test_read_exact(bridge.peer, payload)) do return
+		decoded, input_ok := contracts.stream_decode_input(string(payload))
+		if !testing.expect(t, input_ok && len(decoded.events) == expected_count) do return
 		testing.expect_value(t, decoded.stream_id, STREAM_TEST_ID)
-		if text, ok := decoded.events[0].(contracts.Stream_Input_Text); testing.expect(t, ok) {
-			testing.expect_value(t, text.text, STREAM_TEST_INPUT_MARKER)
+		for input in decoded.events {
+			if text, ok := input.(contracts.Stream_Input_Text); testing.expect(t, ok) {
+				testing.expect_value(t, text.text, fmt.tprintf("%s-%d", STREAM_TEST_INPUT_MARKER, offset))
+			}
+			offset += 1
 		}
 	}
 
