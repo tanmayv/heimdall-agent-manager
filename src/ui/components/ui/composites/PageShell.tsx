@@ -137,7 +137,16 @@ export const PageShell: React.FC<PageShellProps> = ({
       data-rhythm={rhythm}
       className={rootClassName}
     >
-      <a className="ui-pageshell-skip" href="#main-content">
+      <a
+        className="ui-pageshell-skip"
+        href="#main-content"
+        onClick={event => {
+          // The address fragment holds the route. Move focus without replacing it.
+          if (!window.location.hash.startsWith('#/')) return;
+          event.preventDefault();
+          event.currentTarget.closest('section')?.focus();
+        }}
+      >
         Skip to content
       </a>
       <div className="ui-pageshell-container">
