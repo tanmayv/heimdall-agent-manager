@@ -6,13 +6,25 @@ import { ACP_NOT_CHECKED, acpAdapterSummary, acpDisabledReason, acpInstallTermin
 
 export const ACP_INSTALL_WAIT_MS = 150_000;
 
-/** One control for the provider, never a profile override. */
-export default function ProviderRuntimeControl({ setup, status, disabledReason = '', onChange }: {
+/** Debug id suffix of one profile's selector: the provider id for its default profile. */
+export const runtimeProfileKey = (row: BridgeProviderStatus) =>
+  !row.profile_id || row.profile_id === row.provider ? row.provider : `${row.provider}-${row.profile_id}`;
+
+/**
+ * The provider's runtime on one bridge. The transport is chosen per profile (G6):
+ * one selector per row in `profiles` (default: just `status`; none for a profile
+ * not saved yet), each showing the Hub's resolved value for that profile.
+ * `status` is the provider's default-profile row; the ACP adapter install/check
+ * block is provider-wide and shown once.
+ */
+export default function ProviderRuntimeControl({ setup, status, profiles, disabledReason = '', onChange }: {
   setup: ProviderSetupResponse;
   status: BridgeProviderStatus;
+  profiles?: BridgeProviderStatus[];
   disabledReason?: string;
   onChange: (setup: ProviderSetupResponse) => void;
 }) {
+  const rows = profiles ?? [status];
   const provider = status.provider;
   const bridgeId = setup.bridge.bridge_id;
   const [busy, setBusy] = useState(false);
@@ -72,11 +84,11 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
     finally { setBusy(false); }
   }
 
-  async function change(transport: RuntimeTransport | null) {
+  async function change(row: BridgeProviderStatus, transport: RuntimeTransport | null) {
     setBusy(true);
     setError('');
     try {
-      onChangeRef.current(await providerSetupApi.setTransport(setup, provider, transport));
+      onChangeRef.current(await providerSetupApi.setTransport(setup, provider, transport, row.profile_id || provider));
     } catch (e) {
       setError(apiErrorText(e));
       // Selecting ACP can start an automatic install without saving the setting.
@@ -101,6 +113,9 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
   // The Hub's verdict decides; the bridge's report only supplies display text.
   const verdict = status.acp_availability || ACP_NOT_CHECKED;
   const acpReason = acpDisabledReason(verdict, status.acp_adapter);
+  // Each profile has its own verdict: a profile can be unable to run ACP while the install is ready.
+  const rowAcpReason = (row: BridgeProviderStatus) => acpDisabledReason(row.acp_availability || ACP_NOT_CHECKED, row.acp_adapter);
+  const multiple = rows.length > 1;
   // A missing host prerequisite is fixed by the user; the action re-detects it.
   const prerequisite = verdict.reason === 'adapter_missing_node' || verdict.reason === 'adapter_missing_npm';
   const adapterError = status.acp_adapter?.error || '';
@@ -111,22 +126,33 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
   const system = status.acp_runtime_kind === 'system' || acpSystemRuntime(status.acp_adapter);
   return (
     <div className="min-w-0 space-y-2 rounded-lg border border-subtle p-3">
+      {rows.map((row) => {
+        const key = runtimeProfileKey(row);
+        const rowReason = rowAcpReason(row);
+        const name = multiple ? `${row.label || row.profile_id || row.display_name}` : status.display_name;
+        return <div key={key} className="flex flex-wrap items-center gap-3">
+          <label className="flex min-w-0 flex-wrap items-center gap-2" title={reason || undefined}>
+            <span className="text-sm font-medium">{multiple ? `${name} runtime` : 'Runtime'}</span>
+            <select aria-label={`${name} runtime`} title={reason || undefined}
+              data-debug-id={`providers-runtime-select-${key}`}
+              value={row.effective_transport ?? ''} disabled={Boolean(reason) || busy || (active && !timedOut)}
+              onChange={(e) => void change(row, e.target.value as RuntimeTransport)}
+              className="min-h-10 rounded-md border border-subtle bg-surface px-3 text-sm text-primary disabled:opacity-50">
+              {/* No resolved value from the Hub: show that, never a guess. */}
+              {row.effective_transport === null ? <option value="" disabled>Unknown</option> : null}
+              {row.transports.map((transport) => <option key={transport} value={transport}
+                disabled={transport === 'acp' && Boolean(rowReason)} title={transport === 'acp' ? rowReason : undefined}>{transport === 'acp' && provider === 'codex' ? 'ACP (Codex app-server)' : transport.toUpperCase()}</option>)}
+            </select>
+          </label>
+          <Button size="sm" variant="secondary" data-debug-id={`providers-runtime-reset-${key}`}
+            title={disabledReason || `Catalog default: ${row.default_transport.toUpperCase()}`}
+            disabled={Boolean(disabledReason) || busy || row.transport === null}
+            onClick={() => void change(row, null)}>Reset to catalog default</Button>
+          {multiple && row.acp_availability && row.acp_availability.reason !== verdict.reason && rowReason
+            ? <p data-debug-id={`providers-runtime-profile-acp-${key}`} className="w-full text-xs text-muted">{rowReason}</p> : null}
+        </div>;
+      })}
       <div className="flex flex-wrap items-center gap-3">
-        <label className="flex min-w-0 flex-wrap items-center gap-2" title={reason || undefined}>
-          <span className="text-sm font-medium">Runtime</span>
-          <select aria-label={`${status.display_name} runtime`} title={reason || undefined}
-            data-debug-id={`providers-runtime-select-${provider}`}
-            value={status.effective_transport} disabled={Boolean(reason) || busy || (active && !timedOut)}
-            onChange={(e) => void change(e.target.value as RuntimeTransport)}
-            className="min-h-10 rounded-md border border-subtle bg-surface px-3 text-sm text-primary disabled:opacity-50">
-            {status.transports.map((transport) => <option key={transport} value={transport}
-              disabled={transport === 'acp' && Boolean(acpReason)} title={transport === 'acp' ? acpReason : undefined}>{transport === 'acp' && provider === 'codex' ? 'ACP (Codex app-server)' : transport.toUpperCase()}</option>)}
-          </select>
-        </label>
-        <Button size="sm" variant="secondary" data-debug-id={`providers-runtime-reset-${provider}`}
-          title={disabledReason || `Catalog default: ${status.default_transport.toUpperCase()}`}
-          disabled={Boolean(disabledReason) || busy || status.transport === null}
-          onClick={() => void change(null)}>Reset to catalog default</Button>
         {installable ? <Button size="sm" variant="secondary" data-debug-id={`providers-acp-install-${provider}`}
           title={disabledReason || acpReason || undefined}
           disabled={Boolean(disabledReason) || !setup.acp_runtime_supported || busy || active}
@@ -134,7 +160,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
         {status.transports.includes('acp') ? <Button size="sm" variant="ghost" data-debug-id={`providers-acp-check-${provider}`}
           disabled={busy} onClick={() => void checkStatus()}>Check status</Button> : null}
       </div>
-      <Text role="caption" tone="muted">Shared by all {status.display_name} profiles on this bridge. Applies on the next launch; existing instances keep their runtime.</Text>
+      <Text role="caption" tone="muted">Chosen per {status.display_name} profile on this bridge; the adapter is shared. Applies on the next launch; existing instances keep their runtime unless they override it.</Text>
       {/* The bridge's own error is shown once, in the status block below. */}
       {reason || (status.transports.includes('acp') && acpReason && acpReason !== adapterError) ? <p className="text-xs text-muted">{reason || acpReason}</p> : null}
       {status.transports.includes('acp') ? <div data-debug-id={`providers-acp-status-${provider}`} role="status" className="space-y-1 break-words text-xs text-muted">

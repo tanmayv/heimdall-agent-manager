@@ -12,13 +12,19 @@ COPILOT_TRANSPORT_TEST_RECIPE :: `{"command":"copilot","args":["--acp","--stdio"
 Transport_Test_Store :: struct {
  override, features, adapter, transports, recipe, default_transport: string,
  provider: string,
+ // A second profile "work" of the provider: its stored transport, and its own
+ // status-row ACP report (no row when work_adapter is "").
+ work_override, work_adapter: string,
 }
 transport_test_get :: proc(ctx:rawptr,name:string)->(domain.Provider_Catalog_Entry,bool,domain.Domain_Error) {
  s:=(^Transport_Test_Store)(ctx)
  return {provider=strings.clone(name),state=strings.clone("active"),transports_json=strings.clone(s.transports),default_transport=strings.clone(s.default_transport),acp_recipe_json=strings.clone(s.recipe)},true,{}
 }
-transport_test_override :: proc(ctx:rawptr,bridge_id,provider:string)->(string,domain.Domain_Error) {
- return strings.clone((^Transport_Test_Store)(ctx).override),{}
+transport_test_override :: proc(ctx:rawptr,bridge_id,provider,profile:string)->(string,domain.Domain_Error) {
+ s:=(^Transport_Test_Store)(ctx)
+ if profile=="work" do return strings.clone(s.work_override),{}
+ if profile!=provider do return "",{}
+ return strings.clone(s.override),{}
 }
 transport_test_bridge :: proc(ctx:rawptr,id:string)->(domain.Bridge,bool,domain.Domain_Error) {
  return {bridge_id=strings.clone(id),capabilities_json=strings.clone((^Transport_Test_Store)(ctx).features)},true,{}
@@ -28,6 +34,7 @@ transport_test_status :: proc(ctx:rawptr,id:string)->([dynamic]domain.Bridge_Pro
  s := (^Transport_Test_Store)(ctx)
  name := s.provider if s.provider != "" else "claude"
  append(&items,domain.Bridge_Provider_Status{provider=strings.clone(name),profile_id=strings.clone(name),acp_adapter_json=strings.clone(s.adapter)})
+ if s.work_adapter!="" do append(&items,domain.Bridge_Provider_Status{provider=strings.clone(name),profile_id=strings.clone("work"),acp_adapter_json=strings.clone(s.work_adapter)})
  return items,{}
 }
 
@@ -38,10 +45,10 @@ c2_copilot_transport_opt_in_requires_bridge_reported_readiness :: proc(t: ^testi
  repo := iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
  bridges := iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
  svc := Provider_Service{repo=&repo,bridges=&bridges}
- selected, err := resolve_runtime_transport(&svc,"bridge","copilot")
+ selected, err := resolve_runtime_transport(&svc,"bridge","copilot","")
  testing.expect(t,err.code==.None && selected=="pty");delete(selected)
  store.override="acp"
- selected,err=resolve_runtime_transport(&svc,"bridge","copilot")
+ selected,err=resolve_runtime_transport(&svc,"bridge","copilot","")
  testing.expect(t,err.code==.None && selected=="acp");delete(selected)
  ready:=store.adapter
  // A user-installed CLI below the minimum is reported outdated by the bridge.
@@ -51,7 +58,7 @@ c2_copilot_transport_opt_in_requires_bridge_reported_readiness :: proc(t: ^testi
   transport_test_replace(ready,`"state":"ready"`,`"state":"error"`),
  }) {
   store.adapter=raw
-  selected,err=resolve_runtime_transport(&svc,"bridge","copilot")
+  selected,err=resolve_runtime_transport(&svc,"bridge","copilot","")
   testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
  }
 }
@@ -63,39 +70,39 @@ test_runtime_transport_resolves_default_override_and_capability_gate :: proc(t:^
  repo:=iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
  bridges:=iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
  svc:=Provider_Service{repo=&repo,bridges=&bridges}
- transport,err:=resolve_runtime_transport(&svc,"bridge","claude")
+ transport,err:=resolve_runtime_transport(&svc,"bridge","claude","")
  testing.expect_value(t,err.code,domain.Error_Code.None)
  testing.expect_value(t,transport,"pty");delete(transport)
  store.override="acp"
- transport,err=resolve_runtime_transport(&svc,"bridge","claude")
+ transport,err=resolve_runtime_transport(&svc,"bridge","claude","")
  testing.expect_value(t,err.code,domain.Error_Code.None)
  testing.expect_value(t,transport,"acp");delete(transport)
  for features in ([]string{"",`{"features":[]}`,`{"features":["other"],"description":"acp_runtime_v1"}`}) {
   store.features=features
-  transport,err=resolve_runtime_transport(&svc,"bridge","claude")
+  transport,err=resolve_runtime_transport(&svc,"bridge","claude","")
   testing.expect_value(t,err.code,domain.Error_Code.ACP_Unavailable)
   delete(transport)
  }
  store.features=`{"features":["acp_runtime_v1"]}`
  for state in ([]string{"missing_node","missing","installing","outdated","error","not_checked"}) {
   store.adapter=strings.concatenate({`{"state":"`,state,`","installed":false,"checked_at":"2026-11-18T00:00:00Z"}`})
-  transport,err=resolve_runtime_transport(&svc,"bridge","claude")
+  transport,err=resolve_runtime_transport(&svc,"bridge","claude","")
   testing.expect_value(t,err.code,domain.Error_Code.ACP_Installing if state=="installing" else domain.Error_Code.ACP_Unavailable)
   delete(transport);delete(store.adapter)
  }
  store.override="pty";store.features="";store.adapter=""
- transport,err=resolve_runtime_transport(&svc,"bridge","claude")
+ transport,err=resolve_runtime_transport(&svc,"bridge","claude","")
  testing.expect_value(t,err.code,domain.Error_Code.None)
  testing.expect_value(t,transport,"pty");delete(transport)
  store.override="unknown"
- _,err=resolve_runtime_transport(&svc,"bridge","claude")
+ _,err=resolve_runtime_transport(&svc,"bridge","claude","")
  testing.expect_value(t,err.code,domain.Error_Code.Invalid_Transport)
 }
 
 @(test)
 test_runtime_transport_rejects_invalid_recipes_and_catalog_membership :: proc(t:^testing.T) {
  entry:=domain.Provider_Catalog_Entry{provider="claude",transports_json=`["pty"]`,default_transport="pty",acp_recipe_json=TRANSPORT_TEST_RECIPE}
- _,err:=provider_transport_from_entry(entry,"acp")
+ err:=runtime_transport_validate(entry,"acp")
  testing.expect_value(t,err.code,domain.Error_Code.Invalid_Transport)
  entry.transports_json=`["pty","acp"]`
  for recipe in ([]string{
@@ -106,7 +113,7 @@ test_runtime_transport_rejects_invalid_recipes_and_catalog_membership :: proc(t:
   transport_test_replace(TRANSPORT_TEST_RECIPE,`"protocol_version":1`,`"protocol_version":1.0`),
  }) {
   entry.acp_recipe_json=recipe
-  _,err=provider_transport_from_entry(entry,"acp")
+  err=runtime_transport_validate(entry,"acp")
   testing.expect_value(t,err.code,domain.Error_Code.ACP_Unavailable)
  }
  testing.expect(t,contracts.acp_recipe_valid(TRANSPORT_TEST_RECIPE))
@@ -179,13 +186,13 @@ test_runtime_codex_opt_in_requires_system_probe_readiness :: proc(t: ^testing.T)
  repo := iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
  bridges := iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
  svc := Provider_Service{repo=&repo,bridges=&bridges}
- selected, err := resolve_runtime_transport(&svc,"bridge","codex")
+ selected, err := resolve_runtime_transport(&svc,"bridge","codex","")
  testing.expect(t,err.code==.None && selected=="pty");delete(selected)
  store.override="acp"
- selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex","")
  testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
  store.adapter=ready
- selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex","")
  testing.expect(t,err.code==.None && selected=="acp");delete(selected)
  for raw in ([]string{
   transport_test_replace(ready, `"state":"ready"`, `"state":"error"`),
@@ -193,14 +200,14 @@ test_runtime_codex_opt_in_requires_system_probe_readiness :: proc(t: ^testing.T)
   transport_test_replace(ready, `"state":"ready"`, `"state":"missing"`),
  }) {
   store.adapter=raw
-  selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+  selected,err=resolve_runtime_transport(&svc,"bridge","codex","")
   testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
  }
  store.adapter=ready;store.features=""
- selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex","")
  testing.expect(t,err.code==.ACP_Unavailable && selected=="");delete(selected)
  store.override="pty"
- selected,err=resolve_runtime_transport(&svc,"bridge","codex")
+ selected,err=resolve_runtime_transport(&svc,"bridge","codex","")
  testing.expect(t,err.code==.None && selected=="pty");delete(selected)
 }
 
@@ -291,12 +298,100 @@ test_require_acp_ready_maps_verdicts_to_unchanged_errors :: proc(t: ^testing.T) 
   {`{"features":["acp_runtime_v1"]}`, `{"state":"installing"}`, .ACP_Installing, "", "ACP adapter installation is in progress"},
  }) {
   store.features = c.features; store.adapter = c.adapter
-  err := require_acp_ready(&svc, "bridge", entry)
+  err := require_acp_ready(&svc, "bridge", entry, "")
   testing.expectf(t, err.code == c.code && err.message == c.message, "case %d: %v %s", i, err.code, err.message)
   if c.state != "" do testing.expectf(t, strings.contains(err.details_json, strings.concatenate({`"state":"`, c.state, `"`}, context.temp_allocator)), "case %d: %s", i, err.details_json)
  }
  // No status row for the provider at all.
  store.features = `{"features":["acp_runtime_v1"]}`; store.adapter = ""; store.provider = "codex"
- err := require_acp_ready(&svc, "bridge", entry)
+ err := require_acp_ready(&svc, "bridge", entry, "")
  testing.expect(t, err.code == .ACP_Unavailable && err.message == "ACP adapter has not been checked" && strings.contains(err.details_json, `"state":"not_checked"`), err.message)
+}
+
+// G6: precedence is instance override > the profile's own setting > catalog
+// default, per profile; two profiles of one provider on one bridge resolve
+// independently.
+@(test)
+test_runtime_transport_resolves_per_profile_precedence :: proc(t:^testing.T) {
+ ready:=`{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-18T00:00:00Z"}`
+ store:=Transport_Test_Store{features=`{"features":["acp_runtime_v1"]}`,transports=`["pty","acp"]`,default_transport="pty",recipe=TRANSPORT_TEST_RECIPE,adapter=ready,work_adapter=ready}
+ repo:=iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
+ bridges:=iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
+ svc:=Provider_Service{repo=&repo,bridges=&bridges}
+ resolve :: proc(t:^testing.T,svc:^Provider_Service,profile,override:string,expected:string,loc:=#caller_location) {
+  got,err:=resolve_runtime_transport(svc,"bridge","claude",profile,override)
+  defer delete(got)
+  testing.expect_value(t,err.code,domain.Error_Code.None,loc=loc)
+  testing.expect_value(t,got,expected,loc=loc)
+ }
+ // Catalog default for both profiles.
+ resolve(t,&svc,"","","pty");resolve(t,&svc,"claude","","pty");resolve(t,&svc,"work","","pty")
+ // The work profile's setting applies to work only.
+ store.work_override="acp"
+ resolve(t,&svc,"claude","","pty");resolve(t,&svc,"work","","acp")
+ // The default profile's setting no longer reaches another profile.
+ store.override="acp";store.work_override="pty"
+ resolve(t,&svc,"claude","","acp");resolve(t,&svc,"work","","pty")
+ // The instance override wins over the profile setting, either way.
+ resolve(t,&svc,"work","acp","acp");resolve(t,&svc,"claude","pty","pty")
+ // A catalog default of ACP applies to a profile with no setting of its own.
+ store.default_transport="acp";store.override="";store.work_override="pty"
+ resolve(t,&svc,"claude","","acp");resolve(t,&svc,"work","","pty")
+ // An unsupported stored value fails for that profile only.
+ store.transports=`["pty"]`;store.default_transport="pty";store.work_override="acp"
+ _,err:=resolve_runtime_transport(&svc,"bridge","claude","work")
+ testing.expect_value(t,err.code,domain.Error_Code.Invalid_Transport)
+ resolve(t,&svc,"claude","","pty")
+ // The selection without the readiness gate is what the provider-status view shows.
+ store.transports=`["pty","acp"]`;store.work_override="acp";store.features=""
+ _,err=resolve_runtime_transport(&svc,"bridge","claude","work")
+ testing.expect_value(t,err.code,domain.Error_Code.ACP_Unavailable)
+ selected,serr:=resolve_runtime_transport(&svc,"bridge","claude","work",check_ready=false)
+ testing.expect(t,serr.code==.None && selected=="acp");delete(selected)
+}
+
+// ACP readiness for a non-default profile: the provider-wide install (the
+// default profile's report) decides first; then the profile's own report must
+// show the bridge can launch it (ready, or installed and certified by the
+// bridge's probe at launch). Without a profile report the default verdict stands.
+@(test)
+test_require_acp_ready_checks_the_selected_profile :: proc(t:^testing.T) {
+ ready:=`{"installed":true,"state":"ready","version":"1.0.120","checked_at":"2026-11-27T00:00:00Z","provider":"copilot","runtime_kind":"system","adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
+ store:=Transport_Test_Store{provider="copilot",features=`{"features":["acp_runtime_v1"]}`,transports=`["pty","acp"]`,default_transport="pty",recipe=COPILOT_TRANSPORT_TEST_RECIPE,adapter=ready,work_adapter=ready}
+ repo:=iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
+ bridges:=iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
+ svc:=Provider_Service{repo=&repo,bridges=&bridges}
+ entry:=domain.Provider_Catalog_Entry{provider="copilot",acp_recipe_json=COPILOT_TRANSPORT_TEST_RECIPE}
+ testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.None)
+ // Installed but not yet probed for this profile: the bridge probes it at launch.
+ store.work_adapter=`{"installed":true,"state":"error","error":"ACP initialize probe is required for the selected profile; use Re-check","checked_at":"2026-11-27T00:00:00Z"}`
+ testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.None)
+ // The profile's own CLI is missing or below the minimum: that profile cannot use ACP...
+ for state in ([]string{"missing","outdated","error"}) {
+  store.work_adapter=strings.concatenate({`{"installed":false,"state":"`,state,`","checked_at":"2026-11-27T00:00:00Z"}`},context.temp_allocator)
+  err:=require_acp_ready(&svc,"bridge",entry,"work")
+  testing.expect_value(t,err.code,domain.Error_Code.ACP_Unavailable)
+  testing.expectf(t,strings.contains(err.details_json,strings.concatenate({`"state":"`,state,`"`},context.temp_allocator)),"%s: %s",state,err.details_json)
+  // ...while the default profile still can.
+  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"").code,domain.Error_Code.None)
+  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"copilot").code,domain.Error_Code.None)
+ }
+ store.work_adapter=`{"installed":true,"state":"installing","checked_at":"2026-11-27T00:00:00Z"}`
+ testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.ACP_Installing)
+ // No report for the profile yet: the provider-wide verdict stands.
+ store.work_adapter=""
+ testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.None)
+ // A non-ready provider-wide install blocks every profile, whatever the profile reports.
+ store.adapter=`{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`;store.work_adapter=ready
+ testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.ACP_Unavailable)
+ // The resolver applies the same per-profile gate.
+ store.adapter=ready;store.work_override="acp"
+ store.work_adapter=`{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`
+ _,err:=resolve_runtime_transport(&svc,"bridge","copilot","work")
+ testing.expect_value(t,err.code,domain.Error_Code.ACP_Unavailable)
+ // The provider-status verdict for the profile row is the same function.
+ verdict,_:=classify_acp_profile_availability("copilot",COPILOT_TRANSPORT_TEST_RECIPE,`{"features":["acp_runtime_v1"]}`,ready,"work",store.work_adapter)
+ testing.expect_value(t,verdict.reason,contracts.ACP_Availability_Reason.Adapter_Missing)
+ verdict,_=classify_acp_profile_availability("copilot",COPILOT_TRANSPORT_TEST_RECIPE,`{"features":["acp_runtime_v1"]}`,ready,"copilot",store.work_adapter)
+ testing.expect_value(t,verdict.reason,contracts.ACP_Availability_Reason.Ready)
 }

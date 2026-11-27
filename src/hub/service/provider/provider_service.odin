@@ -39,7 +39,14 @@ Provider_Catalog_Result :: struct {
 }
 
 Bridge_Provider_View :: struct {
-	transport, effective_transport, acp_adapter_json: string,
+	// transport is this profile's stored choice ("" = catalog default);
+	// effective_transport is resolve_runtime_transport's selection for it ("" when
+	// it cannot be resolved, e.g. a deprecated provider or an unsupported stored value).
+	transport, effective_transport: string,
+	// acp_adapter_json is the provider-wide report (the default profile row);
+	// profile_acp_adapter_json is this profile's own report ("" for the default
+	// profile). classify_acp_profile_availability combines them.
+	acp_adapter_json, profile_acp_adapter_json: string,
 	acp_adapter_received_at: string, // Hub clock; see Bridge_Provider_Status
 	profile_id: string,
 	profile_state: string,
@@ -61,7 +68,7 @@ Bridge_Provider_View :: struct {
 }
 
 bridge_provider_view_destroy :: proc(value: Bridge_Provider_View) {
-	delete(value.transport); delete(value.effective_transport); delete(value.acp_adapter_json); delete(value.acp_adapter_received_at)
+	delete(value.transport); delete(value.effective_transport); delete(value.acp_adapter_json); delete(value.profile_acp_adapter_json); delete(value.acp_adapter_received_at)
 	delete(value.profile_id); delete(value.profile_state); delete(value.label_enc); delete(value.accent)
 	domain.provider_catalog_entry_destroy(value.catalog)
 	delete(value.models_source); delete(value.models_checked_at); delete(value.models_attempted_at); delete(value.models_state)
@@ -388,9 +395,12 @@ list_bridge_providers :: proc(service: ^Provider_Service, bridge_id: string) -> 
   v.enabled=v.enabled && v.detection_state=="present"
   for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.profile_id {v.enabled=setting.enabled;break}
   v.enabled=v.enabled && p.enabled && p.state!="missing"
-  for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.provider {v.transport=strings.clone(setting.transport);break}
-  v.effective_transport=strings.clone(v.transport if v.transport!="" else contracts.runtime_transport_or_pty(entry.default_transport))
+  for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.profile_id {v.transport=strings.clone(setting.transport);break}
+  // The selection only: launches add the live ACP readiness gate.
+  effective,terr:=resolve_runtime_transport(service,bridge_id,p.provider,p.profile_id,check_ready=false)
+  v.effective_transport=effective if terr.code==.None else strings.clone("")
   for status in statuses do if status.provider==p.provider && domain.profile_effective_id(status.provider,status.profile_id)==p.provider {v.acp_adapter_json=strings.clone(status.acp_adapter_json);v.acp_adapter_received_at=strings.clone(status.acp_adapter_received_at);break}
+  for status in statuses do if p.profile_id!=p.provider && status.provider==p.provider && domain.profile_effective_id(status.provider,status.profile_id)==p.profile_id {v.profile_acp_adapter_json=strings.clone(status.acp_adapter_json);break}
   observation,oerr:=effective_model_observation(service.repo,bridge_id,&v.catalog,p.profile_id)
   if oerr.code!=.None {bridge_provider_view_destroy(v);bridge_provider_views_destroy(views);return nil,oerr}
   v.models_source=strings.clone(observation.models_source if observation.has_snapshot else "static_fallback")

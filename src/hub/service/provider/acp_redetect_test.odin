@@ -55,7 +55,7 @@ test_acp_launch_gate_redetects_non_ready_report_once :: proc(t: ^testing.T) {
 	bridges := iface.Bridge_Repository{ctx = &store, get_bridge = transport_test_bridge}
 	svc := Provider_Service{repo = &repo, bridges = &bridges, redetector = &f.r}
 	for _ in 0 ..< 3 {
-		selected, err := resolve_runtime_transport(&svc, "bridge", "copilot")
+		selected, err := resolve_runtime_transport(&svc, "bridge", "copilot","")
 		testing.expect(t, err.code == .ACP_Unavailable && selected == "", "the launch still fails with its current error")
 		delete(selected)
 	}
@@ -64,26 +64,26 @@ test_acp_launch_gate_redetects_non_ready_report_once :: proc(t: ^testing.T) {
 	// The settings save starts its own tracked install/Re-check: no extra request.
 	redetect_reset(&f)
 	entry := domain.Provider_Catalog_Entry{provider = "copilot", acp_recipe_json = COPILOT_TRANSPORT_TEST_RECIPE}
-	testing.expect_value(t, require_acp_ready(&svc, "bridge", entry, redetect = false).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, require_acp_ready(&svc, "bridge", entry, "", redetect = false).code, domain.Error_Code.ACP_Unavailable)
 	testing.expect_value(t, len(f.calls), 1)
 	// A fresh ready report dispatches nothing.
 	store.adapter = `{"installed":true,"state":"ready","version":"1.0.120","checked_at":"2026-11-27T00:00:00Z","adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
-	selected, err := resolve_runtime_transport(&svc, "bridge", "copilot")
+	selected, err := resolve_runtime_transport(&svc, "bridge", "copilot","")
 	testing.expect(t, err.code == .None && selected == "acp"); delete(selected)
 	testing.expect_value(t, len(f.calls), 1)
 	// An adapter runtime (Claude) missing Node.js is re-detected by a discover.
 	store = Transport_Test_Store{features = `{"features":["acp_runtime_v1"]}`, transports = `["pty","acp"]`, default_transport = "pty",
 		recipe = TRANSPORT_TEST_RECIPE, override = "acp", adapter = `{"installed":false,"state":"missing_node","checked_at":"2026-11-27T00:00:00Z"}`}
-	selected, err = resolve_runtime_transport(&svc, "bridge", "claude"); delete(selected)
+	selected, err = resolve_runtime_transport(&svc, "bridge", "claude",""); delete(selected)
 	testing.expect_value(t, err.code, domain.Error_Code.ACP_Unavailable)
 	testing.expect_value(t, len(f.calls), 2)
 	if len(f.calls) == 2 do testing.expect_value(t, f.calls[1], "bridge/claude/discover")
 	// Installing and unsupported bridges never re-detect.
 	redetect_reset(&f)
 	store.adapter = `{"installed":false,"state":"installing","checked_at":"2026-11-27T00:00:00Z"}`
-	selected, err = resolve_runtime_transport(&svc, "bridge", "claude"); delete(selected)
+	selected, err = resolve_runtime_transport(&svc, "bridge", "claude",""); delete(selected)
 	store.adapter = `{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`; store.features = ""
-	selected, err = resolve_runtime_transport(&svc, "bridge", "claude"); delete(selected)
+	selected, err = resolve_runtime_transport(&svc, "bridge", "claude",""); delete(selected)
 	testing.expect_value(t, len(f.calls), 2)
 }
 

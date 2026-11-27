@@ -69,8 +69,10 @@ export const providerSetupApi = {
     invalidateBridgeProviderStatus(current.bridge.bridge_id);
     return { ...current, providers: current.providers.map((entry) => entry.provider === provider && (entry.profile_id || entry.provider) === (profileId || provider) ? { ...entry, enabled } : entry) };
   },
-  async setTransport(current: ProviderSetupResponse, provider: string, transport: RuntimeTransport | null): Promise<ProviderSetupResponse> {
-    await cookieMutation(`/bridges/${encodeURIComponent(current.bridge.bridge_id)}/providers/${encodeURIComponent(provider)}`, 'PUT', { transport });
+  /** The transport is chosen per profile; no profileId (or the provider id) is the default profile. */
+  async setTransport(current: ProviderSetupResponse, provider: string, transport: RuntimeTransport | null, profileId?: string): Promise<ProviderSetupResponse> {
+    const profile = profileId && profileId !== provider ? { profile_id: profileId } : {};
+    await cookieMutation(`/bridges/${encodeURIComponent(current.bridge.bridge_id)}/providers/${encodeURIComponent(provider)}`, 'PUT', { transport, ...profile });
     invalidateBridgeProviderStatus(current.bridge.bridge_id);
     return providerSetupApi.get(current.bridge.bridge_id, true, true);
   },

@@ -1356,7 +1356,8 @@ test_provider_transport_http_presence_validation_and_atomic_updates :: proc(t:^t
  testing.expect(t,response.status==200,response.body)
  testing.expect(t,strings.contains(response.body,`"transport":"acp"`))
  testing.expect(t,strings.contains(response.body,`"effective_transport":"acp"`))
- // Custom profiles repeat the provider-wide selection and canonical adapter.
+ // G6: a custom profile has its own selection (here none: the catalog
+ // default) and repeats the provider-wide adapter report.
  profile_err:=provider_service.apply_profiles_report(&f.pr_svc,f.bridge_id,[]domain.Bridge_Provider_Profile{{profile_id="work",provider="claude",enabled=true,state="ok"}})
  testing.expect_value(t,profile_err.code,domain.Error_Code.None)
  views,view_err:=provider_service.list_bridge_providers(&f.pr_svc,f.bridge_id)
@@ -1365,8 +1366,8 @@ test_provider_transport_http_presence_validation_and_atomic_updates :: proc(t:^t
  for view in views {
   if view.profile_id!="work" do continue
   custom_found=true
-  testing.expect_value(t,view.transport,"acp")
-  testing.expect_value(t,view.effective_transport,"acp")
+  testing.expect_value(t,view.transport,"")
+  testing.expect_value(t,view.effective_transport,"pty")
   testing.expect_value(t,view.acp_adapter_json,ready)
  }
  testing.expect(t,custom_found)
@@ -1377,13 +1378,39 @@ test_provider_transport_http_presence_validation_and_atomic_updates :: proc(t:^t
  testing.expect(t,response.status==200,response.body)
  transport,_:=iface.get_provider_transport(&f.pr_repo,f.bridge_id,"claude")
  testing.expect_value(t,transport,"acp");delete(transport)
- // All profile rows inherit the canonical override; profile mutation is refused,
- // including null, before making any enabled change.
- for body in ([]string{`{"profile_id":"work","transport":"pty"}`,`{"profile_id":"work","transport":null,"enabled":false}`,`{"profile_id":"work","transport":123}`}) {
-  request.body=body;response=bridge_provider_enable_handler(&f.ph,request)
-  testing.expect(t,response.status==422,response.body)
-  testing.expect(t,strings.contains(response.body,"transport_is_provider_wide"))
+ // A settings save per profile: work selects ACP, then PTY, while the default
+ // profile keeps ACP; the response is the saved profile's row.
+ request.body=`{"profile_id":"work","transport":"acp"}`;response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ testing.expect(t,strings.contains(response.body,`"profile_id":"work"`) && strings.contains(response.body,`"transport":"acp"`) && strings.contains(response.body,`"effective_transport":"acp"`),response.body)
+ transport,_=iface.get_provider_transport(&f.pr_repo,f.bridge_id,"claude","work")
+ testing.expect_value(t,transport,"acp");delete(transport)
+ request.body=`{"profile_id":"work","transport":"pty"}`;response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ testing.expect(t,strings.contains(response.body,`"effective_transport":"pty"`),response.body)
+ views,view_err=provider_service.list_bridge_providers(&f.pr_svc,f.bridge_id)
+ testing.expect_value(t,view_err.code,domain.Error_Code.None)
+ for view in views do if view.catalog.provider=="claude" {
+  // Two profiles of one provider on one bridge resolve differently.
+  testing.expect_value(t,view.effective_transport,"pty" if view.profile_id=="work" else "acp")
  }
+ provider_service.bridge_provider_views_destroy(views)
+ // null clears the profile's choice together with an enabled change.
+ request.body=`{"profile_id":"work","transport":null,"enabled":false}`;response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ testing.expect(t,strings.contains(response.body,`"transport":null`) && strings.contains(response.body,`"enabled":false`),response.body)
+ transport,_=iface.get_provider_transport(&f.pr_repo,f.bridge_id,"claude","work")
+ testing.expect_value(t,transport,"");delete(transport)
+ // A disabled profile may still store its choice; an unknown profile may not.
+ request.body=`{"profile_id":"work","transport":"pty"}`;response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==200,response.body)
+ request.body=`{"profile_id":"nope","transport":"pty"}`;response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status!=200,response.body)
+ transport,_=iface.get_provider_transport(&f.pr_repo,f.bridge_id,"claude","nope")
+ testing.expect_value(t,transport,"");delete(transport)
+ request.body=`{"profile_id":"work","transport":123}`;response=bridge_provider_enable_handler(&f.ph,request)
+ testing.expect(t,response.status==422,response.body)
+ testing.expect(t,strings.contains(response.body,"invalid_transport"),response.body)
  for body in ([]string{`{"transport":1}`,`{"transport":false}`,`{"transport":{}}`,`{"transport":"unknown"}`,`{"transport":""}`}) {
   request.body=body;response=bridge_provider_enable_handler(&f.ph,request)
   testing.expect(t,response.status==422,response.body)
@@ -1683,17 +1710,17 @@ r2_launch_gate_rechecks_system_runtime_and_replaces_a_lost_command :: proc(t: ^t
 	entry, found, err := iface.provider_catalog_get(&f.pr_repo, "copilot")
 	if !testing.expect(t, found && err.code == .None) do return
 	defer domain.provider_catalog_entry_destroy(entry)
-	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry, "").code, domain.Error_Code.ACP_Unavailable)
 	if !testing.expect_value(t, f.sink_rec.count, 1) do return
 	testing.expect_value(t, json_string(f.sink_rec.last_cmd.body_json, "type", context.temp_allocator), "install_acp_adapter")
 	first := strings.clone(f.sink_rec.last_cmd.command_id, context.temp_allocator)
 	// Gate retries do not pile up commands.
-	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry, "").code, domain.Error_Code.ACP_Unavailable)
 	testing.expect_value(t, f.sink_rec.count, 1)
 	// No result within the TTL: the command is failed and a new one sent.
 	provider_service.acp_redetect_pending_set(&r, f.bridge_id, "copilot", first, .Recheck, time.time_add(time.now(), -(provider_service.ACP_REDETECT_INFLIGHT_TTL + time.Second)))
 	provider_service.acp_redetector_clear_window(&r)
-	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry, "").code, domain.Error_Code.ACP_Unavailable)
 	testing.expect_value(t, f.sink_rec.count, 2)
 	second := strings.clone(f.sink_rec.last_cmd.command_id, context.temp_allocator)
 	testing.expect(t, second != first)
@@ -1764,7 +1791,7 @@ r2_launch_gate_joins_a_user_install_without_owning_it :: proc(t: ^testing.T) {
 	if !testing.expect_value(t, response.status, 202) do return
 	user := json_string(response.body, "command_id", context.temp_allocator)
 	entry, _, _ := iface.provider_catalog_get(&f.pr_repo, "copilot"); defer domain.provider_catalog_entry_destroy(entry)
-	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry, "").code, domain.Error_Code.ACP_Unavailable)
 	testing.expect_value(t, f.sink_rec.count, 1) // joined, not duplicated
 	testing.expect_value(t, provider_service.acp_redetect_pending_expired(&r, f.bridge_id, "copilot", time.time_add(time.now(), time.Hour)), "")
 	testing.expect_value(t, extension_test_state(t, f, user), "dispatched")

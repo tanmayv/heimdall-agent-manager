@@ -379,7 +379,7 @@ prepare_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	}
 	resolved, resolved_ok, resolved_err := resolve_provider_model(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, model = input.model,provider_profile=input.provider_profile})
 	if !resolved_ok do return domain.Agent_Instance{}, 0, false, resolved_err
-	transport, transport_err := resolve_launch_transport(service,bridge.bridge_id,resolved.provider)
+	transport, transport_err := resolve_launch_transport(service,bridge.bridge_id,resolved.provider,input.provider_profile)
 	if transport_err.code!=.None do return {},0,false,transport_err
 	// Mint one per-agent global counter for this run and derive the default title
 	// "<agent-name> #<n>". The same default title is used for the (new) chain and
@@ -457,7 +457,7 @@ create_provider_test_instance :: proc(service: ^Agent_Service, auth: contracts.A
  if model_err.code!=.None do return {},false,model_err
 	now := platform.clock_now(service.clock)
 	instance_id := platform.generate_id(service.ids, "provider-test-")
-	transport,transport_err:=resolve_launch_transport(service,bridge_id,provider)
+	transport,transport_err:=resolve_launch_transport(service,bridge_id,provider,provider_profile)
 	if transport_err.code!=.None do return {},false,transport_err
 	inst := domain.Agent_Instance{runtime_transport=transport,launch_epoch=runtime_launch_epoch(service,transport),agent_instance_id=instance_id,owner_user_id=owner,bridge_id=bridge_id,display_name="Provider test",provider=provider,provider_profile=domain.profile_effective_id(provider,provider_profile),model=resolved.model,kind="provider_test",runtime_status="launching",startup_status="starting",activity_status="unknown",run_count=1,created_at=now,updated_at=now,started_at=now,last_seen_at=now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
@@ -2690,17 +2690,18 @@ bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, ow
 }
 
 
-resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string, instance_override: string = "") -> (string,domain.Domain_Error) {
+// resolve_launch_transport calls the Hub's one transport resolver,
+// provider_service.resolve_runtime_transport, with this service's repositories:
+// the instance override wins over the profile's setting on the bridge, which
+// wins over the catalog default; ACP must be ready for that profile.
+resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider, provider_profile: string, instance_override: string = "") -> (string,domain.Domain_Error) {
  svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges,redetector=service.acp_redetector}
- return provider_service.resolve_runtime_transport(&svc,bridge_id,provider,instance_override)
+ return provider_service.resolve_runtime_transport(&svc,bridge_id,provider,provider_profile,instance_override)
 }
 
 // Only new launches call this helper. Re-delivery serializers use the snapshot.
-// Precedence: the instance's explicit runtime_transport_override (set by
-// reconfiguration) wins over the bridge-wide provider setting, which wins over
-// the catalog default; see provider_service.resolve_runtime_transport.
 freeze_runtime_transport :: proc(service: ^Agent_Service, inst: ^domain.Agent_Instance) -> domain.Domain_Error {
- transport,err:=resolve_launch_transport(service,inst.bridge_id,inst.provider,domain.runtime_transport_override_normalize(inst.runtime_transport_override))
+ transport,err:=resolve_launch_transport(service,inst.bridge_id,inst.provider,inst.provider_profile,domain.runtime_transport_override_normalize(inst.runtime_transport_override))
  if err.code!=.None do return err
  inst.runtime_transport=transport
  return {}
@@ -2733,11 +2734,9 @@ validate_frozen_runtime_transport :: proc(service: ^Agent_Service, inst:domain.A
  if err.code!=.None do return err
  if !found do return domain.domain_error(.ACP_Unavailable,"ACP provider is unavailable")
  defer domain.provider_catalog_entry_destroy(entry)
- value,validation_err:=provider_service.provider_transport_from_entry(entry,transport)
- delete(value)
- if validation_err.code!=.None do return validation_err
+ if validation_err:=provider_service.runtime_transport_validate(entry,transport);validation_err.code!=.None do return validation_err
  svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges,redetector=service.acp_redetector}
- return provider_service.require_acp_ready(&svc,inst.bridge_id,entry)
+ return provider_service.require_acp_ready(&svc,inst.bridge_id,entry,inst.provider_profile)
 }
 
 

@@ -70,7 +70,7 @@ action_place_statuses :: proc(
 	return out, {}
 }
 // Production settings default to PTY when no transport override is stored.
-action_place_transport :: proc(ctx: rawptr, bridge, provider: string) -> (string, domain.Domain_Error) {return "", {}}
+action_place_transport :: proc(ctx: rawptr, bridge, provider, profile: string) -> (string, domain.Domain_Error) {return "", {}}
 action_place_settings :: proc(
 	ctx: rawptr,
 	bridge: string,

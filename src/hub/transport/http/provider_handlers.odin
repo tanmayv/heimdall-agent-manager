@@ -152,7 +152,9 @@ write_bridge_provider_view_json :: proc(
 	strings.write_string(b, "\",\"models_has_snapshot\":"); strings.write_string(b,"true" if view.models_has_snapshot else "false")
 	write_bridge_provider_transport_json(b, view)
 	strings.write_string(b, ",\"acp_availability\":")
-	contracts.write_acp_availability_json(b, provider_service.classify_acp_availability(view.catalog.provider, view.catalog.acp_recipe_json, bridge_capabilities_json, view.acp_adapter_json))
+	// Per profile: the same verdict the launch gate (require_acp_ready) applies to this profile.
+	availability, _ := provider_service.classify_acp_profile_availability(view.catalog.provider, view.catalog.acp_recipe_json, bridge_capabilities_json, view.acp_adapter_json, view.profile_id, view.profile_acp_adapter_json)
+	contracts.write_acp_availability_json(b, availability)
 	// Descriptor data for display: "system" (user-installed CLI the bridge only
 	// detects) or "adapter" (published package Heimdall installs); null without
 	// an ACP runtime. The UI words its actions from this, never the provider id.
@@ -717,9 +719,6 @@ parse_provider_settings_update :: proc(body, provider: string) -> (provider_serv
   if !valid do return {},domain.domain_error(.Validation_Failed,"profile_id must be a string")
   input.profile_id=strings.clone(string(profile),context.temp_allocator)
  }
- if _,present:=obj["transport"];present && domain.profile_effective_id(provider,input.profile_id)!=provider {
-  return {},domain.domain_error(.Transport_Is_Provider_Wide,"transport is configured per provider, not per profile")
- }
  if item,present:=obj["enabled"];present {
   enabled,valid:=item.(json.Boolean)
   if !valid do return {},domain.domain_error(.Validation_Failed,"enabled must be a JSON boolean")
@@ -742,8 +741,10 @@ parse_provider_settings_update :: proc(body, provider: string) -> (provider_serv
 write_bridge_provider_transport_json :: proc(b: ^strings.Builder, view: provider_service.Bridge_Provider_View) {
  strings.write_string(b,",\"transport\":")
  if view.transport=="" {strings.write_string(b,"null")} else {strings.write_byte(b,'"');write_handler_json_string(b,view.transport);strings.write_byte(b,'"')}
- strings.write_string(b,",\"effective_transport\":\"");write_handler_json_string(b,contracts.runtime_transport_or_pty(view.effective_transport))
- strings.write_string(b,"\",\"transports\":");strings.write_string(b,view.catalog.transports_json if view.catalog.transports_json!="" else "[\"pty\"]")
+ // The Hub's resolved selection for this profile; null only when it cannot be resolved.
+ strings.write_string(b,",\"effective_transport\":")
+ if view.effective_transport=="" {strings.write_string(b,"null")} else {strings.write_byte(b,'"');write_handler_json_string(b,view.effective_transport);strings.write_byte(b,'"')}
+ strings.write_string(b,",\"transports\":");strings.write_string(b,view.catalog.transports_json if view.catalog.transports_json!="" else "[\"pty\"]")
  strings.write_string(b,",\"default_transport\":\"");write_handler_json_string(b,contracts.runtime_transport_or_pty(view.catalog.default_transport))
  strings.write_string(b,"\",\"acp_adapter\":");strings.write_string(b,view.acp_adapter_json if view.catalog.acp_recipe_json!="" && view.acp_adapter_json!="" else "null")
 }

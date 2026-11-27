@@ -58,7 +58,7 @@ placement_statuses :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Brid
 	return out, {}
 }
 // Production settings default to PTY when no transport override is stored.
-placement_transport :: proc(ctx: rawptr, bridge, provider: string) -> (string, domain.Domain_Error) {return "", {}}
+placement_transport :: proc(ctx: rawptr, bridge, provider, profile: string) -> (string, domain.Domain_Error) {return "", {}}
 placement_settings :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Setting, domain.Domain_Error) {return nil, {}}
 placement_models :: proc(ctx: rawptr, bridge: string) -> ([dynamic]domain.Bridge_Provider_Models, domain.Domain_Error) {
 	out := make([dynamic]domain.Bridge_Provider_Models)

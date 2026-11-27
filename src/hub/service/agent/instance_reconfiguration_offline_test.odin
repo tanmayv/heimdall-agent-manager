@@ -201,6 +201,23 @@ test_transport_reconfiguration_and_provider_test_gate_and_freeze :: proc(t: ^tes
 	if freeze_err := freeze_runtime_transport(&h.service, &current); testing.expect_value(t, freeze_err.code, domain.Error_Code.None) {
 		testing.expect_value(t, current.runtime_transport, "pty")
 	}
+	// G6: a launch freezes the instance profile's own transport; the instance
+	// override still wins over it.
+	bridge.capabilities_json = `{"features":["instance_reconfiguration_v1","acp_runtime_v1"]}`
+	_, _, _ = iface.bridge_save_bridge(&h.bridges, bridge)
+	testing.expect_value(t, iface.set_provider_transport(&h.providers, OFFLINE_RECONFIG_DESTINATION, "claude", "acp", "work-now", "work").code, domain.Error_Code.None)
+	work := current
+	work.provider_profile = "work"
+	if freeze_err := freeze_runtime_transport(&h.service, &work); testing.expect_value(t, freeze_err.code, domain.Error_Code.None) {
+		testing.expect_value(t, work.runtime_transport, "acp")
+	}
+	work.runtime_transport_override = "pty"
+	if freeze_err := freeze_runtime_transport(&h.service, &work); testing.expect_value(t, freeze_err.code, domain.Error_Code.None) {
+		testing.expect_value(t, work.runtime_transport, "pty")
+	}
+	if freeze_err := freeze_runtime_transport(&h.service, &current); testing.expect_value(t, freeze_err.code, domain.Error_Code.None) {
+		testing.expect_value(t, current.runtime_transport, "pty")
+	}
 }
 
 @(test)

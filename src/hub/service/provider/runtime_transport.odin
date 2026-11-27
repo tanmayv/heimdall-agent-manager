@@ -12,53 +12,61 @@ Provider_Settings_Update :: struct {
  transport, profile_id: string, // empty transport clears the override
 }
 
-provider_transport_from_entry :: proc(entry: domain.Provider_Catalog_Entry, override: string) -> (string, domain.Domain_Error) {
- transport := override
- if transport=="" do transport=contracts.runtime_transport_or_pty(entry.default_transport)
- if !contracts.provider_supports_transport(entry.transports_json,transport) do return "",domain.domain_error(.Invalid_Transport,"transport is not supported by this provider")
- if transport=="acp" && !contracts.acp_provider_recipe_valid(entry.provider, entry.acp_recipe_json) do return "",domain.domain_error(.ACP_Unavailable,"provider ACP recipe is invalid")
- return strings.clone(transport),{}
+// runtime_transport_validate checks one chosen transport against the catalog
+// entry: it must be listed in transports, and ACP needs a valid recipe.
+runtime_transport_validate :: proc(entry: domain.Provider_Catalog_Entry, transport: string) -> domain.Domain_Error {
+ if !contracts.provider_supports_transport(entry.transports_json,transport) do return domain.domain_error(.Invalid_Transport,"transport is not supported by this provider")
+ if transport=="acp" && !contracts.acp_provider_recipe_valid(entry.provider, entry.acp_recipe_json) do return domain.domain_error(.ACP_Unavailable,"provider ACP recipe is invalid")
+ return {}
 }
 
-// Settings status describes the current selection. A launch separately checks
-// live bridge capability and adapter readiness immediately before freezing it.
+// resolve_runtime_transport is the Hub's one transport resolver (G6, G7): every
+// launch, reconfiguration and the provider-status view call it; nothing else
+// applies the precedence. The transport is chosen per provider profile.
 //
 // Precedence (highest first):
 //   1. instance_override: one agent instance's explicit choice ("pty" | "acp"),
 //      set through instance reconfiguration (agent_instances.runtime_transport_override);
-//   2. the bridge-wide provider setting (bridge_provider_settings transport);
+//   2. the profile's setting on this bridge (bridge_provider_settings.transport
+//      of bridge_id + profile_id; "" profile_id is the provider's default profile);
 //   3. the catalog default_transport.
-// Every source passes the same catalog support/recipe and ACP readiness checks.
-resolve_runtime_transport :: proc(service: ^Provider_Service, bridge_id, provider: string, instance_override: string = "") -> (string, domain.Domain_Error) {
+// Every source passes the same catalog support/recipe checks. check_ready adds
+// the ACP readiness gate for the selected profile (require_acp_ready): a launch
+// checks it immediately before freezing the result; the provider-status view
+// passes false because it describes the selection, not live readiness.
+resolve_runtime_transport :: proc(service: ^Provider_Service, bridge_id, provider, profile_id: string, instance_override: string = "", check_ready := true) -> (string, domain.Domain_Error) {
  if instance_override!="" && !contracts.runtime_transport_valid(instance_override) do return "",domain.domain_error(.Invalid_Transport,"runtime_transport must be 'pty' or 'acp'")
  entry,found,err:=iface.provider_catalog_get(service.repo,provider)
  if err.code!=.None do return "",err
  if !found || entry.state!="active" do return "",domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
  defer domain.provider_catalog_entry_destroy(entry)
- override:=strings.clone(instance_override)
- if instance_override=="" {
+ profile:=domain.profile_effective_id(provider,profile_id)
+ transport:=strings.clone(instance_override)
+ if transport=="" {
+  delete(transport)
   read_err: domain.Domain_Error
-  override,read_err=iface.get_provider_transport(service.repo,bridge_id,provider)
+  transport,read_err=iface.get_provider_transport(service.repo,bridge_id,provider,profile)
   if read_err.code!=.None do return "",read_err
  }
- defer delete(override)
- transport,terr:=provider_transport_from_entry(entry,override)
- if terr.code!=.None do return "",terr
- if transport=="acp" {
-  if ready_err:=require_acp_ready(service,bridge_id,entry);ready_err.code!=.None {delete(transport);return "",ready_err}
+ if transport=="" {delete(transport);transport=strings.clone(contracts.runtime_transport_or_pty(entry.default_transport))}
+ if terr:=runtime_transport_validate(entry,transport);terr.code!=.None {delete(transport);return "",terr}
+ if check_ready && transport=="acp" {
+  if ready_err:=require_acp_ready(service,bridge_id,entry,profile);ready_err.code!=.None {delete(transport);return "",ready_err}
  }
  return transport,{}
 }
 
-// redetect: a non-ready report asks the online bridge to re-detect (G5,
-// acp_redetect.odin); the settings save passes false because its handler
-// starts the tracked install/Re-check itself.
-require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: domain.Provider_Catalog_Entry, redetect := true) -> domain.Domain_Error {
+// require_acp_ready gates ACP for one profile (profile_id is effective; the
+// provider id is the default profile). redetect: a non-ready report asks the
+// online bridge to re-detect (G5, acp_redetect.odin); the settings save passes
+// false because its handler starts the tracked install/Re-check itself.
+require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: domain.Provider_Catalog_Entry, profile_id: string, redetect := true) -> domain.Domain_Error {
  bridge,found,err:=iface.bridge_get_bridge(service.bridges,bridge_id)
  if err.code!=.None do return err
  if !found do return domain.domain_error(.Not_Found,"bridge not found")
  defer domain.bridge_destroy(&bridge)
- adapter_json:=""
+ profile:=domain.profile_effective_id(entry.provider,profile_id)
+ adapter_json,profile_json:="",""
  has_status:=false
  // Only bridges that support ACP need their adapter status read.
  if contracts.bridge_supports_acp_runtime(bridge.capabilities_json) {
@@ -66,16 +74,50 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
   if serr.code!=.None do return serr
   defer domain.bridge_provider_statuses_destroy(statuses)
   for status in statuses {
-   if status.provider!=entry.provider || domain.profile_effective_id(status.provider,status.profile_id)!=entry.provider do continue
-   adapter_json=strings.clone(status.acp_adapter_json,context.temp_allocator)
-   has_status=true
-   break
+   if status.provider!=entry.provider do continue
+   id:=domain.profile_effective_id(status.provider,status.profile_id)
+   if id==entry.provider {adapter_json=strings.clone(status.acp_adapter_json,context.temp_allocator);has_status=true}
+   if id==profile && profile!=entry.provider do profile_json=strings.clone(status.acp_adapter_json,context.temp_allocator)
   }
  }
- verdict:=classify_acp_availability(entry.provider,entry.acp_recipe_json,bridge.capabilities_json,adapter_json)
+ verdict,report:=classify_acp_profile_availability(entry.provider,entry.acp_recipe_json,bridge.capabilities_json,adapter_json,profile,profile_json)
  // The launch still fails now; a retry sees the bridge's fresh report.
- if redetect do acp_gate_redetect(service.redetector,bridge,entry.provider,adapter_json,verdict,time.now())
- return acp_availability_error(entry.provider,verdict,adapter_json,has_status)
+ if redetect do acp_gate_redetect(service.redetector,bridge,entry.provider,report,verdict,time.now())
+ return acp_availability_error(entry.provider,verdict,report,has_status || report==profile_json && profile_json!="")
+}
+
+// classify_acp_profile_availability is the ACP verdict for launching one
+// profile, and the report it came from. The adapter install (or system CLI
+// check) of the default profile decides first, through
+// classify_acp_availability. A non-default profile then needs its own report,
+// stored per profile row, to show it can run: the bridge reports each
+// profile's status, and certifies the profile's probe receipt itself when it
+// first launches it (acp_adapter_ensure_profile). So a profile report that is
+// installed but not yet probed is launchable, mirroring the bridge's own launch
+// precondition (acp_runtime_launch); one that is not installed (a system CLI
+// missing or below the minimum for that profile) or still installing gets its
+// own verdict. With no profile report yet (not scanned since the Hub stored
+// per-profile reports), the default profile's verdict stands, as before.
+classify_acp_profile_availability :: proc(provider, recipe_json, bridge_capabilities_json, adapter_json, profile_id, profile_adapter_json: string) -> (contracts.ACP_Availability, string) {
+ verdict:=classify_acp_availability(provider,recipe_json,bridge_capabilities_json,adapter_json)
+ if verdict.reason!=.Ready || domain.profile_effective_id(provider,profile_id)==provider || profile_adapter_json=="" do return verdict,adapter_json
+ if acp_profile_report_launchable(profile_adapter_json) do return verdict,adapter_json
+ return classify_acp_availability(provider,recipe_json,bridge_capabilities_json,profile_adapter_json),profile_adapter_json
+}
+
+// acp_profile_report_launchable: the bridge's report for one profile says it
+// can launch it now (ready), or after the probe it runs at launch (installed,
+// and neither installing nor missing Node.js), as acp_runtime_launch checks.
+acp_profile_report_launchable :: proc(adapter_json: string) -> bool {
+ state:=acp_adapter_state(adapter_json)
+ if state=="ready" do return true
+ if state=="installing" || state=="missing_node" do return false
+ value,err:=json.parse_string(adapter_json,allocator=context.temp_allocator)
+ if err!=nil do return false
+ obj,ok:=value.(json.Object)
+ if !ok do return false
+ installed,iok:=obj["installed"].(json.Boolean)
+ return iok && bool(installed)
 }
 
 // classify_acp_availability is the Hub's single ACP verdict. It is pure: the
@@ -159,24 +201,25 @@ acp_availability_error :: proc(provider: string, verdict: contracts.ACP_Availabi
 update_bridge_provider_settings :: proc(service: ^Provider_Service, bridge: domain.Bridge, provider, now: string, input: Provider_Settings_Update) -> domain.Domain_Error {
  if !input.has_enabled && !input.has_transport do return domain.domain_error(.Validation_Failed,"enabled or transport is required")
  profile:=domain.profile_effective_id(provider,input.profile_id)
- if input.has_transport && profile!=provider do return domain.domain_error(.Transport_Is_Provider_Wide,"transport is configured per provider, not per profile")
  if input.has_transport && input.transport!="" && !contracts.runtime_transport_valid(input.transport) do return domain.domain_error(.Invalid_Transport,"transport must be pty, acp or null")
  entry,found,err:=iface.provider_catalog_get(service.repo,provider)
  if err.code!=.None do return err
  if !found || entry.state!="active" do return domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
  defer domain.provider_catalog_entry_destroy(entry)
- // Transport-only saves are provider-wide even if the canonical profile is
- // disabled or missing. Enable updates keep their existing profile validation.
+ // The transport is chosen per profile (G6). Enable updates keep their
+ // existing profile validation. A transport-only save for the default profile
+ // is allowed even if it is disabled or missing; another profile must be one
+ // of this provider's profiles on the bridge, enabled or not.
  if input.has_enabled {
   if e:=validate_profile(service.repo,bridge.bridge_id,provider,profile);e.code!=.None do return e
+ } else if input.has_transport && profile!=provider {
+  if e:=validate_profile(service.repo,bridge.bridge_id,provider,profile);e.code!=.None && e.cause!="profile_disabled" do return e
  }
  if input.has_transport && input.transport!="" {
-  selected,terr:=provider_transport_from_entry(entry,input.transport)
-  if terr.code!=.None do return terr
-  delete(selected)
+  if terr:=runtime_transport_validate(entry,input.transport);terr.code!=.None do return terr
   // Offline saves are allowed. Clearing/reverting never needs readiness.
   if input.transport=="acp" && bridge.status==.Online {
-   if e:=require_acp_ready(service,bridge.bridge_id,entry,redetect=false);e.code!=.None do return e
+   if e:=require_acp_ready(service,bridge.bridge_id,entry,profile,redetect=false);e.code!=.None do return e
   }
  }
  if !input.has_transport {
@@ -193,7 +236,7 @@ update_bridge_provider_settings :: proc(service: ^Provider_Service, bridge: doma
   if !saved do return save_err
  }
  if input.has_transport {
-  if save_err:=iface.set_provider_transport(service.repo,bridge.bridge_id,provider,input.transport,now);save_err.code!=.None do return save_err
+  if save_err:=iface.set_provider_transport(service.repo,bridge.bridge_id,provider,input.transport,now,profile);save_err.code!=.None do return save_err
  }
  committed=true // commit consumes this unit of work, including on failure
  _,cerr:=iface.unit_of_work_commit(&tx)

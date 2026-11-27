@@ -836,7 +836,7 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 		if err.code!=.None do return false,err
 		if !found do return false,domain.domain_error(.ACP_Unavailable,"ACP provider is unavailable")
 		defer domain.provider_catalog_entry_destroy(entry)
-		if e:=provider_service.require_acp_ready(&ps,op.destination.bridge_id,entry);e.code!=.None do return false,e
+		if e:=provider_service.require_acp_ready(&ps,op.destination.bridge_id,entry,op.destination.provider_profile);e.code!=.None do return false,e
 	}
 	inst,inst_ok,inst_err:=iface.agent_get_instance(service.agents,op.agent_instance_id)
  if !inst_ok do return false,inst_err

@@ -191,9 +191,11 @@ test_transport_catalog_constraints_and_pin :: proc(t:^testing.T) {
   "UPDATE provider_catalog SET acp_recipe=NULL WHERE provider='claude';",
   "UPDATE provider_catalog SET acp_recipe='[]' WHERE provider='claude';",
   "UPDATE provider_catalog SET transports='bad' WHERE provider='claude';",
-  "INSERT INTO bridge_provider_settings(bridge_id,provider,profile_id,enabled,updated_at,transport) VALUES('b','claude','work',1,'','pty');",
   "INSERT INTO bridge_provider_settings(bridge_id,provider,profile_id,enabled,updated_at,transport) VALUES('b','claude','claude',1,'','other');",
+  "INSERT INTO bridge_provider_settings(bridge_id,provider,profile_id,enabled,updated_at,transport) VALUES('b','claude','work',1,'','other');",
  }) { testing.expect(t,!exec(&conn,sql),sql) }
+ // G6 (269): any profile may hold its own transport.
+ testing.expect(t,exec(&conn,"INSERT INTO bridge_provider_settings(bridge_id,provider,profile_id,enabled,updated_at,transport) VALUES('b','claude','work',1,'','pty');"))
 }
 
 @(test)
@@ -252,7 +254,7 @@ test_transport_combined_update_rolls_back_enablement_on_failed_transport :: proc
 }
 
 @(test)
-test_transport_status_preserves_latest_canonical_adapter :: proc(t:^testing.T) {
+test_transport_status_preserves_latest_adapter_per_profile :: proc(t:^testing.T) {
  conn,ok:=tmpl_clone_migrated(t)
  if !ok do return
  defer close(&conn)
@@ -271,8 +273,11 @@ test_transport_status_preserves_latest_canonical_adapter :: proc(t:^testing.T) {
  }
  statuses,_:=iface.bridge_provider_status_list(&repo,"b")
  defer domain.bridge_provider_statuses_destroy(statuses)
+ // Each profile row keeps its own latest report (the launch gate of a
+ // non-default profile reads it); the receipt time stays the default profile's.
  for status in statuses {
-  testing.expect_value(t,status.acp_adapter_json,newer if status.profile_id=="claude" else "")
+  testing.expect_value(t,status.acp_adapter_json,newer if status.profile_id=="claude" else older)
+  testing.expect(t,(status.acp_adapter_received_at!="")==(status.profile_id=="claude"))
  }
 }
 

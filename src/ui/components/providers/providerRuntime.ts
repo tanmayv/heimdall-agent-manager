@@ -24,8 +24,10 @@ export interface AcpAdapterStatus {
 export interface ProviderRuntimeFields {
   transports: RuntimeTransport[];
   default_transport: RuntimeTransport;
+  /** This profile's own choice; null follows the catalog default. */
   transport: RuntimeTransport | null;
-  effective_transport: RuntimeTransport;
+  /** The Hub's resolved transport for this profile (resolve_runtime_transport); null when the Hub sent none. */
+  effective_transport: RuntimeTransport | null;
   acp_adapter: AcpAdapterStatus | null;
 }
 export interface ProviderSetupCommand {
@@ -51,7 +53,9 @@ export function normalizeProviderRuntime(raw: any): ProviderRuntimeFields {
   const adapter = raw?.acp_adapter;
   return {
     transports, default_transport, transport,
-    effective_transport: valid(raw?.effective_transport) ? raw.effective_transport : transport || default_transport,
+    // Shown as resolved by the Hub, never re-derived from transport/default_transport.
+    // A row without a transport contract (a Hub that predates ACP) is PTY-only.
+    effective_transport: valid(raw?.effective_transport) ? raw.effective_transport : supported.length ? null : 'pty',
     acp_adapter: adapter && typeof adapter === 'object' && !Array.isArray(adapter) ? {
       installed: adapter.installed === true,
       version: textOrNull(adapter.version), node_version: textOrNull(adapter.node_version),

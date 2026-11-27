@@ -810,6 +810,7 @@ MIGRATION_266_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE :: #load("migrations/266_insta
 
 MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE :: #load("migrations/267_reconfiguration_waiting_for_idle.sql", string)
 MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT :: #load("migrations/268_bridge_provider_acp_received_at.sql", string)
+MIGRATION_269_PROFILE_TRANSPORT :: #load("migrations/269_profile_transport.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1116,6 +1117,7 @@ migration_order :: [?]string {
 	"266_instance_runtime_transport_override.sql",
 	"267_reconfiguration_waiting_for_idle.sql",
 	"268_bridge_provider_acp_received_at.sql",
+	"269_profile_transport.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1630,6 +1632,12 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
+		// 269 rebuilds bridge_provider_settings inside its own BEGIN/COMMIT; the
+		// rebuilt table's named per-profile transport CHECK proves completion.
+		if name == "269_profile_transport.sql" && sqlite_table_sql_mentions(conn, "bridge_provider_settings", "profile_transport") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		// 110 commits atomically before its ledger row; its column proves completion.
 		if name == "110_provider_ask_args.sql" && table_column_exists(conn, "provider_catalog", "ask_args") {
 			mark_migration_applied(conn, name)
@@ -1664,7 +1672,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_task_merge_pending.sql" || name == "266_instance_runtime_transport_override.sql" || name == "267_reconfiguration_waiting_for_idle.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_task_merge_pending.sql" || name == "266_instance_runtime_transport_override.sql" || name == "267_reconfiguration_waiting_for_idle.sql" || name == "269_profile_transport.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1705,6 +1713,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "269_profile_transport.sql" do return strings.clone(MIGRATION_269_PROFILE_TRANSPORT)
 	if name == "268_bridge_provider_acp_received_at.sql" do return strings.clone(MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT)
 	if name == "267_reconfiguration_waiting_for_idle.sql" do return strings.clone(MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE)
 	if name == "266_instance_runtime_transport_override.sql" do return strings.clone(MIGRATION_266_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE)
