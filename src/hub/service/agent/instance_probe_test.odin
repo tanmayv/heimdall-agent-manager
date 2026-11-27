@@ -37,3 +37,14 @@ test_instance_probe_distinguishes_absence_and_orphan_from_unproven_loss :: proc(
 	orphan := parse_instance_probe(`{"command_id":"cmd","ok":true,"payload":{"result":{"agent_instance_id":"inst","state":"exited","source":"orphan_reaped","pid":42,"run_count":3,"launch_epoch":"epoch"}}}`, "cmd", "inst", 3, "epoch")
 	testing.expect(t, orphan.state == .Exited && orphan.orphan_reaped && orphan.pid == 42)
 }
+
+@(test)
+test_launch_absence_is_only_accepted_for_the_requested_generation :: proc(t: ^testing.T) {
+	raw := `{"command_id":"cmd","ok":true,"payload":{"result":{"agent_instance_id":"inst","state":"absent","source":"launch_absence","pid":0,"run_count":3,"launch_epoch":"epoch"}}}`
+	valid := parse_instance_probe(raw, "cmd", "inst", 3, "epoch", for_launch = true)
+	testing.expect(t, valid.state == .Absent && valid.launch_absence)
+	testing.expect_value(t, parse_instance_probe(raw, "cmd", "inst", 3, "epoch").state, Instance_Probe_State.Unknown)
+	testing.expect_value(t, parse_instance_probe(raw, "cmd", "inst", 4, "epoch", for_launch = true).state, Instance_Probe_State.Unknown)
+	testing.expect_value(t, parse_instance_probe(raw, "cmd", "inst", 3, "old", for_launch = true).state, Instance_Probe_State.Unknown)
+	testing.expect_value(t, parse_instance_probe(raw, "cmd", "inst", for_launch = true).state, Instance_Probe_State.Unknown)
+}

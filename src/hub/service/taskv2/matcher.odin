@@ -592,7 +592,7 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 			// Its bridge being away or ineligible is queueing reported by the
 			// placement snapshot, checked before the instance (as before reuse).
 			if reason, _ := placement_problem(svc, ctx, placement, true, fleet.agent_id); reason != "" do return {placement = placement}
-			fact := match_process_fact(svc, u, inst, task.chain_id)
+			fact := match_process_fact(svc, u, inst, task.chain_id, for_launch = true)
 			if fact.state == .Unknown && fact.reason != .never_started do return {placement = placement}
 			if disposition := agent.failure_disposition_from_process(inst, fact, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {placement = placement, why = instance_failure_reason(inst)}
 			if inst.stopped_by == agent.STOPPED_BY_USER do return {placement = placement, why = "assigned instance was stopped by the user"}

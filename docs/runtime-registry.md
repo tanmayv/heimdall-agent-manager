@@ -20,6 +20,10 @@ Stopped, failed, and unreachable entries release active quota and become termina
 
 Heartbeat inventory reconciliation only affects the reporting Bridge generation. Disconnect clears that generation's transient state; replacement starts with a fresh map and accepts the new Bridge's own sequence baseline. An old connection cannot update the new map or repopulate retired command observations.
 
+## Scheduler wake admission
+
+The scheduler asks the owning Bridge for generation-bound process evidence, outside the task transaction. A legacy scheduler-stopped instance may have no recorded process identity. For wake admission only, the Hub can send `instance.probe` with `for_launch: true`. The Bridge reports `source: "launch_absence"` only when a complete daemon roster omits the instance and its launch-only OS check finds no matching process. The Hub caches this separately from exit evidence, and the Bridge repeats its launch guard before starting a replacement. Unknown observations never open a generation or revoke a claim. Older Bridges ignore the optional flag and stay inconclusive in this case.
+
 ## Configurable admission limits
 
 The existing tenancy boundary is the durable owner user ID. Per-owner limits cover that user's active instances across their connected Bridges, not each Bridge independently. Limits count connected activity; they are not a license quota or a guarantee that processes on disconnected remote machines have stopped.
@@ -35,4 +39,4 @@ The existing tenancy boundary is the durable owner user ID. Per-owner limits cov
 
 Flags require positive integer values. Omitted settings use these defaults. Admission failure returns `Bridge_Busy` instead of falsely accepting a connection or silently exhausting a fixed array. Stopping instances and retiring connections release capacity for later work. Limits are operational budgets, not measured throughput guarantees.
 
-These changes do not alter Bridge or UI wire protocols and require no database migration. Deploy the updated Hub to activate them. Binary pane transport, slow-viewer isolation, and bounded terminal-output queues remain separate work described in the [binary pane streaming plan](plans/binary-pane-streaming-plan.md).
+These admission limits do not alter Bridge or UI wire protocols and require no database migration. Deploy the updated Hub to activate them. Binary pane transport, slow-viewer isolation, and bounded terminal-output queues remain separate work described in the [binary pane streaming plan](plans/binary-pane-streaming-plan.md).

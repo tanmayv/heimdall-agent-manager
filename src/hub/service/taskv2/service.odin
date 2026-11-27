@@ -58,7 +58,7 @@ Service :: struct {
 	pending_touches:     map[string]struct{},
 	// Instance IDs whose reported terminal state needs PTY-host evidence.
 	pending_terminal_probes: map[string]struct{},
-	pending_match_probes: map[string]domain.Task_Chain_ID,
+	pending_match_probes: map[string]Match_Probe,
 	// Unit fixtures only. The observer is ignored in non-test builds.
 	fixture_process_fact: proc(domain.Agent_Instance) -> agent.Agent_Liveness,
 	touch_async:         bool,

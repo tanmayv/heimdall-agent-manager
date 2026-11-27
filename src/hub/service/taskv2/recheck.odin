@@ -90,6 +90,7 @@ task_recheck_in_uow :: proc(svc: ^Service, u: ^Uow, task_in: domain.Task, actor:
 	case active_claim_count(before_leases) > 0:
 		// Leave a leased task to its holder: no gate, no matcher, no merge.
 		for l in before_leases {
+			if l.phase == domain.LEASE_PHASE_WAITING do continue
 			append(&reasons, fmt.tprintf("%s lease %s is live (holder %s, attempt #%d); re-check leaves it to the holder", l.kind, l.lease_id, l.holder_instance_id, l.attempt_no))
 		}
 	case task_is_held(task):
@@ -243,8 +244,11 @@ describe_block :: proc(raw: string) -> string {
 @(private = "file")
 recheck_reasons :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Task, out: ^[dynamic]string) {
 	if leases, err := iface.taskchain_list_leases_by_task(svc.repo, task.task_id); err.code == .None {
-		for l in leases do append(out, fmt.tprintf("%s lease %s is live (holder %s, attempt #%d)", l.kind, l.lease_id, l.holder_instance_id, l.attempt_no))
-		if len(leases) > 0 && task.state == .In_Progress do return
+		for l in leases {
+			if l.phase == domain.LEASE_PHASE_WAITING do continue
+			append(out, fmt.tprintf("%s lease %s is live (holder %s, attempt #%d)", l.kind, l.lease_id, l.holder_instance_id, l.attempt_no))
+		}
+		if active_claim_count(leases) > 0 && task.state == .In_Progress do return
 	}
 	if chain.status != .Active && task.state != .Done {
 		append(out, fmt.tprintf("chain is %v; only merge-back is re-checked", chain.status))
@@ -275,9 +279,16 @@ recheck_reasons :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 		for r in dispatch_blockers(svc, chain, task) do append(out, r)
 	case .In_Review:
 		unmet, _ := gate_unmet_components(svc, task)
+		ctx, ctx_ok, _ := load_match_context(svc, chain)
+		defer if ctx_ok do destroy_match_context(&ctx)
 		for m in unmet {
 			if m.kind == "review" {
-				append(out, fmt.tprintf("waiting on review from %s", m.agent_id))
+				why := review_process_verification_wait(svc, &ctx, task, m.agent_id) if ctx_ok else ""
+				if why != "" {
+					append(out, fmt.tprintf("waiting on review from %s: %s", m.agent_id, why))
+				} else {
+					append(out, fmt.tprintf("waiting on review from %s", m.agent_id))
+				}
 			} else {
 				append(out, fmt.tprintf("waiting on %s approval", m.approver if m.approver != "" else "user"))
 			}
@@ -287,6 +298,19 @@ recheck_reasons :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.Ta
 		recheck_merge_reasons(svc, task, out)
 	case .Cancelled:
 	}
+}
+
+// Match the same capacity test as wake selection, without sending a probe or
+// treating an inconclusive observation as a permanent task block.
+@(private = "file")
+review_process_verification_wait :: proc(svc: ^Service, ctx: ^Match_Context, task: domain.Task, agent_id: string) -> string {
+	if review_lease_live_for(ctx, svc, task.task_id, agent_id) do return ""
+	fleet, found := fleet_row_for_agent(ctx.fleets[:], agent_id)
+	if !found || fleet.paused do return ""
+	base, _ := resolve_placement(ctx, task, fleet, false)
+	scan := reuse_scan(svc, nil, ctx, task, fleet, placement_restriction(task, fleet, false), base.bridge_id, domain.LEASE_KIND_REVIEW, "")
+	if scan.occupied < scan.capacity || scan.held >= scan.capacity || reuse_scan_has_candidate(scan) do return ""
+	return scan.verification_wait
 }
 
 @(private = "file")

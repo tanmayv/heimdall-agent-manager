@@ -37,3 +37,15 @@ bridge_agent_roster_loss_confirmed :: proc(id: string, run: int, reap := false) 
 	state, _, _ := bridge_agent_process_after_roster_loss(id, run, reap)
 	return state == .Gone
 }
+
+// Launch-path only: the complete roster omitted this instance. When the Bridge
+// has no recorded identity (clean stop, or launched by an earlier build), no
+// live process carrying the instance id means there is nothing to verify.
+// Reconcile and bot paths keep the stricter bridge_agent_roster_loss_confirmed.
+bridge_agent_launch_absent_confirmed :: proc(id: string, run: int, reap := false) -> bool {
+	if bridge_agent_roster_loss_confirmed(id, run, reap) do return true
+	if bridge_agent_previous_process(id, run).pid > 0 do return false
+	found, _, scanned := bridge_agent_process_find_by_instance(id)
+	// Never reap an unverified match: env-inheriting descendants may match.
+	return scanned && !found
+}
