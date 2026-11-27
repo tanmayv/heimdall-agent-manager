@@ -1037,7 +1037,7 @@ Secure_Form_Local_Request :: struct {
 
 @(private)
 secure_form_local_response :: proc(id: string, code: contracts.Secure_Form_Exit) -> string {
-	return bridge_local_response_data(id, fmt.tprintf("{\"terminal\":true,\"code\":%d}", int(code)))
+	return bridge_local_response_data(id, fmt.tprintf("{{\"terminal\":true,\"code\":%d}", int(code)))
 }
 
 @(private)

@@ -21,6 +21,25 @@ secure_form_test_waiter :: proc() -> Secure_Form_Waiter_State {
 }
 
 @(test)
+test_secure_form_immediate_terminal_response_decodes :: proc(t: ^testing.T) {
+	codes := [?]contracts.Secure_Form_Exit{.Unauthorized, .Not_Delivered, .Retention_Expired}
+	for code in codes {
+		raw := secure_form_local_response("call", code)
+		defer delete(raw)
+		reply: struct {
+			v: int,
+			id: string,
+			ok: bool,
+			data: struct {terminal: bool, code: int},
+		}
+		err := json.unmarshal_string(raw, &reply, allocator = context.temp_allocator)
+		testing.expect(t, err == nil)
+		testing.expect(t, reply.v == 1 && reply.id == "call" && reply.ok &&
+			reply.data.terminal && reply.data.code == int(code))
+	}
+}
+
+@(test)
 test_secure_form_waiter_registration_fence :: proc(t: ^testing.T) {
 	s := secure_form_test_waiter()
 	ack := contracts.Secure_Form_Ack{1, "request", "1", "pending", nil}
