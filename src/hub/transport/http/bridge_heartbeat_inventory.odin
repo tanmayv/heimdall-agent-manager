@@ -1,23 +1,5 @@
-// Heartbeat instance inventory (plan T2): what a bridge_heartbeat says about the
-// Bridge's instances is applied ONLY when it is provably complete.
-//
-// Absence reconciliation (reconcile_bridge_heartbeat, runtime_reconcile_digest) turns
-// "not listed" into "unreachable", so it must never run on an inventory the Hub could
-// not read. The decoder therefore distinguishes three cases instead of collapsing
-// them all into "empty":
-//
-//   - Complete: every inventory member that is present parsed with the right types.
-//     An empty complete inventory is authoritative: the Bridge runs nothing.
-//   - Absent: the frame carries none of active_instance_ids / instances / digest.
-//     Nothing is known about the instances, so nothing about them changes.
-//   - Malformed: the frame is not exactly one JSON object (truncated, trailing bytes,
-//     invalid UTF-8), a present member has the wrong type, an entry lacks its id, or
-//     the legacy digest alias and instances disagree. The whole inventory is rejected:
-//     no status repair and no absence mutation.
-//
-// Absent and malformed beats are counted in heimdall_bridge_frames_rejected_total
-// under a fixed reason. Bridge liveness is refreshed by the heartbeat arm before the
-// inventory is looked at, so a rejected inventory never ages the Bridge itself out.
+// Legacy heartbeat inventory can carry explicit observations, but omission
+// is not evidence that a PTY-host child exited.
 package http
 
 import "base:runtime"
@@ -29,7 +11,6 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import domain "odin_test:hub/domain"
 import metrics "odin_test:lib/metrics"
 import project_service "odin_test:hub/service/project"
-import shell_session_svc "odin_test:hub/service/shell_session"
 
 Bridge_Heartbeat_Inventory_State :: enum {
 	Malformed,
@@ -211,11 +192,7 @@ bridge_apply_heartbeat_reports :: proc(h: ^Bridge_Handlers, bridge_id: string, g
 	}
 }
 
-// Everything a bridge_heartbeat does to instance state: inventory repair, absence
-// reconciliation, superseded detection and the opportunistic stale reap. Returns the
-// unreachable count and superseded ids (caller owns) for the ack. A non-complete
-// inventory leaves every instance of this Bridge untouched and reports no superseded
-// ids; the ack still goes out so schedule freshness is unaffected.
+// Preserve the legacy ack shape without inferring exits from missing rows.
 bridge_reconcile_heartbeat_inventory :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, text: string) -> (reconciled: int, superseded: []string, state: Bridge_Heartbeat_Inventory_State) {
 	inventory: Bridge_Heartbeat_Inventory
 	bridge_decode_heartbeat_inventory(&inventory, text)
@@ -230,43 +207,9 @@ bridge_reconcile_heartbeat_inventory :: proc(h: ^Bridge_Handlers, bridge_id: str
 	if state == .Complete {
 		active := bridge_heartbeat_inventory_active_ids(&inventory)
 		defer delete(active)
-		reconciled = bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, bridge_id, generation, active)
 		if h.agents != nil {
-			// H7 cross-bridge reap: any instance this bridge reports active whose
-			// canonical bridge_id is now a DIFFERENT bridge has been relaunched
-			// elsewhere. Tell this bridge to invalidate those instances' local tokens
-			// (via the ack) so the stale old ham-wrapper self-terminates.
 			superseded = agent_service.detect_superseded_instances(h.agents, bridge_id, active)
-			// The per-instance unreachability signal: the bridge is still connected and
-			// reporting, and these instances are simply no longer among the ones it
-			// reports active. Their foreground runs get the same treatment as on a
-			// bridge-wide disconnect — converted, not killed — deliberately, so there
-			// is no "which signal fired?" branch whose wrong answer destroys work.
-			gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
-			defer domain.agent_instances_destroy(gone)
-			agent_service.notify_instances_terminal(h.agents, gone)
-			metrics.counter_add(project_service.fleet_metrics.agent_instances_reconciled_gone, u64(len(gone)))
-			for inst in gone {
-				publish_instance_changed(h.event_bus, inst, "status_changed")
-				shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
-				reconciled += 1
-			}
 		}
-	}
-	// Opportunistic time-based reap: catches instances stranded by a disconnect the
-	// hub never observed (hub restart with persisted DB, or a lost WS close). It is
-	// driven by last_seen_at age, not by this beat's inventory, so it runs either way:
-	// one unreadable beat cannot age an instance past BRIDGE_INSTANCE_STALE_MS, while a
-	// Bridge that never sends a readable inventory again does not keep zombies forever.
-	if h.agents != nil {
-		reaped := agent_service.reap_stale_instances(h.agents, BRIDGE_INSTANCE_STALE_MS)
-		agent_service.notify_instances_terminal(h.agents, reaped)
-		for inst in reaped {
-			shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
-			publish_instance_changed(h.event_bus, inst, "status_changed")
-			reconciled += 1
-		}
-		domain.agent_instances_destroy(reaped)
 	}
 	return
 }

@@ -227,25 +227,24 @@ test_heartbeat_inventory_idle_agent_survives_beyond_stale_window :: proc(t: ^tes
 	testing.expect_value(t, last_seen, now)
 }
 
-// A complete inventory that no longer lists an instance is authoritative absence, and
-// a complete EMPTY inventory is authoritative for every instance on the Bridge.
+// Neither partial nor complete empty legacy inventory proves a child exited.
 @(test)
-test_heartbeat_inventory_true_disappearance_marks_unreachable :: proc(t: ^testing.T) {
+test_heartbeat_inventory_omission_preserves_runtime :: proc(t: ^testing.T) {
 	f := inv_open(t)
 	defer inv_close(f)
 	inv_save(t, f, "inst_kept", "running")
 	inv_save(t, f, "inst_gone", "running")
 	reconciled, _ := inv_beat(f, `{"type":"bridge_heartbeat","active_instance_ids":["inst_kept"],"instances":[{"agent_instance_id":"inst_kept","state_seq":1,"runtime_status":"running"}]}`)
-	testing.expect_value(t, reconciled, 1)
+	testing.expect_value(t, reconciled, 0)
 	gone, _ := inv_get(t, f, "inst_gone")
 	kept, _ := inv_get(t, f, "inst_kept")
-	testing.expect_value(t, gone, "unreachable")
+	testing.expect_value(t, gone, "running")
 	testing.expect_value(t, kept, "running")
 
 	reconciled, _ = inv_beat(f, `{"type":"bridge_heartbeat","active_instance_ids":[],"instances":[]}`)
-	testing.expect(t, reconciled >= 1, "empty complete inventory reconciles")
+	testing.expect_value(t, reconciled, 0)
 	kept, _ = inv_get(t, f, "inst_kept")
-	testing.expect_value(t, kept, "unreachable")
+	testing.expect_value(t, kept, "running")
 }
 
 // Absent and malformed inventories change no instance, are counted, and do not stop
@@ -306,9 +305,9 @@ test_heartbeat_inventory_terminal_only_repairs_and_never_refreshes :: proc(t: ^t
 	fenced, _ := inv_get(t, f, "inst_fenced")
 	live, _ := inv_get(t, f, "inst_live")
 	testing.expect_value(t, dropped, "stopped")
-	testing.expect_value(t, fenced, "unreachable")
+	testing.expect_value(t, fenced, "running")
 	testing.expect_value(t, live, "running")
-	testing.expect_value(t, reconciled, 1)
+	testing.expect_value(t, reconciled, 0)
 }
 
 // Launch-epoch and state_seq fencing still hold: a superseded launch's report and a
