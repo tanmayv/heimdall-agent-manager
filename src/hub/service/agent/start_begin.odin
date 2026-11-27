@@ -1,6 +1,7 @@
 package agent
 
 import "core:strings"
+import jsonx "odin_test:lib/jsonx"
 import "core:mem"
 import virtual "core:mem/virtual"
 import contracts "odin_test:contracts"
@@ -233,6 +234,58 @@ start :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id
 	inst = ticket.instance
 	ticket.instance = {}
 	return inst, ticket.kept_live, true, {}
+}
+
+// Manual start is a relaunch when a child already exists. The Bridge holds
+// its per-instance lock across closing the old child and spawning the new
+// one. Release the Hub lifecycle lock before waiting: start-success needs it.
+start_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, guard_ctx: rawptr = nil, guard: proc(ctx: rawptr) -> domain.Domain_Error = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
+	ticket, begin_err := start_begin(service, auth, instance_id, {if_live = .Relaunch, guard = guard, guard_ctx = guard_ctx})
+	dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
+	if begin_err.code != .None do return {}, false, begin_err
+	defer start_ticket_destroy(&ticket)
+	body := start_launch_json(service, ticket)
+	defer delete(body)
+	if len(body) == 0 || body[len(body)-1] != '}' {
+		start_settle(service, &ticket, false)
+		return {}, false, domain.domain_error(.Internal_Error, "could not encode start command")
+	}
+	confirmed_body := strings.concatenate({body[:len(body)-1], `,"confirm_start":true}`})
+	defer delete(confirmed_body)
+	reply, got, err := project_service.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = ticket.instance.bridge_id, command_id = ticket.command_id, body_json = confirmed_body}, 32_000)
+	defer delete(reply)
+	if !got {
+		start_settle(service, &ticket, false)
+		return {}, false, err
+	}
+	if ok, refusal := project_service.bridge_reply_refusal(reply, ticket.instance.bridge_id); !ok {
+		start_settle(service, &ticket, false)
+		return {}, false, refusal
+	}
+	if !confirmed_start_receipt(reply, ticket.command_id, instance_id, ticket.instance.run_count) {
+		start_settle(service, &ticket, false)
+		return {}, false, domain.domain_error(.Conflict, "bridge did not confirm start-success for the new process")
+	}
+	start_settle(service, &ticket, true)
+	fresh, found, read_err := get_instance(service, auth, instance_id)
+	if !found do return {}, false, read_err
+	if fresh.run_count != ticket.instance.run_count || fresh.launch_epoch != ticket.instance.launch_epoch || fresh.bridge_id != ticket.instance.bridge_id {
+		domain.agent_instance_destroy(&fresh)
+		return {}, false, domain.domain_error(.Conflict, "start operation was superseded")
+	}
+	return fresh, true, {}
+}
+
+confirmed_start_receipt :: proc(reply, op, instance_id: string, run_count: int) -> bool {
+	if !jsonx.extract_bool(reply, "ok", false, true) || jsonx.extract_string(reply, "command_id", "", true, context.temp_allocator) != op do return false
+	payload, ok := jsonx.extract_raw_object(reply, "payload", true, context.temp_allocator)
+	if !ok || jsonx.extract_string(payload, "status", "", true, context.temp_allocator) != "succeeded" do return false
+	result, has_result := jsonx.extract_raw_object(payload, "result", true, context.temp_allocator)
+	return has_result && jsonx.extract_string(result, "runtime_status", "", true, context.temp_allocator) == "running" &&
+		jsonx.extract_string(result, "agent_instance_id", "", true, context.temp_allocator) == instance_id &&
+		jsonx.extract_int(result, "expected_run_count", -1, true) == run_count &&
+		jsonx.extract_int(result, "process_pid", 0, true) > 0
 }
 
 start_begin_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id, ref: string) -> (launch_json: string, run_count: int, reused: bool, ok: bool, err: domain.Domain_Error) {

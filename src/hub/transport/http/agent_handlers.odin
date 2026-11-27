@@ -326,7 +326,7 @@ stop_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// the same-owner boundary (an instance token for another owner gets Not_Found).
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
-	inst, stopped, err := agent_service.stop_instance(h.agents, auth_ctx, path_part(req.path, 4), agent_service.Stop_Instance_Input{reason = json_string(req.body, "reason"), force = json_bool(req.body, "force")})
+	inst, stopped, err := agent_service.stop_instance_confirmed(h.agents, auth_ctx, path_part(req.path, 4), agent_service.Stop_Instance_Input{reason = json_string(req.body, "reason"), force = json_bool(req.body, "force")})
 	if !stopped do return respond_error(err, req.request_id)
 	publish_instance_changed(h.event_bus, inst, "status_changed")
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)
@@ -348,13 +348,12 @@ restart_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 202)
 }
 
-// start_agent_instance_handler starts a STOPPED instance. Distinct from restart:
-// returns 409 (Conflict, code=already_running) when the instance is already live.
+// Explicit start replaces an existing child and waits for the new child to report readiness.
 start_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
-	inst, started, err := agent_service.start_instance(h.agents, auth_ctx, path_part(req.path, 4))
+	inst, started, err := agent_service.start_instance_confirmed(h.agents, auth_ctx, path_part(req.path, 4))
 	if !started do return respond_error(err, req.request_id)
 	publish_instance_changed(h.event_bus, inst, "status_changed")
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)

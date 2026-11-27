@@ -125,10 +125,10 @@ mcp_runtime_call :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,tool:string,
 		if sent { state.run_count=row.run_count; state.launch_hash=auth.sha256_hex(row.launch_epoch); state.result.revision=mcp.runtime_revision(row) }
 		if !sent {state.result.status="repair_required";state.result.phase="launch_unconfirmed";state.result.error_code=mcp_task_error(send_err)}
 	case "instances.start":
-		row,accepted,action_err:=agent.start_instance(&g.agents,principal,i.agent_instance_id,&guard,mcp_runtime_native_guard)
+		row,accepted,action_err:=agent.start_instance_confirmed(&g.agents,principal,i.agent_instance_id,&guard,mcp_runtime_native_guard)
 		if accepted {state.run_count=row.run_count} else {state.result.status="repair_required";state.result.phase="start_unconfirmed";state.result.error_code=mcp_task_error(action_err)}
 	case "instances.stop":
-		_,accepted,action_err:=agent.stop_instance(&g.agents,principal,i.agent_instance_id,{reason="user_requested"},&guard,mcp_runtime_native_guard)
+		_,accepted,action_err:=agent.stop_instance_confirmed(&g.agents,principal,i.agent_instance_id,{reason="user_requested"},&guard,mcp_runtime_native_guard)
 		if !accepted {state.result.status="repair_required";state.result.phase="stop_unconfirmed";state.result.error_code=mcp_task_error(action_err)}
 	case "instances.reconfigure":
 		op:domain.Instance_Reconfiguration;accepted:bool;action_err:domain.Domain_Error

@@ -1,6 +1,7 @@
 package agent
 
 import "core:fmt"
+import jsonx "odin_test:lib/jsonx"
 import "core:mem"
 import "base:runtime"
 import virtual "core:mem/virtual"
@@ -27,6 +28,7 @@ Start_Test :: struct {
 	service: Agent_Service,
 	commands: [dynamic]string,
 	fail_send: bool,
+	fail_confirmed_stop: bool,
 	allocator:mem.Allocator,
 }
 START_TEST_NOW :: "2026-11-22T12:00:00Z"
@@ -847,3 +849,58 @@ test_start_send_error_cannot_overwrite_ready_report :: proc(t: ^testing.T) {
 test_reconfiguration_before_rollover_preserves_destination :: proc(t:^testing.T) {start_test_run(t,start_rollover_reconfiguration_scenario)}
 @(test)
 test_rollover_before_reconfiguration_preserves_operation :: proc(t:^testing.T) {start_test_run(t,start_rollover_before_reconfiguration_scenario)}
+
+start_test_confirmed_wait :: proc(ctx: rawptr, command: project_service.Runtime_Command, _: int) -> (string, bool, domain.Domain_Error) {
+	h := (^Start_Test)(ctx)
+	switch jsonx.extract_string(command.body_json, "type", "", true, context.temp_allocator) {
+	case "instance.probe":
+		return strings.concatenate({`{"ok":true,"command_id":"`, command.command_id, `","payload":{"result":{"agent_instance_id":"inst","state":"alive","pid":42}}}`}), true, {}
+	case "stop_agent":
+		payload, ok := jsonx.extract_raw_object(command.body_json, "payload", true, context.temp_allocator)
+		if !ok || jsonx.extract_int(payload, "expected_run_count", -1, true) != 3 || jsonx.extract_int(payload, "expected_process_pid", 0, true) != 42 {
+			return "", false, domain.domain_error(.Validation_Failed, "unfenced stop")
+		}
+		if h.fail_confirmed_stop do return "", false, domain.domain_error(.Bridge_Timeout, "fixture stop did not acknowledge")
+		return strings.concatenate({`{"ok":true,"command_id":"`, command.command_id, `","payload":{"status":"succeeded","result":{"agent_instance_id":"inst","expected_run_count":3,"expected_process_pid":42,"runtime_status":"stopped"}}}`}), true, {}
+	case "launch_agent":
+		if !jsonx.extract_bool(command.body_json, "confirm_start", false, true) do return "", false, domain.domain_error(.Validation_Failed, "missing confirmation")
+		row, ready, err := mark_instance_start_success(&h.service, {kind = .Instance_Token, user_id = "owner", agent_instance_id = "inst"}, 4)
+		defer domain.agent_instance_destroy(&row)
+		if !ready do return "", false, err
+		return strings.concatenate({`{"ok":true,"command_id":"`, command.command_id, `","payload":{"status":"succeeded","result":{"agent_instance_id":"inst","expected_run_count":4,"process_pid":43,"runtime_status":"running"}}}`}), true, {}
+	}
+	return "", false, domain.domain_error(.Validation_Failed, "unexpected fixture command")
+}
+
+confirmed_runtime_actions_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
+	start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='running', startup_status='ready';")
+	h.service.bridge_command_sink.send_runtime_command_wait = start_test_confirmed_wait
+	h.fail_confirmed_stop = true
+	_, stopped, stop_err := stop_instance_confirmed(&h.service, start_test_auth(), "inst", {})
+	testing.expect(t, !stopped)
+	testing.expect_value(t, stop_err.code, domain.Error_Code.Bridge_Timeout)
+	before := start_test_row(t, h)
+	testing.expect_value(t, before.runtime_status, "running")
+	testing.expect_value(t, before.stopped_by, "")
+	h.fail_confirmed_stop = false
+	row, ok, err := stop_instance_confirmed(&h.service, start_test_auth(), "inst", {})
+	testing.expect(t, ok, err.message)
+	testing.expect_value(t, row.runtime_status, "stopped")
+	testing.expect_value(t, row.stopped_by, "user")
+	testing.expect_value(t, row.stop_reason, "user_requested")
+}
+
+confirmed_live_start_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
+	start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='running', startup_status='ready';")
+	h.service.bridge_command_sink.send_runtime_command_wait = start_test_confirmed_wait
+	row, ok, err := start_instance_confirmed(&h.service, start_test_auth(), "inst")
+	testing.expect(t, ok, err.message)
+	testing.expect_value(t, row.runtime_status, "running")
+	testing.expect_value(t, row.startup_status, "ready")
+	testing.expect_value(t, row.run_count, 4)
+}
+
+@(test)
+test_explicit_stop_requires_confirmed_exit :: proc(t: ^testing.T) { start_test_run(t, confirmed_runtime_actions_scenario) }
+@(test)
+test_explicit_start_replaces_live_generation_and_waits_for_ready :: proc(t: ^testing.T) { start_test_run(t, confirmed_live_start_scenario) }

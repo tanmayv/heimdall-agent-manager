@@ -72,14 +72,16 @@ startup_blocked_cleared_by_start_success :: proc(t: ^testing.T) {
 }
 
 @(test)
-startup_blocked_appears_in_heartbeat_digest :: proc(t: ^testing.T) {
-	// Blocked must ship upstream: it is an active status so it appears in the
-	// heartbeat's active_instance_ids and the per-instance runtime_status list.
+startup_blocked_push_does_not_require_periodic_digest :: proc(t: ^testing.T) {
+	// Readiness diagnostics ship on a status change, not an agent digest.
 	id := "inst_ae5_blocked_heartbeat"
 	bridge_runtime_set_status(id, "blocked", "idle")
 	digest := bridge_hub_heartbeat_json()
-	testing.expect(t, contains_substr(digest, id), "heartbeat must include the blocked instance id")
-	testing.expect(t, contains_substr(digest, "\"runtime_status\":\"blocked\""), "heartbeat must carry runtime_status=blocked upstream")
+	defer delete(digest)
+	testing.expect(t, !contains_substr(digest, id), "periodic heartbeat must not include an agent snapshot")
+	status := bridge_instance_status_json(id)
+	defer delete(status)
+	testing.expect(t, contains_substr(status, "\"runtime_status\":\"blocked\""), "the blocked status still ships on transition")
 }
 
 @(test)

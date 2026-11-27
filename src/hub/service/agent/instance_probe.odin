@@ -19,7 +19,7 @@ Instance_Probe :: struct {
 }
 
 Agent_Liveness_State :: enum {Unknown, Alive, Exited}
-Agent_Liveness_Reason :: enum {bridge_unavailable, invalid_probe, stale_process_generation, missing_from_pty_roster, pty_child_alive, pty_child_exited}
+Agent_Liveness_Reason :: enum {bridge_unavailable, probe_timed_out, invalid_probe, stale_process_generation, missing_from_pty_roster, pty_child_alive, pty_child_exited}
 Agent_Liveness :: struct {
 	state: Agent_Liveness_State,
 	reason: Agent_Liveness_Reason,
@@ -77,9 +77,9 @@ probe_instance :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> 
 	command, err := json.marshal(struct {type, command_id, agent_instance_id: string}{"instance.probe", id, inst.agent_instance_id})
 	if err != nil do return {}, .invalid_probe
 	defer delete(command)
-	reply, got, _ := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = id, body_json = string(command)}, 3000)
+	reply, got, err := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = id, body_json = string(command)}, 3000)
 	defer delete(reply)
-	if !got do return {}, .bridge_unavailable
+	if !got do return {}, .probe_timed_out if err.code == .Bridge_Timeout else .bridge_unavailable
 	observation := parse_instance_probe(reply, id, inst.agent_instance_id, inst.run_count, inst.launch_epoch)
 	switch observation.state {
 	case .Unknown: return observation, .stale_process_generation if observation.pid > 0 else .invalid_probe
@@ -120,19 +120,19 @@ parse_instance_probe :: proc(reply, command_id, instance_id: string, expected_ru
 
 // The operation ID is supplied by the caller so retries reuse the same
 // Bridge command receipt. Call outside the lifecycle lock and WS reader.
-confirm_stop_observed_process :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, fact: Agent_Liveness, operation_id, reason: string) -> domain.Domain_Error {
+confirm_stop_observed_process :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, fact: Agent_Liveness, operation_id, reason: string, force := false) -> domain.Domain_Error {
 	if service == nil || operation_id == "" || fact.state != .Alive || fact.pid <= 0 do return domain.domain_error(.Conflict, "stop needs a verified live process")
-	body := stop_command_json(operation_id, inst.agent_instance_id, reason, expected_pid = fact.pid)
+	body := stop_command_json(operation_id, inst.agent_instance_id, reason, force = force, expected_pid = fact.pid, expected_run_count = inst.run_count)
 	defer delete(body)
 	reply, got, err := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = operation_id, body_json = body}, 15_000)
 	defer delete(reply)
 	if !got do return err
 	if ok, refusal := project.bridge_reply_refusal(reply, inst.bridge_id); !ok do return refusal
-	if !confirmed_stop_receipt(reply, operation_id, inst.agent_instance_id, fact.pid) do return domain.domain_error(.Conflict, "bridge did not confirm the selected process exited")
+	if !confirmed_stop_receipt(reply, operation_id, inst.agent_instance_id, fact.pid, inst.run_count) do return domain.domain_error(.Conflict, "bridge did not confirm the selected process exited")
 	return {}
 }
 
-confirmed_stop_receipt :: proc(reply, operation_id, instance_id: string, pid: int) -> bool {
+confirmed_stop_receipt :: proc(reply, operation_id, instance_id: string, pid: int, run_count := -1) -> bool {
 	if !jsonx.extract_bool(reply, "ok", false, true) ||
 	   jsonx.extract_string(reply, "command_id", "", true, context.temp_allocator) != operation_id {
 		return false
@@ -143,7 +143,8 @@ confirmed_stop_receipt :: proc(reply, operation_id, instance_id: string, pid: in
 	return has_result &&
 		jsonx.extract_string(result, "runtime_status", "", true, context.temp_allocator) == "stopped" &&
 		jsonx.extract_string(result, "agent_instance_id", "", true, context.temp_allocator) == instance_id &&
-		jsonx.extract_int(result, "expected_process_pid", 0, true) == pid
+		jsonx.extract_int(result, "expected_process_pid", 0, true) == pid &&
+		(run_count < 0 || jsonx.extract_int(result, "expected_run_count", -1, true) == run_count)
 }
 
 // The outer status frame already supplies the launch epoch. A typed exit code

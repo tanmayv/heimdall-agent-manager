@@ -434,3 +434,21 @@ bridge_startup_job_current :: proc(id: string, generation: u64) -> bool {
     sync.mutex_unlock(&bridge_runtime_mutex)
     return current && bridge_startup_rec_current(rec)
 }
+
+// Called by the bounded explicit start command only. Host inventory is sampled
+// once, after start-success has been acknowledged for the spawned generation.
+bridge_wait_confirmed_start :: proc(instance_id: string, run_count: int, deadline_ns: i64) -> i32 {
+	if run_count <= 0 || deadline_ns <= 0 do return 0
+	for time.tick_now()._nsec < deadline_ns {
+		inst, found := bridge_runtime_instance_snapshot(instance_id)
+		if !found || inst.startup.rec.run_count != run_count do return 0
+		if inst.startup.ready_delivered && inst.startup.pty_pid > 0 {
+			proof := bridge_instance_probe(instance_id)
+			if proof.state == "alive" && proof.pid == inst.startup.pty_pid do return proof.pid
+			return 0
+		}
+		if inst.runtime_status == "stopped" || inst.runtime_status == "failed" do return 0
+		time.sleep(100 * time.Millisecond)
+	}
+	return 0
+}

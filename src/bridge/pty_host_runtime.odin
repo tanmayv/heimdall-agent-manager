@@ -967,30 +967,12 @@ bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_l
 // deliberately-stopped instance from being resurrected. Restart-reap (a superseded
 // launch closing an older child) is handled at launch time via
 // bridge_pty_host_reap_superseded, not here.
-bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
-	if bridge_runtime_is_acp(instance) {
-		// The pipe driver drains its final stdout before failing the turn.
-		acp_runtime_command(instance, "exit")
-		return
-	}
+Bridge_Process_Exit :: struct { pid, code: i32, run_count: int }
+
+bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32, observe := bridge_instance_probe) {
 	if strings.trim_space(instance) == "" do return
-	fmt.println("bridge pty-host: child exited", instance, "code", code)
-	// A stale daemon kept for its agents may have just drained: re-check now rather
-	// than at the next backoff step (pty_host_stale.odin).
 	if sync.atomic_load(&pty_host_stale_pending) do sync.atomic_store(&acp_probe_next_retry_ns, 1)
-	bridge_runtime_set_pty_process_alive(instance, false)
-	// bridge_log relay: an agent that dies within BLOG_EARLY_EXIT_WINDOW of its
-	// launch (the launch record still has the tick) is almost always a provider
-	// CLI problem — not logged in, bad model flag, missing binary — and is the
-	// #1 "agent won't start" support question.
-	if launch, has_launch := bridge_runtime_get_launch(instance); has_launch && launch.launched_at_ns != 0 {
-		age := time.tick_now()._nsec - launch.launched_at_ns
-		if age >= 0 && age < i64(BLOG_EARLY_EXIT_WINDOW) {
-			blog_warn(.agent_exited_early, blog_sym(.provider, launch.provider_sym), blog_int(.exit_code, i64(code)), blog_int(.duration_ms, age / 1_000_000))
-		}
-	}
-	bridge_runtime_remove_launch(instance)
-	bridge_runtime_set_status(instance, "stopped", "idle", .pty_child_exited)
+	bridge_pty_host_publish_agent_exit(instance, code, observe)
 
 	// Emit shell_exited WS event for any T4-registered shell session matching this daemon shell_id.
 	// An OWNED snapshot: session_id is read after the map lock is released and after
@@ -1005,6 +987,43 @@ bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 		data_dir := bridge_shell_data_dir()
 		defer delete(data_dir)
 		_ = bridge_shell_session_finalize_exit(&bridge_shell_session_map, sess.session_id, int(code), true, data_dir)
+	}
+}
+
+// A host event has an instance ID and code but no PID. Correlate it with the
+// current tombstone before changing status and retain the proof, so pushing the
+// status does not run a daemon RPC on the Bridge's Hub websocket loop.
+bridge_pty_host_publish_agent_exit :: proc(instance: string, event_code: i32, observe: proc(id: string) -> Bridge_Instance_Probe_Result) {
+	lifecycle := bridge_agent_lifecycle_enter(instance)
+	defer bridge_agent_lifecycle_leave(lifecycle)
+	snapshot, found := bridge_runtime_instance_snapshot(instance)
+	if !found || snapshot.startup.pty_pid <= 0 || snapshot.startup.rec.run_count <= 0 do return
+	proof := observe(instance)
+	bridge_instance_probe_bind(&proof, snapshot.startup.pty_pid, snapshot.startup.rec.run_count, "")
+	code, has_code := proof.exit_code.?
+	if proof.state != "exited" || !has_code || code != event_code do return
+	fmt.println("bridge pty-host: child exited", instance, "pid", proof.pid, "code", code)
+	if bridge_runtime_is_acp(instance) do acp_runtime_command(instance, "exit")
+	// bridge_log relay: an agent that dies within BLOG_EARLY_EXIT_WINDOW of its
+	// launch (the launch record still has the tick) is almost always a provider
+	// CLI problem — not logged in, bad model flag, missing binary — and is the
+	// #1 "agent won't start" support question.
+	if launch, has_launch := bridge_runtime_get_launch(instance); has_launch && launch.launched_at_ns != 0 {
+		age := time.tick_now()._nsec - launch.launched_at_ns
+		if age >= 0 && age < i64(BLOG_EARLY_EXIT_WINDOW) {
+			blog_warn(.agent_exited_early, blog_sym(.provider, launch.provider_sym), blog_int(.exit_code, i64(code)), blog_int(.duration_ms, age / 1_000_000))
+		}
+	}
+	bridge_runtime_remove_launch(instance)
+	now := bridge_runtime_now_ms()
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances {
+		if inst.agent_instance_id != instance || inst.startup.pty_pid != proof.pid || inst.startup.rec.run_count != proof.run_count do continue
+		inst.process_exit = {pid = proof.pid, code = code, run_count = proof.run_count}
+		bridge_runtime_set_pty_process_alive_locked(instance, false)
+		bridge_runtime_set_status_locked(instance, "stopped", "idle", now, true, .pty_child_exited)
+		return
 	}
 }
 

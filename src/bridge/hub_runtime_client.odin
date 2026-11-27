@@ -132,6 +132,7 @@ Bridge_Runtime_Instance :: struct {
 	start_success_seen: bool,
 	last_start_prompt_unix_ms: i64,
 	startup: Bridge_Startup_State,
+	process_exit: Bridge_Process_Exit,
 	// stopped_intent_unix_ms is set when an operator-requested stop begins. While it
 	// is recent (< BRIDGE_STOP_INTENT_TTL_MS) a late wrapper liveness/subscribe
 	// signal is IGNORED for status purposes so it cannot resurrect an intentionally
@@ -693,6 +694,7 @@ bridge_hub_reset_heartbeat_negotiation :: proc() {
 Bridge_Heartbeat_Shape :: struct {
 	omit_metadata:    bool,
 	omit_diagnostics: bool,
+	omit_instance_inventory: bool,
 }
 
 // bridge_hub_heartbeat_shape is the shape the current connection negotiated.
@@ -1186,6 +1188,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(instance_id)
 		bridge_start_status_proc(conn, instance_id)
 		final := bridge_command_result_json(command_id, "succeeded", "starting") if ok else bridge_command_failed_json(command_id, bridge_error_wire(launch_err, detail), "failed")
+		if ok && extract_json_bool(text, "confirm_start", false) {
+			delete(final)
+			count := extract_json_int(text, "run_count", 0)
+			pid := bridge_wait_confirmed_start(instance_id, count, bridge_command_worker_deadline_ns(conn))
+			if pid > 0 {
+				final = bridge_start_confirmed_json(command_id, instance_id, count, pid)
+			} else {
+				final = bridge_command_failed_json(command_id, bridge_cause_wire_error("start_unconfirmed", "new child did not confirm startup before the deadline"), "")
+			}
+		}
 		defer delete(final)
 		if !ok do fmt.println("bridge launch_agent failed", detail, bridge_error_string(launch_err))
 		bridge_runtime_cache_command(command_id, final)
@@ -2841,6 +2853,31 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 			return false, "acp_pipe_lost", bridge_error(.agent_launch_failed, .denied)
 		}
 	}
+	manual_start := extract_json_bool(command_json, "confirm_start", false)
+	wake_lease := extract_json_string(command_json, "lease_id", "", context.temp_allocator)
+	if manual_start || wake_lease != "" {
+		socket, daemon_ok := bridge_pty_host_ensure_daemon()
+		if !daemon_ok do return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
+		roster, listed := bridge_pty_host_list(socket)
+		if !listed do return false, "cannot verify the existing process", bridge_error(.pty_host_unreachable)
+		child := bridge_instance_probe_from_roster(instance_id, roster)
+		pty_host_reply_delete(roster)
+		if child.state == "unknown" do return false, "cannot verify the existing process", bridge_error(.pty_host_unreachable)
+		if wake_lease != "" && !manual_start && child.state == "alive" {
+			return false, "automatic wake will not replace a live process", bridge_error(.agent_launch_failed, .denied)
+		}
+		if manual_start && (child.state == "alive" || child.state == "exited") {
+			if run_count <= bridge_agent_instance_run_count(instance_id) {
+				return false, "manual start targets a superseded process", bridge_error(.agent_launch_failed, .denied)
+			}
+			// Close's acknowledgement is sent after the daemon has reaped the
+			// child. This stays under the same lock as the replacement spawn.
+			if !bridge_pty_host_close(socket, instance_id) {
+				return false, "cannot confirm the previous process exited", bridge_error(.agent_launch_failed, .replaced)
+			}
+			if bridge_runtime_is_acp(instance_id) do acp_runtime_detach(instance_id)
+		}
+	}
 	if launch_epoch != "" {
 		socket, daemon_ok := bridge_pty_host_ensure_daemon()
 		if !daemon_ok do return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
@@ -3534,6 +3571,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				if runtime_status != "failed" do inst.has_last_error = false
 				inst.runtime_status = runtime_status
 				if runtime_changed do inst.runtime_reason = reason
+				if runtime_changed && reason != .pty_child_exited do inst.process_exit = {}
 				if accept_activity do inst.activity_status = activity_status
 			}
 			// Independent lifecycle and screen-derived transitions reach the hub
@@ -3752,14 +3790,11 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	bridge_runtime_write_json_string(&b, inst.activity_source)
 	strings.write_string(&b, "\"")
 	strings.write_string(&b, fmt.tprintf(",\"runtime_reason\":\"%v\"", inst.runtime_reason))
-	if inst.runtime_reason == .pty_child_exited {
-		probe := bridge_instance_probe(instance_id)
-		bridge_instance_probe_bind(&probe, inst.startup.pty_pid, inst.startup.rec.run_count, epoch)
-		if code, confirmed := probe.exit_code.?; probe.state == "exited" && confirmed {
-			strings.write_string(&b, ",\"process_exit\":{")
-			strings.write_string(&b, fmt.tprintf("\"pid\":%d,\"exit_code\":%d,\"run_count\":%d", probe.pid, code, probe.run_count))
-			strings.write_byte(&b, '}')
-		}
+	if inst.runtime_reason == .pty_child_exited && inst.process_exit.pid > 0 {
+		proof := inst.process_exit
+		strings.write_string(&b, ",\"process_exit\":{")
+		strings.write_string(&b, fmt.tprintf("\"pid\":%d,\"exit_code\":%d,\"run_count\":%d", proof.pid, proof.code, proof.run_count))
+		strings.write_byte(&b, '}')
 	}
 	bridge_runtime_write_instance_error(&b, inst)
 	// Optional small snapshot (extension_token_usage.odin); hubs that predate it
@@ -3906,7 +3941,9 @@ bridge_hub_send_vault_status :: proc(conn: ^ws.Connection) {
 // bridge_hub_heartbeat_json builds the heartbeat in the shape this connection
 // negotiated (bridge_hub_heartbeat_shape).
 bridge_hub_heartbeat_json :: proc() -> string {
-	return bridge_hub_heartbeat_json_shaped(bridge_hub_heartbeat_shape())
+	shape := bridge_hub_heartbeat_shape()
+	shape.omit_instance_inventory = true
+	return bridge_hub_heartbeat_json_shaped(shape)
 }
 
 // bridge_hub_heartbeat_json_shaped collects the live state for one heartbeat and
@@ -3935,6 +3972,8 @@ bridge_hub_heartbeat_json_shaped :: proc(shape: Bridge_Heartbeat_Shape, roster: 
 	// blocking I/O belongs inside a lock the per-instance reporters also contend on.
 	frame.vault_status = bridge_hub_vault_status_for_report()
 	frame.search_ready, frame.search_stale, frame.search_revision = bridge_task_chain_search_status()
+	// Retain the empty array keys for compatibility, without scanning agent state.
+	if shape.omit_instance_inventory do return bridge_heartbeat_frame_json(frame, shape)
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
@@ -3998,8 +4037,8 @@ Bridge_Heartbeat_Frame :: struct {
 // command_dispatch, dependency_breakers, http_retries, operation_recovery and stats.
 //
 // active_instance_ids lists the instances with an active runtime status; instances[]
-// lists every instance with a status, terminal ones included, so a dropped terminal
-// status push is repaired. Each entry is the five-member tuple the hub decodes: the
+// holds compatibility observations at connection setup only. An empty list is
+// not liveness evidence. Each entry is the tuple the Hub decodes: the
 // ignored activity_source and error members are not sent here (decision D3-a); the
 // immediate agent_instance_status push (bridge_instance_status_json) still carries
 // both.
@@ -4457,6 +4496,7 @@ Bridge_Command_Runtime_Status :: struct {
 	agent_instance_id: Maybe(string) `json:"agent_instance_id,omitempty"`,
 	expected_run_count: Maybe(int) `json:"expected_run_count,omitempty"`,
 	expected_process_pid: Maybe(i32) `json:"expected_process_pid,omitempty"`,
+	process_pid: Maybe(i32) `json:"process_pid,omitempty"`,
 }
 
 // Successful stop commands carry the requested generation (-1 for legacy stops).
@@ -4474,6 +4514,16 @@ bridge_stop_confirmed_json :: proc(command_id, instance_id: string, expected_run
 		result := res.payload.result.?
 		result.expected_process_pid = expected_pid
 		res.payload.result = result
+	}
+	out, _ := vault.wire_encode(res)
+	return out
+}
+
+bridge_start_confirmed_json :: proc(command_id, instance_id: string, run_count: int, pid: i32) -> string {
+	res := bridge_command_result_wire(command_id, "succeeded", "running")
+	res.ok = true
+	res.payload.result = Bridge_Command_Runtime_Status{
+		runtime_status = "running", agent_instance_id = instance_id, expected_run_count = run_count, process_pid = pid,
 	}
 	out, _ := vault.wire_encode(res)
 	return out
