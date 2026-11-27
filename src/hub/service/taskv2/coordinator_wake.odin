@@ -61,8 +61,8 @@ Pending_Coordinator_Wake :: struct {
 queue_coordinator_wake :: proc(svc: ^Service, instance_id, owner: string) {
 	if svc == nil || svc.wake_coordinator == nil || instance_id == "" || owner == "" do return
 	now := now_ms(svc.clock)
-	sync.mutex_lock(&svc.state_mutex)
-	defer sync.mutex_unlock(&svc.state_mutex)
+	state_held := state_lock(svc)
+	defer state_unlock(svc, state_held)
 	// Heap-lived state: never owned by a request or scratch arena.
 	context.allocator = runtime.heap_allocator()
 	merge_pending_coordinator_wake_locked(svc, instance_id, Pending_Coordinator_Wake{
@@ -93,10 +93,10 @@ merge_pending_coordinator_wake_locked :: proc(svc: ^Service, instance_id: string
 // not settled (a notice queued meanwhile merges with them).
 drain_coordinator_wakes :: proc(svc: ^Service) {
 	if svc == nil do return
-	sync.mutex_lock(&svc.state_mutex)
+	state_held := state_lock(svc)
 	pending := svc.pending_coordinator_wakes
 	svc.pending_coordinator_wakes = nil
-	sync.mutex_unlock(&svc.state_mutex)
+	state_unlock(svc, state_held)
 	if pending == nil do return
 	heap := runtime.heap_allocator()
 	now := now_ms(svc.clock)
@@ -115,10 +115,10 @@ drain_coordinator_wakes :: proc(svc: ^Service) {
 		w.not_before_ms = max(reply.retry_at_ms, now + COORDINATOR_WAKE_MIN_RETRY_MS)
 		append(&keep, instance_id)
 	}
-	sync.mutex_lock(&svc.state_mutex)
+	state_held = state_lock(svc)
 	context.allocator = heap
 	for instance_id in keep do merge_pending_coordinator_wake_locked(svc, instance_id, pending[instance_id])
-	sync.mutex_unlock(&svc.state_mutex)
+	state_unlock(svc, state_held)
 	for instance_id, w in pending {
 		delete(instance_id, heap)
 		delete(w.owner, heap)

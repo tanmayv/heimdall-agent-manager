@@ -100,8 +100,8 @@ HOLD_STALE_MAX_REMINDERS       :: 3
 timers_arm :: proc(svc: ^Service, kind: Timer_Kind, key: string, due_ms: i64, armed: string) {
 	if svc == nil || key == "" do return
 	ts := &svc.timers
-	sync.mutex_lock(&ts.mutex)
-	defer sync.mutex_unlock(&ts.mutex)
+	timers_held := dbt.profiled_mutex_lock(&ts.mutex, .Taskv2_Timers)
+	defer dbt.profiled_mutex_unlock(&ts.mutex, .Taskv2_Timers, timers_held)
 	// Pending requirement notices are a recurring retry, unlike the existing
 	// one-shot timers. Keep one per task, including under frequent heartbeats.
 	if kind == .Requirements_Notice {
@@ -139,8 +139,8 @@ timers_arm :: proc(svc: ^Service, kind: Timer_Kind, key: string, due_ms: i64, ar
 }
 
 timers_armed_count :: proc(svc: ^Service) -> int {
-	sync.mutex_lock(&svc.timers.mutex)
-	defer sync.mutex_unlock(&svc.timers.mutex)
+	timers_held := dbt.profiled_mutex_lock(&svc.timers.mutex, .Taskv2_Timers)
+	defer dbt.profiled_mutex_unlock(&svc.timers.mutex, .Taskv2_Timers, timers_held)
 	return len(svc.timers.heap)
 }
 
@@ -149,8 +149,8 @@ timers_armed_count :: proc(svc: ^Service) -> int {
 timers_pop_due :: proc(svc: ^Service, now_ms: i64) -> []Timer {
 	ts := &svc.timers
 	out := make([dynamic]Timer)
-	sync.mutex_lock(&ts.mutex)
-	defer sync.mutex_unlock(&ts.mutex)
+	timers_held := dbt.profiled_mutex_lock(&ts.mutex, .Taskv2_Timers)
+	defer dbt.profiled_mutex_unlock(&ts.mutex, .Taskv2_Timers, timers_held)
 	for len(ts.heap) > 0 && ts.heap[0].due_ms <= now_ms {
 		top := ts.heap[0]
 		last := len(ts.heap) - 1

@@ -49,18 +49,25 @@ lookup_tasks :: proc(impl: ^Taskchain_Repo_SQLite, query: string, what: string, 
 // holder (nobody reviews their own work), and no instance of the agent holds
 // a live review lease on it (spec SCHED 10.1 step 2), so leased items can
 // never hide an owed one behind the limit.
+// The task side is pinned to the chain too (t.chain_id): without it the only
+// equality SQLite sees on tasks is owner_user_id, it drives the join from
+// idx_search_tasks_owner_lower_title and reads every task the owner has, ~1 s
+// per call at 100k tasks (Scale H, docs/reference/scale-harness.md). With it the
+// plan is one idx_tasks_chain_state range (owed_reviews_plan_test.odin).
+@(private)
+OWED_REVIEWS_QUERY :: "SELECT " + LOOKUP_TASK_COLS + " FROM task_reviewers r JOIN tasks t ON t.task_id = r.task_id" +
+	" WHERE r.chain_id = ?1 AND t.chain_id = ?1 AND r.agent_id = ?2 AND t.owner_user_id = ?3 AND t.state = 'in_review' AND t.kind <> 'gate'" +
+	" AND NOT EXISTS (SELECT 1 FROM task_reviews v WHERE v.task_id = t.task_id AND v.attempt_no = t.attempt_no AND v.reviewer_kind = 'agent' AND v.reviewer_agent_id = r.agent_id" +
+	" AND v.role NOT IN ('coordinator', 'user') AND v.role NOT LIKE 'legacy-verify:%')" +
+	" AND NOT EXISTS (SELECT 1 FROM task_attempts a JOIN agent_instances i ON i.agent_instance_id = a.holder_instance_id" +
+	" WHERE a.task_id = t.task_id AND i.agent_id = r.agent_id AND a.attempt_no = (SELECT MAX(m.attempt_no) FROM task_attempts m WHERE m.task_id = t.task_id))" +
+	" AND NOT EXISTS (SELECT 1 FROM task_leases l JOIN agent_instances li ON li.agent_instance_id = l.holder_instance_id" +
+	" WHERE l.task_id = t.task_id AND l.kind = 'review' AND l.phase <> 'waiting' AND li.agent_id = r.agent_id)" +
+	" ORDER BY " + LOOKUP_TASK_ORDER + " LIMIT ?4;"
+
 task_list_owed_reviews_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, agent_id: string, limit: int) -> ([]domain.Task, domain.Domain_Error) {
 	impl := (^Taskchain_Repo_SQLite)(ctx)
-	query := "SELECT " + LOOKUP_TASK_COLS + " FROM task_reviewers r JOIN tasks t ON t.task_id = r.task_id" +
-		" WHERE r.chain_id = ?1 AND r.agent_id = ?2 AND t.owner_user_id = ?3 AND t.state = 'in_review' AND t.kind <> 'gate'" +
-		" AND NOT EXISTS (SELECT 1 FROM task_reviews v WHERE v.task_id = t.task_id AND v.attempt_no = t.attempt_no AND v.reviewer_kind = 'agent' AND v.reviewer_agent_id = r.agent_id" +
-		" AND v.role NOT IN ('coordinator', 'user') AND v.role NOT LIKE 'legacy-verify:%')" +
-		" AND NOT EXISTS (SELECT 1 FROM task_attempts a JOIN agent_instances i ON i.agent_instance_id = a.holder_instance_id" +
-		" WHERE a.task_id = t.task_id AND i.agent_id = r.agent_id AND a.attempt_no = (SELECT MAX(m.attempt_no) FROM task_attempts m WHERE m.task_id = t.task_id))" +
-		" AND NOT EXISTS (SELECT 1 FROM task_leases l JOIN agent_instances li ON li.agent_instance_id = l.holder_instance_id" +
-		" WHERE l.task_id = t.task_id AND l.kind = 'review' AND l.phase <> 'waiting' AND li.agent_id = r.agent_id)" +
-		" ORDER BY " + LOOKUP_TASK_ORDER + " LIMIT ?4;"
-	return lookup_tasks(impl, query, "owed review list", chain_id, owner_user_id, agent_id, limit)
+	return lookup_tasks(impl, OWED_REVIEWS_QUERY, "owed review list", chain_id, owner_user_id, agent_id, limit)
 }
 
 task_list_assigned_ready_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID, agent_id: string, limit: int) -> ([]domain.Task, domain.Domain_Error) {

@@ -74,6 +74,9 @@ tx_lock_token: dbt.Lock_Token
 tx_started: time.Tick
 @(private = "file")
 tx_acquired_nsec: i64
+// Opt-in lock profile acquire time (owner-written; 0 while the profile is off).
+@(private = "file")
+tx_profile_acquired: i64
 
 @(private = "file")
 Pending_After_Commit :: struct {
@@ -255,7 +258,9 @@ sqlite_uow_rollback :: proc(ctx: rawptr) {
 // outside it). Lock order and semantics are exactly sync.mutex_lock/unlock.
 @(private = "file")
 tx_lock :: proc(conn: ^Conn) {
+	profile_t0 := dbt.profile_start()
 	tx_lock_token = dbt.timed_lock(&tx_mutex, .Uow_Tx)
+	if profile_t0 != 0 do tx_profile_acquired = dbt.profile_acquired(.Uow_Tx, profile_t0)
 	if !tx_lock_token.timed do return
 	tx_started = time.tick_now()
 	sync.atomic_store(&tx_acquired_nsec, tx_started._nsec)
@@ -267,6 +272,10 @@ tx_lock :: proc(conn: ^Conn) {
 tx_unlock :: proc(conn: ^Conn, outcome: Tx_Outcome) {
 	token := tx_lock_token
 	tx_lock_token = {}
+	if tx_profile_acquired != 0 {
+		dbt.profile_released(.Uow_Tx, tx_profile_acquired)
+		tx_profile_acquired = 0
+	}
 	if token.timed {
 		kind := conn_kind_of(conn.db) if conn != nil else Conn_Kind.Other
 		tx_observe(kind, .Uow, tl_uow_wrote, outcome, tx_started)
@@ -305,7 +314,7 @@ outbox_uow_owns :: proc(conn: ^Conn) -> bool {
 // Short repository-owned transactions/savepoints share the UoW serialization
 // gate. Enter before taking db_mutex; leave after COMMIT/ROLLBACK and releasing
 // db_mutex. When already inside this threads UoW, its gate is already held.
-Repository_Tx_Guard :: struct {locked, entered: bool, token: dbt.Lock_Token}
+Repository_Tx_Guard :: struct {locked, entered: bool, token: dbt.Lock_Token, profile_acquired: i64}
 
 // Repository entry points call other repository writers (for example identity
 // provisioning saves a user). Keep their outer guard across the whole operation
@@ -320,9 +329,13 @@ tx_repository_enter :: proc() -> Repository_Tx_Guard {
 		return {entered=true}
 	}
 	lockorder.assert_tx_mutex_allowed()
+	// The opt-in lock profile counts these acquisitions too: repository reads
+	// outside a UoW (every lease-next lookup) take tx_mutex here, not in tx_lock.
+	profile_t0 := dbt.profile_start()
 	token := dbt.timed_lock(&tx_mutex, .Uow_Tx)
+	profile_acquired := dbt.profile_acquired(.Uow_Tx, profile_t0)
 	repository_tx_depth = 1
-	return {locked=true, entered=true, token=token}
+	return {locked=true, entered=true, token=token, profile_acquired=profile_acquired}
 }
 
 tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
@@ -331,6 +344,7 @@ tx_repository_leave :: proc(guard: Repository_Tx_Guard) {
 	repository_tx_depth -= 1
 	if guard.locked {
 		assert(repository_tx_depth == 0)
+		dbt.profile_released(.Uow_Tx, guard.profile_acquired)
 		dbt.timed_unlock(&tx_mutex, .Uow_Tx, guard.token)
 	}
 }

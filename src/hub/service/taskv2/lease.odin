@@ -654,10 +654,10 @@ touch_instance :: proc(svc: ^Service, instance_id: string) {
 // drain_pending_touches discards legacy queued touches without renewing claims.
 // Swap the set under state_mutex; release its storage after unlocking.
 drain_pending_touches :: proc(svc: ^Service) {
-	sync.mutex_lock(&svc.state_mutex)
+	state_held := state_lock(svc)
 	pending := svc.pending_touches
 	svc.pending_touches = nil
-	sync.mutex_unlock(&svc.state_mutex)
+	state_unlock(svc, state_held)
 	if pending == nil do return
 	for instance_id in pending {
 		if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); held do touch_lease(svc, lease)
@@ -1056,8 +1056,8 @@ mark_instance_idle :: proc(svc: ^Service, u: ^Uow, instance_id, now: string) {
 
 note_recent_expiry :: proc(svc: ^Service, instance_id: string, at_ms: i64) {
 	if instance_id == "" do return
-	sync.mutex_lock(&svc.state_mutex)
-	defer sync.mutex_unlock(&svc.state_mutex)
+	state_held := state_lock(svc)
+	defer state_unlock(svc, state_held)
 	if svc.recent_expiries == nil do svc.recent_expiries = make(map[string]i64, runtime.heap_allocator())
 	if _, has := svc.recent_expiries[instance_id]; has {
 		svc.recent_expiries[instance_id] = at_ms
@@ -1067,8 +1067,8 @@ note_recent_expiry :: proc(svc: ^Service, instance_id: string, at_ms: i64) {
 }
 
 recently_expired :: proc(svc: ^Service, instance_id: string, now_ms: i64) -> bool {
-	sync.mutex_lock(&svc.state_mutex)
-	defer sync.mutex_unlock(&svc.state_mutex)
+	state_held := state_lock(svc)
+	defer state_unlock(svc, state_held)
 	at, has := svc.recent_expiries[instance_id]
 	return has && now_ms - at < IDLE_GRACE_SECONDS * 1000
 }
