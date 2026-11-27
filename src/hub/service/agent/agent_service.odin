@@ -917,12 +917,10 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	log_runtime_terminal_transition(saved, fresh.runtime_status, "stop_instance_confirmed", "pty_stop_confirmed")
 	generation := project_service.bridge_runtime_registry_generation(service.bridge_runtime_registry, saved.bridge_id)
 	project_service.bridge_runtime_instance_retire(service.bridge_runtime_registry, saved.bridge_id, generation, instance_id, "stopped", "pty_stop_confirmed")
-	if recorded, _ := iface.agent_set_stop_reason(service.agents, instance_id, reason); recorded {
-		delete(saved.stop_reason)
-		saved.stop_reason = strings.clone(reason)
-	}
+	if recorded, _ := iface.agent_set_stop_reason(service.agents, instance_id, reason); recorded do saved.stop_reason = reason
 	if user_stop && service.hooks.on_user_stopped != nil do service.hooks.on_user_stopped(service.hooks.ctx, instance_id)
-	return saved, true, {}
+	defer if saved.runtime_transport != fresh.runtime_transport do delete(saved.runtime_transport)
+	return domain.agent_instance_clone(saved), true, {}
 }
 
 restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: contracts.Restart_Instance_Input = {expected_run_count=-1}) -> (domain.Agent_Instance, bool, domain.Domain_Error) {

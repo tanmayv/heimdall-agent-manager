@@ -912,3 +912,37 @@ confirmed_live_start_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
 test_explicit_stop_requires_confirmed_exit :: proc(t: ^testing.T) { start_test_run(t, confirmed_runtime_actions_scenario) }
 @(test)
 test_explicit_start_replaces_live_generation_and_waits_for_ready :: proc(t: ^testing.T) { start_test_run(t, confirmed_live_start_scenario) }
+
+task_stop_receipt_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
+	start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='running', startup_status='ready', stop_reason='task_completed';")
+	make_reply :: proc(op: string, run_count: int) -> string {
+		return strings.concatenate({`{"ok":true,"command_id":"`, op, `","payload":{"status":"succeeded","result":{"agent_instance_id":"inst","expected_run_count":`, fmt.tprintf("%d", run_count), `,"runtime_status":"stopped"}}}`})
+	}
+	db_row := start_test_row(t, h)
+	op := task_stop_command_id("inst", db_row.run_count)
+	old_op := task_stop_command_id("inst", db_row.run_count - 1)
+	_, stale := apply_task_stop_receipt(&h.service, db_row.bridge_id, old_op, make_reply(old_op, db_row.run_count - 1), db_row.owner_user_id)
+	_, unrelated := apply_task_stop_receipt(&h.service, db_row.bridge_id, op, make_reply(old_op, db_row.run_count), db_row.owner_user_id)
+	_, wrong_bridge := apply_task_stop_receipt(&h.service, "another_bridge", op, make_reply(op, db_row.run_count), db_row.owner_user_id)
+	_, accepted := apply_task_stop_receipt(&h.service, db_row.bridge_id, op, fmt.tprintf("{\"ok\":true,\"command_id\":%q,\"payload\":{\"status\":\"accepted\"}}", op), db_row.owner_user_id)
+	testing.expect(t, !stale && !unrelated && !wrong_bridge && !accepted)
+	testing.expect_value(t, start_test_row(t, h).runtime_status, "running")
+
+	start_test_sql(t, h, "UPDATE agent_instances SET current_task_id='new_task';")
+	_, reassigned := apply_task_stop_receipt(&h.service, db_row.bridge_id, op, make_reply(op, db_row.run_count), db_row.owner_user_id)
+	testing.expect(t, !reassigned, "a receipt cannot overwrite a new assignment")
+	testing.expect_value(t, start_test_row(t, h).current_task_id, "new_task")
+	start_test_sql(t, h, "UPDATE agent_instances SET current_task_id='';")
+	stopped, applied := apply_task_stop_receipt(&h.service, db_row.bridge_id, op, make_reply(op, db_row.run_count), db_row.owner_user_id)
+	testing.expect(t, applied)
+	testing.expect_value(t, stopped.runtime_status, "stopped")
+	testing.expect_value(t, stopped.status_message, "pty_stop_confirmed")
+	testing.expect_value(t, stopped.stop_reason, "task_completed")
+	_, duplicate := apply_task_stop_receipt(&h.service, db_row.bridge_id, op, make_reply(op, db_row.run_count), db_row.owner_user_id)
+	testing.expect(t, !duplicate)
+}
+
+@(test)
+test_scheduler_stop_receipt_cannot_stop_a_different_run_or_assignment :: proc(t: ^testing.T) {
+	start_test_run(t, task_stop_receipt_scenario)
+}

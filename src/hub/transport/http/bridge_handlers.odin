@@ -2530,7 +2530,13 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		if ext_err := bridge_extension_frame(h, bridge_id, type, text); ext_err.code != .None do fmt.eprintln("extension command result:", ext_err.message)
 		command_id := json_string(text, "command_id")
 		if h.delivery != nil && type == "command_result" && strings.has_prefix(command_id, contracts.DELIVERY_ID_PREFIX) do delivery.on_command_result(h.delivery, bridge_id, command_id, text)
-		_ = bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
+		current_connection := bridge_runtime_service.runtime_command_result_for_connection(h.bridge_runtime_registry, bridge_id, connection_generation, command_id, text)
+		if type == "command_result" && current_connection && h.agents != nil {
+			if stopped, applied := bridge_apply_task_stop_receipt(h, bridge_id, connection_generation, command_id, text); applied {
+				publish_instance_changed(h.event_bus, stopped, "status_changed")
+				domain.agent_instance_destroy(&stopped)
+			}
+		}
 		if h.bots != nil && type == "command_result" && strings.has_prefix(command_id, "cmd_bot_") {
 			status := jsonx.extract_string(text, "status", top_level_only = false, allocator = context.temp_allocator)
 			error_code := jsonx.extract_string(text, "code", top_level_only = false, allocator = context.temp_allocator)
@@ -2809,6 +2815,30 @@ bridge_publish_status_frame_change :: proc(h: ^Bridge_Handlers, instance_id: str
 		publish_instance_changed(h.event_bus, inst, "status_changed" if status_applied else "token_usage_changed", token_changed = true)
 		domain.agent_instance_destroy(&inst)
 	}
+}
+
+// Serialize the stop's read/check/write with lease grants and other runtime
+// observations. Publish/retire the cache only after the projection commits.
+bridge_apply_task_stop_receipt :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, command_id, reply: string) -> (domain.Agent_Instance, bool) {
+	if !strings.has_prefix(command_id, agent_service.TASK_STOP_COMMAND_PREFIX) do return {}, false
+	uow, opened, _ := bridge_persist_begin(h)
+	if !opened do return {}, false
+	defer bridge_persist_rollback(&uow)
+	c := project_service.bridge_runtime_connection_acquire(h.bridge_runtime_registry, bridge_id, generation)
+	if c == nil do return {}, false
+	defer project_service.bridge_runtime_connection_release(h.bridge_runtime_registry, c)
+	project_service.connection_state_lock(c)
+	retired := sync.atomic_load(&c.retired)
+	project_service.connection_state_unlock(c)
+	if retired do return {}, false
+	instance, applied := agent_service.apply_task_stop_receipt(h.agents, bridge_id, command_id, reply, domain.User_ID(c.owner_id))
+	if !applied do return {}, false
+	if committed, _ := bridge_persist_commit(&uow); !committed {
+		domain.agent_instance_destroy(&instance)
+		return {}, false
+	}
+	project_service.bridge_runtime_instance_retire(h.bridge_runtime_registry, bridge_id, generation, instance.agent_instance_id, "stopped", "pty_stop_confirmed")
+	return instance, true
 }
 
 bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string, launch_epoch: string = "", error_json: string = "", changed: ^bool = nil, source := "bridge_status_report", reason := "", process_exit: ^agent_service.Process_Exit_Evidence = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {

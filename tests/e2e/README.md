@@ -139,8 +139,19 @@ LIVENESS_PTY_HOST=/path/to/current/ham-pty-host \
 nix develop -c node tests/e2e/agent_liveness_restart.mjs
 ```
 
-The test creates its own Hub database, Bridge profile, synthetic worker and
-lease. It signals only the fixture Bridge, verifies that the same child PID and
-confirmed lease survive reconnect and malformed terminal input, then checks
-that explicit Start and Stop return only after replacement readiness and exit.
-It does not update or signal an installed Bridge.
+The test creates its own Hub database, Bridge profile, synthetic coordinator
+and worker, and lease. It signals only the fixture Bridge, verifies that the
+same worker PID and confirmed lease survive reconnect and malformed terminal
+input, then checks explicit replacement readiness, scheduler stop on task
+completion, and explicit Stop. It does not update or signal an installed Bridge.
+
+The same Bridge liveness provider can be tested against a real daemon-owned
+ACP pipe process. Use a pty-host binary with pipe support. The fixture uses an
+isolated socket and does not run or authenticate a model provider.
+
+```bash
+HEIMDALL_HAM_PTY_HOST_BIN=/absolute/path/to/ham-pty-host \
+  nix develop -c odin test src/bridge -collection:odin_test=src \
+  -define:HEIMDALL_PTY_LIVENESS_LIVE_TEST=true -define:ODIN_TEST_THREADS=2 \
+  -define:ODIN_TEST_NAMES=test_instance_probe_observes_real_pipe_child_and_exit
+```

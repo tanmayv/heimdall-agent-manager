@@ -340,7 +340,7 @@ release_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, actor: 
 		// keeps its process and pulls its next item (REQ-SCHED-17).
 		if coordinator do return refolded, true, domain.Domain_Error{}
 		if stop_holder {
-			effect_stop(u, inst.bridge_id, string(task.chain_id), inst.agent_instance_id)
+			if queued, qerr := stop_instance_in_uow(svc, u, inst, string(task.chain_id), STOP_REASON_HANDOFF); !queued do return {}, false, qerr
 		}
 		arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, task.chain_id, task.owner_user_id, inst.agent_id), now)
 	}
@@ -374,9 +374,11 @@ wake_reuses_live_child :: proc(inst: domain.Agent_Instance, needs_new_child: boo
 STOP_REASON_TASK_COMPLETED :: "task_completed"
 STOP_REASON_REVIEW_POSTED :: "review_posted"
 STOP_REASON_IDLE_TTL :: "idle_ttl"
+STOP_REASON_HANDOFF :: "lease_handoff"
+STOP_REASON_INVALIDATED :: "lease_invalidated"
 
 lease_stop_reason :: proc(reason: string) -> bool {
-	return reason == STOP_REASON_TASK_COMPLETED || reason == STOP_REASON_REVIEW_POSTED || reason == STOP_REASON_IDLE_TTL || reason == STOP_REASON_CAPACITY_YIELD
+	return reason == STOP_REASON_TASK_COMPLETED || reason == STOP_REASON_REVIEW_POSTED || reason == STOP_REASON_IDLE_TTL || reason == STOP_REASON_CAPACITY_YIELD || reason == STOP_REASON_HANDOFF || reason == STOP_REASON_INVALIDATED
 }
 
 // stop_instance_in_uow records the stop intent, then queues the stop effect:
@@ -391,7 +393,7 @@ stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance
 		if err.code == .None do return false, domain.domain_error(.Internal_Error, "failed to record stop intent")
 		return false, err
 	}
-	effect_stop(u, inst.bridge_id, chain_id, inst.agent_instance_id)
+	effect_stop(u, inst, chain_id, reason)
 	return true, {}
 }
 
@@ -508,8 +510,8 @@ expire_lease_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, re
 	// being stopped is refused an inline grant from its old process.
 	if stops do note_recent_expiry(svc, lease.holder_instance_id, to_ms(now))
 	if inst, iok, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id); iok {
-		if stops && reason != EXPIRE_INSTANCE_LOST && (instance_is_live(inst) || instance_is_pending(inst)) {
-			effect_stop(u, inst.bridge_id, string(task.chain_id), inst.agent_instance_id)
+		if stops {
+			if queued, _ := stop_instance_in_uow(svc, u, inst, string(task.chain_id), STOP_REASON_INVALIDATED); !queued do return .Failed
 		}
 		arm_idle_ttl(svc, inst.agent_instance_id, fleet_idle_ttl(svc, task.chain_id, task.owner_user_id, inst.agent_id), now)
 	}

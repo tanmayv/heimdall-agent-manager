@@ -66,7 +66,9 @@ wake_log_has_run :: proc(log: ^Wake_Log, inst: string) -> bool {
 
 wake_log_has_stop :: proc(log: ^Wake_Log, inst: string) -> bool {
 	for c in log.cmds {
-		if jsonx.extract_string(c.body_json,"type","",true,context.temp_allocator)=="stop_agent" && jsonx.extract_string(c.body_json,"agent_instance_id","",true,context.temp_allocator)==inst do return true
+		if jsonx.extract_string(c.body_json,"type","",true,context.temp_allocator)=="stop_agent" {
+			if jsonx.extract_string(c.body_json,"agent_instance_id","",false,context.temp_allocator)==inst do return true
+		}
 		if stop, ok := jsonx.extract_raw_array(c.body_json, "stop", false, context.temp_allocator); ok && strings.contains(stop, fmt.tprintf(`"%s"`, inst)) do return true
 	}
 	return false

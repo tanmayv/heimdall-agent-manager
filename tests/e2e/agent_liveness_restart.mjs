@@ -57,9 +57,8 @@ const waitFor = async (predicate, label, ms = 20000) => {
   throw new Error('Timed out waiting for ' + label);
 };
 
-let bridge, instance, socket;
-const agentEnvPath = path.join(root, 'agent-env.json');
-const agentEnv = async () => JSON.parse(await fs.readFile(agentEnvPath, 'utf8'));
+let bridge, instance, coordinator, socket;
+const agentEnv = async () => JSON.parse(await fs.readFile(path.join(root, instance.agent_instance_id + '.json'), 'utf8'));
 const leaseNext = async () => {
   const reply = await exec(path.join(bin, 'ham-ctl'), ['lease', 'next'], {
     env: { ...env, ...await agentEnv() }, timeout: 10000,
@@ -86,7 +85,7 @@ try {
     + 'if "--version" in sys.argv: print("codex-cli 0.162.0"); sys.exit()\n'
     + 'if "plugin" in sys.argv: print(\'{"installed":[],"available":[]}\'); sys.exit()\n'
     + 'if not os.environ.get("HEIMDALL_AGENT_INSTANCE_ID"): sys.exit(2)\n'
-    + 'p = ' + JSON.stringify(agentEnvPath) + '\n'
+    + 'p = os.path.join(' + JSON.stringify(root) + ', os.environ["HEIMDALL_AGENT_INSTANCE_ID"] + ".json")\n'
     + 'with open(p+".new","w") as f: json.dump({k:v for k,v in os.environ.items() if k.startswith("HEIMDALL_")}, f)\n'
     + 'os.rename(p+".new",p)\n'
     + 'subprocess.run([' + JSON.stringify(path.join(bin, 'ham-ctl')) + ', "start-success"],check=True)\n'
@@ -104,6 +103,11 @@ try {
   const chain = await api('/task-chains', 'POST', { title: 'Live child lease fixture' });
   const chainRoute = '/task-chains/' + chain.chain_id;
   const [[model]] = await sql("SELECT model_id FROM provider_models WHERE provider='codex' AND state='active' ORDER BY rank LIMIT 1");
+  // The first member of a chain is the coordinator and intentionally
+  // survives task completion. Put the test worker in the second slot.
+  const coordinatorAgent = await api('/agents', 'POST', { name: 'Liveness fixture coordinator', slug: 'liveness-fixture-coord', instructions: 'Synthetic loopback process' });
+  coordinator = await api('/agent-instances', 'POST', { agent_id: coordinatorAgent.agent_id, bridge_id: bridge.bridge_id,
+    provider: 'codex', model, chain_id: chain.chain_id, display_name: 'Liveness fixture coordinator' });
   instance = await api('/agent-instances', 'POST', { agent_id: agent.agent_id, bridge_id: bridge.bridge_id,
     provider: 'codex', model, chain_id: chain.chain_id, display_name: 'Liveness fixture worker' });
   const instanceRoute = '/agent-instances/' + instance.agent_instance_id;
@@ -150,18 +154,42 @@ try {
   const newPid = await waitFor(ptyPid, 'replacement child');
   assert.notEqual(newPid, oldPid, 'explicit Start replaces the live PID');
   assert.equal(restarted.run_count, instance.run_count + 1, 'a single generation was opened');
+  console.log('PASS explicit Start acknowledged ready replacement PID', newPid);
+  assert.equal((await leaseNext()).lease_id, original.lease_id, 'manual restart did not create a second lease');
+  const submit = await exec(path.join(bin, 'ham-ctl'), ['lease', 'submit', '--lease', original.lease_id,
+    '--requirements-revision', '1', '--summary', 'Completed the isolated liveness fixture'], {
+    env: { ...env, ...await agentEnv() }, cwd: root, timeout: 15000,
+  });
+  const submitted = JSON.parse(submit.stdout);
+  assert.equal(submitted.ok, true, 'fixture submit succeeds');
+  await waitFor(async () => {
+    const [[status, reason]] = await sql("SELECT runtime_status,status_message FROM agent_instances WHERE agent_instance_id=?", [instance.agent_instance_id]);
+    return status === 'stopped' && reason === 'pty_stop_confirmed';
+  }, 'scheduler stop receipt after task completion');
+  assert.equal(await ptyPid(), 0, 'scheduler stop confirmed the exact generation exited');
+  console.log('PASS task completion confirmed stop of the replacement PID', newPid);
+
+  const manual = await api(instanceRoute + '/start', 'POST', {});
+  assert.equal(manual.runtime_status, 'running');
+  const manualPid = await waitFor(ptyPid, 'manual stop fixture child');
   const stopped = await api(instanceRoute + '/stop', 'POST', {});
   assert.equal(stopped.runtime_status, 'stopped', 'only publish stopped after confirmation');
-  assert.equal(await ptyPid(), 0, 'the replacement is no longer alive');
-  console.log('PASS explicit Start acknowledged ready replacement PID', newPid, 'and Stop confirmed its exit');
+  assert.equal(await ptyPid(), 0, 'explicit Stop returned after exit');
+  console.log('PASS explicit Stop confirmed exit of PID', manualPid);
 } catch (err) {
   // Only print the narrowly relevant fixture log lines. Startup logs may
   // contain credentials minted for the fixture.
   const log = await bridgeLog().catch(() => '');
-  console.error(log.split('\n').filter(line => /stale daemon|child exited|shell_pty_input rejected|agent_runtime_transition/.test(line)).slice(-15).join('\n'));
+  if (instance) {
+    const rows = await sql("SELECT runtime_status,status_message,stop_reason,run_count,current_task_id FROM agent_instances WHERE agent_instance_id=?", [instance.agent_instance_id]).catch(() => []);
+    console.error('fixture runtime states', rows);
+  }
+  console.error(log.split('\n').filter(line => /stale daemon|child exited|shell_pty_input rejected|agent_runtime_transition|runtime command stop_agent/.test(line)).slice(-15).join('\n'));
   throw err;
 } finally {
-  if (instance) await api('/agent-instances/' + instance.agent_instance_id + '/stop', 'POST', {}).catch(() => {});
+  for (const row of [instance, coordinator]) {
+    if (row) await api('/agent-instances/' + row.agent_instance_id + '/stop', 'POST', {}).catch(() => {});
+  }
   for (const kind of ['bridge', 'hub']) await launch(kind, 'stop').catch(() => {});
   if (socket) await exec(oldHost, ['--socket', socket, 'stop'], { env, timeout: 5000 }).catch(() => {});
   await fs.rm(root, { recursive: true, force: true });

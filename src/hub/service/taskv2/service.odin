@@ -184,7 +184,7 @@ Effects :: struct {
  tickets: [dynamic]^agent.Start_Ticket,
 	// wake runs/stops keyed by bridge id (see wake.odin, M1).
 	runs:        map[string][dynamic]Lease_Wake,
-	stops:       map[string][dynamic]string,
+	stops:       map[string][dynamic]Lease_Stop,
 	// resource_changed publishes: (owner, resource, id, change)
 	publishes:   [dynamic]Publish_Effect,
 	// chains whose task set changed terminal-ness (→ on_tasks_changed).
@@ -294,7 +294,7 @@ Uow :: struct {
 begin_uow :: proc(svc: ^Service) -> (Uow, bool, domain.Domain_Error) {
 	u := Uow{}
 	u.effects.runs = make(map[string][dynamic]Lease_Wake)
-	u.effects.stops = make(map[string][dynamic]string)
+	u.effects.stops = make(map[string][dynamic]Lease_Stop)
 	u.effects.publishes = make([dynamic]Publish_Effect)
 	u.effects.changed_chains = make([dynamic]Changed_Chain)
 	u.effects.reservations = make([dynamic]Jit_Reservation)
@@ -380,7 +380,7 @@ move_effects :: proc(dst, src: ^Effects) {
 			// savepoint boundary: a released old lease may have queued a stop.
 			stops := dst.stops[key]
 			for i := len(stops) - 1; i >= 0; i -= 1 {
-				if stops[i] == entry.agent_instance_id do ordered_remove(&stops, i)
+				if stops[i].instance_id == entry.agent_instance_id do ordered_remove(&stops, i)
 			}
 			dst.stops[key] = stops
 		}
@@ -391,8 +391,8 @@ move_effects :: proc(dst, src: ^Effects) {
 		current := dst.stops[key]
 		for entry in entries {
 			already_present := false
-			for run in dst.runs[key] do if run.agent_instance_id == entry { already_present = true; break }
-			for stop in current do if stop == entry { already_present = true; break }
+			for run in dst.runs[key] do if run.agent_instance_id == entry.instance_id { already_present = true; break }
+			for stop in current do if stop.instance_id == entry.instance_id { already_present = true; break }
 			if !already_present do append(&current, entry)
 		}
 		dst.stops[key] = current

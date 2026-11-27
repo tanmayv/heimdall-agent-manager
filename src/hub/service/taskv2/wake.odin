@@ -1,5 +1,6 @@
 package taskv2
 
+import "core:fmt"
 import "core:strings"
 import jsonx "odin_test:lib/jsonx"
 import domain "odin_test:hub/domain"
@@ -10,8 +11,8 @@ import project "odin_test:hub/service/project"
 
 
 // Wake delivery (plan §2.5 / §4). A UoW never talks to a bridge: it queues
-// run[]/stop[] entries on the Effects list and flush_wakes sends ONE start command
-// command per (bridge × chain) after COMMIT. For a LIVE holder the entry is a
+// start entries and generation-scoped stop intents on the Effects list.
+// flush_wakes sends them after COMMIT. For a LIVE holder the entry is a
 // nudge (deliver="nudge"): the bridge keeps the process, refreshes TASK.md and
 // tells the agent to run `lease next` (T8: no re-bootstrap per attempt or
 // review round). Otherwise the bridge re-bootstraps an instance it has a launch
@@ -150,18 +151,20 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
  remove_stop(u, key, entry.agent_instance_id)
 }
 
-// effect_stop queues `instance_id` on the stop[] list of its bridge × chain.
-// The coordinator is never stopped by the lease system (callers check; the
-// bridge checks again).
-effect_stop :: proc(u: ^Uow, bridge_id, chain_id, instance_id: string) {
+Lease_Stop :: struct { instance_id, reason: string, run_count: int }
+
+// effect_stop queues a stop for this exact instance generation.
+// Callers exclude coordinators before recording a stop intent.
+effect_stop :: proc(u: ^Uow, inst: domain.Agent_Instance, chain_id, reason: string) {
+	bridge_id, instance_id := inst.bridge_id, inst.agent_instance_id
 	if u == nil || bridge_id == "" || instance_id == "" do return
 	key := effects_key(&u.effects, bridge_id, chain_id)
 	if entries, has := u.effects.runs[key]; has {
 		for e in entries do if e.agent_instance_id == instance_id do return // being restarted in this UoW
 	}
 	stops := u.effects.stops[key]
-	for s in stops do if s == instance_id do return
-	append(&stops, instance_id)
+	for s in stops do if s.instance_id == instance_id do return
+	append(&stops, Lease_Stop{effect_owned_string(&u.effects, instance_id), reason, inst.run_count})
 	u.effects.stops[key] = stops
 }
 
@@ -169,7 +172,7 @@ effect_has_stop :: proc(u: ^Uow, bridge_id, chain_id, instance_id: string) -> bo
 	if u == nil || bridge_id == "" || instance_id == "" do return false
 	key := effects_key(&u.effects, bridge_id, chain_id)
 	if stops, has := u.effects.stops[key]; has {
-		for s in stops do if s == instance_id do return true
+		for s in stops do if s.instance_id == instance_id do return true
 	}
 	return false
 }
@@ -179,7 +182,7 @@ remove_stop :: proc(u: ^Uow, key, instance_id: string) {
 	stops, has := u.effects.stops[key]
 	if !has do return
 	for i := 0; i < len(stops); i += 1 {
-		if stops[i] == instance_id {
+		if stops[i].instance_id == instance_id {
 			ordered_remove(&stops, i)
 			i -= 1
 		}
@@ -202,8 +205,8 @@ Wake_Command :: struct {
 	body_json: string,
 }
 
-// flush_wakes sends one start command per (bridge × chain) for the
-// runs/stops a committed UoW decided on. Called after COMMIT, never under the
+// flush_wakes sends one start batch per (bridge × chain) and one confirmed
+// operation per stop a committed UoW decided on. Called after COMMIT, never under the
 // tx mutex.
 flush_wakes :: proc(svc: ^Service, e: ^Effects) {
  keys := make(map[string]bool, context.temp_allocator)
@@ -222,8 +225,17 @@ flush_wakes :: proc(svc: ^Service, e: ^Effects) {
    }
    append(&runs, wake.entry)
   }
-  stops := e.stops[key]
-  if len(runs) == 0 && len(stops) == 0 do continue
+  for stop in e.stops[key] {
+   command := agent.task_stop_command(bridge_id, stop.instance_id, stop.reason, stop.run_count)
+   if svc.wake_observer != nil do svc.wake_observer(svc.wake_observer_ctx, Wake_Command{bridge_id, chain_id, command.body_json})
+   if sent, err := project.bridge_command_send_runtime(svc.bridge_command_sink, command); !sent {
+    fmt.eprintfln("agent_stop_dispatch component=hub instance=%q bridge=%q op=%q reason=%q error=%q",
+     stop.instance_id, bridge_id, command.command_id, stop.reason, err.message)
+   }
+   delete(command.command_id)
+   delete(command.body_json)
+  }
+  if len(runs) == 0 do continue
   cmd_id := platform.generate_id(svc.ids, "cmd_")
   // Observe the exact selected wire form while retaining the caller allocator
   // for all sends and settlement side effects.
@@ -238,7 +250,7 @@ flush_wakes :: proc(svc: ^Service, e: ^Effects) {
    },
   }}
   dispatch.chain_id = chain_id
-  sent, err := agent.start_command_send(&sender, bridge_id, cmd_id, chain_id, runs[:], stops[:])
+  sent, err := agent.start_command_send(&sender, bridge_id, cmd_id, chain_id, runs[:], nil)
   for wake in wakes {
    if wake.ticket == nil || wake.failure != "" do continue
    agent.start_settle(svc.agent_service, wake.ticket, sent)
