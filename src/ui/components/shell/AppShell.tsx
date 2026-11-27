@@ -30,6 +30,7 @@ import {
   DEFAULT_ACTIONS,
   PageShell,
   StatusDot,
+  Spinner,
   mergePaletteActions,
 } from '@ui';
 import { useIsMobile, useViewport } from './responsive';
@@ -1945,9 +1946,9 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   if (path.startsWith('/streams/')) {
     const streamId = path.slice('/streams/'.length);
     return (
-      <main className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-auto bg-canvas text-primary">
-        <Suspense fallback={<span role="status">Loading stream…</span>}>
-          <StreamViewerPage key={streamId} streamId={streamId} />
+      <main className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-hidden bg-canvas text-primary">
+        <Suspense fallback={<div className="grid h-full place-items-center"><Spinner size="lg" label="Connecting" /></div>}>
+          <StreamViewerPage key={streamId} streamId={streamId} onBack={() => { window.location.hash = buildRouteHash('/home', ''); }} />
         </Suspense>
       </main>
     );

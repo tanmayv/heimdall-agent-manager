@@ -82,6 +82,8 @@ export type IconName =
   | 'rocket'
   | 'eye'
   | 'eye-off'
+  | 'fit-width'
+  | 'fit-height'
   | 'maximize'
   | 'minimize'
   | 'bot'
@@ -337,6 +339,8 @@ const PATHS: Record<IconName, ReactElement> = {
       <line x1={1} y1={1} x2={23} y2={23} />
     </g>
   ),
+  'fit-width': <path d="M3 5v14M21 5v14M6 12h12m-9-3-3 3 3 3m6-6 3 3-3 3" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
+  'fit-height': <path d="M5 3h14M5 21h14M12 6v12m-3-9 3-3 3 3m-6 6 3 3 3-3" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
   maximize: (
     <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
       <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
