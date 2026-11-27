@@ -231,15 +231,18 @@ r2_acp_host_install_command_per_os_and_package_manager :: proc(t: ^testing.T) {
     acp_host_has_hook = r2_host_has
     Case :: struct { os: string, host: []string, node, npm: string }
     cases := []Case{
-        {"linux", {"/etc/NIXOS", "nix", "apt-get"}, "nix-env -iA nixos.nodejs_22", "nix-env -iA nixos.nodejs_22"},
+        {"linux", {"/etc/NIXOS", "/nix/var/nix/profiles/per-user/root/channels/nixos", "nix", "apt-get"}, "nix-env -iA nixos.nodejs_22", "nix-env -iA nixos.nodejs_22"},
+        // Flake-only (no channels): nix-env -iA would fail.
+        {"linux", {"/etc/NIXOS", "nix"}, "nix profile install nixpkgs#nodejs_22", "nix profile install nixpkgs#nodejs_22"},
         {"linux", {"pacman"}, "sudo pacman -S --needed nodejs npm", "sudo pacman -S --needed npm"},
         {"linux", {"apk"}, "sudo apk add nodejs-current npm", "sudo apk add npm"},
-        {"linux", {"nix"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
+        {"linux", {"nix", "~/.nix-defexpr/channels/nixpkgs"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
+        {"linux", {"nix"}, "nix profile install nixpkgs#nodejs_22", "nix profile install nixpkgs#nodejs_22"},
         // Debian/Ubuntu/Fedora/openSUSE packages can be older than 22: no command.
         {"linux", {"apt-get"}, "", ""},
         {"linux", {"dnf"}, "", ""},
         {"linux", {"zypper"}, "", ""},
-        {"linux", {"apt-get", "nix"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
+        {"linux", {"apt-get", "nix"}, "nix profile install nixpkgs#nodejs_22", "nix profile install nixpkgs#nodejs_22"},
         // node@22 is keg-only (not on PATH); `node` is current and links.
         {"darwin", {"brew", "apt-get"}, "brew install node", "brew install node"},
         {"darwin", {"port"}, "sudo port install nodejs22 npm10", "sudo port install npm10"},
@@ -257,7 +260,7 @@ r2_acp_host_install_command_per_os_and_package_manager :: proc(t: ^testing.T) {
     // The major version comes from the descriptor, never a constant.
     r2_host = {"/etc/NIXOS"}
     command, note := acp_host_install_command(.Node, 24, "linux")
-    testing.expect(t, command == "nix-env -iA nixos.nodejs_24" && note == "or add nodejs_24 to environment.systemPackages and run nixos-rebuild switch", note)
+    testing.expect(t, command == "nix profile install nixpkgs#nodejs_24" && note == "or add nodejs_24 to environment.systemPackages and run nixos-rebuild switch", note)
     when ODIN_OS == .Linux {
         // A too-old distribution package points at nodejs.org with the reason.
         r2_host = {"apt-get"}

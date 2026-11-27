@@ -17,7 +17,9 @@ ACP_Host_Tool :: enum { Node, Npm }
 // nodejs.org instead of a command that leaves them stuck. note adds context.
 ACP_Host_Installer :: struct {
     os: string,     // lowercased ODIN_OS this row applies to
-    detect: string, // an absolute marker path, or an executable looked up on PATH
+    // Each of detect and also (when set) is an absolute or ~/ marker path, or
+    // an executable looked up on PATH; both must be present.
+    detect, also: string,
     node, npm, note: string,
 }
 
@@ -25,11 +27,15 @@ ACP_Host_Installer :: struct {
 // managers. A matching row without a command keeps looking (e.g. nix on a
 // Debian host) and contributes its note to the nodejs.org fallback.
 ACP_HOST_INSTALLERS := [?]ACP_Host_Installer{
-    {os = "linux", detect = "/etc/NIXOS", node = "nix-env -iA nixos.nodejs_{N}", npm = "nix-env -iA nixos.nodejs_{N}",
+    // nix-env -iA needs a channel; flake-only installs (no channels) use nix profile.
+    {os = "linux", detect = "/etc/NIXOS", also = "/nix/var/nix/profiles/per-user/root/channels/nixos", node = "nix-env -iA nixos.nodejs_{N}", npm = "nix-env -iA nixos.nodejs_{N}",
+        note = "or add nodejs_{N} to environment.systemPackages and run nixos-rebuild switch"},
+    {os = "linux", detect = "/etc/NIXOS", node = "nix profile install nixpkgs#nodejs_{N}", npm = "nix profile install nixpkgs#nodejs_{N}",
         note = "or add nodejs_{N} to environment.systemPackages and run nixos-rebuild switch"},
     {os = "linux", detect = "pacman", node = "sudo pacman -S --needed nodejs npm", npm = "sudo pacman -S --needed npm"},
     {os = "linux", detect = "apk", node = "sudo apk add nodejs-current npm", npm = "sudo apk add npm"},
-    {os = "linux", detect = "nix", node = "nix-env -iA nixpkgs.nodejs_{N}", npm = "nix-env -iA nixpkgs.nodejs_{N}"},
+    {os = "linux", detect = "nix", also = "~/.nix-defexpr/channels/nixpkgs", node = "nix-env -iA nixpkgs.nodejs_{N}", npm = "nix-env -iA nixpkgs.nodejs_{N}"},
+    {os = "linux", detect = "nix", node = "nix profile install nixpkgs#nodejs_{N}", npm = "nix profile install nixpkgs#nodejs_{N}"},
     {os = "linux", detect = "apt-get", note = "the apt nodejs package can be older than Node.js {N}; use the NodeSource or official packages"},
     {os = "linux", detect = "dnf", note = "the dnf nodejs package can be older than Node.js {N}; use the official packages"},
     {os = "linux", detect = "zypper", note = "the zypper nodejs package can be older than Node.js {N}; use the official packages"},
@@ -44,6 +50,10 @@ ACP_NODE_DOWNLOAD_URL :: "https://nodejs.org/en/download"
 acp_host_has_hook: proc(detect: string) -> bool = acp_host_has
 
 acp_host_has :: proc(detect: string) -> bool {
+    if strings.has_prefix(detect, "~/") {
+        home := os.get_env("HOME", context.temp_allocator)
+        return home != "" && os.exists(strings.concatenate({home, detect[1:]}, context.temp_allocator))
+    }
     if strings.has_prefix(detect, "/") do return os.exists(detect)
     env, _ := os.environ(context.temp_allocator)
     path := profile_resolve_binary(detect, env)
@@ -82,7 +92,7 @@ acp_host_install_command :: proc(tool: ACP_Host_Tool, node_min_major: int, host_
     if host_os == "" do host_os = strings.to_lower(fmt.tprintf("%v", ODIN_OS))
     major := fmt.tprintf("%d", node_min_major)
     for row in ACP_HOST_INSTALLERS {
-        if row.os != host_os || !acp_host_has_hook(row.detect) do continue
+        if row.os != host_os || !acp_host_has_hook(row.detect) || row.also != "" && !acp_host_has_hook(row.also) do continue
         if note == "" do note, _ = strings.replace_all(row.note, "{N}", major)
         template := row.node if tool == .Node else row.npm
         if template == "" do continue
