@@ -16,6 +16,14 @@ import lightLogo from '../../../../assets/brand/logos/ninjy-icon-light-gold.png'
 const path = '/api/v1/secure-forms';
 const blocked = 'The request could not be verified. No fields are available.';
 
+class SecureFormHttpError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super('Secure form request failed');
+    this.status = status;
+  }
+}
+
 async function request<T>(suffix: string, owner: string, signal: AbortSignal, body?: unknown): Promise<T> {
   const res = await fetch(withApiBase(path + suffix), {
     signal, cache: 'no-store', credentials: 'same-origin', mode: 'same-origin', redirect: 'error',
@@ -24,7 +32,7 @@ async function request<T>(suffix: string, owner: string, signal: AbortSignal, bo
       : { [EXPECTED_USER_HEADER]: owner, 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  if (!res.ok) throw new Error('Secure form request failed');
+  if (!res.ok) throw new SecureFormHttpError(res.status);
   const result = await res.json();
   return result.data;
 }
@@ -354,4 +362,104 @@ function SecureFormsForOwner({ conversation, owner, decisions }: { conversation:
       }}>Check requests again</Button>
     </Alert>}
   </div>;
+}
+
+
+export function SecureFormLinkPage({ requestId }: { requestId: string }) {
+  const owner = useSelector((state: ReturnType<typeof store.getState>) => state.deviceVault.userId);
+  const stale = useSelector((state: ReturnType<typeof store.getState>) => state.deviceVault.staleHead);
+  const vault = useSyncExternalStore(subscribeKeyringSession, keyringGeneration);
+  return <div className="mx-auto grid w-full max-w-xl gap-4 p-4 sm:p-6">
+    <Text as="h1" role="title">Secure request</Text>
+    {!secureFormId.test(requestId) ? <Alert title="Secure request not found">Check the link or ask the agent for a new request.</Alert>
+      : !owner ? <Alert tone="warning" title="Sign-in required">Sign in to the owner’s Hub account.</Alert>
+      : stale || !getKeyringSession() ? <Alert tone="warning" title="Vault unavailable">Unlock your vault and verify your device to open this request.</Alert>
+      : <LinkedSecureForm key={owner + ':' + requestId + ':' + vault} owner={owner} id={requestId} />}
+  </div>;
+}
+
+function LinkedSecureForm({ owner, id }: { owner: string; id: string }) {
+  const [card, setCard] = useState<Card | null>(null);
+  const [notice, setNotice] = useState('');
+  const [revision, setRevision] = useState(0);
+  const controller = useRef<AbortController | null>(null);
+  const active = useRef<Card | null>(null);
+  const decided = useRef(new Set<string>());
+
+  function update(next: Card) {
+    if (active.current && stateOrder[active.current.status.state] > stateOrder[next.status.state]) return;
+    active.current = next;
+    setCard(next);
+  }
+
+  function unavailable(error: unknown) {
+    active.current = null;
+    setCard(null);
+    const status = error instanceof SecureFormHttpError ? error.status : 0;
+    setNotice(status === 404 ? 'Secure request not found'
+      : status === 401 || status === 403 ? 'Secure request unavailable to this account'
+      : 'Could not load secure request');
+  }
+
+  useEffect(() => {
+    const abort = new AbortController();
+    controller.current = abort;
+    let timer: number | undefined;
+    async function refresh() {
+      try {
+        const view = await request<FormView>('/' + id, owner, abort.signal);
+        const conversation = view?.registration?.request?.conversation;
+        const verified = typeof conversation === 'string' && conversation
+          ? (await verifyViews([view], owner, conversation, id)).entries[id]
+          : undefined;
+        if (abort.signal.aborted) return;
+        if (!verified || (active.current && active.current.form.request.generation !== verified.form.request.generation)) {
+          active.current = null;
+          setCard(null);
+          setNotice('Unverified secure request');
+          return;
+        }
+        setNotice('');
+        update(verified);
+        if (active.current?.status.state !== 'final') timer = window.setTimeout(refresh, 2000);
+      } catch (error) {
+        if (!abort.signal.aborted) unavailable(error);
+      }
+    }
+    void refresh();
+    return () => {
+      abort.abort();
+      window.clearTimeout(timer);
+    };
+  }, [owner, id, revision]);
+
+  async function decide(requestId: string, body: unknown, action: 'submit' | 'decline') {
+    const signal = controller.current?.signal;
+    const current = active.current;
+    if (!signal || signal.aborted || !current || current.status.state !== 'pending'
+      || requestId !== id || !getKeyringSession()) throw new Error('Form no longer active');
+    try {
+      const status = await request<FormStatus>('/' + id + '/' + action, owner, signal, body);
+      if (!statusMatches(status, current.form)) throw new Error('Unexpected form status');
+      if (!signal.aborted && active.current) update({ ...current, status });
+    } catch (error) {
+      if (!signal.aborted && error instanceof SecureFormHttpError && [401, 403, 404].includes(error.status)) {
+        controller.current?.abort();
+        unavailable(error);
+      }
+      throw error;
+    }
+  }
+
+  if (notice) return <Alert tone="warning" title={notice}>
+    {notice === 'Unverified secure request' ? blocked
+      : notice === 'Secure request not found' ? 'This link may be old or belong to another account.'
+      : notice === 'Secure request unavailable to this account' ? 'Sign in to the owner’s Hub account.'
+      : <Button type="button" variant="secondary" size="sm" onClick={() => {
+        setNotice('');
+        setRevision((value) => value + 1);
+      }}>Try again</Button>}
+  </Alert>;
+  if (!card) return <div role="status" className="flex items-center gap-2"><Spinner /><Text role="body-sm">Checking secure request</Text></div>;
+  return <SecureFormCard card={card} decide={decide} decided={decided} />;
 }

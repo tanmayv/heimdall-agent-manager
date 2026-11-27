@@ -23,7 +23,7 @@ Secure_Form_CLI_Request :: struct {
 }
 @(private)
 Secure_Form_CLI_Reply :: struct {
-	request_id, poll_token: string,
+	request_id, poll_token, owner_link: string,
 	attempt: u64,
 	terminal: bool,
 	code: int,
@@ -187,6 +187,18 @@ ctl_secure_form_print_stream :: proc(file: ^os.File, encoded: string, truncated:
 }
 
 @(private)
+ctl_secure_form_owner_link_line :: proc(reply: Secure_Form_CLI_Reply, expected: string) -> string {
+	if reply.request_id != expected || len(expected) != 64 do return ""
+	for c in expected { if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) do return "" }
+	suffix := strings.concatenate({"/#/secure-forms/", expected}, context.temp_allocator)
+	if !strings.has_suffix(reply.owner_link, suffix) do return ""
+	base := reply.owner_link[:len(reply.owner_link)-len(suffix)]
+	if !strings.has_prefix(base, "https://") && !strings.has_prefix(base, "http://") do return ""
+	if strings.contains_any(base, "?#@ \t\r\n") do return ""
+	return fmt.tprintf("secure-form owner link: %s", reply.owner_link)
+}
+
+@(private)
 ctl_secure_form :: proc(endpoint, token, verb: string, args: []string) {
 	opts, schema_path, parsed := ctl_secure_form_args(verb, args[1:])
 	if !parsed || token == "" do os.exit(int(contracts.Secure_Form_Exit.Unauthorized))
@@ -222,6 +234,11 @@ ctl_secure_form :: proc(endpoint, token, verb: string, args: []string) {
 		os.exit(reply.code)
 	}
 	fmt.eprintfln("secure-form request %s, attempt %d", reply.request_id, reply.attempt)
+	link_printed := false
+	if line := ctl_secure_form_owner_link_line(reply, reply.request_id); line != "" {
+		fmt.eprintln(line)
+		link_printed = true
+	}
 	poll := Secure_Form_CLI_Request{request_id = strings.clone(reply.request_id), poll_token = strings.clone(reply.poll_token), attempt = reply.attempt}
 	initial_poll := true
 	for {
@@ -233,6 +250,12 @@ ctl_secure_form :: proc(endpoint, token, verb: string, args: []string) {
 		initial_poll = false
 		reply, transport_code = ctl_secure_form_exchange(endpoint, token, "agent.secure_form.poll", poll)
 		if transport_code != .Success do os.exit(int(contracts.Secure_Form_Exit.Unknown))
+		if !link_printed {
+			if line := ctl_secure_form_owner_link_line(reply, poll.request_id); line != "" {
+				fmt.eprintln(line)
+				link_printed = true
+			}
+		}
 		if !reply.terminal do continue
 		if reply.code != 0 && (reply.code < 20 || reply.code > 29) do os.exit(int(contracts.Secure_Form_Exit.Unknown))
 		ctl_secure_form_print_stream(os.stdout, reply.stdout_b64, reply.stdout_truncated)

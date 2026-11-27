@@ -1049,10 +1049,19 @@ secure_form_discard_output :: proc(w: ^Secure_Form_Live) {
 }
 
 @(private)
+secure_form_owner_link :: proc(hub_url: string, waiter: Secure_Form_Waiter_State) -> string {
+	if !waiter.registered do return ""
+	base, ok := bridge_hub_canonical_base(hub_url, context.temp_allocator)
+	if !ok do return ""
+	return strings.concatenate({base, "/#/secure-forms/", waiter.binding.request_id}, context.temp_allocator)
+}
+
+@(private)
 secure_form_local_report :: proc(id: string, w: ^Secure_Form_Live, include_output: bool) -> string {
 	a := w.waiter.attempt
+	link := secure_form_owner_link(bridge_config.daemon_url, w.waiter)
 	reply := struct {
-		request_id, poll_token: string,
+		request_id, poll_token, owner_link: string,
 		attempt: u64,
 		terminal: bool,
 		code: int,
@@ -1061,7 +1070,7 @@ secure_form_local_report :: proc(id: string, w: ^Secure_Form_Live, include_outpu
 		stdout_truncated, stderr_truncated: bool,
 	}{
 		request_id = w.waiter.binding.request_id, poll_token = w.token, attempt = a.number,
-		terminal = a.terminal, code = int(a.code),
+		owner_link = link, terminal = a.terminal, code = int(a.code),
 	}
 	if include_output && a.terminal {
 		reply.exit_code = w.result.exit_code
