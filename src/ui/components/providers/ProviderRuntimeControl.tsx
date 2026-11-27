@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Text } from '@ui';
 import { apiErrorText } from '../../api/cookieFetch';
 import { providerSetupApi, type BridgeProviderStatus, type ProviderSetupResponse } from './providerSetupApi';
-import { acpAdapterSummary, acpDisabledReason, acpInstallTerminal, acpSystemRuntime, latestAcpInstall, type AcpInstallCommand, type RuntimeTransport } from './providerRuntime';
+import { ACP_NOT_CHECKED, acpAdapterSummary, acpDisabledReason, acpInstallTerminal, acpSystemRuntime, latestAcpInstall, type AcpInstallCommand, type RuntimeTransport } from './providerRuntime';
 
 export const ACP_INSTALL_WAIT_MS = 150_000;
 
@@ -63,7 +63,9 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
     setBusy(true);
     setError('');
     try {
-      onChangeRef.current(await providerSetupApi.get(bridgeId, true, true));
+      // Re-detect on the bridge (Node.js, npm, CLI version) rather than re-read a
+      // possibly stale row, so a newly installed tool shows up without a restart.
+      onChangeRef.current(await providerSetupApi.redetect(setup, provider));
       // Checking is an explicit retry of the bounded wait, not another install.
       setTimedOut(false);
     } catch (e) { setError(apiErrorText(e)); }
@@ -96,8 +98,10 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
 
   const singleReason = status.transports.length === 1 ? `This provider supports only ${status.transports[0].toUpperCase()}.` : '';
   const reason = disabledReason || singleReason;
-  const acpReason = acpDisabledReason(setup.acp_runtime_supported, status.acp_adapter);
-  const installable = status.transports.includes('acp') && (!status.acp_adapter || ['missing', 'outdated', 'error', 'not_checked'].includes(status.acp_adapter.state));
+  // The Hub's verdict decides; the bridge's report only supplies display text.
+  const verdict = status.acp_availability || ACP_NOT_CHECKED;
+  const acpReason = acpDisabledReason(verdict, status.acp_adapter);
+  const installable = status.transports.includes('acp') && (verdict.fix === 'install_adapter' || verdict.fix === 'check_now');
   const failed = command?.status === 'failed' || command?.status === 'cancelled';
   const system = provider === 'opencode' || acpSystemRuntime(status.acp_adapter);
   return (
@@ -121,7 +125,7 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
         {installable ? <Button size="sm" variant="secondary" data-debug-id={`providers-acp-install-${provider}`}
           title={disabledReason || acpReason || undefined}
           disabled={Boolean(disabledReason) || !setup.acp_runtime_supported || busy || active}
-          onClick={() => void install()}>{system ? 'Re-check' : `Install ${status.acp_adapter?.runtime_kind === 'native' ? 'runtime' : 'adapter'}`}</Button> : null}
+          onClick={() => void install()}>{system ? 'Re-check' : 'Install adapter'}</Button> : null}
         {status.transports.includes('acp') ? <Button size="sm" variant="ghost" data-debug-id={`providers-acp-check-${provider}`}
           disabled={busy} onClick={() => void checkStatus()}>Check status</Button> : null}
       </div>
@@ -130,10 +134,12 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
       {status.transports.includes('acp') ? <div data-debug-id={`providers-acp-status-${provider}`} role="status" className="space-y-1 break-words text-xs text-muted">
         <p>{acpAdapterSummary(status.acp_adapter)}</p>
         {status.acp_adapter?.error ? <p className="text-danger">{status.acp_adapter.error}</p> : null}
+        {status.acp_adapter?.install_command ? <p data-debug-id={`providers-acp-install-command-${provider}`}>Run on the bridge host: <code className="break-all">{status.acp_adapter.install_command}</code></p> : null}
+        {status.acp_adapter?.diagnostic ? <pre data-debug-id={`providers-acp-diagnostic-${provider}`} className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-surface-raised p-2 text-xs">{status.acp_adapter.diagnostic}</pre> : null}
         {command ? <p className={failed ? 'text-danger' : ''}>{system ? 'Check' : 'Installation'}: {command.status}{command.message ? ` · ${command.message}` : ''}</p> : null}
         {active && !timedOut ? <progress aria-label={system ? 'ACP CLI check progress' : 'ACP adapter installation progress'} max={100} value={Math.max(0, Math.min(100, command?.progress_percent || 0))} /> : null}
         {timedOut ? <p role="alert">{system ? 'The CLI check' : 'Installation status'} did not finish within 150 seconds. Use Check status to refresh; the bridge may still be {system ? 'checking' : 'installing'}.</p> : null}
-        {command?.status === 'succeeded' && status.effective_transport !== 'acp' && !system ? <p>{status.acp_adapter?.runtime_kind === 'native' ? 'Runtime' : 'Adapter'} installed. Select ACP to use it on the next launch.</p> : null}
+        {command?.status === 'succeeded' && status.effective_transport !== 'acp' && !system ? <p>Adapter installed. Select ACP to use it on the next launch.</p> : null}
       </div> : null}
       {error ? <p role="alert" className="break-words text-xs text-danger">{error}</p> : null}
     </div>

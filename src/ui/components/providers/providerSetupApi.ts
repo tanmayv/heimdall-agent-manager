@@ -51,6 +51,14 @@ export const providerSetupApi = {
     return { ...current, discovery: { state: 'complete', requested_at: requestedAt, completed_at: new Date().toISOString() },
       providers: (Array.isArray(status?.providers) ? status.providers : []).filter((p: any) => !p.profile_id || p.profile_id === p.provider) };
   },
+  /**
+   * Explicit re-detection of one provider on the bridge (binary, version, Node.js,
+   * npm, ACP runtime), then a fresh read. Offline bridges can only be re-read.
+   */
+  async redetect(current: ProviderSetupResponse, provider: string): Promise<ProviderSetupResponse> {
+    if (current.bridge.status === 'online') await discoverBridgeProviders(current.bridge.bridge_id, 'providers', true, [provider]);
+    return providerSetupApi.get(current.bridge.bridge_id, true, true);
+  },
   /** Explicit second stage. Hub derives the present + enabled provider filter. */
   async refreshModels(current: ProviderSetupResponse): Promise<ProviderSetupResponse> {
     const status = await discoverBridgeProviders(current.bridge.bridge_id, 'models');
@@ -90,8 +98,8 @@ export async function refreshBridgeProviderCatalog(bridgeId: string): Promise<an
 }
 
 /** Explicit discovery stage; reads never start probes. */
-export async function discoverBridgeProviders(bridgeId: string, stage: 'providers' | 'models', invalidate = true) {
-  const raw = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/discover`, 'POST', { stage });
+export async function discoverBridgeProviders(bridgeId: string, stage: 'providers' | 'models', invalidate = true, providers?: string[]) {
+  const raw = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/discover`, 'POST', providers?.length ? { stage, providers } : { stage });
   if (invalidate) invalidateBridgeProviderStatus(bridgeId);
   return normalizeProviderStatus(raw, bridgeId);
 }

@@ -128,11 +128,11 @@ export type BridgeCapability = Partial<ProviderRuntimeFields> & {
  * re-derive it from acp_runtime_supported / acp_adapter.
  */
 export type AcpAvailabilityReason = 'ready' | 'no_recipe' | 'unsupported_bridge' | 'adapter_missing' | 'adapter_outdated'
-  | 'adapter_missing_node' | 'adapter_error' | 'installing' | 'not_checked';
+  | 'adapter_missing_node' | 'adapter_missing_npm' | 'adapter_error' | 'installing' | 'not_checked';
 export type AcpAvailabilityFix = 'update_bridge' | 'install_adapter' | 'check_now';
 export interface AcpAvailability { available: boolean; reason: AcpAvailabilityReason; fix: AcpAvailabilityFix | null }
 const acpAvailabilityReasons = new Set<string>(['ready', 'no_recipe', 'unsupported_bridge', 'adapter_missing', 'adapter_outdated',
-  'adapter_missing_node', 'adapter_error', 'installing', 'not_checked']);
+  'adapter_missing_node', 'adapter_missing_npm', 'adapter_error', 'installing', 'not_checked']);
 const acpAvailabilityFixes = new Set<string>(['update_bridge', 'install_adapter', 'check_now']);
 /** null when the Hub predates the verdict or sends an unknown reason. */
 export function normalizeAcpAvailability(raw: any): AcpAvailability | null {

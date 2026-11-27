@@ -12,10 +12,20 @@ const { default: ProviderRuntimeControl, ACP_INSTALL_WAIT_MS } = await import('.
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 
 const adapter = { installed: true, version: '0.108.0', node_version: 'v22.0.0', state: 'ready', error: null, checked_at: '2026-11-18T00:00:00Z' };
-const row = (patch = {}): any => ({ provider: 'claude', profile_id: 'claude', display_name: 'Claude', enabled: true,
-  state: 'present', catalog_state: 'active', models: [], ...normalizeProviderRuntime({
-    transports: ['pty', 'acp'], default_transport: 'pty', effective_transport: 'pty', acp_adapter: adapter,
-  }), ...patch });
+const VERDICTS: Record<string, [string, string | null]> = { ready: ['ready', null], installing: ['installing', null],
+  missing: ['adapter_missing', 'install_adapter'], outdated: ['adapter_outdated', 'install_adapter'], error: ['adapter_error', 'install_adapter'],
+  missing_node: ['adapter_missing_node', 'install_adapter'], missing_npm: ['adapter_missing_npm', 'install_adapter'] };
+/** Test stand-in for the Hub's classify_acp_availability verdict on an ACP-capable bridge. */
+const hubVerdict = (a: any): any => { const [reason, fix] = VERDICTS[a?.state] || ['not_checked', 'check_now']; return { available: reason === 'ready', reason, fix }; };
+const UNSUPPORTED_BRIDGE = { available: false, reason: 'unsupported_bridge', fix: 'update_bridge' } as const;
+const row = (patch: any = {}): any => {
+  const value: any = { provider: 'claude', profile_id: 'claude', display_name: 'Claude', enabled: true,
+    state: 'present', catalog_state: 'active', models: [], ...normalizeProviderRuntime({
+      transports: ['pty', 'acp'], default_transport: 'pty', effective_transport: 'pty', acp_adapter: adapter,
+    }), ...patch };
+  if (!('acp_availability' in patch)) value.acp_availability = hubVerdict(value.acp_adapter);
+  return value;
+};
 const setup = (patch = {}): any => ({ bridge: { bridge_id: 'b', status: 'online' }, discovery: {}, providers: [row()], acp_runtime_supported: true, extension_commands: [], ...patch });
 const response = (data: any) => new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
@@ -25,18 +35,64 @@ test('runtime normalization is PTY-only for old/invalid fields and preserves the
   assert.deepEqual(normalizeProviderRuntime({ transports: ['future'], effective_transport: 'acp', acp_adapter: [] }), normalizeProviderRuntime({}));
   assert.equal(normalizeProviderRuntime({ transports: ['pty'], transport: 'acp' }).transport, null);
   assert.deepEqual(normalizeProviderRuntime(row()).acp_adapter, adapter);
-  assert.match(acpDisabledReason(false, adapter as any), /Update this bridge/);
-  assert.match(acpDisabledReason(true, { ...adapter, state: 'missing_node' } as any), /Node 22/);
+  assert.match(acpDisabledReason(UNSUPPORTED_BRIDGE, adapter as any), /Update this bridge/);
+  // The verdict decides; the text is the bridge's own message with its install command.
+  const node = { ...adapter, state: 'missing_node', install_command: 'sudo dnf install -y nodejs npm',
+    error: 'Node.js 22 or newer is required on the bridge host to run the Claude ACP adapter; install it with: sudo dnf install -y nodejs npm' } as any;
+  assert.equal(acpDisabledReason(hubVerdict(node), node), node.error);
+  assert.equal(normalizeProviderRuntime({ acp_adapter: node }).acp_adapter?.install_command, 'sudo dnf install -y nodejs npm');
+  assert.equal(acpDisabledReason(null, node), '', 'no verdict yet reads as not checked');
+  assert.equal(acpDisabledReason(hubVerdict(adapter), { ...adapter, state: 'error' } as any), '', 'the Hub verdict wins over the raw state');
 });
 
-test('native runtime status keeps its provider identity and uses native labels', () => {
-  const native = normalizeProviderRuntime({ acp_adapter: { ...adapter, provider: 'copilot', runtime_kind: 'native' } }).acp_adapter;
-  assert.equal(native?.provider, 'copilot');
-  assert.equal(native?.runtime_kind, 'native');
-  assert.match(acpAdapterSummary(native), /^ACP native runtime:/);
-  assert.match(acpDisabledReason(true, { ...native!, state: 'installing' }), /runtime installation/);
-  assert.match(acpDisabledReason(true, { ...native!, state: 'error', error: 'acp_adapter_unsupported_platform' }), /not supported on this platform/);
+test('adapter runtime status uses adapter labels; the removed native kind is dropped', () => {
+  const copilot = normalizeProviderRuntime({ acp_adapter: { ...adapter, provider: 'copilot', runtime_kind: 'native' } }).acp_adapter;
+  assert.equal(copilot?.provider, 'copilot');
+  assert.equal(copilot?.runtime_kind, undefined);
+  assert.match(acpAdapterSummary(copilot), /^ACP adapter:/);
+  assert.match(acpDisabledReason(hubVerdict({ state: 'installing' }), { ...copilot!, state: 'installing' }), /adapter installation/);
+  assert.match(acpDisabledReason(hubVerdict({ state: 'error' }), { ...copilot!, state: 'error', error: 'acp_adapter_unsupported_platform' }), /not supported on this platform/);
   assert.equal(normalizeProviderRuntime({ acp_adapter: { ...adapter, runtime_kind: 'unknown' } }).acp_adapter?.runtime_kind, undefined);
+});
+
+test('missing npm and a failed npm install show the bridge command and redacted npm output', async () => {
+  const npm = { ...adapter, installed: false, version: null, state: 'missing_npm', install_command: 'sudo apt-get install -y npm',
+    error: 'npm is required on the bridge host to install the Claude ACP adapter; install it with: sudo apt-get install -y npm' };
+  const failed = { ...adapter, installed: false, version: null, state: 'error', error: 'acp_adapter_install_failed',
+    diagnostic: 'npm error code E404\nnpm error 404 Not Found - GET https://***@registry.npmjs.org/x' };
+  const h = await browser();
+  try {
+    let status = row({ acp_adapter: normalizeProviderRuntime({ acp_adapter: npm }).acp_adapter });
+    assert.equal(status.acp_availability.reason, 'adapter_missing_npm');
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-command-claude"] code')?.textContent, 'sudo apt-get install -y npm');
+    assert.equal((h.doc.querySelector('option[value="acp"]') as HTMLOptionElement).disabled, true);
+    assert.match(h.doc.body.textContent || '', /npm is required on the bridge host/);
+    assert.ok(h.doc.querySelector('[data-debug-id="providers-acp-install-claude"]'), 'Install adapter re-detects after the user installs npm');
+    status = row({ acp_adapter: normalizeProviderRuntime({ acp_adapter: failed }).acp_adapter });
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-diagnostic-claude"]')?.textContent, failed.diagnostic);
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-command-claude"]'), null);
+  } finally { await h.cleanup(); }
+});
+
+test('Check status re-detects the one provider on the bridge before reading status', async () => {
+  const previous = globalThis.fetch;
+  const calls: any[] = [];
+  globalThis.fetch = async (input: any, init: any = {}) => {
+    const path = new URL(String(input), 'http://localhost').pathname;
+    calls.push({ path, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : undefined });
+    if (path.endsWith('/bridges')) return response({ bridges: [{ bridge_id: 'b', status: 'online' }] });
+    return response({ acp_runtime_supported: true, providers: [row()] });
+  };
+  try {
+    await providerSetupApi.redetect(setup(), 'claude');
+    assert.deepEqual(calls.find((c) => c.method === 'POST'), { path: '/api/v1/bridges/b/providers/discover', method: 'POST', body: { stage: 'providers', providers: ['claude'] } });
+    assert.ok(calls.some((c) => c.path.endsWith('/provider-status')));
+    calls.length = 0;
+    await providerSetupApi.redetect(setup({ bridge: { bridge_id: 'b', status: 'offline' } }), 'claude');
+    assert.equal(calls.filter((c) => c.method === 'POST').length, 0, 'an offline bridge is only re-read');
+  } finally { globalThis.fetch = previous; }
 });
 
 test('ACP auth renders descriptor guidance and selected profile without a fixed provider command', () => {
@@ -160,7 +216,7 @@ test('Runtime control saves ACP, resets null, and explains provider/host restric
     await h.render(React.createElement(ProviderRuntimeControl, { setup: setup(), status: row({ transports: ['pty'] }), onChange() {} }));
     assert.equal(h.doc.querySelector('select')!.disabled, true);
     assert.match(h.doc.querySelector('select')!.title, /supports only PTY/);
-    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ acp_runtime_supported: false }), status: row(), onChange() {} }));
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ acp_runtime_supported: false }), status: row({ acp_availability: UNSUPPORTED_BRIDGE }), onChange() {} }));
     assert.equal((h.doc.querySelector('option[value="acp"]') as HTMLOptionElement).disabled, true);
     assert.match(h.doc.body.textContent || '', /Update this bridge/);
     assert.match(h.doc.body.textContent || '', /0\.108\.0.*v22\.0\.0/);
@@ -171,6 +227,9 @@ test('tracked installs stop waiting at 150 seconds and Check status recovers ter
   const h = await browser();
   const originalGet = providerSetupApi.get;
   const originalInstall = providerSetupApi.installAdapter;
+  const originalRedetect = providerSetupApi.redetect;
+  const redetected: string[] = [];
+  providerSetupApi.redetect = async (current, provider) => { redetected.push(provider); return providerSetupApi.get(current.bridge.bridge_id, true, true); };
   const originalTimeout = globalThis.setTimeout;
   const originalClear = globalThis.clearTimeout;
   const timers = new Map<any, { fn: () => void; ms: number }>();
@@ -203,13 +262,14 @@ test('tracked installs stop waiting at 150 seconds and Check status recovers ter
     completed = true;
     await h.click('providers-acp-check-claude');
     assert.equal(installs, 1);
+    assert.deepEqual(redetected, ['claude']);
     assert.match(h.doc.body.textContent || '', /Installation: succeeded/);
     assert.match(h.doc.body.textContent || '', /Select ACP/);
     assert.doesNotMatch(h.doc.body.textContent || '', /did not finish/);
   } finally {
     await h.cleanup();
     globalThis.setTimeout = originalTimeout; globalThis.clearTimeout = originalClear;
-    providerSetupApi.get = originalGet; providerSetupApi.installAdapter = originalInstall;
+    providerSetupApi.get = originalGet; providerSetupApi.installAdapter = originalInstall; providerSetupApi.redetect = originalRedetect;
   }
 });
 
@@ -338,10 +398,11 @@ test('detect-only system CLI status uses Re-check, never Node or install wording
   assert.equal(system.effective_transport, 'acp');
   assert.equal(system.acp_adapter?.runtime_kind, 'system');
   assert.equal(acpAdapterSummary(system.acp_adapter), 'ACP system CLI: outdated · Version: 3.4.0');
-  assert.match(acpDisabledReason(true, system.acp_adapter), /older than the minimum supported version 3\.5\.0/);
-  assert.match(acpDisabledReason(true, { ...system.acp_adapter!, state: 'missing', error: null }), /Install the CLI on the bridge host/);
-  assert.equal(acpDisabledReason(true, { ...system.acp_adapter!, state: 'ready', error: null }), '');
-  assert.doesNotMatch(acpDisabledReason(true, { ...system.acp_adapter!, state: 'missing_node', error: null }), /Node/);
+  const reason = (a: any) => acpDisabledReason(hubVerdict(a), a);
+  assert.match(reason(system.acp_adapter), /older than the minimum supported version 3\.5\.0/);
+  assert.match(reason({ ...system.acp_adapter!, state: 'missing', error: null }), /Install the CLI on the bridge host/);
+  assert.equal(reason({ ...system.acp_adapter!, state: 'ready', error: null }), '');
+  assert.doesNotMatch(reason({ ...system.acp_adapter!, state: 'missing_node', error: null }), /Node/);
   const h = await browser();
   try {
     const status = row({ provider: 'kiro', profile_id: 'kiro', display_name: 'Kiro', ...system });
@@ -404,7 +465,7 @@ test('Codex app-server is an opt-in system runtime with PTY reset and Re-check',
     assert.doesNotMatch(h.doc.body.textContent || '', /Node|Install adapter|Install runtime/);
     await act(async () => { (h.doc.querySelector('[data-debug-id="providers-acp-install-codex"]') as HTMLElement).click(); await tick(); });
     assert.deepEqual(calls, [['check', 'codex']]);
-    status = { ...status, acp_adapter: { ...status.acp_adapter, state: 'ready', error: null } };
+    status = { ...status, acp_adapter: { ...status.acp_adapter, state: 'ready', error: null }, acp_availability: hubVerdict({ state: 'ready' }) };
     providerSetupApi.setTransport = async (_setup, provider, transport) => {
       calls.push(['transport', provider, transport]);
       return setup({ providers: [{ ...status, transport, effective_transport: transport || 'pty' }] });

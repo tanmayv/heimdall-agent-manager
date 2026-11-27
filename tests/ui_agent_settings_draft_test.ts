@@ -126,12 +126,19 @@ test('ACP copy is mapped from acp_availability reason/fix only', async () => {
     kind: 'problem', text: 'dawnstar runs a bridge version without ACP support. Update it to the latest release.',
     action: { fix: 'update_bridge', label: 'Update bridge' },
   });
-  for (const reason of ['adapter_missing', 'adapter_outdated', 'adapter_missing_node', 'adapter_error']) {
+  for (const reason of ['adapter_missing', 'adapter_outdated', 'adapter_error']) {
     assert.deepEqual(v(reason, 'install_adapter'), {
       kind: 'problem', text: "The Claude Code ACP adapter isn't installed on dawnstar.",
       action: { fix: 'install_adapter', label: 'Install adapter' },
     }, reason);
   }
+  // A missing host prerequisite names the tool, not the adapter (G4).
+  assert.deepEqual(v('adapter_missing_node', 'install_adapter'), {
+    kind: 'problem', text: 'Node.js is missing or too old on dawnstar.', action: { fix: 'install_adapter', label: 'Install adapter' },
+  });
+  assert.deepEqual(v('adapter_missing_npm', 'install_adapter'), {
+    kind: 'problem', text: 'npm is missing on dawnstar.', action: { fix: 'install_adapter', label: 'Install adapter' },
+  });
   assert.deepEqual(v('installing', null), { kind: 'installing', text: 'Installing the ACP adapter on dawnstar…' });
   assert.deepEqual(v('not_checked', 'check_now'), {
     kind: 'problem', text: "ACP hasn't been checked on dawnstar.", action: { fix: 'check_now', label: 'Check now' }, titled: false,

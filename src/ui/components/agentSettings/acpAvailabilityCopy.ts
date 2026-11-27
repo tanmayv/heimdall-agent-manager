@@ -44,9 +44,12 @@ export function acpAvailabilityCopy(
       return { kind: 'problem', text: `${names.provider} has no ACP support yet. Use PTY.`, action };
     case 'unsupported_bridge':
       return { kind: 'problem', text: `${names.bridge} runs a bridge version without ACP support. Update it to the latest release.`, action };
+    case 'adapter_missing_node':
+      return { kind: 'problem', text: `Node.js is missing or too old on ${names.bridge}.`, action };
+    case 'adapter_missing_npm':
+      return { kind: 'problem', text: `npm is missing on ${names.bridge}.`, action };
     case 'adapter_missing':
     case 'adapter_outdated':
-    case 'adapter_missing_node':
     case 'adapter_error':
       return { kind: 'problem', text: `The ${names.provider} ACP adapter isn't installed on ${names.bridge}.`, action };
     case 'not_checked':

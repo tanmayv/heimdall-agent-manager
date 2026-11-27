@@ -23,7 +23,7 @@ const state = params.get('state') || 'running';
 const acpReason = params.get('acp') || 'ready';
 const panelFlag = params.get('flag') !== 'off';
 const ACP_FIX: Record<string, string | null> = { ready: null, no_recipe: null, unsupported_bridge: 'update_bridge', adapter_missing: 'install_adapter',
-  adapter_outdated: 'install_adapter', adapter_missing_node: 'install_adapter', adapter_error: 'install_adapter', installing: null, not_checked: 'check_now' };
+  adapter_outdated: 'install_adapter', adapter_missing_node: 'install_adapter', adapter_missing_npm: 'install_adapter', adapter_error: 'install_adapter', installing: null, not_checked: 'check_now' };
 const now = Date.now();
 const startedAt = new Date(now - (2 * 60 + 14) * 60000).toISOString();
 
