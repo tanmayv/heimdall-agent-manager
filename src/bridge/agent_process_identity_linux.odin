@@ -88,9 +88,11 @@ bridge_agent_process_find_by_instance :: proc(id: string) -> (found: bool, view:
 	for entry in entries {
 		pid, ok := strconv.parse_i64(entry.name)
 		if !ok || pid <= 0 || i32(pid) == self do continue
-		raw, err := os.read_entire_file(fmt.tprintf("/proc/%d/environ", pid), context.temp_allocator)
+		raw, err := os.read_entire_file(fmt.tprintf("/proc/%d/environ", pid), context.allocator)
 		if err != nil do continue
-		if !bridge_agent_environ_has(string(raw), needle) do continue
+		has := bridge_agent_environ_has(string(raw), needle)
+		delete(raw)
+		if !has do continue
 		v := bridge_agent_process_os_read(i32(pid))
 		if v.state == .Alive do return true, v, true
 	}

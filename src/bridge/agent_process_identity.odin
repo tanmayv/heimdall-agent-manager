@@ -22,18 +22,7 @@ bridge_agent_process_match :: proc(expected: Bridge_Agent_Process_Identity, view
 
 bridge_agent_process_after_roster_loss :: proc(id: string, run_count: int, reap: bool) -> (state: Bridge_Agent_Process_State, pid: i32, orphan_reaped: bool) {
 	identity := bridge_agent_previous_process(id, run_count)
-	if identity.pid <= 0 {
-		// No recorded identity (e.g. the instance was stopped cleanly or ran
-		// under an earlier Bridge build). Look for any process still carrying
-		// this instance id; none means nothing to verify or stop.
-		found, found_view, scanned := bridge_agent_process_find_by_instance(id)
-		if !scanned do return .Unknown, 0, false
-		if !found do return .Gone, 0, false
-		identity = found_view.identity
-		if !reap do return .Alive, identity.pid, false
-		if !bridge_agent_process_kill_orphan(identity) do return .Unknown, identity.pid, false
-		return .Gone, identity.pid, true
-	}
+	if identity.pid <= 0 do return .Unknown, 0, false
 	view := bridge_agent_process_os_read(identity.pid)
 	state = bridge_agent_process_match(identity, view)
 	if state != .Alive || !reap do return state, identity.pid, false
@@ -47,4 +36,16 @@ bridge_agent_roster_loss_confirmed :: proc(id: string, run: int, reap := false) 
 	if run <= 0 do return true
 	state, _, _ := bridge_agent_process_after_roster_loss(id, run, reap)
 	return state == .Gone
+}
+
+// Launch-path only: the complete roster omitted this instance. When the Bridge
+// has no recorded identity (clean stop, or launched by an earlier build), no
+// live process carrying the instance id means there is nothing to verify.
+// Reconcile and bot paths keep the stricter bridge_agent_roster_loss_confirmed.
+bridge_agent_launch_absent_confirmed :: proc(id: string, run: int, reap := false) -> bool {
+	if bridge_agent_roster_loss_confirmed(id, run, reap) do return true
+	if bridge_agent_previous_process(id, run).pid > 0 do return false
+	found, _, scanned := bridge_agent_process_find_by_instance(id)
+	// Never reap an unverified match: env-inheriting descendants may match.
+	return scanned && !found
 }

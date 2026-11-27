@@ -11,9 +11,9 @@ test_roster_loss_confirmed_for_stopped_instance_without_identity :: proc(t: ^tes
 	found, _, scanned := bridge_agent_process_find_by_instance(id)
 	testing.expect(t, scanned, "proc scan works")
 	testing.expect(t, !found, "no process carries the id")
-	testing.expect(t, bridge_agent_roster_loss_confirmed(id, 3), "stopped instance is startable")
-	state, _, _ := bridge_agent_process_after_roster_loss(id, 3, false)
-	testing.expect_value(t, state, Bridge_Agent_Process_State.Gone)
+	testing.expect(t, bridge_agent_launch_absent_confirmed(id, 3), "stopped instance is startable")
+	testing.expect(t, bridge_agent_launch_absent_confirmed(id, 3, reap = true), "manual start too")
+	testing.expect(t, !bridge_agent_roster_loss_confirmed(id, 3), "reconcile stays strict")
 }
 
 @(test)

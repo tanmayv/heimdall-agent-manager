@@ -2889,7 +2889,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 		child := bridge_instance_probe_from_roster(instance_id, roster)
 		pty_host_reply_delete(roster)
 		if child.state == "unknown" || (child.state == "absent" &&
-		   !bridge_agent_roster_loss_confirmed(instance_id, bridge_agent_instance_run_count(instance_id), reap = manual_start)) {
+		   !bridge_agent_launch_absent_confirmed(instance_id, bridge_agent_instance_run_count(instance_id), reap = manual_start)) {
 			return false, "cannot verify the existing process", bridge_error(.pty_host_unreachable)
 		}
 		if wake_lease != "" && !manual_start && child.state == "alive" {
