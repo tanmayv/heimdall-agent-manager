@@ -22,9 +22,9 @@ import contracts "odin_test:contracts"
 Setup_Harness :: struct {
 	name: string,
 	bin: string,            // command to detect on PATH
-	config_path: string,    // provider config directory ("" when it has no default and no env override)
+	config_dir: string,     // provider config directory ("" when it has no default and no env override)
 	config_dir_env: string, // env var the CLI reads its config directory from ("" if none)
-	config_file: string,    // primary config file under config_path ("" if none): the managed-symlink check
+	config_file: string,    // primary config file under config_dir ("" if none): the managed-symlink check
 	install_hint: string,
 	auth_hint: string,
 	wire_hint: string,
@@ -41,10 +41,10 @@ setup_known_harnesses :: proc(home: string, getenv: proc(key: string) -> string)
 		if d.extension != .None {
 			wire = fmt.aprintf("ham-ctl extension install %s; hooks invoke '$HEIMDALL_CTL_BIN' extension hook %s", d.provider, d.provider)
 		}
-		config_path := contracts.provider_config_dir_resolve(d, "", env_dir, home, context.allocator)
+		config_dir := contracts.provider_config_dir_resolve(d, "", env_dir, home, context.allocator)
 		config_file := ""
-		if config_path != "" && d.config_file != "" {
-			config_file = strings.concatenate({strings.trim_right(config_path, "/\\"), "/", d.config_file})
+		if config_dir != "" && d.config_file != "" {
+			config_file = strings.concatenate({strings.trim_right(config_dir, "/\\"), "/", d.config_file})
 		}
 		// The hint never repeats the minimum version; the registry supplies it.
 		install_hint := d.install_hint
@@ -53,7 +53,7 @@ setup_known_harnesses :: proc(home: string, getenv: proc(key: string) -> string)
 		}
 		append(&out, Setup_Harness{
 			name = d.provider, bin = d.binary,
-			config_path = config_path, config_file = config_file,
+			config_dir = config_dir, config_file = config_file,
 			config_dir_env = d.config_dir_env,
 			install_hint = install_hint, auth_hint = d.auth_guidance, wire_hint = wire,
 		})
@@ -105,7 +105,7 @@ setup_is_symlink :: proc(path: string) -> bool {
 // symlink (Nix/home-manager): its primary config file, or the whole directory.
 // Such config needs a writable overlay; setup never overwrites it.
 setup_config_managed :: proc(h: Setup_Harness) -> bool {
-	return setup_is_symlink(h.config_file) || setup_is_symlink(h.config_path)
+	return setup_is_symlink(h.config_file) || setup_is_symlink(h.config_dir)
 }
 
 // setup_report_json is the `setup --json` report for harnesses (only: one name).
@@ -116,7 +116,8 @@ setup_report_json :: proc(harnesses: []Setup_Harness, only: string) -> string {
 	for h in harnesses {
 		if only != "" && h.name != only do continue
 		bin_path, present := setup_bin_on_path(h.bin)
-		cfg_present := setup_path_exists(h.config_path)
+		// config_path keeps its original meaning: the primary config file.
+		cfg_present := setup_path_exists(h.config_file)
 		cfg_symlink := setup_config_managed(h)
 		if !first do strings.write_string(&b, ",")
 		first = false
@@ -124,8 +125,8 @@ setup_report_json :: proc(harnesses: []Setup_Harness, only: string) -> string {
 		strings.write_string(&b, "\",\"bin\":\""); json_write_string(&b, h.bin)
 		strings.write_string(&b, "\",\"installed\":"); strings.write_string(&b, "true" if present else "false")
 		strings.write_string(&b, ",\"bin_path\":\""); json_write_string(&b, bin_path)
-		strings.write_string(&b, "\",\"config_path\":\""); json_write_string(&b, h.config_path)
-		strings.write_string(&b, "\",\"config_file\":\""); json_write_string(&b, h.config_file)
+		strings.write_string(&b, "\",\"config_path\":\""); json_write_string(&b, h.config_file)
+		strings.write_string(&b, "\",\"config_dir\":\""); json_write_string(&b, h.config_dir)
 		strings.write_string(&b, "\",\"config_dir_env\":\""); json_write_string(&b, h.config_dir_env)
 		strings.write_string(&b, "\",\"config_present\":"); strings.write_string(&b, "true" if cfg_present else "false")
 		strings.write_string(&b, ",\"config_readonly_symlink\":"); strings.write_string(&b, "true" if cfg_symlink else "false")
@@ -153,7 +154,7 @@ ctl_setup_command :: proc(args: []string) {
 	for h in harnesses {
 		if only != "" && h.name != only do continue
 		bin_path, present := setup_bin_on_path(h.bin)
-		cfg_present := setup_path_exists(h.config_path)
+		cfg_present := setup_path_exists(h.config_dir)
 		cfg_symlink := setup_config_managed(h)
 		fmt.printf("\n[%s]\n", h.name)
 		if present {
@@ -161,9 +162,9 @@ ctl_setup_command :: proc(args: []string) {
 		} else {
 			fmt.printf("  installed:   NO  -> %s\n", h.install_hint)
 		}
-		config := h.config_path if h.config_path != "" else "(none by default)"
+		config := h.config_dir if h.config_dir != "" else "(none by default)"
 		if h.config_dir_env != "" do config = fmt.tprintf("%s  [%s]", config, h.config_dir_env)
-		fmt.printf("  config:      %s%s\n", config, cfg_present || h.config_path == "" ? "" : "  (absent)")
+		fmt.printf("  config:      %s%s\n", config, cfg_present || h.config_dir == "" ? "" : "  (absent)")
 		if h.config_file != "" do fmt.printf("  config file: %s%s\n", h.config_file, setup_path_exists(h.config_file) ? "" : "  (absent)")
 		if cfg_symlink {
 			fmt.println("  managed:     read-only symlink -> wrapper must use a writable OVERLAY, not overwrite")

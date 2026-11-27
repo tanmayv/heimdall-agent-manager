@@ -32,27 +32,27 @@ test_setup_harnesses_from_provider_registry :: proc(t: ^testing.T) {
 		testing.expectf(t, h.install_hint != "" && h.auth_hint != "", "%s has install and auth guidance", h.name)
 		switch h.name {
 		case "claude":
-			testing.expect_value(t, h.config_path, "/home/u/.claude")
+			testing.expect_value(t, h.config_dir, "/home/u/.claude")
 			testing.expect_value(t, h.config_file, "/home/u/.claude/settings.json")
 			testing.expect_value(t, h.config_dir_env, "CLAUDE_CONFIG_DIR")
 		case "codex":
-			testing.expect_value(t, h.config_path, "/custom/codex") // CODEX_HOME wins over ~/.codex
+			testing.expect_value(t, h.config_dir, "/custom/codex") // CODEX_HOME wins over ~/.codex
 			testing.expect_value(t, h.config_file, "/custom/codex/config.toml")
 		case "antigravity":
-			testing.expect_value(t, h.config_path, "/home/u/.gemini")
+			testing.expect_value(t, h.config_dir, "/home/u/.gemini")
 			testing.expect_value(t, h.config_file, "/home/u/.gemini/hooks.json")
 		case "pi":
 			testing.expect_value(t, h.config_file, "/home/u/.pi/agent/extensions")
 		case "kiro":
 			testing.expect_value(t, h.config_dir_env, "KIRO_HOME")
-			testing.expect_value(t, h.config_path, "/home/u/.kiro")
+			testing.expect_value(t, h.config_dir, "/home/u/.kiro")
 			testing.expect_value(t, h.install_hint, "install Kiro CLI (kiro-cli) 3.5.0 or newer") // minimum from the registry
 			testing.expect_value(t, h.config_file, "")
 		case "copilot":
-			testing.expect_value(t, h.config_path, "/home/u/.copilot")
+			testing.expect_value(t, h.config_dir, "/home/u/.copilot")
 			testing.expect(t, !strings.contains(h.install_hint, "or newer"), h.install_hint) // pinned runtime: no minimum
 		case "opencode":
-			testing.expect_value(t, h.config_path, "/home/u/.config/opencode")
+			testing.expect_value(t, h.config_dir, "/home/u/.config/opencode")
 			testing.expect_value(t, h.install_hint, "install OpenCode (opencode) 1.19.6 or newer")
 		}
 	}
@@ -64,8 +64,12 @@ test_setup_harnesses_from_provider_registry :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(rows), 7)
 	testing.expect(t, strings.contains(report, `"name":"kiro","bin":"kiro-cli"`), report)
 	testing.expect(t, strings.contains(report, `"name":"opencode","bin":"opencode"`), report)
+	// config_path keeps its original meaning (the config file); config_dir is the directory.
+	claude := setup_report_json(harnesses, "claude")
+	testing.expect(t, strings.contains(claude, `"config_path":"/home/u/.claude/settings.json","config_dir":"/home/u/.claude"`), claude)
 	only := setup_report_json(harnesses, "kiro")
 	testing.expect(t, strings.count(only, `"name":`) == 1 && strings.contains(only, `"KIRO_HOME"`), only)
+	testing.expect(t, strings.contains(only, `"config_path":"","config_dir":"/home/u/.kiro"`), only) // no config file
 }
 
 @(private = "file")
@@ -96,7 +100,8 @@ test_setup_symlinked_config_file_needs_overlay :: proc(t: ^testing.T) {
 	}
 	report := setup_report_json(harnesses, "claude")
 	testing.expect(t, strings.contains(report, `"needs_overlay":true`), report)
-	testing.expect(t, strings.contains(report, `"config_file":"`), report)
+	testing.expect(t, strings.contains(report, fmt.tprintf(`"config_path":"%s/.claude/settings.json"`, home)), report)
+	testing.expect(t, strings.contains(report, `"config_present":true`), report)
 	codex := setup_report_json(harnesses, "codex")
 	testing.expect(t, strings.contains(codex, `"needs_overlay":false`), codex)
 }
