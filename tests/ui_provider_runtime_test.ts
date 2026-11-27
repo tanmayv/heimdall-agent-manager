@@ -45,6 +45,16 @@ test('runtime normalization is PTY-only for old/invalid fields and preserves the
   assert.equal(acpDisabledReason(hubVerdict(adapter), { ...adapter, state: 'error' } as any), '', 'the Hub verdict wins over the raw state');
 });
 
+test('the effective transport is the Hub\'s resolved value, never derived from transport or the default', () => {
+  // G7: no fallback to transport || default_transport.
+  assert.equal(normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'pty', transport: 'acp' }).effective_transport, null);
+  assert.equal(normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'acp' }).effective_transport, null);
+  assert.equal(normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'acp', transport: null, effective_transport: 'pty' }).effective_transport, 'pty');
+  assert.equal(normalizeProviderRuntime({ transports: ['pty', 'acp'], transport: 'pty', effective_transport: 'acp' }).effective_transport, 'acp');
+  assert.equal(normalizeProviderRuntime({ transports: ['pty'], effective_transport: 'acp' }).effective_transport, null, 'unsupported values are dropped');
+  assert.equal(normalizeProviderRuntime({ default_transport: 'pty' }).effective_transport, 'pty', 'a Hub without the transport contract is PTY-only');
+});
+
 test('adapter runtime status uses adapter labels; the removed native kind is dropped', () => {
   const copilot = normalizeProviderRuntime({ acp_adapter: { ...adapter, provider: 'copilot', runtime_kind: 'native' } }).acp_adapter;
   assert.equal(copilot?.provider, 'copilot');
@@ -109,7 +119,7 @@ test('ACP auth renders descriptor guidance and selected profile without a fixed 
   assert.doesNotMatch(fallback, /claude/);
 });
 
-test('transport and install APIs use canonical provider scope and keep profile enablement separate', async () => {
+test('transport saves are per profile; install stays provider-wide and enablement separate', async () => {
   const previous = globalThis.fetch;
   const calls: any[] = [];
   let selected: string | null = null;
@@ -127,13 +137,16 @@ test('transport and install APIs use canonical provider scope and keep profile e
     assert.equal(acp.providers.length, 2, 'refresh keeps all profiles');
     assert.ok(acp.providers.every((p) => p.effective_transport === 'acp'));
     await providerSetupApi.setTransport(acp, 'claude', null);
+    await providerSetupApi.setTransport(acp, 'claude', 'pty', 'work');
+    await providerSetupApi.setTransport(acp, 'claude', 'acp', 'claude');
     await providerSetupApi.installAdapter(acp, 'claude');
     const enabled = await providerSetupApi.setEnabled(acp, 'claude', false, 'work');
     assert.equal(enabled.providers[0].enabled, true);
     assert.equal(enabled.providers[1].enabled, false);
-    assert.deepEqual(calls.filter((c) => c.method === 'PUT').map((c) => c.body), [{ transport: 'acp' }, { transport: null }, { enabled: false, profile_id: 'work' }]);
+    assert.deepEqual(calls.filter((c) => c.method === 'PUT').map((c) => c.body), [{ transport: 'acp' }, { transport: null },
+      { transport: 'pty', profile_id: 'work' }, { transport: 'acp' }, { enabled: false, profile_id: 'work' }]);
     assert.deepEqual(calls.find((c) => c.method === 'POST'), { path: '/api/v1/bridges/b/providers/claude/acp-adapter', method: 'POST', body: { action: 'install' } });
-    assert.equal(calls.filter((c) => c.path.endsWith('/provider-status')).length, 2);
+    assert.equal(calls.filter((c) => c.path.endsWith('/provider-status')).length, 4);
   } finally { globalThis.fetch = previous; }
 });
 
@@ -201,8 +214,8 @@ test('Runtime control saves ACP, resets null, and explains provider/host restric
   const h = await browser();
   const saved = providerSetupApi.setTransport;
   const saves: any[] = [];
-  providerSetupApi.setTransport = async (current, provider, transport) => {
-    saves.push({ provider, transport });
+  providerSetupApi.setTransport = async (current, provider, transport, profileId) => {
+    saves.push({ provider, transport, profileId });
     return { ...current, providers: [row({ transport, effective_transport: transport || 'pty' })] };
   };
   function Host() {
@@ -215,7 +228,7 @@ test('Runtime control saves ACP, resets null, and explains provider/host restric
     await act(async () => { select.value = 'acp'; select.dispatchEvent(new h.dom.window.Event('change', { bubbles: true })); await tick(); });
     assert.equal(h.doc.querySelector('select')!.value, 'acp');
     await h.click('providers-runtime-reset-claude');
-    assert.deepEqual(saves, [{ provider: 'claude', transport: 'acp' }, { provider: 'claude', transport: null }]);
+    assert.deepEqual(saves, [{ provider: 'claude', transport: 'acp', profileId: 'claude' }, { provider: 'claude', transport: null, profileId: 'claude' }]);
     await h.render(React.createElement(ProviderRuntimeControl, { setup: setup(), status: row({ transports: ['pty'] }), onChange() {} }));
     assert.equal(h.doc.querySelector('select')!.disabled, true);
     assert.match(h.doc.querySelector('select')!.title, /supports only PTY/);
@@ -276,27 +289,68 @@ test('tracked installs stop waiting at 150 seconds and Check status recovers ter
   }
 });
 
-test('provider settings renders one shared Runtime control for multiple profiles', async () => {
+test('provider settings renders one Runtime selector per profile with its resolved value', async () => {
   const h = await browser();
   const { Provider } = await import('react-redux');
   const { default: ProviderProfilesSurface } = await import('../src/ui/components/providers/ProviderProfilesSurface.tsx');
   const previous = globalThis.fetch;
   const store = await makeVaultStore();
-  const profiles = ['claude', 'work', 'personal'].map((id) => row({ profile_id: id }));
+  const profiles = [row({ profile_id: 'claude' }), row({ profile_id: 'work', transport: 'acp', effective_transport: 'acp' }), row({ profile_id: 'personal' })];
   globalThis.fetch = async (input: any) => response(String(input).endsWith('/provider-profiles') ? { profiles }
     : String(input).endsWith('/bridges') ? { bridges: [{ bridge_id: 'b', status: 'online' }] }
       : { providers: profiles, acp_runtime_supported: true });
   try {
     await h.render(React.createElement(Provider, { store }, React.createElement(ProviderProfilesSurface, { bridge: { bridge_id: 'b', status: 'online', vault_status: 'locked' } })));
     await act(tick);
-    assert.equal(h.doc.querySelectorAll('[data-debug-id="providers-runtime-select-claude"]').length, 1);
+    const value = (id: string) => (h.doc.querySelector(`[data-debug-id="providers-runtime-select-${id}"]`) as HTMLSelectElement | null)?.value;
+    assert.equal(value('claude'), 'pty');
+    assert.equal(value('claude-work'), 'acp');
+    assert.equal(value('claude-personal'), 'pty');
+    assert.equal(h.doc.querySelectorAll('[data-debug-id^="providers-runtime-select-"]').length, 3);
+    assert.equal(h.doc.querySelectorAll('[data-debug-id="providers-acp-check-claude"]').length, 1, 'the adapter block is provider-wide');
     assert.equal(h.doc.querySelectorAll('[data-debug-id^="profile-select-"]').length, 3);
-    assert.match(h.doc.body.textContent || '', /Shared by all Claude profiles/);
+    assert.match(h.doc.body.textContent || '', /Chosen per Claude profile/);
     assert.equal(h.doc.querySelector('select')!.disabled, true);
   } finally {
     await act(async () => { store.dispatch(heimdallApi.util.resetApiState()); await tick(); });
     await h.cleanup(); globalThis.fetch = previous;
   }
+});
+
+test('a profile selector saves that profile only and uses that profile\'s ACP verdict', async () => {
+  const h = await browser();
+  const saved = providerSetupApi.setTransport;
+  const saves: any[] = [];
+  const missing = { available: false, reason: 'adapter_missing', fix: 'install_adapter' };
+  const rows = (work: string | null) => [row({ label: 'Default' }),
+    row({ profile_id: 'work', label: 'Work', transport: work, effective_transport: work || 'pty' }),
+    row({ profile_id: 'home', label: 'Home', acp_availability: missing, acp_adapter: { ...adapter, runtime_kind: 'system' } })];
+  providerSetupApi.setTransport = async (current, provider, transport, profileId) => {
+    saves.push({ provider, transport, profileId });
+    return { ...current, providers: rows(profileId === 'work' ? transport : null) };
+  };
+  function Host() {
+    const [current, update] = useState(setup({ providers: rows(null) }));
+    return React.createElement(ProviderRuntimeControl, { setup: current, status: current.providers[0], profiles: current.providers, onChange: update });
+  }
+  try {
+    await h.render(React.createElement(Host));
+    const select = (id: string) => h.doc.querySelector(`[data-debug-id="providers-runtime-select-${id}"]`) as HTMLSelectElement;
+    await act(async () => { select('claude-work').value = 'acp'; select('claude-work').dispatchEvent(new h.dom.window.Event('change', { bubbles: true })); await tick(); });
+    assert.deepEqual(saves, [{ provider: 'claude', transport: 'acp', profileId: 'work' }]);
+    assert.equal(select('claude-work').value, 'acp');
+    assert.equal(select('claude').value, 'pty', 'the default profile keeps its own value');
+    // Each profile's ACP option follows that profile's Hub verdict.
+    assert.equal((select('claude').querySelector('option[value="acp"]') as HTMLOptionElement).disabled, false);
+    assert.equal((select('claude-home').querySelector('option[value="acp"]') as HTMLOptionElement).disabled, true);
+    assert.ok(h.doc.querySelector('[data-debug-id="providers-runtime-profile-acp-claude-home"]'));
+    await h.click('providers-runtime-reset-claude-work');
+    assert.deepEqual(saves[1], { provider: 'claude', transport: null, profileId: 'work' });
+    // No resolved value from the Hub: the selector says so instead of guessing.
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup(), status: row({ transport: 'acp', effective_transport: null }), onChange() {} }));
+    assert.equal((h.doc.querySelector('select') as HTMLSelectElement).value, '');
+    assert.match(h.doc.querySelector('select')!.textContent || '', /Unknown/);
+  } finally { providerSetupApi.setTransport = saved; await h.cleanup(); }
 });
 
 test('startup and unknown blockers never offer permission decisions', async () => {
@@ -396,7 +450,7 @@ test('Runtime control displays Claude binary failures from adapter status', asyn
 test('detect-only system CLI status uses Re-check, never Node or install wording', async () => {
   const kiroAdapter = { installed: false, version: '3.4.0', node_version: null, state: 'outdated', provider: 'kiro', runtime_kind: 'system',
     error: 'acp_kiro_outdated: The selected Kiro executable is older than the minimum supported version 3.5.0; upgrade it on the bridge host', checked_at: '2026-11-21T00:00:00Z' };
-  const system = normalizeProviderRuntime({ transports: ['acp'], default_transport: 'acp', acp_adapter: kiroAdapter });
+  const system = normalizeProviderRuntime({ transports: ['acp'], default_transport: 'acp', effective_transport: 'acp', acp_adapter: kiroAdapter });
   assert.deepEqual(system.transports, ['acp']);
   assert.equal(system.effective_transport, 'acp');
   assert.equal(system.acp_adapter?.runtime_kind, 'system');
@@ -420,7 +474,7 @@ test('detect-only system CLI status uses Re-check, never Node or install wording
 });
 
 test('OpenCode is detect-only and exposes no PTY transport', async () => {
-  const runtime = normalizeProviderRuntime({ transports: ['acp'], default_transport: 'acp', acp_adapter: {
+  const runtime = normalizeProviderRuntime({ transports: ['acp'], default_transport: 'acp', effective_transport: 'acp', acp_adapter: {
     ...adapter, provider: 'opencode', profile: 'opencode', runtime_kind: 'system', node_version: null,
     version: '1.19.5', installed: false, state: 'outdated', error: null,
   } });
@@ -442,7 +496,7 @@ test('OpenCode is detect-only and exposes no PTY transport', async () => {
 });
 
 test('Codex app-server is an opt-in system runtime with PTY reset and Re-check', async () => {
-  const runtime = normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'pty', acp_adapter: {
+  const runtime = normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'pty', effective_transport: 'pty', acp_adapter: {
     ...adapter, provider: 'codex', profile: 'codex', runtime_kind: 'system', protocol: 'codex_app_server', version: '0.162.0', node_version: null,
     state: 'error', error: 'ACP initialize probe is required for the selected profile; use Re-check',
   } });
