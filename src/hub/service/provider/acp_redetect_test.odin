@@ -152,3 +152,34 @@ test_acp_redetector_destroy_joins_workers :: proc(t: ^testing.T) {
 	testing.expect_value(t, sync.atomic_load(&slow_done), 2)
 	testing.expect(t, !acp_request_redetect(&r, "b", "pi", .Discover, time.now()), "a destroyed redetector dispatches nothing")
 }
+
+// Item 2: one re-detection in flight per provider, correlated in memory; a
+// lost one stops suppressing requests after ACP_REDETECT_INFLIGHT_TTL.
+@(test)
+test_acp_redetect_in_flight_is_bounded_and_correlated :: proc(t: ^testing.T) {
+	f: Redetect_Fixture; redetect_setup(&f); defer redetect_teardown(&f)
+	now := time.now()
+	acp_redetect_pending_set(&f.r, "b", "claude", "acp_rd_1", .Discover, now)
+	later := time.time_add(now, ACP_REDETECT_MIN_INTERVAL + time.Second)
+	testing.expect(t, !acp_request_redetect(&f.r, "b", "claude", .Discover, later), "in flight: no second request")
+	testing.expect_value(t, acp_redetect_pending_expired(&f.r, "b", "claude", later), "")
+	// Only this bridge's own id matches, and only once.
+	_, other := acp_redetect_pending_take(&f.r, "b2", "acp_rd_1")
+	testing.expect(t, !other)
+	_, unknown := acp_redetect_pending_take(&f.r, "b", "acp_rd_2")
+	testing.expect(t, !unknown)
+	provider, ours := acp_redetect_pending_take(&f.r, "b", "acp_rd_1")
+	testing.expect(t, ours && provider == "claude")
+	_, again := acp_redetect_pending_take(&f.r, "b", "acp_rd_1")
+	testing.expect(t, !again)
+	testing.expect(t, acp_request_redetect(&f.r, "b", "claude", .Discover, later), "the result ends the in-flight request")
+	// A lost request expires.
+	acp_redetect_pending_set(&f.r, "b", "kiro", "cmd_ext_7", .Recheck, now)
+	expired := time.time_add(now, ACP_REDETECT_INFLIGHT_TTL + time.Second)
+	testing.expect_value(t, acp_redetect_pending_expired(&f.r, "b", "kiro", expired), "cmd_ext_7")
+	testing.expect(t, acp_request_redetect(&f.r, "b", "kiro", .Recheck, expired), "a lost request no longer suppresses re-detection")
+	_, recheck := acp_redetect_pending_take(&f.r, "b", "cmd_ext_7")
+	testing.expect(t, !recheck, "Re-check results arrive as their own tracked command")
+	acp_redetect_pending_clear(&f.r, "b", "kiro")
+	testing.expect_value(t, acp_redetect_pending_expired(&f.r, "b", "kiro", expired), "")
+}

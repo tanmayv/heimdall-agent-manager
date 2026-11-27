@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -130,42 +131,82 @@ provider_acp_install_start :: proc(h: ^Provider_Handlers, bridge_id, provider: s
 
 // G5 re-detection (provider_service acp_redetect.odin). This runs on the
 // redetector's worker thread (joined at graph shutdown), so the gate or status
-// read that asked never waits: a Recheck is the ordinary install_acp_adapter
-// command (deduplicated while one is in flight); a Discover is a
-// provider-scoped "acp_redetect" discovery whose report updates the row.
+// read that asked never waits. A Discover is a provider-scoped provider_discover
+// whose id ("acp_rd_" prefix) is never persisted: the redetector remembers it
+// until its report arrives (bridge_extension_frame) or ACP_REDETECT_INFLIGHT_TTL
+// passes. A Recheck is the ordinary install_acp_adapter command; if the one in
+// flight got no result within the TTL it is failed and a new one is sent.
+ACP_REDETECT_COMMAND_PREFIX :: "acp_rd_"
+
 provider_acp_redetect_dispatch :: proc(ctx: rawptr, bridge_id, provider: string, kind: provider_service.ACP_Redetect_Kind) {
 	h := (^Provider_Handlers)(ctx)
+	r := h.providers.redetector
+	now := time.now()
 	if kind == .Recheck {
+		lost := provider_service.acp_redetect_pending_expired(r, bridge_id, provider, now)
 		id, err := provider_acp_install_start(h, bridge_id, provider)
-		if err.code != .None do fmt.eprintfln("acp re-detect: recheck %s on %s not sent: %s", provider, bridge_id, err.message)
-		delete(id)
+		if err.code == .None && lost != "" && id == lost {
+			provider_acp_command_fail(h, bridge_id, id, "no result from the bridge within the re-detect deadline")
+			delete(id)
+			id, err = provider_acp_install_start(h, bridge_id, provider)
+		}
+		defer delete(id)
+		if err.code != .None {
+			provider_service.acp_redetect_pending_clear(r, bridge_id, provider)
+			fmt.eprintfln("acp re-detect: recheck %s on %s not sent: %s", provider, bridge_id, err.message)
+			return
+		}
+		provider_service.acp_redetect_pending_set(r, bridge_id, provider, id, .Recheck, now)
 		return
 	}
-	id, err := provider_acp_redetect_start(h, bridge_id, provider)
-	if err.code != .None do fmt.eprintfln("acp re-detect: discover %s on %s not sent: %s", provider, bridge_id, err.message)
-	delete(id)
+	id := fmt.tprintf("%s%s", ACP_REDETECT_COMMAND_PREFIX, platform.generate_id(h.ids, ""))
+	provider_service.acp_redetect_pending_set(r, bridge_id, provider, id, .Discover, now)
+	payload := provider_discover_command_json(id, {provider}, provider)
+	defer delete(payload)
+	sent, send_err := project_service.bridge_command_send_runtime(h.bridges.bridge_command_sink, {bridge_id = bridge_id, command_id = id, body_json = payload})
+	if !sent {
+		provider_service.acp_redetect_pending_clear(r, bridge_id, provider)
+		fmt.eprintfln("acp re-detect: discover %s on %s not sent: %s", provider, bridge_id, send_err.message)
+	}
 }
 
-// provider_acp_redetect_start sends one provider-scoped discovery as a tracked
-// "acp_redetect" command, reusing one that is still in flight.
-provider_acp_redetect_start :: proc(h: ^Provider_Handlers, bridge_id, provider: string) -> (string, domain.Domain_Error) {
+// provider_acp_command_fail marks one tracked command failed (a lost Re-check).
+provider_acp_command_fail :: proc(h: ^Provider_Handlers, bridge_id, command_id, message: string) {
 	sync.mutex_lock(&h.providers.extension_mutex); defer sync.mutex_unlock(&h.providers.extension_mutex)
-	commands, list_err := iface.provider_extension_command_list(h.providers.repo, bridge_id)
-	if list_err.code != .None do return "", list_err
+	commands, err := iface.provider_extension_command_list(h.providers.repo, bridge_id)
+	if err.code != .None do return
 	defer domain.provider_extension_commands_destroy(commands)
-	for c in commands {
-		if c.kind == "acp_redetect" && c.provider == provider && !extension_command_terminal(c.state) do return strings.clone(c.command_id), {}
+	for &command in commands {
+		if command.command_id != command_id || extension_command_terminal(command.state) do continue
+		extension_command_set_state(&command, "failed", message, command.progress)
+		iface.provider_extension_command_save(h.providers.repo, command)
 	}
-	id := strings.clone(platform.generate_id(h.ids, "cmd_ext_"))
-	command := domain.Provider_Extension_Command{command_id = id, bridge_id = bridge_id, provider = provider, profile_id = provider, kind = "acp_redetect", state = "queued"}
-	created, create_err := iface.provider_extension_command_create(h.providers.repo, command)
-	if !created { delete(id); return "", create_err }
-	sent, send_err := extension_command_dispatch(h, command)
-	command.state = "dispatched" if sent else "failed"
-	if !sent do command.message = send_err.message
-	if save_err := iface.provider_extension_command_save(h.providers.repo, command); save_err.code != .None { delete(id); return "", save_err }
-	if !sent { delete(id); return "", send_err }
-	return id, {}
+}
+
+// provider_acp_redetect_report applies the report of a Discover this Hub sent
+// to this bridge; anything else with the prefix is ignored.
+provider_acp_redetect_report :: proc(h: ^Bridge_Handlers, bridge_id, command_id, text: string) -> domain.Domain_Error {
+	provider, ours := provider_service.acp_redetect_pending_take(h.providers.redetector, bridge_id, command_id)
+	if !ours do return {}
+	report: Provider_Discovery_Report_Wire
+	if json.unmarshal_string(text, &report, json.DEFAULT_SPECIFICATION, context.temp_allocator) != nil || report.request_id != command_id do return domain.domain_error(.Validation_Failed, "invalid re-detect report")
+	statuses := make([dynamic]domain.Bridge_Provider_Status, context.temp_allocator)
+	for item in report.providers {
+		if item.provider != provider do continue // only what was asked for
+		append(&statuses, domain.Bridge_Provider_Status{
+			bridge_id = bridge_id, provider = item.provider, profile_id = item.profile_id,
+			binary_path = item.binary_path, version_text = item.version_text, state = item.state, checked_at = item.checked_at,
+			extension_state = item.extension_state, extension_version = item.extension_version, extension_checked_at = item.extension_checked_at,
+			acp_adapter_json = provider_acp_adapter_wire_json(item.acp_adapter),
+		})
+	}
+	if err := provider_service.apply_discovery_report(h.providers, bridge_id, statuses[:]); err.code != .None do return err
+	bridge, found, _ := iface.bridge_get_bridge(h.bridges.repo, bridge_id)
+	if found {
+		defer domain.bridge_destroy(&bridge)
+		publish_bridge_provider_status_changed(h.event_bus, string(bridge.owner_user_id), bridge_id, provider)
+	}
+	return {}
 }
 
 // The caller holds extension_mutex; no synchronous command wait on the WS reader.
@@ -179,8 +220,7 @@ extension_command_dispatch :: proc(
 	payload := ""
 	if command.kind == "discovery" {
 		payload = provider_discover_command_json(command.command_id, nil,command.profile_id)
-	} else if command.kind == "acp_redetect" {
-		payload = provider_discover_command_json(command.command_id, {command.provider}, command.profile_id)
+
 	} else if command.kind == "install_acp_adapter" {
 		entry, found, err := iface.provider_catalog_get(h.providers.repo, command.provider)
 		if err.code != .None do return false, err
@@ -421,6 +461,9 @@ bridge_extension_frame :: proc(
 	if command_id == "" && frame_type == "provider_discovery_report" {
 		command_id = json_string(text, "request_id")
 	}
+	if frame_type == "provider_discovery_report" && strings.has_prefix(command_id, ACP_REDETECT_COMMAND_PREFIX) {
+		return provider_acp_redetect_report(h, bridge_id, command_id, text)
+	}
 	if !strings.has_prefix(command_id, "cmd_ext_") && !strings.has_prefix(command_id, "cmd_upd_") do return {}
 	sync.mutex_lock(&h.providers.extension_mutex)
 	defer sync.mutex_unlock(&h.providers.extension_mutex)
@@ -460,6 +503,8 @@ bridge_extension_frame :: proc(
 			)
 		}
 		if save_err := iface.provider_extension_command_save(h.providers.repo, command); save_err.code != .None do return save_err
+		// A finished Re-check ends the re-detection in flight for its provider.
+		if command.kind == "install_acp_adapter" && extension_command_terminal(command.state) do provider_service.acp_redetect_pending_clear(h.providers.redetector, bridge_id, command.provider)
 		if extension_action_kind(command.kind) {
 			bridge, found, _ := iface.bridge_get_bridge(h.bridges.repo, bridge_id)
 			if found {
@@ -482,8 +527,8 @@ extension_apply_report :: proc(
 	command: ^domain.Provider_Extension_Command,
 	text: string,
 ) -> domain.Domain_Error {
-	if command.kind != "discovery" && command.kind != "acp_redetect" && !extension_action_kind(command.kind) && command.kind != "install_acp_adapter" do return {}
-	if (command.kind == "discovery" || command.kind == "acp_redetect") && extension_command_terminal(command.state) do return {}
+	if command.kind != "discovery" && !extension_action_kind(command.kind) && command.kind != "install_acp_adapter" do return {}
+	if command.kind == "discovery" && extension_command_terminal(command.state) do return {}
 	if command.state == "waiting" do return {} // no report has been requested yet
 	report: Provider_Discovery_Report_Wire
 	if decode_err := json.unmarshal_string(text, &report, json.DEFAULT_SPECIFICATION, context.temp_allocator); decode_err != nil || report.request_id != command.command_id do return domain.domain_error(.Validation_Failed, "invalid extension discovery report")
@@ -519,11 +564,6 @@ extension_apply_report :: proc(
 		)
 	}
 	if extension_action_kind(command.kind) || command.kind == "install_acp_adapter" do return {}
-	// A re-detection is complete once its report is stored.
-	if command.kind == "acp_redetect" {
-		extension_command_set_state(command, "succeeded", "", 100)
-		return iface.provider_extension_command_save(h.providers.repo, command^)
-	}
 	views, view_err := provider_service.list_bridge_providers(h.providers, command.bridge_id)
 	if view_err.code != .None do return view_err
 	defer provider_service.bridge_provider_views_destroy(views)

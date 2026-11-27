@@ -23,6 +23,17 @@ import domain "odin_test:hub/domain"
 // ACP_REDETECT_MIN_INTERVAL, so reads and launch retries never spam the bridge.
 ACP_REDETECT_MIN_INTERVAL :: 30 * time.Second
 ACP_STATUS_STALE_AFTER :: 10 * time.Minute
+// A re-detection without a result after this long is treated as lost: it no
+// longer suppresses new requests, and a lost Re-check command is failed.
+ACP_REDETECT_INFLIGHT_TTL :: 2 * time.Minute
+
+// One re-detection in flight for a bridge + provider. Discover requests are
+// never persisted: their command id lives only here until the report arrives.
+ACP_Redetect_Pending :: struct {
+	command_id: string, // heap
+	kind: ACP_Redetect_Kind,
+	sent_at: time.Time,
+}
 
 ACP_Redetect_Kind :: enum u8 { Discover, Recheck }
 
@@ -39,6 +50,7 @@ ACP_Redetector :: struct {
 	dispatch: ACP_Redetect_Dispatcher,
 	ctx: rawptr,
 	last: map[string]time.Time, // bridge \x1f provider -> last request (heap)
+	pending: map[string]ACP_Redetect_Pending, // bridge \x1f provider -> in flight (heap)
 	// Every dispatch runs on a worker counted here; destroy joins them all, so
 	// no worker outlives the handlers it uses. inline runs dispatches on the
 	// caller instead (unit tests).
@@ -84,6 +96,65 @@ acp_redetector_destroy :: proc(r: ^ACP_Redetector) {
 	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
 	for key in r.last do delete(key, runtime.default_allocator())
 	delete(r.last); r.last = nil
+	for key, p in r.pending { delete(key, runtime.default_allocator()); delete(p.command_id, runtime.default_allocator()) }
+	delete(r.pending); r.pending = nil
+}
+
+@(private = "file")
+acp_redetect_key :: proc(bridge_id, provider: string) -> string {
+	return strings.concatenate({bridge_id, "\x1f", provider}, context.temp_allocator)
+}
+
+// Caller holds r.mutex.
+@(private = "file")
+acp_redetect_pending_remove_locked :: proc(r: ^ACP_Redetector, key: string) {
+	if _, present := r.pending[key]; !present do return
+	old_key, old := delete_key(&r.pending, key)
+	delete(old_key, runtime.default_allocator()); delete(old.command_id, runtime.default_allocator())
+}
+
+// acp_redetect_pending_set records the command now in flight for a provider.
+acp_redetect_pending_set :: proc(r: ^ACP_Redetector, bridge_id, provider, command_id: string, kind: ACP_Redetect_Kind, now: time.Time) {
+	if r == nil do return
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	if r.pending == nil do r.pending = make(map[string]ACP_Redetect_Pending, allocator = runtime.default_allocator())
+	key := acp_redetect_key(bridge_id, provider)
+	acp_redetect_pending_remove_locked(r, key)
+	r.pending[strings.clone(key, runtime.default_allocator())] = {command_id = strings.clone(command_id, runtime.default_allocator()), kind = kind, sent_at = now}
+}
+
+// acp_redetect_pending_clear ends whatever is in flight for a provider (its
+// result arrived, or sending failed).
+acp_redetect_pending_clear :: proc(r: ^ACP_Redetector, bridge_id, provider: string) {
+	if r == nil do return
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	acp_redetect_pending_remove_locked(r, acp_redetect_key(bridge_id, provider))
+}
+
+// acp_redetect_pending_take matches a Discover report to its request: only an
+// id this redetector sent to this bridge, then forgets it. Returns the
+// provider (temp) that was re-detected.
+acp_redetect_pending_take :: proc(r: ^ACP_Redetector, bridge_id, command_id: string) -> (string, bool) {
+	if r == nil || command_id == "" do return "", false
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	prefix := strings.concatenate({bridge_id, "\x1f"}, context.temp_allocator)
+	for key, p in r.pending {
+		if p.kind != .Discover || p.command_id != command_id || !strings.has_prefix(key, prefix) do continue
+		provider := strings.clone(key[len(prefix):], context.temp_allocator)
+		acp_redetect_pending_remove_locked(r, key)
+		return provider, true
+	}
+	return "", false
+}
+
+// acp_redetect_pending_expired is the id of a request for this provider that
+// got no result within ACP_REDETECT_INFLIGHT_TTL (temp), "" otherwise.
+acp_redetect_pending_expired :: proc(r: ^ACP_Redetector, bridge_id, provider: string, now: time.Time) -> string {
+	if r == nil do return ""
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	p, present := r.pending[acp_redetect_key(bridge_id, provider)]
+	if !present || time.diff(p.sent_at, now) < ACP_REDETECT_INFLIGHT_TTL do return ""
+	return strings.clone(p.command_id, context.temp_allocator)
 }
 
 // acp_redetect_kind picks the request for a provider's current report.
@@ -102,7 +173,9 @@ acp_request_redetect :: proc(r: ^ACP_Redetector, bridge_id, provider: string, ki
 	dispatch, ctx := r.dispatch, r.ctx
 	if dispatch == nil { sync.mutex_unlock(&r.mutex); return false }
 	if r.last == nil do r.last = make(map[string]time.Time, allocator = runtime.default_allocator())
-	key := strings.concatenate({bridge_id, "\x1f", provider}, context.temp_allocator)
+	key := acp_redetect_key(bridge_id, provider)
+	// One re-detection in flight per provider, until its result or the TTL.
+	if p, busy := r.pending[key]; busy && time.diff(p.sent_at, now) < ACP_REDETECT_INFLIGHT_TTL { sync.mutex_unlock(&r.mutex); return false }
 	if last, seen := r.last[key]; seen {
 		if time.diff(last, now) < ACP_REDETECT_MIN_INTERVAL { sync.mutex_unlock(&r.mutex); return false }
 		old, _ := delete_key(&r.last, key)
