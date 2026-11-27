@@ -475,6 +475,13 @@ bridge_extension_frame :: proc(
 	if frame_type == "provider_discovery_report" && strings.has_prefix(command_id, ACP_REDETECT_COMMAND_PREFIX) {
 		return provider_acp_redetect_report(h, bridge_id, command_id, text)
 	}
+	// A re-detect discover the bridge failed or cancelled (e.g. its catalog was
+	// not ready) ends now, rather than suppressing re-detects until the TTL.
+	if frame_type == "command_result" && strings.has_prefix(command_id, ACP_REDETECT_COMMAND_PREFIX) {
+		status := json_string(text, "status", context.temp_allocator)
+		if status == "failed" || status == "cancelled" do provider_service.acp_redetect_pending_take(h.providers.redetector, bridge_id, command_id)
+		return {}
+	}
 	if !strings.has_prefix(command_id, "cmd_ext_") && !strings.has_prefix(command_id, "cmd_upd_") do return {}
 	sync.mutex_lock(&h.providers.extension_mutex)
 	defer sync.mutex_unlock(&h.providers.extension_mutex)

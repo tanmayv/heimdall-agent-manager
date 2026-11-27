@@ -1769,3 +1769,28 @@ r2_launch_gate_joins_a_user_install_without_owning_it :: proc(t: ^testing.T) {
 	testing.expect_value(t, provider_service.acp_redetect_pending_expired(&r, f.bridge_id, "copilot", time.time_add(time.now(), time.Hour)), "")
 	testing.expect_value(t, extension_test_state(t, f, user), "dispatched")
 }
+
+// A failed re-detect discover ends its in-flight state at once.
+@(test)
+r2_failed_redetect_discover_result_clears_in_flight :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := extension_test_setup(t, "r2_redetect_failed"); defer extension_test_teardown(f)
+	r: provider_service.ACP_Redetector
+	redetect_test_enable(t, f, &r); defer provider_service.acp_redetector_destroy(&r)
+	iface.bridge_provider_status_upsert(&f.pr_repo, {bridge_id = f.bridge_id, provider = "claude", profile_id = "claude", state = "present",
+		acp_adapter_json = `{"installed":false,"state":"missing_node","checked_at":"2026-11-27T00:00:00Z"}`})
+	sqlite.exec(&f.conn, "UPDATE bridge_provider_status SET acp_adapter_received_at='2020-01-01T00:00:00Z';")
+	redetect_test_read(t, f)
+	if !testing.expect_value(t, f.sink_rec.count, 1) do return
+	id := strings.clone(f.sink_rec.last_cmd.command_id, context.temp_allocator)
+	// Another bridge's failure for this id changes nothing.
+	failed := fmt.tprintf(`{{"command_id":"%s","status":"failed","error":{{"cause":"provider_catalog_not_ready"}}}}`, id)
+	testing.expect_value(t, bridge_extension_frame(&f.bh, "brg_other", "command_result", failed).code, domain.Error_Code.None)
+	provider_service.acp_redetector_clear_window(&r)
+	redetect_test_read(t, f)
+	testing.expect_value(t, f.sink_rec.count, 1) // still in flight
+	testing.expect_value(t, bridge_extension_frame(&f.bh, f.bridge_id, "command_result", failed).code, domain.Error_Code.None)
+	provider_service.acp_redetector_clear_window(&r)
+	redetect_test_read(t, f)
+	testing.expect_value(t, f.sink_rec.count, 2) // re-detected again
+}
