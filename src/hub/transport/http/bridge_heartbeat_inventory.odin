@@ -146,6 +146,8 @@ heartbeat_inventory_reports :: proc(value: json.Value, allocator: runtime.Alloca
 		ok := true
 		report.runtime_status, ok = heartbeat_inventory_optional_string(entry, "runtime_status")
 		if !ok do return reports, false
+		report.runtime_reason, ok = heartbeat_inventory_optional_string(entry, "runtime_reason")
+		if !ok do return reports, false
 		report.activity_status, ok = heartbeat_inventory_optional_string(entry, "activity_status")
 		if !ok do return reports, false
 		report.launch_epoch, ok = heartbeat_inventory_optional_string(entry, "launch_epoch")
@@ -201,7 +203,7 @@ bridge_apply_heartbeat_reports :: proc(h: ^Bridge_Handlers, bridge_id: string, g
 			continue
 		}
 		status_moved := false
-		if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, report.launch_epoch, changed = &status_moved, source = "bridge_heartbeat"); applied {
+		if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, report.launch_epoch, changed = &status_moved, source = "bridge_heartbeat", reason = report.runtime_reason); applied {
 			// A beat that only refreshed last_seen_at is not news (REQ-2).
 			if status_moved do publish_instance_changed(h.event_bus, inst, "status_changed")
 			domain.agent_instance_destroy(&inst)

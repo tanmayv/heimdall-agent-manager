@@ -217,11 +217,18 @@ bridge_agent_instance_reconcile_now :: proc() {
 		if handled[id] do continue
 		now := bridge_runtime_now_ms()
 		sync.mutex_lock(&bridge_runtime_mutex)
-		bridge_runtime_set_status_locked(id, "running", "idle", now, true)
+		snap, known := bridge_runtime_instance_snapshot_locked(id)
+		if bridge_runtime_stop_intent_active_locked(id, now) {
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			continue
+		}
+		// A roster sighting repairs lost/terminal state, but cannot promote a
+		// newly launched, not-yet-ready child or overwrite current activity.
+		restored := !known || !bridge_runtime_status_active(snap.runtime_status)
+		if restored do bridge_runtime_set_status_locked(id, "running", "idle", now, true, .pty_reconcile_live_child)
 		bridge_runtime_set_pty_process_alive_locked(id, true)
-		bridge_runtime_enqueue_status_push_locked(id)
 		sync.mutex_unlock(&bridge_runtime_mutex)
-		fmt.println("bridge agent reconcile: preserved live instance", id)
+		if restored do fmt.println("bridge agent reconcile: preserved live instance", id)
 	}
 
 	// 2. Reap instances on pty-host marked stopped by user
@@ -242,7 +249,7 @@ bridge_agent_instance_reconcile_now :: proc() {
 		if handled[id] do continue
 		now := bridge_runtime_now_ms()
 		sync.mutex_lock(&bridge_runtime_mutex)
-		bridge_runtime_set_status_locked(id, "stopped", "idle", now, true, "pty_reconcile_no_live_child")
+		bridge_runtime_set_status_locked(id, "stopped", "idle", now, true, .pty_reconcile_no_live_child)
 		bridge_runtime_set_pty_process_alive_locked(id, false)
 		bridge_runtime_enqueue_status_push_locked(id)
 		sync.mutex_unlock(&bridge_runtime_mutex)

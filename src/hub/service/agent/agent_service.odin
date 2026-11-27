@@ -24,6 +24,7 @@ import jsonx "odin_test:lib/jsonx"
 Agent_Service :: struct {
 	entitlements: domain.Entitlement_Lookup,
 	reconfiguration_mutex: sync.Mutex,
+	liveness_cache: Agent_Liveness_Cache,
 	agents: ^iface.Agent_Repository,
 	bridges: ^iface.Bridge_Repository,
 	projects: ^iface.Project_Repository,
@@ -1107,7 +1108,7 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 // failed; a successful start or a stop clears it, a retry in flight keeps it.
 // facts: when non-nil the lifecycle hook is NOT called; the fact is appended
 // for the caller to deliver after it releases its locks (review B1).
-apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "", launch_epoch: string = "", error_json: string = "", facts: ^[dynamic]Lifecycle_Fact = nil, changed: ^bool = nil, source := "bridge_status_report") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "", launch_epoch: string = "", error_json: string = "", facts: ^[dynamic]Lifecycle_Fact = nil, changed: ^bool = nil, source := "bridge_status_report", reason := "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	if changed != nil do changed^ = false
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
@@ -1119,6 +1120,7 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 		domain.agent_instance_destroy(&inst)
 		return {}, false, domain.domain_error(.Conflict, "superseded launch status report")
 	}
+	normalized_reason := runtime_observation_reason(reason)
 	effective_state_seq := state_seq
 	if effective_state_seq <= inst.last_applied_seq {
 		// Bridge runtime state is in-memory and can restart while ham-wrapper
@@ -1159,6 +1161,10 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	if runtime_status != "" {
 		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
 		inst.runtime_status = strings.clone(runtime_status)
+		if normalized_reason != "" && (inst.runtime_status != prior_runtime || inst.status_message == "") {
+			delete(inst.status_message)
+			inst.status_message = strings.clone(normalized_reason)
+		}
 	}
 	if activity_status != "" {
 		if len(inst.activity_status) > 0 do delete(inst.activity_status)
@@ -1206,10 +1212,16 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
 	if saved_ok {
-		log_runtime_terminal_transition(saved, prior_runtime, source, "reported_with_error" if error_json != "" else "reported_without_error")
+		log_runtime_terminal_transition(saved, prior_runtime, source, normalized_reason if normalized_reason != "" else ("reported_with_error" if error_json != "" else "reported_without_error"))
 		emit_fact(service, facts, Lifecycle_Fact{instance_id = instance_id, terminal = instance_runtime_is_terminal(saved.runtime_status), activity = activity_status})
 	}
 	return saved, saved_ok, save_err
+}
+
+runtime_observation_reason :: proc(reason: string) -> string {
+	if len(reason) > 64 do return ""
+	for ch in reason do if !(('a' <= ch && ch <= 'z') || ch == '_') do return ""
+	return reason
 }
 
 log_runtime_terminal_transition :: proc(inst: domain.Agent_Instance, previous, source, reason: string) {
@@ -1276,6 +1288,8 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 			// "stopped", stopped_at now, and the current-task pointer cleared.
 			if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
 			inst.runtime_status = strings.clone("unreachable")
+			delete(inst.status_message)
+			inst.status_message = strings.clone("liveness_timeout")
 			if len(inst.updated_at) > 0 do delete(inst.updated_at)
 			inst.updated_at = strings.clone(now)
 			if len(inst.startup_status) > 0 do delete(inst.startup_status)
@@ -1370,6 +1384,8 @@ mark_bridge_instances_unreachable :: proc(service: ^Agent_Service, bridge_id: st
 		defer delete(prior_runtime)
 		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
 		inst.runtime_status = strings.clone("unreachable")
+		delete(inst.status_message)
+		inst.status_message = strings.clone("bridge_disconnected")
 		if len(inst.activity_status) > 0 do delete(inst.activity_status)
 		inst.activity_status = strings.clone("idle")
 		if len(inst.updated_at) > 0 do delete(inst.updated_at)
@@ -1427,6 +1443,8 @@ reap_stale_instances :: proc(service: ^Agent_Service, stale_after_ms: i64) -> []
 		defer delete(prior_runtime)
 		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
 		inst.runtime_status = strings.clone("unreachable")
+		delete(inst.status_message)
+		inst.status_message = strings.clone("liveness_timeout")
 		if len(inst.activity_status) > 0 do delete(inst.activity_status)
 		inst.activity_status = strings.clone("idle")
 		if len(inst.updated_at) > 0 do delete(inst.updated_at)

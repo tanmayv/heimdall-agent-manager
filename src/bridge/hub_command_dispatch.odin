@@ -295,6 +295,8 @@ bridge_command_spec :: proc(command_type: string) -> (Bridge_Command_Spec, bool)
 		return Bridge_Command_Spec{class=.Interactive,priority=.Interactive,key_kind=.Bridge,queued=true,requires_id=true,timeout_ms=4000,cost_units=2},true
 	case "lsp_start":
 		return Bridge_Command_Spec{class = .Lifecycle, priority = .Interactive, key_kind = .LSP, queued = true, requires_id = true, timeout_ms = 15_000, cost_units = 4}, true
+	case "instance.probe":
+		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 2500, cost_units = 1, retry_safe = true}, true
 	case "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "task_status_changed_notify", "capture_agent_pane", "get_agent_pane", "acp_send_now_batch", "acp_inputs_read":
 		return Bridge_Command_Spec{class = .Interactive, priority = .Interactive, key_kind = .Agent, queued = true, requires_id = true, timeout_ms = 10_000, cost_units = 2}, true
 	case "provider_discover":
@@ -416,7 +418,7 @@ bridge_command_ordering_key :: proc(command_type, text: string) -> string {
 		defer delete(id)
 		if id != "" do return strings.concatenate({"agent:", id})
 		return strings.clone("agent-control")
-	case "event_deliver", "bot_deliver", "launch_agent", "launch_provider_test", "stop_agent", "agent_pty_input", "agent_pty_resize", "capture_agent_pane", "get_agent_pane", "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "acp_send_now_batch", "acp_inputs_read":
+	case "instance.probe", "event_deliver", "bot_deliver", "launch_agent", "launch_provider_test", "stop_agent", "agent_pty_input", "agent_pty_resize", "capture_agent_pane", "get_agent_pane", "notify_agent_message", "notify_task_nudge", "notify_shell_run", "notify_title_nudge", "acp_send_now_batch", "acp_inputs_read":
 		id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(id)
 		if id != "" do return strings.concatenate({"agent:", id})

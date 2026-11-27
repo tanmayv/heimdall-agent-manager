@@ -117,6 +117,7 @@ BRIDGE_STATE_SEQ_FLOOR_OFFSET_MS :: 3_600_000
 BRIDGE_STOP_INTENT_TTL_MS :: 15_000
 
 Bridge_Runtime_Instance :: struct {
+	runtime_reason: Bridge_Runtime_Reason,
 	acp_error_code: string,
 	runtime_transport: string,
 	acp_session_ready: bool,
@@ -1037,6 +1038,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if bridge_provider_catalog_handle_frame(conn, type, text) do return
 	if bridge_provider_handle_discover_frame(conn, type, text) do return
 	if bridge_provider_handle_models_frame(conn, type, text) do return
+	if type == "instance.probe" {
+		bridge_hub_handle_instance_probe(conn, text)
+		return
+	}
 	if type == "bridge_heartbeat_ack" {
 		// H7 cross-bridge reap: the hub tells us which of the instances we reported
 		// active have actually been relaunched on ANOTHER bridge. We hold a stale old
@@ -1053,7 +1058,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			n := bridge_agent_token_invalidate_instance(id)
 			if n > 0 {
 				fmt.println("bridge reap: instance relaunched on another bridge; invalidated local tokens", id, "count", n)
-				bridge_runtime_set_status(id, "stopped", "idle", "superseded_on_other_bridge")
+				bridge_runtime_set_status(id, "stopped", "idle", .superseded_on_other_bridge)
 				bridge_runtime_remove_launch(id)
 			}
 		}
@@ -2640,8 +2645,9 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 
 // bridge_wake_nudge_live_child delivers a wake run[] entry to a child that is
 // already running (T8: an agent is not re-bootstrapped per attempt or review
-// round). It requires a launch record, no stop intent, and a live child of
-// exactly this generation (`run_count`, confirmed with the PTY host). Then it
+// round). It requires no stop intent and a live child of exactly this generation
+// (`run_count`, confirmed with the PTY host using the persisted token record).
+// A bridge restart can discard the launch record without stopping the child. Then it
 // rewrites <run_dir>/TASK.md from the pack and types one line telling the agent
 // to run `ham-ctl lease next`. Returns false — the caller then launches — when
 // any precondition fails. A failed keystroke delivery still returns true: the
@@ -2649,8 +2655,10 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 // wake once and then parks the task (grant_unconfirmed).
 bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string) -> bool {
 	if run_count <= 0 || strings.trim_space(instance_id) == "" do return false
-	launch, has := bridge_runtime_get_launch(instance_id)
-	if !has do return false
+	if bridge_agent_instance_run_count(instance_id) != run_count do return false
+	lifecycle := bridge_agent_lifecycle_enter(instance_id)
+	defer bridge_agent_lifecycle_leave(lifecycle)
+	launch, _ := bridge_runtime_get_launch(instance_id)
 	sync.mutex_lock(&bridge_runtime_mutex)
 	stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
 	sync.mutex_unlock(&bridge_runtime_mutex)
@@ -2659,6 +2667,7 @@ bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: strin
 	if !daemon_ok do return false
 	confirmed, _ := bridge_startup_confirm_spawned(socket, instance_id, run_count)
 	if !confirmed do return false
+	if launch.run_dir == "" do fmt.eprintfln("agent_wake instance=%q source=bridge_wake_nudge_live_child reason=adopted_live_generation run_count=%d", instance_id, run_count)
 	if strings.has_prefix(strings.trim_space(pack_json), "{") {
 		bridge_taskv2_ensure_pack_worktree(pack_json)
 		run_dir := launch.run_dir
@@ -2893,7 +2902,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(credential_snapshot_2312)
 	boot_res := bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, credential_snapshot_2312, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache, deadline_ns)
 	if !boot_res.ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle", "bootstrap_failed")
+		bridge_runtime_set_status(instance_id, "failed", "idle", .bootstrap_failed)
 		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)
 		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
 		blog_error(.agent_bootstrap_invalid, blog_sym(.stage, blog_bootstrap_stage(boot_res.stage)), blog_int(.hub_status, i64(boot_res.http_status)), blog_provider(provider))
@@ -2947,7 +2956,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent, run_count)
 	bridge_startup_begin(agent_issue.plaintext_token)
 	if !bridge_bootstrap_materialize_local_provider_test(run_dir, endpoint, agent_issue.plaintext_token, instance_id, provider) {
-		bridge_runtime_set_status(instance_id, "failed", "idle", "provider_test_bootstrap_failed")
+		bridge_runtime_set_status(instance_id, "failed", "idle", .provider_test_bootstrap_failed)
 		return false, "provider test bootstrap failed", bridge_error(.agent_bootstrap_invalid)
 	}
 	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test", PROVIDER_TEST_TIMEOUT_SECONDS, provider_profile = provider_profile)
@@ -2973,7 +2982,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	// back to the default profile, which could run under the wrong account.
 	pp, pp_err := profile_lookup(provider, provider_profile)
 	if pp_err != .None {
-		bridge_runtime_set_status(instance_id, "failed", "idle", "provider_profile_unavailable")
+		bridge_runtime_set_status(instance_id, "failed", "idle", .provider_profile_unavailable)
 		return false, profile_error_code(pp_err), bridge_error(.agent_launch_failed, .unsupported)
 	}
 	pp_ref: ^Provider_Profile = &pp
@@ -2985,13 +2994,13 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok {
-		bridge_runtime_set_status(instance_id, "unreachable", "idle", "pty_host_unavailable")
+		bridge_runtime_set_status(instance_id, "unreachable", "idle", .pty_host_unavailable)
 		return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
 	}
 
 	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, model, agent_token, env, display_name, timeout_seconds, permission_mode, pp_ref)
 	if !req_ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle", "provider_command_unavailable")
+		bridge_runtime_set_status(instance_id, "failed", "idle", .provider_command_unavailable)
 		blog_error(.provider_missing, blog_provider(provider))
 		return false, "provider has no runnable command", bridge_error(.provider_missing)
 	}
@@ -3010,7 +3019,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	}
 	roster, listed := bridge_pty_host_list(socket)
 	if !listed {
-		bridge_runtime_set_status(instance_id, "blocked", "idle", "pty_inventory_unavailable")
+		bridge_runtime_set_status(instance_id, "blocked", "idle", .pty_inventory_unavailable)
 		return false, "cannot inspect existing PTY runtime before spawn", bridge_error(.pty_host_unreachable)
 	}
 	registered := false
@@ -3018,7 +3027,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	pty_host_reply_delete(roster)
 	if registered {
 		if !bridge_pty_host_close(socket, instance_id) {
-			bridge_runtime_set_status(instance_id, "blocked", "idle", "previous_pty_close_unconfirmed")
+			bridge_runtime_set_status(instance_id, "blocked", "idle", .previous_pty_close_unconfirmed)
 			blog_error(.agent_launch_failed, blog_provider(provider), blog_sym(.stage, .spawn), blog_sym(.reason, .replaced))
 			return false, "failed to close existing instance before respawn", bridge_error(.agent_launch_failed, .replaced)
 		}
@@ -3038,7 +3047,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 			live := false
 			for child in children.agents do if child.instance_id == instance_id && child.alive do live = true
 			pty_host_reply_delete(children)
-			bridge_runtime_set_status(instance_id, "failed" if queried && !live else "blocked", "idle", "pty_spawn_unconfirmed")
+			bridge_runtime_set_status(instance_id, "failed" if queried && !live else "blocked", "idle", .pty_spawn_unconfirmed)
 			blog_error(.agent_launch_failed, blog_provider(provider), blog_sym(.stage, .spawn))
 			return false, "ham-pty-host spawn failed", bridge_error(.agent_launch_failed, .spawn)
 		}
@@ -3108,7 +3117,7 @@ bridge_runtime_stop_agent_process :: proc(instance_id: string, force: bool, bot_
 	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated)
 	// Drop any in-memory launch record so we don't hold stale pane/token data.
 	bridge_runtime_remove_launch(instance_id)
-	bridge_runtime_set_status(instance_id, "stopped", "idle", "pty_stop_confirmed")
+	bridge_runtime_set_status(instance_id, "stopped", "idle", .pty_stop_confirmed)
 	return true
 }
 
@@ -3296,9 +3305,9 @@ bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, la
 		if inst.agent_instance_id != instance_id do continue
 		if launch_started && inst.runtime_status == "starting" {
 			if inst.pty_process_alive {
-				bridge_runtime_set_status_locked(instance_id, "blocked", "idle", bridge_runtime_now_ms(), true, "launch_command_failed_live_child")
+				bridge_runtime_set_status_locked(instance_id, "blocked", "idle", bridge_runtime_now_ms(), true, .launch_command_failed_live_child)
 			} else {
-				bridge_runtime_set_status_locked(instance_id, "failed", "idle", bridge_runtime_now_ms(), true, "launch_command_failed")
+				bridge_runtime_set_status_locked(instance_id, "failed", "idle", bridge_runtime_now_ms(), true, .launch_command_failed)
 			}
 		}
 		if inst.runtime_status == "failed" {
@@ -3331,7 +3340,7 @@ bridge_runtime_stop_or_restore_unlocked :: proc(instance_id: string, force: bool
 		runtime_status, activity = prior_runtime, prior_activity
 	}
 	bridge_runtime_clear_stop_intent(instance_id)
-	bridge_runtime_set_status(instance_id, runtime_status, activity, "stop_unconfirmed_restore")
+	bridge_runtime_set_status(instance_id, runtime_status, activity, .stop_unconfirmed_restore)
 	return false, strings.clone(runtime_status)
 }
 
@@ -3345,7 +3354,7 @@ bridge_runtime_status_snapshot :: proc(instance_id: string) -> (runtime_status, 
 	return "", "", false
 }
 
-bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: string, reason := "", loc := #caller_location) {
+bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: string, reason: Bridge_Runtime_Reason = .lifecycle, loc := #caller_location) {
     defer {
         if runtime_status == "stopped" || runtime_status == "failed" || runtime_status == "unreachable" do bridge_tool_live_clear(instance_id)
     }
@@ -3399,7 +3408,7 @@ bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activi
 		// remains "starting" until the agent explicitly calls start-success.
 		if !inst.start_success_seen {
 			if inst.runtime_status == "failed" {
-				bridge_runtime_set_status_with_source_locked(instance_id, "failed", activity, activity_source, now, true, false)
+				bridge_runtime_set_status_with_source_locked(instance_id, "failed", activity, activity_source, now, true, false, .Activity, .activity_observed)
 				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
 			} else if inst.runtime_status == "blocked" {
 				// A wrapper liveness/activity ping proves the process is alive but does NOT
@@ -3407,16 +3416,16 @@ bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activi
 				// only liveness/activity) instead of forcing it back to "starting", which
 				// would erase the blocked signal on the very next ping. Only an explicit
 				// start-success (-> "running", start_success_seen) clears it.
-				bridge_runtime_set_status_with_source_locked(instance_id, "blocked", activity, activity_source, now, true, false)
+				bridge_runtime_set_status_with_source_locked(instance_id, "blocked", activity, activity_source, now, true, false, .Activity, .activity_observed)
 			} else {
-				bridge_runtime_set_status_with_source_locked(instance_id, "starting", activity, activity_source, now, true, false)
+				bridge_runtime_set_status_with_source_locked(instance_id, "starting", activity, activity_source, now, true, false, .Activity, .activity_observed)
 				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, inst.runtime_status == "unreachable" || inst.runtime_status == "stopped")
 			}
 			sync.mutex_unlock(&bridge_runtime_mutex)
 			if should_prompt do bridge_wrapper_push_startup_prompt(instance_id)
 			return
 		}
-		bridge_runtime_set_status_with_source_locked(instance_id, "running", activity, activity_source, now, true, false)
+		bridge_runtime_set_status_with_source_locked(instance_id, "running", activity, activity_source, now, true, false, .Activity, .activity_observed)
 		sync.mutex_unlock(&bridge_runtime_mutex)
 		return
 	}
@@ -3424,7 +3433,7 @@ bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activi
 	// running. Rediscover it as "starting" rather than "running"; Hub will keep a
 	// durable already-ready instance running if appropriate, and otherwise the pane
 	// receives an explicit start-success prompt.
-	bridge_runtime_set_status_with_source_locked(instance_id, "starting", activity, activity_source, now, true, false)
+	bridge_runtime_set_status_with_source_locked(instance_id, "starting", activity, activity_source, now, true, false, .Activity, .activity_observed)
 	should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	if should_prompt do bridge_wrapper_push_startup_prompt(instance_id)
@@ -3490,16 +3499,52 @@ bridge_runtime_mark_start_success :: proc(instance_id: string) {
 	bridge_runtime_set_status_locked(instance_id, "running", "idle", now, true)
 }
 
-bridge_runtime_log_terminal_transition :: proc(instance_id, from, to, reason: string, loc := #caller_location) {
-	if from == to || (to != "stopped" && to != "failed" && to != "unreachable") do return
-	fmt.eprintfln("agent_runtime_transition component=bridge instance=%q from=%q to=%q source=%q line=%d reason=%q", instance_id, from, to, loc.procedure, loc.line, reason)
+Bridge_Runtime_Source :: enum {Lifecycle, Activity, Inventory, Deadline}
+Bridge_Runtime_Reason :: enum {
+	lifecycle,
+	activity_observed,
+	liveness_timeout,
+	start_success_timeout_no_live_child,
+	acp_close_unconfirmed,
+	acp_error_child_closed,
+	acp_failed_intent,
+	acp_inventory_unavailable,
+	acp_recovery_child_closed,
+	acp_recovery_close_unconfirmed,
+	acp_stop_confirmed,
+	acp_terminal_checkpoint,
+	bootstrap_failed,
+	launch_command_failed,
+	launch_command_failed_live_child,
+	previous_pty_close_unconfirmed,
+	provider_command_unavailable,
+	provider_profile_unavailable,
+	provider_test_bootstrap_failed,
+	pty_child_exited,
+	pty_host_unavailable,
+	pty_inventory_unavailable,
+	pty_reconcile_live_child,
+	pty_reconcile_no_live_child,
+	pty_spawn_unconfirmed,
+	pty_stop_confirmed,
+	start_success_timeout,
+	stop_unconfirmed_restore,
+	superseded_on_other_bridge,
+	waiting_user,
+	wrapper_exit_report,
+	wrapper_startup_failed,
 }
 
-bridge_runtime_set_status_locked :: proc(instance_id, runtime_status, activity_status: string, now: i64, touch_seen: bool, reason := "", loc := #caller_location) {
-	bridge_runtime_set_status_with_source_locked(instance_id, runtime_status, activity_status, "bridge", now, touch_seen, true, reason, loc)
+bridge_runtime_log_transition :: proc(instance_id, from, to: string, source: Bridge_Runtime_Source, reason: Bridge_Runtime_Reason, loc := #caller_location) {
+	if from == to do return
+	fmt.eprintfln("agent_runtime_transition component=bridge instance=%q from=%q to=%q source=%v proc=%q line=%d reason=%v", instance_id, from, to, source, loc.procedure, loc.line, reason)
 }
 
-bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status, activity_status, activity_source: string, now: i64, touch_seen: bool, force_activity: bool, reason := "", loc := #caller_location) {
+bridge_runtime_set_status_locked :: proc(instance_id, runtime_status, activity_status: string, now: i64, touch_seen: bool, reason: Bridge_Runtime_Reason = .lifecycle, loc := #caller_location) {
+	bridge_runtime_set_status_with_source_locked(instance_id, runtime_status, activity_status, "bridge", now, touch_seen, true, .Lifecycle, reason, loc)
+}
+
+bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status, activity_status, activity_source: string, now: i64, touch_seen: bool, force_activity: bool, source: Bridge_Runtime_Source, reason: Bridge_Runtime_Reason, loc := #caller_location) {
 	// Registry snapshots outlive the RPC/test context that reported the status.
 	context.allocator = runtime.heap_allocator()
 	for i in 0..<len(bridge_runtime_instances) {
@@ -3508,7 +3553,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 			old_runtime := inst.runtime_status
 			accept_activity := activity_status != "" && (force_activity || bridge_runtime_accept_activity_update(inst, activity_source, now))
 			runtime_changed := inst.runtime_status != runtime_status
-			bridge_runtime_log_terminal_transition(instance_id, old_runtime, runtime_status, reason, loc)
+			bridge_runtime_log_transition(instance_id, old_runtime, runtime_status, source, reason, loc)
 			activity_changed := accept_activity && inst.activity_status != activity_status
 			if inst.runtime_transport == "acp" && (activity_changed || (!accept_activity && activity_status != "" && inst.activity_status != activity_status)) {
 				// Only bounded state labels and identity: never prompt/tool payloads.
@@ -3518,6 +3563,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
 				if runtime_status != "failed" do inst.has_last_error = false
 				inst.runtime_status = runtime_status
+				if runtime_changed do inst.runtime_reason = reason
 				if accept_activity do inst.activity_status = activity_status
 			}
 			// Independent lifecycle and screen-derived transitions reach the hub
@@ -3560,8 +3606,8 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 	// plus a safety offset so post-relaunch reports remain newer than prior Hub seqs
 	// even if direct agent-actions (like repeated start-success) advanced the DB.
 	if bridge_runtime_instances == nil do bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
-	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen, pty_process_alive = (runtime_status == "running")})
-	bridge_runtime_log_terminal_transition(instance_id, "", runtime_status, reason, loc)
+	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), runtime_reason = reason, activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen, pty_process_alive = (runtime_status == "running")})
+	bridge_runtime_log_transition(instance_id, "", runtime_status, source, reason, loc)
 	if !strings.contains(activity_source, "extension") do bridge_runtime_enqueue_status_push_locked(instance_id)
 }
 
@@ -3685,14 +3731,8 @@ bridge_runtime_touch_liveness :: proc(instance_id: string, pty_process_alive: bo
 			inst := &bridge_runtime_instances[i]
 			if pty_process_alive do inst.pty_process_alive = true
 			if inst.runtime_status == "unreachable" {
-				if inst.start_success_seen {
-					inst.runtime_status = "running"
-				} else {
-					inst.runtime_status = "starting"
-				}
-				inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
-				bridge_runtime_enqueue_status_push_locked(instance_id)
-			} else if !bridge_runtime_status_active(inst.runtime_status) {
+                bridge_runtime_set_status_with_source_locked(instance_id, "running" if inst.start_success_seen else "starting", inst.activity_status, "bridge", now, true, false, .Inventory, .pty_reconcile_live_child)
+            } else if !bridge_runtime_status_active(inst.runtime_status) {
 				return
 			}
 			inst.last_seen_unix_ms = now
@@ -3740,6 +3780,7 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	strings.write_string(&b, "\",\"activity_source\":\"")
 	bridge_runtime_write_json_string(&b, inst.activity_source)
 	strings.write_string(&b, "\"")
+	strings.write_string(&b, fmt.tprintf(",\"runtime_reason\":\"%v\"", inst.runtime_reason))
 	bridge_runtime_write_instance_error(&b, inst)
 	// Optional small snapshot (extension_token_usage.odin); hubs that predate it
 	// ignore the unknown members. Every caller sends the frame it builds, so a
@@ -3926,6 +3967,7 @@ bridge_hub_heartbeat_json_shaped :: proc(shape: Bridge_Heartbeat_Shape, roster: 
 			launch_epoch      = strings.clone(epoch, context.temp_allocator),
 			state_seq         = inst.state_seq,
 			runtime_status    = inst.runtime_status,
+			runtime_reason    = inst.runtime_reason,
 			activity_status   = inst.activity_status,
 		})
 		delete(epoch)
@@ -3947,6 +3989,7 @@ Bridge_Heartbeat_Instance :: struct {
 	launch_epoch:      string,
 	state_seq:         int,
 	runtime_status:    string,
+	runtime_reason:    Bridge_Runtime_Reason,
 	activity_status:   string,
 }
 
@@ -4038,7 +4081,9 @@ bridge_heartbeat_frame_json :: proc(frame: Bridge_Heartbeat_Frame, shape: Bridge
 		bridge_runtime_write_json_string(&b, inst.runtime_status)
 		strings.write_string(&b, `","activity_status":"`)
 		bridge_runtime_write_json_string(&b, inst.activity_status)
-		strings.write_string(&b, `"}`)
+		strings.write_string(&b, `"`)
+		if inst.runtime_reason != .lifecycle do strings.write_string(&b, fmt.tprintf(",\"runtime_reason\":\"%v\"", inst.runtime_reason))
+		strings.write_byte(&b, '}')
 	}
 	strings.write_string(&b, "]}")
 	return strings.to_string(b)
@@ -4053,13 +4098,7 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 				inst.last_seen_unix_ms = now
 				continue
 			}
-			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
-			bridge_runtime_log_terminal_transition(inst.agent_instance_id, inst.runtime_status, "unreachable", "liveness_timeout")
-			inst.runtime_status = "unreachable"
-			inst.activity_status = "idle"
-			inst.activity_source = "bridge"
-			inst.activity_updated_unix_ms = now
-			inst.start_deadline_unix_ms = 0
+			bridge_runtime_set_status_with_source_locked(inst.agent_instance_id, "unreachable", "idle", "bridge", now, false, true, .Deadline, .liveness_timeout)
 			continue
 		}
 		if inst.runtime_status == "starting" && !inst.start_success_seen && inst.start_deadline_unix_ms > 0 && now >= inst.start_deadline_unix_ms {
@@ -4067,12 +4106,10 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 				// Process liveness and readiness are independent. Keep this
 				// instance active but not ready so the Hub cannot replace it.
 				fmt.eprintfln("agent_startup_blocked instance=%q reason=start_success_timeout child_alive=true", inst.agent_instance_id)
-				bridge_runtime_set_status_locked(inst.agent_instance_id, "blocked", "idle", now, false, "start_success_timeout")
+				bridge_runtime_set_status_locked(inst.agent_instance_id, "blocked", "idle", now, false, .start_success_timeout)
 				continue
 			}
-			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
-			bridge_runtime_log_terminal_transition(inst.agent_instance_id, inst.runtime_status, "failed", "start_success_timeout_no_live_child")
-			inst.runtime_status = "failed"
+			bridge_runtime_set_status_with_source_locked(inst.agent_instance_id, "failed", "idle", "bridge", now, false, true, .Deadline, .start_success_timeout_no_live_child)
 			inst.last_error = bridge_error(.agent_launch_failed, .timeout)
 			inst.has_last_error = true
 			inst.activity_status = "idle"

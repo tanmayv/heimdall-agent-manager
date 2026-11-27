@@ -26,11 +26,11 @@ test_wake_nudge_line_names_lease_and_lease_next :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(review, "\n"), "one line")
 }
 
-// Without a launch record (or a generation) the nudge path declines, so the
-// handler falls back to a full launch — no daemon is contacted.
+// Without a persisted generation the nudge path declines, so the handler
+// falls back to a full launch — no daemon is contacted.
 @(test)
-test_wake_nudge_declines_without_launch_record :: proc(t: ^testing.T) {
-	testing.expect(t, !bridge_wake_nudge_live_child("t8_nudge_never_launched", "task", "worker", "lease", 3, "{}"), "no launch record → launch")
+test_wake_nudge_declines_without_persisted_generation :: proc(t: ^testing.T) {
+	testing.expect(t, !bridge_wake_nudge_live_child("t8_nudge_never_launched", "task", "worker", "lease", 3, "{}"), "no persisted generation → launch")
 	testing.expect(t, !bridge_wake_nudge_live_child("t8_nudge_never_launched", "task", "worker", "lease", 0, "{}"), "no generation → launch")
 }
 
@@ -54,12 +54,19 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 		bridge_local_token_records = saved_records
 		sync.mutex_unlock(&bridge_local_token_mutex)
 	}
-	run_dir := fmt.tprintf("/tmp/ham-t8-nudge-run-%d", os.get_pid())
+	root := fmt.tprintf("/tmp/ham-t8-nudge-run-%d", os.get_pid())
+	saved_run_dir := bridge_config.local_endpoint_run_dir
+	bridge_config.local_endpoint_run_dir = root
+	defer bridge_config.local_endpoint_run_dir = saved_run_dir
+	run_dir := bridge_runtime_default_run_dir(id)
+	defer delete(run_dir)
 	_ = bridge_make_directory_all(run_dir)
 	task_md := fmt.tprintf("%s/TASK.md", run_dir)
 	defer {
 		_ = os.remove(task_md)
 		_ = os.remove(run_dir)
+		_ = os.remove(fmt.tprintf("%s/instances", root))
+		_ = os.remove(root)
 	}
 	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = id, run_dir = run_dir})
 	defer bridge_runtime_remove_launch(id)
@@ -153,12 +160,22 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	})
 	defer delete(wake)
 	bridge_hub_handle_wake_agent(nil, wake)
+	launch, has := bridge_runtime_get_launch(id)
+	testing.expect(t, has && launch.role == "worker", "launch record kept, role refreshed")
+	// Model the state after restart: the token and live daemon survived, and
+	// adoption restored runtime readiness but not the in-memory launch record.
+	bridge_runtime_remove_launch(id)
+	bridge_runtime_set_status(id, "running", "idle")
+	_ = os.remove(task_md)
+	bridge_hub_handle_wake_agent(nil, wake)
+	snapshot, _ := bridge_runtime_instance_snapshot(id)
+	testing.expect(t, snapshot.runtime_status == "running" && snapshot.start_success_seen, "same-generation wake preserves readiness")
 	sync.atomic_store(&server.stop, true)
 	thread.join(worker)
 
 	testing.expect_value(t, server.unexpected, 0) // no close / spawn: the child is kept
-	testing.expect_value(t, server.queries, 1)
-	testing.expect(t, server.inputs >= 1 && server.keys >= 1, "one line typed and submitted")
+	testing.expect_value(t, server.queries, 2)
+	testing.expect(t, server.inputs >= 2 && server.keys >= 2, "typed and submitted before and after losing the launch record")
 	typed := string(server.typed[:])
 	testing.expect(t, strings.contains(typed, "ham-ctl lease next") && strings.contains(typed, "lease_t8"), typed)
 	md, read_err := os.read_entire_file(task_md, context.allocator)
@@ -169,6 +186,4 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	sync.mutex_lock(&bridge_local_token_mutex)
 	testing.expect_value(t, bridge_local_token_records[0].invalidated_at_unix_ms, 0) // token not rotated
 	sync.mutex_unlock(&bridge_local_token_mutex)
-	launch, has := bridge_runtime_get_launch(id)
-	testing.expect(t, has && launch.role == "worker", "launch record kept, role refreshed")
 }

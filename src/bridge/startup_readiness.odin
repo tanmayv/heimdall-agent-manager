@@ -404,6 +404,7 @@ bridge_startup_confirm_spawned :: proc(socket, instance_id: string, run_count: i
 	}
 	// Restore startup state after bridge restart or a lost Spawn acknowledgment.
 	// Duplicate delivery must preserve an already-recorded ready/fallback receipt.
+	was_ready := exists && inst.start_success_seen
 	if !exists || inst.startup.generation == 0 || inst.startup.launch_key != rec.token_hash {
 		bridge_startup_begin_locked(rec, now)
 	}
@@ -412,7 +413,7 @@ bridge_startup_confirm_spawned :: proc(socket, instance_id: string, run_count: i
 		current.pty_process_alive = true
 		current.startup.pty_pid = pid
 		if current.startup.armed_at_ms == 0 do current.startup.armed_at_ms = now
-		ready := current.start_success_seen || current.startup.ready_pending || current.startup.ready_delivered || bridge_operation_terminal({state = current.startup.relay_state})
+		ready := was_ready || current.start_success_seen || current.startup.ready_pending || current.startup.ready_delivered || bridge_operation_terminal({state = current.startup.relay_state})
 		if current.runtime_status == "failed" || current.runtime_status == "unknown" || current.runtime_status == "starting" {
 			bridge_runtime_set_status_locked(instance_id, "running" if ready else "starting", "idle" if ready else "active", now, true)
 		}

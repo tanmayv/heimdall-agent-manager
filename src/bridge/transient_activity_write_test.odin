@@ -107,7 +107,7 @@ test_transient_activity_ingestion_has_zero_outgoing_status_or_hub_saves :: proc(
 test_transient_extension_rediscovery_does_not_enqueue_status :: proc(t: ^testing.T) {
     id := "inst_transient_rediscovery"
     sync.mutex_lock(&bridge_runtime_mutex)
-    bridge_runtime_set_status_with_source_locked(id, "starting", "active", "codex_extension", bridge_runtime_now_ms(), true, false)
+    bridge_runtime_set_status_with_source_locked(id, "starting", "active", "codex_extension", bridge_runtime_now_ms(), true, false, .Activity, .activity_observed)
     queued := false
     for pending in bridge_runtime_status_outgoing do if pending == id do queued = true
     sync.mutex_unlock(&bridge_runtime_mutex)
