@@ -9,7 +9,6 @@ const {
   profileEnvelope,
   generateProfileId,
   configDirectoryMode,
-  configDirectoryProviders,
   generateConfigDirectory,
   profileIdentityError,
   encodeProfileArgs,
@@ -279,9 +278,11 @@ test('mounted wizard validates identity, environment never reveals stored secret
   const store = await makeVaultStore();
   await unlockVault(store, keyHex);
   const previousFetch = globalThis.fetch;
+  const claudeConfigDir = { field: 'config_dir', env: 'CLAUDE_CONFIG_DIR' };
   const status = ['claude', 'claude_one', 'claude_two'].map((id) => ({
     provider: 'claude',
     profile_id: id,
+    profile_config_dir: claudeConfigDir,
     enabled: true,
     state: 'present',
     catalog_state: 'active',
@@ -520,6 +521,7 @@ test('mounted wizard validates identity, environment never reveals stored secret
       const [p, setP] = React.useState(latest);
       return React.createElement(ProfileRuntimeEditor, {
         profile: p,
+        configDir: claudeConfigDir,
         onChange: (next: any) => {
           latest = next;
           setP(next);
@@ -565,6 +567,7 @@ test('mounted wizard validates identity, environment never reveals stored secret
       root.render(
         React.createElement(ProfileRuntimeEditor, {
           profile: latest,
+          configDir: claudeConfigDir,
           onChange() {},
           disabled: true,
         }),
@@ -572,6 +575,30 @@ test('mounted wizard validates identity, environment never reveals stored secret
     );
     assert.equal(q('profile-config-dir-mode').matches(':disabled'), true);
     assert.equal(q('profile-config-config_dir').matches(':disabled'), true);
+    // The Hub's profile_config_dir alone decides which directory field renders.
+    const renderEditor = (provider: string, configDir: any) =>
+      act(async () =>
+        root.render(
+          React.createElement(ProfileRuntimeEditor, {
+            key: provider + JSON.stringify(configDir),
+            profile: { ...profile(provider + '_x'), provider, config: {} },
+            configDir,
+            onChange() {},
+          }),
+        ),
+      );
+    await renderEditor('copilot', { field: 'config_dir', env: 'COPILOT_HOME' });
+    assert.ok(q('profile-config-dir-mode'), 'copilot gets the config directory from the Hub');
+    assert.equal(q('profile-config-home_path'), null);
+    await change('profile-config-dir-mode', 'custom');
+    assert.match(dom.window.document.body.textContent || '', /Sets COPILOT_HOME\./);
+    await renderEditor('codex', { field: 'home_path', env: 'CODEX_HOME' });
+    assert.equal(q('profile-config-dir-mode'), null);
+    assert.ok(q('profile-config-home_path'));
+    assert.match(dom.window.document.body.textContent || '', /Sets CODEX_HOME\. Leave blank to inherit\./);
+    await renderEditor('claude', null);
+    assert.equal(q('profile-config-dir-mode'), null, 'older Hub (no profile_config_dir) hides the field');
+    assert.equal(q('profile-config-home_path'), null);
     const picks: any[] = [];
     await act(async () => {
       root.render(
@@ -698,8 +725,33 @@ test('random directory recognition handles resolved Windows and Unix paths witho
   assert.equal(configDirectoryMode(''), 'inherit');
   assert.equal(configDirectoryMode('/private/account'), 'custom');
   assert.equal(configDirectoryMode('~/.heimdall-kiro-12345678-1234-1234-1234-123456789abc'), 'random');
-  assert.equal(configDirectoryMode('~/.heimdall-copilot-12345678-1234-1234-1234-123456789abc'), 'custom');
-  assert.match(generateConfigDirectory('kiro'), /^~\/\.heimdall-kiro-[0-9a-f-]{36}$/);
-  assert.match(generateConfigDirectory(), /^~\/\.heimdall-claude-/);
-  assert.ok(configDirectoryProviders.has('kiro') && configDirectoryProviders.has('claude') && !configDirectoryProviders.has('copilot'));
+  assert.equal(configDirectoryMode('~/.heimdall-copilot-12345678-1234-1234-1234-123456789abc'), 'random');
+  assert.equal(configDirectoryMode('~/.heimdall--12345678-1234-1234-1234-123456789abc'), 'custom');
+  assert.equal(configDirectoryMode('~/.heimdall-copilot-not-a-uuid'), 'custom');
+  for (const provider of ['claude', 'kiro', 'copilot', 'opencode']) {
+    const dir = generateConfigDirectory(provider);
+    assert.match(dir, new RegExp('^~/\\.heimdall-' + provider + '-[0-9a-f-]{36}$'));
+    assert.equal(configDirectoryMode(dir), 'random');
+  }
+  assert.match(generateConfigDirectory('Odd/Name'), /^~\/\.heimdall-oddname-[0-9a-f-]{36}$/);
+});
+
+test('provider status rows keep open provider ids and normalize profile_config_dir', async () => {
+  const { normalizeProviderStatus, normalizeProfileConfigDir } = await import('../src/ui/api/endpoints/bridgeSupport.ts');
+  const status = await normalizeProviderStatus({
+    providers: [
+      { provider: 'claude', profile_config_dir: { field: 'config_dir', env: 'CLAUDE_CONFIG_DIR' } },
+      { provider: 'codex', profile_config_dir: { field: 'home_path', env: 'CODEX_HOME' } },
+      { provider: 'future-cli' },
+      { provider: 'pi', profile_config_dir: null },
+    ],
+  });
+  assert.deepEqual(status.providers.map((p: any) => p.provider), ['claude', 'codex', 'future-cli', 'pi']);
+  assert.deepEqual(status.providers[0].profile_config_dir, { field: 'config_dir', env: 'CLAUDE_CONFIG_DIR' });
+  assert.deepEqual(status.providers[1].profile_config_dir, { field: 'home_path', env: 'CODEX_HOME' });
+  assert.equal(status.providers[2].profile_config_dir, null, 'older Hub: field missing');
+  assert.equal(status.providers[3].profile_config_dir, null);
+  assert.equal(normalizeProfileConfigDir({ field: 'shadow_home_path', env: 'X' }), null);
+  assert.equal(normalizeProfileConfigDir('config_dir'), null);
+  assert.deepEqual(normalizeProfileConfigDir({ field: 'config_dir' }), { field: 'config_dir', env: '' });
 });

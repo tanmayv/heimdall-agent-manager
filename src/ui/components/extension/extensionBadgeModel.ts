@@ -18,6 +18,8 @@ export interface ProviderExtensionStatus {
   min_version: string;
   install_hint: string;
   capabilities: string[];
+  /** Hub-declared: this bridge can install/update/uninstall the extension. False from an older Hub. */
+  installable: boolean;
 }
 
 export type ExtensionBadgeTone = 'success' | 'warning' | 'neutral' | 'danger';
@@ -51,6 +53,7 @@ export function normalizeProviderExtension(raw: any): ProviderExtensionStatus | 
     min_version: str(raw.min_version),
     install_hint: str(raw.install_hint),
     capabilities: Array.isArray(raw.capabilities) ? raw.capabilities.filter((c: unknown) => typeof c === 'string') : [],
+    installable: raw.installable === true,
   };
 }
 

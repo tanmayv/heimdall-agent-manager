@@ -7,10 +7,10 @@ import { apiErrorText, cookieMutation } from '../../api/cookieFetch';
 import { selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { encryptVaultText } from '../../utils/vaultCrypto';
 import { providerSetupApi, type BridgeProviderStatus, type ProviderSetupResponse } from './providerSetupApi';
+import type { ProfileConfigDir } from '../../api/endpoints/bridgeSupport';
 import ProviderRuntimeControl from './ProviderRuntimeControl';
 import {
   configDirectoryMode,
-  configDirectoryProviders,
   generateConfigDirectory,
   type ConfigDirectoryMode,
   decodeProfileArgs,
@@ -47,15 +47,20 @@ const newProfile = (provider: string, used: string[]): ProviderProfile => ({
 
 export function ProfileRuntimeEditor({
   profile,
+  configDir = null,
   onChange,
   disabled = false,
   onValidationChange,
 }: {
   profile: ProviderProfile;
+  /** Hub-declared config directory for profile.provider (row.profile_config_dir); null hides it. */
+  configDir?: ProfileConfigDir | null;
   onChange: (p: ProviderProfile) => void;
   disabled?: boolean;
   onValidationChange?: (error: string) => void;
 }) {
+  const ownsConfigDir = configDir?.field === 'config_dir';
+  const setsEnv = (rest: string) => (configDir?.env ? `Sets ${configDir.env}. ${rest}` : rest);
   const config = (key: keyof ProviderProfile['config'], value: unknown) =>
     onChange({ ...profile, config: { ...profile.config, [key]: value } });
   const row = (
@@ -116,7 +121,7 @@ export function ProfileRuntimeEditor({
   const randomDirectory = useRef(directoryMode === 'random' ? profile.config.config_dir || '' : '');
   const customDirectory = useRef(directoryMode === 'custom' ? profile.config.config_dir || '' : '');
   const directoryError =
-    configDirectoryProviders.has(profile.provider) &&
+    ownsConfigDir &&
     directoryMode === 'custom' &&
     !profile.config.config_dir?.trim()
       ? 'Enter a custom config directory.'
@@ -153,7 +158,7 @@ export function ProfileRuntimeEditor({
       <section className="space-y-3">
         <Text as="h2" role="heading">Runtime</Text>
         {row('binary_path', 'Binary', 'Optional executable name or absolute path on this bridge.')}
-        {configDirectoryProviders.has(profile.provider) ? (
+        {ownsConfigDir ? (
           <div className="space-y-2">
             <label className="block space-y-1">
               <span className="text-sm font-medium">Config directory</span>
@@ -195,12 +200,10 @@ export function ProfileRuntimeEditor({
             ) : null}
             <p className="text-xs text-muted">
               {directoryMode === 'inherit'
-                ? `Use the bridge’s default ${profile.provider === 'kiro' ? 'Kiro login and settings' : 'Claude configuration'}.`
+                ? 'Use the bridge’s default login and settings for this provider.'
                 : directoryMode === 'random'
                   ? 'A new private directory is created on save. Sign in once for this profile. The directory stays the same when reopened.'
-                  : profile.provider === 'kiro'
-                    ? 'Sets KIRO_HOME, and XDG_DATA_HOME to <directory>/data for the Kiro login. Use an absolute path or ~ for the bridge home.'
-                    : 'Sets CLAUDE_CONFIG_DIR. Use an absolute path or ~ for the bridge home.'}
+                  : setsEnv('Use an absolute path or ~ for the bridge home.')}
             </p>
             {directoryError ? (
               <p role="alert" className="text-xs text-danger">
@@ -209,16 +212,16 @@ export function ProfileRuntimeEditor({
             ) : null}
           </div>
         ) : null}
-        {profile.provider === 'codex' ? (
-          <>
-            {row('home_path', 'Codex home', 'Sets CODEX_HOME. Leave blank to inherit.')}
-            {row(
+        {configDir?.field === 'home_path'
+          ? row('home_path', 'Home directory', setsEnv('Leave blank to inherit.'))
+          : null}
+        {profile.provider === 'codex'
+          ? row(
               'shadow_home_path',
               'Shadow home',
               'Optional private Codex overlay with its own authentication and state.',
-            )}
-          </>
-        ) : null}
+            )
+          : null}
         {profile.provider === 'antigravity' ? (
           <>
             <label className="block text-sm">
@@ -631,6 +634,10 @@ export default function ProviderProfilesSurface({ bridge, onHeadingChange }: {
   const currentStatus = statuses.find(
     (s) => s.provider === draft?.provider && (s.profile_id || s.provider) === draft?.profile_id,
   );
+  // Config-directory support is per provider, so any row of the provider (a new
+  // profile has none of its own yet) carries it.
+  const draftConfigDir =
+    statuses.find((s) => s.provider === draft?.provider && s.profile_config_dir)?.profile_config_dir ?? null;
   // Single fix for "profile enabled, disabled on this bridge": set the bridge flag only.
   async function enableOnBridge() {
     if (!draft) return;
@@ -897,6 +904,7 @@ export default function ProviderProfilesSurface({ bridge, onHeadingChange }: {
                   <ProfileRuntimeEditor
                     key={draft.profile_id}
                     profile={draft}
+                    configDir={draftConfigDir}
                     onChange={setDraft}
                     onValidationChange={setRuntimeError}
                     disabled={busy}

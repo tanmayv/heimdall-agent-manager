@@ -22,8 +22,9 @@ export function isExtensionInstallTerminal(status: ExtensionInstallStatus): bool
   return status === 'succeeded' || status === 'failed' || status === 'cancelled';
 }
 
-export function extensionInstallLabel(provider: string, extension: ProviderExtensionStatus | null): string {
-  if (!['claude', 'codex', 'antigravity'].includes(provider)) return '';
+/** The Hub decides installability (extension.installable); the UI keeps no provider list. */
+export function extensionInstallLabel(extension: ProviderExtensionStatus | null): string {
+  if (!extension?.installable) return '';
   if (extension?.state === 'absent') return 'Install Extension';
   if (extension?.state === 'outdated') {
     return extension.min_version ? `Update to v${extension.min_version}` : 'Update Extension';
@@ -32,8 +33,8 @@ export function extensionInstallLabel(provider: string, extension: ProviderExten
 }
 
 /** Uninstall is offered whenever the extension is registered at all. */
-export function extensionUninstallable(provider: string, extension: ProviderExtensionStatus | null): boolean {
-  return ['claude', 'codex', 'antigravity'].includes(provider)
+export function extensionUninstallable(extension: ProviderExtensionStatus | null): boolean {
+  return Boolean(extension?.installable)
     && ['present', 'outdated', 'disabled'].includes(String(extension?.state || ''));
 }
 
