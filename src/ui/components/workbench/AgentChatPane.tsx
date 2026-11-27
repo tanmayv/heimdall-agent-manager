@@ -242,6 +242,8 @@ export interface AgentChatPaneProps {
   headerTrailing?: React.ReactNode;
   /** Inline at the far right (the side-panel toggle, top-right pane). */
   headerEnd?: React.ReactNode;
+  /** The drawer reaches the window edge, but only some docked panes sit under the right chrome. */
+  settingsPanelChrome?: { rightInset: number; overPane: boolean };
 }
 
 type Message = {
@@ -769,6 +771,7 @@ export function AgentChatPane({
   headerLeading,
   headerTrailing,
   headerEnd,
+  settingsPanelChrome,
 }: AgentChatPaneProps) {
   const dispatch = useDispatch<any>();
   const reduxStore = useStore<any>();
@@ -3920,6 +3923,11 @@ export function AgentChatPane({
 
       <AgentSettingsPanel
         state={settingsPanel}
+        closeRightInset={
+          settingsPanel.mode === 'drawer' || settingsPanelChrome?.overPane
+            ? settingsPanelChrome?.rightInset
+            : undefined
+        }
         agentLabel={<VaultText value={agentInstanceLabel} fallback="Agent" />}
         projectLabel={projectId ? <VaultText value={projectName} fallback="Project" /> : undefined}
         runtime={runtimeSection}

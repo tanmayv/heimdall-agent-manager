@@ -9,6 +9,8 @@ import { createRoot } from 'react-dom/client';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 import { heimdallApi } from '../../src/ui/api/heimdallApi';
+import { Workspace } from '../../src/ui/components/mainWorkspace/Workspace';
+import { useIsMobile } from '../../src/ui/components/ui/hooks/useViewport';
 import { AgentChatPane } from '../../src/ui/components/workbench/AgentChatPane';
 import { ShortcutProvider } from '../../src/ui/services/shortcuts/ShortcutContext';
 import { keyringInstalled } from '../../src/ui/store/vaultSlice';
@@ -115,10 +117,17 @@ window.fetch = async (input, init = {}) => {
   return json([]);
 };
 
+function Fixture() {
+  const isMobile = useIsMobile();
+  // The workspace route includes the real fixed side-panel toggle over the chat pane.
+  if (location.hash.startsWith('#/conversations/')) return <Workspace isMobile={isMobile} />;
+  return <AgentChatPane agentInstanceId="inst_coord" paneId="fixture-pane" />;
+}
+
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <ShortcutProvider>
-      <AgentChatPane {...({ agentInstanceId: 'inst_coord', paneId: 'fixture-pane' } as any)} />
+      <Fixture />
     </ShortcutProvider>
   </Provider>,
 );

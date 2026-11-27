@@ -23,6 +23,8 @@ export interface AgentSettingsPanelProps {
   agentLabel: React.ReactNode;
   /** The project name (may be a VaultText). Omitted from the subtitle when absent. */
   projectLabel?: React.ReactNode;
+  /** Measured width of the fixed workspace chrome over the header's right edge. */
+  closeRightInset?: number;
   /** Section 1: <RuntimeSection/>. */
   runtime: React.ReactNode;
   /** Sections 2-5 (T6). */
@@ -31,7 +33,7 @@ export interface AgentSettingsPanelProps {
   footer?: React.ReactNode;
 }
 
-export function AgentSettingsPanel({ state, agentLabel, projectLabel, runtime, children, footer }: AgentSettingsPanelProps) {
+export function AgentSettingsPanel({ state, agentLabel, projectLabel, closeRightInset, runtime, children, footer }: AgentSettingsPanelProps) {
   const headingId = useId();
   if (!state.open) return null;
   const { mode } = state;
@@ -91,6 +93,8 @@ export function AgentSettingsPanel({ state, agentLabel, projectLabel, runtime, c
           label="Close agent settings"
           size="sm"
           data-debug-id="agent-panel-close"
+          className="shrink-0"
+          style={closeRightInset ? { marginRight: closeRightInset } : undefined}
           onClick={close}
         />
       </header>
