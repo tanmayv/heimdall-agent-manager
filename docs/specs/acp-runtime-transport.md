@@ -4,6 +4,25 @@ This specification adds ACP (Agent Client Protocol) beside PTY execution. The Hu
 
 Status: implementation specification, 2026-11-18. Approved inputs: [plan](artifact://art_18e9124cfc75a9c2), [comparison](artifact://art_18e8badae3e44864), and subsequent chain decisions. Those decisions supersede the plan's deferrals of piped hosting, streaming, adapter status, and login fallback. This document specifies proposed changes; it does not assert they already exist. Existing-source references were read at `7ccd2d909c34e2c6c0d985adeba40d2a4e06442f`; paths and line numbers below are relative to that repository revision.
 
+## Provider registry (R1, 2026-11-27)
+
+Three sources describe a provider, each owning different facts, linked by the provider id:
+
+| Source | Owns | Where |
+| --- | --- | --- |
+| Provider registry (`Provider_Descriptor`) | Identity and traits: display name, aliases, telemetry symbol, default CLI binary, `--version` format, config-dir convention (profile field, env var, home default, config file, history dir), profile fields, extension kind, model probe, install and auth guidance | `src/contracts/provider_descriptor.odin` (compiled) |
+| Hub catalog row | Launch recipe, models, state (active/inactive), extension descriptor | SQLite `provider_catalog` (migrations) |
+| ACP recipe (`ACP_Provider_Descriptor`) | ACP/app-server runtime: launch kind, package pins, argv, permission binding; for detect-only (System) runtimes `pkg.version` is the minimum CLI version | `src/contracts/acp_provider.odin` (compiled) |
+
+Shared code reads provider facts through one resolver each and never compares provider names (G7, G9):
+
+- Binary: `bridge_provider_resolve_binary` (profile `binary_path`, else the registry binary; a catalog-only slug uses the catalog row's binary).
+- Version: `bridge_provider_cli_version` / `bridge_provider_cli_version_check`, parsing with `contracts.provider_parse_cli_version`; the minimum is `contracts.provider_min_version` (derived from the System ACP recipe) and `contracts.provider_version_status` is the only comparison.
+- Config directory: `contracts.provider_config_dir_resolve` (bridge: `bridge_provider_config_dir`): profile field, else the CLI's env var, else the home default.
+- Context window: `bridge_context_window_resolve` over `src/bridge/context_windows.json`, whose provider ids must be registered.
+
+The catalog `binary` column and the registry `binary` must agree, and every active catalog row must have a registry descriptor (and vice versa): `test_provider_catalog_matches_provider_registry` (`src/hub/repository/sqlite/provider_catalog_migration_test.odin`) enforces it. An ACP recipe must belong to a registered provider whose binary it launches (`acp_descriptor_shape_valid`).
+
 ## Provider descriptor contract (C1, 2026-11-19)
 
 The compiled closed registry in `src/contracts/acp_provider.odin` owns executable behavior. Catalog recipes select an exact trusted descriptor; they cannot supply extra commands, arguments, environment values, fields, protocol versions or package pins. A valid Claude recipe copied onto another provider is rejected by both Hub and Bridge.
