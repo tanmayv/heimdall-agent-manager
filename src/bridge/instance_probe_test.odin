@@ -30,3 +30,20 @@ test_instance_stop_will_not_touch_replacement_pid :: proc(t: ^testing.T) {
 	defer delete(restored)
 	testing.expect(t, !ok && stale)
 }
+
+@(test)
+test_instance_probe_does_not_attribute_previous_child_exit_to_replacement :: proc(t: ^testing.T) {
+	old := Bridge_Instance_Probe_Result{state = "exited", pid = 42, exit_code = 0}
+	unbound := old
+	bridge_instance_probe_bind(&unbound, 0, 2, "new")
+	testing.expect_value(t, unbound.state, "unknown")
+	bridge_instance_probe_bind(&old, 43, 2, "new")
+	testing.expect_value(t, old.state, "unknown")
+	_, old_code_present := old.exit_code.?
+	testing.expect(t, !old_code_present)
+	current := Bridge_Instance_Probe_Result{state = "exited", pid = 43, exit_code = 0}
+	bridge_instance_probe_bind(&current, 43, 2, "new")
+	testing.expect_value(t, current.state, "exited")
+	testing.expect_value(t, current.run_count, 2)
+	testing.expect_value(t, current.launch_epoch, "new")
+}

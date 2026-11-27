@@ -1,6 +1,8 @@
 package main
 
 import "core:encoding/json"
+import "core:strings"
+import "core:sync"
 import ws "odin_test:lib/ws"
 
 Bridge_Instance_Probe_Result :: struct {
@@ -38,6 +40,21 @@ bridge_instance_probe_from_roster :: proc(id: string, roster: Pty_Host_Reply) ->
 	return result
 }
 
+// The roster is keyed by instance id, not launch generation. A retained
+// tombstone can belong to the previous child even after its replacement was
+// assigned credentials. Only bind an exit to the PID confirmed at spawn or
+// adoption for those credentials. Missing binding is deliberately unknown.
+bridge_instance_probe_bind :: proc(probe: ^Bridge_Instance_Probe_Result, pid: i32, run_count: int, launch_epoch: string) {
+	if probe.state != "exited" do return
+	if pid <= 0 || probe.pid != pid || run_count <= 0 {
+		probe.state = "unknown"
+		probe.exit_code = nil
+		return
+	}
+	probe.run_count = run_count
+	probe.launch_epoch = launch_epoch
+}
+
 bridge_hub_handle_instance_probe :: proc(conn: ^ws.Connection, text: string) {
 	command_id := extract_json_string(text, "command_id", "")
 	defer delete(command_id)
@@ -46,8 +63,22 @@ bridge_hub_handle_instance_probe :: proc(conn: ^ws.Connection, text: string) {
 	if command_id == "" || id == "" do return
 	lifecycle := bridge_agent_lifecycle_enter(id)
 	probe := bridge_instance_probe(id)
-	probe.launch_epoch = bridge_agent_instance_launch_epoch(id)
-	probe.run_count = bridge_agent_instance_run_count(id)
+	if probe.state == "exited" {
+		epoch := bridge_agent_instance_launch_epoch(id)
+		defer delete(epoch)
+		run_count := bridge_agent_instance_run_count(id)
+		pid: i32
+		sync.mutex_lock(&bridge_runtime_mutex)
+		for &inst in bridge_runtime_instances {
+			if inst.agent_instance_id == id && inst.startup.rec.run_count == run_count {
+				pid = inst.startup.pty_pid
+				break
+			}
+		}
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		bridge_instance_probe_bind(&probe, pid, run_count, epoch)
+		probe.launch_epoch = strings.clone(probe.launch_epoch)
+	}
 	bridge_agent_lifecycle_leave(lifecycle)
 	defer delete(probe.launch_epoch)
 	response := struct {
