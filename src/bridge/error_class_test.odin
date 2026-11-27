@@ -285,7 +285,7 @@ test_err_proto_command_failed_json_is_typed :: proc(t: ^testing.T) {
 @(test)
 test_err_proto_failed_instance_status_carries_last_error :: proc(t: ^testing.T) {
 	id := "inst_err_proto_status"
-	bridge_runtime_set_status(id, "failed", "idle")
+	fixture_confirm_child_failure(id)
 	bridge_runtime_record_failure(id, bridge_error(.pty_host_unreachable))
 	failed := bridge_instance_status_json(id)
 	defer delete(failed)

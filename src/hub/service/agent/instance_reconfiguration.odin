@@ -304,8 +304,21 @@ apply_reconfiguration_command_result :: proc(service: ^Agent_Service, bridge_id,
 			status := jsonx.extract_string(result, "status"); defer delete(status)
 			if status == "accepted" do return
 			if status == "succeeded" {
-				stopped, _, _ := reconfiguration_advance(service, op, .Failed, true, op.destination_committed, "recovery_stopped", "Agent stopped. Choose a model or bridge and Apply to start again.")
-				domain.instance_reconfiguration_destroy(&stopped)
+				stopped, applied, _ := reconfiguration_advance(service, op, .Failed, true, op.destination_committed, "recovery_stopped", "Agent stopped. Choose a model or bridge and Apply to start again.")
+				defer domain.instance_reconfiguration_destroy(&stopped)
+				if applied {
+					// The migration's guarded operation transition writes the
+					// stopped projection. Preserve the receipt reason and audit
+					// the actual transition from this force-stop operation.
+					row, found, _ := iface.agent_get_instance(service.agents, op.agent_instance_id)
+					defer domain.agent_instance_destroy(&row)
+					if found && row.launch_epoch == strings.concatenate({"stopped_", op.operation_id}, context.temp_allocator) {
+						next := row
+						next.status_message = "pty_stop_confirmed"
+						_, _, _ = iface.agent_save_instance_guarded(service.agents, next, row.run_count, row.launch_epoch, row.configuration_revision)
+						log_runtime_terminal_transition(row, "stopping", "reconfiguration_force_stop", "pty_stop_confirmed", command_id)
+					}
+				}
 			} else {
 				failed, _, _ := reconfiguration_advance(service, op, .Recovery_Required, op.source_stopped, op.destination_committed, "force_stopping", "Force stop was not confirmed. Reconnect the current bridge and retry Force stop.")
 				domain.instance_reconfiguration_destroy(&failed)

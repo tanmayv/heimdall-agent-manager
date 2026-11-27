@@ -2838,7 +2838,7 @@ bridge_apply_task_stop_receipt :: proc(h: ^Bridge_Handlers, bridge_id: string, g
 		domain.agent_instance_destroy(&instance)
 		return {}, false
 	}
-	project_service.bridge_runtime_instance_retire(h.bridge_runtime_registry, bridge_id, generation, instance.agent_instance_id, "stopped", "pty_stop_confirmed")
+	project_service.bridge_runtime_instance_retire(h.bridge_runtime_registry, bridge_id, generation, instance.agent_instance_id, "stopped", "pty_stop_confirmed", command_id)
 	return instance, true
 }
 

@@ -701,9 +701,9 @@ bridge_runtime_instance_apply :: proc(r: ^Bridge_Runtime_Registry, bridge_id: st
 	return changed, true, domain.Domain_Error{}
 }
 
-log_runtime_registry_terminal :: proc(bridge_id, instance_id, previous, next, source, reason: string) {
+log_runtime_registry_terminal :: proc(bridge_id, instance_id, previous, next, source, reason: string, op_id := "") {
 	if previous == next || (next != "failed" && next != "stopped" && next != "unreachable") do return
-	fmt.eprintfln("agent_runtime_transition component=hub_registry instance=%q bridge=%q from=%q to=%q source=%q reason=%q", instance_id, bridge_id, previous, next, source, reason)
+	fmt.eprintfln("agent_runtime_transition component=hub_registry instance=%q bridge=%q from=%q to=%q source=%q reason=%q op_id=%q", instance_id, bridge_id, previous, next, source, reason, op_id)
 }
 
 bridge_runtime_instance_get :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, id: string) -> (Runtime_Instance_State, bool) {
@@ -773,7 +773,7 @@ bridge_runtime_instance_cancel_reservation :: proc(r: ^Bridge_Runtime_Registry, 
 
 // A durable reaper/stop decision frees active quota without discarding the last
 // sequence. Retain a bounded tombstone for delayed reports on this generation.
-bridge_runtime_instance_retire :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, id: string, status: string, reason := "durable_reaper_decision") {
+bridge_runtime_instance_retire :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, id: string, status: string, reason := "durable_reaper_decision", op_id := "") {
 	c := bridge_runtime_connection_acquire(r, bridge_id, generation)
 	if c == nil do return
 	defer bridge_runtime_connection_release(r, c)
@@ -782,7 +782,7 @@ bridge_runtime_instance_retire :: proc(r: ^Bridge_Runtime_Registry, bridge_id: s
 	state, ok := c.instances[id]
 	if !ok || !state.active do return
 	_ = runtime_active_change(r, state.owner_id, -1)
-	log_runtime_registry_terminal(bridge_id, id, state.runtime_status, status, "bridge_runtime_instance_retire", reason)
+	log_runtime_registry_terminal(bridge_id, id, state.runtime_status, status, "bridge_runtime_instance_retire", reason, op_id)
 	delete(state.runtime_status, runtime.default_allocator())
 	state.runtime_status = strings.clone(status, runtime.default_allocator())
 	state.active = false

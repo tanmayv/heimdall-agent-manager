@@ -71,3 +71,21 @@ test_auto_update_busy_ids_do_not_go_stale :: proc(t: ^testing.T) {
 	testing.expect(t, !bridge_auto_update_quiet_with_host(false, auto_update_test_empty_host))
 	testing.expect(t, !strings.contains(bridge_auto_update_busy_text(), id), "Launch_Preparing must not show stale ids")
 }
+
+// A terminal runtime fixture must use the production writer and a bound exit,
+// not set the protected failed projection directly.
+fixture_confirm_child_failure :: proc(id: string) {
+	bridge_runtime_set_status(id, "starting", "idle")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances {
+		if inst.agent_instance_id == id {
+			inst.startup.rec.run_count = 1
+			inst.startup.pty_pid = 42
+			break
+		}
+	}
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_pty_host_publish_agent_exit(id, 1, proc(id: string) -> Bridge_Instance_Probe_Result {
+		return {agent_instance_id = id, state = "exited", pid = 42, exit_code = i32(1)}
+	})
+}

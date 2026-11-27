@@ -390,7 +390,7 @@ t4_acp_auth_blocks_and_missing_bootstrap_capability_never_readies :: proc(t: ^te
     testing.expect(t, acp_runtime_request(next.r, "initialize", ACP_INITIALIZE_PARAMS))
     t4_runtime_reply(t, &next, 0, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, 1)
     snap, _ = bridge_runtime_instance_snapshot("inst_t4_bootstrap_missing")
-    testing.expect(t, snap.runtime_status == "failed" && !snap.start_success_seen && snap.acp_error_code == "acp_bootstrap_unsupported")
+    testing.expect(t, snap.runtime_status == "stopped" && !snap.start_success_seen && snap.acp_error_code == "acp_bootstrap_unsupported")
     sync.mutex_lock(&next.f.mu); testing.expect_value(t, len(next.f.writes), 1); sync.mutex_unlock(&next.f.mu)
     // A terminal result must persist failure even if no later RPC is sent.
     sync.mutex_lock(&next.f.mu); saved := strings.clone(next.f.snapshot); sync.mutex_unlock(&next.f.mu)

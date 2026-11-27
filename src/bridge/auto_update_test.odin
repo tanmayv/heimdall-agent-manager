@@ -188,7 +188,9 @@ test_auto_update_quiet_ignores_dead_launch_records :: proc(t: ^testing.T) {
 	bridge_runtime_record_launch({agent_instance_id = dead})
 	bridge_runtime_record_launch({agent_instance_id = live})
 	defer { bridge_runtime_remove_launch(dead); bridge_runtime_remove_launch(live) }
-	bridge_runtime_set_status(dead, "failed", "idle")
+	fixture_confirm_child_failure(dead)
+	// Reintroduce the stale record this compatibility case is exercising.
+	bridge_runtime_record_launch({agent_instance_id = dead})
 	bridge_runtime_set_status(live, "running", "idle")
 	testing.expect(t, !bridge_auto_update_quiet_with_host(false, auto_update_test_empty_host), "a live record blocks")
 	text := bridge_auto_update_busy_text()
