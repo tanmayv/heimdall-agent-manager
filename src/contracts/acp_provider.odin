@@ -39,6 +39,10 @@ ACP_Provider_Descriptor :: struct {
     args: []string,
     env: [][2]string,
     protocol_version, node_min_major: int,
+    // cli_command duplicates provider_descriptor(provider).binary (the registry
+    // in provider_descriptor.odin is the source of truth; a test keeps them
+    // equal). cli_command, cli_version_prefix, cli_version_bare and
+    // auth_guidance move to the registry and are removed here in slice B1.
     cli_command, cli_package, cli_version, executable_env: string,
     bootstrap_filename, auth_guidance: string,
     permission_policy: ACP_Permission_Policy,

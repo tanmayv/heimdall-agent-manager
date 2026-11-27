@@ -195,3 +195,17 @@ acp_opencode_recipe_is_stdio_only_on_all_supported_os :: proc(t: ^testing.T) {
     testing.expect(t, acp_provider_recipe_valid("opencode", raw))
     testing.expect(t, !acp_provider_recipe_valid("kiro", raw))
 }
+
+@(test)
+acp_descriptor_cli_command_matches_provider_registry_binary :: proc(t: ^testing.T) {
+    for d in acp_provider_descriptors {
+        p, ok := provider_descriptor(d.provider)
+        testing.expectf(t, ok, "%s: ACP descriptor without a provider registry entry", d.provider)
+        testing.expectf(t, d.cli_command == p.binary, "%s: cli_command %q != registry binary %q", d.provider, d.cli_command, p.binary)
+        testing.expectf(t, d.auth_guidance == p.auth_guidance, "%s: auth_guidance drifted from the registry", d.provider)
+        version_label := "" if d.cli_version_bare else d.cli_version_prefix
+        if d.launch == .System {
+            testing.expectf(t, p.version_label == version_label, "%s: version label drifted from the registry", d.provider)
+        }
+    }
+}

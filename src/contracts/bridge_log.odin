@@ -183,7 +183,9 @@ Bridge_Log_Sym :: enum u8 {
 	// reason
 	eof, timeout, write_error, replaced, revoked, limit, unsupported, denied, expired,
 	transport, missing_binary, not_executable, login_required, unknown,
-	// provider
+	// provider (see provider_descriptor.odin). gemini is no provider and is never
+	// emitted by bridge_log_provider_sym; it remains only so existing callers
+	// (src/bridge/blog_test.odin) compile until they move off it.
 	claude, codex, copilot, antigravity, gemini,
 	// command_kind
 	launch_agent, wake_agent, shell_start, shell_restart, agent_pty_input, provider_test, bridge_update,
@@ -194,6 +196,8 @@ Bridge_Log_Sym :: enum u8 {
 	daemon_unavailable, no_reply, bad_reply, lacks_piped_spawn,
 	// stale PTY host: stage = decision, reason = stale_exe_path or a probe reason above
 	retired, agents_still_hosted, spawn_in_progress, list_failed, stop_failed, stale_exe_path,
+	// provider (appended)
+	pi, kiro, opencode,
 }
 
 BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
@@ -271,6 +275,9 @@ BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
 	.list_failed      = "list_failed",
 	.stop_failed      = "stop_failed",
 	.stale_exe_path   = "stale_exe_path",
+	.pi               = "pi",
+	.kiro             = "kiro",
+	.opencode         = "opencode",
 }
 
 // Name -> enum lookups (linear over small tables; only the hub's validator and
@@ -321,16 +328,10 @@ bridge_log_level_from_name :: proc(name: string) -> (Bridge_Log_Level, bool) {
 	return .Warn, false
 }
 
-// bridge_log_provider_sym maps a provider id (as the hub's catalog names them) to
-// its symbol; anything unknown is .other, never a new value.
+// bridge_log_provider_sym maps a provider id (or alias) to its registry symbol;
+// anything unregistered is .other, never a new value.
 bridge_log_provider_sym :: proc(provider: string) -> Bridge_Log_Sym {
-	switch provider {
-	case "claude":      return .claude
-	case "codex":       return .codex
-	case "copilot":     return .copilot
-	case "antigravity": return .antigravity
-	case "gemini":      return .gemini
-	}
+	if d, ok := provider_descriptor(provider); ok do return d.log_sym
 	return .other
 }
 
