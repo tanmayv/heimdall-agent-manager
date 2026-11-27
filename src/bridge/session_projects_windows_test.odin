@@ -44,7 +44,7 @@ session_projects_windows_junction_escape_and_alias :: proc(t: ^testing.T) {
 	meta.payload.cwd = project
 	data = json.marshal(meta, allocator = context.temp_allocator) or_else nil
 	session_test_seed(t, sandbox, ".codex/sessions/2026/rollout-owned.jsonl", string(data))
-	result := session_projects_discover(sandbox, sandbox)
+	result := session_projects_discover(session_test_env(sandbox), sandbox)
 	defer session_projects_destroy(&result)
 	if testing.expect_value(t, len(result.projects), 1) {
 		testing.expect(t, session_project_path_equal(result.projects[0].path, project), "nested native traversal retains the real project")

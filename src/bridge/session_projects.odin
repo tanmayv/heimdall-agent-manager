@@ -6,7 +6,7 @@ import "core:strings"
 import "core:path/filepath"
 import "core:unicode/utf8"
 import json "core:encoding/json"
-import cfg_lib "odin_test:lib/config"
+import contracts "odin_test:contracts"
 import ws "odin_test:lib/ws"
 
 Session_Project :: struct {
@@ -86,14 +86,20 @@ session_project_path_equal :: proc(a, b: string) -> bool {
 	}
 }
 
-session_projects_discover :: proc(home, sandbox_root: string, deadline_ns: i64 = 0) -> Session_Projects_Result {
+// env (nil: the bridge's own environment) supplies HOME and the providers'
+// config-dir env vars (CODEX_HOME, CLAUDE_CONFIG_DIR).
+session_projects_discover :: proc(env: []string, sandbox_root: string, deadline_ns: i64 = 0) -> Session_Projects_Result {
 	result := Session_Projects_Result{type = "session_projects_result", ok = true}
 	result.projects = make([dynamic]Session_Project)
-	// Only fixed provider history roots are accepted. No caller supplied paths.
+	// Only the registry's provider history roots are accepted, under each
+	// provider's resolved config directory. No caller supplied paths.
 	remaining := 20_000
-	for source in ([]string{"Codex", "Claude Code"}) {
-		suffix := "/.codex/sessions" if source == "Codex" else "/.claude/projects"
-		requested := strings.concatenate({home, suffix}, context.temp_allocator)
+	for d in contracts.provider_descriptors() {
+		if d.history_dir == "" do continue
+		source := d.display_name
+		config_dir := bridge_provider_config_dir(d, nil, env)
+		if config_dir == "" do continue
+		requested := strings.concatenate({strings.trim_right(config_dir, "/\\"), "/", d.history_dir}, context.temp_allocator)
 		root, within := session_project_resolve(requested, sandbox_root)
 		defer delete(root)
 		if !within || !os.is_dir(root) do continue
@@ -179,8 +185,7 @@ bridge_session_projects_handle_command :: proc(conn: ^ws.Connection, type, text:
 	cmd: struct {command_id: string}
 	if json.unmarshal_string(text, &cmd, json.DEFAULT_SPECIFICATION, context.temp_allocator) != nil do return false
 	if cached, ok := bridge_runtime_cached_command(cmd.command_id); ok { _ = bridge_hub_send(conn, cached); return true }
-	home := cfg_lib.home_dir(context.temp_allocator)
-	result := session_projects_discover(home, bridge_fs_root, bridge_command_worker_deadline_ns(conn))
+	result := session_projects_discover(nil, bridge_fs_root, bridge_command_worker_deadline_ns(conn))
 	defer session_projects_destroy(&result)
 	result.command_id = cmd.command_id
 	out, err := json.marshal(result)

@@ -21,6 +21,13 @@ session_test_root :: proc(t: ^testing.T) -> string {
 	delete(root)
 	return canonical
 }
+// A hermetic environment: HOME only, so the bridge's own CODEX_HOME or
+// CLAUDE_CONFIG_DIR never leaks into discovery.
+session_test_env :: proc(home: string) -> []string {
+	env := make([]string, 1, context.temp_allocator)
+	env[0] = fmt.tprintf("HOME=%s", home)
+	return env
+}
 session_test_seed :: proc(t: ^testing.T, root, rel, body: string) {
 	full := fmt.tprintf("%s/%s", root, rel)
 	_ = os.make_directory_all(full[:strings.last_index_byte(full, '/')])
@@ -31,7 +38,7 @@ session_test_seed :: proc(t: ^testing.T, root, rel, body: string) {
 session_projects_empty_and_sandbox :: proc(t: ^testing.T) {
 	root := session_test_root(t)
 	defer { _ = os.remove_all(root); delete(root) }
-	r := session_projects_discover(root, root)
+	r := session_projects_discover(session_test_env(root), root)
 	defer session_projects_destroy(&r)
 	testing.expect(t, r.ok)
 	testing.expect_value(t, len(r.projects), 0)
@@ -39,7 +46,7 @@ session_projects_empty_and_sandbox :: proc(t: ^testing.T) {
 	defer delete(wire)
 	testing.expect(t, marshal_err == nil && strings.contains(string(wire), `"projects":[]`))
 	_ = os.make_directory_all(fmt.tprintf("%s/.codex/sessions", root))
-	r2 := session_projects_discover(root, fmt.tprintf("%s/elsewhere", root))
+	r2 := session_projects_discover(session_test_env(root), fmt.tprintf("%s/elsewhere", root))
 	defer session_projects_destroy(&r2)
 	testing.expect_value(t, len(r2.projects), 0)
 }
@@ -70,7 +77,7 @@ session_projects_metadata_and_malformed :: proc(t: ^testing.T) {
 	for rel in ([]string{".codex/sessions/2026/10/rollout-b.jsonl", ".claude/projects/-home-me-app/b.jsonl"}) {
 		testing.expect(t, os.change_times(fmt.tprintf("%s/%s", root, rel), newer, newer) == nil)
 	}
-	r := session_projects_discover(root, root)
+	r := session_projects_discover(session_test_env(root), root)
 	defer session_projects_destroy(&r)
 	if !testing.expect_value(t, len(r.projects), 2) do return
 	for project in r.projects {
@@ -93,7 +100,7 @@ session_projects_deadline_and_unreadable :: proc(t: ^testing.T) {
 	session_test_seed(t, root, ".codex/sessions/rollout-bad.jsonl", "{")
 	testing.expect_value(t, session_project_codex_cwd(fmt.tprintf("%s/missing", root)), "")
 	testing.expect_value(t, session_project_codex_cwd(fmt.tprintf("%s/.codex/sessions/rollout-bad.jsonl", root)), "")
-	r := session_projects_discover(root, root, time.to_unix_nanoseconds(time.now()) - 1)
+	r := session_projects_discover(session_test_env(root), root, time.to_unix_nanoseconds(time.now()) - 1)
 	defer session_projects_destroy(&r)
 	testing.expect(t, r.truncated)
 	testing.expect_value(t, len(r.projects), 0)
@@ -110,7 +117,7 @@ session_projects_ignores_symlink_history :: proc(t: ^testing.T) {
 	_ = os.make_directory_all(fmt.tprintf("%s/.codex/sessions", root))
 	testing.expect(t, os.symlink(fmt.tprintf("%s/outside", root), fmt.tprintf("%s/.codex/sessions/escape", root)) == nil)
 	testing.expect(t, os.symlink(fmt.tprintf("%s/outside/rollout-secret.jsonl", root), fmt.tprintf("%s/.codex/sessions/rollout-link.jsonl", root)) == nil)
-	r := session_projects_discover(root, root)
+	r := session_projects_discover(session_test_env(root), root)
 	defer session_projects_destroy(&r)
 	testing.expect_value(t, len(r.projects), 0)
 }
@@ -123,7 +130,7 @@ session_projects_reports_prefix_limit :: proc(t: ^testing.T) {
 	defer delete(data)
 	for &byte in data do byte = 'x'
 	session_test_seed(t, root, ".codex/sessions/rollout-large.jsonl", string(data))
-	r := session_projects_discover(root, root)
+	r := session_projects_discover(session_test_env(root), root)
 	defer session_projects_destroy(&r)
 	testing.expect(t, r.truncated, "incomplete metadata prefix must be visible to the user")
 	testing.expect_value(t, len(r.projects), 0)
@@ -212,7 +219,7 @@ session_projects_canonical_cross_provider_descriptions :: proc(t: ^testing.T) {
 	session_test_seed(t, root, ".codex/sessions/rollout-a.jsonl", string(data))
 	encoded := session_project_encode(cwd)
 	session_test_seed(t, root, fmt.tprintf(".claude/projects/%s/session.jsonl", encoded), "SESSION SECRET")
-	r := session_projects_discover(root, root)
+	r := session_projects_discover(session_test_env(root), root)
 	defer session_projects_destroy(&r)
 	if !testing.expect_value(t, len(r.projects), 2) do return
 	for project in r.projects {
@@ -229,4 +236,37 @@ session_projects_canonical_cross_provider_descriptions :: proc(t: ^testing.T) {
 	delete(resolved)
 	budget := 0
 	testing.expect_value(t, session_project_claude_path(encoded, root, 0, &budget), "")
+}
+
+// History roots come from the config-dir resolver: CODEX_HOME and
+// CLAUDE_CONFIG_DIR redirect them, and a root outside the sandbox is skipped.
+@(test)
+session_projects_history_roots_follow_config_dir_env :: proc(t: ^testing.T) {
+	root := session_test_root(t)
+	defer { _ = os.remove_all(root); delete(root) }
+	cwd := fmt.tprintf("%s/code/app", root)
+	_ = os.make_directory_all(cwd)
+	meta := struct {type: string, payload: struct {cwd: string}}{type = "session_meta"}
+	meta.payload.cwd = cwd
+	data, _ := json.marshal(meta, allocator = context.temp_allocator)
+	session_test_seed(t, root, "alt-codex/sessions/rollout-a.jsonl", string(data))
+	session_test_seed(t, root, "alt-claude/projects/-home-me-app/a.jsonl", "")
+	// The default roots under HOME are ignored once the env vars point elsewhere.
+	session_test_seed(t, root, ".codex/sessions/rollout-b.jsonl", string(data))
+	session_test_seed(t, root, ".claude/projects/-home-me-other/a.jsonl", "")
+	env := []string{fmt.tprintf("HOME=%s", root), fmt.tprintf("CODEX_HOME=%s/alt-codex", root), fmt.tprintf("CLAUDE_CONFIG_DIR=%s/alt-claude", root)}
+	r := session_projects_discover(env, root)
+	defer session_projects_destroy(&r)
+	if testing.expect_value(t, len(r.projects), 2) {
+		for project in r.projects {
+			testing.expect_value(t, project.sessions, 1)
+			if project.source == "Codex" { testing.expect(t, session_project_path_equal(project.path, cwd)) }
+			else { testing.expect_value(t, project.path, "-home-me-app") }
+		}
+	}
+	// A config dir outside the sandbox is never scanned.
+	outside := []string{fmt.tprintf("HOME=%s", root), "CODEX_HOME=/", "CLAUDE_CONFIG_DIR=/"}
+	r2 := session_projects_discover(outside, cwd)
+	defer session_projects_destroy(&r2)
+	testing.expect_value(t, len(r2.projects), 0)
 }

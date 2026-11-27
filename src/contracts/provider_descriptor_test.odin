@@ -243,3 +243,19 @@ provider_min_version_and_status :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// Session-history directories scanned by bridge session-project discovery.
+@(test)
+provider_history_dir_per_provider :: proc(t: ^testing.T) {
+	for d in provider_descriptors() {
+		want := ""
+		switch d.provider {
+		case "claude": want = "projects"
+		case "codex":  want = "sessions"
+		}
+		testing.expectf(t, d.history_dir == want, "%s history_dir %q", d.provider, d.history_dir)
+	}
+	bad, _ := provider_descriptor("codex")
+	bad.history_dir = "../escape"
+	testing.expect(t, !provider_descriptor_shape_valid(bad))
+}

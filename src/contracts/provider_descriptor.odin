@@ -57,6 +57,9 @@ Provider_Descriptor :: struct {
 	// directory; `ham-ctl setup` checks it for a read-only managed symlink
 	// (Nix/home-manager) that needs an overlay instead of an in-place edit.
 	config_file:            string,
+	// Session history directory relative to the config directory, scanned by
+	// bridge session-project discovery ("" when not scanned).
+	history_dir:            string,
 	profile_env_fields:     []Provider_Profile_Env_Field,
 	profile_auth_methods:   []string,
 	profile_launch_args:    bool,
@@ -83,7 +86,7 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		log_sym = .claude, binary = "claude",
 		version_format = .Leading_Numeric,
 		config_field = .Config_Dir, config_dir_env = "CLAUDE_CONFIG_DIR", config_dir_default = ".claude",
-		config_file = "settings.json",
+		config_file = "settings.json", history_dir = "projects",
 		profile_launch_args = true, profile_custom_models = true,
 		extension = .Claude_Plugin, extension_dir = "claude-code", extension_marketplace = "heimdall",
 		model_probe = .Claude_Control,
@@ -96,7 +99,7 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		log_sym = .codex, binary = "codex",
 		version_format = .Labelled, version_label = "codex-cli ",
 		config_field = .Home_Path, config_dir_env = "CODEX_HOME", config_dir_default = ".codex",
-		config_file = "config.toml",
+		config_file = "config.toml", history_dir = "sessions",
 		profile_launch_args = true, profile_custom_models = true,
 		extension = .Codex_Plugin, extension_dir = "codex", extension_marketplace = "heimdall-codex",
 		model_probe = .Codex_App_Server,
@@ -294,6 +297,10 @@ provider_descriptor_shape_valid :: proc(d: Provider_Descriptor) -> bool {
 	if d.config_file != "" {
 		if d.config_dir_env == "" && d.config_dir_default == "" do return false
 		if strings.has_prefix(d.config_file, "/") || strings.contains(d.config_file, "..") do return false
+	}
+	if d.history_dir != "" {
+		if d.config_dir_env == "" && d.config_dir_default == "" do return false
+		if strings.has_prefix(d.history_dir, "/") || strings.contains(d.history_dir, "..") do return false
 	}
 	if (d.extension == .None) != (d.extension_dir == "") do return false
 	if d.extension == .None && d.extension_marketplace != "" do return false
