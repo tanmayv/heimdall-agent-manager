@@ -5,6 +5,7 @@ import "core:sync"
 import "core:thread"
 import "core:testing"
 import "core:time"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
@@ -187,6 +188,11 @@ test_acp_redetect_in_flight_is_bounded_and_correlated :: proc(t: ^testing.T) {
 	testing.expect(t, !recheck, "Re-check results arrive as their own tracked command")
 	acp_redetect_pending_clear(&f.r, "b", "kiro")
 	testing.expect_value(t, acp_redetect_pending_expired(&f.r, "b", "kiro", expired), "")
+	// A user's install the re-detect only joined is never reported as lost.
+	acp_redetect_pending_set(&f.r, "b", "kiro", "cmd_ext_user", .Recheck, now, owned = false)
+	testing.expect_value(t, acp_redetect_pending_expired(&f.r, "b", "kiro", expired), "")
+	// The in-flight bound outlives the bridge's own install_acp_adapter deadline.
+	testing.expect(t, ACP_REDETECT_INFLIGHT_TTL > time.Duration(contracts.ACP_INSTALL_COMMAND_TIMEOUT_MS) * time.Millisecond + time.Minute)
 }
 
 // A worker that cannot be started is uncounted again: shutdown never hangs.

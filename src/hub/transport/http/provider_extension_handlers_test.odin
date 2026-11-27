@@ -1749,3 +1749,23 @@ r2_provider_status_reports_acp_runtime_kind :: proc(t: ^testing.T) {
 	testing.expect_value(t, kinds["opencode"], "system")
 	testing.expect_value(t, kinds["antigravity"], "null")
 }
+
+// A gate Re-check that joins the user's own install never fails it as lost.
+@(test)
+r2_launch_gate_joins_a_user_install_without_owning_it :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := extension_test_setup(t, "r2_redetect_join"); defer extension_test_teardown(f)
+	r: provider_service.ACP_Redetector
+	redetect_test_enable(t, f, &r); defer provider_service.acp_redetector_destroy(&r)
+	iface.bridge_provider_status_upsert(&f.pr_repo, {bridge_id = f.bridge_id, provider = "copilot", profile_id = "copilot", state = "present",
+		acp_adapter_json = `{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`})
+	path := fmt.tprintf("/api/v1/bridges/%s/providers/copilot/acp-adapter", f.bridge_id)
+	response := bridge_provider_acp_adapter_handler(&f.ph, extension_test_request(f, path, `{"action":"install"}`))
+	if !testing.expect_value(t, response.status, 202) do return
+	user := json_string(response.body, "command_id", context.temp_allocator)
+	entry, _, _ := iface.provider_catalog_get(&f.pr_repo, "copilot"); defer domain.provider_catalog_entry_destroy(entry)
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, f.sink_rec.count, 1) // joined, not duplicated
+	testing.expect_value(t, provider_service.acp_redetect_pending_expired(&r, f.bridge_id, "copilot", time.time_add(time.now(), time.Hour)), "")
+	testing.expect_value(t, extension_test_state(t, f, user), "dispatched")
+}

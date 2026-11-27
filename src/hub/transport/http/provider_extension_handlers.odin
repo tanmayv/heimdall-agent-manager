@@ -101,32 +101,38 @@ bridge_provider_acp_adapter_handler :: proc(ctx: rawptr, req: Request) -> Respon
 }
 
 provider_acp_install_start :: proc(h: ^Provider_Handlers, bridge_id, provider: string) -> (string, domain.Domain_Error) {
+    id, _, err := provider_acp_install_start_tracked(h, bridge_id, provider)
+    return id, err
+}
+
+// created is false when an install already in flight was reused.
+provider_acp_install_start_tracked :: proc(h: ^Provider_Handlers, bridge_id, provider: string) -> (string, bool, domain.Domain_Error) {
     entry, found, err := iface.provider_catalog_get(h.providers.repo, provider)
-    if err.code != .None do return "", err
-    if !found do return "", domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
+    if err.code != .None do return "", false, err
+    if !found do return "", false, domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
     defer domain.provider_catalog_entry_destroy(entry)
-    if entry.state != "active" || !contracts.provider_supports_transport(entry.transports_json, "acp") || !contracts.acp_provider_recipe_valid(entry.provider, entry.acp_recipe_json) do return "", domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
+    if entry.state != "active" || !contracts.provider_supports_transport(entry.transports_json, "acp") || !contracts.acp_provider_recipe_valid(entry.provider, entry.acp_recipe_json) do return "", false, domain.domain_error(.Unprocessable_Entity, "provider does not support ACP")
     descriptor, _ := contracts.acp_provider_descriptor(provider)
     sync.mutex_lock(&h.providers.extension_mutex); defer sync.mutex_unlock(&h.providers.extension_mutex)
     commands, list_err := iface.provider_extension_command_list(h.providers.repo, bridge_id)
-    if list_err.code != .None do return "", list_err
+    if list_err.code != .None do return "", false, list_err
     defer domain.provider_extension_commands_destroy(commands)
     for c in commands {
-        if c.kind == "install_acp_adapter" && c.provider == provider && c.target_version == descriptor.pkg.version && !extension_command_terminal(c.state) do return strings.clone(c.command_id), {}
+        if c.kind == "install_acp_adapter" && c.provider == provider && c.target_version == descriptor.pkg.version && !extension_command_terminal(c.state) do return strings.clone(c.command_id), false, {}
     }
     id := strings.clone(platform.generate_id(h.ids, "cmd_ext_"))
     command := domain.Provider_Extension_Command{command_id = id, bridge_id = bridge_id, provider = provider, profile_id = provider, kind = "install_acp_adapter", state = "queued", target_version = descriptor.pkg.version}
     created, create_err := iface.provider_extension_command_create(h.providers.repo, command)
-    if !created { delete(id); return "", create_err }
+    if !created { delete(id); return "", false, create_err }
     sent, send_err := extension_command_dispatch(h, command)
     if !sent {
         command.state = "failed"; command.message = send_err.message
         iface.provider_extension_command_save(h.providers.repo, command)
-        delete(id); return "", send_err
+        delete(id); return "", false, send_err
     }
     command.state = "dispatched"
-    if save_err := iface.provider_extension_command_save(h.providers.repo, command); save_err.code != .None { delete(id); return "", save_err }
-    return id, {}
+    if save_err := iface.provider_extension_command_save(h.providers.repo, command); save_err.code != .None { delete(id); return "", false, save_err }
+    return id, true, {}
 }
 
 // G5 re-detection (provider_service acp_redetect.odin). This runs on the
@@ -134,8 +140,10 @@ provider_acp_install_start :: proc(h: ^Provider_Handlers, bridge_id, provider: s
 // read that asked never waits. A Discover is a provider-scoped provider_discover
 // whose id ("acp_rd_" prefix) is never persisted: the redetector remembers it
 // until its report arrives (bridge_extension_frame) or ACP_REDETECT_INFLIGHT_TTL
-// passes. A Recheck is the ordinary install_acp_adapter command; if the one in
-// flight got no result within the TTL it is failed and a new one is sent.
+// passes. A Recheck is the ordinary install_acp_adapter command; if one this
+// re-detect created got no result within the TTL (above the bridge's own
+// deadline) it is failed and a new one is sent. A user's install it joined is
+// never failed.
 ACP_REDETECT_COMMAND_PREFIX :: "acp_rd_"
 
 provider_acp_redetect_dispatch :: proc(ctx: rawptr, bridge_id, provider: string, kind: provider_service.ACP_Redetect_Kind) {
@@ -144,11 +152,13 @@ provider_acp_redetect_dispatch :: proc(ctx: rawptr, bridge_id, provider: string,
 	now := time.now()
 	if kind == .Recheck {
 		lost := provider_service.acp_redetect_pending_expired(r, bridge_id, provider, now)
-		id, err := provider_acp_install_start(h, bridge_id, provider)
+		// In flight from now: concurrent gates see it before the command exists.
+		provider_service.acp_redetect_pending_set(r, bridge_id, provider, "", .Recheck, now, owned = false)
+		id, created, err := provider_acp_install_start_tracked(h, bridge_id, provider)
 		if err.code == .None && lost != "" && id == lost {
 			provider_acp_command_fail(h, bridge_id, id, "no result from the bridge within the re-detect deadline")
 			delete(id)
-			id, err = provider_acp_install_start(h, bridge_id, provider)
+			id, created, err = provider_acp_install_start_tracked(h, bridge_id, provider)
 		}
 		defer delete(id)
 		if err.code != .None {
@@ -156,7 +166,8 @@ provider_acp_redetect_dispatch :: proc(ctx: rawptr, bridge_id, provider: string,
 			fmt.eprintfln("acp re-detect: recheck %s on %s not sent: %s", provider, bridge_id, err.message)
 			return
 		}
-		provider_service.acp_redetect_pending_set(r, bridge_id, provider, id, .Recheck, now)
+		// Only a command this re-detect created may later be failed as lost.
+		provider_service.acp_redetect_pending_set(r, bridge_id, provider, id, .Recheck, now, owned = created)
 		return
 	}
 	id := fmt.tprintf("%s%s", ACP_REDETECT_COMMAND_PREFIX, platform.generate_id(h.ids, ""))

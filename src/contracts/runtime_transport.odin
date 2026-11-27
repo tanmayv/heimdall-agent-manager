@@ -107,6 +107,10 @@ bridge_supports_acp_runtime :: proc(raw: string) -> bool {
 	return false
 }
 
+// The bridge's deadline for one install_acp_adapter command (an npm install or
+// a probe Re-check), shared so the Hub never gives up on a live one first.
+ACP_INSTALL_COMMAND_TIMEOUT_MS :: 140_000
+
 // ACP availability is the Hub's single verdict for one bridge + provider pair
 // (GET /api/v1/bridges/{id}/provider-status providers[].acp_availability). The
 // UI renders it and never re-derives the rules. Mirrored in TS as

@@ -23,8 +23,11 @@ import domain "odin_test:hub/domain"
 ACP_REDETECT_MIN_INTERVAL :: 30 * time.Second
 ACP_STATUS_STALE_AFTER :: 10 * time.Minute
 // A re-detection without a result after this long is treated as lost: it no
-// longer suppresses new requests, and a lost Re-check command is failed.
-ACP_REDETECT_INFLIGHT_TTL :: 2 * time.Minute
+// longer suppresses new requests, and a lost Re-check the redetector itself
+// started is failed. It exceeds the bridge's install_acp_adapter deadline plus
+// queueing headroom, so a live Re-check is never failed and duplicated.
+ACP_REDETECT_QUEUE_HEADROOM :: 2 * time.Minute
+ACP_REDETECT_INFLIGHT_TTL :: time.Duration(contracts.ACP_INSTALL_COMMAND_TIMEOUT_MS) * time.Millisecond + ACP_REDETECT_QUEUE_HEADROOM
 
 // One re-detection in flight for a bridge + provider. Discover requests are
 // never persisted: their command id lives only here until the report arrives.
@@ -32,6 +35,7 @@ ACP_Redetect_Pending :: struct {
 	command_id: string, // heap
 	kind: ACP_Redetect_Kind,
 	sent_at: time.Time,
+	owned: bool, // the redetector created this command (not a user's install)
 }
 
 ACP_Redetect_Kind :: enum u8 { Discover, Recheck }
@@ -122,13 +126,13 @@ acp_redetect_pending_remove_locked :: proc(r: ^ACP_Redetector, key: string) {
 }
 
 // acp_redetect_pending_set records the command now in flight for a provider.
-acp_redetect_pending_set :: proc(r: ^ACP_Redetector, bridge_id, provider, command_id: string, kind: ACP_Redetect_Kind, now: time.Time) {
+acp_redetect_pending_set :: proc(r: ^ACP_Redetector, bridge_id, provider, command_id: string, kind: ACP_Redetect_Kind, now: time.Time, owned := true) {
 	if r == nil do return
 	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
 	if r.pending == nil do r.pending = make(map[string]ACP_Redetect_Pending, allocator = runtime.default_allocator())
 	key := acp_redetect_key(bridge_id, provider)
 	acp_redetect_pending_remove_locked(r, key)
-	r.pending[strings.clone(key, runtime.default_allocator())] = {command_id = strings.clone(command_id, runtime.default_allocator()), kind = kind, sent_at = now}
+	r.pending[strings.clone(key, runtime.default_allocator())] = {command_id = strings.clone(command_id, runtime.default_allocator()), kind = kind, sent_at = now, owned = owned}
 }
 
 // acp_redetect_pending_clear ends whatever is in flight for a provider (its
@@ -155,13 +159,15 @@ acp_redetect_pending_take :: proc(r: ^ACP_Redetector, bridge_id, command_id: str
 	return "", false
 }
 
-// acp_redetect_pending_expired is the id of a request for this provider that
-// got no result within ACP_REDETECT_INFLIGHT_TTL (temp), "" otherwise.
+// acp_redetect_pending_expired is the id of a command the redetector itself
+// started for this provider that got no result within
+// ACP_REDETECT_INFLIGHT_TTL (temp), "" otherwise. A user's install it merely
+// joined is never reported, so it is never failed.
 acp_redetect_pending_expired :: proc(r: ^ACP_Redetector, bridge_id, provider: string, now: time.Time) -> string {
 	if r == nil do return ""
 	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
 	p, present := r.pending[acp_redetect_key(bridge_id, provider)]
-	if !present || time.diff(p.sent_at, now) < ACP_REDETECT_INFLIGHT_TTL do return ""
+	if !present || !p.owned || time.diff(p.sent_at, now) < ACP_REDETECT_INFLIGHT_TTL do return ""
 	return strings.clone(p.command_id, context.temp_allocator)
 }
 
