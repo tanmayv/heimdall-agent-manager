@@ -321,7 +321,7 @@ placement_target_queued :: proc(svc: ^Service, ctx: ^Match_Context, fleet: domai
 		if ctx.held[inst.agent_instance_id] { waiting += 1; continue }
 		if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None { waiting += 1; continue }
 		if inst.stopped_by == agent.STOPPED_BY_USER do continue
-		if agent.failed_instance_disposition(inst, ctx.now_ms) == .Hold {
+		if agent.failure_disposition_from_process(inst, match_process_fact(svc, nil, inst, ctx.chain.chain_id), ctx.now_ms) == .Hold {
 			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable do waiting += 1
 		}
 	}

@@ -406,7 +406,7 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 	// which pulls it with `lease next` (REQ-SCHED-13). It is never woken; an
 	// unavailable process gets the Start agent card.
 	if ctx.has_coordinator && assignee == ctx.coordinator.agent_id {
-		if reason := coordinator_unavailable_reason(svc, ctx); reason != "" {
+		if reason := coordinator_unavailable_reason(svc, u, ctx); reason != "" {
 			block_ready_agent_in_uow(svc, u, task, ctx.coordinator.agent_id, coordinator_placement(ctx), reason)
 		}
 		return
@@ -450,11 +450,12 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 // assigned to it ("" when it is running or starting, or its bridge is offline
 // — the placement snapshot owns bridge absence; no business block).
 @(private = "package")
-coordinator_unavailable_reason :: proc(svc: ^Service, ctx: ^Match_Context) -> string {
+coordinator_unavailable_reason :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context) -> string {
 	if !ctx.has_coordinator do return ""
 	coord := ctx.coordinator
 	if !bridge_online(svc, coord.bridge_id) do return ""
-	if instance_is_live(coord) || instance_is_pending(coord) do return ""
+	fact := match_process_fact(svc, u, coord, ctx.chain.chain_id)
+	if fact.state == .Alive || (fact.state == .Unknown && fact.reason != .never_started) do return ""
 	return instance_failure_reason(coord)
 }
 
@@ -482,7 +483,7 @@ grant_reviews :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 		if review_lease_live_for(ctx, svc, task.task_id, agent_id) do continue
 		// The coordinator pulls a review it owes (REQ-SCHED-13).
 		if ctx.has_coordinator && agent_id == ctx.coordinator.agent_id {
-			if reason := coordinator_unavailable_reason(svc, ctx); reason != "" {
+			if reason := coordinator_unavailable_reason(svc, u, ctx); reason != "" {
 				failure, failed_agent, failed_placement = reason, agent_id, coordinator_placement(ctx)
 			}
 			continue
@@ -570,8 +571,7 @@ Pick :: struct {
 //      is not being stopped (a reviewer in its grace window keeps its process);
 //   3. a stopped reusable instance on an online bridge that supports the
 //      row's runtime (relaunched by the wake), below capacity;
-//   4. an instance that is being stopped;
-//   5. a new instance on `base`, below capacity, only when no existing
+//   4. a new instance on `base`, below capacity, only when no existing
 //      instance may be used and none must not be replaced (REQ-SCHED-32).
 // Capacity is the agent's occupied instances over all bridges (REQ-SCHED-33).
 // Among equal candidates the base placement's bridge wins. Coordinators are
@@ -590,7 +590,9 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 			// Its bridge being away or ineligible is queueing reported by the
 			// placement snapshot, checked before the instance (as before reuse).
 			if reason, _ := placement_problem(svc, ctx, placement, true, fleet.agent_id); reason != "" do return {placement = placement}
-			if disposition := agent.failed_instance_disposition(inst, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {placement = placement, why = instance_failure_reason(inst)}
+			fact := match_process_fact(svc, u, inst, task.chain_id)
+			if fact.state == .Unknown && fact.reason != .never_started do return {placement = placement}
+			if disposition := agent.failure_disposition_from_process(inst, fact, ctx.now_ms); disposition == .Dead || disposition == .Hold do return {placement = placement, why = instance_failure_reason(inst)}
 			if inst.stopped_by == agent.STOPPED_BY_USER do return {placement = placement, why = "assigned instance was stopped by the user"}
 			if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None do return {placement = placement, why = "assigned instance has a pending runtime action"}
 			if kind == domain.LEASE_KIND_WORK && placement.directory_id != "" && directory_has_work_lease_ctx(ctx, placement.directory_id) do return {placement = placement}
@@ -616,13 +618,12 @@ pick_instance :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.
 	below_capacity := scan.occupied < scan.capacity
 	within_capacity := scan.held < scan.capacity
 	if scan.have_pref {
-		if instance_is_live(scan.preferred) || instance_is_pending(scan.preferred) {
+		if scan.preferred_live {
 			if within_capacity do return choose(svc, ctx, u, fleet, scan.preferred)
 		} else if below_capacity do return choose(svc, ctx, u, fleet, scan.preferred)
 	}
 	if scan.have_live && within_capacity do return choose(svc, ctx, u, fleet, scan.live)
 	if scan.have_warm && below_capacity do return choose(svc, ctx, u, fleet, scan.warm)
-	if scan.have_stopping && within_capacity do return choose(svc, ctx, u, fleet, scan.stopping)
 	if !below_capacity do return {placement = base}
 	// A new instance goes where the base placement says. Problems there are
 	// queueing reported by the placement snapshot, never a card, and are
@@ -909,7 +910,7 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 			append(&out, fmt.tprintf("coordinator %s: bridge %s is offline", coord.agent_instance_id, coord.bridge_id))
 		} else if ctx.held[coord.agent_instance_id] {
 			append(&out, fmt.tprintf("coordinator %s already holds a lease; it pulls this task after submitting", coord.agent_instance_id))
-		} else if instance_is_live(coord) || instance_is_pending(coord) {
+		} else if match_process_fact(svc, nil, coord, ctx.chain.chain_id).state != .Exited {
 			append(&out, fmt.tprintf("assigned to the coordinator: waiting for %s to pull it with `ham-ctl lease next`", coord.agent_instance_id))
 		} else {
 			append(&out, fmt.tprintf("coordinator: %s", instance_failure_reason(coord)))
@@ -973,7 +974,8 @@ dispatch_blockers :: proc(svc: ^Service, chain: domain.Task_Chain, task: domain.
 			instance_reason = fmt.tprintf("instance %s was stopped by the user", inst.agent_instance_id)
 			continue
 		}
-		disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
+		fact := match_process_fact(svc, nil, inst, task.chain_id)
+		disposition := agent.failure_disposition_from_process(inst, fact, ctx.now_ms)
 		if disposition == .Dead || disposition == .Hold {
 			instance_reason = instance_failure_reason(inst)
 			continue

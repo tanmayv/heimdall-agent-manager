@@ -34,6 +34,18 @@ Failed_Instance_Disposition :: enum {
 failed_instance_disposition :: proc(inst: domain.Agent_Instance, now_ms: i64) -> Failed_Instance_Disposition {
 	if inst.runtime_status == "terminated" do return .Dead
 	if inst.runtime_status != "failed" do return .Not_Failed
+	return failure_disposition_for_error(inst, now_ms)
+}
+
+// Placement uses process evidence before consuming a prior provider error.
+failure_disposition_from_process :: proc(inst: domain.Agent_Instance, fact: Agent_Liveness, now_ms: i64) -> Failed_Instance_Disposition {
+	if fact.state != .Exited || (fact.reason != .pty_child_exited && fact.reason != .previous_exit_confirmed) do return .Not_Failed
+	if fact.exit_code == 0 && inst.last_error_json == "" do return .Not_Failed
+	return failure_disposition_for_error(inst, now_ms)
+}
+
+@(private = "file")
+failure_disposition_for_error :: proc(inst: domain.Agent_Instance, now_ms: i64) -> Failed_Instance_Disposition {
 	werr, found := instance_last_error(inst)
 	if !found do return .Dead
 	switch werr.class {
@@ -96,7 +108,9 @@ apply_stop_command_result :: proc(service: ^Agent_Service, bridge_id, command_id
 	if at < 0 do return false
 	instance_id := command_id[at + 1:]
 	restored := jsonx.extract_string(result, "runtime_status", "", false, context.temp_allocator)
-	if restored == "" || restored == "stopping" do return false
+	// A failed command cannot prove an exit. Preserve "unreachable" as a
+	// connectivity hint for legacy bridges without an in-memory snapshot.
+	if restored == "" || restored == "stopping" || restored == "stopped" || restored == "failed" do return false
 	inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return false
 	if inst.bridge_id != bridge_id || inst.runtime_status != "stopping" {

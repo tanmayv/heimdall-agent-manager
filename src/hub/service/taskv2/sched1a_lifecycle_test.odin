@@ -418,7 +418,7 @@ test_sched1a_row12_block_keeps_worker :: proc(t: ^testing.T) {
 }
 
 // Row 13: `lease handoff` deletes the lease and stops the worker; the next
-// holder (here the same instance, re-granted at once) starts fresh.
+// holder (here the same instance, after the exact stop receipt) starts fresh.
 @(test)
 test_sched1a_row13_handoff_stops_worker_next_holder_fresh :: proc(t: ^testing.T) {
 	fx, log, ok := lease_fixture(t, "s1a_r13")
@@ -432,6 +432,20 @@ test_sched1a_row13_handoff_stops_worker_next_holder_fresh :: proc(t: ^testing.T)
 	wake_log_reset(log)
 	_, hok, herr := lease_handoff(&fx.svc, inst_auth("inst_w1"), Handoff_Input{summary = "fresh window please"})
 	if !testing.expectf(t, hok, "handoff: %s", herr.message) do return
+	_, held_before_receipt := lease_of(fx, "inst_w1")
+	testing.expect(t, !held_before_receipt && !wake_log_has_run(log, "inst_w1"), "no new generation until stop is confirmed")
+	testing.expect(t, wake_log_has_stop(log, "inst_w1"), "handoff issued the generation-fenced stop")
+	command := agent.task_stop_command_id("inst_w1", gen)
+	defer delete(command)
+	result := strings.concatenate({`{"ok":true,"command_id":"`, command, `","payload":{"status":"succeeded","result":{"agent_instance_id":"inst_w1","expected_run_count":`, fmt.tprintf("%d", gen), `,"runtime_status":"stopped"}}}`}, context.temp_allocator)
+	row, receipt_applied := agent.apply_task_stop_receipt(fx.svc.agent_service, "br_1", command, result, "u1")
+	defer domain.agent_instance_destroy(&row)
+	if !testing.expect(t, receipt_applied) do return
+	u, opened, _ := begin_uow(&fx.svc)
+	if !testing.expect(t, opened) do return
+	matched, merr := match_chain_in_uow(&fx.svc, &u, chain, .Process_Verified)
+	_, _ = end_uow(&fx.svc, &u, matched)
+	testing.expect(t, matched, merr.message)
 	again, held := lease_of(fx, "inst_w1")
 	testing.expect(t, held && again.lease_id != before.lease_id && again.attempt_no == before.attempt_no, "next holder continues the same attempt")
 	s1a_expect_fresh(t, fx, log, "inst_w1", gen, "handoff re-grant")

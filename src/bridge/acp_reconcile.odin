@@ -357,7 +357,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
             if owned_epoch do acp_runtime_detach(id)
             closed := pipe.instance == "" || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
             if closed do bridge_runtime_set_pty_process_alive(id, false)
-            bridge_runtime_set_status(id, "failed" if closed else "blocked", "idle", .acp_failed_intent)
+            bridge_runtime_set_status(id, "stopped" if closed else "blocked", "idle", .acp_failed_intent)
             acp_runtime_leave_lifecycle(lifecycle); continue
         }
         if intent.status == "stopped" || intent.status == "cancelled" || intent.status == "stopping" {
@@ -421,7 +421,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
             if built && acp_runtime_terminal_error(&r.d) {
                 closed := pipe.instance == "" || matching_child && acp_runtime_close_child(r)
                 if closed do bridge_runtime_set_pty_process_alive(id, false)
-                bridge_runtime_set_status(id, "failed" if closed else "blocked", "idle", .acp_terminal_checkpoint)
+                bridge_runtime_set_status(id, "stopped" if closed else "blocked", "idle", .acp_terminal_checkpoint)
                 sync.mutex_lock(&bridge_runtime_mutex)
                 for &inst in bridge_runtime_instances do if inst.agent_instance_id == id do bridge_runtime_replace_acp_error(&inst, r.d.error)
                 sync.mutex_unlock(&bridge_runtime_mutex)

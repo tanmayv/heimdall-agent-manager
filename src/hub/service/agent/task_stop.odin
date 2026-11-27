@@ -49,7 +49,7 @@ apply_task_stop_receipt :: proc(service: ^Agent_Service, bridge_id, command_id, 
 	next.stopped_at = next.updated_at
 	saved, applied, _ := iface.agent_save_instance_guarded(service.agents, next, inst.run_count, inst.launch_epoch, inst.configuration_revision)
 	if !applied do return {}, false
-	log_runtime_terminal_transition(saved, inst.runtime_status, "apply_task_stop_receipt", "pty_stop_confirmed")
+	log_runtime_terminal_transition(saved, inst.runtime_status, "apply_task_stop_receipt", "pty_stop_confirmed", command_id)
 	defer if saved.runtime_transport != inst.runtime_transport do delete(saved.runtime_transport)
 	return domain.agent_instance_clone(saved), true
 }

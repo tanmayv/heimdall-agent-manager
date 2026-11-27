@@ -1230,6 +1230,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		fmt.println("bridge hub runtime command stop_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
+		previous_op := bridge_runtime_transition_op_id
+		bridge_runtime_transition_op_id = command_id
+		defer bridge_runtime_transition_op_id = previous_op
 		if cached, ok := bridge_runtime_cached_command(command_id); ok && !bridge_failed_fenced_stop_retry(type, text, cached) { _ = bridge_hub_send(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		defer delete(accepted)
@@ -2806,6 +2809,9 @@ bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, 
 // launch_agent command. On failure `err` carries the typed code + class so callers
 // decide retry/park/fail from the class, never from the `detail` text.
 bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_ns: i64 = 0, bot_delivery := false) -> (ok: bool, detail: string, err: Bridge_Error) {
+	previous_op := bridge_runtime_transition_op_id
+	bridge_runtime_transition_op_id = command_id
+	defer bridge_runtime_transition_op_id = previous_op
 	if !bridge_auto_update_launch_enter() do return false, "bridge is applying an update; retry after reconnect", bridge_error(.agent_launch_failed, .other, retry_after_ms = 30_000)
 	defer bridge_auto_update_launch_leave()
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
@@ -3131,12 +3137,12 @@ bridge_runtime_stop_agent_process :: proc(instance_id: string, force: bool, bot_
 	// Wrapper-free: the bridge closes the instance on the ham-pty-host daemon
 	// directly (SIGTERM->SIGKILL + unregister). Token invalidation below is still
 	// done for defense-in-depth.
-	socket, daemon_ok := bridge_pty_host_ensure_daemon()
-	if !daemon_ok do return false
-	// An absent instance is an idempotent stop only after a successful list.
-	// is_registered alone cannot distinguish absence from transport failure.
-	reply, list_ok := bridge_pty_host_list(socket)
-	if !list_ok do return false
+	// Stop may enumerate this daemon, but may not start a replacement and
+	// take the new daemon's empty roster as a receipt for the old process.
+	socket := bridge_pty_liveness_socket()
+	defer delete(socket)
+	reply := bridge_pty_liveness_roster_at(socket)
+	if reply.kind != .Agent_List do return false
 	registered, alive := false, false
 	for agent in reply.agents do if agent.instance_id == instance_id { registered = true; alive = agent.alive; break }
 	pty_host_reply_delete(reply)
@@ -3486,7 +3492,7 @@ bridge_runtime_mark_stop_intent :: proc(instance_id: string) {
 			return
 		}
 	}
-	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = "stopping", activity_status = "idle", last_seen_unix_ms = now, stopped_intent_unix_ms = now})
+	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), stopped_intent_unix_ms = now})
 }
 
 // bridge_runtime_clear_stop_intent removes the stop tombstone (called when a
@@ -3553,9 +3559,12 @@ Bridge_Runtime_Reason :: enum {
 	wrapper_startup_failed,
 }
 
+@(thread_local)
+bridge_runtime_transition_op_id: string
+
 bridge_runtime_log_transition :: proc(instance_id, from, to: string, source: Bridge_Runtime_Source, reason: Bridge_Runtime_Reason, loc := #caller_location) {
 	if from == to do return
-	fmt.eprintfln("agent_runtime_transition component=bridge instance=%q from=%q to=%q source=%v proc=%q line=%d reason=%v", instance_id, from, to, source, loc.procedure, loc.line, reason)
+	fmt.eprintfln("agent_runtime_transition component=bridge instance=%q from=%q to=%q source=%v proc=%q line=%d reason=%v op_id=%q", instance_id, from, to, source, loc.procedure, loc.line, reason, bridge_runtime_transition_op_id)
 }
 
 bridge_runtime_set_status_locked :: proc(instance_id, runtime_status, activity_status: string, now: i64, touch_seen: bool, reason: Bridge_Runtime_Reason = .lifecycle, loc := #caller_location) {
@@ -3571,6 +3580,12 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 			old_runtime := inst.runtime_status
 			accept_activity := activity_status != "" && (force_activity || bridge_runtime_accept_activity_update(inst, activity_source, now))
 			runtime_changed := inst.runtime_status != runtime_status
+			if runtime_status == "failed" && runtime_changed {
+				if reason != .pty_child_exited || inst.process_exit.pid <= 0 ||
+				   inst.process_exit.pid != inst.startup.pty_pid || inst.process_exit.run_count != inst.startup.rec.run_count {
+					return
+				}
+			}
 			bridge_runtime_log_transition(instance_id, old_runtime, runtime_status, source, reason, loc)
 			activity_changed := accept_activity && inst.activity_status != activity_status
 			if inst.runtime_transport == "acp" && (activity_changed || (!accept_activity && activity_status != "" && inst.activity_status != activity_status)) {
@@ -3624,6 +3639,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 	// keeps the durable last_applied_seq. Seed new local records from wall-clock ms
 	// plus a safety offset so post-relaunch reports remain newer than prior Hub seqs
 	// even if direct agent-actions (like repeated start-success) advanced the DB.
+	if runtime_status == "failed" do return // no prior generation to bind to a process exit
 	if bridge_runtime_instances == nil do bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
 	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), runtime_reason = reason, activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen, pty_process_alive = (runtime_status == "running")})
 	bridge_runtime_log_transition(instance_id, "", runtime_status, source, reason, loc)
@@ -4822,9 +4838,19 @@ bridge_runtime_features :: proc() -> []string {
 	return features[:]
 }
 
+bridge_pty_liveness_socket :: proc() -> string {
+	sync.mutex_lock(&pty_host_daemon_lock)
+	defer sync.mutex_unlock(&pty_host_daemon_lock)
+	return strings.clone(pty_host_daemon_socket) if pty_host_daemon_socket != "" else pty_host_socket_path()
+}
+
 bridge_pty_liveness_roster :: proc() -> Pty_Host_Reply {
-	socket := pty_host_socket_path()
+	socket := bridge_pty_liveness_socket()
 	defer delete(socket)
+	return bridge_pty_liveness_roster_at(socket)
+}
+
+bridge_pty_liveness_roster_at :: proc(socket: string) -> Pty_Host_Reply {
 	frame := pty_host_encode_list()
 	defer delete(frame)
 	reply, ok := pty_host_request_deadline(socket, frame, 1500)

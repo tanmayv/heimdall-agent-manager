@@ -23,6 +23,7 @@ Start_Request :: struct {
 	expected: ^domain.Agent_Instance,
 	expected_run_count: ^int,
 	require_live: bool,
+	process_fact: Maybe(Agent_Liveness),
 	guard: proc(ctx: rawptr) -> domain.Domain_Error,
 	guard_ctx: rawptr,
 }
@@ -43,6 +44,14 @@ start_ticket_destroy :: proc(t: ^Start_Ticket) {
 	domain.agent_instance_destroy(&t.instance)
 	delete(t.command_id)
 	t^ = {}
+}
+
+// start_process_fact is the in-transaction view of the authoritative service.
+start_process_fact :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> Agent_Liveness {
+	when ODIN_TEST {
+		if service != nil && service.fixture_start_fact != nil do return service.fixture_start_fact(inst)
+	}
+	return agent_liveness(service, inst, cache_only = true)
 }
 
 // No mutex and no network: this joins a transaction already open on this thread.
@@ -87,23 +96,23 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	// Automatic self-restarts cannot revive a completed/user-stopped process.
 	// Check before ref reuse and admission (manual start lock or task transaction).
 	if req.expected_run_count != nil && inst.run_count != req.expected_run_count^ do return {}, domain.domain_error(.Conflict, "superseded restart generation", `{"code":"start_raced"}`)
-	if req.require_live && (inst.stopped_by != "" || inst.stop_reason != "" || inst.runtime_status == "stopping" || !runtime_expected_active(inst.runtime_status)) do return {}, domain.domain_error(.Conflict, "instance stop superseded restart", `{"code":"start_raced"}`)
-	if req.ref != "" && inst.start_ref == req.ref && runtime_expected_active(inst.runtime_status) {
+	fact, observed := req.process_fact.?
+	if !observed do fact = start_process_fact(service, inst)
+	if req.require_live && (inst.stopped_by != "" || inst.stop_reason != "" || fact.state != .Alive) do return {}, domain.domain_error(.Conflict, "instance stop superseded restart", `{"code":"start_raced"}`)
+	if req.ref != "" && inst.start_ref == req.ref && fact.state != .Exited && inst.stop_reason == "" {
 		return start_ticket_for_row(service, inst, req.ref, false, true), {}
 	}
 	if req.expected != nil {
 		e := req.expected
-		if inst.run_count != e.run_count || inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id || inst.stopped_by != e.stopped_by || inst.stop_reason != e.stop_reason || inst.runtime_status == "stopping" && e.runtime_status != "stopping" do return {}, domain.domain_error(.Conflict, "instance changed before runtime action", `{"code":"start_raced"}`)
+		if inst.run_count != e.run_count || inst.configuration_revision != e.configuration_revision || inst.launch_epoch != e.launch_epoch || inst.bridge_id != e.bridge_id || inst.stopped_by != e.stopped_by || inst.stop_reason != e.stop_reason do return {}, domain.domain_error(.Conflict, "instance changed before runtime action", `{"code":"start_raced"}`)
 	}
-	if runtime_expected_active(inst.runtime_status) {
-		switch req.if_live {
-		case .Refuse:
-			msg := strings.concatenate({"instance ", inst.agent_instance_id, " is already running (runtime_status=", inst.runtime_status, ")"})
-			details := strings.concatenate({"{\"code\":\"already_running\",\"runtime_status\":\"", inst.runtime_status, "\"}"})
-			return {}, domain.domain_error(.Conflict, msg, details)
-		case .Keep:
-			return start_ticket_for_row(service, inst, req.ref, true, false), {}
-		case .Relaunch:
+	if req.if_live != .Relaunch {
+		if fact.state == .Alive {
+			if req.if_live == .Keep do return start_ticket_for_row(service, inst, req.ref, true, false), {}
+			return {}, domain.domain_error(.Conflict, "instance is already running", `{"code":"already_running"}`)
+		}
+		if fact.state == .Unknown && fact.reason != .never_started {
+			return {}, domain.domain_error(.Bridge_Busy, "could not confirm previous process exited")
 		}
 	}
 	if idle, idle_err := reconfiguration_require_idle(service, instance_id); !idle do return {}, idle_err
@@ -176,7 +185,7 @@ start_reuse :: proc(service: ^Agent_Service, instance_id, ref: string, allocator
 	inst, found, read_err := iface.agent_get_instance(service.agents, instance_id)
 	if !found do return {}, false, true, read_err
 	defer domain.agent_instance_destroy(&inst)
-	if ref != "" && inst.start_ref == ref && runtime_expected_active(inst.runtime_status) {
+	if ref != "" && inst.start_ref == ref && inst.stop_reason == "" && start_process_fact(service, inst).state != .Exited {
 		return start_ticket_for_row(service, inst, ref, false, true), true, false, {}
 	}
 	return {}, false, true, {}
@@ -226,6 +235,18 @@ start_send :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_E
 }
 
 start :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, req: Start_Request) -> (inst: domain.Agent_Instance, kept_live: bool, ok: bool, err: domain.Domain_Error) {
+	req := req
+	obs_row: domain.Agent_Instance
+	defer domain.agent_instance_destroy(&obs_row)
+	if req.require_live || req.if_live != .Relaunch {
+		current, found, err := get_instance(service, auth, instance_id)
+		if !found do return {}, false, false, err
+		obs_row = current
+		fact := start_process_fact(service, current)
+		if fact.reason == .not_observed do fact = agent_liveness(service, current)
+		req.process_fact = fact
+		if req.expected == nil do req.expected = &obs_row
+	}
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	ticket, begin_err := start_begin(service, auth, instance_id, req)
@@ -264,7 +285,8 @@ start_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_C
 		start_settle(service, &ticket, false)
 		return {}, false, refusal
 	}
-	if !confirmed_start_receipt(reply, ticket.command_id, instance_id, ticket.instance.run_count) {
+	process_pid := confirmed_start_pid(reply, ticket.command_id, instance_id, ticket.instance.run_count)
+	if process_pid <= 0 {
 		start_settle(service, &ticket, false)
 		return {}, false, domain.domain_error(.Conflict, "bridge did not confirm start-success for the new process")
 	}
@@ -275,18 +297,25 @@ start_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_C
 		domain.agent_instance_destroy(&fresh)
 		return {}, false, domain.domain_error(.Conflict, "start operation was superseded")
 	}
+	if fresh.startup_status != "ready" {
+		domain.agent_instance_destroy(&fresh)
+		return {}, false, domain.domain_error(.Conflict, "new process is no longer ready")
+	}
+	record_confirmed_start_process(service, fresh, process_pid)
 	return fresh, true, {}
 }
 
-confirmed_start_receipt :: proc(reply, op, instance_id: string, run_count: int) -> bool {
-	if !jsonx.extract_bool(reply, "ok", false, true) || jsonx.extract_string(reply, "command_id", "", true, context.temp_allocator) != op do return false
+confirmed_start_pid :: proc(reply, op, instance_id: string, run_count: int) -> int {
+	if !jsonx.extract_bool(reply, "ok", false, true) || jsonx.extract_string(reply, "command_id", "", true, context.temp_allocator) != op do return 0
 	payload, ok := jsonx.extract_raw_object(reply, "payload", true, context.temp_allocator)
-	if !ok || jsonx.extract_string(payload, "status", "", true, context.temp_allocator) != "succeeded" do return false
+	if !ok || jsonx.extract_string(payload, "status", "", true, context.temp_allocator) != "succeeded" do return 0
 	result, has_result := jsonx.extract_raw_object(payload, "result", true, context.temp_allocator)
-	return has_result && jsonx.extract_string(result, "runtime_status", "", true, context.temp_allocator) == "running" &&
-		jsonx.extract_string(result, "agent_instance_id", "", true, context.temp_allocator) == instance_id &&
-		jsonx.extract_int(result, "expected_run_count", -1, true) == run_count &&
-		jsonx.extract_int(result, "process_pid", 0, true) > 0
+	if !has_result || jsonx.extract_string(result, "runtime_status", "", true, context.temp_allocator) != "running" ||
+	   jsonx.extract_string(result, "agent_instance_id", "", true, context.temp_allocator) != instance_id ||
+	   jsonx.extract_int(result, "expected_run_count", -1, true) != run_count {
+		return 0
+	}
+	return jsonx.extract_int(result, "process_pid", 0, true)
 }
 
 start_begin_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id, ref: string) -> (launch_json: string, run_count: int, reused: bool, ok: bool, err: domain.Domain_Error) {

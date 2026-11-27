@@ -94,9 +94,20 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	if scope != .Excluded {
 		if e := iface.fleet_scope_set(svc.bridges, inst, "chain"); e.code != .None do return {}, false, e
 	}
-	// Inline grants do not replace a process. Excluded origins also retain their
-	// existing runtime when explicitly taking work, regardless of chain policy.
-	preserve_runtime := req.delivery == domain.LEASE_DELIVERY_INLINE || scope == .Excluded
+	// Inline takes come from the holder. Wake grants need the already observed
+	// pty-host state; a miss queued a probe rather than claiming another child.
+	fact: agent.Agent_Liveness
+	if req.delivery == domain.LEASE_DELIVERY_WAKE {
+		fact = match_process_fact(svc, u, inst, task.chain_id)
+		if fact.state == .Unknown && fact.reason != .never_started {
+			return {}, false, domain.domain_error(.Bridge_Busy, "waiting for process verification")
+		}
+		if fact.state == .Alive && (stopping || inst.stop_reason != "") {
+			return {}, false, domain.domain_error(.Bridge_Busy, "waiting for current process stop confirmation")
+		}
+	}
+	// Retaining a live child also means retaining its actual runtime config.
+	preserve_runtime := req.delivery == domain.LEASE_DELIVERY_INLINE || scope == .Excluded || fact.state == .Alive
 	if preserve_runtime {
 		req.placement.provider, req.placement.provider_profile, req.placement.model = inst.provider, inst.provider_profile, inst.model
 	}
@@ -199,9 +210,7 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	if req.kind == domain.LEASE_KIND_WORK && pre.last_release != .Handoff do attempt_no += 1
 	lease.attempt_no = attempt_no
 
- model_changed := false
  if req.delivery!=domain.LEASE_DELIVERY_INLINE && (domain.profile_effective_id(inst.provider,inst.provider_profile)!=lease.provider_profile || inst.provider!=provider || inst.model!=model) {
-  model_changed = true
   updated:=inst
   updated.provider=provider;updated.provider_profile=lease.provider_profile;updated.model=model
   stored,changed,e:=iface.agent_save_instance(svc.agents,updated)
@@ -215,12 +224,15 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 		if svc.agent_service == nil do return {}, false, domain.domain_error(.Internal_Error, "agent launch service is unavailable")
 		current, found, read_err := iface.agent_get_instance(svc.agents, inst.agent_instance_id)
 		if !found do return {}, false, read_err
-		// A recorded stop intent (task done, review approved, grace window
-		// over) means the next responsibility gets a fresh process (REQ-SCHED-25).
-		policy := agent.Start_If_Live.Relaunch
-		if wake_reuses_live_child(current, model_changed || stopping || current.stop_reason != "") do policy = .Keep
+		// Match observed this generation before entering the nested grant UoW.
+		// A discarded or unavailable observation cannot open a new generation.
+		policy := agent.Start_If_Live.Keep
+		if current.run_count != inst.run_count || current.launch_epoch != inst.launch_epoch {
+			domain.agent_instance_destroy(&current)
+			return {}, false, domain.domain_error(.Conflict, "instance changed before process verification")
+		}
 		domain.agent_instance_destroy(&current)
-		ticket, start_err := agent.start_begin(svc.agent_service, contracts.Auth_Context{user_id=string(task.owner_user_id), kind=.Internal_User}, inst.agent_instance_id, {ref=lease.lease_id, if_live=policy, expected=&inst})
+		ticket, start_err := agent.start_begin(svc.agent_service, contracts.Auth_Context{user_id=string(task.owner_user_id), kind=.Internal_User}, inst.agent_instance_id, {ref=lease.lease_id, if_live=policy, expected=&inst, process_fact=fact})
 		if start_err.code != .None do return {}, false, start_err
 		start_ticket = new(agent.Start_Ticket)
 		start_ticket^ = ticket
@@ -353,15 +365,6 @@ expiry_stops_holder :: proc(reason: string) -> bool {
 	return reason != EXPIRE_TTL && reason != EXPIRE_HARD_CAP && reason != EXPIRE_IDLE && reason != EXPIRE_CHANGES_REQUESTED
 }
 
-// wake_reuses_live_child: a wake grant keeps the instance's running process
-// (and its generation) when the process is live, was not stopped by a person,
-// and nothing demands a new child (`needs_new_child`: the grant changes its
-// provider/model, or this unit of work is stopping it). Otherwise the grant
-// launches a new child (run_count bump + full bootstrap on the bridge).
-wake_reuses_live_child :: proc(inst: domain.Agent_Instance, needs_new_child: bool) -> bool {
-	return !needs_new_child && instance_is_live(inst) && inst.stopped_by == ""
-}
-
 // ---- instance lifetime: event-driven stops (spec SCHED 8, REQ-SCHED-19..28) ----
 // A worker or reviewer is stopped by the event that ends its responsibility:
 // its task becomes done or cancelled (clear_task_claims_in_uow), it approves
@@ -388,7 +391,10 @@ lease_stop_reason :: proc(reason: string) -> bool {
 // `reported_live`: its bridge has just reported it active, which outranks the
 // stored status (still `unreachable` from the disconnect during on_bridge_hello).
 stop_instance_in_uow :: proc(svc: ^Service, u: ^Uow, inst: domain.Agent_Instance, chain_id: string, reason: string, reported_live := false) -> (bool, domain.Domain_Error) {
-	if !reported_live && !instance_is_live(inst) && !instance_is_pending(inst) do return true, {}
+	if !reported_live {
+		fact := match_process_fact(svc, nil, inst, domain.Task_Chain_ID(chain_id))
+		if fact.state == .Exited || fact.reason == .never_started do return true, {}
+	}
 	if recorded, err := iface.agent_set_stop_reason(svc.agents, inst.agent_instance_id, reason); !recorded {
 		if err.code == .None do return false, domain.domain_error(.Internal_Error, "failed to record stop intent")
 		return false, err
@@ -456,7 +462,9 @@ instance_stop_managed :: proc(svc: ^Service, chain: domain.Task_Chain, inst: dom
 // came up with nothing to do.
 ensure_idle_timer_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, instance_id: string) {
 	inst, ok, _ := iface.agent_get_instance(svc.agents, instance_id)
-	if !ok || (!instance_is_live(inst) && !instance_is_pending(inst)) do return
+	if !ok do return
+	fact := match_process_fact(svc, nil, inst, chain.chain_id)
+	if fact.state == .Exited || fact.reason == .never_started do return
 	ttl, managed := instance_stop_managed(svc, chain, inst)
 	if !managed do return
 	since := inst.idle_since
@@ -608,7 +616,8 @@ drain_instance_terminal_probes :: proc(svc: ^Service) {
 		if !found || err.code != .None do continue
 		// An exit hint invalidates a recently cached alive observation. A
 		// timeout, offline bridge or missing record does not authorize revocation.
-		if agent.agent_liveness(svc.agent_service, inst, force_probe = true, prefer_reported_exit = true).state != .Exited do continue
+		fact := agent.agent_liveness(svc.agent_service, inst, force_probe = true, prefer_reported_exit = true)
+		if fact.state != .Exited || fact.reason != .pty_child_exited || fact.pid <= 0 do continue
 		on_instance_terminal(svc, id, &inst, lease.lease_id)
 	}
 }
@@ -641,10 +650,12 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string, observed: ^doma
 				_, _ = end_uow(svc, &u, false)
 				return
 			}
-		} else if instance_is_live(inst) || instance_is_pending(inst) ||
-		   (inst.runtime_status == "unreachable" && !bridge_online(svc, inst.bridge_id)) {
-			_, _ = end_uow(svc, &u, false)
-			return
+		} else {
+			fact := match_process_fact(svc, nil, inst, domain.Task_Chain_ID(inst.chain_id))
+			if fact.state != .Exited {
+				_, _ = end_uow(svc, &u, false)
+				return
+			}
 		}
 	}
 	acted := false
@@ -779,7 +790,11 @@ on_start_success :: proc(svc: ^Service, inst: domain.Agent_Instance) {
 // user stop was already cleared by the explicit start that launched it. Reads
 // the projections inside the UoW, so duplicate start-success is a no-op.
 answer_ready_agent_blocks_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domain.Task_Chain, inst: domain.Agent_Instance) -> (answered: bool, ok: bool) {
-	if !instance_is_live(inst) || inst.stopped_by != "" || inst.agent_id == "" || inst.bridge_id == "" do return false, true
+	fact := match_process_fact(svc, nil, inst, chain.chain_id)
+	if fact.state == .Exited || (fact.state != .Alive && inst.startup_status != "ready") ||
+	   inst.stopped_by != "" || inst.agent_id == "" || inst.bridge_id == "" {
+		return false, true
+	}
 	tasks, terr := iface.taskchain_list_tasks_by_chain(svc.repo, chain.chain_id, chain.owner_user_id)
 	if terr.code != .None do return false, false
 	for task in tasks {
@@ -1131,10 +1146,6 @@ recently_expired :: proc(svc: ^Service, instance_id: string, now_ms: i64) -> boo
 	defer state_unlock(svc, state_held)
 	at, has := svc.recent_expiries[instance_id]
 	return has && now_ms - at < IDLE_GRACE_SECONDS * 1000
-}
-
-instance_is_live :: proc(inst: domain.Agent_Instance) -> bool {
-	return inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy"
 }
 
 // holder_is_coordinator resolves the lease's OWN chain (never a caller's) and

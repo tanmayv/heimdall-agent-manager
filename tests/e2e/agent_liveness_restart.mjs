@@ -117,7 +117,21 @@ try {
   await api(chainRoute + '/fleets/' + agent.agent_id, 'PUT', { capacity: 1, min_warm: 0, provider: 'codex', model });
   await api(chainRoute + '/tasks', 'POST', { title: 'Keep the child', bridge_id: bridge.bridge_id, assignee: agent.agent_id,
     brief: { goal: 'Keep the same child and lease across reconnect', acceptance: ['same lease and PID'] } });
+  // Reproduce the historical poisoned projection without stopping the fixture
+  // child. Let the scheduler prove the same generation alive before making a
+  // grant. Calling lease next first would let an inline take mask the bug.
+  await sql("UPDATE agent_instances SET runtime_status='failed',startup_status='startup_failed',status_message='' WHERE agent_instance_id=?", [instance.agent_instance_id]);
   await api(chainRoute + '/publish', 'POST', {});
+  await waitFor(async () => {
+    const [[holder, delivery] = []] = await sql("SELECT holder_instance_id,delivery FROM task_leases WHERE chain_id=?", [chain.chain_id]);
+    if (!holder) return false;
+    assert.equal(holder, instance.agent_instance_id, 'the matcher did not launch a duplicate');
+    assert.equal(delivery, 'wake');
+    return true;
+  }, 'automatic lease on the verified process');
+  assert.equal(await ptyPid(), oldPid);
+  assert.equal((await api(instanceRoute)).run_count, instance.run_count, 'automatic wake kept the selected run');
+  console.log('PASS poisoned Hub projection did not open a new generation');
   const original = await waitFor(leaseNext, 'confirmed fixture lease');
   console.log('lease before restart', original.lease_id, 'PID', oldPid);
 
@@ -156,7 +170,24 @@ try {
   assert.equal(restarted.run_count, instance.run_count + 1, 'a single generation was opened');
   console.log('PASS explicit Start acknowledged ready replacement PID', newPid);
   assert.equal((await leaseNext()).lease_id, original.lease_id, 'manual restart did not create a second lease');
-  const submit = await exec(path.join(bin, 'ham-ctl'), ['lease', 'submit', '--lease', original.lease_id,
+  const handoff = await exec(path.join(bin, 'ham-ctl'), ['lease', 'handoff', '--lease', original.lease_id,
+    '--summary', 'Request a fresh context window in the isolated fixture'], {
+    env: { ...env, ...await agentEnv() }, cwd: root, timeout: 15000,
+  });
+  assert.equal(JSON.parse(handoff.stdout).ok, true);
+  const afterHandoff = await waitFor(async () => {
+    const row = await api(instanceRoute);
+    return row.run_count === restarted.run_count + 1 && row.runtime_status === 'running' && row;
+  }, 'replacement readiness after fenced handoff');
+  const handedOffPid = await waitFor(ptyPid, 'live child after handoff');
+  assert.notEqual(handedOffPid, newPid);
+  const handedOffLease = await waitFor(leaseNext, 're-granted fixture lease');
+  assert.notEqual(handedOffLease.lease_id, original.lease_id);
+  assert.equal(handedOffLease.attempt_no, original.attempt_no);
+  assert.equal(afterHandoff.run_count, restarted.run_count + 1);
+  console.log('PASS handoff waited for stop and kept the attempt on new PID', handedOffPid);
+
+  const submit = await exec(path.join(bin, 'ham-ctl'), ['lease', 'submit', '--lease', handedOffLease.lease_id,
     '--requirements-revision', '1', '--summary', 'Completed the isolated liveness fixture'], {
     env: { ...env, ...await agentEnv() }, cwd: root, timeout: 15000,
   });
@@ -167,7 +198,7 @@ try {
     return status === 'stopped' && reason === 'pty_stop_confirmed';
   }, 'scheduler stop receipt after task completion');
   assert.equal(await ptyPid(), 0, 'scheduler stop confirmed the exact generation exited');
-  console.log('PASS task completion confirmed stop of the replacement PID', newPid);
+  console.log('PASS task completion confirmed stop of the replacement PID', handedOffPid);
 
   const manual = await api(instanceRoute + '/start', 'POST', {});
   assert.equal(manual.runtime_status, 'running');

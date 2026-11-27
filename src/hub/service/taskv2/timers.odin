@@ -475,7 +475,8 @@ fire_idle_ttl :: proc(svc: ^Service, u: ^Uow, t: Timer) -> Fire_Result {
 	// Not running (or `unreachable` behind an offline bridge): nothing to stop
 	// now. idle_since is unchanged, so the reconnect sweep finds the window
 	// over and delivers the stop (spec SCHED 12, bridge offline).
-	if !instance_is_live(inst) && !instance_is_pending(inst) do return .Noop
+	fact := match_process_fact(svc, nil, inst, domain.Task_Chain_ID(inst.chain_id))
+	if fact.state == .Exited || fact.reason == .never_started do return .Noop
 	// The grace window ended with no lease (REQ-SCHED-23/26): point reads only.
 	// A worker waiting for review or blocked holds a waiting claim, so it is
 	// never stopped here; an instance outside any chain fleet is not managed.
@@ -735,6 +736,7 @@ timer_thread_proc :: proc(t: ^thread.Thread) {
 		_ = fire_due(svc, now, jump)
 		drain_pending_touches(svc)
 		drain_instance_terminal_probes(svc)
+		drain_match_probe(svc)
 		drain_coordinator_wakes(svc)
 		dbt.scope_end_background()
 		// Per-tick scratch (wake keys, JSON) lives on the temp allocator.

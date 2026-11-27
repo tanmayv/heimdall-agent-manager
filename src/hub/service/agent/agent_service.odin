@@ -25,6 +25,8 @@ Agent_Service :: struct {
 	entitlements: domain.Entitlement_Lookup,
 	reconfiguration_mutex: sync.Mutex,
 	liveness_cache: Agent_Liveness_Cache,
+	// Unit fixtures only. The observer is ignored in non-test builds.
+	fixture_start_fact: proc(domain.Agent_Instance) -> Agent_Liveness,
 	agents: ^iface.Agent_Repository,
 	bridges: ^iface.Bridge_Repository,
 	projects: ^iface.Project_Repository,
@@ -580,7 +582,12 @@ mark_instance_start_success_locked :: proc(service: ^Agent_Service, auth: contra
 	if !ok do return domain.Agent_Instance{}, false, err
 	if inst.owner_user_id != domain.User_ID(auth.user_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found")
 	if expected_run_count >= 0 && inst.run_count != expected_run_count do return {}, false, domain.domain_error(.Conflict, "superseded startup generation")
-	if inst.runtime_status == "stopped" || inst.runtime_status == "stopping" || inst.runtime_status == "failed" do return {}, false, domain.domain_error(.Conflict, "startup signal is for an inactive launch")
+	fact := agent_liveness(service, inst, cache_only = true)
+	bot_idle_reopen := inst.kind == "bot" && inst.stop_reason == "bot_idle"
+	if inst.stopped_by != "" || (!bot_idle_reopen && (inst.stop_reason != "" || fact.state == .Exited || fact.reason == .never_started)) {
+		domain.agent_instance_destroy(&inst)
+		return {}, false, domain.domain_error(.Conflict, "startup signal is for an inactive launch")
+	}
 	now := platform.clock_now(service.clock)
 	inst.runtime_status = "running"
 	inst.startup_status = "ready"
@@ -882,16 +889,17 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	reason := input.reason
 	if reason == "" do reason = "user_requested"
 	fact := agent_liveness(service, inst, force_probe = true)
+	op := ""
+	defer delete(op)
 	switch fact.state {
 	case .Alive:
-		op := platform.generate_id(service.ids, "cmd_stop_")
-		defer delete(op)
+		op = platform.generate_id(service.ids, "cmd_stop_")
 		if err := confirm_stop_observed_process(service, inst, fact, op, reason, force = input.force); err.code != .None do return {}, false, err
 	case .Exited:
 	case .Unknown:
 		if fact.reason == .probe_timed_out do return {}, false, domain.domain_error(.Bridge_Timeout, "process verification timed out")
 		if fact.reason == .bridge_unavailable do return {}, false, domain.domain_error(.Bridge_Offline, "bridge is not available to verify the process")
-		if fact.reason != .missing_from_pty_roster || (inst.run_count != 0 && inst.status_message != "pty_stop_confirmed") do return {}, false, domain.domain_error(.Conflict, "could not confirm the instance process state")
+		if fact.reason != .never_started do return {}, false, domain.domain_error(.Conflict, "could not confirm the instance process state")
 	}
 	lock_tok = dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	held = true
@@ -914,7 +922,7 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 		if save_err.code == .None do save_err = domain.domain_error(.Conflict, "instance changed before stop confirmation")
 		return {}, false, save_err
 	}
-	log_runtime_terminal_transition(saved, fresh.runtime_status, "stop_instance_confirmed", "pty_stop_confirmed")
+	log_runtime_terminal_transition(saved, fresh.runtime_status, "stop_instance_confirmed", "pty_stop_confirmed", op)
 	generation := project_service.bridge_runtime_registry_generation(service.bridge_runtime_registry, saved.bridge_id)
 	project_service.bridge_runtime_instance_retire(service.bridge_runtime_registry, saved.bridge_id, generation, instance_id, "stopped", "pty_stop_confirmed")
 	if recorded, _ := iface.agent_set_stop_reason(service.agents, instance_id, reason); recorded do saved.stop_reason = reason
@@ -1183,14 +1191,24 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	}
 	// Status frames are observations. Only the pty-host's generation-bound
 	// exit evidence can project a process into a terminal state.
-	if process_exit != nil && instance_runtime_is_terminal(runtime_status) {
-		if runtime_status == "unreachable" || process_exit.pid <= 0 || process_exit.exit_code == nil ||
+	if instance_runtime_is_terminal(runtime_status) {
+		if process_exit == nil || runtime_status == "unreachable" || process_exit.pid <= 0 || process_exit.exit_code == nil ||
 		   process_exit.run_count <= 0 || process_exit.run_count != inst.run_count || reason != "pty_child_exited" {
 			domain.agent_instance_destroy(&inst)
 			return {}, false, domain.domain_error(.Conflict, "terminal status report has no current child exit evidence")
 		}
 	}
 	normalized_reason := runtime_observation_reason(reason)
+	// These durable fence reasons are reserved. Neither a delayed ready
+	// observation nor a legacy status hint can manufacture or undo one.
+	if normalized_reason == "pty_stop_confirmed" || (normalized_reason == "pty_child_exited" && !instance_runtime_is_terminal(runtime_status)) {
+		normalized_reason = ""
+	}
+	fenced := inst.status_message == "pty_stop_confirmed" || inst.status_message == "pty_child_exited"
+	if fenced && inst.stopped_at != "" && runtime_expected_active(runtime_status) && !(inst.kind == "bot" && inst.stop_reason == "bot_idle") {
+		domain.agent_instance_destroy(&inst)
+		return {}, false, domain.domain_error(.Conflict, "runtime report follows a confirmed exit")
+	}
 	effective_state_seq := state_seq
 	if effective_state_seq <= inst.last_applied_seq {
 		// Bridge runtime state is in-memory and can restart while ham-wrapper
@@ -1282,7 +1300,11 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
 	if saved_ok {
-		log_runtime_terminal_transition(saved, prior_runtime, source, normalized_reason if normalized_reason != "" else ("reported_with_error" if error_json != "" else "reported_without_error"))
+		op_id := ""
+		if process_exit != nil && process_exit.pid > 0 && instance_runtime_is_terminal(saved.runtime_status) {
+			op_id = fmt.tprintf("pty_exit_%d_%d", process_exit.run_count, process_exit.pid)
+		}
+		log_runtime_terminal_transition(saved, prior_runtime, source, normalized_reason if normalized_reason != "" else ("reported_with_error" if error_json != "" else "reported_without_error"), op_id)
 		emit_fact(service, facts, Lifecycle_Fact{instance_id = instance_id, terminal = instance_runtime_is_terminal(saved.runtime_status), activity = activity_status})
 	}
 	return saved, saved_ok, save_err
@@ -1294,9 +1316,9 @@ runtime_observation_reason :: proc(reason: string) -> string {
 	return reason
 }
 
-log_runtime_terminal_transition :: proc(inst: domain.Agent_Instance, previous, source, reason: string) {
+log_runtime_terminal_transition :: proc(inst: domain.Agent_Instance, previous, source, reason: string, op_id := "") {
 	if previous == inst.runtime_status || (inst.runtime_status != "failed" && inst.runtime_status != "stopped" && inst.runtime_status != "unreachable") do return
-	fmt.eprintfln("agent_runtime_transition component=hub instance=%q bridge=%q from=%q to=%q source=%q reason=%q", inst.agent_instance_id, inst.bridge_id, previous, inst.runtime_status, source, reason)
+	fmt.eprintfln("agent_runtime_transition component=hub instance=%q bridge=%q from=%q to=%q source=%q reason=%q op_id=%q", inst.agent_instance_id, inst.bridge_id, previous, inst.runtime_status, source, reason, op_id)
 }
 
 @(private = "file")
@@ -1685,33 +1707,6 @@ resolve_project_path_for_launch :: proc(service: ^Agent_Service, owner: domain.U
 publish_state_string :: proc(state: domain.Publish_State) -> string { if state == .Published do return "published"; return "draft" }
 chain_status_string :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; if status == .Archived do return "archived"; return "active" }
 json_or_empty_array :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "[]"; return value }
-
-apply_runtime_startup_projection :: proc(inst: ^domain.Agent_Instance, now: string) {
-	if inst == nil do return
-	switch inst.runtime_status {
-	case "running", "idle", "busy":
-		inst.startup_status = "ready"
-	case "launching", "starting":
-		inst.startup_status = "starting"
-	case "blocked":
-		// Startup probe classified the agent as blocked (e.g. an interactive prompt
-		// the wrapper could not auto-dismiss). Surface it as startup_blocked so the UI
-		// flags it. It stays active-but-not-ready: no stopped_at, keep current_task.
-		inst.startup_status = "startup_blocked"
-	case "failed":
-		inst.startup_status = "startup_failed"
-		inst.stopped_at = now
-		clear_instance_current_task(inst)
-	case "stopped", "unreachable":
-		inst.startup_status = "stopped"
-		inst.stopped_at = now
-		// CT-7 consistency: a stopped/unreachable instance is no longer focused on
-		// any task, so drop its persisted current_task pointer. The auto-promotion
-		// engine will re-establish focus if/when the instance comes back and a
-		// chain recompute runs.
-		clear_instance_current_task(inst)
-	}
-}
 
 // clear_instance_current_task drops an instance's persisted current_task pointer
 // in place. Used by the runtime projection when an instance reaches a terminal

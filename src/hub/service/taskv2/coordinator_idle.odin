@@ -29,7 +29,7 @@ import agent "odin_test:hub/service/agent"
 // instance and the chain status are re-read; a moved stamp, a stopped or
 // user-stopped instance, or (X) an Active chain makes the fire a no-op. The
 // guards (REQ-CIS-3: busy, a live lease, unread user input, the start grace)
-// defer the stop and re-arm a retry. The stop itself is agent.stop_instance,
+// defer the stop and re-arm a retry. The stop itself is agent.stop_instance_confirmed,
 // called after the unit of work commits, with a reason that does not start
 // with "user" so stopped_by stays clear and the existing wakes still apply.
 
@@ -178,7 +178,8 @@ rebuild_coordinator_idle_timers :: proc(svc: ^Service) {
 	insts, err := iface.agent_list_active_runtime_instances(svc.agents)
 	if err.code != .None do return
 	for inst in insts {
-		if !instance_is_live(inst) do continue
+		fact := match_process_fact(svc, nil, inst, domain.Task_Chain_ID(inst.chain_id))
+		if fact.state == .Exited || fact.reason == .never_started do continue
 		arm_coordinator_idle_instance(svc, inst)
 	}
 }
@@ -186,7 +187,7 @@ rebuild_coordinator_idle_timers :: proc(svc: ^Service) {
 // coordinator_idle_guard reports why a due idle stop must wait (REQ-CIS-3),
 // or "" when the coordinator may be stopped now.
 coordinator_idle_guard :: proc(svc: ^Service, inst: domain.Agent_Instance, now_ms: i64) -> string {
-	if inst.runtime_status == "busy" || inst.activity_status == "busy" do return "busy"
+	if inst.activity_status == "busy" do return "busy"
 	// Only an ACTIVE claim is live work. A waiting claim (submitted for review,
 	// blocked on the user) permits no work, and is exactly the idle-waiting
 	// case Y must stop (a Solo coordinator waiting on the user's review).
@@ -226,7 +227,8 @@ fire_coordinator_idle :: proc(svc: ^Service, t: Timer, now_ms: i64) -> (stop: Co
 	// A user event since arming moved the stamp: the newer timer owns it.
 	if !sfound || stamp != t.armed do return {}, false
 	if now_ms < to_ms(stamp) + i64(secs) * 1000 do return {}, false
-	if inst.stopped_by == agent.STOPPED_BY_USER || !instance_is_live(inst) do return {}, false
+	fact := match_process_fact(svc, nil, inst, domain.Task_Chain_ID(inst.chain_id))
+	if inst.stopped_by == agent.STOPPED_BY_USER || fact.state == .Exited || fact.reason == .never_started do return {}, false
 	chains := coordinated_chains(svc, inst)
 	if len(chains) == 0 do return {}, false
 	// X: reopened or new work cancels it; completion re-arms it.
@@ -241,7 +243,7 @@ fire_coordinator_idle :: proc(svc: ^Service, t: Timer, now_ms: i64) -> (stop: Co
 
 // coordinator_idle_stop_after_commit performs the stop outside any unit of
 // work. Tests (and wiring that wants to observe) set Service.coordinator_stop;
-// otherwise agent.stop_instance is called as the owner's internal principal.
+// otherwise agent.stop_instance_confirmed is called as the owner's internal principal.
 // A failed stop (bridge offline, reconfiguration in flight) retries later; the
 // retry re-checks liveness, so a gone instance ends the loop.
 coordinator_idle_stop_after_commit :: proc(svc: ^Service, stop: Coordinator_Idle_Stop, now_ms: i64) {
@@ -258,7 +260,8 @@ coordinator_idle_stop_after_commit :: proc(svc: ^Service, stop: Coordinator_Idle
 	if svc.coordinator_stop != nil {
 		ok = svc.coordinator_stop(svc.coordinator_stop_ctx, stop.owner, stop.instance_id, stop.reason)
 	} else if svc.agent_service != nil {
-		_, stopped, err := agent.stop_instance(svc.agent_service, contracts.Auth_Context{kind = .Internal_User, user_id = string(stop.owner)}, stop.instance_id, agent.Stop_Instance_Input{reason = stop.reason})
+		row, stopped, err := agent.stop_instance_confirmed(svc.agent_service, contracts.Auth_Context{kind = .Internal_User, user_id = string(stop.owner)}, stop.instance_id, agent.Stop_Instance_Input{reason = stop.reason})
+		defer domain.agent_instance_destroy(&row)
 		ok = stopped
 		msg = err.message
 	}

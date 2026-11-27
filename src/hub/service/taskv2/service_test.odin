@@ -9,6 +9,7 @@ import "core:sync"
 import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import agent "odin_test:hub/service/agent"
 import platform "odin_test:hub/platform"
 import sqlite "odin_test:hub/repository/sqlite"
 import jsonx "odin_test:lib/jsonx"
@@ -150,6 +151,24 @@ fixture_wire :: proc(fx: ^Fixture) {
 	fx.ids = platform.real_id_generator()
 	fx.svc = new_service(&fx.repo, &fx.agents, &fx.bridges, &fx.clock, &fx.ids)
 	fx.svc.uow_factory = &fx.uow
+	fx.svc.fixture_process_fact = fixture_process_fact
+}
+
+// These scheduler fixtures historically expressed their simulated processes
+// as seed rows. Translate at the fixture boundary only. Runtime integration
+// cases turn this fake off and exercise the demand probe/cache.
+fixture_process_fact :: proc(inst: domain.Agent_Instance) -> agent.Agent_Liveness {
+	switch inst.runtime_status {
+	case "running", "idle", "busy", "launching", "starting", "blocked", "stopping":
+		return {state = .Alive, reason = .pty_child_alive, pid = 42}
+	case "failed", "terminated":
+		return {state = .Exited, reason = .pty_child_exited, pid = 42, exit_code = 1}
+	case "stopped":
+		return {state = .Exited, reason = .stop_confirmed}
+	case "unreachable":
+		return {reason = .bridge_unavailable}
+	}
+	return {reason = .never_started}
 }
 
 fixture_close :: proc(fx: ^Fixture) {
@@ -352,4 +371,13 @@ test_projection_matches_fold_through_engine :: proc(t: ^testing.T) {
 	testing.expect(t, evs[len(evs)-1].kind == EV_CANCELLED, "last event is cancelled")
 	none, _ := iface.taskchain_list_events_by_task(&fx.repo, b.task_id, "u2")
 	testing.expect_value(t, len(none), 0)
+}
+
+instance_is_live :: proc(inst: domain.Agent_Instance) -> bool {
+	return inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy"
+}
+
+// Pending children await readiness; this is a read-only lifecycle predicate.
+instance_is_pending :: proc(inst: domain.Agent_Instance) -> bool {
+	return inst.runtime_status == "launching" || inst.runtime_status == "starting" || inst.runtime_status == "blocked"
 }

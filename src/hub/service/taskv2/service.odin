@@ -58,6 +58,9 @@ Service :: struct {
 	pending_touches:     map[string]struct{},
 	// Instance IDs whose reported terminal state needs PTY-host evidence.
 	pending_terminal_probes: map[string]struct{},
+	pending_match_probes: map[string]domain.Task_Chain_ID,
+	// Unit fixtures only. The observer is ignored in non-test builds.
+	fixture_process_fact: proc(domain.Agent_Instance) -> agent.Agent_Liveness,
 	touch_async:         bool,
 	// merges_inflight: task ids whose merge-back job is running (sent, reply
 	// not yet recorded); guarded by state_mutex, keys heap-owned (merge.odin).
@@ -101,8 +104,8 @@ Service :: struct {
 	// after the last user event; 0 disables. Wiring copies Hub_Config.
 	coordinator_idle_completed_seconds: int,
 	coordinator_idle_seconds:           int,
-	// coordinator_stop replaces agent.stop_instance for idle stops (tests);
-	// returns whether the stop was sent.
+	// coordinator_stop replaces the confirmed coordinator idle stop (tests);
+	// returns whether the stop completed.
 	coordinator_stop:     proc(ctx: rawptr, owner: domain.User_ID, instance_id, reason: string) -> bool,
 	coordinator_stop_ctx: rawptr,
 	// content: chat inbox reads for the idle-stop unread-user-input guard.
@@ -142,6 +145,7 @@ Trigger :: enum {
 	Review_Posted,
 	Fleet_Changed,
 	Instance_Terminal,
+	Process_Verified,
 	Bridge_Hello,
 	Chain_Closed,
 	Task_Cancelled,
@@ -165,6 +169,7 @@ trigger_label :: proc(t: Trigger) -> string {
 	case .Review_Posted: return "review_posted"
 	case .Fleet_Changed: return "fleet_changed"
 	case .Instance_Terminal: return "instance_terminal"
+	case .Process_Verified: return "process_verified"
 	case .Bridge_Hello: return "bridge_hello"
 	case .Chain_Closed: return "chain_closed"
 	case .Task_Cancelled: return "task_cancelled"
@@ -1127,7 +1132,7 @@ fleet_changed :: proc(svc: ^Service, chain: domain.Task_Chain, agent_id := "") -
 			}
 		}
 		if retry_agent {
-			if reset, reset_err := reset_idle_agent_instances(svc, chain.owner_user_id, chain.chain_id, agent_id); !reset {
+			if reset, reset_err := reset_idle_agent_instances(svc, &u, chain.owner_user_id, chain.chain_id, agent_id); !reset {
 				_, _ = end_uow(svc, &u, false)
 				return reset_err
 			}

@@ -12,6 +12,7 @@ Bridge_Instance_Probe_Result :: struct {
 	exit_code: Maybe(i32),
 	launch_epoch: string,
 	run_count: int,
+	ready: bool,
 }
 
 // A failed request or a missing tombstone is not proof that an earlier
@@ -45,7 +46,7 @@ bridge_instance_probe_from_roster :: proc(id: string, roster: Pty_Host_Reply) ->
 // assigned credentials. Only bind an exit to the PID confirmed at spawn or
 // adoption for those credentials. Missing binding is deliberately unknown.
 bridge_instance_probe_bind :: proc(probe: ^Bridge_Instance_Probe_Result, pid: i32, run_count: int, launch_epoch: string) {
-	if probe.state != "exited" do return
+	if probe.state != "exited" && probe.state != "alive" do return
 	if pid <= 0 || probe.pid != pid || run_count <= 0 {
 		probe.state = "unknown"
 		probe.exit_code = nil
@@ -63,7 +64,7 @@ bridge_hub_handle_instance_probe :: proc(conn: ^ws.Connection, text: string) {
 	if command_id == "" || id == "" do return
 	lifecycle := bridge_agent_lifecycle_enter(id)
 	probe := bridge_instance_probe(id)
-	if probe.state == "exited" {
+	if probe.state == "exited" || probe.state == "alive" {
 		epoch := bridge_agent_instance_launch_epoch(id)
 		defer delete(epoch)
 		run_count := bridge_agent_instance_run_count(id)
@@ -72,10 +73,23 @@ bridge_hub_handle_instance_probe :: proc(conn: ^ws.Connection, text: string) {
 		for &inst in bridge_runtime_instances {
 			if inst.agent_instance_id == id && inst.startup.rec.run_count == run_count {
 				pid = inst.startup.pty_pid
+				probe.ready = inst.start_success_seen && probe.state == "alive" && probe.pid == pid
 				break
 			}
 		}
 		sync.mutex_unlock(&bridge_runtime_mutex)
+		if probe.state == "alive" && pid != probe.pid {
+			// Bridge restart may have discarded the launch record. Verify the
+			// local token against the immutable child spec without starting or
+			// nudging the daemon to check its identity.
+			socket := bridge_pty_liveness_socket()
+			defer delete(socket)
+			rec := bridge_agent_instance_token_hash(id, run_count)
+			defer delete(rec)
+			if rec != "" {
+				if observed_pid, verified := bridge_pty_host_startup_launch(socket, id, rec); verified do pid = observed_pid
+			}
+		}
 		bridge_instance_probe_bind(&probe, pid, run_count, epoch)
 		probe.launch_epoch = strings.clone(probe.launch_epoch)
 	}
@@ -93,4 +107,17 @@ bridge_hub_handle_instance_probe :: proc(conn: ^ws.Connection, text: string) {
 	if err != nil do return
 	defer delete(bytes)
 	_ = bridge_hub_send(conn, string(bytes))
+}
+
+@(private = "file")
+bridge_agent_instance_token_hash :: proc(id: string, run_count: int) -> string {
+	sync.mutex_lock(&bridge_local_token_mutex)
+	defer sync.mutex_unlock(&bridge_local_token_mutex)
+	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {
+		rec := bridge_local_token_records[i]
+		if rec.agent_instance_id == id && rec.role == .Agent && rec.invalidated_at_unix_ms == 0 && rec.run_count == run_count {
+			return strings.clone(rec.token_hash)
+		}
+	}
+	return ""
 }

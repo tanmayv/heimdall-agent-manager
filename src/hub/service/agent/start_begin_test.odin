@@ -56,6 +56,10 @@ start_test_open :: proc(t: ^testing.T, h: ^Start_Test) -> bool {
 	h.clock = {now=start_test_clock}
 	h.ids = {generate=start_test_id}
 	h.service = new_agent_service_with_runtime(&h.ar, &h.br, nil, &h.cr, nil, {ctx=h, send_runtime_command=start_test_send}, &h.registry, &h.clock, &h.ids)
+	h.service.fixture_start_fact = proc(inst: domain.Agent_Instance) -> Agent_Liveness {
+		if runtime_expected_active(inst.runtime_status) do return {state = .Alive, reason = .pty_child_alive, pid = 42}
+		return {state = .Exited, reason = .stop_confirmed}
+	}
 	h.tr = sqlite.new_taskchain_repository(&h.ti, &h.db)
 	h.service.taskchains = &h.tr
 	h.service.providers = &h.pr
@@ -451,7 +455,8 @@ start_status_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="status"})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	testing.expect_value(t,h.registry.active_instances,1)
-	_,ok,serr:=apply_bridge_status_report(&h.service,"brg","inst",1,"failed","unknown","owner",ticket.instance.launch_epoch)
+	proof := Process_Exit_Evidence{pid = 42, exit_code = 1, run_count = ticket.instance.run_count}
+	_,ok,serr:=apply_bridge_status_report(&h.service,"brg","inst",1,"failed","unknown","owner",ticket.instance.launch_epoch, reason = "pty_child_exited", process_exit = &proof)
 	testing.expect(t,ok,serr.message)
 	// The HTTP status handler applies accepted rows to the runtime registry.
 	generation:=project_service.bridge_runtime_registry_generation(&h.registry,"brg")
@@ -862,7 +867,7 @@ start_test_confirmed_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 	sync.mutex_unlock(&h.service.reconfiguration_mutex)
 	switch jsonx.extract_string(command.body_json, "type", "", true, context.temp_allocator) {
 	case "instance.probe":
-		return strings.concatenate({`{"ok":true,"command_id":"`, command.command_id, `","payload":{"result":{"agent_instance_id":"inst","state":"alive","pid":42}}}`}), true, {}
+		return strings.concatenate({`{"ok":true,"command_id":"`, command.command_id, `","payload":{"result":{"agent_instance_id":"inst","state":"alive","pid":42,"run_count":3,"launch_epoch":""}}}`}), true, {}
 	case "stop_agent":
 		payload, ok := jsonx.extract_raw_object(command.body_json, "payload", true, context.temp_allocator)
 		if !ok || jsonx.extract_int(payload, "expected_run_count", -1, true) != 3 || jsonx.extract_int(payload, "expected_process_pid", 0, true) != 42 {
@@ -945,4 +950,25 @@ task_stop_receipt_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
 @(test)
 test_scheduler_stop_receipt_cannot_stop_a_different_run_or_assignment :: proc(t: ^testing.T) {
 	start_test_run(t, task_stop_receipt_scenario)
+}
+
+@(test)
+test_start_keep_uses_process_fact_not_failed_projection :: proc(t: ^testing.T) {
+	start_test_run(t, proc(t: ^testing.T, h: ^Start_Test) {
+		h.service.fixture_start_fact = nil
+		start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='failed', startup_status='startup_failed';")
+		ticket, waiting := start_begin(&h.service, start_test_auth(), "inst", {if_live = .Keep, ref = "lease"})
+		defer start_ticket_destroy(&ticket)
+		testing.expect_value(t, waiting.code, domain.Error_Code.Bridge_Busy)
+		testing.expect_value(t, start_test_row(t, h).run_count, 3)
+
+		// The verified live process wins even when the persisted UI cache is
+		// wrong. No generation opens and no other launch is required.
+		proof := Agent_Liveness{state = .Alive, reason = .pty_child_alive, pid = 42}
+		kept, err := start_begin(&h.service, start_test_auth(), "inst", {if_live = .Keep, ref = "lease", process_fact = proof})
+		defer start_ticket_destroy(&kept)
+		testing.expect_value(t, err.code, domain.Error_Code.None)
+		testing.expect(t, kept.kept_live && !kept.reserved)
+		testing.expect_value(t, start_test_row(t, h).run_count, 3)
+	})
 }

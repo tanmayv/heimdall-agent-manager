@@ -73,10 +73,8 @@ bridge_runtime_stop_generation :: proc(instance_id:string,force:bool,expected_ru
 }
 
 bridge_runtime_process_absent :: proc(instance_id: string) -> bool {
-    socket, daemon_ok := bridge_pty_host_ensure_daemon()
-    if !daemon_ok do return false
-    reply, listed := bridge_pty_host_list(socket)
-    if !listed do return false
+    reply := bridge_pty_liveness_roster()
+    if reply.kind != .Agent_List do return false
     defer pty_host_reply_delete(reply)
     for agent in reply.agents do if agent.instance_id == instance_id do return false
     return true

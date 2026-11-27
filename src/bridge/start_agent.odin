@@ -121,7 +121,10 @@ bridge_start_agent_apply_detail :: proc(conn: ^ws.Connection, text: string, dead
 		// token, startup and wake state must use the caller's heap context, never
 		// the private scratch arena (including its temporary allocator).
 		context = saved_context
-		if deliver == contracts.START_DELIVER_NUDGE {
+		// Delivery mode is a Hub hint. For lease wakes, let the daemon answer
+		// whether this exact run already exists even when an older Hub sent
+		// "launch". Explicit starts do not carry a lease and still restart.
+		if deliver == contracts.START_DELIVER_NUDGE || (lease_id != "" && run_count > 0) {
 			switch bridge_start_nudge_proc(id, task_id, role, lease_id, run_count, pack) {
 			case .Delivered:
 				bridge_runtime_set_launch_role(id, role)

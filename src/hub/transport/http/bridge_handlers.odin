@@ -2534,6 +2534,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		if type == "command_result" && current_connection && h.agents != nil {
 			if stopped, applied := bridge_apply_task_stop_receipt(h, bridge_id, connection_generation, command_id, text); applied {
 				publish_instance_changed(h.event_bus, stopped, "status_changed")
+				taskv2.on_match_process_stopped(h.task_engine, stopped)
 				domain.agent_instance_destroy(&stopped)
 			}
 		}
@@ -2868,6 +2869,7 @@ bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, ge
 	}
 	if process_exit != nil && reason == "pty_child_exited" && (status == "stopped" || status == "failed") {
 		agent_service.record_committed_process_exit(h.agents, instance, process_exit^)
+		taskv2.on_match_process_stopped(h.task_engine, instance)
 	}
 	agent_service.notify_facts(h.agents, facts[:])
 	if applied {

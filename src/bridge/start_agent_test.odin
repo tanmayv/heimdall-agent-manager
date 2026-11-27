@@ -22,6 +22,7 @@ Start_Bridge_Test :: struct {
 	launches, frames, statuses, stops:[dynamic]string,
 	nudges:int,
 	live, fail, nudge_fails:bool,
+	live_instance_id: string,
 }
 start_bridge_expect_json :: proc(t:^testing.T,text,key,expected:string) {
     value:=extract_json_string(text,key,"")
@@ -52,7 +53,7 @@ start_bridge_nudge :: proc(id,task,role,lease:string,generation:int,pack:string)
 	testing.expect(h.t,lease!="")
 	testing.expect(h.t,strings.has_prefix(pack,"{"))
 	if h.nudge_fails do return .Delivery_Failed
-	return .Delivered if h.live else .Unavailable
+	return .Delivered if h.live && (h.live_instance_id == "" || h.live_instance_id == id) else .Unavailable
 }
 start_bridge_stop :: proc(id:string,force:bool=false)->bool {
 	start_bridge_check_context()
@@ -189,6 +190,7 @@ start_bridge_old_launch :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 }
 start_bridge_old_wake :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 	h.live=true
+	h.live_instance_id="i2"
 	bridge_hub_handle_wake_agent(nil,START_TEST_OLD_WAKE)
 	if testing.expect_value(t,len(h.launches),1) {
 		id:=extract_json_string(h.launches[0],"command_id","");defer delete(id)
@@ -196,19 +198,21 @@ start_bridge_old_wake :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 		normalized,_:=strings.replace_all(h.launches[0],id,"SYN");defer delete(normalized)
 		testing.expect_value(t,normalized,START_TEST_WAKE_LAUNCH)
 	}
-	testing.expect_value(t,h.nudges,1)
+	testing.expect_value(t,h.nudges,2)
 	testing.expect_value(t,len(h.stops),1)
 	if testing.expect_value(t,len(h.frames),1) {
 		final:=bridge_command_result_json("batch","succeeded","");defer delete(final)
 		testing.expect_value(t,h.frames[0],final)
 	}
-	// The old name still reports succeeded even when a launch fails.
+	// The legacy wire still accepts its payload, but its command result must
+	// report a launch refusal as an action error.
 	h.fail=true
 	for s in h.launches do delete(s,h.allocator)
 	clear(&h.launches)
 	bridge_hub_handle_wake_agent(nil,START_TEST_OLD_WAKE)
 	testing.expect_value(t,len(h.statuses),1)
-	start_bridge_expect_json(t,h.frames[1],"status","succeeded")
+	start_bridge_expect_json(t,h.frames[1],"status","failed")
+	start_bridge_expect_json(t,h.frames[1],"cause","agent_launch_failed")
 }
 start_bridge_spec :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 	spec,known:=bridge_command_spec("start_agent")
@@ -297,6 +301,21 @@ test_start_wake_nudge_failure_reports_error_without_launch :: proc(t: ^testing.T
 		testing.expect_value(t, len(h.stops), 0)
 		if testing.expect_value(t, len(h.frames), 1) {
 			start_bridge_expect_json(t, h.frames[0], "status", "failed")
+		}
+	})
+}
+
+@(test)
+test_start_wake_checks_live_generation_despite_launch_hint :: proc(t: ^testing.T) {
+	start_bridge_run(t, proc(t: ^testing.T, h: ^Start_Bridge_Test) {
+		h.live = true
+		text := `{"command_id":"lease-wake","payload":{"run":[{"deliver":"launch","launch":{"command_id":"n","payload":{"agent_instance_id":"i","role":"worker","lease_id":"l","run_count":4,"pack":{}}}}]}}`
+		bridge_hub_handle_start_agent(nil, text)
+		testing.expect_value(t, h.nudges, 1)
+		testing.expect_value(t, len(h.launches), 0)
+		testing.expect_value(t, len(h.stops), 0)
+		if testing.expect_value(t, len(h.frames), 1) {
+			start_bridge_expect_json(t, h.frames[0], "status", "succeeded")
 		}
 	})
 }

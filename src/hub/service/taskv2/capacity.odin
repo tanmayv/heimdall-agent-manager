@@ -47,7 +47,7 @@ ctx_is_coordinator :: proc(svc: ^Service, ctx: ^Match_Context, instance_id: stri
 @(private = "package")
 instance_stopping :: proc(ctx: ^Match_Context, u: ^Uow, inst: domain.Agent_Instance) -> bool {
 	if u != nil && effect_has_stop(u, inst.bridge_id, string(ctx.chain.chain_id), inst.agent_instance_id) do return true
-	return lease_stop_reason(inst.stop_reason) && (instance_is_live(inst) || instance_is_pending(inst))
+	return lease_stop_reason(inst.stop_reason) && match_process_fact(ctx.service, nil, inst, ctx.chain.chain_id).state != .Exited
 }
 
 // instance_in_grace: a live or starting, lease-free, managed (fleet row) fleet
@@ -55,7 +55,8 @@ instance_stopping :: proc(ctx: ^Match_Context, u: ^Uow, inst: domain.Agent_Insta
 @(private = "package")
 instance_in_grace :: proc(svc: ^Service, ctx: ^Match_Context, u: ^Uow, inst: domain.Agent_Instance) -> bool {
 	if ctx.held[inst.agent_instance_id] do return false
-	if !(instance_is_live(inst) || instance_is_pending(inst)) do return false
+	fact := match_process_fact(svc, nil, inst, ctx.chain.chain_id)
+	if fact.state == .Exited || fact.reason == .never_started do return false
 	if inst.stopped_by == agent.STOPPED_BY_USER do return false
 	if _, managed := fleet_row_for_agent(ctx.fleets, inst.agent_id); !managed do return false
 	if ctx_is_coordinator(svc, ctx, inst.agent_instance_id) do return false
@@ -174,9 +175,9 @@ Reuse_Scan :: struct {
 	capacity:      int,
 	live:          domain.Agent_Instance, // rank 2: live lease-free, not stopping
 	warm:          domain.Agent_Instance, // rank 3: stopped reusable
-	stopping:      domain.Agent_Instance, // rank 4
-	have_live, have_warm, have_stopping: bool,
+	have_live, have_warm: bool,
 	preferred:     domain.Agent_Instance,
+	preferred_live: bool,
 	have_pref:     bool,
 	// failure: a free instance that must not be replaced (user-stopped, Hold,
 	// a pending runtime action). With no candidate it blocks a new instance
@@ -217,7 +218,7 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 		// A lease holder always occupies its slot, whatever its runtime state
 		// (a failed holder keeps its waiting claim).
 		held := ctx.held[inst.agent_instance_id]
-		if held { scan.held += 1; scan.occupied += 1 }
+		if held { scan.held += 1; scan.occupied += 1; continue }
 		if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None {
 			if !held do scan.occupied += 1
 			if in_scope && !held do scan.failure = "instance has a pending runtime action"
@@ -229,7 +230,15 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 			if in_scope && !held do scan.failure = fmt.tprintf("instance %s was stopped by the user", inst.agent_instance_id)
 			continue
 		}
-		disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
+		probe_uow := u if in_scope else nil
+		fact := match_process_fact(svc, probe_uow, inst, ctx.chain.chain_id)
+		// An unverified generation occupies a slot until we can observe it.
+		// A stale row is never permission to JIT a duplicate.
+		if fact.state == .Unknown && fact.reason != .never_started {
+			if !held do scan.occupied += 1
+			continue
+		}
+		disposition := agent.failure_disposition_from_process(inst, fact, ctx.now_ms)
 		if disposition == .Hold {
 			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable {
 				// Provider backoff: occupies its slot and is retried at its deadline.
@@ -246,18 +255,18 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 			if in_scope && !held do scan.failure = instance_failure_reason(inst)
 			continue
 		}
-		live := instance_is_live(inst) || instance_is_pending(inst)
+		live := fact.state == .Alive
 		if !held && live do scan.occupied += 1
 		if held || !in_scope do continue
 		if why := bridge_reuse_problem(svc, ctx, fleet, inst.bridge_id, kind); why != "" {
 			if scan.unusable == "" do scan.unusable = fmt.tprintf("instance %s on bridge %s: %s", inst.agent_instance_id, inst.bridge_id, why)
 			continue
 		}
-		if prefer != "" && inst.agent_instance_id == prefer { scan.preferred = inst; scan.have_pref = true }
+		// A confirmed stop is required before taking another generation.
+		if live && instance_stopping(ctx, u, inst) do continue
+		if prefer != "" && inst.agent_instance_id == prefer { scan.preferred = inst; scan.have_pref = true; scan.preferred_live = live }
 		if live {
-			if instance_stopping(ctx, u, inst) {
-				if better(inst, scan.stopping, scan.have_stopping, preferred_bridge) { scan.stopping = inst; scan.have_stopping = true }
-			} else if better(inst, scan.live, scan.have_live, preferred_bridge) {
+			if better(inst, scan.live, scan.have_live, preferred_bridge) {
 				scan.live = inst; scan.have_live = true
 			}
 		} else if better(inst, scan.warm, scan.have_warm, preferred_bridge) {
@@ -271,9 +280,9 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 reuse_scan_has_candidate :: proc(scan: Reuse_Scan) -> bool {
 	below := scan.occupied < scan.capacity
 	within := scan.held < scan.capacity
-	if scan.have_pref && (instance_is_live(scan.preferred) || instance_is_pending(scan.preferred)) && within do return true
+	if scan.have_pref && scan.preferred_live && within do return true
 	if scan.have_pref && below do return true
-	return ((scan.have_live || scan.have_stopping) && within) || (scan.have_warm && below)
+	return (scan.have_live && within) || (scan.have_warm && below)
 }
 
 // agent_occupied_count: REQ-SCHED-33 for one agent, over all bridges: its
@@ -287,12 +296,13 @@ agent_occupied_count :: proc(svc: ^Service, ctx: ^Match_Context, agent_id: strin
 		if ctx.held[inst.agent_instance_id] { n += 1; continue }
 		if busy, err := iface.agent_runtime_busy(svc.agents, inst.agent_instance_id); busy || err.code != .None { n += 1; continue }
 		if inst.stopped_by == agent.STOPPED_BY_USER do continue
-		disposition := agent.failed_instance_disposition(inst, ctx.now_ms)
+		fact := match_process_fact(svc, nil, inst, ctx.chain.chain_id)
+		disposition := agent.failure_disposition_from_process(inst, fact, ctx.now_ms)
 		if disposition == .Hold {
 			if werr, typed := agent.instance_last_error(inst); typed && werr.class == .retriable { n += 1; continue }
 		}
 		if disposition == .Dead || disposition == .Hold do continue
-		if instance_is_live(inst) || instance_is_pending(inst) do n += 1
+		if fact.state != .Exited && fact.reason != .never_started do n += 1
 	}
 	return n
 }

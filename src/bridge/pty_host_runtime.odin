@@ -1022,7 +1022,11 @@ bridge_pty_host_publish_agent_exit :: proc(instance: string, event_code: i32, ob
 		if inst.agent_instance_id != instance || inst.startup.pty_pid != proof.pid || inst.startup.rec.run_count != proof.run_count do continue
 		inst.process_exit = {pid = proof.pid, code = code, run_count = proof.run_count}
 		bridge_runtime_set_pty_process_alive_locked(instance, false)
-		bridge_runtime_set_status_locked(instance, "stopped", "idle", now, true, .pty_child_exited)
+		previous_op := bridge_runtime_transition_op_id
+		bridge_runtime_transition_op_id = fmt.tprintf("pty_exit_%d_%d", proof.run_count, proof.pid)
+		defer bridge_runtime_transition_op_id = previous_op
+		terminal := "failed" if code != 0 && inst.stopped_intent_unix_ms == 0 else "stopped"
+		bridge_runtime_set_status_locked(instance, terminal, "idle", now, true, .pty_child_exited)
 		return
 	}
 }

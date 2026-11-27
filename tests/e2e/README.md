@@ -141,9 +141,10 @@ nix develop -c node tests/e2e/agent_liveness_restart.mjs
 
 The test creates its own Hub database, Bridge profile, synthetic coordinator
 and worker, and lease. It signals only the fixture Bridge, verifies that the
-same worker PID and confirmed lease survive reconnect and malformed terminal
-input, then checks explicit replacement readiness, scheduler stop on task
-completion, and explicit Stop. It does not update or signal an installed Bridge.
+worker stays on the same PID and generation despite a deliberately incorrect
+Hub status. It verifies that the PID and lease survive reconnect and malformed
+terminal input, then checks explicit replacement readiness, a handoff fenced
+by the old child's stop receipt, task completion, and explicit Stop. It does not update or signal an installed Bridge.
 
 The same Bridge liveness provider can be tested against a real daemon-owned
 ACP pipe process. Use a pty-host binary with pipe support. The fixture uses an

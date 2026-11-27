@@ -74,27 +74,13 @@ Lf_Repo :: struct {
 
 @(private = "file")
 lf_clone :: proc(i: domain.Agent_Instance) -> domain.Agent_Instance {
-	c := i
-	c.agent_instance_id = strings.clone(i.agent_instance_id)
-	c.owner_user_id     = domain.User_ID(strings.clone(string(i.owner_user_id)))
-	c.bridge_id         = strings.clone(i.bridge_id)
-	c.runtime_status    = strings.clone(i.runtime_status)
-	c.startup_status    = strings.clone(i.startup_status)
-	c.activity_status   = strings.clone(i.activity_status)
-	c.last_error_json   = strings.clone(i.last_error_json)
-	c.last_seen_at      = strings.clone(i.last_seen_at)
-	c.updated_at        = strings.clone(i.updated_at)
-	c.stopped_at        = strings.clone(i.stopped_at)
-	c.launch_epoch      = ""
-	c.agent_id          = ""
-	c.created_at        = ""
-	return c
+	return domain.agent_instance_clone(i)
 }
 
 @(test)
 test_err_proto_status_report_records_and_clears_last_error :: proc(t: ^testing.T) {
 	r: Lf_Repo
-	r.inst = lf_clone(domain.Agent_Instance{agent_instance_id = "inst_lf", owner_user_id = "owner_a", bridge_id = "brg_1", runtime_status = "starting", startup_status = "starting", activity_status = "idle"})
+	r.inst = lf_clone(domain.Agent_Instance{agent_instance_id = "inst_lf", owner_user_id = "owner_a", bridge_id = "brg_1", runtime_status = "starting", startup_status = "starting", activity_status = "idle", run_count = 1})
 	defer domain.agent_instance_destroy(&r.inst)
 	repo := iface.Agent_Repository{
 		ctx = rawptr(&r),
@@ -114,21 +100,44 @@ test_err_proto_status_report_records_and_clears_last_error :: proc(t: ^testing.T
 	svc.clock = &clk
 	err_json := `{"code":"provider_unavailable","class":"recoverable","cause":"provider_not_logged_in","message":"login"}`
 
-	saved, applied, _ := apply_bridge_status_report(&svc, "brg_1", "inst_lf", 1, "failed", "idle", error_json = err_json)
+	// A side error with no pty-host evidence must neither terminalize the run
+	// nor change its retry budget. A real exit can record its launch error.
+	_, unproven, refusal := apply_bridge_status_report(&svc, "brg_1", "inst_lf", 99, "failed", "idle", error_json = err_json)
+	testing.expect(t, !unproven && refusal.code == .Conflict)
+	testing.expect_value(t, r.inst.runtime_status, "starting")
+	testing.expect_value(t, r.inst.last_applied_seq, 0)
+	proof := Process_Exit_Evidence{pid = 42, exit_code = 1, run_count = r.inst.run_count}
+	saved, applied, _ := apply_bridge_status_report(&svc, "brg_1", "inst_lf", 1, "failed", "idle", error_json = err_json, reason = "pty_child_exited", process_exit = &proof)
 	testing.expect(t, applied)
 	testing.expect(t, strings.contains(saved.last_error_json, `"cause":"provider_not_logged_in"`), saved.last_error_json)
 	testing.expect(t, strings.contains(saved.last_error_json, `"attempt":1`), saved.last_error_json)
 	domain.agent_instance_destroy(&saved)
 
-	// A retry in flight keeps the failure; a second failure counts as attempt 2.
+	// The same generation cannot become live following a confirmed exit.
+	_, reopened, _ := apply_bridge_status_report(&svc, "brg_1", "inst_lf", 2, "starting", "active")
+	testing.expect(t, !reopened)
+	testing.expect_value(t, r.inst.last_applied_seq, 1)
+	// A new launch generation keeps the previous error until startup succeeds.
+	r.inst.run_count += 1
+	delete(r.inst.status_message)
+	r.inst.status_message = ""
+	delete(r.inst.stopped_at)
+	r.inst.stopped_at = ""
+	proof.run_count = r.inst.run_count
+	proof.pid = 43
 	saved, _, _ = apply_bridge_status_report(&svc, "brg_1", "inst_lf", 2, "starting", "active")
 	testing.expect(t, saved.last_error_json != "", "starting keeps last_error")
 	domain.agent_instance_destroy(&saved)
-	saved, _, _ = apply_bridge_status_report(&svc, "brg_1", "inst_lf", 3, "failed", "idle", error_json = err_json)
+	saved, _, _ = apply_bridge_status_report(&svc, "brg_1", "inst_lf", 3, "failed", "idle", error_json = err_json, reason = "pty_child_exited", process_exit = &proof)
 	testing.expect(t, strings.contains(saved.last_error_json, `"attempt":2`), saved.last_error_json)
 	domain.agent_instance_destroy(&saved)
 
-	// A successful start clears it.
+	// A successful replacement start clears the previous error.
+	r.inst.run_count += 1
+	delete(r.inst.status_message)
+	r.inst.status_message = ""
+	delete(r.inst.stopped_at)
+	r.inst.stopped_at = ""
 	saved, _, _ = apply_bridge_status_report(&svc, "brg_1", "inst_lf", 4, "running", "idle")
 	testing.expect_value(t, saved.last_error_json, "")
 	domain.agent_instance_destroy(&saved)
@@ -163,6 +172,9 @@ test_err_proto_failed_stop_result_restores_status :: proc(t: ^testing.T) {
 	testing.expect_value(t, r.inst.runtime_status, "stopping")
 	ok_result := `{"type":"command_result","command_id":"cmd_stop_1_inst_lf","ok":true,"payload":{"status":"succeeded","result":{"runtime_status":"stopped"}}}`
 	testing.expect(t, !apply_stop_command_result(&svc, "brg_1", "cmd_stop_1_inst_lf", ok_result), "a successful stop is left to the status report")
+	testing.expect_value(t, r.inst.runtime_status, "stopping")
+	false_exit, _ := strings.replace_all(failed, `"runtime_status":"running"`, `"runtime_status":"failed"`, context.temp_allocator)
+	testing.expect(t, !apply_stop_command_result(&svc, "brg_1", "cmd_stop_1_inst_lf", false_exit), "a command error cannot prove the process exited")
 	testing.expect_value(t, r.inst.runtime_status, "stopping")
 
 	testing.expect(t, apply_stop_command_result(&svc, "brg_1", "cmd_stop_1_inst_lf", failed))

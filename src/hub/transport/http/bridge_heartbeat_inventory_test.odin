@@ -112,7 +112,7 @@ inv_save :: proc(t: ^testing.T, f: ^Inv_Fixture, id, status: string, seq := 1, e
 	now := platform.clock_now(&f.clock)
 	_, ok, err := iface.agent_save_instance(&f.ag_repo, domain.Agent_Instance{
 		agent_instance_id = id, agent_id = "agt_inventory", owner_user_id = domain.User_ID(INV_OWNER),
-		bridge_id = bridge_id if bridge_id != "" else f.bridge_id, kind = "agent", runtime_status = status, activity_status = "idle",
+		bridge_id = bridge_id if bridge_id != "" else f.bridge_id, kind = "agent", runtime_transport = "pty", runtime_status = status, activity_status = "idle",
 		startup_status = "ready", run_count = run_count, last_applied_seq = seq, launch_epoch = epoch, last_seen_at = now, updated_at = now, created_at = now,
 	})
 	testing.expect(t, ok, err.message)

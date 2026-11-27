@@ -45,7 +45,7 @@ agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Leas
 		agent_id = inst.agent_id
 		// Only bridge absence: no failure report, error or user stop explains
 		// the loss. The bridge hello then answers this block and rematches.
-		if !confirmed_exit && !bridge_online(svc, inst.bridge_id) && inst.runtime_status != "failed" && inst.stopped_by == "" && jsonx.extract_string(inst.last_error_json, "message", "", true, context.temp_allocator) == "" {
+		if !confirmed_exit && !bridge_online(svc, inst.bridge_id) && inst.stopped_by == "" && jsonx.extract_string(inst.last_error_json, "message", "", true, context.temp_allocator) == "" {
 			cause = "bridge_offline"
 		}
 		if provider == "" do provider = inst.provider
@@ -156,11 +156,29 @@ start_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task_id: d
 		if coord, coord_found, _ := iface.agent_get_instance(svc.agents, chain.coordinator_agent_instance_id); coord_found && coord.agent_id == agent_id {
 			_, cerr := end_uow(svc, &u, true)
 			if cerr.code != .None do return false, cerr
-			return start_coordinator_task_agent(svc, auth, task, coord)
+			return start_blocked_task_instance(svc, auth, task, coord)
 		}
 	}
 	bridge_id := jsonx.extract_string(task.blocked_on_json, "bridge_id", "", true, context.temp_allocator)
-	if reset, reset_err := reset_idle_agent_instances(svc, task.owner_user_id, task.chain_id, agent_id, bridge_id, true, task.task_id); !reset {
+	// A retained claim identifies exactly which instance the user's Start agent
+	// action belongs to. Do not synthesize a stopped projection so a matcher
+	// can dispatch it as an automatic wake.
+	claims, claim_err := iface.taskchain_list_leases_by_task(svc.repo, task.task_id)
+	if claim_err.code != .None {
+		_, _ = end_uow(svc, &u, false)
+		return false, claim_err
+	}
+	for claim in claims {
+		if claim.phase != domain.LEASE_PHASE_WAITING do continue
+		inst, present, _ := iface.agent_get_instance(svc.agents, claim.holder_instance_id)
+		if !present do continue
+		defer domain.agent_instance_destroy(&inst)
+		if inst.agent_id != agent_id || (bridge_id != "" && inst.bridge_id != bridge_id) do continue
+		_, cerr := end_uow(svc, &u, true)
+		if cerr.code != .None do return false, cerr
+		return start_blocked_task_instance(svc, auth, task, inst)
+	}
+	if reset, reset_err := reset_idle_agent_instances(svc, &u, task.owner_user_id, task.chain_id, agent_id, bridge_id, true, task.task_id); !reset {
 		_, _ = end_uow(svc, &u, false)
 		return false, reset_err
 	}
@@ -192,15 +210,17 @@ on_dispatch_failed :: proc(svc: ^Service, lease_id, detail: string) {
 	_, _ = end_uow(svc, &u, acted)
 }
 
-// Explicit user recovery for the pull-only coordinator. Launch outside the
-// transaction and clear its block only after the launch command succeeds.
-start_coordinator_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task: domain.Task, coord: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
+// Explicit recovery of the exact blocked holder, including the pull-only
+// coordinator. Await readiness outside the transaction before clearing the card.
+start_blocked_task_instance :: proc(svc: ^Service, auth: contracts.Auth_Context, task: domain.Task, coord: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
 	started := false
 	start_err: domain.Domain_Error
 	if svc.agent_service == nil {
 		start_err = domain.domain_error(.Internal_Error, "agent launch service is unavailable")
 	} else {
-		_, started, start_err = agent.start_instance_confirmed(svc.agent_service, auth, coord.agent_instance_id)
+		row: domain.Agent_Instance
+		row, started, start_err = agent.start_instance_confirmed(svc.agent_service, auth, coord.agent_instance_id)
+		domain.agent_instance_destroy(&row)
 	}
 	u, ok, err := begin_uow(svc)
 	if !ok do return false, err
@@ -234,7 +254,7 @@ start_coordinator_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context
 
 // A fleet edit retries infrastructure failures using its new launch selection.
 // Instances holding another lease and deliberate user stops remain protected.
-reset_idle_agent_instances :: proc(svc: ^Service, owner: domain.User_ID, chain_id: domain.Task_Chain_ID, agent_id: string, bridge_id := "", clear_user_stop := false, recovery_task_id: domain.Task_ID = "") -> (bool, domain.Domain_Error) {
+reset_idle_agent_instances :: proc(svc: ^Service, u: ^Uow, owner: domain.User_ID, chain_id: domain.Task_Chain_ID, agent_id: string, bridge_id := "", clear_user_stop := false, recovery_task_id: domain.Task_ID = "") -> (bool, domain.Domain_Error) {
 	instances, ierr := iface.agent_list_instances_by_chain(svc.agents, owner, string(chain_id))
 	if ierr.code != .None do return false, ierr
 	// Only explicit recovery may reset this task's retained waiting holder.
@@ -251,17 +271,13 @@ reset_idle_agent_instances :: proc(svc: ^Service, owner: domain.User_ID, chain_i
 		if claim_err.code != .None && claim_err.code != .Not_Found do return false, claim_err
 		own_waiting := clear_user_stop && recovery_task_id != "" && held && claim.task_id == recovery_task_id && claim.phase == domain.LEASE_PHASE_WAITING
 		if (held && !own_waiting) || (retained && !own_waiting) do continue
-		if instance_is_live(inst) || instance_is_pending(inst) do continue
+		fact := match_process_fact(svc, u, inst, chain_id)
+		if fact.state != .Exited && fact.reason != .never_started do continue
 		if !clear_user_stop && inst.stopped_by != "" do continue
 		next := inst
-		next.runtime_status = "stopped"
 		next.stopped_by = ""
 		next.last_error_json = ""
-		if row, saved, serr := iface.agent_save_instance(svc.agents, next); !saved {
-			return false, serr
-		} else {
-			agent.log_runtime_terminal_transition(row, inst.runtime_status, "reset_idle_agent_instances", "fleet_retry_reset")
-		}
+		if _, saved, serr := iface.agent_save_instance(svc.agents, next); !saved do return false, serr
 	}
 	return true, domain.Domain_Error{}
 }

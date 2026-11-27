@@ -17,6 +17,8 @@ test_agent_not_running_offline_start_failure_retry_and_dead_holder :: proc(t: ^t
 	fx, log, ok := lease_fixture(t, "anr_retry")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
+	log.service.bridge_command_sink.ctx = log
+	log.service.bridge_command_sink.send_runtime_command_wait = fixture_confirm_blocked_start
 	chain := seed_live_chain(t, fx, "chain_anr")
 	seed_fleet(fx, chain, "agt_w")
 	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "stopped")
@@ -241,6 +243,8 @@ test_agent_not_running_reviewer_restart_preserves_rounds :: proc(t: ^testing.T) 
 	fx, log, ok := lease_fixture(t, "anr_reviewer")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
+	log.service.bridge_command_sink.ctx = log
+	log.service.bridge_command_sink.send_runtime_command_wait = fixture_confirm_blocked_start
 	chain := seed_live_chain(t, fx, "chain_anr_reviewer")
 	seed_fleet(fx, chain, "agt_w")
 	seed_fleet(fx, chain, "agt_r")
@@ -427,17 +431,17 @@ test_start_recovery_resets_only_own_waiting_holder :: proc(t: ^testing.T) {
   testing.expect(t, saved && err.code==.None)
  }
  // Automatic fleet repair must preserve every held instance.
- reset, err := reset_idle_agent_instances(&fx.svc, "u1", chain.chain_id, "agt_w", "br_1")
+ reset, err := reset_idle_agent_instances(&fx.svc, nil, "u1", chain.chain_id, "agt_w", "br_1")
  testing.expect(t, reset && err.code==.None)
  own, _, _ := iface.agent_get_instance(&fx.agents, "own")
  testing.expect(t, own.runtime_status=="failed" && own.stopped_by=="user")
- reset, err = reset_idle_agent_instances(&fx.svc, "u1", chain.chain_id, "agt_w", "br_1", true, "task_own")
+ reset, err = reset_idle_agent_instances(&fx.svc, nil, "u1", chain.chain_id, "agt_w", "br_1", true, "task_own")
  testing.expect(t, reset && err.code==.None)
  for id in ([]string{"own","other_waiting","other_active","warm"}) {
   inst, found, err := iface.agent_get_instance(&fx.agents, id)
   testing.expect(t, found && err.code==.None)
   if id=="own" {
-   testing.expect(t, inst.runtime_status=="stopped" && inst.stopped_by=="" && inst.last_error_json=="")
+   testing.expect(t, inst.runtime_status=="failed" && inst.stopped_by=="" && inst.last_error_json=="")
   } else {
    testing.expectf(t, inst.runtime_status=="failed" && inst.stopped_by=="user" && inst.last_error_json==`{"message":"launch failed"}`, "unrelated instance %s unchanged", id)
   }
@@ -506,4 +510,32 @@ test_terminal_hint_needs_pty_exit_for_current_claim :: proc(t: ^testing.T) {
 	current, current_held := lease_of(fx, "inst_w1")
 	testing.expect(t, current_held && current.lease_id == original.lease_id && current.phase == domain.LEASE_PHASE_WAITING, "confirmed exit parks the same claim")
 	testing.expect(t, is_agent_not_running_block(get_task(fx, "task_probe").blocked_on_json))
+}
+
+
+fixture_confirm_blocked_start :: proc(raw: rawptr, command: project.Runtime_Command, _: int) -> (string, bool, domain.Domain_Error) {
+	log := (^Wake_Log)(raw)
+	payload, exists := jsonx.extract_raw_object(command.body_json, "payload", true, context.temp_allocator)
+	if !exists || !jsonx.extract_bool(command.body_json, "confirm_start", false, true) {
+		return "", false, domain.domain_error(.Validation_Failed, "Start agent must request a confirmed launch")
+	}
+	id := jsonx.extract_string(payload, "agent_instance_id", "", true, context.temp_allocator)
+	count := jsonx.extract_int(payload, "run_count", 0, true)
+	owner := string(domain.User_ID("u1"))
+	row, ready, err := agent.mark_instance_start_success(&log.service, {kind = .Instance_Token, user_id = owner, agent_instance_id = id}, count)
+	defer domain.agent_instance_destroy(&row)
+	if !ready do return "", false, err
+	result := json_begin()
+	json_str(&result, "agent_instance_id", id)
+	json_int(&result, "expected_run_count", i64(count))
+	json_int(&result, "process_pid", 42)
+	json_str(&result, "runtime_status", "running")
+	outcome := json_begin()
+	json_str(&outcome, "status", "succeeded")
+	json_raw(&outcome, "result", json_end(&result))
+	reply := json_begin()
+	json_str(&reply, "command_id", command.command_id)
+	json_bool(&reply, "ok", true)
+	json_raw(&reply, "payload", json_end(&outcome))
+	return strings.clone(json_end(&reply)), true, {}
 }

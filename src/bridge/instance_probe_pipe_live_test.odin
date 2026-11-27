@@ -25,6 +25,8 @@ when #config(HEIMDALL_PTY_LIVENESS_LIVE_TEST, false) {
 		defer { bridge_config.local_endpoint_run_dir, bridge_config.daemon_id = prev_run_dir, prev_bridge }
 		socket := pty_host_socket_path()
 		defer delete(socket)
+		swap := pty_host_test_install_socket(socket)
+		defer pty_host_test_restore_socket(swap)
 		daemon, spawn_err := os.process_start({command = {bin, "daemon", "--socket", socket}, env = {fmt.tprintf("HOME=%s", dir), "PATH=/usr/bin:/bin"}})
 		if !testing.expect(t, spawn_err == nil, "could not start fixture daemon") do return
 		defer {

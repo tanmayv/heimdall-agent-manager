@@ -42,7 +42,7 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
 	if found {
 		blocked,ready_ref:=fleet_runtime_operation(svc,current)
 		if blocked {domain.agent_instance_destroy(&current);return}
-		if ready_ref!="" && instance_is_live(current) {
+		if ready_ref!="" && match_process_fact(svc, u, current, lease.chain_id).state == .Alive {
 			ticket=new(agent.Start_Ticket)
 			ticket^=agent.Start_Ticket{instance=domain.agent_instance_clone(current),command_id=strings.concatenate({"fleet_notice_",ready_ref}),kept_live=true,reused=true,allocator=context.allocator}
 			append(&u.effects.tickets,ticket)
@@ -58,7 +58,7 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
    current, found, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id)
    if found {
     held, has_claim, _ := iface.taskchain_get_lease_by_holder(svc.repo, lease.holder_instance_id)
-    if has_claim && held.lease_id == lease.lease_id && agent.runtime_expected_active(current.runtime_status) {
+    if has_claim && held.lease_id == lease.lease_id && current.stop_reason == "" {
      events, eerr := iface.taskchain_list_events_by_task(svc.repo, lease.task_id, lease.owner_user_id)
      if eerr.code == .None {
       for event in events {
@@ -67,11 +67,11 @@ effect_wake_lease :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, task
        // Pre-T25 grants opened this generation without start_ref or event
        // metadata. Preserve their pending wake across the deploy/restart.
        legacy := !jsonx.has_key(event.payload_json,"start_run_count",true) && current.start_ref == "" &&
-        (instance_is_live(current) || instance_is_pending(current)) &&
+        match_process_fact(svc, u, current, lease.chain_id).state != .Exited &&
         held.confirmed_at == "" && held.delivery == domain.LEASE_DELIVERY_WAKE && held.phase == domain.LEASE_PHASE_ACTIVE &&
         (current.current_task_id == "" || current.current_task_id == string(lease.task_id))
        if kept || legacy {
-        reused = agent.Start_Ticket{instance=domain.agent_instance_clone(current),command_id=strings.concatenate({"sb_",lease.lease_id}),kept_live=kept || instance_is_live(current),reused=true}
+        reused = agent.Start_Ticket{instance=domain.agent_instance_clone(current),command_id=strings.concatenate({"sb_",lease.lease_id}),kept_live=kept || match_process_fact(svc, u, current, lease.chain_id).state == .Alive,reused=true}
         reused.allocator = context.allocator
         ok = true
        }
@@ -260,8 +260,3 @@ flush_wakes :: proc(svc: ^Service, e: ^Effects) {
 }
 
 Wake_Dispatch :: struct { svc: ^Service, chain_id: string }
-
-// Pending children await readiness; this is a read-only lifecycle predicate.
-instance_is_pending :: proc(inst: domain.Agent_Instance) -> bool {
-	return inst.runtime_status == "launching" || inst.runtime_status == "starting" || inst.runtime_status == "blocked"
-}

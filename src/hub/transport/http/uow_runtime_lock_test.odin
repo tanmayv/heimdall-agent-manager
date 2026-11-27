@@ -9,6 +9,7 @@ import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import project "odin_test:hub/service/project"
+import agent "odin_test:hub/service/agent"
 import sqlite "odin_test:hub/repository/sqlite"
 import lockorder "odin_test:lib/lockorder"
 
@@ -184,13 +185,19 @@ test_runtime_concurrent_reconnect_and_disconnect_keeps_newest :: proc(t: ^testin
 test_runtime_concurrent_reports_keep_terminal_sequence :: proc(t: ^testing.T) {
 	f := runtime_persist_test_open(t)
 	defer runtime_persist_test_close(f)
+	seed, found, _ := iface.agent_get_instance(&f.fixture.ag_repo, f.fixture.instance_id)
+	if !testing.expect(t, found) do return
+	defer domain.agent_instance_destroy(&seed)
+	seed.run_count = max(1, seed.run_count)
+	if _, saved, _ := iface.agent_save_instance(&f.fixture.ag_repo, seed); !testing.expect(t, saved) do return
+	proof := agent.Process_Exit_Evidence{pid = 42, exit_code = 0, run_count = seed.run_count}
 	job := Runtime_Persist_Job{f=f, operation=proc(f: ^Runtime_Persist_Test) -> bool {
 		row, _, err := bridge_apply_validated_status(&f.handlers, f.fixture.bridge_pin, f.generation, f.fixture.instance_id, 10, "running", "busy")
 		domain.agent_instance_destroy(&row)
 		return err.code == .None
 	}}
 	worker := runtime_persist_job_start(&job)
-	row, applied, err := bridge_apply_validated_status(&f.handlers, f.fixture.bridge_pin, f.generation, f.fixture.instance_id, 11, "stopped", "idle")
+	row, applied, err := bridge_apply_validated_status(&f.handlers, f.fixture.bridge_pin, f.generation, f.fixture.instance_id, 11, "stopped", "idle", reason = "pty_child_exited", process_exit = &proof)
 	domain.agent_instance_destroy(&row)
 	testing.expect(t, applied && err.code == .None)
 	thread.join(worker)
