@@ -17,7 +17,7 @@ const formPath = '/api/v1/secure-forms';
 let browser;
 process.once('SIGTERM', () => process.exit(143));
 process.once('exit', () => browser?.kill());
-const { h, bridgeId, task, instance, profile, port } = await startSecureFormRuntime(control);
+const { h, bridgeId, bridgeRuntime, task, instance, profile, port } = await startSecureFormRuntime(control);
 try {
   const headers = { 'X-Heimdall-Expected-User': h.owner };
   const answer = (method, suffix = '', body) => h.request(method, formPath + suffix, body, headers);
@@ -127,7 +127,8 @@ try {
   if (expiry) {
     // Exercise the real monotonic TTL without changing production clocks or code.
     await waitUntil(302_000);
-    check(await command('retry', '--request', id, '--after-attempt', '2').code() === 29, 'original receipt deadline rejects retry');
+    const expiredCode = await command('retry', '--request', id, '--after-attempt', '2').code();
+    check(expiredCode === 29, `original receipt deadline rejects retry (CLI ${expiredCode}, Bridge ${bridgeRuntime.exitCode ?? bridgeRuntime.signalCode ?? 'running'})`);
   }
   const fresh = run();
   const freshId = await fresh.request();

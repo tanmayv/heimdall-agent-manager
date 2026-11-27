@@ -53,7 +53,7 @@ done
   process.env.PATH = bin + path.delimiter + process.env.PATH;
   const h = await nativeMcpHub();
   try {
-    const { bridgeId } = await h.enroll();
+    const { bridgeId, runtime: bridgeRuntime } = await h.enroll();
     const bridge = `/api/v1/bridges/${bridgeId}`;
     check((await h.signed('POST', bridge + '/providers/discover', { providers: ['pi'], stage: 'providers' })).status === 200, 'fixture provider discovery');
     check((await h.signed('PUT', bridge + '/providers/pi', { enabled: true })).status === 200, 'fixture provider enabled');
@@ -90,7 +90,7 @@ done
     }, 'fixture agent claimed the task', 65000);
     check(instance === activeInstance, 'real task placement matches coordinator instance');
     check(profile && port, 'bridge browser profile and debug port supplied');
-    return { h, bridgeId, task, instance, profile, port };
+    return { h, bridgeId, bridgeRuntime, task, instance, profile, port };
   } catch (error) {
     await h.close();
     fs.rmSync(h.root, { recursive: true, force: true });
