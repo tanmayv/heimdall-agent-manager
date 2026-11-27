@@ -225,7 +225,8 @@ ham-ctl stream share --tab <cdp-target-id>
 ```
 
 Send the exact link printed by `stream share` to the owner in Heimdall chat.
-The link is not a credential. Only the signed-in Heimdall owner can open it.
+Re-sharing a tab with a live stream returns the existing link without using
+another stream slot. The link is not a credential. Only the signed-in Heimdall owner can open it.
 The viewer is watch-only and shows the page, not browser chrome or OS dialogs.
 
 Anything visible on the page is visible to the owner while they watch,

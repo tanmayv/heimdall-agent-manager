@@ -192,8 +192,12 @@ stream_test_record_control :: proc(conn: ^ws.Connection, control: contracts.Stre
 }
 stream_test_instance_live :: proc(_: string, _: int) -> bool { return true }
 
+stream_test_registry_mu: sync.Mutex
+
 @(test)
 test_stream_registration_reconnect_stop_and_expiry :: proc(t: ^testing.T) {
+	sync.mutex_lock(&stream_test_registry_mu)
+	defer sync.mutex_unlock(&stream_test_registry_mu)
 	stream_connection(true)
 	defer {
 		stream_connection(false)
@@ -205,7 +209,9 @@ test_stream_registration_reconnect_stop_and_expiry :: proc(t: ^testing.T) {
 	}
 	id := "0123456789abcdef0123456789abcdef"
 	rec := Bridge_Local_Agent_Token_Record{agent_instance_id = "inst_test", run_count = 1}
-	if !testing.expect(t, stream_local_register(id, "owner", rec, "task", {"fixture", "", "page"}, 42000, "/fixture")) do return
+	live, created := stream_local_register(id, "owner", rec, "task", {"fixture", "", "page"}, 42000, "/fixture", "fixture-link", stream_test_instance_live)
+	if !testing.expect(t, live != nil && created) do return
+	live.share_waiters -= 1
 	defer free_all(context.temp_allocator)
 	trace: Stream_Test_Control_Record
 	probe := cast(^ws.Connection)&trace
@@ -221,7 +227,9 @@ test_stream_registration_reconnect_stop_and_expiry :: proc(t: ^testing.T) {
 	testing.expect_value(t, trace.ended, 1)
 	testing.expect_value(t, trace.reason, "stopped")
 
-	if !testing.expect(t, stream_local_register(id, "owner", rec, "task", {"fixture", "", "page"}, 42000, "/fixture")) do return
+	live, created = stream_local_register(id, "owner", rec, "task", {"fixture", "", "page"}, 42000, "/fixture", "fixture-link", stream_test_instance_live)
+	if !testing.expect(t, live != nil && created) do return
+	live.share_waiters -= 1
 	_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
 	sync.mutex_lock(&stream_mu)
 	if live := stream_find_locked(id); live != nil do live.reg.expires = 1
@@ -231,7 +239,8 @@ test_stream_registration_reconnect_stop_and_expiry :: proc(t: ^testing.T) {
 	testing.expect_value(t, trace.reason, "expired")
 	// The drain may run before the share caller observes the negative ACK.
 	for code in ([]string{"unauthorized", "limit", "duplicate", "invalid"}) {
-		if !testing.expect(t, stream_local_register(id, "owner", rec, "task", {"fixture", "", "page"}, 42000, "/fixture", waiting = true)) do return
+		live, created = stream_local_register(id, "owner", rec, "task", {"fixture", "", "page"}, 42000, "/fixture", "fixture-link", stream_test_instance_live)
+		if !testing.expect(t, live != nil && created) do return
 		_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
 		ack := contracts.stream_encode_control(contracts.Stream_Register_Ack{id, false, code}, context.temp_allocator)
 		testing.expect(t, stream_hub_receive(string(ack)))
@@ -241,12 +250,102 @@ test_stream_registration_reconnect_stop_and_expiry :: proc(t: ^testing.T) {
 		got := ""
 		if live != nil {
 			got = live.register_reject
-			live.register_waiting = false
+			live.share_waiters -= 1
 		}
 		sync.mutex_unlock(&stream_mu)
 		testing.expect_value(t, got, code)
 		// In particular, a duplicate rejection cannot end the original route.
 		testing.expect_value(t, trace.ended, 2)
 		_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
+	}
+}
+
+Stream_Test_Share :: struct {
+	id, tab, instance, link: string,
+	live: ^Stream_Live,
+	created: bool,
+}
+
+stream_test_share :: proc(data: rawptr) {
+	r := cast(^Stream_Test_Share)data
+	rec := Bridge_Local_Agent_Token_Record{agent_instance_id = r.instance, run_count = 1}
+	r.live, r.created = stream_local_register(r.id, "owner", rec, "", {r.tab, "", "page"}, 42000, "/fixture", r.link, stream_test_instance_live)
+}
+
+@(test)
+test_stream_share_reuses_pending_and_accepted_source :: proc(t: ^testing.T) {
+	sync.mutex_lock(&stream_test_registry_mu)
+	defer sync.mutex_unlock(&stream_test_registry_mu)
+	stream_connection(true)
+	defer {
+		stream_connection(false)
+		sync.mutex_lock(&stream_mu)
+		for &slot in stream_live {
+			if slot != nil { stream_free(slot); slot = nil }
+		}
+		sync.mutex_unlock(&stream_mu)
+	}
+	first := Stream_Test_Share{id = "0123456789abcdef0123456789abcdef", tab = "tab-a", instance = "first", link = "https://one.test/#/streams/0123456789abcdef0123456789abcdef"}
+	second := Stream_Test_Share{id = "fedcba9876543210fedcba9876543210", tab = first.tab, instance = "second", link = "https://two.test/#/streams/fedcba9876543210fedcba9876543210"}
+	// Both callers contend for the unclaimed source before either can proceed.
+	sync.mutex_lock(&stream_mu)
+	a := thread.create_and_start_with_data(&first, stream_test_share)
+	b := thread.create_and_start_with_data(&second, stream_test_share)
+	sync.mutex_unlock(&stream_mu)
+	if a != nil { thread.join(a); thread.destroy(a) }
+	if b != nil { thread.join(b); thread.destroy(b) }
+	if !testing.expect(t, a != nil && b != nil && first.live != nil && first.live == second.live && first.created != second.created) do return
+
+	trace: Stream_Test_Control_Record
+	probe := cast(^ws.Connection)&trace
+	_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
+	testing.expect_value(t, trace.registered, 1)
+	winner := first
+	if second.created do winner = second
+	ack := contracts.stream_encode_control(contracts.Stream_Register_Ack{winner.id, true, ""}, context.temp_allocator)
+	testing.expect(t, stream_hub_receive(string(ack)))
+	for _ in 0..<2 {
+		response := stream_share_wait("request", winner.live, false, stream_test_instance_live)
+		testing.expect(t, strings.contains(response, winner.link))
+		delete(response)
+	}
+	slots := [?]Stream_Test_Share{
+		{id = "22222222222222222222222222222222", tab = "tab-b"},
+		{id = "33333333333333333333333333333333", tab = "tab-c"},
+		{id = "44444444444444444444444444444444", tab = "tab-d"},
+	}
+	for &req in slots {
+		stream_test_share(&req)
+		testing.expect(t, req.created)
+	}
+	repeat := Stream_Test_Share{id = "55555555555555555555555555555555", tab = winner.tab, link = "wrong-link"}
+	stream_test_share(&repeat)
+	if !testing.expect(t, repeat.live == winner.live && !repeat.created) do return
+	response := stream_share_wait("repeat", repeat.live, false, stream_test_instance_live)
+	testing.expect(t, strings.contains(response, winner.link))
+	delete(response)
+	overflow := Stream_Test_Share{id = repeat.id, tab = "tab-e"}
+	stream_test_share(&overflow)
+	testing.expect(t, overflow.live == nil)
+
+	// Drive the captured end states through the real drain, without starting Chromium.
+	for reason in ([]string{"stopped", "expired", "source_closed"}) {
+		if reason == "stopped" {
+			stop := contracts.stream_encode_control(contracts.Stream_Stop{winner.id}, context.temp_allocator)
+			testing.expect(t, stream_hub_receive(string(stop)))
+		}
+		sync.mutex_lock(&stream_mu)
+		if reason == "expired" {
+			winner.live.reg.expires = 1
+		} else if reason == "source_closed" {
+			winner.live.reason = reason
+		}
+		winner.live.share_waiters = 0
+		sync.mutex_unlock(&stream_mu)
+		_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
+		previous := winner.id
+		winner.id = first.id if previous != first.id else second.id
+		stream_test_share(&winner)
+		if !testing.expect(t, winner.created && winner.live.reg.stream_id != previous) do return
 	}
 }
