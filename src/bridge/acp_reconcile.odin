@@ -88,7 +88,7 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
         // Retain an inert owner for a later complete reconcile. A transport
         // failure cannot prove death or authorize closing an unseen child.
         acp_runtimes[r.instance] = r
-        bridge_runtime_set_status(r.instance, "unreachable", "idle")
+        bridge_runtime_set_status(r.instance, "unreachable", "idle", "acp_inventory_unavailable")
         return
     }
     same, alive := false, false
@@ -112,11 +112,11 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
 
 acp_runtime_lost_status :: proc(instance: string, closed: bool, reason: string = "acp_pipe_lost") {
     if closed do bridge_runtime_set_pty_process_alive(instance, false)
-    bridge_runtime_set_status(instance, "stopped" if closed else "failed", "idle")
+    bridge_runtime_set_status(instance, "stopped" if closed else "blocked", "idle", "acp_recovery_child_closed" if closed else "acp_recovery_close_unconfirmed")
     // Terminal end of the SIGTERM/crash path (acp_pipe_lost -> recovery could not
     // reattach or respawn): the agent is gone, so it must not keep a launch record
     // that holds the auto-update quiet window (T16d).
-    bridge_runtime_remove_launch(instance)
+    if closed do bridge_runtime_remove_launch(instance)
     sync.mutex_lock(&bridge_runtime_mutex)
     for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance do bridge_runtime_replace_acp_error(&inst, reason)
     sync.mutex_unlock(&bridge_runtime_mutex)
@@ -357,7 +357,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
             if owned_epoch do acp_runtime_detach(id)
             closed := pipe.instance == "" || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
             if closed do bridge_runtime_set_pty_process_alive(id, false)
-            bridge_runtime_set_status(id, "failed", "idle")
+            bridge_runtime_set_status(id, "failed" if closed else "blocked", "idle", "acp_failed_intent")
             acp_runtime_leave_lifecycle(lifecycle); continue
         }
         if intent.status == "stopped" || intent.status == "cancelled" || intent.status == "stopping" {
@@ -374,7 +374,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
                 if closed {
                     bridge_agent_token_invalidate_instance(id)
                     bridge_runtime_set_pty_process_alive(id, false)
-                    bridge_runtime_set_status(id, "stopped", "idle")
+                    bridge_runtime_set_status(id, "stopped", "idle", "acp_stop_confirmed")
                 }
             }
             acp_runtime_leave_lifecycle(lifecycle); continue
@@ -421,7 +421,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
             if built && acp_runtime_terminal_error(&r.d) {
                 closed := pipe.instance == "" || matching_child && acp_runtime_close_child(r)
                 if closed do bridge_runtime_set_pty_process_alive(id, false)
-                bridge_runtime_set_status(id, "failed", "idle")
+                bridge_runtime_set_status(id, "failed" if closed else "blocked", "idle", "acp_terminal_checkpoint")
                 sync.mutex_lock(&bridge_runtime_mutex)
                 for &inst in bridge_runtime_instances do if inst.agent_instance_id == id do bridge_runtime_replace_acp_error(&inst, r.d.error)
                 sync.mutex_unlock(&bridge_runtime_mutex)

@@ -227,6 +227,7 @@ runtime_reconcile_digest :: proc(registry: ^project_service.Bridge_Runtime_Regis
 	for key, &state in c.instances {
 		if state.active && !state.reserved && !string_slice_contains(active_instance_ids, key) {
 			_ = project_service.runtime_active_change(registry, state.owner_id, -1)
+			project_service.log_runtime_registry_terminal(bridge_id, key, state.runtime_status, "unreachable", "runtime_reconcile_digest", "missing_from_active_inventory")
 			delete(state.runtime_status, runtime.default_allocator())
 			state.runtime_status = strings.clone("unreachable", runtime.default_allocator())
 			state.active = false

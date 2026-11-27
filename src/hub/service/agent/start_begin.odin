@@ -204,7 +204,8 @@ start_fail :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_E
 	failed.runtime_status = "failed"
 	failed.startup_status = "failed"
 	failed.stopped_at = platform.clock_now(service.clock)
-	_, _, err := iface.agent_save_instance_guarded(service.agents, failed, t.instance.run_count, t.instance.launch_epoch, t.instance.configuration_revision)
+	saved, ok, err := iface.agent_save_instance_guarded(service.agents, failed, t.instance.run_count, t.instance.launch_epoch, t.instance.configuration_revision)
+	if ok do log_runtime_terminal_transition(saved, t.instance.runtime_status, "start_fail", "launch_dispatch_failed")
 	return err
 }
 

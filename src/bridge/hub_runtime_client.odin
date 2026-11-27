@@ -422,7 +422,11 @@ bridge_hub_runtime_worker :: proc() {
 		// REQ-ACP-1: probed here so the hello carries it, and again on daemon
 		// restart/adoption, provider scan and a retry schedule (acp_runtime_probe.odin).
 		bridge_acp_runtime_probe_on_connect()
-		hello := bridge_hub_hello_json()
+		// Reconciliation runs after bridge_ready, but the Hub acts on hello
+		// immediately. Include survivors from the existing daemon before then.
+		roster := bridge_pty_liveness_roster()
+		hello := bridge_hub_hello_json(roster.agents)
+		pty_host_reply_delete(roster)
 		if !ws.send_text(&conn, hello) {
 			log_failure(&last_failure, &attempts, "WS connected but sending hello failed (connection dropped immediately)", .hub_connect_failed, blog_sym(.stage, .hello), blog_sym(.reason, .write_error))
 			bridge_hub_connection_teardown(&conn)
@@ -706,7 +710,12 @@ bridge_hub_heartbeat_shape :: proc() -> Bridge_Heartbeat_Shape {
 // reconnect. It is an ordinary heartbeat frame, so hubs of every version accept it.
 bridge_hub_send_connect_heartbeat :: proc(conn: ^ws.Connection) -> (anchor_ns: i64) {
 	if sync.atomic_load(&bridge_hub_traffic_stopped) do return time.to_unix_nanoseconds(time.now())
-	hb := bridge_hub_heartbeat_json()
+	// The asynchronous adoption may still be waiting for its Hub listing.
+	// Carry fresh daemon evidence in the immediate heartbeat too, so it
+	// cannot immediately contradict the survivors advertised in hello.
+	roster := bridge_pty_liveness_roster()
+	defer pty_host_reply_delete(roster)
+	hb := bridge_hub_heartbeat_json_shaped(bridge_hub_heartbeat_shape(), roster.agents)
 	_ = ws.send_text(conn, hb)
 	delete(hb)
 	// Anchored after the send, so building the frame (stats fork `ps`) does not pull
@@ -1044,7 +1053,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			n := bridge_agent_token_invalidate_instance(id)
 			if n > 0 {
 				fmt.println("bridge reap: instance relaunched on another bridge; invalidated local tokens", id, "count", n)
-				bridge_runtime_set_status(id, "stopped", "idle")
+				bridge_runtime_set_status(id, "stopped", "idle", "superseded_on_other_bridge")
 				bridge_runtime_remove_launch(id)
 			}
 		}
@@ -2884,7 +2893,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(credential_snapshot_2312)
 	boot_res := bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, credential_snapshot_2312, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache, deadline_ns)
 	if !boot_res.ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
+		bridge_runtime_set_status(instance_id, "failed", "idle", "bootstrap_failed")
 		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)
 		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
 		blog_error(.agent_bootstrap_invalid, blog_sym(.stage, blog_bootstrap_stage(boot_res.stage)), blog_int(.hub_status, i64(boot_res.http_status)), blog_provider(provider))
@@ -2938,7 +2947,7 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent, run_count)
 	bridge_startup_begin(agent_issue.plaintext_token)
 	if !bridge_bootstrap_materialize_local_provider_test(run_dir, endpoint, agent_issue.plaintext_token, instance_id, provider) {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
+		bridge_runtime_set_status(instance_id, "failed", "idle", "provider_test_bootstrap_failed")
 		return false, "provider test bootstrap failed", bridge_error(.agent_bootstrap_invalid)
 	}
 	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test", PROVIDER_TEST_TIMEOUT_SECONDS, provider_profile = provider_profile)
@@ -2964,7 +2973,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	// back to the default profile, which could run under the wrong account.
 	pp, pp_err := profile_lookup(provider, provider_profile)
 	if pp_err != .None {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
+		bridge_runtime_set_status(instance_id, "failed", "idle", "provider_profile_unavailable")
 		return false, profile_error_code(pp_err), bridge_error(.agent_launch_failed, .unsupported)
 	}
 	pp_ref: ^Provider_Profile = &pp
@@ -2976,13 +2985,13 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
+		bridge_runtime_set_status(instance_id, "unreachable", "idle", "pty_host_unavailable")
 		return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
 	}
 
 	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, model, agent_token, env, display_name, timeout_seconds, permission_mode, pp_ref)
 	if !req_ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
+		bridge_runtime_set_status(instance_id, "failed", "idle", "provider_command_unavailable")
 		blog_error(.provider_missing, blog_provider(provider))
 		return false, "provider has no runnable command", bridge_error(.provider_missing)
 	}
@@ -2999,9 +3008,17 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	if stream_was_active {
 		bridge_pty_stream_worker_detach(instance_id)
 	}
-	if bridge_pty_host_is_registered(socket, instance_id) {
+	roster, listed := bridge_pty_host_list(socket)
+	if !listed {
+		bridge_runtime_set_status(instance_id, "blocked", "idle", "pty_inventory_unavailable")
+		return false, "cannot inspect existing PTY runtime before spawn", bridge_error(.pty_host_unreachable)
+	}
+	registered := false
+	for child in roster.agents do if child.instance_id == instance_id do registered = true
+	pty_host_reply_delete(roster)
+	if registered {
 		if !bridge_pty_host_close(socket, instance_id) {
-			bridge_runtime_set_status(instance_id, "failed", "idle")
+			bridge_runtime_set_status(instance_id, "blocked", "idle", "previous_pty_close_unconfirmed")
 			blog_error(.agent_launch_failed, blog_provider(provider), blog_sym(.stage, .spawn), blog_sym(.reason, .replaced))
 			return false, "failed to close existing instance before respawn", bridge_error(.agent_launch_failed, .replaced)
 		}
@@ -3010,9 +3027,21 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	bridge_startup_arm(instance_id, agent_token, bridge_runtime_now_ms())
 	pid, ok = bridge_pty_host_spawn(socket, req)
 	if !ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
-		blog_error(.agent_launch_failed, blog_provider(provider), blog_sym(.stage, .spawn))
-		return false, "ham-pty-host spawn failed", bridge_error(.agent_launch_failed, .spawn)
+		// Losing Spawned does not mean Spawn failed. Confirm this exact
+		// launch when possible, otherwise don't assert death on a lost reply.
+		launch_key := bridge_local_hash_token(agent_token)
+		defer delete(launch_key)
+		if actual_pid, confirmed := bridge_pty_host_startup_launch(socket, instance_id, launch_key); confirmed && actual_pid > 0 {
+			pid = actual_pid
+		} else {
+			children, queried := bridge_pty_host_list(socket)
+			live := false
+			for child in children.agents do if child.instance_id == instance_id && child.alive do live = true
+			pty_host_reply_delete(children)
+			bridge_runtime_set_status(instance_id, "failed" if queried && !live else "blocked", "idle", "pty_spawn_unconfirmed")
+			blog_error(.agent_launch_failed, blog_provider(provider), blog_sym(.stage, .spawn))
+			return false, "ham-pty-host spawn failed", bridge_error(.agent_launch_failed, .spawn)
+		}
 	}
 	bridge_runtime_set_pty_process_alive(instance_id, true)
 	bridge_startup_spawned(instance_id, agent_token, pid)
@@ -3079,7 +3108,7 @@ bridge_runtime_stop_agent_process :: proc(instance_id: string, force: bool, bot_
 	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated)
 	// Drop any in-memory launch record so we don't hold stale pane/token data.
 	bridge_runtime_remove_launch(instance_id)
-	bridge_runtime_set_status(instance_id, "stopped", "idle")
+	bridge_runtime_set_status(instance_id, "stopped", "idle", "pty_stop_confirmed")
 	return true
 }
 
@@ -3266,7 +3295,11 @@ bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, la
 	for &inst in bridge_runtime_instances {
 		if inst.agent_instance_id != instance_id do continue
 		if launch_started && inst.runtime_status == "starting" {
-			bridge_runtime_set_status_locked(instance_id, "failed", "idle", bridge_runtime_now_ms(), true)
+			if inst.pty_process_alive {
+				bridge_runtime_set_status_locked(instance_id, "blocked", "idle", bridge_runtime_now_ms(), true, "launch_command_failed_live_child")
+			} else {
+				bridge_runtime_set_status_locked(instance_id, "failed", "idle", bridge_runtime_now_ms(), true, "launch_command_failed")
+			}
 		}
 		if inst.runtime_status == "failed" {
 			inst.last_error = err
@@ -3298,7 +3331,7 @@ bridge_runtime_stop_or_restore_unlocked :: proc(instance_id: string, force: bool
 		runtime_status, activity = prior_runtime, prior_activity
 	}
 	bridge_runtime_clear_stop_intent(instance_id)
-	bridge_runtime_set_status(instance_id, runtime_status, activity)
+	bridge_runtime_set_status(instance_id, runtime_status, activity, "stop_unconfirmed_restore")
 	return false, strings.clone(runtime_status)
 }
 
@@ -3312,7 +3345,7 @@ bridge_runtime_status_snapshot :: proc(instance_id: string) -> (runtime_status, 
 	return "", "", false
 }
 
-bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: string) {
+bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: string, reason := "", loc := #caller_location) {
     defer {
         if runtime_status == "stopped" || runtime_status == "failed" || runtime_status == "unreachable" do bridge_tool_live_clear(instance_id)
     }
@@ -3325,7 +3358,7 @@ bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: 
 	}
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	bridge_runtime_set_status_locked(instance_id, runtime_status, activity_status, now, true)
+	bridge_runtime_set_status_locked(instance_id, runtime_status, activity_status, now, true, reason, loc)
 }
 
 bridge_runtime_note_wrapper_signal :: proc(instance_id, activity_status: string) {
@@ -3457,11 +3490,16 @@ bridge_runtime_mark_start_success :: proc(instance_id: string) {
 	bridge_runtime_set_status_locked(instance_id, "running", "idle", now, true)
 }
 
-bridge_runtime_set_status_locked :: proc(instance_id, runtime_status, activity_status: string, now: i64, touch_seen: bool) {
-	bridge_runtime_set_status_with_source_locked(instance_id, runtime_status, activity_status, "bridge", now, touch_seen, true)
+bridge_runtime_log_terminal_transition :: proc(instance_id, from, to, reason: string, loc := #caller_location) {
+	if from == to || (to != "stopped" && to != "failed" && to != "unreachable") do return
+	fmt.eprintfln("agent_runtime_transition component=bridge instance=%q from=%q to=%q source=%q line=%d reason=%q", instance_id, from, to, loc.procedure, loc.line, reason)
 }
 
-bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status, activity_status, activity_source: string, now: i64, touch_seen: bool, force_activity: bool) {
+bridge_runtime_set_status_locked :: proc(instance_id, runtime_status, activity_status: string, now: i64, touch_seen: bool, reason := "", loc := #caller_location) {
+	bridge_runtime_set_status_with_source_locked(instance_id, runtime_status, activity_status, "bridge", now, touch_seen, true, reason, loc)
+}
+
+bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status, activity_status, activity_source: string, now: i64, touch_seen: bool, force_activity: bool, reason := "", loc := #caller_location) {
 	// Registry snapshots outlive the RPC/test context that reported the status.
 	context.allocator = runtime.heap_allocator()
 	for i in 0..<len(bridge_runtime_instances) {
@@ -3470,6 +3508,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 			old_runtime := inst.runtime_status
 			accept_activity := activity_status != "" && (force_activity || bridge_runtime_accept_activity_update(inst, activity_source, now))
 			runtime_changed := inst.runtime_status != runtime_status
+			bridge_runtime_log_terminal_transition(instance_id, old_runtime, runtime_status, reason, loc)
 			activity_changed := accept_activity && inst.activity_status != activity_status
 			if inst.runtime_transport == "acp" && (activity_changed || (!accept_activity && activity_status != "" && inst.activity_status != activity_status)) {
 				// Only bounded state labels and identity: never prompt/tool payloads.
@@ -3522,6 +3561,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 	// even if direct agent-actions (like repeated start-success) advanced the DB.
 	if bridge_runtime_instances == nil do bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
 	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen, pty_process_alive = (runtime_status == "running")})
+	bridge_runtime_log_terminal_transition(instance_id, "", runtime_status, reason, loc)
 	if !strings.contains(activity_source, "extension") do bridge_runtime_enqueue_status_push_locked(instance_id)
 }
 
@@ -3850,7 +3890,7 @@ bridge_hub_heartbeat_json :: proc() -> string {
 
 // bridge_hub_heartbeat_json_shaped collects the live state for one heartbeat and
 // serializes it with bridge_heartbeat_frame_json.
-bridge_hub_heartbeat_json_shaped :: proc(shape: Bridge_Heartbeat_Shape) -> string {
+bridge_hub_heartbeat_json_shaped :: proc(shape: Bridge_Heartbeat_Shape, roster: []Pty_Host_Agent_Info = nil) -> string {
 	frame: Bridge_Heartbeat_Frame
 	if !shape.omit_metadata do frame.features = bridge_runtime_features_json()
 	// Diagnostics are collected only when sent, and BEFORE bridge_runtime_mutex is
@@ -3891,6 +3931,13 @@ bridge_hub_heartbeat_json_shaped :: proc(shape: Bridge_Heartbeat_Shape) -> strin
 		delete(epoch)
 	}
 	frame.instances = instances[:]
+	if len(roster) != 0 {
+		seen := make(map[string]bool, allocator = context.temp_allocator)
+		for inst in instances do seen[inst.agent_instance_id] = true
+		adopted := make([dynamic]string, context.temp_allocator)
+		bridge_add_pty_survivors(&adopted, &seen, roster)
+		frame.adopted_active_ids = adopted[:]
+	}
 	return bridge_heartbeat_frame_json(frame, shape)
 }
 
@@ -3917,6 +3964,7 @@ Bridge_Heartbeat_Frame :: struct {
 	operation_recovery:  string,
 	stats:               string, // "" when resource stats are off: member omitted
 	instances:           []Bridge_Heartbeat_Instance,
+	adopted_active_ids:  []string, // positive liveness only, no readiness/sequence inferred
 }
 
 // bridge_heartbeat_frame_json serializes one heartbeat. Always present, in this
@@ -3967,6 +4015,13 @@ bridge_heartbeat_frame_json :: proc(frame: Bridge_Heartbeat_Frame, shape: Bridge
 		bridge_runtime_write_json_string(&b, inst.agent_instance_id)
 		strings.write_byte(&b, '"')
 	}
+	for id in frame.adopted_active_ids {
+		if !first_active do strings.write_byte(&b, ',')
+		first_active = false
+		strings.write_byte(&b, '"')
+		bridge_runtime_write_json_string(&b, id)
+		strings.write_byte(&b, '"')
+	}
 	strings.write_string(&b, `],"instances":[`)
 	first := true
 	for inst in frame.instances {
@@ -3999,6 +4054,7 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 				continue
 			}
 			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
+			bridge_runtime_log_terminal_transition(inst.agent_instance_id, inst.runtime_status, "unreachable", "liveness_timeout")
 			inst.runtime_status = "unreachable"
 			inst.activity_status = "idle"
 			inst.activity_source = "bridge"
@@ -4007,7 +4063,15 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 			continue
 		}
 		if inst.runtime_status == "starting" && !inst.start_success_seen && inst.start_deadline_unix_ms > 0 && now >= inst.start_deadline_unix_ms {
+			if inst.pty_process_alive {
+				// Process liveness and readiness are independent. Keep this
+				// instance active but not ready so the Hub cannot replace it.
+				fmt.eprintfln("agent_startup_blocked instance=%q reason=start_success_timeout child_alive=true", inst.agent_instance_id)
+				bridge_runtime_set_status_locked(inst.agent_instance_id, "blocked", "idle", now, false, "start_success_timeout")
+				continue
+			}
 			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
+			bridge_runtime_log_terminal_transition(inst.agent_instance_id, inst.runtime_status, "failed", "start_success_timeout_no_live_child")
 			inst.runtime_status = "failed"
 			inst.last_error = bridge_error(.agent_launch_failed, .timeout)
 			inst.has_last_error = true
@@ -4684,7 +4748,20 @@ bridge_runtime_features :: proc() -> []string {
 	return features[:]
 }
 
-bridge_hub_hello_json :: proc() -> string {
+bridge_pty_liveness_roster :: proc() -> Pty_Host_Reply {
+	socket := pty_host_socket_path()
+	defer delete(socket)
+	frame := pty_host_encode_list()
+	defer delete(frame)
+	reply, ok := pty_host_request_deadline(socket, frame, 1500)
+	if !ok || reply.kind != .Agent_List {
+		pty_host_reply_delete(reply)
+		return {}
+	}
+	return reply
+}
+
+bridge_hub_hello_json :: proc(roster: []Pty_Host_Agent_Info = nil) -> string {
 	hello := Bridge_Hello_Wire{
 		type = "bridge_hello",
 		protocol_version = contracts.BRIDGE_WS_FRAME_VERSION,
@@ -4708,12 +4785,28 @@ bridge_hub_hello_json :: proc() -> string {
 	hello.identity_public_key = unseal.identity_public_key
 	hello.identity_sign_alg = unseal.identity_sign_alg
 	ids := make([dynamic]string, context.temp_allocator)
+	seen := make(map[string]bool, allocator = context.temp_allocator)
 	sync.mutex_lock(&bridge_runtime_mutex)
-	for launch in bridge_runtime_launches do append(&ids, strings.clone(launch.agent_instance_id, context.temp_allocator))
+	for launch in bridge_runtime_launches {
+		id := strings.clone(launch.agent_instance_id, context.temp_allocator)
+		seen[id] = true
+		append(&ids, id)
+	}
 	sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_add_pty_survivors(&ids, &seen, roster)
 	hello.active_instance_ids = ids[:]
 	out, _ := vault.wire_encode(hello)
 	return out
+}
+
+// List is shared by current and retained hosts. Shell sessions and
+// tombstones are not active agents. The borrowed IDs survive serialization.
+bridge_add_pty_survivors :: proc(ids: ^[dynamic]string, seen: ^map[string]bool, roster: []Pty_Host_Agent_Info) {
+	for agent in roster {
+		if !agent.alive || !strings.has_prefix(agent.instance_id, "inst_") || seen^[agent.instance_id] do continue
+		seen^[agent.instance_id] = true
+		append(ids, agent.instance_id)
+	}
 }
 
 // bridge_runtime_features_json serializes BRIDGE_RUNTIME_FEATURES for the legacy

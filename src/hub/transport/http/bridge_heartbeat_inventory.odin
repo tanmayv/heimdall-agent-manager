@@ -201,7 +201,7 @@ bridge_apply_heartbeat_reports :: proc(h: ^Bridge_Handlers, bridge_id: string, g
 			continue
 		}
 		status_moved := false
-		if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, report.launch_epoch, changed = &status_moved); applied {
+		if inst, applied, _ := bridge_apply_validated_status(h, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, report.launch_epoch, changed = &status_moved, source = "bridge_heartbeat"); applied {
 			// A beat that only refreshed last_seen_at is not news (REQ-2).
 			if status_moved do publish_instance_changed(h.event_bus, inst, "status_changed")
 			domain.agent_instance_destroy(&inst)

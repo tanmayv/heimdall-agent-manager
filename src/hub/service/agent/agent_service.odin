@@ -1107,7 +1107,7 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 // failed; a successful start or a stop clears it, a retry in flight keeps it.
 // facts: when non-nil the lifecycle hook is NOT called; the fact is appended
 // for the caller to deliver after it releases its locks (review B1).
-apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "", launch_epoch: string = "", error_json: string = "", facts: ^[dynamic]Lifecycle_Fact = nil, changed: ^bool = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "", launch_epoch: string = "", error_json: string = "", facts: ^[dynamic]Lifecycle_Fact = nil, changed: ^bool = nil, source := "bridge_status_report") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	if changed != nil do changed^ = false
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
@@ -1150,6 +1150,8 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 		}
 	}
 	now := platform.clock_now(service.clock)
+	prior_runtime := strings.clone(inst.runtime_status)
+	defer delete(prior_runtime)
 	if changed != nil {
 		changed^ = (runtime_status != "" && runtime_status != inst.runtime_status) || (activity_status != "" && activity_status != inst.activity_status) || error_json != ""
 	}
@@ -1204,9 +1206,15 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, inst)
 	if saved_ok {
+		log_runtime_terminal_transition(saved, prior_runtime, source, "reported_with_error" if error_json != "" else "reported_without_error")
 		emit_fact(service, facts, Lifecycle_Fact{instance_id = instance_id, terminal = instance_runtime_is_terminal(saved.runtime_status), activity = activity_status})
 	}
 	return saved, saved_ok, save_err
+}
+
+log_runtime_terminal_transition :: proc(inst: domain.Agent_Instance, previous, source, reason: string) {
+	if previous == inst.runtime_status || (inst.runtime_status != "failed" && inst.runtime_status != "stopped" && inst.runtime_status != "unreachable") do return
+	fmt.eprintfln("agent_runtime_transition component=hub instance=%q bridge=%q from=%q to=%q source=%q reason=%q", inst.agent_instance_id, inst.bridge_id, previous, inst.runtime_status, source, reason)
 }
 
 @(private = "file")
@@ -1234,7 +1242,7 @@ lifecycle_facts_destroy :: proc(facts: ^[dynamic]Lifecycle_Fact) {
 // unreachability signal in the hub — the bridge is still connected and reporting,
 // and just this one instance has gone — so it is the most precise trigger for the
 // foreground-run liveness rule. The caller owns the returned slice.
-reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, active_instance_ids: []string) -> []domain.Agent_Instance {
+reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, active_instance_ids: []string, source := "reconcile_bridge_heartbeat") -> []domain.Agent_Instance {
 	instances, err := iface.agent_list_instances_by_bridge(service.agents, bridge_id)
 	if err.code != .None do return nil
 	// NO BLANKET `defer agent_instances_destroy(instances)` HERE. The elements this
@@ -1253,6 +1261,8 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 		inst := instances[i]
 		reported_active := string_slice_contains(active_instance_ids, inst.agent_instance_id)
 		if runtime_expected_active(inst.runtime_status) && !reported_active {
+			prior_runtime := strings.clone(inst.runtime_status)
+			defer delete(prior_runtime)
 			// Mutated IN PLACE rather than through a copy, and every overwritten field
 			// is freed then CLONED. A shallow copy would alias inst's strings, so the
 			// copy could not escape while inst was destroyed; and assigning a literal
@@ -1275,6 +1285,7 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 			clear_instance_current_task(&inst)
 			saved, ok, _ := iface.agent_save_instance(service.agents, inst)
 			if ok {
+				log_runtime_terminal_transition(saved, prior_runtime, source, "missing_from_active_inventory")
 				// Escapes to the caller, which owns it from here. NOT destroyed below.
 				append(&changed, saved)
 			} else {
@@ -1355,6 +1366,8 @@ mark_bridge_instances_unreachable :: proc(service: ^Agent_Service, bridge_id: st
 			domain.agent_instance_destroy(&inst)
 			continue
 		}
+		prior_runtime := strings.clone(inst.runtime_status)
+		defer delete(prior_runtime)
 		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
 		inst.runtime_status = strings.clone("unreachable")
 		if len(inst.activity_status) > 0 do delete(inst.activity_status)
@@ -1368,6 +1381,7 @@ mark_bridge_instances_unreachable :: proc(service: ^Agent_Service, bridge_id: st
 		clear_instance_current_task(&inst)
 		saved, ok, _ := iface.agent_save_instance(service.agents, inst)
 		if ok {
+			log_runtime_terminal_transition(saved, prior_runtime, "mark_bridge_instances_unreachable", "bridge_disconnected")
 			append(&changed, saved)
 		} else {
 			domain.agent_instance_destroy(&inst)
@@ -1409,6 +1423,8 @@ reap_stale_instances :: proc(service: ^Agent_Service, stale_after_ms: i64) -> []
 			domain.agent_instance_destroy(&inst)
 			continue
 		}
+		prior_runtime := strings.clone(inst.runtime_status)
+		defer delete(prior_runtime)
 		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
 		inst.runtime_status = strings.clone("unreachable")
 		if len(inst.activity_status) > 0 do delete(inst.activity_status)
@@ -1422,6 +1438,7 @@ reap_stale_instances :: proc(service: ^Agent_Service, stale_after_ms: i64) -> []
 		clear_instance_current_task(&inst)
 		saved, ok, _ := iface.agent_save_instance(service.agents, inst)
 		if ok {
+			log_runtime_terminal_transition(saved, prior_runtime, "reap_stale_instances", "last_seen_expired")
 			append(&changed, saved)
 		} else {
 			domain.agent_instance_destroy(&inst)

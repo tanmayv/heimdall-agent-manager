@@ -329,6 +329,30 @@ test_t10_unlocked_agent_pty_input_refuses_plaintext :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(res, "vault_locked"), fmt.tprintf("an unlocked vault is not locked, got %q", res))
 }
 
+@(test)
+test_unlocked_shell_input_encoding_mismatch_preserves_running_agent :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&keystore_test_mutex)
+	defer sync.mutex_unlock(&keystore_test_mutex)
+
+	f, ok := fixture_open(t, "agent_pane_encoding_mismatch", true, TEST_ENC_VAULT_KEY)
+	defer fixture_close(&f)
+	if !ok do return
+	testing.expect_value(t, bridge_vault_status(), Vault_Status.Unlocked)
+	id := "inst_pane_encoding_mismatch"
+	bridge_runtime_set_status(id, "running", "active")
+	before, _ := bridge_runtime_instance_snapshot(id)
+
+	bridge_hub_handle_shell_pty_input(nil, `{"type":"shell_pty_input","command_id":"cmd_input_pane_mismatch","shell_id":"inst_pane_encoding_mismatch","data_b64":"ZWNobyBoaQo=","is_encrypted":true}`)
+	res, cached := bridge_runtime_cached_command("cmd_input_pane_mismatch")
+	testing.expect(t, cached && strings.contains(res, "invalid_payload"))
+	after, _ := bridge_runtime_instance_snapshot(id)
+	testing.expect_value(t, after.state_seq, before.state_seq)
+	testing.expect_value(t, after.runtime_status, "running")
+	testing.expect(t, after.pty_process_alive && after.start_success_seen)
+}
+
 // shell_pty_input (the wire type the current hub uses for BOTH agent and shell panes)
 // now names its locked refusal and emits the typed frame.
 @(test)

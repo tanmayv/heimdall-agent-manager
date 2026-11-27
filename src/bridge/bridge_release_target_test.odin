@@ -117,3 +117,26 @@ test_bridge_hub_hello_version_fields :: proc(t: ^testing.T) {
 	expected_target := fmt.tprintf("\"target\":\"%s\"", target)
 	testing.expect(t, strings.contains(hello, expected_target), "target matches host os and arch")
 }
+
+@(test)
+test_bridge_hello_includes_live_adopted_agent_before_reconcile :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&keystore_test_mutex)
+	defer sync.mutex_unlock(&keystore_test_mutex)
+	adopted := [?]Pty_Host_Agent_Info{
+		{instance_id = "inst_old_host_live", alive = true},
+		{instance_id = "inst_old_host_dead", alive = false},
+		{instance_id = "sh_old_host_live", alive = true},
+	}
+	hello := bridge_hub_hello_json(adopted[:])
+	defer delete(hello)
+	testing.expect(t, strings.contains(hello, `"inst_old_host_live"`), "survivor must not be absent from hello while reconciliation is still pending")
+	testing.expect(t, !strings.contains(hello, `"inst_old_host_dead"`))
+	testing.expect(t, !strings.contains(hello, `"sh_old_host_live"`))
+	hb := bridge_hub_heartbeat_json_shaped({omit_metadata = true, omit_diagnostics = true}, adopted[:])
+	defer delete(hb)
+	testing.expect(t, strings.contains(hb, `"inst_old_host_live"`), "the immediate heartbeat must not retract the liveness evidence from hello")
+	testing.expect(t, !strings.contains(hb, `"agent_instance_id":"inst_old_host_live"`), "liveness alone cannot invent durable readiness or a status sequence")
+	testing.expect(t, !strings.contains(hb, `"inst_old_host_dead"`))
+}

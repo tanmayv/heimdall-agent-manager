@@ -152,9 +152,14 @@ acp_runtime_error :: proc(r: ^ACP_Runtime, reason: string, auth := false) {
         bridge_runtime_set_status(r.instance, "blocked", "waiting_user")
         acp_runtime_auth_blocker(r)
     } else {
-        acp_runtime_close_child(r)
+        if !acp_runtime_close_child(r) {
+            // A failed close is not a death receipt. Preserve launch ownership
+            // for a later stop or reconciliation of the still-hosted process.
+            bridge_runtime_set_status(r.instance, "blocked", "idle", "acp_close_unconfirmed")
+            return
+        }
         bridge_runtime_set_pty_process_alive(r.instance, false)
-        bridge_runtime_set_status(r.instance, "failed", "idle")
+        bridge_runtime_set_status(r.instance, "failed", "idle", "acp_error_child_closed")
         // The child is gone: a dead agent must not keep a launch record (it would
         // hold the auto-update quiet window forever, T16d). A relaunch records anew.
         bridge_runtime_remove_launch(r.instance)

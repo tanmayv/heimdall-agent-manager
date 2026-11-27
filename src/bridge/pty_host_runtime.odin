@@ -990,7 +990,7 @@ bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 		}
 	}
 	bridge_runtime_remove_launch(instance)
-	bridge_runtime_set_status(instance, "stopped", "idle")
+	bridge_runtime_set_status(instance, "stopped", "idle", "pty_child_exited")
 
 	// Emit shell_exited WS event for any T4-registered shell session matching this daemon shell_id.
 	// An OWNED snapshot: session_id is read after the map lock is released and after

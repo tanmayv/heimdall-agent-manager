@@ -573,6 +573,32 @@ test_ready_unclaimed_alert_and_blocked_realert :: proc(t: ^testing.T) {
 
 // ---- chokepoints ------------------------------------------------------------------------
 
+// A delayed terminal hook must not revoke the recovered process's claim.
+@(test)
+test_delayed_terminal_hook_preserves_recovered_holder :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "c_terminal_recovered")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_terminal_recovered")
+	seed_fleet(fx, chain, "agt_w")
+	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "idle")
+	_ = publish_task(t, fx, chain, "task_1")
+	confirm_holder(fx, "inst_w1")
+	original, held := lease_of(fx, "inst_w1")
+	testing.expect(t, held)
+	inst, found, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	testing.expect(t, found)
+	inst.runtime_status = "running"
+	_, saved, _ := iface.agent_save_instance(&fx.agents, inst)
+	testing.expect(t, saved)
+	wake_log_reset(log)
+	on_instance_terminal(&fx.svc, "inst_w1")
+	current, still_held := lease_of(fx, "inst_w1")
+	testing.expect(t, still_held && current.lease_id == original.lease_id && current.phase == original.phase)
+	testing.expect_value(t, count_events(fx, "task_1", EV_BLOCKED), 0)
+	testing.expect(t, !wake_log_has_run(log, "inst_w1") && !wake_log_has_stop(log, "inst_w1"))
+}
+
 // A confirmed dead holder parks without spending the attempt budget.
 @(test)
 test_instance_terminal_blocks_until_explicit_retry :: proc(t: ^testing.T) {

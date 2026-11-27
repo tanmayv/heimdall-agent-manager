@@ -198,8 +198,15 @@ bridge_agent_instance_reconcile_now :: proc() {
 		pipe_frame := pty_host_encode_pipe_request({kind = .List}); defer delete(pipe_frame)
 		pipes, pipes_ok := pty_host_request_deadline(socket, pipe_frame, 2000)
 		defer pty_host_reply_delete(pipes)
-		if !pipes_ok || pipes.kind != .Pipe_List do return
-		handled = acp_runtime_reconcile(socket, pipes.pipes, intents)
+		if pipes_ok && pipes.kind == .Pipe_List {
+			handled = acp_runtime_reconcile(socket, pipes.pipes, intents)
+		} else {
+			// An adopted daemon may not implement ListPipes. Do not infer
+			// anything about ACP from that refusal, but still reconcile the
+			// independently verified legacy PTY roster.
+			for id, intent in intents do if intent.transport == "acp" do handled[id] = true
+			fmt.eprintln("bridge agent reconcile: ACP inventory unavailable; reconciling PTY only")
+		}
 	}
 
 	plan := bridge_agent_instance_compute_reconcile_plan(reply.agents, hub_instances)
@@ -222,6 +229,10 @@ bridge_agent_instance_reconcile_now :: proc() {
 		if handled[id] do continue
 		if bridge_pty_host_close(socket, id) {
 			fmt.println("bridge agent reconcile: reaped stopped instance", id)
+		} else {
+			// A failed close cannot authorize terminal publication below.
+			handled[id] = true
+			continue
 		}
 		bridge_agent_token_invalidate_instance(id)
 	}
@@ -231,7 +242,7 @@ bridge_agent_instance_reconcile_now :: proc() {
 		if handled[id] do continue
 		now := bridge_runtime_now_ms()
 		sync.mutex_lock(&bridge_runtime_mutex)
-		bridge_runtime_set_status_locked(id, "stopped", "idle", now, true)
+		bridge_runtime_set_status_locked(id, "stopped", "idle", now, true, "pty_reconcile_no_live_child")
 		bridge_runtime_set_pty_process_alive_locked(id, false)
 		bridge_runtime_enqueue_status_push_locked(id)
 		sync.mutex_unlock(&bridge_runtime_mutex)

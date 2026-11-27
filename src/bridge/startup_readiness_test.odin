@@ -293,7 +293,7 @@ startup_stop_relaunch_and_revocation_are_fenced :: proc(t: ^testing.T) {
 }
 
 @(test)
-startup_watchdog_still_expires_after_fallback :: proc(t: ^testing.T) {
+startup_watchdog_blocks_live_child_after_fallback :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	rec := startup_test_launch("startup_watchdog", "startup_watchdog")
@@ -306,9 +306,31 @@ startup_watchdog_still_expires_after_fallback :: proc(t: ^testing.T) {
 	bridge_runtime_expire_stale_locked(121000)
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	snap, _ := bridge_runtime_instance_snapshot(rec.agent_instance_id)
-	testing.expect_value(t, snap.runtime_status, "failed")
+	testing.expect_value(t, snap.runtime_status, "blocked")
+	testing.expect(t, snap.pty_process_alive && !snap.start_success_seen)
 	startup_test_tick(rec.agent_instance_id, 121001)
 	testing.expect_value(t, startup_test_deliveries, 1)
+	accepted, delivered := bridge_startup_accept(rec, 121002)
+	testing.expect(t, accepted && delivered, "the surviving agent can still acknowledge readiness")
+	snap, _ = bridge_runtime_instance_snapshot(rec.agent_instance_id)
+	testing.expect_value(t, snap.runtime_status, "running")
+}
+
+@(test)
+startup_watchdog_still_fails_attempt_without_live_child :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	rec := startup_test_launch("startup_missing_child", "startup_missing_child")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	bridge_runtime_set_pty_process_alive_locked(rec.agent_instance_id, false)
+	for &inst in bridge_runtime_instances {
+		if inst.agent_instance_id == rec.agent_instance_id do inst.last_seen_unix_ms = 121000
+	}
+	bridge_runtime_expire_stale_locked(121000)
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	snap, _ := bridge_runtime_instance_snapshot(rec.agent_instance_id)
+	testing.expect_value(t, snap.runtime_status, "failed")
+	testing.expect(t, snap.has_last_error, "a genuine startup timeout carries a diagnostic")
 }
 
 @(test)

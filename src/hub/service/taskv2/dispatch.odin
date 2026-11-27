@@ -257,8 +257,10 @@ reset_idle_agent_instances :: proc(svc: ^Service, owner: domain.User_ID, chain_i
 		next.runtime_status = "stopped"
 		next.stopped_by = ""
 		next.last_error_json = ""
-		if _, saved, serr := iface.agent_save_instance(svc.agents, next); !saved {
+		if row, saved, serr := iface.agent_save_instance(svc.agents, next); !saved {
 			return false, serr
+		} else {
+			agent.log_runtime_terminal_transition(row, inst.runtime_status, "reset_idle_agent_instances", "fleet_retry_reset")
 		}
 	}
 	return true, domain.Domain_Error{}

@@ -1863,7 +1863,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	hello_active := json_string_array(hello_text, "active_instance_ids")
 	_ = bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, bridge.bridge_id, hello.generation, hello_active)
 	if h.agents != nil {
-		gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge.bridge_id, hello_active)
+		gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge.bridge_id, hello_active, "bridge_hello")
 		defer domain.agent_instances_destroy(gone)
 		agent_service.notify_instances_terminal(h.agents, gone)
 		for inst in gone {
@@ -2825,7 +2825,7 @@ bridge_publish_status_frame_change :: proc(h: ^Bridge_Handlers, instance_id: str
 	}
 }
 
-bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string, launch_epoch: string = "", error_json: string = "", changed: ^bool = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string, launch_epoch: string = "", error_json: string = "", changed: ^bool = nil, source := "bridge_status_report") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	uow, opened, begin_err := bridge_persist_begin(h)
 	if !opened do return {}, false, begin_err
 	defer bridge_persist_rollback(&uow)
@@ -2844,7 +2844,7 @@ bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, ge
 	project_service.connection_state_unlock(c)
 	facts := make([dynamic]agent_service.Lifecycle_Fact, context.temp_allocator)
 	defer agent_service.lifecycle_facts_destroy(&facts)
-	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = owner_user_id, launch_epoch = launch_epoch, error_json = error_json, facts = &facts, changed = changed)
+	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = owner_user_id, launch_epoch = launch_epoch, error_json = error_json, facts = &facts, changed = changed, source = source)
 	if !applied do return instance, applied, err
 	if committed, commit_err := bridge_persist_commit(&uow); !committed {
 		domain.agent_instance_destroy(&instance)

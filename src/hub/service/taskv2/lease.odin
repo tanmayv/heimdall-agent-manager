@@ -595,6 +595,16 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string) {
 	}
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
+	// Hooks are delivered after the status transaction. A reconnect can
+	// restore the agent before this callback starts; never revoke that claim
+	// using an observation superseded by the current durable state.
+	if inst, found, _ := iface.agent_get_instance(svc.agents, instance_id); found {
+		if instance_is_live(inst) || instance_is_pending(inst) ||
+		   (inst.runtime_status == "unreachable" && !bridge_online(svc, inst.bridge_id)) {
+			_, _ = end_uow(svc, &u, false)
+			return
+		}
+	}
 	acted := false
 	chain_id := domain.Task_Chain_ID("")
 	owner := domain.User_ID("")

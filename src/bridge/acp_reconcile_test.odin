@@ -210,7 +210,10 @@ c2_test_reconcile_provider_recovery :: proc(t: ^testing.T, provider: string) {
         testing.expect(t, terminal.spawns == 0 && terminal.closes == 0 && terminal.interrupted == 0 && !acp_runtime_owned(terminal.instance))
         snap, exists := bridge_runtime_instance_snapshot(terminal.instance)
         expected := "stopped" if status == "stopped" || status == "epoch_mismatch" || strings.has_prefix(status, "legacy_") else "failed"
-        testing.expect(t, exists && snap.runtime_status == expected)
+        // A different generation cannot be killed or used as evidence of
+        // failure. This case has an explicitly live child in the daemon.
+        if status == "newer_child" do expected = "blocked"
+        testing.expect(t, exists && snap.runtime_status == expected, status)
         if strings.has_prefix(status, "legacy_") do testing.expect_value(t, snap.acp_error_code, "acp_restart_required")
         if status == "failed" || status == "stopped" || status == "running" {
             handled_retry, retry_ok := acp_runtime_retry_launch(terminal.instance, "recovery_epoch", 9)

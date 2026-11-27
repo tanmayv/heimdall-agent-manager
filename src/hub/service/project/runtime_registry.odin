@@ -1,6 +1,7 @@
 package project
 
 import "base:runtime"
+import "core:fmt"
 import "core:net"
 import "core:strings"
 import "core:sync"
@@ -683,6 +684,7 @@ bridge_runtime_instance_apply :: proc(r: ^Bridge_Runtime_Registry, bridge_id: st
 		state.expires_ns = now + i64(time.Minute)
 		if exists do state.state_seq = old.state_seq
 	}
+	log_runtime_registry_terminal(bridge_id, instance_id, old.runtime_status, status, "bridge_runtime_instance_apply", "accepted_runtime_report")
 	if exists {
 		changed = old.runtime_status != "" && old.runtime_status != status
 		delete(old.owner_id, heap)
@@ -697,6 +699,11 @@ bridge_runtime_instance_apply :: proc(r: ^Bridge_Runtime_Registry, bridge_id: st
 	runtime_terminal_prune_locked(r, c)
 	if changed do sync.atomic_add(&r.edge_event_count, 1)
 	return changed, true, domain.Domain_Error{}
+}
+
+log_runtime_registry_terminal :: proc(bridge_id, instance_id, previous, next, source, reason: string) {
+	if previous == next || (next != "failed" && next != "stopped" && next != "unreachable") do return
+	fmt.eprintfln("agent_runtime_transition component=hub_registry instance=%q bridge=%q from=%q to=%q source=%q reason=%q", instance_id, bridge_id, previous, next, source, reason)
 }
 
 bridge_runtime_instance_get :: proc(r: ^Bridge_Runtime_Registry, bridge_id: string, generation: int, id: string) -> (Runtime_Instance_State, bool) {
@@ -775,6 +782,7 @@ bridge_runtime_instance_retire :: proc(r: ^Bridge_Runtime_Registry, bridge_id: s
 	state, ok := c.instances[id]
 	if !ok || !state.active do return
 	_ = runtime_active_change(r, state.owner_id, -1)
+	log_runtime_registry_terminal(bridge_id, id, state.runtime_status, status, "bridge_runtime_instance_retire", "durable_reaper_decision")
 	delete(state.runtime_status, runtime.default_allocator())
 	state.runtime_status = strings.clone(status, runtime.default_allocator())
 	state.active = false

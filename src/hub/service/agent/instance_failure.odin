@@ -110,6 +110,7 @@ apply_stop_command_result :: proc(service: ^Agent_Service, bridge_id, command_id
 	// The saved revision shares inst's strings: free exactly one of them.
 	saved, saved_ok, _ := iface.agent_save_instance(service.agents, inst)
 	if saved_ok {
+		log_runtime_terminal_transition(saved, "stopping", "apply_stop_command_result", "stop_command_failed_restore")
 		if out != nil do out^ = saved
 		else do domain.agent_instance_destroy(&saved)
 	} else {

@@ -181,10 +181,12 @@ mcp_runtime_store :: proc(g:^App_Graph,view:mcp.Access_View,state:MCP_Runtime_St
 		expected_run:=state.run_count
   if state.result.tool=="instances.create" && state.result.phase=="not_dispatched" && i.run_count==0 do expected_run=0
   if !found || e.code!=.None || i.run_count!=expected_run || i.configuration_revision!=state.configuration_revision || auth.sha256_hex(i.launch_epoch)!=state.launch_hash {iface.unit_of_work_rollback(&uow);return false}
+		previous:=i.runtime_status
 		i.runtime_status="stopped";i.startup_status="stopped";i.stopped_by=agent.STOPPED_BY_USER
 		i.updated_at=platform.clock_now(&g.clock);i.stopped_at=i.updated_at
-		_,saved,save_err:=iface.agent_save_instance(&g.repos.agents,i)
+		row,saved,save_err:=iface.agent_save_instance(&g.repos.agents,i)
 		if !saved || save_err.code!=.None {iface.unit_of_work_rollback(&uow);return false}
+		agent.log_runtime_terminal_transition(row,previous,"mcp_runtime_store","launch_cancelled_or_revoked")
 	}
 	encoded,_:=json.marshal(state,allocator=context.temp_allocator)
 	if sqlite.mcp_runtime_receipt_update(&g.db,view.owner,view.grant,state.result.tool,state.args.request_id,string(encoded)).code!=.None {iface.unit_of_work_rollback(&uow);return false}

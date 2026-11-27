@@ -416,7 +416,22 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		runtime := "starting"
 		// Wrapper "ready" only means the child process was launched. The agent is
 		// not running from Heimdall's perspective until explicit start-success.
-		if phase == "startup_failed" do runtime = "failed"
+		if phase == "startup_failed" {
+			// A startup classification from a surviving wrapper is not proof
+			// that the provider exited. Preserve an already-ready runtime.
+			sync.mutex_lock(&bridge_runtime_mutex)
+			now := bridge_runtime_now_ms()
+			inst, found := bridge_runtime_instance_snapshot_locked(rec.agent_instance_id)
+			if !bridge_runtime_stop_intent_active_locked(rec.agent_instance_id, now) &&
+			   (!found || (inst.runtime_status != "stopping" && inst.runtime_status != "stopped")) {
+				if !inst.start_success_seen {
+					bridge_runtime_set_status_locked(rec.agent_instance_id, "blocked", "idle", now, true, "wrapper_startup_failed")
+				}
+				fmt.eprintfln("agent_startup_report instance=%q phase=startup_failed action=%q", rec.agent_instance_id, "preserve_ready" if inst.start_success_seen else "blocked")
+			}
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			return bridge_local_response_data(request_id, "{\"accepted\":true}")
+		}
 		// A startup probe that classifies the pane as blocked (e.g. an interactive
 		// prompt the wrapper could not auto-dismiss) surfaces as a distinct "blocked"
 		// runtime state: active-but-not-ready, so it neither expires as stale nor
@@ -443,7 +458,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.exited" {
-		bridge_runtime_set_status(rec.agent_instance_id, "stopped", "idle")
+		bridge_runtime_set_status(rec.agent_instance_id, "stopped", "idle", "wrapper_exit_report")
 		bridge_wrapper_push_drop(rec.agent_instance_id)
 		bridge_runtime_remove_launch(rec.agent_instance_id)
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
