@@ -2486,7 +2486,8 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		activity_status := json_string(text, "activity_status")
 		if h.agents != nil {
 			error_json, _ := jsonx.extract_raw_object(text, "error", true, context.temp_allocator)
-			inst, applied, _ := bridge_apply_validated_status(h, bridge_id, connection_generation, instance_id, state_seq, runtime_status, activity_status, json_string(text, "launch_epoch", context.temp_allocator), error_json, reason = json_string(text, "runtime_reason", context.temp_allocator))
+			process_exit := agent_service.parse_process_exit_evidence(text)
+			inst, applied, _ := bridge_apply_validated_status(h, bridge_id, connection_generation, instance_id, state_seq, runtime_status, activity_status, json_string(text, "launch_epoch", context.temp_allocator), error_json, reason = json_string(text, "runtime_reason", context.temp_allocator), process_exit = &process_exit)
 			token_changed := bridge_apply_token_usage_members(h, bridge_id, instance_id, text)
 			bridge_publish_status_frame_change(h, instance_id, &inst, applied, token_changed)
 		}
@@ -2826,7 +2827,7 @@ bridge_publish_status_frame_change :: proc(h: ^Bridge_Handlers, instance_id: str
 	}
 }
 
-bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string, launch_epoch: string = "", error_json: string = "", changed: ^bool = nil, source := "bridge_status_report", reason := "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, id: string, seq: int, status, activity: string, launch_epoch: string = "", error_json: string = "", changed: ^bool = nil, source := "bridge_status_report", reason := "", process_exit: ^agent_service.Process_Exit_Evidence = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	uow, opened, begin_err := bridge_persist_begin(h)
 	if !opened do return {}, false, begin_err
 	defer bridge_persist_rollback(&uow)
@@ -2845,7 +2846,7 @@ bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, ge
 	project_service.connection_state_unlock(c)
 	facts := make([dynamic]agent_service.Lifecycle_Fact, context.temp_allocator)
 	defer agent_service.lifecycle_facts_destroy(&facts)
-	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = owner_user_id, launch_epoch = launch_epoch, error_json = error_json, facts = &facts, changed = changed, source = source, reason = reason)
+	instance, applied, err := agent_service.apply_bridge_status_report(h.agents, bridge_id, id, seq, status, activity, owner_user_id = owner_user_id, launch_epoch = launch_epoch, error_json = error_json, facts = &facts, changed = changed, source = source, reason = reason, process_exit = process_exit)
 	if !applied do return instance, applied, err
 	if committed, commit_err := bridge_persist_commit(&uow); !committed {
 		domain.agent_instance_destroy(&instance)

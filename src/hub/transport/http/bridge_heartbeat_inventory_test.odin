@@ -108,12 +108,12 @@ inv_advance :: proc(f: ^Inv_Fixture, seconds: i64) {
 }
 
 @(private = "file")
-inv_save :: proc(t: ^testing.T, f: ^Inv_Fixture, id, status: string, seq := 1, epoch := "", bridge_id := "") {
+inv_save :: proc(t: ^testing.T, f: ^Inv_Fixture, id, status: string, seq := 1, epoch := "", bridge_id := "", run_count := 0) {
 	now := platform.clock_now(&f.clock)
 	_, ok, err := iface.agent_save_instance(&f.ag_repo, domain.Agent_Instance{
 		agent_instance_id = id, agent_id = "agt_inventory", owner_user_id = domain.User_ID(INV_OWNER),
 		bridge_id = bridge_id if bridge_id != "" else f.bridge_id, kind = "agent", runtime_status = status, activity_status = "idle",
-		startup_status = "ready", last_applied_seq = seq, launch_epoch = epoch, last_seen_at = now, updated_at = now, created_at = now,
+		startup_status = "ready", run_count = run_count, last_applied_seq = seq, launch_epoch = epoch, last_seen_at = now, updated_at = now, created_at = now,
 	})
 	testing.expect(t, ok, err.message)
 }
@@ -403,4 +403,35 @@ test_old_bridge_heartbeat_ok :: proc(t: ^testing.T) {
 	old_bridge_heartbeat_scenario(t)
 	virtual.arena_destroy(&arena)
 	testing.expect_value(t, len(track.allocation_map), 0)
+}
+
+// Newer sequence numbers and an exit reason do not make an old or
+// incomplete push authoritative. A generation-matched zero exit code does.
+@(test)
+test_bridge_status_requires_current_child_exit :: proc(t: ^testing.T) {
+	f := inv_open(t)
+	defer inv_close(f)
+	inv_save(t, f, "inst_push", "running", seq = 3, epoch = "current", run_count = 1)
+	cases := [?]string{
+		`{}`,
+		`{"process_exit":{"pid":42,"run_count":1}}`,
+		`{"process_exit":{"pid":0,"exit_code":0,"run_count":1}}`,
+		`{"process_exit":{"pid":42,"exit_code":0,"run_count":2}}`,
+		`{"process_exit":{"pid":42,"exit_code":0,"run_count":1}}`,
+	}
+	for frame, i in cases {
+		proof := agent_service.parse_process_exit_evidence(frame)
+		epoch := "old" if i == len(cases)-1 else "current"
+		inst, applied, _ := bridge_apply_validated_status(&f.bh, f.bridge_id, f.generation, "inst_push", 4, "stopped", "idle", epoch, reason = "pty_child_exited", process_exit = &proof)
+		defer domain.agent_instance_destroy(&inst)
+		testing.expect(t, !applied)
+	}
+	before, _ := inv_get(t, f, "inst_push")
+	testing.expect_value(t, before, "running")
+	proof := agent_service.parse_process_exit_evidence(cases[len(cases)-1])
+	inst, applied, err := bridge_apply_validated_status(&f.bh, f.bridge_id, f.generation, "inst_push", 4, "stopped", "idle", "current", reason = "pty_child_exited", process_exit = &proof)
+	defer domain.agent_instance_destroy(&inst)
+	testing.expect(t, err.code == .None)
+	testing.expect(t, applied)
+	testing.expect_value(t, inst.runtime_status, "stopped")
 }

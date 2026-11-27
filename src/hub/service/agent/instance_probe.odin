@@ -145,3 +145,19 @@ confirmed_stop_receipt :: proc(reply, operation_id, instance_id: string, pid: in
 		jsonx.extract_string(result, "agent_instance_id", "", true, context.temp_allocator) == instance_id &&
 		jsonx.extract_int(result, "expected_process_pid", 0, true) == pid
 }
+
+// The outer status frame already supplies the launch epoch. A typed exit code
+// distinguishes a normal exit with code 0 from an unpopulated report.
+Process_Exit_Evidence :: struct {
+	pid: i32,
+	exit_code: Maybe(i32),
+	run_count: int,
+}
+
+parse_process_exit_evidence :: proc(frame: string) -> Process_Exit_Evidence {
+	raw, present := jsonx.extract_raw_object(frame, "process_exit", true, context.temp_allocator)
+	if !present do return {}
+	evidence: Process_Exit_Evidence
+	if json.unmarshal_string(raw, &evidence, allocator = context.temp_allocator) != nil do return {}
+	return evidence
+}

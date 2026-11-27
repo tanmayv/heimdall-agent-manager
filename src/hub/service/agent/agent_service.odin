@@ -1108,7 +1108,7 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 // failed; a successful start or a stop clears it, a retry in flight keeps it.
 // facts: when non-nil the lifecycle hook is NOT called; the fact is appended
 // for the caller to deliver after it releases its locks (review B1).
-apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "", launch_epoch: string = "", error_json: string = "", facts: ^[dynamic]Lifecycle_Fact = nil, changed: ^bool = nil, source := "bridge_status_report", reason := "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string, owner_user_id: string = "", launch_epoch: string = "", error_json: string = "", facts: ^[dynamic]Lifecycle_Fact = nil, changed: ^bool = nil, source := "bridge_status_report", reason := "", process_exit: ^Process_Exit_Evidence = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	if changed != nil do changed^ = false
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
@@ -1119,6 +1119,15 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	if inst.launch_epoch != launch_epoch {
 		domain.agent_instance_destroy(&inst)
 		return {}, false, domain.domain_error(.Conflict, "superseded launch status report")
+	}
+	// Status frames are observations. Only the pty-host's generation-bound
+	// exit evidence can project a process into a terminal state.
+	if process_exit != nil && instance_runtime_is_terminal(runtime_status) {
+		if runtime_status == "unreachable" || process_exit.pid <= 0 || process_exit.exit_code == nil ||
+		   process_exit.run_count <= 0 || process_exit.run_count != inst.run_count || reason != "pty_child_exited" {
+			domain.agent_instance_destroy(&inst)
+			return {}, false, domain.domain_error(.Conflict, "terminal status report has no current child exit evidence")
+		}
 	}
 	normalized_reason := runtime_observation_reason(reason)
 	effective_state_seq := state_seq

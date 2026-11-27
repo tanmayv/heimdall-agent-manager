@@ -3740,7 +3740,8 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	strings.write_string(&b, "{\"type\":\"agent_instance_status\",\"protocol_version\":1,\"agent_instance_id\":\"")
 	bridge_runtime_write_json_string(&b, inst.agent_instance_id)
 	epoch := bridge_agent_instance_launch_epoch(inst.agent_instance_id)
-	strings.write_string(&b, "\",\"launch_epoch\":\""); bridge_runtime_write_json_string(&b, epoch); delete(epoch)
+	strings.write_string(&b, "\",\"launch_epoch\":\""); bridge_runtime_write_json_string(&b, epoch)
+	defer delete(epoch)
 	strings.write_string(&b, "\",\"state_seq\":")
 	strings.write_string(&b, fmt.tprintf("%d", inst.state_seq))
 	strings.write_string(&b, ",\"runtime_status\":\"")
@@ -3751,6 +3752,15 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	bridge_runtime_write_json_string(&b, inst.activity_source)
 	strings.write_string(&b, "\"")
 	strings.write_string(&b, fmt.tprintf(",\"runtime_reason\":\"%v\"", inst.runtime_reason))
+	if inst.runtime_reason == .pty_child_exited {
+		probe := bridge_instance_probe(instance_id)
+		bridge_instance_probe_bind(&probe, inst.startup.pty_pid, inst.startup.rec.run_count, epoch)
+		if code, confirmed := probe.exit_code.?; probe.state == "exited" && confirmed {
+			strings.write_string(&b, ",\"process_exit\":{")
+			strings.write_string(&b, fmt.tprintf("\"pid\":%d,\"exit_code\":%d,\"run_count\":%d", probe.pid, code, probe.run_count))
+			strings.write_byte(&b, '}')
+		}
+	}
 	bridge_runtime_write_instance_error(&b, inst)
 	// Optional small snapshot (extension_token_usage.odin); hubs that predate it
 	// ignore the unknown members. Every caller sends the frame it builds, so a
