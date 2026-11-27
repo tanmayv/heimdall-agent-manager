@@ -38,6 +38,7 @@ Timer_Kind :: enum {
 	// Rematch is a safety net: a Ready / In-review task that still has no lease
 	// of the right kind re-runs the matcher for its chain, so a missed trigger
 	// (e.g. a hub restart or re-fold racing the bridge reconnect) self-heals.
+	Workspace_Map,     // key = ready task ID; performs bridge preflight outside the UoW
 	Rematch,           // key = task_id,     armed = task state when armed
 	// Dependency_Stalled: a Done prerequisite whose merge never settled keeps
 	// its backlog dependents waiting; alert after a bounded delay (REQ-TV2-3b).
@@ -104,7 +105,7 @@ timers_arm :: proc(svc: ^Service, kind: Timer_Kind, key: string, due_ms: i64, ar
 	defer dbt.profiled_mutex_unlock(&ts.mutex, .Taskv2_Timers, timers_held)
 	// Pending requirement notices are a recurring retry, unlike the existing
 	// one-shot timers. Keep one per task, including under frequent heartbeats.
-	if kind == .Requirements_Notice {
+	if kind == .Requirements_Notice || kind == .Workspace_Map {
 		for timer in ts.heap do if timer.kind == kind && timer.key == key do return
 	}
 	// Coordinator idle timers are re-armed on every reset, start and chain
@@ -349,12 +350,17 @@ fire_due :: proc(svc: ^Service, now_ms: i64, jump_detected := false) -> int {
 
 @(private = "file")
 fire_timer :: proc(svc: ^Service, t: Timer, now_ms: i64, jump_detected: bool) {
+	if t.kind == .Workspace_Map {
+		attempt_workspace_mapping(svc, domain.Task_ID(t.key))
+		return
+	}
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
 	r := Fire_Result.Noop
 	idle_stop: Coordinator_Idle_Stop
 	has_idle_stop := false
 	switch t.kind {
+	case .Workspace_Map:    r = .Noop // handled before opening the UoW
 	case .Requirements_Notice:
 		if task, found, _ := iface.taskchain_get_task(svc.repo, domain.Task_ID(t.key)); found {
 			if ok, _ := requirements_reconcile_in_uow(svc, &u, task); ok {
@@ -386,6 +392,7 @@ fire_timer :: proc(svc: ^Service, t: Timer, now_ms: i64, jump_detected: bool) {
 	// The stop is network I/O and takes the agent service's own locks: strictly
 	// after the unit of work released the engine lock.
 	if has_idle_stop && committed do coordinator_idle_stop_after_commit(svc, idle_stop, now_ms)
+	if t.kind == .Rematch && r == .Acted && committed do attempt_workspace_mapping(svc, domain.Task_ID(t.key))
 }
 
 @(private = "file")

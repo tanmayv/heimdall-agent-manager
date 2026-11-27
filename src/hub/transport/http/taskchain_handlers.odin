@@ -2170,8 +2170,10 @@ patch_chain_directory_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		has_bridge_id = has_bridge_id,
 		has_vcs_kind  = has_vcs_kind,
 		has_vcs_info  = has_vcs_info,
+		require_unmapped = json_bool(req.body, "require_unmapped"),
 	})
 	if !updated do return respond_error(err, req.request_id)
+	if h.task_engine != nil do _, _ = taskv2.directory_added(h.task_engine, dir)
 	publish_chain_changed(h, string(dir.owner_user_id), string(dir.chain_id), "updated")
 	b := strings.builder_make()
 	write_directory_json(&b, dir)

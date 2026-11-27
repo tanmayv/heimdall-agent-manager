@@ -73,7 +73,7 @@ test('recovery model: unpaused fleet rows and active durable identities; drafts 
 });
 
 const json = (data: any, status = 200) => new Response(JSON.stringify({ data }), { status, headers: { 'Content-Type': 'application/json' } });
-type Options = { items?: any[]; task?: any; fleets?: any[]; failures?: Array<{ status: number; message: string }>; onRecover?: (body: any) => void; providerModels?: string[] };
+type Options = { items?: any[]; task?: any; fleets?: any[]; failures?: Array<{ status: number; message: string }>; onRecover?: (body: any) => void; providerModels?: string[]; directories?: any[]; mappingError?: string };
 async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
   const { JSDOM } = await import('jsdom');
   const { Provider } = await import('react-redux');
@@ -103,6 +103,11 @@ async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
       opts.onRecover?.(body);
       return json({ task: currentTask, repaired: true });
     }
+    if (method === 'PATCH' && url.pathname.endsWith('/directories/dir_legacy')) {
+      if (opts.mappingError) return new Response(JSON.stringify({ error: { code: 'validation_failed', message: opts.mappingError } }), { status: 422 });
+      items = [];
+      return json({ directory_id: 'dir_legacy', bridge_id: 'brg_river' });
+    }
     if (url.pathname.endsWith('/attention')) {
       if (attentionUnavailable) return new Response(JSON.stringify({ error: { message: 'Attention temporarily unavailable' } }), { status: 503 });
       return json({ since: 'all', counts: { total: items.length, task: items.length }, items });
@@ -115,7 +120,7 @@ async function withRecovery(opts: Options, run: (h: any) => Promise<void>) {
     if (url.pathname.endsWith('/review-roles')) throw new Error('REQ-SCHED-8: /review-roles must never be requested');
     if (url.pathname.endsWith('/bridge-support')) return json({ entries: [] });
     if (url.pathname.endsWith('/fleets')) return json(opts.fleets || fleets);
-    if (url.pathname.endsWith('/task-chains/chain_recovery')) return json({ chain_id: 'chain_recovery', members: [], tasks: [currentTask, { ...currentTask, task_id: 'task_other', title: 'Other queued ticket' }] });
+    if (url.pathname.endsWith('/task-chains/chain_recovery')) return json({ chain_id: 'chain_recovery', members: [], directories: opts.directories || [], tasks: [currentTask, { ...currentTask, task_id: 'task_other', title: 'Other queued ticket' }] });
     if (url.pathname.endsWith('/tasks/task_recovery')) return json(currentTask);
     return json({});
   };
@@ -317,5 +322,44 @@ test('deck: native dropdown and portaled chain staffing own their keyboard event
     await h.drain();
     assert.equal(h.closed(), 0, 'Escape closes chain staffing without closing the deck');
     assert.ok(h.q(p));
+  });
+});
+
+
+test('deck: validates and maps an unmapped workspace to the effective bridge', async () => {
+  const failed = target('agt_worker', 'work');
+  Object.assign(failed.failure, { reason: 'workspace_missing', bridge_id: 'brg_river', directory_id: '' });
+  await withRecovery({
+    items: [placement([failed])],
+    task: { ...task, state: 'ready' },
+    directories: [
+      { directory_id: 'dir_legacy', path: '/workspace/legacy', bridge_id: '', vcs_kind: 'git' },
+      { directory_id: 'dir_other', path: '/workspace/other', bridge_id: 'brg_mac' },
+    ],
+  }, async (h) => {
+    const id = 'attention-placement-work-agt_worker-map-workspace';
+    assert.match(h.q(id).textContent, /Map workspace to Riverwood/);
+    await h.click(id);
+    assert.deepEqual(h.hits.filter((request: any) => request.method === 'PATCH'), [{
+      method: 'PATCH', path: '/api/v1/task-chains/chain_recovery/directories/dir_legacy',
+      body: { bridge_id: 'brg_river', require_unmapped: true },
+    }]);
+    assert.equal(h.q(id), null, 'attention clears after successful mapping');
+  });
+});
+
+test('deck: shows the bridge rejection and leaves the workspace repair available', async () => {
+  const failed = target('agt_worker', 'work');
+  Object.assign(failed.failure, { reason: 'workspace_missing', bridge_id: 'brg_river', directory_id: '' });
+  await withRecovery({
+    items: [placement([failed])],
+    task: { ...task, state: 'ready' },
+    directories: [{ directory_id: 'dir_legacy', path: '/workspace/legacy', bridge_id: '' }],
+    mappingError: 'Git root was not found',
+  }, async (h) => {
+    const id = 'attention-placement-work-agt_worker-map-workspace';
+    await h.click(id);
+    assert.match(h.text(), /Git root was not found/);
+    assert.equal(h.q(id).disabled, false);
   });
 });

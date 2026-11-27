@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Button } from '@ui';
+import { Button, Select } from '@ui';
 import { attentionApi, useRecoverPlacementMutation, type AttentionTaskItem, type PlacementTarget } from '../../api/endpoints/attention';
 import { useListAgentIdentitiesQuery, useListAgentInstancesQuery } from '../../api/endpoints/agents';
 import { useListBridgesQuery, useBridgeProviderStatus, useListAgentBridgeSupportQuery } from '../../api/endpoints/bridgeSupport';
 import { useGetTaskChainFleetsQuery } from '../../api/endpoints/taskChains';
-import { useFetchChainTaskDetailQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
+import { useFetchChainTaskDetailQuery, useFetchTaskChainDetailQuery, useMapChainDirectoryMutation, type TaskChainDirectory } from '../../api/endpoints/tasks';
 import { apiErrorText, queryErrorStatus } from '../../api/cookieFetch';
 import { heimdallApi } from '../../api/heimdallApi';
 import { setPlacementDraft, clearPlacementDraft, type PlacementDraft } from '../../store/attentionSlice';
@@ -61,7 +61,22 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
   const agents: any[] = identities.data?.agents || [];
   const f = target.failure;
   const worker = f.phase === 'work';
-  const affected = useFetchTaskChainDetailQuery({ chainId }, { skip: worker || draft.action !== 'bridge' || !confirmation });
+  const workspaceMissing = f.reason === 'workspace_missing' && !!f.bridge_id;
+  const affected = useFetchTaskChainDetailQuery({ chainId }, { skip: !workspaceMissing && (worker || draft.action !== 'bridge' || !confirmation) });
+  const [mapWorkspace, mapping] = useMapChainDirectoryMutation();
+  const [workspaceSelection, setWorkspaceSelection] = useState('');
+  const workspaceOptions: TaskChainDirectory[] = (affected.data?.chain?.directories || []).filter((d: TaskChainDirectory) => !d.bridgeId);
+  const workspaceDirectory = workspaceOptions.length === 1
+    ? workspaceOptions[0]
+    : workspaceOptions.find((d) => d.directoryId === workspaceSelection);
+  const applyWorkspace = async () => {
+    if (!workspaceDirectory || !f.bridge_id || mapping.isLoading) return;
+    setError(''); setNotice('');
+    try {
+      await mapWorkspace({ chainId, directoryId: workspaceDirectory.directoryId, bridgeId: f.bridge_id }).unwrap();
+      setNotice('Workspace mapped. Matching will retry on this bridge.');
+    } catch (err) { setError(apiErrorText(err, 'Could not map workspace')); }
+  };
   const name = agents.find((a) => (a.agent_id || a.id) === f.agent_id);
   const targetName = String(name?.name || name?.display_name || name?.slug || (f.agent_id ? `Unavailable agent (${f.agent_id})` : 'Unassigned worker'));
   const effectiveBridge = rows.find((b) => bridgeIdOf(b) === f.bridge_id);
@@ -101,7 +116,7 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
   const refresh = async () => {
     setConfirmation(''); setError(''); setRefreshing(true);
     dispatch(heimdallApi.util.invalidateTags([
-      { type: 'Attention', id: 'ALL' }, { type: 'Task', id: taskId }, { type: 'TaskChainFleets', id: chainId },
+      { type: 'Attention', id: 'ALL' }, { type: 'Task', id: taskId }, { type: 'Chain', id: chainId }, { type: 'TaskChainFleets', id: chainId },
       { type: 'Bridges', id: 'LIST' }, { type: 'Agents', id: 'LIST' }, { type: 'BridgeSupport', id: f.agent_id },
       { type: 'BridgeProviders', id: draft.bridgeId },
     ]));
@@ -136,6 +151,29 @@ function RecoveryTarget({ item, target, onOpenConfiguration }: { item: Attention
         {f.provider ? ` · ${f.provider_profile || f.provider}${f.model ? ` / ${f.model}` : ''}` : ''}
       </p>
       <p data-debug-id={`${prefix}-cause`} role="status" className="text-warning">{f.message || f.reason}</p>
+      {workspaceMissing && effectiveBridge && bridgeIsOnline(effectiveBridge) ? (
+        <div className="space-y-2">
+          {affected.isFetching ? <p role="status">Checking chain workspaces…</p> : null}
+          {affected.isError ? <p role="alert">Could not load chain workspaces. Refresh to retry.</p> : null}
+          {workspaceOptions.length > 1 ? (
+            <div>
+              <p className="text-muted">Workspace to map</p>
+              <Select aria-label="Workspace to map" width="full" value={workspaceSelection} disabled={mapping.isLoading} onChange={setWorkspaceSelection}>
+                <option value="">Choose a workspace</option>
+                {workspaceOptions.map((d) => <option key={d.directoryId} value={d.directoryId}>{d.path}</option>)}
+              </Select>
+            </div>
+          ) : null}
+          {workspaceOptions.length ? (
+            <>
+              <p className="text-muted">The bridge will validate {workspaceDirectory?.path || 'the selected path'} before mapping it for this chain.</p>
+              <Button size="sm" variant="primary" data-debug-id={`${prefix}-map-workspace`} disabled={!workspaceDirectory || affected.isFetching || affected.isError || mapping.isLoading} onClick={() => void applyWorkspace()}>
+                {mapping.isLoading ? 'Validating workspace…' : `Map workspace to ${bridgeLabel(effectiveBridge)}`}
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <a href={fleetFocusHref(f.bridge_id, f.agent_id)} data-debug-id={`${prefix}-runtime`} onClick={onOpenConfiguration} className="text-accent underline">Open runtime settings in Home Fleet</a>
       <p className="text-muted">A live target lease must use checkpoint/hold before a move. Other live leases keep their placement.</p>
       {workflow ? <p role="alert">This is a workflow-managed ticket. Change placement through workflow configuration.</p> : null}

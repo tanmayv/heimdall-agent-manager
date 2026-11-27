@@ -1078,6 +1078,25 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
     }),
+    mapChainDirectory: build.mutation<unknown, { chainId: string; directoryId: string; bridgeId: string }>({
+      queryFn: async ({ chainId, directoryId, bridgeId }) => {
+        try {
+          const data = await cookieMutation(
+            `/task-chains/${encodeURIComponent(chainId)}/directories/${encodeURIComponent(directoryId)}`,
+            'PATCH',
+            { bridge_id: bridgeId, require_unmapped: true },
+          );
+          return { data };
+        } catch (error) {
+          return { error: { status: 'CUSTOM_ERROR', error: error instanceof Error ? error.message : String(error) } };
+        }
+      },
+      invalidatesTags: (_result, error, { chainId }) => error ? [] : [
+        { type: 'Chain', id: chainId },
+        { type: 'ChainTasks', id: chainId },
+        { type: 'Attention', id: 'ALL' },
+      ],
+    }),
     addChainDirectory: build.mutation<any, { chainId: string; path: string; bridgeId?: string; vcsKind?: string }>({
       queryFn: async ({ chainId, path, bridgeId, vcsKind }) => {
         try {
@@ -1776,6 +1795,7 @@ export const {
   useUpdateTaskDetailMutation,
   useUpdateTaskPriorityMutation,
   useCancelTaskDetailMutation,
+  useMapChainDirectoryMutation,
   useAddChainDirectoryMutation,
   useCreateTaskMutation,
   usePublishTaskMutation,
