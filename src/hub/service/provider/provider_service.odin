@@ -401,9 +401,11 @@ list_bridge_providers :: proc(service: ^Provider_Service, bridge_id: string) -> 
   }
   v.enabled=v.enabled && p.enabled && p.state!="missing"
   for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.profile_id {v.transport=strings.clone(setting.transport);break}
-  // The selection only: launches add the live ACP readiness gate.
-  effective,terr:=resolve_runtime_transport(service,bridge_id,p.provider,p.profile_id,check_ready=false)
-  v.effective_transport=effective if terr.code==.None else strings.clone("")
+  // The selection only (launches add the live ACP readiness gate), with the
+  // entry and setting this loop already loaded: same precedence as
+  // resolve_runtime_transport, no extra reads per profile.
+  effective,terr:=runtime_transport_select(entry,v.transport,"")
+  v.effective_transport=strings.clone(effective if terr.code==.None else "")
   for status in statuses do if status.provider==p.provider && domain.profile_effective_id(status.provider,status.profile_id)==p.provider {v.acp_adapter_json=strings.clone(status.acp_adapter_json);v.acp_adapter_received_at=strings.clone(status.acp_adapter_received_at);break}
   for status in statuses do if p.profile_id!=p.provider && status.provider==p.provider && domain.profile_effective_id(status.provider,status.profile_id)==p.profile_id {v.profile_acp_adapter_json=strings.clone(status.acp_adapter_json);break}
   observation,oerr:=effective_model_observation(service.repo,bridge_id,&v.catalog,p.profile_id)

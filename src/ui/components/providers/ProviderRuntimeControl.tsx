@@ -15,12 +15,14 @@ export const runtimeProfileKey = (row: BridgeProviderStatus) =>
  * one selector per row in `profiles` (default: just `status`; none for a profile
  * not saved yet), each showing the Hub's resolved value for that profile.
  * `status` is the provider's default-profile row; the ACP adapter install/check
- * block is provider-wide and shown once.
+ * block is provider-wide and shown once, only from that row (`providerWide`
+ * false hides it when the default-profile row is missing).
  */
-export default function ProviderRuntimeControl({ setup, status, profiles, disabledReason = '', onChange }: {
+export default function ProviderRuntimeControl({ setup, status, profiles, providerWide = true, disabledReason = '', onChange }: {
   setup: ProviderSetupResponse;
   status: BridgeProviderStatus;
   profiles?: BridgeProviderStatus[];
+  providerWide?: boolean;
   disabledReason?: string;
   onChange: (setup: ProviderSetupResponse) => void;
 }) {
@@ -120,7 +122,7 @@ export default function ProviderRuntimeControl({ setup, status, profiles, disabl
   const prerequisite = verdict.reason === 'adapter_missing_node' || verdict.reason === 'adapter_missing_npm';
   const adapterError = status.acp_adapter?.error || '';
   const installCommand = status.acp_adapter?.install_command || '';
-  const installable = status.transports.includes('acp') && (verdict.fix === 'install_adapter' || verdict.fix === 'check_now');
+  const installable = providerWide && status.transports.includes('acp') && (verdict.fix === 'install_adapter' || verdict.fix === 'check_now');
   const failed = command?.status === 'failed' || command?.status === 'cancelled';
   // Descriptor data (Hub) or the bridge report, never the provider id (G9).
   const system = status.acp_runtime_kind === 'system' || acpSystemRuntime(status.acp_adapter);
@@ -157,13 +159,13 @@ export default function ProviderRuntimeControl({ setup, status, profiles, disabl
           title={disabledReason || acpReason || undefined}
           disabled={Boolean(disabledReason) || !setup.acp_runtime_supported || busy || active}
           onClick={() => void install()}>{system || prerequisite ? 'Re-check' : 'Install adapter'}</Button> : null}
-        {status.transports.includes('acp') ? <Button size="sm" variant="ghost" data-debug-id={`providers-acp-check-${provider}`}
+        {providerWide && status.transports.includes('acp') ? <Button size="sm" variant="ghost" data-debug-id={`providers-acp-check-${provider}`}
           disabled={busy} onClick={() => void checkStatus()}>Check status</Button> : null}
       </div>
       <Text role="caption" tone="muted">Chosen per {status.display_name} profile on this bridge; the adapter is shared. Applies on the next launch; existing instances keep their runtime unless they override it.</Text>
       {/* The bridge's own error is shown once, in the status block below. */}
-      {reason || (status.transports.includes('acp') && acpReason && acpReason !== adapterError) ? <p className="text-xs text-muted">{reason || acpReason}</p> : null}
-      {status.transports.includes('acp') ? <div data-debug-id={`providers-acp-status-${provider}`} role="status" className="space-y-1 break-words text-xs text-muted">
+      {reason || (providerWide && status.transports.includes('acp') && acpReason && acpReason !== adapterError) ? <p className="text-xs text-muted">{reason || acpReason}</p> : null}
+      {providerWide && status.transports.includes('acp') ? <div data-debug-id={`providers-acp-status-${provider}`} role="status" className="space-y-1 break-words text-xs text-muted">
         <p>{acpAdapterSummary(status.acp_adapter)}</p>
         {/* The install command appears once: inline when the message ends with it. */}
         {adapterError ? <p className="text-danger">{installCommand && adapterError.endsWith(installCommand)

@@ -725,14 +725,15 @@ export default function ProviderProfilesSurface({ bridge, onHeadingChange }: {
       {!loaded ? <Spinner size="sm" /> : null}
       {providerSetup ? <div className="min-w-0 space-y-3" data-debug-id="providers-runtime-settings">
         {(editing && draft ? drivers.filter((driver) => driver === draft.provider) : editing ? [] : drivers).map((driver) => {
-          const status = statuses.find((s) => s.provider === driver && (s.profile_id || s.provider) === driver)
-            || statuses.find((s) => s.provider === driver);
+          // The provider-wide adapter block comes from the default-profile row only.
+          const defaultRow = statuses.find((s) => s.provider === driver && (s.profile_id || s.provider) === driver);
           // One runtime selector per profile (G6); while editing, just the edited profile's.
           const rows = statuses.filter((s) => s.provider === driver
             && (!editing || !draft || (s.profile_id || s.provider) === draft.profile_id));
+          const status = defaultRow || rows[0];
           return status ? <section key={driver} className="min-w-0 space-y-2">
             <Text as="h2" role="heading">{status.display_name}</Text>
-            <ProviderRuntimeControl setup={providerSetup} status={status} profiles={rows}
+            <ProviderRuntimeControl setup={providerSetup} status={status} profiles={rows} providerWide={Boolean(defaultRow)}
               disabledReason={!editable ? 'Connect and unseal this bridge, and unlock this device, to change its runtime.' : busy ? 'Finish the profile operation first.' : ''}
               onChange={runtimeChanged} />
           </section> : null;

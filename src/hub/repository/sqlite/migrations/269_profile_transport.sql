@@ -14,7 +14,7 @@
 -- enabled value; a profile with no settings row gets a transport-only row
 -- (enabled NULL). NULL transport stays NULL (catalog default). Every profile
 -- therefore resolves, and is enabled, exactly as before.
-BEGIN;
+BEGIN IMMEDIATE;
 CREATE TABLE bridge_provider_settings_v269 (
  bridge_id TEXT NOT NULL, profile_id TEXT NOT NULL, provider TEXT NOT NULL REFERENCES provider_catalog(provider),
  enabled INTEGER DEFAULT NULL CHECK(enabled IS NULL OR enabled IN (0,1)), updated_at TEXT NOT NULL,

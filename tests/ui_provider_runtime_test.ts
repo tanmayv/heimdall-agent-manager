@@ -346,6 +346,11 @@ test('a profile selector saves that profile only and uses that profile\'s ACP ve
     assert.ok(h.doc.querySelector('[data-debug-id="providers-runtime-profile-acp-claude-home"]'));
     await h.click('providers-runtime-reset-claude-work');
     assert.deepEqual(saves[1], { provider: 'claude', transport: null, profileId: 'work' });
+    // Without the default-profile row there is no provider-wide adapter block to show.
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup(), status: rows(null)[1], profiles: rows(null).slice(1), providerWide: false, onChange() {} }));
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-check-claude"]'), null);
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-status-claude"]'), null);
+    assert.ok(h.doc.querySelector('[data-debug-id="providers-runtime-select-claude-work"]'));
     // No resolved value from the Hub: the selector says so instead of guessing.
     await h.render(React.createElement(ProviderRuntimeControl, { setup: setup(), status: row({ transport: 'acp', effective_transport: null }), onChange() {} }));
     assert.equal((h.doc.querySelector('select') as HTMLSelectElement).value, '');

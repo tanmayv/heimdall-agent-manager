@@ -21,8 +21,9 @@ runtime_transport_validate :: proc(entry: domain.Provider_Catalog_Entry, transpo
 }
 
 // resolve_runtime_transport is the Hub's one transport resolver (G6, G7): every
-// launch, reconfiguration and the provider-status view call it; nothing else
-// applies the precedence. The transport is chosen per provider profile.
+// launch and reconfiguration calls it, and the provider-status view calls its
+// precedence helper runtime_transport_select with the inputs it already holds;
+// nothing else applies the precedence. The transport is chosen per provider profile.
 //
 // Precedence (highest first):
 //   1. instance_override: one agent instance's explicit choice ("pty" | "acp"),
@@ -32,27 +33,41 @@ runtime_transport_validate :: proc(entry: domain.Provider_Catalog_Entry, transpo
 //   3. the catalog default_transport.
 // Every source passes the same catalog support/recipe checks. check_ready adds
 // the ACP readiness gate for the selected profile (require_acp_ready): a launch
-// checks it immediately before freezing the result; the provider-status view
-// passes false because it describes the selection, not live readiness.
+// checks it immediately before freezing the result; false returns the selection
+// only, as the provider-status view shows it.
 resolve_runtime_transport :: proc(service: ^Provider_Service, bridge_id, provider, profile_id: string, instance_override: string = "", check_ready := true) -> (string, domain.Domain_Error) {
  if instance_override!="" && !contracts.runtime_transport_valid(instance_override) do return "",domain.domain_error(.Invalid_Transport,"runtime_transport must be 'pty' or 'acp'")
  entry,found,err:=iface.provider_catalog_get(service.repo,provider)
  if err.code!=.None do return "",err
- if !found || entry.state!="active" do return "",domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
+ if !found do return "",domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
  defer domain.provider_catalog_entry_destroy(entry)
  profile:=domain.profile_effective_id(provider,profile_id)
- transport:=strings.clone(instance_override)
- if transport=="" {
-  delete(transport)
+ setting:=""
+ if instance_override=="" {
   read_err: domain.Domain_Error
-  transport,read_err=iface.get_provider_transport(service.repo,bridge_id,provider,profile)
+  setting,read_err=iface.get_provider_transport(service.repo,bridge_id,provider,profile)
   if read_err.code!=.None do return "",read_err
  }
- if transport=="" {delete(transport);transport=strings.clone(contracts.runtime_transport_or_pty(entry.default_transport))}
- if terr:=runtime_transport_validate(entry,transport);terr.code!=.None {delete(transport);return "",terr}
- if check_ready && transport=="acp" {
-  if ready_err:=require_acp_ready(service,bridge_id,entry,profile);ready_err.code!=.None {delete(transport);return "",ready_err}
+ defer delete(setting)
+ selected,serr:=runtime_transport_select(entry,setting,instance_override)
+ if serr.code!=.None do return "",serr
+ if check_ready && selected=="acp" {
+  if ready_err:=require_acp_ready(service,bridge_id,entry,profile);ready_err.code!=.None do return "",ready_err
  }
+ return strings.clone(selected),{}
+}
+
+// runtime_transport_select is the precedence itself, for an already-loaded
+// catalog entry and profile setting: instance override, else the profile's
+// setting, else the catalog default, validated against the entry. Only
+// resolve_runtime_transport and the provider-status view (which already holds
+// both inputs) call it. The result borrows from its inputs or is a literal.
+runtime_transport_select :: proc(entry: domain.Provider_Catalog_Entry, profile_setting, instance_override: string) -> (string, domain.Domain_Error) {
+ if entry.state!="active" do return "",domain.domain_error(.Unprocessable_Entity,"provider is unknown or deprecated")
+ transport:=instance_override
+ if transport=="" do transport=profile_setting
+ if transport=="" do transport=contracts.runtime_transport_or_pty(entry.default_transport)
+ if terr:=runtime_transport_validate(entry,transport);terr.code!=.None do return "",terr
  return transport,{}
 }
 
