@@ -1,4 +1,5 @@
 import { createAssistantFetchQueue } from './acpChatStream';
+import { secureFormChanged, secureFormEventDetail } from '../utils/secureFormCrypto';
 import { announceTaskChainCreated } from './taskChainCreationEvents';
 import { analytics } from '../analytics/analytics';
 import { heimdallApi, HEIMDALL_TAG_TYPES } from './heimdallApi';
@@ -1333,6 +1334,13 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
   }
 
   switch (payload?.type) {
+    case secureFormChanged: {
+      const detail = secureFormEventDetail(payload);
+      if (typeof window !== 'undefined' && detail) {
+        window.dispatchEvent(new CustomEvent(secureFormChanged, { detail }));
+      }
+      return;
+    }
     case 'bot_changed':
       dispatch(heimdallApi.util.invalidateTags(['Bot']));
       return;

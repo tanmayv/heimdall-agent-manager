@@ -18,6 +18,7 @@ import {
 import { selectActiveVaultKey, selectIsVaultUnlocked } from '../../store/vaultSlice';
 import { visibleMessageOptions, messageOptionsEligible } from './types';
 import { conversationOptionsRevision, subscribeConversationOptions } from '../../api/conversationMessageEvents';
+import SecureForms from './SecureForm';
 import { parseQuestionGroup, type QuestionSubmission } from './multiQuestion';
 import MultiQuestionForm from './MultiQuestionForm';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -1199,6 +1200,7 @@ export default function ChatMessageList({
               {activity}
             </div>
           ) : activity}
+          {conversationKey && debugPrefix === 'conversation-thread' ? <SecureForms key={conversationKey} conversation={conversationKey} /> : null}
           {children}
           {pinEnabled ? (
             <div ref={turnSpacerRef} data-debug-id={`${debugPrefix}-pin-turn-spacer`} aria-hidden="true"
