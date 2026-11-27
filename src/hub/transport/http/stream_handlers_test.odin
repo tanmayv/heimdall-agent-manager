@@ -195,6 +195,41 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	unknown := router_dispatch(&router, secure_form_test_request("GET", STREAM_API_PATH + "/00000000000000000000000000000000", "", "", alice, ""))
 	testing.expect_value(t, unknown.status, 404)
 
+	forms_path := path + "/secure-forms"
+	defer {
+		for _, route in h.secure_forms.forms do secure_form_route_free(route)
+		delete(h.secure_forms.forms)
+	}
+	now := stream_now_ms()
+	for fixture in ([]struct { id, owner, bridge, instance: string, expired, unregistered, accepted: bool }{
+		{"matching-public-form", "alice", STREAM_TEST_BRIDGE, STREAM_TEST_INSTANCE, false, false, false},
+		{"wrong-instance", "alice", STREAM_TEST_BRIDGE, "inst_idle", false, false, false},
+		{"wrong-owner", "bob", STREAM_TEST_BRIDGE, STREAM_TEST_INSTANCE, false, false, false},
+		{"wrong-bridge", "alice", "brg_other", STREAM_TEST_INSTANCE, false, false, false},
+		{"expired-form", "alice", STREAM_TEST_BRIDGE, STREAM_TEST_INSTANCE, true, false, false},
+		{"unregistered-form", "alice", STREAM_TEST_BRIDGE, STREAM_TEST_INSTANCE, false, true, false},
+		{"accepted-form", "alice", STREAM_TEST_BRIDGE, STREAM_TEST_INSTANCE, false, false, true},
+	}) {
+		request := contracts.Secure_Form_Request{request_id = fixture.id, owner = fixture.owner, bridge = fixture.bridge, instance = fixture.instance}
+		deadline := now + 30_000
+		testing.expect_value(t, secure_form_route_insert(&h.secure_forms, request, "{}", hello.generation, now, deadline, deadline + 60_000, 16), Secure_Form_Register_Result.Registered)
+		if form := h.secure_forms.forms[fixture.id]; form != nil {
+			form.registered = !fixture.unregistered
+			if fixture.expired do form.deadline_ms = now
+			if fixture.accepted do form.state = .Accepted
+		}
+	}
+	form_views := router_dispatch(&router, secure_form_test_request("GET", forms_path, "", "", alice, ""))
+	testing.expect_value(t, form_views.status, 200)
+	testing.expect(t, strings.contains(form_views.body, "matching-public-form"))
+	for excluded in ([]string{"wrong-instance", "wrong-owner", "wrong-bridge", "expired-form", "unregistered-form", "accepted-form"}) {
+		testing.expect(t, !strings.contains(form_views.body, excluded))
+	}
+	testing.expect_value(t, header_value(form_views.headers, "Cache-Control"), "no-store")
+	testing.expect_value(t, router_dispatch(&router, secure_form_test_request("GET", forms_path, "", "", bob, "")).status, 404)
+	testing.expect_value(t, router_dispatch(&router, secure_form_test_request("GET", forms_path, "", "", "", "")).status, 401)
+	testing.expect_value(t, router_dispatch(&router, secure_form_test_request("GET", forms_path, "", "", alice, "https://foreign.test")).status, 403)
+
 	denied, denied_ok := stream_test_pair(t)
 	if !denied_ok do return
 	defer stream_test_pair_close(denied)

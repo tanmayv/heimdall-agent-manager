@@ -148,6 +148,51 @@ stream_metadata_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return secure_form_no_store(respond_success_typed(info, req.request_id, ""))
 }
 
+Stream_Secure_Forms_View :: struct {
+	instance, bridge: string,
+	forms: []Secure_Form_Status_View,
+}
+
+// Read public registration descriptors only, while holding the routing lock.
+stream_pending_secure_forms :: proc(h: ^Bridge_Handlers, info: contracts.Stream_Registration, now: u64) -> []Secure_Form_Status_View {
+	routing := &h.secure_forms
+	sync.lock(&routing.mu)
+	defer sync.unlock(&routing.mu)
+	secure_form_route_sweep(routing, now)
+	items := make([dynamic]Secure_Form_Status_View)
+	for _, route in routing.forms {
+		if !route.registered || route.owner != info.owner || route.bridge != info.bridge || route.instance != info.instance do continue
+		secure_form_route_refresh(h, route, now)
+		if route.state == .Pending do append(&items, secure_form_status_view(route))
+	}
+	return items[:]
+}
+
+stream_secure_forms_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	auth, ok, refused := require_auth(h.auth, req)
+	if !ok do return secure_form_no_store(refused)
+	if !stream_interactive_auth(auth) do return stream_http_error(req, .Forbidden, "owner authentication required")
+	origin := header_value(req.headers, "Origin")
+	csrf_ok, _ := csrf_decide(req.method, req.headers, h.auth.web.ui_origin, false)
+	if !csrf_ok || (origin != "" && !csrf_origin_equal(origin, h.auth.web.ui_origin)) {
+		return stream_http_error(req, .Forbidden, "same-origin request required")
+	}
+	id := path_part(req.path, 4)
+	if !contracts.stream_id_valid(id) || req.path != strings.concatenate({STREAM_API_PATH, "/", id, "/secure-forms"}, context.temp_allocator) {
+		return stream_http_error(req, .Not_Found, "stream not found")
+	}
+	sync.lock(&h.streams.mu)
+	r := stream_live_for_owner(h, auth.user_id, id)
+	info: contracts.Stream_Registration
+	if r != nil do info = stream.clone_info(r.info, context.temp_allocator)
+	sync.unlock(&h.streams.mu)
+	if r == nil do return stream_http_error(req, .Not_Found, "stream not found")
+	// Never nest the stream and form routing mutexes.
+	items := stream_pending_secure_forms(h, info, secure_form_now_ms())
+	return secure_form_no_store(respond_success_typed(Stream_Secure_Forms_View{info.instance, info.bridge, items}, req.request_id, ""))
+}
+
 stream_view_leave :: proc(h: ^Bridge_Handlers, owner, id: string, serial: u64) {
 	sync.lock(&h.stream_controls)
 	defer sync.unlock(&h.stream_controls)

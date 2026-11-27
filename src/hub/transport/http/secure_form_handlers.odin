@@ -22,7 +22,7 @@ Secure_Form_Routing :: struct {
 }
 
 Secure_Form_Route :: struct {
-	owner, bridge, conversation, request_id, registration: string,
+	owner, bridge, instance, conversation, request_id, registration: string,
 	generation: int,
 	deadline_ms, forget_ms: u64,
 	state: contracts.Secure_Form_Hub_State,
@@ -40,6 +40,7 @@ secure_form_route_free :: proc(route: ^Secure_Form_Route) {
 	heap := runtime.heap_allocator()
 	delete(route.owner, heap)
 	delete(route.bridge, heap)
+	delete(route.instance, heap)
 	delete(route.conversation, heap)
 	delete(route.request_id, heap)
 	delete(route.registration, heap)
@@ -86,6 +87,7 @@ secure_form_route_insert :: proc(routing: ^Secure_Form_Routing, request: contrac
 	route^ = {
 		owner = strings.clone(request.owner, heap),
 		bridge = strings.clone(request.bridge, heap),
+		instance = strings.clone(request.instance, heap),
 		conversation = strings.clone(request.conversation, heap),
 		request_id = strings.clone(request.request_id, heap),
 		registration = strings.clone(raw_registration, heap),

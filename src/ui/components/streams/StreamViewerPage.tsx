@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { IconButton, Spinner, Text } from '@ui';
 import ViewerHeader from '../ViewerHeader';
+import { StreamSecureForms } from '../chat/SecureForm';
 import { useStreamViewer, type StreamStatus } from './useStreamViewer.ts';
 import { centeredPan, clampPan, fitFrame, toggleFit, type FitMode, type Pan, type Size } from './streamViewport.ts';
 
@@ -18,6 +19,7 @@ const labels = {
 
 export default function StreamViewerPage({ streamId, onBack }: { streamId: string; onBack: () => void }) {
   const { status, image, meta, reconnect } = useStreamViewer(streamId);
+  const [formRefresh, setFormRefresh] = useState(0);
   const title = meta?.title || 'Shared tab';
   const viewportRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ id: number; x: number; y: number }>(undefined);
@@ -79,38 +81,44 @@ export default function StreamViewerPage({ streamId, onBack }: { streamId: strin
           setNatural(undefined);
           setView(previous => ({ ...previous, pan: centeredPan }));
           reconnect();
+          setFormRefresh(value => value + 1);
         }} />
         <IconButton icon={mode} label={mode === 'fit-width' ? 'Fit width (current). Switch to fit height' : 'Fit height (current). Switch to fit width'} onClick={() => {
           stopDrag();
           setView(previous => toggleFit(previous.mode));
         }} />
       </ViewerHeader>
-      <div
-        ref={viewportRef}
-        className={`relative min-h-0 flex-1 touch-none overflow-hidden ${canPan ? dragging ? 'cursor-grabbing' : 'cursor-grab' : ''}`}
-        onPointerDown={pointerDown}
-        onPointerMove={pointerMove}
-        onPointerUp={pointerEnd}
-        onPointerCancel={pointerEnd}
-        onLostPointerCapture={pointerEnd}
-      >
-        {image ? (
-          <img
-            className="pointer-events-none absolute left-1/2 top-1/2 block max-w-none select-none"
-            src={image}
-            alt="Latest image of the shared tab"
-            draggable={false}
-            style={{ width: frame.width, height: frame.height, transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px))`, visibility: natural ? undefined : 'hidden' }}
-            onLoad={({ currentTarget }) => {
-              const { naturalWidth: width, naturalHeight: height } = currentTarget;
-              setNatural(previous => previous?.width === width && previous.height === height ? previous : { width, height });
-            }}
-          />
-        ) : (
-          <div className="grid h-full place-items-center">
-            {status === 'loading' ? <Spinner size="lg" label="Connecting" /> :
-              <Text role="body-sm" tone="muted" aria-live="polite">{labels[status]}</Text>}
-          </div>
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div
+          ref={viewportRef}
+          className={`relative h-full touch-none overflow-hidden ${canPan ? dragging ? 'cursor-grabbing' : 'cursor-grab' : ''}`}
+          onPointerDown={pointerDown}
+          onPointerMove={pointerMove}
+          onPointerUp={pointerEnd}
+          onPointerCancel={pointerEnd}
+          onLostPointerCapture={pointerEnd}
+        >
+          {image ? (
+            <img
+              className="pointer-events-none absolute left-1/2 top-1/2 block max-w-none select-none"
+              src={image}
+              alt="Latest image of the shared tab"
+              draggable={false}
+              style={{ width: frame.width, height: frame.height, transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px))`, visibility: natural ? undefined : 'hidden' }}
+              onLoad={({ currentTarget }) => {
+                const { naturalWidth: width, naturalHeight: height } = currentTarget;
+                setNatural(previous => previous?.width === width && previous.height === height ? previous : { width, height });
+              }}
+            />
+          ) : (
+            <div className="grid h-full place-items-center">
+              {status === 'loading' ? <Spinner size="lg" label="Connecting" /> :
+                <Text role="body-sm" tone="muted" aria-live="polite">{labels[status]}</Text>}
+            </div>
+          )}
+        </div>
+        {meta && !['ended', 'expired', 'unavailable', 'unauthorized'].includes(status) && (
+          <StreamSecureForms streamId={streamId} reconnect={formRefresh} />
         )}
       </div>
     </div>

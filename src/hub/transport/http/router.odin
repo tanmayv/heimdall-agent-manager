@@ -168,6 +168,7 @@ router_dispatch_matched_safe :: proc(router: ^Router, req: Request) -> (Response
 
 router_add_streams :: proc(router: ^Router, h: ^Bridge_Handlers, tickets: ^User_WS_Ticket_Store) {
 	h.stream_tickets = tickets
+	router_add(router, "GET", STREAM_API_PATH + "/*/secure-forms", h, stream_secure_forms_handler)
 	router_add(router, "GET", STREAM_API_PATH + "/*", h, stream_metadata_handler)
 	router_add_upgrade(router, "GET", STREAM_API_PATH + "/*/view", h, stream_view_handler)
 }

@@ -28,8 +28,8 @@ class SecureFormHttpError extends Error {
   }
 }
 
-async function request<T>(suffix: string, owner: string, signal: AbortSignal, body?: unknown): Promise<T> {
-  const res = await fetch(withApiBase(path + suffix), {
+async function request<T>(suffix: string, owner: string, signal: AbortSignal, body?: unknown, base = path): Promise<T> {
+  const res = await fetch(withApiBase(base + suffix), {
     signal, cache: 'no-store', credentials: 'same-origin', mode: 'same-origin', redirect: 'error',
     method: body === undefined ? 'GET' : 'POST',
     headers: body === undefined ? { [EXPECTED_USER_HEADER]: owner }
@@ -50,7 +50,8 @@ function statusMatches(status: FormStatus, form: VerifiedForm) {
     && status.generation === form.request.generation && ['pending', 'forwarding', 'accepted', 'final'].includes(status.state);
 }
 
-async function verifyViews(views: FormView[], owner: string, conversation: string, expectedId?: string) {
+async function verifyViews(views: FormView[], owner: string, conversation: string | undefined,
+  expectedId?: string, placement?: { instance: string; bridge: string }) {
   const entries: Entries = Object.create(null);
   const rejected = new Set<string>();
   if (!views.length) return { entries, rejected };
@@ -90,11 +91,12 @@ async function verifyViews(views: FormView[], owner: string, conversation: strin
     seen.add(id);
     try {
       const { registration, status } = view;
-      const bridgeId = registration.request.bridge;
+      const { bridge: bridgeId, instance, conversation: signedConversation } = registration.request;
+      if (placement && (instance !== placement.instance || bridgeId !== placement.bridge)) throw new Error(blocked);
       const candidates = [...chain.trusted.values()].filter((d) => d.kind === 'bridge' && d.row.bridge_id === bridgeId
         && d.sign_alg === SIGN_ALG_ECDSA_P256_SHA256 && !chain.retiredHints.includes(d.device_id));
       const verified = await Promise.any(candidates.map((device) => verifySecureForm(registration,
-        { owner, conversation, bridge: bridgeId }, device.sign_public_key)));
+        { owner, conversation: conversation ?? signedConversation, bridge: bridgeId }, device.sign_public_key)));
       if (!statusMatches(status, verified)) throw new Error(blocked);
       entries[id] = { form: verified, status, signer: signing };
     } catch {
@@ -469,4 +471,98 @@ function LinkedSecureForm({ owner, id }: { owner: string; id: string }) {
     </Alert> : card ? <SecureFormCard card={card} decide={decide} decided={decided} standalone />
       : <div className="grid place-items-center"><Spinner label="Checking secure request" /></div>}
   </SecureFormPageLayout>;
+}
+
+
+export function StreamSecureForms({ streamId, reconnect }: { streamId: string; reconnect: number }) {
+  const owner = useSelector((state: ReturnType<typeof store.getState>) => state.deviceVault.userId);
+  const stale = useSelector((state: ReturnType<typeof store.getState>) => state.deviceVault.staleHead);
+  const vault = useSyncExternalStore(subscribeKeyringSession, keyringGeneration);
+  if (!owner || stale || !getKeyringSession() || !/^[0-9a-f]{32}$/.test(streamId)) return null;
+  return <StreamSecureFormsForOwner key={owner + ':' + streamId + ':' + vault} {...{ owner, streamId, reconnect }} />;
+}
+
+function StreamSecureFormsForOwner({ owner, streamId, reconnect }: { owner: string; streamId: string; reconnect: number }) {
+  const [cards, setCards] = useState<Card[]>([]);
+  const controller = useRef<AbortController | null>(null);
+  const decided = useRef(new Set<string>());
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  const refreshNow = useRef(() => {});
+
+  useEffect(() => {
+    const abort = new AbortController();
+    controller.current = abort;
+    let timer: number | undefined;
+    let inFlight = false;
+    let dirty = false;
+    const refresh = async () => {
+      if (abort.signal.aborted) return;
+      if (inFlight) {
+        dirty = true;
+        return;
+      }
+      inFlight = true;
+      try {
+        const scope = await request<{ instance: string; bridge: string; forms: FormView[] }>(
+          '', owner, abort.signal, undefined, '/api/v1/streams/' + streamId + '/secure-forms');
+        if (!scope.instance || !scope.bridge || !Array.isArray(scope.forms)) throw new Error(blocked);
+        const { entries } = await verifyViews(scope.forms, owner, undefined, undefined, scope);
+        if (abort.signal.aborted) return;
+        const unexpired = (card: Card) => Number(card.form.request.deadline) > Date.now();
+        const next = Object.values(entries).filter(card => card.status.state === 'pending' && unexpired(card))
+          .sort((a, b) => Number(a.form.request.deadline) - Number(b.form.request.deadline));
+        window.clearTimeout(timer);
+        setCards(next);
+        if (next.length) timer = window.setTimeout(() => {
+          setCards(current => current.filter(unexpired));
+          void refresh();
+        }, Math.max(0, Number(next[0].form.request.deadline) - Date.now()));
+      } catch {
+        if (!abort.signal.aborted) {
+          window.clearTimeout(timer);
+          setCards([]);
+        }
+      } finally {
+        inFlight = false;
+        if (dirty) {
+          dirty = false;
+          void refresh();
+        }
+      }
+    };
+    const reload = () => { void refresh(); };
+    refreshNow.current = reload;
+    window.addEventListener(secureFormChanged, reload);
+    window.addEventListener(USER_WS_RESYNC_EVENT, reload);
+    return () => {
+      abort.abort();
+      window.clearTimeout(timer);
+      window.removeEventListener(secureFormChanged, reload);
+      window.removeEventListener(USER_WS_RESYNC_EVENT, reload);
+    };
+  }, [owner, streamId]);
+
+  useEffect(() => { refreshNow.current(); }, [reconnect]);
+
+  const card = cards.find(value => !dismissed.has(value.form.request.request_id));
+  if (!card) return null;
+  const id = card.form.request.request_id;
+  const form = card.form;
+  async function decide(requestId: string, body: unknown, action: 'submit' | 'decline') {
+    const signal = controller.current?.signal;
+    if (!signal || signal.aborted || requestId !== id || !getKeyringSession()) throw new Error('Form no longer active');
+    try {
+      const status = await request<FormStatus>('/' + id + '/' + action, owner, signal, body);
+      if (!statusMatches(status, form)) throw new Error('Unexpected form status');
+      if (!signal.aborted) setDismissed(previous => new Set(previous).add(id));
+    } catch (error) {
+      if (error instanceof SecureFormHttpError && [401, 403, 404, 409].includes(error.status)) refreshNow.current();
+      throw error;
+    }
+  }
+  return <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 max-h-full overflow-y-auto px-2 pb-2 motion-safe:animate-sheet-in sm:px-4 sm:pb-4">
+    <div className="pointer-events-auto mx-auto w-full max-w-xl">
+      <SecureFormCard key={id} card={card} decided={decided} decide={decide} />
+    </div>
+  </div>;
 }
