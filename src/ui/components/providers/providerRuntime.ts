@@ -8,6 +8,8 @@ export interface AcpAdapterStatus {
   profile?: string;
   /** 'system' runtimes are user-installed CLIs the bridge only detects and checks. */
   runtime_kind?: 'adapter' | 'system';
+  /** The runtime's wire protocol, from the bridge's descriptor (display only). */
+  protocol?: 'acp' | 'codex_app_server';
   installed: boolean;
   version: string | null;
   node_version: string | null;
@@ -58,6 +60,7 @@ export function normalizeProviderRuntime(raw: any): ProviderRuntimeFields {
       ...(typeof adapter.provider === 'string' ? { provider: adapter.provider } : {}),
       ...(typeof adapter.profile === 'string' ? { profile: adapter.profile } : {}),
       ...(adapter.runtime_kind === 'adapter' || adapter.runtime_kind === 'system' ? { runtime_kind: adapter.runtime_kind } : {}),
+      ...(adapter.protocol === 'acp' || adapter.protocol === 'codex_app_server' ? { protocol: adapter.protocol } : {}),
       ...(textOrNull(adapter.install_command) ? { install_command: adapter.install_command } : {}),
       ...(textOrNull(adapter.diagnostic) ? { diagnostic: adapter.diagnostic } : {}),
     } : null,
@@ -107,7 +110,8 @@ export function acpDisabledReason(availability: AcpAvailability | null | undefin
 export function acpAdapterSummary(adapter: AcpAdapterStatus | null): string {
   const state = adapter?.state.replaceAll('_', ' ') || 'not checked';
   if (acpSystemRuntime(adapter)) {
-    const runtime = adapter?.provider === 'codex' ? 'Codex app-server runtime' : 'ACP system CLI';
+    // Labelled from bridge-reported descriptor data, never the provider id (G9).
+    const runtime = adapter?.protocol === 'codex_app_server' ? 'App-server runtime' : 'ACP system CLI';
     return `${runtime}: ${state} · Version: ${adapter?.version || 'unknown'}`;
   }
   return `ACP adapter: ${state} · Version: ${adapter?.version || 'unknown'} · Node: ${adapter?.node_version || 'unknown'}`;

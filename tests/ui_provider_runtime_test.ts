@@ -436,11 +436,13 @@ test('OpenCode is detect-only and exposes no PTY transport', async () => {
 
 test('Codex app-server is an opt-in system runtime with PTY reset and Re-check', async () => {
   const runtime = normalizeProviderRuntime({ transports: ['pty', 'acp'], default_transport: 'pty', acp_adapter: {
-    ...adapter, provider: 'codex', profile: 'codex', runtime_kind: 'system', version: '0.162.0', node_version: null,
+    ...adapter, provider: 'codex', profile: 'codex', runtime_kind: 'system', protocol: 'codex_app_server', version: '0.162.0', node_version: null,
     state: 'error', error: 'ACP initialize probe is required for the selected profile; use Re-check',
   } });
   assert.equal(runtime.effective_transport, 'pty');
-  assert.equal(acpAdapterSummary(runtime.acp_adapter), 'Codex app-server runtime: error · Version: 0.162.0');
+  assert.equal(acpAdapterSummary(runtime.acp_adapter), 'App-server runtime: error · Version: 0.162.0');
+  // The label follows the reported protocol, not the provider id.
+  assert.equal(acpAdapterSummary({ ...runtime.acp_adapter!, protocol: 'acp' }), 'ACP system CLI: error · Version: 0.162.0');
   const h = await browser();
   const oldInstall = providerSetupApi.installAdapter;
   const oldSet = providerSetupApi.setTransport;

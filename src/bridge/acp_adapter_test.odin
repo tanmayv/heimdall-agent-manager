@@ -621,7 +621,7 @@ acp_codex_detect_only_recheck_requires_successful_probe :: proc(t: ^testing.T) {
     testing.expect(t, ok && reason == "" && codex_catalog_probe_calls == 2 && !kiro_npm_called)
     testing.expect_value(t, acp_adapter_status("codex").state, "ready")
     status_json := acp_adapter_status_json("codex")
-    testing.expect(t, strings.contains(status_json, `"runtime_kind":"system"`) && strings.contains(status_json, `"node_version":null`))
+    testing.expect(t, strings.contains(status_json, `"runtime_kind":"system"`) && strings.contains(status_json, `"node_version":null`) && strings.contains(status_json, `"protocol":"codex_app_server"`))
     p1c_put(t, binary, "#!/bin/sh\nprintf 'codex-cli 0.166.0\\n'\n", true)
     status = acp_adapter_status("codex")
     testing.expect(t, status.state == "error" && status.version == "0.166.0", "a changed executable version invalidates its probe receipt")

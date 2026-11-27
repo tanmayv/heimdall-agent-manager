@@ -337,12 +337,14 @@ acp_adapter_status_json :: proc(provider: string, override: string = "", profile
         state: string,
         error, checked_at: json.Value,
         provider, runtime_kind, profile: string,
+        protocol: string, // "acp" or "codex_app_server": display data for the UI
         install_command, diagnostic: json.Value,
         // The catalog recipe this verdict was evaluated against; the Hub
         // compares it with its own catalog (a Hub-owned fact).
         adapter_package, adapter_version: string,
     }{s.installed, nullable(s.version), nullable(s.node_version), s.state, nullable(s.error), nullable(s.checked_at),
         provider, acp_adapter_runtime_kind(d), profile_effective_id(provider, profile),
+        "codex_app_server" if d.protocol == .Codex_App_Server else "acp",
         nullable(s.install_command), nullable(s.diagnostic),
         recipe.acp_recipe.adapter_package, recipe.acp_recipe.adapter_version})
     return string(raw)
