@@ -90,3 +90,38 @@ Each run writes:
   - `normal = openai-codex/gpt-5.4`
   - `smart = openai-codex/gpt-5.5`
 - Port `49422` is free.
+
+## Live tab stream
+
+`tabstream_live.mjs` starts an isolated Hub, NATS, Bridge and synthetic agent,
+then drives real `ham-ctl` commands against an animated headless Chromium tab.
+It verifies the owner route and ticketed WebSocket, non-owner denial, the
+viewer page, measured transfer rates, control latency, last-viewer detach,
+explicit stop, tab close, and the absence of sampled stream data in SQLite,
+NATS traffic and local logs. Viewer onboarding is stubbed. The stream
+requests still use a real owner session from the fixture's mock OIDC provider.
+
+From the repository root, with renderer dependencies already present:
+
+```sh
+STREAM_BIN_DIR=/path/to/ham-binaries \
+STREAM_PTY_HOST=/path/to/ham-pty-host \
+HEIMDALL_TEST_CHROMIUM=/path/to/chromium \
+PUPPETEER_MODULE=/path/to/puppeteer-core.js \
+node --import ./tests/helpers/vaultEndpointHarness.ts tests/e2e/tabstream_live.mjs
+```
+
+The binary directory needs `ham-hub`, `ham-bridge`, `ham-ctl` and
+`ham-dev-proxy` from this checkout. Use `HEIMDALL_E2E_NATS_BIN` if
+`nats-server` is not on PATH. The binaries must run under the host user's
+normal filesystem identity so the real browser profile ownership checks work.
+If needed, set `STREAM_VIEWER_CHROMIUM` separately from the capture browser.
+
+To exercise expiry without waiting for the default two hours, prepare a
+second, isolated binary directory with the same binaries except for a Bridge
+built against a temporary copy of the contracts with
+`STREAM_EXPIRY_MS :: 15 * 1000`. Keep the Hub, CLI, and viewer unmodified.
+Run the same command with that directory and `STREAM_E2E_EXPIRY=1`.
+The short-TTL run checks live viewing before the deadline, actual expiry in
+the viewer, rejection of fresh lookups and viewer upgrades, and that capture
+stops. Do not deploy or use the short-TTL build outside the fixture.

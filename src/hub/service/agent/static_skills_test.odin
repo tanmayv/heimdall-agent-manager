@@ -231,10 +231,10 @@ find_static_skill :: proc(slug: string) -> (content: string, ok: bool) {
 }
 
 @(test)
-test_static_skills_contains_all_sixteen_skills :: proc(t: ^testing.T) {
+test_static_skills_contains_all_shipped_skills :: proc(t: ^testing.T) {
 	want := []string{
 		"action-cards", "artifact-authoring", "chain-events-and-claims", "coordinator-task-management",
-		"ham-ctl-reference", "heimdall-ctl-communication", "heimdall-preview-setup", "memory-management-workflow",
+		"credential-and-browser-use", "ham-ctl-reference", "heimdall-ctl-communication", "heimdall-preview-setup", "memory-management-workflow",
 		"ninjy-automations", "ninjy-bot-operations", "ninjy-chain-hygiene", "ninjy-chain-routing", "ninjy-channel-communication",
 		"search-command", "shell-sessions", "worker-task-management",
 	}

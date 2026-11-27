@@ -9,16 +9,23 @@ ctl_stream_usage :: proc() {
 	fmt.println("ham-ctl stream share --tab <cdp-target-id> | stop <id> | list --sources tabs")
 }
 
-ctl_stream :: proc(endpoint, token: string, args: []string) {
-	method, key, value: string
+ctl_stream_parse :: proc(tokens, argv: []string) -> (method, key, value: string) {
+	tab := option_value(argv, "--tab", "")
+	sources := option_value(argv, "--sources", "")
 	switch {
-	case len(args) == 3 && args[0] == "share" && args[1] == "--tab":
-		method, key, value = "agent.stream.share", "tab", args[2]
-	case len(args) == 2 && args[0] == "stop" && contracts.stream_id_valid(args[1]):
-		method, key, value = "agent.stream.stop", "stream_id", args[1]
-	case len(args) == 3 && args[0] == "list" && args[1] == "--sources" && args[2] == "tabs":
-		method, key, value = "agent.stream.list", "sources", "tabs"
-	case:
+	case len(tokens) == 2 && tokens[0] == "share" && tab != "" && tokens[1] == tab && sources == "":
+		return "agent.stream.share", "tab", tab
+	case len(tokens) == 2 && tokens[0] == "stop" && contracts.stream_id_valid(tokens[1]) && tab == "" && sources == "":
+		return "agent.stream.stop", "stream_id", tokens[1]
+	case len(tokens) == 2 && tokens[0] == "list" && sources == "tabs" && tokens[1] == sources && tab == "":
+		return "agent.stream.list", "sources", sources
+	}
+	return "", "", ""
+}
+
+ctl_stream :: proc(endpoint, token: string, tokens, argv: []string) {
+	method, key, value := ctl_stream_parse(tokens, argv)
+	if method == "" {
 		ctl_stream_usage()
 		os.exit(2)
 	}

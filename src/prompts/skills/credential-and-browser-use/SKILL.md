@@ -210,3 +210,29 @@ NODE
 
 A zero script exit means the submission was initiated. Separately verify the
 expected signed-in state without reading the secret values.
+
+## Share a live, watch-only tab
+
+Share the tab when the owner wants to follow what you are doing. Confirm that
+the target is the tab you are working in, not another agent's tab in the shared
+Chromium profile.
+
+```sh
+ham-ctl stream list --sources tabs
+ham-ctl stream share --tab <cdp-target-id>
+```
+
+Send the exact link printed by `stream share` to the owner in Heimdall chat.
+The link is not a credential. Only the signed-in Heimdall owner can open it.
+The viewer is watch-only and shows the page, not browser chrome or OS dialogs.
+
+Anything visible on the page is visible to the owner while they watch,
+including account details and codes. A secure form does not pause the stream.
+Do not put unmasked secret values on screen or share a tab whose visible
+content the owner should not see. The Hub relays the capture without recording
+frames or storing stream metadata.
+
+Capture starts when the first viewer opens the link and stops when the last
+viewer leaves. The link can be reopened until it expires (normally after two
+hours) or the tab closes. To end the share sooner, run
+`ham-ctl stream stop <stream-id>` with the ID at the end of the link.
