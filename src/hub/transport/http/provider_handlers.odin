@@ -153,6 +153,13 @@ write_bridge_provider_view_json :: proc(
 	write_bridge_provider_transport_json(b, view)
 	strings.write_string(b, ",\"acp_availability\":")
 	contracts.write_acp_availability_json(b, provider_service.classify_acp_availability(view.catalog.provider, view.catalog.acp_recipe_json, bridge_capabilities_json, view.acp_adapter_json))
+	// Descriptor data for display: "system" (user-installed CLI the bridge only
+	// detects) or "adapter" (published package Heimdall installs); null without
+	// an ACP runtime. The UI words its actions from this, never the provider id.
+	strings.write_string(b, ",\"acp_runtime_kind\":")
+	if d, known := contracts.acp_provider_descriptor(view.catalog.provider); known && view.catalog.acp_recipe_json != "" {
+		strings.write_string(b, "\"system\"" if d.launch == .System else "\"adapter\"")
+	} else do strings.write_string(b, "null")
 	write_bridge_provider_extension_json(b, view)
 	write_bridge_provider_profile_config_dir_json(b, view.catalog.provider)
 	strings.write_string(b, ",\"models\":[")

@@ -1723,3 +1723,29 @@ r2_enable_acp_rechecks_a_ready_report_for_another_recipe :: proc(t: ^testing.T) 
 	transport, err := iface.get_provider_transport(&f.pr_repo, f.bridge_id, "claude"); defer delete(transport)
 	testing.expect(t, err.code == .None && transport == "", "the setting is not saved until ready")
 }
+
+// G9: the status row carries the ACP runtime kind from the compiled descriptor.
+@(test)
+r2_provider_status_reports_acp_runtime_kind :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := extension_test_setup(t, "r2_runtime_kind"); defer extension_test_teardown(f)
+	req := extension_test_request(f, fmt.tprintf("/api/v1/bridges/%s/provider-status", f.bridge_id))
+	req.method = "GET"
+	response := bridge_provider_status_handler(&f.ph, req)
+	testing.expect_value(t, response.status, 200)
+	value, err := json.parse_string(response.body)
+	if !testing.expect(t, err == nil) do return
+	data, _ := value.(json.Object)["data"].(json.Object)
+	providers, _ := data["providers"].(json.Array)
+	kinds := map[string]string{}
+	for item in providers {
+		row := item.(json.Object)
+		name, _ := row["provider"].(json.String)
+		if kind, is_string := row["acp_runtime_kind"].(json.String); is_string do kinds[string(name)] = string(kind)
+		else if _, is_null := row["acp_runtime_kind"].(json.Null); is_null do kinds[string(name)] = "null"
+	}
+	testing.expect_value(t, kinds["claude"], "adapter")
+	testing.expect_value(t, kinds["copilot"], "system")
+	testing.expect_value(t, kinds["opencode"], "system")
+	testing.expect_value(t, kinds["antigravity"], "null")
+}

@@ -167,6 +167,8 @@ export interface ProviderStatusRow extends ModelCatalogMetadata, ProviderRuntime
   extension: ProviderExtensionStatus | null;
   /** T2: Hub-computed ACP verdict for this bridge + provider; null from an older Hub. */
   acp_availability: AcpAvailability | null;
+  /** Hub descriptor data: the ACP runtime is a user-installed CLI ('system') or an installed adapter. */
+  acp_runtime_kind: 'adapter' | 'system' | null;
   /** R1: Hub-declared profile config directory (field + env var); null = none or older Hub. */
   profile_config_dir: ProfileConfigDir | null;
 }
@@ -184,6 +186,7 @@ function normalizeProviderStatusRow(raw: any): ProviderStatusRow {
     ...normalizeModelCatalog(raw),
     extension: normalizeProviderExtension(raw?.extension),
     acp_availability: normalizeAcpAvailability(raw?.acp_availability),
+    acp_runtime_kind: raw?.acp_runtime_kind === 'system' || raw?.acp_runtime_kind === 'adapter' ? raw.acp_runtime_kind : null,
     profile_config_dir: normalizeProfileConfigDir(raw?.profile_config_dir),
     models: Array.isArray(raw?.models) ? raw.models.map((model: any) => ({
       ...model,

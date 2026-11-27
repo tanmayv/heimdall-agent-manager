@@ -107,7 +107,8 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
   const installCommand = status.acp_adapter?.install_command || '';
   const installable = status.transports.includes('acp') && (verdict.fix === 'install_adapter' || verdict.fix === 'check_now');
   const failed = command?.status === 'failed' || command?.status === 'cancelled';
-  const system = provider === 'opencode' || acpSystemRuntime(status.acp_adapter);
+  // Descriptor data (Hub) or the bridge report, never the provider id (G9).
+  const system = status.acp_runtime_kind === 'system' || acpSystemRuntime(status.acp_adapter);
   return (
     <div className="min-w-0 space-y-2 rounded-lg border border-subtle p-3">
       <div className="flex flex-wrap items-center gap-3">

@@ -426,13 +426,17 @@ test('OpenCode is detect-only and exposes no PTY transport', async () => {
   } });
   const h = await browser();
   try {
-    const status = row({ provider: 'opencode', profile_id: 'opencode', display_name: 'OpenCode', ...runtime });
+    const status = row({ provider: 'opencode', profile_id: 'opencode', display_name: 'OpenCode', acp_runtime_kind: 'system', ...runtime });
     await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
     assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-opencode"]')?.textContent, 'Re-check');
     assert.deepEqual(Array.from(h.doc.querySelectorAll('select option')).map(option => (option as HTMLOptionElement).value), ['acp']);
     const unchecked = { ...status, acp_adapter: null };
     await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [unchecked] }), status: unchecked, onChange() {} }));
     assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-opencode"]')?.textContent, 'Re-check');
+    // The wording follows descriptor data, never the provider id (G9).
+    const adapterKind = { ...unchecked, acp_runtime_kind: 'adapter' };
+    await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [adapterKind] }), status: adapterKind, onChange() {} }));
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-opencode"]')?.textContent, 'Install adapter');
 
   } finally { await h.cleanup(); }
 });
