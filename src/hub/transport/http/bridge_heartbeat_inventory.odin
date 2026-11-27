@@ -157,8 +157,7 @@ heartbeat_inventory_reports_equal :: proc(a, b: []Bridge_Agent_Status_Report) ->
 
 // The positive liveness set. A non-empty active_instance_ids is authoritative; an
 // empty or absent one falls back to the reports, but ONLY to those whose status is
-// active: terminal rows recur so a dropped terminal push is repaired, and must never
-// refresh liveness. The returned slice is the caller's; its strings borrow from inv.
+// active: terminal rows never refresh liveness. The returned slice is the caller's; its strings borrow from inv.
 bridge_heartbeat_inventory_active_ids :: proc(inv: ^Bridge_Heartbeat_Inventory, allocator := context.allocator) -> []string {
 	if len(inv.active_ids) > 0 {
 		out := make([]string, len(inv.active_ids), allocator)

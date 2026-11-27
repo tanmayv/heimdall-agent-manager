@@ -1858,26 +1858,10 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 		defer delete(payload)
 		_ = write_ws_text_frame_locked(h, bridge.bridge_id, client, payload)
 	}
-	// REQ-RECON-FIX-2: Ingest active_instance_ids from bridge_hello on WS connect
-	// and immediately reconcile active instances for the connecting bridge.
+	// Hello supplies positive reconnect hints only. A missing row can mean the
+	// retained daemon was unreachable when the Bridge built the frame. It must
+	// not erase readiness, clear a task pointer or publish a terminal event.
 	hello_active := json_string_array(hello_text, "active_instance_ids")
-	_ = bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, bridge.bridge_id, hello.generation, hello_active)
-	if h.agents != nil {
-		gone := agent_service.reconcile_bridge_heartbeat(h.agents, bridge.bridge_id, hello_active, "bridge_hello")
-		defer domain.agent_instances_destroy(gone)
-		agent_service.notify_instances_terminal(h.agents, gone)
-		for inst in gone {
-			publish_instance_changed(h.event_bus, inst, "status_changed")
-			if h.shell_sessions != nil {
-				shell_session_svc.shell_session_background_runs_for_agent(h.shell_sessions, string(inst.owner_user_id), inst.agent_instance_id)
-			}
-		}
-	}
-	// Task System v2 (plan §2.4, bridge Online): re-send unconfirmed grants on
-	// this bridge, stop[] live non-coordinator instances that hold no lease, and
-	// match_chain for every chain with a held task. Runs AFTER the heartbeat
-	// reconcile above so instances the bridge no longer runs have already
-	// crossed on_instance_terminal.
 	taskv2.on_bridge_hello(h.task_engine, bridge.bridge_id, hello_active)
 	if h.bots != nil do bots.bots_on_bridge_hello(h.bots, bridge.bridge_id)
 	if h.delivery != nil do delivery.on_bridge_online(h.delivery, bridge.bridge_id)
