@@ -19,7 +19,8 @@ Stream_Live :: struct {
 	profile: string,
 	run_count: int,
 	registered, accepted, attached: bool,
-	register_waiting: bool,
+	share_waiters: int,
+	link: string,
 	register_reject: string,
 	reason, source_stage: string,
 	worker: ^thread.Thread,
@@ -94,6 +95,11 @@ stream_local_call :: proc(id, method, raw: string, rec: Bridge_Local_Agent_Token
 	owner := bridge_enrolled_owner_user_id(bridge_config.daemon_id)
 	origin, origin_ok := bridge_hub_canonical_base(bridge_config.daemon_url, context.temp_allocator)
 	if owner == "" || !origin_ok do return bridge_local_response_error(id, "unavailable", "Bridge is not enrolled")
+	sync.mutex_lock(&stream_mu)
+	existing := stream_share_join_locked(owner, contracts.STREAM_SOURCE_BROWSER_TAB, tab.id)
+	sync.mutex_unlock(&stream_mu)
+	if existing != nil do return stream_share_wait(id, existing, false)
+
 	task := ""
 	path := [?]string{"api", "v1", "agent-actions", "context"}
 	relay := bridge_local_relay_agent_envelope(path[:], "agent.context.get", "{}", rec, 5000)
@@ -110,48 +116,77 @@ stream_local_call :: proc(id, method, raw: string, rec: Bridge_Local_Agent_Token
 	if !os_random.fill(random[:]) do return bridge_local_response_error(id, "internal", "could not generate stream ID")
 	hex_id := hex.encode(random[:], context.temp_allocator)
 	stream_id := string(hex_id)
-	if !stream_local_register(stream_id, owner, rec, task, tab, port, profile, waiting = true) {
+	link := strings.concatenate({strings.trim_right(origin, "/"), "/#/streams/", stream_id}, context.temp_allocator)
+	live, created := stream_local_register(stream_id, owner, rec, task, tab, port, profile, link)
+	if live == nil {
 		return bridge_local_response_error(id, "unavailable", "Bridge disconnected or stream limit reached")
 	}
+	return stream_share_wait(id, live, created)
+}
+
+// Waiters pin the record through ACK, timeout, or termination so cleanup
+// cannot invalidate the original link or a rejection before it is read.
+stream_share_wait :: proc(id: string, live: ^Stream_Live, created: bool, instance_live := stream_instance_live) -> string {
 	defer {
 		sync.mutex_lock(&stream_mu)
-		if live := stream_find_locked(stream_id); live != nil do live.register_waiting = false
+		live.share_waiters -= 1
 		sync.mutex_unlock(&stream_mu)
 	}
 	started := time.tick_now()
 	for time.tick_since(started) < 3 * time.Second {
 		sync.mutex_lock(&stream_mu)
-		live := stream_find_locked(stream_id)
-		accepted := live != nil && live.accepted && live.reason == ""
-		rejected := live == nil || live.reason != ""
+		eligible := stream_share_eligible_locked(live, u64(bridge_runtime_now_ms()), instance_live)
+		accepted := stream_connected && eligible && live.accepted
+		link := live.link // Immutable while pinned.
 		sync.mutex_unlock(&stream_mu)
 		if accepted {
-			link := strings.concatenate({strings.trim_right(origin, "/"), "/#/streams/", stream_id}, context.temp_allocator)
 			encoded, _ := json.marshal(struct {link: string}{link}, allocator = context.temp_allocator)
 			return bridge_local_response_data(id, string(encoded))
 		}
-		if rejected do break
+		if !eligible do break
 		time.sleep(10 * time.Millisecond)
 	}
 	sync.mutex_lock(&stream_mu)
 	defer sync.mutex_unlock(&stream_mu)
-	if live := stream_find_locked(stream_id); live != nil {
-		if live.register_reject != "" {
-			return bridge_local_response_error(id, live.register_reject, "Hub rejected stream registration")
-		}
-		if live.reason == "" do live.reason = "stopped"
+	if live.register_reject != "" {
+		return bridge_local_response_error(id, live.register_reject, "Hub rejected stream registration")
 	}
+	if created && !live.accepted && live.reason == "" do live.reason = "stopped"
 	return bridge_local_response_error(id, "unavailable", "Hub did not accept stream registration")
 }
 
-stream_local_register :: proc(id, owner: string, rec: Bridge_Local_Agent_Token_Record, task: string, tab: Stream_Tab, port: u16, profile: string, waiting := false) -> bool {
+stream_share_eligible_locked :: proc(live: ^Stream_Live, now: u64, instance_live: proc(string, int) -> bool) -> bool {
+	return live.reason == "" && live.reg.expires > now && instance_live(live.reg.instance, live.run_count)
+}
+
+// The registry is Bridge-local. The owner check additionally prevents reuse
+// across enrollment changes, without transferring creator stop authority.
+stream_share_join_locked :: proc(owner, kind, ref: string, instance_live := stream_instance_live) -> ^Stream_Live {
+	if !stream_connected do return nil
+	now := u64(bridge_runtime_now_ms())
+	for live in stream_live {
+		if live != nil && live.reg.owner == owner && live.reg.source.kind == kind && live.reg.source.ref == ref &&
+		   stream_share_eligible_locked(live, now, instance_live) {
+			live.share_waiters += 1
+			return live
+		}
+	}
+	return nil
+}
+
+stream_local_register :: proc(id, owner: string, rec: Bridge_Local_Agent_Token_Record, task: string, tab: Stream_Tab, port: u16, profile, link: string, instance_live := stream_instance_live) -> (live: ^Stream_Live, created: bool) {
 	sync.mutex_lock(&stream_mu)
 	defer sync.mutex_unlock(&stream_mu)
-	if !stream_connected || stream_find_locked(id) != nil do return false
+	// Recheck after context lookup. Pending shares reserve the source as well
+	// as a slot, so only one request sends a registration for this tab.
+	if existing := stream_share_join_locked(owner, contracts.STREAM_SOURCE_BROWSER_TAB, tab.id, instance_live); existing != nil {
+		return existing, false
+	}
+	if !stream_connected || stream_find_locked(id) != nil || !instance_live(rec.agent_instance_id, rec.run_count) do return nil, false
 	for &slot in stream_live {
 		if slot != nil do continue
 		allocator := runtime.heap_allocator()
-		live := new(Stream_Live, allocator)
+		live = new(Stream_Live, allocator)
 		live.reg = {stream_id = strings.clone(id, allocator), owner = strings.clone(owner, allocator), bridge = strings.clone(bridge_config.daemon_id, allocator),
 			instance = strings.clone(rec.agent_instance_id, allocator), task = strings.clone(task, allocator),
 			source = {kind = contracts.STREAM_SOURCE_BROWSER_TAB, ref = strings.clone(tab.id, allocator)},
@@ -159,11 +194,12 @@ stream_local_register :: proc(id, owner: string, rec: Bridge_Local_Agent_Token_R
 		live.port = port
 		live.profile = strings.clone(profile, allocator)
 		live.run_count = rec.run_count
-		live.register_waiting = waiting
+		live.share_waiters = 1
+		live.link = strings.clone(link, allocator)
 		slot = live
-		return true
+		return live, true
 	}
-	return false
+	return nil, false
 }
 
 stream_free :: proc(live: ^Stream_Live) {
@@ -175,6 +211,7 @@ stream_free :: proc(live: ^Stream_Live) {
 	delete(live.reg.source.ref, runtime.heap_allocator())
 	delete(live.reg.title, runtime.heap_allocator())
 	delete(live.profile, runtime.heap_allocator())
+	delete(live.link, runtime.heap_allocator())
 	delete(live.register_reject, runtime.heap_allocator())
 	delete(live.pending, runtime.heap_allocator())
 	delete(live.sending, runtime.heap_allocator())
@@ -207,7 +244,7 @@ stream_hub_receive :: proc(raw: string) -> bool {
 			if !frame.accepted {
 				live.reason = "source_error"
 				live.registered = false // A rejected registration owns no Hub route to end.
-				if live.register_waiting do live.register_reject = strings.clone(frame.code, runtime.heap_allocator())
+				if live.share_waiters > 0 do live.register_reject = strings.clone(frame.code, runtime.heap_allocator())
 			}
 		}
 	case contracts.Stream_Attach:
@@ -264,7 +301,7 @@ stream_hub_drain :: proc(conn: ^ws.Connection, send_control := stream_send_contr
 				live.registered = false
 			}
 			// The local caller may not have observed the rejection yet.
-			if live.worker == nil && !live.register_waiting { stream_free(live); slot = nil }
+			if live.worker == nil && live.share_waiters == 0 { stream_free(live); slot = nil }
 			continue
 		}
 		if !live.registered {
