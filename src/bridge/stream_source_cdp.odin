@@ -204,17 +204,25 @@ stream_capture_worker :: proc(data: rawptr) {
 	stage = "session"
 	if !stream_cdp_target_valid(session) do return
 	fmt.eprintln("bridge stream: CDP attached")
+	// Headless/background tabs can accept startScreencast without producing
+	// compositor frames until the flattened page session is prepared.
+	stage = "page_enable"
+	if !stream_cdp_command(&conn, 3, session, "Page.enable", struct {}{}) do return
+	if _, enabled := stream_cdp_wait(&conn, 3); !enabled do return
+	stage = "focus_emulation"
+	if !stream_cdp_command(&conn, 4, session, "Emulation.setFocusEmulationEnabled", struct {enabled: bool}{true}) do return
+	if _, enabled := stream_cdp_wait(&conn, 4); !enabled do return
 	stage = "start"
-	if !stream_cdp_command(&conn, 3, session, "Page.startScreencast",
+	if !stream_cdp_command(&conn, 5, session, "Page.startScreencast",
 		struct {format: string, quality, maxWidth, maxHeight: int}{"jpeg", 60, contracts.STREAM_MAX_WIDTH, contracts.STREAM_MAX_HEIGHT}) { return }
-	if _, started := stream_cdp_wait(&conn, 3); !started do return
+	if _, started := stream_cdp_wait(&conn, 5); !started do return
 	fmt.eprintln("bridge stream: screencast started")
-	defer _ = stream_cdp_command(&conn, 4, session, "Page.stopScreencast", struct {}{})
+	defer _ = stream_cdp_command(&conn, 6, session, "Page.stopScreencast", struct {}{})
 
 	buf := make([dynamic]byte)
 	defer delete(buf)
 	stage = "receive"
-	request_id := 4
+	request_id := 6
 	first_frame := true
 	first_frame_wait := time.tick_now()
 	reported_wait := false
