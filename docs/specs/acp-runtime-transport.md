@@ -19,7 +19,7 @@ Shared code reads provider facts through one resolver each and never compares pr
 - Binary: `bridge_provider_resolve_binary` (profile `binary_path`, else the registry binary; a catalog-only slug uses the catalog row's binary).
 - Version: `bridge_provider_cli_version` / `bridge_provider_cli_version_check`, parsing with `contracts.provider_parse_cli_version`; the minimum is `contracts.provider_min_version` (derived from the System ACP recipe) and `contracts.provider_version_status` is the only comparison.
 - Config directory: `contracts.provider_config_dir_resolve` (bridge: `bridge_provider_config_dir`): profile field, else the CLI's env var, else the home default.
-- Context window: `bridge_context_window_resolve` over `src/bridge/context_windows.json`, whose provider ids must be registered.
+- Context window: `bridge_context_window_resolve` over `src/bridge/context_windows.json`, whose provider ids must be registered. Copilot and Kiro have no rows and use `default_window` (200K) by decision (user, 2026-11-27): their official docs give no verifiable model id to window mapping (Kiro lists windows only by display name and shows model ids only when signed in; Copilot publishes no per-model default).
 
 The catalog `binary` column and the registry `binary` must agree, and every active catalog row must have a registry descriptor (and vice versa): `test_provider_catalog_matches_provider_registry` (`src/hub/repository/sqlite/provider_catalog_migration_test.odin`) enforces it. An ACP recipe must belong to a registered provider whose binary it launches (`acp_descriptor_shape_valid`).
 
