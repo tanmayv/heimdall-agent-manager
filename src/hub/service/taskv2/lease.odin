@@ -578,9 +578,9 @@ on_dep_added_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task, actor: Ac
 queue_instance_terminal_probe :: proc(svc: ^Service, instance_id: string) {
 	if svc == nil || svc.repo == nil || instance_id == "" do return
 	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); !held {
-		if inst, found, _ := iface.agent_get_instance(svc.agents, instance_id); found && instance_ownership_stop_pending(svc, inst) {
-			on_instance_terminal(svc, instance_id)
-		}
+		// A transfer fence may outlive its lease. Retry the original fence
+		// without touching any lease that may have been acquired meanwhile.
+		retry_instance_ownership_stops(svc, instance_id)
 		return
 	}
 	held := state_lock(svc)
@@ -611,6 +611,16 @@ drain_instance_terminal_probes :: proc(svc: ^Service) {
 	}
 }
 
+@(private = "file")
+retry_instance_ownership_stops :: proc(svc: ^Service, instance_id: string) {
+	inst, found, _ := iface.agent_get_instance(svc.agents, instance_id)
+	if !found || !instance_ownership_stop_pending(svc, inst) do return
+	u, started, _ := begin_uow(svc)
+	if !started do return
+	reconcile_ownership_stops_in_uow(svc, &u, inst)
+	_, _ = end_uow(svc, &u, true)
+}
+
 // Runtime callers provide an observed generation and lease. The legacy direct
 // entry is used for administrative removal, where there may be no instance row.
 on_instance_terminal :: proc(svc: ^Service, instance_id: string, observed: ^domain.Agent_Instance = nil, observed_lease_id := "") {
@@ -618,9 +628,7 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string, observed: ^doma
 	scratch: Scratch
 	context.allocator = scratch_begin(&scratch)
 	defer scratch_end(&scratch)
-	if inst,found,_:=iface.agent_get_instance(svc.agents,instance_id);found && instance_ownership_stop_pending(svc,inst) {
-		if stop_u,started,_:=begin_uow(svc);started {reconcile_ownership_stops_in_uow(svc,&stop_u,inst);_,_=end_uow(svc,&stop_u,true)}
-	}
+	retry_instance_ownership_stops(svc, instance_id)
 	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); !held do return
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
