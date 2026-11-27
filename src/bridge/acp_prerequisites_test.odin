@@ -237,6 +237,9 @@ r2_acp_host_install_command_per_os_and_package_manager :: proc(t: ^testing.T) {
         {"linux", {"pacman"}, "sudo pacman -S --needed nodejs npm", "sudo pacman -S --needed npm"},
         {"linux", {"apk"}, "sudo apk add nodejs-current npm", "sudo apk add npm"},
         {"linux", {"nix", "~/.nix-defexpr/channels/nixpkgs"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
+        // Multi-user nix: root's channel, via the user's channels_root link or directly.
+        {"linux", {"nix", "~/.nix-defexpr/channels_root/nixpkgs"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
+        {"linux", {"nix", "/nix/var/nix/profiles/per-user/root/channels/nixpkgs"}, "nix-env -iA nixpkgs.nodejs_22", "nix-env -iA nixpkgs.nodejs_22"},
         {"linux", {"nix"}, "nix profile install nixpkgs#nodejs_22", "nix profile install nixpkgs#nodejs_22"},
         // Debian/Ubuntu/Fedora/openSUSE packages can be older than 22: no command.
         {"linux", {"apt-get"}, "", ""},
