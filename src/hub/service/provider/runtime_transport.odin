@@ -81,13 +81,16 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
 // version (against the same compiled minimum), the package tree and the probe
 // receipt live and reports state "ready" only when it can launch, after
 // matching the catalog recipe against its own descriptor. The Hub adds only
-// the facts it owns (a valid catalog recipe and bridge ACP support) and never
-// re-derives the report. An older bridge's "ready" is its own verdict too.
+// the facts it owns (a valid catalog recipe, bridge ACP support, and that the
+// report was evaluated against this catalog recipe) and never re-derives it.
 classify_acp_availability :: proc(provider, recipe_json, bridge_capabilities_json, adapter_json: string) -> contracts.ACP_Availability {
  if !contracts.acp_provider_recipe_valid(provider,recipe_json) do return contracts.acp_availability_for(.No_Recipe)
  if !contracts.bridge_supports_acp_runtime(bridge_capabilities_json) do return contracts.acp_availability_for(.Unsupported_Bridge)
  switch acp_adapter_state(adapter_json) {
- case "ready": return contracts.acp_availability_for(.Ready)
+ case "ready":
+  // A ready report evaluated against another recipe needs a Re-check/install.
+  if !acp_report_binds_recipe(adapter_json,recipe_json) do return contracts.acp_availability_for(.Adapter_Outdated)
+  return contracts.acp_availability_for(.Ready)
  case "installing": return contracts.acp_availability_for(.Installing)
  case "missing": return contracts.acp_availability_for(.Adapter_Missing)
  case "missing_node": return contracts.acp_availability_for(.Adapter_Missing_Node)
@@ -96,6 +99,31 @@ classify_acp_availability :: proc(provider, recipe_json, bridge_capabilities_jso
  case "outdated": return contracts.acp_availability_for(.Adapter_Outdated)
  }
  return contracts.acp_availability_for(.Not_Checked)
+}
+
+// acp_report_binds_recipe checks a ready report's minimal structure (installed,
+// checked_at) and the recipe binding it carries (adapter_package and
+// adapter_version, sent since R2) against the catalog recipe. A report from a
+// pre-R2 bridge has no binding; its "version" is then accepted only when it
+// equals the recipe's adapter_version, which is exactly what those bridges
+// pinned for adapters (a system CLI must sit at the minimum itself, so such
+// bridges are best updated). Mismatches classify as adapter_outdated.
+acp_report_binds_recipe :: proc(adapter_json, recipe_json: string) -> bool {
+ recipe: contracts.ACP_Recipe
+ if json.unmarshal_string(recipe_json,&recipe,allocator=context.temp_allocator)!=nil || recipe.adapter_version=="" do return false
+ value,err:=json.parse_string(adapter_json,allocator=context.temp_allocator)
+ if err!=nil do return false
+ obj,ok:=value.(json.Object)
+ if !ok do return false
+ installed,iok:=obj["installed"].(json.Boolean)
+ checked,cok:=obj["checked_at"].(json.String)
+ if !iok || !bool(installed) || !cok || checked=="" do return false
+ if version,bound:=obj["adapter_version"].(json.String);bound {
+  pkg,_:=obj["adapter_package"].(json.String)
+  return string(version)==recipe.adapter_version && string(pkg)==recipe.adapter_package
+ }
+ legacy,lok:=obj["version"].(json.String)
+ return lok && string(legacy)==recipe.adapter_version
 }
 
 // acp_availability_error maps a verdict to the launch/settings error. Error

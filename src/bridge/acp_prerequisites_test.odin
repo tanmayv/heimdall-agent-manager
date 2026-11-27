@@ -204,7 +204,8 @@ r2_acp_copilot_user_installed_minimum_detected_without_restart :: proc(t: ^testi
     testing.expect(t, ok, reason)
     testing.expect_value(t, acp_adapter_status("copilot").state, "ready")
     status_json := acp_adapter_status_json("copilot")
-    testing.expect(t, strings.contains(status_json, `"runtime_kind":"system"`) && strings.contains(status_json, `"version":"1.0.120"`) && strings.contains(status_json, `"install_command":null`), status_json)
+    testing.expect(t, strings.contains(status_json, `"runtime_kind":"system"`) && strings.contains(status_json, `"version":"1.0.120"`) && strings.contains(status_json, `"install_command":null`) &&
+        strings.contains(status_json, `"adapter_package":"@github/copilot","adapter_version":"1.0.114"`), status_json)
     testing.expect_value(t, r2_runner_calls, 0) // never node, npm or an install
 }
 

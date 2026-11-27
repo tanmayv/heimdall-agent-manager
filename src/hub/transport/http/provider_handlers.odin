@@ -453,7 +453,8 @@ bridge_provider_enable_handler :: proc(ctx: rawptr, req: Request) -> Response {
 			// install, or a Re-check for user-installed CLIs), so a stale report
 			// (e.g. Node.js or the CLI installed since) never needs a restart.
 			switch state {
-			case "missing", "outdated", "not_checked", "missing_node", "missing_npm", "error":
+			// "ready" here is a report bound to another catalog recipe.
+			case "missing", "outdated", "not_checked", "missing_node", "missing_npm", "error", "ready":
 				id, install_err := provider_acp_install_start(h, bridge.bridge_id, provider)
 				if install_err.code != .None do return respond_error(install_err, req.request_id)
 				defer delete(id)

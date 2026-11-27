@@ -325,7 +325,8 @@ acp_adapter_tool_version :: proc(out: string) -> string {
 }
 
 acp_adapter_status_json :: proc(provider: string, override: string = "", profile: string = "") -> string {
-    if _, ok := acp_adapter_recipe(provider); !ok do return strings.clone("null")
+    recipe, ok := acp_adapter_recipe(provider)
+    if !ok do return strings.clone("null")
     d, _ := contracts.acp_provider_descriptor(provider)
     s := acp_adapter_status(provider, profile)
     if override != "" do s.state = override
@@ -337,9 +338,13 @@ acp_adapter_status_json :: proc(provider: string, override: string = "", profile
         error, checked_at: json.Value,
         provider, runtime_kind, profile: string,
         install_command, diagnostic: json.Value,
+        // The catalog recipe this verdict was evaluated against; the Hub
+        // compares it with its own catalog (a Hub-owned fact).
+        adapter_package, adapter_version: string,
     }{s.installed, nullable(s.version), nullable(s.node_version), s.state, nullable(s.error), nullable(s.checked_at),
         provider, acp_adapter_runtime_kind(d), profile_effective_id(provider, profile),
-        nullable(s.install_command), nullable(s.diagnostic)})
+        nullable(s.install_command), nullable(s.diagnostic),
+        recipe.acp_recipe.adapter_package, recipe.acp_recipe.adapter_version})
     return string(raw)
 }
 
