@@ -4,9 +4,13 @@ import "core:fmt"
 import "core:slice"
 import "core:strings"
 import "core:sync"
+import "core:time"
 import contracts "odin_test:contracts"
 
 MAX_VIEWERS_PER_STREAM :: 8
+MAX_INPUT_PER_SECOND :: 60
+INPUT_BUCKET_SIZE :: 100 * time.Millisecond
+INPUT_BUCKETS :: 11
 
 Registry :: struct {
 	mu: sync.Mutex,
@@ -27,6 +31,9 @@ Route :: struct {
 	window_ms: u64,
 	window_bytes, window_frames: int,
 	ready: bool,
+	started_ms: u64,
+	input_buckets: [INPUT_BUCKETS]u8,
+	input_bucket_index: i64,
 }
 
 clone_info :: proc(info: contracts.Stream_Registration, allocator := context.allocator) -> contracts.Stream_Registration {
@@ -83,6 +90,7 @@ register :: proc(reg: ^Registry, info: contracts.Stream_Registration, generation
 	r := new(Route)
 	r.info = clone_info(info)
 	r.generation = generation
+	r.started_ms = now
 	reg.next_serial += 1
 	r.serial = reg.next_serial
 	reg.routes[r.info.stream_id] = r
@@ -130,4 +138,26 @@ accept_piece :: proc(r: ^Route, p: contracts.Stream_Piece, now: u64) {
 	r.latest_seq = r.seq
 	if r.version == 0 do fmt.eprintln("hub stream: first frame assembled")
 	r.version += 1
+}
+
+// The routing mutex protects the shared budget across all viewers. Keep
+// only aggregate bucket counts. Counting the current and ten preceding
+// 100 ms buckets covers any rolling second, with at most 100 ms extra hold.
+admit_input :: proc(r: ^Route, count: int, now: time.Tick) -> bool {
+	if count <= 0 || count > MAX_INPUT_PER_SECOND do return false
+	index := now._nsec / i64(INPUT_BUCKET_SIZE)
+	advanced := index - r.input_bucket_index
+	if advanced >= INPUT_BUCKETS {
+		r.input_buckets = {}
+	} else {
+		for step in 1..=advanced {
+			r.input_buckets[(r.input_bucket_index + step) % INPUT_BUCKETS] = 0
+		}
+	}
+	r.input_bucket_index = index
+	total := count
+	for n in r.input_buckets do total += int(n)
+	if total > MAX_INPUT_PER_SECOND do return false
+	r.input_buckets[index % INPUT_BUCKETS] += u8(count)
+	return true
 }

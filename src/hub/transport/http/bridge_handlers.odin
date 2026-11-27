@@ -2400,6 +2400,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	heap := context.allocator
 	defer delete(text, heap)
 	defer delete(type, heap)
+	if type == "stream_input" do return true // Viewer-only direction, silently ignored.
 	metrics.counter_inc(metrics.with(project_service.fleet_metrics.bridge_ws_frames, "rx", project_service.bridge_frame_kind(type)))
 
 	// Per-frame scratch, the reader-thread counterpart of handle_client's

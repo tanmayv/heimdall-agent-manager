@@ -469,11 +469,14 @@ send_all_tcp :: proc(socket: net.TCP_Socket, bytes: []byte, timeout: time.Durati
 
 // One OS send per iteration: core:net send_tcp loops internally, which can
 // extend SO_SNDTIMEO indefinitely when a peer makes tiny amounts of progress.
-send_socket_bytes :: proc(socket: net.TCP_Socket, bytes: []byte, timeout: time.Duration = WRITE_DEADLINE) -> (sent: int, ok: bool) {
-	if net.set_option(socket, .Send_Timeout, 50 * time.Millisecond) != nil do return 0, false
+send_socket_bytes :: proc(socket: net.TCP_Socket, bytes: []byte, timeout: time.Duration = WRITE_DEADLINE, record_timeout := true) -> (sent: int, ok: bool) {
+	if net.set_option(socket, .Send_Timeout, min(timeout, 50 * time.Millisecond)) != nil do return 0, false
 	started := time.tick_now()
 	for sent < len(bytes) {
-		if time.tick_since(started) >= timeout { sync.atomic_add(&_send_timeouts, 1); return sent, false }
+		if time.tick_since(started) >= timeout {
+			if record_timeout do sync.atomic_add(&_send_timeouts, 1)
+			return sent, false
+		}
 		n, retry := socket_send_once(socket, bytes[sent:])
 		if retry { time.sleep(time.Millisecond); continue }
 		if n <= 0 do return sent, false

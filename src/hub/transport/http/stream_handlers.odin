@@ -2,6 +2,7 @@ package http
 
 import "base:runtime"
 import "core:fmt"
+import "core:mem/virtual"
 import "core:net"
 import "core:strings"
 import "core:sync"
@@ -130,6 +131,35 @@ stream_live_for_owner :: proc(h: ^Bridge_Handlers, owner, id: string) -> ^stream
 	return r
 }
 
+Stream_List_Item :: struct {
+	stream_id, title, source_kind, bridge, instance: string,
+	started: u64, // Hub registration time in Unix milliseconds.
+}
+
+stream_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	auth, ok, refused := require_auth(h.auth, req)
+	if !ok do return secure_form_no_store(refused)
+	if !stream_interactive_auth(auth) do return stream_http_error(req, .Forbidden, "owner authentication required")
+	items := make([dynamic]Stream_List_Item)
+	defer delete(items)
+	now := stream_now_ms()
+	sync.lock(&h.streams.mu)
+	for _, r in h.streams.routes {
+		if r.info.owner != auth.user_id || !r.ready || now >= r.info.expires ||
+		   project.bridge_runtime_registry_generation(h.bridge_runtime_registry, r.info.bridge) != r.generation {
+			continue
+		}
+		append(&items, Stream_List_Item{
+			strings.clone(r.info.stream_id, context.temp_allocator), strings.clone(r.info.title, context.temp_allocator),
+			strings.clone(r.info.source.kind, context.temp_allocator), strings.clone(r.info.bridge, context.temp_allocator),
+			strings.clone(r.info.instance, context.temp_allocator), r.started_ms,
+		})
+	}
+	sync.unlock(&h.streams.mu)
+	return secure_form_no_store(respond_success_typed(items[:], req.request_id, ""))
+}
+
 stream_metadata_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	auth, ok, refused := require_auth(h.auth, req)
@@ -217,9 +247,48 @@ stream_view_leave :: proc(h: ^Bridge_Handlers, owner, id: string, serial: u64) {
 	fmt.eprintfln("hub stream: detach sent=%t", detached)
 }
 
+// Only the upgraded viewer calls this, using the owner and route serial
+// established at admission. Never send via command tracking or telemetry.
+stream_view_input :: proc(h: ^Bridge_Handlers, owner, id: string, serial: u64, raw: string) {
+	scratch: virtual.Arena
+	if virtual.arena_init_growing(&scratch) != nil do return
+	defer virtual.arena_destroy(&scratch)
+	allocator := virtual.arena_allocator(&scratch)
+	input, valid := contracts.stream_decode_input(raw, allocator)
+	if !valid || input.stream_id != id do return
+
+	if !sync.mutex_try_lock(&h.stream_controls) do return
+	defer sync.unlock(&h.stream_controls)
+	sync.lock(&h.streams.mu)
+	r := stream_live_for_owner(h, owner, id)
+	if r == nil || r.serial != serial || r.viewers == 0 || !stream.admit_input(r, len(input.events), time.tick_now()) {
+		sync.unlock(&h.streams.mu)
+		return
+	}
+	c := project.bridge_runtime_connection_acquire(h.bridge_runtime_registry, r.info.bridge, r.generation)
+	sync.unlock(&h.streams.mu)
+	if c == nil do return
+	defer project.bridge_runtime_connection_release(h.bridge_runtime_registry, c)
+	if !sync.mutex_try_lock(&c.writer_mutex) do return
+	defer sync.unlock(&c.writer_mutex)
+	if sync.atomic_load(&c.retired) || c.owner_id != owner do return
+
+	// Browser ingress may use extended lengths. Keep Bridge egress within
+	// its 16-bit frame limit, even with six-byte escapes for every text byte.
+	started := time.tick_now()
+	for i := 0; i < len(input.events); i += 8 {
+		payload := contracts.stream_encode_input({id, input.events[i:min(i + 8, len(input.events))]}, allocator)
+		remaining := 10 * time.Millisecond - time.tick_since(started)
+		if len(payload) == 0 || remaining <= 0 do return
+		_, result := ws.write_server_opcode_counted(c.socket, 0x1, string(payload), false, remaining, record_timeout = false)
+		if result == .Desynchronised do _ = net.shutdown(net.Any_Socket(c.socket), .Both)
+		if result != .Ok do return
+	}
+}
+
 // One socket handler owns all writes to its viewer. Bridge ingestion never
 // waits on that socket. The existing reader retains any partial inbound frame
-// across receive deadlines; application messages are rejected (watch only).
+// across receive deadlines. Only text input messages are accepted.
 stream_view_handler :: proc(ctx: rawptr, req: Request, socket: net.TCP_Socket) {
 	h := (^Bridge_Handlers)(ctx)
 	ticket := query_value(req.query, "ticket")
@@ -287,7 +356,7 @@ stream_view_handler :: proc(ctx: rawptr, req: Request, socket: net.TCP_Socket) {
 	// The HTTP request arena cannot reclaim individual frames while the upgrade lives.
 	context.allocator = runtime.heap_allocator()
 	reader := bridge_ws_reader_make(socket)
-	reader.max_buffer_bytes = 4096 // Control frames only on this watch-only socket.
+	reader.max_buffer_bytes = contracts.STREAM_MAX_INPUT_BYTES + 8192
 	defer bridge_ws_reader_destroy(&reader)
 	guard := stream_auth_guard_make(h.auth, auth)
 	version: u64
@@ -309,8 +378,13 @@ stream_view_handler :: proc(ctx: rawptr, req: Request, socket: net.TCP_Socket) {
 		}
 		message, read, reason := bridge_ws_read_frame(&reader, 100 * time.Millisecond)
 		if read {
+			if reader.last_opcode != 0x1 || !stream_auth_still_valid(&guard) {
+				delete(message)
+				return
+			}
+			stream_view_input(h, auth.user_id, id, serial, message)
 			delete(message)
-			return
+			continue
 		}
 		if reason != .Read_Deadline do return
 	}

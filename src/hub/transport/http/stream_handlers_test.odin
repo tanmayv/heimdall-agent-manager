@@ -1,11 +1,14 @@
 package http
 
+import "base:runtime"
 import "core:net"
 import "core:strings"
 import "core:testing"
 import "core:thread"
 import "core:time"
 import "core:fmt"
+import stream "odin_test:hub/service/stream"
+import ws "odin_test:lib/ws"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -22,6 +25,7 @@ STREAM_TEST_ID :: "123456789012345678901234567890ab"
 STREAM_TEST_BRIDGE :: "brg_stream_a"
 STREAM_TEST_INSTANCE :: "inst_stream_a"
 STREAM_TEST_TASK :: "task_stream_a"
+STREAM_TEST_INPUT_MARKER :: "synthetic-input-canary-fca12bb8"
 STREAM_TEST_MARKER :: "synthetic-image-canary-c5ac1640"
 
 Stream_Test_Pair :: struct {peer, hub: net.TCP_Socket}
@@ -192,6 +196,37 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 		got := router_dispatch(&router, secure_form_test_request("GET", path, "", "", principal, ""))
 		testing.expect_value(t, got.status, 200 if principal == alice else 404)
 	}
+	// An owner must not see another owner's route even if that route is
+	// ready and its Bridge generation is live. Nor should a pending or
+	// expired registration for the caller appear.
+	fixture_now := stream_now_ms()
+	for fixture in ([]struct { id, owner, title: string, ready, expired: bool }{
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bob", "Foreign tab", true, false},
+		{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "alice", "Pending tab", false, false},
+		{"cccccccccccccccccccccccccccccccc", "alice", "Expired tab", true, true},
+	}) {
+		other := r
+		other.stream_id, other.owner, other.title = fixture.id, fixture.owner, fixture.title
+		// The fixture route must have the same allocation ownership as a real registration.
+		{
+			context.allocator = runtime.heap_allocator()
+			if !testing.expect_value(t, stream.register(&h.streams, other, hello.generation, fixture_now), "") do return
+		}
+		route := h.streams.routes[fixture.id]
+		route.ready = fixture.ready
+		if fixture.expired do route.info.expires = fixture_now
+	}
+	list := router_dispatch(&router, secure_form_test_request("GET", STREAM_API_PATH, "", "", alice, ""))
+	testing.expect_value(t, list.status, 200)
+	testing.expect(t, strings.contains(list.body, STREAM_TEST_ID) && strings.contains(list.body, "Example tab"))
+	testing.expect(t, !strings.contains(list.body, "Foreign tab") && !strings.contains(list.body, "Pending tab") && !strings.contains(list.body, "Expired tab"))
+	testing.expect(t, !strings.contains(list.body, "tab_1") && !strings.contains(list.body, STREAM_TEST_TASK))
+	testing.expect_value(t, header_value(list.headers, "Cache-Control"), "no-store")
+	other_list := router_dispatch(&router, secure_form_test_request("GET", STREAM_API_PATH, "", "", bob, ""))
+	testing.expect_value(t, other_list.status, 200)
+	testing.expect(t, !strings.contains(other_list.body, STREAM_TEST_ID) && strings.contains(other_list.body, "Foreign tab"))
+	testing.expect_value(t, router_dispatch(&router, secure_form_test_request("GET", STREAM_API_PATH, "", "", "", "")).status, 401)
+
 	unknown := router_dispatch(&router, secure_form_test_request("GET", STREAM_API_PATH + "/00000000000000000000000000000000", "", "", alice, ""))
 	testing.expect_value(t, unknown.status, 404)
 
@@ -255,6 +290,29 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	if !testing.expect(t, strings.contains(stream_test_http_header(first.peer), "101 Switching Protocols")) do return
 	testing.expect(t, strings.contains(secure_form_test_read_text(bridge.peer), "stream_attach"))
 
+	input_events := []contracts.Stream_Input_Event{contracts.Stream_Input_Text{text = STREAM_TEST_INPUT_MARKER}}
+	input_wire := contracts.stream_encode_input({STREAM_TEST_ID, input_events})
+	masked := http_test_masked_text_frame(string(input_wire), {1, 2, 3, 4})
+	// Send from the wrong transport while an owner viewer is already active.
+	// If it relays the canary, the next read carries the wrong event.
+	wrong_transport := contracts.stream_encode_input({STREAM_TEST_ID, {contracts.Stream_Input_Text{text = "wrong-transport"}}})
+	chunks: [dynamic]Bridge_Chunk_Reassembly
+	testing.expect(t, bridge_ws_process_frame(&h, STREAM_TEST_BRIDGE, hello.generation, bridge.hub, &chunks, strings.clone(string(wrong_transport))))
+	probe_events := []contracts.Stream_Input_Event{contracts.Stream_Input_Text{text = "non-target"}}
+	probe_wire := contracts.stream_encode_input({"00000000000000000000000000000000", probe_events})
+	probe := http_test_masked_text_frame(string(probe_wire), {1, 2, 3, 4})
+	_, probe_sent := ws.send_socket_bytes(first.peer, probe[:])
+	_, input_sent := ws.send_socket_bytes(first.peer, masked[:])
+	testing.expect(t, probe_sent && input_sent)
+	forwarded := secure_form_test_read_text(bridge.peer)
+	decoded, input_ok := contracts.stream_decode_input(forwarded)
+	if testing.expect(t, input_ok) {
+		testing.expect_value(t, decoded.stream_id, STREAM_TEST_ID)
+		if text, ok := decoded.events[0].(contracts.Stream_Input_Text); testing.expect(t, ok) {
+			testing.expect_value(t, text.text, STREAM_TEST_INPUT_MARKER)
+		}
+	}
+
 	wire := contracts.stream_encode_piece({STREAM_TEST_ID, 1, 0, 1, contracts.STREAM_MIME_JPEG, transmute([]byte)string(STREAM_TEST_MARKER)})
 	testing.expect(t, bridge_ws_process_binary_frame(&h, STREAM_TEST_BRIDGE, hello.generation, string(wire)))
 	stream_test_frame(t, first.peer)
@@ -287,6 +345,9 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	testing.expect_value(t, event_bytes, 0)
 	cached := router_dispatch(&router, secure_form_test_request("GET", path, "", "", alice, ""))
 	testing.expect(t, !strings.contains(cached.body, STREAM_TEST_MARKER))
+	testing.expect(t, !strings.contains(cached.body, STREAM_TEST_INPUT_MARKER))
+	list = router_dispatch(&router, secure_form_test_request("GET", STREAM_API_PATH, "", "", alice, ""))
+	testing.expect(t, !strings.contains(list.body, STREAM_TEST_INPUT_MARKER))
 	testing.expect_value(t, header_value(cached.headers, "Cache-Control"), "no-store")
 
 	disconnected, dc_ok := stream_test_pair(t)
@@ -326,4 +387,20 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	user_ws_ticket_store_put(&tickets, "expired_stream", owner_auth, 60)
 	testing.expect(t, router_dispatch_upgrade(&router, stream_test_view_request(view_path, "expired_stream"), expired.hub))
 	testing.expect(t, strings.contains(stream_test_http_header(expired.peer), "404 Not Found"))
+}
+
+@(test)
+test_stream_input_rate_limit_is_rolling_and_shared :: proc(t: ^testing.T) {
+	route: stream.Route
+	start := time.Tick{_nsec = i64(time.Second)}
+	near := time.Tick{_nsec = i64(2*time.Second - time.Millisecond)}
+	boundary := time.Tick{_nsec = i64(2*time.Second)}
+	next := time.Tick{_nsec = i64(2*time.Second + stream.INPUT_BUCKET_SIZE)}
+	testing.expect(t, stream.admit_input(&route, 32, start))
+	testing.expect(t, !stream.admit_input(&route, 29, near), "an excess batch cannot leak through or consume the remaining quota")
+	testing.expect(t, stream.admit_input(&route, 28, near))
+	testing.expect(t, !stream.admit_input(&route, 1, near))
+	testing.expect(t, !stream.admit_input(&route, 32, boundary), "conservative bucket rollover cannot reset the whole budget")
+	testing.expect(t, stream.admit_input(&route, 32, next))
+	testing.expect(t, !stream.admit_input(&route, 1, next), "refill only the events at least a second old")
 }
