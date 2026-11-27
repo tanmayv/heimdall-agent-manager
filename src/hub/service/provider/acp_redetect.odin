@@ -156,6 +156,14 @@ acp_redetect_pending_expired :: proc(r: ^ACP_Redetector, bridge_id, provider: st
 	return strings.clone(p.command_id, context.temp_allocator)
 }
 
+// acp_redetector_clear_window forgets the dedupe window (tests; a request
+// after it behaves as if the window had passed).
+acp_redetector_clear_window :: proc(r: ^ACP_Redetector) {
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	for key in r.last do delete(key, runtime.default_allocator())
+	clear(&r.last)
+}
+
 // acp_redetect_kind picks the request for a provider's current report.
 acp_redetect_kind :: proc(provider, adapter_json: string) -> ACP_Redetect_Kind {
 	d, known := contracts.acp_provider_descriptor(provider)

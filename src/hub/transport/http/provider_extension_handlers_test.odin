@@ -1585,3 +1585,141 @@ test_bridge_provider_row_descriptor_fields :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(unknown, `"profile_config_dir":null`), unknown)
 	for text in ([]string{claude, codex, agy, copilot, kiro, retired, unknown}) do testing.expect(t, text != "", "row is valid JSON")
 }
+
+// R2 G5: an inline redetector wired to this fixture's handlers.
+@(private = "file")
+redetect_test_enable :: proc(t: ^testing.T, f: ^extension_handler_fixture, r: ^provider_service.ACP_Redetector) {
+	provider_service.acp_redetector_init(r, provider_acp_redetect_dispatch, &f.ph)
+	r.inline = true
+	f.pr_svc.redetector = r
+	bridge, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+	defer domain.bridge_destroy(&bridge)
+	delete(bridge.capabilities_json); bridge.capabilities_json = strings.clone(`{"features":["acp_runtime_v1"]}`)
+	_, saved, _ := iface.bridge_save_bridge(&f.br_repo, bridge)
+	testing.expect(t, saved)
+}
+
+@(private = "file")
+redetect_test_adapter :: proc(t: ^testing.T, f: ^extension_handler_fixture, provider: string) -> string {
+	statuses, err := iface.bridge_provider_status_list(&f.pr_repo, f.bridge_id)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	defer domain.bridge_provider_statuses_destroy(statuses)
+	for s in statuses do if s.provider == provider && s.profile_id == provider do return strings.clone(s.acp_adapter_json, context.temp_allocator)
+	return ""
+}
+
+@(private = "file")
+redetect_test_read :: proc(t: ^testing.T, f: ^extension_handler_fixture) {
+	req := extension_test_request(f, fmt.tprintf("/api/v1/bridges/%s/provider-status", f.bridge_id))
+	req.method = "GET"
+	testing.expect_value(t, bridge_provider_status_handler(&f.ph, req).status, 200)
+}
+
+// A stale status read sends one provider-scoped discover; its report is
+// applied; nothing is persisted; later triggers (after the window, or after a
+// failed send) send again; reports the Hub did not ask for are ignored.
+@(test)
+r2_stale_status_read_redetects_with_provider_scoped_discover :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := extension_test_setup(t, "r2_redetect_read"); defer extension_test_teardown(f)
+	r: provider_service.ACP_Redetector
+	redetect_test_enable(t, f, &r); defer provider_service.acp_redetector_destroy(&r)
+	ready := fmt.tprintf(`{{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-26T00:00:00Z","adapter_package":"%s","adapter_version":"0.108.0"}}`, contracts.ACP_CLAUDE_DESCRIPTOR.pkg.name)
+	ok, upsert_err := iface.bridge_provider_status_upsert(&f.pr_repo, {bridge_id = f.bridge_id, provider = "claude", profile_id = "claude", state = "present", acp_adapter_json = ready})
+	testing.expect(t, ok && upsert_err.code == .None)
+	redetect_test_read(t, f)
+	testing.expect_value(t, f.sink_rec.count, 0) // just received: fresh
+	make_stale :: proc(f: ^extension_handler_fixture) { sqlite.exec(&f.conn, "UPDATE bridge_provider_status SET acp_adapter_received_at='2020-01-01T00:00:00Z';") }
+	make_stale(f)
+	redetect_test_read(t, f)
+	if !testing.expect_value(t, f.sink_rec.count, 1) do return
+	id := strings.clone(f.sink_rec.last_cmd.command_id, context.temp_allocator)
+	testing.expect(t, strings.has_prefix(id, ACP_REDETECT_COMMAND_PREFIX), id)
+	testing.expect_value(t, json_string(f.sink_rec.last_cmd.body_json, "type", context.temp_allocator), "provider_discover")
+	testing.expect(t, strings.contains(f.sink_rec.last_cmd.body_json, `"providers":["claude"]`), f.sink_rec.last_cmd.body_json)
+	commands := extension_test_commands(t, f)
+	testing.expect_value(t, len(commands), 0) // never persisted
+	domain.provider_extension_commands_destroy(commands)
+	// In flight: no second request even after the window.
+	provider_service.acp_redetector_clear_window(&r)
+	redetect_test_read(t, f)
+	testing.expect_value(t, f.sink_rec.count, 1)
+	// A report the Hub did not ask for (another id) changes nothing.
+	extension_test_report(t, f, "acp_rd_forged", `[{"provider":"claude","state":"present","acp_adapter":{"installed":false,"state":"missing","checked_at":"2026-11-28T00:00:00Z"}}]`)
+	testing.expect(t, strings.contains(redetect_test_adapter(t, f, "claude"), `"state":"ready"`))
+	// The matching report is applied and ends the request.
+	extension_test_report(t, f, id, `[{"provider":"claude","state":"present","acp_adapter":{"installed":false,"state":"missing_node","checked_at":"2026-11-28T00:00:00Z"}},{"provider":"codex","state":"present","acp_adapter":{"installed":false,"state":"missing","checked_at":"2026-11-28T00:00:00Z"}}]`)
+	testing.expect(t, strings.contains(redetect_test_adapter(t, f, "claude"), `"state":"missing_node"`), redetect_test_adapter(t, f, "claude"))
+	testing.expect_value(t, redetect_test_adapter(t, f, "codex"), "") // only the provider asked for
+	redetect_test_read(t, f)
+	testing.expect_value(t, f.sink_rec.count, 1) // the applied report is fresh
+	// After the window a stale report is re-detected again, with a new id.
+	make_stale(f); provider_service.acp_redetector_clear_window(&r)
+	redetect_test_read(t, f)
+	testing.expect_value(t, f.sink_rec.count, 2)
+	testing.expect(t, f.sink_rec.last_cmd.command_id != id)
+	extension_test_report(t, f, f.sink_rec.last_cmd.command_id, `[{"provider":"claude","state":"present","acp_adapter":{"installed":false,"state":"missing_node","checked_at":"2026-11-28T00:01:00Z"}}]`)
+	// A failed send does not block later re-detects.
+	make_stale(f); provider_service.acp_redetector_clear_window(&r)
+	f.sink_rec.fail = true
+	redetect_test_read(t, f)
+	f.sink_rec.fail = false
+	provider_service.acp_redetector_clear_window(&r)
+	redetect_test_read(t, f)
+	testing.expect_value(t, f.sink_rec.count, 3)
+}
+
+// The launch gate re-checks a not-ready System runtime with the tracked
+// install_acp_adapter command; a lost one is failed and replaced.
+@(test)
+r2_launch_gate_rechecks_system_runtime_and_replaces_a_lost_command :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := extension_test_setup(t, "r2_redetect_gate"); defer extension_test_teardown(f)
+	r: provider_service.ACP_Redetector
+	redetect_test_enable(t, f, &r); defer provider_service.acp_redetector_destroy(&r)
+	ok, upsert_err := iface.bridge_provider_status_upsert(&f.pr_repo, {bridge_id = f.bridge_id, provider = "copilot", profile_id = "copilot", state = "present",
+		acp_adapter_json = `{"installed":true,"state":"error","version":"1.0.120","checked_at":"2026-11-27T00:00:00Z","error":"ACP initialize probe is required for the selected profile; use Re-check"}`})
+	testing.expect(t, ok && upsert_err.code == .None)
+	entry, found, err := iface.provider_catalog_get(&f.pr_repo, "copilot")
+	if !testing.expect(t, found && err.code == .None) do return
+	defer domain.provider_catalog_entry_destroy(entry)
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	if !testing.expect_value(t, f.sink_rec.count, 1) do return
+	testing.expect_value(t, json_string(f.sink_rec.last_cmd.body_json, "type", context.temp_allocator), "install_acp_adapter")
+	first := strings.clone(f.sink_rec.last_cmd.command_id, context.temp_allocator)
+	// Gate retries do not pile up commands.
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, f.sink_rec.count, 1)
+	// No result within the TTL: the command is failed and a new one sent.
+	provider_service.acp_redetect_pending_set(&r, f.bridge_id, "copilot", first, .Recheck, time.time_add(time.now(), -(provider_service.ACP_REDETECT_INFLIGHT_TTL + time.Second)))
+	provider_service.acp_redetector_clear_window(&r)
+	testing.expect_value(t, provider_service.require_acp_ready(&f.pr_svc, f.bridge_id, entry).code, domain.Error_Code.ACP_Unavailable)
+	testing.expect_value(t, f.sink_rec.count, 2)
+	second := strings.clone(f.sink_rec.last_cmd.command_id, context.temp_allocator)
+	testing.expect(t, second != first)
+	testing.expect_value(t, extension_test_state(t, f, first), "failed")
+	// Its terminal result ends the re-detection in flight.
+	result := strings.concatenate({`{"command_id":"`, second, `","status":"succeeded"}`}, context.temp_allocator)
+	testing.expect_value(t, bridge_extension_frame(&f.bh, f.bridge_id, "command_result", result).code, domain.Error_Code.None)
+	testing.expect_value(t, provider_service.acp_redetect_pending_expired(&r, f.bridge_id, "copilot", time.time_add(time.now(), time.Hour)), "")
+}
+
+// A "ready" report bound to another catalog recipe is not ready; selecting
+// ACP re-checks it (provider_handlers enable path).
+@(test)
+r2_enable_acp_rechecks_a_ready_report_for_another_recipe :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	f := extension_test_setup(t, "r2_enable_mismatch"); defer extension_test_teardown(f)
+	bridge, _, _ := iface.bridge_get_bridge(&f.br_repo, f.bridge_id); defer domain.bridge_destroy(&bridge)
+	bridge.capabilities_json = strings.clone(`{"features":["acp_runtime_v1"]}`)
+	iface.bridge_save_bridge(&f.br_repo, bridge)
+	iface.bridge_provider_status_upsert(&f.pr_repo, {bridge_id = f.bridge_id, provider = "claude", profile_id = "claude", state = "present",
+		acp_adapter_json = fmt.tprintf(`{{"installed":true,"state":"ready","version":"0.0.1","checked_at":"2026-11-27T00:00:00Z","adapter_package":"%s","adapter_version":"0.0.1"}}`, contracts.ACP_CLAUDE_DESCRIPTOR.pkg.name)})
+	path := fmt.tprintf("/api/v1/bridges/%s/providers/claude", f.bridge_id)
+	response := bridge_provider_enable_handler(&f.ph, extension_test_request(f, path, `{"transport":"acp"}`))
+	testing.expect(t, response.status == 409 && strings.contains(response.body, "acp_installing"), response.body)
+	testing.expect_value(t, f.sink_rec.count, 1)
+	testing.expect_value(t, json_string(f.sink_rec.last_cmd.body_json, "type", context.temp_allocator), "install_acp_adapter")
+	transport, err := iface.get_provider_transport(&f.pr_repo, f.bridge_id, "claude"); defer delete(transport)
+	testing.expect(t, err.code == .None && transport == "", "the setting is not saved until ready")
+}
