@@ -160,7 +160,14 @@ acp_adapter_files_check :: proc(root: string, provider: string) -> ACP_Adapter_F
 
 acp_adapter_node_compatible :: proc(version: string, minimum: int = 22) -> bool {
     if len(version) > 64 do return false
-    parts := strings.split(strings.trim_prefix(strings.trim_space(version), "v"), ".", context.temp_allocator)
+    core := strings.trim_prefix(strings.trim_space(version), "v")
+    // A prerelease/build suffix (v23.0.0-rc.1) does not change the major.
+    if cut := strings.index_any(core, "-+"); cut >= 0 {
+        if cut + 1 >= len(core) do return false
+        for c in transmute([]u8)core[cut + 1:] do if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || c == '-') do return false
+        core = core[:cut]
+    }
+    parts := strings.split(core, ".", context.temp_allocator)
     if len(parts) != 3 do return false
     major, ok := strconv.parse_int(parts[0])
     minor, minor_ok := strconv.parse_int(parts[1]); patch, patch_ok := strconv.parse_int(parts[2])
@@ -176,11 +183,20 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
         s.state = "error"; s.error = "acp_adapter_unsupported_platform"; return s
     }
     if d.launch == .System do return acp_adapter_system_status(d, profile, s)
-    // Node.js runs the adapter, so it is always required.
-    out, diagnostic, node_exit, ran, _ := acp_adapter_runner({"node", "--version"}, 2*time.Second)
+    // Node.js runs the adapter, so it is always required. "Missing" means it
+    // does not resolve on PATH; a resolved tool that cannot be started now
+    // (process budget, spawn failure, timeout) is a transient error.
+    node := acp_host_tool_resolve_hook("node")
+    if node == "" {
+        s.state = "missing_node"
+        s.error, s.install_command = acp_host_tool_requirement(.Node, d.display_name, d.node_min_major)
+        return s
+    }
+    out, diagnostic, node_exit, ran, node_timeout := acp_adapter_runner({node, "--version"}, 2*time.Second)
     defer { delete(out); delete(diagnostic) }
-    if !ran || node_exit != 0 || !acp_adapter_node_compatible(out, d.node_min_major) {
-        found := acp_adapter_tool_version(out) if ran && node_exit == 0 else ""
+    if !ran || node_timeout { s.state = "error"; s.error = ACP_PREREQUISITE_CHECK_FAILED_NODE; return s }
+    if node_exit != 0 || !acp_adapter_node_compatible(out, d.node_min_major) {
+        found := acp_adapter_tool_version(out) if node_exit == 0 else ""
         s.state = "missing_node"; s.node_version = found
         s.error, s.install_command = acp_host_tool_requirement(.Node, d.display_name, d.node_min_major, found)
         return s
@@ -197,12 +213,24 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
     }
     // npm is needed only to install the package: a verified tree runs without it.
     if !s.installed {
-        npm_out, npm_err, npm_exit, npm_ran, _ := acp_adapter_runner({"npm", "--version"}, 5*time.Second)
-        defer { delete(npm_out); delete(npm_err) }
-        if !npm_ran || npm_exit != 0 || acp_adapter_tool_version(npm_out) == "" {
+        npm := acp_host_tool_resolve_hook("npm")
+        if npm == "" {
             s.state = "missing_npm"
             s.error, s.install_command = acp_host_tool_requirement(.Npm, d.display_name, d.node_min_major)
             return s
+        }
+        // Windows resolves npm.cmd, a batch script that needs a shell to run:
+        // presence on PATH is the check there (the install itself reports
+        // npm's own diagnostics if it cannot run).
+        if !acp_host_tool_is_script(npm) {
+            npm_out, npm_err, npm_exit, npm_ran, npm_timeout := acp_adapter_runner({npm, "--version"}, 5*time.Second)
+            defer { delete(npm_out); delete(npm_err) }
+            if !npm_ran || npm_timeout { s.state = "error"; s.error = ACP_PREREQUISITE_CHECK_FAILED_NPM; return s }
+            if npm_exit != 0 || acp_adapter_tool_version(npm_out) == "" {
+                s.state = "missing_npm"
+                s.error, s.install_command = acp_host_tool_requirement(.Npm, d.display_name, d.node_min_major, acp_adapter_tool_version(npm_out))
+                return s
+            }
         }
     }
     if s.installed do s.version = d.pkg.version
@@ -287,12 +315,12 @@ acp_adapter_runtime_kind :: proc(d: contracts.ACP_Provider_Descriptor) -> string
     return ""
 }
 
-// The version a tool printed (`v22.1.0`, `10.8.2`), "" when it is not a short
-// version string: tool output is never echoed beyond that.
+// The version a tool printed (`v22.1.0`, `10.8.2`, `11.0.0-pre.1`), "" when it
+// is not a short version string: tool output is never echoed beyond that.
 acp_adapter_tool_version :: proc(out: string) -> string {
     text := strings.trim_space(out)
-    if text == "" || len(text) > 32 do return ""
-    for c in transmute([]u8)text do if !(c >= '0' && c <= '9' || c == '.' || c == 'v') do return ""
+    if text == "" || len(text) > 32 || !(text[0] >= '0' && text[0] <= '9' || text[0] == 'v') do return ""
+    for c in transmute([]u8)text do if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || c == '-' || c == '+') do return ""
     return strings.clone(text, context.temp_allocator)
 }
 
@@ -515,6 +543,7 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     before := acp_adapter_status(provider)
     if before.state == "missing_node" do return false, "acp_adapter_missing_node"
     if before.state == "missing_npm" do return false, "acp_adapter_missing_npm"
+    if strings.has_prefix(before.error, "acp_adapter_prerequisite_check_failed") do return false, "acp_adapter_prerequisite_check_failed"
     parent := filepath.dir(root)
     if bridge_make_directory_all(parent) != nil do return false, "acp_adapter_directory_failed"
     lock_path := strings.concatenate({root, ".lock"}); defer delete(lock_path)
@@ -624,7 +653,7 @@ acp_adapter_handle_install :: proc(conn: ^ws.Connection, text: string) {
         // The command result repeats what the status row reports: the
         // prerequisite and its install command, or npm's redacted diagnostic.
         status := acp_adapter_status(provider)
-        if reason == "acp_adapter_missing_node" || reason == "acp_adapter_missing_npm" do message = status.error
+        if reason == "acp_adapter_missing_node" || reason == "acp_adapter_missing_npm" || reason == "acp_adapter_prerequisite_check_failed" do message = status.error
         if reason == "acp_adapter_install_failed" && status.diagnostic != "" do message = strings.concatenate({"npm install failed:\n", status.diagnostic}, context.temp_allocator)
     }
     frame := acp_adapter_install_result_json(command, ok, reason, message)

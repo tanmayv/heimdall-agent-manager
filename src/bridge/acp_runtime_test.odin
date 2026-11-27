@@ -283,8 +283,8 @@ t4_acp_token_reissue_fences_old_same_launch :: proc(t: ^testing.T) {
 
 @(test)
 t4_acp_node_versions_and_intent_epochs :: proc(t: ^testing.T) {
-    for v in ([]string{"v22.0.0", "v24.1.2\n"}) do testing.expect(t, acp_adapter_node_compatible(v))
-    for v in ([]string{"v20.19.0", "", "not-node", "v22"}) do testing.expect(t, !acp_adapter_node_compatible(v))
+    for v in ([]string{"v22.0.0", "v24.1.2\n", "v23.0.0-rc.1", "v22.1.0+build.5"}) do testing.expect(t, acp_adapter_node_compatible(v))
+    for v in ([]string{"v20.19.0", "", "not-node", "v22", "v20.0.0-rc.1", "v22.0.0-rc 1", "v22.0.0-"}) do testing.expectf(t, !acp_adapter_node_compatible(v), "%q", v)
     intents := bridge_agent_reconcile_acp_intents(`[{"agent_instance_id":"inst_a","launch_epoch":"epoch_a","runtime_transport":"acp","runtime_status":"stopped","run_count":7}]`)
     testing.expect(t, intents["inst_a"].epoch == "epoch_a" && intents["inst_a"].run_count == 7 && intents["inst_a"].status == "stopped")
     testing.expect(t, !bridge_startup_fallback_due({runtime_transport = "acp"}, 10000))

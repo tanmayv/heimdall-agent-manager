@@ -51,6 +51,27 @@ acp_host_has :: proc(detect: string) -> bool {
     return path != ""
 }
 
+// A prerequisite that resolves but cannot be started right now (process
+// budget, spawn failure, timeout): transient, so it never reads as missing.
+ACP_PREREQUISITE_CHECK_FAILED_NODE :: "acp_adapter_prerequisite_check_failed: node --version could not be run right now; check again"
+ACP_PREREQUISITE_CHECK_FAILED_NPM :: "acp_adapter_prerequisite_check_failed: npm --version could not be run right now; check again"
+
+// Test seam: the absolute path of a host tool on the bridge's PATH, "" when
+// absent. On Windows `npm` resolves to npm.cmd through PATHEXT.
+acp_host_tool_resolve_hook: proc(name: string) -> string = acp_host_tool_resolve
+
+acp_host_tool_resolve :: proc(name: string) -> string {
+    env, _ := os.environ(context.temp_allocator)
+    path := profile_resolve_binary(name, env)
+    defer delete(path)
+    return strings.clone(path, context.temp_allocator)
+}
+
+acp_host_tool_is_script :: proc(path: string) -> bool {
+    lower := strings.to_lower(path, context.temp_allocator)
+    return strings.has_suffix(lower, ".cmd") || strings.has_suffix(lower, ".bat")
+}
+
 // acp_host_install_command is the command that installs tool (for Node.js
 // node_min_major or newer) on this bridge host, or "" when no package manager
 // that ships a recent enough Node.js was detected; note is the matching rows'

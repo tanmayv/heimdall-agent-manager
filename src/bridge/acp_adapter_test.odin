@@ -115,6 +115,9 @@ c2_acp_copilot_profile_env_and_system_argv :: proc(t: ^testing.T) {
 @(private = "file") t4_adapter_lock_version: string
 @(private = "file") t4_adapter_install_prefix: string
 
+// Fake runners match bare tool names: resolve each tool to its own name.
+t4_tool_resolve :: proc(name: string) -> string { return name }
+
 t4_adapter_fake_runner :: proc(argv: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
     if len(argv) == 2 && argv[0] == "node" && argv[1] == "--version" do return strings.clone("v22.0.0"), "", 0, true, false
     if len(argv) == 2 && argv[0] == "npm" && argv[1] == "--version" do return strings.clone("10.8.2"), "", 0, true, false
@@ -198,7 +201,7 @@ lock2_acp_adapter_symlinked_data_dir_installs_with_canonical_prefix :: proc(t: ^
     snapshot := Bridge_Provider_Catalog_Snapshot{etag = "sha256:lock2", providers = {Bridge_Catalog_Provider{provider = "claude", state = "active", acp_recipe = {command = "claude-agent-acp", protocol_version = 1, adapter_package = ACP_CLAUDE_PACKAGE, adapter_version = ACP_CLAUDE_VERSION, env = env}}}}
     bridge_provider_catalog_snapshot = &snapshot; bridge_provider_catalog_loaded = true
     acp_adapter_binding_hook = t4_adapter_fake_binding
-    acp_adapter_runner = t4_adapter_fake_runner; acp_adapter_probe_hook = t4_adapter_fake_probe; acp_adapter_cli_probe_hook = t4_adapter_fake_claude_probe
+    acp_adapter_runner = t4_adapter_fake_runner; acp_host_tool_resolve_hook = t4_tool_resolve; defer acp_host_tool_resolve_hook = acp_host_tool_resolve; acp_adapter_probe_hook = t4_adapter_fake_probe; acp_adapter_cli_probe_hook = t4_adapter_fake_claude_probe
     final := acp_adapter_root("claude")
     testing.expect(t, strings.has_prefix(final, link), "root keeps the configured (symlinked) data dir")
     read_diagnostic :: proc(final: string) -> string {
@@ -255,7 +258,7 @@ t4_acp_adapter_pinned_integrity_probe_and_atomic_promotion :: proc(t: ^testing.T
     snapshot := Bridge_Provider_Catalog_Snapshot{etag = "sha256:t4", providers = {Bridge_Catalog_Provider{provider = "claude", state = "active", acp_recipe = {command = "claude-agent-acp", protocol_version = 1, adapter_package = ACP_CLAUDE_PACKAGE, adapter_version = ACP_CLAUDE_VERSION, env = env}}}}
     bridge_provider_catalog_snapshot = &snapshot; bridge_provider_catalog_loaded = true
     acp_adapter_binding_hook = t4_adapter_fake_binding
-    acp_adapter_runner = t4_adapter_fake_runner; acp_adapter_probe_hook = t4_adapter_fake_probe; acp_adapter_cli_probe_hook = t4_adapter_fake_claude_probe
+    acp_adapter_runner = t4_adapter_fake_runner; acp_host_tool_resolve_hook = t4_tool_resolve; defer acp_host_tool_resolve_hook = acp_host_tool_resolve; acp_adapter_probe_hook = t4_adapter_fake_probe; acp_adapter_cli_probe_hook = t4_adapter_fake_claude_probe
     final := acp_adapter_root("claude")
     bridge_make_directory_all(filepath.dir(final))
     lock_path := strings.concatenate({final, ".lock"})
@@ -451,7 +454,7 @@ t11_acp_install_claude_prerequisite_and_status :: proc(t: ^testing.T) {
     old_runner, old_probe := acp_adapter_runner, acp_adapter_probe_hook
     old_profile_probe := acp_adapter_profile_probe_hook
     defer { acp_adapter_runner = old_runner; acp_adapter_probe_hook = old_probe; acp_adapter_profile_probe_hook = old_profile_probe }
-    acp_adapter_runner = t4_adapter_fake_runner; acp_adapter_probe_hook = t4_adapter_fake_probe
+    acp_adapter_runner = t4_adapter_fake_runner; acp_host_tool_resolve_hook = t4_tool_resolve; defer acp_host_tool_resolve_hook = acp_host_tool_resolve; acp_adapter_probe_hook = t4_adapter_fake_probe
     t4_adapter_bad_integrity = false; t10_adapter_probe_fails = false
     t4_adapter_install_argv_ok = false; t4_adapter_probe_ran = false
     snapshot := bridge_provider_catalog_snapshot

@@ -14,6 +14,16 @@ import "core:time"
 @(private = "file") r2_npm_install_fails: bool
 @(private = "file") r2_npm_installs: int
 @(private = "file") r2_runner_calls: int
+@(private = "file") r2_spawn_fails: bool
+@(private = "file") r2_npm_version: string
+@(private = "file") r2_npm_spawn_fails: bool
+
+// node resolves on PATH when r2_node is set, npm when r2_npm is.
+@(private = "file")
+r2_resolve :: proc(name: string) -> string {
+    if name == "node" && r2_node != "" || name == "npm" && r2_npm do return name
+    return ""
+}
 
 @(private = "file")
 r2_host_has :: proc(detect: string) -> bool {
@@ -24,13 +34,14 @@ r2_host_has :: proc(detect: string) -> bool {
 @(private = "file")
 r2_runner :: proc(argv: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
     r2_runner_calls += 1
+    if len(argv) == 2 && argv[1] == "--version" && r2_spawn_fails do return "", "", -1, false, false
     if len(argv) == 2 && argv[0] == "node" && argv[1] == "--version" {
         if r2_node == "" do return "", "", -1, false, false
         return strings.clone(r2_node), "", 0, true, false
     }
     if len(argv) == 2 && argv[0] == "npm" && argv[1] == "--version" {
-        if !r2_npm do return "", "", -1, false, false
-        return strings.clone("10.8.2\n"), "", 0, true, false
+        if !r2_npm || r2_npm_spawn_fails do return "", "", -1, false, false
+        return strings.clone(r2_npm_version if r2_npm_version != "" else "10.8.2\n"), "", 0, true, false
     }
     if len(argv) > 1 && argv[0] == "npm" && argv[1] == "install" do r2_npm_installs += 1
     if r2_npm_install_fails {
@@ -51,8 +62,9 @@ r2_runner :: proc(argv: []string, timeout: time.Duration) -> (string, string, in
 r2_acp_adapter_node_npm_detected_live_with_install_commands :: proc(t: ^testing.T) {
     st := p1c_test_setup(t); defer p1c_test_teardown(st)
     context.allocator = context.temp_allocator
-    old_runner, old_probe, old_cli, old_binding, old_host := acp_adapter_runner, acp_adapter_probe_hook, acp_adapter_cli_probe_hook, acp_adapter_binding_hook, acp_host_has_hook
-    defer { acp_adapter_runner = old_runner; acp_adapter_probe_hook = old_probe; acp_adapter_cli_probe_hook = old_cli; acp_adapter_binding_hook = old_binding; acp_host_has_hook = old_host }
+    old_runner, old_probe, old_cli, old_binding, old_host, old_resolve := acp_adapter_runner, acp_adapter_probe_hook, acp_adapter_cli_probe_hook, acp_adapter_binding_hook, acp_host_has_hook, acp_host_tool_resolve_hook
+    defer { acp_adapter_runner = old_runner; acp_adapter_probe_hook = old_probe; acp_adapter_cli_probe_hook = old_cli; acp_adapter_binding_hook = old_binding; acp_host_has_hook = old_host; acp_host_tool_resolve_hook = old_resolve }
+    acp_host_tool_resolve_hook = r2_resolve; r2_spawn_fails = false; r2_npm_spawn_fails = false; r2_npm_version = ""
     acp_adapter_runner = r2_runner; acp_adapter_probe_hook = t4_adapter_fake_probe
     acp_adapter_cli_probe_hook = t4_adapter_fake_claude_probe; acp_adapter_binding_hook = t4_adapter_fake_binding
     acp_host_has_hook = r2_host_has
@@ -82,6 +94,18 @@ r2_acp_adapter_node_npm_detected_live_with_install_commands :: proc(t: ^testing.
     testing.expect(t, status.state == "missing_node" && status.node_version == "v18.19.1")
     testing.expect_value(t, status.error, "Node.js 22 or newer is required on the bridge host to run the Claude ACP adapter (found v18.19.1); upgrade it with: sudo pacman -S --needed nodejs npm")
 
+    // A resolved node that cannot be started now is a transient error, not missing.
+    r2_node = "v22.3.0\n"; r2_spawn_fails = true
+    status = acp_adapter_status("claude")
+    testing.expect(t, status.state == "error" && status.install_command == "", status.state)
+    testing.expect_value(t, status.error, ACP_PREREQUISITE_CHECK_FAILED_NODE)
+    ok, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
+    testing.expect(t, !ok && reason == "acp_adapter_prerequisite_check_failed" && r2_npm_installs == 0)
+    r2_spawn_fails = false
+    // A prerelease Node.js meets the major.
+    r2_node = "v22.0.0-rc.1\n"
+    testing.expect_value(t, acp_adapter_status("claude").state, "missing_npm")
+
     // Node.js installed without npm: a separate state with its own command.
     r2_node = "v22.3.0\n"
     status = acp_adapter_status("claude")
@@ -91,8 +115,13 @@ r2_acp_adapter_node_npm_detected_live_with_install_commands :: proc(t: ^testing.
     ok, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
     testing.expect(t, !ok && reason == "acp_adapter_missing_npm" && r2_npm_installs == 0)
 
-    // npm installed: the adapter is merely missing and installable.
-    r2_npm = true
+    // npm on PATH but not startable now: transient, not missing.
+    r2_npm = true; r2_npm_spawn_fails = true
+    status = acp_adapter_status("claude")
+    testing.expect(t, status.state == "error" && status.error == ACP_PREREQUISITE_CHECK_FAILED_NPM, status.error)
+    r2_npm_spawn_fails = false
+    // npm installed (a prerelease version is accepted): merely missing and installable.
+    r2_npm_version = "11.0.0-pre.1\n"
     status = acp_adapter_status("claude")
     testing.expect(t, status.state == "missing" && status.install_command == "" && status.error == "")
 
