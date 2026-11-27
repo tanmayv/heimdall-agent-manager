@@ -3,10 +3,16 @@
 
 Run with HEIMDALL_TEST_CHROMIUM=/path/to/chromium python3 tests/test_secure_form_integration.py.
 Requires Node with built-in WebSocket. No site, live credentials or live profile is used.
+
+For the combined test install the repository's JS dependencies and run inside
+`nix develop` with HEIMDALL_E2E_SECURE_FORM_NATIVE=1, HEIMDALL_E2E_HUB_BIN,
+HEIMDALL_E2E_BRIDGE_BIN, HEIMDALL_E2E_CTL_BIN and HEIMDALL_E2E_PTY_HOST_BIN set
+to the native binaries. Set HEIMDALL_E2E_SECURE_FORM_EXPIRY=1 to wait out the
+real five-minute retention window instead of changing production clocks.
 """
 import contextlib
-from html import escape
 import hmac
+from html import escape
 import http.server
 import json
 import os
@@ -98,13 +104,61 @@ def devtools(endpoint, path, method="GET"):
         return json.load(response)
 
 
+def skill_script():
+    _, body = SKILL.read_text().split("```bash secure-form-fill\n", 1)
+    return body.split("\n```", 1)[0] + "\n"
+
+
+class SecureFormNativeTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("HEIMDALL_E2E_SECURE_FORM_NATIVE") == "1",
+                         "explicit native fixture opt-in")
+    def test_real_cli_hub_bridge_retry_and_browser(self):
+        password = secrets.token_hex(24)
+        outcomes = queue.Queue()
+        repo = SKILL.parents[4]
+        with (tempfile.TemporaryDirectory(prefix="hsf-") as temporary,
+              fixture_site(password, outcomes) as origin):
+            root = Path(temporary).resolve()
+            (root / "fill.sh").write_text(skill_script())
+            # Allow only isolated harness inputs through to the native test.
+            keys = ("PATH", "HOME", "LD_LIBRARY_PATH", "HEIMDALL_TEST_CHROMIUM",
+                    "HEIMDALL_E2E_HUB_BIN", "HEIMDALL_E2E_BRIDGE_BIN", "HEIMDALL_E2E_CTL_BIN",
+                    "HEIMDALL_E2E_PTY_HOST_BIN", "HEIMDALL_E2E_NATS_BIN",
+                    "HEIMDALL_E2E_SECURE_FORM_EXPIRY")
+            env = {key: os.environ[key] for key in keys if key in os.environ}
+            env["TMPDIR"] = str(root)
+            with subprocess.Popen(
+                ["node", "--import", "./tests/helpers/vaultEndpointHarness.ts",
+                 "tests/e2e/secure_form_runtime.mjs", str(root), origin],
+                cwd=repo, env=env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ) as driver:
+                try:
+                    stdout, stderr = driver.communicate(password.encode(), timeout=460)
+                except subprocess.TimeoutExpired:
+                    # SIGTERM lets the driver's owned process cleanup run.
+                    driver.terminate()
+                    try:
+                        driver.communicate(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        driver.kill()
+                        driver.communicate()
+                    self.fail("native fixture exceeded its deadline")
+            self.assertFalse(password.encode() in (stdout + stderr),
+                             "native driver output contained the synthetic value")
+            if driver.returncode:
+                self.fail((stdout + stderr).decode(errors="replace"))
+            self.assertEqual(outcomes.get_nowait(), ("submitted", True))
+            self.assertEqual(outcomes.get_nowait(), ("account", True))
+            self.assertTrue(outcomes.empty(), "unexpected replay at the destination")
+
+
 class SecureFormBrowserTest(unittest.TestCase):
     def test_skill_script_submits_only_to_verified_origin_and_keeps_profile(self):
         chrome = os.environ["HEIMDALL_TEST_CHROMIUM"]
         password = secrets.token_hex(24)
         payload = json.dumps({"version": 1, "values": {"password": password}}).encode()
-        _, body = SKILL.read_text().split("```bash secure-form-fill\n", 1)
-        script = body.split("\n```", 1)[0] + "\n"
+        script = skill_script()
         trusted, foreign = queue.Queue(), queue.Queue()
 
         with (tempfile.TemporaryDirectory(prefix="ham-secure-form-") as temporary,
