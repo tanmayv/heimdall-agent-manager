@@ -800,6 +800,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	bridge_log_service.service_free(&graph.bridge_logs)
 	bridge_runtime_service.runtime_command_cache_destroy(&graph.bridge_runtime_registry)
 	http.secure_form_routing_destroy(&graph.bridge_handlers.secure_forms)
+	http.stream_routing_destroy(&graph.bridge_handlers)
 	http.router_free(&graph.router)
 	http.user_ws_ticket_store_free(&graph.user_handlers.ws_tickets)
 	shell_session_svc.shell_metrics_detach_service(&graph.shell_session_service)
@@ -1196,6 +1197,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	// POST /api/v1/bridges/enroll (the token-for-credential exchange).
 	// Enrollment is browser-approved only; see the /api/v1/device/* routes.
 	http.router_add_secure_forms(&graph.router, &graph.bridge_handlers)
+	http.router_add_streams(&graph.router, &graph.bridge_handlers, &graph.user_handlers.ws_tickets)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/bridge-ws", rawptr(&graph.bridge_handlers), http.bridge_ws_upgrade_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/agent-instances/*/bootstrap", rawptr(&graph.bridge_handlers), http.bridge_instance_bootstrap_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/agent-instances/*/start-begin", rawptr(&graph.bridge_handlers), http.bridge_instance_start_begin_handler)

@@ -32,6 +32,7 @@ import provider_service "odin_test:hub/service/provider"
 import taskchain_service "odin_test:hub/service/taskchain"
 import taskv2 "odin_test:hub/service/taskv2"
 import ws "odin_test:lib/ws"
+import stream_svc "odin_test:hub/service/stream"
 import shell_session_svc "odin_test:hub/service/shell_session"
 import jsonx "odin_test:lib/jsonx"
 import vault "odin_test:lib/vault"
@@ -41,6 +42,9 @@ import bots "odin_test:hub/service/bots"
 
 Bridge_Handlers :: struct {
 	secure_forms: Secure_Form_Routing,
+	streams: stream_svc.Registry,
+	stream_controls: sync.Mutex,
+	stream_tickets: ^User_WS_Ticket_Store,
 	// Always wired in production; nil only for in-memory repository doubles.
 	uow_factory: ^iface.Unit_Of_Work_Factory,
 	delivery: ^delivery.Service,
@@ -1981,6 +1985,7 @@ bridge_ws_disconnect :: proc(
 	if connected_at_ns > 0 do duration_ms = (time.now()._nsec - connected_at_ns) / 1_000_000
 	bridge_ws_log_disconnect(bridge_id, reason, connection_generation, duration_ms, still_current)
 	project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
+	stream_bridge_disconnected(h, bridge_id, connection_generation)
 	// Per-bridge gauges (bridge_info with its owner/version labels, heartbeat
 	// timestamp, M3 resource gauges) are tombstoned only once NO generation is
 	// live: a replaced connection's teardown must not erase its successor's info.
@@ -2309,9 +2314,9 @@ bridge_ws_try_reauth :: proc(h: ^Bridge_Handlers, connection: ^project_service.B
 }
 
 // bridge_ws_process_binary_frame routes one bridge->hub BINARY frame (REQ-PTY-NET-2).
-// Today that is exactly one thing: a pty_wire OUTPUT session frame, handed to the shell
-// fan-out WITHOUT re-encoding — the payload bytes (raw or GCM ciphertext) go to every
-// viewer as they arrived. The frame string is owned here and freed before return.
+// PTY OUTPUT still reaches the shell fan-out without re-encoding. Stream
+// pieces use a distinct kind and enter only RAM-only stream routing.
+// The frame string is owned here and freed before return.
 // Returns false only for a frame that cannot be parsed at all: a desynchronised binary
 // stream is not something to keep reading from.
 bridge_ws_process_binary_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, raw: string) -> bool {
@@ -2323,6 +2328,8 @@ bridge_ws_process_binary_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, c
 		return false
 	}
 	switch kind {
+	case contracts.STREAM_WIRE_KIND_PIECE:
+		stream_bridge_piece(h, bridge_id, connection_generation, transmute([]byte)raw)
 	case contracts.PTY_WIRE_KIND_OUTPUT:
 		metrics.counter_inc(metrics.with(project_service.fleet_metrics.bridge_ws_frames, "rx", "shell_pty_output"))
 		if h.shell_sessions != nil && len(payload) > 0 {
@@ -2415,6 +2422,8 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	switch type {
 	case contracts.SECURE_FORM_REGISTER_FRAME:
 		secure_form_bridge_register(h, bridge_id, connection_generation, client, text)
+	case "stream_register", "stream_ended":
+		stream_bridge_control(h, bridge_id, connection_generation, text)
 	case contracts.SECURE_FORM_ACK_FRAME, contracts.SECURE_FORM_CANCEL_FRAME:
 		secure_form_bridge_status(h, bridge_id, connection_generation, type, text)
 	case "provider_catalog_request":
@@ -2424,6 +2433,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		}
 		delete(payload)
 	case "bridge_heartbeat":
+		stream_expire_routes(h)
 		metrics.gauge_set(metrics.with(project_service.fleet_metrics.bridge_last_heartbeat, bridge_id), time.now()._nsec / 1_000_000_000)
 		// Legacy diagnostic members are still ingested from Bridges that do not send
 		// bridge_diagnostics. Once this connection has delivered a snapshot, that frame

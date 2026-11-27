@@ -166,6 +166,12 @@ router_dispatch_matched_safe :: proc(router: ^Router, req: Request) -> (Response
 	return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id), ROUTE_UNMATCHED
 }
 
+router_add_streams :: proc(router: ^Router, h: ^Bridge_Handlers, tickets: ^User_WS_Ticket_Store) {
+	h.stream_tickets = tickets
+	router_add(router, "GET", STREAM_API_PATH + "/*", h, stream_metadata_handler)
+	router_add_upgrade(router, "GET", STREAM_API_PATH + "/*/view", h, stream_view_handler)
+}
+
 router_add_secure_forms :: proc(router: ^Router, h: ^Bridge_Handlers) {
 	router_add(router, "GET", contracts.SECURE_FORM_API_PATH, h, secure_form_http_handler)
 	router_add(router, "GET", contracts.SECURE_FORM_API_PATH + "/*", h, secure_form_http_handler)
