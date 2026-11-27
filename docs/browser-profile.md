@@ -37,16 +37,34 @@ resulting path is checked before use.
   unavailable** and ask for it to be restored. Don't switch password-store
   backends or overwrite the profile to recover access.
 
-## Busy and cleanup
+## Attach, launch, and reuse
 
-Let the browser enforce its native exclusive profile lock. Treat both a
-lock/in-use error and a launch that hands off to an existing browser process as
-**busy**. A zero exit status after handoff doesn't establish ownership. Require
-a new browser instance owned by this operation before navigating to a target or
-interacting with any window or tab. Launch with a blank page when probing for
-ownership. A launcher crash doesn't release a still-running browser's
-lock. Never delete native lock files, copy cookies, or attach to a browser
-owned by another invocation. Close only the browser you launched.
+`HEIMDALL_BROWSER_CDP_PORT` is fixed per bridge. By default it is derived from
+the profile path, and the bridge can override it with `browser_cdp_port`. Never
+assume a common port such as 9222. The endpoint must stay local to the bridge.
+
+1. Probe `http://127.0.0.1:$HEIMDALL_BROWSER_CDP_PORT/json/version`. On the
+   browser WebSocket at the same address and port, call
+   `Browser.getBrowserCommandLine`. Require exactly one `--user-data-dir`
+   argument matching `HEIMDALL_BROWSER_PROFILE_DIR`. If the listener exists
+   but cannot be verified, stop without attaching or launching.
+2. If no listener exists, start Chromium with a blank tab,
+   `--enable-automation`, `--remote-debugging-address=127.0.0.1`,
+   `--remote-debugging-port="$HEIMDALL_BROWSER_CDP_PORT"` and
+   `--user-data-dir="$HEIMDALL_BROWSER_PROFILE_DIR"`.
+3. If the profile is busy or Chromium hands off to an existing process,
+   retry the probe and profile check on the same endpoint. A zero launch exit
+   after handoff does not establish ownership. If the configured endpoint
+   cannot be verified, report the blocker. Never remove lock files.
+4. Configure the agent's MCP server to run pinned
+   `npx -y @playwright/mcp@0.0.86 --cdp-endpoint` with the verified endpoint
+   as its next argument. Expand the bridge port in the configuration. No
+   launcher helper or global install is needed.
+
+Use only your own tab. Leave the shared browser running, including when you
+launched it. Never close another tab or the shared browser. For confidential
+input, use the secure-form script in the [credential and browser skill](../src/prompts/skills/credential-and-browser-use/SKILL.md).
+Do not type or fill secrets through Playwright MCP.
 
 Agents on one registration share authenticated access as the same OS account.
 Never attach the profile, cookies or diagnostics containing session data to an

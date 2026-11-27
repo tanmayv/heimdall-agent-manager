@@ -18,6 +18,7 @@ STATIC_SKILLS := []Static_Skill{
 	{"artifact-authoring", #load("../../../prompts/skills/artifact-authoring/SKILL.md", string)},
 	{"chain-events-and-claims", #load("../../../prompts/skills/chain-events-and-claims/SKILL.md", string)},
 	{"coordinator-task-management", #load("../../../prompts/skills/coordinator-task-management/SKILL.md", string)},
+	{"credential-and-browser-use", #load("../../../prompts/skills/credential-and-browser-use/SKILL.md", string)},
 	{"ham-ctl-reference", #load("../../../prompts/skills/ham-ctl-reference/SKILL.md", string)},
 	{"heimdall-ctl-communication", #load("../../../prompts/skills/heimdall-ctl-communication/SKILL.md", string)},
 	{"heimdall-preview-setup", #load("../../../prompts/skills/heimdall-preview-setup/SKILL.md", string)},
