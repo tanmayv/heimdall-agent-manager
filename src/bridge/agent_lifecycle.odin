@@ -52,9 +52,15 @@ bridge_agent_lifecycle_leave :: proc(entry:^Bridge_Agent_Lifecycle) {
 
 // The generation comparison and every destructive stop side effect share the
 // same critical section as launch, including failure-status restoration.
-bridge_runtime_stop_generation :: proc(instance_id:string,force:bool,expected_run_count:int,stop:=bridge_runtime_stop_agent_unlocked, absent:=bridge_runtime_process_absent)->(ok:bool,restored:string,stale:bool) {
+bridge_runtime_stop_generation :: proc(instance_id:string,force:bool,expected_run_count:int,stop:=bridge_runtime_stop_agent_unlocked, absent:=bridge_runtime_process_absent, expected_pid: i32 = 0, observe := bridge_instance_probe)->(ok:bool,restored:string,stale:bool) {
     lifecycle:=bridge_agent_lifecycle_enter(instance_id)
     defer bridge_agent_lifecycle_leave(lifecycle)
+    if expected_pid > 0 {
+        sighting := observe(instance_id)
+        // Never stop a different child, or infer exit from an unavailable
+        // inventory. Check inside the lifecycle lock shared with launch.
+        if sighting.pid != expected_pid || (sighting.state != "alive" && sighting.state != "exited") do return false, "", true
+    }
     if expected_run_count>=0 && bridge_agent_instance_run_count(instance_id)!=expected_run_count {
         // A newer token alone says nothing about the old child. A successful
         // daemon enumeration can prove there is no process to stop, without

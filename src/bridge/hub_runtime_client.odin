@@ -1224,9 +1224,17 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
 		expected_run := extract_json_int(text, "expected_run_count", -1)
+		expected_pid := extract_json_int(text, "expected_process_pid", 0)
+		if expected_pid < 0 || expected_pid > 0x7fff_ffff {
+			final := bridge_command_failed_json(command_id, bridge_cause_wire_error("invalid_payload", "invalid process pid"), "")
+			defer delete(final)
+			bridge_runtime_cache_command(command_id, final)
+			_ = bridge_hub_send(conn, final)
+			return
+		}
 		bot_idle := extract_json_string(text, "reason", "", context.temp_allocator) == "bot_idle"
 		stop := bridge_runtime_stop_idle_bot_unlocked if bot_idle else bridge_runtime_stop_agent_unlocked
-		ok, restored, stale := bridge_runtime_stop_generation(instance_id, extract_json_bool(text, "force", false), expected_run, stop)
+		ok, restored, stale := bridge_runtime_stop_generation(instance_id, extract_json_bool(text, "force", false), expected_run, stop, expected_pid = i32(expected_pid))
 		defer delete(restored)
 		if stale {
 			final := bridge_command_failed_json(command_id, bridge_cause_wire_error("stale_generation", "stop targets a different process generation"), "")
@@ -1239,11 +1247,11 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if ok do _ = bridge_ext_token_capture_final(instance_id, bridge_agent_instance_run_count(instance_id))
 		st_json := bridge_instance_status_json(instance_id)
 		defer delete(st_json)
-		_ = bridge_hub_send(conn, st_json)
-		final := bridge_stop_confirmed_json(command_id, instance_id, expected_run) if ok else bridge_command_failed_json(command_id, bridge_cause_wire_error("stop_failed", "the agent did not stop"), restored)
+		final := bridge_stop_confirmed_json(command_id, instance_id, expected_run, i32(expected_pid)) if ok else bridge_command_failed_json(command_id, bridge_cause_wire_error("stop_failed", "the agent did not stop"), restored)
 		defer delete(final)
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_hub_send(conn, final)
+		_ = bridge_hub_send(conn, st_json)
 		return
 	}
 	if type == contracts.ACP_SEND_NOW_BATCH_COMMAND || type == contracts.ACP_INPUTS_READ_COMMAND {
@@ -4486,18 +4494,24 @@ Bridge_Command_Runtime_Status :: struct {
 	retry_after_ms: Maybe(i64) `json:"retry_after_ms,omitempty"`,
 	agent_instance_id: Maybe(string) `json:"agent_instance_id,omitempty"`,
 	expected_run_count: Maybe(int) `json:"expected_run_count,omitempty"`,
+	expected_process_pid: Maybe(i32) `json:"expected_process_pid,omitempty"`,
 }
 
 // Successful stop commands carry the requested generation (-1 for legacy stops).
 // Ownership consumers require a nonnegative generation. Generic runtime status
 // observations are not evidence that an ownership holder died.
-bridge_stop_confirmed_json :: proc(command_id, instance_id: string, expected_run_count: int) -> string {
+bridge_stop_confirmed_json :: proc(command_id, instance_id: string, expected_run_count: int, expected_pid: i32 = 0) -> string {
 	res := bridge_command_result_wire(command_id, "succeeded", "stopped")
 	res.ok = true
 	res.payload.result = Bridge_Command_Runtime_Status{
 		runtime_status = "stopped",
 		agent_instance_id = instance_id,
 		expected_run_count = expected_run_count,
+	}
+	if expected_pid > 0 {
+		result := res.payload.result.?
+		result.expected_process_pid = expected_pid
+		res.payload.result = result
 	}
 	out, _ := vault.wire_encode(res)
 	return out

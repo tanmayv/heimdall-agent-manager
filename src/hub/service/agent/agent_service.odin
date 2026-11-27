@@ -1758,14 +1758,16 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	return strings.to_string(b)
 }
 
-stop_command_json :: proc(command_id, instance_id, reason: string, force: bool = false) -> string {
+stop_command_json :: proc(command_id, instance_id, reason: string, force: bool = false, expected_pid: int = 0) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"stop_agent\",\"protocol_version\":1,\"message_id\":\""); write_service_json_string(&b, strings.concatenate({"msg_", command_id}))
 	strings.write_string(&b, "\",\"command_id\":\""); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"payload\":{\"agent_instance_id\":\""); write_service_json_string(&b, instance_id)
 	strings.write_string(&b, "\",\"reason\":\""); write_service_json_string(&b, reason)
 	strings.write_string(&b, "\",\"grace_seconds\":"); strings.write_string(&b, "0" if force else "10")
-	strings.write_string(&b, ",\"force\":"); strings.write_string(&b, "true" if force else "false"); strings.write_string(&b, "}}")
+	strings.write_string(&b, ",\"force\":"); strings.write_string(&b, "true" if force else "false")
+	if expected_pid > 0 do strings.write_string(&b, fmt.tprintf(",\"expected_process_pid\":%d", expected_pid))
+	strings.write_string(&b, "}}")
 	return strings.to_string(b)
 }
 

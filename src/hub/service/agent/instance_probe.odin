@@ -112,3 +112,31 @@ parse_instance_probe :: proc(reply, command_id, instance_id: string) -> Instance
 	}
 	return {}
 }
+
+// The operation ID is supplied by the caller so retries reuse the same
+// Bridge command receipt. Call outside the lifecycle lock and WS reader.
+confirm_stop_observed_process :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, fact: Agent_Liveness, operation_id, reason: string) -> domain.Domain_Error {
+	if service == nil || operation_id == "" || fact.state != .Alive || fact.pid <= 0 do return domain.domain_error(.Conflict, "stop needs a verified live process")
+	body := stop_command_json(operation_id, inst.agent_instance_id, reason, expected_pid = fact.pid)
+	defer delete(body)
+	reply, got, err := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = operation_id, body_json = body}, 15_000)
+	defer delete(reply)
+	if !got do return err
+	if ok, refusal := project.bridge_reply_refusal(reply, inst.bridge_id); !ok do return refusal
+	if !confirmed_stop_receipt(reply, operation_id, inst.agent_instance_id, fact.pid) do return domain.domain_error(.Conflict, "bridge did not confirm the selected process exited")
+	return {}
+}
+
+confirmed_stop_receipt :: proc(reply, operation_id, instance_id: string, pid: int) -> bool {
+	if !jsonx.extract_bool(reply, "ok", false, true) ||
+	   jsonx.extract_string(reply, "command_id", "", true, context.temp_allocator) != operation_id {
+		return false
+	}
+	payload, ok := jsonx.extract_raw_object(reply, "payload", true, context.temp_allocator)
+	if !ok || jsonx.extract_string(payload, "status", "", true, context.temp_allocator) != "succeeded" do return false
+	result, has_result := jsonx.extract_raw_object(payload, "result", true, context.temp_allocator)
+	return has_result &&
+		jsonx.extract_string(result, "runtime_status", "", true, context.temp_allocator) == "stopped" &&
+		jsonx.extract_string(result, "agent_instance_id", "", true, context.temp_allocator) == instance_id &&
+		jsonx.extract_int(result, "expected_process_pid", 0, true) == pid
+}
