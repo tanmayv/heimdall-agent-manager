@@ -39,7 +39,7 @@ stdenv.mkDerivation {
     runHook postInstallCheck
   '';
   meta = {
-    description = "Pinned Copilot native ACP CLI for Heimdall on NixOS";
+    description = "GitHub Copilot CLI built for NixOS hosts; optional, user-built (Heimdall never installs it)";
     homepage = "https://github.com/github/copilot-cli";
     license = lib.licenses.unfree;
     sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
