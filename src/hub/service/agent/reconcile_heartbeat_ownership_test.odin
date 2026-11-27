@@ -50,6 +50,7 @@ hb_list_by_bridge :: proc(ctx: rawptr, bridge_id: string) -> ([]domain.Agent_Ins
 		c.activity_status   = strings.clone(inst.activity_status)
 		c.updated_at        = strings.clone(inst.updated_at)
 		c.stopped_at        = strings.clone(inst.stopped_at)
+		c.current_task_id  = strings.clone(inst.current_task_id)
 		c.last_seen_at      = strings.clone(inst.last_seen_at)
 		c.created_at        = strings.clone(inst.created_at)
 		out[i] = c
@@ -263,4 +264,26 @@ test_apply_bridge_status_report_refreshes_last_seen_without_seq_advance :: proc(
 	testing.expect(t, applied, "must apply liveness update without seq advance")
 	testing.expect_value(t, saved.last_seen_at, HB_NOW)
 	testing.expect_value(t, saved.runtime_status, "running")
+}
+
+@(test)
+test_bridge_disconnect_keeps_process_and_task_metadata :: proc(t: ^testing.T) {
+	r: Hb_Repo
+	defer delete(r.instances)
+	inst := hb_instance("inst_surviving_child", "running")
+	inst.current_task_id = "task_in_progress"
+	inst.activity_status = "active"
+	append(&r.instances, inst)
+	repo := iface.Agent_Repository{ctx = &r, list_instances_by_bridge = hb_list_by_bridge, save_instance = hb_save_instance}
+	clk := platform.Clock{now = hb_now}
+	svc := hb_service(&repo, &clk)
+
+	changed := mark_bridge_instances_unreachable(&svc, "brg_1")
+	defer domain.agent_instances_destroy(changed)
+	if !testing.expect_value(t, len(changed), 1) do return
+	testing.expect_value(t, changed[0].runtime_status, "unreachable")
+	testing.expect_value(t, changed[0].startup_status, "ready")
+	testing.expect_value(t, changed[0].activity_status, "active")
+	testing.expect_value(t, changed[0].current_task_id, "task_in_progress")
+	testing.expect_value(t, changed[0].stopped_at, "")
 }

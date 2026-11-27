@@ -1362,12 +1362,8 @@ detect_superseded_instances :: proc(service: ^Agent_Service, reporting_bridge_id
 	return out[:]
 }
 
-// mark_bridge_instances_unreachable clears the durable runtime state of every
-// still-active instance on a bridge that just disconnected. The bridge runtime
-// registry is in-memory only, so when a bridge WS drops (crash/restart/quit)
-// nothing else transitions its instances out of "running" — reconcile_bridge_heartbeat
-// needs a live heartbeat, which a gone bridge can never send. Returns the affected
-// instances so the caller can fan out resource_changed and the UI clears them.
+// Mark connectivity unknown without declaring a PTY child stopped. Keep the
+// current task, readiness, and activity intact so a surviving child can resume.
 mark_bridge_instances_unreachable :: proc(service: ^Agent_Service, bridge_id: string) -> []domain.Agent_Instance {
 	if service == nil || service.agents == nil || strings.trim_space(bridge_id) == "" do return nil
 	instances, err := iface.agent_list_instances_by_bridge(service.agents, bridge_id)
@@ -1386,15 +1382,8 @@ mark_bridge_instances_unreachable :: proc(service: ^Agent_Service, bridge_id: st
 		inst.runtime_status = strings.clone("unreachable")
 		delete(inst.status_message)
 		inst.status_message = strings.clone("bridge_disconnected")
-		if len(inst.activity_status) > 0 do delete(inst.activity_status)
-		inst.activity_status = strings.clone("idle")
 		if len(inst.updated_at) > 0 do delete(inst.updated_at)
 		inst.updated_at = strings.clone(now)
-		if len(inst.startup_status) > 0 do delete(inst.startup_status)
-		inst.startup_status = strings.clone("stopped")
-		if len(inst.stopped_at) > 0 do delete(inst.stopped_at)
-		inst.stopped_at = strings.clone(now)
-		clear_instance_current_task(&inst)
 		saved, ok, _ := iface.agent_save_instance(service.agents, inst)
 		if ok {
 			log_runtime_terminal_transition(saved, prior_runtime, "mark_bridge_instances_unreachable", "bridge_disconnected")

@@ -20,11 +20,7 @@ import platform "odin_test:hub/platform"
 import shell_session_svc "odin_test:hub/service/shell_session"
 import vault_directory_service "odin_test:hub/service/vault_directory"
 
-// REAPER_STALE_MS mirrors the request-driven sweep threshold used on bridge
-// heartbeats (http.BRIDGE_INSTANCE_STALE_MS = 90s): an instance still in an
-// active runtime state whose last_seen_at is older than this is flipped to
-// "unreachable". Kept generously above the ~2s heartbeat cadence so a briefly
-// slow bridge is never falsely reaped.
+// Former instance staleness threshold, retained for shell-retention comparisons.
 REAPER_STALE_MS :: 90_000
 
 // DEFAULT_REAPER_INTERVAL_SECONDS is used when the configured interval is <= 0.
@@ -89,23 +85,7 @@ REAPER_SERVER_MAX_AGE_MS :: 24 * 60 * 60 * 1000
 // pathological table from allocating without limit on a 20-second loop.
 REAPER_LIVE_BRIDGE_IDS_MAX :: 1024
 
-// reaper_loop is the periodic background safety net for stale agent instances.
-//
-// Why it exists: the hub's staleness reap was REQUEST-DRIVEN only — it ran on
-// inbound bridge heartbeats. If a whole bridge dies and never reconnects, no
-// heartbeat arrives, so its instances stay runtime_status='running' forever
-// (the clean-disconnect cascade in bridge_ws_disconnect covers an observed WS
-// close, but not a hub restart with a persisted DB, a silently half-open
-// connection, or a lost close). This loop re-evaluates staleness on a fixed
-// cadence independent of bridge traffic and flips stranded instances to
-// 'unreachable', publishing resource_changed so the UI self-heals live.
-//
-// Thread-safety: this runs in its own process-scoped thread (launched from
-// app.run before the blocking http.serve). It uses the EXACT same access
-// pattern the HTTP request threads already use concurrently — the server spawns
-// one thread per client, all sharing graph.agents + graph.event_bus with no
-// mutex, and request handlers already call agent_service.reap_stale_instances +
-// events.publish_resource_changed. So this adds no new shared-state contract.
+// reaper_loop runs background maintenance. Agent process liveness is probed on demand.
 reaper_loop :: proc(graph: ^App_Graph) {
 	if graph == nil do return
 	interval := graph.config.reaper_interval_seconds
@@ -255,18 +235,6 @@ reaper_sweep_once :: proc(graph: ^App_Graph) {
 	agent_service.reconcile_active_reconfigurations(&graph.agents)
 	fleet_application.reconcile(&graph.fleet)
 
-	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
-	agent_service.notify_instances_terminal(&graph.agents, reaped)
-	defer domain.agent_instances_destroy(reaped)
-	for inst in reaped {
-		project_service.bridge_runtime_instance_retire(&graph.bridge_runtime_registry, inst.bridge_id, project_service.bridge_runtime_registry_generation(&graph.bridge_runtime_registry, inst.bridge_id), inst.agent_instance_id, string(inst.runtime_status))
-		// REQ-SHELL-2 §9: the staleness sweep is the third and last liveness signal,
-		// and it gets the same rule as the other two — a foreground run whose agent
-		// is gone becomes a background run, so it stays tracked and reapable instead
-		// of blocking for a caller that no longer exists.
-		shell_session_svc.shell_session_background_runs_for_agent(&graph.shell_session_service, string(inst.owner_user_id), inst.agent_instance_id)
-		http.publish_instance_changed(&graph.event_bus, inst, "status_changed")
-	}
 }
 
 // reaper_sweep_pending_enrollments rolls back every pending enrollment past its
