@@ -2836,6 +2836,9 @@ bridge_apply_validated_status :: proc(h: ^Bridge_Handlers, bridge_id: string, ge
 		domain.agent_instance_destroy(&instance)
 		return {}, false, commit_err
 	}
+	if process_exit != nil && reason == "pty_child_exited" && (status == "stopped" || status == "failed") {
+		agent_service.record_committed_process_exit(h.agents, instance, process_exit^)
+	}
 	agent_service.notify_facts(h.agents, facts[:])
 	if applied {
 		_, _, tracking_err := project_service.bridge_runtime_instance_apply(h.bridge_runtime_registry, bridge_id, generation, id, string(instance.owner_user_id), string(instance.runtime_status), string(instance.activity_status), seq, recover = true)

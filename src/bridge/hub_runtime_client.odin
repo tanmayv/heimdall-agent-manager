@@ -2657,9 +2657,9 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
     // The adapter arena owns only conversion text. The common apply and all
     // side effects inherit the original dispatch context while it stays alive.
     context = saved_context
-    _, _ = bridge_start_agent_apply(conn, adapted, bridge_command_worker_deadline_ns(conn))
+    applied, err := bridge_start_agent_apply(conn, adapted, bridge_command_worker_deadline_ns(conn))
     if command_id != "" {
-        result := bridge_command_result_json(command_id, "succeeded", "")
+        result := bridge_command_result_json(command_id, "succeeded", "") if applied else bridge_command_failed_json(command_id, bridge_error_wire(err), "")
         defer delete(result)
         _ = bridge_start_send_proc(conn, result)
     }
@@ -2671,24 +2671,24 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 // (`run_count`, confirmed with the PTY host using the persisted token record).
 // A bridge restart can discard the launch record without stopping the child. Then it
 // rewrites <run_dir>/TASK.md from the pack and types one line telling the agent
-// to run `ham-ctl lease next`. Returns false — the caller then launches — when
-// any precondition fails. A failed keystroke delivery still returns true: the
-// child is live, so a launch would no-op; the hub re-sends an unconfirmed
-// wake once and then parks the task (grant_unconfirmed).
-bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string) -> bool {
-	if run_count <= 0 || strings.trim_space(instance_id) == "" do return false
-	if bridge_agent_instance_run_count(instance_id) != run_count do return false
+// to run `ham-ctl lease next`. A delivery error is distinct from an
+// unavailable identity: the caller must not fall back to launch when the
+// child is already known alive.
+Bridge_Wake_Nudge :: enum { Unavailable, Delivered, Delivery_Failed }
+bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: string, run_count: int, pack_json: string) -> Bridge_Wake_Nudge {
+	if run_count <= 0 || strings.trim_space(instance_id) == "" do return .Unavailable
+	if bridge_agent_instance_run_count(instance_id) != run_count do return .Unavailable
 	lifecycle := bridge_agent_lifecycle_enter(instance_id)
 	defer bridge_agent_lifecycle_leave(lifecycle)
 	launch, _ := bridge_runtime_get_launch(instance_id)
 	sync.mutex_lock(&bridge_runtime_mutex)
 	stopped := bridge_runtime_stop_intent_active_locked(instance_id, bridge_runtime_now_ms())
 	sync.mutex_unlock(&bridge_runtime_mutex)
-	if stopped do return false
+	if stopped do return .Unavailable
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
-	if !daemon_ok do return false
+	if !daemon_ok do return .Unavailable
 	confirmed, _ := bridge_startup_confirm_spawned(socket, instance_id, run_count)
-	if !confirmed do return false
+	if !confirmed do return .Unavailable
 	if launch.run_dir == "" do fmt.eprintfln("agent_wake instance=%q source=bridge_wake_nudge_live_child reason=adopted_live_generation run_count=%d", instance_id, run_count)
 	if strings.has_prefix(strings.trim_space(pack_json), "{") {
 		bridge_taskv2_ensure_pack_worktree(pack_json)
@@ -2705,11 +2705,20 @@ bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: strin
 	}
 	line := bridge_wake_nudge_line(lease_id, task_id, role)
 	defer delete(line)
-	if !bridge_pty_host_deliver_line(socket, instance_id, line) {
+	delivered := false
+	if bridge_runtime_is_acp(instance_id) {
+		now := bridge_runtime_now_ms()
+		delivered = bridge_task_notice_enqueue({instance = instance_id, task = task_id, origin = "lease_wake",
+			text = line, queued_ms = now, due_ms = now})
+	} else {
+		delivered = bridge_pty_host_deliver_line(socket, instance_id, line)
+	}
+	if !delivered {
 		fmt.eprintln("bridge wake_agent: nudge delivery failed for live instance", instance_id)
+		return .Delivery_Failed
 	}
 	bridge_task_wake_note_launched(instance_id)
-	return true
+	return .Delivered
 }
 
 // bridge_wake_nudge_line is the one line typed into a live agent that was

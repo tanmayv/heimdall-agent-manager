@@ -434,4 +434,6 @@ test_bridge_status_requires_current_child_exit :: proc(t: ^testing.T) {
 	testing.expect(t, err.code == .None)
 	testing.expect(t, applied)
 	testing.expect_value(t, inst.runtime_status, "stopped")
+	proof_now := agent_service.agent_liveness(&f.ag_svc, inst, force_probe = true, prefer_reported_exit = true)
+	testing.expect(t, proof_now.state == .Exited && proof_now.pid == 42 && proof_now.exit_code == 0, "committed exit is available for the lease decision")
 }

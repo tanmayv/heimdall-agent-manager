@@ -125,3 +125,22 @@ Run the same command with that directory and `STREAM_E2E_EXPIRY=1`.
 The short-TTL run checks live viewing before the deadline, actual expiry in
 the viewer, rejection of fresh lookups and viewer upgrades, and that capture
 stops. Do not deploy or use the short-TTL build outside the fixture.
+
+### Agent liveness through a Bridge-only restart (Linux)
+
+Use a private fixture stack and source-built `ham-hub`, `ham-bridge`,
+`ham-ctl`, and `ham-dev-proxy` in one directory. Provide two distinct PTY host
+binary paths, with the older or retained binary given as `LIVENESS_OLD_PTY_HOST`.
+
+```sh
+LIVENESS_BIN_DIR=/path/to/fixture-binaries \
+LIVENESS_OLD_PTY_HOST=/path/to/old/ham-pty-host \
+LIVENESS_PTY_HOST=/path/to/current/ham-pty-host \
+nix develop -c node tests/e2e/agent_liveness_restart.mjs
+```
+
+The test creates its own Hub database, Bridge profile, synthetic worker and
+lease. It signals only the fixture Bridge, verifies that the same child PID and
+confirmed lease survive reconnect and malformed terminal input, then checks
+that explicit Start and Stop return only after replacement readiness and exit.
+It does not update or signal an installed Bridge.

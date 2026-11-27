@@ -606,7 +606,7 @@ drain_instance_terminal_probes :: proc(svc: ^Service) {
 		if !found || err.code != .None do continue
 		// An exit hint invalidates a recently cached alive observation. A
 		// timeout, offline bridge or missing record does not authorize revocation.
-		if agent.agent_liveness(svc.agent_service, inst, force_probe = true).state != .Exited do continue
+		if agent.agent_liveness(svc.agent_service, inst, force_probe = true, prefer_reported_exit = true).state != .Exited do continue
 		on_instance_terminal(svc, id, &inst, lease.lease_id)
 	}
 }

@@ -121,9 +121,18 @@ bridge_start_agent_apply_detail :: proc(conn: ^ws.Connection, text: string, dead
 		// token, startup and wake state must use the caller's heap context, never
 		// the private scratch arena (including its temporary allocator).
 		context = saved_context
-		if deliver == contracts.START_DELIVER_NUDGE && bridge_start_nudge_proc(id, task_id, role, lease_id, run_count, pack) {
-			bridge_runtime_set_launch_role(id, role)
-			continue
+		if deliver == contracts.START_DELIVER_NUDGE {
+			switch bridge_start_nudge_proc(id, task_id, role, lease_id, run_count, pack) {
+			case .Delivered:
+				bridge_runtime_set_launch_role(id, role)
+				continue
+			case .Delivery_Failed:
+				if ok do err = bridge_error(.agent_launch_failed, .other)
+				ok = false
+				continue
+			case .Unavailable:
+				// The launcher must independently verify inventory before spawn.
+			}
 		}
 		launched, detail, launch_err := bridge_start_launch_proc(entry_id, launch, deadline_ns)
 		if launched {

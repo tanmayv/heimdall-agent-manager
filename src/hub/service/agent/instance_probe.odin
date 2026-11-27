@@ -33,25 +33,35 @@ Agent_Liveness_Cache :: struct {
 		key: [32]byte,
 		at: time.Tick,
 		fact: Agent_Liveness,
+		from_exit_frame: bool,
 	},
 }
 
 AGENT_LIVENESS_CACHE_TTL :: 2 * time.Second
 
+agent_liveness_key :: proc(inst: domain.Agent_Instance) -> (key: [32]byte) {
+	// A later runtime observation for the same generation (for example a
+	// recovery start) must not reuse an older process result.
+	identity := fmt.tprintf("%q/%q/%q/%d/%d", inst.bridge_id, inst.agent_instance_id, inst.launch_epoch, inst.run_count, inst.last_applied_seq)
+	hash.hash_string_to_buffer(.SHA256, identity, key[:])
+	return
+}
+
 // The cache is bounded and fenced by the durable generation and owning bridge.
 // runtime_status is deliberately not an input. A miss authorizes no state
 // mutation and may perform one bounded RPC, so call outside the UoW and reader.
-agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, force_probe := false) -> Agent_Liveness {
+agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, force_probe := false, prefer_reported_exit := false) -> Agent_Liveness {
 	if service == nil do return {}
-	identity := fmt.tprintf("%q/%q/%q/%d", inst.bridge_id, inst.agent_instance_id, inst.launch_epoch, inst.run_count)
-	key: [32]byte
-	hash.hash_string_to_buffer(.SHA256, identity, key[:])
+	key := agent_liveness_key(inst)
 	index := int(key[0]) % len(service.liveness_cache.rows)
 	cache := &service.liveness_cache
 	sync.mutex_lock(&cache.mutex)
 	slot := cache.rows[index]
 	sync.mutex_unlock(&cache.mutex)
-	if !force_probe && slot.key == key && time.tick_since(slot.at) < AGENT_LIVENESS_CACHE_TTL do return slot.fact
+	if slot.key == key && time.tick_since(slot.at) < AGENT_LIVENESS_CACHE_TTL &&
+	   (!force_probe || (prefer_reported_exit && slot.from_exit_frame)) {
+		return slot.fact
+	}
 
 	at := time.tick_now()
 	observation, reason := probe_instance(service, inst)
@@ -161,4 +171,19 @@ parse_process_exit_evidence :: proc(frame: string) -> Process_Exit_Evidence {
 	evidence: Process_Exit_Evidence
 	if json.unmarshal_string(raw, &evidence, allocator = context.temp_allocator) != nil do return {}
 	return evidence
+}
+
+// Only call after committing a validated Bridge terminal frame. A late
+// in-flight probe cannot overwrite this evidence with an older observation.
+record_committed_process_exit :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, evidence: Process_Exit_Evidence) {
+	code, has_code := evidence.exit_code.?
+	if service == nil || !has_code || evidence.pid <= 0 || evidence.run_count <= 0 || evidence.run_count != inst.run_count do return
+	key := agent_liveness_key(inst)
+	cache := &service.liveness_cache
+	index := int(key[0]) % len(cache.rows)
+	sync.mutex_lock(&cache.mutex)
+	cache.rows[index] = {key = key, at = time.tick_now(), from_exit_frame = true, fact = {
+		state = .Exited, reason = .pty_child_exited, pid = int(evidence.pid), exit_code = code,
+	}}
+	sync.mutex_unlock(&cache.mutex)
 }

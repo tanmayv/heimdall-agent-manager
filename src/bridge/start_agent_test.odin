@@ -21,7 +21,7 @@ Start_Bridge_Test :: struct {
 	captures:int,
 	launches, frames, statuses, stops:[dynamic]string,
 	nudges:int,
-	live, fail:bool,
+	live, fail, nudge_fails:bool,
 }
 start_bridge_expect_json :: proc(t:^testing.T,text,key,expected:string) {
     value:=extract_json_string(text,key,"")
@@ -44,14 +44,15 @@ start_bridge_launch :: proc(id,text:string,deadline:i64)->(bool,string,Bridge_Er
 	if h.fail && len(h.launches)==1 do return false,"denied by fixture",bridge_error(.agent_launch_failed,.denied)
 	return true,"",{}
 }
-start_bridge_nudge :: proc(id,task,role,lease:string,generation:int,pack:string)->bool {
+start_bridge_nudge :: proc(id,task,role,lease:string,generation:int,pack:string)->Bridge_Wake_Nudge {
 	h:=start_bridge_test
 	start_bridge_check_context()
 	h.nudges+=1
 	testing.expect(h.t,generation>0)
 	testing.expect(h.t,lease!="")
 	testing.expect(h.t,strings.has_prefix(pack,"{"))
-	return h.live
+	if h.nudge_fails do return .Delivery_Failed
+	return .Delivered if h.live else .Unavailable
 }
 start_bridge_stop :: proc(id:string,force:bool=false)->bool {
 	start_bridge_check_context()
@@ -283,4 +284,19 @@ start_bridge_wake_context_scenario :: proc(t:^testing.T,h:^Start_Bridge_Test) {
 		testing.expect(t,strings.contains(features,contracts.BRIDGE_FEATURE_START_AGENT_V1))
 	}
 	testing.expect_value(t,len(track.allocation_map),0)
+}
+
+@(test)
+test_start_wake_nudge_failure_reports_error_without_launch :: proc(t: ^testing.T) {
+	start_bridge_run(t, proc(t: ^testing.T, h: ^Start_Bridge_Test) {
+		h.nudge_fails = true
+		text := `{"command_id":"failed-nudge","payload":{"run":[{"deliver":"nudge","launch":{"command_id":"n","payload":{"agent_instance_id":"i","role":"worker","lease_id":"l","run_count":4,"pack":{}}}}]}}`
+		bridge_hub_handle_start_agent(nil, text)
+		testing.expect_value(t, h.nudges, 1)
+		testing.expect_value(t, len(h.launches), 0)
+		testing.expect_value(t, len(h.stops), 0)
+		if testing.expect_value(t, len(h.frames), 1) {
+			start_bridge_expect_json(t, h.frames[0], "status", "failed")
+		}
+	})
 }

@@ -30,8 +30,8 @@ test_wake_nudge_line_names_lease_and_lease_next :: proc(t: ^testing.T) {
 // falls back to a full launch — no daemon is contacted.
 @(test)
 test_wake_nudge_declines_without_persisted_generation :: proc(t: ^testing.T) {
-	testing.expect(t, !bridge_wake_nudge_live_child("t8_nudge_never_launched", "task", "worker", "lease", 3, "{}"), "no persisted generation → launch")
-	testing.expect(t, !bridge_wake_nudge_live_child("t8_nudge_never_launched", "task", "worker", "lease", 0, "{}"), "no generation → launch")
+	testing.expect(t, bridge_wake_nudge_live_child("t8_nudge_never_launched", "task", "worker", "lease", 3, "{}") == .Unavailable, "no persisted generation → launch")
+	testing.expect(t, bridge_wake_nudge_live_child("t8_nudge_never_launched", "task", "worker", "lease", 0, "{}") == .Unavailable, "no generation → launch")
 }
 
 @(test)
