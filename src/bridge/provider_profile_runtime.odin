@@ -120,7 +120,8 @@ profile_prepare_runtime :: proc(p: ^Provider_Profile) -> Profile_Error {
 	context.allocator = context.temp_allocator
 	if p.provider != "codex" || p.config.shadow_home_path == "" do return .None
 	shared := p.config.home_path
-	if shared == "" do shared = profile_normalize_path("~/.codex")
+	// No profile home: the default Codex home ($CODEX_HOME, else ~/.codex).
+	if shared == "" do shared = bridge_codex_default_home()
 	shadow := p.config.shadow_home_path
 	// Canonicalize existing parents as well, so aliases cannot share auth.
 	shared = bridge_fs_canonicalize_existing(shared)

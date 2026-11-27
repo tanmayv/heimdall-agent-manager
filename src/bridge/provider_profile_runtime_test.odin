@@ -182,6 +182,23 @@ test_profile_codex_shadow_layout_and_private_auth :: proc(t: ^testing.T) {
 	testing.expect_value(t, string(source), "shared-auth")
 }
 
+// A shadow profile without home_path shares the default Codex home, which
+// honours CODEX_HOME (the config-dir resolver), not a hardcoded ~/.codex.
+@(test)
+test_profile_codex_shadow_default_shared_home_honours_codex_home :: proc(t: ^testing.T) {
+	when ODIN_OS == .Windows do return
+	st := p1c_test_setup(t); defer p1c_test_teardown(st)
+	shared, shadow := profile_join(st.dir, "codex-env-home"), profile_join(st.dir, "shadow")
+	p1c_put(t, profile_join(shared, "config.toml"), "source")
+	saved := os.get_env("CODEX_HOME", context.temp_allocator)
+	defer { if saved != "" do _ = os.set_env("CODEX_HOME", saved); else do os.unset_env("CODEX_HOME") }
+	testing.expect(t, os.set_env("CODEX_HOME", shared) == nil)
+	p := Provider_Profile{provider = "codex", config = Provider_Profile_Config{shadow_home_path = shadow}}
+	testing.expect_value(t, profile_prepare_runtime(&p), Profile_Error.None)
+	link, err := os.read_link(profile_join(shadow, "config.toml"), context.temp_allocator)
+	testing.expect(t, err == nil && link == profile_join(shared, "config.toml"), link)
+}
+
 @(test)
 test_profile_codex_shadow_conflicts_preserve_files_and_active_locks :: proc(t: ^testing.T) {
 	when ODIN_OS == .Windows do return
