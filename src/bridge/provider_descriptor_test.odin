@@ -95,3 +95,34 @@ test_profile_env_fields_and_secrets_come_from_descriptor :: proc(t: ^testing.T) 
 	plan = profile_env_plan(&claude)
 	testing.expect(t, len(plan.set) == 1 && plan.set[0] == [2]string{"CLAUDE_CONFIG_DIR", "/c"})
 }
+
+// A fake CLI whose `--version` runs body (a shell fragment).
+@(private = "file")
+provider_version_fixture :: proc(t: ^testing.T, name, body: string) -> string {
+	base := os.get_env("TMPDIR", context.temp_allocator)
+	if base == "" do base = "/tmp"
+	path := fmt.tprintf("%s/ham-r1-version-%s-%d-%d", base, name, os.get_pid(), time.tick_now()._nsec)
+	testing.expect(t, os.write_entire_file(path, fmt.tprintf("#!/bin/sh\n%s\n", body)) == nil)
+	testing.expect(t, os.chmod(path, os.Permissions{.Read_User, .Write_User, .Execute_User}) == nil)
+	return path
+}
+
+// The version check returns the parsed version and its status against the
+// registry minimum (Kiro: 3.5.0 from its ACP recipe).
+@(test)
+test_provider_cli_version_check_status :: proc(t: ^testing.T) {
+	kiro := bridge_provider_traits("kiro")
+	cases := []struct{ body, parsed: string, status: contracts.Provider_Version_Status }{
+		{"echo 'kiro-cli 3.5.0'", "3.5.0", .Ok},
+		{"echo 'kiro-cli 3.10.2'", "3.10.2", .Ok},
+		{"echo 'kiro-cli 3.4.9'", "3.4.9", .Outdated},
+		{"echo 'something else'", "", .Missing},
+		{"exit 3", "", .Missing},
+	}
+	for c in cases {
+		path := provider_version_fixture(t, "kiro", c.body)
+		defer os.remove(path)
+		v, status := bridge_provider_cli_version_check(kiro, path, nil, 2*time.Second, context.temp_allocator)
+		testing.expectf(t, v.parsed == c.parsed && status == c.status, "%q: got (%q, %v)", c.body, v.parsed, status)
+	}
+}

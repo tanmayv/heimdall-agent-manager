@@ -46,11 +46,16 @@ setup_known_harnesses :: proc(home: string, getenv: proc(key: string) -> string)
 		if config_path != "" && d.config_file != "" {
 			config_file = strings.concatenate({strings.trim_right(config_path, "/\\"), "/", d.config_file})
 		}
+		// The hint never repeats the minimum version; the registry supplies it.
+		install_hint := d.install_hint
+		if minimum := contracts.provider_min_version(d); minimum != "" {
+			install_hint = fmt.aprintf("%s %s or newer", d.install_hint, minimum)
+		}
 		append(&out, Setup_Harness{
 			name = d.provider, bin = d.binary,
 			config_path = config_path, config_file = config_file,
 			config_dir_env = d.config_dir_env,
-			install_hint = d.install_hint, auth_hint = d.auth_guidance, wire_hint = wire,
+			install_hint = install_hint, auth_hint = d.auth_guidance, wire_hint = wire,
 		})
 	}
 	return out[:]

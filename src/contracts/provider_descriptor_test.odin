@@ -1,5 +1,6 @@
 package contracts
 
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -213,5 +214,32 @@ provider_model_probe_agrees_with_acp_recipe :: proc(t: ^testing.T) {
 		if !acp.discover_models_via_acp do continue
 		d, known := provider_descriptor(acp.provider)
 		testing.expectf(t, known && d.model_probe == .ACP, "%s opts in to ACP discovery but its registry probe is %v", acp.provider, d.model_probe)
+	}
+}
+
+// The minimum version comes from the detect-only ACP recipe; hints never
+// repeat it as free text.
+@(test)
+provider_min_version_and_status :: proc(t: ^testing.T) {
+	kiro, _ := provider_descriptor("kiro")
+	opencode, _ := provider_descriptor("opencode")
+	codex, _ := provider_descriptor("codex")
+	copilot, _ := provider_descriptor("copilot")
+	pi, _ := provider_descriptor("pi")
+	testing.expect_value(t, provider_min_version(kiro), "3.5.0")
+	testing.expect_value(t, provider_min_version(opencode), "1.19.6")
+	testing.expect_value(t, provider_min_version(codex), "0.162.0")
+	testing.expect_value(t, provider_min_version(copilot), "") // pinned Native runtime
+	testing.expect_value(t, provider_min_version(pi), "")      // no ACP runtime
+	testing.expect_value(t, provider_version_status(kiro, "3.5.0"), Provider_Version_Status.Ok)
+	testing.expect_value(t, provider_version_status(kiro, "3.10.0"), Provider_Version_Status.Ok)
+	testing.expect_value(t, provider_version_status(kiro, "3.4.9"), Provider_Version_Status.Outdated)
+	testing.expect_value(t, provider_version_status(kiro, ""), Provider_Version_Status.Missing)
+	testing.expect_value(t, provider_version_status(kiro, "v3.5.0"), Provider_Version_Status.Missing)
+	testing.expect_value(t, provider_version_status(pi, "0.0.1"), Provider_Version_Status.Ok)
+	for d in provider_descriptors() {
+		if minimum := provider_min_version(d); minimum != "" {
+			testing.expectf(t, !strings.contains(d.install_hint, minimum), "%s install_hint repeats %s", d.provider, minimum)
+		}
 	}
 }

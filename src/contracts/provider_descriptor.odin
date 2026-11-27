@@ -11,7 +11,9 @@ import "core:strings"
 // resolves these facts here instead of comparing provider names (G7, G9).
 //
 // Heimdall never installs a provider CLI (G2): install_hint is guidance the user
-// follows, never a command Heimdall runs.
+// follows, never a command Heimdall runs. It carries no version number: the
+// minimum version is provider_min_version (from the ACP recipe), appended where
+// the hint is shown.
 
 // How `<binary> --version` prints its version.
 Provider_Version_Format :: enum u8 {
@@ -155,7 +157,7 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		config_dir_derived_env = {{"XDG_DATA_HOME", "data"}},
 		profile_launch_args = true, profile_custom_models = true,
 		model_probe = .ACP,
-		install_hint = "install Kiro CLI (kiro-cli) 3.5.0 or newer",
+		install_hint = "install Kiro CLI (kiro-cli)",
 		auth_guidance = "Run kiro-cli login --use-device-flow on the bridge host using the selected provider profile (its KIRO_HOME and XDG_DATA_HOME), or configure the profile's sensitive KIRO_API_KEY environment row, then restart this instance.",
 	},
 	{
@@ -168,7 +170,7 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		config_dir_default = ".config/opencode",
 		profile_launch_args = true, profile_custom_models = true,
 		model_probe = .ACP,
-		install_hint = "install OpenCode (opencode) 1.19.6 or newer",
+		install_hint = "install OpenCode (opencode)",
 		auth_guidance = "Run opencode auth login on the bridge host in the selected provider profile, or configure a local backend in OpenCode, then restart this instance.",
 	},
 }
@@ -242,6 +244,31 @@ provider_parse_cli_version :: proc(d: Provider_Descriptor, output: string) -> (s
 	}
 	if len(text) > 64 || !exact_adapter_version(text) do return "", false
 	return text, true
+}
+
+// provider_min_version is the minimum CLI version Heimdall supports, "" when it
+// sets none. Single source: the ACP recipe of a detect-only (System) runtime,
+// whose pkg.version is that minimum (acp_provider.odin). Pinned runtimes
+// (Adapter, Native) bring their own CLI and set no minimum here.
+provider_min_version :: proc(d: Provider_Descriptor) -> string {
+	if acp, ok := acp_provider_descriptor(d.provider); ok && acp.launch == .System do return acp.pkg.version
+	return ""
+}
+
+// How a detected CLI version compares with provider_min_version.
+Provider_Version_Status :: enum u8 {
+	Missing,  // no exact numeric version could be parsed
+	Ok,       // at least the minimum, or no minimum applies
+	Outdated, // below the minimum
+}
+
+// provider_version_status is THE minimum-version comparison; parsed is the
+// output of provider_parse_cli_version ("" when unparsed).
+provider_version_status :: proc(d: Provider_Descriptor, parsed: string) -> Provider_Version_Status {
+	if !exact_adapter_version(parsed) do return .Missing
+	minimum := provider_min_version(d)
+	if minimum == "" || acp_semver_compare(parsed, minimum) >= 0 do return .Ok
+	return .Outdated
 }
 
 // provider_config_dir_resolve picks the provider's config directory: the

@@ -168,7 +168,10 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
 // matches the pin, or, for system CLIs, is at least the minimum.
 acp_descriptor_cli_version_accepted :: proc(d: ACP_Provider_Descriptor, version: string) -> bool {
     if !exact_adapter_version(version) do return false
-    if d.launch == .System do return acp_semver_compare(version, d.pkg.version) >= 0
+    if d.launch == .System {
+        provider, registered := provider_descriptor(d.provider)
+        return registered && provider_version_status(provider, version) == .Ok
+    }
     return d.cli_version == "" || d.cli_version == version
 }
 

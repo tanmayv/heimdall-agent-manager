@@ -87,6 +87,15 @@ bridge_provider_cli_version :: proc(d: contracts.Provider_Descriptor, path: stri
 	return
 }
 
+// bridge_provider_cli_version_check runs bridge_provider_cli_version and
+// compares its parsed version with the registry minimum
+// (contracts.provider_version_status, the one comparison): Missing when the
+// CLI did not run or its version is unparsed, Outdated below the minimum.
+bridge_provider_cli_version_check :: proc(d: contracts.Provider_Descriptor, path: string, env: []string, timeout: time.Duration, allocator := context.allocator) -> (v: Bridge_Provider_CLI_Version, status: contracts.Provider_Version_Status) {
+	v = bridge_provider_cli_version(d, path, env, timeout, allocator)
+	return v, contracts.provider_version_status(d, v.parsed)
+}
+
 // bridge_provider_config_dir resolves the provider's config directory: the
 // profile's config field, else the CLI's config env var in env (nil means the
 // bridge's own environment; a leading "~/" expands), else the home default.

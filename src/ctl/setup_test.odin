@@ -46,11 +46,14 @@ test_setup_harnesses_from_provider_registry :: proc(t: ^testing.T) {
 		case "kiro":
 			testing.expect_value(t, h.config_dir_env, "KIRO_HOME")
 			testing.expect_value(t, h.config_path, "/home/u/.kiro")
+			testing.expect_value(t, h.install_hint, "install Kiro CLI (kiro-cli) 3.5.0 or newer") // minimum from the registry
 			testing.expect_value(t, h.config_file, "")
 		case "copilot":
 			testing.expect_value(t, h.config_path, "/home/u/.copilot")
+			testing.expect(t, !strings.contains(h.install_hint, "or newer"), h.install_hint) // pinned runtime: no minimum
 		case "opencode":
 			testing.expect_value(t, h.config_path, "/home/u/.config/opencode")
+			testing.expect_value(t, h.install_hint, "install OpenCode (opencode) 1.19.6 or newer")
 		}
 	}
 
