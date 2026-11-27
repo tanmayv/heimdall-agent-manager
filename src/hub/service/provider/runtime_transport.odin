@@ -74,7 +74,7 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
  }
  verdict:=classify_acp_availability(entry.provider,entry.acp_recipe_json,bridge.capabilities_json,adapter_json)
  // The launch still fails now; a retry sees the bridge's fresh report.
- if redetect do acp_gate_redetect(bridge,entry.provider,adapter_json,verdict,time.now())
+ if redetect do acp_gate_redetect(service.redetector,bridge,entry.provider,adapter_json,verdict,time.now())
  return acp_availability_error(entry.provider,verdict,adapter_json,has_status)
 }
 

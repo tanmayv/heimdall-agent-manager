@@ -33,6 +33,9 @@ Agent_Service :: struct {
 	content: ^iface.Content_Repository,
 	taskchains: ^iface.Taskchain_Repository,
 	providers: ^iface.Provider_Repository,
+	// Shared with the provider service: launch gates ask the bridge to
+	// re-detect a non-ready ACP report (G5). nil disables it.
+	acp_redetector: ^provider_service.ACP_Redetector,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
 	bridge_command_sink: project_service.Bridge_Command_Sink,
 	clock: ^platform.Clock,
@@ -2688,7 +2691,7 @@ bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, ow
 
 
 resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string, instance_override: string = "") -> (string,domain.Domain_Error) {
- svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
+ svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges,redetector=service.acp_redetector}
  return provider_service.resolve_runtime_transport(&svc,bridge_id,provider,instance_override)
 }
 
@@ -2733,7 +2736,7 @@ validate_frozen_runtime_transport :: proc(service: ^Agent_Service, inst:domain.A
  value,validation_err:=provider_service.provider_transport_from_entry(entry,transport)
  delete(value)
  if validation_err.code!=.None do return validation_err
- svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
+ svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges,redetector=service.acp_redetector}
  return provider_service.require_acp_ready(&svc,inst.bridge_id,entry)
 }
 

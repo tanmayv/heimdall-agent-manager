@@ -831,7 +831,7 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 		if path != op.destination.project_path do return false, domain.domain_error(.Conflict, "destination project path changed after preflight; recovery needs the original validated path")
 	}
 	if op.destination.runtime_transport=="acp" {
-		ps:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
+		ps:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges,redetector=service.acp_redetector}
 		entry,found,err:=iface.provider_catalog_get(service.providers,op.destination.provider)
 		if err.code!=.None do return false,err
 		if !found do return false,domain.domain_error(.ACP_Unavailable,"ACP provider is unavailable")

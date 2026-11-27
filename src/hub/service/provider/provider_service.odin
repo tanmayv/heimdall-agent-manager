@@ -29,6 +29,8 @@ Provider_Service :: struct {
 	test_mutex: sync.Mutex,
 	extension_mutex: sync.Mutex,
 	test_runs:  [dynamic]Provider_Test_Run,
+	// G5 re-detection (acp_redetect.odin); nil disables it.
+	redetector: ^ACP_Redetector,
 }
 
 Provider_Catalog_Result :: struct {

@@ -178,6 +178,7 @@ App_Graph :: struct {
 	lsp_server_config_handlers: http.Lsp_Server_Config_Rest_Handlers,
 	provider_handlers: http.Provider_Handlers,
 	providers: provider_service.Provider_Service,
+	acp_redetector: provider_service.ACP_Redetector,
 	card_handlers: http.Card_Handlers,
 	issues: issue_service.Issue_Service,
 	issue_handlers: http.Issue_Handlers,
@@ -752,7 +753,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
 	// G5: launch gates and stale status reads ask the bridge to re-detect.
-	provider_service.acp_redetect_register(http.provider_acp_redetect_dispatch, &graph.provider_handlers)
+	provider_service.acp_redetector_init(&graph.acp_redetector, http.provider_acp_redetect_dispatch, &graph.provider_handlers)
+	graph.providers.redetector = &graph.acp_redetector
+	graph.agents.acp_redetector = &graph.acp_redetector
 	graph.agent_action_handlers.providers = &graph.providers
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
@@ -782,7 +785,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
-	provider_service.acp_redetect_register(nil, nil) // the handlers die with the graph
+	provider_service.acp_redetector_destroy(&graph.acp_redetector) // the handlers die with the graph
 	eventrelay.stop(&graph.event_relay)
 	eventinbox.stop(&graph.event_inbox_runtime)
 	eventinbox.counters_destroy(&graph.event_inbox)

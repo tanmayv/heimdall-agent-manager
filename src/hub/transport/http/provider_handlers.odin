@@ -249,7 +249,7 @@ bridge_provider_status_response :: proc(
 	for view, i in views {if i > 0 do strings.write_byte(&b, ',')
 		write_bridge_provider_view_json(&b, view, bridge.capabilities_json if found else "")
 		// G5: a stale ACP report asks the bridge to re-detect (deduplicated, not awaited).
-		if found && view.profile_id == view.catalog.provider do provider_service.acp_read_redetect(bridge, view.catalog.provider, view.catalog.transports_json, view.catalog.acp_recipe_json, view.acp_adapter_json, now)
+		if found && view.profile_id == view.catalog.provider do provider_service.acp_read_redetect(h.providers.redetector, bridge, view.catalog.provider, view.catalog.transports_json, view.catalog.acp_recipe_json, view.acp_adapter_json, now)
 	}
 	strings.write_string(&b, "],\"extension_commands\":[")
 	if h.providers.repo != nil && h.providers.repo.list_extension_commands != nil {

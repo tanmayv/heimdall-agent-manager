@@ -6,108 +6,120 @@ import "core:time"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
-@(private = "file") redetect_calls: [dynamic]string
+// Each test owns its redetector and call log: nothing is process-wide, so
+// tests running in parallel never share a dedupe window or a dispatcher.
+@(private = "file")
+Redetect_Fixture :: struct {
+	r: ACP_Redetector,
+	calls: [dynamic]string,
+}
 
 @(private = "file")
 redetect_fake :: proc(ctx: rawptr, bridge_id, provider: string, kind: ACP_Redetect_Kind) {
-	append(&redetect_calls, strings.concatenate({bridge_id, "/", provider, "/", "recheck" if kind == .Recheck else "discover"}))
+	f := (^Redetect_Fixture)(ctx)
+	append(&f.calls, strings.concatenate({bridge_id, "/", provider, "/", "recheck" if kind == .Recheck else "discover"}))
 }
 
 @(private = "file")
-redetect_setup :: proc() {
-	acp_redetect_reset()
-	for call in redetect_calls do delete(call)
-	clear(&redetect_calls)
-	acp_redetect_register(redetect_fake, nil)
+redetect_setup :: proc(f: ^Redetect_Fixture) {
+	acp_redetector_init(&f.r, redetect_fake, f)
 }
 
 @(private = "file")
-redetect_teardown :: proc() {
-	acp_redetect_register(nil, nil)
-	acp_redetect_reset()
-	for call in redetect_calls do delete(call)
-	delete(redetect_calls); redetect_calls = nil
+redetect_reset :: proc(f: ^Redetect_Fixture) {
+	acp_redetector_destroy(&f.r)
+	acp_redetector_init(&f.r, redetect_fake, f)
+}
+
+@(private = "file")
+redetect_teardown :: proc(f: ^Redetect_Fixture) {
+	acp_redetector_destroy(&f.r)
+	for call in f.calls do delete(call)
+	delete(f.calls)
 }
 
 // G5: the launch gate re-detects a non-ready report on an online bridge,
 // exactly once per dedupe window, without changing the launch error.
 @(test)
 test_acp_launch_gate_redetects_non_ready_report_once :: proc(t: ^testing.T) {
-	redetect_setup(); defer redetect_teardown()
+	f: Redetect_Fixture; redetect_setup(&f); defer redetect_teardown(&f)
 	store := Transport_Test_Store{provider = "copilot", features = `{"features":["acp_runtime_v1"]}`, transports = `["pty","acp"]`, default_transport = "pty",
 		recipe = COPILOT_TRANSPORT_TEST_RECIPE, override = "acp",
 		adapter = `{"installed":true,"state":"error","version":"1.0.120","checked_at":"2026-11-27T00:00:00Z","error":"ACP initialize probe is required for the selected profile; use Re-check"}`}
 	repo := iface.Provider_Repository{ctx = &store, get = transport_test_get, get_provider_transport = transport_test_override, list_status = transport_test_status}
 	bridges := iface.Bridge_Repository{ctx = &store, get_bridge = transport_test_bridge}
-	svc := Provider_Service{repo = &repo, bridges = &bridges}
+	svc := Provider_Service{repo = &repo, bridges = &bridges, redetector = &f.r}
 	for _ in 0 ..< 3 {
 		selected, err := resolve_runtime_transport(&svc, "bridge", "copilot")
 		testing.expect(t, err.code == .ACP_Unavailable && selected == "", "the launch still fails with its current error")
 		delete(selected)
 	}
-	testing.expect_value(t, len(redetect_calls), 1)
-	if len(redetect_calls) == 1 do testing.expect_value(t, redetect_calls[0], "bridge/copilot/recheck") // System runtime: probe Re-check
+	testing.expect_value(t, len(f.calls), 1)
+	if len(f.calls) == 1 do testing.expect_value(t, f.calls[0], "bridge/copilot/recheck") // System runtime: probe Re-check
 	// The settings save starts its own tracked install/Re-check: no extra request.
-	acp_redetect_reset()
+	redetect_reset(&f)
 	entry := domain.Provider_Catalog_Entry{provider = "copilot", acp_recipe_json = COPILOT_TRANSPORT_TEST_RECIPE}
 	testing.expect_value(t, require_acp_ready(&svc, "bridge", entry, redetect = false).code, domain.Error_Code.ACP_Unavailable)
-	testing.expect_value(t, len(redetect_calls), 1)
+	testing.expect_value(t, len(f.calls), 1)
 	// A fresh ready report dispatches nothing.
 	store.adapter = `{"installed":true,"state":"ready","version":"1.0.120","checked_at":"2026-11-27T00:00:00Z","adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
 	selected, err := resolve_runtime_transport(&svc, "bridge", "copilot")
 	testing.expect(t, err.code == .None && selected == "acp"); delete(selected)
-	testing.expect_value(t, len(redetect_calls), 1)
+	testing.expect_value(t, len(f.calls), 1)
 	// An adapter runtime (Claude) missing Node.js is re-detected by a discover.
 	store = Transport_Test_Store{features = `{"features":["acp_runtime_v1"]}`, transports = `["pty","acp"]`, default_transport = "pty",
 		recipe = TRANSPORT_TEST_RECIPE, override = "acp", adapter = `{"installed":false,"state":"missing_node","checked_at":"2026-11-27T00:00:00Z"}`}
 	selected, err = resolve_runtime_transport(&svc, "bridge", "claude"); delete(selected)
 	testing.expect_value(t, err.code, domain.Error_Code.ACP_Unavailable)
-	testing.expect_value(t, len(redetect_calls), 2)
-	if len(redetect_calls) == 2 do testing.expect_value(t, redetect_calls[1], "bridge/claude/discover")
+	testing.expect_value(t, len(f.calls), 2)
+	if len(f.calls) == 2 do testing.expect_value(t, f.calls[1], "bridge/claude/discover")
 	// Installing and unsupported bridges never re-detect.
-	acp_redetect_reset()
+	redetect_reset(&f)
 	store.adapter = `{"installed":false,"state":"installing","checked_at":"2026-11-27T00:00:00Z"}`
 	selected, err = resolve_runtime_transport(&svc, "bridge", "claude"); delete(selected)
 	store.adapter = `{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`; store.features = ""
 	selected, err = resolve_runtime_transport(&svc, "bridge", "claude"); delete(selected)
-	testing.expect_value(t, len(redetect_calls), 2)
+	testing.expect_value(t, len(f.calls), 2)
 }
 
 @(test)
 test_acp_redetect_dedupes_per_bridge_provider_window :: proc(t: ^testing.T) {
-	redetect_setup(); defer redetect_teardown()
+	f: Redetect_Fixture; redetect_setup(&f); defer redetect_teardown(&f)
 	now := time.now()
-	testing.expect(t, acp_request_redetect("b1", "claude", .Discover, now))
-	testing.expect(t, !acp_request_redetect("b1", "claude", .Discover, time.time_add(now, 29 * time.Second)))
-	testing.expect(t, acp_request_redetect("b2", "claude", .Discover, now), "another bridge is independent")
-	testing.expect(t, acp_request_redetect("b1", "kiro", .Recheck, now), "another provider is independent")
-	testing.expect(t, acp_request_redetect("b1", "claude", .Discover, time.time_add(now, 31 * time.Second)), "the window expires")
-	testing.expect_value(t, len(redetect_calls), 4)
-	acp_redetect_register(nil, nil)
-	testing.expect(t, !acp_request_redetect("b3", "claude", .Discover, now), "no dispatcher, no request")
+	testing.expect(t, acp_request_redetect(&f.r, "b1", "claude", .Discover, now))
+	testing.expect(t, !acp_request_redetect(&f.r, "b1", "claude", .Discover, time.time_add(now, 29 * time.Second)))
+	testing.expect(t, acp_request_redetect(&f.r, "b2", "claude", .Discover, now), "another bridge is independent")
+	testing.expect(t, acp_request_redetect(&f.r, "b1", "kiro", .Recheck, now), "another provider is independent")
+	testing.expect(t, acp_request_redetect(&f.r, "b1", "claude", .Discover, time.time_add(now, 31 * time.Second)), "the window expires")
+	testing.expect_value(t, len(f.calls), 4)
+	testing.expect(t, !acp_request_redetect(nil, "b3", "claude", .Discover, now), "no redetector, no request")
+	// Another service's redetector has its own window.
+	other: Redetect_Fixture; redetect_setup(&other); defer redetect_teardown(&other)
+	testing.expect(t, acp_request_redetect(&other.r, "b1", "claude", .Discover, now))
+	testing.expect_value(t, len(f.calls), 4)
 }
 
 // A provider-status read re-detects a stale report once; fresh reports, PTY-only
 // providers, offline or non-ACP bridges never.
 @(test)
 test_acp_stale_status_read_redetects_once :: proc(t: ^testing.T) {
-	redetect_setup(); defer redetect_teardown()
+	f: Redetect_Fixture; redetect_setup(&f); defer redetect_teardown(&f)
 	now, _ := time.rfc3339_to_time_utc("2026-11-27T12:00:00Z")
 	bridge := domain.Bridge{bridge_id = "b", capabilities_json = `{"features":["acp_runtime_v1"]}`}
 	stale := `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-27T11:00:00Z","adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}`
 	fresh := `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-27T11:55:00Z","adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0"}`
-	testing.expect(t, !acp_read_redetect(bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, fresh, now))
-	testing.expect(t, !acp_read_redetect(bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, "", now), "no report yet: scans create it")
-	testing.expect(t, !acp_read_redetect(bridge, "claude", `["pty"]`, TRANSPORT_TEST_RECIPE, stale, now))
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, fresh, now))
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, "", now), "no report yet: scans create it")
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty"]`, TRANSPORT_TEST_RECIPE, stale, now))
 	offline := bridge; offline.status = .Offline
-	testing.expect(t, !acp_read_redetect(offline, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
+	testing.expect(t, !acp_read_redetect(&f.r, offline, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
 	no_acp := bridge; no_acp.capabilities_json = `{"features":[]}`
-	testing.expect(t, !acp_read_redetect(no_acp, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
-	testing.expect_value(t, len(redetect_calls), 0)
-	testing.expect(t, acp_read_redetect(bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
-	testing.expect(t, !acp_read_redetect(bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, time.time_add(now, time.Second)), "deduplicated")
-	testing.expect_value(t, len(redetect_calls), 1)
-	if len(redetect_calls) == 1 do testing.expect_value(t, redetect_calls[0], "b/claude/discover")
+	testing.expect(t, !acp_read_redetect(&f.r, no_acp, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
+	testing.expect_value(t, len(f.calls), 0)
+	testing.expect(t, acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, now))
+	testing.expect(t, !acp_read_redetect(&f.r, bridge, "claude", `["pty","acp"]`, TRANSPORT_TEST_RECIPE, stale, time.time_add(now, time.Second)), "deduplicated")
+	testing.expect_value(t, len(f.calls), 1)
+	if len(f.calls) == 1 do testing.expect_value(t, f.calls[0], "b/claude/discover")
 	testing.expect(t, acp_report_stale(`{"state":"ready","checked_at":"not a time"}`, now))
 	testing.expect_value(t, acp_redetect_kind("kiro", `{"state":"outdated"}`), ACP_Redetect_Kind.Recheck)
 	testing.expect_value(t, acp_redetect_kind("kiro", stale), ACP_Redetect_Kind.Discover)

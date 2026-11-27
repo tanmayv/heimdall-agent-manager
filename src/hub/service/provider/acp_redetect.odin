@@ -28,22 +28,29 @@ ACP_Redetect_Kind :: enum u8 { Discover, Recheck }
 // Sends the tracked command and returns at once (the transport layer).
 ACP_Redetect_Dispatcher :: proc(ctx: rawptr, bridge_id, provider: string, kind: ACP_Redetect_Kind)
 
-@(private = "file") acp_redetect_dispatcher: ACP_Redetect_Dispatcher
-@(private = "file") acp_redetect_ctx: rawptr
-@(private = "file") acp_redetect_mutex: sync.Mutex
-@(private = "file") acp_redetect_last: map[string]time.Time
-
-// Registered once by the Hub wiring; without it no re-detection is requested.
-acp_redetect_register :: proc(dispatcher: ACP_Redetect_Dispatcher, ctx: rawptr) {
-	sync.mutex_lock(&acp_redetect_mutex); defer sync.mutex_unlock(&acp_redetect_mutex)
-	acp_redetect_dispatcher, acp_redetect_ctx = dispatcher, ctx
+// ACP_Redetector owns the dispatcher and the dedupe window. It lives on the
+// Hub graph (or a test) and is shared by pointer: Provider_Service.redetector
+// and Agent_Service.acp_redetector. There is no process-wide state, so
+// parallel services and tests never share a window or a dispatcher.
+ACP_Redetector :: struct {
+	mutex: sync.Mutex,
+	dispatch: ACP_Redetect_Dispatcher,
+	ctx: rawptr,
+	last: map[string]time.Time, // bridge \x1f provider -> last request (heap)
 }
 
-// Clears the dedupe window (tests).
-acp_redetect_reset :: proc() {
-	sync.mutex_lock(&acp_redetect_mutex); defer sync.mutex_unlock(&acp_redetect_mutex)
-	for key in acp_redetect_last do delete(key, runtime.default_allocator())
-	clear(&acp_redetect_last)
+acp_redetector_init :: proc(r: ^ACP_Redetector, dispatch: ACP_Redetect_Dispatcher, ctx: rawptr) {
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	r.dispatch, r.ctx = dispatch, ctx
+}
+
+// acp_redetector_destroy stops dispatching and frees the window.
+acp_redetector_destroy :: proc(r: ^ACP_Redetector) {
+	if r == nil do return
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	r.dispatch, r.ctx = nil, nil
+	for key in r.last do delete(key, runtime.default_allocator())
+	delete(r.last); r.last = nil
 }
 
 // acp_redetect_kind picks the request for a provider's current report.
@@ -55,36 +62,34 @@ acp_redetect_kind :: proc(provider, adapter_json: string) -> ACP_Redetect_Kind {
 
 // acp_request_redetect dispatches one re-detection unless one was requested
 // for this bridge + provider within ACP_REDETECT_MIN_INTERVAL. Returns whether
-// it dispatched.
-acp_request_redetect :: proc(bridge_id, provider: string, kind: ACP_Redetect_Kind, now: time.Time) -> bool {
-	sync.mutex_lock(&acp_redetect_mutex)
-	dispatcher, ctx := acp_redetect_dispatcher, acp_redetect_ctx
-	if dispatcher == nil { sync.mutex_unlock(&acp_redetect_mutex); return false }
+// it dispatched. A nil redetector (no wiring) never dispatches.
+acp_request_redetect :: proc(r: ^ACP_Redetector, bridge_id, provider: string, kind: ACP_Redetect_Kind, now: time.Time) -> bool {
+	if r == nil do return false
+	sync.mutex_lock(&r.mutex)
+	dispatch, ctx := r.dispatch, r.ctx
+	if dispatch == nil { sync.mutex_unlock(&r.mutex); return false }
+	if r.last == nil do r.last = make(map[string]time.Time, allocator = runtime.default_allocator())
 	key := strings.concatenate({bridge_id, "\x1f", provider}, context.temp_allocator)
-	if last, seen := acp_redetect_last[key]; seen && time.diff(last, now) < ACP_REDETECT_MIN_INTERVAL {
-		sync.mutex_unlock(&acp_redetect_mutex)
-		return false
-	}
-	if acp_redetect_last == nil do acp_redetect_last = make(map[string]time.Time, allocator = runtime.default_allocator())
-	if _, seen := acp_redetect_last[key]; seen {
-		old, _ := delete_key(&acp_redetect_last, key)
+	if last, seen := r.last[key]; seen {
+		if time.diff(last, now) < ACP_REDETECT_MIN_INTERVAL { sync.mutex_unlock(&r.mutex); return false }
+		old, _ := delete_key(&r.last, key)
 		delete(old, runtime.default_allocator())
 	}
-	acp_redetect_last[strings.clone(key, runtime.default_allocator())] = now
-	sync.mutex_unlock(&acp_redetect_mutex)
-	dispatcher(ctx, bridge_id, provider, kind)
+	r.last[strings.clone(key, runtime.default_allocator())] = now
+	sync.mutex_unlock(&r.mutex)
+	dispatch(ctx, bridge_id, provider, kind)
 	return true
 }
 
 // acp_gate_redetect is the launch/reconfiguration gate's request: a report the
 // bridge could act on that is not ready is re-detected.
-acp_gate_redetect :: proc(bridge: domain.Bridge, provider, adapter_json: string, verdict: contracts.ACP_Availability, now: time.Time) -> bool {
+acp_gate_redetect :: proc(r: ^ACP_Redetector, bridge: domain.Bridge, provider, adapter_json: string, verdict: contracts.ACP_Availability, now: time.Time) -> bool {
 	if bridge.status != .Online do return false
 	switch verdict.reason {
 	case .Ready, .No_Recipe, .Unsupported_Bridge, .Installing: return false
 	case .Adapter_Missing, .Adapter_Outdated, .Adapter_Missing_Node, .Adapter_Missing_Npm, .Adapter_Error, .Not_Checked:
 	}
-	return acp_request_redetect(bridge.bridge_id, provider, acp_redetect_kind(provider, adapter_json), now)
+	return acp_request_redetect(r, bridge.bridge_id, provider, acp_redetect_kind(provider, adapter_json), now)
 }
 
 // acp_report_stale is true for a report whose checked_at is older than
@@ -105,9 +110,9 @@ acp_report_stale :: proc(adapter_json: string, now: time.Time) -> bool {
 
 // acp_read_redetect is the provider-status read's request for one provider
 // row: an ACP-capable, online bridge with a stale report is re-detected.
-acp_read_redetect :: proc(bridge: domain.Bridge, provider, transports_json, recipe_json, adapter_json: string, now: time.Time) -> bool {
+acp_read_redetect :: proc(r: ^ACP_Redetector, bridge: domain.Bridge, provider, transports_json, recipe_json, adapter_json: string, now: time.Time) -> bool {
 	if bridge.status != .Online || !contracts.bridge_supports_acp_runtime(bridge.capabilities_json) do return false
 	if !contracts.provider_supports_transport(transports_json, "acp") || !contracts.acp_provider_recipe_valid(provider, recipe_json) do return false
 	if !acp_report_stale(adapter_json, now) do return false
-	return acp_request_redetect(bridge.bridge_id, provider, acp_redetect_kind(provider, adapter_json), now)
+	return acp_request_redetect(r, bridge.bridge_id, provider, acp_redetect_kind(provider, adapter_json), now)
 }
