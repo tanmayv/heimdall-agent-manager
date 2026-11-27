@@ -69,7 +69,7 @@ BYOK is a distinct profile configuration using the CLI's `COPILOT_PROVIDER_*` va
 
 Resolve models against both the selected profile's known/custom model set and the session's advertised model options. Prefer `configOptions[category=model]` plus `session/set_config_option`, using the actual returned configId and verifying the response selected the exact requested ID. Pi maps models as `provider/model`. Preserve all slashes after the provider separator. Copilot's authenticated session config shape still needs recording; explicitly support a different advertised mechanism only if verified. Never silently fall back to a default model.
 
-Runtime availability is shared per provider installation, while authentication, models and launch checks belong to the selected profile. The current canonical-profile readiness check must not certify custom-profile authentication. Preserve provider-wide transport selection.
+Runtime availability is shared per provider installation, while authentication, models and launch checks belong to the selected profile. The current canonical-profile readiness check must not certify custom-profile authentication. Preserve provider-wide transport selection. (Superseded by R3: transport is chosen per profile; see docs/specs/acp-runtime-transport.md.)
 
 On -32000 auth-required startup, show provider-specific instructions and the selected profile context. Do not execute arbitrary terminal commands received in agent metadata; choose the trusted descriptor's login recipe. No automatic login UI is added by this plan.
 
