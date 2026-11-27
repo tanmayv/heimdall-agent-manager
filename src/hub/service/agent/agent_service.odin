@@ -1126,11 +1126,22 @@ agent_service_send_pty_resize :: proc(service: ^Agent_Service, auth: contracts.A
 send_pty_resize :: agent_service_send_pty_resize
 
 reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	observed, observed_ok, probe_err := get_instance(service, auth, instance_id)
+	if !observed_ok do return {}, false, probe_err
+	defer domain.agent_instance_destroy(&observed)
+	fact := agent_liveness(service, observed)
+	if fact.state == .Unknown && fact.reason != .never_started {
+		return {}, false, domain.domain_error(.Bridge_Busy, "instance process could not be verified")
+	}
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
 	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	if idle, err := reconfiguration_require_idle(service, instance_id); !idle do return {}, false, err
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
+	if agent_liveness_key(inst) != agent_liveness_key(observed) || inst.configuration_revision != observed.configuration_revision {
+		domain.agent_instance_destroy(&inst)
+		return {}, false, domain.domain_error(.Conflict, "instance changed before reconfiguration")
+	}
 	if input.has_agent_id || input.has_bridge_id || input.has_project_id || input.has_chain_id || input.has_conversation_id do return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "agent_id, bridge_id, project_id, chain_id, and conversation_id are immutable for an instance; changing them requires a new instance")
 	provider := input.provider; if provider == "" do provider = inst.provider
 	if input.provider_profile!="" {inst.provider_profile=input.provider_profile} else if provider!=inst.provider {inst.provider_profile=provider}
@@ -1141,7 +1152,7 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	inst.provider = resolved.provider
 	inst.model = resolved.model
 	if input.has_display_name do inst.display_name = input.display_name
-	if runtime_expected_active(inst.runtime_status) {
+	if fact.state == .Alive {
   ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Relaunch, provider=resolved.provider, model=resolved.model, profile=inst.provider_profile, expected=&inst})
   if begin_err.code != .None do return {}, false, begin_err
   defer start_ticket_destroy(&ticket)
@@ -1201,10 +1212,12 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	normalized_reason := runtime_observation_reason(reason)
 	// These durable fence reasons are reserved. Neither a delayed ready
 	// observation nor a legacy status hint can manufacture or undo one.
-	if normalized_reason == "pty_stop_confirmed" || (normalized_reason == "pty_child_exited" && !instance_runtime_is_terminal(runtime_status)) {
+	if normalized_reason == "pty_stop_confirmed" || normalized_reason == "missing_from_pty_roster" || normalized_reason == "orphan_reaped" ||
+	   (normalized_reason == "pty_child_exited" && !instance_runtime_is_terminal(runtime_status)) {
 		normalized_reason = ""
 	}
-	fenced := inst.status_message == "pty_stop_confirmed" || inst.status_message == "pty_child_exited"
+	fenced := inst.status_message == "pty_stop_confirmed" || inst.status_message == "pty_child_exited" ||
+			inst.status_message == "missing_from_pty_roster" || inst.status_message == "orphan_reaped"
 	if fenced && inst.stopped_at != "" && runtime_expected_active(runtime_status) && !(inst.kind == "bot" && inst.stop_reason == "bot_idle") {
 		domain.agent_instance_destroy(&inst)
 		return {}, false, domain.domain_error(.Conflict, "runtime report follows a confirmed exit")
@@ -2232,35 +2245,14 @@ hub_fragment_cache_get :: proc(hash: string) -> (string, bool) {
 	return entry.body, true
 }
 
-// bootstrap_manifest_status_launchable reports whether an instance in the given
-// runtime_status may have its bootstrap manifest fetched by the bridge. It allows
-// the already-active/launching states plus the recoverable non-active states a
-// scheduler legitimately wakes from ("stopped", "failed", "unreachable"). It does
-// NOT allow states that indicate an in-progress teardown ("stopping") or unknown
-// values, keeping the gate conservative.
-bootstrap_manifest_status_launchable :: proc(runtime_status: string) -> bool {
-	switch runtime_status {
-	case "launching", "starting", "running", "idle", "busy", "blocked",
-	     "stopped", "failed", "unreachable":
-		return true
-	}
-	return false
-}
-
 bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id: string) -> (string, bool, domain.Domain_Error) {
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return "", false, err
 	if inst.bridge_id != bridge_id || inst.owner_user_id != owner do return "", false, domain.domain_error(.Not_Found, "agent instance not found")
-	// A scheduled action (or auto-nudge) may need to wake an instance that is not
-	// currently live. The bridge synthesizes a minimal launch and fetches this
-	// manifest by instance id to materialize the agent, so we must also permit the
-	// recoverable non-active states it legitimately wakes from -- "stopped",
-	// "failed", and "unreachable" -- in addition to the already-active/launching
-	// states. Previously those were rejected with 409 "not launchable", which meant
-	// a scheduled action could never start a stopped instance (it only churned it to
-	// startup_failed). This is a read-only manifest fetch; it does not itself change
-	// instance state.
-	if !bootstrap_manifest_status_launchable(inst.runtime_status) do return "", false, domain.domain_error(.Conflict, "agent instance is not launchable")
+	// This read-only bootstrap belongs to the authenticated owning Bridge.
+	// A stale lifecycle projection is never launch authorization. A durable
+	// explicit stop, unlike the projection, remains an authorization fence.
+	if inst.stopped_by == STOPPED_BY_USER do return "", false, domain.domain_error(.Conflict, "agent instance was explicitly stopped")
 	agent, agent_ok, agent_err := iface.agent_get(service.agents, inst.agent_id)
 	if !agent_ok do return "", false, agent_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
@@ -2343,7 +2335,7 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	strings.write_string(&b, "\",\"model\":\""); write_service_json_string(&b, inst.model)
 	strings.write_string(&b, "\",\"launch_epoch\":\""); write_service_json_string(&b, inst.launch_epoch)
 	strings.write_string(&b, "\",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", inst.run_count))
-	if inst.runtime_status == "stopped" && inst.stop_reason == "bot_idle" && inst.stopped_by != STOPPED_BY_USER {
+	if inst.stopped_at != "" && inst.stop_reason == "bot_idle" && inst.stopped_by != STOPPED_BY_USER {
 		strings.write_string(&b, ",\"bot_idle_restart\":true")
 	}
 	strings.write_string(&b, ",\"permission_mode\":\""); write_service_json_string(&b, domain.effective_permission_mode(inst.permission_mode, agent.permission_mode))

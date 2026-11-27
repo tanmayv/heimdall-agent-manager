@@ -48,9 +48,6 @@ start_ticket_destroy :: proc(t: ^Start_Ticket) {
 
 // start_process_fact is the in-transaction view of the authoritative service.
 start_process_fact :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> Agent_Liveness {
-	when ODIN_TEST {
-		if service != nil && service.fixture_start_fact != nil do return service.fixture_start_fact(inst)
-	}
 	return agent_liveness(service, inst, cache_only = true)
 }
 
@@ -238,7 +235,7 @@ start :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id
 	req := req
 	obs_row: domain.Agent_Instance
 	defer domain.agent_instance_destroy(&obs_row)
-	if req.require_live || req.if_live != .Relaunch {
+	if (req.require_live || req.if_live != .Relaunch) && (req.process_fact == nil || req.expected == nil) {
 		current, found, err := get_instance(service, auth, instance_id)
 		if !found do return {}, false, false, err
 		obs_row = current
@@ -321,14 +318,18 @@ confirmed_start_pid :: proc(reply, op, instance_id: string, run_count: int) -> i
 start_begin_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id, ref: string) -> (launch_json: string, run_count: int, reused: bool, ok: bool, err: domain.Domain_Error) {
 	if strings.trim_space(ref) == "" do return "", 0, false, false, domain.domain_error(.Validation_Failed, "ref is required")
 	if len(ref) > START_REF_MAX_BYTES do return "", 0, false, false, domain.domain_error(.Validation_Failed, "ref exceeds 128 bytes")
-	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
-	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	inst, found, read_err := iface.agent_get_instance(service.agents, instance_id)
 	if !found do return "", 0, false, false, read_err
 	defer domain.agent_instance_destroy(&inst)
 	if inst.owner_user_id != owner || inst.bridge_id != bridge_id do return "", 0, false, false, domain.domain_error(.Not_Found, "agent instance not found")
+	// A Bridge-triggered wake is also a demand for process evidence. Probe
+	// before taking the mutex, then fence the result against this generation.
+	fact := start_process_fact(service, inst)
+	if fact.reason == .not_observed do fact = agent_liveness(service, inst)
+	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
+	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	auth := contracts.Auth_Context{kind=.Session, user_id=string(owner)}
-	ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Refuse, ref=ref})
+	ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Refuse, ref=ref, process_fact=fact, expected=&inst})
 	if begin_err.code != .None do return "", 0, false, false, begin_err
 	defer start_ticket_destroy(&ticket)
 	return start_launch_json(service, ticket), ticket.instance.run_count, ticket.reused, true, {}

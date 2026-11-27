@@ -23,6 +23,7 @@ Bridge_Local_Agent_Token_Record :: struct {
 	rotated_at_unix_ms: i64,
 	invalidated_at_unix_ms: i64,
 	bot_idle_stopped: bool,
+	process_identity: Bridge_Agent_Process_Identity,
 }
 
 Bridge_Local_Token_Issue_Result :: struct {
@@ -243,6 +244,11 @@ bridge_agent_token_store_load_file :: proc(path: string) {
 			rotated_at_unix_ms = bridge_agent_token_json_i64(trimmed, "rotated_at_unix_ms", 0),
 			invalidated_at_unix_ms = bridge_agent_token_json_i64(trimmed, "invalidated_at_unix_ms", 0),
 			bot_idle_stopped = extract_json_bool(trimmed, "bot_idle_stopped", false),
+			process_identity = {
+				pid = i32(bridge_agent_token_json_i64(trimmed, "process_pid", 0)),
+				start = bridge_agent_token_json_i64(trimmed, "process_start", 0),
+				boot = bridge_agent_token_json_i64(trimmed, "process_boot", 0),
+			},
 		}
 		if strings.trim_space(rec.token_hash) == "" || strings.trim_space(rec.agent_instance_id) == "" do continue
 		already := false
@@ -266,6 +272,10 @@ bridge_agent_token_store_save_locked :: proc() {
 		strings.write_string(&b, ",\"rotated_at_unix_ms\":"); strings.write_string(&b, fmt.tprintf("%d", rec.rotated_at_unix_ms))
 		strings.write_string(&b, ",\"invalidated_at_unix_ms\":"); strings.write_string(&b, fmt.tprintf("%d", rec.invalidated_at_unix_ms))
 		strings.write_string(&b, ",\"run_count\":"); strings.write_string(&b, fmt.tprintf("%d", rec.run_count))
+		if rec.process_identity.pid > 0 {
+			strings.write_string(&b, fmt.tprintf(",\"process_pid\":%d,\"process_start\":%d,\"process_boot\":%d",
+				rec.process_identity.pid, rec.process_identity.start, rec.process_identity.boot))
+		}
 		if rec.bot_idle_stopped do strings.write_string(&b, ",\"bot_idle_stopped\":true")
 		strings.write_string(&b, "}\n")
 	}
@@ -387,4 +397,33 @@ bridge_agent_instance_launch_epoch :: proc(instance_id: string) -> string {
 	defer delete(assertion)
 	if separator := strings.index(assertion, "~"); separator >= 0 do return strings.clone(assertion[separator + 1:])
 	return ""
+}
+
+// Record OS identity only for the token that the owning daemon associated
+// with the spawn. Keep it after token invalidation for reconnect/orphan checks.
+bridge_agent_remember_process :: proc(id, token_hash: string, pid: i32) {
+	sighting := bridge_agent_process_os_read(pid)
+	if sighting.state != .Alive do return
+	sync.mutex_lock(&bridge_local_token_mutex)
+	defer sync.mutex_unlock(&bridge_local_token_mutex)
+	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {
+		rec := &bridge_local_token_records[i]
+		if rec.agent_instance_id != id || rec.role != .Agent do continue
+		if rec.token_hash != token_hash || rec.invalidated_at_unix_ms != 0 do return
+		if rec.process_identity != sighting.identity {
+			rec.process_identity = sighting.identity
+			bridge_agent_token_store_save_locked()
+		}
+		return
+	}
+}
+
+bridge_agent_previous_process :: proc(id: string, run_count: int) -> Bridge_Agent_Process_Identity {
+	sync.mutex_lock(&bridge_local_token_mutex)
+	defer sync.mutex_unlock(&bridge_local_token_mutex)
+	for i := len(bridge_local_token_records) - 1; i >= 0; i -= 1 {
+		rec := bridge_local_token_records[i]
+		if rec.agent_instance_id == id && rec.role == .Agent && rec.run_count == run_count && rec.process_identity.pid > 0 do return rec.process_identity
+	}
+	return {}
 }

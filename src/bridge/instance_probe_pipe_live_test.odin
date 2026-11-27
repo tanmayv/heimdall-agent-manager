@@ -20,16 +20,24 @@ when #config(HEIMDALL_PTY_LIVENESS_LIVE_TEST, false) {
 		dir := fmt.tprintf("/tmp/ham-liveness-%d-%d", os.get_pid(), time.tick_now()._nsec)
 		if !testing.expect(t, os.make_directory(dir, {.Read_User, .Write_User, .Execute_User}) == nil) do return
 		defer _ = os.remove_all(dir)
-		prev_run_dir, prev_bridge := bridge_config.local_endpoint_run_dir, bridge_config.daemon_id
-		bridge_config.local_endpoint_run_dir, bridge_config.daemon_id = dir, "pipe-fixture"
-		defer { bridge_config.local_endpoint_run_dir, bridge_config.daemon_id = prev_run_dir, prev_bridge }
+		prev_config := bridge_config
+		bridge_config.local_endpoint_run_dir, bridge_config.daemon_id, bridge_config.data_dir = dir, "pipe-fixture", dir
+		defer bridge_config = prev_config
+		prev_tokens := bridge_local_token_records
+		bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record)
+		defer {
+			for rec in bridge_local_token_records { delete(rec.token_hash); delete(rec.agent_instance_id); delete(rec.instance_token) }
+			delete(bridge_local_token_records)
+			bridge_local_token_records = prev_tokens
+		}
 		socket := pty_host_socket_path()
 		defer delete(socket)
 		swap := pty_host_test_install_socket(socket)
 		defer pty_host_test_restore_socket(swap)
 		daemon, spawn_err := os.process_start({command = {bin, "daemon", "--socket", socket}, env = {fmt.tprintf("HOME=%s", dir), "PATH=/usr/bin:/bin"}})
 		if !testing.expect(t, spawn_err == nil, "could not start fixture daemon") do return
-		defer {
+		daemon_waited := false
+		defer if !daemon_waited {
 			_ = os.process_kill(daemon)
 			_, _ = os.process_wait(daemon)
 		}
@@ -75,5 +83,76 @@ when #config(HEIMDALL_PTY_LIVENESS_LIVE_TEST, false) {
 		code, has_code := exited.exit_code.?
 		testing.expect(t, exited.state == "exited" && exited.pid == launch.pid && has_code && code != 0 && exited.run_count == 4,
 			"confirmed terminal observation must match the real child PID and carry its exit code")
+		when ODIN_OS == .Linux {
+			// Both children are independent of pipe EOF. The first should die
+			// with the daemon, and the second deliberately ignores SIGTERM.
+			normal, normal_ok := pty_host_spawn_pipe(socket, {
+				mode = .Pipe, instance = "inst_parent_signal", argv = {"/bin/sleep", "300"},
+				env = {{"PATH", "/usr/bin:/bin"}, {"HOME", dir}}, cwd = dir, has_cwd = true,
+			})
+			defer pty_host_reply_delete(normal)
+			if !testing.expect(t, normal_ok && normal.kind == .Spawned) do return
+			normal_token := bridge_agent_token_issue("inst_parent_signal", "fixture~normal_epoch", .Agent, 3)
+			normal_rec, _ := bridge_agent_token_verify(normal_token.plaintext_token)
+			bridge_agent_remember_process("inst_parent_signal", normal_rec.token_hash, normal.pid)
+			normal_identity := bridge_agent_previous_process("inst_parent_signal", 3)
+			defer if bridge_agent_process_match(normal_identity, bridge_agent_process_os_read(normal.pid)) == .Alive {
+				_ = bridge_agent_process_kill_orphan(normal_identity)
+			}
+			ready_path := fmt.tprintf("%s/orphan-ready", dir)
+			orphan, orphan_ok := pty_host_spawn_pipe(socket, {
+				mode = .Pipe, instance = "inst_orphan_signal",
+				argv = {"/bin/sh", "-c", "trap '' TERM; : > \"$1\"; exec /bin/sleep 300", "fixture", ready_path},
+				env = {{"PATH", "/usr/bin:/bin"}, {"HOME", dir}}, cwd = dir, has_cwd = true,
+			})
+			defer pty_host_reply_delete(orphan)
+			if !testing.expect(t, orphan_ok && orphan.kind == .Spawned) do return
+			orphan_token := bridge_agent_token_issue("inst_orphan_signal", "fixture~orphan_epoch", .Agent, 4)
+			orphan_rec, _ := bridge_agent_token_verify(orphan_token.plaintext_token)
+			bridge_agent_remember_process("inst_orphan_signal", orphan_rec.token_hash, orphan.pid)
+			orphan_identity := bridge_agent_previous_process("inst_orphan_signal", 4)
+			defer if bridge_agent_process_match(orphan_identity, bridge_agent_process_os_read(orphan.pid)) == .Alive {
+				_ = bridge_agent_process_kill_orphan(orphan_identity)
+			}
+			for deadline := time.tick_now()._nsec + i64(2 * time.Second); !os.exists(ready_path) && time.tick_now()._nsec < deadline; {
+				time.sleep(10 * time.Millisecond)
+			}
+			if !testing.expect(t, os.exists(ready_path) && orphan_identity.start > 0 && normal_identity.start > 0) do return
+			testing.expect(t, bridge_instance_probe("inst_parent_signal").state == "alive", "one-shot spawn socket may close without causing parent death")
+			testing.expect(t, os.process_kill(daemon) == nil)
+			_, _ = os.process_wait(daemon)
+			daemon_waited = true
+			for deadline := time.tick_now()._nsec + i64(2 * time.Second); time.tick_now()._nsec < deadline; {
+				if bridge_agent_process_match(normal_identity, bridge_agent_process_os_read(normal.pid)) == .Gone do break
+				time.sleep(10 * time.Millisecond)
+			}
+			testing.expect_value(t, bridge_agent_process_match(normal_identity, bridge_agent_process_os_read(normal.pid)), Bridge_Agent_Process_State.Gone)
+			testing.expect_value(t, bridge_agent_process_match(orphan_identity, bridge_agent_process_os_read(orphan.pid)), Bridge_Agent_Process_State.Alive)
+			wrong := orphan_identity
+			wrong.start += 1
+			testing.expect(t, !bridge_agent_process_kill_orphan(wrong), "a different start time must never signal the process")
+			offline := bridge_instance_probe_for_hub("inst_orphan_signal")
+			defer delete(offline.launch_epoch)
+			testing.expect_value(t, offline.state, "unknown")
+			_ = os.remove(socket)
+			next_daemon, next_err := os.process_start({command = {bin, "daemon", "--socket", socket}, env = {fmt.tprintf("HOME=%s", dir), "PATH=/usr/bin:/bin"}})
+			if !testing.expect(t, next_err == nil, "start isolated replacement daemon") do return
+			defer { _ = os.process_kill(next_daemon); _, _ = os.process_wait(next_daemon) }
+			next_ready := false
+			for deadline := time.tick_now()._nsec + i64(3 * time.Second); time.tick_now()._nsec < deadline; {
+				if bridge_pty_host_ping(socket) { next_ready = true; break }
+				time.sleep(10 * time.Millisecond)
+			}
+			if !testing.expect(t, next_ready) do return
+			absent := bridge_instance_probe_for_hub("inst_parent_signal")
+			defer delete(absent.launch_epoch)
+			testing.expect(t, absent.state == "absent" && absent.source == "os_identity_gone" &&
+				absent.run_count == 3 && absent.launch_epoch == "normal_epoch" && absent.exit_code == nil, "bound absence must not invent an exit code")
+			reaped := bridge_instance_probe_for_hub("inst_orphan_signal")
+			defer delete(reaped.launch_epoch)
+			testing.expect(t, reaped.state == "exited" && reaped.source == "orphan_reaped" &&
+				reaped.run_count == 4 && reaped.launch_epoch == "orphan_epoch" && reaped.pid == orphan.pid && reaped.exit_code == nil)
+			testing.expect_value(t, bridge_agent_process_match(orphan_identity, bridge_agent_process_os_read(orphan.pid)), Bridge_Agent_Process_State.Gone)
+		}
 	}
 }

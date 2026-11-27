@@ -56,7 +56,8 @@ stream_find_locked :: proc(id: string) -> ^Stream_Live {
 
 stream_instance_live :: proc(instance: string, run_count: int) -> bool {
 	launch, active := bridge_runtime_instance_snapshot(instance)
-	return active && launch.runtime_status == "running" && bridge_agent_instance_run_count(instance) == run_count
+	return active && launch.start_success_seen && launch.pty_process_alive && launch.stopped_intent_unix_ms == 0 &&
+		bridge_agent_instance_run_count(instance) == run_count
 }
 
 stream_local_call :: proc(id, method, raw: string, rec: Bridge_Local_Agent_Token_Record) -> string {

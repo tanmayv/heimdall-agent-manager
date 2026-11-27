@@ -46,13 +46,9 @@ bridge_agent_instance_extract_hub_instances :: proc(
 		id_str, id_is_str := id_val.(json.String)
 		if !id_is_str do continue
 
-		status_val, has_status := item_obj["runtime_status"]
-		if !has_status do continue
-		status_str, status_is_str := status_val.(json.String)
-		if !status_is_str do continue
-
+		stop_val, _ := item_obj["stop_reason"].(json.String)
 		id := string(id_str)
-		status := string(status_str)
+		status := "stopped" if strings.has_prefix(string(stop_val), "user") else "preserve"
 		if !(id in hub_instances) {
 			hub_instances[strings.clone(id, allocator)] = strings.clone(status, allocator)
 		}
@@ -244,17 +240,8 @@ bridge_agent_instance_reconcile_now :: proc() {
 		bridge_agent_token_invalidate_instance(id)
 	}
 
-	// 3. Push terminal status for reaped or unknown/dead instances so Hub DB does not linger in 'running'
-	for id in plan.to_push_terminal {
-		if handled[id] do continue
-		now := bridge_runtime_now_ms()
-		sync.mutex_lock(&bridge_runtime_mutex)
-		bridge_runtime_set_status_locked(id, "stopped", "idle", now, true, .pty_reconcile_no_live_child)
-		bridge_runtime_set_pty_process_alive_locked(id, false)
-		bridge_runtime_enqueue_status_push_locked(id)
-		sync.mutex_unlock(&bridge_runtime_mutex)
-		fmt.println("bridge agent reconcile: pushed terminal status for instance", id)
-	}
+	// Missing rows are not unsolicited process-exit events. The Hub resolves
+	// them with a generation-bound point probe when deciding a lease or wake.
 }
 
 // Collect every page before doing any destructive reconciliation. Malformed,
@@ -298,12 +285,12 @@ bridge_agent_reconcile_acp_intents :: proc(raw: string) -> map[string]ACP_Hub_In
         obj, valid := row.(json.Object); if !valid do continue
         id, _ := obj["agent_instance_id"].(json.String)
         epoch, _ := obj["launch_epoch"].(json.String)
-        status, _ := obj["runtime_status"].(json.String)
+        stop, _ := obj["stop_reason"].(json.String)
         transport, _ := obj["runtime_transport"].(json.String)
         generation, _ := obj["run_count"].(json.Integer)
         provider, _ := obj["provider"].(json.String)
         profile, _ := obj["provider_profile"].(json.String)
-        out[string(id)] = {status = string(status), epoch = string(epoch), transport = string(transport), run_count = int(generation),
+        out[string(id)] = {status = "stopped" if strings.has_prefix(string(stop), "user") else "", epoch = string(epoch), transport = string(transport), run_count = int(generation),
             provider = string(provider), profile = profile_effective_id(string(provider), string(profile))}
     }
     return out

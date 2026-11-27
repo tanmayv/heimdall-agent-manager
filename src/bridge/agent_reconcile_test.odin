@@ -6,7 +6,7 @@ import "core:testing"
 test_agent_reconcile_extract_hub_instances :: proc(t: ^testing.T) {
 	json_payload := `{"ok":true,"data":[` +
 		`{"agent_instance_id":"inst_1","runtime_status":"running"},` +
-		`{"agent_instance_id":"inst_2","runtime_status":"stopped"},` +
+		`{"agent_instance_id":"inst_2","runtime_status":"running","stop_reason":"user_stopped"},` +
 		`{"agent_instance_id":"inst_3","runtime_status":"unreachable"},` +
 		`{"agent_instance_id":"inst_4","runtime_status":"starting"}` +
 		`]}`
@@ -16,10 +16,10 @@ test_agent_reconcile_extract_hub_instances :: proc(t: ^testing.T) {
 	defer bridge_agent_instance_delete_hub_instances(&hub_instances)
 
 	testing.expect_value(t, len(hub_instances), 4)
-	testing.expect_value(t, hub_instances["inst_1"], "running")
+	testing.expect_value(t, hub_instances["inst_1"], "preserve")
 	testing.expect_value(t, hub_instances["inst_2"], "stopped")
-	testing.expect_value(t, hub_instances["inst_3"], "unreachable")
-	testing.expect_value(t, hub_instances["inst_4"], "starting")
+	testing.expect_value(t, hub_instances["inst_3"], "preserve")
+	testing.expect_value(t, hub_instances["inst_4"], "preserve")
 }
 
 @(test)

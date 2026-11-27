@@ -403,6 +403,15 @@ bridge_hub_runtime_worker :: proc() {
 			time.sleep(time.Duration(BRIDGE_CREDENTIAL_REEVAL_MAX_MS) * time.Millisecond)
 			continue
 		}
+		// Reconnect starts scoped Hub probes of confirmed lease holders. Have
+		// the daemon available before hello so a reboot can return a complete
+		// empty roster instead of racing the background reconcile. Keep this
+		// before the upgrade, which has a short deadline for receiving hello.
+		if !bridge_hub_is_enroll_only_runtime() {
+			inventory := bridge_pty_liveness_roster()
+			if inventory.kind != .Agent_List do _, _ = bridge_pty_host_ensure_daemon()
+			pty_host_reply_delete(inventory)
+		}
 		sync.atomic_store(&bridge_hub_dial_generation, dial_generation)
         conn, ok := ws.connect_with_bearer(ws_url, credential)
         delete(credential)
@@ -2879,7 +2888,10 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 		if !listed do return false, "cannot verify the existing process", bridge_error(.pty_host_unreachable)
 		child := bridge_instance_probe_from_roster(instance_id, roster)
 		pty_host_reply_delete(roster)
-		if child.state == "unknown" do return false, "cannot verify the existing process", bridge_error(.pty_host_unreachable)
+		if child.state == "unknown" || (child.state == "absent" &&
+		   !bridge_agent_roster_loss_confirmed(instance_id, bridge_agent_instance_run_count(instance_id), reap = manual_start)) {
+			return false, "cannot verify the existing process", bridge_error(.pty_host_unreachable)
+		}
 		if wake_lease != "" && !manual_start && child.state == "alive" {
 			return false, "automatic wake will not replace a live process", bridge_error(.agent_launch_failed, .denied)
 		}
@@ -3152,6 +3164,7 @@ bridge_runtime_stop_agent_process :: proc(instance_id: string, force: bool, bot_
 		if result, _ := bridge_pty_host_signal_detailed(&client, instance_id, 9); result == .Refused do return false
 	}
 	if registered && !bridge_pty_host_close(socket, instance_id) do return false
+	if !registered && !bridge_agent_roster_loss_confirmed(instance_id, bridge_agent_instance_run_count(instance_id), reap = true) do return false
 
 	// Invalidate every local token for this instance (persisted to disk).
 	invalidated := bridge_agent_token_invalidate_instance(instance_id, bot_idle)
@@ -3528,7 +3541,7 @@ bridge_runtime_mark_start_success :: proc(instance_id: string) {
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	if bridge_runtime_stop_intent_active_locked(instance_id, now) do return
 	if inst, ok := bridge_runtime_instance_snapshot_locked(instance_id); ok {
-		if inst.runtime_status == "stopped" || inst.runtime_status == "stopping" do return
+		if inst.stopped_intent_unix_ms != 0 || inst.process_exit.pid > 0 do return
 	}
 	bridge_runtime_set_status_locked(instance_id, "running", "idle", now, true)
 }

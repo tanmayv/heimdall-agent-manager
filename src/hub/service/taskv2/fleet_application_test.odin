@@ -67,6 +67,10 @@ fleet_test_service :: proc(t:^testing.T,fx:^Fixture,log:^Wake_Log,p:^Fleet_Probe
 	if p.allocator.procedure==nil do p.allocator=context.allocator
 	if p.commands==nil do p.commands=make([dynamic]project.Runtime_Command,p.allocator)
 	log.service.bridge_command_sink={ctx=p,send_runtime_command=fleet_probe_send}
+	log.service.fixture_start_fact = proc(inst: domain.Agent_Instance) -> agent.Agent_Liveness {
+		if inst.runtime_status == "running" do return {state=.Alive,reason=.pty_child_alive,pid=42,ready=true}
+		return {state=.Exited,reason=.stop_confirmed}
+	}
 	log.service.hooks={ctx=&fx.svc,on_terminal=proc(ctx:rawptr,id:string){on_instance_terminal((^Service)(ctx),id)},launch_context=proc(ctx:rawptr,i:domain.Agent_Instance)->(agent.Start_Lease,bool,domain.Domain_Error){return reconfiguration_launch_context((^Service)(ctx),i)}}
 	return {settings=agent.fleet_service(&log.service),agents=&log.service,factory=&fx.uow,clock=&fx.clock,ids=&fx.ids},true
 }

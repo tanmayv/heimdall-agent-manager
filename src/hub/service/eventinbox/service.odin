@@ -11,6 +11,8 @@ import platform "odin_test:hub/platform"
 import iface "odin_test:hub/repository/iface"
 import nats "odin_test:lib/nats"
 
+Notice_Process :: enum {Unknown, Ready, Exited}
+
 Service :: struct {
 	factory:     ^iface.Unit_Of_Work_Factory,
 	notice_dirty: Notice_Dirty,
@@ -23,6 +25,7 @@ Service :: struct {
 
 	counters: Counter_Registry,
 	notice_ctx: rawptr,
+	notice_process: proc(ctx: rawptr, owner: string, target: domain.Event_Notice_Target) -> Notice_Process,
 	// Called outside a UoW. True means the existing notice/start path accepted it.
 	notice: proc(ctx: rawptr, owner, instance: string, target: domain.Event_Notice_Target, count: int, wake: bool) -> bool,
 	options:     nats.Connect_Options,

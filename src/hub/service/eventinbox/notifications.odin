@@ -295,11 +295,7 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 		if prior.last_sent._nsec != 0 && now._nsec - prior.last_sent._nsec < i64(30 * time.Second) do continue
 		if prior.last_rejected._nsec != 0 && now._nsec - prior.last_rejected._nsec < i64(5 * time.Second) do continue
 		eligible :=
-			target.instance_id != "" &&
-			target.stopped_by == "" &&
-			((target.runtime_status == "running" || target.runtime_status == "idle") &&
-						target.activity_status == "idle" ||
-					target.runtime_status == "stopped")
+			target.instance_id != "" && target.stopped_by == ""
 		if !eligible do continue
 		state, state_err := nats.consumer_state(r.connection, "HEIM_EVENTS", row.consumer_name)
 		if state_err.status != 0 do return false
@@ -405,10 +401,13 @@ notify_pending :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time
 			obj, _ := other.value.(json.Object)
 			if other.row.wake_policy == "catalog" && notice_wake_worthy(obj, target.is_bot) do worthy = true
 		}
-		stopped := target.runtime_status == "stopped"
-		idle :=
-			(target.runtime_status == "running" || target.runtime_status == "idle") && target.activity_status == "idle"
-		if count > 0 && target.instance_id != "" && target.stopped_by == "" && (idle || stopped && worthy) {
+		process: Notice_Process
+		if count > 0 && target.instance_id != "" && target.stopped_by == "" && s.notice_process != nil {
+			process = s.notice_process(s.notice_ctx, row.owner_user_id, target)
+		}
+		stopped := process == .Exited
+		idle := process == .Ready && target.activity_status == "idle"
+		if idle || stopped && worthy {
 			if s.notice(s.notice_ctx, row.owner_user_id, row.subscriber_instance_id, target, count, stopped) {
 				save_notification_state(r, key, {last_sent = now})
 				record_notice(s, row.owner_user_id, stopped)

@@ -231,11 +231,7 @@ coordinator_wake_transient_error :: proc(code: domain.Error_Code) -> bool {
 	return false
 }
 
-coordinator_wake_runtime_live :: proc(status: string) -> bool {
-	return status == "running" || status == "idle" || status == "busy" || status == "blocked"
-}
-
-// coordinator_wake_stopped_instance restarts a stopped/failed/unreachable chain
+// coordinator_wake_stopped_instance wakes a chain
 // coordinator through restart_stopped_conversation_instance. An empty
 // conversation_id resolves to the instance's own conversation.
 coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, target_instance_id, conversation_id, sender_label, sender_key: string, chains_scope: Coordinator_Wake_Chains, now_ms: i64, detail: ^Coordinator_Wake_Detail = nil) -> Coordinator_Wake_Outcome {
@@ -265,11 +261,6 @@ coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contr
 	if !found { code = err.code; return outcome }
 	defer domain.agent_instance_destroy(&target)
 	if target.owner_user_id != domain.User_ID(auth.user_id) { code = .Not_Found; return outcome }
-	if target.runtime_status != "stopped" && target.runtime_status != "failed" && target.runtime_status != "unreachable" {
-		d.live = coordinator_wake_runtime_live(target.runtime_status)
-		d.transitional = !d.live && agent_service.runtime_expected_active(target.runtime_status)
-		outcome = .Not_Needed; return outcome
-	}
 	outcome = .Not_Coordinator
 	if target.kind != "agent" do return outcome
 	// Spec assumption fallback: the repository proc is agent_get, not agent_get_agent.
@@ -286,6 +277,16 @@ coordinator_wake_stopped_instance :: proc(h: ^Agent_Action_Handlers, auth: contr
 	if !eligible do return outcome
 	outcome = .User_Stopped
 	if target.stopped_by == agent_service.STOPPED_BY_USER do return outcome
+	fact := agent_service.agent_liveness(h.agents, target)
+	if fact.reason == .retired { outcome = .Not_Needed; return outcome }
+	if fact.state == .Alive {
+		d.live = fact.ready
+		d.transitional = !fact.ready
+		outcome = .Not_Needed; return outcome
+	}
+	if fact.state == .Unknown && fact.reason != .never_started {
+		outcome = .Failed; code = .Bridge_Busy; return outcome
+	}
 	cid := conversation_id
 	if cid == "" do cid = target.conversation_id
 	if cid == "" && h.content != nil {

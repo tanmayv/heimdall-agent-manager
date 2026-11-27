@@ -99,6 +99,7 @@ isolation_scenario :: proc(t: ^testing.T) {
 	}
 	defer delete(recorder.notices)
 	service.notice_ctx = &recorder
+	service.notice_process = notice_test_process
 	service.notice = isolation_record
 	runtime := Runtime {
 		service = &service,
@@ -266,6 +267,7 @@ no_replay_scenario :: proc(t: ^testing.T) {
 	}
 	defer delete(recorder.notices)
 	service.notice_ctx = &recorder
+	service.notice_process = notice_test_process
 	service.notice = isolation_record
 	runtime := Runtime {
 		service = &service,

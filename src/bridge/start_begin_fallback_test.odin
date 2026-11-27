@@ -111,7 +111,13 @@ fallback_test_run :: proc(t: ^testing.T, name: string) {
         saved_map := bridge_agent_wake
         saved_bot_backoff := bridge_bot_backoff
         bridge_bot_backoff = make(map[string]Bridge_Bot_Backoff, runtime.heap_allocator())
-        snap, launch, http, begin := bridge_wake_snapshot_proc, bridge_wake_launch_proc, bridge_wake_http_proc, bridge_wake_start_begin_proc
+        snap, proof, launch, http, begin := bridge_wake_snapshot_proc, bridge_wake_probe_proc, bridge_wake_launch_proc, bridge_wake_http_proc, bridge_wake_start_begin_proc
+        bridge_wake_probe_proc = proc(id: string) -> Bridge_Instance_Probe_Result {
+            snap, found := fallback_test_snapshot(id)
+            live := found && bridge_runtime_status_active(snap.runtime_status)
+            return {agent_instance_id=id,state="alive" if live else "absent"}
+        }
+        defer bridge_wake_probe_proc = proof
         bot_snap, bot_launch, bot_now, bot_sleep, bot_record, bot_rollover := bridge_bot_snapshot_proc, bridge_bot_runtime_launch_proc, bridge_bot_now_proc, bridge_bot_sleep_proc, bridge_bot_launch_record_proc, bridge_bot_rollover_proc
         old_worker, old_bot_proc := bridge_bot_current_worker, bridge_bot_launch_proc
         old_report, old_switch, old_runnable, old_busy := bridge_bot_report_proc, bridge_bot_switch_proc, bridge_bot_runnable_proc, bridge_bot_busy_inputs_proc

@@ -77,5 +77,5 @@ bridge_runtime_process_absent :: proc(instance_id: string) -> bool {
     if reply.kind != .Agent_List do return false
     defer pty_host_reply_delete(reply)
     for agent in reply.agents do if agent.instance_id == instance_id do return false
-    return true
+    return bridge_agent_roster_loss_confirmed(instance_id, bridge_agent_instance_run_count(instance_id))
 }

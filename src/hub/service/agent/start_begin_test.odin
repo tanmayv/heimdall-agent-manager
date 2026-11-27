@@ -972,3 +972,19 @@ test_start_keep_uses_process_fact_not_failed_projection :: proc(t: ^testing.T) {
 		testing.expect_value(t, start_test_row(t, h).run_count, 3)
 	})
 }
+
+@(test)
+test_automatic_start_relaunches_after_complete_roster_absence :: proc(t: ^testing.T) {
+	start_test_run(t, proc(t: ^testing.T, h: ^Start_Test) {
+		h.service.fixture_start_fact = nil
+		start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='running', startup_status='ready';")
+		h.service.bridge_command_sink.send_runtime_command_wait = proc(_: rawptr, command: project_service.Runtime_Command, _: int) -> (string, bool, domain.Domain_Error) {
+			return fmt.aprintf(`{{"ok":true,"command_id":"%s","payload":{{"status":"succeeded","result":{{"agent_instance_id":"inst","state":"absent","source":"os_identity_gone","pid":0,"run_count":3,"launch_epoch":""}}}}}}`, command.command_id), true, {}
+		}
+		row, kept, started, err := start(&h.service, start_test_auth(), "inst", {if_live = .Keep})
+		defer domain.agent_instance_destroy(&row)
+		testing.expect(t, started && !kept && err.code == .None, err.message)
+		testing.expect_value(t, row.run_count, 4)
+		testing.expect_value(t, len(h.commands), 1)
+	})
+}

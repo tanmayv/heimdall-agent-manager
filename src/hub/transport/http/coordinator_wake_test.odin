@@ -54,6 +54,16 @@ coordinator_wake_fixture :: proc(t: ^testing.T, other_owner := false) -> ^Coordi
 	f.ag_svc.bridge_runtime_registry = &c.registry
 	sink := project_service.Bridge_Command_Sink{ctx = c, send_runtime_command = coordinator_wake_test_command}
 	f.ag_svc.bridge_command_sink = sink
+	// Existing delivery tests describe process states via their fixture rows.
+	// The production decision consumes only this independent observation.
+	f.ag_svc.fixture_start_fact = proc(inst: domain.Agent_Instance) -> agent_service.Agent_Liveness {
+		switch inst.runtime_status {
+		case "running", "idle", "busy", "blocked": return {state=.Alive, reason=.pty_child_alive, pid=42, ready=true}
+		case "starting", "launching", "stopping": return {state=.Alive, reason=.pty_child_alive, pid=42}
+		case "terminated": return {reason=.retired}
+		case: return {state=.Exited, reason=.missing_from_pty_roster}
+		}
+	}
 	c.content.bridge_command_sink = sink
 	testing.expect(t, project_service.bridge_runtime_registry_mark_live(&c.registry, f.bridge_pin, false, ""))
 	testing.expect(t, sqlite.exec(&f.conn, fmt.tprintf("UPDATE bridges SET status='online' WHERE bridge_id='%s';", f.bridge_pin)))

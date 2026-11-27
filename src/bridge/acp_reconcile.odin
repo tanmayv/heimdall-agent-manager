@@ -91,12 +91,20 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
         bridge_runtime_set_status(r.instance, "unreachable", "idle", .acp_inventory_unavailable)
         return
     }
-    same, alive := false, false
-    for pipe in pipes.pipes { if pipe.instance == r.instance { same = pipe.generation == r.generation; alive = pipe.alive } }
+    same, alive, present := false, false, false
+    for pipe in pipes.pipes {
+        if pipe.instance == r.instance { present = true; same = pipe.generation == r.generation; alive = pipe.alive }
+    }
+    lost_confirmed := !present && bridge_agent_roster_loss_confirmed(r.instance, r.rec.run_count)
+    if !present && !lost_confirmed {
+        acp_runtimes[r.instance] = r
+        r.reconnect_queued = false
+        return
+    }
     connected := false
     if daemon && listed && pipes.kind == .Pipe_List && r.d.stream_retries <= 3 {
         if same && alive && !job.force_load { connected = acp_runtime_connect(r, socket, saved.last_stdout_seq, string(raw)) }
-        else if same || !alive { connected = acp_runtime_recover_lost(r, socket) }
+        else if same || lost_confirmed { connected = acp_runtime_recover_lost(r, socket) }
     }
     if connected {
         acp_runtimes[r.instance] = r
@@ -105,9 +113,9 @@ acp_runtime_recovery_worker :: proc(data: rawptr) {
         acp_rpc_call(r.client, &work)
         return
     }
-    closed := acp_runtime_close_child(r)
+    // A connection or checkpoint error isn't permission to kill a live child.
     r.quiescing = true; acp_runtime_destroy(r)
-    acp_runtime_lost_status(job.instance, closed)
+    acp_runtime_lost_status(job.instance, lost_confirmed || same && !alive)
 }
 
 acp_runtime_lost_status :: proc(instance: string, closed: bool, reason: string = "acp_pipe_lost") {
@@ -126,7 +134,7 @@ acp_runtime_retry_launch :: proc(instance, epoch: string, run_count: int, provid
     if !acp_state_component_ok(epoch) do return true, false
     current_epoch := bridge_agent_instance_launch_epoch(instance); defer delete(current_epoch)
     snapshot, exists := bridge_runtime_instance_snapshot(instance)
-    if exists && current_epoch == epoch && (snapshot.stopped_intent_unix_ms != 0 || snapshot.runtime_status == "failed" || snapshot.runtime_status == "stopped" || snapshot.runtime_status == "stopping") {
+    if exists && current_epoch == epoch && snapshot.stopped_intent_unix_ms != 0 {
         return true, false // redelivery of the old launch is not an explicit retry
     }
     if acp_runtime_owned(instance) {
@@ -138,7 +146,7 @@ acp_runtime_retry_launch :: proc(instance, epoch: string, run_count: int, provid
             sync.mutex_unlock(&acp_runtime_mu)
             if !same do return true, false
             snap, present := bridge_runtime_instance_snapshot(instance)
-            return true, present && snap.stopped_intent_unix_ms == 0 && snap.runtime_status != "stopped" && snap.runtime_status != "stopping" && snap.runtime_status != "failed"
+            return true, present && snap.stopped_intent_unix_ms == 0 && snap.pty_process_alive
         }
     }
     base := bridge_shell_data_dir(); defer delete(base)
@@ -153,7 +161,7 @@ acp_runtime_retry_launch :: proc(instance, epoch: string, run_count: int, provid
     // Launch caller already holds this instance's lifecycle gate.
     acp_runtime_reconcile(socket, reply.pipes, intents, lifecycle_held = true)
     snap, present := bridge_runtime_instance_snapshot(instance)
-    return true, acp_runtime_owned(instance) && present && snap.stopped_intent_unix_ms == 0 && snap.runtime_status != "stopped" && snap.runtime_status != "stopping" && snap.runtime_status != "failed"
+    return true, acp_runtime_owned(instance) && present && snap.stopped_intent_unix_ms == 0 && snap.pty_process_alive
 }
 
 acp_runtime_current_record :: proc(instance: string) -> (Bridge_Local_Agent_Token_Record, bool) {
@@ -346,20 +354,9 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
         pipe_epoch := extract_json_string(pipe.meta_json, "launch_epoch", "")
         matching_child := pipe.instance != "" && pipe_epoch == intent.epoch
         delete(pipe_epoch)
-        if intent.status == "failed" {
-            // Failed is a terminal launch intent. Only a new launch epoch may
-            // retry it; neither a valid session nor a missing child authorizes it.
-            sync.mutex_lock(&acp_runtime_mu)
-            owner := acp_runtimes[id]
-            owned_epoch := owner != nil && owner.epoch == intent.epoch
-            sync.mutex_unlock(&acp_runtime_mu)
-            if owner != nil && !owned_epoch { acp_runtime_leave_lifecycle(lifecycle); continue }
-            if owned_epoch do acp_runtime_detach(id)
-            closed := pipe.instance == "" || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
-            if closed do bridge_runtime_set_pty_process_alive(id, false)
-            bridge_runtime_set_status(id, "stopped" if closed else "blocked", "idle", .acp_failed_intent)
-            acp_runtime_leave_lifecycle(lifecycle); continue
-        }
+        // A missing ListPipes row may be an orphan, not an exit.
+        absent_confirmed := pipe.instance == "" && intent.run_count > 0 &&
+            bridge_agent_roster_loss_confirmed(id, intent.run_count)
         if intent.status == "stopped" || intent.status == "cancelled" || intent.status == "stopping" {
             sync.mutex_lock(&acp_runtime_mu)
             owner := acp_runtimes[id]
@@ -370,7 +367,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
                 // disappeared from the daemon's complete inventory.
                 bridge_runtime_mark_stop_intent(id)
                 acp_runtime_command(id, "stop"); acp_runtime_detach(id)
-                closed := pipe.instance == "" || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
+                closed := absent_confirmed || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
                 if closed {
                     bridge_agent_token_invalidate_instance(id)
                     bridge_runtime_set_pty_process_alive(id, false)
@@ -381,8 +378,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
         }
         rec, has_rec := acp_runtime_current_record(id)
         if !has_rec {
-            closed := pipe.instance == "" || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
-            acp_runtime_lost_status(id, closed)
+            acp_runtime_lost_status(id, absent_confirmed)
             acp_runtime_leave_lifecycle(lifecycle); continue
         }
         state_path_base := bridge_shell_data_dir()
@@ -419,7 +415,7 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
             r: ^ACP_Runtime; built := false
             if valid do r, built = acp_runtime_from_state(&saved, rec)
             if built && acp_runtime_terminal_error(&r.d) {
-                closed := pipe.instance == "" || matching_child && acp_runtime_close_child(r)
+                closed := absent_confirmed || matching_child && !pipe.alive
                 if closed do bridge_runtime_set_pty_process_alive(id, false)
                 bridge_runtime_set_status(id, "stopped" if closed else "blocked", "idle", .acp_terminal_checkpoint)
                 sync.mutex_lock(&bridge_runtime_mutex)
@@ -445,21 +441,20 @@ acp_runtime_reconcile :: proc(socket: string, pipes: []Pty_Host_Pipe_Info, inten
                         work := ACP_RPC_Command{kind = .Runtime, a = "resume", runtime_work = acp_runtime_work, runtime_data = r}
                         acp_rpc_call(r.client, &work)
                     }
-                } else if pipe.instance == "" || pipe.generation == saved.pipe_generation {
+                } else if absent_confirmed || matching_child && !pipe.alive && pipe.generation == saved.pipe_generation {
                     success = acp_runtime_recover_lost(r, socket)
                 }
                 sync.mutex_unlock(&acp_runtime_mu)
                 if !success {
-                    closed := acp_runtime_close_child(r)
-                    acp_runtime_detach(id); acp_runtime_lost_status(id, closed)
+                    acp_runtime_detach(id)
+                    acp_runtime_lost_status(id, absent_confirmed || matching_child && !pipe.alive)
                 }
             } else {
                 if r != nil do acp_runtime_destroy(r)
-                closed := pipe.instance == "" || matching_child && acp_runtime_close_child(&ACP_Runtime{instance = id, generation = pipe.generation})
-                acp_runtime_lost_status(id, closed, restart_reason if restart_reason != "" else "acp_pipe_lost")
+                acp_runtime_lost_status(id, absent_confirmed || matching_child && !pipe.alive,
+                    restart_reason if restart_reason != "" else "acp_pipe_lost")
             }
-            snap, exists := bridge_runtime_instance_snapshot(id)
-            if exists && snap.runtime_status == "stopped" {
+            if absent_confirmed || matching_child && !pipe.alive {
                 sync.mutex_lock(&bridge_runtime_mutex)
                 for &inst in bridge_runtime_instances do if inst.agent_instance_id == id do bridge_runtime_replace_acp_error(&inst, restart_reason if restart_reason != "" else "acp_pipe_lost")
                 sync.mutex_unlock(&bridge_runtime_mutex)

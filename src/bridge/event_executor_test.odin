@@ -27,6 +27,10 @@ bridge_event_test_http_status: int
 bridge_event_test_http_body: string
 bridge_event_test_launches: int
 bridge_event_test_snapshot :: proc(id: string) -> (Bridge_Runtime_Instance, bool) { return bridge_event_test_snap, bridge_event_test_has }
+bridge_event_test_probe :: proc(id: string) -> Bridge_Instance_Probe_Result {
+	state := "alive" if bridge_event_test_has && bridge_event_test_snap.runtime_status != "stopped" else "absent"
+	return {agent_instance_id = id, state = state}
+}
 bridge_event_test_busy :: proc() -> (bool, bool, bool) {
     return bridge_event_test_reason == "draining", false, bridge_event_test_reason != "vault_locked"
 }
@@ -96,6 +100,9 @@ bridge_event_test_run :: proc(t: ^testing.T, name: string) {
 bridge_event_test_scenario :: proc(t: ^testing.T) {
     bridge_event_test_t = t
     snap, start, notice, send, now := bridge_event_snapshot_proc, bridge_event_start_proc, bridge_event_notice_proc, bridge_event_send_proc, bridge_event_now_proc
+    probe := bridge_event_probe_proc
+    bridge_event_probe_proc = bridge_event_test_probe
+    defer bridge_event_probe_proc = probe
     rollover, deliver := bridge_event_rollover_proc, bridge_event_deliver_proc
     bridge_event_rollover_proc, bridge_event_deliver_proc = bridge_event_test_rollover, bridge_event_test_deliver
     busy := bridge_bot_busy_inputs_proc
@@ -126,6 +133,7 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
         // Use the real local registry and ACP pre-spawn rejection. A later fire
         // must not mistake the rejected startup for a booting child.
         bridge_event_snapshot_proc = bridge_runtime_instance_snapshot
+        bridge_event_test_has = false
         bridge_event_start_proc = bridge_event_test_rejected_start
         bridge_runtime_set_status("inst_t17", "stopped", "idle")
         defer bridge_runtime_set_status("inst_t17", "stopped", "idle")
@@ -166,7 +174,7 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
                     bridge_event_ledger_clear_locked()
                     bridge_event_test_has = local != .Absent
                     bridge_event_test_snap = {runtime_status = "running", activity_status = "idle", start_success_seen = true}
-                    if local == .Stopping do bridge_event_test_snap.runtime_status = "stopping"
+                    if local == .Stopping do bridge_event_test_snap.stopped_intent_unix_ms = bridge_ledger_test_now()
                     if local == .Booting do bridge_event_test_snap.start_success_seen = false
                     if local == .Busy do bridge_event_test_snap.activity_status = "active"
                     bridge_event_test_reason = reason
@@ -424,7 +432,9 @@ bridge_event_test_manifest :: proc(instance_id, command_id: string, deadline_ns:
 bridge_event_http_scenario :: proc(t: ^testing.T, name: string) {
     config, cred := bridge_config, g_bridge_cred
     supported := bridge_hub_start_begin_supported
-    wake_snap, launch, http, manifest := bridge_wake_snapshot_proc, bridge_wake_launch_proc, bridge_wake_http_proc, bridge_wake_manifest_proc
+    wake_snap, wake_proof, launch, http, manifest := bridge_wake_snapshot_proc, bridge_wake_probe_proc, bridge_wake_launch_proc, bridge_wake_http_proc, bridge_wake_manifest_proc
+    bridge_wake_probe_proc = bridge_event_test_probe
+    defer bridge_wake_probe_proc = wake_proof
     start := bridge_event_start_proc
     saved_map := bridge_agent_wake
     bridge_agent_wake = make(map[string]Bridge_Wake_State, runtime.heap_allocator())

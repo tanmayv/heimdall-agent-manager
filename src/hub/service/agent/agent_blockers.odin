@@ -177,7 +177,8 @@ apply_bridge_blockers_snapshot :: proc(service: ^Agent_Service, bridge_id, text:
 
 	fresh := make([dynamic]Agent_Blocker, blockers_allocator())
 	// A stopped instance has no blockers whatever a late snapshot says.
-	if inst.runtime_status != "stopped" && inst.runtime_status != "failed" {
+	fact := agent_liveness(service, inst, cache_only = true)
+	if fact.state != .Exited && inst.stopped_by == "" {
 		if arr, is_arr := root["blockers"].(json.Array); is_arr {
 			for item in arr {
 				if len(fresh) >= AGENT_BLOCKERS_MAX_PER_INSTANCE do break
@@ -382,7 +383,10 @@ apply_bridge_blockers_leased :: proc(service: ^Agent_Service, bridge_id, text: s
     run, run_ok := root["run_count"].(json.Integer)
     if token == "" || !run_ok do return false
     inst, found, _ := tool_live_instance(service, id)
-    if !found || inst.bridge_id != bridge_id || inst.run_count != int(run) || !runtime_expected_active(inst.runtime_status) do return false
+    if !found || inst.bridge_id != bridge_id || inst.run_count != int(run) || inst.stopped_by != "" do return false
+    // This runs on the WS reader. The authenticated, generation-bound tool
+    // subscription authorizes ingress unless liveness already proves exit.
+    if agent_liveness(service, inst, cache_only = true).state == .Exited do return false
     sync.mutex_lock(&service.tool_live.mutex)
     defer sync.mutex_unlock(&service.tool_live.mutex)
     route := service.tool_live.routes[id]

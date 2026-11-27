@@ -617,8 +617,23 @@ drain_instance_terminal_probes :: proc(svc: ^Service) {
 		// An exit hint invalidates a recently cached alive observation. A
 		// timeout, offline bridge or missing record does not authorize revocation.
 		fact := agent.agent_liveness(svc.agent_service, inst, force_probe = true, prefer_reported_exit = true)
-		if fact.state != .Exited || fact.reason != .pty_child_exited || fact.pid <= 0 do continue
-		on_instance_terminal(svc, id, &inst, lease.lease_id)
+		if fact.state == .Alive {
+			// A reconnect point probe may also prove a legacy terminal
+			// projection wrong. Keep the same lease and repair display state.
+			if u, opened, _ := begin_uow(svc); opened {
+				changed := agent.apply_observed_alive_projection(svc.agent_service, inst, fact)
+				if changed do effect_instance_changed(&u, id)
+				_, _ = end_uow(svc, &u, changed)
+			}
+			continue
+		}
+		if fact.state != .Exited do continue
+		// A complete, generation-bound roster rules out a formerly confirmed
+		// holder. It cannot cancel a wake that has yet to spawn.
+		lost := (fact.reason == .missing_from_pty_roster || fact.reason == .orphan_reaped) && lease.confirmed_at != ""
+		exited := fact.reason == .pty_child_exited && fact.pid > 0
+		if !lost && !exited do continue
+		on_instance_terminal(svc, id, &inst, lease.lease_id, absence = fact.reason if lost else .not_observed)
 	}
 }
 
@@ -634,7 +649,7 @@ retry_instance_ownership_stops :: proc(svc: ^Service, instance_id: string) {
 
 // Runtime callers provide an observed generation and lease. The legacy direct
 // entry is used for administrative removal, where there may be no instance row.
-on_instance_terminal :: proc(svc: ^Service, instance_id: string, observed: ^domain.Agent_Instance = nil, observed_lease_id := "") {
+on_instance_terminal :: proc(svc: ^Service, instance_id: string, observed: ^domain.Agent_Instance = nil, observed_lease_id := "", absence := agent.Agent_Liveness_Reason.not_observed) {
 	if svc == nil || svc.repo == nil || instance_id == "" do return
 	scratch: Scratch
 	context.allocator = scratch_begin(&scratch)
@@ -663,7 +678,18 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string, observed: ^doma
 	owner := domain.User_ID("")
 	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); held && lease.phase != domain.LEASE_PHASE_WAITING &&
 	   (observed == nil || observed_lease_id == lease.lease_id) {
-		acted = agent_not_running_in_uow(svc, &u, lease, "lease holder is no longer running", confirmed_exit = observed != nil) == .Expired
+		if absence != .not_observed && observed != nil && lease.confirmed_at != "" {
+			current, present, _ := iface.agent_get_instance(svc.agents, instance_id)
+			if !present || !agent.apply_observed_absent_projection(svc.agent_service, current, absence) {
+				_, _ = end_uow(svc, &u, false)
+				return
+			}
+			effect_instance_changed(&u, instance_id)
+		}
+		detail := "lease holder is no longer running"
+		if absence == .missing_from_pty_roster do detail = "lease holder is absent from the PTY roster and the verified process is gone"
+		if absence == .orphan_reaped do detail = "lease holder's orphaned process group was reaped"
+		acted = agent_not_running_in_uow(svc, &u, lease, detail, confirmed_exit = observed != nil) == .Expired
 		chain_id, owner = lease.chain_id, lease.owner_user_id
 		match_scope_note_instance(chain_id, instance_id)
 	}
@@ -846,14 +872,12 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 			// F2: a confirmed holder that is still alive may have given up on a
 			// ham-ctl call while the hub/bridge link was down. Count the outage
 			// as presence and tell it to carry on.
+			// Hello also includes local launch records that can outlive a
+			// daemon. Verify confirmed holders after leaving the transaction.
+			append(&reconnect_probes, l.holder_instance_id)
 			live := false
 			for id in active_instance_ids do if id == l.holder_instance_id { live = true; break }
-			if !live {
-				// An omitted holder needs a point probe, never an inference
-				// from the partial hello. Queue after leaving the transaction.
-				append(&reconnect_probes, l.holder_instance_id)
-				continue
-			}
+			if !live do continue
 			if task, tok, _ := iface.taskchain_get_task(svc.repo, l.task_id); tok {
 				effect_nudge_instance(&u, l.holder_instance_id, bridge_id, fmt.tprintf("[taskv2] Hub connection restored: continue lease %s on '%s'. Re-run the ham-ctl command that failed (ham-ctl lease next shows your lease).", l.lease_id, task.title))
 			}

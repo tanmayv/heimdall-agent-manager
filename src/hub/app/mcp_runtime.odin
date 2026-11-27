@@ -67,7 +67,6 @@ mcp_runtime_call :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,tool:string,
 		if mcp.runtime_revision(i)!=a.expected_revision do return "","revision_conflict"
 		if code:=mcp_runtime_idle(g,i);code!="" do return "",code
 		if busy,busy_err:=iface.agent_runtime_busy(&g.repos.agents,i.agent_instance_id);busy_err.code!=.None {return "","request_failed"} else if busy && a.retry_request_id=="" {return "","runtime_busy"}
-		if tool=="instances.start" && agent.runtime_expected_active(i.runtime_status) do return "","already_running"
 	}
 	if tool=="instances.create" || tool=="instances.reconfigure" {
 		bridge,found,err:=iface.bridge_get_bridge(&g.repos.bridges,a.bridge_id)

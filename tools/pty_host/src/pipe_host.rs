@@ -26,6 +26,34 @@ const STDERR_BYTES: usize = 64 * 1024;
 const RECEIPTS: usize = 65_536;
 const TICK: Duration = Duration::from_millis(5);
 
+// PDEATHSIG is tied to the thread that forked, not the thread group.
+// Spawn on one permanent parent thread so closing a control socket doesn't
+// signal the child when that socket's reader thread exits.
+#[cfg(target_os = "linux")]
+fn spawn_pipe_child(cmd: Command) -> std::io::Result<Child> {
+    use std::sync::{mpsc, OnceLock};
+    type Work = (Command, mpsc::SyncSender<std::io::Result<Child>>);
+    static PARENT: OnceLock<std::io::Result<mpsc::Sender<Work>>> = OnceLock::new();
+    let parent = PARENT.get_or_init(|| {
+        let (send, receive) = mpsc::channel::<Work>();
+        std::thread::Builder::new()
+            .name("pipe-child-parent".into())
+            .spawn(move || {
+                while let Ok((mut command, result)) = receive.recv() {
+                    let _ = result.send(command.spawn());
+                }
+            })?;
+        Ok(send)
+    }).as_ref().map_err(|err| std::io::Error::new(err.kind(), err.to_string()))?;
+    let (send, receive) = mpsc::sync_channel(1);
+    parent.send((cmd, send)).map_err(std::io::Error::other)?;
+    receive.recv().map_err(std::io::Error::other)?
+}
+#[cfg(not(target_os = "linux"))]
+fn spawn_pipe_child(mut cmd: Command) -> std::io::Result<Child> {
+    cmd.spawn()
+}
+
 struct Owner {
     id: u64,
     sink: ReplySink,
@@ -147,10 +175,27 @@ impl PipeHost {
         {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
+            #[cfg(target_os = "linux")]
+            {
+                let daemon = unsafe { libc::getpid() };
+                // Install before exec, then close the fork/prctl window. The
+                // child must not run provider code if its daemon already died.
+                unsafe {
+                    cmd.pre_exec(move || {
+                        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        if libc::getppid() != daemon {
+                            return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                        }
+                        Ok(())
+                    });
+                }
+            }
         }
         #[cfg(unix)]
         let (cancel_read, cancel_write) = std::os::unix::net::UnixStream::pair()?;
-        let mut child = cmd.spawn().context("spawn piped child")?;
+        let mut child = spawn_pipe_child(cmd).context("spawn piped child")?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();

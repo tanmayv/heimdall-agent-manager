@@ -741,7 +741,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.event_inbox = eventinbox.Service{
  reconcile_interval = time.Duration(config.event_inbox_reconcile_seconds)*time.Second,
 		factory = &graph.uow_factory, ids = &graph.ids,
-		notice_ctx = graph, notice = event_inbox_notice,
+		notice_ctx = graph, notice = event_inbox_notice, notice_process = event_inbox_notice_process,
 		options = {url = config.nats_url, creds_file = config.nats_creds_file, ca_file = config.nats_ca_file, timeout_ms = 1000},
 	}
 	graph.mcp_control_handlers.inbox = &graph.event_inbox
@@ -1440,6 +1440,17 @@ read_secret_file :: proc(path: string) -> (string, bool) {
 
 // The inbox observes pending messages; delivery stays on the existing bridge
 // notice and guarded agent start paths, always outside a SQLite transaction.
+event_inbox_notice_process :: proc(ctx: rawptr, owner: string, target: domain.Event_Notice_Target) -> eventinbox.Notice_Process {
+	graph := (^App_Graph)(ctx)
+	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, target.instance_id)
+	defer domain.agent_instance_destroy(&inst)
+	if !found || string(inst.owner_user_id) != owner || inst.stopped_by != "" do return .Unknown
+	fact := agent_service.agent_liveness(&graph.agents, inst)
+	if fact.state == .Exited || fact.reason == .never_started do return .Exited
+	if fact.state == .Alive && fact.ready do return .Ready
+	return .Unknown
+}
+
 event_inbox_notice :: proc(
 	ctx: rawptr,
 	owner, instance: string,
@@ -1453,23 +1464,26 @@ event_inbox_notice :: proc(
 	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, target.instance_id)
 	defer domain.agent_instance_destroy(&inst)
 	if !found || string(inst.owner_user_id) != owner || inst.stopped_by != "" do return false
+	fact := agent_service.agent_liveness(&graph.agents, inst)
 	if wake {
-		if inst.runtime_status != "stopped" do return false
+		if fact.state != .Exited && fact.reason != .never_started do return false
 		guard := Event_Inbox_Wake_Guard {
 			graph       = graph,
 			owner       = owner,
 			instance_id = inst.agent_instance_id,
+			expected     = &inst,
 		}
-		_, started, _ := agent_service.start_instance(
+		started_row, _, started, _ := agent_service.start(
 			&graph.agents,
 			{kind = .Internal_User, user_id = owner},
 			inst.agent_instance_id,
-			&guard,
-			event_inbox_wake_guard,
+			{if_live = .Refuse, process_fact = fact, expected = &inst,
+			 guard_ctx = &guard, guard = event_inbox_wake_guard},
 		)
+		defer domain.agent_instance_destroy(&started_row)
 		return started
 	}
-	if (inst.runtime_status != "running" && inst.runtime_status != "idle") || inst.activity_status != "idle" do return false
+	if fact.state != .Alive || !fact.ready || inst.activity_status != "idle" do return false
 	id := platform.generate_id(&graph.ids, "cmd_events_")
 	if id == "" do return false
 	// ID generator returns temporary allocator storage.
@@ -1489,6 +1503,7 @@ event_inbox_notice :: proc(
 Event_Inbox_Wake_Guard :: struct {
 	graph:              ^App_Graph,
 	owner, instance_id: string,
+	expected:           ^domain.Agent_Instance,
 }
 event_inbox_wake_guard :: proc(ctx: rawptr) -> domain.Domain_Error {
 	guard := (^Event_Inbox_Wake_Guard)(ctx)
@@ -1496,7 +1511,11 @@ event_inbox_wake_guard :: proc(ctx: rawptr) -> domain.Domain_Error {
 	defer domain.agent_instance_destroy(&inst)
 	if err.code != .None do return err
 	if !found || string(inst.owner_user_id) != guard.owner do return domain.domain_error(.Not_Found, "event wake instance no longer belongs to subscriber")
-	if inst.stopped_by != "" || inst.runtime_status != "stopped" do return domain.domain_error(.Conflict, "event wake requires a stopped instance without an explicit stop")
+	expected := guard.expected
+	if inst.stopped_by != "" || inst.run_count != expected.run_count || inst.launch_epoch != expected.launch_epoch ||
+	   inst.bridge_id != expected.bridge_id || inst.last_applied_seq != expected.last_applied_seq || inst.stop_reason != expected.stop_reason {
+		return domain.domain_error(.Conflict, "event wake was superseded by a runtime action")
+	}
 	return {}
 }
 

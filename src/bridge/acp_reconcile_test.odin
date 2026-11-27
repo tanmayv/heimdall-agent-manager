@@ -161,7 +161,9 @@ c2_test_reconcile_provider_recovery :: proc(t: ^testing.T, provider: string) {
     }
     intents := make(map[string]ACP_Hub_Intent, allocator = context.temp_allocator)
     intents[f.instance] = {status = "running", epoch = "recovery_epoch", transport = "acp", run_count = 9, provider = provider, profile = provider}
-    handled := acp_runtime_reconcile("fixture-daemon", nil, intents)
+    dead_child := [1]Pty_Host_Pipe_Info{{instance=f.instance, generation="old-generation", alive=false,
+        meta_json=`{"launch_epoch":"recovery_epoch"}`}}
+    handled := acp_runtime_reconcile("fixture-daemon", dead_child[:], intents)
     testing.expect(t, handled[f.instance] && f.spawns == 1 && f.closes == 1 && f.interrupted == 1)
     if !testing.expect(t, f.rpc.r != nil) do return
     testing.expect(t, f.rpc.r.d.token_reissued && f.rpc.r.generation == "new-generation")
@@ -209,15 +211,14 @@ c2_test_reconcile_provider_recovery :: proc(t: ^testing.T, provider: string) {
         acp_runtime_reconcile("fixture-daemon", pipes, intents)
         testing.expect(t, terminal.spawns == 0 && terminal.closes == 0 && terminal.interrupted == 0 && !acp_runtime_owned(terminal.instance))
         snap, exists := bridge_runtime_instance_snapshot(terminal.instance)
-        expected := "stopped" if status == "stopped" || status == "epoch_mismatch" || strings.has_prefix(status, "legacy_") else "failed"
-        // A different generation cannot be killed or used as evidence of
-        // failure. This case has an explicitly live child in the daemon.
-        if status == "newer_child" do expected = "blocked"
+        // Neither a missing identity nor a different live generation proves
+        // exit. An explicit stop records intent but cannot confirm the close.
+        expected := "running" if status == "stopped" else "blocked"
         testing.expect(t, exists && snap.runtime_status == expected, status)
         if strings.has_prefix(status, "legacy_") do testing.expect_value(t, snap.acp_error_code, "acp_restart_required")
         if status == "failed" || status == "stopped" || status == "running" {
             handled_retry, retry_ok := acp_runtime_retry_launch(terminal.instance, "recovery_epoch", 9)
-            testing.expect(t, handled_retry && !retry_ok && terminal.lists == 0 && terminal.spawns == 0)
+            testing.expect(t, handled_retry && !retry_ok && terminal.spawns == 0 && terminal.closes == 0)
             after, _ := bridge_runtime_instance_snapshot(terminal.instance)
             testing.expect_value(t, after.runtime_status, expected)
         }

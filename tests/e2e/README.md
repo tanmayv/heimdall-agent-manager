@@ -156,3 +156,12 @@ HEIMDALL_HAM_PTY_HOST_BIN=/absolute/path/to/ham-pty-host \
   -define:HEIMDALL_PTY_LIVENESS_LIVE_TEST=true -define:ODIN_TEST_THREADS=2 \
   -define:ODIN_TEST_NAMES=test_instance_probe_observes_real_pipe_child_and_exit
 ```
+
+On Linux this pipe-child test also exercises a daemon crash and a fresh empty
+roster. A normal child receives its parent-death signal. A child that ignores
+SIGTERM is only reaped if its stored PID and start time match, and the Bridge
+confirms the exit without fabricating an exit code. Process-group orphan reaping
+uses Linux 6.9 or newer pidfds. On older kernels and non-Linux targets, an
+independently live orphan remains unverified. If a previously running instance
+has no saved process identity (for example it predates the upgrade and was not
+observed while still alive), a missing roster row remains inconclusive.

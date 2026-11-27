@@ -41,19 +41,54 @@ read_application :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id, i
 	return iface.fleet_application_get(s.settings.bridges, owner, bridge_id, id)
 }
 
+fleet_desired_runtime :: proc(snapshot: domain.Fleet_Settings, agent_id: string) -> domain.Fleet_Runtime {
+	for override in snapshot.overrides do if override.agent_id == agent_id do return override.runtime
+	return snapshot.default_runtime
+}
+
+Fleet_Target_Facts :: map[[32]byte]bool
+
+// Read candidate generations in a short transaction. Probe outside that
+// transaction, then recheck each fact's identity in preview/Apply's atomic
+// snapshot. Nested callers may only use already observed evidence.
+observe_targets :: proc(s: ^Service, owner: domain.User_ID, bridge_id: string, snapshot: domain.Fleet_Settings) -> (Fleet_Target_Facts, domain.Domain_Error) {
+	u, begun, err := iface.unit_of_work_begin(s.factory)
+	if !begun do return nil, err
+	settings := s.settings
+	if u.repos != nil { settings.bridges = &u.repos.bridges; settings.agents = &u.repos.agents }
+	bridge, found, read_err := iface.bridge_get_bridge(settings.bridges, bridge_id)
+	defer domain.bridge_destroy(&bridge)
+	if !found || bridge.owner_user_id != owner {
+		iface.unit_of_work_rollback(&u)
+		return nil, read_err if !found else domain.domain_error(.Not_Found, "bridge not found")
+	}
+	instances, list_err := iface.agent_list_instances_by_bridge(settings.agents, bridge_id)
+	nested := u.nested
+	iface.unit_of_work_rollback(&u)
+	if list_err.code != .None do return nil, list_err
+	defer { for &inst in instances do domain.agent_instance_destroy(&inst); delete(instances) }
+	facts := make(Fleet_Target_Facts, context.temp_allocator)
+	for inst in instances {
+		if inst.owner_user_id != owner || inst.bridge_id != bridge_id || inst.stopped_by != "" ||
+		   domain.fleet_runtime_equal({inst.provider, inst.provider_profile, inst.model}, fleet_desired_runtime(snapshot, inst.agent_id)) { continue }
+		fact := agent.agent_liveness(s.agents, inst, cache_only = nested)
+		if fact.state == .Alive && fact.ready do facts[agent.agent_liveness_key(inst)] = true
+	}
+	return facts, {}
+}
+
 // One classifier for preview and Apply. Results borrow the instance/snapshot
 // strings and have no operation IDs, persistence or lifecycle effects.
-select_targets :: proc(settings: ^fleet.Service, owner: domain.User_ID, bridge_id: string, snapshot: domain.Fleet_Settings, instances: []domain.Agent_Instance) -> ([]domain.Fleet_Application_Target, domain.Domain_Error) {
+select_targets :: proc(settings: ^fleet.Service, owner: domain.User_ID, bridge_id: string, snapshot: domain.Fleet_Settings, instances: []domain.Agent_Instance, facts: Fleet_Target_Facts) -> ([]domain.Fleet_Application_Target, domain.Domain_Error) {
 	targets := make([dynamic]domain.Fleet_Application_Target, context.temp_allocator)
 	seen := make(map[string]bool, context.temp_allocator)
 	for inst in instances {
-		if inst.owner_user_id != owner || inst.bridge_id != bridge_id || inst.runtime_status != "running" || inst.stopped_by == "user" || seen[inst.agent_instance_id] do continue
+		if inst.owner_user_id != owner || inst.bridge_id != bridge_id || !facts[agent.agent_liveness_key(inst)] || inst.stopped_by != "" || seen[inst.agent_instance_id] do continue
 		seen[inst.agent_instance_id] = true
 		included, scope_err := iface.fleet_scope_get(settings.bridges, inst)
 		if scope_err.code != .None do return nil, scope_err
 		if !included do continue
-		desired := snapshot.default_runtime
-		for o in snapshot.overrides do if o.agent_id == inst.agent_id {desired = o.runtime; break}
+		desired := fleet_desired_runtime(snapshot, inst.agent_id)
 		actual := domain.Fleet_Runtime{inst.provider, inst.provider_profile, inst.model}
 		if domain.fleet_runtime_equal(actual, desired) do continue
 		append(&targets, domain.Fleet_Application_Target{agent_instance_id=inst.agent_instance_id,agent_id=inst.agent_id,configuration_revision=inst.configuration_revision,run_count=inst.run_count,launch_epoch=inst.launch_epoch,project_id=string(inst.project_id),before=actual,desired=desired,state="pending"})
@@ -65,6 +100,9 @@ preview :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, dr
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return {}, err
 	if draft.expected_revision < 0 do return {}, domain.domain_error(.Validation_Failed, "nonnegative expected_revision is required")
+	snapshot := domain.Fleet_Settings{bridge_id=bridge_id,default_runtime=draft.default_runtime,overrides=draft.overrides}
+	facts, fact_err := observe_targets(s, owner, bridge_id, snapshot)
+	if fact_err.code != .None do return {}, fact_err
 	u, begun, ue := iface.unit_of_work_begin(s.factory)
 	if !begun do return {}, ue
 	// Always roll back: even semantic no-ops must not write or publish.
@@ -79,8 +117,7 @@ preview :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, dr
 	instances, ie := iface.agent_list_instances_by_bridge(settings.agents, bridge_id)
 	if ie.code != .None do return {}, ie
 	defer {for &inst in instances do domain.agent_instance_destroy(&inst); delete(instances)}
-	snapshot := domain.Fleet_Settings{bridge_id=bridge_id,default_runtime=draft.default_runtime,overrides=draft.overrides}
-	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances)
+	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances, facts)
 	if te.code != .None do return {}, te
 	return {bridge_id, draft.expected_revision, len(targets)}, {}
 }
@@ -102,6 +139,8 @@ apply :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, inpu
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return {}, false, err
 	if strings.trim_space(input.request_id) == "" || len(input.request_id) > 128 || input.expected_revision < 0 do return {}, false, domain.domain_error(.Validation_Failed, "request_id and nonnegative expected_revision are required")
+	facts, fact_err := observe_targets(s, owner, bridge_id, {bridge_id=bridge_id,default_runtime=input.default_runtime,overrides=input.overrides})
+	if fact_err.code != .None do return {}, false, fact_err
 	u, begun, ue := iface.unit_of_work_begin(s.factory)
 	if !begun do return {}, false, ue
 	finished := false
@@ -130,7 +169,7 @@ apply :: proc(s: ^Service, auth: contracts.Auth_Context, bridge_id: string, inpu
 	instances, ie := iface.agent_list_instances_by_bridge(settings.agents, bridge_id)
 	if ie.code != .None do return {}, false, ie
 	defer {for &inst in instances do domain.agent_instance_destroy(&inst); delete(instances)}
-	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances)
+	targets, te := select_targets(&settings, owner, bridge_id, snapshot, instances, facts)
 	if te.code != .None do return {}, false, te
 	// One lease read for the whole snapshot instead of one lookup per target.
 	holders, he := lease_ids_by_holder(s, targets)
@@ -175,7 +214,7 @@ set_text :: proc(dst: ^string, value: string) {delete(dst^); dst^ = strings.clon
 fail :: proc(t: ^domain.Fleet_Application_Target, code, message: string, retryable := true) {
 	set_text(&t.state, "failed"); set_text(&t.error_code, code); set_text(&t.error_message, message); t.retryable = retryable
 }
-Guard :: struct {s: ^Service, record: ^domain.Fleet_Application_Record, target: ^domain.Fleet_Application_Target, recovering: bool,authorization:Authorization}
+Guard :: struct {s: ^Service, record: ^domain.Fleet_Application_Record, target: ^domain.Fleet_Application_Target, recovering: bool,authorization:Authorization, observed_key:[32]byte, observed_ready:bool}
 guard_target :: proc(ctx: rawptr) -> domain.Domain_Error {
 	g := (^Guard)(ctx); r := g.record; t := g.target
 	// Guards of one pass run on parallel native-start workers; the shared
@@ -203,7 +242,7 @@ guard_target :: proc(ctx: rawptr) -> domain.Domain_Error {
 		if !held && le.code != .None && le.code != .Not_Found do return le
 		if (held && lease.lease_id != t.lease_id) || (!held && t.lease_id != "") do return domain.domain_error(.Conflict, "Fleet target claim changed after Apply")
 	}
-	if !g.recovering && (inst.runtime_status != "running" || inst.configuration_revision != t.configuration_revision || inst.launch_epoch != t.launch_epoch || inst.run_count != t.run_count) do return domain.domain_error(.Conflict, "Fleet target runtime changed after Apply")
+	if !g.recovering && (!g.observed_ready || g.observed_key != agent.agent_liveness_key(inst) || inst.configuration_revision != t.configuration_revision || inst.launch_epoch != t.launch_epoch || inst.run_count != t.run_count) do return domain.domain_error(.Conflict, "Fleet target runtime changed after Apply")
 	return {}
 }
 
@@ -308,7 +347,15 @@ plan_target :: proc(s: ^Service, r: ^domain.Fleet_Application_Record, t: ^domain
 // record is otherwise read-only to workers apart from the atomic cancel flag.
 run_native :: proc(job: ^Native_Job) {
 	s, r, t, out := job.s, job.r, job.t, &job.result
-	g := Guard{s,r,t,job.step == .Retry,job.authorization}
+	g := Guard{s=s,record=r,target=t,recovering=job.step == .Retry,authorization=job.authorization}
+	if !g.recovering {
+		inst, found, _ := iface.agent_get_instance(s.settings.agents, t.agent_instance_id)
+		defer domain.agent_instance_destroy(&inst)
+		if found && inst.owner_user_id == r.owner_user_id && inst.bridge_id == r.application.bridge_id {
+			fact := agent.agent_liveness(s.agents, inst)
+			g.observed_key, g.observed_ready = agent.agent_liveness_key(inst), fact.state == .Alive && fact.ready
+		}
+	}
 	if e := guard_target(&g); e.code != .None {fail(out,"target_changed",e.message,false); return}
 	auth := contracts.Auth_Context{kind=.Internal_User,user_id=string(r.owner_user_id)}
 	op: domain.Instance_Reconfiguration; accepted: bool; ne: domain.Domain_Error

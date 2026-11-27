@@ -146,7 +146,7 @@ bridge_task_notice_deliver :: proc(batch: []Bridge_Task_Notice) -> bool {
     // Restore runs before asynchronous runtime reconciliation. An unknown pipe
     // must not be mistaken for a PTY and acknowledged by a one-way socket write.
     snap, present := bridge_runtime_instance_snapshot(instance)
-    if !present || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || snap.runtime_status == "starting" do return false
+    if !present || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return false
     acp := bridge_runtime_is_acp(instance)
     if acp {
         wants_interrupt := false

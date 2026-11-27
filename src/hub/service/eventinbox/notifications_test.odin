@@ -83,6 +83,7 @@ notification_scenario :: proc(t: ^testing.T) {
 		t       = t,
 	}
 	service.notice_ctx = &recorder
+	service.notice_process = notice_test_process
 	service.notice = notification_record_dispatch
 	runtime := Runtime {
 		service = &service,
@@ -299,4 +300,10 @@ notification_scenario :: proc(t: ^testing.T) {
 notify_pending_full :: proc(r: ^Runtime, rows: []domain.Event_Subscription, now: time.Tick) -> bool {
     r.notice_reconcile = {}
     return notify_pending(r, rows, now)
+}
+
+notice_test_process :: proc(_: rawptr, _: string, target: domain.Event_Notice_Target) -> Notice_Process {
+    if target.runtime_status == "stopped" do return .Exited
+    if target.runtime_status == "running" || target.runtime_status == "idle" do return .Ready
+    return .Unknown
 }

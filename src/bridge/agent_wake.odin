@@ -227,6 +227,7 @@ Bridge_Wake_Result :: struct { outcome: Bridge_Wake_Outcome, err: Bridge_Error, 
 BRIDGE_LIVE_ROW_RETRY_MS :: i64(30_000)
 BRIDGE_LIVE_ROW_RETRIES :: 5
 bridge_wake_snapshot_proc: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) = bridge_runtime_instance_snapshot
+bridge_wake_probe_proc: proc(instance_id: string) -> Bridge_Instance_Probe_Result = bridge_instance_probe
 bridge_wake_launch_proc: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) = bridge_wake_launch
 bridge_wake_start_begin_proc: proc(instance_id, ref: string, deadline_ns: i64) -> (string, string, Bridge_Error, bool) = bridge_wake_start_begin
 bridge_wake_manifest_proc: proc(instance_id, command_id: string, deadline_ns: i64) -> (string, Bridge_Error, bool) = bridge_wake_legacy_manifest
@@ -249,18 +250,18 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64, deadline_ns: i
 }
 bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0, delivery_id: string = "", pending_ref: string = "") -> Bridge_Wake_Result {
 	bridge_agent_wake_init()
+	// Daemon calls and the Hub's start-begin decision must run outside the
+	// wake mutex. A concurrent launch invalidates the wake generation.
+	proof := bridge_wake_probe_proc(instance_id)
 	sync.mutex_lock(&bridge_wake_mutex)
-	// Activity is checked UNDER the wake mutex (lock order: wake ->
-	// runtime). A launch marks the instance active before it calls
-	// bridge_task_wake_note_launched, so either this check sees it active, or the
-	// launch's generation bump happens after we register and invalidates us.
     if pending_ref != "" {
         if st, has := bridge_agent_wake[instance_id]; !has || st.ref != pending_ref {
             sync.mutex_unlock(&bridge_wake_mutex)
             return {.Coalesced, {}, 0}
         }
     }
-	if inst, found := bridge_wake_snapshot_proc(instance_id); found && bridge_runtime_status_active(inst.runtime_status) && (delivery_id == "" || inst.runtime_status != "stopping") {
+	inst, found := bridge_wake_snapshot_proc(instance_id)
+	if proof.state == "alive" && (delivery_id == "" || !found || inst.stopped_intent_unix_ms == 0) {
         if st, has := &bridge_agent_wake[instance_id]; has do st.live_row_retry_at_ms = 0
 		sync.mutex_unlock(&bridge_wake_mutex)
 		return {.Already_Active, {}, 0}
@@ -317,7 +318,8 @@ bridge_wake_attempt :: proc(instance_id: string, now: i64, deadline_ns: i64 = 0,
     defer delete(command_id)
     defer delete(command_json)
     if use_start_begin && !enrich_ok && bridge_wake_is_live_row(enrich_err) {
-        if snap, found := bridge_wake_snapshot_proc(instance_id); found && bridge_runtime_status_active(snap.runtime_status) && snap.runtime_status != "stopping" {
+        snap, found := bridge_wake_snapshot_proc(instance_id)
+        if bridge_wake_probe_proc(instance_id).state == "alive" && (!found || snap.stopped_intent_unix_ms == 0) {
             sync.mutex_lock(&bridge_wake_mutex)
             if current, has := &bridge_agent_wake[instance_id]; has && current.generation == generation do current.live_row_retry_at_ms = 0
             sync.mutex_unlock(&bridge_wake_mutex)

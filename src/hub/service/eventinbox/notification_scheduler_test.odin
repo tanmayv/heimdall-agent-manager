@@ -63,6 +63,7 @@ notification_scheduler_scenario :: proc(t: ^testing.T) {
 
 	recorder := Isolation_Recorder{t=t}
 	defer delete(recorder.notices)
+	service.notice_process = notice_test_process
 	service.notice = isolation_record
 	service.notice_ctx = &recorder
 	now := time.tick_now()

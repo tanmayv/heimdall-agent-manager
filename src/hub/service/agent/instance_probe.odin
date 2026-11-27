@@ -17,11 +17,12 @@ Instance_Probe :: struct {
 	state: Instance_Probe_State,
 	pid: int,
 	exit_code: i32,
+	orphan_reaped: bool,
 	ready: bool,
 }
 
 Agent_Liveness_State :: enum {Unknown, Alive, Exited}
-Agent_Liveness_Reason :: enum {not_observed, never_started, stop_confirmed, previous_exit_confirmed, bridge_unavailable, probe_timed_out, invalid_probe, stale_process_generation, missing_from_pty_roster, pty_child_alive, pty_child_exited}
+Agent_Liveness_Reason :: enum {not_observed, never_started, retired, stop_confirmed, previous_exit_confirmed, bridge_unavailable, probe_timed_out, invalid_probe, stale_process_generation, missing_from_pty_roster, orphan_reaped, pty_child_alive, pty_child_exited}
 Agent_Liveness :: struct {
 	state: Agent_Liveness_State,
 	reason: Agent_Liveness_Reason,
@@ -57,6 +58,12 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, for
 	// A new durable generation starts at run_count = 1. An explicit
 	// acknowledged close is durable until the next generation clears its
 	// reason. Neither case needs another RPC to rule out a current child.
+	when ODIN_TEST {
+		if service != nil && service.fixture_start_fact != nil do return service.fixture_start_fact(inst)
+	}
+	// A legacy terminated tombstone is not a process report, and cannot
+	// authorize either wake or physical exit.
+	if inst.runtime_status == "terminated" do return {reason = .retired}
 	if inst.run_count == 0 do return {reason = .never_started}
 	if inst.status_message == "pty_stop_confirmed" && inst.stopped_at != "" do return {state = .Exited, reason = .stop_confirmed}
 	if service == nil do return {}
@@ -80,6 +87,10 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, for
 		if inst.status_message == "pty_child_exited" && inst.stopped_at != "" {
 			return {state = .Exited, reason = .previous_exit_confirmed}
 		}
+		if inst.stopped_at != "" {
+			if inst.status_message == "missing_from_pty_roster" do return {state = .Exited, reason = .missing_from_pty_roster}
+			if inst.status_message == "orphan_reaped" do return {state = .Exited, reason = .orphan_reaped}
+		}
 		return {reason = .not_observed}
 	}
 	at := time.tick_now()
@@ -87,7 +98,7 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, for
 	fact := Agent_Liveness{reason = reason, pid = observation.pid, exit_code = observation.exit_code, ready = observation.ready}
 	#partial switch observation.state {
 	case .Alive: fact.state = .Alive
-	case .Exited: fact.state = .Exited
+	case .Absent, .Exited: fact.state = .Exited
 	}
 	sync.mutex_lock(&cache.mutex)
 	if cache.rows[index].at._nsec <= at._nsec do cache.rows[index] = {key = key, at = time.tick_now(), fact = fact}
@@ -112,7 +123,7 @@ probe_instance :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> 
 	case .Unknown: return observation, .stale_process_generation if observation.pid > 0 else .invalid_probe
 	case .Absent: return observation, .missing_from_pty_roster
 	case .Alive: return observation, .pty_child_alive
-	case .Exited: return observation, .pty_child_exited
+	case .Exited: return observation, .orphan_reaped if observation.orphan_reaped else .pty_child_exited
 	}
 	return {}, .invalid_probe
 }
@@ -126,19 +137,20 @@ parse_instance_probe :: proc(reply, command_id, instance_id: string, expected_ru
 	if !has_payload do return {}
 	result, has_result := jsonx.extract_raw_object(payload, "result", true, context.temp_allocator)
 	if !has_result do return {}
-	report: struct {agent_instance_id, state, launch_epoch: string, pid: i32, exit_code: Maybe(i32), run_count: Maybe(int), ready: bool}
+	report: struct {agent_instance_id, state, launch_epoch, source: string, pid: i32, exit_code: Maybe(i32), run_count: Maybe(int), ready: bool}
 	if json.unmarshal_string(result, &report, allocator = context.temp_allocator) != nil || report.agent_instance_id != instance_id do return {}
+	if expected_run_count >= 0 {
+		count, present := report.run_count.?
+		if !present || count <= 0 || count != expected_run_count || report.launch_epoch != expected_launch_epoch do return {pid = int(report.pid)}
+	}
 	switch report.state {
 	case "absent":
-		if report.pid == 0 do return {state = .Absent}
+		if report.source == "os_identity_gone" && report.pid == 0 && report.exit_code == nil && !report.ready do return {state = .Absent}
 	case "alive", "exited":
 		if report.pid <= 0 do return {}
-		if expected_run_count >= 0 {
-			count, present := report.run_count.?
-			if !present || count <= 0 || count != expected_run_count || report.launch_epoch != expected_launch_epoch do return {pid = int(report.pid)}
-		}
 		if report.state == "alive" do return {state = .Alive, pid = int(report.pid), ready = report.ready}
-		if code, has_code := report.exit_code.?; has_code do return {state = .Exited, pid = int(report.pid), exit_code = code}
+		if report.source == "orphan_reaped" && report.exit_code == nil && !report.ready do return {state = .Exited, pid = int(report.pid), orphan_reaped = true}
+		if code, has_code := report.exit_code.?; has_code && report.source == "" do return {state = .Exited, pid = int(report.pid), exit_code = code}
 	}
 	return {}
 }
@@ -242,5 +254,25 @@ apply_observed_alive_projection :: proc(service: ^Agent_Service, observed: domai
 	projected.last_seen_at = projected.updated_at
 	saved, applied, _ := iface.agent_save_instance_guarded(service.agents, projected, observed.run_count, observed.launch_epoch, observed.configuration_revision)
 	if applied && saved.runtime_transport != current.runtime_transport do delete(saved.runtime_transport)
+	return applied
+}
+
+// Persist a scoped terminal observation without inventing a wait status. The
+// caller owns the UoW and has already checked the lease that required the probe.
+apply_observed_absent_projection :: proc(service: ^Agent_Service, current: domain.Agent_Instance, reason: Agent_Liveness_Reason) -> bool {
+	if service == nil || (reason != .missing_from_pty_roster && reason != .orphan_reaped) do return false
+	status_reason := "orphan_reaped" if reason == .orphan_reaped else "missing_from_pty_roster"
+	next := current
+	next.runtime_status = "stopped"
+	next.startup_status = "stopped"
+	next.activity_status = "idle"
+	next.status_message = status_reason
+	next.stopped_at = platform.clock_now(service.clock)
+	next.updated_at = next.stopped_at
+	saved, applied, _ := iface.agent_save_instance_guarded(service.agents, next, current.run_count, current.launch_epoch, current.configuration_revision)
+	if applied {
+		log_runtime_terminal_transition(saved, current.runtime_status, "apply_observed_absent_projection", status_reason)
+		if saved.runtime_transport != current.runtime_transport do delete(saved.runtime_transport)
+	}
 	return applied
 }

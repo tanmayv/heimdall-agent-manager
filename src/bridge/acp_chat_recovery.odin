@@ -88,7 +88,9 @@ acp_chat_recover_journal :: proc(path:string) -> bool {
     durable:ACP_Runtime_Durable
     if json.unmarshal_string(saved.runtime_json,&durable,allocator=context.temp_allocator)!=nil do return false
     snap,present:=bridge_runtime_instance_snapshot(saved.instance)
-    terminal:=present && (snap.runtime_status=="stopped" || snap.runtime_status=="failed" || snap.stopped_intent_unix_ms!=0)
+    proof:=bridge_instance_probe(saved.instance)
+    terminal:=present && (snap.stopped_intent_unix_ms!=0 ||
+        proof.state=="exited" && proof.pid==snap.startup.pty_pid)
     // No local owner yet during initial cold reconcile does not prove interruption.
     if !stale && !durable.stopped && durable.error=="" && !terminal do return false
     r:=ACP_Runtime{instance=saved.instance,epoch=saved.launch_epoch,saved_outbox=strings.clone(saved.chat_outbox_json)}

@@ -6,9 +6,10 @@ import "core:time"
 import contracts "odin_test:contracts"
 import ws "odin_test:lib/ws"
 
-Bridge_Event_Local :: enum { Absent, Stopping, Booting, Idle, Busy }
+Bridge_Event_Local :: enum { Absent, Stopping, Booting, Idle, Busy, Unknown }
 Bridge_Event_Action :: enum { Answer_Stored, Answer_Started, Type_Notice, Start, Retry, Fatal }
 bridge_event_snapshot_proc: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) = bridge_runtime_instance_snapshot
+bridge_event_probe_proc: proc(instance_id: string) -> Bridge_Instance_Probe_Result = bridge_instance_probe
 bridge_event_start_proc: proc(instance_id, delivery_id: string, deadline_ns: i64) -> Bridge_Wake_Result = bridge_event_start
 bridge_event_notice_proc: proc(instance_id: string, notice: contracts.Delivery_Notice_Wire) -> bool = bridge_event_type_notice
 bridge_event_send_proc: proc(conn: ^ws.Connection, text: string) -> bool = bridge_hub_send
@@ -35,15 +36,17 @@ bridge_event_decide :: proc(ledger: Maybe(Bridge_Ledger_Entry), local: Bridge_Ev
         if final do return .Type_Notice, "", 0
         return .Retry, "busy", 0
     case .Absent: return .Start, "", 0
+    case .Unknown: return (.Fatal if final else .Retry), "process_unverified", 5000 if !final else 0
     }
     return .Fatal, "invalid_frame", 0
 }
 bridge_event_local :: proc(instance_id: string) -> Bridge_Event_Local {
     snap, found := bridge_event_snapshot_proc(instance_id)
-    if !found do return .Absent
-    if snap.runtime_status == "stopping" do return .Stopping
-    if !bridge_runtime_status_active(snap.runtime_status) do return .Absent
-    if !bridge_bot_ready(snap) do return .Booting
+    if found && snap.stopped_intent_unix_ms > 0 && bridge_event_now_proc() - snap.stopped_intent_unix_ms < i64(BRIDGE_STOP_INTENT_TTL_MS) do return .Stopping
+    observation := bridge_event_probe_proc(instance_id)
+    if observation.state == "absent" || observation.state == "exited" do return .Absent
+    if observation.state != "alive" do return .Unknown
+    if !found || !snap.start_success_seen do return .Booting
     if snap.activity_status == "idle" do return .Idle
     return .Busy
 }

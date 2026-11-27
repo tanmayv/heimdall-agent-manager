@@ -341,7 +341,6 @@ runtime_wait_delay :: proc(r: ^Runtime, now: time.Tick) -> time.Duration {
   for row in chain.rows {
    target:=chain.snapshot_by_id[row.subscription_id].target
    if target.instance_id=="" || target.stopped_by!="" do continue
-   if !(target.runtime_status=="stopped" || (target.runtime_status=="running" || target.runtime_status=="idle") && target.activity_status=="idle") do continue
    schedule, found := r.notifications[fmt.tprintf("schedule:%s",row.consumer_name)]
    if !found do continue
    due := schedule.next_check._nsec

@@ -423,7 +423,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 			now := bridge_runtime_now_ms()
 			inst, found := bridge_runtime_instance_snapshot_locked(rec.agent_instance_id)
 			if !bridge_runtime_stop_intent_active_locked(rec.agent_instance_id, now) &&
-			   (!found || (inst.runtime_status != "stopping" && inst.runtime_status != "stopped")) {
+			   (!found || (inst.stopped_intent_unix_ms == 0 && inst.process_exit.pid <= 0)) {
 				if !inst.start_success_seen {
 					bridge_runtime_set_status_locked(rec.agent_instance_id, "blocked", "idle", now, true, .wrapper_startup_failed)
 				}

@@ -74,7 +74,7 @@ acp_runtime_owned :: proc(instance: string) -> bool {
 acp_runtime_current :: proc(r: ^ACP_Runtime) -> bool {
     if r.quiescing || r.d.stopped || !bridge_startup_rec_current(r.rec) do return false
     snap, exists := bridge_runtime_instance_snapshot(r.instance)
-    return !exists || (snap.stopped_intent_unix_ms == 0 && snap.runtime_status != "stopping" && snap.runtime_status != "stopped" && snap.runtime_status != "failed")
+    return !exists || snap.stopped_intent_unix_ms == 0
 }
 
 acp_runtime_replace :: proc(target: ^string, value: string) {

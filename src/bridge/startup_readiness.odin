@@ -145,6 +145,7 @@ bridge_startup_arm :: proc(instance_id, agent_token: string, now: i64) {
 bridge_startup_spawned :: proc(instance_id, agent_token: string, pid: i32) {
 	hash := bridge_local_hash_token(agent_token)
 	defer delete(hash)
+	bridge_agent_remember_process(instance_id, hash, pid)
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for &inst in bridge_runtime_instances {
@@ -168,7 +169,7 @@ bridge_startup_accept :: proc(rec: Bridge_Local_Agent_Token_Record, now: i64) ->
 	inst, exists := bridge_runtime_instance_snapshot_locked(rec.agent_instance_id)
 	if exists && inst.runtime_transport == "acp" && !inst.acp_session_ready do return false, false
 	if exists && inst.stopped_intent_unix_ms != 0 do return false, false
-	if exists && (inst.runtime_status == "stopped" || inst.runtime_status == "stopping" || inst.runtime_status == "failed") do return false, false
+	if exists && inst.process_exit.pid > 0 do return false, false
 	// After a bridge restart, persisted current tokens may precede rediscovery.
 	// Adopt them only if no managed launch/tombstone has replaced them.
 	if !exists || inst.startup.generation == 0 do bridge_startup_begin_locked(rec, now)
@@ -287,9 +288,8 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
 	for job in jobs {
 		sync.mutex_lock(&bridge_startup_io_mutex)
 		inst, exists := bridge_runtime_instance_snapshot(job.id)
-		if !exists || inst.startup.generation != job.generation ||
-		   inst.runtime_status == "stopped" || inst.runtime_status == "stopping" ||
-		   inst.runtime_status == "failed" || inst.stopped_intent_unix_ms != 0 || !bridge_startup_rec_current(inst.startup.rec) {
+		if !exists || inst.startup.generation != job.generation || inst.process_exit.pid > 0 ||
+		   inst.stopped_intent_unix_ms != 0 || !bridge_startup_rec_current(inst.startup.rec) {
 			sync.mutex_unlock(&bridge_startup_io_mutex)
 			continue
 		}
@@ -345,8 +345,7 @@ bridge_startup_tick :: proc(now: i64, relay := bridge_startup_relay, deliver := 
 		sync.mutex_lock(&bridge_runtime_mutex)
 		for &current in bridge_runtime_instances {
 			if current.agent_instance_id != job.id || current.startup.generation != job.generation ||
-               current.stopped_intent_unix_ms != 0 || current.runtime_status == "stopped" ||
-               current.runtime_status == "stopping" || current.runtime_status == "failed" { continue }
+               current.stopped_intent_unix_ms != 0 || current.process_exit.pid > 0 { continue }
 			current.startup.next_attempt_ms = finished.next_ms
             if ready { current.startup.relay_state = finished.state }
             else { current.startup.fallback_state = finished.state }
@@ -393,12 +392,13 @@ bridge_startup_confirm_spawned :: proc(socket, instance_id: string, run_count: i
 	if !ok do return false, false
 	if !bridge_startup_rec_current(rec) do return false, false
 	if pid == 0 do return false, true
+	bridge_agent_remember_process(instance_id, rec.token_hash, pid)
 
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	inst, exists := bridge_runtime_instance_snapshot_locked(instance_id)
 	if bridge_runtime_stop_intent_active_locked(instance_id, now) ||
-	   (exists && (inst.stopped_intent_unix_ms != 0 || inst.runtime_status == "stopped" || inst.runtime_status == "stopping")) {
+	   (exists && inst.stopped_intent_unix_ms != 0) {
 		sync.mutex_unlock(&bridge_runtime_mutex)
 		return false, false
 	}
@@ -428,8 +428,7 @@ bridge_startup_job_current :: proc(id: string, generation: u64) -> bool {
     sync.mutex_lock(&bridge_runtime_mutex)
     inst, exists := bridge_runtime_instance_snapshot_locked(id)
     current := exists && inst.startup.generation == generation &&
-        inst.stopped_intent_unix_ms == 0 && inst.runtime_status != "stopped" &&
-        inst.runtime_status != "stopping" && inst.runtime_status != "failed"
+        inst.stopped_intent_unix_ms == 0 && inst.process_exit.pid <= 0
     rec := bridge_startup_clone_rec(inst.startup.rec, context.temp_allocator)
     sync.mutex_unlock(&bridge_runtime_mutex)
     return current && bridge_startup_rec_current(rec)
@@ -449,7 +448,7 @@ bridge_wait_confirmed_start :: proc(instance_id: string, run_count: int, deadlin
 			if proof.state == "alive" && proof.pid == inst.startup.pty_pid do return proof.pid, false
 			return 0, false
 		}
-		if inst.runtime_status == "stopped" || inst.runtime_status == "failed" do return 0, false
+		if inst.stopped_intent_unix_ms != 0 || inst.process_exit.pid > 0 do return 0, false
 		time.sleep(max(0, min(100 * time.Millisecond, remaining - time.tick_since(started))))
 	}
 	return 0, true

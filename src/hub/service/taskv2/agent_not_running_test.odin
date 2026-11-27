@@ -455,6 +455,15 @@ test_start_recovery_resets_only_own_waiting_holder :: proc(t: ^testing.T) {
 // agent owns a confirmed claim. Only process evidence can park its work.
 @(test)
 test_terminal_hint_needs_pty_exit_for_current_claim :: proc(t: ^testing.T) {
+	terminal_hint_checks_current_claim(t, "exited")
+}
+
+@(test)
+test_complete_roster_absence_releases_confirmed_holder :: proc(t: ^testing.T) {
+	terminal_hint_checks_current_claim(t, "absent")
+}
+
+terminal_hint_checks_current_claim :: proc(t: ^testing.T, terminal_state: string) {
 	fx, log, ok := lease_fixture(t, "terminal_probe")
 	defer lease_fixture_close(fx, log)
 	if !ok do return
@@ -473,17 +482,22 @@ test_terminal_hint_needs_pty_exit_for_current_claim :: proc(t: ^testing.T) {
 
 	Probe :: struct { state, epoch: string, calls, run_count: int }
 	probe := Probe{run_count = inst.run_count, epoch = inst.launch_epoch}
-	service := agent.Agent_Service{ids = &fx.ids, bridge_command_sink = {
+	service := agent.Agent_Service{ids = &fx.ids, agents = &fx.agents, clock = &fx.clock, bridge_command_sink = {
 		ctx = &probe,
 		send_runtime_command_wait = proc(ctx: rawptr, command: project.Runtime_Command, timeout: int) -> (string, bool, domain.Domain_Error) {
 			p := (^Probe)(ctx)
 			p.calls += 1
 			if p.state == "offline" do return "", false, domain.domain_error(.Bridge_Offline, "mock disconnected")
+			if p.state == "timeout" do return "", false, domain.domain_error(.Bridge_Timeout, "mock timeout")
+			if p.state == "absent" {
+				id := jsonx.extract_string(command.body_json, "agent_instance_id", "", true, context.temp_allocator)
+				return fmt.aprintf(`{{"command_id":"%s","ok":true,"payload":{{"result":{{"agent_instance_id":"%s","state":"absent","source":"os_identity_gone","pid":0,"run_count":%d,"launch_epoch":"%s"}}}}}}`, command.command_id, id, p.run_count, p.epoch), true, {}
+			}
 			return fmt.aprintf(`{{"command_id":"%s","ok":true,"payload":{{"result":{{"agent_instance_id":"inst_w1","state":"%s","pid":42,"exit_code":0,"run_count":%d,"launch_epoch":"%s"}}}}}}`, command.command_id, p.state, p.run_count, p.epoch), true, {}
 		},
 	}}
 	fx.svc.agent_service = &service
-	for state in ([]string{"alive", "offline"}) {
+	for state in ([]string{"alive", "offline", "timeout", "unknown"}) {
 		probe.state = state
 		queue_instance_terminal_probe(&fx.svc, "inst_w1")
 		queue_instance_terminal_probe(&fx.svc, "inst_w1")
@@ -491,8 +505,8 @@ test_terminal_hint_needs_pty_exit_for_current_claim :: proc(t: ^testing.T) {
 		current, current_held := lease_of(fx, "inst_w1")
 		testing.expect(t, current_held && current.lease_id == original.lease_id && current.phase != domain.LEASE_PHASE_WAITING, state)
 	}
-	testing.expect_value(t, probe.calls, 2)
-	probe.state = "exited"
+	testing.expect_value(t, probe.calls, 4)
+	probe.state = terminal_state
 	probe.run_count += 1
 	queue_instance_terminal_probe(&fx.svc, "inst_w1")
 	drain_instance_terminal_probes(&fx.svc)
@@ -504,12 +518,17 @@ test_terminal_hint_needs_pty_exit_for_current_claim :: proc(t: ^testing.T) {
 	on_instance_terminal(&fx.svc, "inst_w1", &stale, original.lease_id)
 	on_instance_terminal(&fx.svc, "inst_w1", &inst, "different_claim")
 	testing.expect_value(t, get_task(fx, "task_probe").state, domain.Task_State.In_Progress)
-	probe.state = "exited"
+	probe.state = terminal_state
 	queue_instance_terminal_probe(&fx.svc, "inst_w1")
 	drain_instance_terminal_probes(&fx.svc)
 	current, current_held := lease_of(fx, "inst_w1")
 	testing.expect(t, current_held && current.lease_id == original.lease_id && current.phase == domain.LEASE_PHASE_WAITING, "confirmed exit parks the same claim")
 	testing.expect(t, is_agent_not_running_block(get_task(fx, "task_probe").blocked_on_json))
+	if terminal_state == "absent" {
+		stopped, present, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+		defer domain.agent_instance_destroy(&stopped)
+		testing.expect(t, present && stopped.run_count == inst.run_count && stopped.status_message == "missing_from_pty_roster")
+	}
 }
 
 

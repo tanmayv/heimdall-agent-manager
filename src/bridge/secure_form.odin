@@ -1098,7 +1098,8 @@ secure_form_local_report :: proc(id: string, w: ^Secure_Form_Live, include_outpu
 @(private)
 secure_form_placement :: proc(rec: Bridge_Local_Agent_Token_Record) -> (owner, bridge, task, conversation, ui_origin: string, ok: bool) {
 	launch, active := bridge_runtime_instance_snapshot(rec.agent_instance_id)
-	if !active || launch.runtime_status != "running" || bridge_agent_instance_run_count(rec.agent_instance_id) != rec.run_count do return
+	if !active || !launch.start_success_seen || !launch.pty_process_alive ||
+	   launch.stopped_intent_unix_ms != 0 || bridge_agent_instance_run_count(rec.agent_instance_id) != rec.run_count { return }
 	path := [?]string{"api", "v1", "agent-actions", "context"}
 	relay := bridge_local_relay_agent_envelope(path[:], "agent.context.get", "{}", rec, 5000)
 	defer delete(relay.body)

@@ -9,6 +9,7 @@ import "core:testing"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
+import agent "odin_test:hub/service/agent"
 
 Event_Notice_Wire :: struct {
 	graph:                                                  ^App_Graph,
@@ -26,7 +27,7 @@ event_notice_wire_get :: proc(ctx: rawptr, id: string) -> (domain.Agent_Instance
 		f.guard_locked = !acquired
 		if acquired do sync.mutex_unlock(&f.graph.agents.reconfiguration_mutex)
 		if f.stop_after_snapshot do f.stopped_by = "user"
-		if f.fail_after_snapshot do f.runtime = "failed"
+		if f.fail_after_snapshot do f.runtime = "superseded"
 	}
 	return {
 		agent_instance_id = strings.clone(id),
@@ -36,7 +37,15 @@ event_notice_wire_get :: proc(ctx: rawptr, id: string) -> (domain.Agent_Instance
 		runtime_status = strings.clone(f.runtime),
 		activity_status = strings.clone(f.activity),
 		stopped_by = strings.clone(f.stopped_by),
+		run_count = 2 if f.runtime == "superseded" else 1,
 	}, true, {}
+}
+event_notice_fixture_process :: proc(inst: domain.Agent_Instance) -> agent.Agent_Liveness {
+	switch inst.runtime_status {
+	case "running": return {state = .Alive, reason = .pty_child_alive, pid = 42, ready = true}
+	case "stopped": return {state = .Exited, reason = .missing_from_pty_roster}
+	case: return {reason = .probe_timed_out}
+	}
 }
 event_notice_wire_send :: proc(ctx: rawptr, command: project.Runtime_Command) -> (bool, domain.Domain_Error) {
 	f := (^Event_Notice_Wire)(ctx)
@@ -70,6 +79,7 @@ test_event_inbox_notice_uses_existing_command_and_rechecks_idle :: proc(t: ^test
 	}
 	graph: App_Graph
 	graph.ids = platform.real_id_generator()
+	graph.agents.fixture_start_fact = event_notice_fixture_process
 	graph.repos.agents = {
 		ctx          = &f,
 		get_instance = event_notice_wire_get,
@@ -119,6 +129,7 @@ test_event_inbox_wake_guard_preserves_stop_after_snapshot :: proc(t: ^testing.T)
 		get_instance = event_notice_wire_get,
 	}
 	graph.agents.agents = &graph.repos.agents
+	graph.agents.fixture_start_fact = event_notice_fixture_process
 	target := domain.Event_Notice_Target {
 		instance_id = "inst_coord",
 	}
@@ -136,9 +147,9 @@ test_event_inbox_wake_guard_preserves_stop_after_snapshot :: proc(t: ^testing.T)
 	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_coord", target, 20, true))
 	testing.expect_value(t, f.reads, 2)
 	testing.expect(t, f.guard_locked)
-	testing.expect_value(t, f.runtime, "failed")
+	testing.expect_value(t, f.runtime, "superseded")
 
-	// Already-failed instances are rejected before even entering start_instance.
+	// Inconclusive process observations are rejected before even entering start_instance.
 	f.reads = 0
 	testing.expect(t, !event_inbox_notice(&graph, "alice", "inst_coord", target, 20, true))
 	testing.expect_value(t, f.reads, 1)

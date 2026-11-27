@@ -127,7 +127,7 @@ bridge_ext_permission_parse :: proc(params: string) -> (req: Bridge_Ext_Permissi
 bridge_ext_permission_instance_gone :: proc(agent_instance_id: string) -> bool {
 	inst, ok := bridge_runtime_instance_snapshot(agent_instance_id)
 	if !ok do return false
-	return inst.runtime_status == "stopped" || inst.runtime_status == "failed" || inst.runtime_status == "stopping"
+	return inst.stopped_intent_unix_ms != 0 || inst.process_exit.pid > 0
 }
 
 // bridge_ext_permission_run is the blocking core of agent.extension.permission.
