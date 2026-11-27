@@ -36,15 +36,36 @@ test_bridge_provider_acp_received_at_migration_and_upsert :: proc(t: ^testing.T)
 	testing.expect_value(t, received(t, &repo, "claude"), "") // stored before the column: stale once
 
 	before := time.now()
+	fresh := proc(t: ^testing.T, value: string, before: time.Time) {
+		at, consumed := time.rfc3339_to_time_utc(value)
+		testing.expectf(t, consumed > 0 && time.diff(time.time_add(before, -2 * time.Second), at) >= 0 && time.diff(at, time.now()) >= -time.Second, "Hub clock at upsert: %q", value)
+	}
+	adapter := proc(repo: ^iface.Provider_Repository) -> string {
+		items, _ := iface.bridge_provider_status_list(repo, "b")
+		for item in items do if item.profile_id == "claude" do return item.acp_adapter_json
+		return ""
+	}
+	// A report whose body is rejected (older checked_at) still counts as heard
+	// from: the receipt moves, the stored body does not.
 	ok, upsert_err := iface.bridge_provider_status_upsert(&repo, {bridge_id = "b", provider = "claude", profile_id = "claude", state = "present",
-		acp_adapter_json = `{"state":"ready","checked_at":"2020-01-01T00:00:00Z"}`})
+		acp_adapter_json = `{"state":"missing","checked_at":"2020-01-01T00:00:00Z"}`})
 	testing.expect(t, ok && upsert_err.code == .None)
-	testing.expect_value(t, received(t, &repo, "claude"), "") // an older report is not stored, nor is its receipt
+	fresh(t, received(t, &repo, "claude"), before)
+	testing.expect_value(t, adapter(&repo), `{"state":"ready","checked_at":"2026-11-01T00:00:00Z"}`)
+	// So does a report with no ACP body or no checked_at.
+	exec(&conn, "UPDATE bridge_provider_status SET acp_adapter_received_at='2020-01-01T00:00:00Z';")
+	ok, upsert_err = iface.bridge_provider_status_upsert(&repo, {bridge_id = "b", provider = "claude", profile_id = "claude", state = "present"})
+	testing.expect(t, ok && upsert_err.code == .None)
+	fresh(t, received(t, &repo, "claude"), before)
+	exec(&conn, "UPDATE bridge_provider_status SET acp_adapter_received_at='2020-01-01T00:00:00Z';")
+	ok, upsert_err = iface.bridge_provider_status_upsert(&repo, {bridge_id = "b", provider = "claude", profile_id = "claude", state = "present", acp_adapter_json = `{"state":"ready"}`})
+	testing.expect(t, ok && upsert_err.code == .None)
+	fresh(t, received(t, &repo, "claude"), before)
 	ok, upsert_err = iface.bridge_provider_status_upsert(&repo, {bridge_id = "b", provider = "claude", profile_id = "claude", state = "present",
 		acp_adapter_json = `{"state":"ready","checked_at":"2026-11-02T00:00:00Z"}`})
 	testing.expect(t, ok && upsert_err.code == .None)
-	at, consumed := time.rfc3339_to_time_utc(received(t, &repo, "claude"))
-	testing.expect(t, consumed > 0 && time.diff(time.time_add(before, -2 * time.Second), at) >= 0 && time.diff(at, time.now()) >= -time.Second, "Hub clock at upsert")
+	fresh(t, received(t, &repo, "claude"), before)
+	testing.expect_value(t, adapter(&repo), `{"state":"ready","checked_at":"2026-11-02T00:00:00Z"}`)
 	// A profile-only report never carries an ACP receipt.
 	ok, upsert_err = iface.bridge_provider_status_upsert(&repo, {bridge_id = "b", provider = "claude", profile_id = "work", state = "present",
 		acp_adapter_json = `{"state":"ready","checked_at":"2026-11-03T00:00:00Z"}`})
