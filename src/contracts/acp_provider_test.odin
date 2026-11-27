@@ -29,26 +29,14 @@ acp_descriptor_closed_registry_and_launch_shapes :: proc(t: ^testing.T) {
         testing.expect(t, !enabled)
     }
     copilot, enabled := acp_provider_descriptor("copilot")
-    testing.expect(t, enabled && acp_descriptor_shape_valid(copilot) && copilot.launch == .Native)
-    // Additional platforms still require a reviewed registry change.
-    native := ACP_Provider_Descriptor{
-        provider = "copilot", id = "copilot-acp", revision = 1, launch = .Native,
-        pkg = {"@github/copilot", "1.0.114", "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="},
-        platforms = {{"linux", "amd64", {"@github/copilot-linux-x64", "1.0.114", "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="}}},
-        command = "copilot", args = {"--acp", "--stdio"}, env = {{"COPILOT_AUTO_UPDATE", "false"}},
-        cli_package = "@github/copilot", cli_version = "1.0.114",
-        protocol_version = 1, node_min_major = 22, bootstrap_filename = "AGENTS.md",
-        model_category = "model", permission_policy = .Once_Only,
-    }
-    testing.expect(t, acp_descriptor_shape_valid(native))
-    platform, supported := acp_descriptor_platform_package(native, "linux", "amd64")
-    testing.expect(t, supported && platform.name == "@github/copilot-linux-x64")
-    _, supported = acp_descriptor_platform_package(native, "linux", "arm64")
-    testing.expect(t, !supported)
-    native.platforms = nil
-    testing.expect(t, !acp_descriptor_shape_valid(native))
-    native = d; native.launch = .Native
-    testing.expect(t, !acp_descriptor_shape_valid(native))
+    testing.expect(t, enabled && acp_descriptor_shape_valid(copilot) && copilot.launch == .System)
+    // An adapter shape requires its exact published package pin.
+    adapter := d; adapter.pkg.integrity = ""
+    testing.expect(t, !acp_descriptor_shape_valid(adapter))
+    adapter = d; adapter.node_min_major = 0
+    testing.expect(t, !acp_descriptor_shape_valid(adapter))
+    adapter = d; adapter.system_os = {"linux"}
+    testing.expect(t, !acp_descriptor_shape_valid(adapter))
     mode, mode_supported := acp_descriptor_permission_mode(d, "ask")
     testing.expect(t, mode_supported && mode == "default")
 }
@@ -63,26 +51,28 @@ acp_descriptor_recipe_rejects_substitution_and_unknown_fields :: proc(t: ^testin
     testing.expect(t, !acp_recipe_valid(`{"command":"claude-agent-acp","args":[],"env":{"CLAUDE_AGENT_ACP_PROTOCOL":"v1"},"protocol_version":1,"adapter_package":"@agentclientprotocol/claude-agent-acp","adapter_version":"0.108.0","unknown":true}`))
 }
 
+// G2: Heimdall never installs Copilot. It is a user-installed system CLI with
+// a minimum version, no npm/Node requirement and no package integrity pin.
 @(test)
-acp_copilot_platforms_pin_only_linux_amd64_and_darwin_arm64 :: proc(t: ^testing.T) {
+acp_copilot_system_descriptor_is_detect_only_with_minimum :: proc(t: ^testing.T) {
     d, known := acp_provider_descriptor("copilot")
-    testing.expect(t, known && len(d.platforms) == 2)
-    linux, supported := acp_descriptor_platform_package(d, "linux", "amd64")
-    testing.expect(t, supported && linux.name == "@github/copilot-linux-x64" && linux.version == "1.0.114")
-    darwin, darwin_supported := acp_descriptor_platform_package(d, "darwin", "arm64")
-    testing.expect(t, darwin_supported && darwin.name == "@github/copilot-darwin-arm64" && darwin.version == "1.0.114")
-    testing.expect_value(t, darwin.integrity, "sha512-Mw47DTwMNDG0bb4t1rVu7S+ekdThIGGitpG28/wGpACZ0lFhYnpNEoSJ7hHBM3oix4b/w6+ZcmxE9J9MngsR9Q==")
-    for target in ([][2]string{{"linux", "arm64"}, {"darwin", "amd64"}, {"windows", "amd64"}, {"windows", "arm64"}, {"freebsd", "amd64"}, {"", ""}}) {
-        _, supported := acp_descriptor_platform_package(d, target[0], target[1])
-        testing.expect(t, !supported)
-    }
+    testing.expect(t, known && d.launch == .System && acp_descriptor_shape_valid(d))
+    testing.expect(t, d.pkg.integrity == "" && d.node_min_major == 0 && d.executable_env == "")
+    testing.expect_value(t, d.pkg.version, "1.0.114")
+    for os in ([]string{"linux", "darwin", "windows"}) do testing.expect(t, acp_descriptor_system_os_supported(d, os))
+    testing.expect(t, !acp_descriptor_system_os_supported(d, "freebsd"))
+    provider, _ := provider_descriptor("copilot")
+    testing.expect_value(t, provider_min_version(provider), "1.0.114")
+    // The catalog recipe (migration 224) still binds unchanged.
+    raw :: `{"command":"copilot","args":["--acp","--stdio"],"env":{"COPILOT_AUTO_UPDATE":"false"},"protocol_version":1,"adapter_package":"@github/copilot","adapter_version":"1.0.114"}`
+    testing.expect(t, acp_provider_recipe_valid("copilot", raw))
 }
 
 @(test)
 acp_kiro_system_descriptor_is_detect_only :: proc(t: ^testing.T) {
     d, known := acp_provider_descriptor("kiro")
     testing.expect(t, known && d.launch == .System && acp_descriptor_shape_valid(d))
-    testing.expect(t, d.pkg.integrity == "" && d.node_min_major == 0 && len(d.platforms) == 0)
+    testing.expect(t, d.pkg.integrity == "" && d.node_min_major == 0)
     // v2-only flags would silently switch kiro-cli to its v2 engine.
     testing.expect_value(t, len(d.args), 3)
     for arg in d.args do testing.expect(t, arg != "--model" && arg != "--agent" && arg != "-a" && arg != "--trust-all-tools")
@@ -104,9 +94,10 @@ acp_kiro_system_descriptor_is_detect_only :: proc(t: ^testing.T) {
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
     invalid = d; invalid.provider = "pi"; invalid.pkg.name = "pi" // registered, but its version is unparsed
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
-    invalid = d; invalid.pkg.name = "other"
+    // A system runtime launches the registered provider binary only.
+    invalid = d; invalid.command = "other"
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
-    invalid = d; invalid.cli_version = "3.5.0"
+    invalid = d; invalid.executable_env = "KIRO_EXECUTABLE"
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
 }
 
@@ -120,8 +111,11 @@ acp_cli_version_minimum_and_pins :: proc(t: ^testing.T) {
         testing.expectf(t, !acp_descriptor_cli_version_accepted(kiro, rejected), "%s rejected", rejected)
     }
     copilot, _ := acp_provider_descriptor("copilot")
+    // Copilot is a minimum, not a pin: newer user-installed CLIs are accepted.
     testing.expect(t, acp_descriptor_cli_version_accepted(copilot, "1.0.114"))
-    testing.expect(t, !acp_descriptor_cli_version_accepted(copilot, "1.0.115"))
+    testing.expect(t, acp_descriptor_cli_version_accepted(copilot, "1.0.115"))
+    testing.expect(t, acp_descriptor_cli_version_accepted(copilot, "1.1.0"))
+    testing.expect(t, !acp_descriptor_cli_version_accepted(copilot, "1.0.113"))
     claude, _ := acp_provider_descriptor("claude")
     testing.expect(t, acp_descriptor_cli_version_accepted(claude, "2.9.1"))
     testing.expect_value(t, acp_semver_compare("3.10.0", "3.9.9"), 1)
@@ -144,7 +138,9 @@ acp_kiro_recipe_binds_only_kiro :: proc(t: ^testing.T) {
 acp_bootstrap_link_and_default_model_are_system_only :: proc(t: ^testing.T) {
     kiro, _ := acp_provider_descriptor("kiro")
     testing.expect(t, kiro.bootstrap_resource_link && kiro.agent_default_model == "default")
-    for provider in ([]string{"claude", "copilot"}) {
+    copilot, _ := acp_provider_descriptor("copilot")
+    testing.expect(t, !copilot.bootstrap_resource_link && copilot.agent_default_model == "", "Copilot does not opt in")
+    for provider in ([]string{"claude"}) {
         d, _ := acp_provider_descriptor(provider)
         testing.expect(t, !d.bootstrap_resource_link && d.agent_default_model == "")
         d.bootstrap_resource_link = true
@@ -169,7 +165,7 @@ acp_descriptor_protocol_registry_is_explicit :: proc(t: ^testing.T) {
 acp_codex_system_descriptor_recipe_and_version_floor :: proc(t: ^testing.T) {
     d, known := acp_provider_descriptor("codex")
     testing.expect(t, known && acp_descriptor_shape_valid(d) && d.launch == .System && d.protocol == .Codex_App_Server)
-    testing.expect(t, d.permission_policy == .Once_Only && d.pkg.integrity == "" && d.node_min_major == 0 && len(d.platforms) == 0)
+    testing.expect(t, d.permission_policy == .Once_Only && d.pkg.integrity == "" && d.node_min_major == 0)
     testing.expect(t, d.bootstrap_filename == "AGENTS.md" && len(d.args) == 1 && d.args[0] == "app-server")
     for version in ([]string{"0.162.0", "0.166.0", "1.0.0"}) do testing.expect(t, acp_descriptor_cli_version_accepted(d, version))
     for version in ([]string{"0.161.9", "0.99.0", "0.162", "0.162.0-beta", "v0.162.0", ""}) do testing.expect(t, !acp_descriptor_cli_version_accepted(d, version))
@@ -202,7 +198,7 @@ acp_descriptors_link_to_the_provider_registry :: proc(t: ^testing.T) {
         p, ok := provider_descriptor(d.provider)
         testing.expectf(t, ok && p.provider == d.provider, "%s: ACP descriptor without a provider registry entry", d.provider)
         if d.launch == .System {
-            testing.expectf(t, d.pkg.name == p.binary, "%s: system package %q != registry binary %q", d.provider, d.pkg.name, p.binary)
+            testing.expectf(t, d.command == p.binary, "%s: system command %q != registry binary %q", d.provider, d.command, p.binary)
             testing.expectf(t, p.version_format != .Raw, "%s: a minimum version needs a parseable --version", d.provider)
         }
     }

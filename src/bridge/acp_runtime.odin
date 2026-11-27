@@ -433,7 +433,7 @@ acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^P
     d, known := contracts.acp_provider_descriptor(pp.provider)
     if !known do return {}, false
     resolved := ""
-    if d.launch == .Native || d.launch == .System {
+    if d.launch == .System {
         resolved, _ = bridge_provider_resolve_binary(bridge_provider_descriptor(d.provider), pp, full)
     }
     argv, built := acp_provider_launch_argv(d, root, resolved)

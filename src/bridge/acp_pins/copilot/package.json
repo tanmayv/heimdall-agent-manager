@@ -1,8 +1,0 @@
-{
-  "name": "heimdall-copilot-acp",
-  "version": "1.0.114",
-  "private": true,
-  "dependencies": {
-    "@github/copilot": "1.0.114"
-  }
-}

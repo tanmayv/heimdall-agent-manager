@@ -72,30 +72,35 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
  return acp_availability_error(entry.provider,verdict,adapter_json,has_status)
 }
 
-// classify_acp_availability is the single copy of the ACP readiness rules. It
-// is pure: the provider-status view and every launch/settings gate
-// (require_acp_ready) call it with the catalog recipe, the bridge's
-// capabilities_json and the provider-wide adapter report ("" when the bridge
-// has no status row for the provider).
+// classify_acp_availability is the Hub's single ACP verdict. It is pure: the
+// provider-status view and every launch/settings gate (require_acp_ready) call
+// it with the catalog recipe, the bridge's capabilities_json and the
+// provider-wide adapter report ("" when the bridge has no status row).
+//
+// Readiness itself is the Bridge's verdict: it detects Node.js, npm, the CLI
+// version (against the same compiled minimum), the package tree and the probe
+// receipt live and reports state "ready" only when it can launch, after
+// matching the catalog recipe against its own descriptor. The Hub adds only
+// the facts it owns (a valid catalog recipe and bridge ACP support) and never
+// re-derives the report. An older bridge's "ready" is its own verdict too.
 classify_acp_availability :: proc(provider, recipe_json, bridge_capabilities_json, adapter_json: string) -> contracts.ACP_Availability {
  if !contracts.acp_provider_recipe_valid(provider,recipe_json) do return contracts.acp_availability_for(.No_Recipe)
  if !contracts.bridge_supports_acp_runtime(bridge_capabilities_json) do return contracts.acp_availability_for(.Unsupported_Bridge)
- if acp_adapter_ready(adapter_json,recipe_json,provider) do return contracts.acp_availability_for(.Ready)
  switch acp_adapter_state(adapter_json) {
+ case "ready": return contracts.acp_availability_for(.Ready)
  case "installing": return contracts.acp_availability_for(.Installing)
  case "missing": return contracts.acp_availability_for(.Adapter_Missing)
  case "missing_node": return contracts.acp_availability_for(.Adapter_Missing_Node)
+ case "missing_npm": return contracts.acp_availability_for(.Adapter_Missing_Npm)
  case "error": return contracts.acp_availability_for(.Adapter_Error)
- // A "ready" report that fails verification (version, runtime kind or
- // identity mismatch) needs the pinned adapter reinstalled, like outdated.
- case "outdated","ready": return contracts.acp_availability_for(.Adapter_Outdated)
+ case "outdated": return contracts.acp_availability_for(.Adapter_Outdated)
  }
  return contracts.acp_availability_for(.Not_Checked)
 }
 
 // acp_availability_error maps a verdict to the launch/settings error. Error
 // codes and details are unchanged from before the classifier existed: the
-// detail state is the raw adapter state (e.g. "ready" for a mismatched report).
+// detail state is the raw adapter state.
 acp_availability_error :: proc(provider: string, verdict: contracts.ACP_Availability, adapter_json: string, has_status: bool) -> domain.Domain_Error {
  switch verdict.reason {
  case .Ready: return {}
@@ -106,50 +111,11 @@ acp_availability_error :: proc(provider: string, verdict: contracts.ACP_Availabi
   // A missing status row and a present-but-unchecked report keep their
   // historical messages.
   if !has_status do return acp_unavailable_error(provider,"not_checked","ACP adapter has not been checked")
- case .Adapter_Missing,.Adapter_Outdated,.Adapter_Missing_Node,.Adapter_Error:
+ case .Adapter_Missing,.Adapter_Outdated,.Adapter_Missing_Node,.Adapter_Missing_Npm,.Adapter_Error:
  }
  // The HTTP settings handler starts a tracked install for installable states
  // while keeping the settings unchanged until adapter readiness is verified.
  return acp_unavailable_error(provider,acp_adapter_state(adapter_json),"ACP adapter is not ready")
-}
-
-acp_adapter_ready :: proc(raw, recipe: string, provider: string = "claude") -> bool {
- if !contracts.acp_provider_recipe_valid(provider, recipe) do return false
- d, _ := contracts.acp_provider_descriptor(provider)
- value,err:=json.parse(raw)
- if err!=nil do return false
- defer json.destroy_value(value)
- obj,ok:=value.(json.Object)
- if !ok do return false
- state,sok:=obj["state"].(json.String)
- installed,iok:=obj["installed"].(json.Boolean)
- version,vok:=obj["version"].(json.String)
- checked,cok:=obj["checked_at"].(json.String)
- if !sok || !iok || !vok || !cok || state!="ready" || !bool(installed) || checked=="" do return false
- if kind, present := obj["runtime_kind"]; present {
-  name, valid := kind.(json.String)
-  expected := "adapter"
-  switch d.launch {
-  case .Adapter: expected = "adapter"
-  case .Native: expected = "native"
-  case .System: expected = "system"
-  }
-  if !valid || string(name) != expected do return false
- } else if d.launch == .System {
-  // Detect-only runtimes only exist on bridges that report their kind.
-  return false
- }
- if identity, present := obj["provider"]; present {
-  name, valid := identity.(json.String)
-  if !valid || string(name) != provider do return false
- }
- if profile, present := obj["profile"]; present {
-  name, valid := profile.(json.String)
-  if !valid || string(name) != provider do return false
- }
- // A detected system CLI reports its own version, which must meet the minimum.
- if d.launch == .System do return contracts.acp_descriptor_cli_version_accepted(d, string(version))
- return string(version)==d.pkg.version
 }
 
 update_bridge_provider_settings :: proc(service: ^Provider_Service, bridge: domain.Bridge, provider, now: string, input: Provider_Settings_Update) -> domain.Domain_Error {
@@ -212,7 +178,7 @@ acp_adapter_state :: proc(raw:string)->string {
  state,valid:=obj["state"].(json.String)
  if !valid do return "not_checked"
  switch string(state) {
- case "not_checked","missing_node","missing","installing","ready","outdated","error":return strings.clone(string(state),context.temp_allocator)
+ case "not_checked","missing_node","missing_npm","missing","installing","ready","outdated","error":return strings.clone(string(state),context.temp_allocator)
  }
  return "not_checked"
 }

@@ -32,9 +32,9 @@ transport_test_status :: proc(ctx:rawptr,id:string)->([dynamic]domain.Bridge_Pro
 }
 
 @(test)
-c2_copilot_transport_opt_in_requires_native_pinned_readiness :: proc(t: ^testing.T) {
+c2_copilot_transport_opt_in_requires_bridge_reported_readiness :: proc(t: ^testing.T) {
  store := Transport_Test_Store{provider="copilot",features=`{"features":["acp_runtime_v1"]}`,transports=`["pty","acp"]`,default_transport="pty",recipe=COPILOT_TRANSPORT_TEST_RECIPE,
-  adapter=`{"installed":true,"state":"ready","version":"1.0.114","checked_at":"2026-11-19T00:00:00Z","provider":"copilot","profile":"copilot","runtime_kind":"native"}`}
+  adapter=`{"installed":true,"state":"ready","version":"1.0.120","checked_at":"2026-11-27T00:00:00Z","provider":"copilot","profile":"copilot","runtime_kind":"system"}`}
  repo := iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
  bridges := iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
  svc := Provider_Service{repo=&repo,bridges=&bridges}
@@ -44,10 +44,11 @@ c2_copilot_transport_opt_in_requires_native_pinned_readiness :: proc(t: ^testing
  selected,err=resolve_runtime_transport(&svc,"bridge","copilot")
  testing.expect(t,err.code==.None && selected=="acp");delete(selected)
  ready:=store.adapter
+ // A user-installed CLI below the minimum is reported outdated by the bridge.
  for raw in ([]string{
-  transport_test_replace(ready,`"runtime_kind":"native"`,`"runtime_kind":"adapter"`),
-  transport_test_replace(ready,`"version":"1.0.114"`,`"version":"1.0.91"`),
-  transport_test_replace(ready,`"provider":"copilot"`,`"provider":"claude"`),
+  transport_test_replace(transport_test_replace(ready,`"state":"ready"`,`"state":"outdated"`),`"version":"1.0.120"`,`"version":"1.0.91"`),
+  transport_test_replace(ready,`"state":"ready"`,`"state":"missing"`),
+  transport_test_replace(ready,`"state":"ready"`,`"state":"error"`),
  }) {
   store.adapter=raw
   selected,err=resolve_runtime_transport(&svc,"bridge","copilot")
@@ -132,17 +133,27 @@ transport_test_replace :: proc(input,old,replacement:string)->string {
  return value
 }
 
+// One readiness function (G7): the bridge computes readiness; the hub stores
+// its report and classify_acp_availability consumes the reported state, adding
+// only the catalog recipe and bridge capability it owns. Version, runtime kind
+// and identity are the bridge's checks and are not re-derived here.
 @(test)
-test_runtime_descriptor_readiness_rejects_status_identity_substitution :: proc(t: ^testing.T) {
+test_acp_readiness_is_the_bridge_reported_verdict :: proc(t: ^testing.T) {
+ ACP :: `{"features":["acp_runtime_v1"]}`
  ready :: `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-19T00:00:00Z","provider":"claude","profile":"claude","runtime_kind":"adapter"}`
- testing.expect(t, acp_adapter_ready(ready, TRANSPORT_TEST_RECIPE, "claude"))
- testing.expect(t, !acp_adapter_ready(ready, TRANSPORT_TEST_RECIPE, "copilot"))
  for raw in ([]string{
-  transport_test_replace(ready, `"provider":"claude"`, `"provider":"copilot"`),
-  transport_test_replace(ready, `"profile":"claude"`, `"profile":"work"`),
-  transport_test_replace(ready, `"runtime_kind":"adapter"`, `"runtime_kind":"native"`),
-  transport_test_replace(ready, `"version":"0.108.0"`, `"version":"0.108.1"`),
- }) { testing.expect(t, !acp_adapter_ready(raw, TRANSPORT_TEST_RECIPE, "claude")) }
+  ready,
+  transport_test_replace(ready, `"version":"0.108.0"`, `"version":"0.109.0"`),
+  transport_test_replace(ready, `,"runtime_kind":"adapter"`, ``),
+  `{"state":"ready"}`,
+ }) { testing.expect_value(t, classify_acp_availability("claude", TRANSPORT_TEST_RECIPE, ACP, raw).reason, contracts.ACP_Availability_Reason.Ready) }
+ for state in ([]string{"missing", "missing_node", "missing_npm", "outdated", "error", "installing", "not_checked"}) {
+  raw := transport_test_replace(ready, `"state":"ready"`, strings.concatenate({`"state":"`, state, `"`}, context.temp_allocator))
+  testing.expectf(t, !classify_acp_availability("claude", TRANSPORT_TEST_RECIPE, ACP, raw).available, "%s is not ready", state)
+ }
+ // Hub-owned facts still gate a ready report.
+ testing.expect_value(t, classify_acp_availability("copilot", TRANSPORT_TEST_RECIPE, ACP, ready).reason, contracts.ACP_Availability_Reason.No_Recipe)
+ testing.expect_value(t, classify_acp_availability("claude", TRANSPORT_TEST_RECIPE, "", ready).reason, contracts.ACP_Availability_Reason.Unsupported_Bridge)
 }
 
 KIRO_TRANSPORT_TEST_RECIPE :: `{"command":"kiro-cli","args":["acp","--agent-engine","v3"],"env":{},"protocol_version":1,"adapter_package":"kiro-cli","adapter_version":"3.5.0"}`
@@ -164,14 +175,10 @@ test_runtime_codex_opt_in_requires_system_probe_readiness :: proc(t: ^testing.T)
  store.adapter=ready
  selected,err=resolve_runtime_transport(&svc,"bridge","codex")
  testing.expect(t,err.code==.None && selected=="acp");delete(selected)
- testing.expect(t, acp_adapter_ready(transport_test_replace(ready, `"version":"0.162.0"`, `"version":"0.166.0"`), CODEX_TRANSPORT_TEST_RECIPE, "codex"))
  for raw in ([]string{
-  transport_test_replace(ready, `"version":"0.162.0"`, `"version":"0.161.9"`),
-  transport_test_replace(ready, `"runtime_kind":"system"`, `"runtime_kind":"native"`),
-  transport_test_replace(ready, `,"runtime_kind":"system"`, ``),
-  transport_test_replace(ready, `"profile":"codex"`, `"profile":"work"`),
-  transport_test_replace(ready, `"provider":"codex"`, `"provider":"kiro"`),
   transport_test_replace(ready, `"state":"ready"`, `"state":"error"`),
+  transport_test_replace(ready, `"state":"ready"`, `"state":"outdated"`),
+  transport_test_replace(ready, `"state":"ready"`, `"state":"missing"`),
  }) {
   store.adapter=raw
   selected,err=resolve_runtime_transport(&svc,"bridge","codex")
@@ -186,20 +193,15 @@ test_runtime_codex_opt_in_requires_system_probe_readiness :: proc(t: ^testing.T)
 }
 
 @(test)
-test_runtime_kiro_readiness_accepts_detected_versions_at_or_above_minimum :: proc(t: ^testing.T) {
+test_runtime_kiro_readiness_follows_the_bridge_report :: proc(t: ^testing.T) {
+ ACP :: `{"features":["acp_runtime_v1"]}`
  ready :: `{"installed":true,"state":"ready","version":"3.5.0","checked_at":"2026-11-21T00:00:00Z","provider":"kiro","profile":"kiro","runtime_kind":"system"}`
- testing.expect(t, acp_adapter_ready(ready, KIRO_TRANSPORT_TEST_RECIPE, "kiro"))
- testing.expect(t, acp_adapter_ready(transport_test_replace(ready, `"version":"3.5.0"`, `"version":"3.12.1"`), KIRO_TRANSPORT_TEST_RECIPE, "kiro"))
- testing.expect(t, !acp_adapter_ready(ready, KIRO_TRANSPORT_TEST_RECIPE, "claude"))
- testing.expect(t, !acp_adapter_ready(ready, TRANSPORT_TEST_RECIPE, "kiro"))
- for raw in ([]string{
-  transport_test_replace(ready, `"version":"3.5.0"`, `"version":"3.4.9"`),
-  transport_test_replace(ready, `"version":"3.5.0"`, `"version":"3.5"`),
-  transport_test_replace(ready, `"runtime_kind":"system"`, `"runtime_kind":"native"`),
-  transport_test_replace(ready, `,"runtime_kind":"system"`, ``),
-  transport_test_replace(ready, `"state":"ready"`, `"state":"outdated"`),
-  transport_test_replace(ready, `"profile":"kiro"`, `"profile":"work"`),
- }) { testing.expect(t, !acp_adapter_ready(raw, KIRO_TRANSPORT_TEST_RECIPE, "kiro")) }
+ testing.expect(t, classify_acp_availability("kiro", KIRO_TRANSPORT_TEST_RECIPE, ACP, ready).available)
+ testing.expect(t, !classify_acp_availability("claude", KIRO_TRANSPORT_TEST_RECIPE, ACP, ready).available)
+ testing.expect(t, !classify_acp_availability("kiro", TRANSPORT_TEST_RECIPE, ACP, ready).available)
+ // Below the minimum, the bridge reports outdated with the detected version.
+ outdated := transport_test_replace(transport_test_replace(ready, `"state":"ready"`, `"state":"outdated"`), `"version":"3.5.0"`, `"version":"3.4.9"`)
+ testing.expect_value(t, classify_acp_availability("kiro", KIRO_TRANSPORT_TEST_RECIPE, ACP, outdated).reason, contracts.ACP_Availability_Reason.Adapter_Outdated)
 }
 
 @(test)
@@ -220,9 +222,8 @@ test_acp_availability_classifies_every_reason_with_its_fix :: proc(t: ^testing.T
   {TRANSPORT_TEST_RECIPE, `{"features":["other"],"description":"acp_runtime_v1"}`, ready, false, "unsupported_bridge", `"update_bridge"`},
   {TRANSPORT_TEST_RECIPE, ACP, state_json("missing"), false, "adapter_missing", `"install_adapter"`},
   {TRANSPORT_TEST_RECIPE, ACP, state_json("outdated"), false, "adapter_outdated", `"install_adapter"`},
-  {TRANSPORT_TEST_RECIPE, ACP, transport_test_replace(ready,`"version":"0.108.0"`,`"version":"0.107.0"`), false, "adapter_outdated", `"install_adapter"`},
-  {TRANSPORT_TEST_RECIPE, ACP, transport_test_replace(ready,`"runtime_kind":"adapter"`,`"runtime_kind":"native"`), false, "adapter_outdated", `"install_adapter"`},
   {TRANSPORT_TEST_RECIPE, ACP, state_json("missing_node"), false, "adapter_missing_node", `"install_adapter"`},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("missing_npm"), false, "adapter_missing_npm", `"install_adapter"`},
   {TRANSPORT_TEST_RECIPE, ACP, state_json("error"), false, "adapter_error", `"install_adapter"`},
   {TRANSPORT_TEST_RECIPE, ACP, state_json("installing"), false, "installing", "null"},
   {TRANSPORT_TEST_RECIPE, ACP, state_json("not_checked"), false, "not_checked", `"check_now"`},
@@ -255,7 +256,7 @@ test_require_acp_ready_maps_verdicts_to_unchanged_errors :: proc(t: ^testing.T) 
  for c, i in ([]Case{
   {`{"features":["acp_runtime_v1"]}`, `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-19T00:00:00Z"}`, .None, "", ""},
   {"", "", .ACP_Unavailable, "unsupported_bridge", "bridge does not support acp_runtime_v1 and piped hosting"},
-  {`{"features":["acp_runtime_v1"]}`, `{"installed":true,"state":"ready","version":"0.1.0","checked_at":"2026-11-19T00:00:00Z"}`, .ACP_Unavailable, "ready", "ACP adapter is not ready"},
+  {`{"features":["acp_runtime_v1"]}`, `{"state":"missing_npm"}`, .ACP_Unavailable, "missing_npm", "ACP adapter is not ready"},
   {`{"features":["acp_runtime_v1"]}`, `{"state":"missing"}`, .ACP_Unavailable, "missing", "ACP adapter is not ready"},
   {`{"features":["acp_runtime_v1"]}`, `{"state":"missing_node"}`, .ACP_Unavailable, "missing_node", "ACP adapter is not ready"},
   {`{"features":["acp_runtime_v1"]}`, `{"state":"outdated"}`, .ACP_Unavailable, "outdated", "ACP adapter is not ready"},

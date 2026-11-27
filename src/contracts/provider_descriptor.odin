@@ -251,8 +251,8 @@ provider_parse_cli_version :: proc(d: Provider_Descriptor, output: string) -> (s
 
 // provider_min_version is the minimum CLI version Heimdall supports, "" when it
 // sets none. Single source: the ACP recipe of a detect-only (System) runtime,
-// whose pkg.version is that minimum (acp_provider.odin). Pinned runtimes
-// (Adapter, Native) bring their own CLI and set no minimum here.
+// whose pkg.version is that minimum (acp_provider.odin). Pinned npm
+// adapters bring their own package and set no CLI minimum here.
 provider_min_version :: proc(d: Provider_Descriptor) -> string {
 	if acp, ok := acp_provider_descriptor(d.provider); ok && acp.launch == .System do return acp.pkg.version
 	return ""

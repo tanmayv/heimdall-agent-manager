@@ -161,7 +161,7 @@ t4_runtime_open :: proc(f: ^T4_Runtime_Test, instance, cwd: string, provider: st
     d, _ := contracts.acp_provider_descriptor(provider)
     mode, _ := contracts.acp_descriptor_permission_mode(d, "ask")
     f.r = acp_runtime_new(instance, "t4_epoch", cwd, provider, provider, "sha256:test", "sonnet", mode, rec)
-    acp_runtime_replace(&f.r.binding.cli_version, d.cli_version if d.cli_version != "" else "2.1.70")
+    acp_runtime_replace(&f.r.binding.cli_version, d.pkg.version if d.launch == .System else "2.1.70")
     f.r.d.phase = strings.clone("initialize"); f.r.d.starter = strings.clone("EXACT starter text")
     f.r.client, _ = acp_rpc_open({data = &f.f, instance = instance, launch_epoch = "t4_epoch", write = acp_test_write, ack = acp_test_ack, close = acp_test_close},
         {data = f, checkpoint = t4_runtime_checkpoint, restore_completion = t4_runtime_restore_completion})

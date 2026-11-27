@@ -61,7 +61,7 @@ acp_provider_binding_delete :: proc(b: ^ACP_Runtime_Binding) {
 
 acp_provider_marker_valid :: proc(raw: string, expected: ACP_Runtime_Binding) -> bool {
     // The old integrity-only Claude marker deliberately cannot certify this
-    // contract, another profile, or another provider's native runtime.
+    // contract, another profile, or another provider's runtime.
     actual: ACP_Runtime_Binding
     if json.unmarshal_string(raw, &actual, allocator = context.temp_allocator) != nil do return false
     return acp_provider_binding_valid(actual) && acp_provider_binding_equal(actual, expected)
@@ -143,12 +143,12 @@ acp_runtime_upgrade_legacy_state :: proc(s: ^ACP_State, intent: ACP_Hub_Intent, 
     return true, ""
 }
 
-// Shared by installation probes and managed spawns. Native and system argv is
-// the resolved CLI plus fixed ACP flags; adapter argv is the managed package bin.
+// Shared by installation probes and managed spawns. System argv is the
+// resolved CLI plus fixed ACP flags; adapter argv is the managed package bin.
 acp_provider_launch_argv :: proc(d: contracts.ACP_Provider_Descriptor, root, resolved_cli: string) -> ([]string, bool) {
     argv := make([dynamic]string, allocator = context.temp_allocator)
     switch d.launch {
-    case .Native, .System:
+    case .System:
         if resolved_cli == "" do return nil, false
         append(&argv, resolved_cli)
     case .Adapter:

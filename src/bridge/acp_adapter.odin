@@ -11,26 +11,28 @@ import "core:time"
 import ws "odin_test:lib/ws"
 import contracts "odin_test:contracts"
 
-ACP_COPILOT_PACKAGE_JSON :: #load("acp_pins/copilot/package.json", string)
-ACP_COPILOT_LOCK_JSON :: #load("acp_pins/copilot/package-lock.json", string)
 acp_adapter_runner: Bridge_Extension_Install_Runner = bridge_process_run_capture_status
 acp_adapter_probe_hook: proc(provider, root, scratch: string) -> (bool, string) = acp_adapter_probe
 acp_adapter_cli_probe_hook: proc(provider: string) -> (string, string) = acp_adapter_cli_probe
 acp_adapter_binding_hook: proc(provider, profile: string) -> (ACP_Runtime_Binding, bool) = acp_adapter_profile_binding
 acp_adapter_profile_probe_hook: proc(pp: ^Provider_Profile, root, scratch: string) -> (bool, string) = acp_adapter_probe_profile
 
+// Every detection is live: status is recomputed from the host (node, npm, the
+// selected CLI, the package tree and probe receipts) on each scan, Re-check and
+// launch, so installing or upgrading a prerequisite needs no bridge restart.
+// install_command is the exact command for a missing/old Node.js or npm;
+// diagnostic is the redacted npm excerpt of the last failed install.
 ACP_Adapter_Status :: struct {
     installed: bool,
     version, node_version, state, error, checked_at: string,
+    install_command, diagnostic: string,
 }
 
 ACP_Adapter_Lock_State :: enum { Acquired, Busy, Error }
 
 acp_adapter_platform_supported :: proc(d: contracts.ACP_Provider_Descriptor) -> bool {
     if d.launch == .System do return contracts.acp_descriptor_system_os_supported(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator))
-    if d.launch != .Native do return true
-    _, supported := contracts.acp_descriptor_platform_package(d, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
-    return supported
+    return true
 }
 
 acp_adapter_cleanup_stages :: proc(root: string) -> bool {
@@ -64,8 +66,7 @@ acp_adapter_root :: proc(provider: string) -> string {
     d, known := contracts.acp_provider_descriptor(provider)
     if !known do return ""
     base := bridge_shell_data_dir(); defer delete(base)
-    cli := strings.concatenate({"-cli-", d.cli_version}, context.temp_allocator) if d.cli_version != "" else ""
-    root := strings.concatenate({base, "/bridge/acp-runtimes/", d.provider, "/", d.id, fmt.tprintf("-r%d/", d.revision), d.pkg.version, cli})
+    root := strings.concatenate({base, "/bridge/acp-runtimes/", d.provider, "/", d.id, fmt.tprintf("-r%d/", d.revision), d.pkg.version})
     if acp_provider_legacy_claude(d) && !os.is_dir(root) {
         old := strings.concatenate({base, "/bridge/acp-adapters/claude/0.108.0"})
         // Keep the old path and lock inode intact beneath surviving children.
@@ -82,7 +83,7 @@ acp_adapter_bin :: proc(root: string, provider: string) -> string {
 }
 
 acp_adapter_files_valid :: proc(root: string, provider: string) -> bool {
-    return acp_adapter_files_valid_for_platform(root, provider, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
+    return acp_adapter_files_check(root, provider) == .None
 }
 
 // ACP_Adapter_Files_Check names the first staged-layout predicate that failed.
@@ -93,7 +94,6 @@ ACP_Adapter_Files_Check :: enum u8 {
     Unknown_Provider,
     Manifest_Read,
     Lockfile_Read,
-    Lockfile_Pin,
     Manifest_Parse,
     Lockfile_Parse,
     Manifest_Identity,
@@ -102,15 +102,6 @@ ACP_Adapter_Files_Check :: enum u8 {
     Lock_Entry_Integrity,
     Bin_Entry,
     Bin_Path,
-    Native_Platform,
-    Native_Lock_Entry,
-    Native_Manifest_Read,
-    Native_Manifest_Parse,
-    Native_Manifest_Identity,
-    Native_Manifest_Version,
-    Native_Bin_Entry,
-    Native_Executable,
-    Native_Target,
     Bin_Target,
     Bin_Executable,
 }
@@ -120,7 +111,6 @@ ACP_ADAPTER_FILES_CHECK_IDS := [ACP_Adapter_Files_Check]string{
     .Unknown_Provider         = "unknown_provider",
     .Manifest_Read            = "manifest_read",
     .Lockfile_Read            = "lockfile_read",
-    .Lockfile_Pin             = "lockfile_pin",
     .Manifest_Parse           = "manifest_parse",
     .Lockfile_Parse           = "lockfile_parse",
     .Manifest_Identity        = "manifest_identity",
@@ -129,32 +119,13 @@ ACP_ADAPTER_FILES_CHECK_IDS := [ACP_Adapter_Files_Check]string{
     .Lock_Entry_Integrity     = "lock_entry_integrity",
     .Bin_Entry                = "bin_entry",
     .Bin_Path                 = "bin_path",
-    .Native_Platform          = "native_platform",
-    .Native_Lock_Entry        = "native_lock_entry",
-    .Native_Manifest_Read     = "native_manifest_read",
-    .Native_Manifest_Parse    = "native_manifest_parse",
-    .Native_Manifest_Identity = "native_manifest_identity",
-    .Native_Manifest_Version  = "native_manifest_version",
-    .Native_Bin_Entry         = "native_bin_entry",
-    .Native_Executable        = "native_executable",
-    .Native_Target            = "native_target",
     .Bin_Target               = "bin_target",
     .Bin_Executable           = "bin_executable",
 }
 
-// Keep package-layout validation independent of the host so every supported
-// native layout can be checked without executing a foreign binary.
-acp_adapter_files_valid_for_platform :: proc(root, provider, platform_os, platform_arch: string) -> bool {
-    return acp_adapter_files_check_for_platform(root, provider, platform_os, platform_arch) == .None
-}
-
+// acp_adapter_files_check returns the first failed predicate of the installed
+// adapter package, in evaluation order, or .None when the layout is valid.
 acp_adapter_files_check :: proc(root: string, provider: string) -> ACP_Adapter_Files_Check {
-    return acp_adapter_files_check_for_platform(root, provider, strings.to_lower(fmt.tprintf("%v", ODIN_OS), context.temp_allocator), fmt.tprintf("%v", ODIN_ARCH))
-}
-
-// acp_adapter_files_check_for_platform returns the first failed predicate, in
-// evaluation order, or .None when the layout is valid.
-acp_adapter_files_check_for_platform :: proc(root, provider, platform_os, platform_arch: string) -> ACP_Adapter_Files_Check {
     d, known := contracts.acp_provider_descriptor(provider)
     if !known do return .Unknown_Provider
     // A system CLI is user-installed: there are no managed files to verify,
@@ -165,7 +136,6 @@ acp_adapter_files_check_for_platform :: proc(root, provider, platform_os, platfo
     if me != nil do return .Manifest_Read
     lock, le := os.read_entire_file(strings.concatenate({root, "/package-lock.json"}), context.temp_allocator)
     if le != nil do return .Lockfile_Read
-    if d.provider == "copilot" && string(lock) != ACP_COPILOT_LOCK_JSON do return .Lockfile_Pin
     m, err := json.parse(string(manifest)); if err != nil do return .Manifest_Parse
     l, lerr := json.parse(string(lock)); if lerr != nil do return .Lockfile_Parse
     mo, mok := m.(json.Object); if !mok do return .Manifest_Parse
@@ -181,27 +151,6 @@ acp_adapter_files_check_for_platform :: proc(root, provider, platform_os, platfo
     if string(integrity) != d.pkg.integrity do return .Lock_Entry_Integrity
     if bin == "" do return .Bin_Entry
     if filepath.is_abs(string(bin)) || strings.contains(string(bin), "..") do return .Bin_Path
-    if d.launch == .Native {
-        pin, supported := contracts.acp_descriptor_platform_package(d, platform_os, platform_arch)
-        if !supported do return .Native_Platform
-        native, present := packages[strings.concatenate({"node_modules/", pin.name}, context.temp_allocator)].(json.Object)
-        nv, _ := native["version"].(json.String); ni, _ := native["integrity"].(json.String)
-        if !present || string(nv) != pin.version || string(ni) != pin.integrity do return .Native_Lock_Entry
-        native_manifest, ne := os.read_entire_file(strings.concatenate({root, "/node_modules/", pin.name, "/package.json"}, context.temp_allocator), context.temp_allocator)
-        if ne != nil do return .Native_Manifest_Read
-        nm, pe := json.parse(string(native_manifest)); if pe != nil do return .Native_Manifest_Parse
-        no, _ := nm.(json.Object)
-        nn, _ := no["name"].(json.String); nversion, _ := no["version"].(json.String)
-        if string(nn) != pin.name do return .Native_Manifest_Identity
-        if string(nversion) != pin.version do return .Native_Manifest_Version
-        native_bins, _ := no["bin"].(json.Object)
-        native_entry, _ := native_bins[strings.trim_prefix(pin.name, "@github/")].(json.String)
-        if string(native_entry) != "copilot" do return .Native_Bin_Entry
-        native_dir := strings.concatenate({root, "/node_modules/", pin.name}, context.temp_allocator)
-        native_binary := strings.concatenate({native_dir, "/copilot"}, context.temp_allocator)
-        if !bridge_provider_path_executable(native_binary) do return .Native_Executable
-        if filepath.dir(bridge_fs_canonicalize_existing(native_binary)) != bridge_fs_canonicalize_existing(native_dir) do return .Native_Target
-    }
     executable := acp_adapter_bin(root, provider)
     expected, _ := filepath.join({root, "node_modules", d.pkg.name, string(bin)}, context.temp_allocator)
     if bridge_fs_canonicalize_existing(executable) != bridge_fs_canonicalize_existing(expected) do return .Bin_Target
@@ -227,9 +176,15 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
         s.state = "error"; s.error = "acp_adapter_unsupported_platform"; return s
     }
     if d.launch == .System do return acp_adapter_system_status(d, profile, s)
-    out, diagnostic, _, ran, _ := acp_adapter_runner({"node", "--version"}, 2*time.Second)
+    // Node.js runs the adapter, so it is always required.
+    out, diagnostic, node_exit, ran, _ := acp_adapter_runner({"node", "--version"}, 2*time.Second)
     defer { delete(out); delete(diagnostic) }
-    if !ran || !acp_adapter_node_compatible(out, d.node_min_major) { s.state = "missing_node"; s.error = "Node 22 or newer is required"; return s }
+    if !ran || node_exit != 0 || !acp_adapter_node_compatible(out, d.node_min_major) {
+        found := acp_adapter_tool_version(out) if ran && node_exit == 0 else ""
+        s.state = "missing_node"; s.node_version = found
+        s.error, s.install_command = acp_host_tool_requirement(.Node, d.display_name, d.node_min_major, found)
+        return s
+    }
     s.node_version = strings.clone(strings.trim_space(out), context.temp_allocator)
     root := acp_adapter_root(provider); defer delete(root)
     s.installed = acp_adapter_files_valid(root, provider)
@@ -240,11 +195,21 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
         if state == .Error { s.state = "error"; s.error = "acp_adapter_lock_failed"; return s }
         acp_adapter_lock_release(lock)
     }
+    // npm is needed only to install the package: a verified tree runs without it.
+    if !s.installed {
+        npm_out, npm_err, npm_exit, npm_ran, _ := acp_adapter_runner({"npm", "--version"}, 5*time.Second)
+        defer { delete(npm_out); delete(npm_err) }
+        if !npm_ran || npm_exit != 0 || acp_adapter_tool_version(npm_out) == "" {
+            s.state = "missing_npm"
+            s.error, s.install_command = acp_host_tool_requirement(.Npm, d.display_name, d.node_min_major)
+            return s
+        }
+    }
     if s.installed do s.version = d.pkg.version
     if !s.installed && os.is_dir(root) { s.state = "outdated"; s.error = "Pinned adapter files failed verification" }
     raw, status_err := os.read_entire_file(strings.concatenate({root, ".status.json"}), context.temp_allocator)
     if status_err == nil {
-        record: struct{state, error, diagnostic: string}
+        record: struct{state, error, diagnostic, install_diagnostic: string}
         if json.unmarshal(raw, &record) == nil && record.state == "error" {
             provider_error := record.error == strings.concatenate({"acp_", d.provider, "_not_found"}, context.temp_allocator) ||
                 record.error == strings.concatenate({"acp_", d.provider, "_not_runnable"}, context.temp_allocator)
@@ -257,6 +222,8 @@ acp_adapter_status :: proc(provider: string, profile: string = "") -> ACP_Adapte
                 switch record.error {
                 case "acp_adapter_directory_failed", "acp_adapter_install_failed", "acp_adapter_integrity_failed", "acp_adapter_probe_failed", "acp_adapter_host_unavailable", "acp_adapter_in_use", "acp_adapter_promote_failed": s.error = record.error
                 }
+                // npm's own words, re-bounded and re-redacted on every read.
+                if record.error == "acp_adapter_install_failed" do s.diagnostic = acp_adapter_npm_diagnostic(record.install_diagnostic)
                 if record.error == "acp_adapter_probe_failed" || provider_error {
                     if message := acp_adapter_probe_message(record.diagnostic, provider); message != "" {
                         s.error = strings.concatenate({record.error, ": ", message}, context.temp_allocator)
@@ -315,10 +282,18 @@ acp_adapter_system_status :: proc(d: contracts.ACP_Provider_Descriptor, profile:
 acp_adapter_runtime_kind :: proc(d: contracts.ACP_Provider_Descriptor) -> string {
     switch d.launch {
     case .Adapter: return "adapter"
-    case .Native: return "native"
     case .System: return "system"
     }
     return ""
+}
+
+// The version a tool printed (`v22.1.0`, `10.8.2`), "" when it is not a short
+// version string: tool output is never echoed beyond that.
+acp_adapter_tool_version :: proc(out: string) -> string {
+    text := strings.trim_space(out)
+    if text == "" || len(text) > 32 do return ""
+    for c in transmute([]u8)text do if !(c >= '0' && c <= '9' || c == '.' || c == 'v') do return ""
+    return strings.clone(text, context.temp_allocator)
 }
 
 acp_adapter_status_json :: proc(provider: string, override: string = "", profile: string = "") -> string {
@@ -333,8 +308,10 @@ acp_adapter_status_json :: proc(provider: string, override: string = "", profile
         state: string,
         error, checked_at: json.Value,
         provider, runtime_kind, profile: string,
+        install_command, diagnostic: json.Value,
     }{s.installed, nullable(s.version), nullable(s.node_version), s.state, nullable(s.error), nullable(s.checked_at),
-        provider, acp_adapter_runtime_kind(d), profile_effective_id(provider, profile)})
+        provider, acp_adapter_runtime_kind(d), profile_effective_id(provider, profile),
+        nullable(s.install_command), nullable(s.diagnostic)})
     return string(raw)
 }
 
@@ -372,8 +349,7 @@ acp_adapter_probe_message :: proc(reason: string, provider: string = "claude") -
     if reason == strings.concatenate({provider, "_version_timeout"}, context.temp_allocator) do return fmt.tprintf("%s --version did not finish before the deadline", d.display_name)
     if reason == strings.concatenate({provider, "_version_spawn_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version could not be executed", d.display_name)
     if reason == strings.concatenate({provider, "_version_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version exited with a non-zero status", d.display_name)
-    if reason == "cli_version_mismatch" && d.launch == .System do return fmt.tprintf("The selected %s executable did not report a %sX.Y.Z version", d.display_name, bridge_provider_traits(provider).version_label)
-    if reason == "cli_version_mismatch" do return fmt.tprintf("The selected %s executable does not report the pinned CLI version %s", d.display_name, d.cli_version)
+    if reason == "cli_version_mismatch" do return fmt.tprintf("The selected %s executable did not report a %sX.Y.Z version", d.display_name, bridge_provider_traits(provider).version_label)
     if reason == "cli_version_outdated" do return fmt.tprintf("The selected %s executable is older than the minimum supported version %s; upgrade it on the bridge host", d.display_name, contracts.provider_min_version(bridge_provider_traits(provider)))
     switch reason {
     case "host_unavailable": return "The pipe daemon is unavailable"
@@ -419,7 +395,7 @@ acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration =
         if pair[0] == d.executable_env do binary = pair[1]
     }
     provider := bridge_provider_descriptor(d.provider)
-    if d.launch == .Native || d.launch == .System do binary, _ = bridge_provider_resolve_binary(provider, pp, env[:])
+    if d.launch == .System do binary, _ = bridge_provider_resolve_binary(provider, pp, env[:])
     if binary == "" && d.launch == .System do return "", strings.concatenate({"acp_", d.provider, "_not_found"}), strings.concatenate({d.provider, "_missing"})
     probe, status := bridge_provider_cli_version_check(provider, binary, env[:], min(timeout, 3*time.Second))
     if !probe.ok {
@@ -432,7 +408,6 @@ acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration =
     if status == .Missing do return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), "cli_version_mismatch"
     // A detected system CLI below the minimum is reported with its version.
     if status == .Outdated do return strings.clone(probe.parsed), strings.concatenate({"acp_", d.provider, "_outdated"}), "cli_version_outdated"
-    // A pinned CLI that reports another version is a mismatch.
     if !contracts.acp_descriptor_cli_version_accepted(d, probe.parsed) do return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), "cli_version_mismatch"
     return strings.clone(probe.parsed), "", ""
 }
@@ -464,7 +439,7 @@ acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) 
     env, env_ok := acp_adapter_probe_env(pp)
     if !env_ok do return false, strings.concatenate({d.provider, "_missing"})
     resolved := ""
-    if d.launch == .Native || d.launch == .System {
+    if d.launch == .System {
         child_env := make([dynamic]string)
         for pair in env do append(&child_env, strings.concatenate({pair[0], "=", pair[1]}, context.temp_allocator))
         resolved, _ = bridge_provider_resolve_binary(bridge_provider_descriptor(d.provider), pp, child_env[:])
@@ -522,16 +497,12 @@ acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) 
     return false, acp_adapter_probe_reason(string(p.diagnostic[:p.diagnostic_len]), fallback)
 }
 
-acp_adapter_prepare_install :: proc(d: contracts.ACP_Provider_Descriptor, stage: string) -> ([]string, bool) {
+// Only the exact published adapter package is installed: no lifecycle
+// scripts, no source builds and no provider CLI.
+acp_adapter_install_argv :: proc(d: contracts.ACP_Provider_Descriptor, stage: string) -> []string {
     argv := make([dynamic]string, allocator = context.temp_allocator)
-    if d.provider == "copilot" {
-        if !bridge_retry_atomic_write(strings.concatenate({stage, "/package.json"}, context.temp_allocator), transmute([]byte)ACP_COPILOT_PACKAGE_JSON) ||
-           !bridge_retry_atomic_write(strings.concatenate({stage, "/package-lock.json"}, context.temp_allocator), transmute([]byte)ACP_COPILOT_LOCK_JSON) { return nil, false }
-        append(&argv, "npm", "ci", "--prefix", stage, "--ignore-scripts", "--no-audit", "--no-fund")
-        return argv[:], true
-    }
     append(&argv, "npm", "install", "--prefix", stage, "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund", strings.concatenate({d.pkg.name, "@", d.pkg.version}, context.temp_allocator))
-    return argv[:], true
+    return argv[:]
 }
 
 acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reason: string) {
@@ -543,6 +514,7 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     root := acp_adapter_root(provider); defer delete(root)
     before := acp_adapter_status(provider)
     if before.state == "missing_node" do return false, "acp_adapter_missing_node"
+    if before.state == "missing_npm" do return false, "acp_adapter_missing_npm"
     parent := filepath.dir(root)
     if bridge_make_directory_all(parent) != nil do return false, "acp_adapter_directory_failed"
     lock_path := strings.concatenate({root, ".lock"}); defer delete(lock_path)
@@ -550,9 +522,9 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     if lock_state == .Busy do return false, "acp_adapter_install_in_progress"
     if lock_state == .Error do return false, "acp_adapter_lock_failed"
     defer acp_adapter_lock_release(lock)
-    diagnostic := ""
+    diagnostic, install_diagnostic := "", ""
     defer {
-        raw, _ := json.marshal(struct{state, error, diagnostic, checked_at: string}{"ready" if ok else "error", reason, diagnostic, bridge_provider_probe_time()}, allocator = context.temp_allocator)
+        raw, _ := json.marshal(struct{state, error, diagnostic, install_diagnostic, checked_at: string}{"ready" if ok else "error", reason, diagnostic, install_diagnostic, bridge_provider_probe_time()}, allocator = context.temp_allocator)
         bridge_retry_atomic_write(strings.concatenate({root, ".status.json"}, context.temp_allocator), raw)
     }
     if !acp_adapter_cleanup_stages(root) do return false, "acp_adapter_directory_failed"
@@ -584,11 +556,15 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     // "node_modules/<pkg>" entry is absent. Hand npm the resolved stage.
     stage := bridge_fs_canonicalize_existing(requested_stage); defer delete(stage)
     defer os.remove_all(stage)
-    install_argv, prepared := acp_adapter_prepare_install(d, stage)
-    if !prepared do return false, "acp_adapter_directory_failed"
-    out, npm_diagnostic, npm_exit, installed, npm_timeout := acp_adapter_runner(install_argv, 100*time.Second)
-    delete(out); delete(npm_diagnostic) // Never expose npm diagnostics/environment.
-    if !installed || npm_exit != 0 || npm_timeout do return false, "acp_adapter_install_failed"
+    out, npm_diagnostic, npm_exit, installed, npm_timeout := acp_adapter_runner(acp_adapter_install_argv(d, stage), 100*time.Second)
+    defer { delete(out); delete(npm_diagnostic) }
+    if !installed || npm_exit != 0 || npm_timeout {
+        // Surface npm's real diagnostics, bounded and redacted, as a separate
+        // field; the error code stays fixed.
+        install_diagnostic = acp_adapter_npm_diagnostic(npm_diagnostic, out)
+        if npm_timeout do install_diagnostic = strings.concatenate({install_diagnostic, "\n" if install_diagnostic != "" else "", "npm install did not finish within 100 seconds"}, context.temp_allocator)
+        return false, "acp_adapter_install_failed"
+    }
     // REQ-ACP-L1: name the failed predicate while the stage still exists (its
     // removal is deferred). Only the fixed identifier is printed and persisted.
     if check := acp_adapter_files_check(stage, provider); check != .None {
@@ -643,12 +619,20 @@ acp_adapter_handle_install :: proc(conn: ^ws.Connection, text: string) {
     ok, reason := acp_adapter_install(provider, etag, version)
     report := bridge_provider_discovery_report_json(command, results[:]); defer delete(report)
     bridge_hub_send(conn, report)
-    frame := acp_adapter_install_result_json(command, ok, reason)
+    message := ""
+    if !ok {
+        // The command result repeats what the status row reports: the
+        // prerequisite and its install command, or npm's redacted diagnostic.
+        status := acp_adapter_status(provider)
+        if reason == "acp_adapter_missing_node" || reason == "acp_adapter_missing_npm" do message = status.error
+        if reason == "acp_adapter_install_failed" && status.diagnostic != "" do message = strings.concatenate({"npm install failed:\n", status.diagnostic}, context.temp_allocator)
+    }
+    frame := acp_adapter_install_result_json(command, ok, reason, message)
     defer delete(frame)
     bridge_hub_send(conn, frame)
 }
 
-acp_adapter_install_result_json :: proc(command: string, ok: bool, reason: string) -> string {
+acp_adapter_install_result_json :: proc(command: string, ok: bool, reason: string, message: string = "") -> string {
     if ok do return bridge_command_result_json(command, "succeeded", "")
-    return bridge_command_failed_json(command, bridge_cause_wire_error(reason, "ACP adapter installation failed"))
+    return bridge_command_failed_json(command, bridge_cause_wire_error(reason, message if message != "" else "ACP adapter installation failed"))
 }

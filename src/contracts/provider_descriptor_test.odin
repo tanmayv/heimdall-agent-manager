@@ -229,7 +229,7 @@ provider_min_version_and_status :: proc(t: ^testing.T) {
 	testing.expect_value(t, provider_min_version(kiro), "3.5.0")
 	testing.expect_value(t, provider_min_version(opencode), "1.19.6")
 	testing.expect_value(t, provider_min_version(codex), "0.162.0")
-	testing.expect_value(t, provider_min_version(copilot), "") // pinned Native runtime
+	testing.expect_value(t, provider_min_version(copilot), "1.0.114") // user-installed minimum
 	testing.expect_value(t, provider_min_version(pi), "")      // no ACP runtime
 	testing.expect_value(t, provider_version_status(kiro, "3.5.0"), Provider_Version_Status.Ok)
 	testing.expect_value(t, provider_version_status(kiro, "3.10.0"), Provider_Version_Status.Ok)

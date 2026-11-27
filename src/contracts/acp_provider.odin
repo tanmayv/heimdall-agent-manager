@@ -4,25 +4,24 @@ import "core:strings"
 
 // This is executable policy compiled into Heimdall, not a catalog-supplied
 // shell recipe. Adding a provider requires an explicit reviewed registry entry.
+// Heimdall never installs a provider CLI (claude, codex, copilot, kiro, ...):
 // System runtimes are user-installed CLIs detected on the bridge host (PATH or
-// the profile binary_path); Heimdall never installs or pins them.
+// the profile binary_path) and checked against a minimum version. Only Adapter
+// runtimes are installed, and only as a pinned, published npm package.
 ACP_Protocol :: enum { ACP, Codex_App_Server }
-ACP_Launch_Kind :: enum { Adapter, Native, System }
+ACP_Launch_Kind :: enum { Adapter, System }
 ACP_Permission_Policy :: enum { Session_Mode, Once_Only }
 ACP_Package_Pin :: struct {
     name, version, integrity: string,
-}
-ACP_Platform_Pin :: struct {
-    os, arch: string,
-    pkg: ACP_Package_Pin,
 }
 ACP_Provider_Descriptor :: struct {
     provider, id, display_name: string,
     revision: int,
     launch: ACP_Launch_Kind,
     protocol: ACP_Protocol,
+    // Adapter: the exact published npm package to install. System: the
+    // package/product the user installs and its minimum accepted version.
     pkg: ACP_Package_Pin,
-    platforms: []ACP_Platform_Pin,
     // System only: the operating systems the CLI ships for. The CLI binary,
     // its `--version` format and auth guidance live in the provider registry
     // (provider_descriptor(provider)).
@@ -38,7 +37,7 @@ ACP_Provider_Descriptor :: struct {
     args: []string,
     env: [][2]string,
     protocol_version, node_min_major: int,
-    cli_package, cli_version, executable_env: string,
+    executable_env: string,
     bootstrap_filename: string,
     permission_policy: ACP_Permission_Policy,
     model_category, permission_category, ask_mode, yolo_mode: string,
@@ -55,16 +54,15 @@ ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
     ask_mode = "default", yolo_mode = "bypassPermissions",
 }
 
+// Copilot is detect-only: the user installs the GitHub Copilot CLI (npm
+// package @github/copilot, Homebrew or WinGet) and pkg.version is the minimum
+// accepted version. The catalog recipe names the npm package, so pkg.name is
+// that package rather than the `copilot` binary.
 ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
-    protocol = .ACP, provider = "copilot", id = "copilot-acp", display_name = "Copilot", revision = 1, launch = .Native,
-    pkg = {"@github/copilot", "1.0.114", "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="},
-    platforms = {
-        {"linux", "amd64", {"@github/copilot-linux-x64", "1.0.114", "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="}},
-        {"darwin", "arm64", {"@github/copilot-darwin-arm64", "1.0.114", "sha512-Mw47DTwMNDG0bb4t1rVu7S+ekdThIGGitpG28/wGpACZ0lFhYnpNEoSJ7hHBM3oix4b/w6+ZcmxE9J9MngsR9Q=="}},
-    },
+    protocol = .ACP, provider = "copilot", id = "copilot-acp", display_name = "Copilot", revision = 1, launch = .System,
+    pkg = {"@github/copilot", "1.0.114", ""}, system_os = {"linux", "darwin", "windows"},
     command = "copilot", args = {"--acp", "--stdio"}, env = {{"COPILOT_AUTO_UPDATE", "false"}},
-    protocol_version = 1, node_min_major = 22,
-    cli_package = "@github/copilot", cli_version = "1.0.114",
+    protocol_version = 1,
     bootstrap_filename = "AGENTS.md",
     permission_policy = .Once_Only, model_category = "model",
 }
@@ -117,10 +115,10 @@ acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, b
     return {}, false
 }
 
-// Shape validation is separate from registry membership. Native providers must
-// bind their CLI pin and every supported native platform package; adapters bind
-// the resolved underlying executable; system CLIs bind a minimum version and the
-// operating systems they ship for. No shape enables a provider.
+// Shape validation is separate from registry membership. Adapters bind an exact
+// published package and the resolved underlying executable; system CLIs launch
+// the registered provider binary and bind a minimum version and the operating
+// systems they ship for. No shape enables a provider.
 acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     // Every ACP runtime belongs to a registered provider, which supplies its CLI
     // binary, version format and auth guidance.
@@ -134,16 +132,14 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     if d.protocol != .ACP && d.protocol != .Codex_App_Server do return false
     if d.discover_models_via_acp && (d.protocol != .ACP || d.launch != .System) do return false
     switch d.launch {
-    case .Adapter, .Native:
+    case .Adapter:
         if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||
-           len(d.system_os) != 0 || d.agent_default_model != "" || d.bootstrap_resource_link { return false }
-        if d.launch == .Adapter && d.executable_env == "" do return false
-        if d.launch == .Native && (d.executable_env != "" || d.cli_package != d.pkg.name || d.cli_version != d.pkg.version || len(d.platforms) == 0) do return false
+           len(d.system_os) != 0 || d.agent_default_model != "" || d.bootstrap_resource_link || d.executable_env == "" { return false }
     case .System:
-        // Nothing is downloaded, so there is no integrity, Node or platform pin.
-        if d.pkg.integrity != "" || d.node_min_major != 0 || d.executable_env != "" || d.cli_package != "" ||
-           d.cli_version != "" || len(d.platforms) != 0 || d.pkg.name != provider.binary ||
-           len(d.system_os) == 0 { return false }
+        // Nothing is downloaded, so there is no integrity or Node pin. The
+        // launched command is the registered provider binary.
+        if d.pkg.integrity != "" || d.node_min_major != 0 || d.executable_env != "" ||
+           d.command != provider.binary || len(d.system_os) == 0 { return false }
         // The minimum version is checked, so the CLI's version must be parseable.
         if provider.version_format == .Raw do return false
         for name, i in d.system_os {
@@ -152,11 +148,6 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
         }
     case: return false
     }
-    for pin, i in d.platforms {
-        if pin.os == "" || pin.arch == "" || pin.pkg.name == "" || pin.pkg.version != d.pkg.version ||
-           !strings.has_prefix(pin.pkg.integrity, "sha512-") || len(pin.pkg.integrity) != 95 { return false }
-        for previous in d.platforms[:i] do if previous.os == pin.os && previous.arch == pin.arch do return false
-    }
     switch d.permission_policy {
     case .Session_Mode: return d.permission_category != "" && d.ask_mode != "" && d.yolo_mode != ""
     case .Once_Only: return d.permission_category == "" && d.ask_mode == "" && d.yolo_mode == ""
@@ -164,15 +155,16 @@ acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
     return false
 }
 
-// A detected CLI version is acceptable when it is an exact numeric version and
-// matches the pin, or, for system CLIs, is at least the minimum.
+// A detected CLI version is acceptable when it is an exact numeric version and,
+// for system CLIs, at least the minimum. An adapter's underlying CLI (e.g.
+// Claude Code beneath claude-agent-acp) sets no minimum here.
 acp_descriptor_cli_version_accepted :: proc(d: ACP_Provider_Descriptor, version: string) -> bool {
     if !exact_adapter_version(version) do return false
     if d.launch == .System {
         provider, registered := provider_descriptor(d.provider)
         return registered && provider_version_status(provider, version) == .Ok
     }
-    return d.cli_version == "" || d.cli_version == version
+    return true
 }
 
 // Both inputs must already be exact numeric versions.
@@ -225,7 +217,3 @@ acp_descriptor_system_os_supported :: proc(d: ACP_Provider_Descriptor, os: strin
     return false
 }
 
-acp_descriptor_platform_package :: proc(d: ACP_Provider_Descriptor, os, arch: string) -> (ACP_Package_Pin, bool) {
-    for pin in d.platforms do if pin.os == os && pin.arch == arch do return pin.pkg, true
-    return {}, false
-}

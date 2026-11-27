@@ -50,7 +50,8 @@ test_setup_harnesses_from_provider_registry :: proc(t: ^testing.T) {
 			testing.expect_value(t, h.config_file, "")
 		case "copilot":
 			testing.expect_value(t, h.config_dir, "/home/u/.copilot")
-			testing.expect(t, !strings.contains(h.install_hint, "or newer"), h.install_hint) // pinned runtime: no minimum
+			// User-installed with a minimum version (G2), not a pinned runtime.
+			testing.expect_value(t, h.install_hint, "install GitHub Copilot CLI (npm package @github/copilot) 1.0.114 or newer")
 		case "opencode":
 			testing.expect_value(t, h.config_dir, "/home/u/.config/opencode")
 			testing.expect_value(t, h.install_hint, "install OpenCode (opencode) 1.19.6 or newer")

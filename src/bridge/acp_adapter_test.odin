@@ -13,75 +13,16 @@ import "core:sync"
 import "core:testing"
 import "core:time"
 
+// Copilot is a user-installed system CLI: supported wherever it ships, with
+// no platform package pins (G2).
 @(test)
-c2_acp_native_platform_allowlist_rejects_unpinned_targets :: proc(t: ^testing.T) {
+c2_acp_copilot_platforms_follow_system_os :: proc(t: ^testing.T) {
     d, known := contracts.acp_provider_descriptor("copilot")
-    testing.expect(t,known)
-    when ODIN_OS == .Linux && ODIN_ARCH == .amd64 || ODIN_OS == .Darwin && ODIN_ARCH == .arm64 { testing.expect(t,acp_adapter_platform_supported(d)) }
-    else { testing.expect(t,!acp_adapter_platform_supported(d)) }
-    d.platforms=nil
-    testing.expect(t,!acp_adapter_platform_supported(d))
-    testing.expect(t,acp_adapter_platform_supported(contracts.ACP_CLAUDE_DESCRIPTOR))
-}
-
-@(test)
-c2_acp_copilot_frozen_install_and_native_files :: proc(t: ^testing.T) {
-    st := p1c_test_setup(t); defer p1c_test_teardown(st)
-    context.allocator = context.temp_allocator
-    d, enabled := contracts.acp_provider_descriptor("copilot")
-    testing.expect(t, enabled)
-    root := profile_join(st.dir, "copilot-stage")
-    bridge_make_directory_all(root)
-    argv, prepared := acp_adapter_prepare_install(d, root)
-    testing.expect(t, prepared && len(argv) == 7 && argv[0] == "npm" && argv[1] == "ci" && argv[3] == root && argv[4] == "--ignore-scripts")
-    lock_path := profile_join(root, "package-lock.json")
-    lock, err := os.read_entire_file(lock_path, context.temp_allocator)
-    testing.expect(t, err == nil && string(lock) == ACP_COPILOT_LOCK_JSON)
-    package_path := profile_join(root, "node_modules/@github/copilot")
-    bridge_make_directory_all(package_path)
-    bridge_make_directory_all(profile_join(root, "node_modules/.bin"))
-    p1c_put(t, profile_join(package_path, "package.json"), `{"name":"@github/copilot","version":"1.0.114","bin":{"copilot":"npm-loader.js"}}`, false)
-    p1c_put(t, profile_join(package_path, "npm-loader.js"), "#!/bin/sh\nexit 0\n", true)
-    os.symlink("../@github/copilot/npm-loader.js", acp_adapter_bin(root, "copilot"))
-    for pin in d.platforms {
-        native_path := profile_join(root, strings.concatenate({"node_modules/", pin.pkg.name}))
-        bridge_make_directory_all(native_path)
-        bins := make(map[string]string)
-        bins[strings.trim_prefix(pin.pkg.name, "@github/")] = "copilot"
-        manifest, _ := json.marshal(struct {name, version: string, bin: map[string]string}{pin.pkg.name, pin.pkg.version, bins})
-        p1c_put(t, profile_join(native_path, "package.json"), string(manifest), false)
-        binary := profile_join(native_path, "copilot")
-        p1c_put(t, binary, "#!/bin/sh\nexit 0\n", true)
-        testing.expect(t, acp_adapter_files_valid_for_platform(root, "copilot", pin.os, pin.arch))
-        os.remove(binary)
-        testing.expect_value(t, acp_adapter_files_check_for_platform(root, "copilot", pin.os, pin.arch), ACP_Adapter_Files_Check.Native_Executable)
-        testing.expect(t, !acp_adapter_files_valid_for_platform(root, "copilot", pin.os, pin.arch), "the selected native executable must exist")
-        p1c_put(t, binary, "#!/bin/sh\nexit 0\n", true)
-        changed, _ := strings.replace_all(ACP_COPILOT_LOCK_JSON, pin.pkg.integrity, "sha512-wrong")
-        p1c_put(t, lock_path, changed, false)
-        testing.expect_value(t, acp_adapter_files_check_for_platform(root, "copilot", pin.os, pin.arch), ACP_Adapter_Files_Check.Lockfile_Pin)
-        testing.expect(t, !acp_adapter_files_valid_for_platform(root, "copilot", pin.os, pin.arch), "native integrity mismatches must fail")
-        p1c_put(t, lock_path, ACP_COPILOT_LOCK_JSON, false)
-        p1c_put(t, profile_join(native_path, "package.json"), `{"name":"wrong-native-package","version":"1.0.114"}`, false)
-        testing.expect_value(t, acp_adapter_files_check_for_platform(root, "copilot", pin.os, pin.arch), ACP_Adapter_Files_Check.Native_Manifest_Identity)
-        testing.expect(t, !acp_adapter_files_valid_for_platform(root, "copilot", pin.os, pin.arch), "launcher integrity does not certify another native package")
-        p1c_put(t, profile_join(native_path, "package.json"), string(manifest), false)
-        changed, _ = strings.replace_all(string(manifest), "1.0.114", "1.0.91")
-        p1c_put(t, profile_join(native_path, "package.json"), changed, false)
-        testing.expect_value(t, acp_adapter_files_check_for_platform(root, "copilot", pin.os, pin.arch), ACP_Adapter_Files_Check.Native_Manifest_Version)
-        testing.expect(t, !acp_adapter_files_valid_for_platform(root, "copilot", pin.os, pin.arch), "launcher integrity does not certify another native version")
-        p1c_put(t, profile_join(native_path, "package.json"), string(manifest), false)
-    }
-    testing.expect(t, acp_adapter_files_valid(root, "copilot") == acp_adapter_platform_supported(d))
-    changed, _ := strings.replace_all(ACP_COPILOT_LOCK_JSON, `"2.1.2"`, `"2.1.3"`)
-    p1c_put(t, lock_path, changed, false)
-    testing.expect_value(t, acp_adapter_files_check(root, "copilot"), ACP_Adapter_Files_Check.Lockfile_Pin)
-    testing.expect(t, !acp_adapter_files_valid(root, "copilot"), "transitive dependency changes must invalidate the install")
-    p1c_put(t, lock_path, ACP_COPILOT_LOCK_JSON, false)
-    for target in ([][2]string{{"linux", "arm64"}, {"darwin", "amd64"}, {"windows", "arm64"}, {"freebsd", "amd64"}}) {
-        testing.expect(t, !acp_adapter_files_valid_for_platform(root, "copilot", target[0], target[1]))
-        testing.expect_value(t, acp_adapter_files_check_for_platform(root, "copilot", target[0], target[1]), ACP_Adapter_Files_Check.Native_Platform)
-    }
+    testing.expect(t, known && d.launch == .System)
+    when ODIN_OS == .Linux || ODIN_OS == .Darwin || ODIN_OS == .Windows { testing.expect(t, acp_adapter_platform_supported(d)) }
+    d.system_os = {"plan9"}
+    testing.expect(t, !acp_adapter_platform_supported(d))
+    testing.expect(t, acp_adapter_platform_supported(contracts.ACP_CLAUDE_DESCRIPTOR))
 }
 
 // REQ-ACP-L1: each staged-layout predicate reports its own fixed identifier.
@@ -145,7 +86,7 @@ l1_acp_claude_files_check_names_failed_predicate :: proc(t: ^testing.T) {
 }
 
 @(test)
-c2_acp_copilot_profile_env_pin_and_native_argv :: proc(t: ^testing.T) {
+c2_acp_copilot_profile_env_and_system_argv :: proc(t: ^testing.T) {
     st := p1c_test_setup(t); defer p1c_test_teardown(st)
     context.allocator = context.temp_allocator
     binary := profile_join(st.dir, "profile-copilot")
@@ -176,6 +117,7 @@ c2_acp_copilot_profile_env_pin_and_native_argv :: proc(t: ^testing.T) {
 
 t4_adapter_fake_runner :: proc(argv: []string, timeout: time.Duration) -> (string, string, int, bool, bool) {
     if len(argv) == 2 && argv[0] == "node" && argv[1] == "--version" do return strings.clone("v22.0.0"), "", 0, true, false
+    if len(argv) == 2 && argv[0] == "npm" && argv[1] == "--version" do return strings.clone("10.8.2"), "", 0, true, false
     t4_adapter_install_argv_ok = len(argv) == 9 && argv[0] == "npm" && argv[1] == "install" && argv[2] == "--prefix" &&
         argv[4] == "--save-exact" && argv[5] == "--ignore-scripts" && argv[6] == "--no-audit" && argv[7] == "--no-fund" && argv[8] == ACP_CLAUDE_PACKAGE+"@"+ACP_CLAUDE_VERSION && timeout <= 120*time.Second
     if !t4_adapter_install_argv_ok do return "", "", 1, false, false
@@ -578,7 +520,7 @@ t11_acp_install_claude_prerequisite_and_status :: proc(t: ^testing.T) {
 }
 
 @(test)
-c3_acp_copilot_darwin_layout_resolves_versions_and_launches_without_patching :: proc(t: ^testing.T) {
+c3_acp_copilot_npm_layout_resolves_versions_and_launches_without_patching :: proc(t: ^testing.T) {
     st := p1c_test_setup(t); defer p1c_test_teardown(st)
     context.allocator = context.temp_allocator
     bin_dir := profile_join(st.dir, "mac-prefix/node_modules/.bin")
@@ -606,9 +548,14 @@ c3_acp_copilot_darwin_layout_resolves_versions_and_launches_without_patching :: 
     testing.expect(t, version == "1.0.114" && reason == "" && diagnostic == "")
     spawn, built = acp_runtime_build_spawn(r, "endpoint", "synthetic-agent-token", &pp)
     testing.expect(t, built && len(spawn.argv) == 3 && spawn.argv[0] == binary && spawn.argv[1] == "--acp" && spawn.argv[2] == "--stdio")
+    // Below the minimum is outdated (reported with its version), not a pin mismatch.
     p1c_put(t, binary, "#!/bin/sh\nprintf 'GitHub Copilot CLI 1.0.91.\\n'\n", true)
-    _, reason, diagnostic = acp_provider_cli_version(&pp)
-    testing.expect(t, reason == "acp_copilot_not_runnable" && diagnostic == "cli_version_mismatch")
+    version, reason, diagnostic = acp_provider_cli_version(&pp)
+    testing.expect(t, version == "1.0.91" && reason == "acp_copilot_outdated" && diagnostic == "cli_version_outdated")
+    // A newer user-installed CLI is accepted.
+    p1c_put(t, binary, "#!/bin/sh\nprintf 'GitHub Copilot CLI 1.0.130.\\n'\n", true)
+    version, reason, diagnostic = acp_provider_cli_version(&pp)
+    testing.expect(t, version == "1.0.130" && reason == "" && diagnostic == "")
 }
 
 @(private = "file") kiro_npm_called: bool

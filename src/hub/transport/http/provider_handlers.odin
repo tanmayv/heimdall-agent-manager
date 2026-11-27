@@ -449,7 +449,11 @@ bridge_provider_enable_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if err:=provider_service.update_bridge_provider_settings(h.providers,bridge,provider,platform.clock_now(h.clock),input);err.code!=.None {
 		if err.code == .ACP_Unavailable && input.has_transport && input.transport == "acp" && bridge.status == .Online {
 			state := json_string(err.details_json, "state", context.temp_allocator)
-			if state == "missing" || state == "outdated" || state == "not_checked" {
+			// Selecting ACP re-detects every not-ready state on the bridge (an
+			// install, or a Re-check for user-installed CLIs), so a stale report
+			// (e.g. Node.js or the CLI installed since) never needs a restart.
+			switch state {
+			case "missing", "outdated", "not_checked", "missing_node", "missing_npm", "error":
 				id, install_err := provider_acp_install_start(h, bridge.bridge_id, provider)
 				if install_err.code != .None do return respond_error(install_err, req.request_id)
 				defer delete(id)

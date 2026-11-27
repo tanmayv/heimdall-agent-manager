@@ -13,7 +13,7 @@ ACP_CLAUDE_PACKAGE :: contracts.ACP_CLAUDE_DESCRIPTOR.pkg.name
 ACP_CLAUDE_INTEGRITY :: contracts.ACP_CLAUDE_DESCRIPTOR.pkg.integrity
 
 @(test)
-c2_acp_copilot_restore_binds_policy_profile_and_pinned_version :: proc(t: ^testing.T) {
+c2_acp_copilot_restore_binds_policy_profile_and_minimum_version :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
     instance := "inst_c2_restore"
     state := ACP_State{schema_version = 3, runtime_binding_version = 1, provider = "copilot", profile = "work", bridge = bridge_config.daemon_id,
@@ -38,30 +38,32 @@ c2_acp_copilot_restore_binds_policy_profile_and_pinned_version :: proc(t: ^testi
 }
 
 @(test)
-c2_acp_cli_version_pin_rejects_old_host_and_untrusted_output :: proc(t: ^testing.T) {
-    // The registry parses the output; the ACP pin then decides acceptance.
-    native := contracts.ACP_Provider_Descriptor{provider = "copilot", launch = .Native, cli_version = "1.0.114"}
+c2_acp_copilot_cli_minimum_rejects_old_host_and_untrusted_output :: proc(t: ^testing.T) {
+    // The registry parses the output; the ACP minimum then decides acceptance.
+    d := contracts.ACP_COPILOT_DESCRIPTOR
     copilot := bridge_provider_traits("copilot")
     version, valid := contracts.provider_parse_cli_version(copilot, "GitHub Copilot CLI 1.0.114.\nRun 'copilot version' to check for updates.\n")
-    testing.expect(t, valid && version == "1.0.114" && contracts.acp_descriptor_cli_version_accepted(native, version))
+    testing.expect(t, valid && version == "1.0.114" && contracts.acp_descriptor_cli_version_accepted(d, version))
+    version, valid = contracts.provider_parse_cli_version(copilot, "GitHub Copilot CLI 1.2.0.\n")
+    testing.expect(t, valid && contracts.acp_descriptor_cli_version_accepted(d, version), "newer CLIs meet the minimum")
     for output in ([]string{"GitHub Copilot CLI 1.0.91.", "1.0.114", "diagnostic GitHub Copilot CLI 1.0.114.", "GitHub Copilot CLI 1.0.114.secret", "GitHub Copilot CLI 1.0.114.5"}) {
         version, valid := contracts.provider_parse_cli_version(copilot, output)
-        testing.expectf(t, !valid || !contracts.acp_descriptor_cli_version_accepted(native, version), "%q rejected", output)
+        testing.expectf(t, !valid || !contracts.acp_descriptor_cli_version_accepted(d, version), "%q rejected", output)
     }
     version, valid = contracts.provider_parse_cli_version(bridge_provider_traits("claude"), "2.1.70 (Claude Code)\n")
     testing.expect(t, valid && version == "2.1.70")
 }
 
 @(test)
-acp_provider_launch_argv_native_and_adapter_share_probe_semantics :: proc(t: ^testing.T) {
+acp_provider_launch_argv_system_and_adapter_share_probe_semantics :: proc(t: ^testing.T) {
     d, _ := contracts.acp_provider_descriptor("claude")
     adapter, valid := acp_provider_launch_argv(d, "/managed/claude", "/profile/claude")
     testing.expect(t, valid && len(adapter) == 1 && adapter[0] == "/managed/claude/node_modules/.bin/claude-agent-acp")
-    native := contracts.ACP_Provider_Descriptor{launch = .Native, args = {"--acp", "--stdio"}}
-    argv, built := acp_provider_launch_argv(native, "/managed/copilot", "/profile/copilot")
+    system := contracts.ACP_COPILOT_DESCRIPTOR
+    argv, built := acp_provider_launch_argv(system, "/managed/copilot", "/profile/copilot")
     testing.expect(t, built && len(argv) == 3 && argv[0] == "/profile/copilot" && argv[1] == "--acp" && argv[2] == "--stdio")
-    _, built = acp_provider_launch_argv(native, "/managed/copilot", "")
-    testing.expect(t, !built, "missing resolved native CLI cannot fall back to another executable")
+    _, built = acp_provider_launch_argv(system, "/managed/copilot", "")
+    testing.expect(t, !built, "missing resolved system CLI cannot fall back to another executable")
 }
 
 @(test)

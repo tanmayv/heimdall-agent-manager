@@ -118,6 +118,7 @@ ACP_Availability_Reason :: enum u8 {
 	Adapter_Missing,
 	Adapter_Outdated,
 	Adapter_Missing_Node,
+	Adapter_Missing_Npm,
 	Adapter_Error,
 	Installing,
 	Not_Checked,
@@ -137,6 +138,7 @@ ACP_AVAILABILITY_REASON_WIRE := [ACP_Availability_Reason]string {
 	.Adapter_Missing      = "adapter_missing",
 	.Adapter_Outdated     = "adapter_outdated",
 	.Adapter_Missing_Node = "adapter_missing_node",
+	.Adapter_Missing_Npm  = "adapter_missing_npm",
 	.Adapter_Error        = "adapter_error",
 	.Installing           = "installing",
 	.Not_Checked          = "not_checked",
@@ -164,7 +166,7 @@ acp_availability_for :: proc(reason: ACP_Availability_Reason) -> ACP_Availabilit
 		return {reason = reason, fix = .None}
 	case .Unsupported_Bridge:
 		return {reason = reason, fix = .Update_Bridge}
-	case .Adapter_Missing, .Adapter_Outdated, .Adapter_Missing_Node, .Adapter_Error:
+	case .Adapter_Missing, .Adapter_Outdated, .Adapter_Missing_Node, .Adapter_Missing_Npm, .Adapter_Error:
 		return {reason = reason, fix = .Install_Adapter}
 	case .Not_Checked:
 		return {reason = reason, fix = .Check_Now}
