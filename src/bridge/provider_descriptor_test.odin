@@ -126,3 +126,20 @@ test_provider_cli_version_check_status :: proc(t: ^testing.T) {
 		testing.expectf(t, v.parsed == c.parsed && status == c.status, "%q: got (%q, %v)", c.body, v.parsed, status)
 	}
 }
+
+// parsed comes from the same text reported as raw: the first line of stdout,
+// else of stderr.
+@(test)
+test_provider_cli_version_parses_raw_text :: proc(t: ^testing.T) {
+	cases := []struct{ provider, body, raw, parsed: string }{
+		{"kiro", "echo 'kiro-cli 3.5.0' >&2", "kiro-cli 3.5.0", "3.5.0"},          // stderr only
+		{"opencode", "printf '1.19.6\\nnotice: update available\\n'", "1.19.6", "1.19.6"}, // first line only
+		{"claude", "echo '2.1.3 (Claude Code)'; echo 'warn' >&2", "2.1.3 (Claude Code)", "2.1.3"},
+	}
+	for c in cases {
+		path := provider_version_fixture(t, c.provider, c.body)
+		defer os.remove(path)
+		v := bridge_provider_cli_version(bridge_provider_traits(c.provider), path, nil, 2*time.Second, context.temp_allocator)
+		testing.expectf(t, v.ok && v.raw == c.raw && v.parsed == c.parsed, "%s: got raw %q parsed %q", c.provider, v.raw, v.parsed)
+	}
+}

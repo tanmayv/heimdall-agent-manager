@@ -83,7 +83,8 @@ bridge_provider_cli_version :: proc(d: contracts.Provider_Descriptor, path: stri
 	if newline := strings.index_byte(text, '\n'); newline >= 0 do text = strings.trim_space(text[:newline])
 	if len(text) > 256 do text = text[:256]
 	v.raw = strings.clone(text, allocator)
-	if parsed, valid := contracts.provider_parse_cli_version(d, stdout); valid do v.parsed = strings.clone(parsed, allocator)
+	// Parse exactly the text reported as raw, so the two never disagree.
+	if parsed, valid := contracts.provider_parse_cli_version(d, text); valid do v.parsed = strings.clone(parsed, allocator)
 	return
 }
 
