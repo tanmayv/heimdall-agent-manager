@@ -940,6 +940,36 @@ test_extension_auto_install_excludes_disabled_absent_error_and_unmeasured :: pro
 }
 
 
+// G6: the extension auto-install skips a profile whose own transport is ACP
+// (the extension drives the PTY CLI), so a PTY profile of a provider whose
+// default profile uses ACP still gets it, and the reverse.
+@(test)
+test_extension_auto_install_skips_acp_profiles_only :: proc(t: ^testing.T) {
+	for acp_profile in ([2]string{"codex", "work"}) {
+		f := extension_test_setup(t, "per-profile-acp")
+		extension_test_status(t, f, "codex", "present", "outdated")
+		perr := provider_service.apply_profiles_report(&f.pr_svc, f.bridge_id, []domain.Bridge_Provider_Profile{{profile_id = "work", provider = "codex", enabled = true, state = "ok"}})
+		testing.expect_value(t, perr.code, domain.Error_Code.None)
+		_, serr := iface.bridge_provider_status_upsert(&f.pr_repo, {bridge_id = f.bridge_id, provider = "codex", profile_id = "work", binary_path = "/bin/provider", state = "present",
+			extension_state = "outdated", extension_version = "0.1.0", checked_at = "2026-01-01", extension_checked_at = "2026-01-01"})
+		testing.expect_value(t, serr.code, domain.Error_Code.None)
+		testing.expect_value(t, iface.set_provider_transport(&f.pr_repo, f.bridge_id, "codex", "acp", "now", acp_profile).code, domain.Error_Code.None)
+		id := extension_test_update(t, f, "{\"update_extensions\":true}")
+		extension_test_restart(t, f, id)
+		discovery := strings.clone(f.sink_rec.last_cmd.command_id)
+		report := "[{\"provider\":\"codex\",\"profile_id\":\"codex\",\"state\":\"present\",\"extension_state\":\"outdated\",\"extension_version\":\"0.1.0\"},{\"provider\":\"codex\",\"profile_id\":\"work\",\"state\":\"present\",\"extension_state\":\"outdated\",\"extension_version\":\"0.1.0\"}]"
+		extension_test_report(t, f, discovery, report)
+		commands := extension_test_commands(t, f)
+		installs := make([dynamic]string, context.temp_allocator)
+		for command in commands do if command.kind == "install" do append(&installs, domain.profile_effective_id(command.provider, command.profile_id))
+		pty_profile := "work" if acp_profile == "codex" else "codex"
+		testing.expectf(t, len(installs) == 1 && installs[0] == pty_profile, "ACP on %s: installs %v", acp_profile, installs)
+		domain.provider_extension_commands_destroy(commands)
+		delete(id); delete(discovery)
+		extension_test_teardown(f)
+	}
+}
+
 @(test)
 test_extension_update_reconnect_recovers_lost_restart_progress :: proc(t: ^testing.T) {
 	f := extension_test_setup(t, "lost-progress")
