@@ -403,7 +403,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Agent:
 		// Agent API v2: a single allowlist driven by the unified route table
 		// (see agent_api.odin). No more 400-char `||` chain.
-		return secure_form_local_method(method) || bridge_agent_method_allowed(method)
+		return stream_local_method(method) || secure_form_local_method(method) || bridge_agent_method_allowed(method)
 	}
 	return false
 }
@@ -495,6 +495,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 }
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+	if stream_local_method(method) do return stream_local_call(request_id, method, params, rec)
 	if secure_form_local_method(method) do return secure_form_local_call(request_id, method, params, rec)
 	bridge_runtime_touch_liveness(rec.agent_instance_id)
 	if method == "agent.activity.report" {

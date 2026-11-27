@@ -40,6 +40,7 @@ Bridge_Config :: struct {
 	// or [bridge] local_proxy_enabled=false turns it off. This is an off switch, not an
 	// opt-in: a deployment that sets nothing gets the proxy.
 	local_proxy_enabled: bool,
+	browser_cdp_port: u16,
 	fs_root: string,
 	fs_read_page_bytes: i64,
 	// BR-2: when true the bridge drives agents through ham-pty-host instead of
@@ -600,6 +601,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 			cfg.fs_read_page_bytes = i64(loaded.config.bridge.fs_read_page_bytes)
 		}
 		cfg.pty_host_runtime = loaded.config.bridge.pty_host_runtime
+		cfg.browser_cdp_port = loaded.config.bridge.browser_cdp_port
 		// REQ-XM-4: only an explicitly present [bridge].local_proxy_enabled key
 		// overrides the enabled-by-default. --no-local-proxy is applied after the
 		// config load below, so the CLI flag still wins over the file.

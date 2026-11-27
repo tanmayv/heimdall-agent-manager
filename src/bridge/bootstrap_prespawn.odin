@@ -21,6 +21,7 @@ package main
 // There is no wrapper and no wrapper.bootstrap.* RPC in this path.
 
 import "core:os"
+import "core:fmt"
 import "core:strings"
 import agent_runtime "odin_test:lib/agent_runtime"
 
@@ -87,6 +88,8 @@ bridge_prespawn_rmdir_all :: proc(dir: string) {
 	_ = os.remove(dir)
 }
 
+BRIDGE_BROWSER_CDP_PORT_ENV :: "HEIMDALL_BROWSER_CDP_PORT"
+
 BRIDGE_BROWSER_PROFILE_ENV :: "HEIMDALL_BROWSER_PROFILE_DIR"
 
 // A detached PTY host can outlive the bridge and retain a stale desktop
@@ -123,6 +126,7 @@ bridge_browser_registration_valid :: proc(id: string) -> bool {
 //   HEIMDALL_BRIDGE_ENDPOINT   — local bridge socket the ctl shim dials
 //   HEIMDALL_AGENT_TOKEN       — this instance's agent token
 //   HEIMDALL_AGENT_INSTANCE_ID — the agent instance id
+//   HEIMDALL_BROWSER_CDP_PORT — fixed loopback debugging port
 //   HEIMDALL_BROWSER_PROFILE_DIR — verified profile path, empty if unavailable
 //   HEIMDALL_CTL_BIN           — absolute path to the materialized ham-ctl shim
 //
@@ -148,6 +152,12 @@ bridge_prespawn_env :: proc(run_dir, bridge_endpoint, agent_token, instance_id: 
 	profile := bridge_browser_profile_dir(settings.data_dir, settings.daemon_id)
 	defer delete(profile)
 	append(&out, strings.concatenate({BRIDGE_BROWSER_PROFILE_ENV, "=", profile}))
+	port := stream_profile_port(profile, settings.browser_cdp_port)
+	if port != 0 {
+		append(&out, fmt.aprintf("%s=%d", BRIDGE_BROWSER_CDP_PORT_ENV, port))
+	} else {
+		append(&out, strings.clone("HEIMDALL_BROWSER_CDP_PORT="))
+	}
 	when ODIN_OS == .Linux {
 		for name in BRIDGE_BROWSER_SESSION_ENV {
 			value := os.get_env(name, context.temp_allocator)
