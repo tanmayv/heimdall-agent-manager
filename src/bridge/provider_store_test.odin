@@ -77,10 +77,9 @@ test_provider_version_probe_kills_and_reaps_at_deadline :: proc(t: ^testing.T) {
 	chmod_err := os.chmod(path, os.Permissions{.Read_User, .Write_User, .Execute_User})
 	if !testing.expect(t, chmod_err == nil, "timeout fixture must be executable") do return
 	started := time.to_unix_nanoseconds(time.now())
-	version, ok := bridge_provider_probe_version_with_timeout(path, 50 * time.Millisecond)
+	probe := bridge_provider_cli_version(bridge_provider_descriptor("claude"), path, nil, 50 * time.Millisecond)
 	elapsed := time.to_unix_nanoseconds(time.now()) - started
-	defer delete(version)
-	testing.expect(t, !ok && version == "", "timed out provider probe must not report a version")
+	testing.expect(t, !probe.ok && probe.timed_out && probe.raw == "" && probe.parsed == "", "timed out provider probe must not report a version")
 	testing.expect(t, elapsed < i64(2 * time.Second), "timed out provider probe must be killed and reaped promptly")
 }
 

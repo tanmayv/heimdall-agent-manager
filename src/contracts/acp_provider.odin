@@ -23,11 +23,10 @@ ACP_Provider_Descriptor :: struct {
     protocol: ACP_Protocol,
     pkg: ACP_Package_Pin,
     platforms: []ACP_Platform_Pin,
-    // System only: the operating systems the CLI ships for, and the label that
-    // precedes the version in its `--version` output.
+    // System only: the operating systems the CLI ships for. The CLI binary,
+    // its `--version` format and auth guidance live in the provider registry
+    // (provider_descriptor(provider)).
     system_os: []string,
-    cli_version_prefix: string,
-    cli_version_bare: bool,
     discover_models_via_acp: bool, // opt in after a metadata-only session probe is verified
     // System only. agent_default_model is the catalog model id that keeps the
     // agent's own default model (no session/set_config_option). With
@@ -39,12 +38,8 @@ ACP_Provider_Descriptor :: struct {
     args: []string,
     env: [][2]string,
     protocol_version, node_min_major: int,
-    // cli_command duplicates provider_descriptor(provider).binary (the registry
-    // in provider_descriptor.odin is the source of truth; a test keeps them
-    // equal). cli_command, cli_version_prefix, cli_version_bare and
-    // auth_guidance move to the registry and are removed here in slice B1.
-    cli_command, cli_package, cli_version, executable_env: string,
-    bootstrap_filename, auth_guidance: string,
+    cli_package, cli_version, executable_env: string,
+    bootstrap_filename: string,
     permission_policy: ACP_Permission_Policy,
     model_category, permission_category, ask_mode, yolo_mode: string,
 }
@@ -54,9 +49,8 @@ ACP_CLAUDE_DESCRIPTOR :: ACP_Provider_Descriptor{
     pkg = {"@agentclientprotocol/claude-agent-acp", "0.108.0", "sha512-Y0HI3CB0DfhpWItCn2RE3xgpen001V2U/bHm3G6ZVKXsElF5N4uYyjYlmgNzZBKcBtZK0JqiE96NMaeVXtgJjw=="},
     command = "claude-agent-acp", env = {{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"}},
     protocol_version = 1, node_min_major = 22,
-    cli_command = "claude", executable_env = "CLAUDE_CODE_EXECUTABLE",
+    executable_env = "CLAUDE_CODE_EXECUTABLE",
     bootstrap_filename = "CLAUDE.md",
-    auth_guidance = "Run claude /login on the bridge host using the selected provider profile, then restart this instance.",
     permission_policy = .Session_Mode, model_category = "model", permission_category = "mode",
     ask_mode = "default", yolo_mode = "bypassPermissions",
 }
@@ -70,9 +64,8 @@ ACP_COPILOT_DESCRIPTOR :: ACP_Provider_Descriptor{
     },
     command = "copilot", args = {"--acp", "--stdio"}, env = {{"COPILOT_AUTO_UPDATE", "false"}},
     protocol_version = 1, node_min_major = 22,
-    cli_command = "copilot", cli_package = "@github/copilot", cli_version = "1.0.114",
+    cli_package = "@github/copilot", cli_version = "1.0.114",
     bootstrap_filename = "AGENTS.md",
-    auth_guidance = "Run copilot login on the bridge host using the selected provider profile and its COPILOT_HOME, or configure the profile's sensitive COPILOT_GITHUB_TOKEN or COPILOT_PROVIDER_* environment rows, then restart this instance.",
     permission_policy = .Once_Only, model_category = "model",
 }
 
@@ -85,10 +78,8 @@ ACP_KIRO_DESCRIPTOR :: ACP_Provider_Descriptor{
     pkg = {"kiro-cli", "3.5.0", ""}, system_os = {"linux", "darwin"},
     discover_models_via_acp = true, command = "kiro-cli", args = {"acp", "--agent-engine", "v3"},
     protocol_version = 1,
-    cli_command = "kiro-cli", cli_version_prefix = "kiro-cli ",
     agent_default_model = "default", bootstrap_resource_link = true,
     bootstrap_filename = "AGENTS.md",
-    auth_guidance = "Run kiro-cli login --use-device-flow on the bridge host using the selected provider profile (its KIRO_HOME and XDG_DATA_HOME), or configure the profile's sensitive KIRO_API_KEY environment row, then restart this instance.",
     permission_policy = .Once_Only, model_category = "model",
 }
 
@@ -100,9 +91,7 @@ ACP_CODEX_DESCRIPTOR :: ACP_Provider_Descriptor{
     pkg = {"codex", "0.162.0", ""}, system_os = {"linux", "darwin", "windows"},
     command = "codex", args = {"app-server"},
     protocol_version = 1,
-    cli_command = "codex", cli_version_prefix = "codex-cli ",
     bootstrap_filename = "AGENTS.md",
-    auth_guidance = "Run codex login on the bridge host using the selected provider profile and its CODEX_HOME, then restart this instance.",
     permission_policy = .Once_Only, model_category = "model",
 }
 
@@ -112,9 +101,8 @@ ACP_OPENCODE_DESCRIPTOR :: ACP_Provider_Descriptor{
     protocol = .ACP, provider = "opencode", id = "opencode-acp", display_name = "OpenCode", revision = 1, launch = .System,
     pkg = {"opencode", "1.19.6", ""}, system_os = {"linux", "darwin", "windows"},
     command = "opencode", args = {"acp"}, protocol_version = 1,
-    cli_command = "opencode", cli_version_bare = true, discover_models_via_acp = true,
+    discover_models_via_acp = true,
     agent_default_model = "default", bootstrap_filename = "AGENTS.md",
-    auth_guidance = "Run opencode auth login on the bridge host in the selected provider profile, or configure a local backend in OpenCode, then restart this instance.",
     permission_policy = .Once_Only, model_category = "model",
 }
 
@@ -134,24 +122,30 @@ acp_provider_descriptor :: proc(provider: string) -> (ACP_Provider_Descriptor, b
 // the resolved underlying executable; system CLIs bind a minimum version and the
 // operating systems they ship for. No shape enables a provider.
 acp_descriptor_shape_valid :: proc(d: ACP_Provider_Descriptor) -> bool {
+    // Every ACP runtime belongs to a registered provider, which supplies its CLI
+    // binary, version format and auth guidance.
+    provider, registered := provider_descriptor(d.provider)
+    if !registered || provider.provider != d.provider do return false
     if d.provider == "" || d.id == "" || d.revision < 1 || d.protocol_version != 1 ||
-       d.command == "" || d.cli_command == "" || !exact_adapter_version(d.pkg.version) ||
+       d.command == "" || !exact_adapter_version(d.pkg.version) ||
        d.pkg.name == "" || d.bootstrap_filename == "" ||
        strings.contains_any(d.bootstrap_filename, "/\\") || strings.contains(d.bootstrap_filename, "..") ||
-       d.auth_guidance == "" || d.model_category == "" { return false }
+       d.model_category == "" { return false }
     if d.protocol != .ACP && d.protocol != .Codex_App_Server do return false
     if d.discover_models_via_acp && (d.protocol != .ACP || d.launch != .System) do return false
     switch d.launch {
     case .Adapter, .Native:
         if !strings.has_prefix(d.pkg.integrity, "sha512-") || len(d.pkg.integrity) != 95 || d.node_min_major < 22 ||
-           len(d.system_os) != 0 || d.cli_version_prefix != "" || d.cli_version_bare || d.agent_default_model != "" || d.bootstrap_resource_link { return false }
+           len(d.system_os) != 0 || d.agent_default_model != "" || d.bootstrap_resource_link { return false }
         if d.launch == .Adapter && d.executable_env == "" do return false
         if d.launch == .Native && (d.executable_env != "" || d.cli_package != d.pkg.name || d.cli_version != d.pkg.version || len(d.platforms) == 0) do return false
     case .System:
         // Nothing is downloaded, so there is no integrity, Node or platform pin.
         if d.pkg.integrity != "" || d.node_min_major != 0 || d.executable_env != "" || d.cli_package != "" ||
-           d.cli_version != "" || len(d.platforms) != 0 || d.pkg.name != d.cli_command ||
-           (d.cli_version_prefix != "") == d.cli_version_bare || len(d.system_os) == 0 { return false }
+           d.cli_version != "" || len(d.platforms) != 0 || d.pkg.name != provider.binary ||
+           len(d.system_os) == 0 { return false }
+        // The minimum version is checked, so the CLI's version must be parseable.
+        if provider.version_format == .Raw do return false
         for name, i in d.system_os {
             if name == "" do return false
             for previous in d.system_os[:i] do if previous == name do return false

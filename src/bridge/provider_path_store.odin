@@ -27,7 +27,7 @@ Bridge_Provider_Path_Store_Wire :: struct {
 }
 
 // extension borrows the immutable, process-lifetime catalog snapshot; it is never freed.
-Bridge_Provider_Probe_Target :: struct { provider, binary: string, extension: Bridge_Catalog_Extension }
+Bridge_Provider_Probe_Target :: struct { provider: string, extension: Bridge_Catalog_Extension }
 
 bridge_provider_paths_mutex: sync.RW_Mutex
 bridge_provider_paths_loaded: bool
@@ -100,45 +100,21 @@ bridge_provider_path_executable :: proc(path: string) -> bool {
 	return bridge_os_is_executable(path)
 }
 
-bridge_provider_probe_version :: proc(path: string) -> string {
-	version, _ := bridge_provider_probe_version_with_timeout(path, 2 * time.Second)
-	return version
-}
-
-bridge_provider_probe_version_with_timeout :: proc(path: string, timeout: time.Duration, env: []string = nil) -> (string, bool) {
-	if path == "" do return "", false
-	if !bridge_process_slot_try_acquire() do return "", false
-	defer bridge_process_slot_release()
-	argv := []string{path, "--version"}
-	stdout_r, stdout_w, pipe_err := os.pipe()
-	if pipe_err != nil do return "", false
-	defer os.close(stdout_r)
-	process, start_err := bridge_os_start_hidden(os.Process_Desc{command = argv, stdout = stdout_w, stderr = stdout_w, env = env})
-	_ = os.close(stdout_w)
-	if start_err != nil do return "", false
-	state, wait_err := os.process_wait(process, timeout)
-	if wait_err != nil || !state.exited {
-		_ = os.process_kill(process)
-		_, _ = os.process_wait(process, 500 * time.Millisecond)
-		return "", false
-	}
-	stdout, read_err := os.read_entire_file(stdout_r, context.allocator)
-	defer if len(stdout) > 0 do delete(stdout)
-	if read_err != nil || state.exit_code != 0 do return "", false
-	text := strings.trim_space(string(stdout))
-	if newline := strings.index_byte(text, '\n'); newline >= 0 do text = text[:newline]
-	if len(text) > 256 do text = text[:256]
-	return strings.clone(text), true
-}
-
+// bridge_provider_probe_one probes the default profile with binary (a command
+// name or path) in place of the provider's own; tests use it directly.
 bridge_provider_probe_one :: proc(provider, binary: string, extension: Bridge_Catalog_Extension = {}) -> Bridge_Provider_Path {
-	return bridge_provider_probe_one_with_timeout(provider, binary, 2 * time.Second, extension, time.time_add(time.now(), 2 * time.Second + BRIDGE_PROVIDER_EXTENSION_TIMEOUT))
+	d := bridge_provider_descriptor(provider)
+	d.binary = binary
+	path, _ := bridge_provider_resolve_binary(d, nil, nil)
+	return bridge_provider_probe_one_with_timeout(provider, path, 2 * time.Second, extension, time.time_add(time.now(), 2 * time.Second + BRIDGE_PROVIDER_EXTENSION_TIMEOUT))
 }
 
-// extension_deadline bounds the extension detector (itself capped at 5s); a zero
-// deadline skips it, which reports an unsupported/absent/error state without running.
-bridge_provider_probe_one_with_timeout :: proc(provider, binary: string, timeout: time.Duration, extension: Bridge_Catalog_Extension = {}, extension_deadline: time.Time = {}, env: []string = nil, profile_id: string = "") -> Bridge_Provider_Path {
-	path := profile_resolve_binary(binary,env) if env != nil else bridge_runtime_find_on_path(binary)
+// path is the binary bridge_provider_resolve_binary resolved ("" when absent);
+// this procedure takes ownership of it. extension_deadline bounds the extension
+// detector (itself capped at 5s); a zero deadline skips it, which reports an
+// unsupported/absent/error state without running.
+bridge_provider_probe_one_with_timeout :: proc(provider, path: string, timeout: time.Duration, extension: Bridge_Catalog_Extension = {}, extension_deadline: time.Time = {}, env: []string = nil, profile_id: string = "") -> Bridge_Provider_Path {
+	path := path
 	if path != "" && !bridge_provider_path_executable(path) {
 		delete(path)
 		path = ""
@@ -148,9 +124,11 @@ bridge_provider_probe_one_with_timeout :: proc(provider, binary: string, timeout
 		breaker_key := strings.concatenate({"provider-probe:", profile_id, ":", path})
 		defer delete(breaker_key)
 		if bridge_dependency_breaker_allow(breaker_key) {
-			probe_ok := false
-			version, probe_ok = bridge_provider_probe_version_with_timeout(path, timeout, env)
-			bridge_dependency_breaker_record(breaker_key, probe_ok)
+			// version_text stays the raw first line; parsing is the ACP probe's job.
+			probe := bridge_provider_cli_version(bridge_provider_descriptor(provider), path, env, timeout)
+			delete(probe.parsed)
+			version = probe.raw
+			bridge_dependency_breaker_record(breaker_key, probe.ok)
 		}
 	}
 	extension_timeout: time.Duration = 0
@@ -182,7 +160,6 @@ bridge_provider_probe_targets :: proc(filter: []string) -> [dynamic]Bridge_Provi
 		if selected {
 			append(&targets, Bridge_Provider_Probe_Target{
 				provider = strings.clone(provider.provider),
-				binary = strings.clone(provider.binary),
 				extension = provider.extension,
 			})
 		}
@@ -285,7 +262,7 @@ bridge_provider_discover_execute_profile :: proc(filter: []string, profile_id: s
 	if bridge_provider_discovery_test_delay > 0 do time.sleep(bridge_provider_discovery_test_delay)
 	targets := bridge_provider_probe_targets(filter)
 	defer {
-		for target in targets { delete(target.provider); delete(target.binary) }
+		for target in targets do delete(target.provider)
 		delete(targets)
 	}
 	results := make([dynamic]Bridge_Provider_Path)
@@ -312,8 +289,8 @@ bridge_provider_discover_execute_profile :: proc(filter: []string, profile_id: s
 			append(&results,Bridge_Provider_Path{provider = strings.clone(target.provider),profile_id = strings.clone(p.profile_id),state = strings.clone("error"),extension_state = strings.clone("error"),probed_at = bridge_provider_probe_time()})
 			continue
 		}
-		binary := p.config.binary_path if p.config.binary_path != "" else target.binary
-		result := bridge_provider_probe_one_with_timeout(target.provider, binary, probe_timeout, target.extension, extension_deadline, env,p.profile_id)
+		path, _ := bridge_provider_resolve_binary(bridge_provider_descriptor(target.provider), &p, env)
+		result := bridge_provider_probe_one_with_timeout(target.provider, path, probe_timeout, target.extension, extension_deadline, env,p.profile_id)
 		redacted := profile_redact_text(result.version_text,&p)
 		if redacted != result.version_text {
 			replacement := strings.clone(redacted); delete(result.version_text); result.version_text = replacement

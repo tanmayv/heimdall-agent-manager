@@ -183,10 +183,8 @@ Bridge_Log_Sym :: enum u8 {
 	// reason
 	eof, timeout, write_error, replaced, revoked, limit, unsupported, denied, expired,
 	transport, missing_binary, not_executable, login_required, unknown,
-	// provider (see provider_descriptor.odin). gemini is no provider and is never
-	// emitted by bridge_log_provider_sym; it remains only so existing callers
-	// (src/bridge/blog_test.odin) compile until they move off it.
-	claude, codex, copilot, antigravity, gemini,
+	// provider (see provider_descriptor.odin)
+	claude, codex, copilot, antigravity,
 	// command_kind
 	launch_agent, wake_agent, shell_start, shell_restart, agent_pty_input, provider_test, bridge_update,
 	// stage (appended: values above keep their numbers)
@@ -254,7 +252,6 @@ BRIDGE_LOG_SYM_NAMES :: [Bridge_Log_Sym]string{
 	.codex            = "codex",
 	.copilot          = "copilot",
 	.antigravity      = "antigravity",
-	.gemini           = "gemini",
 	.launch_agent     = "launch_agent",
 	.wake_agent       = "wake_agent",
 	.shell_start      = "shell_start",

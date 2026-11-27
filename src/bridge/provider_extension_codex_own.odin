@@ -26,6 +26,7 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import bridgesvc "odin_test:lib/bridgesvc"
+import contracts "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
 
 BRIDGE_CODEX_OWN_MARKETPLACE_PREFIX :: "heimdall-codex-"
@@ -83,10 +84,11 @@ bridge_codex_own_plugin_id :: proc(marketplace: string) -> string {
 	return strings.concatenate({BRIDGE_CODEX_PLUGIN_NAME, "@", marketplace}, context.temp_allocator)
 }
 
-// The CODEX_HOME agents of the default profile use: $CODEX_HOME, else ~/.codex.
-bridge_codex_default_home :: proc() -> string {
-	if env := strings.trim_space(os.get_env("CODEX_HOME", context.temp_allocator)); env != "" do return codex_own_expand_home(env, context.temp_allocator)
-	return codex_own_expand_home("~/.codex", context.temp_allocator)
+// The CODEX_HOME agents of the default profile use: $CODEX_HOME, else ~/.codex
+// (the provider config-dir resolver; env nil means the bridge's environment).
+bridge_codex_default_home :: proc(env: []string = nil) -> string {
+	d, _ := contracts.provider_descriptor("codex")
+	return bridge_provider_config_dir(d, nil, env)
 }
 
 // bridge_codex_own_launch_args_for is pure apart from one directory check: the

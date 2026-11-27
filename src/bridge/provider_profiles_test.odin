@@ -121,8 +121,15 @@ test_profile_driver_validation :: proc(t: ^testing.T) {
 	p.config.config_dir = "rel/cfg"
 	testing.expect_value(t, profile_validate(&p), Profile_Error.Path_Invalid)
 	p.config.config_dir = "/abs/cfg"
+	// Copilot profiles own a config directory too (exported as COPILOT_HOME).
 	p.provider = "copilot"
-	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Dir_Unsupported)
+	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
+	for provider in ([]string{"pi", "opencode", "antigravity", "codex"}) {
+		p.provider = provider
+		p.config.launch_args = ""
+		testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Dir_Unsupported)
+	}
+	p.config.launch_args = "--chrome"
 	p.provider = "kiro"
 	p.config.launch_args = ""
 	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
@@ -136,6 +143,16 @@ test_profile_driver_validation :: proc(t: ^testing.T) {
 		config = Provider_Profile_Config{api_key = "key"},
 	}
 	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Invalid)
+	// Antigravity-only fields stay refused for every other provider.
+	for provider in ([]string{"claude", "codex", "copilot", "pi", "kiro", "opencode", "catalog-only"}) {
+		for config in ([]Provider_Profile_Config{{api_key = "key"}, {api_key_redacted = true}, {gcp_project = "p"}, {gcp_location = "l"}, {auth_method = "gemini-api-key"}}) {
+			p = Provider_Profile{provider = provider, config = config}
+			testing.expectf(t, profile_validate(&p) == .Config_Invalid, "%s accepted an antigravity field", provider)
+		}
+	}
+	// A catalog-only provider launches over PTY: launch args and custom models apply.
+	p = Provider_Profile{provider = "catalog-only", config = Provider_Profile_Config{launch_args = "--x", custom_models = []string{"m"}}}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
 	p = Provider_Profile {
 		provider = "claude",
 		config = Provider_Profile_Config{binary_path = "/nonexistent/claude"},
@@ -160,6 +177,11 @@ test_profile_driver_validation :: proc(t: ^testing.T) {
 	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
 	p.config.launch_args = "--bad"
 	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Invalid)
+	p.config.launch_args = ""
+	p.config.custom_models = []string{"m"}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.Config_Invalid)
+	p.config = Provider_Profile_Config{api_key = "k", gcp_project = "proj", gcp_location = "loc", auth_method = "agent-platform"}
+	testing.expect_value(t, profile_validate(&p), Profile_Error.None)
 }
 
 @(test)
@@ -869,7 +891,7 @@ test_profile_spawn_binary_custom_model_args_and_env :: proc(t: ^testing.T) {
 		provider = "claude",
 		enabled = true,
 		config = Provider_Profile_Config {
-			binary_path = "/explicit/claude",
+			binary_path = "/bin/sh", // an explicit path is used as is
 			config_dir = "/config",
 			launch_args = `--name "work profile" '$HOME'`,
 			custom_models = []string{"custom"},
@@ -891,7 +913,7 @@ test_profile_spawn_binary_custom_model_args_and_env :: proc(t: ^testing.T) {
 	if !testing.expect(t, ok) do return
 	defer bridge_pty_host_spawn_request_delete(req)
 	expected := []string {
-		"/explicit/claude",
+		"/bin/sh",
 		"--base",
 		"--model",
 		"custom",

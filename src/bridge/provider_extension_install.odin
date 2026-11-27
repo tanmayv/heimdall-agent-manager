@@ -329,13 +329,6 @@ bridge_extension_resolve_profile_binary :: proc(provider: string, pp: ^Provider_
 	if pp == nil do return bridge_extension_binary_resolver(provider)
 	env,ok := profile_child_env(pp)
 	if !ok do return "",false
-	binary := pp.config.binary_path
-	if binary == "" {
-		// Same binary name discovery probes (the catalog's `binary`), resolved on PATH.
-		name,found := bridge_provider_catalog_binary(provider)
-		if !found do return "",false
-		binary = name
-	}
-	path := profile_resolve_binary(binary,env)
-	return path,path != ""
+	// The same binary discovery probes, resolved on the profile's PATH.
+	return bridge_provider_resolve_binary(bridge_provider_descriptor(provider), pp, env)
 }

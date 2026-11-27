@@ -300,19 +300,20 @@ profile_validate :: proc(p: ^Provider_Profile) -> Profile_Error {
 	for path in ([]string{c.config_dir, c.home_path, c.shadow_home_path}) {
 		if path != "" && !profile_path_absolute(path) do return .Path_Invalid
 	}
-	if c.config_dir != "" && p.provider != "claude" && p.provider != "kiro" do return .Config_Dir_Unsupported
-	if (c.home_path != "" || c.shadow_home_path != "") && p.provider != "codex" do return .Config_Invalid
-	ag_config :=
-		c.auth_method != "" ||
-		c.api_key != "" ||
-		c.api_key_redacted ||
-		c.gcp_project != "" ||
-		c.gcp_location != ""
-	if ag_config && p.provider != "antigravity" do return .Config_Invalid
-	if p.provider == "antigravity" {
-		if c.launch_args != "" || len(c.custom_models) > 0 do return .Config_Invalid
-		if c.auth_method != "" && !slice.contains([]string{"oauth-personal", "oauth-business", "gemini-api-key", "agent-platform"}, c.auth_method) do return .Config_Invalid
+	// Which fields a provider's profile accepts is registry data.
+	d := bridge_provider_traits(p.provider)
+	if c.config_dir != "" && d.config_field != .Config_Dir do return .Config_Dir_Unsupported
+	if (c.home_path != "" || c.shadow_home_path != "") && d.config_field != .Home_Path do return .Config_Invalid
+	for field in ([]string{"api_key", "gcp_project", "gcp_location"}) {
+		value, redacted := profile_config_env_field(c, field)
+		if value^ == "" && (redacted == nil || !redacted^) do continue
+		declared := false
+		for f in d.profile_env_fields do if f.field == field do declared = true
+		if !declared do return .Config_Invalid
 	}
+	if c.auth_method != "" && !slice.contains(d.profile_auth_methods, c.auth_method) do return .Config_Invalid
+	if c.launch_args != "" && !d.profile_launch_args do return .Config_Invalid
+	if len(c.custom_models) > 0 && !d.profile_custom_models do return .Config_Invalid
 	for value in ([]string{c.api_key, c.gcp_project, c.gcp_location}) {
 		if len(value) > PROFILE_ENV_VALUE_MAX || profile_has_nul(value) do return .Config_Invalid
 	}
@@ -379,23 +380,18 @@ profile_env_plan :: proc(
 	}
 	for e in p.environment do profile_env_set(&plan, e.name, e.value)
 	c := &p.config
-	if p.provider == "claude" && c.config_dir != "" {
-		profile_env_set(&plan, "CLAUDE_CONFIG_DIR", c.config_dir)
+	d := bridge_provider_traits(p.provider)
+	// The profile's config directory goes to the CLI's env var, with any
+	// derived variables (Kiro keeps settings under KIRO_HOME but its credential
+	// store, kiro-cli/data.sqlite3, under XDG_DATA_HOME, so both move together).
+	if dir := profile_config_field_dir(d, c); dir != "" && d.config_dir_env != "" {
+		profile_env_set(&plan, d.config_dir_env, dir)
+		for derived in d.config_dir_derived_env {
+			profile_env_set(&plan, derived[0], strings.concatenate({dir, "/", derived[1]}, allocator))
+		}
 	}
-	// Kiro keeps settings under KIRO_HOME but its credential store
-	// (kiro-cli/data.sqlite3) under XDG_DATA_HOME, so both must move together.
-	if p.provider == "kiro" && c.config_dir != "" {
-		profile_env_set(&plan, "KIRO_HOME", c.config_dir)
-		profile_env_set(&plan, "XDG_DATA_HOME", strings.concatenate({c.config_dir, "/data"}, allocator))
-	}
-	if p.provider == "codex" {
-		dir := c.shadow_home_path if c.shadow_home_path != "" else c.home_path
-		if dir != "" do profile_env_set(&plan, "CODEX_HOME", dir)
-	}
-	if p.provider == "antigravity" {
-		if c.api_key != "" do profile_env_set(&plan, "GEMINI_API_KEY", c.api_key)
-		if c.gcp_project != "" do profile_env_set(&plan, "GOOGLE_CLOUD_PROJECT", c.gcp_project)
-		if c.gcp_location != "" do profile_env_set(&plan, "GOOGLE_CLOUD_LOCATION", c.gcp_location)
+	for f in d.profile_env_fields {
+		if value, _ := profile_config_env_field(c, f.field); value != nil && value^ != "" do profile_env_set(&plan, f.env, value^)
 	}
 	return plan
 }
@@ -547,13 +543,16 @@ profile_secret_fields :: proc(p: ^Provider_Profile) -> []Profile_Secret_Field {
 			},
 		)
 	}
-	if p.provider == "antigravity" {
+	for f in bridge_provider_traits(p.provider).profile_env_fields {
+		if !f.secret do continue
+		value, redacted := profile_config_env_field(&p.config, f.field)
+		if value == nil || redacted == nil do continue
 		append(
 			&out,
 			Profile_Secret_Field {
-				profile_config_secret_name(p.profile_id, p.provider, "api_key"),
-				&p.config.api_key,
-				&p.config.api_key_redacted,
+				profile_config_secret_name(p.profile_id, p.provider, f.field),
+				value,
+				redacted,
 				true,
 			},
 		)

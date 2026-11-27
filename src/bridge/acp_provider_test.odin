@@ -39,14 +39,16 @@ c2_acp_copilot_restore_binds_policy_profile_and_pinned_version :: proc(t: ^testi
 
 @(test)
 c2_acp_cli_version_pin_rejects_old_host_and_untrusted_output :: proc(t: ^testing.T) {
+    // The registry parses the output; the ACP pin then decides acceptance.
     native := contracts.ACP_Provider_Descriptor{provider = "copilot", launch = .Native, cli_version = "1.0.114"}
-    version, valid := acp_provider_parse_cli_version(native, "GitHub Copilot CLI 1.0.114.\nRun 'copilot version' to check for updates.\n")
-    testing.expect(t, valid && version == "1.0.114")
+    copilot := bridge_provider_traits("copilot")
+    version, valid := contracts.provider_parse_cli_version(copilot, "GitHub Copilot CLI 1.0.114.\nRun 'copilot version' to check for updates.\n")
+    testing.expect(t, valid && version == "1.0.114" && contracts.acp_descriptor_cli_version_accepted(native, version))
     for output in ([]string{"GitHub Copilot CLI 1.0.91.", "1.0.114", "diagnostic GitHub Copilot CLI 1.0.114.", "GitHub Copilot CLI 1.0.114.secret", "GitHub Copilot CLI 1.0.114.5"}) {
-        version, valid := acp_provider_parse_cli_version(native, output)
-        testing.expect(t, !valid && version == "")
+        version, valid := contracts.provider_parse_cli_version(copilot, output)
+        testing.expectf(t, !valid || !contracts.acp_descriptor_cli_version_accepted(native, version), "%q rejected", output)
     }
-    version, valid = acp_provider_parse_cli_version(contracts.ACP_CLAUDE_DESCRIPTOR, "2.1.70 (Claude Code)\n")
+    version, valid = contracts.provider_parse_cli_version(bridge_provider_traits("claude"), "2.1.70 (Claude Code)\n")
     testing.expect(t, valid && version == "2.1.70")
 }
 
@@ -196,12 +198,13 @@ acp_provider_legacy_journal_migrates_without_new_turn_and_ambiguous_requires_res
 acp_kiro_version_argv_and_binding_use_minimum :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
     d := contracts.ACP_KIRO_DESCRIPTOR
+    kiro := bridge_provider_traits("kiro")
     for pair in ([][2]string{{"kiro-cli 3.5.0\n", "3.5.0"}, {"kiro-cli 3.10.2 (stable)\n", "3.10.2"}, {"kiro-cli 3.4.0", "3.4.0"}}) {
-        version, valid := acp_provider_parse_cli_version(d, pair[0])
+        version, valid := contracts.provider_parse_cli_version(kiro, pair[0])
         testing.expectf(t, valid && version == pair[1], "%q parses as %s", pair[0], pair[1])
     }
     for output in ([]string{"3.5.0", "Kiro CLI 3.5.0", "kiro-cli v3.5.0", "kiro-cli 3.5", "warning\nkiro-cli 3.5.0", "kiro-cli 3.5.0-beta.1", ""}) {
-        version, valid := acp_provider_parse_cli_version(d, output)
+        version, valid := contracts.provider_parse_cli_version(kiro, output)
         testing.expectf(t, !valid, "%q rejected (got %s)", output, version)
     }
     argv, built := acp_provider_launch_argv(d, "/unused/root", "/opt/kiro/bin/kiro-cli")
@@ -227,21 +230,24 @@ acp_kiro_profile_config_dir_moves_settings_and_credentials :: proc(t: ^testing.T
     p.config.config_dir = ""; p.environment = nil
     inherited := strings.join(profile_apply_env_plan([]string{"HOME=/bridge"}, profile_env_plan(&p)), "\n", context.temp_allocator)
     testing.expect(t, !strings.contains(inherited, "KIRO_HOME") && !strings.contains(inherited, "XDG_DATA_HOME"))
-    copilot := Provider_Profile{provider = "copilot", config = {config_dir = "/p/copilot"}}
+    // A Copilot profile's config directory is exported as COPILOT_HOME.
+    copilot := Provider_Profile{provider = "copilot", config = {config_dir = "/p/copilot"}, environment = {{name = "COPILOT_HOME", value = "/env/copilot"}}}
     plan := profile_env_plan(&copilot)
-    testing.expect_value(t, len(plan.set), 0)
+    testing.expect_value(t, len(plan.set), 1)
+    if len(plan.set) == 1 do testing.expect(t, plan.set[0] == [2]string{"COPILOT_HOME", "/p/copilot"})
 }
 
 @(test)
 acp_codex_version_binding_and_registered_driver :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
     d := contracts.ACP_CODEX_DESCRIPTOR
+    codex := bridge_provider_traits("codex")
     for output in ([]string{"codex-cli 0.162.0\n", "codex-cli 0.166.0\n"}) {
-        version, valid := acp_provider_parse_cli_version(d, output)
+        version, valid := contracts.provider_parse_cli_version(codex, output)
         testing.expect(t, valid && contracts.acp_descriptor_cli_version_accepted(d, version))
     }
     for output in ([]string{"codex 0.162.0", "0.162.0", "codex-cli v0.162.0", "codex-cli 0.162.0-beta"}) {
-        _, valid := acp_provider_parse_cli_version(d, output)
+        _, valid := contracts.provider_parse_cli_version(codex, output)
         testing.expect(t, !valid)
     }
     binding := acp_provider_binding(d, "work", "0.162.0", "AGENTS.md", 7)
@@ -257,10 +263,11 @@ acp_codex_version_binding_and_registered_driver :: proc(t: ^testing.T) {
 @(test)
 acp_opencode_detects_plain_version_and_preserves_argv_boundaries :: proc(t: ^testing.T) {
     d := contracts.ACP_OPENCODE_DESCRIPTOR
-    version, parsed := acp_provider_parse_cli_version(d, "1.19.6\r\n")
+    opencode := bridge_provider_traits("opencode")
+    version, parsed := contracts.provider_parse_cli_version(opencode, "1.19.6\r\n")
     testing.expect(t, parsed && version == "1.19.6")
     for output in ([]string{"opencode 1.19.6", "warning\n1.19.6", "1.19.6-beta", "1.19.6 2.0.0"}) {
-        _, accepted := acp_provider_parse_cli_version(d, output)
+        _, accepted := contracts.provider_parse_cli_version(opencode, output)
         testing.expect(t, !accepted)
     }
     for binary in ([]string{"/opt/Program Files/opencode", "C:\\Program Files\\OpenCode\\opencode.exe"}) {

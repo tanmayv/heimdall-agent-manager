@@ -2,11 +2,11 @@ package main
 
 import "core:encoding/json"
 import "core:os"
-import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 
 // REQ-EXT-DET-1: whether a provider's Heimdall extension is installed. The Hub
 // catalog owns the descriptor; this file only runs `<binary> <detect_argv...>`
@@ -112,24 +112,7 @@ bridge_provider_extension_state_rank :: proc(state: string) -> int {
 
 bridge_antigravity_plugin_enabled_state :: proc(plugin_id: string, paths: []string = nil) -> (enabled: bool, has_config: bool) {
 	enabled = true
-	candidates := make([dynamic]string, context.temp_allocator)
-	if paths != nil {
-		append(&candidates, ..paths)
-	} else {
-		if gemini_cfg := os.get_env("GEMINI_CONFIG_DIR", context.temp_allocator); gemini_cfg != "" {
-			c1, _ := filepath.join({gemini_cfg, "config.json"}, context.temp_allocator)
-			append(&candidates, c1)
-			c2, _ := filepath.join({gemini_cfg, "config", "config.json"}, context.temp_allocator)
-			append(&candidates, c2)
-		}
-		home := os.get_env("HOME", context.temp_allocator)
-		if home != "" {
-			c3, _ := filepath.join({home, ".gemini", "config", "config.json"}, context.temp_allocator)
-			append(&candidates, c3)
-			c4, _ := filepath.join({home, ".gemini", "config.json"}, context.temp_allocator)
-			append(&candidates, c4)
-		}
-	}
+	candidates := paths if paths != nil else bridge_extension_gemini_paths(nil, plugin_id, false)
 	for cand in candidates {
 		if os.exists(cand) {
 			if data, read_err := os.read_entire_file(cand, context.temp_allocator); read_err == nil {
@@ -151,24 +134,7 @@ bridge_antigravity_plugin_enabled_state :: proc(plugin_id: string, paths: []stri
 }
 
 bridge_provider_extension_installed_manifest_version :: proc(plugin_id: string, allocator := context.temp_allocator, paths: []string = nil) -> string {
-	candidates := make([dynamic]string, context.temp_allocator)
-	if paths != nil {
-		append(&candidates, ..paths)
-	} else {
-		if gemini_cfg := os.get_env("GEMINI_CONFIG_DIR", context.temp_allocator); gemini_cfg != "" {
-			c1, _ := filepath.join({gemini_cfg, "plugins", plugin_id, "plugin.json"}, context.temp_allocator)
-			append(&candidates, c1)
-			c2, _ := filepath.join({gemini_cfg, "config", "plugins", plugin_id, "plugin.json"}, context.temp_allocator)
-			append(&candidates, c2)
-		}
-		home := os.get_env("HOME", context.temp_allocator)
-		if home != "" {
-			c3, _ := filepath.join({home, ".gemini", "config", "plugins", plugin_id, "plugin.json"}, context.temp_allocator)
-			append(&candidates, c3)
-			c4, _ := filepath.join({home, ".gemini", "plugins", plugin_id, "plugin.json"}, context.temp_allocator)
-			append(&candidates, c4)
-		}
-	}
+	candidates := paths if paths != nil else bridge_extension_gemini_paths(nil, plugin_id, true)
 	for cand in candidates {
 		if os.exists(cand) {
 			if data, read_err := os.read_entire_file(cand, context.temp_allocator); read_err == nil {
@@ -327,16 +293,16 @@ bridge_provider_extension_probe :: proc(binary_path: string, ext: Bridge_Catalog
 	return bridge_provider_extension_evaluate(ext, stdout, ok,env = env)
 }
 
-// With a supplied child environment, never fall back to process-global paths.
-// An explicit GEMINI_CONFIG_DIR excludes the bridge HOME's other account.
+// Candidate plugin config/manifest files under the config directory of the
+// provider that owns Antigravity-style plugins, resolved from env (nil: the
+// bridge's environment) by the config-dir resolver. An explicit
+// GEMINI_CONFIG_DIR excludes the bridge HOME's other account.
 bridge_extension_gemini_paths :: proc(env: []string, plugin_id: string, manifest: bool) -> []string {
-	if env == nil do return nil
-	root := profile_env_value(env,"GEMINI_CONFIG_DIR")
-	if root == "" {
-		home := profile_env_value(env,"HOME")
-		when ODIN_OS == .Windows { if home == "" do home = profile_env_value(env,"USERPROFILE") }
-		if home != "" do root = profile_join(home,".gemini")
+	root := ""
+	for d in contracts.provider_descriptors() {
+		if d.extension == .Antigravity_Plugin { root = bridge_provider_config_dir(d, nil, env); break }
 	}
+	// Never nil, so callers do not mistake "no directory" for "not supplied".
 	if root == "" { out := make([]string,1,context.temp_allocator); return out }
 	suffix := profile_join(profile_join("plugins",plugin_id),"plugin.json") if manifest else "config.json"
 	out := make([]string,2,context.temp_allocator)

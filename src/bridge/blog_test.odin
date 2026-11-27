@@ -263,7 +263,7 @@ test_blog_drain_respects_opt_out_and_sends_frame :: proc(t: ^testing.T) {
 
 	now := time.tick_now()._nsec
 	bridge_heartbeat_stats_set_enabled(false)
-	blog_emit(.Error, .provider_missing, {blog_sym(.provider, .gemini)}, now_ms = 1700000000000)
+	blog_emit(.Error, .provider_missing, {blog_sym(.provider, .kiro)}, now_ms = 1700000000000)
 	testing.expect(t, !bridge_log_drain_outgoing_at(&conn, now), "opt-out: nothing is shipped")
 	testing.expect(t, blog_pending_count(&blog_ring) >= 1, "opt-out: the ring still buffers")
 	testing.expect(t, conn.connected, "opt-out: connection untouched")
@@ -276,7 +276,7 @@ test_blog_drain_respects_opt_out_and_sends_frame :: proc(t: ^testing.T) {
 	wire := string(buf[:max(n, 0)])
 	testing.expect(t, strings.contains(wire, `"type":"bridge_log"`), wire)
 	testing.expect(t, strings.contains(wire, `"code":"provider_missing"`), wire)
-	testing.expect(t, strings.contains(wire, `"fields":{"provider":"gemini"}`), wire)
+	testing.expect(t, strings.contains(wire, `"fields":{"provider":"kiro"}`), wire)
 	testing.expect(t, strings.contains(wire, `"ts_ms":1700000000000`), wire)
 	testing.expect(t, !blog_flush_due(&blog_ring, now), "nothing left / cadence resets after a send")
 

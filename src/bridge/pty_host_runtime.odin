@@ -395,13 +395,16 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 	profile, profile_ok := bridge_provider_catalog_profile(provider)
 	if !profile_ok do return {}, false
 	resolved_path: string
+	path_ok: bool
 	if pp != nil && pp.config.binary_path != "" {
-		resolved_path = strings.clone(pp.config.binary_path)
+		// A bare-name override resolves on the profile's PATH, like every probe.
+		profile_env, env_ok := profile_child_env(pp)
+		if !env_ok do return {}, false
+		resolved_path, path_ok = bridge_provider_resolve_binary(bridge_provider_descriptor(provider), pp, profile_env)
 	} else {
-		path_ok: bool
 		resolved_path, path_ok = bridge_provider_resolve_path(provider)
-		if !path_ok do return {}, false
 	}
+	if !path_ok do return {}, false
 	defer delete(resolved_path)
 	profile.command = []string{resolved_path}
 	full_env := env

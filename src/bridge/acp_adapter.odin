@@ -372,7 +372,7 @@ acp_adapter_probe_message :: proc(reason: string, provider: string = "claude") -
     if reason == strings.concatenate({provider, "_version_timeout"}, context.temp_allocator) do return fmt.tprintf("%s --version did not finish before the deadline", d.display_name)
     if reason == strings.concatenate({provider, "_version_spawn_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version could not be executed", d.display_name)
     if reason == strings.concatenate({provider, "_version_failed"}, context.temp_allocator) do return fmt.tprintf("%s --version exited with a non-zero status", d.display_name)
-    if reason == "cli_version_mismatch" && d.launch == .System do return fmt.tprintf("The selected %s executable did not report a %sX.Y.Z version", d.display_name, d.cli_version_prefix)
+    if reason == "cli_version_mismatch" && d.launch == .System do return fmt.tprintf("The selected %s executable did not report a %sX.Y.Z version", d.display_name, bridge_provider_traits(provider).version_label)
     if reason == "cli_version_mismatch" do return fmt.tprintf("The selected %s executable does not report the pinned CLI version %s", d.display_name, d.cli_version)
     if reason == "cli_version_outdated" do return fmt.tprintf("The selected %s executable is older than the minimum supported version %s; upgrade it on the bridge host", d.display_name, d.pkg.version)
     switch reason {
@@ -404,33 +404,6 @@ acp_adapter_probe_env :: proc(pp: ^Provider_Profile) -> ([][2]string, bool) {
     return bridge_pty_host_env_pairs(clean[:]), true
 }
 
-acp_provider_parse_cli_version :: proc(d: contracts.ACP_Provider_Descriptor, output: string) -> (string, bool) {
-    text := strings.trim_space(output)
-    if d.launch == .System {
-        // `kiro-cli 3.5.0`: the descriptor label, then the first token only.
-        if d.cli_version_bare do return text, len(text) <= 64 && contracts.exact_adapter_version(text)
-        if !strings.has_prefix(text, d.cli_version_prefix) do return "", false
-        text = strings.trim_prefix(text, d.cli_version_prefix)
-        if end := strings.index_any(text, " \t\r\n"); end >= 0 do text = text[:end]
-        return text, len(text) <= 64 && contracts.exact_adapter_version(text)
-    }
-    if d.launch == .Native {
-        // Copilot prints a product label and a trailing full stop, followed by
-        // an update hint. Never accept a different semver found in diagnostics.
-        if d.provider != "copilot" || !strings.has_prefix(text, "GitHub Copilot CLI ") do return "", false
-        text = strings.trim_prefix(text, "GitHub Copilot CLI ")
-        if end := strings.index_byte(text, '\n'); end >= 0 do text = strings.trim_space(text[:end])
-        text = strings.trim_suffix(text, ".")
-        if text != d.cli_version || !contracts.exact_adapter_version(text) do return "", false
-        return text, true
-    }
-    // Preserve Claude's numeric prefix (the rest is a product label).
-    for c, i in text {
-        if (c < '0' || c > '9') && c != '.' { text = text[:i]; break }
-    }
-    return text, len(text) <= 64 && contracts.exact_adapter_version(text)
-}
-
 // Use the same resolution and environment as managed ACP launches, with no
 // Heimdall credentials. Only allowlisted excerpts of the bounded output escape.
 acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration = 3*time.Second) -> (version, reason, diagnostic: string) {
@@ -445,26 +418,25 @@ acp_provider_cli_version :: proc(pp: ^Provider_Profile, timeout: time.Duration =
         append(&env, strings.concatenate({pair[0], "=", pair[1]}))
         if pair[0] == d.executable_env do binary = pair[1]
     }
-    if d.launch == .Native || d.launch == .System {
-        command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
-        binary = profile_resolve_binary(command, env[:])
-    }
+    provider := bridge_provider_descriptor(d.provider)
+    if d.launch == .Native || d.launch == .System do binary, _ = bridge_provider_resolve_binary(provider, pp, env[:])
     if binary == "" && d.launch == .System do return "", strings.concatenate({"acp_", d.provider, "_not_found"}), strings.concatenate({d.provider, "_missing"})
-    out, stderr, exit_code, ran, timed_out := bridge_process_run_capture_status_env({binary, "--version"}, min(timeout, 3*time.Second), env[:])
-    defer { delete(out); delete(stderr) }
-    if !ran || timed_out || exit_code != 0 {
+    probe := bridge_provider_cli_version(provider, binary, env[:], min(timeout, 3*time.Second))
+    if !probe.ok {
         fallback := strings.concatenate({d.provider, "_version_failed"})
-        if exit_code < 0 do fallback = strings.concatenate({d.provider, "_version_spawn_failed"})
-        if timed_out do fallback = strings.concatenate({d.provider, "_version_timeout"})
-        excerpt := strings.concatenate({stderr[:min(len(stderr), 512)], out[:min(len(out), 512)]})
-        return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), acp_adapter_probe_reason(excerpt, fallback)
+        if probe.exit_code < 0 do fallback = strings.concatenate({d.provider, "_version_spawn_failed"})
+        if probe.timed_out do fallback = strings.concatenate({d.provider, "_version_timeout"})
+        return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), acp_adapter_probe_reason(probe.excerpt, fallback)
     }
     // Only a validated numeric version can leave this boundary.
-    text, valid := acp_provider_parse_cli_version(d, out)
-    if !valid do return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), "cli_version_mismatch"
-    // A detected system CLI below the minimum is reported with its version.
-    if !contracts.acp_descriptor_cli_version_accepted(d, text) do return strings.clone(text), strings.concatenate({"acp_", d.provider, "_outdated"}), "cli_version_outdated"
-    return strings.clone(text), "", ""
+    if probe.parsed == "" do return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), "cli_version_mismatch"
+    if !contracts.acp_descriptor_cli_version_accepted(d, probe.parsed) {
+        // A detected system CLI below the minimum is reported with its version;
+        // a pinned CLI that reports another version is a mismatch.
+        if d.launch != .System do return "", strings.concatenate({"acp_", d.provider, "_not_runnable"}), "cli_version_mismatch"
+        return strings.clone(probe.parsed), strings.concatenate({"acp_", d.provider, "_outdated"}), "cli_version_outdated"
+    }
+    return strings.clone(probe.parsed), "", ""
 }
 
 acp_adapter_cli_probe :: proc(provider: string) -> (reason, diagnostic: string) {
@@ -497,8 +469,7 @@ acp_adapter_probe_profile :: proc(pp: ^Provider_Profile, root, scratch: string) 
     if d.launch == .Native || d.launch == .System {
         child_env := make([dynamic]string)
         for pair in env do append(&child_env, strings.concatenate({pair[0], "=", pair[1]}, context.temp_allocator))
-        command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
-        resolved = profile_resolve_binary(command, child_env[:])
+        resolved, _ = bridge_provider_resolve_binary(bridge_provider_descriptor(d.provider), pp, child_env[:])
     }
     argv, built := acp_provider_launch_argv(d, root, resolved)
     if !built do return false, "spawn_failed"

@@ -175,7 +175,7 @@ acp_runtime_auth_blocker :: proc(r: ^ACP_Runtime) {
     for p in bridge_permission_pending { if p.agent_instance_id == r.instance && p.request_id == id { delete(id); return } }
     append(&bridge_permission_pending, Bridge_Permission_Pending{
         request_id = id, agent_instance_id = strings.clone(r.instance), provider = strings.clone(r.provider),
-        kind = "startup", summary = strings.concatenate({"ACP authentication required for profile ", r.profile, ". ", r.descriptor.auth_guidance}),
+        kind = "startup", summary = strings.concatenate({"ACP authentication required for profile ", r.profile, ". ", bridge_provider_traits(r.provider).auth_guidance}),
         input = `{"reason":"acp_auth_required","actions":[]}`, created_unix_ms = bridge_runtime_now_ms(), generation = 1,
     })
     bridge_blockers_touch_locked(r.instance)
@@ -405,9 +405,8 @@ acp_profile_child_env :: proc(pp: ^Provider_Profile) -> ([]string, bool) {
     env, ok := profile_child_env(pp); if !ok do return nil, false
     d, known := contracts.acp_provider_descriptor(pp.provider)
     if !known do return nil, false
-    binary := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
-    resolved := profile_resolve_binary(binary, env)
-    if resolved == "" do return nil, false
+    resolved, found := bridge_provider_resolve_binary(bridge_provider_descriptor(d.provider), pp, env)
+    if !found do return nil, false
     defer delete(resolved)
     plan := Profile_Env_Plan{}
     for pair in d.env do append(&plan.set, pair)
@@ -435,8 +434,7 @@ acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^P
     if !known do return {}, false
     resolved := ""
     if d.launch == .Native || d.launch == .System {
-        command := pp.config.binary_path if pp.config.binary_path != "" else d.cli_command
-        resolved = profile_resolve_binary(command, full)
+        resolved, _ = bridge_provider_resolve_binary(bridge_provider_descriptor(d.provider), pp, full)
     }
     argv, built := acp_provider_launch_argv(d, root, resolved)
     if !built do return {}, false

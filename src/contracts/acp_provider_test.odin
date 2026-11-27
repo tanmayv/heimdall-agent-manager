@@ -36,9 +36,9 @@ acp_descriptor_closed_registry_and_launch_shapes :: proc(t: ^testing.T) {
         pkg = {"@github/copilot", "1.0.114", "sha512-qhiUzWGAu3v9jRMU62YFpoI/x9/sQJbylUU2rNrKpTgJSw+jRX7eee0RKf/ZC/FfOPtuACpXWNBQrf08WhVEEw=="},
         platforms = {{"linux", "amd64", {"@github/copilot-linux-x64", "1.0.114", "sha512-gHnINm9ffFqz+G19cQUqRe3lsTAQO3Tbdj7r7Bx1ktZvC5X6iXd/nfo1DRTj9magb52aGRiuwB3yvD1lkW68xQ=="}}},
         command = "copilot", args = {"--acp", "--stdio"}, env = {{"COPILOT_AUTO_UPDATE", "false"}},
-        cli_command = "copilot", cli_package = "@github/copilot", cli_version = "1.0.114",
+        cli_package = "@github/copilot", cli_version = "1.0.114",
         protocol_version = 1, node_min_major = 22, bootstrap_filename = "AGENTS.md",
-        auth_guidance = "Run copilot login with the selected profile.", model_category = "model", permission_policy = .Once_Only,
+        model_category = "model", permission_policy = .Once_Only,
     }
     testing.expect(t, acp_descriptor_shape_valid(native))
     platform, supported := acp_descriptor_platform_package(native, "linux", "amd64")
@@ -99,14 +99,14 @@ acp_kiro_system_descriptor_is_detect_only :: proc(t: ^testing.T) {
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
     invalid = d; invalid.system_os = {"linux", "linux"}
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
-    invalid = d; invalid.cli_version_prefix = ""
+    // The CLI binary and version format come from the provider registry.
+    invalid = d; invalid.provider = "unknown"
+    testing.expect(t, !acp_descriptor_shape_valid(invalid))
+    invalid = d; invalid.provider = "pi"; invalid.pkg.name = "pi" // registered, but its version is unparsed
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
     invalid = d; invalid.pkg.name = "other"
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
     invalid = d; invalid.cli_version = "3.5.0"
-    testing.expect(t, !acp_descriptor_shape_valid(invalid))
-    claude, _ := acp_provider_descriptor("claude")
-    invalid = claude; invalid.cli_version_prefix = "claude "
     testing.expect(t, !acp_descriptor_shape_valid(invalid))
 }
 
@@ -197,15 +197,13 @@ acp_opencode_recipe_is_stdio_only_on_all_supported_os :: proc(t: ^testing.T) {
 }
 
 @(test)
-acp_descriptor_cli_command_matches_provider_registry_binary :: proc(t: ^testing.T) {
+acp_descriptors_link_to_the_provider_registry :: proc(t: ^testing.T) {
     for d in acp_provider_descriptors {
         p, ok := provider_descriptor(d.provider)
-        testing.expectf(t, ok, "%s: ACP descriptor without a provider registry entry", d.provider)
-        testing.expectf(t, d.cli_command == p.binary, "%s: cli_command %q != registry binary %q", d.provider, d.cli_command, p.binary)
-        testing.expectf(t, d.auth_guidance == p.auth_guidance, "%s: auth_guidance drifted from the registry", d.provider)
-        version_label := "" if d.cli_version_bare else d.cli_version_prefix
+        testing.expectf(t, ok && p.provider == d.provider, "%s: ACP descriptor without a provider registry entry", d.provider)
         if d.launch == .System {
-            testing.expectf(t, p.version_label == version_label, "%s: version label drifted from the registry", d.provider)
+            testing.expectf(t, d.pkg.name == p.binary, "%s: system package %q != registry binary %q", d.provider, d.pkg.name, p.binary)
+            testing.expectf(t, p.version_format != .Raw, "%s: a minimum version needs a parseable --version", d.provider)
         }
     }
 }
