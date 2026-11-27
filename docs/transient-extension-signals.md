@@ -132,6 +132,9 @@ resolves every id below):
 | antigravity | `gemini-.*` | 256000 | native 1048576, but a 256K platform compression limit is reported | Google model docs + third-party monitor; conservative |
 | antigravity | `claude-.*` | 200000 | in-app limit unknown | undocumented; conservative |
 | antigravity | `gpt-oss-120b.*` | 131072 | native gpt-oss-120b window | model card; in-app limit unknown |
+| opencode | `opencode/(beam-free\|hy4-flash-free\|nemotron-3\.5-super-vl-free\|seaglass-alpha-free\|tidepool-alpha-free)` | 1048576 | OpenCode Zen models | `opencode models --verbose` (`limit.context`); authoritative |
+| opencode | `opencode/(flint-40b-free\|iceman-free\|nemotron-3\.5-lightning-free)` | 262144 | OpenCode Zen models | `opencode models --verbose`; authoritative |
+| opencode | `opencode/(big-pickle\|deepseek-v4\.1-flash-free\|mimo-v2\.6-flash-free)` | 200000 | OpenCode Zen models | `opencode models --verbose`; authoritative |
 
 Any other Claude id gets the 200000 default, the same assumption Claude Code
 makes for a model it does not know. Sources: the Anthropic platform docs
@@ -140,6 +143,23 @@ and openai/codex issue 53336 for Codex's effective window. Caveat: a Claude
 Code launched with `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` runs those models at
 200K; the bridge cannot see that, so set a 200000 override for the model on
 that bridge.
+
+OpenCode rows come from `opencode models --verbose` (opencode 1.19.6, read on
+2026-11-27), whose `limit.context` is OpenCode's own registry; its ACP
+`session/new` model option values use the same `<provider>/<model>` ids. The
+rows list exact OpenCode Zen ids only: user-configured backends (local servers)
+and any other id get the 200000 default, so set an override for those.
+Kiro and Copilot have no rows and use the default: Kiro documents its windows
+per display name only ([kiro.dev/docs/models](https://kiro.dev/docs/models/),
+updated 2026-11-25: 1M for most current Claude/GPT models, 200K for the 4.5
+generation), but its model ids are visible only when signed in and no Kiro
+account was available to verify them (docs/specs/acp-runtime-transport.md);
+GitHub publishes no per-model window table for Copilot CLI (the window "varies
+by model", with an optional 1M mode;
+[supported models](https://docs.github.com/en/copilot/reference/ai-models/supported-models)).
+Every provider in `context_windows.json` must be a registered provider id
+(`contracts.provider_descriptors`); `test_ctxwin_shipped_providers_are_registered`
+enforces it.
 
 Pi and Antigravity rows come from dawnstar's `provider_models.json` and
 `pi --list-models`, read on 2026-11-02 (agy 1.2.16). Pi ids are

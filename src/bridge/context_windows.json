@@ -19,6 +19,9 @@
 		{"provider": "pi", "model_regex": "zai/glm-5\\..*", "context_window": 1000000},
 		{"provider": "antigravity", "model_regex": "gemini-.*", "context_window": 256000},
 		{"provider": "antigravity", "model_regex": "claude-.*", "context_window": 200000},
-		{"provider": "antigravity", "model_regex": "gpt-oss-120b.*", "context_window": 131072}
+		{"provider": "antigravity", "model_regex": "gpt-oss-120b.*", "context_window": 131072},
+		{"provider": "opencode", "model_regex": "opencode/(beam-free|hy4-flash-free|nemotron-3\\.5-super-vl-free|seaglass-alpha-free|tidepool-alpha-free)", "context_window": 1048576},
+		{"provider": "opencode", "model_regex": "opencode/(flint-40b-free|iceman-free|nemotron-3\\.5-lightning-free)", "context_window": 262144},
+		{"provider": "opencode", "model_regex": "opencode/(big-pickle|deepseek-v4\\.1-flash-free|mimo-v2\\.6-flash-free)", "context_window": 200000}
 	]
 }

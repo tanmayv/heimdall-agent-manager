@@ -40,6 +40,7 @@ import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 import bridgesvc "odin_test:lib/bridgesvc"
 
 Bridge_Extension_Condition :: enum {
@@ -102,28 +103,41 @@ bridge_extension_count_other_profiles :: proc() -> int {
 	return n
 }
 
-BRIDGE_CLAUDE_MARKETPLACE :: "heimdall"
-BRIDGE_CODEX_MARKETPLACE :: "heimdall-codex"
 BRIDGE_ANTIGRAVITY_PLUGIN :: "heimdall"
 
+// bridge_extension_descriptor finds the registry entry of a provider that has a
+// Heimdall extension (aliases such as "claude-code" accepted); ok is false for
+// every other provider. Which providers have one, their marketplace and bundle
+// directory come from contracts.provider_descriptors (G7).
+bridge_extension_descriptor :: proc(provider: string) -> (contracts.Provider_Descriptor, bool) {
+	d, ok := contracts.provider_descriptor(strings.trim_space(provider))
+	return d, ok && d.extension != .None
+}
+
+// bridge_extension_kind is the provider's extension mechanism (.None when it has none).
+bridge_extension_kind :: proc(provider: string) -> contracts.Provider_Extension_Kind {
+	d, _ := bridge_extension_descriptor(provider)
+	return d.extension
+}
+
+// bridge_extension_canonical_provider maps an alias to its registered id;
+// an unknown name is returned trimmed and unchanged.
 bridge_extension_canonical_provider :: proc(provider: string) -> string {
 	p := strings.trim_space(provider)
-	return "claude" if p == "claude-code" else p
+	if d, ok := contracts.provider_descriptor(p); ok do return d.provider
+	return p
 }
 
 bridge_extension_provider_supported :: proc(provider: string) -> bool {
-	switch bridge_extension_canonical_provider(provider) {
-	case "antigravity", "claude", "codex": return true
-	}
-	return false
+	_, ok := bridge_extension_descriptor(provider)
+	return ok
 }
 
+// bridge_extension_marketplace_name is the local plugin marketplace the
+// extension registers through, "" for a kind without one (Antigravity).
 bridge_extension_marketplace_name :: proc(provider: string) -> string {
-	switch bridge_extension_canonical_provider(provider) {
-	case "claude": return BRIDGE_CLAUDE_MARKETPLACE
-	case "codex":  return BRIDGE_CODEX_MARKETPLACE
-	}
-	return ""
+	d, _ := bridge_extension_descriptor(provider)
+	return d.extension_marketplace
 }
 
 // bridge_extension_parse_marketplace finds marketplace `name` in the output of
@@ -230,32 +244,34 @@ bridge_extension_cleanup_argvs :: proc(provider, bin_path: string, allocator := 
 	add :: proc(out: ^[dynamic][]string, argv: []string, allocator: mem.Allocator) {
 		append(out, slice.clone(argv, allocator))
 	}
-	switch bridge_extension_canonical_provider(provider) {
-	case "claude":
+	d, _ := bridge_extension_descriptor(provider)
+	switch d.extension {
+	case .Claude_Plugin:
 		add(&out, {bin_path, "plugin", "uninstall", BRIDGE_CLAUDE_PLUGIN_ID}, allocator)
-		add(&out, {bin_path, "plugin", "marketplace", "remove", BRIDGE_CLAUDE_MARKETPLACE}, allocator)
-	case "codex":
+		add(&out, {bin_path, "plugin", "marketplace", "remove", d.extension_marketplace}, allocator)
+	case .Codex_Plugin:
 		add(&out, {bin_path, "plugin", "remove", BRIDGE_CODEX_PLUGIN_ID}, allocator)
-		add(&out, {bin_path, "plugin", "marketplace", "remove", BRIDGE_CODEX_MARKETPLACE}, allocator)
-	case "antigravity":
+		add(&out, {bin_path, "plugin", "marketplace", "remove", d.extension_marketplace}, allocator)
+	case .Antigravity_Plugin:
 		add(&out, {bin_path, "plugin", "uninstall", BRIDGE_ANTIGRAVITY_PLUGIN}, allocator)
+	case .None:
 	}
 	return out[:]
 }
 
 // In-process half of the lock: POSIX record locks are per process, so two
-// threads of one bridge would both "hold" the file lock.
+// threads of one bridge would both "hold" the file lock. Keyed by extension
+// kind: each kind belongs to exactly one provider.
 @(private = "file")
-g_extension_ensure_mu: [len(BRIDGE_EXTENSION_PROVIDERS)]sync.Mutex
+g_extension_ensure_mu: [contracts.Provider_Extension_Kind]sync.Mutex
 
 BRIDGE_EXTENSION_LOCK_POLL :: 100 * time.Millisecond
 
 // bridge_extension_lock waits until deadline for the provider's in-process
 // mutex and its per-OS-user lock file. Release with bridge_extension_unlock.
 bridge_extension_lock :: proc(prov: string, deadline: time.Time) -> (lock_path: string, ok: bool) {
-	idx := -1
-	for p, i in BRIDGE_EXTENSION_PROVIDERS do if p == prov do idx = i
-	if idx < 0 do return "", true // unsupported; rejected later, nothing to serialize
+	idx := bridge_extension_kind(prov)
+	if idx == .None do return "", true // unsupported; rejected later, nothing to serialize
 	path, path_ok := bridge_extension_lock_path(prov)
 	if !path_ok do return "", false
 	for !sync.mutex_try_lock(&g_extension_ensure_mu[idx]) {
@@ -274,7 +290,7 @@ bridge_extension_lock :: proc(prov: string, deadline: time.Time) -> (lock_path: 
 
 bridge_extension_unlock :: proc(prov, lock_path: string) {
 	bridge_instance_unlock(lock_path)
-	for p, i in BRIDGE_EXTENSION_PROVIDERS do if p == prov do sync.mutex_unlock(&g_extension_ensure_mu[i])
+	if kind := bridge_extension_kind(prov); kind != .None do sync.mutex_unlock(&g_extension_ensure_mu[kind])
 }
 
 bridge_extension_sink_progress :: proc(sink: Bridge_Extension_Sink, stage: string, pct: int, message: string) {
@@ -289,6 +305,7 @@ bridge_extension_fail_result :: proc(cond: Bridge_Extension_Condition, code, mes
 // ext_path with bin_path; both must come from local resolution.
 bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: time.Time, sink: Bridge_Extension_Sink) -> Bridge_Extension_Result {
 	prov := bridge_extension_canonical_provider(provider)
+	kind := bridge_extension_kind(prov)
 	install_deadline := time.time_add(deadline, -8 * time.Second)
 	lock_path, locked := bridge_extension_lock(prov, install_deadline)
 	if !locked {
@@ -302,12 +319,12 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 	// A bridge uninstalled without cleaning up leaves its own marketplace with a
 	// deleted source, and Codex then fails every `plugin list`, including the
 	// shared registration's check below: drop those first.
-	if prov == "codex" && sink.profile == nil {
+	if kind == .Codex_Plugin && sink.profile == nil {
 		if healed, heal_msg := bridge_codex_own_heal_hook(); healed > 0 || heal_msg != "" {
 			bridge_extension_sink_progress(sink, "installing", 5, fmt.tprintf("Removed %d stale bridge Codex marketplace(s)%s%s", healed, "; " if heal_msg != "" else "", heal_msg))
 		}
 	}
-	defer if prov == "codex" && sink.profile == nil {
+	defer if kind == .Codex_Plugin && sink.profile == nil {
 		own_ok, own_msg := bridge_codex_own_ensure_hook(bin_path, install_deadline, sink.env)
 		bridge_extension_sink_progress(sink, "installing", 90, own_ok ? own_msg : fmt.tprintf("This bridge's own Codex plugin was not registered (%s); agents use the shared one", own_msg))
 	}
@@ -321,9 +338,9 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 
 	mp_root := ""
 	has_mp := false
-	switch prov {
-	case "claude": mp_root, has_mp = bridge_claude_resolve_marketplace_root(ext_path)
-	case "codex":  mp_root, has_mp = bridge_codex_resolve_marketplace_root(ext_path)
+	#partial switch kind {
+	case .Claude_Plugin: mp_root, has_mp = bridge_claude_resolve_marketplace_root(ext_path)
+	case .Codex_Plugin:  mp_root, has_mp = bridge_codex_resolve_marketplace_root(ext_path)
 	}
 
 	// Inspect what is registered now.
@@ -356,8 +373,8 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 			fmt.tprintf("bundled %s extension at %s is version %q, but Ninjy requires %q or newer; update this Bridge to a release that bundles extension %s, then retry",
 				prov, ext_path, bundled_version, required_version, required_version))
 	}
-	if (prov == "claude" || prov == "codex") && !has_mp {
-		label := "Claude marketplace metadata (.claude-plugin/marketplace.json)" if prov == "claude" else "Codex marketplace metadata"
+	if bridge_extension_marketplace_name(prov) != "" && !has_mp {
+		label := "Claude marketplace metadata (.claude-plugin/marketplace.json)" if kind == .Claude_Plugin else "Codex marketplace metadata"
 		return bridge_extension_fail_result(cond, "missing_marketplace", fmt.tprintf("missing %s for extension directory: %s", label, ext_path))
 	}
 
@@ -417,6 +434,7 @@ bridge_extension_ensure :: proc(provider, ext_path, bin_path: string, deadline: 
 // sink, that must no longer find the extension. Setup and update reinstall it.
 bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time, sink: Bridge_Extension_Sink) -> Bridge_Extension_Result {
 	prov := bridge_extension_canonical_provider(provider)
+	kind := bridge_extension_kind(prov)
 	install_deadline := time.time_add(deadline, -8 * time.Second)
 	lock_path, locked := bridge_extension_lock(prov, install_deadline)
 	if !locked {
@@ -425,7 +443,7 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 	}
 	defer bridge_extension_unlock(prov, lock_path)
 	// This bridge's own Codex plugin is never shared with another profile.
-	if prov == "codex" && sink.profile == nil do bridge_codex_own_remove_hook(bin_path, install_deadline, sink.env)
+	if kind == .Codex_Plugin && sink.profile == nil do bridge_codex_own_remove_hook(bin_path, install_deadline, sink.env)
 	// The OS user's registration is shared by every profile of this OS user;
 	// removing it for one Ninjy account would break the others' agents. A
 	// per-account provider profile registers in its own config dir instead.
@@ -465,14 +483,15 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 // codex) and installs the plugin.
 @(private = "file")
 bridge_extension_install_once :: proc(prov, ext_path, bin_path, mp_root: string, install_deadline: time.Time, sink: Bridge_Extension_Sink) -> (code, message: string, ok: bool) {
-	if prov == "claude" || prov == "codex" {
-		bridge_extension_sink_progress(sink, "installing", 25, fmt.tprintf("Registering %s local plugin marketplace...", "Claude" if prov == "claude" else "Codex"))
+	kind := bridge_extension_kind(prov)
+	if mp_name := bridge_extension_marketplace_name(prov); mp_name != "" {
+		bridge_extension_sink_progress(sink, "installing", 25, fmt.tprintf("Registering %s local plugin marketplace...", "Claude" if kind == .Claude_Plugin else "Codex"))
 		_, msg, registered := bridge_extension_install_step({bin_path, "plugin", "marketplace", "add", mp_root}, install_deadline, sink.env)
 		// Another source holds the name (e.g. an older Bridge's bundle): replace it
 		// here instead of depending on a second, possibly time-starved attempt.
 		if !registered && strings.contains(strings.to_lower(msg, context.temp_allocator), "different source") {
 			bridge_extension_sink_progress(sink, "installing", 30, "Replacing a marketplace registered from another source...")
-			_, _, _ = bridge_extension_install_step({bin_path, "plugin", "marketplace", "remove", bridge_extension_marketplace_name(prov)}, install_deadline, sink.env)
+			_, _, _ = bridge_extension_install_step({bin_path, "plugin", "marketplace", "remove", mp_name}, install_deadline, sink.env)
 			_, msg, registered = bridge_extension_install_step({bin_path, "plugin", "marketplace", "add", mp_root}, install_deadline, sink.env)
 		}
 		if !registered do return "marketplace_add_failed", msg, false
@@ -481,7 +500,7 @@ bridge_extension_install_once :: proc(prov, ext_path, bin_path, mp_root: string,
 	argv := bridge_provider_extension_build_install_args(prov, bin_path, ext_path)
 	output, install_error, installed := bridge_extension_install_step(argv, install_deadline, sink.env)
 	if !installed do return "install_failed", install_error, false
-	if prov == "claude" && strings.contains(strings.to_lower(output, context.temp_allocator), "already installed") {
+	if kind == .Claude_Plugin && strings.contains(strings.to_lower(output, context.temp_allocator), "already installed") {
 		bridge_extension_sink_progress(sink, "installing", 65, "Updating existing Claude extension...")
 		_, msg, updated := bridge_extension_install_step({bin_path, "plugin", "update", BRIDGE_CLAUDE_PLUGIN_ID}, install_deadline, sink.env)
 		if !updated do return "update_failed", msg, false

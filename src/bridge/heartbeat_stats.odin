@@ -5,6 +5,7 @@ import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 
 // Heartbeat resource stats (hub telemetry plan 4.3). Piggybacked on the existing
 // 45 s bridge_heartbeat as a `stats` object; the hub turns it into per-bridge
@@ -209,21 +210,12 @@ heartbeat_stats_collect :: proc(allocator := context.allocator) -> (st: Heartbea
 	return
 }
 
-// heartbeat_stats_provider_from_program reduces a program path to its lowercase
-// basename ("/nix/store/.../bin/claude" -> "claude"). The hub maps it onto its
-// provider enum; anything unknown becomes "other" there, never a new series.
+// heartbeat_stats_provider_from_program maps a process program (path, maybe
+// with arguments) to its registered provider id by basename through
+// contracts.provider_for_program ("/usr/bin/kiro-cli" -> "kiro"); anything
+// unregistered is "other", so the hub never sees a new series.
 heartbeat_stats_provider_from_program :: proc(program: string) -> string {
-	p := program
-	if i := strings.last_index_byte(p, '/'); i >= 0 do p = p[i+1:]
-	if j := strings.index_byte(p, ' '); j >= 0 do p = p[:j]
-	switch strings.to_lower(p, context.temp_allocator) {
-	case "claude", "claude-code":               return "claude"
-	case "codex":                               return "codex"
-	case "copilot", "github-copilot", "gh":     return "copilot"
-	case "antigravity", "agy":                  return "antigravity"
-	case "gemini":                              return "gemini"
-	case "":                                    return "other"
-	}
+	if d, ok := contracts.provider_for_program(program); ok do return d.provider
 	return "other"
 }
 

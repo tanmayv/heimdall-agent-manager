@@ -255,7 +255,7 @@ test_sync_discover :: proc(filter: []string) -> [dynamic]Bridge_Provider_Path {
 	results := make([dynamic]Bridge_Provider_Path)
 	last := ""
 	if n := len(test_install_calls); n > 0 && len(test_install_calls[n - 1]) > 3 do last = test_install_calls[n - 1][3]
-	for p, i in BRIDGE_EXTENSION_PROVIDERS {
+	for p, i in bridge_extension_providers() {
 		present := test_sync_discover_present[i]
 		installed := len(filter) == 1 && (last == BRIDGE_CLAUDE_PLUGIN_ID && p == "claude" || last == BRIDGE_CODEX_PLUGIN_ID && p == "codex")
 		append(&results, Bridge_Provider_Path{
@@ -512,4 +512,39 @@ test_bridge_extension_replaces_marketplace_from_another_source :: proc(t: ^testi
 	for call in test_install_calls do append(&verbs, test_install_verb(call))
 	// add (refused) -> remove -> add -> plugin add, with no cleanup pass first.
 	testing.expectf(t, len(verbs) >= 4 && verbs[0] == "marketplace add" && verbs[1] == "marketplace remove" && verbs[2] == "marketplace add" && verbs[3] == "add", "%v", verbs)
+}
+
+// The extension sync list, aliases, marketplaces and bundle directories all come
+// from the provider registry: only claude, codex and antigravity have one.
+@(test)
+test_bridge_extension_providers_from_descriptors :: proc(t: ^testing.T) {
+	providers := bridge_extension_providers()
+	testing.expect_value(t, len(providers), 3)
+	if len(providers) == 3 {
+		testing.expect_value(t, providers[0], "claude")
+		testing.expect_value(t, providers[1], "codex")
+		testing.expect_value(t, providers[2], "antigravity")
+	}
+	testing.expect_value(t, bridge_extension_canonical_provider(" claude-code "), "claude")
+	testing.expect_value(t, bridge_extension_canonical_provider("unknown-cli"), "unknown-cli")
+	testing.expect(t, bridge_extension_provider_supported("claude-code"))
+	for p in ([]string{"copilot", "pi", "kiro", "opencode", "gemini", ""}) {
+		testing.expectf(t, !bridge_extension_provider_supported(p), "%s must not be supported", p)
+		testing.expect_value(t, bridge_extension_kind(p), contracts.Provider_Extension_Kind.None)
+		testing.expect_value(t, bridge_extension_variant_dir(p), "")
+		testing.expect_value(t, len(bridge_extension_cleanup_argvs(p, "/bin/x")), 0)
+	}
+	testing.expect_value(t, bridge_extension_marketplace_name("claude-code"), "heimdall")
+	testing.expect_value(t, bridge_extension_marketplace_name("codex"), "heimdall-codex")
+	testing.expect_value(t, bridge_extension_marketplace_name("antigravity"), "")
+	testing.expect_value(t, bridge_extension_variant_dir("claude"), "claude-code")
+	testing.expect_value(t, bridge_extension_variant_dir("codex"), "codex")
+	testing.expect_value(t, bridge_extension_variant_dir("antigravity"), "antigravity")
+	claude := bridge_extension_cleanup_argvs("claude", "/bin/claude")
+	testing.expect_value(t, len(claude), 2)
+	if len(claude) == 2 do testing.expect_value(t, strings.join(claude[1], " ", context.temp_allocator), "/bin/claude plugin marketplace remove heimdall")
+	codex := bridge_extension_cleanup_argvs("codex", "/bin/codex")
+	testing.expect_value(t, len(codex), 2)
+	if len(codex) == 2 do testing.expect_value(t, strings.join(codex[1], " ", context.temp_allocator), "/bin/codex plugin marketplace remove heimdall-codex")
+	testing.expect_value(t, len(bridge_extension_cleanup_argvs("antigravity", "/bin/agy")), 1)
 }

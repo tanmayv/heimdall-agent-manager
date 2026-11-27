@@ -161,27 +161,28 @@ bridge_models_append :: proc(models: ^[dynamic]Bridge_Discovered_Model, id, labe
 
 // A malformed entry invalidates the entire page; callers discard partial results.
 bridge_models_parse_array :: proc(provider: string, array: json.Array, models: ^[dynamic]Bridge_Discovered_Model) -> bool {
+	kind := bridge_models_probe_kind(provider)
 	for entry in array {
 		obj, ok := entry.(json.Object)
 		if !ok do return false
 		id, label, resolved := "", "", ""
-		switch provider {
-		case "claude": id = bridge_model_string(obj, "value"); label = bridge_model_string(obj, "displayName"); resolved = bridge_model_string(obj, "resolvedModel")
-		case "codex":
+		switch kind {
+		case .Claude_Control: id = bridge_model_string(obj, "value"); label = bridge_model_string(obj, "displayName"); resolved = bridge_model_string(obj, "resolvedModel")
+		case .Codex_App_Server:
 			if hidden, _ := obj["hidden"].(json.Boolean); bool(hidden) do continue
 			id = bridge_model_string(obj, "model"); label = bridge_model_string(obj, "displayName")
-		case "pi":
+		case .Pi_Rpc:
 			upstream := bridge_model_string(obj, "provider")
 			// Pi's user-defined provider names do not follow Heimdall's own
 			// catalog slug grammar (they can contain capitals and underscores).
 			if !bridge_model_id_valid(upstream) || strings.contains(upstream, "/") || !bridge_model_id_valid(bridge_model_string(obj, "id")) do return false
 			id = fmt.tprintf("%s/%s", upstream, bridge_model_string(obj, "id")); label = bridge_model_string(obj, "name")
-		case "copilot":
+		case .Copilot_Rpc:
 			if policy, policy_ok := obj["policy"].(json.Object); policy_ok {
 				if state := bridge_model_string(policy, "state"); state != "" && state != "enabled" do continue
 			}
 			id = bridge_model_string(obj, "id"); label = bridge_model_string(obj, "name")
-		case: return false
+		case .None, .Agy_Models, .ACP: return false
 		}
 		if !bridge_models_append(models, id, label, resolved) do return false
 	}
@@ -208,13 +209,14 @@ bridge_models_parse_reply :: proc(provider, text: string, expected_id: int, mode
 	obj, ok := value.(json.Object)
 	if !ok do return false, false, "", false
 	root := obj
-	if provider == "claude" {
+	kind := bridge_models_probe_kind(provider)
+	if kind == .Claude_Control {
 		if bridge_model_string(obj, "type") != "control_response" do return false, false, "", false
 		response, _ := obj["response"].(json.Object)
 		if bridge_model_string(response, "request_id") != "models" do return false, false, "", false
 		if bridge_model_string(response, "subtype") != "success" do return true, false, "", false
 		root, _ = response["response"].(json.Object)
-	} else if provider == "pi" {
+	} else if kind == .Pi_Rpc {
 		if bridge_model_string(obj, "id") != "models" || bridge_model_string(obj, "command") != "get_available_models" do return false, false, "", false
 		if success, _ := obj["success"].(json.Boolean); !bool(success) do return true, false, "", false
 		root, _ = obj["data"].(json.Object)
@@ -227,7 +229,7 @@ bridge_models_parse_reply :: proc(provider, text: string, expected_id: int, mode
 		}
 		root, _ = obj["result"].(json.Object)
 	}
-	key := "data" if provider == "codex" else "models"
+	key := "data" if kind == .Codex_App_Server else "models"
 	array, array_ok := root[key].(json.Array)
 	if !array_ok do return true, false, "", false
 	if !bridge_models_parse_array(provider, array, models) do return true, false, "", false
@@ -251,32 +253,11 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	state = "error"
 	models = make([dynamic]Bridge_Discovered_Model)
 	if timeout <= 0 do return models, "timeout"
-	args := make([dynamic]string, context.temp_allocator)
-	append(&args, binary)
-	request := ""
+	kind := bridge_models_probe_kind(provider)
 	descriptor, acp := bridge_models_acp_descriptor(provider)
-	if acp {
-		if binary == "" do return models, "absent"
-		argv, built := acp_provider_launch_argv(descriptor, "", binary)
-		if !built do return
-		resize(&args, 0); append(&args, ..argv)
-		request = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"heimdall-model-discovery","version":"1"}}}`
-	} else { switch provider {
-	case "claude":
-		append(&args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--tools", "", "--settings", `{"disableAllHooks":true}`)
-		request = `{"type":"control_request","request_id":"models","request":{"subtype":"initialize"}}`
-	case "codex": append(&args, "app-server")
-	case "pi":
-		append(&args, "--offline", "--no-session", "--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--mode", "rpc")
-		request = `{"id":"models","type":"get_available_models"}`
-	case "copilot":
-		append(&args, "--server", "--stdio")
-		request = `{"jsonrpc":"2.0","id":2,"method":"models.list","params":{}}`
-	case "antigravity": append(&args, "models")
-	case: return models, "unsupported"
-	}
-	append(&args, ..launch_args)
-	}
+	if acp && binary == "" do return models, "absent"
+	args, request, built := bridge_models_probe_command(provider, binary, launch_args)
+	if !built do return models, "error" if acp else "unsupported"
 	if binary == "" do return models, "absent"
 	if !bridge_process_slot_try_acquire() do return models, "busy"
 	defer bridge_process_slot_release()
@@ -302,14 +283,14 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	path := bridge_models_path(); defer delete(path)
 	cwd := strings.clone(working_dir) if working_dir != "" else strings.concatenate({path, ".probe"}); defer delete(cwd)
 	if err := bridge_make_directory_all(cwd); err != nil && !os.is_dir(cwd) { os.close(in_r); os.close(out_w); return }
-	process, started := bridge_model_process_start({command = args[:], stdin = in_r, stdout = out_w, env = clean_env[:], working_dir = cwd})
+	process, started := bridge_model_process_start({command = args, stdin = in_r, stdout = out_w, env = clean_env[:], working_dir = cwd})
 	os.close(in_r); os.close(out_w)
 	if !started do return
 	// Always terminate the owned process tree before reaping. No wait/reap races
 	// or reader threads can outlive this invocation.
 	defer if process.pid > 0 { bridge_model_process_kill(process); _, _ = os.process_wait(process, 500 * time.Millisecond) }
-	framed := provider == "copilot"
-	if provider == "codex" {
+	framed := kind == .Copilot_Rpc
+	if kind == .Codex_App_Server {
 		if !bridge_models_write_request(in_w, `{"id":1,"method":"initialize","params":{"clientInfo":{"name":"heimdall-model-discovery","version":"1"}}}`, false) do return
 		if !bridge_models_write_request(in_w, `{"method":"initialized","params":{}}`, false) do return
 		request = `{"id":2,"method":"model/list","params":{"limit":100,"includeHidden":false}}`
@@ -322,7 +303,7 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	for time.diff(time.now(), deadline) > 0 {
 		ready, err := os.pipe_has_data(out_r)
 		if err != nil {
-			if provider == "antigravity" && err == .Broken_Pipe && bridge_models_parse_agy(string(buffer[:]), &models) {
+			if kind == .Agy_Models && err == .Broken_Pipe && bridge_models_parse_agy(string(buffer[:]), &models) {
 				bridge_model_process_kill(process)
 				status, wait_err := os.process_wait(process, 500 * time.Millisecond)
 				process = {}
@@ -334,7 +315,7 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 		chunk: [8192]byte
 		n, read_err := os.read(out_r, chunk[:])
 		if read_err != nil || n == 0 {
-			if provider == "antigravity" && bridge_models_parse_agy(string(buffer[:]), &models) {
+			if kind == .Agy_Models && bridge_models_parse_agy(string(buffer[:]), &models) {
 				status, wait_err := os.process_wait(process, 0)
 				if wait_err == nil && status.exited && status.exit_code == 0 {
 					// Already reaped: prevent cleanup from targeting a reused pid.
@@ -346,7 +327,7 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 		total += n
 		if total > BRIDGE_MODEL_OUTPUT_LIMIT do return models, "output_limit"
 		append(&buffer, ..chunk[:n])
-		if provider == "antigravity" do continue
+		if kind == .Agy_Models do continue
 		for {
 			message, consumed := "", 0
 			if framed {
@@ -412,7 +393,7 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 				defer delete(cursor)
 				if !valid do return models, "authentication_required" if auth else "invalid_response"
 				if cursor == "" do return models, "success"
-				if provider != "codex" || expected_id >= 18 || len(cursor) > 256 do return models, "page_limit"
+				if kind != .Codex_App_Server || expected_id >= 18 || len(cursor) > 256 do return models, "page_limit"
 				expected_id += 1
 				cursor_json, _ := json.marshal(cursor, allocator = context.temp_allocator)
 				body := fmt.tprintf(`{"id":%d,"method":"model/list","params":{"limit":100,"includeHidden":false,"cursor":%s}}`, expected_id, string(cursor_json))
@@ -424,19 +405,65 @@ bridge_models_probe :: proc(provider, binary: string, timeout := BRIDGE_MODEL_PR
 	return models, "timeout"
 }
 
+// bridge_models_probe_kind is the provider's model probe from the registry
+// (contracts.provider_descriptors); .None for an unregistered provider.
+bridge_models_probe_kind :: proc(provider: string) -> contracts.Provider_Model_Probe {
+	return contracts.provider_descriptor_or_generic(provider).model_probe
+}
+
+// bridge_models_acp_descriptor is the ACP recipe of a provider whose model probe
+// is ACP and whose recipe opts in to a system-launched metadata-only session.
 bridge_models_acp_descriptor :: proc(provider: string) -> (contracts.ACP_Provider_Descriptor, bool) {
+	if bridge_models_probe_kind(provider) != .ACP do return {}, false
 	d, found := contracts.acp_provider_descriptor(provider)
 	return d, found && d.discover_models_via_acp && d.protocol == .ACP && d.launch == .System
 }
 
+// bridge_models_probe_command builds the probe child's argv and its first
+// request line for the provider's model probe kind (temp-allocated). Codex's
+// app-server requests are sent by bridge_models_probe after the initialize
+// handshake. launch_args (the profile's) are appended for the CLI probes only,
+// never to the fixed ACP argv. ok is false for a provider without a probe.
+bridge_models_probe_command :: proc(provider, binary: string, launch_args: []string = nil) -> (argv: []string, request: string, ok: bool) {
+	args := make([dynamic]string, context.temp_allocator)
+	append(&args, binary)
+	switch bridge_models_probe_kind(provider) {
+	case .ACP:
+		descriptor, acp := bridge_models_acp_descriptor(provider)
+		if !acp do return nil, "", false
+		acp_argv, built := acp_provider_launch_argv(descriptor, "", binary)
+		if !built do return nil, "", false
+		return acp_argv, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"heimdall-model-discovery","version":"1"}}}`, true
+	case .Claude_Control:
+		append(&args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--tools", "", "--settings", `{"disableAllHooks":true}`)
+		request = `{"type":"control_request","request_id":"models","request":{"subtype":"initialize"}}`
+	case .Codex_App_Server:
+		append(&args, "app-server")
+	case .Pi_Rpc:
+		append(&args, "--offline", "--no-session", "--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--mode", "rpc")
+		request = `{"id":"models","type":"get_available_models"}`
+	case .Copilot_Rpc:
+		append(&args, "--server", "--stdio")
+		request = `{"jsonrpc":"2.0","id":2,"method":"models.list","params":{}}`
+	case .Agy_Models:
+		append(&args, "models")
+	case .None:
+		return nil, "", false
+	}
+	append(&args, ..launch_args)
+	return args[:], request, true
+}
+
 bridge_models_source :: proc(provider: string) -> string {
-	if _, acp := bridge_models_acp_descriptor(provider); acp do return "acp_v1"
-	switch provider {
-	case "claude": return "claude_control"
-	case "codex": return "codex_app_server"
-	case "pi": return "pi_rpc"
-	case "antigravity": return "agy_models"
-	case "copilot": return "copilot_rpc"
+	switch bridge_models_probe_kind(provider) {
+	case .ACP:
+		if _, acp := bridge_models_acp_descriptor(provider); acp do return "acp_v1"
+	case .Claude_Control:   return "claude_control"
+	case .Codex_App_Server: return "codex_app_server"
+	case .Pi_Rpc:           return "pi_rpc"
+	case .Agy_Models:       return "agy_models"
+	case .Copilot_Rpc:      return "copilot_rpc"
+	case .None:
 	}
 	return "unsupported"
 }
