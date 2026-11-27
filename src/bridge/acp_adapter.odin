@@ -548,9 +548,16 @@ acp_adapter_install :: proc(provider, etag, version: string) -> (ok: bool, reaso
     if etag != current do return false, "provider_catalog_stale"
     root := acp_adapter_root(provider); defer delete(root)
     before := acp_adapter_status(provider)
-    if before.state == "missing_node" do return false, "acp_adapter_missing_node"
-    if before.state == "missing_npm" do return false, "acp_adapter_missing_npm"
-    if strings.has_prefix(before.error, "acp_adapter_prerequisite_check_failed") do return false, "acp_adapter_prerequisite_check_failed"
+    // A prerequisite failure is this attempt's result: an older install record
+    // (and its npm diagnostic) must not reappear once the tool is installed.
+    prerequisite := ""
+    if before.state == "missing_node" do prerequisite = "acp_adapter_missing_node"
+    if before.state == "missing_npm" do prerequisite = "acp_adapter_missing_npm"
+    if strings.has_prefix(before.error, "acp_adapter_prerequisite_check_failed") do prerequisite = "acp_adapter_prerequisite_check_failed"
+    if prerequisite != "" {
+        os.remove(strings.concatenate({root, ".status.json"}, context.temp_allocator))
+        return false, prerequisite
+    }
     parent := filepath.dir(root)
     if bridge_make_directory_all(parent) != nil do return false, "acp_adapter_directory_failed"
     lock_path := strings.concatenate({root, ".lock"}); defer delete(lock_path)

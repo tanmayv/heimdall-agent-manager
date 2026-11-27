@@ -144,6 +144,15 @@ r2_acp_adapter_node_npm_detected_live_with_install_commands :: proc(t: ^testing.
     frame = acp_adapter_install_result_json("cmd_r2", false, reason, strings.concatenate({"npm install failed:\n", status.diagnostic}))
     testing.expect(t, strings.contains(frame, "E404") && !strings.contains(frame, "hunter2"), frame)
 
+    // A later attempt that stops at a missing prerequisite replaces that
+    // result: the old npm diagnostic does not come back once npm is installed.
+    r2_npm = false
+    ok, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
+    testing.expect(t, !ok && reason == "acp_adapter_missing_npm")
+    r2_npm = true
+    status = acp_adapter_status("claude")
+    testing.expect(t, status.state == "missing" && status.diagnostic == "" && status.error == "", status.state)
+
     // Installing succeeds without a restart; a verified tree no longer needs npm.
     r2_npm_install_fails = false
     ok, reason = acp_adapter_install("claude", snapshot.etag, ACP_CLAUDE_VERSION)
@@ -283,5 +292,8 @@ r2_acp_npm_diagnostic_is_bounded_and_redacted :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, acp_adapter_npm_diagnostic("npm error code ETIMEDOUT\x1b[31m"), "npm error code ETIMEDOUT?[31m")
     testing.expect_value(t, acp_adapter_npm_diagnostic("", "npm error from stdout"), "npm error from stdout")
+    // Query strings are masked; the home directory reads as ~.
+    testing.expect_value(t, acp_adapter_npm_diagnostic("npm error GET https://registry.example/pkg?sig=abc&x=1 failed", home = ""), "npm error GET https://registry.example/pkg?*** failed")
+    testing.expect_value(t, acp_adapter_npm_diagnostic("npm error path /home/alice/.npm/_cacache\nnpm error see /home/alice/", home = "/home/alice/"), "npm error path ~/.npm/_cacache\nnpm error see ~/")
     testing.expect_value(t, acp_adapter_npm_diagnostic("  \n"), "")
 }

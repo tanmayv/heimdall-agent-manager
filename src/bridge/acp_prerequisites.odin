@@ -118,13 +118,17 @@ ACP_NPM_DIAGNOSTIC_LINE_BYTES :: 240
 @(private = "file")
 acp_npm_secret_markers := [?]string{"token", "_auth", "authorization", "password", "passwd", "secret", "credential", "cookie", "bearer", "npm_config_", "api_key", "apikey", "private"}
 
-acp_adapter_npm_diagnostic :: proc(stderr: string, stdout: string = "") -> string {
+acp_adapter_npm_diagnostic :: proc(stderr: string, stdout: string = "", home: string = "\x00") -> string {
     context.allocator = context.temp_allocator
+    // The bridge user's home directory is shown as ~ (no account name).
+    home := os.get_env("HOME", context.temp_allocator) if home == "\x00" else home
+    home = strings.trim_right(home, "/")
     source := stderr if strings.trim_space(stderr) != "" else stdout
     lines := make([dynamic]string)
     for raw in strings.split_lines(source) {
         line := strings.trim_space(raw)
         if line == "" do continue
+        if len(home) > 1 do line, _ = strings.replace_all(line, home, "~")
         append(&lines, acp_npm_diagnostic_line(line))
     }
     first := max(0, len(lines) - ACP_NPM_DIAGNOSTIC_MAX_LINES)
@@ -150,7 +154,7 @@ acp_npm_diagnostic_line :: proc(line: string) -> string {
     }
     b := strings.builder_make(context.temp_allocator)
     rest := line
-    // URL user info (https://user:pass@registry) is replaced.
+    // URL user info (https://user:pass@registry) and query strings are replaced.
     for {
         scheme := strings.index(rest, "://")
         if scheme < 0 do break
@@ -160,6 +164,12 @@ acp_npm_diagnostic_line :: proc(line: string) -> string {
         at := strings.last_index_byte(host[:end], '@')
         strings.write_string(&b, rest[:scheme + 3])
         if at >= 0 { strings.write_string(&b, "***@"); rest = host[at + 1:] } else do rest = host
+        token_end := strings.index_any(rest, " \t")
+        if token_end < 0 do token_end = len(rest)
+        if q := strings.index_byte(rest[:token_end], '?'); q >= 0 {
+            strings.write_string(&b, rest[:q]); strings.write_string(&b, "?***")
+            rest = rest[token_end:]
+        }
     }
     strings.write_string(&b, rest)
     out := strings.to_string(b)
