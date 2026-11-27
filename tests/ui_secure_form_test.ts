@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { sealSecureForm, secureFormEventDetail, verifySecureForm, type FormRegistration } from '../src/ui/utils/secureFormCrypto.ts';
+import { missingSecureFormChoices, sealSecureForm, secureFormEventDetail, verifySecureForm, type FormRegistration } from '../src/ui/utils/secureFormCrypto.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/secure-form-v1.json', import.meta.url), 'utf8'));
 const registration: FormRegistration = { version: 1, request: fixture.request, schema: fixture.schema, signature: fixture.request_signature };
@@ -91,4 +91,13 @@ test('WebSocket routing passes only an addressed metadata refresh', () => {
   assert.deepEqual(secureFormEventDetail({ ...detail, envelope: 'ignored' } as typeof detail), detail);
   assert.equal(secureFormEventDetail({ ...detail, request_id: '../submit' }), null);
   assert.equal(secureFormEventDetail({ ...detail, conversation_id: '' }), null);
+});
+
+test('missing choices can be corrected before discarding valid entered values', async () => {
+  const { schema } = await verifySecureForm(registration, expected, fixture.bridge_public);
+  const text = Object.freeze({ login: 'test@example.test', pass: 'synthetic-canary' });
+  const missing = missingSecureFormChoices(schema.fields, text);
+  assert.deepEqual({ ...missing }, { environment: 'Choose an option.', roles: 'Choose at least one option.' });
+  assert.equal(text.pass, 'synthetic-canary');
+  assert.deepEqual({ ...missingSecureFormChoices(schema.fields, { ...text, environment: 'test', roles: ['editor'] }) }, {});
 });

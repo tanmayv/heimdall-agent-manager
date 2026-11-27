@@ -23,6 +23,16 @@ export type FormStatus = { version: 1; request_id: string; generation: string; s
 export type FormView = { registration: FormRegistration; status: FormStatus };
 type Values = Record<string, string | string[]>;
 
+export function missingSecureFormChoices(fields: SecureFormField[], values: Values): Record<string, string> {
+  const missing: Record<string, string> = Object.create(null);
+  for (const { id, type } of fields) {
+    const value = Object.hasOwn(values, id) ? values[id] : undefined;
+    if (type === 'single' && (typeof value !== 'string' || !value)) missing[id] = 'Choose an option.';
+    if (type === 'multiple' && (!Array.isArray(value) || !value.length)) missing[id] = 'Choose at least one option.';
+  }
+  return missing;
+}
+
 function requireValid(condition: unknown): asserts condition {
   if (!condition) throw new Error('Secure form verification failed');
 }

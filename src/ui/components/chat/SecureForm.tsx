@@ -5,11 +5,13 @@ import { withApiBase } from '../../api/apiBase';
 import { USER_WS_RESYNC_EVENT } from '../../api/userWsRecovery';
 import { currentDeviceIdentity, fetchVerifiedChain } from '../../services/deviceVault';
 import type { store } from '../../store/store';
+import { selectActiveTheme } from '../../store/themeSlice';
 import { EXPECTED_USER_HEADER, getExpectedUserGeneration } from '../../utils/expectedUser';
 import { getKeyringSession, keyringGeneration, subscribeKeyringSession } from '../../utils/vaultKeyringSession';
 import { kindPolicy, signatureObjectText, SIGN_ALG_ECDSA_P256_SHA256 } from '../../utils/vaultStatements';
-import { sealSecureForm, secureFormChanged, secureFormId, verifySecureForm, type FormSigner, type FormStatus, type FormView, type VerifiedForm } from '../../utils/secureFormCrypto';
-import logo from '../../../../assets/brand/logos/ninjy-icon-dark-gold.png';
+import { missingSecureFormChoices, sealSecureForm, secureFormChanged, secureFormId, verifySecureForm, type FormSigner, type FormStatus, type FormView, type VerifiedForm } from '../../utils/secureFormCrypto';
+import darkLogo from '../../../../assets/brand/logos/ninjy-icon-dark-gold.png';
+import lightLogo from '../../../../assets/brand/logos/ninjy-icon-light-gold.png';
 
 const path = '/api/v1/secure-forms';
 const blocked = 'The request could not be verified. No fields are available.';
@@ -36,9 +38,10 @@ function statusMatches(status: FormStatus, form: VerifiedForm) {
     && status.generation === form.request.generation && ['pending', 'forwarding', 'accepted', 'final'].includes(status.state);
 }
 
-async function verifyViews(views: FormView[], owner: string, conversation: string): Promise<Entries> {
+async function verifyViews(views: FormView[], owner: string, conversation: string, expectedId?: string) {
   const entries: Entries = Object.create(null);
-  if (!views.length) return entries;
+  const rejected = new Set<string>();
+  if (!views.length) return { entries, rejected };
   const identity = currentDeviceIdentity();
   if (!identity || identity.userId !== owner || getKeyringSession()?.identity !== identity) throw new Error(blocked);
   const { chain, dir } = await fetchVerifiedChain();
@@ -61,19 +64,32 @@ async function verifyViews(views: FormView[], owner: string, conversation: strin
     deviceId: identity.deviceId, signPrivateKey: identity.signPrivateKey, sequence: chain.version, head: chain.headHash, proof,
   };
   const seen = new Set<string>();
-  for (const { registration, status } of views) {
-    const id = registration?.request?.request_id;
-    if (!secureFormId.test(id) || seen.has(id)) throw new Error(blocked);
+  for (const [index, view] of views.entries()) {
+    const id = view?.registration?.request?.request_id;
+    if (typeof id !== 'string' || !secureFormId.test(id) || (expectedId && id !== expectedId)) {
+      rejected.add(expectedId ?? 'invalid-' + index);
+      continue;
+    }
+    if (seen.has(id)) {
+      delete entries[id];
+      rejected.add(id);
+      continue;
+    }
     seen.add(id);
-    const bridgeId = registration.request.bridge;
-    const candidates = [...chain.trusted.values()].filter((d) => d.kind === 'bridge' && d.row.bridge_id === bridgeId
-      && d.sign_alg === SIGN_ALG_ECDSA_P256_SHA256 && !chain.retiredHints.includes(d.device_id));
-    const verified = await Promise.any(candidates.map((device) => verifySecureForm(registration,
-      { owner, conversation, bridge: bridgeId }, device.sign_public_key)));
-    if (!statusMatches(status, verified)) throw new Error(blocked);
-    entries[id] = { form: verified, status, signer: signing };
+    try {
+      const { registration, status } = view;
+      const bridgeId = registration.request.bridge;
+      const candidates = [...chain.trusted.values()].filter((d) => d.kind === 'bridge' && d.row.bridge_id === bridgeId
+        && d.sign_alg === SIGN_ALG_ECDSA_P256_SHA256 && !chain.retiredHints.includes(d.device_id));
+      const verified = await Promise.any(candidates.map((device) => verifySecureForm(registration,
+        { owner, conversation, bridge: bridgeId }, device.sign_public_key)));
+      if (!statusMatches(status, verified)) throw new Error(blocked);
+      entries[id] = { form: verified, status, signer: signing };
+    } catch {
+      rejected.add(id);
+    }
   }
-  return entries;
+  return { entries, rejected };
 }
 
 function label(status: FormStatus, expired: boolean, sent: boolean): [string, Tone] {
@@ -103,39 +119,48 @@ function SecureFormCard({ card, decide, decided }: {
   const [values, setValues] = useState<Record<string, string | string[]>>({});
   const [expired, setExpired] = useState(() => Date.now() >= Number(r.deadline));
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(() => decided.current.has(r.request_id));
   const active = useRef(false);
   const viewGeneration = useRef(0);
+  const logo = useSelector(selectActiveTheme).appearance === 'light' ? lightLogo : darkLogo;
   useEffect(() => {
     active.current = true;
     const expire = () => { setExpired(true); setValues({}); };
-    const clear = () => { viewGeneration.current++; setValues({}); };
+    const clear = () => { viewGeneration.current++; setValues({}); setFieldErrors({}); };
     const timer = window.setTimeout(expire, Math.max(0, Number(r.deadline) - Date.now()));
     window.addEventListener('pagehide', clear);
     window.addEventListener('hashchange', clear);
     window.addEventListener('popstate', clear);
-    document.addEventListener('visibilitychange', clear);
     return () => {
       active.current = false;
       clearTimeout(timer);
       window.removeEventListener('pagehide', clear);
       window.removeEventListener('hashchange', clear);
       window.removeEventListener('popstate', clear);
-      document.removeEventListener('visibilitychange', clear);
     };
   }, [r.deadline]);
   useEffect(() => { if (status.state !== 'pending') setValues({}); }, [status.state]);
-  const set = (id: string, value: string | string[]) => setValues((prev) => ({ ...prev, [id]: value }));
+  const set = (id: string, value: string | string[]) => {
+    setValues((prev) => ({ ...prev, [id]: value }));
+    setFieldErrors((prev) => Object.hasOwn(prev, id) ? { ...prev, [id]: '' } : prev);
+  };
   const [state, tone] = label(status, expired, sent);
 
   async function send(action: 'submit' | 'decline', event?: FormEvent) {
     event?.preventDefault();
     if (decided.current.has(r.request_id) || Date.now() >= Number(r.deadline) || status.state !== 'pending') return;
+    if (action === 'submit') {
+      const missing = missingSecureFormChoices(schema.fields, values);
+      setFieldErrors(missing);
+      if (Object.keys(missing).length) return;
+    }
     decided.current.add(r.request_id);
     setBusy(true);
     setError('');
     setValues({});
+    setFieldErrors({});
     const generation = getExpectedUserGeneration();
     const vault = keyringGeneration();
     const view = viewGeneration.current;
@@ -153,7 +178,7 @@ function SecureFormCard({ card, decide, decided }: {
       if (!started) decided.current.delete(r.request_id);
       if (active.current) setError(started
         ? 'The decision could not be confirmed. Ask the agent for a new request if needed.'
-        : 'Nothing was sent. Check that each value is present and within the form limits.');
+        : 'Nothing was sent. Enter the values again and check the form limits.');
     } finally {
       if (active.current) setBusy(false);
     }
@@ -166,7 +191,7 @@ function SecureFormCard({ card, decide, decided }: {
           {schema.logo ? <img src={logo} alt="" className="h-6 w-6" /> : <Icon name="lock" />}
           <Text id={titleId} as="h2" role="heading">Secure request</Text>
         </div>
-        <StatusPill aria-live="polite" tone={tone}>{busy ? 'Preparing decision' : state}</StatusPill>
+        <StatusPill aria-live="polite" tone={tone}>{busy && !sent ? 'Preparing decision' : state}</StatusPill>
       </div>
       <div className="mt-3 grid gap-2">
         <Text role="title" className="break-words">{schema.purpose}</Text>
@@ -180,22 +205,24 @@ function SecureFormCard({ card, decide, decided }: {
         <form aria-labelledby={titleId} autoComplete="off" className="mt-4 grid gap-4" onSubmit={(event) => void send('submit', event)}>
           {schema.fields.map((field, index) => {
             const value = Object.hasOwn(values, field.id) ? values[field.id] : '';
+            const fieldError = Object.hasOwn(fieldErrors, field.id) ? fieldErrors[field.id] : undefined;
             if (field.type === 'multiple') {
               const selected = Array.isArray(value) ? value : [];
               const fieldId = fieldsId + '-' + index;
-              return <fieldset key={field.id} aria-labelledby={fieldId} className="grid min-w-0 gap-2" disabled={busy}>
+              return <fieldset key={field.id} aria-labelledby={fieldId} aria-describedby={fieldError ? fieldId + '-error' : undefined} className="grid min-w-0 gap-2" disabled={busy}>
                 <Text id={fieldId} role="label" className="break-words">{field.label} (choose at least one)</Text>
                 {field.choices?.map((choice) => <Checkbox key={choice.id} label={choice.label}
-                  checked={selected.includes(choice.id)}
+                  checked={selected.includes(choice.id)} aria-describedby={fieldError ? fieldId + '-error' : undefined}
                   onChange={(checked) => set(field.id, checked ? [...selected, choice.id] : selected.filter((id) => id !== choice.id))} />)}
+                {fieldError && <Text id={fieldId + '-error'} role="body-sm" tone="danger" aria-live="polite">{fieldError}</Text>}
               </fieldset>;
             }
-            return <FormField key={field.id} label={field.label} required>
+            return <FormField key={field.id} label={field.label} error={fieldError} required>
               {field.type === 'single'
                 ? <Select value={String(value)} disabled={busy} onChange={(next) => set(field.id, next)} placeholder="Choose an option"
                     options={(field.choices ?? []).map((c) => ({ value: c.id, label: c.label }))} />
                 : <Input type={field.type === 'password' ? 'password' : 'text'} value={String(value)} disabled={busy}
-                    autoComplete={field.type === 'password' ? 'new-password' : 'off'} spellCheck={false} autoCorrect="off"
+                    autoComplete="off" spellCheck={false} autoCorrect="off"
                     autoCapitalize="off" maxLength={8192} required onChange={(next) => set(field.id, next)} />}
             </FormField>;
           })}
@@ -224,25 +251,38 @@ export default function SecureForms({ conversation }: { conversation: string }) 
 
 function SecureFormsForOwner({ conversation, owner, decisions }: { conversation: string; owner: string; decisions: Set<string> }) {
   const [entries, setEntries] = useState<Entries>({});
-  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [attempt, setAttempt] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [rejected, setRejected] = useState<Set<string>>(() => new Set());
+  const [refreshErrors, setRefreshErrors] = useState<Set<string | undefined>>(() => new Set());
   const decisionRef = useRef(decisions);
   const controller = useRef<AbortController | null>(null);
   const known = useRef<Entries>({});
+  const rejectedNow = useRef(new Set<string>());
+  const retry = useRef<(id?: string) => void>(() => {});
 
   useEffect(() => {
     const abort = new AbortController();
     controller.current = abort;
     let pending = Promise.resolve();
-    const merge = (incoming: Entries) => {
+    const merge = ({ entries: incoming, rejected: failures }: Awaited<ReturnType<typeof verifyViews>>, id?: string) => {
       const next = { ...known.current };
-      for (const [id, card] of Object.entries(incoming)) {
-        const old = next[id];
-        if (old && new Uint8Array(old.form.digest).some((byte, i) => byte !== new Uint8Array(card.form.digest)[i])) throw new Error(blocked);
-        if (!old || stateOrder[old.status.state] <= stateOrder[card.status.state]) next[id] = card;
+      const hidden = new Set(rejectedNow.current);
+      if (!id) for (const key of hidden) if (!secureFormId.test(key)) hidden.delete(key);
+      for (const [key, card] of Object.entries(incoming)) {
+        const old = next[key];
+        const incomingDigest = new Uint8Array(card.form.digest);
+        if (old && new Uint8Array(old.form.digest).some((byte, i) => byte !== incomingDigest[i])) {
+          failures.add(key);
+          continue;
+        }
+        if (!old || stateOrder[old.status.state] <= stateOrder[card.status.state]) next[key] = card;
+        hidden.delete(key);
       }
+      for (const failed of failures) hidden.add(failed);
       known.current = next;
+      rejectedNow.current = hidden;
       setEntries(next);
+      setRejected(hidden);
     };
     const refresh = async (id?: string) => {
       if (abort.signal.aborted) return;
@@ -250,15 +290,22 @@ function SecureFormsForOwner({ conversation, owner, decisions }: { conversation:
         const views = id
           ? [await request<FormView>('/' + id, owner, abort.signal)]
           : await request<FormView[]>('?conversation_id=' + encodeURIComponent(conversation), owner, abort.signal);
-        const updated = await verifyViews(views, owner, conversation);
+        const updated = await verifyViews(views, owner, conversation, id);
         if (abort.signal.aborted) return;
-        merge(updated);
-        setPhase('ready');
+        merge(updated, id);
+        setRefreshErrors((previous) => {
+          const next = new Set(previous);
+          next.delete(id);
+          return next;
+        });
       } catch {
-        if (!abort.signal.aborted) setPhase('error');
+        if (!abort.signal.aborted) setRefreshErrors((previous) => new Set(previous).add(id));
+      } finally {
+        if (!abort.signal.aborted) setLoading(false);
       }
     };
     const queue = (id?: string) => { pending = pending.then(() => refresh(id)); };
+    retry.current = queue;
     const changed = (event: Event) => {
       const data = (event as CustomEvent<{ conversation_id: string; request_id: string }>).detail;
       if (data?.conversation_id === conversation && secureFormId.test(data.request_id)) queue(data.request_id);
@@ -277,12 +324,12 @@ function SecureFormsForOwner({ conversation, owner, decisions }: { conversation:
       window.removeEventListener(secureFormChanged, changed);
       window.removeEventListener(USER_WS_RESYNC_EVENT, resync);
     };
-  }, [owner, conversation, attempt]);
+  }, [owner, conversation]);
 
   async function decide(id: string, body: unknown, action: 'submit' | 'decline') {
     const signal = controller.current?.signal;
     const card = known.current[id];
-    if (!signal || signal.aborted || !card || !getKeyringSession()) throw new Error('Form no longer active');
+    if (!signal || signal.aborted || !card || rejectedNow.current.has(id) || !getKeyringSession()) throw new Error('Form no longer active');
     // Only the sealed envelope (submit) or public reference (decline) reaches fetch.
     const status = await request<FormStatus>('/' + id + '/' + action, owner, signal, body);
     if (!statusMatches(status, card.form)) throw new Error('Unexpected form status');
@@ -294,14 +341,17 @@ function SecureFormsForOwner({ conversation, owner, decisions }: { conversation:
     setEntries(next);
   }
 
-  if (phase === 'error') return <Alert tone="warning" title="Secure requests unavailable">
-    <Text as="p" role="body-sm">{getKeyringSession() ? blocked : 'Unlock your vault to check secure requests.'}</Text>
-    <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={() => { setPhase('loading'); setAttempt((n) => n + 1); }}>Check requests again</Button>
-  </Alert>;
-  if (phase === 'loading') return <div role="status" className="flex items-center gap-2"><Spinner /><Text role="body-sm">Checking for secure requests</Text></div>;
-  if (!Object.keys(entries).length) return null;
+  if (loading) return <div role="status" className="flex items-center gap-2"><Spinner /><Text role="body-sm">Checking for secure requests</Text></div>;
+  if (!Object.keys(entries).length && !refreshErrors.size && !rejected.size) return null;
   if (!getKeyringSession()) return <Alert tone="warning" title="Vault locked">Unlock your vault to check secure requests.</Alert>;
   return <div className="grid min-w-0 gap-3">
-    {Object.entries(entries).map(([id, card]) => <SecureFormCard key={id} card={card} decide={decide} decided={decisionRef} />)}
+    {Object.entries(entries).filter(([id]) => !rejected.has(id)).map(([id, card]) => <SecureFormCard key={id} card={card} decide={decide} decided={decisionRef} />)}
+    {[...rejected].map((id) => <Alert key={id} tone="warning" title="Unverified secure request">{blocked}</Alert>)}
+    {refreshErrors.size > 0 && <Alert tone="warning" title="Could not refresh secure requests">
+      <Text as="p" role="body-sm">Some requests may be out of date.</Text>
+      <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={() => {
+        for (const id of refreshErrors) retry.current(id);
+      }}>Check requests again</Button>
+    </Alert>}
   </div>;
 }
