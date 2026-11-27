@@ -22,7 +22,6 @@ import "core:time"
 import contracts "odin_test:contracts"
 import bridgesvc "odin_test:lib/bridgesvc"
 
-BRIDGE_EXTENSION_PROVIDERS :: [?]string{"claude", "codex", "antigravity"}
 // Per provider, matching the Hub-frame path; there is no shared cap, so a slow
 // CLI cannot leave a later provider starting with its deadline already passed.
 BRIDGE_EXTENSION_PROVIDER_TIMEOUT :: 55 * time.Second
@@ -35,8 +34,19 @@ Bridge_Extension_Sync_Line :: struct {
 	line:     string,
 }
 
+// bridge_extension_providers lists, in registry order, the providers that have
+// a Heimdall extension (contracts.provider_descriptors, G7).
+bridge_extension_providers :: proc(allocator := context.temp_allocator) -> []string {
+	out := make([dynamic]string, allocator)
+	for d in contracts.provider_descriptors() do if d.extension != .None do append(&out, d.provider)
+	return out[:]
+}
+
+// bridge_extension_variant_dir is the provider's directory under the
+// extensions bundle; "" for a provider without an extension.
 bridge_extension_variant_dir :: proc(provider: string) -> string {
-	return "claude-code" if bridge_extension_canonical_provider(provider) == "claude" else provider
+	d, _ := bridge_extension_descriptor(provider)
+	return d.extension_dir
 }
 
 // bridge_extensions_bundle_source finds the extensions a release bundle ships
@@ -178,8 +188,8 @@ bridge_extensions_sync_installed :: proc(data_dir: string, on_line: proc(data: r
 // bundle at ext_root. on_line, when set, sees each provider as it finishes.
 bridge_extensions_sync_providers :: proc(ext_root: string, on_line: proc(data: rawptr, line: Bridge_Extension_Sync_Line) = nil, data: rawptr = nil) -> (lines: []Bridge_Extension_Sync_Line, failures: int) {
 	out := make([dynamic]Bridge_Extension_Sync_Line, context.temp_allocator)
-	providers := BRIDGE_EXTENSION_PROVIDERS
-	detected := bridge_extension_discover(providers[:])
+	providers := bridge_extension_providers()
+	detected := bridge_extension_discover(providers)
 	defer bridge_provider_paths_destroy_all(&detected)
 	for prov in providers {
 		bin := ""

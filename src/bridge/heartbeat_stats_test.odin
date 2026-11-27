@@ -53,6 +53,15 @@ test_heartbeat_stats_sum_tree_and_provider :: proc(t: ^testing.T) {
 	testing.expect_value(t, heartbeat_stats_provider_from_program("codex --full-auto"), "codex")
 	testing.expect_value(t, heartbeat_stats_provider_from_program("/usr/local/bin/some-shell"), "other")
 	testing.expect_value(t, heartbeat_stats_provider_from_program(""), "other")
+	// Every registered provider has its own series (registry program names);
+	// gemini is not a registered provider.
+	testing.expect_value(t, heartbeat_stats_provider_from_program("/home/u/.local/bin/kiro-cli acp --agent-engine v3"), "kiro")
+	testing.expect_value(t, heartbeat_stats_provider_from_program("/usr/bin/opencode"), "opencode")
+	testing.expect_value(t, heartbeat_stats_provider_from_program("pi --mode rpc"), "pi")
+	testing.expect_value(t, heartbeat_stats_provider_from_program("/usr/bin/Claude-Code"), "claude")
+	testing.expect_value(t, heartbeat_stats_provider_from_program("/opt/agy"), "antigravity")
+	testing.expect_value(t, heartbeat_stats_provider_from_program("github-copilot"), "copilot")
+	testing.expect_value(t, heartbeat_stats_provider_from_program("/usr/bin/gemini"), "other")
 }
 
 @(test)

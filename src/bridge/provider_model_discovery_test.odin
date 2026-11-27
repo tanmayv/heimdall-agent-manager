@@ -364,3 +364,36 @@ test_model_discovery_acp_live_opencode :: proc(t: ^testing.T) {
 		testing.expectf(t, found, "live probe did not report %s", id)
 	}
 }
+
+// The probe argv, first request and models_source follow the registry's
+// model_probe kind, never the provider name.
+@(test)
+test_model_discovery_probe_command_per_kind :: proc(t: ^testing.T) {
+	Case :: struct { provider, argv, request_prefix, source: string }
+	cases := []Case{
+		{"claude", `/b -p --input-format stream-json --output-format stream-json --verbose --no-session-persistence --strict-mcp-config --mcp-config {"mcpServers":{}} --tools  --settings {"disableAllHooks":true} --extra`, `{"type":"control_request","request_id":"models"`, "claude_control"},
+		{"claude-code", `/b -p --input-format stream-json --output-format stream-json --verbose --no-session-persistence --strict-mcp-config --mcp-config {"mcpServers":{}} --tools  --settings {"disableAllHooks":true} --extra`, `{"type":"control_request","request_id":"models"`, "claude_control"},
+		{"codex", "/b app-server --extra", "", "codex_app_server"},
+		{"pi", "/b --offline --no-session --no-extensions --no-mcp --no-skills --no-prompt-templates --mode rpc --extra", `{"id":"models","type":"get_available_models"}`, "pi_rpc"},
+		{"copilot", "/b --server --stdio --extra", `{"jsonrpc":"2.0","id":2,"method":"models.list"`, "copilot_rpc"},
+		{"antigravity", "/b models --extra", "", "agy_models"},
+		// ACP: the fixed recipe argv; profile launch args never reach it.
+		{"kiro", "/b acp --agent-engine v3", `{"jsonrpc":"2.0","id":1,"method":"initialize"`, "acp_v1"},
+		{"opencode", "/b acp", `{"jsonrpc":"2.0","id":1,"method":"initialize"`, "acp_v1"},
+	}
+	for c in cases {
+		argv, request, ok := bridge_models_probe_command(c.provider, "/b", {"--extra"})
+		testing.expectf(t, ok, "%s: no probe command", c.provider)
+		testing.expectf(t, strings.join(argv, " ", context.temp_allocator) == c.argv, "%s argv: %v", c.provider, argv)
+		testing.expectf(t, strings.has_prefix(request, c.request_prefix) && (c.request_prefix != "" || request == ""), "%s request: %s", c.provider, request)
+		testing.expect_value(t, bridge_models_source(c.provider), c.source)
+	}
+	for provider in ([]string{"gemini", "unknown-cli", ""}) {
+		_, _, ok := bridge_models_probe_command(provider, "/b")
+		testing.expectf(t, !ok, "%s must have no probe", provider)
+		testing.expect_value(t, bridge_models_source(provider), "unsupported")
+		models, state := bridge_models_probe(provider, "/b", time.Second)
+		defer model_test_destroy(&models)
+		testing.expect_value(t, state, "unsupported")
+	}
+}

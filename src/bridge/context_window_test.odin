@@ -7,6 +7,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import contracts "odin_test:contracts"
 
 // Context-window resolution (context_window.odin): shipped config parsing and
 // regex order, alias via resolved_model, override precedence + persistence,
@@ -49,7 +50,7 @@ test_ctxwin_shipped_config_parses_every_entry :: proc(t: ^testing.T) {
 	c: Bridge_Context_Window_Config
 	testing.expect(t, bridge_context_window_parse_config(BRIDGE_CONTEXT_WINDOWS_EMBEDDED, &c))
 	defer bridge_context_window_config_destroy(&c)
-	testing.expect_value(t, len(c.entries), 17) // no shipped regex may fail to compile
+	testing.expect_value(t, len(c.entries), 20) // no shipped regex may fail to compile
 	testing.expect_value(t, c.default_window, i64(200_000))
 	testing.expect_value(t, c.default_window, i64(BRIDGE_EXT_TOKEN_DEFAULT_WINDOW))
 	testing.expect_value(t, c.warn_pct, 40)
@@ -83,6 +84,39 @@ test_ctxwin_regex_match_order_and_default :: proc(t: ^testing.T) {
 	testing.expect_value(t, r, Bridge_Context_Window_Resolution{200_000, .Default})
 	r = bridge_context_window_resolve("", "")
 	testing.expect_value(t, r, Bridge_Context_Window_Resolution{200_000, .Default})
+	// OpenCode Zen rows are exact ids from `opencode models --verbose`.
+	r = bridge_context_window_resolve("opencode", "opencode/big-pickle")
+	testing.expect_value(t, r, Bridge_Context_Window_Resolution{200_000, .Config})
+	r = bridge_context_window_resolve("opencode", "opencode/iceman-free")
+	testing.expect_value(t, r, Bridge_Context_Window_Resolution{262_144, .Config})
+	r = bridge_context_window_resolve("opencode", "opencode/nemotron-3.5-super-vl-free")
+	testing.expect_value(t, r, Bridge_Context_Window_Resolution{1_048_576, .Config})
+	r = bridge_context_window_resolve("opencode", "opencode/nemotron-3x5-super-vl-free") // dots are literal
+	testing.expect_value(t, r, Bridge_Context_Window_Resolution{200_000, .Default})
+	r = bridge_context_window_resolve("opencode", "my-local/qwen3-14b") // user backends: default
+	testing.expect_value(t, r, Bridge_Context_Window_Resolution{200_000, .Default})
+	r = bridge_context_window_resolve("kiro", "claude-sonnet-4.5") // unverified ids: default
+	testing.expect_value(t, r, Bridge_Context_Window_Resolution{200_000, .Default})
+}
+
+// Every provider the shipped config names is a registered provider id
+// (contracts.provider_descriptors), so no row is dead or keyed by an alias.
+@(test)
+test_ctxwin_shipped_providers_are_registered :: proc(t: ^testing.T) {
+	c: Bridge_Context_Window_Config
+	testing.expect(t, bridge_context_window_parse_config(BRIDGE_CONTEXT_WINDOWS_EMBEDDED, &c))
+	defer bridge_context_window_config_destroy(&c)
+	wire: Bridge_Context_Window_Config_Wire
+	testing.expect(t, json.unmarshal_string(BRIDGE_CONTEXT_WINDOWS_EMBEDDED, &wire, allocator = context.temp_allocator) == nil)
+	testing.expect_value(t, len(c.entries), len(wire.entries)) // every regex compiles
+	seen_opencode := false
+	for e in c.entries {
+		d, ok := contracts.provider_descriptor(e.provider)
+		testing.expectf(t, ok && d.provider == e.provider, "context_windows.json provider %q is not a registered provider id", e.provider)
+		testing.expectf(t, e.context_window >= BRIDGE_CONTEXT_WINDOW_MIN, "%s %s: %d", e.provider, e.model_regex, e.context_window)
+		if e.provider == "opencode" do seen_opencode = true
+	}
+	testing.expect(t, seen_opencode)
 }
 
 @(test)
@@ -224,7 +258,7 @@ test_ctxwin_op_frame_list_set_clear :: proc(t: ^testing.T) {
 	testing.expect_value(t, root["rollover_pct"].(json.Integer), 70)
 	testing.expect_value(t, root["default_window"].(json.Integer), 200000)
 	testing.expect_value(t, root["min_window"].(json.Integer), 100000)
-	testing.expect_value(t, len(root["entries"].(json.Array)), 17)
+	testing.expect_value(t, len(root["entries"].(json.Array)), 20)
 	overrides := root["overrides"].(json.Array)
 	testing.expect_value(t, len(overrides), 1)
 	found := false
