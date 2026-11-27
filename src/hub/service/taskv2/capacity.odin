@@ -189,6 +189,7 @@ Reuse_Scan :: struct {
 	// bridge (offline, ineligible, provider, busy directory); recorded with
 	// the grant (REQ-SCHED-31).
 	unusable:      string,
+	verification_wait: string, // the first unverified instance reserving capacity
 	retry_due_ms:  i64,
 }
 
@@ -231,11 +232,14 @@ reuse_scan :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 			continue
 		}
 		probe_uow := u if in_scope else nil
-		fact := match_process_fact(svc, probe_uow, inst, ctx.chain.chain_id)
+		fact := match_process_fact(svc, probe_uow, inst, ctx.chain.chain_id, for_launch = true)
 		// An unverified generation occupies a slot until we can observe it.
 		// A stale row is never permission to JIT a duplicate.
 		if fact.state == .Unknown && fact.reason != .never_started {
 			if !held do scan.occupied += 1
+			if scan.verification_wait == "" {
+				scan.verification_wait = fmt.tprintf("instance %s on bridge %s has unverified process state (%v)", inst.agent_instance_id, inst.bridge_id, fact.reason)
+			}
 			continue
 		}
 		disposition := agent.failure_disposition_from_process(inst, fact, ctx.now_ms)

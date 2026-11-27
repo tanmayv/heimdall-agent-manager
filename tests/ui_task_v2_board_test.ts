@@ -517,7 +517,13 @@ test('task card: the in-review sentence names the reviewing agent, reviewer agen
   }));
   assert.match(reviewing, /Reviewer #3 is reviewing · Attempt 1 submitted · review in progress/);
   assert.doesNotMatch(reviewing, /inst_|role/);
-  assert.match(status(makeTask({ state: 'in_review', brief })), /Waiting on Sec · Attempt 1 submitted/);
+  const submitted = makeTask({
+    state: 'in_review',
+    brief,
+    leases: [{ kind: 'work', holder_instance_id: 'inst_w1', phase: 'waiting' }] as TaskWire['leases'],
+  });
+  assert.match(status(submitted), /Waiting on Sec · Attempt 1 submitted/);
+  assert.doesNotMatch(status(submitted), /is working/);
   store.dispatch(agentsApi.util.resetApiState());
 });
 

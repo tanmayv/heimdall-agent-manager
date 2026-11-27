@@ -98,7 +98,7 @@ grant_attempt_in_uow :: proc(svc: ^Service, u: ^Uow, req: Grant_Request, stoppin
 	// pty-host state; a miss queued a probe rather than claiming another child.
 	fact: agent.Agent_Liveness
 	if req.delivery == domain.LEASE_DELIVERY_WAKE {
-		fact = match_process_fact(svc, u, inst, task.chain_id)
+		fact = match_process_fact(svc, u, inst, task.chain_id, for_launch = true)
 		if fact.state == .Unknown && fact.reason != .never_started {
 			return {}, false, domain.domain_error(.Bridge_Busy, "waiting for process verification")
 		}

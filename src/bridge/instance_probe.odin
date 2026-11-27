@@ -3,6 +3,7 @@ package main
 import "core:encoding/json"
 import "core:strings"
 import "core:sync"
+import contracts "odin_test:contracts"
 import ws "odin_test:lib/ws"
 
 Bridge_Instance_Probe_Result :: struct {
@@ -67,25 +68,44 @@ bridge_instance_probe_bind :: proc(probe: ^Bridge_Instance_Probe_Result, pid: i3
 	probe.launch_epoch = launch_epoch
 }
 
-bridge_instance_probe_for_hub :: proc(id: string) -> Bridge_Instance_Probe_Result {
+// Qualify only a complete roster's absence. A launch check cannot invent a
+// wait status or reap an unverified process. The spawn path repeats its own
+// absence check under the same lifecycle lock before replacing the child.
+bridge_instance_probe_qualify_absence :: proc(
+	probe: ^Bridge_Instance_Probe_Result, run: int, for_launch: bool,
+	observe := bridge_agent_process_after_roster_loss,
+	confirm_launch_absent := bridge_agent_launch_absent_confirmed,
+) {
+	if probe.state != "absent" do return
+	probe.state = "unknown"
+	if run <= 0 do return
+	observation, previous_pid, reaped := observe(probe.agent_instance_id, run, true)
+	if observation == .Gone {
+		probe.state = "absent"
+		probe.source = "os_identity_gone"
+		if reaped {
+			probe.state = "exited"
+			probe.pid = previous_pid
+			probe.source = "orphan_reaped"
+		}
+	} else if observation == .Unknown && previous_pid == 0 && for_launch &&
+	          confirm_launch_absent(probe.agent_instance_id, run, false) {
+		probe.state = "absent"
+		probe.source = contracts.INSTANCE_PROBE_LAUNCH_ABSENCE
+	}
+}
+
+bridge_instance_probe_for_hub :: proc(id: string, for_launch := false) -> Bridge_Instance_Probe_Result {
 	lifecycle := bridge_agent_lifecycle_enter(id)
 	defer bridge_agent_lifecycle_leave(lifecycle)
 	probe := bridge_instance_probe(id)
 	if probe.state == "absent" {
 		run := bridge_agent_instance_run_count(id)
-		observation, previous_pid, reaped := bridge_agent_process_after_roster_loss(id, run, reap = true)
-		if observation != .Gone {
-			probe.state = "unknown"
-		} else {
+		bridge_instance_probe_qualify_absence(&probe, run, for_launch)
+		if probe.state != "unknown" {
 			probe.run_count = run
 			probe.launch_epoch = bridge_agent_instance_launch_epoch(id)
-			probe.source = "os_identity_gone"
-			if reaped {
-				probe.state = "exited"
-				probe.pid = previous_pid
-				probe.source = "orphan_reaped"
-				bridge_runtime_set_pty_process_alive(id, false)
-			}
+			if probe.source == "orphan_reaped" do bridge_runtime_set_pty_process_alive(id, false)
 		}
 	} else if probe.state == "exited" || probe.state == "alive" {
 		epoch := bridge_agent_instance_launch_epoch(id)
@@ -123,19 +143,19 @@ bridge_instance_probe_for_hub :: proc(id: string) -> Bridge_Instance_Probe_Resul
 }
 
 bridge_hub_handle_instance_probe :: proc(conn: ^ws.Connection, text: string) {
-	command_id := extract_json_string(text, "command_id", "")
-	defer delete(command_id)
-	id := extract_json_string(text, "agent_instance_id", "")
-	defer delete(id)
-	if command_id == "" || id == "" do return
-	probe := bridge_instance_probe_for_hub(id)
+	command: contracts.Instance_Probe_Command
+	if json.unmarshal_string(text, &command, allocator = context.temp_allocator) != nil ||
+	   command.type != contracts.INSTANCE_PROBE_COMMAND || command.command_id == "" || command.agent_instance_id == "" {
+		return
+	}
+	probe := bridge_instance_probe_for_hub(command.agent_instance_id, command.for_launch)
 	defer delete(probe.launch_epoch)
 	response := struct {
 		type, command_id: string,
 		protocol_version: int,
 		ok: bool,
 		payload: struct {status: string, result: Bridge_Instance_Probe_Result},
-	}{type = "command_result", command_id = command_id, protocol_version = 1, ok = true}
+	}{type = "command_result", command_id = command.command_id, protocol_version = 1, ok = true}
 	response.payload.status = "succeeded"
 	response.payload.result = probe
 	bytes, err := json.marshal(response)

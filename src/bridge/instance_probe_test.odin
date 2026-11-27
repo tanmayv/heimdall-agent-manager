@@ -47,3 +47,38 @@ test_instance_probe_does_not_attribute_previous_child_exit_to_replacement :: pro
 	testing.expect_value(t, current.run_count, 2)
 	testing.expect_value(t, current.launch_epoch, "new")
 }
+
+@(test)
+test_instance_probe_limits_legacy_absence_to_launch_with_a_complete_roster :: proc(t: ^testing.T) {
+	omitted := bridge_instance_probe_from_roster("inst_legacy", {kind = .Agent_List})
+	unknown :: proc(_: string, _: int, _: bool) -> (Bridge_Agent_Process_State, i32, bool) {
+		return .Unknown, 0, false
+	}
+	unconfirmed_pid :: proc(_: string, _: int, _: bool) -> (Bridge_Agent_Process_State, i32, bool) {
+		return .Unknown, 42, false
+	}
+	clear_scan :: proc(_: string, _: int, reap: bool) -> bool { return !reap }
+	unverified_scan :: proc(_: string, _: int, _: bool) -> bool { return false }
+
+	ordinary := omitted
+	bridge_instance_probe_qualify_absence(&ordinary, 4, false, unknown, clear_scan)
+	testing.expect_value(t, ordinary.state, "unknown")
+
+	launch := omitted
+	bridge_instance_probe_qualify_absence(&launch, 4, true, unknown, clear_scan)
+	testing.expect(t, launch.state == "absent" && launch.source == "launch_absence" && launch.pid == 0 && launch.exit_code == nil)
+
+	unavailable := bridge_instance_probe_from_roster("inst_legacy", {})
+	bridge_instance_probe_qualify_absence(&unavailable, 4, true, unknown, clear_scan)
+	testing.expect_value(t, unavailable.state, "unknown")
+
+	for probe_case in ([3]struct {
+		run: int,
+		observe: proc(string, int, bool) -> (Bridge_Agent_Process_State, i32, bool),
+		scan: proc(string, int, bool) -> bool,
+	}{{0, unknown, clear_scan}, {4, unconfirmed_pid, clear_scan}, {4, unknown, unverified_scan}}) {
+		refused := omitted
+		bridge_instance_probe_qualify_absence(&refused, probe_case.run, true, probe_case.observe, probe_case.scan)
+		testing.expect_value(t, refused.state, "unknown")
+	}
+}

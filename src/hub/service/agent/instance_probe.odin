@@ -5,6 +5,7 @@ import "core:crypto/hash"
 import "core:fmt"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
@@ -18,11 +19,12 @@ Instance_Probe :: struct {
 	pid: int,
 	exit_code: i32,
 	orphan_reaped: bool,
+	launch_absence: bool,
 	ready: bool,
 }
 
 Agent_Liveness_State :: enum {Unknown, Alive, Exited}
-Agent_Liveness_Reason :: enum {not_observed, never_started, retired, stop_confirmed, previous_exit_confirmed, bridge_unavailable, probe_timed_out, invalid_probe, stale_process_generation, missing_from_pty_roster, orphan_reaped, pty_child_alive, pty_child_exited}
+Agent_Liveness_Reason :: enum {not_observed, never_started, retired, stop_confirmed, previous_exit_confirmed, bridge_unavailable, probe_timed_out, invalid_probe, stale_process_generation, missing_from_pty_roster, orphan_reaped, pty_child_alive, pty_child_exited, launch_absence_verified}
 Agent_Liveness :: struct {
 	state: Agent_Liveness_State,
 	reason: Agent_Liveness_Reason,
@@ -31,14 +33,19 @@ Agent_Liveness :: struct {
 	ready: bool,
 }
 
+Agent_Liveness_Cache_Row :: struct {
+	key: [32]byte,
+	at: time.Tick,
+	fact: Agent_Liveness,
+	from_exit_frame: bool,
+}
+
 Agent_Liveness_Cache :: struct {
 	mutex: sync.Mutex,
-	rows: [64]struct {
-		key: [32]byte,
-		at: time.Tick,
-		fact: Agent_Liveness,
-		from_exit_frame: bool,
-	},
+	rows: [64]Agent_Liveness_Cache_Row,
+	// Weak launch-only evidence and negative replies must not replace or leak
+	// into the cache used by terminal reconciliation and claim recovery.
+	launch_rows: [64]Agent_Liveness_Cache_Row,
 }
 
 AGENT_LIVENESS_CACHE_TTL :: 2 * time.Second
@@ -54,7 +61,7 @@ agent_liveness_key :: proc(inst: domain.Agent_Instance) -> (key: [32]byte) {
 // The cache is bounded and fenced by the durable generation and owning bridge.
 // runtime_status is deliberately not an input. A miss authorizes no state
 // mutation and may perform one bounded RPC, so call outside the UoW and reader.
-agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, force_probe := false, prefer_reported_exit := false, cache_only := false) -> Agent_Liveness {
+agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, force_probe := false, prefer_reported_exit := false, cache_only := false, for_launch := false) -> Agent_Liveness {
 	// A new durable generation starts at run_count = 1. An explicit
 	// acknowledged close is durable until the next generation clears its
 	// reason. Neither case needs another RPC to rule out a current child.
@@ -72,8 +79,10 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, for
 	cache := &service.liveness_cache
 	sync.mutex_lock(&cache.mutex)
 	slot := cache.rows[index]
+	launch_slot := cache.launch_rows[index] if for_launch else Agent_Liveness_Cache_Row{}
 	sync.mutex_unlock(&cache.mutex)
 	if slot.key == key && time.tick_since(slot.at) < AGENT_LIVENESS_CACHE_TTL &&
+	   (!for_launch || slot.fact.state != .Unknown) &&
 	   (!force_probe || (prefer_reported_exit && slot.from_exit_frame)) {
 		return slot.fact
 	}
@@ -91,17 +100,22 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, for
 			if inst.status_message == "missing_from_pty_roster" do return {state = .Exited, reason = .missing_from_pty_roster}
 			if inst.status_message == "orphan_reaped" do return {state = .Exited, reason = .orphan_reaped}
 		}
-		return {reason = .not_observed}
 	}
+	if for_launch && !force_probe && launch_slot.key == key && time.tick_since(launch_slot.at) < AGENT_LIVENESS_CACHE_TTL {
+		return launch_slot.fact
+	}
+	if cache_only do return {reason = .not_observed}
 	at := time.tick_now()
-	observation, reason := probe_instance(service, inst)
+	observation, reason := probe_instance(service, inst, for_launch = for_launch)
 	fact := Agent_Liveness{reason = reason, pid = observation.pid, exit_code = observation.exit_code, ready = observation.ready}
 	#partial switch observation.state {
 	case .Alive: fact.state = .Alive
 	case .Absent, .Exited: fact.state = .Exited
 	}
 	sync.mutex_lock(&cache.mutex)
-	if cache.rows[index].at._nsec <= at._nsec do cache.rows[index] = {key = key, at = time.tick_now(), fact = fact}
+	target := &cache.rows[index]
+	if for_launch && (fact.state == .Unknown || reason == .launch_absence_verified) do target = &cache.launch_rows[index]
+	if target.at._nsec <= at._nsec do target^ = {key = key, at = time.tick_now(), fact = fact}
 	sync.mutex_unlock(&cache.mutex)
 	return fact
 }
@@ -109,26 +123,26 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, for
 // Run outside a Hub UoW and off the Bridge websocket read loop. Otherwise the
 // caller can prevent its own response from being read.
 @(private = "file")
-probe_instance :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> (Instance_Probe, Agent_Liveness_Reason) {
+probe_instance :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, for_launch := false) -> (Instance_Probe, Agent_Liveness_Reason) {
 	if service == nil || service.ids == nil || inst.bridge_id == "" || inst.agent_instance_id == "" do return {}, .bridge_unavailable
 	id := platform.generate_id(service.ids, "cmd_instance_probe_")
-	command, err := json.marshal(struct {type, command_id, agent_instance_id: string}{"instance.probe", id, inst.agent_instance_id})
+	command, err := json.marshal(contracts.Instance_Probe_Command{contracts.INSTANCE_PROBE_COMMAND, id, inst.agent_instance_id, for_launch})
 	if err != nil do return {}, .invalid_probe
 	defer delete(command)
 	reply, got, wait_err := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = id, body_json = string(command)}, 3000)
 	defer delete(reply)
 	if !got do return {}, .probe_timed_out if wait_err.code == .Bridge_Timeout else .bridge_unavailable
-	observation := parse_instance_probe(reply, id, inst.agent_instance_id, inst.run_count, inst.launch_epoch)
+	observation := parse_instance_probe(reply, id, inst.agent_instance_id, inst.run_count, inst.launch_epoch, for_launch = for_launch)
 	switch observation.state {
 	case .Unknown: return observation, .stale_process_generation if observation.pid > 0 else .invalid_probe
-	case .Absent: return observation, .missing_from_pty_roster
+	case .Absent: return observation, .launch_absence_verified if observation.launch_absence else .missing_from_pty_roster
 	case .Alive: return observation, .pty_child_alive
 	case .Exited: return observation, .orphan_reaped if observation.orphan_reaped else .pty_child_exited
 	}
 	return {}, .invalid_probe
 }
 
-parse_instance_probe :: proc(reply, command_id, instance_id: string, expected_run_count := -1, expected_launch_epoch := "") -> Instance_Probe {
+parse_instance_probe :: proc(reply, command_id, instance_id: string, expected_run_count := -1, expected_launch_epoch := "", for_launch := false) -> Instance_Probe {
 	if !jsonx.extract_bool(reply, "ok", false, true) ||
 	   jsonx.extract_string(reply, "command_id", "", true, context.temp_allocator) != command_id {
 		return {}
@@ -145,7 +159,11 @@ parse_instance_probe :: proc(reply, command_id, instance_id: string, expected_ru
 	}
 	switch report.state {
 	case "absent":
-		if report.source == "os_identity_gone" && report.pid == 0 && report.exit_code == nil && !report.ready do return {state = .Absent}
+		if report.pid != 0 || report.exit_code != nil || report.ready do return {}
+		if report.source == "os_identity_gone" do return {state = .Absent}
+		if for_launch && expected_run_count > 0 && report.source == contracts.INSTANCE_PROBE_LAUNCH_ABSENCE {
+			return {state = .Absent, launch_absence = true}
+		}
 	case "alive", "exited":
 		if report.pid <= 0 do return {}
 		if report.state == "alive" do return {state = .Alive, pid = int(report.pid), ready = report.ready}
