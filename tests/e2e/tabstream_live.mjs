@@ -67,6 +67,7 @@ const waitFor = async (predicate, label, ms = 15000) => {
 const clients = new Set();
 let bridge, instance, capture, viewerBrowser, cdpProxy, cdpServer, eventTap, vite;
 const captureMethods = [];
+let unpreparedCaptureStarts = 0;
 const needles = [];
 const fixtureTitle = 'Synthetic tabstream ' + randomBytes(16).toString('hex');
 const dbSchema = () => sql("SELECT name,sql FROM sqlite_master ORDER BY name");
@@ -120,7 +121,7 @@ try {
     + 'const c=document.querySelector("canvas").getContext("2d");function draw(t){'
     + 'for(let y=0;y<800;y+=12)for(let x=0;x<1280;x+=12){'
     + 'c.fillStyle="hsl("+((x*57+y*37+t)%360)+" 100% 50%)";c.fillRect(x,y,12,12)}requestAnimationFrame(draw)}requestAnimationFrame(draw)</script>');
-  capture = spawn(chromium, ['--headless', '--enable-automation', '--no-sandbox',
+  capture = spawn(chromium, ['--headless=new', '--enable-automation', '--no-sandbox',
     '--disable-background-networking', '--no-first-run', '--remote-debugging-port=0',
     '--window-size=1280,800', '--user-data-dir=' + profile, 'file://' + fixture], { env, stdio: 'ignore' });
   const portFile = path.join(profile, 'DevToolsActivePort');
@@ -132,6 +133,19 @@ try {
   const realCdp = 'http://127.0.0.1:' + realPort;
   const target = await waitFor(async () => (await (await fetch(realCdp + '/json/list')).json())
     .find(t => t.type === 'page' && t.title === fixtureTitle)?.id, 'animated CDP tab');
+  const captureBrowser = await puppeteer.connect({
+    browserWSEndpoint: 'ws://127.0.0.1:' + realPort + wsPath,
+    defaultViewport: null,
+  });
+  try {
+    const source = (await captureBrowser.pages()).find(p => p.url() === 'file://' + fixture);
+    assert.ok(source, 'headless source page');
+    const foreground = await captureBrowser.newPage();
+    await foreground.bringToFront();
+    assert.equal(await source.evaluate(() => document.hasFocus()), false, 'source begins unfocused');
+  } finally {
+    await captureBrowser.disconnect();
+  }
   cdpProxy = new WebSocketServer({ noServer: true });
   cdpServer = http.createServer((req, res) => {
     if (req.url !== '/json/version') return res.writeHead(404).end();
@@ -142,8 +156,14 @@ try {
     if (req.url !== wsPath) return socket.destroy();
     cdpProxy.handleUpgrade(req, socket, head, downstream => {
       const upstream = new WebSocket('ws://127.0.0.1:' + realPort + wsPath);
+      const enabledPages = new Set();
+      const focusedPages = new Set();
       downstream.on('message', bytes => {
-        const { method } = JSON.parse(bytes.toString());
+        const { method, sessionId, params } = JSON.parse(bytes.toString());
+        if (sessionId && method === 'Page.enable') enabledPages.add(sessionId);
+        if (sessionId && method === 'Emulation.setFocusEmulationEnabled' && params?.enabled === true
+          && enabledPages.has(sessionId)) focusedPages.add(sessionId);
+        if (method === 'Page.startScreencast' && !focusedPages.has(sessionId)) unpreparedCaptureStarts += 1;
         if (method === 'Page.startScreencast' || method === 'Page.stopScreencast') captureMethods.push(method);
         if (upstream.readyState === WebSocket.OPEN) upstream.send(bytes, {binary: false});
         else upstream.once('open', () => upstream.send(bytes, {binary: false}));
@@ -229,7 +249,8 @@ try {
       if (request.url().startsWith(origin + '/') || /^(blob|data):/.test(request.url())) return request.continue();
       return request.abort();
     });
-    await page.goto(origin + '/' + new URL(link).hash, {waitUntil: 'domcontentloaded'});
+    assert.equal(new URL(link).origin, origin, 'owner link uses the configured UI origin');
+    await page.goto(link, {waitUntil: 'domcontentloaded'});
     return {
       async waitForImage() {
         try {
@@ -303,6 +324,7 @@ try {
       needles.push(signature, Buffer.from(signature.toString('base64')));
     },
     async finish() {
+      assert.equal(unpreparedCaptureStarts, 0, 'every screencast enables Page then focus emulation on its own session');
       eventTap.write('PING\r\n');
       await waitForPong(2);
       assert.equal(overflow, false, 'event monitor remained within its memory limit');

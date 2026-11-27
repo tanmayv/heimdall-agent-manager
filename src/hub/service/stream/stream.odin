@@ -1,5 +1,6 @@
 package stream
 
+import "core:fmt"
 import "core:slice"
 import "core:strings"
 import "core:sync"
@@ -40,6 +41,7 @@ clone_info :: proc(info: contracts.Stream_Registration, allocator := context.all
 
 // Callers hold the registry mutex. No caller retains a Route across unlock.
 remove :: proc(reg: ^Registry, route: ^Route) {
+	if route.ready do fmt.eprintln("hub stream: ended")
 	r := route.info
 	delete_key(&reg.routes, r.stream_id)
 	fields := []string{r.stream_id, r.owner, r.bridge, r.instance, r.task,
@@ -126,5 +128,6 @@ accept_piece :: proc(r: ^Route, p: contracts.Stream_Piece, now: u64) {
 	r.window_frames += 1
 	r.partial, r.latest = r.latest, r.partial
 	r.latest_seq = r.seq
+	if r.version == 0 do fmt.eprintln("hub stream: first frame assembled")
 	r.version += 1
 }

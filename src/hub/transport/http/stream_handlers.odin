@@ -1,6 +1,7 @@
 package http
 
 import "base:runtime"
+import "core:fmt"
 import "core:net"
 import "core:strings"
 import "core:sync"
@@ -165,7 +166,8 @@ stream_view_leave :: proc(h: ^Bridge_Handlers, owner, id: string, serial: u64) {
 	clear(&r.partial)
 	sync.unlock(&h.streams.mu)
 	defer delete(bridge)
-	_ = stream_control_send(h, bridge, generation, contracts.Stream_Detach{id})
+	detached := stream_control_send(h, bridge, generation, contracts.Stream_Detach{id})
+	fmt.eprintfln("hub stream: detach sent=%t", detached)
 }
 
 // One socket handler owns all writes to its viewer. Bridge ingestion never
@@ -218,6 +220,7 @@ stream_view_handler :: proc(ctx: rawptr, req: Request, socket: net.TCP_Socket) {
 	defer delete(bridge, request_allocator)
 	sync.unlock(&h.streams.mu)
 	attached := !first || stream_control_send(h, bridge, generation, contracts.Stream_Attach{id})
+	if first do fmt.eprintfln("hub stream: attach sent=%t", attached)
 	if !attached {
 		sync.lock(&h.streams.mu)
 		if existing := h.streams.routes[id]; existing != nil && existing.serial == serial {

@@ -18,14 +18,14 @@ is a trusted bridge convention, not isolation between agents.
    `--user-data-dir` equal to the bridge-provided path. Do not attach if the
    listener responds but identity is missing or wrong. Do not log its command
    line or switch to a different port or profile.
-2. If there is no listener, launch installed Chromium in a usable desktop
-   session with these flags. Headless on the same profile is for already
-   authenticated work only. Report **display required** for interactive work
-   without a usable desktop, or **session unavailable** if the original OS
-   cookie store is unavailable.
+2. If there is no listener, launch installed Chromium headless by default
+   with these flags. Use the same profile and original OS cookie store.
+   If a step requires direct desktop interaction, report **display required**
+   and coordinate with the owner. If the original OS cookie store is
+   unavailable, report **session unavailable**.
 
    ```bash
-   chromium --enable-automation --remote-debugging-address=127.0.0.1 \
+   chromium --headless=new --enable-automation --remote-debugging-address=127.0.0.1 \
      --remote-debugging-port="$HEIMDALL_BROWSER_CDP_PORT" \
      --user-data-dir="$HEIMDALL_BROWSER_PROFILE_DIR" about:blank
    ```

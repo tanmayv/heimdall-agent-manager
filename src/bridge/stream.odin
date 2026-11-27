@@ -4,6 +4,7 @@ import "base:runtime"
 
 import "core:encoding/hex"
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -97,6 +98,10 @@ stream_local_call :: proc(id, method, raw: string, rec: Bridge_Local_Agent_Token
 	defer delete(relay.body)
 	if !relay.ok || relay.status != 200 do return bridge_local_response_error(id, "unavailable", "agent context is unavailable")
 	ctx := bridge_local_extract_json_object(relay.body, "data", context.temp_allocator)
+	// Older Hubs omit ui_origin. Keep the enrolled Hub base as their fallback.
+	if ui_origin := bridge_local_extract_json_string(ctx, "ui_origin", "", context.temp_allocator); ui_origin != "" {
+		origin = ui_origin
+	}
 	current := bridge_local_extract_json_object(ctx, "current_task", context.temp_allocator)
 	task = bridge_local_extract_json_string(current, "task_id", "", context.temp_allocator)
 	random: [16]byte
@@ -189,11 +194,13 @@ stream_hub_receive :: proc(raw: string) -> bool {
 		}
 	case contracts.Stream_Attach:
 		if live := stream_find_locked(frame.stream_id); live != nil && live.accepted {
+			if !live.attached do fmt.eprintln("bridge stream: viewer attached")
 			live.attached = true
 			if live.worker_watching do live.worker_stop = true
 		}
 	case contracts.Stream_Detach:
 		if live := stream_find_locked(frame.stream_id); live != nil {
+			if live.attached do fmt.eprintln("bridge stream: viewer detached")
 			live.attached = false
 			live.worker_stop = true
 		}
@@ -234,6 +241,7 @@ stream_hub_drain :: proc(conn: ^ws.Connection, send_control := stream_send_contr
 		}
 		if live.reason != "" {
 			if live.registered {
+				fmt.eprintfln("bridge stream: ended reason=%s stage=%s", live.reason, live.source_stage)
 				_ = send_control(conn, contracts.Stream_Ended{live.reg.stream_id, live.reason})
 				live.registered = false
 			}

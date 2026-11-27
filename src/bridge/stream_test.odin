@@ -4,6 +4,7 @@ import "base:runtime"
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:thread"
@@ -11,6 +12,17 @@ import "core:time"
 import contracts "odin_test:contracts"
 import httpc "odin_test:lib/httpc"
 import ws "odin_test:lib/ws"
+
+@(test)
+test_stream_titles_are_readable_and_do_not_expose_data_urls :: proc(t: ^testing.T) {
+	testing.expect_value(t, stream_cdp_title("  DaTa:text/html,<h1>private fixture</h1>"), "Data URL tab")
+	testing.expect_value(t, stream_cdp_title(""), "Browser tab")
+	testing.expect_value(t, stream_cdp_title("  A short title  "), "A short title")
+	testing.expect_value(t, stream_cdp_title("Visible title\nHidden suffix"), "Visible title…")
+	prefix := strings.repeat("🙂", 49, context.temp_allocator)
+	long := strings.concatenate({prefix, "🙂 tail"}, context.temp_allocator)
+	testing.expect_value(t, stream_cdp_title(long), strings.concatenate({prefix, "…"}, context.temp_allocator))
+}
 
 @(test)
 test_stream_profile_identity_and_port :: proc(t: ^testing.T) {

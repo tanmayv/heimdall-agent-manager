@@ -18,18 +18,16 @@ resulting path is checked before use.
   Chromium calls this directory its **user data directory**, not its individual
   `Default` profile directory. Check the application's signed-in account before
   reusing its session.
-- Launch headed when the child has a working graphical session. On Linux,
-  verify a connection to its inherited Wayland or X11 session. A nonempty
-  `DISPLAY` or `WAYLAND_DISPLAY` is not a connection check. macOS needs an active
-  Aqua login for the launch user. Windows needs an interactive desktop in the
-  same user session. Don't copy or synthesize another user's session credentials.
+- Launch headless by default so the shared browser does not depend on desktop
+  focus or a graphical session. A step that requires direct desktop interaction
+  needs a working display and the owner's coordination. Do not replace an
+  already-running shared browser to switch modes.
 - On Linux, the bridge forwards nonempty desktop and session-bus variables.
   Explicit shell session values take precedence, including an explicit empty
   value. Absent or empty bridge values leave the launch environment alone.
-- Without a usable desktop, use the browser's supported headless mode on the
-  **same** profile only for already-authenticated work. If interactive sign-in
-  is needed, report **display required**. Don't attempt sign-in in a disposable
-  profile. Report any graphical initialization failure that led to this check.
+- If direct desktop interaction is needed without a usable display, report
+  **display required**. Don't attempt sign-in in a disposable profile or copy
+  another user's desktop session credentials.
 - Keep the original unlocked OS cookie store reachable. On Linux this means the
   same Secret Service or KWallet backend and matching DBus session. On macOS
   keep the login Keychain accessible. On Windows retain the original
@@ -48,7 +46,7 @@ assume a common port such as 9222. The endpoint must stay local to the bridge.
    `Browser.getBrowserCommandLine`. Require exactly one `--user-data-dir`
    argument matching `HEIMDALL_BROWSER_PROFILE_DIR`. If the listener exists
    but cannot be verified, stop without attaching or launching.
-2. If no listener exists, start Chromium with a blank tab,
+2. If no listener exists, start Chromium with a blank tab, `--headless=new`,
    `--enable-automation`, `--remote-debugging-address=127.0.0.1`,
    `--remote-debugging-port="$HEIMDALL_BROWSER_CDP_PORT"` and
    `--user-data-dir="$HEIMDALL_BROWSER_PROFILE_DIR"`.
