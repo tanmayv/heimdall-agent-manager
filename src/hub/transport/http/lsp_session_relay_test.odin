@@ -167,8 +167,7 @@ test_lsp_ws_frame_header_encodes_each_length_class :: proc(t: ^testing.T) {
 
 // --- inbound framing ---------------------------------------------------------
 
-@(private = "file")
-lsp_make_masked_frame :: proc(text: string, mask: [4]byte) -> [dynamic]byte {
+http_test_masked_text_frame :: proc(text: string, mask: [4]byte) -> [dynamic]byte {
 	n := len(text)
 	out := make([dynamic]byte)
 	append(&out, 0x81)
@@ -304,7 +303,7 @@ test_lsp_ws_take_frame_still_reads_an_unfragmented_message :: proc(t: ^testing.T
 	// and the reader must not think a fragmented message is open afterwards.
 	reader := Lsp_WS_Reader{}
 	defer lsp_ws_reader_destroy(&reader)
-	f := lsp_make_masked_frame("{\"n\":1}", {1, 2, 3, 4})
+	f := http_test_masked_text_frame("{\"n\":1}", {1, 2, 3, 4})
 	defer delete(f)
 	append(&reader.pending, ..f[:])
 
@@ -404,7 +403,7 @@ test_lsp_ws_take_frame_reads_a_64bit_length_frame :: proc(t: ^testing.T) {
 
 	reader := Lsp_WS_Reader{}
 	defer lsp_ws_reader_destroy(&reader)
-	frame := lsp_make_masked_frame(payload, {0x0a, 0x0b, 0x0c, 0x0d})
+	frame := http_test_masked_text_frame(payload, {0x0a, 0x0b, 0x0c, 0x0d})
 	defer delete(frame)
 	append(&reader.pending, ..frame[:])
 
@@ -422,7 +421,7 @@ test_lsp_ws_take_frame_waits_for_a_split_header :: proc(t: ^testing.T) {
 	// One recv can end mid-header; that is "need more bytes", never a fatal error.
 	reader := Lsp_WS_Reader{}
 	defer lsp_ws_reader_destroy(&reader)
-	frame := lsp_make_masked_frame("{\"type\":\"ping\"}", {1, 2, 3, 4})
+	frame := http_test_masked_text_frame("{\"type\":\"ping\"}", {1, 2, 3, 4})
 	defer delete(frame)
 
 	append(&reader.pending, frame[0])
@@ -451,9 +450,9 @@ test_lsp_ws_take_frame_splits_coalesced_frames :: proc(t: ^testing.T) {
 	// leave the rest intact.
 	reader := Lsp_WS_Reader{}
 	defer lsp_ws_reader_destroy(&reader)
-	f1 := lsp_make_masked_frame("{\"n\":1}", {1, 2, 3, 4})
+	f1 := http_test_masked_text_frame("{\"n\":1}", {1, 2, 3, 4})
 	defer delete(f1)
-	f2 := lsp_make_masked_frame("{\"n\":2}", {5, 6, 7, 8})
+	f2 := http_test_masked_text_frame("{\"n\":2}", {5, 6, 7, 8})
 	defer delete(f2)
 	append(&reader.pending, ..f1[:])
 	append(&reader.pending, ..f2[:])
