@@ -30,7 +30,6 @@ async function checkViewerInput(viewer, source, audit, waitFor) {
   await viewer.waitForSelector(control + '[aria-pressed="true"]');
   await viewer.mouse.click(...owner);
   await waitFor(async () => (await actions()).owner >= 1, 'owner click in source tab');
-  assert.equal((await actions()).owner, 1, 'watch-only click was not forwarded');
 
   await viewer.mouse.click(...await point('#typing'));
   await waitFor(() => source.$eval('#typing', node => document.activeElement === node), 'source input focus');
@@ -54,8 +53,9 @@ async function checkViewerInput(viewer, source, audit, waitFor) {
     await waitFor(() => source.evaluate(() => window.dragHeld()), 'owner drag held in source tab');
     // The simulated agent acts on the same tab using an independent CDP
     // connection while the owner is still holding the pointer down.
-    await source.$eval('#agent', node => node.click());
-    assert.equal((await actions()).agent, 1);
+    await source.keyboard.press('F8');
+    await waitFor(async () => (await actions()).agent === 1, 'trusted agent key in source tab');
+    assert.equal(await source.evaluate(() => window.dragHeld()), true, 'agent key arrived during owner drag');
     await viewer.mouse.move(...await point('#drag', 70), { steps: 5 });
   } finally {
     await viewer.mouse.up();
@@ -63,6 +63,9 @@ async function checkViewerInput(viewer, source, audit, waitFor) {
   await waitFor(async () => (await actions()).drag > 100, 'owner drag delta in source tab');
   await viewer.mouse.wheel({ deltaY: 400 });
   await waitFor(() => source.evaluate(() => scrollY > 0), 'owner wheel scrolled source tab');
+  // The wheel is a later round trip on the ordered viewer connection. Any
+  // incorrectly forwarded watch-only click has reached the source by now.
+  assert.equal((await actions()).owner, 1, 'watch-only click was not forwarded');
 }
 
 export async function checkTabStream({
@@ -164,8 +167,7 @@ export async function checkTabStream({
         .some(item => item.textContent === title), {}, alternate.title);
       assert.deepEqual(await page.page.$$eval('[role="menuitem"]', items => items.map(item => item.textContent)),
         [alternate.title], 'switcher lists the other live stream only');
-      await page.page.evaluate(title => [...document.querySelectorAll('[role="menuitem"]')]
-        .find(item => item.textContent === title).click(), alternate.title);
+      await page.page.click('[role="menuitem"]');
       await page.page.waitForFunction(id => location.hash === '#/streams/' + id, {}, second.id);
       await page.page.waitForSelector('button[aria-label="' + alternate.title + ', switch stream"]');
       await waitForCapture('Page.startScreencast', alternate.target);
