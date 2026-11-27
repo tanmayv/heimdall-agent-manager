@@ -3,6 +3,7 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
@@ -336,4 +337,40 @@ test_provider_extension_antigravity_empty_probe_exit_status :: proc(t: ^testing.
 		_ = os.remove(path)
 		delete(path)
 	}
+}
+
+// Antigravity imports detection reads plugin state under the config dir the
+// given env resolves: GEMINI_CONFIG_DIR when set (HOME/.gemini is then never
+// consulted), else HOME/.gemini.
+@(test)
+test_antigravity_detection_env_with_and_without_gemini_config_dir :: proc(t: ^testing.T) {
+	dir, _ := os.temp_directory(context.temp_allocator)
+	seq := sync.atomic_add(&probe_fixture_counter, 1)
+	root := fmt.tprintf("%s/heimdall-ext-gemini-env-%p-%d-%d", dir, t, time.to_unix_nanoseconds(time.now()), seq)
+	defer _ = os.remove_all(root)
+	put := proc(t: ^testing.T, path, body: string) {
+		testing.expect(t, os.make_directory_all(path[:strings.last_index_byte(path, '/')]) == nil)
+		testing.expect(t, os.write_entire_file_from_string(path, body) == nil)
+	}
+	home, cfg := fmt.tprintf("%s/home", root), fmt.tprintf("%s/gemini-cfg", root)
+	put(t, fmt.tprintf("%s/.gemini/config.json", home), `{"plugins":{"heimdall":{"enabled":true}}}`)
+	put(t, fmt.tprintf("%s/.gemini/plugins/heimdall/plugin.json", home), `{"version":"1.0.0"}`)
+	put(t, fmt.tprintf("%s/config.json", cfg), `{"plugins":{"heimdall":{"enabled":false}}}`)
+	put(t, fmt.tprintf("%s/plugins/heimdall/plugin.json", cfg), `{"version":"2.0.0"}`)
+	ext := Bridge_Catalog_Extension{
+		plugin_id = "heimdall", detect_argv = []string{"plugin", "list"}, detect_collection = "imports",
+		detect_id_key = "name", detect_version_key = "version", detect_enabled_key = "enabled",
+		min_version = "0.1.0",
+	}
+	imports := `{"imports":[{"name":"heimdall","importedAt":"today"}]}`
+	state, version := bridge_provider_extension_evaluate(ext, imports, true, context.temp_allocator, []string{fmt.tprintf("HOME=%s", home)})
+	testing.expect_value(t, state, "present")
+	testing.expect_value(t, version, "1.0.0")
+	state, version = bridge_provider_extension_evaluate(ext, imports, true, context.temp_allocator, []string{fmt.tprintf("HOME=%s", home), fmt.tprintf("GEMINI_CONFIG_DIR=%s", cfg)})
+	testing.expect_value(t, state, "disabled")
+	testing.expect_value(t, version, "2.0.0")
+	// GEMINI_CONFIG_DIR set but empty of plugin files: no HOME fallback.
+	empty := fmt.tprintf("%s/empty-cfg", root)
+	state, version = bridge_provider_extension_evaluate(ext, imports, true, context.temp_allocator, []string{fmt.tprintf("HOME=%s", home), fmt.tprintf("GEMINI_CONFIG_DIR=%s", empty)})
+	testing.expectf(t, version == "", "no HOME fallback: got (%s, %q)", state, version)
 }

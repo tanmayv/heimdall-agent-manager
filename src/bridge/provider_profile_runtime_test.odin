@@ -384,7 +384,7 @@ test_profile_extension_detection_uses_child_config_only :: proc(t: ^testing.T) {
 	defer delete(version)
 	testing.expect_value(t, state, "disabled")
 	testing.expect_value(t, version, "2.0.0")
-	for path in bridge_extension_gemini_paths(env, "heimdall", true) do testing.expect(t, strings.has_prefix(path, cfg))
+	for path in bridge_extension_plugin_config_paths(env, "heimdall", true) do testing.expect(t, strings.has_prefix(path, cfg))
 }
 
 @(test)

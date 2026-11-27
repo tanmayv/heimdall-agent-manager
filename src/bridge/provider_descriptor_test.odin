@@ -73,9 +73,9 @@ test_provider_config_dir_resolver_precedence :: proc(t: ^testing.T) {
 	testing.expect_value(t, bridge_provider_config_dir(copilot, &cp, []string{"HOME=/h"}), "/profile/copilot")
 	testing.expect_value(t, bridge_provider_config_dir(copilot, nil, []string{"HOME=/h", "COPILOT_HOME=/env/copilot"}), "/env/copilot")
 	// Antigravity plugin config lives under GEMINI_CONFIG_DIR, else ~/.gemini.
-	paths := bridge_extension_gemini_paths([]string{"HOME=/h", "GEMINI_CONFIG_DIR=/g"}, "heimdall", false)
+	paths := bridge_extension_plugin_config_paths([]string{"HOME=/h", "GEMINI_CONFIG_DIR=/g"}, "heimdall", false)
 	testing.expect(t, len(paths) == 2 && paths[0] == "/g/config.json" && paths[1] == "/g/config/config.json")
-	paths = bridge_extension_gemini_paths([]string{"HOME=/h"}, "heimdall", true)
+	paths = bridge_extension_plugin_config_paths([]string{"HOME=/h"}, "heimdall", true)
 	testing.expect(t, len(paths) == 2 && paths[0] == "/h/.gemini/plugins/heimdall/plugin.json")
 }
 

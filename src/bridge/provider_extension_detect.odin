@@ -112,7 +112,7 @@ bridge_provider_extension_state_rank :: proc(state: string) -> int {
 
 bridge_antigravity_plugin_enabled_state :: proc(plugin_id: string, paths: []string = nil) -> (enabled: bool, has_config: bool) {
 	enabled = true
-	candidates := paths if paths != nil else bridge_extension_gemini_paths(nil, plugin_id, false)
+	candidates := paths if paths != nil else bridge_extension_plugin_config_paths(nil, plugin_id, false)
 	for cand in candidates {
 		if os.exists(cand) {
 			if data, read_err := os.read_entire_file(cand, context.temp_allocator); read_err == nil {
@@ -134,7 +134,7 @@ bridge_antigravity_plugin_enabled_state :: proc(plugin_id: string, paths: []stri
 }
 
 bridge_provider_extension_installed_manifest_version :: proc(plugin_id: string, allocator := context.temp_allocator, paths: []string = nil) -> string {
-	candidates := paths if paths != nil else bridge_extension_gemini_paths(nil, plugin_id, true)
+	candidates := paths if paths != nil else bridge_extension_plugin_config_paths(nil, plugin_id, true)
 	for cand in candidates {
 		if os.exists(cand) {
 			if data, read_err := os.read_entire_file(cand, context.temp_allocator); read_err == nil {
@@ -213,13 +213,13 @@ bridge_provider_extension_evaluate :: proc(ext: Bridge_Catalog_Extension, output
 		entry_version_val, has_version := object[version_key].(json.String)
 		entry_version := string(entry_version_val)
 		if using_antigravity_imports && (!has_version || entry_version == "") {
-			entry_version = bridge_provider_extension_installed_manifest_version(ext.plugin_id, context.temp_allocator,bridge_extension_gemini_paths(env,ext.plugin_id,true))
+			entry_version = bridge_provider_extension_installed_manifest_version(ext.plugin_id, context.temp_allocator,bridge_extension_plugin_config_paths(env,ext.plugin_id,true))
 		}
 		enabled := true
 		if value, has := object[enabled_key].(json.Boolean); has {
 			enabled = bool(value)
 		} else if using_antigravity_imports {
-			agy_enabled, _ := bridge_antigravity_plugin_enabled_state(ext.plugin_id,bridge_extension_gemini_paths(env,ext.plugin_id,false))
+			agy_enabled, _ := bridge_antigravity_plugin_enabled_state(ext.plugin_id,bridge_extension_plugin_config_paths(env,ext.plugin_id,false))
 			enabled = agy_enabled
 		}
 		has_errors := false
@@ -297,7 +297,7 @@ bridge_provider_extension_probe :: proc(binary_path: string, ext: Bridge_Catalog
 // provider that owns Antigravity-style plugins, resolved from env (nil: the
 // bridge's environment) by the config-dir resolver. An explicit
 // GEMINI_CONFIG_DIR excludes the bridge HOME's other account.
-bridge_extension_gemini_paths :: proc(env: []string, plugin_id: string, manifest: bool) -> []string {
+bridge_extension_plugin_config_paths :: proc(env: []string, plugin_id: string, manifest: bool) -> []string {
 	root := ""
 	for d in contracts.provider_descriptors() {
 		if d.extension == .Antigravity_Plugin { root = bridge_provider_config_dir(d, nil, env); break }
