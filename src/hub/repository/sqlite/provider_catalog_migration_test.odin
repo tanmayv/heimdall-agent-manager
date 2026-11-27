@@ -2,6 +2,7 @@
 // Behavioral tests for the provider catalog state produced by the migrations.
 package sqlite
 
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import provider_service "odin_test:hub/service/provider"
@@ -127,4 +128,37 @@ test_codex_and_pi_catalog_select_gpt6_models :: proc(t: ^testing.T) {
 	expect_models(t, &impl, "pi",
 		{"openai-codex/gpt-6.1-sol", "openai-codex/gpt-6-astra", "openai-codex/gpt-6-sol", "openai-codex/gpt-6-luna"},
 		{"openai-codex/gpt-5.6-sol", "openai-codex/gpt-5.6-luna"})
+}
+
+// The compiled provider registry (contracts.provider_descriptors) and the
+// migrated catalog describe the same providers: every active catalog row has a
+// descriptor, every descriptor has an active row, and the default binaries agree.
+// A registered provider with an extension kind must ship an extension descriptor.
+@(test)
+test_provider_catalog_matches_provider_registry :: proc(t: ^testing.T) {
+	conn, clone_ok := tmpl_clone_migrated(t)
+	if !clone_ok do return
+	defer close(&conn)
+
+	impl := Provider_Repo_SQLite{conn = &conn}
+	repo := new_provider_repository(&impl, &conn)
+	catalog, err := iface.provider_catalog_list(&repo)
+	testing.expect_value(t, err.code, domain.Error_Code.None)
+	defer domain.provider_catalog_destroy(catalog)
+	for entry in catalog {
+		if entry.state != "active" do continue
+		d, ok := contracts.provider_descriptor(entry.provider)
+		testing.expectf(t, ok, "active catalog row %s has a registry descriptor", entry.provider)
+		if !ok do continue
+		testing.expectf(t, d.provider == entry.provider, "catalog row %s uses the canonical id, not an alias", entry.provider)
+		testing.expectf(t, d.binary == entry.binary, "%s binary: registry %q, catalog %q", entry.provider, d.binary, entry.binary)
+		if d.extension != .None {
+			testing.expectf(t, entry.extension_json != "", "%s has an extension kind but no catalog extension descriptor", entry.provider)
+		}
+	}
+	for d in contracts.provider_descriptors() {
+		found := false
+		for entry in catalog do if entry.provider == d.provider && entry.state == "active" do found = true
+		testing.expectf(t, found, "registry provider %s has an active catalog row", d.provider)
+	}
 }

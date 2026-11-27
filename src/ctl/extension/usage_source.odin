@@ -1,8 +1,9 @@
 package extension
 
-// Per-provider usage sources. A provider that can report context usage has ONE
-// entry in USAGE_READERS and one parser file; adapters never name a parser.
-// Providers without an entry (antigravity) simply report no usage.
+// Per-provider usage sources. A provider that can report context usage has a
+// usage reader on its HOOK_ADAPTERS entry (hook.odin, keyed by the registry's
+// extension kind) and one parser file; adapters never name a parser.
+// Providers without a reader (antigravity) simply report no usage.
 
 import json "core:encoding/json"
 import "core:strings"
@@ -12,23 +13,10 @@ import "core:strings"
 // usable record exists. Readers never write to stdout or stderr.
 Usage_Reader :: proc(root: json.Object) -> (Transcript_Usage, bool)
 
-@(private = "file")
-Usage_Source_Entry :: struct {
-	provider: string,
-	reader:   Usage_Reader,
-}
-
-@(private = "file")
-USAGE_READERS := [?]Usage_Source_Entry{
-	{CLAUDE_PROVIDER, claude_usage_reader},
-	{CODEX_PROVIDER, codex_usage_reader},
-}
-
 usage_reader_for :: proc(provider: string) -> (Usage_Reader, bool) {
-	for e in USAGE_READERS {
-		if e.provider == provider do return e.reader, true
-	}
-	return nil, false
+	adapter, ok := hook_adapter_for(provider)
+	if !ok || adapter.usage == nil do return nil, false
+	return adapter.usage, true
 }
 
 // ext_event_finish_usage appends the usage block for provider when want_usage.

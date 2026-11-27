@@ -480,3 +480,33 @@ test_usage_source_table_covers_readers_and_antigravity_has_none :: proc(t: ^test
 	ev := parse_one(t, ext_event_end(&eb, "{}"))
 	testing.expect(t, !ev.has_usage && !ev.usage_unavailable)
 }
+
+// Hook dispatch and usage readers come from the extension-kind table: only
+// claude and codex read usage, antigravity hooks without usage, and providers
+// without a Heimdall extension (or unknown ones) are ignored.
+@(test)
+test_hook_adapter_table_from_provider_registry :: proc(t: ^testing.T) {
+	_, ok := usage_reader_for("claude")
+	testing.expect(t, ok, "claude reads usage")
+	_, ok = usage_reader_for("codex")
+	testing.expect(t, ok, "codex reads usage")
+	for p in ([]string{"antigravity", "copilot", "kiro", "opencode", "pi", "gemini", ""}) {
+		_, ok = usage_reader_for(p)
+		testing.expectf(t, !ok, "%s has no usage reader", p)
+	}
+	for p in ([]string{"claude", "codex", "antigravity", "claude-code"}) {
+		testing.expectf(t, hook_provider_supported(p), "%s hooks are supported", p)
+	}
+	calls := 0
+	count_send :: proc(endpoint, token, method, params: string, timeout_ms: int) -> (string, bool) {
+		(^int)(context.user_ptr)^ += 1
+		return "", true
+	}
+	context.user_ptr = &calls
+	env := Hook_Env{endpoint = "unix:/nonexistent", token = "tok", ts = "2026-11-27T00:00:00Z"}
+	for p in ([]string{"copilot", "kiro", "opencode", "pi", "gemini", "unknown", ""}) {
+		testing.expectf(t, !hook_provider_supported(p), "%s hooks are not supported", p)
+		testing.expect_value(t, hook_run(p, `{"hook_event_name":"Stop"}`, env, count_send), "")
+	}
+	testing.expect_value(t, calls, 0)
+}

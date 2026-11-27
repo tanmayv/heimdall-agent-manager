@@ -154,6 +154,7 @@ write_bridge_provider_view_json :: proc(
 	strings.write_string(b, ",\"acp_availability\":")
 	contracts.write_acp_availability_json(b, provider_service.classify_acp_availability(view.catalog.provider, view.catalog.acp_recipe_json, bridge_capabilities_json, view.acp_adapter_json))
 	write_bridge_provider_extension_json(b, view)
+	write_bridge_provider_profile_config_dir_json(b, view.catalog.provider)
 	strings.write_string(b, ",\"models\":[")
 	for model, i in view.catalog.models {
 		if i > 0 do strings.write_byte(b, ',')
@@ -163,7 +164,8 @@ write_bridge_provider_view_json :: proc(
 }
 
 // write_bridge_provider_extension_json emits the measured extension state next to
-// the catalog's install_hint and capabilities (REQ-EXT-DET-1). It is null for a
+// the catalog's install_hint and capabilities (REQ-EXT-DET-1), plus whether Heimdall
+// can install it on request (installable, see extension_install_supported). It is null for a
 // provider whose catalog row has no extension descriptor.
 write_bridge_provider_extension_json :: proc(
 	b: ^strings.Builder,
@@ -199,7 +201,32 @@ write_bridge_provider_extension_json :: proc(
 		if i > 0 do strings.write_byte(b, ',')
 		strings.write_byte(b, '"'); write_handler_json_string(b, capability); strings.write_byte(b, '"')
 	}
-	strings.write_string(b, "]}")
+	strings.write_string(b, "],\"installable\":")
+	strings.write_string(b, "true" if extension_install_supported(view) else "false")
+	strings.write_byte(b, '}')
+}
+
+// write_bridge_provider_profile_config_dir_json tells the UI which provider
+// profile field holds the provider's config directory and the env var the CLI
+// reads it from (provider registry); null when profiles have no such field.
+write_bridge_provider_profile_config_dir_json :: proc(b: ^strings.Builder, provider: string) {
+	strings.write_string(b, ",\"profile_config_dir\":")
+	d, ok := contracts.provider_descriptor(provider)
+	field: string
+	if ok {
+		switch d.config_field {
+		case .None:
+		case .Config_Dir: field = "config_dir"
+		case .Home_Path:  field = "home_path"
+		}
+	}
+	if field == "" {
+		strings.write_string(b, "null")
+		return
+	}
+	strings.write_string(b, "{\"field\":\""); strings.write_string(b, field)
+	strings.write_string(b, "\",\"env\":\""); write_handler_json_string(b, d.config_dir_env)
+	strings.write_string(b, "\"}")
 }
 
 bridge_provider_status_response :: proc(

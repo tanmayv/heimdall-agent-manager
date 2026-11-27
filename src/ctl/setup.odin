@@ -17,45 +17,42 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import contracts "odin_test:contracts"
 
 Setup_Harness :: struct {
 	name: string,
-	bin: string,           // command to detect on PATH
-	config_path: string,   // primary config/hook file (~ expanded)
+	bin: string,            // command to detect on PATH
+	config_path: string,    // provider config directory ("" when it has no default and no env override)
+	config_dir_env: string, // env var the CLI reads its config directory from ("" if none)
 	install_hint: string,
 	auth_hint: string,
 	wire_hint: string,
 }
 
-setup_known_harnesses :: proc() -> []Setup_Harness {
-	home := os.get_env_alloc("HOME", context.allocator)
-	j :: proc(home, rel: string) -> string { return strings.concatenate({home, "/", rel}) }
+// setup_known_harnesses lists every provider in the registry (G7): its default
+// binary, config directory (env override, else the home default), install and
+// auth guidance. Heimdall never installs a provider (G2); the hints are printed.
+setup_known_harnesses :: proc(home: string, getenv: proc(key: string) -> string) -> []Setup_Harness {
 	out := make([dynamic]Setup_Harness)
-	append(&out, Setup_Harness{
-		name = "pi", bin = "pi", config_path = j(home, ".pi/agent/extensions"),
-		install_hint = "install @earendil-works/pi-coding-agent (npm) or via nix",
-		auth_hint = "set provider key env (e.g. ANTHROPIC_API_KEY) or run pi's OAuth",
-		wire_hint = "activity via the harness-agnostic tmux pane-capture detector (source=pane_diff); no extension required",
-	})
-	append(&out, Setup_Harness{
-		name = "antigravity", bin = "agy", config_path = j(home, ".gemini/hooks.json"),
-		install_hint = "install antigravity-cli (agy); extension: agy plugin install <repo>/extensions/antigravity",
-		auth_hint = "Google OAuth: token at ~/.gemini/antigravity-cli/antigravity-oauth-token",
-		wire_hint = "agy plugin install <repo>/extensions/antigravity or load via --add-dir extensions/antigravity; hooks invoke '$HEIMDALL_CTL_BIN' extension hook antigravity",
-	})
-	append(&out, Setup_Harness{
-		name = "claude", bin = "claude", config_path = j(home, ".claude/settings.json"),
-		install_hint = "install Claude Code",
-		auth_hint = "run 'claude' login (OAuth) or set ANTHROPIC_API_KEY",
-		wire_hint = "wire PreToolUse/PostToolUse/Stop/Notification hooks to the wrapper command",
-	})
-	append(&out, Setup_Harness{
-		name = "codex", bin = "codex", config_path = j(home, ".codex/config.toml"),
-		install_hint = "install Codex CLI",
-		auth_hint = "set OPENAI_API_KEY or run Codex login",
-		wire_hint = "set notify = [\"<wrapper>\", \"--codex\"]; permission relay via MCP",
-	})
+	for d in contracts.provider_descriptors() {
+		env_dir := getenv(d.config_dir_env) if d.config_dir_env != "" else ""
+		wire := "no Heimdall extension; activity via the harness-agnostic pane detector"
+		if d.extension != .None {
+			wire = fmt.aprintf("ham-ctl extension install %s; hooks invoke '$HEIMDALL_CTL_BIN' extension hook %s", d.provider, d.provider)
+		}
+		append(&out, Setup_Harness{
+			name = d.provider, bin = d.binary,
+			config_path = contracts.provider_config_dir_resolve(d, "", env_dir, home, context.allocator),
+			config_dir_env = d.config_dir_env,
+			install_hint = d.install_hint, auth_hint = d.auth_guidance, wire_hint = wire,
+		})
+	}
 	return out[:]
+}
+
+@(private = "file")
+setup_getenv :: proc(key: string) -> string {
+	return os.get_env_alloc(key, context.allocator)
 }
 
 setup_path_exists :: proc(path: string) -> bool {
@@ -93,33 +90,42 @@ setup_is_symlink :: proc(path: string) -> bool {
 	return is_link
 }
 
+// setup_report_json is the `setup --json` report for harnesses (only: one name).
+setup_report_json :: proc(harnesses: []Setup_Harness, only: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"harnesses\":[")
+	first := true
+	for h in harnesses {
+		if only != "" && h.name != only do continue
+		bin_path, present := setup_bin_on_path(h.bin)
+		cfg_present := setup_path_exists(h.config_path)
+		cfg_symlink := setup_is_symlink(h.config_path)
+		if !first do strings.write_string(&b, ",")
+		first = false
+		strings.write_string(&b, "{\"name\":\""); json_write_string(&b, h.name)
+		strings.write_string(&b, "\",\"bin\":\""); json_write_string(&b, h.bin)
+		strings.write_string(&b, "\",\"installed\":"); strings.write_string(&b, "true" if present else "false")
+		strings.write_string(&b, ",\"bin_path\":\""); json_write_string(&b, bin_path)
+		strings.write_string(&b, "\",\"config_path\":\""); json_write_string(&b, h.config_path)
+		strings.write_string(&b, "\",\"config_dir_env\":\""); json_write_string(&b, h.config_dir_env)
+		strings.write_string(&b, "\",\"config_present\":"); strings.write_string(&b, "true" if cfg_present else "false")
+		strings.write_string(&b, ",\"config_readonly_symlink\":"); strings.write_string(&b, "true" if cfg_symlink else "false")
+		strings.write_string(&b, ",\"needs_overlay\":"); strings.write_string(&b, "true" if cfg_symlink else "false")
+		strings.write_string(&b, ",\"install_hint\":\""); json_write_string(&b, h.install_hint)
+		strings.write_string(&b, "\",\"auth_hint\":\""); json_write_string(&b, h.auth_hint)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, "]}")
+	return strings.to_string(b)
+}
+
 ctl_setup_command :: proc(args: []string) {
 	as_json := has_flag(args, "--json")
 	only := option_value(args, "--harness", "")
-	harnesses := setup_known_harnesses()
+	harnesses := setup_known_harnesses(os.get_env_alloc("HOME", context.allocator), setup_getenv)
 
 	if as_json {
-		b := strings.builder_make()
-		strings.write_string(&b, "{\"harnesses\":[")
-		first := true
-		for h in harnesses {
-			if only != "" && h.name != only do continue
-			bin_path, present := setup_bin_on_path(h.bin)
-			cfg_present := setup_path_exists(h.config_path)
-			cfg_symlink := setup_is_symlink(h.config_path)
-			if !first do strings.write_string(&b, ",")
-			first = false
-			strings.write_string(&b, "{\"name\":\""); json_write_string(&b, h.name)
-			strings.write_string(&b, "\",\"installed\":"); strings.write_string(&b, "true" if present else "false")
-			strings.write_string(&b, ",\"bin_path\":\""); json_write_string(&b, bin_path)
-			strings.write_string(&b, "\",\"config_path\":\""); json_write_string(&b, h.config_path)
-			strings.write_string(&b, "\",\"config_present\":"); strings.write_string(&b, "true" if cfg_present else "false")
-			strings.write_string(&b, ",\"config_readonly_symlink\":"); strings.write_string(&b, "true" if cfg_symlink else "false")
-			strings.write_string(&b, ",\"needs_overlay\":"); strings.write_string(&b, "true" if cfg_symlink else "false")
-			strings.write_string(&b, "}")
-		}
-		strings.write_string(&b, "]}")
-		fmt.println(strings.to_string(b))
+		fmt.println(setup_report_json(harnesses, only))
 		return
 	}
 
@@ -136,7 +142,9 @@ ctl_setup_command :: proc(args: []string) {
 		} else {
 			fmt.printf("  installed:   NO  -> %s\n", h.install_hint)
 		}
-		fmt.printf("  config:      %s%s\n", h.config_path, cfg_present ? "" : "  (absent)")
+		config := h.config_path if h.config_path != "" else "(none by default)"
+		if h.config_dir_env != "" do config = fmt.tprintf("%s  [%s]", config, h.config_dir_env)
+		fmt.printf("  config:      %s%s\n", config, cfg_present || h.config_path == "" ? "" : "  (absent)")
 		if cfg_symlink {
 			fmt.println("  managed:     read-only symlink -> wrapper must use a writable OVERLAY, not overwrite")
 		}
