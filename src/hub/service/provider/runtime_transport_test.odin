@@ -254,6 +254,18 @@ test_acp_availability_classifies_every_reason_with_its_fix :: proc(t: ^testing.T
   testing.expectf(t, strings.to_string(b) == want, "case %d: got %s want %s", i, strings.to_string(b), want)
  }
  testing.expect_value(t, seen, ~bit_set[contracts.ACP_Availability_Reason]{})
+ // A pre-R2 bridge sends no recipe binding. For a System runtime its version is
+ // the detected CLI: at or above the minimum stays ready (a Re-check could never
+ // change it), below is outdated. Bound (R2) reports ignore that version.
+ legacy_kiro :: proc(version: string) -> string {
+  return strings.concatenate({`{"installed":true,"state":"ready","checked_at":"2026-11-21T00:00:00Z","version":"`, version, `"}`}, context.temp_allocator)
+ }
+ testing.expect_value(t, classify_acp_availability("kiro", KIRO_TRANSPORT_TEST_RECIPE, ACP, legacy_kiro("3.12.1")), contracts.acp_availability_for(.Ready))
+ testing.expect_value(t, classify_acp_availability("kiro", KIRO_TRANSPORT_TEST_RECIPE, ACP, legacy_kiro("3.5.0")), contracts.acp_availability_for(.Ready))
+ testing.expect_value(t, classify_acp_availability("kiro", KIRO_TRANSPORT_TEST_RECIPE, ACP, legacy_kiro("3.4.9")), contracts.acp_availability_for(.Adapter_Outdated))
+ testing.expect_value(t, classify_acp_availability("copilot", COPILOT_TRANSPORT_TEST_RECIPE, ACP, legacy_kiro("1.0.130")), contracts.acp_availability_for(.Ready))
+ // An unbound adapter report still needs the exact pin.
+ testing.expect_value(t, classify_acp_availability("claude", TRANSPORT_TEST_RECIPE, ACP, legacy_kiro("0.109.0")), contracts.acp_availability_for(.Adapter_Outdated))
 }
 
 // require_acp_ready is built on the classifier; its error codes and details

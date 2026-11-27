@@ -95,7 +95,7 @@ classify_acp_availability :: proc(provider, recipe_json, bridge_capabilities_jso
  switch acp_adapter_state(adapter_json) {
  case "ready":
   // A ready report evaluated against another recipe needs a Re-check/install.
-  if !acp_report_binds_recipe(adapter_json,recipe_json) do return contracts.acp_availability_for(.Adapter_Outdated)
+  if !acp_report_binds_recipe(provider,adapter_json,recipe_json) do return contracts.acp_availability_for(.Adapter_Outdated)
   return contracts.acp_availability_for(.Ready)
  case "installing": return contracts.acp_availability_for(.Installing)
  case "missing": return contracts.acp_availability_for(.Adapter_Missing)
@@ -110,11 +110,13 @@ classify_acp_availability :: proc(provider, recipe_json, bridge_capabilities_jso
 // acp_report_binds_recipe checks a ready report's minimal structure (installed,
 // checked_at) and the recipe binding it carries (adapter_package and
 // adapter_version, sent since R2) against the catalog recipe. A report from a
-// pre-R2 bridge has no binding; its "version" is then accepted only when it
-// equals the recipe's adapter_version, which is exactly what those bridges
-// pinned for adapters (a system CLI must sit at the minimum itself, so such
-// bridges are best updated). Mismatches classify as adapter_outdated.
-acp_report_binds_recipe :: proc(adapter_json, recipe_json: string) -> bool {
+// pre-R2 bridge has no binding, so the pre-R2 Hub rule applies to it: an
+// adapter's "version" must equal the recipe's pinned adapter_version, and a
+// System runtime's "version" is the detected CLI, accepted at or above the
+// compiled minimum. Old bridges therefore keep working (a CLI newer than the
+// minimum stays ready); this legacy branch is the only place the Hub reads a
+// version. Mismatches classify as adapter_outdated.
+acp_report_binds_recipe :: proc(provider, adapter_json, recipe_json: string) -> bool {
  recipe: contracts.ACP_Recipe
  if json.unmarshal_string(recipe_json,&recipe,allocator=context.temp_allocator)!=nil || recipe.adapter_version=="" do return false
  value,err:=json.parse_string(adapter_json,allocator=context.temp_allocator)
@@ -129,7 +131,9 @@ acp_report_binds_recipe :: proc(adapter_json, recipe_json: string) -> bool {
   return string(version)==recipe.adapter_version && string(pkg)==recipe.adapter_package
  }
  legacy,lok:=obj["version"].(json.String)
- return lok && string(legacy)==recipe.adapter_version
+ if !lok do return false
+ if d,known:=contracts.acp_provider_descriptor(provider);known && d.launch==.System do return contracts.acp_descriptor_cli_version_accepted(d,string(legacy))
+ return string(legacy)==recipe.adapter_version
 }
 
 // acp_availability_error maps a verdict to the launch/settings error. Error
