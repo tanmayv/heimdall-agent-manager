@@ -73,3 +73,38 @@ bridge_agent_process_kill_orphan :: proc(expected: Bridge_Agent_Process_Identity
 	}
 	return false
 }
+
+// Scan /proc for a live process whose environment names this instance.
+// Returns scanned=false when /proc cannot be listed, so callers fail closed.
+bridge_agent_process_find_by_instance :: proc(id: string) -> (found: bool, view: Bridge_Agent_Process_View, scanned: bool) {
+	if id == "" do return false, {}, false
+	dir, open_err := os.open("/proc")
+	if open_err != nil do return false, {}, false
+	defer os.close(dir)
+	entries, read_err := os.read_dir(dir, -1, context.temp_allocator)
+	if read_err != nil do return false, {}, false
+	needle := strings.concatenate({"HEIMDALL_AGENT_INSTANCE_ID=", id}, context.temp_allocator)
+	self := i32(os.get_pid())
+	for entry in entries {
+		pid, ok := strconv.parse_i64(entry.name)
+		if !ok || pid <= 0 || i32(pid) == self do continue
+		raw, err := os.read_entire_file(fmt.tprintf("/proc/%d/environ", pid), context.temp_allocator)
+		if err != nil do continue
+		if !bridge_agent_environ_has(string(raw), needle) do continue
+		v := bridge_agent_process_os_read(i32(pid))
+		if v.state == .Alive do return true, v, true
+	}
+	return false, {}, true
+}
+
+bridge_agent_environ_has :: proc(environ, entry: string) -> bool {
+	rest := environ
+	for len(rest) > 0 {
+		end := strings.index_byte(rest, 0)
+		item := rest if end < 0 else rest[:end]
+		if item == entry do return true
+		if end < 0 do break
+		rest = rest[end+1:]
+	}
+	return false
+}
