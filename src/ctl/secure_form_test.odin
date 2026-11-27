@@ -50,7 +50,7 @@ test_secure_form_cli_encodes_only_method_params :: proc(t: ^testing.T) {
 @(test)
 test_secure_form_owner_link_has_no_private_reply_fields :: proc(t: ^testing.T) {
 	id :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	link :: "https://hub.example.test/prefix/#/secure-forms/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	link :: "https://ui.example.test/#/secure-forms/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	reply := Secure_Form_CLI_Reply{request_id = id, poll_token = "private-poll", stdout_b64 = "private-output"}
 	testing.expect_value(t, ctl_secure_form_owner_link_line(reply, id), "")
 	reply.owner_link = link

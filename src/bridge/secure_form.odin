@@ -587,7 +587,7 @@ SECURE_FORM_LOCAL_LIVENESS_MS :: 15_000
 Secure_Form_Live :: struct {
 	waiter: Secure_Form_Waiter_State,
 	run_count, execution_seconds: int,
-	schema, token, register_wire, ciphertext, raw_submission: string,
+	schema, token, register_wire, ciphertext, raw_submission, ui_origin: string,
 	digest: [32]byte,
 	recipient: Secure_Form_Secret,
 	receipt, last_poll, forget, output_expiry: u64,
@@ -687,7 +687,7 @@ secure_form_sweep_locked :: proc(now: u64) {
 		delete_key(&secure_form_live, id)
 		secure_form_forget_input(w)
 		secure_form_child_result_free(&w.result)
-		for s in ([]string{w.schema, w.token, w.register_wire, w.raw_submission, w.waiter.generation, id,
+		for s in ([]string{w.schema, w.token, w.register_wire, w.raw_submission, w.ui_origin, w.waiter.generation, id,
 			w.waiter.binding.owner, w.waiter.binding.bridge, w.waiter.binding.instance, w.waiter.binding.task,
 			w.waiter.binding.script, w.waiter.binding.schema_digest}) {
 			delete(s)
@@ -958,7 +958,7 @@ secure_form_execute_attempt :: proc(w: ^Secure_Form_Live) {
 		crypto.zero_explicit(raw_data(assertion), len(assertion))
 		delete(assertion)
 	}
-	owner, bridge, task, _, active := secure_form_placement({
+	owner, bridge, task, _, _, active := secure_form_placement({
 		agent_instance_id = w.waiter.binding.instance, instance_token = assertion, run_count = w.run_count, role = .Agent,
 	})
 	if !active || owner != w.waiter.binding.owner || bridge != w.waiter.binding.bridge || task != w.waiter.binding.task {
@@ -1049,17 +1049,22 @@ secure_form_discard_output :: proc(w: ^Secure_Form_Live) {
 }
 
 @(private)
-secure_form_owner_link :: proc(hub_url: string, waiter: Secure_Form_Waiter_State) -> string {
+secure_form_owner_link :: proc(hub_url, ui_origin: string, waiter: Secure_Form_Waiter_State) -> string {
 	if !waiter.registered do return ""
-	base, ok := bridge_hub_canonical_base(hub_url, context.temp_allocator)
-	if !ok do return ""
+	base := strings.trim_right(ui_origin, "/")
+	// Older Hubs omit ui_origin, as with stream share.
+	if base == "" {
+		ok: bool
+		base, ok = bridge_hub_canonical_base(hub_url, context.temp_allocator)
+		if !ok do return ""
+	}
 	return strings.concatenate({base, "/#/secure-forms/", waiter.binding.request_id}, context.temp_allocator)
 }
 
 @(private)
 secure_form_local_report :: proc(id: string, w: ^Secure_Form_Live, include_output: bool) -> string {
 	a := w.waiter.attempt
-	link := secure_form_owner_link(bridge_config.daemon_url, w.waiter)
+	link := secure_form_owner_link(bridge_config.daemon_url, w.ui_origin, w.waiter)
 	reply := struct {
 		request_id, poll_token, owner_link: string,
 		attempt: u64,
@@ -1091,7 +1096,7 @@ secure_form_local_report :: proc(id: string, w: ^Secure_Form_Live, include_outpu
 }
 
 @(private)
-secure_form_placement :: proc(rec: Bridge_Local_Agent_Token_Record) -> (owner, bridge, task, conversation: string, ok: bool) {
+secure_form_placement :: proc(rec: Bridge_Local_Agent_Token_Record) -> (owner, bridge, task, conversation, ui_origin: string, ok: bool) {
 	launch, active := bridge_runtime_instance_snapshot(rec.agent_instance_id)
 	if !active || launch.runtime_status != "running" || bridge_agent_instance_run_count(rec.agent_instance_id) != rec.run_count do return
 	path := [?]string{"api", "v1", "agent-actions", "context"}
@@ -1105,6 +1110,7 @@ secure_form_placement :: proc(rec: Bridge_Local_Agent_Token_Record) -> (owner, b
 	bridge = bridge_local_extract_json_string(ctx, "bridge_id", "", context.temp_allocator)
 	if bridge != bridge_config.daemon_id do return
 	conversation = bridge_local_extract_json_string(ctx, "conversation_id", "", context.temp_allocator)
+	ui_origin = bridge_local_extract_json_string(ctx, "ui_origin", "", context.temp_allocator)
 	current, has_task := jsonx.extract_raw_object(ctx, "current_task", true, context.temp_allocator)
 	if !has_task do return
 	task = bridge_local_extract_json_string(current, "task_id", "", context.temp_allocator)
@@ -1169,7 +1175,7 @@ secure_form_local_retry :: proc(id: string, params: Secure_Form_Local_Request, r
 
 @(private)
 secure_form_local_start :: proc(id: string, params: Secure_Form_Local_Request, rec: Bridge_Local_Agent_Token_Record,
-	owner, bridge, task, conversation: string) -> string {
+	owner, bridge, task, conversation, ui_origin: string) -> string {
 	if params.timeout < 10 || params.timeout > 600 || params.execution_timeout < 1 || params.execution_timeout > 600 ||
 	   !contracts.secure_form_path(params.script) || len(params.schema) > contracts.SECURE_FORM_SCHEMA_MAX {
 		return secure_form_local_response(id, .Unauthorized)
@@ -1221,6 +1227,7 @@ secure_form_local_start :: proc(id: string, params: Secure_Form_Local_Request, r
 		form_deadline = deadline, attempt = {1, false, .Unknown},
 	}
 	w.run_count, w.execution_seconds = rec.run_count, params.execution_timeout
+	w.ui_origin = strings.clone(ui_origin)
 	w.schema, w.token, w.register_wire = strings.clone(params.schema), vault.hex_encode_lower(token[:], context.allocator), strings.clone(wire)
 	w.recipient, w.digest, w.last_poll, w.forget = secret, digest, now, deadline + 960_000
 	w.env = secure_form_environment_copy(params.env)
@@ -1266,8 +1273,8 @@ secure_form_local_call :: proc(id, method, raw: string, rec: Bridge_Local_Agent_
 	if method == "agent.secure_form.poll" || method == "agent.secure_form.cancel" {
 		return secure_form_local_poll(id, method, params, rec)
 	}
-	owner, bridge, task, conversation, ok := secure_form_placement(rec)
+	owner, bridge, task, conversation, ui_origin, ok := secure_form_placement(rec)
 	if !ok do return secure_form_local_response(id, .Unauthorized)
 	if method == "agent.secure_form.retry" do return secure_form_local_retry(id, params, rec, owner, bridge, task)
-	return secure_form_local_start(id, params, rec, owner, bridge, task, conversation)
+	return secure_form_local_start(id, params, rec, owner, bridge, task, conversation, ui_origin)
 }

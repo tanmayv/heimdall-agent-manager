@@ -13,6 +13,10 @@ import { missingSecureFormChoices, sealSecureForm, secureFormChanged, secureForm
 import darkLogo from '../../../../assets/brand/logos/ninjy-icon-dark-gold.png';
 import lightLogo from '../../../../assets/brand/logos/ninjy-icon-light-gold.png';
 
+import { buildConversationHash } from '../../utils/conversationUrl';
+import { closeViewer } from '../../utils/viewerBack';
+import ViewerHeader from '../ViewerHeader';
+
 const path = '/api/v1/secure-forms';
 const blocked = 'The request could not be verified. No fields are available.';
 
@@ -365,17 +369,27 @@ function SecureFormsForOwner({ conversation, owner, decisions }: { conversation:
 }
 
 
+function SecureFormPageLayout({ card, children }: { card?: Card | null; children: React.ReactNode }) {
+  const instance = card?.form.request.instance;
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas">
+      <ViewerHeader title={card?.form.schema.purpose ?? 'Secure request'}
+        onBack={() => closeViewer(instance ? buildConversationHash([instance]) : undefined)} />
+      <div className="min-h-0 flex-1 overflow-auto">
+        <div className="mx-auto grid w-full max-w-xl gap-4 p-4 sm:p-6">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 export function SecureFormLinkPage({ requestId }: { requestId: string }) {
   const owner = useSelector((state: ReturnType<typeof store.getState>) => state.deviceVault.userId);
   const stale = useSelector((state: ReturnType<typeof store.getState>) => state.deviceVault.staleHead);
   const vault = useSyncExternalStore(subscribeKeyringSession, keyringGeneration);
-  return <div className="mx-auto grid w-full max-w-xl gap-4 p-4 sm:p-6">
-    <Text as="h1" role="title">Secure request</Text>
-    {!secureFormId.test(requestId) ? <Alert title="Secure request not found">Check the link or ask the agent for a new request.</Alert>
-      : !owner ? <Alert tone="warning" title="Sign-in required">Sign in to the owner’s Hub account.</Alert>
-      : stale || !getKeyringSession() ? <Alert tone="warning" title="Vault unavailable">Unlock your vault and verify your device to open this request.</Alert>
-      : <LinkedSecureForm key={owner + ':' + requestId + ':' + vault} owner={owner} id={requestId} />}
-  </div>;
+  if (!secureFormId.test(requestId)) return <SecureFormPageLayout><Alert title="Secure request not found" /></SecureFormPageLayout>;
+  if (!owner) return <SecureFormPageLayout><Alert tone="warning" title="Sign-in required" /></SecureFormPageLayout>;
+  if (stale || !getKeyringSession()) return <SecureFormPageLayout><Alert tone="warning" title="Verify and unlock your vault to continue" /></SecureFormPageLayout>;
+  return <LinkedSecureForm key={owner + ':' + requestId + ':' + vault} owner={owner} id={requestId} />;
 }
 
 function LinkedSecureForm({ owner, id }: { owner: string; id: string }) {
@@ -451,15 +465,13 @@ function LinkedSecureForm({ owner, id }: { owner: string; id: string }) {
     }
   }
 
-  if (notice) return <Alert tone="warning" title={notice}>
-    {notice === 'Unverified secure request' ? blocked
-      : notice === 'Secure request not found' ? 'This link may be old or belong to another account.'
-      : notice === 'Secure request unavailable to this account' ? 'Sign in to the owner’s Hub account.'
-      : <Button type="button" variant="secondary" size="sm" onClick={() => {
+  return <SecureFormPageLayout card={card}>
+    {notice ? <Alert tone="warning" title={notice}>
+      {notice === 'Could not load secure request' && <Button type="button" variant="secondary" size="sm" onClick={() => {
         setNotice('');
         setRevision((value) => value + 1);
       }}>Try again</Button>}
-  </Alert>;
-  if (!card) return <div role="status" className="flex items-center gap-2"><Spinner /><Text role="body-sm">Checking secure request</Text></div>;
-  return <SecureFormCard card={card} decide={decide} decided={decided} />;
+    </Alert> : card ? <SecureFormCard card={card} decide={decide} decided={decided} />
+      : <div className="grid place-items-center"><Spinner label="Checking secure request" /></div>}
+  </SecureFormPageLayout>;
 }

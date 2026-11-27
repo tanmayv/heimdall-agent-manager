@@ -62,6 +62,7 @@ import {
   isAgentConversationRoute,
 } from './shellChrome';
 import { useWindowChrome } from '../../hooks/useWindowChrome';
+import { closeViewer } from '../../utils/viewerBack';
 import { artifactIdFromPath, closeArtifactPage, handleArtifactPageLink } from '../../utils/artifactPage';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import { setApprovalPageOpener } from '../../bridge/desktopBridgeSession';
@@ -1935,8 +1936,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   if (path.startsWith('/secure-forms/')) {
     const requestId = path.slice('/secure-forms/'.length);
     return (
-      <main className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-auto bg-canvas text-primary">
-        <Suspense fallback={<span role="status">Loading secure request…</span>}>
+      <main className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-hidden bg-canvas text-primary">
+        <Suspense fallback={<div className="grid h-full place-items-center"><Spinner size="lg" label="Checking secure request" /></div>}>
           <SecureFormLinkPage requestId={requestId} />
         </Suspense>
       </main>
@@ -1948,7 +1949,7 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
     return (
       <main className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-hidden bg-canvas text-primary">
         <Suspense fallback={<div className="grid h-full place-items-center"><Spinner size="lg" label="Connecting" /></div>}>
-          <StreamViewerPage key={streamId} streamId={streamId} onBack={() => { window.location.hash = buildRouteHash('/home', ''); }} />
+          <StreamViewerPage key={streamId} streamId={streamId} onBack={() => closeViewer()} />
         </Suspense>
       </main>
     );

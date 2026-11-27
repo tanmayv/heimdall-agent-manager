@@ -470,7 +470,8 @@ test_secure_form_owner_link_requires_registration_ack :: proc(t: ^testing.T) {
 	hub :: "https://hub.example.test/ninjy/"
 	waiter := Secure_Form_Waiter_State{}
 	waiter.binding.request_id = id
-	testing.expect_value(t, secure_form_owner_link(hub, waiter), "")
+	testing.expect_value(t, secure_form_owner_link(hub, "https://ui.example.test/", waiter), "")
 	waiter.registered = true
-	testing.expect_value(t, secure_form_owner_link(hub, waiter), "https://hub.example.test:443/ninjy/#/secure-forms/" + id)
+	testing.expect_value(t, secure_form_owner_link(hub, "https://ui.example.test/", waiter), "https://ui.example.test/#/secure-forms/" + id)
+	testing.expect_value(t, secure_form_owner_link(hub, "", waiter), "https://hub.example.test:443/ninjy/#/secure-forms/" + id)
 }

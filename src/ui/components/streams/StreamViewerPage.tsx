@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { IconButton, Spinner, Text } from '@ui';
+import ViewerHeader from '../ViewerHeader';
 import { useStreamViewer, type StreamStatus } from './useStreamViewer.ts';
 import { centeredPan, clampPan, fitFrame, toggleFit, type FitMode, type Pan, type Size } from './streamViewport.ts';
 
@@ -72,10 +73,7 @@ export default function StreamViewerPage({ streamId, onBack }: { streamId: strin
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas">
-      <header className="relative z-10 flex min-h-14 shrink-0 items-center gap-2 bg-canvas/90 px-3 py-2 shadow-sm backdrop-blur-md sm:min-h-12 sm:gap-3 sm:px-4">
-        <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 -bottom-6 h-6 bg-gradient-to-b from-canvas/90 via-canvas/50 to-transparent backdrop-blur-sm" />
-        <IconButton icon="arrow-left" label="Back" onClick={onBack} />
-        <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-primary" title={title}>{title}</h1>
+      <ViewerHeader title={title} onBack={onBack}>
         <IconButton icon="refresh" label="Reconnect" disabled={status === 'loading'} onClick={() => {
           stopDrag();
           setNatural(undefined);
@@ -86,7 +84,7 @@ export default function StreamViewerPage({ streamId, onBack }: { streamId: strin
           stopDrag();
           setView(previous => toggleFit(previous.mode));
         }} />
-      </header>
+      </ViewerHeader>
       <div
         ref={viewportRef}
         className={`relative min-h-0 flex-1 touch-none overflow-hidden ${canPan ? dragging ? 'cursor-grabbing' : 'cursor-grab' : ''}`}
