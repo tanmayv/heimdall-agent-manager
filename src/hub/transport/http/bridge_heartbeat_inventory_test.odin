@@ -289,24 +289,25 @@ test_heartbeat_inventory_absent_or_malformed_skips_absence_reconciliation :: pro
 	for frame in frames do testing.expect_value(t, len(bridge_apply_heartbeat_digest(&f.bh, f.bridge_id, frame, f.generation)), 0)
 }
 
-// Terminal-only inventory: a dropped terminal push is repaired from the recurring row,
-// and a terminal row whose repair is fenced off (stale seq) is still never treated as
-// active — before T2 the fallback kept such an instance "running" indefinitely.
+// A legacy bridge can send a newer sequence for an apparent failure or exit.
+// The report must not change durable process status without exit evidence.
 @(test)
-test_heartbeat_inventory_terminal_only_repairs_and_never_refreshes :: proc(t: ^testing.T) {
+test_heartbeat_inventory_unproven_terminal_status_is_ignored :: proc(t: ^testing.T) {
 	f := inv_open(t)
 	defer inv_close(f)
-	inv_save(t, f, "inst_dropped", "running", seq = 3)
-	inv_save(t, f, "inst_fenced", "running", seq = 10)
-	inv_save(t, f, "inst_live", "running", seq = 2)
-	reconciled, state := inv_beat(f, `{"type":"bridge_heartbeat","active_instance_ids":[],"instances":[{"agent_instance_id":"inst_dropped","state_seq":4,"runtime_status":"stopped","activity_status":"idle"},{"agent_instance_id":"inst_fenced","state_seq":6,"runtime_status":"stopped"},{"agent_instance_id":"inst_live","state_seq":2,"runtime_status":"running"}]}`)
+	inv_save(t, f, "inst_stopped", "running", seq = 3)
+	inv_save(t, f, "inst_failed", "running", seq = 3)
+	inv_save(t, f, "inst_unreachable", "running", seq = 3)
+	reconciled, state := inv_beat(f, `{"type":"bridge_heartbeat","active_instance_ids":[],"instances":[{"agent_instance_id":"inst_stopped","state_seq":4,"runtime_status":"stopped"},{"agent_instance_id":"inst_failed","state_seq":4,"runtime_status":"failed"},{"agent_instance_id":"inst_unreachable","state_seq":4,"runtime_status":"unreachable"}]}`)
 	testing.expect_value(t, state, Bridge_Heartbeat_Inventory_State.Complete)
-	dropped, _ := inv_get(t, f, "inst_dropped")
-	fenced, _ := inv_get(t, f, "inst_fenced")
-	live, _ := inv_get(t, f, "inst_live")
-	testing.expect_value(t, dropped, "stopped")
-	testing.expect_value(t, fenced, "running")
-	testing.expect_value(t, live, "running")
+	ids := [?]string{"inst_stopped", "inst_failed", "inst_unreachable"}
+	for id in ids {
+		inst, ok, _ := iface.agent_get_instance(&f.ag_repo, id)
+		testing.expect(t, ok, "instance readable")
+		testing.expect_value(t, inst.runtime_status, "running")
+		testing.expect_value(t, inst.last_applied_seq, 3)
+		domain.agent_instance_destroy(&inst)
+	}
 	testing.expect_value(t, reconciled, 0)
 }
 

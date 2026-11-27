@@ -172,13 +172,15 @@ bridge_heartbeat_inventory_active_ids :: proc(inv: ^Bridge_Heartbeat_Inventory, 
 	return out[:]
 }
 
-// Repairs durable and registry status from every report, active or terminal. Epoch
-// and state_seq fencing live in apply_bridge_status_report / the registry.
+// Legacy inventory can refresh nonterminal status but cannot prove a process
+// exit or current reachability. The row can describe a stale Bridge snapshot
+// even when its launch epoch and sequence pass the usual fences.
 bridge_apply_heartbeat_reports :: proc(h: ^Bridge_Handlers, bridge_id: string, generation: int, reports: []Bridge_Agent_Status_Report) {
 	if h == nil do return
 	current_generation := generation
 	if current_generation == 0 do current_generation = project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id)
 	for report in reports {
+		if report.runtime_status == "failed" || report.runtime_status == "stopped" || report.runtime_status == "unreachable" do continue
 		if h.agents == nil {
 			_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, bridge_id, current_generation, report.agent_instance_id, report.state_seq, report.runtime_status, report.activity_status, "")
 			continue
