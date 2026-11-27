@@ -599,7 +599,7 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 		if !sync.atomic_load(&bridge_hub_runtime_up) do return bridge_local_response_error(request_id, "hub_unreachable", "Hub is unreachable; the request was not sent")
 		body := ""
-		if route.send_body { body = strings.trim_space(params); if body == "" do body = "{}" }
+		if route.send_body { body = strings.trim_space(route.body if route.body != "" else params); if body == "" do body = "{}" }
 		relay := bridge_local_relay_raw(route.http_method, route.path, route.query, body, rec)
 		if !relay.ok do return bridge_local_relay_failure(request_id, "Hub relay failed", relay)
 		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)

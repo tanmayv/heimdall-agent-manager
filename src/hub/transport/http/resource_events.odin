@@ -80,11 +80,14 @@ publish_conversation_changed :: proc(bus: ^events.User_Event_Bus, c: domain.Chat
 }
 
 //   resource_changed resource=agent_instance_reconfiguration
-//       resource_id=<agent_instance_id> change=created|progress|error|succeeded|failed
-//       summary {reconfiguration_id, phase, revision, error_code}
+//       resource_id=<agent_instance_id> change=created|progress|error|succeeded|failed|cancelled
+//       summary {reconfiguration_id, phase, revision, error_code, apply, waiting_since}
+//       (phase waiting_for_idle: queued after the current turn; cancelled: a
+//       queued operation was cancelled or superseded by Restart now)
 //   resource_changed resource=agent_instance change=<caller's change>
 //       summary = instance_changed_summary_json (status fields + display_name,
-//       bridge_id, provider, model, runtime_transport, launch_epoch, configuration_revision, run_count,
+//       bridge_id, provider, model, runtime_transport, runtime_transport_override,
+//       project_id, provider_profile, permission_mode, effective_permission_mode?, launch_epoch, configuration_revision, run_count,
 //       started_at, current_task_id, current_task_role, chain_id, updated_at,
 //       token_usage?, token_usage_updated_at?, token_totals?, token_changed?)
 reconfiguration_summary_json :: proc(op: domain.Instance_Reconfiguration) -> string {
@@ -95,6 +98,10 @@ reconfiguration_summary_json :: proc(op: domain.Instance_Reconfiguration) -> str
 	write_handler_json_string(&b, domain.instance_reconfiguration_phase_string(op.phase))
 	fmt.sbprintf(&b, "\",\"revision\":%d,\"error_code\":\"", op.revision)
 	write_handler_json_string(&b, op.failure_code)
+	strings.write_string(&b, "\",\"apply\":\"")
+	write_handler_json_string(&b, op.apply if op.apply != "" else domain.RECONFIGURATION_APPLY_NOW)
+	strings.write_string(&b, "\",\"waiting_since\":\"")
+	write_handler_json_string(&b, op.waiting_since)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }
@@ -116,6 +123,17 @@ instance_changed_summary_json :: proc(inst: domain.Agent_Instance, token_changed
 	strings.write_string(&b, "\",\"provider\":\""); write_handler_json_string(&b, inst.provider)
 	strings.write_string(&b, "\",\"model\":\""); write_handler_json_string(&b, inst.model)
 	strings.write_string(&b, "\",\"runtime_transport\":\""); write_handler_json_string(&b, contracts.runtime_transport_or_pty(inst.runtime_transport))
+	strings.write_string(&b, "\",\"runtime_transport_override\":\""); write_handler_json_string(&b, domain.runtime_transport_override_normalize(inst.runtime_transport_override))
+	strings.write_string(&b, "\",\"project_id\":\""); write_handler_json_string(&b, string(inst.project_id))
+	strings.write_string(&b, "\",\"provider_profile\":\""); write_handler_json_string(&b, domain.profile_effective_id(inst.provider, inst.provider_profile))
+	// Same keys as the HTTP instance JSON: permission_mode is the instance
+	// override ("" inherits the agent's), effective_permission_mode what the next
+	// launch uses. The effective value needs the agent's mode, which repository
+	// reads fill; a caller-built row without it omits the key instead of guessing.
+	strings.write_string(&b, "\",\"permission_mode\":\""); write_handler_json_string(&b, domain.agent_instance_permission_mode_normalize(inst.permission_mode))
+	if inst.agent_permission_mode != "" {
+		strings.write_string(&b, "\",\"effective_permission_mode\":\""); write_handler_json_string(&b, domain.agent_instance_effective_permission_mode(inst))
+	}
 	strings.write_string(&b, "\",\"launch_epoch\":\""); write_handler_json_string(&b, inst.launch_epoch)
 	fmt.sbprintf(&b, "\",\"configuration_revision\":%d,\"run_count\":%d,\"started_at\":\"", inst.configuration_revision, inst.run_count)
 	write_handler_json_string(&b, inst.started_at)

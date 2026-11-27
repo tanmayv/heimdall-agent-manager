@@ -10,11 +10,18 @@ import jsonx "odin_test:lib/jsonx"
 
 create_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth, authorized, auth_response := require_auth(h.auth, req)
+	// Users and bridge-relayed instance tokens (ham-ctl). get_instance ->
+	// require_owner keeps the same-owner boundary: another owner's instance
+	// token gets Not_Found.
+	auth, authorized, auth_response := require_auth_any(h.auth, req)
 	if !authorized do return auth_response
 	// This is an explicit full destination, unlike the legacy partial PATCH.
-	// permission_mode (yolo|ask) is the one optional field: omitted keeps the
-	// instance's current override.
+	// Optional fields: permission_mode (yolo|ask) and runtime_transport (pty|acp);
+	// each omitted keeps the instance's current override. provider_profile is
+	// optional too (omitted selects the provider's default profile). apply is
+	// now (default) | after_turn: after_turn on a busy instance returns the
+	// operation in phase waiting_for_idle; an explicit "now" with a new key
+	// supersedes a queued operation (Restart now).
 	for field in ([]string{"bridge_id", "project_id", "provider", "model", "idempotency_key", "expected_revision"}) {
 		if !jsonx.has_key(req.body, field, true) do return respond_error(domain.domain_error(.Validation_Failed, "full destination and expected revision are required"), req.request_id)
 	}
@@ -22,7 +29,7 @@ create_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Re
 	object, is_object := value.(json.Object)
 	if parse_err != nil || !is_object do return respond_error(domain.domain_error(.Validation_Failed, "request must be a JSON object"), req.request_id)
 	for key, _ in object {
-		if key != "bridge_id" && key != "project_id" && key != "provider" && key != "model" && key != "idempotency_key" && key != "expected_revision" && key != "permission_mode" && key != "provider_profile" do return respond_error(domain.domain_error(.Validation_Failed, "unknown reconfiguration field"), req.request_id)
+		if key != "bridge_id" && key != "project_id" && key != "provider" && key != "model" && key != "idempotency_key" && key != "expected_revision" && key != "permission_mode" && key != "provider_profile" && key != "runtime_transport" && key != "apply" do return respond_error(domain.domain_error(.Validation_Failed, "unknown reconfiguration field"), req.request_id)
 	}
 	input: agent_service.Reconfigure_Operation_Input
 	if json.unmarshal_string(req.body, &input, .JSON, context.temp_allocator) != nil do return respond_error(domain.domain_error(.Validation_Failed, "invalid reconfiguration request"), req.request_id)
@@ -36,7 +43,10 @@ create_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Re
 
 list_instance_reconfigurations_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth, authorized, auth_response := require_auth(h.auth, req)
+	// Users and bridge-relayed instance tokens (ham-ctl). get_instance ->
+	// require_owner keeps the same-owner boundary: another owner's instance
+	// token gets Not_Found.
+	auth, authorized, auth_response := require_auth_any(h.auth, req)
 	if !authorized do return auth_response
 	instance_id := path_part(req.path, 4)
 	inst, found, err := agent_service.get_instance(h.agents, auth, instance_id)
@@ -68,4 +78,23 @@ retry_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Res
 	defer domain.instance_reconfiguration_destroy(&op)
 	data := agent_service.reconfiguration_json(op); defer delete(data)
 	return respond_success(data, req.request_id, auth_ctx_server_time(req), 202)
+}
+
+// POST /api/v1/agent-instances/{id}/reconfigurations/cancel
+// {idempotency_key, expected_operation_revision}: cancels a queued
+// (waiting_for_idle) operation; any other phase is 409 conflict.
+cancel_instance_reconfiguration_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Handlers)(ctx)
+	// Users and bridge-relayed instance tokens (ham-ctl). get_instance ->
+	// require_owner keeps the same-owner boundary: another owner's instance
+	// token gets Not_Found.
+	auth, authorized, auth_response := require_auth_any(h.auth, req)
+	if !authorized do return auth_response
+	key := json_string(req.body, "idempotency_key")
+	defer delete(key)
+	op, accepted, err := agent_service.cancel_instance_reconfiguration(h.agents, auth, path_part(req.path, 4), key, json_int(req.body, "expected_operation_revision", -1))
+	if !accepted do return respond_error(err, req.request_id)
+	defer domain.instance_reconfiguration_destroy(&op)
+	data := agent_service.reconfiguration_json(op); defer delete(data)
+	return respond_success(data, req.request_id, auth_ctx_server_time(req))
 }

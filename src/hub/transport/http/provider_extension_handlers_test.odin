@@ -82,6 +82,69 @@ t6_provider_status_exposes_acp_capability_and_latest_install_by_kind :: proc(t: 
     testing.expect(t, !strings.contains(after.body, `t6_acp_old`) && !strings.contains(after.body, `t6_discovery`), after.body)
 }
 
+// T2: every providers[] entry carries the Hub-computed ACP verdict, so the UI
+// never re-derives capability/adapter rules.
+@(test)
+t2_provider_status_exposes_acp_availability_per_provider :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    f := extension_test_setup(t, "t2_acp_availability")
+    defer extension_test_teardown(f)
+    req := extension_test_request(f, fmt.tprintf("/api/v1/bridges/%s/provider-status", f.bridge_id))
+    req.method = "GET"
+    availability :: proc(t: ^testing.T, body, provider: string) -> string {
+        value, err := json.parse_string(body)
+        if !testing.expect(t, err == nil, body) do return ""
+        data, _ := value.(json.Object)["data"].(json.Object)
+        providers, _ := data["providers"].(json.Array)
+        for item in providers {
+            row := item.(json.Object)
+            if name, _ := row["provider"].(json.String); name != provider do continue
+            if row["profile_id"].(json.String) != provider do continue
+            // Re-emit in wire order; json.Object iteration order is unspecified.
+            verdict, _ := row["acp_availability"].(json.Object)
+            available, _ := verdict["available"].(json.Boolean)
+            reason, _ := verdict["reason"].(json.String)
+            fix := "null"
+            if value, is_string := verdict["fix"].(json.String); is_string do fix = fmt.tprintf(`"%s"`, value)
+            else if _, is_null := verdict["fix"].(json.Null); !is_null do fix = "<missing>"
+            return fmt.tprintf(`{{"available":%v,"reason":"%s","fix":%s}}`, bool(available), reason, fix)
+        }
+        return ""
+    }
+    before := bridge_provider_status_handler(&f.ph, req)
+    testing.expect_value(t, before.status, 200)
+    testing.expect_value(t, availability(t, before.body, "claude"), `{"available":false,"reason":"unsupported_bridge","fix":"update_bridge"}`)
+    // A catalog provider without an ACP recipe never asks for a bridge update.
+    testing.expect_value(t, availability(t, before.body, "antigravity"), `{"available":false,"reason":"no_recipe","fix":null}`)
+
+    bridge, found, err := iface.bridge_get_bridge(&f.br_repo, f.bridge_id)
+    if !testing.expect(t, found && err.code == .None) do return
+    defer domain.bridge_destroy(&bridge)
+    delete(bridge.capabilities_json)
+    bridge.capabilities_json = strings.clone(`{"features":["acp_runtime_v1"]}`)
+    saved, saved_ok, save_err := iface.bridge_save_bridge(&f.br_repo, bridge)
+    defer if saved_ok do domain.bridge_destroy(&saved)
+    testing.expect(t, saved_ok && save_err.code == .None)
+    unchecked := bridge_provider_status_handler(&f.ph, req)
+    testing.expect_value(t, availability(t, unchecked.body, "claude"), `{"available":false,"reason":"not_checked","fix":"check_now"}`)
+
+    d, _ := contracts.acp_provider_descriptor("claude")
+    for item in ([]struct{adapter, want: string}{
+        {`{"installed":false,"state":"missing","checked_at":"2026-11-26T00:00:00Z"}`, `{"available":false,"reason":"adapter_missing","fix":"install_adapter"}`},
+        {`{"installed":false,"state":"installing","checked_at":"2026-11-26T00:00:00Z"}`, `{"available":false,"reason":"installing","fix":null}`},
+        {fmt.tprintf(`{{"installed":true,"state":"ready","version":"%s","checked_at":"2026-11-26T00:00:00Z","provider":"claude","profile":"claude","runtime_kind":"adapter"}}`, d.pkg.version), `{"available":true,"reason":"ready","fix":null}`},
+    }) {
+        ok, upsert_err := iface.bridge_provider_status_upsert(&f.pr_repo, {
+            bridge_id = f.bridge_id, provider = "claude", profile_id = "claude", state = "present",
+            checked_at = "2026-11-26T00:00:00Z", acp_adapter_json = item.adapter,
+        })
+        testing.expect(t, ok && upsert_err.code == .None)
+        response := bridge_provider_status_handler(&f.ph, req)
+        testing.expect_value(t, response.status, 200)
+        testing.expect_value(t, availability(t, response.body, "claude"), item.want)
+    }
+}
+
 @(test)
 t4_acp_install_endpoint_coalesces_and_tracks_completion :: proc(t: ^testing.T) {
     context.allocator = context.temp_allocator
@@ -927,7 +990,7 @@ test_provider_models_api_filter_empty_and_additive_metadata :: proc(t: ^testing.
 	if len(eligible)==1 do testing.expect_value(t,eligible[0],"codex")
 	for view in views do if view.catalog.provider=="codex" {
 		b:=strings.builder_make()
-		write_bridge_provider_view_json(&b,view)
+		write_bridge_provider_view_json(&b,view,"")
 		text:=strings.to_string(b)
 		testing.expect(t,strings.contains(text,`"models_source":"static_fallback"`))
 		testing.expect(t,strings.contains(text,`"models_state":"not_checked"`))

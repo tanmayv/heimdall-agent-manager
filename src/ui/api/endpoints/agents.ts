@@ -34,6 +34,14 @@ async function refreshLifecycleCaches(
 /** Runtime transport belongs to this launch, independently of provider settings. */
 export interface AgentInstance extends AgentInstanceTokenFields {
   runtime_transport: RuntimeTransport;
+  /** This instance's explicit PTY/ACP choice; '' follows the bridge-provider setting, then the catalog default. */
+  runtime_transport_override?: '' | RuntimeTransport;
+  project_id?: string;
+  provider_profile?: string;
+  /** Instance permission override: '' inherits the agent's mode. */
+  permission_mode?: '' | 'yolo' | 'ask';
+  /** The mode the next launch uses (instance override, else the agent's). */
+  effective_permission_mode?: 'yolo' | 'ask';
   launch_epoch?: string;
   /** Why the Hub last stopped this run (e.g. coordinator_idle); '' when it did not. */
   stop_reason?: string;
@@ -609,6 +617,16 @@ export const agentsApi = heimdallApi.injectEndpoints({
       // The instance itself changes later and announces it (agent_instance/config_changed).
       invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
     }),
+    cancelInstanceConfiguration: build.mutation<InstanceReconfiguration, { instanceId: string; idempotency_key: string; expected_operation_revision: number }>({
+      queryFn: async ({ instanceId, ...body }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/reconfigurations/cancel`, 'POST', body);
+          return { data: normalizeInstanceReconfiguration(data) };
+        } catch (error: any) { return { error: customQueryError(error) as any }; }
+      },
+      // Only a waiting_for_idle operation can be cancelled (409 otherwise).
+      invalidatesTags: (_data, _error, { instanceId }) => [{ type: 'InstanceReconfigurations' as const, id: instanceId }],
+    }),
     applyInstanceConfiguration: build.mutation<InstanceReconfiguration, ApplyInstanceConfigurationInput>({
       queryFn: async ({ instanceId, ...body }) => {
         try {
@@ -798,6 +816,7 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
 
 export const {
   useRetryInstanceConfigurationMutation,
+  useCancelInstanceConfigurationMutation,
   useListInstanceReconfigurationsQuery,
   useApplyInstanceConfigurationMutation,
   useListAgentIdentitiesQuery,
@@ -979,20 +998,61 @@ export type InstanceConfiguration = {
   project_path: string; provider: string; provider_profile?: string; model: string;
   /** Instance permission override: '' inherits the agent's mode. */
   permission_mode?: '' | 'yolo' | 'ask';
+  /** Resolved launch transport for this configuration. */
+  runtime_transport?: RuntimeTransport;
+  /** Explicit per-instance choice; '' follows the bridge-provider setting, then the catalog default. */
+  runtime_transport_override?: '' | RuntimeTransport;
 };
 export type InstanceReconfiguration = {
   operation_id: string; agent_instance_id: string; conversation_id: string; idempotency_key: string;
-  phase: 'prepared' | 'stopping' | 'source_stopped' | 'launching' | 'ready' | 'failed' | 'recovery_required';
+  /**
+   * waiting_for_idle: queued by apply 'after_turn' until the current turn ends.
+   * It does not block messages. It leaves to stopping (fired) or to failed with
+   * failure_code 'cancelled' | 'superseded' (Restart now) | 'conflict' (the
+   * configuration changed while it waited).
+   */
+  phase: 'prepared' | 'stopping' | 'source_stopped' | 'launching' | 'ready' | 'failed' | 'recovery_required' | 'waiting_for_idle';
   source: InstanceConfiguration; destination: InstanceConfiguration;
   source_stopped: boolean; destination_committed: boolean;
   failure_code: string; failure_message: string; revision: number; updated_at?: string;
+  /** 'now' | 'after_turn' (absent on operations created before deferred apply). */
+  apply?: ReconfigurationApply;
+  /** RFC 3339 time the operation was queued; '' when it never waited. The Hub waits indefinitely. */
+  waiting_since?: string;
 };
+export type ReconfigurationApply = 'now' | 'after_turn';
 export type ApplyInstanceConfigurationInput = {
   instanceId: string; bridge_id: string; project_id: string; provider: string; provider_profile?: string; model: string;
   idempotency_key: string; expected_revision: number;
   /** Optional: set this instance's permission mode (restarts it with/without yolo flags). */
   permission_mode?: 'yolo' | 'ask';
+  /**
+   * Optional: pin this one instance to PTY or ACP (restarts it). Wins over the
+   * bridge-wide provider setting on every later launch. Omitted keeps the
+   * instance's current choice. ACP failures: acp_unavailable (details.state) or acp_installing.
+   */
+  runtime_transport?: RuntimeTransport;
+  /**
+   * 'now' (default) restarts at once. 'after_turn' queues the change until the
+   * current turn ends (phase waiting_for_idle; starts at once when idle). An
+   * explicit 'now' with a new idempotency_key supersedes a queued change (Restart now).
+   */
+  apply?: ReconfigurationApply;
 };
+/**
+ * Mirrors the Hub's instance_reconfiguration_blocks_input: whether messages and
+ * runtime actions are disabled while this operation is the latest one. A change
+ * queued after the current turn (waiting_for_idle) never blocks input.
+ */
+export function reconfigurationBlocksInput(operation: InstanceReconfiguration | undefined | null): boolean {
+  if (!operation || operation.phase === 'ready' || operation.phase === 'waiting_for_idle') return false;
+  if (operation.phase !== 'failed') return true;
+  return !(operation.failure_code === 'recovery_stopped' || (!operation.source_stopped && !operation.destination_committed));
+}
+/** A queued change that ended without running: cancelled, or superseded by Restart now. */
+export function isCancelledReconfiguration(operation: InstanceReconfiguration): boolean {
+  return operation.phase === 'failed' && (operation.failure_code === 'cancelled' || operation.failure_code === 'superseded');
+}
 /** Whether an operation reached a phase that changes the instance and conversation. */
 export function isSettledReconfiguration(operation: InstanceReconfiguration): boolean {
   return operation.phase === 'ready' || (operation.phase === 'failed' && operation.failure_code === 'recovery_stopped');
@@ -1010,8 +1070,9 @@ export function reconfigurationSettled(
   if (!previous || !isSettledReconfiguration(next)) return false;
   return previous.operation_id !== next.operation_id || !isSettledReconfiguration(previous);
 }
-function normalizeInstanceReconfiguration(raw: any): InstanceReconfiguration {
-  const phases = ['prepared', 'stopping', 'source_stopped', 'launching', 'ready', 'failed', 'recovery_required'];
+export function normalizeInstanceReconfiguration(raw: any): InstanceReconfiguration {
+  // Index order matches the Hub enum (ordinal payloads); waiting_for_idle was appended.
+  const phases = ['prepared', 'stopping', 'source_stopped', 'launching', 'ready', 'failed', 'recovery_required', 'waiting_for_idle'];
   const phase = typeof raw?.phase === 'number' ? phases[raw.phase] : String(raw?.phase || '').toLowerCase();
   return { ...raw, phase: phases.includes(phase) ? phase : 'recovery_required' };
 }

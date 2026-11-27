@@ -3,7 +3,7 @@ package domain
 import "core:encoding/json"
 import "core:testing"
 
-// REQ-EXP-GATE-1: Actions and Project/VCS are opt-in; only streaming panes default on.
+// REQ-EXP-GATE-1: Actions and Project/VCS are opt-in; streaming panes and the agent settings panel default on.
 @(test)
 test_actions_and_project_vcs_experiments_default_off :: proc(t: ^testing.T) {
 	testing.expect_value(t, ACTIONS_EXPERIMENT_KEY, "actions")
@@ -11,6 +11,16 @@ test_actions_and_project_vcs_experiments_default_off :: proc(t: ^testing.T) {
 	testing.expect(t, !experiment_default_enabled(ACTIONS_EXPERIMENT_KEY))
 	testing.expect(t, !experiment_default_enabled(PROJECT_VCS_EXPERIMENT_KEY))
 	testing.expect(t, experiment_default_enabled(STREAMING_TERMINAL_PANE_EXPERIMENT_KEY))
+}
+
+// The Agent settings panel is default-on; a stored off row falls back to the modal.
+@(test)
+test_agent_settings_panel_experiment_default_on :: proc(t: ^testing.T) {
+	testing.expect_value(t, AGENT_SETTINGS_PANEL_EXPERIMENT_KEY, "agent_settings_panel")
+	testing.expect(t, experiment_default_enabled(AGENT_SETTINGS_PANEL_EXPERIMENT_KEY))
+	testing.expect(t, experiment_enabled_in({}, AGENT_SETTINGS_PANEL_EXPERIMENT_KEY))
+	off := []Experiment{{key = AGENT_SETTINGS_PANEL_EXPERIMENT_KEY, enabled = false}}
+	testing.expect(t, !experiment_enabled_in(off, AGENT_SETTINGS_PANEL_EXPERIMENT_KEY), "explicit off beats default-on")
 }
 
 @(test)

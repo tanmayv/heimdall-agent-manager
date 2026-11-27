@@ -50,6 +50,12 @@ export interface AlertProps extends RootClassNameProps {
   icon?: IconName | null;
   /** When provided, shows a close button that calls this. */
   onDismiss?: () => void;
+  /**
+   * Live-region role override. Default: `alert` for `danger`, `status` otherwise. Pass
+   * `alert` for a non-danger message that blocks the user's next step.
+   */
+  role?: 'alert' | 'status';
+  'data-debug-id'?: string;
 }
 
 export const Alert: React.FC<AlertProps> = ({
@@ -59,7 +65,9 @@ export const Alert: React.FC<AlertProps> = ({
   children,
   icon,
   onDismiss,
+  role,
   className,
+  'data-debug-id': debugId,
 }) => {
   const iconName = icon === null ? null : icon ?? DEFAULT_ICON[tone];
   const rootClassName = [
@@ -73,7 +81,7 @@ export const Alert: React.FC<AlertProps> = ({
     .trim();
 
   return (
-    <div role={tone === 'danger' ? 'alert' : 'status'} className={rootClassName}>
+    <div role={role ?? (tone === 'danger' ? 'alert' : 'status')} data-debug-id={debugId} className={rootClassName}>
       {iconName ? <Icon name={iconName} size="sm" className="mt-0.5 shrink-0" /> : null}
       <div className="min-w-0 flex-1">
         {title ? <div className="font-semibold">{title}</div> : null}

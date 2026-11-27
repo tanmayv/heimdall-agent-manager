@@ -122,6 +122,28 @@ export type BridgeCapability = Partial<ProviderRuntimeFields> & {
   models: string[];
 };
 
+/**
+ * Mirrors contracts.ACP_Availability (src/contracts/runtime_transport.odin): the
+ * Hub's computed ACP verdict for this bridge + provider. Render it; never
+ * re-derive it from acp_runtime_supported / acp_adapter.
+ */
+export type AcpAvailabilityReason = 'ready' | 'no_recipe' | 'unsupported_bridge' | 'adapter_missing' | 'adapter_outdated'
+  | 'adapter_missing_node' | 'adapter_error' | 'installing' | 'not_checked';
+export type AcpAvailabilityFix = 'update_bridge' | 'install_adapter' | 'check_now';
+export interface AcpAvailability { available: boolean; reason: AcpAvailabilityReason; fix: AcpAvailabilityFix | null }
+const acpAvailabilityReasons = new Set<string>(['ready', 'no_recipe', 'unsupported_bridge', 'adapter_missing', 'adapter_outdated',
+  'adapter_missing_node', 'adapter_error', 'installing', 'not_checked']);
+const acpAvailabilityFixes = new Set<string>(['update_bridge', 'install_adapter', 'check_now']);
+/** null when the Hub predates the verdict or sends an unknown reason. */
+export function normalizeAcpAvailability(raw: any): AcpAvailability | null {
+  if (!raw || typeof raw !== 'object' || !acpAvailabilityReasons.has(raw.reason)) return null;
+  return {
+    available: raw.available === true && raw.reason === 'ready',
+    reason: raw.reason as AcpAvailabilityReason,
+    fix: acpAvailabilityFixes.has(raw.fix) ? raw.fix as AcpAvailabilityFix : null,
+  };
+}
+
 export interface ProviderModelStatus { model_id: string; label: string; state: string; resolved_model?: string }
 export interface ProviderStatusRow extends ModelCatalogMetadata, ProviderRuntimeFields {
   profile_id?: string; label?: string; label_enc?: string; accent?: string; profile_state?: string;
@@ -131,6 +153,8 @@ export interface ProviderStatusRow extends ModelCatalogMetadata, ProviderRuntime
   enabled: boolean; models: ProviderModelStatus[];
   /** REQ-EXT-DET-1/2: the bridge's probe of the provider's Heimdall extension; null = provider has none. */
   extension: ProviderExtensionStatus | null;
+  /** T2: Hub-computed ACP verdict for this bridge + provider; null from an older Hub. */
+  acp_availability: AcpAvailability | null;
 }
 function normalizeProviderStatusRow(raw: any): ProviderStatusRow {
   return {
@@ -145,6 +169,7 @@ function normalizeProviderStatusRow(raw: any): ProviderStatusRow {
     ...normalizeProviderRuntime(raw),
     ...normalizeModelCatalog(raw),
     extension: normalizeProviderExtension(raw?.extension),
+    acp_availability: normalizeAcpAvailability(raw?.acp_availability),
     models: Array.isArray(raw?.models) ? raw.models.map((model: any) => ({
       ...model,
       model_id: String(model?.model_id || ''), label: String(model?.label || model?.model_id || ''),
@@ -489,6 +514,20 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
     }),
+    // ACP adapter install for one provider on a bridge (the Agent settings panel's
+    // "Install adapter" fix). Progress arrives as provider_status_changed, which
+    // refetches the bridge's provider status (acp_availability reason `installing`).
+    installAcpAdapter: build.mutation<{ command_id?: string }, { bridgeId: string; provider: string }>({
+      queryFn: async ({ bridgeId, provider }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(provider)}/acp-adapter`, 'POST', { action: 'install' });
+          return { data };
+        } catch (error: any) {
+          return { error: customQueryError(error) as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
+    }),
     getProviderExtensionInstall: build.query<ProviderExtensionCommand, { bridgeId: string; provider: string; commandId: string; profileId?: string; kind?: ExtensionCommandKind }>({
       queryFn: async ({ bridgeId, provider, commandId, kind, profileId }) => {
         try {
@@ -519,6 +558,19 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
         try {
           const { refreshBridgeProviderCatalog } = await import('../../components/providers/providerSetupApi');
           return { data: await refreshBridgeProviderCatalog(bridgeId) };
+        }
+        catch (error: any) { return { error: customQueryError(error) as any }; }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
+    }),
+    // Provider discovery only (POST /bridges/{id}/providers/discover {stage:'providers'}):
+    // the stage that records each provider's ACP adapter state, which acp_availability
+    // is classified from. The Agent settings panel's "Check now" fix.
+    discoverBridgeProviders: build.mutation<any, { bridgeId: string }>({
+      queryFn: async ({ bridgeId }) => {
+        try {
+          const { discoverBridgeProviders } = await import('../../components/providers/providerSetupApi');
+          return { data: await discoverBridgeProviders(bridgeId, 'providers', false) };
         }
         catch (error: any) { return { error: customQueryError(error) as any }; }
       },
@@ -565,9 +617,11 @@ export const {
   useUninstallBridgeMutation,
   useInstallProviderExtensionMutation,
   useUninstallProviderExtensionMutation,
+  useInstallAcpAdapterMutation,
   useGetProviderExtensionInstallQuery,
   useListBridgeProvidersQuery,
   useRefreshBridgeModelsMutation,
+  useDiscoverBridgeProvidersMutation,
 } = bridgeSupportApi;
 
 /** How long a visible, open runtime/provider picker may show provider status. */

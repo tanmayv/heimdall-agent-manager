@@ -49,7 +49,8 @@ Agent_Service :: struct {
 }
 
 // Resource_Event_Hooks are invoked only after the write they describe returned
-// success. change for reconfigurations is created|progress|error|succeeded|failed;
+// success. change for reconfigurations is created|progress|error|succeeded|failed|cancelled
+// (cancelled: a queued after_turn operation was cancelled or superseded);
 // config_committed is true on the advance that committed the destination (the
 // SQL trigger that rewrites agent_instances bridge/provider/model/revision).
 Resource_Event_Hooks :: struct {
@@ -113,8 +114,11 @@ notify_instances_terminal :: proc(service: ^Agent_Service, insts: []domain.Agent
 }
 
 notify_instance_activity :: proc(service: ^Agent_Service, instance_id, activity_status: string) {
-	if service == nil || service.hooks.on_activity == nil || instance_id == "" || activity_status == "" do return
-	service.hooks.on_activity(service.hooks.ctx, instance_id, activity_status)
+	if service == nil || instance_id == "" || activity_status == "" do return
+	if service.hooks.on_activity != nil do service.hooks.on_activity(service.hooks.ctx, instance_id, activity_status)
+	// The turn ended: fire a reconfiguration queued "after_turn" (T4). Facts are
+	// delivered after the status write committed and its locks were released.
+	if activity_status == "idle" do reconfiguration_fire_waiting(service, instance_id)
 }
 
 instance_runtime_is_terminal :: proc(runtime_status: string) -> bool {
@@ -853,6 +857,9 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_stop_"), "_", inst.agent_instance_id})
 	command := project_service.Runtime_Command{bridge_id = inst.bridge_id, command_id = command_id, body_json = stop_command_json(command_id, inst.agent_instance_id, reason, force = input.force)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
+	// A Stop wins over a change queued "after_turn": cancel it so the next idle
+	// sweep cannot relaunch the agent (T4).
+	reconfiguration_cancel_waiting_locked(service, string(inst.owner_user_id), inst.agent_instance_id)
 	// Record why the Hub stopped it (UI label, instance events). Saves never
 	// write the column; the next run clears it.
 	if recorded, _ := iface.agent_set_stop_reason(service.agents, inst.agent_instance_id, reason); recorded do inst.stop_reason = strings.clone(reason)
@@ -2592,14 +2599,17 @@ bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, ow
 }
 
 
-resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string) -> (string,domain.Domain_Error) {
+resolve_launch_transport :: proc(service: ^Agent_Service, bridge_id, provider: string, instance_override: string = "") -> (string,domain.Domain_Error) {
  svc:=provider_service.Provider_Service{repo=service.providers,bridges=service.bridges}
- return provider_service.resolve_runtime_transport(&svc,bridge_id,provider)
+ return provider_service.resolve_runtime_transport(&svc,bridge_id,provider,instance_override)
 }
 
 // Only new launches call this helper. Re-delivery serializers use the snapshot.
+// Precedence: the instance's explicit runtime_transport_override (set by
+// reconfiguration) wins over the bridge-wide provider setting, which wins over
+// the catalog default; see provider_service.resolve_runtime_transport.
 freeze_runtime_transport :: proc(service: ^Agent_Service, inst: ^domain.Agent_Instance) -> domain.Domain_Error {
- transport,err:=resolve_launch_transport(service,inst.bridge_id,inst.provider)
+ transport,err:=resolve_launch_transport(service,inst.bridge_id,inst.provider,domain.runtime_transport_override_normalize(inst.runtime_transport_override))
  if err.code!=.None do return err
  inst.runtime_transport=transport
  return {}

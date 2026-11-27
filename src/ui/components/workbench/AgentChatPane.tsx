@@ -15,13 +15,14 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
+import { lifecycleResult, useAgentLifecycle, type LifecycleResult } from '../../hooks/useAgentLifecycle';
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import { desktopUpdateFrozen, desktopUpdatePreparation } from '../../utils/desktopUpdatePreparation';
 import { writeClientStorageChecked, writeComposerDraftChecked } from '../../utils/clientPersistence';
 import {
   CommandPalette,
   Icon as UiIcon,
+  IconButton as UiIconButton,
   Menu,
   Modal,
   StatusDot,
@@ -57,16 +58,25 @@ import {
   useFetchAgentInstanceQuery,
   useFetchAgentIdentityQuery,
   useListInstanceReconfigurationsQuery,
+  useCancelInstanceConfigurationMutation,
   type InstanceReconfiguration,
   reconfigurationSettled,
+  reconfigurationBlocksInput,
+  isCancelledReconfiguration,
+  agentErrorText,
 } from '../../api/endpoints/agents';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import {
   normalizeBridgeCapabilities,
   useBridgeProviderStatus,
+  useDiscoverBridgeProvidersMutation,
+  useInstallAcpAdapterMutation,
   useListBridgeProvidersQuery,
   useListBridgesQuery,
+  useRefreshBridgeModelsMutation,
+  useUpdateBridgeMutation,
+  type AcpAvailabilityFix,
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
 import {
@@ -121,6 +131,31 @@ import { useSettleWithoutReveal, type StreamRevealOptions } from '../chat/stream
 import InstanceReconfigurationProgress from '../chat/InstanceReconfigurationProgress';
 import { MessageComposerInput, MessageComposerActions, MessageComposerStatus, useComposerDockInset, useComposerExpanded } from '../chat/MessageComposer';
 import RuntimeConfigurationOptions from '../chat/RuntimeConfigurationOptions';
+import { AgentSettingsPanel } from '../agentSettings/AgentSettingsPanel';
+import { RuntimeSection, providerDisplayName, runtimeSectionView } from '../agentSettings/RuntimeSection';
+import { BridgeSection } from '../agentSettings/BridgeSection';
+import { ModelSection } from '../agentSettings/ModelSection';
+import { ConnectionSection } from '../agentSettings/ConnectionSection';
+import { PermissionsSection } from '../agentSettings/PermissionsSection';
+import { ApplyFooter } from '../agentSettings/ApplyFooter';
+import { applyFooterView, useApplyAgentSettings } from '../agentSettings/useApplyAgentSettings';
+import { acpAvailabilityCopy } from '../agentSettings/acpAvailabilityCopy';
+import {
+  applyBlockedReason,
+  bridgeRowsView,
+  draftDiff,
+  lastCheckedAt,
+  providerOptionsFromStatus,
+  reconcileDraftProviders,
+  reduceAgentDraft,
+  type AgentConfig,
+  type AgentDraftAction,
+  type RuntimeTransport,
+} from '../agentSettings/agentSettingsDraft';
+import { projectEditHref } from '../projects/projectModel';
+import { useAgentSettingsPanelState } from '../agentSettings/useAgentSettingsPanelState';
+import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
+import { AGENT_SETTINGS_PANEL_EXPERIMENT_KEY, resolveExperimentFlag } from '../settings/experimentFlags';
 import { usePaneDeferredRefresh, usePaneMarkRead, usePanePollPolicy, usePaneVisible, visiblePollInterval } from './paneVisibility';
 import {
   CONVERSATION_MESSAGES_READ_EVENT,
@@ -128,7 +163,7 @@ import {
   reconcileOlderPages,
   type ConversationMessagesRead,
 } from '../../api/conversationMessageEvents';
-import { permissionToggleRequest, permissionToggleState } from './permissionToggleModel';
+import { effectivePermissionMode, permissionToggleRequest, permissionToggleState } from './permissionToggleModel';
 import { type TaskLike } from '../chat/chainTaskInference';
 import { groupTranscriptMessages, isAgentStartMessage } from '../chat/transcriptGrouping';
 import type { ChatDeliveryStatus, ChatMessage } from '../chat/types';
@@ -949,9 +984,37 @@ export function AgentChatPane({
   const [provider, setProvider] = useState('');
   const [providerProfile, setProviderProfile] = useState('');
   const [model, setModel] = useState('');
+  // Agent settings panel draft (T6): transport and bypass staged like bridge/provider/
+  // model above; null follows the running instance.
+  const [stagedTransport, setStagedTransport] = useState<RuntimeTransport | null>(null);
+  const [stagedBypass, setStagedBypass] = useState<boolean | null>(null);
+  // A bridge picked in the panel whose provider status has not answered yet: once it
+  // does, the draft falls back to an installed provider (reconcileDraftProviders).
+  const [draftBridgeCheck, setDraftBridgeCheck] = useState<string | null>(null);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  // Agent settings: the docked panel (agent_settings_panel experiment, default on) or,
+  // with the experiment off or not loaded yet, the previous modal.
+  const experimentsQuery = useFetchExperimentsQuery();
+  const settingsPanelEnabled =
+    !isAuxSubagent &&
+    resolveExperimentFlag(experimentsQuery.data?.flags, AGENT_SETTINGS_PANEL_EXPERIMENT_KEY) === 'enabled';
+  const settingsPanel = useAgentSettingsPanelState({ enabled: settingsPanelEnabled });
+  const openAgentSettings = () => {
+    if (settingsPanelEnabled) settingsPanel.setOpen(true);
+    else setRuntimeMenuOpen(true);
+  };
+  // The Runtime card's uptime ticks while the panel is open.
+  const [panelNow, setPanelNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!settingsPanel.open) return;
+    setPanelNow(Date.now());
+    const timer = setInterval(() => setPanelNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [settingsPanel.open]);
+  // Either settings surface is open: provider status is fetched live only then.
+  const settingsOpen = runtimeMenuOpen || settingsPanel.open;
   const editingRuntime =
-    runtimeMenuOpen ||
+    settingsOpen ||
     stagedBridgeId !== null ||
     Boolean(provider && provider !== instanceProvider) ||
     Boolean(providerProfile && providerProfile !== (instance?.provider_profile || instanceProvider)) ||
@@ -1253,6 +1316,12 @@ export function AgentChatPane({
   }, [chainDetailQuery.data, chainId]);
 
   const chainAgentOptions = chainAgentGroups[0]?.conversations || [];
+  const chainMemberTitle =
+    chainAgentGroups[0]?.conversations.find((member) => member.agentInstanceId === agentInstanceId)?.title || '';
+  const agentBreadcrumbLabel = chainMemberTitle || agentDisplayName || agentId;
+  // Agent settings subtitle: "<agent> #<n>" (the instance's numbered display name).
+  const agentInstanceLabel =
+    chainMemberTitle || String(instance?.display_name || '').trim() || agentDisplayName || agentId;
   const canOpenChainAgentSwitcher = (
     variant === 'main'
     && isFocusedPane
@@ -1341,15 +1410,9 @@ export function AgentChatPane({
     operation &&
       ['prepared', 'stopping', 'source_stopped', 'launching'].includes(operation.phase),
   );
-  const operationBlocksInput = Boolean(
-    operation &&
-      operation.phase !== 'ready' &&
-      !(
-        operation.phase === 'failed' &&
-        (operation.failure_code === 'recovery_stopped' ||
-          (!operation.source_stopped && !operation.destination_committed))
-      ),
-  );
+  // A change queued after the current turn (waiting_for_idle) keeps the
+  // conversation and runtime actions usable, exactly like the Hub.
+  const operationBlocksInput = reconfigurationBlocksInput(operation);
   const bridgeLabel = String(
     instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '',
   );
@@ -1564,7 +1627,7 @@ export function AgentChatPane({
   // while the settings panel is open).
   const instanceProvidersQuery = useListBridgeProvidersQuery(
     { bridgeId: instanceBridgeId },
-    { skip: !instanceBridgeId || !runtimeMenuOpen },
+    { skip: !instanceBridgeId || !settingsOpen },
   );
   const instanceCatalogExtension = useMemo(
     () =>
@@ -1615,6 +1678,9 @@ export function AgentChatPane({
     observedOperationRef.current = undefined;
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
+    setStagedTransport(null);
+    setStagedBypass(null);
+    setDraftBridgeCheck(null);
     setAcceptedOperation(null);
     setProvider(instanceProvider);
     setProviderProfile(String(instance?.provider_profile || instanceProvider));
@@ -1647,6 +1713,9 @@ export function AgentChatPane({
     if (operation.phase !== 'ready') return;
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
+    setStagedTransport(null);
+    setStagedBypass(null);
+    setDraftBridgeCheck(null);
     setProvider(operation.destination.provider);
     setProviderProfile(operation.destination.provider_profile || operation.destination.provider);
     setModel(operation.destination.model);
@@ -1719,6 +1788,111 @@ export function AgentChatPane({
       (effectiveProvider && effectiveProvider !== instanceProvider) ||
       effectiveProfile !== instanceProfile ||
       (effectiveModel && effectiveModel !== instanceModel));
+  // ---- Agent settings panel draft (T6; rules in agentSettings/agentSettingsDraft.ts).
+  const instanceTransport: RuntimeTransport = instance?.runtime_transport === 'acp' ? 'acp' : 'pty';
+  const instanceBypass = effectivePermissionMode(instance) === 'yolo';
+  const currentConfig: AgentConfig = {
+    bridgeId: instanceBridgeId, provider: instanceProvider, providerProfile: instanceProfile,
+    model: instanceModel, transport: instanceTransport, bypass: instanceBypass,
+  };
+  const draftConfig: AgentConfig = {
+    bridgeId: destinationBridgeId, provider: effectiveProvider, providerProfile: effectiveProfile,
+    model: effectiveModel, transport: stagedTransport ?? instanceTransport, bypass: stagedBypass ?? instanceBypass,
+  };
+  // Provider rows (installed or not, versions, models, acp_availability) for the DRAFT
+  // bridge. provider_status_changed on the user WebSocket refetches it (live installs).
+  const draftProvidersQuery = useListBridgeProvidersQuery(
+    { bridgeId: destinationBridgeId },
+    { skip: !destinationBridgeId || !settingsPanel.open },
+  );
+  const draftProviderOptions = useMemo(
+    () => providerOptionsFromStatus(draftProvidersQuery.currentData),
+    [draftProvidersQuery.currentData],
+  );
+  const draftProvidersLoaded = Boolean(draftProvidersQuery.currentData) || draftProvidersQuery.isError;
+  const bridgeLabelOf = (id: string) => {
+    const row = bridges.find((b: any) => bridgeId(b) === id);
+    return String(row?.label || row?.machine_hostname || id || '');
+  };
+  const providerLabelOf = (config: AgentConfig) =>
+    draftProviderOptions.find((p) => p.id === (config.providerProfile || config.provider))?.label
+      || providerDisplayName(config.provider);
+  const draftChanges = agentInstanceId
+    ? draftDiff(currentConfig, draftConfig, { bridgeLabel: bridgeLabelOf, providerLabel: providerLabelOf })
+    : [];
+  // Model refresh and the ACP fixes act on the DRAFT bridge through the existing paths.
+  const [refreshBridgeModels, refreshModelsState] = useRefreshBridgeModelsMutation();
+  const [updateBridgeRequest, updateBridgeState] = useUpdateBridgeMutation();
+  const [installAcpAdapter, installAcpState] = useInstallAcpAdapterMutation();
+  const [discoverBridgeProviders, discoverProvidersState] = useDiscoverBridgeProvidersMutation();
+  const [draftRefreshError, setDraftRefreshError] = useState('');
+  const [draftFixError, setDraftFixError] = useState('');
+  useEffect(() => { setDraftRefreshError(''); setDraftFixError(''); }, [destinationBridgeId]);
+  async function refreshDraftModels() {
+    if (!destinationBridgeId) return;
+    setDraftRefreshError('');
+    try { await refreshBridgeModels({ bridgeId: destinationBridgeId }).unwrap(); }
+    catch (err) { setDraftRefreshError(agentErrorText(err, 'Could not check models.')); }
+  }
+  async function fixDraftConnection(fix: AcpAvailabilityFix) {
+    if (!destinationBridgeId) return;
+    setDraftFixError('');
+    try {
+      if (fix === 'update_bridge') await updateBridgeRequest({ bridgeId: destinationBridgeId }).unwrap();
+      else if (fix === 'install_adapter') await installAcpAdapter({ bridgeId: destinationBridgeId, provider: draftConfig.provider }).unwrap();
+      // check_now: provider discovery is the stage that records the ACP adapter state.
+      else await discoverBridgeProviders({ bridgeId: destinationBridgeId }).unwrap();
+    } catch (err) {
+      setDraftFixError(agentErrorText(err, 'The request failed.'));
+    }
+  }
+  // The panel's gate. The old modal (panel closed, flag off) keeps its own rules: the
+  // draft bridge's provider status is not even fetched there.
+  const draftApplyBlocked = settingsPanel.open
+    ? applyBlockedReason(draftConfig, draftProvidersLoaded ? draftProviderOptions : null)
+    : null;
+  // Staged-changes footer (T7): the panel's Apply flow (useApplyAgentSettings.ts).
+  const [cancelInstanceConfiguration] = useCancelInstanceConfigurationMutation();
+  const applyFlow = useApplyAgentSettings({
+    instanceId: agentInstanceId,
+    projectId: destinationProjectId,
+    current: currentConfig,
+    draft: draftConfig,
+    revision: Number(instance?.configuration_revision || 0),
+    launchEpoch: String((instance as any)?.launch_epoch || ''),
+    running: runtimeStateFromStatus(runtimeStatus) === 'live',
+    midTurn: isWorking,
+    operation,
+    labels: { bridgeLabel: bridgeLabelOf, providerLabel: providerLabelOf },
+    // The footer shows the outcome; the Runtime card's inline message would repeat it.
+    reconfigure: async (args) => { const result = await lifecycle.reconfigure(args); setReconfigStatus(''); return result; },
+    retry: async (args) => { const result = await lifecycle.retry(args); setReconfigStatus(''); return result; },
+    cancel: (args) => lifecycleResult('reconfigure', () => cancelInstanceConfiguration(args).unwrap()),
+    refetchInstance: () => refetchIfStarted(instanceQuery),
+    onAccepted: (accepted) => setAcceptedOperation(accepted),
+  });
+  function commitDraft(next: AgentConfig) {
+    settingsEditedRef.current = true;
+    setStagedBridgeId(next.bridgeId === instanceBridgeId ? null : next.bridgeId);
+    setProvider(next.provider);
+    setProviderProfile(next.providerProfile || next.provider);
+    setModel(next.model);
+    setStagedTransport(next.transport === instanceTransport ? null : next.transport);
+    setStagedBypass(next.bypass === instanceBypass ? null : next.bypass);
+  }
+  function dispatchDraft(action: AgentDraftAction) {
+    const next = reduceAgentDraft(draftConfig, action);
+    if (action.type === 'bridge' && next.bridgeId !== draftConfig.bridgeId) setDraftBridgeCheck(next.bridgeId);
+    if (next !== draftConfig) commitDraft(next);
+  }
+  // A picked bridge's provider status arrived: keep the provider if it is installed
+  // there, else switch to the first installed one and its first model.
+  useEffect(() => {
+    if (!draftBridgeCheck || draftBridgeCheck !== destinationBridgeId || !draftProvidersQuery.currentData) return;
+    setDraftBridgeCheck(null);
+    const next = reconcileDraftProviders(draftConfig, draftProviderOptions);
+    if (next !== draftConfig) commitDraft(next);
+  }, [draftBridgeCheck, destinationBridgeId, draftProvidersQuery.currentData]);
   const validityInput = {
     instanceLoaded: Boolean(instance),
     instanceError: instanceQuery.isError,
@@ -2326,6 +2500,16 @@ export function AgentChatPane({
       setReconfigStatus('Choose a provider and model first.');
       return;
     }
+    if (draftApplyBlocked) {
+      setReconfigStatus(draftApplyBlocked.message);
+      return;
+    }
+    // The panel's draft also stages the connection and bypass; send them only when
+    // they change, so the old modal's requests stay exactly as before.
+    const draftExtras = {
+      ...(draftConfig.transport !== instanceTransport ? { runtime_transport: draftConfig.transport } : {}),
+      ...(draftConfig.bypass !== instanceBypass ? { permission_mode: draftConfig.bypass ? 'yolo' as const : 'ask' as const } : {}),
+    };
     setRuntimeMenuOpen(false);
     setReconfigStatus(
       `Applying configuration on ${bridgeLabel || instanceBridgeId || 'this bridge'}…`,
@@ -2337,10 +2521,11 @@ export function AgentChatPane({
       provider: nextProvider,
       provider_profile: effectiveProfile,
       model: nextModel,
+      ...draftExtras,
       expected_revision: Number(instance?.configuration_revision || 0),
       idempotency_key: configurationIntentKey({
         instanceId: agentInstanceId, bridge_id: destinationBridgeId, project_id: destinationProjectId,
-        provider: nextProvider, provider_profile: effectiveProfile, model: nextModel,
+        provider: nextProvider, provider_profile: effectiveProfile, model: nextModel, ...draftExtras,
         expected_revision: Number(instance?.configuration_revision || 0),
       }),
     });
@@ -2385,9 +2570,19 @@ export function AgentChatPane({
     if (result.status === 'accepted') setReconfigStatus('Force stop requested. Waiting for confirmed termination…');
   }
 
+  async function restartRuntime() {
+    if (!agentId || !agentInstanceId || runtimeActionBusy || needsStart) return;
+    setReconfigStatus('Restarting…');
+    const result = await lifecycle.restart({ agentId, instanceId: agentInstanceId });
+    if (result.status === 'accepted') setReconfigStatus('');
+  }
+
   function resetRuntimeConfiguration() {
     settingsEditedRef.current = false;
     setStagedBridgeId(null);
+    setStagedTransport(null);
+    setStagedBypass(null);
+    setDraftBridgeCheck(null);
     setProvider(instanceProvider);
     setProviderProfile(String(instance?.provider_profile || instanceProvider));
     setModel(instanceModel);
@@ -2395,7 +2590,7 @@ export function AgentChatPane({
   }
 
   const pendingReconfig =
-    selectionChangesConfig || operation?.phase === 'recovery_required';
+    selectionChangesConfig || draftChanges.length > 0 || operation?.phase === 'recovery_required';
   // Morphing composer: a 56px pill that grows into the full card while focused or while
   // anything below holds it open (MessageComposer.tsx useComposerExpanded).
   const composerExpansion = useComposerExpanded({
@@ -2406,7 +2601,9 @@ export function AgentChatPane({
     borrowed: Boolean(trayModeItem),
     menuOpen: statusMenuOpen || runtimeMenuOpen || mentionQuery !== null,
     uploadActive: filePickerOpen || hasUploadingAttachments || voice.active,
-    pendingActions: pendingReconfig,
+    // The open settings panel owns Apply (one primary action per decision).
+    // With the panel enabled its footer owns Apply (one primary action per decision).
+    pendingActions: pendingReconfig && !settingsPanelEnabled,
     readOnly: conversationReadOnly,
   });
   const permissionToggle = permissionToggleState({
@@ -2416,57 +2613,61 @@ export function AgentChatPane({
       runtimeActionBusy || operationBlocksInput || isStarting || runtimeStopping || !agentInstanceId,
     pendingChanges: pendingReconfig,
   });
-  const runtimeControls = (
-    <div data-debug-id="conversation-runtime-controls" className="text-left">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle p-3">
-        <span className="inline-flex items-center gap-2 text-sm text-primary">
-          <StatusDot
-            size="sm"
-            tone={runtimeStatusToTone(runtimeStatus)}
-            label={needsStart ? 'Stopped' : 'Running'}
-          />
-          {needsStart
-            ? 'Stopped'
-            : runtimeStopping
-            ? 'Stopping…'
-            : isStarting
-            ? 'Starting…'
-            : 'Running'}
-        </span>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            data-debug-id="conversation-runtime-modal-toggle-btn"
-            disabled={
-              !agentInstanceId ||
-              runtimeActionBusy ||
-              runtimeStopping ||
-              operationBlocksInput ||
-              (needsStart && conversationReadOnly)
-            }
-            onClick={() => void toggleRuntime()}
-            className="min-h-11 rounded-xl border border-subtle px-3 text-sm text-primary disabled:opacity-40"
-          >
-            {needsStart ? 'Start agent' : 'Stop agent'}
-          </button>
-          <button
-            type="button"
-            data-debug-id="conversation-runtime-force-stop-btn"
-            disabled={
-              !agentInstanceId ||
-              (needsStart && !operationBlocksInput) ||
-              lifecycle.isPending('stop') ||
-              lifecycle.isPending('reconfigure') ||
-              lifecycle.isPending('retry') ||
-              instanceBridge?.runtime_connected !== true
-            }
-            onClick={() => void forceStopRuntime()}
-            className="min-h-11 rounded-xl border border-danger/30 px-3 text-sm text-danger disabled:opacity-40"
-          >
-            Force stop
-          </button>
-        </div>
+  const runtimeStatusCard = (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle p-3">
+      <span className="inline-flex items-center gap-2 text-sm text-primary">
+        <StatusDot
+          size="sm"
+          tone={runtimeStatusToTone(runtimeStatus)}
+          label={needsStart ? 'Stopped' : 'Running'}
+        />
+        {needsStart
+          ? 'Stopped'
+          : runtimeStopping
+          ? 'Stopping…'
+          : isStarting
+          ? 'Starting…'
+          : 'Running'}
+      </span>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          data-debug-id="conversation-runtime-modal-toggle-btn"
+          disabled={
+            !agentInstanceId ||
+            runtimeActionBusy ||
+            runtimeStopping ||
+            operationBlocksInput ||
+            (needsStart && conversationReadOnly)
+          }
+          onClick={() => void toggleRuntime()}
+          className="min-h-11 rounded-xl border border-subtle px-3 text-sm text-primary disabled:opacity-40"
+        >
+          {needsStart ? 'Start agent' : 'Stop agent'}
+        </button>
+        <button
+          type="button"
+          data-debug-id="conversation-runtime-force-stop-btn"
+          disabled={
+            !agentInstanceId ||
+            (needsStart && !operationBlocksInput) ||
+            lifecycle.isPending('stop') ||
+            lifecycle.isPending('reconfigure') ||
+            lifecycle.isPending('retry') ||
+            instanceBridge?.runtime_connected !== true
+          }
+          onClick={() => void forceStopRuntime()}
+          className="min-h-11 rounded-xl border border-danger/30 px-3 text-sm text-danger disabled:opacity-40"
+        >
+          Force stop
+        </button>
       </div>
+    </div>
+  );
+  // Bypass, project and bridge/provider/model pickers: the old modal's body, also the
+  // panel's interim configuration slot until T6 lands sections 2-5.
+  const runtimeConfigControls = (
+    <>
       {permissionToggle.visible ? (
         <div
           data-debug-id="conversation-permission-toggle"
@@ -2553,7 +2754,8 @@ export function AgentChatPane({
           ))}
         </ul>
       ) : null}
-      {reconfigStatus ? (
+      {/* In the panel the Runtime card shows this message. */}
+      {reconfigStatus && !settingsPanel.open ? (
         <div
           data-debug-id="conversation-reconfigure-status"
           className="px-2 pt-1 text-caption text-muted"
@@ -2561,6 +2763,156 @@ export function AgentChatPane({
           {reconfigStatus}
         </div>
       ) : null}
+    </>
+  );
+  const runtimeSection = settingsPanel.open ? (
+    <RuntimeSection
+      view={runtimeSectionView({
+        runtimeStatus,
+        startupStatus,
+        activityStatus,
+        startedAt: String(instance?.started_at || instance?.startedAt || ''),
+        stopReason: String(instance?.stop_reason || ''),
+        operations: operationQuery.data?.operations,
+        operationInFlight,
+        restartPending: lifecycle.isPending('restart') || applyFlow.state.phase === 'restarting',
+        now: panelNow,
+      })}
+      bridgeLabel={bridgeLabel}
+      provider={instanceProvider}
+      model={instanceModel}
+      transport={instance?.runtime_transport === 'acp' ? 'acp' : 'pty'}
+      folder={String(instance?.project_path || '')}
+      agentLabel={agentInstanceLabel}
+      touch={settingsPanel.mode === 'page'}
+      actionsDisabled={
+        !agentInstanceId ||
+        runtimeActionBusy ||
+        runtimeStopping ||
+        operationBlocksInput ||
+        (needsStart && conversationReadOnly)
+      }
+      forceStopDisabled={
+        !agentInstanceId ||
+        (needsStart && !operationBlocksInput) ||
+        lifecycle.isPending('stop') ||
+        lifecycle.isPending('reconfigure') ||
+        lifecycle.isPending('retry') ||
+        instanceBridge?.runtime_connected !== true
+      }
+      pendingAction={
+        lifecycle.isPending('restart') ? 'restart'
+          : lifecycle.isPending('start') ? 'start'
+            : lifecycle.isPending('stop') ? 'stop'
+              : null
+      }
+      statusMessage={reconfigStatus}
+      onStart={() => void toggleRuntime()}
+      onStop={() => void toggleRuntime()}
+      onRestart={() => void restartRuntime()}
+      onForceStop={() => void forceStopRuntime()}
+    />
+  ) : null;
+  // Sections 2-5 (T6): every control edits the draft above; nothing applies on click.
+  const draftBridgeLabel = bridgeLabelOf(destinationBridgeId);
+  const draftProviderOption = draftProviderOptions.find((p) => p.id === (draftConfig.providerProfile || draftConfig.provider));
+  // A change queued after this turn locks the draft: the footer shows and Restart now
+  // sends exactly what is queued; Cancel it to edit again.
+  const draftControlsDisabled = !agentInstanceId || runtimeActionBusy || operationBlocksInput || isStarting
+    || operation?.phase === 'waiting_for_idle';
+  const panelTouch = settingsPanel.mode === 'page';
+  const settingsSections = settingsPanel.open ? (
+    <>
+      <BridgeSection
+        view={bridgeRowsView({
+          bridges,
+          currentBridgeId: instanceBridgeId,
+          projectId,
+          bridgePaths: projectQuery.data?.bridge_paths || [],
+          defaultPath: String(projectQuery.data?.project?.default_path || ''),
+          currentFolder: String(instance?.project_path || ''),
+        })}
+        selected={destinationBridgeId}
+        onSelect={(id) => dispatchDraft({ type: 'bridge', bridgeId: id, providers: null })}
+        manageFoldersHref={projectId ? projectEditHref(projectId) : undefined}
+        disabled={draftControlsDisabled}
+        loading={!bridgesQuery.data}
+        touch={panelTouch}
+      />
+      <ModelSection
+        providers={draftProviderOptions}
+        loaded={draftProvidersLoaded}
+        selectedProvider={draftConfig.providerProfile || draftConfig.provider}
+        selectedModel={draftConfig.model}
+        bridgeLabel={draftBridgeLabel}
+        onSelectProvider={(id) => dispatchDraft({ type: 'provider', id, providers: draftProviderOptions })}
+        onSelectModel={(next) => dispatchDraft({ type: 'model', model: next })}
+        onRefresh={() => void refreshDraftModels()}
+        refreshing={refreshModelsState.isLoading}
+        checkedAt={lastCheckedAt(draftProviderOptions)}
+        refreshError={draftRefreshError}
+        disabled={draftControlsDisabled}
+        touch={panelTouch}
+      />
+      <ConnectionSection
+        selected={draftConfig.transport}
+        onSelect={(transport) => dispatchDraft({ type: 'transport', transport })}
+        acp={acpAvailabilityCopy(draftProviderOption?.acp, {
+          provider: providerLabelOf(draftConfig),
+          bridge: draftBridgeLabel,
+        })}
+        onFix={(fix) => void fixDraftConnection(fix)}
+        fixPending={discoverProvidersState.isLoading || updateBridgeState.isLoading || installAcpState.isLoading}
+        fixError={draftFixError}
+        disabled={draftControlsDisabled}
+        touch={panelTouch}
+      />
+      <PermissionsSection
+        bypass={draftConfig.bypass}
+        transport={draftConfig.transport}
+        providerLabel={providerLabelOf(draftConfig)}
+        onChange={(bypass) => dispatchDraft({ type: 'bypass', bypass })}
+        disabled={draftControlsDisabled}
+        touch={panelTouch}
+      />
+    </>
+  ) : null;
+  const destinationFolder = bridgeRowsView({
+    bridges,
+    currentBridgeId: instanceBridgeId,
+    projectId,
+    bridgePaths: projectQuery.data?.bridge_paths || [],
+    defaultPath: String(projectQuery.data?.project?.default_path || ''),
+    currentFolder: String(instance?.project_path || ''),
+  }).rows.find((row) => row.bridgeId === destinationBridgeId)?.folder || '';
+  const applyFooter = settingsPanel.open ? (
+    <ApplyFooter
+      view={applyFooterView({
+        changes: applyFlow.changes,
+        flow: applyFlow.state,
+        midTurn: isWorking,
+        stopped: needsStart,
+        destinationBridge: draftBridgeLabel,
+        destinationFolder,
+        blockedMessage: draftApplyBlocked?.message || '',
+        issues: applyFlow.changes.length ? stagedConfigurationIssues : [],
+        busy:
+          !agentInstanceId ||
+          runtimeActionBusy ||
+          (operation?.phase !== 'recovery_required' && (operationBlocksInput || isStarting || runtimeStopping)),
+        now: panelNow,
+      })}
+      touch={panelTouch}
+      onApply={() => void (operation?.phase === 'recovery_required' ? applyFlow.retry() : applyFlow.apply())}
+      onRestartNow={() => void applyFlow.restartNow()}
+      onCancel={() => void applyFlow.cancelWaiting()}
+      onDiscard={() => { applyFlow.clear(); resetRuntimeConfiguration(); }}
+    />
+  ) : null;
+  const runtimeControls = (
+    <div data-debug-id="conversation-runtime-controls" className="text-left">
+      {runtimeStatusCard}
+      {runtimeConfigControls}
     </div>
   );
 
@@ -2643,7 +2995,7 @@ export function AgentChatPane({
       compactModel: isSmallComposer,
       provider: activeProvider,
       model: instanceModel,
-      onSettings: () => setRuntimeMenuOpen(true),
+      onSettings: openAgentSettings,
       onUpload: openAttachmentPicker,
       uploadDisabled: normalSendBusy || (trayModeItem ? false : configurationInputBlocked),
       onRecord: () => { if (!desktopUpdateFrozen()) void voice.recorder.start(); },
@@ -2803,7 +3155,7 @@ export function AgentChatPane({
                   </button>
                 </div>
               ) : null}
-              {pendingReconfig && stagedConfigurationIssues.length > 0 ? (
+              {pendingReconfig && !settingsPanelEnabled && stagedConfigurationIssues.length > 0 ? (
                 <div
                   data-debug-id="conversation-apply-blocked-reasons"
                   role="status"
@@ -2819,7 +3171,7 @@ export function AgentChatPane({
                   </ul>
                 </div>
               ) : null}
-              {operation ? (
+              {operation && !isCancelledReconfiguration(operation) ? (
                 <InstanceReconfigurationProgress operation={operation} />
               ) : null}
               {operationBlocksInput ? (
@@ -2884,7 +3236,7 @@ export function AgentChatPane({
                 <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => setRuntimeMenuOpen(true)}
+                    onClick={openAgentSettings}
                     aria-haspopup="dialog"
                     aria-label="Change bridge, provider or model"
                     data-debug-id="conversation-composer-bridge-chip"
@@ -2925,7 +3277,9 @@ export function AgentChatPane({
                 {...composerActions}
                 readOnly={conversationReadOnly}
                 pendingActions={
-                  pendingReconfig ? (
+                  // With the settings panel enabled its staged-changes footer owns
+                  // Discard/Apply for the draft, so the composer shows none.
+                  pendingReconfig && !settingsPanelEnabled ? (
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -2943,7 +3297,8 @@ export function AgentChatPane({
                           runtimeActionBusy ||
                           (operation?.phase !== 'recovery_required' &&
                             (isStarting || runtimeStopping)) ||
-                          stagedConfigurationIssues.length > 0
+                          stagedConfigurationIssues.length > 0 ||
+                          Boolean(draftApplyBlocked)
                         }
                         onClick={() => void applyReconfigure()}
                         className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg disabled:opacity-40"
@@ -3075,8 +3430,13 @@ export function AgentChatPane({
   return (
     <div
       data-debug-id={`workbench-agent-chat-pane-${agentInstanceId}`}
-      className="relative flex h-full w-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas text-left"
+      className="relative flex h-full w-full min-h-0 min-w-0 flex-1 flex-row overflow-hidden bg-canvas text-left"
     >
+      {/* Conversation column; the Agent settings panel is its flex sibling. */}
+      <div
+        data-debug-id="conversation-thread-column"
+        className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+      >
       {/* Scoped top bar in Chat Pane (absent in an aux sub-agent tab: transcript + composer only) */}
       {!isAuxSubagent ? (
       <header
@@ -3215,16 +3575,7 @@ export function AgentChatPane({
                   />
                 ) : null}
                 <span className="truncate">
-                  <VaultText
-                    value={
-                      chainAgentGroups[0]?.conversations.find(
-                        (member) => member.agentInstanceId === agentInstanceId,
-                      )?.title ||
-                      agentDisplayName ||
-                      agentId
-                    }
-                    fallback="Agent"
-                  />
+                  <VaultText value={agentBreadcrumbLabel} fallback="Agent" />
                 </span>
                 <Icon name="chevron-down" size={13} className="shrink-0 text-muted" />
               </button>
@@ -3254,6 +3605,18 @@ export function AgentChatPane({
           ) : null}
 
           {headerTrailing}
+          {settingsPanelEnabled ? (
+            <UiIconButton
+              ref={settingsPanel.gearRef}
+              icon="gear"
+              label="Agent settings"
+              variant={settingsPanel.open ? 'solid' : 'ghost'}
+              size={isMobile ? 'md' : 'sm'}
+              aria-expanded={settingsPanel.open}
+              data-debug-id="conversation-agent-settings-btn"
+              onClick={settingsPanel.toggle}
+            />
+          ) : null}
           <Menu
             align="end"
             label="Conversation options"
@@ -3290,7 +3653,7 @@ export function AgentChatPane({
               data-debug-id="conversation-thread-settings-action"
               onClick={() => {
                 setHeaderActionsOpen(false);
-                setRuntimeMenuOpen(true);
+                openAgentSettings();
               }}
             >
               <Icon name="gear" size={15} />
@@ -3553,6 +3916,17 @@ export function AgentChatPane({
           )}
         </FloatingComposerDock>
       </div>
+      </div>
+
+      <AgentSettingsPanel
+        state={settingsPanel}
+        agentLabel={<VaultText value={agentInstanceLabel} fallback="Agent" />}
+        projectLabel={projectId ? <VaultText value={projectName} fallback="Project" /> : undefined}
+        runtime={runtimeSection}
+        footer={applyFooter}
+      >
+        {settingsSections}
+      </AgentSettingsPanel>
 
       <Modal
         open={runtimeMenuOpen}

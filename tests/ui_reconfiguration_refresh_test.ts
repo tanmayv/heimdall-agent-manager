@@ -273,3 +273,81 @@ test('lifecycle acceptance refreshes scoped lists and chain without agentId; WS 
     globalThis.fetch = previous;
   }
 });
+
+test('agent_instance summaries patch the settings panel fields (project, profile, permission, transport)', async () => {
+  const { handleUserWsEvent, INVALIDATION_COALESCE_MS, resetQueuedInvalidations } = await import('../src/ui/api/wsInvalidation.ts');
+  const instance = { agent_instance_id: 'inst_a', agent_id: 'agt_a', project_id: 'proj_a', provider: 'claude', provider_profile: 'claude', permission_mode: '', effective_permission_mode: 'yolo', runtime_transport: 'pty', runtime_transport_override: '', runtime_status: 'running', updated_at: '2026-11-26T00:00:00Z' };
+  const fetched = installRoutedFetch({ '/agent-instances/inst_a': () => instance, '/agent-instances': () => [instance] });
+  const store = await makeVaultStore();
+  const subs = [
+    store.dispatch(agents.agentsApi.endpoints.fetchAgentInstance.initiate({ instanceId: 'inst_a' })),
+    store.dispatch(agents.agentsApi.endpoints.listAgentInstances.initiate(undefined)),
+  ];
+  try {
+    await Promise.all(subs);
+    // Every agent_instance change carries the complete summary; status_changed patches
+    // in place without a refetch (config_changed additionally refetches the instance).
+    const before = fetched.count(/^GET /);
+    const patch = { project_id: 'proj_b', provider_profile: 'work', permission_mode: 'ask', effective_permission_mode: 'ask', runtime_transport: 'acp', runtime_transport_override: 'acp' };
+    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'inst_a', change: 'status_changed', summary: { ...instance, ...patch, updated_at: '2026-11-26T00:01:00Z' } });
+    await settle(INVALIDATION_COALESCE_MS + 60);
+    const detail = agents.agentsApi.endpoints.fetchAgentInstance.select({ instanceId: 'inst_a' })(store.getState()).data?.instance;
+    const row = agents.agentsApi.endpoints.listAgentInstances.select(undefined)(store.getState()).data?.instances[0];
+    for (const [field, value] of Object.entries(patch)) {
+      assert.equal(detail?.[field], value, `detail ${field}`);
+      assert.equal(row?.[field], value, `list ${field}`);
+    }
+    // A producer that lacks the agent's mode omits effective_permission_mode: the cached value stays.
+    const { effective_permission_mode: _omitted, ...withoutEffective } = { ...instance, ...patch, permission_mode: '' };
+    handleUserWsEvent(store.dispatch, { type: 'resource_changed', resource: 'agent_instance', resource_id: 'inst_a', change: 'status_changed', summary: { ...withoutEffective, updated_at: '2026-11-26T00:02:00Z' } });
+    await settle(INVALIDATION_COALESCE_MS + 60);
+    assert.equal(fetched.count(/^GET /), before, 'patched in place, no refetch');
+    const after = agents.agentsApi.endpoints.fetchAgentInstance.select({ instanceId: 'inst_a' })(store.getState()).data?.instance;
+    assert.equal(after?.permission_mode, '');
+    assert.equal(after?.effective_permission_mode, 'ask');
+  } finally {
+    resetQueuedInvalidations();
+    subs.forEach(sub => sub.unsubscribe());
+    store.dispatch(heimdallApi.util.resetApiState());
+    fetched.restore();
+  }
+});
+
+// T4: a change queued after the current turn (waiting_for_idle) never blocks the
+// conversation, mirroring the Hub's instance_reconfiguration_blocks_input.
+test('waiting_for_idle does not block input; blocking phases still do', () => {
+  const { reconfigurationBlocksInput, isCancelledReconfiguration } = agents;
+  assert.equal(reconfigurationBlocksInput(undefined), false);
+  assert.equal(reconfigurationBlocksInput(op('q', 'waiting_for_idle', { source_stopped: false })), false);
+  for (const phase of ['prepared', 'stopping', 'source_stopped', 'launching', 'recovery_required']) {
+    assert.equal(reconfigurationBlocksInput(op('b', phase)), true, phase);
+  }
+  assert.equal(reconfigurationBlocksInput(op('r', 'ready')), false);
+  // A queued change that ended without running (cancel, Restart now, conflict) never stopped the source.
+  const cancelled = op('c', 'failed', { source_stopped: false, failure_code: 'cancelled' });
+  assert.equal(reconfigurationBlocksInput(cancelled), false);
+  assert.equal(isCancelledReconfiguration(cancelled), true);
+  assert.equal(isCancelledReconfiguration(op('s', 'failed', { source_stopped: false, failure_code: 'superseded' })), true);
+  assert.equal(isCancelledReconfiguration(op('f', 'failed', { failure_code: 'launch_failed' })), false);
+  assert.equal(reconfigurationBlocksInput(op('f', 'failed', { failure_code: 'launch_failed' })), true);
+});
+
+test('ordinal phase 7 normalizes to waiting_for_idle', async () => {
+  const fetch = installRoutedFetch({ '/reconfigurations': () => ({ operations: [op('q', 7 as any)] }) });
+  const store = await makeVaultStore();
+  try {
+    const result: any = await store.dispatch(agents.agentsApi.endpoints.listInstanceReconfigurations.initiate({ instanceId: 'inst_a' }) as any);
+    store.dispatch(heimdallApi.util.resetApiState());
+    assert.equal(result.data.operations[0].phase, 'waiting_for_idle');
+  } finally { fetch.restore(); }
+});
+
+test('progress banner shows a queued change as queued, not as a failure', async () => {
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { default: Progress } = await import('../src/ui/components/chat/InstanceReconfigurationProgress.tsx');
+  const html = renderToStaticMarkup(React.createElement(Progress, { operation: op('q', 'waiting_for_idle', { source_stopped: false }) }));
+  assert.match(html, /Restart queued after this turn/);
+  assert.match(html, />Running</);
+  assert.match(html, />Queued</);
+  assert.doesNotMatch(html, /needs attention/i);
+});
