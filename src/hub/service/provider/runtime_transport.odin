@@ -104,17 +104,20 @@ classify_acp_profile_availability :: proc(provider, recipe_json, bridge_capabili
  #partial switch verdict.reason {
  case .No_Recipe,.Unsupported_Bridge,.Installing,.Adapter_Missing_Node,.Adapter_Missing_Npm: return verdict,adapter_json
  }
- if acp_profile_report_launchable(profile_adapter_json) do return contracts.acp_availability_for(.Ready),profile_adapter_json
+ // A profile report counts only when it was evaluated against this catalog
+ // recipe (R2's binding, acp_report_binds_recipe), ready or not yet probed: a
+ // stale report after a recipe bump is outdated, never launchable.
+ state:=acp_adapter_state(profile_adapter_json)
+ if state!="installing" && state!="missing_node" && acp_report_installed(profile_adapter_json) {
+  if acp_report_binds_recipe(provider,profile_adapter_json,recipe_json) do return contracts.acp_availability_for(.Ready),profile_adapter_json
+  return contracts.acp_availability_for(.Adapter_Outdated),profile_adapter_json
+ }
  return classify_acp_availability(provider,recipe_json,bridge_capabilities_json,profile_adapter_json),profile_adapter_json
 }
 
-// acp_profile_report_launchable: the bridge's report for one profile says it
-// can launch it now (ready), or after the probe it runs at launch (installed,
-// and neither installing nor missing Node.js), as acp_runtime_launch checks.
-acp_profile_report_launchable :: proc(adapter_json: string) -> bool {
- state:=acp_adapter_state(adapter_json)
- if state=="ready" do return true
- if state=="installing" || state=="missing_node" do return false
+// acp_report_installed: the bridge's report says the runtime is installed for
+// that profile (the precondition acp_runtime_launch checks before probing).
+acp_report_installed :: proc(adapter_json: string) -> bool {
  value,err:=json.parse_string(adapter_json,allocator=context.temp_allocator)
  if err!=nil do return false
  obj,ok:=value.(json.Object)

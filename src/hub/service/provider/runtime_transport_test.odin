@@ -404,6 +404,19 @@ test_require_acp_ready_checks_the_selected_profile :: proc(t:^testing.T) {
  store.features=""
  testing.expect_value(t,require_acp_ready(&svc,"bridge",entry,"work").code,domain.Error_Code.ACP_Unavailable)
  store.features=`{"features":["acp_runtime_v1"]}`
+ // R2's recipe binding applies to a profile report too: one evaluated against
+ // another recipe (stale after a recipe bump) is outdated, not launchable.
+ store.adapter=ready
+ for stale in ([]string{
+  transport_test_replace(ready,`"adapter_version":"1.0.114"`,`"adapter_version":"1.0.100"`),
+  `{"installed":true,"state":"error","error":"ACP initialize probe is required for the selected profile; use Re-check","checked_at":"2026-11-27T00:00:00Z","adapter_package":"@github/copilot","adapter_version":"1.0.100"}`,
+  `{"installed":true,"state":"error","checked_at":"2026-11-27T00:00:00Z","adapter_package":"@other/pkg","adapter_version":"1.0.114"}`,
+ }) {
+  store.work_adapter=stale
+  testing.expectf(t,require_acp_ready(&svc,"bridge",entry,"work").code==.ACP_Unavailable,"%s",stale)
+  row,_:=classify_acp_profile_availability("copilot",COPILOT_TRANSPORT_TEST_RECIPE,store.features,store.adapter,"work",stale)
+  testing.expect_value(t,row.reason,contracts.ACP_Availability_Reason.Adapter_Outdated)
+ }
  // The resolver applies the same per-profile gate.
  store.adapter=ready;store.work_override="acp"
  store.work_adapter=`{"installed":false,"state":"missing","checked_at":"2026-11-27T00:00:00Z"}`
