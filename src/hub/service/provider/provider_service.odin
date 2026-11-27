@@ -390,10 +390,15 @@ list_bridge_providers :: proc(service: ^Provider_Service, bridge_id: string) -> 
    delete(v.extension_checked_at);v.extension_checked_at=strings.clone(status.extension_checked_at)
    break
   }
-  // Single source of truth: with no explicit per-bridge setting, a present provider whose profile is
-  // enabled is runtime-enabled by default. An explicit setting (PUT .../providers/<p>) always overrides.
+  // Single source of truth: with no explicit per-bridge enable setting (no row, or a
+  // row whose enabled is NULL because it only holds a transport), a present provider
+  // whose profile is enabled is runtime-enabled by default. An explicit setting
+  // (PUT .../providers/<p> with enabled) always overrides.
   v.enabled=v.enabled && v.detection_state=="present"
-  for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.profile_id {v.enabled=setting.enabled;break}
+  for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.profile_id {
+   if !setting.enabled_implicit do v.enabled=setting.enabled
+   break
+  }
   v.enabled=v.enabled && p.enabled && p.state!="missing"
   for setting in settings do if setting.provider==p.provider && domain.profile_effective_id(setting.provider,setting.profile_id)==p.profile_id {v.transport=strings.clone(setting.transport);break}
   // The selection only: launches add the live ACP readiness gate.

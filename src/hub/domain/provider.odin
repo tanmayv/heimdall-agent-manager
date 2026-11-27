@@ -63,6 +63,10 @@ Bridge_Provider_Status :: struct {
 
 Bridge_Provider_Setting :: struct {
 	transport: string,
+	// enabled_implicit: the row stores no explicit enable choice (SQL NULL, e.g. a
+	// row that only holds a transport); enabled is then derived from detection
+	// and the profile, exactly as with no row. The zero value is explicit.
+	enabled_implicit: bool,
 	profile_id: string,
 	bridge_id: string,
 	provider: string,

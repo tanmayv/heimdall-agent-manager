@@ -87,11 +87,11 @@ bridge_provider_setting_list_sqlite :: proc(ctx: rawptr, bridge_id: string) -> (
 	impl := (^Provider_Repo_SQLite)(ctx)
 	if !provider_repo_ready(impl) do return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	stmt: sqlite3_stmt = nil
-	query := "SELECT bridge_id, provider, enabled, updated_at, profile_id, COALESCE(transport, '') FROM bridge_provider_settings WHERE bridge_id=? ORDER BY provider;"
+	query := "SELECT bridge_id, provider, COALESCE(enabled, 0), updated_at, profile_id, COALESCE(transport, ''), enabled IS NULL FROM bridge_provider_settings WHERE bridge_id=? ORDER BY provider;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare provider setting list")
 	defer sqlite3_finalize(stmt); bind_text(stmt,1,bridge_id)
 	items := make([dynamic]domain.Bridge_Provider_Setting)
-	for sqlite3_step(stmt) == SQLITE_ROW do append(&items, domain.Bridge_Provider_Setting{bridge_id=column_text(stmt,0),provider=column_text(stmt,1),enabled=column_text_unowned(stmt,2)=="1",updated_at=column_text(stmt,3),profile_id=column_text(stmt,4),transport=column_text(stmt,5)})
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&items, domain.Bridge_Provider_Setting{bridge_id=column_text(stmt,0),provider=column_text(stmt,1),enabled=column_text_unowned(stmt,2)=="1",enabled_implicit=column_text_unowned(stmt,6)=="1",updated_at=column_text(stmt,3),profile_id=column_text(stmt,4),transport=column_text(stmt,5)})
 	return items, {}
 }
 
@@ -281,11 +281,11 @@ set_provider_transport_sqlite :: proc(ctx: rawptr, bridge_id, provider, profile_
 
  impl := (^Provider_Repo_SQLite)(ctx)
  if !provider_repo_ready(impl) do return domain.domain_error(.Internal_Error, "sqlite repository is not open")
- // Materialize the profile's row using the same implicit enabled value as the
- // provider view. An existing explicit enabled value is never overwritten.
- // The service validates that profile_id is this provider's profile first.
+ // A transport save never decides enablement: a new row leaves enabled NULL
+ // (derived from detection and the profile, as with no row), and an existing
+ // row keeps its enabled value. The service validates profile_id first.
  stmt: sqlite3_stmt
- query := "INSERT INTO bridge_provider_settings(bridge_id,provider,profile_id,enabled,updated_at,transport) SELECT ?1,?2,?5,CASE WHEN EXISTS(SELECT 1 FROM bridge_provider_status WHERE bridge_id=?1 AND provider=?2 AND profile_id=?5 AND state='present') AND COALESCE((SELECT enabled FROM bridge_provider_profiles WHERE bridge_id=?1 AND profile_id=?5),1)=1 AND COALESCE((SELECT state FROM bridge_provider_profiles WHERE bridge_id=?1 AND profile_id=?5),'ok')!='missing' THEN 1 ELSE 0 END,?3,?4 ON CONFLICT(bridge_id,profile_id) DO UPDATE SET transport=excluded.transport,updated_at=excluded.updated_at;"
+ query := "INSERT INTO bridge_provider_settings(bridge_id,provider,profile_id,enabled,updated_at,transport) VALUES (?1,?2,?5,NULL,?3,?4) ON CONFLICT(bridge_id,profile_id) DO UPDATE SET transport=excluded.transport,updated_at=excluded.updated_at;"
  if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(query)),-1,&stmt,nil)!=SQLITE_OK do return domain.domain_error(.Internal_Error,"failed provider transport prepare")
  defer sqlite3_finalize(stmt)
  bind_text(stmt,1,bridge_id);bind_text(stmt,2,provider);bind_text(stmt,3,now);bind_text(stmt,5,profile_id)

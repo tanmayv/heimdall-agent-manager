@@ -199,7 +199,7 @@ test_transport_catalog_constraints_and_pin :: proc(t:^testing.T) {
 }
 
 @(test)
-test_transport_only_materializes_current_enablement_and_preserves_other_profiles :: proc(t:^testing.T) {
+test_transport_only_save_never_decides_enablement_and_preserves_other_profiles :: proc(t:^testing.T) {
  conn,ok:=tmpl_clone_migrated(t)
  if !ok do return
  defer close(&conn)
@@ -211,7 +211,8 @@ test_transport_only_materializes_current_enablement_and_preserves_other_profiles
  testing.expect_value(t,err.code,domain.Error_Code.None)
  settings,_:=iface.bridge_provider_setting_list(&repo,"b")
  testing.expect_value(t,len(settings),1)
- if len(settings)>0 {testing.expect(t,settings[0].enabled);testing.expect_value(t,settings[0].transport,"acp")}
+ // The new row holds only the transport: enablement stays derived (NULL).
+ if len(settings)>0 {testing.expect(t,settings[0].enabled_implicit);testing.expect_value(t,settings[0].transport,"acp")}
  domain.bridge_provider_settings_destroy(settings)
  _,err=iface.bridge_provider_setting_upsert(&repo,{bridge_id="b",provider="claude",enabled=false})
  testing.expect_value(t,err.code,domain.Error_Code.None)
@@ -228,6 +229,8 @@ test_transport_only_materializes_current_enablement_and_preserves_other_profiles
  testing.expect_value(t,len(settings),2)
  for setting in settings {
   testing.expect_value(t,setting.transport,"")
+  // Explicit choices survive a later transport save.
+  testing.expect(t,!setting.enabled_implicit)
   testing.expect_value(t,setting.enabled,setting.profile_id=="work")
  }
 }

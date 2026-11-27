@@ -8,7 +8,7 @@ import provider "odin_test:hub/service/provider"
 // G6 (269): the provider-wide transport becomes each profile's own value.
 // Backfill: a provider-wide value applies to every profile of that provider on
 // the same bridge; NULL stays NULL; enabled and updated_at are preserved, and a
-// new row gets the implicit enabled value the provider view showed.
+// new row holds only the transport (enabled NULL: still derived on every read).
 @(test)
 test_profile_transport_migration_backfills_each_profile :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -35,7 +35,8 @@ test_profile_transport_migration_backfills_each_profile :: proc(t: ^testing.T) {
 
 	impl: Provider_Repo_SQLite
 	repo := new_provider_repository(&impl, &conn)
-	Row :: struct {profile, transport, updated_at: string, enabled: bool}
+	// enabled: "1"/"0" explicit, "" derived (NULL).
+	Row :: struct {profile, transport, updated_at, enabled: string}
 	expect_rows :: proc(t: ^testing.T, repo: ^iface.Provider_Repository, bridge: string, want: []Row, loc := #caller_location) {
 		settings, serr := iface.bridge_provider_setting_list(repo, bridge)
 		testing.expect_value(t, serr.code, domain.Error_Code.None, loc = loc)
@@ -44,22 +45,23 @@ test_profile_transport_migration_backfills_each_profile :: proc(t: ^testing.T) {
 			found := false
 			for s in settings do if s.profile_id == w.profile {
 				found = true
-				testing.expectf(t, s.transport == w.transport && s.enabled == w.enabled && s.updated_at == w.updated_at, "%s: got transport=%q enabled=%v updated_at=%q, want %v", w.profile, s.transport, s.enabled, s.updated_at, w, loc = loc)
+				enabled := "" if s.enabled_implicit else ("1" if s.enabled else "0")
+				testing.expectf(t, s.transport == w.transport && enabled == w.enabled && s.updated_at == w.updated_at, "%s: got transport=%q enabled=%q updated_at=%q, want %v", w.profile, s.transport, enabled, s.updated_at, w, loc = loc)
 			}
 			testing.expectf(t, found, "%s: row missing", w.profile, loc = loc)
 		}
 	}
 	expect_rows(t, &repo, "b1", []Row{
-		{"claude", "acp", "t-claude", true},
-		{"work", "acp", "t-work", false},    // existing row: transport copied, enabled kept
-		{"home", "acp", "t-claude", true},   // new row: present + enabled profile
-		{"away", "acp", "t-claude", false},  // new row: not detected
-		{"off", "acp", "t-claude", false},   // new row: profile disabled
-		{"codex", "", "t-codex", true},      // NULL stays NULL; cx gets no row
-		{"copilot", "pty", "t-copilot", false},
-		{"cp", "pty", "t-cp", true},
+		{"claude", "acp", "t-claude", "1"},
+		{"work", "acp", "t-work", "0"},    // existing row: transport copied, enabled kept
+		{"home", "acp", "t-claude", ""},   // new rows: transport only, enablement derived
+		{"away", "acp", "t-claude", ""},
+		{"off", "acp", "t-claude", ""},
+		{"codex", "", "t-codex", "1"},     // NULL stays NULL; cx gets no row
+		{"copilot", "pty", "t-copilot", "0"},
+		{"cp", "pty", "t-cp", "1"},
 	})
-	expect_rows(t, &repo, "b2", []Row{{"claude", "", "t2", true}, {"work2", "", "t2-work", true}})
+	expect_rows(t, &repo, "b2", []Row{{"claude", "", "t2", "1"}, {"work2", "", "t2-work", "1"}})
 
 	// Every profile resolves to the transport it had before the migration.
 	svc := provider.Provider_Service{repo = &repo}
@@ -70,6 +72,39 @@ test_profile_transport_migration_backfills_each_profile :: proc(t: ^testing.T) {
 		got, rerr := provider.resolve_runtime_transport(&svc, c.bridge, c.provider, c.profile, check_ready = false)
 		testing.expectf(t, rerr.code == .None && got == c.want, "%s/%s: %q %v", c.bridge, c.profile, got, rerr.code)
 	}
+
+	// Enablement stays derived for transport-only rows, exactly as with no row.
+	svc_enabled :: proc(t: ^testing.T, svc: ^provider.Provider_Service, bridge, profile: string) -> bool {
+		views, verr := provider.list_bridge_providers(svc, bridge)
+		testing.expect_value(t, verr.code, domain.Error_Code.None)
+		defer provider.bridge_provider_views_destroy(views)
+		for v in views do if v.profile_id == profile do return v.enabled
+		testing.expectf(t, false, "%s: no view", profile)
+		return false
+	}
+	testing.expect(t, svc_enabled(t, &svc, "b1", "home"))   // detected + enabled profile
+	testing.expect(t, !svc_enabled(t, &svc, "b1", "away"))  // not detected yet
+	testing.expect(t, !svc_enabled(t, &svc, "b1", "off"))   // profile disabled
+	// A profile detected after the migration becomes enabled...
+	_, uerr := iface.bridge_provider_status_upsert(&repo, {bridge_id = "b1", provider = "claude", profile_id = "away", state = "present"})
+	testing.expect_value(t, uerr.code, domain.Error_Code.None)
+	testing.expect(t, svc_enabled(t, &svc, "b1", "away"))
+	// ...and an uninstalled CLI stops being enabled.
+	_, uerr = iface.bridge_provider_status_upsert(&repo, {bridge_id = "b1", provider = "claude", profile_id = "home", state = "absent"})
+	testing.expect(t, !svc_enabled(t, &svc, "b1", "home"))
+	// A transport save on a disabled profile does not pin it disabled.
+	testing.expect_value(t, iface.set_provider_transport(&repo, "b1", "claude", "pty", "t-off", "off").code, domain.Error_Code.None)
+	testing.expect(t, !svc_enabled(t, &svc, "b1", "off"))
+	testing.expect(t, exec(&conn, "UPDATE bridge_provider_profiles SET enabled=1 WHERE bridge_id='b1' AND profile_id='off';"))
+	testing.expect(t, svc_enabled(t, &svc, "b1", "off"))
+	// An explicit enable/disable still wins over detection, and a later
+	// transport save keeps it.
+	_, uerr = iface.bridge_provider_setting_upsert(&repo, {bridge_id = "b1", provider = "claude", profile_id = "away", enabled = false, updated_at = "t-x"})
+	testing.expect(t, !svc_enabled(t, &svc, "b1", "away"))
+	testing.expect_value(t, iface.set_provider_transport(&repo, "b1", "claude", "acp", "t-y", "away").code, domain.Error_Code.None)
+	testing.expect(t, !svc_enabled(t, &svc, "b1", "away"))
+	_, uerr = iface.bridge_provider_setting_upsert(&repo, {bridge_id = "b1", provider = "claude", profile_id = "home", enabled = true, updated_at = "t-z"})
+	testing.expect(t, svc_enabled(t, &svc, "b1", "home"))   // explicit enable over an absent CLI
 
 	// The per-profile CHECK admits any profile and still rejects other values.
 	testing.expect(t, exec(&conn, "UPDATE bridge_provider_settings SET transport='pty' WHERE bridge_id='b1' AND profile_id='work';"))
