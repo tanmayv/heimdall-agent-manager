@@ -803,9 +803,12 @@ MIGRATION_262_EXTENSION_VERSION_SYNC :: #load("migrations/262_extension_version_
 MIGRATION_263_TASK_MERGE_PENDING :: #load("migrations/263_task_merge_pending.sql", string)
 
 MIGRATION_264_EXTENSION_VERSION_SYNC :: #load("migrations/264_extension_version_sync_0_5_94.sql", string)
-MIGRATION_265_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE :: #load("migrations/265_instance_runtime_transport_override.sql", string)
 
-MIGRATION_266_RECONFIGURATION_WAITING_FOR_IDLE :: #load("migrations/266_reconfiguration_waiting_for_idle.sql", string)
+MIGRATION_265_EXTENSION_VERSION_SYNC :: #load("migrations/265_extension_version_sync_0_5_95.sql", string)
+
+MIGRATION_266_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE :: #load("migrations/266_instance_runtime_transport_override.sql", string)
+
+MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE :: #load("migrations/267_reconfiguration_waiting_for_idle.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1108,8 +1111,9 @@ migration_order :: [?]string {
 	"262_extension_version_sync_0_5_93.sql",
 	"263_task_merge_pending.sql",
 	"264_extension_version_sync_0_5_94.sql",
-	"265_instance_runtime_transport_override.sql",
-	"266_reconfiguration_waiting_for_idle.sql",
+	"265_extension_version_sync_0_5_95.sql",
+	"266_instance_runtime_transport_override.sql",
+	"267_reconfiguration_waiting_for_idle.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1602,18 +1606,18 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
-		// 265 runs inside its own BEGIN/COMMIT; its last statement recreates the
+		// 266 runs inside its own BEGIN/COMMIT; its last statement recreates the
 		// commit trigger, so a trigger that mentions the override proves completion.
-		if name == "265_instance_runtime_transport_override.sql" &&
+		if name == "266_instance_runtime_transport_override.sql" &&
 		   table_column_exists(conn, "agent_instances", "runtime_transport_override") &&
 		   sqlite_trigger_mentions(conn, "instance_reconfiguration_commit", "runtime_transport_override") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		// 266 rebuilds instance_reconfigurations inside its own BEGIN/COMMIT; the
+		// 267 rebuilds instance_reconfigurations inside its own BEGIN/COMMIT; the
 		// rebuilt table admits waiting_for_idle and its last statement recreates
 		// the hold_messages trigger, so both together prove completion.
-		if name == "266_reconfiguration_waiting_for_idle.sql" &&
+		if name == "267_reconfiguration_waiting_for_idle.sql" &&
 		   sqlite_table_sql_mentions(conn, "instance_reconfigurations", "waiting_for_idle") &&
 		   sqlite_object_exists(conn, "instance_reconfiguration_hold_messages") {
 			mark_migration_applied(conn, name)
@@ -1653,7 +1657,7 @@ run_migrations :: proc(
 			)
 		}
 		if !exec(conn, sql) {
-			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_task_merge_pending.sql" || name == "265_instance_runtime_transport_override.sql" || name == "266_reconfiguration_waiting_for_idle.sql" do _ = exec(conn, "ROLLBACK;")
+			if name == "actions_007_filter_tree.sql" || name == "actions_001_reset.sql" || name == "169_provider_profiles.sql" || name == "211_provider_transport.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "215_bots_whatsapp.sql" || name == "216_bots_media.sql" || name == "218_acp_adapter_install.sql" || name == "events_006_instance_subscriptions.sql" || name == "events_007_entity_versions.sql" || name == "260_drop_fleet_roles.sql" || name == "263_task_merge_pending.sql" || name == "266_instance_runtime_transport_override.sql" || name == "267_reconfiguration_waiting_for_idle.sql" do _ = exec(conn, "ROLLBACK;")
 			delete(sql)
 			return false, domain.domain_error(
 				.Internal_Error,
@@ -1694,9 +1698,10 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "267_reconfiguration_waiting_for_idle.sql" do return strings.clone(MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE)
+	if name == "266_instance_runtime_transport_override.sql" do return strings.clone(MIGRATION_266_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE)
+	if name == "265_extension_version_sync_0_5_95.sql" do return strings.clone(MIGRATION_265_EXTENSION_VERSION_SYNC)
 	if name == "264_extension_version_sync_0_5_94.sql" do return strings.clone(MIGRATION_264_EXTENSION_VERSION_SYNC)
-	if name == "266_reconfiguration_waiting_for_idle.sql" do return strings.clone(MIGRATION_266_RECONFIGURATION_WAITING_FOR_IDLE)
-	if name == "265_instance_runtime_transport_override.sql" do return strings.clone(MIGRATION_265_INSTANCE_RUNTIME_TRANSPORT_OVERRIDE)
 	if name == "262_extension_version_sync_0_5_93.sql" do return strings.clone(MIGRATION_262_EXTENSION_VERSION_SYNC)
 	if name == "263_task_merge_pending.sql" do return strings.clone(MIGRATION_263_TASK_MERGE_PENDING)
 	if name == "261_extension_version_sync_0_5_92.sql" do return strings.clone(MIGRATION_261_EXTENSION_VERSION_SYNC)

@@ -6,7 +6,7 @@ import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
-// 264 (T4): phase waiting_for_idle. It never blocks input but holds the
+// 267 (T4): phase waiting_for_idle. It never blocks input but holds the
 // instance's single active-operation slot; Restart now supersedes it atomically.
 
 @(private = "file")
@@ -44,13 +44,13 @@ test_reconfiguration_waiting_for_idle_migration_slot_and_supersede :: proc(t: ^t
 	conn, opened, _ := open(":memory:")
 	if !testing.expect(t, opened) do return
 	defer close(&conn)
-	migrated, err := run_migrations(&conn, stop_before = "266_reconfiguration_waiting_for_idle.sql")
+	migrated, err := run_migrations(&conn, stop_before = "267_reconfiguration_waiting_for_idle.sql")
 	if !testing.expect(t, migrated, err.message) do return
 	if !testing.expect(t, rwi_instance(&conn, "rwi_a") && rwi_instance(&conn, "rwi_b")) do return
 	impl: Agent_Repo_SQLite
 	repo := new_agent_repository(&impl, &conn)
 
-	// An operation persisted before 264 survives the rebuild and keeps its slot.
+	// An operation persisted before 267 survives the rebuild and keeps its slot.
 	pre, began, begin_err := iface.instance_reconfiguration_begin(&repo, rwi_op("rwi_a", "pre", .Prepared))
 	if !testing.expect(t, began, begin_err.message) do return
 	domain.instance_reconfiguration_destroy(&pre)
@@ -60,14 +60,14 @@ test_reconfiguration_waiting_for_idle_migration_slot_and_supersede :: proc(t: ^t
 	for name in ([]string{"instance_reconfiguration_commit", "instance_reconfiguration_requested", "instance_reconfiguration_outcome", "instance_reconfiguration_recovery_stopped", "instance_reconfiguration_hold_messages", "instance_reconfigurations_exclusive", "instance_reconfigurations_owner_instance"}) {
 		testing.expectf(t, sqlite_object_exists(&conn, name), "%s recreated", name)
 	}
-	testing.expect(t, sqlite_trigger_mentions(&conn, "instance_reconfiguration_commit", "runtime_transport_override"), "commit keeps the 263 body")
+	testing.expect(t, sqlite_trigger_mentions(&conn, "instance_reconfiguration_commit", "runtime_transport_override"), "commit keeps the 266 body")
 	testing.expect(t, sqlite_trigger_mentions(&conn, "instance_reconfiguration_outcome", "Configuration change cancelled"))
 	testing.expect_value(t, rwi_int(&conn, "SELECT COUNT(*) FROM sqlite_master WHERE name='instance_reconfigurations_v264';"), 0)
 	// Re-running is a no-op (ledger + completion guard); embedded == disk.
 	migrated, err = run_migrations(&conn)
 	testing.expect(t, migrated, err.message)
-	embedded := migration_sql("266_reconfiguration_waiting_for_idle.sql", ""); defer delete(embedded)
-	disk := migration_sql("266_reconfiguration_waiting_for_idle.sql", "src/hub/repository/sqlite/migrations"); defer delete(disk)
+	embedded := migration_sql("267_reconfiguration_waiting_for_idle.sql", ""); defer delete(embedded)
+	disk := migration_sql("267_reconfiguration_waiting_for_idle.sql", "src/hub/repository/sqlite/migrations"); defer delete(disk)
 	testing.expect_value(t, embedded, disk)
 
 	// One active operation per instance: a blocking one excludes a queued one.

@@ -5,7 +5,7 @@ import "core:testing"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
-// 263: agent_instances.runtime_transport_override (per-instance PTY/ACP choice)
+// 266: agent_instances.runtime_transport_override (per-instance PTY/ACP choice)
 // defaults to '' for existing rows, is read by instance lookups and is written
 // only by the reconfiguration commit trigger from $.destination.
 
@@ -59,7 +59,7 @@ test_instance_transport_override_migration_and_commit :: proc(t: ^testing.T) {
 	conn, opened, _ := open(":memory:")
 	if !testing.expect(t, opened) do return
 	defer close(&conn)
-	migrated, err := run_migrations(&conn, stop_before = "265_instance_runtime_transport_override.sql")
+	migrated, err := run_migrations(&conn, stop_before = "266_instance_runtime_transport_override.sql")
 	if !testing.expect(t, migrated, err.message) do return
 	testing.expect(t, exec(&conn, "INSERT INTO agent_instances(agent_instance_id,owner_user_id,agent_id,bridge_id,provider,provider_profile,model,conversation_id,runtime_status,runtime_transport,created_at,updated_at) VALUES('ito_inst','owner','agent','ito_bridge','codex','codex','gpt-6.1-sol','ito_chat','running','pty','','');"))
 	migrated, err = run_migrations(&conn)
@@ -70,8 +70,8 @@ test_instance_transport_override_migration_and_commit :: proc(t: ^testing.T) {
 	// Re-running is a no-op (ledger + completion guard).
 	migrated, err = run_migrations(&conn)
 	testing.expect(t, migrated, err.message)
-	embedded := migration_sql("265_instance_runtime_transport_override.sql", ""); defer delete(embedded)
-	disk := migration_sql("265_instance_runtime_transport_override.sql", "src/hub/repository/sqlite/migrations"); defer delete(disk)
+	embedded := migration_sql("266_instance_runtime_transport_override.sql", ""); defer delete(embedded)
+	disk := migration_sql("266_instance_runtime_transport_override.sql", "src/hub/repository/sqlite/migrations"); defer delete(disk)
 	testing.expect_value(t, embedded, disk)
 
 	impl: Agent_Repo_SQLite
@@ -97,7 +97,7 @@ test_instance_transport_override_migration_and_commit :: proc(t: ^testing.T) {
 	testing.expect_value(t, revision, 2)
 	testing.expect_value(t, transport, "pty")
 
-	// A payload persisted before 263 has no key: the commit keeps the stored value.
+	// A payload persisted before 266 has no key: the commit keeps the stored value.
 	testing.expect(t, exec(&conn, "UPDATE agent_instances SET runtime_transport_override='pty';"))
 	legacy := ito_op("ito_legacy", ito_source()); legacy.expected_revision = 2
 	stored, began, begin_err := iface.instance_reconfiguration_begin(&repo, legacy)
