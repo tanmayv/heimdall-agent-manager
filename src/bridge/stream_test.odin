@@ -59,10 +59,33 @@ test_stream_headless_capture :: proc(t: ^testing.T) {
 	if binary == "" do return
 	root, root_err := bridge_browser_test_root()
 	if !testing.expect(t, root_err == nil) do return
-	defer { _ = os.remove_all(root); delete(root) }
+	defer {
+		testing.expect(t, os.remove_all(root) == nil, "could not remove private browser fixture")
+		delete(root)
+	}
 	profile := fmt.tprintf("%s/profile", root)
 	html := fmt.tprintf("%s/fixture.html", root)
-	body := string(`<!doctype html><body><script>
+	body := string(`<!doctype html><meta charset="utf-8"><title>Stream fixture</title><body style="height:300vh;margin:0">
+<input id="entry" style="position:fixed;left:10vw;top:10vh;width:20vw;height:8vh">
+<div id="drag" style="position:fixed;left:10vw;top:30vh;width:20vw;height:8vh;background:#888"></div>
+<script>
+let clicks=0, dragX=0, activeDrag=false, dropped=false;
+entry.onclick=()=>clicks++;
+drag.onpointerdown=()=>activeDrag=true;
+window.addEventListener('pointermove',e=>{
+  if(activeDrag && e.buttons===1){
+    dragX=e.clientX/innerWidth;
+    drag.style.left=e.clientX+'px';
+  }
+});
+window.addEventListener('pointerup',e=>{
+  if(activeDrag && e.buttons===0){activeDrag=false;dropped=true}
+});
+function verdict(){
+  const passed=[clicks===2,entry.value==='aΩ',scrollY>100,dragX>0.5,dropped];
+  document.title=passed.every(Boolean)?'Stream input passed':'Stream checks '+passed.map(Number).join('');
+}
+setInterval(verdict,20);
 window.animate=true;let i=0;function draw(){if(window.animate)document.body.style.background = (i++%2 ? '#114477' : '#ee3344');requestAnimationFrame(draw)}draw()
 </script>`)
 	if !testing.expect(t, os.write_entire_file(html, transmute([]byte)body) == nil) do return
@@ -73,7 +96,19 @@ window.animate=true;let i=0;function draw(){if(window.animate)document.body.styl
 		"--enable-automation", "--remote-debugging-port=0", fmt.tprintf("--user-data-dir=%s", profile), fmt.tprintf("file://%s", html)}
 	child, launch_err := os.process_start({command = argv})
 	if !testing.expect(t, launch_err == nil, "could not launch fixture Chromium") do return
-	defer { _ = os.process_kill(child); _, _ = os.process_wait(child, time.Second) }
+	closing := false
+	defer {
+		if closing {
+			_, err := os.process_wait(child, time.Second)
+			if err != nil {
+				_ = os.process_kill(child)
+				_, _ = os.process_wait(child, time.Second)
+			}
+		} else {
+			_ = os.process_kill(child)
+			_, _ = os.process_wait(child, time.Second)
+		}
+	}
 	port: u16
 	start := time.tick_now()
 	for time.tick_since(start) < 5 * time.Second {
@@ -87,7 +122,11 @@ window.animate=true;let i=0;function draw(){if(window.animate)document.body.styl
 	if !testing.expect_value(t, identity, Stream_Identity.Foreign) do return
 	conn, own_identity := stream_cdp_verified(port, profile)
 	if !testing.expect_value(t, own_identity, Stream_Identity.Verified) do return
-	defer httpc.websocket_close(&conn)
+	defer {
+		// Let Chromium shut down its subprocesses before deleting its profile.
+		closing = stream_cdp_command(&conn, 99, "", "Browser.close", struct {}{})
+		httpc.websocket_close(&conn)
+	}
 	tabs, ok := stream_cdp_tabs(&conn)
 	if !testing.expect(t, ok && len(tabs) == 1, "expected one fixture tab") do return
 	live := Stream_Live{profile = profile, port = port,
@@ -119,6 +158,8 @@ window.animate=true;let i=0;function draw(){if(window.animate)document.body.styl
 		piece, valid := contracts.stream_decode_piece(wire)
 		testing.expect(t, valid && len(piece.data) == len(data))
 	}
+
+	if !stream_test_browser_input(t, &conn, &live, worker) do return
 
 	if os.get_env("HEIMDALL_TEST_STREAM_LONG", context.temp_allocator) == "1" {
 		// Keep the fixture controller separate from the capture's CDP session.
@@ -461,4 +502,70 @@ test_stream_share_reuses_pending_and_accepted_source :: proc(t: ^testing.T) {
 		stream_test_share(&winner)
 		if !testing.expect(t, winner.created && winner.live.reg.stream_id != previous) do return
 	}
+}
+
+// Exercise the Bridge ingress, capture worker, real CDP session and fixture DOM
+// together. Coordinates are fractions of fixed-position controls so this works
+// with the browser-selected viewport and a resized screencast.
+stream_test_browser_input :: proc(t: ^testing.T, conn: ^httpc.WebSocket, live: ^Stream_Live, worker: ^thread.Thread) -> bool {
+	sync.mutex_lock(&stream_test_registry_mu)
+	defer sync.mutex_unlock(&stream_test_registry_mu)
+	sync.mutex_lock(&stream_mu)
+	prev_live, prev_connected := stream_live[0], stream_connected
+	stream_live[0], stream_connected = live, true
+	live.worker, live.accepted, live.attached = worker, true, true
+	live.reg.expires = u64(bridge_runtime_now_ms()) + 30_000
+	sync.mutex_unlock(&stream_mu)
+	defer {
+		sync.mutex_lock(&stream_mu)
+		live.worker, live.accepted, live.attached = nil, false, false
+		stream_live[0], stream_connected = prev_live, prev_connected
+		stream_input_clear(&live.input)
+		sync.mutex_unlock(&stream_mu)
+	}
+	events: []contracts.Stream_Input_Event = {
+		contracts.Stream_Input_Pointer{action = "down", x = 0.15, y = 0.14, buttons = 1},
+		contracts.Stream_Input_Pointer{action = "up", x = 0.15, y = 0.14, buttons = 0},
+		contracts.Stream_Input_Key{action = "down", key = "a", code = "KeyA"},
+		contracts.Stream_Input_Key{action = "up", key = "a", code = "KeyA"},
+		contracts.Stream_Input_Text{text = "Ω"},
+		contracts.Stream_Input_Pointer{action = "down", x = 0.15, y = 0.34, buttons = 1},
+		contracts.Stream_Input_Pointer{action = "move", button = -1, x = 0.25, y = 0.34, buttons = 1},
+		contracts.Stream_Input_Pointer{action = "move", button = -1, x = 0.65, y = 0.34, buttons = 1},
+		contracts.Stream_Input_Pointer{action = "up", x = 0.65, y = 0.34, buttons = 0},
+		contracts.Stream_Input_Wheel{dy = 400, x = 0.8, y = 0.7},
+	}
+	if !stream_test_wire_input(t, live.reg.stream_id, events) do return false
+
+	// Wait for actual page scroll before clicking the fixed input again.
+	sent := stream_cdp_command(conn, 42, "", "Target.attachToTarget",
+		struct {targetId: string, flatten: bool}{live.reg.source.ref, true})
+	if !testing.expect(t, sent) do return false
+	attached, ok := stream_cdp_wait(conn, 42)
+	if !testing.expect(t, ok) do return false
+	expr := "new Promise(resolve=>{const id=setInterval(()=>{if(scrollY>100){clearInterval(id);resolve()}},10)})"
+	if !testing.expect(t, stream_cdp_command(conn, 43, attached.result.sessionId, "Runtime.evaluate",
+		struct {expression: string, awaitPromise: bool}{expr, true})) { return false }
+	if _, scrolled := stream_cdp_wait(conn, 43); !testing.expect(t, scrolled, "fixture did not scroll") do return false
+	if !stream_test_wire_input(t, live.reg.stream_id, events[:2]) do return false
+
+	start := time.tick_now()
+	diagnostic := "fixture tab not found"
+	for time.tick_since(start) < 3 * time.Second {
+		tabs, ok := stream_cdp_tabs(conn)
+		if !testing.expect(t, ok) do return false
+		for tab in tabs {
+			if tab.id != live.reg.source.ref do continue
+			if tab.title == "Stream input passed" do return true
+			diagnostic = tab.title
+		}
+		time.sleep(10 * time.Millisecond)
+	}
+	return testing.expect(t, false, fmt.tprintf("fixture checks for click, typing, scroll, drag and release did not all pass: %s", diagnostic))
+}
+
+stream_test_wire_input :: proc(t: ^testing.T, id: string, events: []contracts.Stream_Input_Event) -> bool {
+	wire := contracts.stream_encode_input({id, events})
+	defer delete(wire)
+	return testing.expect(t, len(wire) > 0 && stream_hub_receive(string(wire)), "Bridge did not recognize stream input")
 }

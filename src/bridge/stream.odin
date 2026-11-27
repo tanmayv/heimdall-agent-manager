@@ -31,6 +31,7 @@ Stream_Live :: struct {
 	seq: u64,
 	budget: Stream_Budget,
 	ack_stats: Stream_Ack_Stats,
+	input: Stream_Input_Queue,
 }
 
 Stream_Ack_Stats :: struct {
@@ -209,6 +210,7 @@ stream_local_register :: proc(id, owner: string, rec: Bridge_Local_Agent_Token_R
 }
 
 stream_free :: proc(live: ^Stream_Live) {
+	stream_input_clear(&live.input)
 	delete(live.reg.stream_id, runtime.heap_allocator())
 	delete(live.reg.owner, runtime.heap_allocator())
 	delete(live.reg.bridge, runtime.heap_allocator())
@@ -234,10 +236,12 @@ stream_connection :: proc(connected: bool) {
 		live.accepted = false
 		live.attached = false
 		live.worker_stop = true
+		stream_input_clear(&live.input)
 	}
 }
 
 stream_hub_receive :: proc(raw: string) -> bool {
+	if stream_input_receive(raw) do return true
 	if len(raw) > contracts.STREAM_MAX_CONTROL_BYTES || !strings.contains(raw, "\"stream_") do return false
 	control, ok := contracts.stream_decode_control(raw, u64(bridge_runtime_now_ms()))
 	if !ok do return false
@@ -264,11 +268,13 @@ stream_hub_receive :: proc(raw: string) -> bool {
 			if live.attached do fmt.eprintln("bridge stream: viewer detached")
 			live.attached = false
 			live.worker_stop = true
+			stream_input_clear(&live.input)
 		}
 	case contracts.Stream_Stop:
 		if live := stream_find_locked(frame.stream_id); live != nil {
 			live.reason = "stopped"
 			live.worker_stop = true
+			stream_input_clear(&live.input)
 		}
 	}
 	return true
@@ -296,6 +302,7 @@ stream_hub_drain :: proc(conn: ^ws.Connection, send_control := stream_send_contr
 		if live.worker != nil && thread.is_done(live.worker) {
 			thread.destroy(live.worker)
 			live.worker = nil
+			stream_input_clear(&live.input)
 			delete(live.pending, runtime.heap_allocator()); live.pending = nil
 			delete(live.sending, runtime.heap_allocator()); live.sending = nil
 			live.acked, live.piece = 0, 0

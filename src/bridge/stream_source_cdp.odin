@@ -242,6 +242,7 @@ stream_capture_worker :: proc(data: rawptr) {
 		stats := live.ack_stats
 		sync.mutex_unlock(&stream_mu)
 		if stop do return
+		stream_cdp_drain_input(&conn, &capture)
 		if time.tick_since(last_ack_report) >= 10 * time.Second {
 			age := i64(-1)
 			if stats.last_frame._nsec != 0 do age = i64(time.tick_since(stats.last_frame) / time.Millisecond)
@@ -278,6 +279,9 @@ Stream_CDP_Capture :: struct {
 	session, stage: string,
 	request_id: int,
 	first_frame, closed: bool,
+	input_frame: Stream_Input_Frame,
+	input_buttons, input_id: int,
+	input_sent: time.Tick,
 }
 
 // CDP events are independent of command replies. Route frames through this
@@ -285,6 +289,10 @@ Stream_CDP_Capture :: struct {
 stream_cdp_capture_event :: proc(conn: ^httpc.WebSocket, state: rawptr, message: Stream_CDP_Message) -> bool {
 	capture := cast(^Stream_CDP_Capture)state
 	live := capture.live
+	if message.id != 0 && message.id == capture.input_id {
+		capture.input_id = 0
+		return true
+	}
 	if message.method == "Target.detachedFromTarget" || message.method == "Inspector.detached" {
 		capture.closed = true
 		return false
@@ -306,6 +314,7 @@ stream_cdp_capture_event :: proc(conn: ^httpc.WebSocket, state: rawptr, message:
 		delete(data, runtime.heap_allocator())
 		discard_session = int(frame_session)
 	} else {
+		capture.input_frame = stream_input_frame(message.params)
 		discard_session = stream_offer_frame(live, data, int(frame_session))
 		if capture.first_frame {
 			fmt.eprintln("bridge stream: first screencast frame")
