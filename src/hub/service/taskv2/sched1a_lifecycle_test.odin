@@ -448,7 +448,9 @@ test_sched1a_row14_dispatch_failure_parks_lease :: proc(t: ^testing.T) {
 	_ = publish_task(t, fx, chain, "task_1", brief = BRIEF_NO_REVIEW)
 	lease, held := lease_of(fx, "inst_w1")
 	if !testing.expect(t, held, "granted") do return
+	wake_log_reset(log)
 	on_dispatch_failed(&fx.svc, lease.lease_id, "send failed")
+	testing.expect(t, !wake_log_has_stop(log, "inst_w1"), "delivery failure must not stop a possibly live child")
 	parked, still := lease_of(fx, "inst_w1")
 	testing.expect(t, still && parked.phase == domain.LEASE_PHASE_WAITING, "lease becomes waiting")
 	task := get_task(fx, "task_1")

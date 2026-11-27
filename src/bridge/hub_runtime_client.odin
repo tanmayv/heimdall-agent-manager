@@ -1191,11 +1191,13 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if ok && extract_json_bool(text, "confirm_start", false) {
 			delete(final)
 			count := extract_json_int(text, "run_count", 0)
-			pid := bridge_wait_confirmed_start(instance_id, count, bridge_command_worker_deadline_ns(conn))
+			pid, timed_out := bridge_wait_confirmed_start(instance_id, count, bridge_command_worker_deadline_ns(conn))
 			if pid > 0 {
 				final = bridge_start_confirmed_json(command_id, instance_id, count, pid)
 			} else {
-				final = bridge_command_failed_json(command_id, bridge_cause_wire_error("start_unconfirmed", "new child did not confirm startup before the deadline"), "")
+				error := contracts.wire_error(.Bridge_Timeout, "start_unconfirmed", "new child did not confirm startup before the deadline") if timed_out else
+					contracts.wire_error(.Conflict, "start_unconfirmed", "could not confirm that the new child is alive and ready")
+				final = bridge_command_failed_json(command_id, error, "")
 			}
 		}
 		defer delete(final)

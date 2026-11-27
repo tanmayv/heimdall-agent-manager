@@ -146,12 +146,18 @@ test_agent_not_running_coordinator_start_launches_only_on_user_action :: proc(t:
 	_, _, _ = iface.agent_save_support(&fx.agents, domain.Agent_Bridge_Support{agent_id = "agt_c", bridge_id = "br_1", owner_user_id = "u1", enabled = true})
 	registry := project.Bridge_Runtime_Registry{}
 	project.bridge_runtime_registry_mark_live(&registry, "br_1", false, "")
-	refuse := true
-	sink := project.Bridge_Command_Sink{ctx = &refuse, send_runtime_command = proc(ctx: rawptr, cmd: project.Runtime_Command) -> (bool, domain.Domain_Error) {
-		if (^bool)(ctx)^ do return false, domain.domain_error(.Internal_Error, "coordinator launch refused")
-		return true, domain.Domain_Error{}
+	Coordinator_Start :: struct { refuse: bool, service: ^agent.Agent_Service }
+	fixture := Coordinator_Start{refuse = true}
+	sink := project.Bridge_Command_Sink{ctx = &fixture, send_runtime_command_wait = proc(ctx: rawptr, cmd: project.Runtime_Command, _: int) -> (string, bool, domain.Domain_Error) {
+		start := (^Coordinator_Start)(ctx)
+		if start.refuse do return "", false, domain.domain_error(.Internal_Error, "coordinator launch refused")
+		count := jsonx.extract_int(cmd.body_json, "run_count", 0, false)
+		_, ready, err := agent.mark_instance_start_success(start.service, {kind = .Instance_Token, user_id = "u1", agent_instance_id = "inst_coord"}, count)
+		if !ready do return "", false, err
+		return fmt.aprintf(`{{"ok":true,"command_id":"%s","payload":{{"status":"succeeded","result":{{"agent_instance_id":"inst_coord","runtime_status":"running","expected_run_count":%d,"process_pid":42}}}}}}`, cmd.command_id, count), true, {}
 	}}
 	ag_service := agent.new_agent_service_with_runtime(&fx.agents, &fx.bridges, &pr_repo, &co_repo, &fx.repo, sink, &registry, &fx.clock, &fx.ids)
+	fixture.service = &ag_service
 	ag_service.providers = &pv_repo
 	ag_service.providers = &pv_repo
 	fx.svc.agent_service = &ag_service
@@ -160,11 +166,11 @@ test_agent_not_running_coordinator_start_launches_only_on_user_action :: proc(t:
 	testing.expect(t, !started && strings.contains(err.message, "coordinator launch refused"), "explicit failed launch returned")
 	task = get_task(fx, "task_coord_anr")
 	testing.expect(t, task.state == .Backlog && strings.contains(task.blocked_on_json, "coordinator launch refused"), "failed coordinator start remains blocked with updated reason")
-	refuse = false
+	fixture.refuse = false
 	started, err = start_task_agent(&fx.svc, auth, task.task_id)
 	testing.expect(t, started && err.code == .None, "explicit coordinator start succeeded")
 	coord, _, _ = iface.agent_get_instance(&fx.agents, "inst_coord")
-	testing.expect_value(t, coord.runtime_status, "launching")
+	testing.expect_value(t, coord.runtime_status, "running")
 	task = get_task(fx, "task_coord_anr")
 	testing.expect(t, task.state == .Ready && task.blocked_on_json == "", "successful coordinator start clears block")
 	_, held := lease_of(fx, "inst_coord")

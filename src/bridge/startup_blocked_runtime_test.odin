@@ -1,6 +1,7 @@
 package main
 
 import "core:testing"
+import "core:sync"
 
 @(test)
 launch_rejection_before_new_start_preserves_existing_child :: proc(t: ^testing.T) {
@@ -73,6 +74,8 @@ startup_blocked_cleared_by_start_success :: proc(t: ^testing.T) {
 
 @(test)
 startup_blocked_push_does_not_require_periodic_digest :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	// Readiness diagnostics ship on a status change, not an agent digest.
 	id := "inst_ae5_blocked_heartbeat"
 	bridge_runtime_set_status(id, "blocked", "idle")
@@ -109,4 +112,25 @@ contains_substr :: proc(haystack, needle: string) -> bool {
 		if haystack[i:i + len(needle)] == needle do return true
 	}
 	return false
+}
+
+// Legacy wrapper classifications and wrapper connection exit are not child
+// exit evidence. These reports must not touch an already healthy generation.
+@(test)
+test_legacy_wrapper_reports_preserve_live_agent_until_pty_exit :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	id := "inst_legacy_wrapper_live"
+	bridge_runtime_set_status(id, "running", "idle")
+	before, found := bridge_runtime_instance_snapshot(id)
+	if !testing.expect(t, found && before.pty_process_alive) do return
+	rec := Bridge_Local_Agent_Token_Record{agent_instance_id = id}
+	startup := bridge_local_handle_wrapper_method("startup-result", "wrapper.startup.report", `{"phase":"startup_failed"}`, rec)
+	defer delete(startup)
+	exited := bridge_local_handle_wrapper_method("wrapper-exit", "wrapper.exited", "{}", rec)
+	defer delete(exited)
+	after, _ := bridge_runtime_instance_snapshot(id)
+	testing.expect_value(t, after.runtime_status, "running")
+	testing.expect_value(t, after.state_seq, before.state_seq)
+	testing.expect(t, after.pty_process_alive)
 }

@@ -132,6 +132,7 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	ps := agent_placement(service)
 	if eligible, reason := placement.bridge_eligible(&ps, bridge, {owner=string(bridge.owner_user_id)}); !eligible do return {}, agent_placement_error(&ps, bridge, reason, "pinned bridge is offline")
 	next.stopped_by = ""
+	next.status_message = ""
 	next.runtime_status = "launching"
 	next.startup_status = "starting"
 	next.activity_status = "unknown"

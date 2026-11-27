@@ -863,11 +863,12 @@ stop_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ins
 }
 
 // An explicit stop is confirmed by the Bridge before publishing stopped or
-// releasing its user's task. The lifecycle lock serializes manual operations;
-// no database transaction is held while waiting for a Bridge reply.
+// releasing its user's task. Neither the lifecycle lock nor a DB transaction
+// may be held across a Bridge round trip: the websocket reader needs the lock.
 stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Stop_Instance_Input, guard_ctx: rawptr = nil, guard: proc(ctx: rawptr) -> domain.Domain_Error = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	lock_tok := dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
-	defer dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
+	held := true
+	defer if held do dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
 	if guard != nil { if err := guard(guard_ctx); err.code != .None do return {}, false, err }
 	if input.force {
 		if inst, handled, err := force_stop_instance_reconfiguration_locked(service, auth, instance_id); handled do return inst, err.code == .None, err
@@ -876,6 +877,8 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return {}, false, err
 	defer domain.agent_instance_destroy(&inst)
+	dbt.timed_unlock(&service.reconfiguration_mutex, .Reconfig, lock_tok)
+	held = false
 	reason := input.reason
 	if reason == "" do reason = "user_requested"
 	fact := agent_liveness(service, inst, force_probe = true)
@@ -890,6 +893,8 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 		if fact.reason == .bridge_unavailable do return {}, false, domain.domain_error(.Bridge_Offline, "bridge is not available to verify the process")
 		if fact.reason != .missing_from_pty_roster || (inst.run_count != 0 && inst.status_message != "pty_stop_confirmed") do return {}, false, domain.domain_error(.Conflict, "could not confirm the instance process state")
 	}
+	lock_tok = dbt.timed_lock(&service.reconfiguration_mutex, .Reconfig)
+	held = true
 	fresh, found, read_err := get_instance(service, auth, instance_id)
 	if !found do return {}, false, read_err
 	defer domain.agent_instance_destroy(&fresh)
@@ -910,6 +915,8 @@ stop_instance_confirmed :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 		return {}, false, save_err
 	}
 	log_runtime_terminal_transition(saved, fresh.runtime_status, "stop_instance_confirmed", "pty_stop_confirmed")
+	generation := project_service.bridge_runtime_registry_generation(service.bridge_runtime_registry, saved.bridge_id)
+	project_service.bridge_runtime_instance_retire(service.bridge_runtime_registry, saved.bridge_id, generation, instance_id, "stopped", "pty_stop_confirmed")
 	if recorded, _ := iface.agent_set_stop_reason(service.agents, instance_id, reason); recorded {
 		delete(saved.stop_reason)
 		saved.stop_reason = strings.clone(reason)

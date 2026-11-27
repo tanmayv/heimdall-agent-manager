@@ -74,11 +74,10 @@ agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Leas
 	json_bool(&p, "dispatch_failed", true)
 	json_bool(&p, "continuation", continuation)
 	json_raw(&p, "waiting_on", json_end(&waiting))
-	stop_holder := false
-	if inst, found, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id); found {
-		stop_holder = !confirmed_exit && bridge_online(svc, inst.bridge_id) && (instance_is_live(inst) || instance_is_pending(inst))
-	}
-	if _, ok, _ := release_in_uow(svc, u, lease, hub_actor(), EV_BLOCKED, json_end(&p), "dispatch_failed", stop_holder); !ok do return .Failed
+	// A failed dispatch never proves the child needs stopping, and a
+	// confirmed exit has already stopped it. Keep the parked claim without
+	// enqueueing an unfenced command against a possibly live process.
+	if _, ok, _ := release_in_uow(svc, u, lease, hub_actor(), EV_BLOCKED, json_end(&p), "dispatch_failed", false); !ok do return .Failed
 	if lease.kind == domain.LEASE_KIND_WORK && !continuation {
 		attempts, aerr := iface.taskchain_list_attempts_by_task(svc.repo, lease.task_id, lease.owner_user_id)
 		if aerr.code != .None do return .Failed
@@ -196,22 +195,23 @@ on_dispatch_failed :: proc(svc: ^Service, lease_id, detail: string) {
 // Explicit user recovery for the pull-only coordinator. Launch outside the
 // transaction and clear its block only after the launch command succeeds.
 start_coordinator_task_agent :: proc(svc: ^Service, auth: contracts.Auth_Context, task: domain.Task, coord: domain.Agent_Instance) -> (bool, domain.Domain_Error) {
-	stale := instance_is_live(coord) && now_ms(svc.clock) - to_ms(coord.last_seen_at) >= LEASE_TTL_SECONDS * 1000
-	started := (instance_is_live(coord) && !stale) || instance_is_pending(coord)
+	started := false
 	start_err: domain.Domain_Error
-	if !started {
-		if svc.agent_service == nil {
-			start_err = domain.domain_error(.Internal_Error, "agent launch service is unavailable")
-		} else if stale {
-			_, started, start_err = agent.restart_instance(svc.agent_service, auth, coord.agent_instance_id)
-		} else {
-			_, started, start_err = agent.start_instance(svc.agent_service, auth, coord.agent_instance_id)
-		}
+	if svc.agent_service == nil {
+		start_err = domain.domain_error(.Internal_Error, "agent launch service is unavailable")
+	} else {
+		_, started, start_err = agent.start_instance_confirmed(svc.agent_service, auth, coord.agent_instance_id)
 	}
 	u, ok, err := begin_uow(svc)
 	if !ok do return false, err
 	current, found, read_err := iface.taskchain_get_task(svc.repo, task.task_id)
 	if !found { _, _ = end_uow(svc, &u, false); return false, read_err }
+	// The confirmed readiness hook can answer this block before the
+	// command reply arrives. Do not reapply the card in that case.
+	if started && blocked_on_without_hold(current.blocked_on_json) == "" {
+		_, _ = end_uow(svc, &u, false)
+		return true, {}
+	}
 	// A hold or release since the card was read leaves the failure itself unchanged.
 	if blocked_on_without_hold(current.blocked_on_json) != blocked_on_without_hold(task.blocked_on_json) {
 		_, _ = end_uow(svc, &u, false)

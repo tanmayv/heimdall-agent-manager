@@ -816,6 +816,7 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 	if !ok do return
 	// One kind-filtered read per owner, not every task's full history per instance.
 	if instances,ierr:=iface.agent_list_instances_by_bridge(svc.agents,bridge_id);ierr.code==.None {reconcile_ownership_stops_for_instances_in_uow(svc,&u,instances)}
+	reconnect_probes := make([dynamic]string)
 	leases, lerr := iface.taskchain_list_all_leases(svc.repo)
 	if lerr.code == .None {
 		for l in leases {
@@ -830,7 +831,12 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 			// as presence and tell it to carry on.
 			live := false
 			for id in active_instance_ids do if id == l.holder_instance_id { live = true; break }
-			if !live do continue
+			if !live {
+				// An omitted holder needs a point probe, never an inference
+				// from the partial hello. Queue after leaving the transaction.
+				append(&reconnect_probes, l.holder_instance_id)
+				continue
+			}
 			if task, tok, _ := iface.taskchain_get_task(svc.repo, l.task_id); tok {
 				effect_nudge_instance(&u, l.holder_instance_id, bridge_id, fmt.tprintf("[taskv2] Hub connection restored: continue lease %s on '%s'. Re-run the ham-ctl command that failed (ham-ctl lease next shows your lease).", l.lease_id, task.title))
 			}
@@ -859,6 +865,7 @@ on_bridge_hello :: proc(svc: ^Service, bridge_id: string, active_instance_ids: [
 		}
 	}
 	_, _ = end_uow(svc, &u, ok_all)
+	for instance_id in reconnect_probes do queue_instance_terminal_probe(svc, instance_id)
 }
 
 @(private = "file")

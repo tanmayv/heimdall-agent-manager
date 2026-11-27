@@ -437,18 +437,20 @@ bridge_startup_job_current :: proc(id: string, generation: u64) -> bool {
 
 // Called by the bounded explicit start command only. Host inventory is sampled
 // once, after start-success has been acknowledged for the spawned generation.
-bridge_wait_confirmed_start :: proc(instance_id: string, run_count: int, deadline_ns: i64) -> i32 {
-	if run_count <= 0 || deadline_ns <= 0 do return 0
-	for time.tick_now()._nsec < deadline_ns {
+bridge_wait_confirmed_start :: proc(instance_id: string, run_count: int, deadline_ns: i64) -> (pid: i32, timed_out: bool) {
+	if run_count <= 0 || deadline_ns <= 0 do return 0, false
+	remaining := time.Duration(deadline_ns - time.to_unix_nanoseconds(time.now()))
+	started := time.tick_now()
+	for time.tick_since(started) < remaining {
 		inst, found := bridge_runtime_instance_snapshot(instance_id)
-		if !found || inst.startup.rec.run_count != run_count do return 0
+		if !found || inst.startup.rec.run_count != run_count do return 0, false
 		if inst.startup.ready_delivered && inst.startup.pty_pid > 0 {
 			proof := bridge_instance_probe(instance_id)
-			if proof.state == "alive" && proof.pid == inst.startup.pty_pid do return proof.pid
-			return 0
+			if proof.state == "alive" && proof.pid == inst.startup.pty_pid do return proof.pid, false
+			return 0, false
 		}
-		if inst.runtime_status == "stopped" || inst.runtime_status == "failed" do return 0
-		time.sleep(100 * time.Millisecond)
+		if inst.runtime_status == "stopped" || inst.runtime_status == "failed" do return 0, false
+		time.sleep(max(0, min(100 * time.Millisecond, remaining - time.tick_since(started))))
 	}
-	return 0
+	return 0, true
 }

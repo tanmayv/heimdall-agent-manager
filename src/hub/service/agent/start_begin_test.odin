@@ -7,6 +7,7 @@ import "base:runtime"
 import virtual "core:mem/virtual"
 import "core:strings"
 import "core:testing"
+import "core:sync"
 import "core:thread"
 import "core:time"
 import contracts "odin_test:contracts"
@@ -852,6 +853,13 @@ test_rollover_before_reconfiguration_preserves_operation :: proc(t:^testing.T) {
 
 start_test_confirmed_wait :: proc(ctx: rawptr, command: project_service.Runtime_Command, _: int) -> (string, bool, domain.Domain_Error) {
 	h := (^Start_Test)(ctx)
+	// The Bridge reader consumes accepted and terminal frames in order and
+	// takes this lock while advancing reconfiguration. Do not wait while
+	// holding it or the reader cannot reach the terminal reply.
+	if !sync.mutex_try_lock(&h.service.reconfiguration_mutex) {
+		return "", false, domain.domain_error(.Internal_Error, "runtime reply would deadlock on the Hub lifecycle lock")
+	}
+	sync.mutex_unlock(&h.service.reconfiguration_mutex)
 	switch jsonx.extract_string(command.body_json, "type", "", true, context.temp_allocator) {
 	case "instance.probe":
 		return strings.concatenate({`{"ok":true,"command_id":"`, command.command_id, `","payload":{"result":{"agent_instance_id":"inst","state":"alive","pid":42}}}`}), true, {}
