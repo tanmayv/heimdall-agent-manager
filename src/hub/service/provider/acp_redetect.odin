@@ -55,6 +55,15 @@ ACP_Redetector :: struct {
 	// caller instead (unit tests).
 	workers: sync.Wait_Group,
 	inline: bool,
+	// Test seam: starts a worker thread; nil uses core:thread. Returns false
+	// when no thread could be created.
+	start_worker: proc(data: rawptr, fn: proc(data: rawptr)) -> bool,
+}
+
+@(private = "file")
+acp_redetect_start_thread :: proc(data: rawptr, fn: proc(data: rawptr)) -> bool {
+	context.allocator = runtime.heap_allocator() // the Thread record must outlive a per-request arena
+	return thread.create_and_start_with_data(data, fn, self_cleanup = true) != nil
 }
 
 @(private = "file")
@@ -198,7 +207,13 @@ acp_request_redetect :: proc(r: ^ACP_Redetector, bridge_id, provider: string, ki
 	job := new(ACP_Redetect_Job, heap)
 	job^ = {r = r, dispatch = dispatch, ctx = ctx, bridge_id = strings.clone(bridge_id, heap), provider = strings.clone(provider, heap), kind = kind}
 	context.allocator = heap // the Thread record must outlive a per-request arena
-	thread.run_with_data(rawptr(job), acp_redetect_worker)
+	start := r.start_worker if r.start_worker != nil else acp_redetect_start_thread
+	if !start(rawptr(job), acp_redetect_worker) {
+		// No worker: undo the count so destroy never waits for it, and free the job.
+		delete(job.bridge_id, heap); delete(job.provider, heap); free(job, heap)
+		sync.wait_group_done(&r.workers)
+		return false
+	}
 	return true
 }
 

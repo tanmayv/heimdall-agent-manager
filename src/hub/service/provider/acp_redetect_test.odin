@@ -2,6 +2,7 @@ package provider
 
 import "core:strings"
 import "core:sync"
+import "core:thread"
 import "core:testing"
 import "core:time"
 import domain "odin_test:hub/domain"
@@ -186,4 +187,22 @@ test_acp_redetect_in_flight_is_bounded_and_correlated :: proc(t: ^testing.T) {
 	testing.expect(t, !recheck, "Re-check results arrive as their own tracked command")
 	acp_redetect_pending_clear(&f.r, "b", "kiro")
 	testing.expect_value(t, acp_redetect_pending_expired(&f.r, "b", "kiro", expired), "")
+}
+
+// A worker that cannot be started is uncounted again: shutdown never hangs.
+@(test)
+test_acp_redetector_failed_worker_start_does_not_block_destroy :: proc(t: ^testing.T) {
+	r: ACP_Redetector
+	acp_redetector_init(&r, redetect_slow, nil)
+	r.start_worker = proc(data: rawptr, fn: proc(data: rawptr)) -> bool { return false }
+	testing.expect(t, !acp_request_redetect(&r, "b", "claude", .Discover, time.now()), "nothing was dispatched")
+	done: bool
+	waiter := thread.create_and_start_with_poly_data2(&r, &done, proc(r: ^ACP_Redetector, done: ^bool) {
+		acp_redetector_destroy(r)
+		sync.atomic_store(done, true)
+	})
+	deadline := time.time_add(time.now(), 2 * time.Second)
+	for !sync.atomic_load(&done) && time.diff(time.now(), deadline) > 0 do time.sleep(5 * time.Millisecond)
+	testing.expect(t, sync.atomic_load(&done), "destroy returned")
+	if sync.atomic_load(&done) { thread.join(waiter); thread.destroy(waiter) }
 }
