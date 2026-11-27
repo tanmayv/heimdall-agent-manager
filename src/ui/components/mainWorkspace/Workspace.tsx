@@ -747,6 +747,10 @@ export function Workspace({ focusMessageId, isMobile = false, leading, leadingWi
         isFocusedPane: isFocused,
         headerLeading: isTopLeftMost ? leading : null,
         headerEnd: isTopRightMost && !dockOccupiesTopRight ? topRightSpacer : null,
+        settingsPanelChrome: {
+          rightInset: reservedTopRightWidth,
+          overPane: Boolean(isTopRightMost && !dockOccupiesTopRight),
+        },
       });
       return (
         <MainPaneFrame
@@ -810,6 +814,7 @@ export function Workspace({ focusMessageId, isMobile = false, leading, leadingWi
       dockOccupiesTopRight,
       leading,
       topRightSpacer,
+      reservedTopRightWidth,
       ctx.projectVcsEnabled,
       dispatch,
       focusMessageId,

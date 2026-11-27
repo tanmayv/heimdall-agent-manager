@@ -56,6 +56,14 @@ agent_instance_permission_mode_normalize :: proc(mode: string) -> string {
 	return ""
 }
 
+// runtime_transport_override_normalize maps a stored per-instance transport
+// choice to a static literal: "" (follow bridge/catalog), "pty" or "acp".
+runtime_transport_override_normalize :: proc(transport: string) -> string {
+	if transport == "pty" do return "pty"
+	if transport == "acp" do return "acp"
+	return ""
+}
+
 // effective_permission_mode is the mode a launch uses: the instance override
 // when set, else the agent's mode (yolo when neither says "ask").
 effective_permission_mode :: proc(instance_mode, agent_mode: string) -> string {
@@ -164,6 +172,12 @@ Agent_Instance :: struct {
 	// literals (see agent_instance_permission_mode_normalize), never heap-owned.
 	permission_mode: string,
 	agent_permission_mode: string,
+	// runtime_transport_override is this instance's explicit PTY/ACP choice: ""
+	// follows the bridge-provider setting and then the catalog default; "pty" /
+	// "acp" win over both on every launch (see freeze_runtime_transport). Written
+	// only by the reconfiguration commit trigger. Always a static literal (see
+	// runtime_transport_override_normalize), never heap-owned.
+	runtime_transport_override: string,
 }
 
 current_task_role_string :: proc(role: Current_Task_Role) -> string {

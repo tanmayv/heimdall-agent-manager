@@ -201,3 +201,75 @@ test_runtime_kiro_readiness_accepts_detected_versions_at_or_above_minimum :: pro
   transport_test_replace(ready, `"profile":"kiro"`, `"profile":"work"`),
  }) { testing.expect(t, !acp_adapter_ready(raw, KIRO_TRANSPORT_TEST_RECIPE, "kiro")) }
 }
+
+@(test)
+test_acp_availability_classifies_every_reason_with_its_fix :: proc(t: ^testing.T) {
+ ACP :: `{"features":["acp_runtime_v1"]}`
+ ready :: `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-19T00:00:00Z","provider":"claude","profile":"claude","runtime_kind":"adapter"}`
+ state_json :: proc(state: string) -> string {
+  return strings.concatenate({`{"state":"`,state,`","installed":false,"checked_at":"2026-11-19T00:00:00Z"}`},context.temp_allocator)
+ }
+ Case :: struct {recipe, features, adapter: string, available: bool, reason, fix: string}
+ cases := []Case{
+  {TRANSPORT_TEST_RECIPE, ACP, ready, true, "ready", "null"},
+  {"", ACP, ready, false, "no_recipe", "null"},
+  {COPILOT_TRANSPORT_TEST_RECIPE, ACP, ready, false, "no_recipe", "null"}, // recipe bound to another provider
+  // Recipe is checked before the bridge, so a PTY-only provider never asks for a bridge update.
+  {"", "", "", false, "no_recipe", "null"},
+  {TRANSPORT_TEST_RECIPE, "", ready, false, "unsupported_bridge", `"update_bridge"`},
+  {TRANSPORT_TEST_RECIPE, `{"features":["other"],"description":"acp_runtime_v1"}`, ready, false, "unsupported_bridge", `"update_bridge"`},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("missing"), false, "adapter_missing", `"install_adapter"`},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("outdated"), false, "adapter_outdated", `"install_adapter"`},
+  {TRANSPORT_TEST_RECIPE, ACP, transport_test_replace(ready,`"version":"0.108.0"`,`"version":"0.107.0"`), false, "adapter_outdated", `"install_adapter"`},
+  {TRANSPORT_TEST_RECIPE, ACP, transport_test_replace(ready,`"runtime_kind":"adapter"`,`"runtime_kind":"native"`), false, "adapter_outdated", `"install_adapter"`},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("missing_node"), false, "adapter_missing_node", `"install_adapter"`},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("error"), false, "adapter_error", `"install_adapter"`},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("installing"), false, "installing", "null"},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("not_checked"), false, "not_checked", `"check_now"`},
+  {TRANSPORT_TEST_RECIPE, ACP, "", false, "not_checked", `"check_now"`},
+  {TRANSPORT_TEST_RECIPE, ACP, "not json", false, "not_checked", `"check_now"`},
+  {TRANSPORT_TEST_RECIPE, ACP, state_json("bogus"), false, "not_checked", `"check_now"`},
+ }
+ seen: bit_set[contracts.ACP_Availability_Reason]
+ for c, i in cases {
+  verdict := classify_acp_availability("claude", c.recipe, c.features, c.adapter)
+  seen += {verdict.reason}
+  b := strings.builder_make(context.temp_allocator)
+  contracts.write_acp_availability_json(&b, verdict)
+  want := strings.concatenate({`{"available":`, "true" if c.available else "false", `,"reason":"`, c.reason, `","fix":`, c.fix, `}`}, context.temp_allocator)
+  testing.expectf(t, strings.to_string(b) == want, "case %d: got %s want %s", i, strings.to_string(b), want)
+ }
+ testing.expect_value(t, seen, ~bit_set[contracts.ACP_Availability_Reason]{})
+}
+
+// require_acp_ready is built on the classifier; its error codes and details
+// keep their pre-classifier values (UI and the settings auto-install read them).
+@(test)
+test_require_acp_ready_maps_verdicts_to_unchanged_errors :: proc(t: ^testing.T) {
+ store := Transport_Test_Store{features=`{"features":["acp_runtime_v1"]}`,transports=`["pty","acp"]`,default_transport="pty",recipe=TRANSPORT_TEST_RECIPE}
+ repo := iface.Provider_Repository{ctx=&store,get=transport_test_get,get_provider_transport=transport_test_override,list_status=transport_test_status}
+ bridges := iface.Bridge_Repository{ctx=&store,get_bridge=transport_test_bridge}
+ svc := Provider_Service{repo=&repo,bridges=&bridges}
+ entry := domain.Provider_Catalog_Entry{provider="claude",acp_recipe_json=TRANSPORT_TEST_RECIPE}
+ Case :: struct {features, adapter: string, code: domain.Error_Code, state, message: string}
+ for c, i in ([]Case{
+  {`{"features":["acp_runtime_v1"]}`, `{"installed":true,"state":"ready","version":"0.108.0","checked_at":"2026-11-19T00:00:00Z"}`, .None, "", ""},
+  {"", "", .ACP_Unavailable, "unsupported_bridge", "bridge does not support acp_runtime_v1 and piped hosting"},
+  {`{"features":["acp_runtime_v1"]}`, `{"installed":true,"state":"ready","version":"0.1.0","checked_at":"2026-11-19T00:00:00Z"}`, .ACP_Unavailable, "ready", "ACP adapter is not ready"},
+  {`{"features":["acp_runtime_v1"]}`, `{"state":"missing"}`, .ACP_Unavailable, "missing", "ACP adapter is not ready"},
+  {`{"features":["acp_runtime_v1"]}`, `{"state":"missing_node"}`, .ACP_Unavailable, "missing_node", "ACP adapter is not ready"},
+  {`{"features":["acp_runtime_v1"]}`, `{"state":"outdated"}`, .ACP_Unavailable, "outdated", "ACP adapter is not ready"},
+  {`{"features":["acp_runtime_v1"]}`, `{"state":"error"}`, .ACP_Unavailable, "error", "ACP adapter is not ready"},
+  {`{"features":["acp_runtime_v1"]}`, `{"state":"not_checked"}`, .ACP_Unavailable, "not_checked", "ACP adapter is not ready"},
+  {`{"features":["acp_runtime_v1"]}`, `{"state":"installing"}`, .ACP_Installing, "", "ACP adapter installation is in progress"},
+ }) {
+  store.features = c.features; store.adapter = c.adapter
+  err := require_acp_ready(&svc, "bridge", entry)
+  testing.expectf(t, err.code == c.code && err.message == c.message, "case %d: %v %s", i, err.code, err.message)
+  if c.state != "" do testing.expectf(t, strings.contains(err.details_json, strings.concatenate({`"state":"`, c.state, `"`}, context.temp_allocator)), "case %d: %s", i, err.details_json)
+ }
+ // No status row for the provider at all.
+ store.features = `{"features":["acp_runtime_v1"]}`; store.adapter = ""; store.provider = "codex"
+ err := require_acp_ready(&svc, "bridge", entry)
+ testing.expect(t, err.code == .ACP_Unavailable && err.message == "ACP adapter has not been checked" && strings.contains(err.details_json, `"state":"not_checked"`), err.message)
+}

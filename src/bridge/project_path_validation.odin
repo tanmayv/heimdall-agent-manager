@@ -34,6 +34,7 @@ bridge_validate_project_path_local :: proc(path, vcs_kind, repo_url: string) -> 
 	if !os.exists(path) do return Bridge_Project_Path_Validation_Result{ok = false, error_code = "path_not_found", message = "Path does not exist"}
 	if !os.is_dir(path) do return Bridge_Project_Path_Validation_Result{ok = false, error_code = "path_not_directory", message = "Path is not a directory"}
 	if vcs_kind == "git" && !bridge_path_has_git_root(path) do return Bridge_Project_Path_Validation_Result{ok = false, error_code = "git_root_not_found", message = "Git root was not found"}
+	if vcs_kind == "jj" && !vcs_jj_detect(path) do return Bridge_Project_Path_Validation_Result{ok = false, error_code = "jj_root_not_found", message = "Jujutsu root was not found"}
 	return Bridge_Project_Path_Validation_Result{ok = true}
 }
 

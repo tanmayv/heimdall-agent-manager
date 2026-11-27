@@ -1869,6 +1869,7 @@ Update_Directory_Input :: struct {
 	has_bridge_id: bool,
 	has_vcs_kind:  bool,
 	has_vcs_info:  bool,
+	require_unmapped: bool,
 }
 
 list_chain_directories :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Directory, domain.Domain_Error) {
@@ -1884,13 +1885,30 @@ get_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	return iface.taskchain_get_directory(service.repo, directory_id, chain.chain_id, chain.owner_user_id)
 }
 
+default_directory_bridge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain: domain.Task_Chain) -> (string, domain.Domain_Error) {
+	if service.agents != nil {
+		for id in ([]string{chain.coordinator_agent_instance_id, auth.agent_instance_id}) {
+			if id == "" do continue
+			inst, found, err := iface.agent_get_instance(service.agents, id)
+			if err.code != .None && err.code != .Not_Found do return "", err
+			if found && inst.owner_user_id == chain.owner_user_id && inst.bridge_id != "" do return inst.bridge_id, {}
+		}
+	}
+	return "", domain.domain_error(.Validation_Failed, "bridge_id is required when the chain has no coordinator or creating instance with a bridge")
+}
+
 add_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Add_Directory_Input) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
 	trimmed_path := strings.trim_space(input.path)
 	if trimmed_path == "" do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Validation_Failed, "directory path is required")
 	chain, ok, err := get_chain_for_owner_write(service, auth, input.chain_id)
 	if !ok do return domain.Task_Chain_Directory{}, false, err
 
-	if err := validate_task_bridge(service, chain.owner_user_id, strings.trim_space(input.bridge_id)); err.code != .None do return {}, false, err
+	bridge_id := strings.trim_space(input.bridge_id)
+	if bridge_id == "" {
+		bridge_id, err = default_directory_bridge(service, auth, chain)
+		if err.code != .None do return {}, false, err
+		if err = project.validate_workspace_path((service.agent_service.bridges if service.agent_service != nil else nil), service.bridge_command_sink, service.ids, chain.owner_user_id, bridge_id, trimmed_path, strings.trim_space(input.vcs_kind)); err.code != .None do return {}, false, err
+	} else if err = validate_task_bridge(service, chain.owner_user_id, bridge_id); err.code != .None do return {}, false, err
 
 	now := platform.clock_now(service.clock)
 	dir_id := platform.generate_id(service.ids, "dir_")
@@ -1904,7 +1922,7 @@ add_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 		chain_id      = chain.chain_id,
 		owner_user_id = chain.owner_user_id,
 		path          = trimmed_path,
-		bridge_id     = strings.trim_space(input.bridge_id),
+		bridge_id     = bridge_id,
 		vcs_kind      = strings.trim_space(input.vcs_kind),
 		vcs_info_json = vcs_json,
 		created_at    = now,
@@ -1923,6 +1941,10 @@ update_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 
 	existing, get_ok, get_err := iface.taskchain_get_directory(service.repo, input.directory_id, chain.chain_id, chain.owner_user_id)
 	if !get_ok do return domain.Task_Chain_Directory{}, false, get_err
+	original := existing
+	if input.require_unmapped && (!input.has_bridge_id || input.has_path || input.has_vcs_kind || input.has_vcs_info || existing.bridge_id != "") {
+		return {}, false, domain.domain_error(.Conflict, "workspace is no longer unmapped")
+	}
 
 	if input.has_bridge_id {
 		if err := validate_task_bridge(service, chain.owner_user_id, strings.trim_space(input.bridge_id)); err.code != .None do return {}, false, err
@@ -1933,7 +1955,10 @@ update_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 		if trimmed_path == "" do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Validation_Failed, "directory path cannot be empty")
 		existing.path = trimmed_path
 	}
-	if input.has_bridge_id do existing.bridge_id = strings.trim_space(input.bridge_id)
+	if input.has_bridge_id {
+		existing.bridge_id = strings.trim_space(input.bridge_id)
+		if existing.bridge_id == "" do return {}, false, domain.domain_error(.Validation_Failed, "bridge_id cannot be cleared on a workspace")
+	}
 	if input.has_vcs_kind do existing.vcs_kind = strings.trim_space(input.vcs_kind)
 	if input.has_vcs_info {
 		vcs_json := input.vcs_info_json
@@ -1942,9 +1967,26 @@ update_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 		}
 		existing.vcs_info_json = vcs_json
 	}
+	if original.bridge_id == "" && existing.bridge_id != "" {
+		if err = project.validate_workspace_path((service.agent_service.bridges if service.agent_service != nil else nil), service.bridge_command_sink, service.ids, chain.owner_user_id, existing.bridge_id, existing.path, existing.vcs_kind); err.code != .None do return {}, false, err
+	}
+	// Serialize the compare and write with dispatch's automatic mapper.
+	tx: iface.Unit_Of_Work
+	if service.uow_factory != nil {
+		tx, ok, err = iface.unit_of_work_begin(service.uow_factory)
+		if !ok do return {}, false, err
+	}
+	defer if service.uow_factory != nil && tx.ctx != nil { iface.unit_of_work_rollback(&tx) }
+	current, current_ok, current_err := iface.taskchain_get_directory(service.repo, input.directory_id, chain.chain_id, chain.owner_user_id)
+	if !current_ok do return {}, false, current_err
+	if current != original do return {}, false, domain.domain_error(.Conflict, "workspace configuration changed, refresh and retry")
 	existing.updated_at = platform.clock_now(service.clock)
 
 	saved, save_ok, save_err := iface.taskchain_save_directory(service.repo, existing)
+	if service.uow_factory != nil && save_ok {
+		save_ok, save_err = iface.unit_of_work_commit(&tx)
+		tx = {}
+	}
 	if !save_ok do return domain.Task_Chain_Directory{}, false, save_err
 	return saved, true, domain.Domain_Error{}
 }

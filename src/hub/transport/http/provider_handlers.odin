@@ -100,9 +100,12 @@ provider_icon_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	}
 }
 
+// bridge_capabilities_json is the bridge's capabilities record ("" when the
+// bridge is unknown); it feeds the computed acp_availability verdict.
 write_bridge_provider_view_json :: proc(
 	b: ^strings.Builder,
 	view: provider_service.Bridge_Provider_View,
+	bridge_capabilities_json: string,
 ) {
 	strings.write_string(
 		b,
@@ -148,6 +151,8 @@ write_bridge_provider_view_json :: proc(
 	strings.write_string(b, "\",\"models_version_text\":\""); write_handler_json_string(b,view.models_version_text)
 	strings.write_string(b, "\",\"models_has_snapshot\":"); strings.write_string(b,"true" if view.models_has_snapshot else "false")
 	write_bridge_provider_transport_json(b, view)
+	strings.write_string(b, ",\"acp_availability\":")
+	contracts.write_acp_availability_json(b, provider_service.classify_acp_availability(view.catalog.provider, view.catalog.acp_recipe_json, bridge_capabilities_json, view.acp_adapter_json))
 	write_bridge_provider_extension_json(b, view)
 	strings.write_string(b, ",\"models\":[")
 	for model, i in view.catalog.models {
@@ -214,7 +219,7 @@ bridge_provider_status_response :: proc(
 	strings.write_string(&b, "true" if acp_supported else "false")
 	strings.write_string(&b, ",\"providers\":[")
 	for view, i in views {if i > 0 do strings.write_byte(&b, ',')
-		write_bridge_provider_view_json(&b, view)}
+		write_bridge_provider_view_json(&b, view, bridge.capabilities_json if found else "")}
 	strings.write_string(&b, "],\"extension_commands\":[")
 	if h.providers.repo != nil && h.providers.repo.list_extension_commands != nil {
 		commands, command_err := iface.provider_extension_command_list(h.providers.repo, bridge_id)
@@ -436,7 +441,7 @@ bridge_provider_enable_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		b:=strings.builder_make()
 		strings.write_string(&b,"{\"bridge_id\":\"");write_handler_json_string(&b,bridge.bridge_id)
 		strings.write_string(&b,"\",")
-		row:=strings.builder_make();write_bridge_provider_view_json(&row,view)
+		row:=strings.builder_make();write_bridge_provider_view_json(&row,view,bridge.capabilities_json)
 		row_json:=strings.to_string(row);defer delete(row_json)
 		strings.write_string(&b,row_json[1:])
 		return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))

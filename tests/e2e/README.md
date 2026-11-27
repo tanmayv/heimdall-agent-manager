@@ -96,9 +96,12 @@ Each run writes:
 `tabstream_live.mjs` starts an isolated Hub, NATS, Bridge and synthetic agent,
 then drives real `ham-ctl` commands against an animated headless Chromium tab.
 It verifies the owner route and ticketed WebSocket, non-owner denial, the
-viewer page, measured transfer rates, control latency, last-viewer detach,
-explicit stop, tab close, and the absence of sampled stream data in SQLite,
-NATS traffic and local logs. Viewer onboarding is stubbed. The stream
+viewer page, measured transfer rates, CLI latency, last-viewer detach,
+explicit stop, and tab close. It also drives Control for click, typing, drag
+and scroll while an independent agent CDP connection acts on the same tab,
+then switches to a second live stream. The audit checks SQLite, NATS traffic
+and local logs for sampled stream data and a synthetic input marker verified
+in the source tab. Viewer onboarding is stubbed. The stream
 requests still use a real owner session from the fixture's mock OIDC provider.
 
 From the repository root, with renderer dependencies already present:

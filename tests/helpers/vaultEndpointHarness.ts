@@ -34,6 +34,11 @@ function getTransformSync() {
 // transpile `.ts`/`.tsx` under `src/` via esbuild so plain `node --test` can load them.
 registerHooks({
   load(url, context, nextLoad) {
+    // Vite turns static PNG imports into URLs. Keep the same value shape when
+    // a Node-rendered component imports a logo along with its styles.
+    if (url.startsWith('file:') && url.endsWith('.png')) {
+      return { format: 'module', source: `export default ${JSON.stringify(url)};`, shortCircuit: true };
+    }
     if (url.startsWith('file:') && url.endsWith('.css')) {
       return { format: 'module', source: 'export default {};', shortCircuit: true };
     }

@@ -213,7 +213,7 @@ NODE
 A zero script exit means the submission was initiated. Separately verify the
 expected signed-in state without reading the secret values.
 
-## Share a live, watch-only tab
+## Share a live browser tab
 
 Share the tab when the owner wants to follow what you are doing. Confirm that
 the target is the tab you are working in, not another agent's tab in the shared
@@ -227,7 +227,12 @@ ham-ctl stream share --tab <cdp-target-id>
 Send the exact link printed by `stream share` to the owner in Heimdall chat.
 Re-sharing a tab with a live stream returns the existing link without using
 another stream slot. The link is not a credential. Only the signed-in Heimdall owner can open it.
-The viewer is watch-only and shows the page, not browser chrome or OS dialogs.
+The viewer starts in watch-only mode and shows the page, not browser chrome or OS dialogs.
+The owner can turn on **Control** to act in the streamed tab, for example to complete
+a sign-in step the agent cannot do. The agent can still interact with the same tab
+while Control is on, so coordinate before acting on the same page.
+Stream input passes through the Hub in memory and does not have secure-form
+encryption. Keep using secure forms for passwords rather than typing them into the stream.
 
 Anything visible on the page is visible to the owner while they watch,
 including account details and codes. A secure form does not pause the stream.

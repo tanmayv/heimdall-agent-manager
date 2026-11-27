@@ -313,3 +313,45 @@ test_release_0_5_64_upgrades_whatsapp_and_copilot :: proc(t: ^testing.T) {
 		tmpl_remove_db(path)
 	}
 }
+
+// A released 0.5.95 database already has slot 265. Reconciliation must
+// preserve that ledger entry, then apply each settings-panel schema change.
+@(test)
+test_release_0_5_95_upgrades_settings_panel :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	release_sync :: "265_extension_version_sync_0_5_95.sql"
+	transport_override :: "266_instance_runtime_transport_override.sql"
+	waiting_for_idle :: "267_reconfiguration_waiting_for_idle.sql"
+
+	conn, path, ok := tmpl_open_file_prod(t, "release_0_5_95")
+	defer tmpl_remove_db(path)
+	if !ok do return
+	defer close(&conn)
+	migrated, err := run_migrations(&conn, stop_before = transport_override)
+	if !testing.expect(t, migrated, err.message) do return
+	testing.expect(t, migration_applied(&conn, release_sync))
+	testing.expect_value(t, rmo_text(&conn, "SELECT json_extract(extension, '$.min_version') FROM provider_catalog WHERE provider='codex';"), "0.5.95")
+	testing.expect(t, !table_column_exists(&conn, "agent_instances", "runtime_transport_override"))
+	testing.expect(t, !sqlite_table_sql_mentions(&conn, "instance_reconfigurations", "waiting_for_idle"))
+
+	// If the release sync is replayed it replaces the catalog etag.
+	if !testing.expect(t, exec(&conn, "UPDATE provider_catalog_meta SET catalog_etag='release-upgrade-fixture';")) do return
+
+	migrated, err = run_migrations(&conn, stop_before = waiting_for_idle)
+	if !testing.expect(t, migrated, err.message) do return
+	testing.expect(t, migration_applied(&conn, transport_override))
+	testing.expect(t, table_column_exists(&conn, "agent_instances", "runtime_transport_override"))
+	testing.expect(t, !sqlite_table_sql_mentions(&conn, "instance_reconfigurations", "waiting_for_idle"))
+
+	for _ in 0 ..< 2 {
+		migrated, err = run_migrations(&conn)
+		if !testing.expect(t, migrated, err.message) do return
+		testing.expect(t, migration_applied(&conn, release_sync))
+		testing.expect(t, migration_applied(&conn, transport_override))
+		testing.expect(t, migration_applied(&conn, waiting_for_idle))
+		testing.expect(t, sqlite_table_sql_mentions(&conn, "instance_reconfigurations", "waiting_for_idle"))
+		testing.expect(t, sqlite_trigger_mentions(&conn, "instance_reconfiguration_commit", "runtime_transport_override"))
+		testing.expect_value(t, rmo_text(&conn, "SELECT catalog_etag FROM provider_catalog_meta;"), "release-upgrade-fixture")
+		testing.expect_value(t, rmo_text(&conn, "PRAGMA integrity_check;"), "ok")
+	}
+}

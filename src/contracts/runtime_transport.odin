@@ -106,3 +106,85 @@ bridge_supports_acp_runtime :: proc(raw: string) -> bool {
 	for feature in features do if name, valid := feature.(json.String); valid && name==BRIDGE_FEATURE_ACP_RUNTIME do return true
 	return false
 }
+
+// ACP availability is the Hub's single verdict for one bridge + provider pair
+// (GET /api/v1/bridges/{id}/provider-status providers[].acp_availability). The
+// UI renders it and never re-derives the rules. Mirrored in TS as
+// AcpAvailability (src/ui/components/providers/providerRuntime.ts).
+ACP_Availability_Reason :: enum u8 {
+	Ready,
+	No_Recipe,
+	Unsupported_Bridge,
+	Adapter_Missing,
+	Adapter_Outdated,
+	Adapter_Missing_Node,
+	Adapter_Error,
+	Installing,
+	Not_Checked,
+}
+
+ACP_Availability_Fix :: enum u8 {
+	None, // serialized as JSON null
+	Update_Bridge,
+	Install_Adapter,
+	Check_Now,
+}
+
+ACP_AVAILABILITY_REASON_WIRE := [ACP_Availability_Reason]string {
+	.Ready                = "ready",
+	.No_Recipe            = "no_recipe",
+	.Unsupported_Bridge   = "unsupported_bridge",
+	.Adapter_Missing      = "adapter_missing",
+	.Adapter_Outdated     = "adapter_outdated",
+	.Adapter_Missing_Node = "adapter_missing_node",
+	.Adapter_Error        = "adapter_error",
+	.Installing           = "installing",
+	.Not_Checked          = "not_checked",
+}
+
+ACP_AVAILABILITY_FIX_WIRE := [ACP_Availability_Fix]string {
+	.None            = "",
+	.Update_Bridge   = "update_bridge",
+	.Install_Adapter = "install_adapter",
+	.Check_Now       = "check_now",
+}
+
+ACP_Availability :: struct {
+	available: bool,
+	reason:    ACP_Availability_Reason,
+	fix:       ACP_Availability_Fix,
+}
+
+// Each reason has exactly one fix; the pair is never chosen independently.
+acp_availability_for :: proc(reason: ACP_Availability_Reason) -> ACP_Availability {
+	switch reason {
+	case .Ready:
+		return {available = true, reason = reason, fix = .None}
+	case .No_Recipe, .Installing:
+		return {reason = reason, fix = .None}
+	case .Unsupported_Bridge:
+		return {reason = reason, fix = .Update_Bridge}
+	case .Adapter_Missing, .Adapter_Outdated, .Adapter_Missing_Node, .Adapter_Error:
+		return {reason = reason, fix = .Install_Adapter}
+	case .Not_Checked:
+		return {reason = reason, fix = .Check_Now}
+	}
+	return {reason = .Not_Checked, fix = .Check_Now}
+}
+
+// Writes {"available":bool,"reason":"...","fix":"..."|null}.
+write_acp_availability_json :: proc(b: ^strings.Builder, value: ACP_Availability) {
+	strings.write_string(b, `{"available":`)
+	strings.write_string(b, "true" if value.available else "false")
+	strings.write_string(b, `,"reason":"`)
+	strings.write_string(b, ACP_AVAILABILITY_REASON_WIRE[value.reason])
+	strings.write_string(b, `","fix":`)
+	if value.fix == .None {
+		strings.write_string(b, "null")
+	} else {
+		strings.write_byte(b, '"')
+		strings.write_string(b, ACP_AVAILABILITY_FIX_WIRE[value.fix])
+		strings.write_byte(b, '"')
+	}
+	strings.write_byte(b, '}')
+}

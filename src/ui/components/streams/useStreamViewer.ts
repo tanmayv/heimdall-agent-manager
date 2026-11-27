@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { apiAbsoluteUrl } from '../../api/apiBase.ts';
 import { createFrameAssembler } from './streamFrames.ts';
+
+import { isContinuousInput, streamInputMessage, type StreamInputEvent } from './streamInput.ts';
 
 export type StreamStatus = 'loading' | 'waiting' | 'live' | 'paused' | 'ended' | 'expired' | 'unavailable' | 'unauthorized' | 'error';
 type Metadata = { title: string; expires: number };
@@ -15,6 +17,15 @@ async function fetchStreamJson(path: string, init: RequestInit) {
   const response = await fetch(apiAbsoluteUrl(path), { ...init, credentials: 'include', cache: 'no-store' });
   if (!response.ok) throw new StreamRequestError(response.status);
   return (await response.json()).data;
+}
+
+export type ActiveStream = { stream_id: string; title: string };
+
+export async function listOtherStreams(id: string, signal: AbortSignal): Promise<ActiveStream[]> {
+  const rows: unknown = await fetchStreamJson('/api/v1/streams', { signal });
+  if (!Array.isArray(rows)) throw new Error('Invalid stream list');
+  return rows.filter((row): row is ActiveStream => typeof row?.stream_id === 'string' &&
+    /^[0-9a-f]{32}$/.test(row.stream_id) && row.stream_id !== id && typeof row.title === 'string');
 }
 
 export function streamViewUrl(id: string, ticket: string) {
@@ -33,11 +44,13 @@ export function streamFailure(status: number | undefined, known: Metadata | unde
   return 'error';
 }
 
-export function useStreamViewer(id: string) {
+export function useStreamViewer(id: string, beforePause?: RefObject<(() => void) | undefined>) {
   const [status, setStatus] = useState<StreamStatus>('loading');
   const [meta, setMeta] = useState<Metadata>();
   const [image, setImage] = useState<string>();
   const [attempt, setAttempt] = useState(0);
+
+  const liveInput = useRef<((events: StreamInputEvent[]) => void) | undefined>(undefined);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -59,6 +72,7 @@ export function useStreamViewer(id: string) {
     const finish = (next: StreamStatus) => {
       if (finished || signal.aborted) return;
       finished = true;
+      liveInput.current = undefined;
       clearTimeout(idle);
       clearTimeout(expiry);
       clearTimeout(connectionDeadline);
@@ -80,6 +94,7 @@ export function useStreamViewer(id: string) {
       clearTimeout(idle);
       clearTimeout(connectionDeadline);
       if (finished || signal.aborted) return;
+      liveInput.current = undefined;
       setStatus('paused');
       try {
         await fetchStreamJson(path, { signal });
@@ -91,6 +106,9 @@ export function useStreamViewer(id: string) {
 
     const onIdle = () => {
       if (finished || signal.aborted) return;
+      // Flush held input while the old viewer socket is still writable.
+      beforePause?.current?.();
+      liveInput.current = undefined;
       setStatus('paused');
       if (retried) return;
       retried = true;
@@ -146,6 +164,12 @@ export function useStreamViewer(id: string) {
           clearImage();
           imageUrl = next;
           setImage(next);
+          const peer = socket;
+          liveInput.current = events => {
+            if (peer?.readyState !== WebSocket.OPEN) return;
+            const batch = peer.bufferedAmount < 64 * 1024 ? events : events.filter(event => !isContinuousInput(event));
+            if (batch.length) peer.send(streamInputMessage(id, batch));
+          };
           setStatus('live');
           clearTimeout(idle);
           idle = setTimeout(onIdle, FRAME_IDLE_MS);
@@ -159,6 +183,7 @@ export function useStreamViewer(id: string) {
 
     return () => {
       abort.abort();
+      liveInput.current = undefined;
       clearTimeout(idle);
       clearTimeout(expiry);
       clearTimeout(connectionDeadline);
@@ -168,7 +193,7 @@ export function useStreamViewer(id: string) {
       }
       clearImage();
     };
-  }, [id, attempt]);
+  }, [id, attempt, beforePause]);
 
-  return { status, meta, image, reconnect: () => setAttempt(value => value + 1) };
+  return { status, meta, image, sendInput: (events: StreamInputEvent[]) => liveInput.current?.(events), reconnect: () => setAttempt(value => value + 1) };
 }

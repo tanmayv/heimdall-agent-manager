@@ -1,14 +1,76 @@
 // Exercise the real CLI/relay against an isolated stack supplied by the fixture.
 // Keep synthetic frames in memory even on failure. Only aggregate counts escape.
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { createFrameAssembler } from '../../src/ui/components/streams/streamFrames.ts';
 
 const API = '/api/v1/streams';
+const image = 'img[alt="Latest image of the shared tab"]';
+const control = 'button[aria-label="Control"]';
+
+async function checkViewerInput(viewer, source, audit, waitFor) {
+  const point = async (selector, offset = 0) => {
+    const [x, y] = await source.$eval(selector, (node, offset) => {
+      const rect = node.getBoundingClientRect();
+      return [(rect.left + rect.width / 2 + offset) / innerWidth,
+        (rect.top + rect.height / 2) / innerHeight];
+    }, offset);
+    const box = await viewer.$eval(image, node => {
+      const rect = node.getBoundingClientRect();
+      return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    });
+    return [box.x + x * box.width, box.y + y * box.height];
+  };
+  const actions = () => source.evaluate(() => window.actions);
+  const owner = await point('#owner');
+  assert.equal(await viewer.$eval(control, button => button.getAttribute('aria-pressed')), 'false');
+  await viewer.mouse.click(...owner);
+  await viewer.click(control);
+  await viewer.waitForSelector(control + '[aria-pressed="true"]');
+  await viewer.mouse.click(...owner);
+  await waitFor(async () => (await actions()).owner >= 1, 'owner click in source tab');
+
+  await viewer.mouse.click(...await point('#typing'));
+  await waitFor(() => source.$eval('#typing', node => document.activeElement === node), 'source input focus');
+  await viewer.keyboard.press('a');
+  await waitFor(() => source.$eval('#typing', node => node.value === 'a'), 'owner physical key');
+  const marker = 'stream-input-' + randomBytes(16).toString('hex');
+  audit.input(marker);
+  // Model an IME commit as one text frame, so the entire marker can be
+  // searched for rather than individual characters from key events.
+  await viewer.$eval('textarea[aria-label="Shared tab input"]', (node, text) => {
+    node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    node.value = text;
+    node.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
+  }, marker);
+  await waitFor(() => source.$eval('#typing', (node, expected) => node.value === expected, 'a' + marker),
+    'owner composed text in source tab');
+
+  await viewer.mouse.move(...await point('#drag', -70));
+  await viewer.mouse.down();
+  try {
+    await waitFor(() => source.evaluate(() => window.dragHeld()), 'owner drag held in source tab');
+    // The simulated agent acts on the same tab using an independent CDP
+    // connection while the owner is still holding the pointer down.
+    await source.keyboard.press('F8');
+    await waitFor(async () => (await actions()).agent === 1, 'trusted agent key in source tab');
+    assert.equal(await source.evaluate(() => window.dragHeld()), true, 'agent key arrived during owner drag');
+    await viewer.mouse.move(...await point('#drag', 70), { steps: 5 });
+  } finally {
+    await viewer.mouse.up();
+  }
+  await waitFor(async () => (await actions()).drag > 100, 'owner drag delta in source tab');
+  await viewer.mouse.wheel({ deltaY: 400 });
+  await waitFor(() => source.evaluate(() => scrollY > 0), 'owner wheel scrolled source tab');
+  // The wheel is a later round trip on the ordered viewer connection. Any
+  // incorrectly forwarded watch-only click has reached the source by now.
+  assert.equal((await actions()).owner, 1, 'watch-only click was not forwarded');
+}
 
 export async function checkTabStream({
   cli, ownerRequest, foreignRequest, openViewer, openPage, target, waitForCapture,
-  closeTab, waitFor, audit, report, expiryOnly = false,
+  closeTab, waitFor, audit, report, alternate, source, expiryOnly = false,
 }) {
   const idFromLink = (link) => {
     const url = new URL(link.trim());
@@ -18,16 +80,16 @@ export async function checkTabStream({
     assert.equal(url.password, '');
     return url.hash.split('/').at(-1);
   };
-  const share = async () => {
-    const link = await cli(['stream', 'share', '--tab', target]);
+  const share = async (tab = target) => {
+    const link = await cli(['stream', 'share', '--tab', tab]);
     const id = idFromLink(link);
     const route = `${API}/${id}`;
     const owner = await ownerRequest(route);
     assert.equal(owner.status, 200);
     const { data: meta } = await owner.json();
-    assert.deepEqual(meta.source, { kind: 'browser_tab', ref: target });
+    assert.deepEqual(meta.source, { kind: 'browser_tab', ref: tab });
     assert.equal((await foreignRequest(route)).status, 404);
-    await audit.register({ id, target, title: meta.title });
+    await audit.register({ id, target: tab, title: meta.title });
     return { id, route, link: link.trim(), meta };
   };
   const initial = await share();
@@ -84,10 +146,10 @@ export async function checkTabStream({
     try {
       await page.waitForImage();
       const start = performance.now();
-      const control = await share();
+      const repeat = await share();
       const controlMs = performance.now() - start;
-      await cli(['stream', 'stop', control.id]);
-      assert.ok(controlMs < 2000, 'control command responsive during capture');
+      assert.equal(repeat.id, initial.id, 'same target reuses its live stream');
+      assert.ok(controlMs < 2000, 'CLI responsive during capture');
       await waitFor(() => samples.at(-1)?.arrival - samples[0].arrival >= 5000, 'five seconds of capture');
       const duration = (samples.at(-1).arrival - samples[0].arrival) / 1000;
       const measured = samples.slice(1);
@@ -96,6 +158,26 @@ export async function checkTabStream({
       assert.ok(fps <= 8, 'sustained owner JPEG rate within 8 fps');
       assert.ok(bytesPerSecond <= 1_000_000, 'sustained owner JPEG payload within 1 MB/s');
       report({ frames: samples.length, fps, bytesPerSecond, controlMs });
+      await checkViewerInput(page.page, source, audit, waitFor);
+      const second = await share(alternate.target);
+      assert.equal(second.meta.title, alternate.title);
+      const initialFrame = await page.page.$eval(image, img => img.src);
+      await page.page.click('button[aria-label$=", switch stream"]');
+      await page.page.waitForFunction(title => [...document.querySelectorAll('[role="menuitem"]')]
+        .some(item => item.textContent === title), {}, alternate.title);
+      assert.deepEqual(await page.page.$$eval('[role="menuitem"]', items => items.map(item => item.textContent)),
+        [alternate.title], 'switcher lists the other live stream only');
+      await page.page.click('[role="menuitem"]');
+      await page.page.waitForFunction(id => location.hash === '#/streams/' + id, {}, second.id);
+      await page.page.waitForSelector('button[aria-label="' + alternate.title + ', switch stream"]');
+      await waitForCapture('Page.startScreencast', alternate.target);
+      await page.page.waitForFunction((selector, initialFrame) => {
+        const frame = document.querySelector(selector);
+        return frame?.naturalWidth > 0 && frame.src !== initialFrame;
+      }, {}, image, initialFrame);
+      await page.waitForImage();
+      assert.equal(await page.page.$eval(control, button => button.getAttribute('aria-pressed')), 'false');
+      await cli(['stream', 'stop', second.id]);
     } finally {
       await page.close();
     }

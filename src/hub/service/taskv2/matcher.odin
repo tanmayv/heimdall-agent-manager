@@ -406,6 +406,7 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 	// which pulls it with `lease next` (REQ-SCHED-13). It is never woken; an
 	// unavailable process gets the Start agent card.
 	if ctx.has_coordinator && assignee == ctx.coordinator.agent_id {
+		if trigger != .Timer do arm_workspace_mapping(svc, ctx, task, coordinator_placement(ctx), ctx.coordinator.agent_id)
 		if reason := coordinator_unavailable_reason(svc, u, ctx); reason != "" {
 			block_ready_agent_in_uow(svc, u, task, ctx.coordinator.agent_id, coordinator_placement(ctx), reason)
 		}
@@ -420,6 +421,7 @@ grant_work :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Tas
 		prefer = last_attempt_holder(svc, task)
 	}
 	base, pok := resolve_placement(ctx, task, fleet, true)
+	if pok && trigger != .Timer do arm_workspace_mapping(svc, ctx, task, base, fleet.agent_id)
 	pick := pick_instance(svc, u, ctx, task, fleet, base, pok, placement_restriction(task, fleet, true), domain.LEASE_KIND_WORK, prefer)
 	if !pick.found {
 		if pick.why != "" do block_ready_agent_in_uow(svc, u, task, fleet.agent_id, pick.placement, pick.why)
@@ -461,7 +463,7 @@ coordinator_unavailable_reason :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Conte
 
 @(private = "package")
 coordinator_placement :: proc(ctx: ^Match_Context) -> Placement {
-	return Placement{bridge_id = ctx.coordinator.bridge_id, provider = ctx.coordinator.provider, model = ctx.coordinator.model}
+	return Placement{bridge_id = ctx.coordinator.bridge_id, directory_id = resolve_directory_for_bridge(ctx.dirs, ctx.coordinator.bridge_id), provider = ctx.coordinator.provider, model = ctx.coordinator.model}
 }
 
 // ---- review pass ---------------------------------------------------------------------

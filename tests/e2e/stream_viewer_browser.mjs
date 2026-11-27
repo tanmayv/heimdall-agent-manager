@@ -2,6 +2,7 @@
 // STREAM_CHROMIUM=/path/to/chromium node tests/e2e/stream_viewer_browser.mjs EVIDENCE_DIR
 // Real app, styles and WebSocket framing against an isolated synthetic HTTP/WS peer.
 import assert from 'node:assert/strict';
+import { EventEmitter, once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,12 +14,19 @@ const evidence = path.resolve(process.argv[2]);
 await mkdir(evidence, { recursive: true });
 const prefix = '/api/v1/preview/sh_fixture';
 const id = '0123456789abcdef0123456789abcdef';
+const otherId = 'abcdef0123456789abcdef0123456789';
 const stream = `/api/v1/streams/${id}`;
 const statuses = new Map();
 let mode = '';
 let pendingMetadata;
 let latestSocket;
 let connections = 0;
+let input = [];
+const received = new EventEmitter();
+async function waitForInput(predicate) {
+  const signal = AbortSignal.timeout(3000);
+  while (!predicate(input)) await once(received, 'input', { signal });
+}
 const sockets = new WebSocketServer({ noServer: true });
 const respond = (res, status, data) => {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -43,6 +51,13 @@ const server = await createServer({
       vite.middlewares.use((req, res, next) => {
         const p = new URL(req.url, 'http://fixture.invalid').pathname;
         if (p === prefix + '/') { req.url = '/'; return next(); }
+        if (p === prefix + '/api/v1/streams') return respond(res, 200, [
+          { stream_id: id, title: 'Release readiness checklist' },
+          { stream_id: otherId, title: 'Deployment status' },
+        ]);
+        if (p === prefix + '/api/v1/streams/' + otherId) {
+          return respond(res, 200, { title: 'Deployment status', expires: Date.now() + 60_000 });
+        }
         if (p === prefix + stream) {
           statuses.set('metadata', p);
           const payload = { title: 'Release readiness checklist', expires: Date.now() + (mode === 'expired' ? -1 : 60_000) };
@@ -71,7 +86,19 @@ const server = await createServer({
         if (url.pathname !== prefix + stream + '/view') return;
         assert.equal(url.searchParams.get('ticket'), 'synthetic-ticket');
         statuses.set('view', url.pathname);
-        sockets.handleUpgrade(req, sock, head, ws => { latestSocket = ws; connections++; });
+        sockets.handleUpgrade(req, sock, head, ws => {
+          latestSocket = ws;
+          connections++;
+          ws.on('message', data => {
+            const frame = JSON.parse(data.toString());
+            assert.equal(frame.type, 'stream_input');
+            assert.equal(frame.protocol_version, 1);
+            assert.equal(frame.payload.stream_id, id);
+            assert.ok(frame.payload.events.length > 0 && frame.payload.events.length <= 32);
+            input.push(...frame.payload.events);
+            received.emit('input');
+          });
+        });
       });
     },
   }],
@@ -84,6 +111,7 @@ try {
   browser = await puppeteer.launch({ executablePath: process.env.STREAM_CHROMIUM, headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-background-networking'] });
   for (const [width, height] of [[1440, 900], [390, 780]]) {
+    input = [];
     const page = await browser.newPage();
     const failures = [];
     page.on('pageerror', error => failures.push(error.message));
@@ -91,7 +119,8 @@ try {
     page.on('response', res => { if (res.status() >= 400) badResponses.push([res.status(), res.url()]); });
     const consoleErrors = [];
     page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
-    await page.setViewport({ width, height });
+    const phone = width < 500;
+    await page.setViewport({ width, height, hasTouch: phone, isMobile: phone });
     await page.setRequestInterception(true);
     page.on('request', req => {
       if (req.url().startsWith(origin + '/') || req.url().startsWith('blob:') || req.url().startsWith('data:')) return req.continue();
@@ -101,6 +130,11 @@ try {
       const revoke = URL.revokeObjectURL;
       window.revokedStreamUrls = [];
       URL.revokeObjectURL = url => { window.revokedStreamUrls.push(url); revoke(url); };
+      const bufferedAmount = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'bufferedAmount');
+      Object.defineProperty(WebSocket.prototype, 'bufferedAmount', {
+        ...bufferedAmount,
+        get() { return window.streamInputBackpressure ? 65536 : bufferedAmount.get.call(this); },
+      });
       const timers = new Map();
       let timerId = -1;
       const nativeSet = window.setTimeout.bind(window);
@@ -178,9 +212,110 @@ try {
       sendJpeg();
       await page.waitForFunction(selector => document.querySelector(selector)?.naturalWidth > 0, {}, image);
       await page.screenshot({ path: path.join(evidence, `${width}-live.png`) });
+      const control = 'button[aria-label="Control"]';
+      const fit = 'button[aria-label^="Fit width"]';
+      const field = 'textarea[aria-label="Shared tab input"]';
+      const switcher = 'button[aria-label="Release readiness checklist, switch stream"]';
+      const bounds = () => page.$eval(image, el => {
+        const { x, y, width, height } = el.getBoundingClientRect();
+        return { x, y, width, height };
+      });
+      // Zoom and pan before entering Control. Compare delivered coordinates
+      // with the rendered (and clipped) image, not the viewport dimensions.
+      if (phone) {
+        await page.tap(control);
+        await page.waitForSelector(`${control}[aria-pressed="true"]`);
+        await page.focus(control);
+        await page.keyboard.press('Escape');
+        await page.waitForSelector(`${control}[aria-pressed="false"]`);
+      }
+      await page.click(fit);
+      const initial = await bounds();
+      const p = { x: width / 2, y: height / 2 };
+      const drag = async (x, y, dx) => {
+        if (phone) {
+          await page.touchscreen.touchStart(x, y);
+          await page.touchscreen.touchMove(x + dx, y);
+          await page.touchscreen.touchEnd();
+        } else {
+          await page.mouse.move(x, y);
+          await page.mouse.down();
+          await page.mouse.move(x + dx, y);
+          await page.mouse.up();
+        }
+      };
+      await drag(p.x, p.y, 64);
+      const panned = await bounds();
+      assert.ok(panned.x > initial.x);
+      assert.deepEqual(input, [], 'watch-mode pan must not send input');
+
+      await page.click(control);
+      assert.equal(await page.$eval(control, el => el.getAttribute('aria-pressed')), 'true');
+      if (phone) {
+        await page.touchscreen.tap(p.x, p.y);
+        await drag(p.x, p.y, -40);
+        await page.waitForFunction(selector => document.activeElement?.matches(selector), {}, field);
+        await page.$eval(field, el => {
+          el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+          el.value = '入力';
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+          el.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '入力' }));
+        });
+      } else {
+        await drag(p.x, p.y, -40);
+        await page.keyboard.press('A');
+        await page.mouse.wheel({ deltaY: 112 });
+        await waitForInput(events => events.some(event => event.kind === 'wheel' && event.dy === 112));
+      }
+      // The synthetic peer witnesses input before assertions inspect it.
+      if (phone) await waitForInput(events => events.some(event => event.kind === 'text'));
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-pressed') === 'false', {}, control);
+      const actions = input.filter(event => event.kind === 'pointer');
+      const down = actions.find(event => event.action === 'down');
+      assert.ok(down && Math.abs(down.x - (p.x - panned.x) / panned.width) < 0.001);
+      assert.ok(Math.abs(down.y - (p.y - panned.y) / panned.height) < 0.001);
+      assert.ok(actions.some(event => event.action === 'move' && event.buttons === 1));
+      assert.ok(actions.some(event => event.action === 'up' && event.buttons === 0));
+      assert.deepEqual(await bounds(), panned, 'Control drag must not pan the image');
+      if (phone) {
+        assert.equal(actions.filter(event => event.action === 'down').length, 2, 'touch tap and drag each press the shared tab');
+        assert.equal(actions.filter(event => event.action === 'up').length, 2, 'touch tap and drag each release the shared tab');
+        assert.deepEqual(input.filter(event => event.kind === 'text'), [{ kind: 'text', text: '入力' }]);
+      }
+      else {
+        assert.ok(input.some(event => event.kind === 'key' && event.action === 'down' && event.code === 'KeyA'));
+        assert.ok(input.some(event => event.kind === 'wheel' && event.dy === 112));
+      }
+      input = [];
+      await drag(p.x, p.y, initial.x - panned.x);
+      assert.deepEqual(await bounds(), initial);
+      assert.deepEqual(input, [], 'Escape restores watch-only panning');
+      await page.click('button[aria-label^="Fit height"]');
+      await page.click(control);
+      await page.waitForSelector(`${control}[aria-pressed="true"]`);
+      await page.screenshot({ path: path.join(evidence, `${width}-control.png`) });
+      await page.click(control);
+      await page.click(switcher);
+      await page.waitForFunction(() => document.activeElement?.textContent === 'Deployment status');
+      await page.screenshot({ path: path.join(evidence, `${width}-switcher.png`) });
+      await page.keyboard.press('Escape');
+      await page.waitForSelector(`${switcher}[aria-expanded="false"]`);
+
       const frameUrl = await page.$eval(image, img => img.src);
       const attached = connections;
       const original = latestSocket;
+
+      // Hold input through an idle reconnect. Even if the socket is congested,
+      // its final discrete releases should be sent before the old peer closes.
+      input = [];
+      await page.evaluate(() => { window.streamInputBackpressure = true; });
+      await page.focus(control);
+      await page.keyboard.press('Enter');
+      await page.mouse.move(p.x, p.y);
+      await page.mouse.down();
+      await page.mouse.move(p.x + 30, p.y);
+      await page.keyboard.down('Shift');
 
       // Leave the socket open and silent. A transport close must not be what
       // drives this state. Advance only viewer timers, not request/paint clocks.
@@ -189,6 +324,13 @@ try {
       await page.waitForFunction(() => window.streamPendingTimers() > 0);
       assert.equal(connections, attached + 1);
       assert.notEqual(latestSocket, original);
+      await page.mouse.up();
+      await page.keyboard.up('Shift');
+      await page.evaluate(() => { window.streamInputBackpressure = false; });
+      await waitForInput(events => events.some(event => event.kind === 'key' && event.action === 'up'));
+      assert.deepEqual(input.map(({ kind, action }) => [kind, action]), [
+        ['pointer', 'down'], ['key', 'down'], ['pointer', 'up'], ['key', 'up'],
+      ]);
       assert.equal(await page.$eval(image, img => img.src), frameUrl, 'retain last frame during auto-retry');
       assert.ok(await page.$eval('button[aria-label="Reconnect"]', el => el.classList.contains('bg-surface-raised')));
       const advanceWithoutRetry = async () => {
@@ -212,6 +354,8 @@ try {
       assert.equal(new URL(page.url()).hash, '#/streams/' + id);
       await page.focus('button[aria-label="Back"]');
       await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Release readiness checklist, switch stream');
+      await page.keyboard.press('Tab');
       assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Reconnect');
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => [...document.querySelectorAll('main [aria-live="polite"]')].some(el => el.textContent === 'Waiting'));
@@ -228,11 +372,19 @@ try {
         await capture(label, scenario);
       }
 
+      await page.focus(switcher.replace('Release readiness checklist', 'Shared tab'));
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.activeElement?.textContent === 'Deployment status');
+      assert.deepEqual(await page.$$eval('[role=menuitem]', rows => rows.map(row => row.textContent)), ['Deployment status']);
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(id => location.hash === '#/streams/' + id, {}, otherId);
+      await page.waitForSelector('button[aria-label="Deployment status, switch stream"]');
+
       assert.equal(statuses.get('metadata'), prefix + stream);
       assert.equal(statuses.get('ticket'), prefix + '/api/v1/me/ws-ticket');
       assert.equal(statuses.get('view'), prefix + stream + '/view');
       assert.deepEqual(failures, []);
-      console.log(`PASS ${width}×${height}: viewer states, one idle reconnect, frame recovery, keyboard reconnect and blob URL cleanup`);
+      console.log(`PASS ${width}×${height}: viewer states, one idle reconnect, frame recovery, keyboard reconnect, blob URL cleanup, Control input and stream switching`);
     } catch (error) {
       console.error({ failures, badResponses, consoleErrors, body: (await page.$eval('body', el => el.innerText)).slice(0, 700) });
       throw error;

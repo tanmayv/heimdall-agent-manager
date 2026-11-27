@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createFrameAssembler } from '../src/ui/components/streams/streamFrames.ts';
 import { clampPan, fitFrame, toggleFit } from '../src/ui/components/streams/streamViewport.ts';
 import { streamFailure } from '../src/ui/components/streams/useStreamViewer.ts';
+import { createStreamInputPacer, isContinuousInput, type StreamInputEvent } from '../src/ui/components/streams/streamInput.ts';
 import { resolveShellRoute } from '../src/ui/components/shell/shellRouting.ts';
 
 const id = '0123456789abcdef0123456789abcdef';
@@ -82,4 +83,59 @@ test('switching either fit mode recenters instead of carrying over the previous 
   assert.deepEqual(next, { mode: 'fit-height', pan: { x: 0, y: 0 } });
   const moved = { ...next, pan: { x: -250, y: 0 } };
   assert.deepEqual(toggleFit(moved.mode), { mode: 'fit-width', pan: { x: 0, y: 0 } });
+});
+
+test('120 Hz hover and wheel traffic leave room for clicks and keys in Hub rolling admission', () => {
+  let now = 0;
+  const timers = new Map<ReturnType<typeof setTimeout>, { fire: () => void; at: number }>();
+  let timerId = 0;
+  const buckets = new Map<number, number>();
+  const accepted: StreamInputEvent[] = [];
+  const pacer = createStreamInputPacer(batch => {
+    const index = Math.floor(now / 100);
+    const live = [...buckets].filter(([bucket]) => index - bucket < 11);
+    const total = live.reduce((count, [, value]) => count + value, 0);
+    assert.ok(total + batch.length <= 60, 'Hub would reject the entire batch');
+    buckets.set(index, (buckets.get(index) ?? 0) + batch.length);
+    accepted.push(...batch);
+  }, () => now, (fire, delay) => {
+    const id = ++timerId as unknown as ReturnType<typeof setTimeout>;
+    timers.set(id, { fire, at: now + delay });
+    return id;
+  }, id => { timers.delete(id); });
+  function advance(until: number) {
+    for (;;) {
+      const next = [...timers].sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next || next[1].at > until) break;
+      const [id, { fire, at }] = next;
+      timers.delete(id);
+      now = at;
+      fire();
+    }
+    now = until;
+  }
+  const move = (x: number, buttons: number): StreamInputEvent =>
+    ({ kind: 'pointer', action: 'move', x, y: 0.5, button: -1, buttons });
+  const down: StreamInputEvent = { kind: 'pointer', action: 'down', x: 0.5, y: 0.5, button: 0, buttons: 1 };
+  const up: StreamInputEvent = { ...down, action: 'up', buttons: 0 };
+  const key: StreamInputEvent = { kind: 'key', action: 'down', key: 'a', code: 'KeyA', modifiers: 0 };
+  for (let i = 0; i < 300; i++) {
+    advance(i * 1000 / 120);
+    if (i < 150) pacer.push(move(i / 300, 0));
+    else pacer.push({ kind: 'wheel', x: 0.5, y: 0.5, dx: 0, dy: 1 });
+    if (i === 125 || i === 275) {
+      pacer.push(down);
+      pacer.push(move(0.75, 1));
+      pacer.push(up);
+      pacer.push(key);
+      pacer.push({ ...key, action: 'up' });
+    }
+  }
+  advance(2600);
+  const discrete = accepted.filter(event => !isContinuousInput(event));
+  assert.deepEqual(discrete, [down, up, key, { ...key, action: 'up' }, down, up, key, { ...key, action: 'up' }]);
+  assert.equal(accepted.filter(e => e.kind === 'wheel').reduce((sum, e) => sum + e.dy, 0), 150);
+  assert.ok(accepted.filter(isContinuousInput).length < 60, 'continuous traffic is paced');
+  const firstDown = accepted.indexOf(down);
+  assert.deepEqual(accepted.slice(firstDown, firstDown + 3), [down, move(0.75, 1), up]);
 });

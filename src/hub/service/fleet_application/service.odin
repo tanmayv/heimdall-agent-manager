@@ -316,7 +316,7 @@ target_apply_phase :: proc(t: ^domain.Fleet_Application_Target, op: domain.Insta
 		fail(t,op.failure_code,op.failure_message,op.failure_code!="force_stopping")
 	case .Failed:
 		fail(t,op.failure_code,op.failure_message,false)
-	case .Prepared, .Stopping, .Source_Stopped, .Launching:
+	case .Prepared, .Stopping, .Source_Stopped, .Launching, .Waiting_For_Idle:
 		set_text(&t.state,"restarting"); set_text(&t.error_code,""); set_text(&t.error_message,""); t.retryable=false
 	}
 }

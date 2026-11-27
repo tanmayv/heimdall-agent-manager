@@ -41,15 +41,15 @@ test_streaming_terminal_pane_is_default_on :: proc(t: ^testing.T) {
 test_experiment_list_includes_unset_default_on_flags :: proc(t: ^testing.T) {
 	empty := experiment_list_json({})
 	defer delete(empty)
-	testing.expect_value(t, empty, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":true,"updated_at":""}]}`)
+	testing.expect_value(t, empty, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":true,"updated_at":""},{"key":"agent_settings_panel","enabled":true,"updated_at":""}]}`)
 
 	stored := []domain.Experiment{{key = "lsp", enabled = true, updated_at = "t1"}}
 	with_other := experiment_list_json(stored)
 	defer delete(with_other)
-	testing.expect_value(t, with_other, `{"ok":true,"experiments":[{"key":"lsp","enabled":true,"updated_at":"t1"},{"key":"streaming_terminal_pane","enabled":true,"updated_at":""}]}`)
+	testing.expect_value(t, with_other, `{"ok":true,"experiments":[{"key":"lsp","enabled":true,"updated_at":"t1"},{"key":"streaming_terminal_pane","enabled":true,"updated_at":""},{"key":"agent_settings_panel","enabled":true,"updated_at":""}]}`)
 
 	off := []domain.Experiment{{key = domain.STREAMING_TERMINAL_PANE_EXPERIMENT_KEY, enabled = false, updated_at = "t2"}}
 	explicit := experiment_list_json(off)
 	defer delete(explicit)
-	testing.expect_value(t, explicit, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":false,"updated_at":"t2"}]}`)
+	testing.expect_value(t, explicit, `{"ok":true,"experiments":[{"key":"streaming_terminal_pane","enabled":false,"updated_at":"t2"},{"key":"agent_settings_panel","enabled":true,"updated_at":""}]}`)
 }

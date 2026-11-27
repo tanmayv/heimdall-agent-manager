@@ -7,6 +7,9 @@ package taskchain
 // `complete` for completion, valid transitions, lease-holder self-edit) stay.
 
 import "core:testing"
+import "core:mem/virtual"
+import agent "odin_test:hub/service/agent"
+import project "odin_test:hub/service/project"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -258,7 +261,12 @@ test_cross_chain_publication_metadata_fleet_and_advertisement :: proc(t: ^testin
 	testing.expect_value(t,persisted.title,"Renamed across chains")
 	testing.expect(t,!is_chain_coordinator(&fx.svc,persisted,"inst_outsider"),"outsider remains noncoordinator")
 
-	dir,added,direrr:=add_chain_directory(&fx.svc,outsider,Add_Directory_Input{chain_id=chain.chain_id,path="/isolated/repo"})
+	bridge_repo_impl: sqlite.Bridge_Repo_SQLite
+	bridge_repo := sqlite.new_bridge_repository(&bridge_repo_impl, &fx.conn)
+	as := agent.Agent_Service{bridges = &bridge_repo}
+	fx.svc.agent_service = &as
+	_, _, _ = iface.bridge_save_bridge(&bridge_repo, domain.Bridge{bridge_id = "br_authz", owner_user_id = AZ_OWNER, status = .Online})
+	dir,added,direrr:=add_chain_directory(&fx.svc,outsider,Add_Directory_Input{chain_id=chain.chain_id,path="/isolated/repo",bridge_id="br_authz"})
 	if testing.expect(t,added,direrr.message) {
 		moved,mok,merr:=update_chain_directory(&fx.svc,outsider,Update_Directory_Input{chain_id=chain.chain_id,directory_id=dir.directory_id,path="/isolated/renamed",has_path=true})
 		testing.expect(t,mok && moved.path=="/isolated/renamed",merr.message)
@@ -321,4 +329,59 @@ test_cross_chain_invalid_actors_leave_metadata_publication_and_fleet_unchanged :
 	dirs,_:=iface.taskchain_list_directories_by_chain(&fx.repo,chain.chain_id,chain.owner_user_id)
 	testing.expect(t,persisted.title==chain.title && persisted.publish_state==.Draft && persisted.work_revision==chain.work_revision,"denials preserve chain")
 	testing.expect(t,draft.publish_state==.Draft && len(fleets)==0 && len(dirs)==0,"denials preserve draft and referenced resources")
+}
+
+
+@(test)
+test_directory_default_preflight_uses_coordinator_bridge :: proc(t: ^testing.T) {
+	scratch: virtual.Arena
+	if !testing.expect(t, virtual.arena_init_growing(&scratch) == nil, "initialize fixture arena") do return
+	defer virtual.arena_destroy(&scratch)
+	context.allocator = virtual.arena_allocator(&scratch)
+	fx: Az_Fx
+	if !az_make(&fx, t, "directory_default") do return
+	defer az_free(&fx)
+	chain := az_chain(&fx, "chain_authz", .Draft)
+	chain.coordinator_agent_instance_id = "inst_directory_coord"
+	_, _, _ = iface.taskchain_save_chain(&fx.repo, chain)
+	bridge_repo_impl: sqlite.Bridge_Repo_SQLite
+	bridge_repo := sqlite.new_bridge_repository(&bridge_repo_impl, &fx.conn)
+	as := agent.Agent_Service{bridges = &bridge_repo}
+	fx.svc.agent_service = &as
+	for id in ([]string{"br_author", "br_coordinator"}) do _, _, _ = iface.bridge_save_bridge(&bridge_repo, domain.Bridge{bridge_id = id, owner_user_id = AZ_OWNER, status = .Online})
+	coord, _, _ := iface.agent_get_instance(&fx.agents, "inst_coord")
+	coord.agent_instance_id = "inst_directory_coord"
+	coord.bridge_id = "br_coordinator"
+	_, _, _ = iface.agent_save_instance(&fx.agents, coord)
+	author, _, _ := iface.agent_get_instance(&fx.agents, "inst_outsider")
+	author.agent_instance_id = "inst_directory_author"
+	author.bridge_id = "br_author"
+	_, _, _ = iface.agent_save_instance(&fx.agents, author)
+	seen: project.Validate_Project_Path_Command
+	fx.svc.bridge_command_sink = {ctx = &seen, validate_project_path = proc(ctx: rawptr, command: project.Validate_Project_Path_Command) -> (project.Project_Path_Validation_Result, bool, domain.Domain_Error) {
+		(^project.Validate_Project_Path_Command)(ctx)^ = command
+		return {ok = command.path == "/valid", validation_error = "Path does not exist"}, true, {}
+	}}
+	auth := az_instance("inst_directory_author")
+	dir, added, err := add_chain_directory(&fx.svc, auth, {chain_id = chain.chain_id, path = "/valid", vcs_kind = "git"})
+	testing.expect(t, added && dir.bridge_id == "br_coordinator", err.message)
+	testing.expect(t, seen.bridge_id == "br_coordinator" && seen.path == "/valid" && seen.vcs_kind == "git", "preflight validates the coordinator's path")
+	_, invalid_added, invalid_err := add_chain_directory(&fx.svc, auth, {chain_id = chain.chain_id, path = "/missing"})
+	testing.expect(t, !invalid_added && invalid_err.code == .Validation_Failed, "invalid workspace rejected")
+	dirs, _ := iface.taskchain_list_directories_by_chain(&fx.repo, chain.chain_id, AZ_OWNER)
+	testing.expect_value(t, len(dirs), 1)
+	legacy := domain.Task_Chain_Directory{directory_id = "dir_legacy", chain_id = chain.chain_id, owner_user_id = AZ_OWNER, path = "/missing", vcs_kind = "git"}
+	_, _, _ = iface.taskchain_save_directory(&fx.repo, legacy)
+	input := Update_Directory_Input{chain_id = chain.chain_id, directory_id = legacy.directory_id, bridge_id = "br_author", has_bridge_id = true, require_unmapped = true}
+	_, rejected, rejected_err := update_chain_directory(&fx.svc, auth, input)
+	testing.expect(t, !rejected && rejected_err.code == .Validation_Failed, "repair cannot bypass path validation")
+	still_unmapped, _, _ := iface.taskchain_get_directory(&fx.repo, legacy.directory_id, chain.chain_id, AZ_OWNER)
+	testing.expect_value(t, still_unmapped.bridge_id, "")
+	legacy.path = "/valid"
+	_, _, _ = iface.taskchain_save_directory(&fx.repo, legacy)
+	repaired, repaired_ok, repaired_err := update_chain_directory(&fx.svc, auth, input)
+	testing.expect(t, repaired_ok && repaired.bridge_id == "br_author", repaired_err.message)
+	input.bridge_id = "br_coordinator"
+	_, stale_ok, stale_err := update_chain_directory(&fx.svc, auth, input)
+	testing.expect(t, !stale_ok && stale_err.code == .Conflict, "stale card cannot move an already mapped workspace")
 }

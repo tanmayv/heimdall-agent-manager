@@ -853,10 +853,12 @@ function stated(payload: any, key: string): string | undefined {
 // COMPLETE instance summary (publish_instance_changed, resource_events.odin). Fields
 // present in it are patched in place, guarded by updated_at so a late frame never
 // overwrites a newer fetch. Patched fields are the ones the summary owns; anything else
-// on the cached row (project, agent, timestamps the summary lacks) is left as fetched.
+// on the cached row (agent, project_path, timestamps the summary lacks) is left as fetched.
+// effective_permission_mode is omitted by producers that lack the agent's mode.
 const INSTANCE_SUMMARY_FIELDS = [
   'runtime_status', 'startup_status', 'activity_status', 'display_name', 'bridge_id',
-  'provider', 'model', 'runtime_transport', 'launch_epoch', 'configuration_revision', 'run_count', 'started_at',
+  'provider', 'model', 'runtime_transport', 'runtime_transport_override', 'project_id', 'provider_profile',
+  'permission_mode', 'effective_permission_mode', 'launch_epoch', 'configuration_revision', 'run_count', 'started_at',
   'current_task_id', 'current_task_role', 'chain_id', 'updated_at', 'stop_reason',
 ] as const;
 

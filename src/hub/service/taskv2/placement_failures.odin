@@ -43,7 +43,10 @@ placement_problem :: proc(svc: ^Service, ctx: ^Match_Context, placement: Placeme
 			return "bridge_ineligible", "agent is disabled on the placement bridge"
 		}
 	}
-	if len(ctx.dirs) > 0 && placement.directory_id == "" do return "workspace_missing", "no chain workspace is mapped on the placement bridge"
+	if len(ctx.dirs) > 0 && placement.directory_id == "" {
+		if _, count := unmapped_workspace(ctx.dirs); count > 1 do return "workspace_missing", "more than one workspace is unmapped; choose a workspace to map explicitly"
+		return "workspace_missing", "no chain workspace is mapped on the placement bridge"
+	}
 	if placement.runtime_error.code != .None do return "provider_ineligible", placement.runtime_error.message
 	if svc.agent_service != nil && svc.agent_service.providers != nil {
 		provider, model := resolve_launch_model(svc.agent_service, placement.bridge_id, placement.provider, placement.model, placement.provider_profile)
@@ -109,6 +112,16 @@ append_placement_failure :: proc(out: ^[dynamic]Placement_Failure, ctx: ^Match_C
 		if d.directory_id != placement.directory_id do continue
 		json_str(&c, "directory_path", d.path)
 		json_str(&c, "directory_updated_at", d.updated_at)
+	}
+	if reason == "workspace_missing" {
+		d, count := unmapped_workspace(ctx.dirs)
+		json_int(&c, "unmapped_count", i64(count))
+		if count == 1 {
+			json_str(&c, "unmapped_directory_id", d.directory_id)
+			json_str(&c, "unmapped_path", d.path)
+			json_str(&c, "unmapped_vcs", d.vcs_kind)
+			json_str(&c, "unmapped_updated_at", d.updated_at)
+		}
 	}
 	f := Placement_Failure{
 		phase = phase, agent_id = fleet.agent_id,
@@ -240,8 +253,8 @@ reconcile_placement_for_task_in_uow :: proc(svc: ^Service, u: ^Uow, chain: domai
 	return reconcile_task_placement_in_uow(svc, u, &ctx, task, nil, false)
 }
 
-@(private = "file")
-reconcile_task_placement_in_uow :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, grant_failures: []Grant_Placement_Failure, matcher_pass: bool) -> (bool, domain.Domain_Error) {
+@(private = "package")
+reconcile_task_placement_in_uow :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Context, task: domain.Task, grant_failures: []Grant_Placement_Failure, matcher_pass: bool, workspace_message := "") -> (bool, domain.Domain_Error) {
 	{
 		failures, perr := collect_placement_failures(svc, ctx, task)
 		if perr.code != .None do return false, perr
@@ -251,6 +264,26 @@ reconcile_task_placement_in_uow :: proc(svc: ^Service, u: ^Uow, ctx: ^Match_Cont
 		exists := false
 		for f in facets {
 			if f.attempt_no == task.attempt_no && f.kind == FACET_PLACEMENT { old = f; exists = true; break }
+		}
+		// Keep the last preflight error until another reply or a different
+		// workspace/placement invalidates it. Routine matches do not validate.
+		saved_workspace_failures: []Placement_Failure
+		if exists do saved_workspace_failures = placement_saved_failures(old.body_json)
+		for &failure in failures {
+			if failure.phase != "work" || failure.reason != "workspace_missing" do continue
+			message := workspace_message
+			if message == "" {
+				for previous in saved_workspace_failures {
+					if previous.reason == failure.reason && previous.configuration == failure.configuration {
+						message = previous.message
+						break
+					}
+				}
+			}
+			if message != "" && message != failure.message {
+				failure.message = message
+				failure.fingerprint = placement_hash(placement_failure_json(failure, false))
+			}
 		}
 		// Grant errors are known only after attempting start_begin. Merge them
 		// into this pass's normal diagnostics; a later pass recomputes afresh.
@@ -329,13 +362,17 @@ placement_target_queued :: proc(svc: ^Service, ctx: ^Match_Context, fleet: domai
 }
 
 // Parsed strings live only through this reconciliation's scratch scope.
-placement_saved_grant_failures :: proc(body:string)->[]Placement_Failure {
- context.allocator=context.temp_allocator
- raw,found:=jsonx.extract_raw_array(body,"failures",true)
- if !found do return nil
- entries:[]Placement_Failure
- if json.unmarshal_string(raw,&entries)!=nil do return nil
- out:=make([dynamic]Placement_Failure,context.temp_allocator)
- for entry in entries do if entry.source=="grant" do append(&out,entry)
- return out[:]
+placement_saved_failures :: proc(body: string) -> []Placement_Failure {
+	context.allocator = context.temp_allocator
+	raw, found := jsonx.extract_raw_array(body, "failures", true)
+	if !found do return nil
+	entries: []Placement_Failure
+	if json.unmarshal_string(raw, &entries) != nil do return nil
+	return entries
+}
+
+placement_saved_grant_failures :: proc(body: string) -> []Placement_Failure {
+	out := make([dynamic]Placement_Failure, context.temp_allocator)
+	for entry in placement_saved_failures(body) do if entry.source == "grant" do append(&out, entry)
+	return out[:]
 }

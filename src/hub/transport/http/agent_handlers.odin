@@ -277,7 +277,10 @@ create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 agent_instance_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Users and bridge-relayed instance tokens (ham-ctl reconfigure reads the
+	// current configuration). get_instance -> require_owner keeps the same-owner
+	// boundary: another owner's instance token gets Not_Found.
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	instance_id := path_part(req.path, 4)
 	if strings.contains(instance_id, "/") do return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
@@ -451,6 +454,9 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, "\",\"provider\":\""); write_handler_json_string(b, inst.provider)
 	strings.write_string(b, "\",\"provider_profile\":\""); write_handler_json_string(b, domain.profile_effective_id(inst.provider,inst.provider_profile))
 	strings.write_string(b,"\",\"runtime_transport\":\"");write_handler_json_string(b,contracts.runtime_transport_or_pty(inst.runtime_transport))
+	// runtime_transport_override: this instance's explicit choice ("" follows the
+	// bridge-provider setting, then the catalog default).
+	strings.write_string(b,"\",\"runtime_transport_override\":\"");write_handler_json_string(b,domain.runtime_transport_override_normalize(inst.runtime_transport_override))
 	strings.write_string(b,"\",\"launch_epoch\":\"");write_handler_json_string(b,inst.launch_epoch)
 	strings.write_string(b, "\",\"model\":\""); write_handler_json_string(b, inst.model)
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, string(inst.project_id))
