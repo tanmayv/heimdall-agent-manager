@@ -219,7 +219,8 @@ start_send_failure_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect(t,!ok)
 	testing.expect_value(t,err.code,domain.Error_Code.Bridge_Offline)
 	inst:=start_test_row(t,h)
-	testing.expect_value(t,inst.runtime_status,"failed")
+	testing.expect_value(t,inst.runtime_status,"launching")
+	testing.expect_value(t,inst.stopped_at,"")
 	testing.expect_value(t,inst.run_count,4)
 	testing.expect_value(t,h.registry.active_instances,0)
 }
@@ -389,7 +390,7 @@ test_start_refusals_write_nothing :: proc(t:^testing.T) { start_test_run(t,start
 test_start_restart_refused_keeps_user_stop :: proc(t:^testing.T) { start_test_run(t,start_restart_refused_scenario) }
 
 @(test)
-test_start_send_failure_marks_failed :: proc(t:^testing.T) { start_test_run(t,start_send_failure_scenario) }
+test_start_send_failure_preserves_unconfirmed_runtime :: proc(t:^testing.T) { start_test_run(t,start_send_failure_scenario) }
 
 @(test)
 test_start_begin_in_open_unit_of_work :: proc(t:^testing.T) { start_test_run(t,start_uow_scenario) }
@@ -654,8 +655,8 @@ start_reconfigure_settle_scenario :: proc(t:^testing.T,h:^Start_Test) {
 		testing.expect(t,!ok)
 		testing.expect_value(t,err.code,domain.Error_Code.Bridge_Busy if name=="fail_busy" else domain.Error_Code.Conflict)
 		after:=start_test_row(t,h)
-		testing.expect_value(t,after.runtime_status,"failed")
-		testing.expect_value(t,after.startup_status,"failed")
+		testing.expect_value(t,after.runtime_status,"launching")
+		testing.expect_value(t,after.startup_status,"starting")
 		testing.expect_value(t,after.run_count,before.run_count+1)
 		testing.expect_value(t,h.registry.active_instances,0)
 		testing.expect_value(t,len(h.commands),0)
@@ -761,7 +762,7 @@ start_rollover_failed_send_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect(t,!ok)
 	testing.expect_value(t,err.code,domain.Error_Code.Bridge_Offline)
 	testing.expect_value(t,start_test_row(t,h).run_count,4)
-	testing.expect_value(t,start_test_row(t,h).runtime_status,"failed")
+	testing.expect_value(t,start_test_row(t,h).runtime_status,"launching")
 	testing.expect_value(t,h.registry.active_instances,0)
 	h.fail_send=false
 	_, again, retry_err := restart_instance(&h.service,auth,"inst",{expected_run_count=3})
@@ -819,6 +820,29 @@ start_rollover_before_reconfiguration_scenario :: proc(t:^testing.T,h:^Start_Tes
 test_rollover_duplicate_restart_has_one_generation :: proc(t:^testing.T) {start_test_run(t,start_rollover_duplicate_scenario)}
 @(test)
 test_rollover_failed_restart_releases_reservation :: proc(t:^testing.T) {start_test_run(t,start_rollover_failed_send_scenario)}
+
+start_ready_before_send_error_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
+	ticket, err := start_begin(&h.service, start_test_auth(), "inst", {})
+	if !testing.expect_value(t, err.code, domain.Error_Code.None) do return
+	defer start_ticket_destroy(&ticket)
+	saved, applied, report_err := apply_bridge_status_report(&h.service, "brg", "inst", 1, "running", "idle", launch_epoch = ticket.instance.launch_epoch)
+	if !testing.expect(t, applied, report_err.message) do return
+	defer domain.agent_instance_destroy(&saved)
+
+	start_settle(&h.service, &ticket, false)
+
+	current := start_test_row(t, h)
+	defer domain.agent_instance_destroy(&current)
+	testing.expect_value(t, current.runtime_status, "running")
+	testing.expect_value(t, current.startup_status, "ready")
+	testing.expect_value(t, current.last_applied_seq, 1)
+	testing.expect_value(t, current.stopped_at, "")
+}
+
+@(test)
+test_start_send_error_cannot_overwrite_ready_report :: proc(t: ^testing.T) {
+	start_test_run(t, start_ready_before_send_error_scenario)
+}
 @(test)
 test_reconfiguration_before_rollover_preserves_destination :: proc(t:^testing.T) {start_test_run(t,start_rollover_reconfiguration_scenario)}
 @(test)

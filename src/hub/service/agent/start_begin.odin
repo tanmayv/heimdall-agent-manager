@@ -198,20 +198,11 @@ start_cancel :: proc(service: ^Agent_Service, t: ^Start_Ticket) {
 	t.reserved = false
 }
 
-start_fail :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_Error {
-	defer start_cancel(service, t)
-	failed := t.instance
-	failed.runtime_status = "failed"
-	failed.startup_status = "failed"
-	failed.stopped_at = platform.clock_now(service.clock)
-	saved, ok, err := iface.agent_save_instance_guarded(service.agents, failed, t.instance.run_count, t.instance.launch_epoch, t.instance.configuration_revision)
-	if ok do log_runtime_terminal_transition(saved, t.instance.runtime_status, "start_fail", "launch_dispatch_failed")
-	return err
-}
-
 start_settle :: proc(service: ^Agent_Service, t: ^Start_Ticket, sent: bool) {
 	if t.kept_live || t.reused do return
-	if !sent { _ = start_fail(service, t) } else { t.reserved = false }
+	// A send error does not prove the Bridge missed the request or that its
+	// child exited. Don't overwrite status, including a concurrent ready report.
+	if !sent { start_cancel(service, t) } else { t.reserved = false }
 }
 
 start_send :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_Error {
@@ -225,7 +216,7 @@ start_send :: proc(service: ^Agent_Service, t: ^Start_Ticket) -> domain.Domain_E
 		delete(body)
 	}
 	if !sent {
-		if save_err := start_fail(service, t); save_err.code != .None do return save_err
+		start_settle(service, t, false)
 		return err
 	}
 	t.reserved = false // The registry holds it until status/expiry; the ticket is settled.
