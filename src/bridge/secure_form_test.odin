@@ -463,3 +463,14 @@ test_secure_form_pinned_device_proof_is_required :: proc(t: ^testing.T) {
 	testing.expect(t, !secure_form_verify_device(TEST_VAULT_USER_ID, bridge, digest, a, string(proof_bytes)))
 	testing.expect(t, !secure_form_device_fence_live(TEST_VAULT_USER_ID, bridge, a))
 }
+
+@(test)
+test_secure_form_owner_link_requires_registration_ack :: proc(t: ^testing.T) {
+	id :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	hub :: "https://hub.example.test/ninjy/"
+	waiter := Secure_Form_Waiter_State{}
+	waiter.binding.request_id = id
+	testing.expect_value(t, secure_form_owner_link(hub, waiter), "")
+	waiter.registered = true
+	testing.expect_value(t, secure_form_owner_link(hub, waiter), "https://hub.example.test:443/ninjy/#/secure-forms/" + id)
+}

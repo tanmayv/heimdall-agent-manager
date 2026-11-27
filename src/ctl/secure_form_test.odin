@@ -46,3 +46,16 @@ test_secure_form_cli_encodes_only_method_params :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+@(test)
+test_secure_form_owner_link_has_no_private_reply_fields :: proc(t: ^testing.T) {
+	id :: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	link :: "https://hub.example.test/prefix/#/secure-forms/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	reply := Secure_Form_CLI_Reply{request_id = id, poll_token = "private-poll", stdout_b64 = "private-output"}
+	testing.expect_value(t, ctl_secure_form_owner_link_line(reply, id), "")
+	reply.owner_link = link
+	testing.expect_value(t, ctl_secure_form_owner_link_line(reply, id), "secure-form owner link: " + link)
+	testing.expect_value(t, ctl_secure_form_owner_link_line(reply, "different-id"), "")
+	reply.owner_link = "https://user:password@hub.example.test/#/secure-forms/" + id
+	testing.expect_value(t, ctl_secure_form_owner_link_line(reply, id), "")
+}

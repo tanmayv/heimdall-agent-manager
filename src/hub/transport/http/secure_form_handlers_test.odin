@@ -209,6 +209,13 @@ test_secure_form_http_routes_never_publish_or_store_answer :: proc(t: ^testing.T
 	baseline := secure_form_sql_changes(&conn)
 	testing.expect(t, baseline >= 0)
 	check_status(t, router_dispatch(&router, secure_form_test_request("GET", path, "", "", other, "")), 404, ciphertext)
+	for no_session, index in ([2]string{"GET", "POST"}) {
+		target := path if index == 0 else strings.concatenate({path, "/submit"})
+		anonymous := router_dispatch(&router, secure_form_test_request(no_session, target, "", string(submission), "", origin))
+		check_status(t, anonymous, 401, ciphertext)
+		testing.expect(t, !strings.contains(anonymous.body, signed.request_id))
+	}
+
 	list := router_dispatch(&router, secure_form_test_request("GET", contracts.SECURE_FORM_API_PATH, "conversation_id=chat_alice", "", other, ""))
 	check_status(t, list, 200, ciphertext)
 	testing.expect(t, !strings.contains(list.body, signed.request_id))

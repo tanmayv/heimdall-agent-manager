@@ -109,6 +109,7 @@ const TaskChainsPage = lazy(() => import('../taskchain/TaskChainsPage'));
 const BotChatPage = lazy(() => import('../bots/BotChatPage'));
 const NewConversationPage = lazy(() => import('../chat/NewConversationPage'));
 const DeviceApprovalPage = lazy(() => import('../devices/DeviceApprovalPage'));
+const SecureFormLinkPage = lazy(() => import('../chat/SecureForm').then((module) => ({ default: module.SecureFormLinkPage })));
 const StreamViewerPage = lazy(() => import('../streams/StreamViewerPage'));
 const SetupWizardPage = lazy(() => import('../setup/SetupWizardPage'));
 const McpConsentPage = lazy(() => import('../devices/McpConsentPage'));
@@ -1930,6 +1931,17 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
   // Keep navigation, command palette, and vault onboarding
   // out of this route so the operator sees only the machine asking for access and the
   // decision in front of them.
+  if (path.startsWith('/secure-forms/')) {
+    const requestId = path.slice('/secure-forms/'.length);
+    return (
+      <main className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-auto bg-canvas text-primary">
+        <Suspense fallback={<span role="status">Loading secure request…</span>}>
+          <SecureFormLinkPage requestId={requestId} />
+        </Suspense>
+      </main>
+    );
+  }
+
   if (path.startsWith('/streams/')) {
     const streamId = path.slice('/streams/'.length);
     return (

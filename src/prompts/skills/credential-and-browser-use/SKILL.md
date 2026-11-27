@@ -62,6 +62,8 @@ ham-ctl secure-form run --form form.json --script /absolute/path/login.sh \
   --timeout 180 --execution-timeout 60
 ```
 
+As soon as the command prints the owner link, post it in chat with one line explaining what the form is for. The link requires the owner’s Hub session and is not a bearer token. Share only the link and context, never form values or raw command output.
+
 The Bridge runs `bash <script>` in its parent directory with the agent's usual
 environment, supplying one versioned JSON object on private stdin. Do not put
 values in files, environment, arguments or diagnostics. Never enable tracing or
