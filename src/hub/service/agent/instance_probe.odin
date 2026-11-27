@@ -77,9 +77,9 @@ probe_instance :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> 
 	command, err := json.marshal(struct {type, command_id, agent_instance_id: string}{"instance.probe", id, inst.agent_instance_id})
 	if err != nil do return {}, .invalid_probe
 	defer delete(command)
-	reply, got, err := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = id, body_json = string(command)}, 3000)
+	reply, got, wait_err := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = id, body_json = string(command)}, 3000)
 	defer delete(reply)
-	if !got do return {}, .probe_timed_out if err.code == .Bridge_Timeout else .bridge_unavailable
+	if !got do return {}, .probe_timed_out if wait_err.code == .Bridge_Timeout else .bridge_unavailable
 	observation := parse_instance_probe(reply, id, inst.agent_instance_id, inst.run_count, inst.launch_epoch)
 	switch observation.state {
 	case .Unknown: return observation, .stale_process_generation if observation.pid > 0 else .invalid_probe
