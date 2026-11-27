@@ -56,6 +56,8 @@ Service :: struct {
 	// once touch_async is set (start_timer_thread); otherwise touches are
 	// written inline (unit tests).
 	pending_touches:     map[string]struct{},
+	// Instance IDs whose reported terminal state needs PTY-host evidence.
+	pending_terminal_probes: map[string]struct{},
 	touch_async:         bool,
 	// merges_inflight: task ids whose merge-back job is running (sent, reply
 	// not yet recorded); guarded by state_mutex, keys heap-owned (merge.odin).

@@ -19,7 +19,7 @@ Instance_Probe :: struct {
 }
 
 Agent_Liveness_State :: enum {Unknown, Alive, Exited}
-Agent_Liveness_Reason :: enum {bridge_unavailable, invalid_probe, missing_from_pty_roster, pty_child_alive, pty_child_exited}
+Agent_Liveness_Reason :: enum {bridge_unavailable, invalid_probe, stale_process_generation, missing_from_pty_roster, pty_child_alive, pty_child_exited}
 Agent_Liveness :: struct {
 	state: Agent_Liveness_State,
 	reason: Agent_Liveness_Reason,
@@ -41,7 +41,7 @@ AGENT_LIVENESS_CACHE_TTL :: 2 * time.Second
 // The cache is bounded and fenced by the durable generation and owning bridge.
 // runtime_status is deliberately not an input. A miss authorizes no state
 // mutation and may perform one bounded RPC, so call outside the UoW and reader.
-agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> Agent_Liveness {
+agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, force_probe := false) -> Agent_Liveness {
 	if service == nil do return {}
 	identity := fmt.tprintf("%q/%q/%q/%d", inst.bridge_id, inst.agent_instance_id, inst.launch_epoch, inst.run_count)
 	key: [32]byte
@@ -51,7 +51,7 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> 
 	sync.mutex_lock(&cache.mutex)
 	slot := cache.rows[index]
 	sync.mutex_unlock(&cache.mutex)
-	if slot.key == key && time.tick_since(slot.at) < AGENT_LIVENESS_CACHE_TTL do return slot.fact
+	if !force_probe && slot.key == key && time.tick_since(slot.at) < AGENT_LIVENESS_CACHE_TTL do return slot.fact
 
 	at := time.tick_now()
 	observation, reason := probe_instance(service, inst)
@@ -74,16 +74,15 @@ agent_liveness :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> 
 probe_instance :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> (Instance_Probe, Agent_Liveness_Reason) {
 	if service == nil || service.ids == nil || inst.bridge_id == "" || inst.agent_instance_id == "" do return {}, .bridge_unavailable
 	id := platform.generate_id(service.ids, "cmd_instance_probe_")
-	defer delete(id)
 	command, err := json.marshal(struct {type, command_id, agent_instance_id: string}{"instance.probe", id, inst.agent_instance_id})
 	if err != nil do return {}, .invalid_probe
 	defer delete(command)
 	reply, got, _ := project.bridge_command_send_runtime_wait(service.bridge_command_sink, {bridge_id = inst.bridge_id, command_id = id, body_json = string(command)}, 3000)
 	defer delete(reply)
 	if !got do return {}, .bridge_unavailable
-	observation := parse_instance_probe(reply, id, inst.agent_instance_id)
+	observation := parse_instance_probe(reply, id, inst.agent_instance_id, inst.run_count, inst.launch_epoch)
 	switch observation.state {
-	case .Unknown: return observation, .invalid_probe
+	case .Unknown: return observation, .stale_process_generation if observation.pid > 0 else .invalid_probe
 	case .Absent: return observation, .missing_from_pty_roster
 	case .Alive: return observation, .pty_child_alive
 	case .Exited: return observation, .pty_child_exited
@@ -91,7 +90,7 @@ probe_instance :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> 
 	return {}, .invalid_probe
 }
 
-parse_instance_probe :: proc(reply, command_id, instance_id: string) -> Instance_Probe {
+parse_instance_probe :: proc(reply, command_id, instance_id: string, expected_run_count := -1, expected_launch_epoch := "") -> Instance_Probe {
 	if !jsonx.extract_bool(reply, "ok", false, true) ||
 	   jsonx.extract_string(reply, "command_id", "", true, context.temp_allocator) != command_id {
 		return {}
@@ -100,7 +99,7 @@ parse_instance_probe :: proc(reply, command_id, instance_id: string) -> Instance
 	if !has_payload do return {}
 	result, has_result := jsonx.extract_raw_object(payload, "result", true, context.temp_allocator)
 	if !has_result do return {}
-	report: struct {agent_instance_id, state: string, pid: i32, exit_code: Maybe(i32)}
+	report: struct {agent_instance_id, state, launch_epoch: string, pid: i32, exit_code: Maybe(i32), run_count: Maybe(int)}
 	if json.unmarshal_string(result, &report, allocator = context.temp_allocator) != nil || report.agent_instance_id != instance_id do return {}
 	switch report.state {
 	case "absent":
@@ -108,7 +107,13 @@ parse_instance_probe :: proc(reply, command_id, instance_id: string) -> Instance
 	case "alive":
 		if report.pid > 0 do return {state = .Alive, pid = int(report.pid)}
 	case "exited":
-		if code, has_code := report.exit_code.?; report.pid > 0 && has_code do return {state = .Exited, pid = int(report.pid), exit_code = code}
+		if code, has_code := report.exit_code.?; report.pid > 0 && has_code {
+			if expected_run_count >= 0 {
+				count, present := report.run_count.?
+				if !present || count <= 0 || count != expected_run_count || report.launch_epoch != expected_launch_epoch do return {pid = int(report.pid)}
+			}
+			return {state = .Exited, pid = int(report.pid), exit_code = code}
+		}
 	}
 	return {}
 }

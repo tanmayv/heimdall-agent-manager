@@ -17,7 +17,7 @@ dispatch_failed_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease,
 // A confirmed holder that exits or loses its heartbeat is infrastructure loss
 // too. Only send-failure callbacks require an unconfirmed wake (a late error
 // must never revoke an already confirmed lease).
-agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, failure: string, unconfirmed_only := false) -> Expire_Result {
+agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Lease, failure: string, unconfirmed_only := false, confirmed_exit := false) -> Expire_Result {
 	if inst,found,_:=iface.agent_get_instance(svc.agents,lease.holder_instance_id);found {
 		if protected,_:=fleet_runtime_operation(svc,inst);protected do return .Gone
 	}
@@ -45,7 +45,7 @@ agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Leas
 		agent_id = inst.agent_id
 		// Only bridge absence: no failure report, error or user stop explains
 		// the loss. The bridge hello then answers this block and rematches.
-		if !bridge_online(svc, inst.bridge_id) && inst.runtime_status != "failed" && inst.stopped_by == "" && jsonx.extract_string(inst.last_error_json, "message", "", true, context.temp_allocator) == "" {
+		if !confirmed_exit && !bridge_online(svc, inst.bridge_id) && inst.runtime_status != "failed" && inst.stopped_by == "" && jsonx.extract_string(inst.last_error_json, "message", "", true, context.temp_allocator) == "" {
 			cause = "bridge_offline"
 		}
 		if provider == "" do provider = inst.provider
@@ -76,7 +76,7 @@ agent_not_running_in_uow :: proc(svc: ^Service, u: ^Uow, lease: domain.Task_Leas
 	json_raw(&p, "waiting_on", json_end(&waiting))
 	stop_holder := false
 	if inst, found, _ := iface.agent_get_instance(svc.agents, lease.holder_instance_id); found {
-		stop_holder = bridge_online(svc, inst.bridge_id) && (instance_is_live(inst) || instance_is_pending(inst))
+		stop_holder = !confirmed_exit && bridge_online(svc, inst.bridge_id) && (instance_is_live(inst) || instance_is_pending(inst))
 	}
 	if _, ok, _ := release_in_uow(svc, u, lease, hub_actor(), EV_BLOCKED, json_end(&p), "dispatch_failed", stop_holder); !ok do return .Failed
 	if lease.kind == domain.LEASE_KIND_WORK && !continuation {

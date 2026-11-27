@@ -8,6 +8,8 @@ Bridge_Instance_Probe_Result :: struct {
 	state: string,
 	pid: i32,
 	exit_code: Maybe(i32),
+	launch_epoch: string,
+	run_count: int,
 }
 
 // A failed request or a missing tombstone is not proof that an earlier
@@ -42,7 +44,12 @@ bridge_hub_handle_instance_probe :: proc(conn: ^ws.Connection, text: string) {
 	id := extract_json_string(text, "agent_instance_id", "")
 	defer delete(id)
 	if command_id == "" || id == "" do return
+	lifecycle := bridge_agent_lifecycle_enter(id)
 	probe := bridge_instance_probe(id)
+	probe.launch_epoch = bridge_agent_instance_launch_epoch(id)
+	probe.run_count = bridge_agent_instance_run_count(id)
+	bridge_agent_lifecycle_leave(lifecycle)
+	defer delete(probe.launch_epoch)
 	response := struct {
 		type, command_id: string,
 		protocol_version: int,

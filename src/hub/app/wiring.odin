@@ -194,7 +194,7 @@ task_engine_on_tasks_changed :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID
 }
 
 task_engine_on_instance_terminal :: proc(ctx: rawptr, instance_id: string) {
-	taskv2.on_instance_terminal((^taskv2.Service)(ctx), instance_id)
+	taskv2.queue_instance_terminal_probe((^taskv2.Service)(ctx), instance_id)
 }
 
 task_engine_on_instance_activity :: proc(ctx: rawptr, instance_id, activity_status: string) {

@@ -573,11 +573,47 @@ on_dep_added_in_uow :: proc(svc: ^Service, u: ^Uow, task: domain.Task, actor: Ac
 
 // ---- chokepoints ---------------------------------------------------------------------
 
-// on_instance_terminal is the ONE chokepoint for every instance-death path
-// (runtime status stopped|unreachable|failed, reaper, bridge disconnect, delete,
-// member removal): block(agent_not_running) → match_chain. Safe to call for an
-// instance holding nothing (no-op, no UoW).
-on_instance_terminal :: proc(svc: ^Service, instance_id: string) {
+// Status handlers can run on the Bridge reader that must receive the probe
+// reply. Queue a hint, not an exit, and coalesce repeated hints per holder.
+queue_instance_terminal_probe :: proc(svc: ^Service, instance_id: string) {
+	if svc == nil || svc.repo == nil || instance_id == "" do return
+	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); !held {
+		if inst, found, _ := iface.agent_get_instance(svc.agents, instance_id); found && instance_ownership_stop_pending(svc, inst) {
+			on_instance_terminal(svc, instance_id)
+		}
+		return
+	}
+	held := state_lock(svc)
+	defer state_unlock(svc, held)
+	heap := runtime.heap_allocator()
+	if svc.pending_terminal_probes == nil do svc.pending_terminal_probes = make(map[string]struct{}, heap)
+	if _, pending := svc.pending_terminal_probes[instance_id]; !pending {
+		svc.pending_terminal_probes[strings.clone(instance_id, heap)] = {}
+	}
+}
+
+drain_instance_terminal_probes :: proc(svc: ^Service) {
+	held := state_lock(svc)
+	pending := svc.pending_terminal_probes
+	svc.pending_terminal_probes = nil
+	state_unlock(svc, held)
+	defer delete(pending)
+	for id in pending {
+		defer delete(id, runtime.heap_allocator())
+		lease, leased, _ := iface.taskchain_get_lease_by_holder(svc.repo, id)
+		if !leased || lease.phase == domain.LEASE_PHASE_WAITING do continue
+		inst, found, err := iface.agent_get_instance(svc.agents, id)
+		if !found || err.code != .None do continue
+		// An exit hint invalidates a recently cached alive observation. A
+		// timeout, offline bridge or missing record does not authorize revocation.
+		if agent.agent_liveness(svc.agent_service, inst, force_probe = true).state != .Exited do continue
+		on_instance_terminal(svc, id, &inst, lease.lease_id)
+	}
+}
+
+// Runtime callers provide an observed generation and lease. The legacy direct
+// entry is used for administrative removal, where there may be no instance row.
+on_instance_terminal :: proc(svc: ^Service, instance_id: string, observed: ^domain.Agent_Instance = nil, observed_lease_id := "") {
 	if svc == nil || svc.repo == nil || instance_id == "" do return
 	scratch: Scratch
 	context.allocator = scratch_begin(&scratch)
@@ -586,20 +622,16 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string) {
 		if stop_u,started,_:=begin_uow(svc);started {reconcile_ownership_stops_in_uow(svc,&stop_u,inst);_,_=end_uow(svc,&stop_u,true)}
 	}
 	if _, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); !held do return
-	// Bridge ABSENCE is not instance death (review B2): an instance marked
-	// `unreachable` because its bridge disconnected keeps its claim. Bridge
-	// reconciliation reports real deaths as not-active (through this hook
-	// with the bridge online). stopped|failed always block at once.
-	if inst, iok, _ := iface.agent_get_instance(svc.agents, instance_id); iok {
-		if inst.runtime_status == "unreachable" && !bridge_online(svc, inst.bridge_id) do return
-	}
 	u, ok, _ := begin_uow(svc)
 	if !ok do return
-	// Hooks are delivered after the status transaction. A reconnect can
-	// restore the agent before this callback starts; never revoke that claim
-	// using an observation superseded by the current durable state.
 	if inst, found, _ := iface.agent_get_instance(svc.agents, instance_id); found {
-		if instance_is_live(inst) || instance_is_pending(inst) ||
+		if observed != nil {
+			if inst.bridge_id != observed.bridge_id || inst.launch_epoch != observed.launch_epoch || inst.run_count != observed.run_count ||
+			   inst.last_applied_seq != observed.last_applied_seq {
+				_, _ = end_uow(svc, &u, false)
+				return
+			}
+		} else if instance_is_live(inst) || instance_is_pending(inst) ||
 		   (inst.runtime_status == "unreachable" && !bridge_online(svc, inst.bridge_id)) {
 			_, _ = end_uow(svc, &u, false)
 			return
@@ -608,8 +640,9 @@ on_instance_terminal :: proc(svc: ^Service, instance_id: string) {
 	acted := false
 	chain_id := domain.Task_Chain_ID("")
 	owner := domain.User_ID("")
-	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); held && lease.phase != domain.LEASE_PHASE_WAITING {
-		acted = agent_not_running_in_uow(svc, &u, lease, "lease holder is no longer running") == .Expired
+	if lease, held, _ := iface.taskchain_get_lease_by_holder(svc.repo, instance_id); held && lease.phase != domain.LEASE_PHASE_WAITING &&
+	   (observed == nil || observed_lease_id == lease.lease_id) {
+		acted = agent_not_running_in_uow(svc, &u, lease, "lease holder is no longer running", confirmed_exit = observed != nil) == .Expired
 		chain_id, owner = lease.chain_id, lease.owner_user_id
 		match_scope_note_instance(chain_id, instance_id)
 	}

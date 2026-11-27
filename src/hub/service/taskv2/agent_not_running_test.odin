@@ -440,3 +440,64 @@ test_start_recovery_resets_only_own_waiting_holder :: proc(t: ^testing.T) {
  claim, found, _ := iface.taskchain_get_lease_by_holder(&fx.repo, "own")
  testing.expect(t, found && claim.task_id=="task_own" && claim.phase==domain.LEASE_PHASE_WAITING)
 }
+
+// A terminal status can come from reconnect inventory loss even while the
+// agent owns a confirmed claim. Only process evidence can park its work.
+@(test)
+test_terminal_hint_needs_pty_exit_for_current_claim :: proc(t: ^testing.T) {
+	fx, log, ok := lease_fixture(t, "terminal_probe")
+	defer lease_fixture_close(fx, log)
+	if !ok do return
+	chain := seed_live_chain(t, fx, "chain_probe")
+	seed_fleet(fx, chain, "agt_w")
+	seed_instance(fx, chain, "inst_w1", "agt_w", "br_1", "running")
+	_ = publish_task(t, fx, chain, "task_probe")
+	confirm_holder(fx, "inst_w1")
+	original, held := lease_of(fx, "inst_w1")
+	if !testing.expect(t, held && original.confirmed_at != "", "confirmed lease fixture") do return
+	inst, _, _ := iface.agent_get_instance(&fx.agents, "inst_w1")
+	inst.runtime_status = "failed"
+	if inst.run_count == 0 do inst.run_count = 1
+	_, stored, _ := iface.agent_save_instance(&fx.agents, inst)
+	if !testing.expect(t, stored, "persist fixture generation") do return
+
+	Probe :: struct { state, epoch: string, calls, run_count: int }
+	probe := Probe{run_count = inst.run_count, epoch = inst.launch_epoch}
+	service := agent.Agent_Service{ids = &fx.ids, bridge_command_sink = {
+		ctx = &probe,
+		send_runtime_command_wait = proc(ctx: rawptr, command: project.Runtime_Command, timeout: int) -> (string, bool, domain.Domain_Error) {
+			p := (^Probe)(ctx)
+			p.calls += 1
+			if p.state == "offline" do return "", false, domain.domain_error(.Bridge_Offline, "mock disconnected")
+			return fmt.aprintf(`{{"command_id":"%s","ok":true,"payload":{{"result":{{"agent_instance_id":"inst_w1","state":"%s","pid":42,"exit_code":0,"run_count":%d,"launch_epoch":"%s"}}}}}}`, command.command_id, p.state, p.run_count, p.epoch), true, {}
+		},
+	}}
+	fx.svc.agent_service = &service
+	for state in ([]string{"alive", "offline"}) {
+		probe.state = state
+		queue_instance_terminal_probe(&fx.svc, "inst_w1")
+		queue_instance_terminal_probe(&fx.svc, "inst_w1")
+		drain_instance_terminal_probes(&fx.svc)
+		current, current_held := lease_of(fx, "inst_w1")
+		testing.expect(t, current_held && current.lease_id == original.lease_id && current.phase != domain.LEASE_PHASE_WAITING, state)
+	}
+	testing.expect_value(t, probe.calls, 2)
+	probe.state = "exited"
+	probe.run_count += 1
+	queue_instance_terminal_probe(&fx.svc, "inst_w1")
+	drain_instance_terminal_probes(&fx.svc)
+	testing.expect_value(t, get_task(fx, "task_probe").state, domain.Task_State.In_Progress)
+	probe.run_count = inst.run_count
+
+	stale := inst
+	stale.run_count += 1
+	on_instance_terminal(&fx.svc, "inst_w1", &stale, original.lease_id)
+	on_instance_terminal(&fx.svc, "inst_w1", &inst, "different_claim")
+	testing.expect_value(t, get_task(fx, "task_probe").state, domain.Task_State.In_Progress)
+	probe.state = "exited"
+	queue_instance_terminal_probe(&fx.svc, "inst_w1")
+	drain_instance_terminal_probes(&fx.svc)
+	current, current_held := lease_of(fx, "inst_w1")
+	testing.expect(t, current_held && current.lease_id == original.lease_id && current.phase == domain.LEASE_PHASE_WAITING, "confirmed exit parks the same claim")
+	testing.expect(t, is_agent_not_running_block(get_task(fx, "task_probe").blocked_on_json))
+}

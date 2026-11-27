@@ -734,6 +734,7 @@ timer_thread_proc :: proc(t: ^thread.Thread) {
 		dbt.scope_begin(.Timer)
 		_ = fire_due(svc, now, jump)
 		drain_pending_touches(svc)
+		drain_instance_terminal_probes(svc)
 		drain_coordinator_wakes(svc)
 		dbt.scope_end_background()
 		// Per-tick scratch (wake keys, JSON) lives on the temp allocator.
