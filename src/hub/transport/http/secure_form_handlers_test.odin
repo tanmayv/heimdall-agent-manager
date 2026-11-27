@@ -4,6 +4,7 @@ import "base:runtime"
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:mem/virtual"
 import "core:net"
 import "core:strings"
 import "core:sync"
@@ -236,7 +237,16 @@ test_secure_form_http_routes_never_publish_or_store_answer :: proc(t: ^testing.T
 	sync.unlock(&live.writer_mutex)
 	project.bridge_runtime_connection_release(&registry, live)
 	check_status(t, busy, 503, ciphertext)
-	check_status(t, router_dispatch(&router, req), 202, ciphertext)
+	{
+		// Like handle_client: the handler runs on a per-request arena that is
+		// unmapped once the 202 is written, while the detached dispatch thread
+		// is still delivering (P0 Hub segfault regression).
+		request_arena: virtual.Arena
+		if !testing.expect(t, virtual.arena_init_growing(&request_arena, 256 * 1024) == nil) do return
+		context.allocator = virtual.arena_allocator(&request_arena)
+		check_status(t, router_dispatch(&router, req), 202, ciphertext)
+		virtual.arena_destroy(&request_arena)
+	}
 	check_status(t, router_dispatch(&router, req), 409, ciphertext)
 
 	frame := secure_form_test_read_text(peer)

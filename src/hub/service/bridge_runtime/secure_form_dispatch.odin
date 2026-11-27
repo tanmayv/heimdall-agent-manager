@@ -46,6 +46,12 @@ secure_form_dispatch :: proc(registry: ^project.Bridge_Runtime_Registry, bridge:
 	if _, ok := sync.atomic_compare_exchange_strong(&_secure_form_dispatch_slot, 0, 1); !ok do return .Busy
 
 	heap := runtime.heap_allocator()
+	// The detached thread outlives the caller. HTTP handlers run on a per-request
+	// arena that is unmapped once the response is written, and core:thread
+	// allocates (and, with self_cleanup, later frees) its ^Thread through
+	// context.allocator. Every allocation that crosses into the thread must be
+	// heap-owned, so switch the allocator for the rest of this proc body.
+	context.allocator = heap
 	job := new(Secure_Form_Dispatch_Job, heap)
 	job^ = {registry, connection, strings.clone(payload, heap), done, ctx}
 	if thread.create_and_start_with_data(job, secure_form_dispatch_run, self_cleanup = true) == nil {
