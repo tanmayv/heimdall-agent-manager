@@ -317,7 +317,7 @@ startup_watchdog_blocks_live_child_after_fallback :: proc(t: ^testing.T) {
 }
 
 @(test)
-startup_watchdog_still_fails_attempt_without_live_child :: proc(t: ^testing.T) {
+startup_watchdog_does_not_infer_exit_from_missing_alive_bit :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	rec := startup_test_launch("startup_missing_child", "startup_missing_child")
@@ -329,8 +329,9 @@ startup_watchdog_still_fails_attempt_without_live_child :: proc(t: ^testing.T) {
 	bridge_runtime_expire_stale_locked(121000)
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	snap, _ := bridge_runtime_instance_snapshot(rec.agent_instance_id)
-	testing.expect_value(t, snap.runtime_status, "failed")
-	testing.expect(t, snap.has_last_error, "a genuine startup timeout carries a diagnostic")
+	testing.expect_value(t, snap.runtime_status, "blocked")
+	testing.expect_value(t, snap.runtime_reason, Bridge_Runtime_Reason.start_success_timeout)
+	testing.expect(t, !snap.has_last_error, "a readiness timeout alone is not a process failure")
 }
 
 @(test)

@@ -4110,20 +4110,10 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 			continue
 		}
 		if inst.runtime_status == "starting" && !inst.start_success_seen && inst.start_deadline_unix_ms > 0 && now >= inst.start_deadline_unix_ms {
-			if inst.pty_process_alive {
-				// Process liveness and readiness are independent. Keep this
-				// instance active but not ready so the Hub cannot replace it.
-				fmt.eprintfln("agent_startup_blocked instance=%q reason=start_success_timeout child_alive=true", inst.agent_instance_id)
-				bridge_runtime_set_status_locked(inst.agent_instance_id, "blocked", "idle", now, false, .start_success_timeout)
-				continue
-			}
-			bridge_runtime_set_status_with_source_locked(inst.agent_instance_id, "failed", "idle", "bridge", now, false, true, .Deadline, .start_success_timeout_no_live_child)
-			inst.last_error = bridge_error(.agent_launch_failed, .timeout)
-			inst.has_last_error = true
-			inst.activity_status = "idle"
-			inst.activity_source = "bridge"
-			inst.activity_updated_unix_ms = now
-			inst.start_deadline_unix_ms = 0
+			// Readiness timing out and a missing cached alive bit do not prove
+			// exit. Leave terminal status to the process-exit observation.
+			fmt.eprintfln("agent_startup_blocked instance=%q reason=start_success_timeout cached_child_alive=%t", inst.agent_instance_id, inst.pty_process_alive)
+			bridge_runtime_set_status_locked(inst.agent_instance_id, "blocked", "idle", now, false, .start_success_timeout)
 		}
 	}
 }
