@@ -2792,8 +2792,6 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id", bridge_error(.agent_launch_failed, .unsupported)
 	lifecycle := bridge_agent_lifecycle_enter(instance_id)
 	defer bridge_agent_lifecycle_leave(lifecycle)
-	launch_started := false
-	defer if !ok do bridge_runtime_record_failure(instance_id, err, launch_started)
 	launch_epoch := extract_json_string(command_json, "launch_epoch", "")
 	run_count, _ := bridge_provider_json_extract_int(command_json, "run_count")
 	defer delete(launch_epoch)
@@ -2883,8 +2881,6 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	_ = bridge_make_directory_all(run_dir)
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable", bridge_error(.agent_launch_failed, .socket_dir)
-	bridge_runtime_set_status(instance_id, "starting", "active")
-	launch_started = true
 	// H7 restart-reap: invalidate ANY prior local tokens for this instance BEFORE
 	// issuing fresh ones. A superseded old runtime then fails its next liveness
 	// ping (its token is no longer valid). The freshly issued agent token below is
@@ -2893,7 +2889,6 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	invalidated := bridge_agent_token_invalidate_instance(instance_id)
 	if invalidated > 0 do fmt.println("bridge launch: invalidated prior local tokens for instance", instance_id, "count", invalidated)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent, run_count)
-	bridge_startup_begin(agent_issue.plaintext_token)
 	provider, model := bridge_runtime_provider_model(command_json)
 	// Conditional, per-hash bootstrap (BRG-1..BRG-4): build the per-instance
 	// descriptor from the enriched launch payload, run one conditional manifest GET
@@ -2910,7 +2905,6 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string, deadline_n
 	defer delete(credential_snapshot_2312)
 	boot_res := bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, credential_snapshot_2312, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache, deadline_ns)
 	if !boot_res.ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle", .bootstrap_failed)
 		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)
 		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
 		blog_error(.agent_bootstrap_invalid, blog_sym(.stage, blog_bootstrap_stage(boot_res.stage)), blog_int(.hub_status, i64(boot_res.http_status)), blog_provider(provider))
@@ -2947,24 +2941,18 @@ bridge_runtime_launch_provider_test :: proc(command_id, command_json: string) ->
 	pp,profile_error := profile_lookup(provider,provider_profile)
 	if profile_error != .None do return false,profile_error_code(profile_error),bridge_error(.agent_launch_failed,.unsupported)
 	if strings.trim_space(instance_id) == "" || !profile_has_model(&pp,provider,model) do return false,"invalid provider test request",bridge_error(.agent_launch_failed,.unsupported)
-	launch_started := false
-	defer if !ok do bridge_runtime_record_failure(instance_id, err, launch_started)
 	bridge_runtime_clear_stop_intent(instance_id)
 	run_dir := bridge_runtime_default_run_dir(instance_id)
 	defer delete(run_dir)
 	_ = bridge_make_directory_all(run_dir)
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable", bridge_error(.agent_launch_failed, .socket_dir)
-	bridge_runtime_set_status(instance_id, "starting", "active")
-	launch_started = true
 	_ = bridge_agent_token_invalidate_instance(instance_id)
 	instance_token := strings.concatenate({"hit_", instance_id})
 	defer delete(instance_token)
 	run_count, _ := bridge_provider_json_extract_int(command_json, "run_count")
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent, run_count)
-	bridge_startup_begin(agent_issue.plaintext_token)
 	if !bridge_bootstrap_materialize_local_provider_test(run_dir, endpoint, agent_issue.plaintext_token, instance_id, provider) {
-		bridge_runtime_set_status(instance_id, "failed", "idle", .provider_test_bootstrap_failed)
 		return false, "provider test bootstrap failed", bridge_error(.agent_bootstrap_invalid)
 	}
 	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, model, agent_issue.plaintext_token, "Provider test", PROVIDER_TEST_TIMEOUT_SECONDS, provider_profile = provider_profile)
@@ -2980,9 +2968,6 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
     // A previous ACP child may already be dead while its driver still owns
     // routing. Join that owner before changing transport or spawning a PTY.
     if bridge_runtime_is_acp(instance_id) do acp_runtime_detach(instance_id)
-	sync.mutex_lock(&bridge_runtime_mutex)
-	for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance_id { inst.runtime_transport = "pty"; bridge_runtime_replace_acp_error(&inst, "") }
-	sync.mutex_unlock(&bridge_runtime_mutex)
 	// T2b: the context window is resolved per launch from provider + model
 	// (override > shipped config > default); never detected from the provider.
 	bridge_ext_note_launch(instance_id, provider, model, provider_profile)
@@ -2990,7 +2975,6 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	// back to the default profile, which could run under the wrong account.
 	pp, pp_err := profile_lookup(provider, provider_profile)
 	if pp_err != .None {
-		bridge_runtime_set_status(instance_id, "failed", "idle", .provider_profile_unavailable)
 		return false, profile_error_code(pp_err), bridge_error(.agent_launch_failed, .unsupported)
 	}
 	pp_ref: ^Provider_Profile = &pp
@@ -3002,13 +2986,11 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok {
-		bridge_runtime_set_status(instance_id, "unreachable", "idle", .pty_host_unavailable)
 		return false, "ham-pty-host daemon unavailable", bridge_error(.pty_host_unreachable)
 	}
 
 	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, model, agent_token, env, display_name, timeout_seconds, permission_mode, pp_ref)
 	if !req_ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle", .provider_command_unavailable)
 		blog_error(.provider_missing, blog_provider(provider))
 		return false, "provider has no runnable command", bridge_error(.provider_missing)
 	}
@@ -3027,7 +3009,6 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	}
 	roster, listed := bridge_pty_host_list(socket)
 	if !listed {
-		bridge_runtime_set_status(instance_id, "blocked", "idle", .pty_inventory_unavailable)
 		return false, "cannot inspect existing PTY runtime before spawn", bridge_error(.pty_host_unreachable)
 	}
 	registered := false
@@ -3035,12 +3016,15 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	pty_host_reply_delete(roster)
 	if registered {
 		if !bridge_pty_host_close(socket, instance_id) {
-			bridge_runtime_set_status(instance_id, "blocked", "idle", .previous_pty_close_unconfirmed)
 			blog_error(.agent_launch_failed, blog_provider(provider), blog_sym(.stage, .spawn), blog_sym(.reason, .replaced))
 			return false, "failed to close existing instance before respawn", bridge_error(.agent_launch_failed, .replaced)
 		}
 	}
 	// Arm before Spawn: a hook may call the local endpoint before Spawn returns.
+	bridge_startup_begin(agent_token)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == instance_id { inst.runtime_transport = "pty"; bridge_runtime_replace_acp_error(&inst, "") }
+	sync.mutex_unlock(&bridge_runtime_mutex)
 	bridge_startup_arm(instance_id, agent_token, bridge_runtime_now_ms())
 	pid, ok = bridge_pty_host_spawn(socket, req)
 	if !ok {
@@ -3051,11 +3035,6 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		if actual_pid, confirmed := bridge_pty_host_startup_launch(socket, instance_id, launch_key); confirmed && actual_pid > 0 {
 			pid = actual_pid
 		} else {
-			children, queried := bridge_pty_host_list(socket)
-			live := false
-			for child in children.agents do if child.instance_id == instance_id && child.alive do live = true
-			pty_host_reply_delete(children)
-			bridge_runtime_set_status(instance_id, "failed" if queried && !live else "blocked", "idle", .pty_spawn_unconfirmed)
 			blog_error(.agent_launch_failed, blog_provider(provider), blog_sym(.stage, .spawn))
 			return false, "ham-pty-host spawn failed", bridge_error(.agent_launch_failed, .spawn)
 		}
@@ -3306,18 +3285,11 @@ bridge_runtime_now_ms :: proc() -> i64 {
 // A rejected new launch must not leave a booting snapshot after a pre-spawn
 // failure. Earlier stale/duplicate-command refusals did not begin a new launch
 // and must preserve the existing child (including one still starting).
-bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error, launch_started := false) {
+bridge_runtime_record_failure :: proc(instance_id: string, err: Bridge_Error) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for &inst in bridge_runtime_instances {
 		if inst.agent_instance_id != instance_id do continue
-		if launch_started && inst.runtime_status == "starting" {
-			if inst.pty_process_alive {
-				bridge_runtime_set_status_locked(instance_id, "blocked", "idle", bridge_runtime_now_ms(), true, .launch_command_failed_live_child)
-			} else {
-				bridge_runtime_set_status_locked(instance_id, "failed", "idle", bridge_runtime_now_ms(), true, .launch_command_failed)
-			}
-		}
 		if inst.runtime_status == "failed" {
 			inst.last_error = err
 			inst.has_last_error = true
@@ -3521,19 +3493,9 @@ Bridge_Runtime_Reason :: enum {
 	acp_recovery_close_unconfirmed,
 	acp_stop_confirmed,
 	acp_terminal_checkpoint,
-	bootstrap_failed,
-	launch_command_failed,
-	launch_command_failed_live_child,
-	previous_pty_close_unconfirmed,
-	provider_command_unavailable,
-	provider_profile_unavailable,
-	provider_test_bootstrap_failed,
 	pty_child_exited,
-	pty_host_unavailable,
-	pty_inventory_unavailable,
 	pty_reconcile_live_child,
 	pty_reconcile_no_live_child,
-	pty_spawn_unconfirmed,
 	pty_stop_confirmed,
 	start_success_timeout,
 	stop_unconfirmed_restore,

@@ -475,6 +475,7 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     if !built { acp_runtime_destroy(r); return false, "provider_missing", bridge_error(.provider_missing) }
     // This is a genuine new launch; common launch identity handling has already
     // refused unrelated live children before bootstrap/token replacement.
+    bridge_startup_begin(token)
     bridge_startup_set_expectation(instance, token, false)
     bridge_startup_arm(instance, token, bridge_runtime_now_ms())
     sync.mutex_lock(&bridge_runtime_mutex)

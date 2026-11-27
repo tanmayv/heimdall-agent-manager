@@ -134,9 +134,8 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
         local := bridge_event_local("inst_t17")
         testing.expect_value(t, local, Bridge_Event_Local.Absent)
         rejected, found := bridge_runtime_instance_snapshot("inst_t17")
-        testing.expect(t, found && rejected.runtime_status == "failed" && rejected.activity_status == "idle")
-        testing.expect(t, rejected.start_deadline_unix_ms == 0 && rejected.has_last_error)
-        testing.expect(t, rejected.last_error.reason == .unsupported)
+        testing.expect(t, found && rejected.runtime_status == "stopped" && rejected.activity_status == "idle")
+        testing.expect(t, rejected.start_deadline_unix_ms == 0 && !rejected.has_last_error)
         next, _ := strings.replace_all(bridge_event_test_frame(), "dlv_t17", "dlv_t17_next")
         defer delete(next)
         bridge_event_deliver_handle(nil, next)
@@ -347,7 +346,6 @@ bridge_event_test_scenario :: proc(t: ^testing.T) {
 bridge_event_test_rejected_start :: proc(id, delivery_id: string, deadline: i64) -> Bridge_Wake_Result {
     bridge_event_test_starts += 1
     if bridge_event_test_starts > 1 do return {.Parked, bridge_error(.agent_launch_failed, .unsupported), 0}
-    bridge_runtime_set_status(id, "starting", "active")
     snapshot, loaded := bridge_provider_catalog_snapshot, bridge_provider_catalog_loaded
     defer { bridge_provider_catalog_snapshot = snapshot; bridge_provider_catalog_loaded = loaded }
     env := make(map[string]string, context.temp_allocator)
@@ -358,8 +356,6 @@ bridge_event_test_rejected_start :: proc(id, delivery_id: string, deadline: i64)
     defer delete(etag)
     ok, detail, err := acp_runtime_launch("rejected", id, "epoch_rejected", etag, "", "", "claude", "", "", "invalid_mode", "")
     testing.expect(bridge_event_test_t, !ok && detail == "invalid_acp_configuration")
-    // This is the launch entry point's deferred failure cleanup.
-    bridge_runtime_record_failure(id, err, true)
     return {.Failed, err, 0}
 }
 @(test)
