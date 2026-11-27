@@ -34,7 +34,8 @@ stream_placement_valid :: proc(h: ^Bridge_Handlers, c: ^project.Bridge_Runtime_C
 	instance, found, err := iface.agent_get_instance(h.agents.agents, r.instance)
 	if !found || err.code != .None do return false
 	defer domain.agent_instance_destroy(&instance)
-	return string(instance.owner_user_id) == c.owner_id && instance.bridge_id == c.bridge_id && instance.current_task_id == r.task
+	// Task focus can change independently of the instance or the stream.
+	return string(instance.owner_user_id) == c.owner_id && instance.bridge_id == c.bridge_id && instance.runtime_status == "running"
 }
 
 stream_bridge_control :: proc(h: ^Bridge_Handlers, bridge: string, generation: int, raw: string) {
@@ -59,6 +60,7 @@ stream_bridge_control :: proc(h: ^Bridge_Handlers, bridge: string, generation: i
 			if code == "" do serial = reg.routes[p.stream_id].serial
 			sync.unlock(&reg.mu)
 		}
+		if code != "" do fmt.eprintfln("hub stream: registration rejected code=%s", code)
 		sent := stream_control_send(h, bridge, generation, contracts.Stream_Register_Ack{p.stream_id, code == "", code})
 		if code != "" do return
 		sync.lock(&reg.mu)

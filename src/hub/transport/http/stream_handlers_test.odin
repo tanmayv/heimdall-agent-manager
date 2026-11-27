@@ -131,9 +131,17 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	bob, b_ok := auth_service.mint_session(&auth, "bob", ensure_user = false)
 	if !testing.expect(t, a_ok && b_ok) do return
 	fake_repo := iface.Agent_Repository{get_instance = proc(_: rawptr, id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-		if id != STREAM_TEST_INSTANCE do return {}, false, {}
-		return {agent_instance_id = strings.clone(id), owner_user_id = domain.User_ID(strings.clone("alice")),
-			bridge_id = strings.clone(STREAM_TEST_BRIDGE), current_task_id = strings.clone(STREAM_TEST_TASK)}, true, {}
+		owner, bridge, task, status := "alice", STREAM_TEST_BRIDGE, "task_other", "running"
+		switch id {
+		case STREAM_TEST_INSTANCE:
+		case "inst_idle": task = ""
+		case "inst_foreign_owner": owner = "bob"
+		case "inst_foreign_bridge": bridge = "brg_other"
+		case "inst_stopped": status = "stopped"
+		case: return {}, false, {}
+		}
+		return {agent_instance_id = strings.clone(id), owner_user_id = domain.User_ID(strings.clone(owner)),
+			bridge_id = strings.clone(bridge), current_task_id = strings.clone(task), runtime_status = strings.clone(status)}, true, {}
 	}}
 	agent := agents.Agent_Service{agents = &fake_repo}
 	router := new_router()
@@ -164,6 +172,19 @@ test_stream_hub_owner_view_lifecycle_and_private_transport :: proc(t: ^testing.T
 	stream_bridge_control(&h, STREAM_TEST_BRIDGE, hello.generation, string(reg))
 	testing.expect(t, strings.contains(secure_form_test_read_text(bridge.peer), "unauthorized"))
 	r.owner = "alice"
+	for instance in ([]string{"inst_foreign_owner", "inst_foreign_bridge", "inst_unknown", "inst_stopped"}) {
+		r.instance = instance
+		reg = contracts.stream_encode_control(r)
+		stream_bridge_control(&h, STREAM_TEST_BRIDGE, hello.generation, string(reg))
+		testing.expect(t, strings.contains(secure_form_test_read_text(bridge.peer), `"code":"unauthorized"`))
+	}
+	r.instance = "inst_idle"
+	reg = contracts.stream_encode_control(r)
+	stream_bridge_control(&h, STREAM_TEST_BRIDGE, hello.generation, string(reg))
+	if !testing.expect(t, strings.contains(secure_form_test_read_text(bridge.peer), `"accepted":true`)) do return
+	ended := contracts.stream_encode_control(contracts.Stream_Ended{STREAM_TEST_ID, "stopped"})
+	stream_bridge_control(&h, STREAM_TEST_BRIDGE, hello.generation, string(ended))
+	r.instance = STREAM_TEST_INSTANCE
 	reg = contracts.stream_encode_control(r)
 	stream_bridge_control(&h, STREAM_TEST_BRIDGE, hello.generation, string(reg))
 	if !testing.expect(t, strings.contains(secure_form_test_read_text(bridge.peer), `"accepted":true`)) do return

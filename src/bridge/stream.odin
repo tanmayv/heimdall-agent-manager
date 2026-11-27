@@ -19,6 +19,8 @@ Stream_Live :: struct {
 	profile: string,
 	run_count: int,
 	registered, accepted, attached: bool,
+	register_waiting: bool,
+	register_reject: string,
 	reason, source_stage: string,
 	worker: ^thread.Thread,
 	worker_stop, worker_watching: bool,
@@ -108,8 +110,13 @@ stream_local_call :: proc(id, method, raw: string, rec: Bridge_Local_Agent_Token
 	if !os_random.fill(random[:]) do return bridge_local_response_error(id, "internal", "could not generate stream ID")
 	hex_id := hex.encode(random[:], context.temp_allocator)
 	stream_id := string(hex_id)
-	if !stream_local_register(stream_id, owner, rec, task, tab, port, profile) {
+	if !stream_local_register(stream_id, owner, rec, task, tab, port, profile, waiting = true) {
 		return bridge_local_response_error(id, "unavailable", "Bridge disconnected or stream limit reached")
+	}
+	defer {
+		sync.mutex_lock(&stream_mu)
+		if live := stream_find_locked(stream_id); live != nil do live.register_waiting = false
+		sync.mutex_unlock(&stream_mu)
 	}
 	started := time.tick_now()
 	for time.tick_since(started) < 3 * time.Second {
@@ -127,12 +134,17 @@ stream_local_call :: proc(id, method, raw: string, rec: Bridge_Local_Agent_Token
 		time.sleep(10 * time.Millisecond)
 	}
 	sync.mutex_lock(&stream_mu)
-	if live := stream_find_locked(stream_id); live != nil && live.reason == "" do live.reason = "stopped"
-	sync.mutex_unlock(&stream_mu)
+	defer sync.mutex_unlock(&stream_mu)
+	if live := stream_find_locked(stream_id); live != nil {
+		if live.register_reject != "" {
+			return bridge_local_response_error(id, live.register_reject, "Hub rejected stream registration")
+		}
+		if live.reason == "" do live.reason = "stopped"
+	}
 	return bridge_local_response_error(id, "unavailable", "Hub did not accept stream registration")
 }
 
-stream_local_register :: proc(id, owner: string, rec: Bridge_Local_Agent_Token_Record, task: string, tab: Stream_Tab, port: u16, profile: string) -> bool {
+stream_local_register :: proc(id, owner: string, rec: Bridge_Local_Agent_Token_Record, task: string, tab: Stream_Tab, port: u16, profile: string, waiting := false) -> bool {
 	sync.mutex_lock(&stream_mu)
 	defer sync.mutex_unlock(&stream_mu)
 	if !stream_connected || stream_find_locked(id) != nil do return false
@@ -147,6 +159,7 @@ stream_local_register :: proc(id, owner: string, rec: Bridge_Local_Agent_Token_R
 		live.port = port
 		live.profile = strings.clone(profile, allocator)
 		live.run_count = rec.run_count
+		live.register_waiting = waiting
 		slot = live
 		return true
 	}
@@ -162,6 +175,7 @@ stream_free :: proc(live: ^Stream_Live) {
 	delete(live.reg.source.ref, runtime.heap_allocator())
 	delete(live.reg.title, runtime.heap_allocator())
 	delete(live.profile, runtime.heap_allocator())
+	delete(live.register_reject, runtime.heap_allocator())
 	delete(live.pending, runtime.heap_allocator())
 	delete(live.sending, runtime.heap_allocator())
 	free(live, runtime.heap_allocator())
@@ -190,7 +204,11 @@ stream_hub_receive :: proc(raw: string) -> bool {
 	case contracts.Stream_Register_Ack:
 		if live := stream_find_locked(frame.stream_id); live != nil && live.registered {
 			live.accepted = frame.accepted
-			if !frame.accepted do live.reason = "source_error"
+			if !frame.accepted {
+				live.reason = "source_error"
+				live.registered = false // A rejected registration owns no Hub route to end.
+				if live.register_waiting do live.register_reject = strings.clone(frame.code, runtime.heap_allocator())
+			}
 		}
 	case contracts.Stream_Attach:
 		if live := stream_find_locked(frame.stream_id); live != nil && live.accepted {
@@ -245,7 +263,8 @@ stream_hub_drain :: proc(conn: ^ws.Connection, send_control := stream_send_contr
 				_ = send_control(conn, contracts.Stream_Ended{live.reg.stream_id, live.reason})
 				live.registered = false
 			}
-			if live.worker == nil { stream_free(live); slot = nil }
+			// The local caller may not have observed the rejection yet.
+			if live.worker == nil && !live.register_waiting { stream_free(live); slot = nil }
 			continue
 		}
 		if !live.registered {

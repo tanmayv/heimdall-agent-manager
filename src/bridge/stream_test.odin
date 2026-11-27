@@ -229,4 +229,24 @@ test_stream_registration_reconnect_stop_and_expiry :: proc(t: ^testing.T) {
 	_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
 	testing.expect_value(t, trace.ended, 2)
 	testing.expect_value(t, trace.reason, "expired")
+	// The drain may run before the share caller observes the negative ACK.
+	for code in ([]string{"unauthorized", "limit", "duplicate", "invalid"}) {
+		if !testing.expect(t, stream_local_register(id, "owner", rec, "task", {"fixture", "", "page"}, 42000, "/fixture", waiting = true)) do return
+		_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
+		ack := contracts.stream_encode_control(contracts.Stream_Register_Ack{id, false, code}, context.temp_allocator)
+		testing.expect(t, stream_hub_receive(string(ack)))
+		_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
+		sync.mutex_lock(&stream_mu)
+		live := stream_find_locked(id)
+		got := ""
+		if live != nil {
+			got = live.register_reject
+			live.register_waiting = false
+		}
+		sync.mutex_unlock(&stream_mu)
+		testing.expect_value(t, got, code)
+		// In particular, a duplicate rejection cannot end the original route.
+		testing.expect_value(t, trace.ended, 2)
+		_ = stream_hub_drain(probe, stream_test_record_control, stream_test_instance_live)
+	}
 }
