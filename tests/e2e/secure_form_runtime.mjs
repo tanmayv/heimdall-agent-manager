@@ -124,6 +124,8 @@ try {
   }, 'same browser reaches signed-in account');
   check(await command('retry', '--request', id, '--after-attempt', '1').code() === 0, 'duplicate retry joins existing result');
   check(fs.readFileSync(path.join(control, 'attempts'), 'utf8') === 'first\nsecond\n', 'duplicate request did not spawn or submit again');
+  const afterSuccess = await command('retry', '--request', id, '--after-attempt', '2').code();
+  check(afterSuccess === 20, `a successful predecessor cannot start another attempt (CLI ${afterSuccess})`);
   if (expiry) {
     // Exercise the real monotonic TTL without changing production clocks or code.
     await waitUntil(302_000);
