@@ -1132,7 +1132,10 @@ agent_service_send_pty_resize :: proc(service: ^Agent_Service, auth: contracts.A
 
 send_pty_resize :: agent_service_send_pty_resize
 
-reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+// relaunched reports that a replacement launch was sent successfully, not
+// that the replacement has acknowledged readiness.
+reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input, relaunched: ^bool = nil) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	if relaunched != nil do relaunched^ = false
 	observed, observed_ok, probe_err := get_instance(service, auth, instance_id)
 	if !observed_ok do return {}, false, probe_err
 	defer domain.agent_instance_destroy(&observed)
@@ -1176,6 +1179,7 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
    ticket.instance.display_name = strings.clone(input.display_name)
   }
   if send_err := start_send(service, &ticket); send_err.code != .None do return {}, false, send_err
+  if relaunched != nil do relaunched^ = true
   result := ticket.instance
   ticket.instance = {}
   return result, true, {}

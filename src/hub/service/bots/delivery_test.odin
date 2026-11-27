@@ -500,6 +500,40 @@ test_switch_route_rules :: proc(t: ^testing.T) {
 	testing.expect_value(t, changed.model, "m2"); testing.expect(t, !changed.relaunched)
 }
 
+@(test)
+test_bot_switch_reports_relaunch_only_when_sent :: proc(t: ^testing.T) {
+	arena: virtual.Arena
+	assert(virtual.arena_init_growing(&arena) == nil)
+	defer virtual.arena_destroy(&arena)
+	context.allocator = virtual.arena_allocator(&arena)
+	context.temp_allocator = context.allocator
+	for still_alive in ([2]bool{false, true}) {
+		f := delivery_fixture(t)
+		defer delivery_destroy(f)
+		delivery_seed(t, f)
+		a := delivery_attempt_test(f)
+		defer domain.bot_delivery_attempt_destroy(&a)
+		f.instance.run_count = 7
+		f.instance.runtime_status = "failed" if still_alive else "running"
+		if still_alive {
+			f.agents.fixture_start_fact = proc(_: domain.Agent_Instance) -> agent_service.Agent_Liveness {
+				return {state = .Alive, reason = .pty_child_alive, pid = 42, ready = true}
+			}
+		} else {
+			f.agents.fixture_start_fact = proc(_: domain.Agent_Instance) -> agent_service.Agent_Liveness {
+				return {state = .Exited, reason = .pty_child_exited, pid = 42}
+			}
+		}
+		before := len(f.frames)
+		view, err := bots_switch(&f.pair.service, "b1", a.attempt_id, {provider = "alpha", provider_profile = "alpha", model = "m2"})
+		testing.expect_value(t, err.code, domain.Error_Code.None)
+		testing.expect_value(t, view.relaunched, still_alive)
+		testing.expect_value(t, view.model, "m2")
+		testing.expect_value(t, len(f.frames) - before, 1 if still_alive else 0)
+		testing.expect_value(t, f.instance.run_count, 8 if still_alive else 7)
+	}
+}
+
 delivery_notice :: proc(ctx: rawptr, chat, text: string) -> (string, channel.Channel_Error) {
 	f := (^Delivery_Fixture)(ctx)
 	caller := context.allocator

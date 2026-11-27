@@ -89,6 +89,35 @@ bridge_bot_test_report :: proc(report: string) -> bool {
 	return true
 }
 bridge_bot_test_activity :: proc(instance: string) -> string { if bridge_bot_test.activity != "" do return bridge_bot_test.activity; return "idle" }
+
+@(test)
+test_bot_live_row_reuse_requires_observed_child :: proc(t: ^testing.T) {
+	active_row := proc(_: string) -> (Bridge_Runtime_Instance, bool) { return {runtime_status = "running"}, true }
+	stale_row := proc(_: string) -> (Bridge_Runtime_Instance, bool) { return {runtime_status = "unreachable"}, true }
+	stopping := proc(_: string) -> (Bridge_Runtime_Instance, bool) { return {runtime_status = "running", stopped_intent_unix_ms = 1}, true }
+	unavailable := proc(_: string) -> Bridge_Instance_Probe_Result { return {state = "unknown"} }
+	exited := proc(_: string) -> Bridge_Instance_Probe_Result { return {state = "exited", pid = 42, exit_code = 0} }
+	alive := proc(_: string) -> Bridge_Instance_Probe_Result { return {state = "alive", pid = 42} }
+	testing.expect(t, !bridge_bot_can_reuse_live_row("inst_bot", active_row, unavailable))
+	testing.expect(t, !bridge_bot_can_reuse_live_row("inst_bot", active_row, exited))
+	testing.expect(t, bridge_bot_can_reuse_live_row("inst_bot", stale_row, alive))
+	testing.expect(t, !bridge_bot_can_reuse_live_row("inst_bot", stopping, alive))
+}
+
+@(test)
+test_bot_live_row_retry_ignores_stale_ready_projection :: proc(t: ^testing.T) {
+	s: Bridge_Bot_Test
+	bridge_bot_test_begin(&s)
+	defer bridge_bot_test_end(&s)
+	w := bridge_bot_test_worker(&s)
+	s.process_alive = false // The cached state still says running and start-success.
+	w.live_row_retry_at_ms = s.now + 250
+	w.ready_deadline_ms = s.now + 1_000
+	outcome, _, _, _ := bridge_bot_wait_ready(w, false, "")
+	testing.expect_value(t, outcome, "")
+	testing.expect_value(t, s.launches, 1)
+}
+
 bridge_bot_test_busy :: proc() -> (traffic_stopped, update_reserved, vault_unlocked: bool) {
 	s := bridge_bot_test
 	sync.atomic_store(&s.entered, true)

@@ -248,6 +248,14 @@ tool_stream_unavailable_locked :: proc(s: ^Tool_Live_Store, r: ^Tool_Stream_Rout
     data, _ := json.marshal(struct {type, instance_id, reason: string}{"unavailable", r.id, reason}, allocator = context.temp_allocator)
     for _, w in s.viewers do if w.owner == r.owner && w.ids[r.id] do _ = tool_stream_enqueue_locked(w, string(data), instance_id = r.id)
 }
+// Producer admission is not a process check. Viewers may attach during
+// launch before a child is observable, but must not reopen a retired producer
+// on a Bridge reconnect. These skinny routing rows do not carry probe identity.
+// Attach uses the existing bridge/run/connection/token fences. Never probe
+// from this path, which also runs on the Bridge reader under the stream mutex.
+tool_stream_producer_expected :: proc(inst: domain.Agent_Instance) -> bool {
+    return runtime_expected_active(inst.runtime_status)
+}
 tool_stream_rebind_locked :: proc(svc: ^Agent_Service, r: ^Tool_Stream_Route, inst: domain.Agent_Instance, connection_generation: int) {
     s := &svc.tool_live
     // A Bridge reconnect is transport recovery, not an agent ready transition.
@@ -256,7 +264,7 @@ tool_stream_rebind_locked :: proc(svc: ^Agent_Service, r: ^Tool_Stream_Route, in
         tool_stream_suspend_locked(s, r, "upgrade_required")
         return
     }
-    if !runtime_expected_active(inst.runtime_status) {
+    if !tool_stream_producer_expected(inst) {
         tool_stream_suspend_locked(s, r, "instance_changed")
         return
     }
@@ -277,7 +285,7 @@ tool_stream_reconcile_locked :: proc(svc: ^Agent_Service, r: ^Tool_Stream_Route,
         tool_stream_suspend_locked(s, r, "instance_changed")
         return false
     }
-    if !runtime_expected_active(inst.runtime_status) {
+    if !tool_stream_producer_expected(inst) {
         tool_stream_suspend_locked(s, r, "instance_changed")
         return true // Still authorized to listen for a future ready baseline.
     }
@@ -341,7 +349,7 @@ tool_stream_subscribe :: proc(svc: ^Agent_Service, w: ^Tool_Stream_Viewer, ids: 
         w.ids[strings.clone(id, runtime.heap_allocator())] = true
         r.viewers += 1
         // Additional viewers share the producer but earn a fresh Bridge baseline.
-        if !runtime_expected_active(inst.runtime_status) {
+        if !tool_stream_producer_expected(inst) {
             tool_stream_suspend_locked(s, r, "instance_changed")
         } else {
             r.suspended = false
@@ -359,7 +367,7 @@ tool_live_clear :: proc(svc: ^Agent_Service, instance_id: string) {
         inst, found, _ := tool_live_instance(svc, instance_id)
         if !found { tool_stream_suspend_locked(s, r, "not_found"); return }
         if tool_stream_reconcile_locked(svc, r, inst) {
-            if !runtime_expected_active(inst.runtime_status) {
+            if !tool_stream_producer_expected(inst) {
                 tool_stream_suspend_locked(s, r, "instance_changed")
                 return
             }

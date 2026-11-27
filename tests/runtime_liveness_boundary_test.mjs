@@ -91,16 +91,23 @@ const projectionSites = [
   ['bridge/auto_update.odin', 'bridge_auto_update_quiet_with_host:1'], // An active process still blocks via independently checked daemon roster.
   ['hub/transport/http/stream_handlers.odin', 'stream_placement_valid:1'], // TODO(liveness-followup): stream subscription authorization only.
 
-  // TODO(liveness-followup): bot idle/rollover admission owns a different
-  // supervisor state machine and cannot revoke a task lease.
-  ['hub/service/bots/delivery.odin', 'bots_switch:1'],
+  // Disable and delete can cancel a launch before the child exists. Requiring
+  // Alive would miss those starts. The bot view is presentation only.
   ['hub/service/bots/disable.odin', 'bots_on_experiment_disabled:1'],
   ['hub/service/bots/service.odin', 'bots_view_json:2 bots_delete:1'],
+  // Recovery's "stopping" suppresses duplicate commands while a receipt is
+  // pending. Idle retires inactive launches (including startup/blocked) via
+  // the async bot_idle stop/reopen protocol. It does not infer a process exit.
   ['hub/service/bots/supervisor.odin', 'bots_resolve_blocking_locked:1 bots_idle_stop:1'],
-  ['bridge/bot_delivery.odin', 'bridge_bot_launch_via_start_begin:1 bridge_bot_run:3 bridge_bot_wait_ready:3 bridge_bot_ready:1'],
-  // TODO(liveness-followup): tool stream projections manage viewer demand,
-  // not process ownership, wake, or task lease decisions.
-  ['hub/service/agent/tool_stream.odin', 'tool_stream_rebind_locked:1 tool_stream_reconcile_locked:1 tool_stream_subscribe:1 tool_live_clear:1'],
+  // Bot worker: prefer the warm candidate or await a launch already underway,
+  // surface launch errors/blocks, and require the startup acknowledgement.
+  // The reply watch's terminal projections end a delivery attempt only. An
+  // actual relaunch goes back through Hub Start/reconfigure admission.
+  ['bridge/bot_delivery.odin', 'bridge_bot_run:3 bridge_bot_wait_ready:2 bridge_bot_ready:1'],
+  // Viewer demand can attach before spawn, and terminal projections retire
+  // subscriptions. Neither route admission nor the Bridge's hook-generation
+  // filter claims a PID exited. Both also run on reader/mutex paths.
+  ['hub/service/agent/tool_stream.odin', 'tool_stream_producer_expected:1'],
   ['bridge/tool_activity_live.odin', 'bridge_tool_live_instance:1'],
 ];
 

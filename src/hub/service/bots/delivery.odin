@@ -232,9 +232,9 @@ bots_switch :: proc(s: ^Bots_Service, bridge_id, attempt_id: string, candidate: 
 	if inst.provider == candidate.provider && inst.model == candidate.model {
 		return {inst.agent_instance_id, inst.provider, inst.provider_profile, inst.model, inst.configuration_revision, false}, {}
 	}
-	previous_active := agent_service.runtime_expected_active(inst.runtime_status)
+	relaunched: bool
 	updated, ok, e := agent_service.reconfigure_instance(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id}, inst.agent_instance_id,
-		{provider = candidate.provider, provider_profile = candidate.provider_profile, model = candidate.model})
+		{provider = candidate.provider, provider_profile = candidate.provider_profile, model = candidate.model}, relaunched = &relaunched)
 	if !ok {
 		if e.code == .Conflict {
 			ops, list_err := iface.instance_reconfiguration_list(s.agents.agents, bot.owner_user_id, inst.agent_instance_id, true)
@@ -244,5 +244,5 @@ bots_switch :: proc(s: ^Bots_Service, bridge_id, attempt_id: string, candidate: 
 		}
 		return {}, e
 	}
-	return {updated.agent_instance_id, updated.provider, updated.provider_profile, updated.model, updated.configuration_revision, previous_active}, {}
+	return {updated.agent_instance_id, updated.provider, updated.provider_profile, updated.model, updated.configuration_revision, relaunched}, {}
 }

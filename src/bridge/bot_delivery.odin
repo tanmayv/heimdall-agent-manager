@@ -100,7 +100,7 @@ bridge_bot_launch_via_start_begin :: proc(instance_id, attempt_id: string) -> (o
     }
     defer delete(command_json)
     if !fetched && bridge_wake_is_live_row(fetch_err) {
-        if snap, found := bridge_bot_snapshot_proc(instance_id); found && bridge_runtime_status_active(snap.runtime_status) && snap.runtime_status != "stopping" {
+        if bridge_bot_can_reuse_live_row(instance_id) {
             return true, "", {}
         }
         if w := bridge_bot_current_worker; w != nil && w.live_row_retries < BRIDGE_LIVE_ROW_RETRIES {
@@ -112,6 +112,14 @@ bridge_bot_launch_via_start_begin :: proc(instance_id, attempt_id: string) -> (o
     if !fetched do return false, "start-begin or legacy descriptor fetch refused", fetch_err
     return bridge_bot_runtime_launch_proc(command_id, command_json, deadline_ns)
 
+}
+// A live-row refusal (including from a legacy Hub) is not proof that the
+// Bridge still owns a child. Use the same PTY observation as instance.probe.
+// This only skips launch. The worker still waits for startup acknowledgement.
+bridge_bot_can_reuse_live_row :: proc(instance_id: string, snapshot := bridge_runtime_instance_snapshot, observe := bridge_instance_probe) -> bool {
+    snap, found := snapshot(instance_id)
+    if found && snap.stopped_intent_unix_ms != 0 do return false
+    return observe(instance_id).state == "alive"
 }
 // Preserve bot launch admission for the legacy launcher as well.
 bridge_bot_runtime_launch_proc: proc(command_id, command_json: string, deadline_ns: i64) -> (bool, string, Bridge_Error) = bridge_bot_runtime_launch
@@ -336,16 +344,21 @@ bridge_bot_wait_ready :: proc(w: ^Bridge_Bot_Worker, relaunched: bool, pre_id: s
 	for !sync.atomic_load(&w.cancel) {
 		free_all(context.temp_allocator)
 		if bridge_bot_now_proc() >= w.ready_deadline_ms do return "launch_timeout", "", {}, false
-        snap, found := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
-        if w.live_row_retry_at_ms != 0 {
-            if found && bridge_runtime_status_active(snap.runtime_status) && snap.runtime_status != "stopping" {
-                w.live_row_retry_at_ms = 0
-            } else if bridge_bot_now_proc() >= w.live_row_retry_at_ms {
-                w.live_row_retry_at_ms = 0
-                ok, _, launch_err := bridge_bot_launch_proc(w.frame.agent_instance_id, w.frame.attempt_id)
-                if !ok do return "launch_failed", contracts.bridge_error_class_name(launch_err.class), launch_err, true
-            }
-        }
+		if w.live_row_retry_at_ms != 0 {
+			if bridge_bot_now_proc() >= w.live_row_retry_at_ms {
+				w.live_row_retry_at_ms = 0
+				ok, _, launch_err := bridge_bot_launch_proc(w.frame.agent_instance_id, w.frame.attempt_id)
+				if !ok do return "launch_failed", contracts.bridge_error_class_name(launch_err.class), launch_err, true
+			}
+			// While the refusal is unresolved, a stale ready projection cannot
+			// clear the retry or advance the worker to delivery.
+			if w.live_row_retry_at_ms != 0 {
+				bridge_bot_progress(w)
+				bridge_bot_sleep_proc(250)
+				continue
+			}
+		}
+		snap, found := bridge_bot_snapshot_proc(w.frame.agent_instance_id)
 		launch, has_launch := bridge_bot_launch_record_proc(w.frame.agent_instance_id)
 		launch_changed := !relaunched || (has_launch && launch.command_id != pre_id)
 		if launch_changed && has_launch do observed_record = true
