@@ -485,7 +485,7 @@ bridge_extension_remove :: proc(provider, bin_path: string, deadline: time.Time,
 bridge_extension_install_once :: proc(prov, ext_path, bin_path, mp_root: string, install_deadline: time.Time, sink: Bridge_Extension_Sink) -> (code, message: string, ok: bool) {
 	kind := bridge_extension_kind(prov)
 	if mp_name := bridge_extension_marketplace_name(prov); mp_name != "" {
-		bridge_extension_sink_progress(sink, "installing", 25, fmt.tprintf("Registering %s local plugin marketplace...", "Claude" if kind == .Claude_Plugin else "Codex"))
+		bridge_extension_sink_progress(sink, "installing", 25, fmt.tprintf("Registering %s local plugin marketplace...", bridge_provider_traits(prov).display_name))
 		_, msg, registered := bridge_extension_install_step({bin_path, "plugin", "marketplace", "add", mp_root}, install_deadline, sink.env)
 		// Another source holds the name (e.g. an older Bridge's bundle): replace it
 		// here instead of depending on a second, possibly time-starved attempt.

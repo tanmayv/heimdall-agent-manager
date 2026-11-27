@@ -231,13 +231,14 @@ test_bridge_extension_ensure_reports_through_sink :: proc(t: ^testing.T) {
 	root := test_install_fixture(t)
 	defer _ = os.remove_all(root)
 	test_install_reset(t, "sink")
-	Capture :: struct { stages: [dynamic]string, reports: int }
-	capture := Capture{stages = make([dynamic]string, context.temp_allocator)}
+	Capture :: struct { stages, messages: [dynamic]string, reports: int }
+	capture := Capture{stages = make([dynamic]string, context.temp_allocator), messages = make([dynamic]string, context.temp_allocator)}
 	sink := Bridge_Extension_Sink{
 		data = &capture,
 		progress = proc(data: rawptr, stage: string, pct: int, message: string) {
 			c := (^Capture)(data)
 			append(&c.stages, strings.clone(stage, context.temp_allocator))
+			append(&c.messages, strings.clone(message, context.temp_allocator))
 		},
 		report = proc(data: rawptr, results: []Bridge_Provider_Path) { (^Capture)(data).reports += 1 },
 	}
@@ -246,6 +247,10 @@ test_bridge_extension_ensure_reports_through_sink :: proc(t: ^testing.T) {
 	testing.expect_value(t, result.version, "0.4.31")
 	testing.expect(t, len(capture.stages) > 0)
 	testing.expect_value(t, capture.reports, 1)
+	// The marketplace label is the registry display name.
+	labelled := false
+	for m in capture.messages do if m == "Registering Codex local plugin marketplace..." do labelled = true
+	testing.expectf(t, labelled, "%v", capture.messages)
 }
 
 test_sync_discover_present: [3]bool
