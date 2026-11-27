@@ -2,6 +2,7 @@ package provider
 
 import "core:encoding/json"
 import "core:strings"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -49,7 +50,10 @@ resolve_runtime_transport :: proc(service: ^Provider_Service, bridge_id, provide
  return transport,{}
 }
 
-require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: domain.Provider_Catalog_Entry) -> domain.Domain_Error {
+// redetect: a non-ready report asks the online bridge to re-detect (G5,
+// acp_redetect.odin); the settings save passes false because its handler
+// starts the tracked install/Re-check itself.
+require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: domain.Provider_Catalog_Entry, redetect := true) -> domain.Domain_Error {
  bridge,found,err:=iface.bridge_get_bridge(service.bridges,bridge_id)
  if err.code!=.None do return err
  if !found do return domain.domain_error(.Not_Found,"bridge not found")
@@ -69,6 +73,8 @@ require_acp_ready :: proc(service: ^Provider_Service, bridge_id: string, entry: 
   }
  }
  verdict:=classify_acp_availability(entry.provider,entry.acp_recipe_json,bridge.capabilities_json,adapter_json)
+ // The launch still fails now; a retry sees the bridge's fresh report.
+ if redetect do acp_gate_redetect(bridge,entry.provider,adapter_json,verdict,time.now())
  return acp_availability_error(entry.provider,verdict,adapter_json,has_status)
 }
 
@@ -166,7 +172,7 @@ update_bridge_provider_settings :: proc(service: ^Provider_Service, bridge: doma
   delete(selected)
   // Offline saves are allowed. Clearing/reverting never needs readiness.
   if input.transport=="acp" && bridge.status==.Online {
-   if e:=require_acp_ready(service,bridge.bridge_id,entry);e.code!=.None do return e
+   if e:=require_acp_ready(service,bridge.bridge_id,entry,redetect=false);e.code!=.None do return e
   }
  }
  if !input.has_transport {

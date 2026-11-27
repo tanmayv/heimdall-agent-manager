@@ -97,7 +97,11 @@ export async function refreshBridgeProviderCatalog(bridgeId: string): Promise<an
   return discoverBridgeProviders(bridgeId, 'models', false);
 }
 
-/** Explicit discovery stage; reads never start probes. */
+/**
+ * Explicit, awaited discovery stage. A status read never waits on a probe; the
+ * Hub itself asks the bridge to re-detect a stale ACP report in the background
+ * (G5), and the next read shows the result.
+ */
 export async function discoverBridgeProviders(bridgeId: string, stage: 'providers' | 'models', invalidate = true, providers?: string[]) {
   const raw = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/discover`, 'POST', providers?.length ? { stage, providers } : { stage });
   if (invalidate) invalidateBridgeProviderStatus(bridgeId);

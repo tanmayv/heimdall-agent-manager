@@ -751,6 +751,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.bot_handlers = http.Bot_Handlers{auth = &graph.auth, bots = &graph.bots, experiments = &graph.experiment_repo, content = &graph.repos.content, cards = &graph.repos.cards}
 	graph.bridges.provider_repo = graph.providers.repo
 	graph.provider_handlers = http.Provider_Handlers{auth = &graph.auth, providers = &graph.providers, bridges = &graph.bridges, bridge_runtime_registry = &graph.bridge_runtime_registry, clock = &graph.clock, ids = &graph.ids, agents = &graph.agents, event_bus = &graph.event_bus}
+	// G5: launch gates and stale status reads ask the bridge to re-detect.
+	provider_service.acp_redetect_register(http.provider_acp_redetect_dispatch, &graph.provider_handlers)
 	graph.agent_action_handlers.providers = &graph.providers
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
@@ -780,6 +782,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 }
 
 shutdown_graph :: proc(graph: ^App_Graph) {
+	provider_service.acp_redetect_register(nil, nil) // the handlers die with the graph
 	eventrelay.stop(&graph.event_relay)
 	eventinbox.stop(&graph.event_inbox_runtime)
 	eventinbox.counters_destroy(&graph.event_inbox)
