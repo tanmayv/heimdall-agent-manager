@@ -229,7 +229,8 @@ try {
       if (request.url().startsWith(origin + '/') || /^(blob|data):/.test(request.url())) return request.continue();
       return request.abort();
     });
-    await page.goto(origin + '/' + new URL(link).hash, {waitUntil: 'domcontentloaded'});
+    assert.equal(new URL(link).origin, origin, 'owner link uses the configured UI origin');
+    await page.goto(link, {waitUntil: 'domcontentloaded'});
     return {
       async waitForImage() {
         try {

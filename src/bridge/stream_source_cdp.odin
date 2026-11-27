@@ -203,16 +203,21 @@ stream_capture_worker :: proc(data: rawptr) {
 	defer delete(session)
 	stage = "session"
 	if !stream_cdp_target_valid(session) do return
+	fmt.eprintln("bridge stream: CDP attached")
 	stage = "start"
 	if !stream_cdp_command(&conn, 3, session, "Page.startScreencast",
 		struct {format: string, quality, maxWidth, maxHeight: int}{"jpeg", 60, contracts.STREAM_MAX_WIDTH, contracts.STREAM_MAX_HEIGHT}) { return }
 	if _, started := stream_cdp_wait(&conn, 3); !started do return
+	fmt.eprintln("bridge stream: screencast started")
 	defer _ = stream_cdp_command(&conn, 4, session, "Page.stopScreencast", struct {}{})
 
 	buf := make([dynamic]byte)
 	defer delete(buf)
 	stage = "receive"
 	request_id := 4
+	first_frame := true
+	first_frame_wait := time.tick_now()
+	reported_wait := false
 	for {
 		sync.mutex_lock(&stream_mu)
 		stop := live.worker_stop
@@ -220,6 +225,10 @@ stream_capture_worker :: proc(data: rawptr) {
 		live.acked = 0
 		sync.mutex_unlock(&stream_mu)
 		if stop do return
+		if first_frame && !reported_wait && time.tick_since(first_frame_wait) >= 5 * time.Second {
+			fmt.eprintln("bridge stream: waiting for first screencast frame")
+			reported_wait = true
+		}
 		for _ in 0..<acked {
 			request_id += 1
 			if !stream_cdp_ack(&conn, request_id, session, ack_session) do return
@@ -247,6 +256,10 @@ stream_capture_worker :: proc(data: rawptr) {
 			discard_session = int(frame_session)
 		} else {
 			discard_session = stream_offer_frame(live, data, int(frame_session))
+			if first_frame {
+				fmt.eprintln("bridge stream: first screencast frame")
+				first_frame = false
+			}
 		}
 		if discard_session != 0 {
 			request_id += 1
@@ -259,10 +272,16 @@ stream_cdp_ack :: proc(conn: ^httpc.WebSocket, id: int, session: string, frame_s
 	return stream_cdp_command(conn, id, session, "Page.screencastFrameAck", struct {sessionId: int}{frame_session})
 }
 
-stream_cdp_title :: proc(title: string) -> string {
-	if !utf8.valid_string(title) do return ""
+stream_cdp_title :: proc(raw_title: string) -> string {
+	if !utf8.valid_string(raw_title) do return "Browser tab"
+	title := strings.trim_space(raw_title)
+	if len(title) >= len("data:") && strings.equal_fold(title[:len("data:")], "data:") do return "Data URL tab"
+	if title == "" do return "Browser tab"
 	for ch, offset in title {
-		if ch < 0x20 || ch >= 0x7f && ch <= 0x9f || offset >= 197 do return title[:offset]
+		if ch < 0x20 || ch >= 0x7f && ch <= 0x9f || (len(title) > 200 && offset >= 194) {
+			if offset == 0 do return "Browser tab"
+			return strings.concatenate({strings.trim_space(title[:offset]), "…"}, context.temp_allocator)
+		}
 	}
 	return title
 }

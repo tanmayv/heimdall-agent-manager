@@ -836,6 +836,11 @@ agent_action_context_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if conv_ok { strings.write_string(&b, fmt.tprintf("%d", conv.unread_count)) } else { strings.write_string(&b, "0") }
 	strings.write_string(&b, "},\"current_task\":")
 	write_agent_current_task_json(&b, h, auth, inst)
+	if h.auth != nil && h.auth.web.ui_origin != "" {
+		strings.write_string(&b, ",\"ui_origin\":\"")
+		write_handler_json_string(&b, h.auth.web.ui_origin)
+		strings.write_byte(&b, '"')
+	}
 	strings.write_string(&b, ",\"next_cursor\":\""); write_handler_json_string(&b, auth_ctx_server_time(req)); strings.write_string(&b, "\"")
 	strings.write_byte(&b, '}')
 	publish_agent_action(h, inst, "context", "refreshed context")
