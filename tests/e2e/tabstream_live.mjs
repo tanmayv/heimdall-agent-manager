@@ -65,7 +65,7 @@ const waitFor = async (predicate, label, ms = 15000) => {
   throw new Error('Timed out waiting for ' + label);
 };
 const clients = new Set();
-let bridge, instance, capture, viewerBrowser, cdpProxy, cdpServer, eventTap, vite;
+let bridge, instance, capture, captureBrowser, viewerBrowser, cdpProxy, cdpServer, eventTap, vite;
 const captureMethods = [];
 let unpreparedCaptureStarts = 0;
 const needles = [];
@@ -116,8 +116,18 @@ try {
   const canonicalRoot = await fs.realpath(root);
   assert.ok(profile.startsWith(canonicalRoot + path.sep), 'browser profile belongs to fixture stack (empty=' + (profile === '') + ')');
   const fixture = path.join(root, 'fixture.html');
-  await fs.writeFile(fixture, '<title>' + fixtureTitle + '</title><canvas width="1280" height="800"></canvas>'
-    + '<style>body{margin:0;overflow:hidden}</style><script>'
+  await fs.writeFile(fixture, '<meta charset="utf-8"><title>' + fixtureTitle + '</title>'
+    + '<canvas width="1280" height="800"></canvas>'
+    + '<section><button id="owner">Owner click</button> <button id="agent">Agent click</button> '
+    + '<input id="typing" autocomplete="off"><p id="drag">Drag here</p></section>'
+    + '<style>body{margin:0;height:2400px}canvas{position:fixed;inset:0;pointer-events:none}'
+    + 'section{position:absolute;top:100px;left:100px;background:white;padding:24px}'
+    + '#drag{width:210px;height:65px;background:lightblue;user-select:none}</style><script>'
+    + 'window.actions={owner:0,agent:0,drag:0};'
+    + 'for(const id of ["owner","agent"])document.getElementById(id).onclick=()=>actions[id]++;'
+    + 'let dragStart;document.getElementById("drag").onmousedown=e=>{dragStart=e.clientX};'
+    + 'document.onmouseup=e=>{if(dragStart!==undefined){actions.drag=e.clientX-dragStart;dragStart=undefined}};'
+    + 'window.dragHeld=()=>dragStart!==undefined;'
     + 'const c=document.querySelector("canvas").getContext("2d");function draw(t){'
     + 'for(let y=0;y<800;y+=12)for(let x=0;x<1280;x+=12){'
     + 'c.fillStyle="hsl("+((x*57+y*37+t)%360)+" 100% 50%)";c.fillRect(x,y,12,12)}requestAnimationFrame(draw)}requestAnimationFrame(draw)</script>');
@@ -133,18 +143,23 @@ try {
   const realCdp = 'http://127.0.0.1:' + realPort;
   const target = await waitFor(async () => (await (await fetch(realCdp + '/json/list')).json())
     .find(t => t.type === 'page' && t.title === fixtureTitle)?.id, 'animated CDP tab');
-  const captureBrowser = await puppeteer.connect({
+  captureBrowser = await puppeteer.connect({
     browserWSEndpoint: 'ws://127.0.0.1:' + realPort + wsPath,
     defaultViewport: null,
   });
-  try {
-    const source = (await captureBrowser.pages()).find(p => p.url() === 'file://' + fixture);
-    assert.ok(source, 'headless source page');
-    const foreground = await captureBrowser.newPage();
-    await foreground.bringToFront();
-    assert.equal(await source.evaluate(() => document.hasFocus()), false, 'source begins unfocused');
-  } finally {
-    await captureBrowser.disconnect();
+  const source = (await captureBrowser.pages()).find(p => p.url() === 'file://' + fixture);
+  assert.ok(source, 'headless source page');
+  const foreground = await captureBrowser.newPage();
+  await foreground.bringToFront();
+  assert.equal(await source.evaluate(() => document.hasFocus()), false, 'source begins unfocused');
+  let alternate;
+  if (!expiryOnly) {
+    const title = fixtureTitle + ' alternate';
+    await foreground.goto('file://' + fixture + '#alternate');
+    await foreground.evaluate(title => { document.title = title; }, title);
+    const id = await waitFor(async () => (await (await fetch(realCdp + '/json/list')).json())
+      .find(t => t.type === 'page' && t.title === title)?.id, 'second animated CDP tab');
+    alternate = { target: id, title };
   }
   cdpProxy = new WebSocketServer({ noServer: true });
   cdpServer = http.createServer((req, res) => {
@@ -158,13 +173,17 @@ try {
       const upstream = new WebSocket('ws://127.0.0.1:' + realPort + wsPath);
       const enabledPages = new Set();
       const focusedPages = new Set();
+      let attachedTarget;
       downstream.on('message', bytes => {
         const { method, sessionId, params } = JSON.parse(bytes.toString());
+        if (method === 'Target.attachToTarget') attachedTarget = params.targetId;
         if (sessionId && method === 'Page.enable') enabledPages.add(sessionId);
         if (sessionId && method === 'Emulation.setFocusEmulationEnabled' && params?.enabled === true
           && enabledPages.has(sessionId)) focusedPages.add(sessionId);
         if (method === 'Page.startScreencast' && !focusedPages.has(sessionId)) unpreparedCaptureStarts += 1;
-        if (method === 'Page.startScreencast' || method === 'Page.stopScreencast') captureMethods.push(method);
+        if (method === 'Page.startScreencast' || method === 'Page.stopScreencast') {
+          captureMethods.push({ method, target: attachedTarget });
+        }
         if (upstream.readyState === WebSocket.OPEN) upstream.send(bytes, {binary: false});
         else upstream.once('open', () => upstream.send(bytes, {binary: false}));
       });
@@ -251,7 +270,10 @@ try {
     });
     assert.equal(new URL(link).origin, origin, 'owner link uses the configured UI origin');
     await page.goto(link, {waitUntil: 'domcontentloaded'});
+    const waitForState = state => page.waitForFunction(label => document.body.innerText
+      .split('\n').some(line => line.trim() === label), {}, state);
     return {
+      page,
       async waitForImage() {
         try {
           await page.waitForFunction(() =>
@@ -260,10 +282,9 @@ try {
           throw new Error('Viewer image missing (stream HTTP ' + statuses.join(',') + ', page errors ' + errors.join(',') + ')', {cause: error});
         }
       },
-      waitForEnded: () => page.waitForFunction(() => document.body.innerText.includes('The shared tab is no longer streaming')),
-      waitForExpired: () => page.waitForFunction(() => [...document.querySelectorAll('[role=status]')]
-        .some(node => node.textContent.startsWith('Expired'))),
-      waitForUnavailable: () => page.waitForFunction(() => document.body.innerText.includes('Stream not found')),
+      waitForEnded: () => waitForState('Ended'),
+      waitForExpired: () => waitForState('Expired'),
+      waitForUnavailable: () => waitForState('Unavailable'),
       close: () => page.close(),
     };
   };
@@ -313,6 +334,9 @@ try {
       return entry.isDirectory() ? walk(file) : entry.isFile() ? file : [];
     }))).flat();
   const audit = {
+    input(marker) {
+      needles.push(Buffer.from(marker), Buffer.from(Buffer.from(marker).toString('base64')));
+    },
     register({id, target, title}) {
       for (const value of [id, target, title]) needles.push(Buffer.from(value));
     },
@@ -333,20 +357,23 @@ try {
       for (const needle of needles) assert.equal(observed.includes(needle), false, 'stream data in event bus');
       assert.deepEqual(await dbSchema(), initialSchema);
       const files = await walk(local);
+      assert.ok(files.includes(db), 'audit found the fixture Hub SQLite file');
+      assert.ok(files.includes(path.join(path.dirname(db), 'logs', 'hub.log')), 'audit found the fixture Hub log');
       for (const file of files.filter(file => /(?:hub\.db(?:-wal|-shm)?$|nats.*(?:store|jetstream)|\.log$)/.test(file))) {
         const raw = await fs.readFile(file);
         for (const needle of needles) assert.equal(raw.includes(needle), false,
-          'stream identifier, title, target, or JPEG signature in ' + path.relative(local, file));
+          'stream identifier, title, target, JPEG signature, or input marker in ' + path.relative(local, file));
       }
     },
   };
-  await checkTabStream({cli, ownerRequest, foreignRequest, openViewer, openPage, target, audit, waitFor, expiryOnly,
-    waitForCapture: method => waitFor(() => captureMethods.includes(method), method),
+  await checkTabStream({cli, ownerRequest, foreignRequest, openViewer, openPage, target, alternate, source, audit, waitFor, expiryOnly,
+    waitForCapture: (method, tab = target) => waitFor(() =>
+      captureMethods.some(event => event.method === method && event.target === tab), method),
     closeTab: async () => assert.equal((await fetch(realCdp + '/json/close/' + target)).status, 200),
     report: stats => console.log(JSON.stringify(stats)),
   });
   if (expiryOnly) console.log('PASS real short-TTL share expiry, owner viewer closure, denial and persistence audit');
-  else console.log('PASS real CLI share, owner/non-owner relay, viewer page, rate/control, detach, stop, tab close and persistence scan');
+  else console.log('PASS real CLI share, owner/non-owner relay, viewer Control with concurrent agent action, switcher, rate, detach, stop, tab close and persistence scan');
 } finally {
   eventTap?.destroy();
   for (const client of clients) client.terminate();
@@ -354,6 +381,7 @@ try {
   await vite?.close();
   for (const client of cdpProxy?.clients ?? []) client.terminate();
   cdpServer?.close();
+  captureBrowser?.disconnect();
   capture?.kill();
   if (instance) await api('/agent-instances/' + instance.agent_instance_id + '/stop', 'POST', {}).catch(() => {});
   for (const kind of ['bridge', 'hub']) await launch(kind, 'stop').catch(() => {});
