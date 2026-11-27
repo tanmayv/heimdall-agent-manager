@@ -36,9 +36,8 @@ ctl_extension_command :: proc(cmd: []string, args: []string) {
 	case "hook":
 		if !ext.env_ready(env) do return
 		provider := cmd[2] if len(cmd) > 2 else ""
-		if provider != ext.CLAUDE_PROVIDER && provider != ext.CODEX_PROVIDER && provider != ext.ANTIGRAVITY_PROVIDER {
-			return
-		}
+		// Only providers whose registry descriptor has a Heimdall extension.
+		if !ext.hook_provider_supported(provider) do return
 		raw, ok := ctl_extension_read_stdin()
 		if !ok do return
 		env.ts = ctl_extension_now_rfc3339()

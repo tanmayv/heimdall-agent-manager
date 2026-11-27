@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 import metrics "odin_test:lib/metrics"
 
 // Fleet / WebSocket metric families (hub telemetry plan 3.1, 3.4). They live in
@@ -223,14 +224,11 @@ bridge_frame_kind :: proc(frame_type: string) -> string {
 	return "other"
 }
 
-// provider_enum maps a bridge-reported provider/program name onto the hub's
-// provider catalog ids; anything else is "other".
+// provider_enum maps a bridge-reported provider name onto the bounded metrics
+// label: a registered provider's canonical id (aliases included), else "other".
+// The provider registry is the single source (G7).
 provider_enum :: proc(provider: string) -> string {
-	switch provider {
-	case "claude", "codex", "copilot", "antigravity", "gemini":
-		return provider
-	}
-	return "other"
+	return contracts.provider_telemetry_name(provider)
 }
 
 // bridge_command_error_code maps a domain error code name onto a fixed set.

@@ -1535,3 +1535,53 @@ provider_status_accepts_relayed_instance_token_read_only :: proc(t: ^testing.T) 
 	put_resp := bridge_provider_enable_handler(&f.ph, instance_request(headers, "PUT", fmt.tprintf("/api/v1/bridges/%s/providers/claude", f.bridge_id)))
 	testing.expect(t, put_resp.status == 401 || put_resp.status == 403, fmt.tprintf("mutating provider route stays user-only: %d %s", put_resp.status, put_resp.body))
 }
+
+// GET /api/v1/bridges/{id}/providers rows carry descriptor-derived fields the UI
+// reads instead of its own provider lists: extension.installable (active row +
+// extension JSON + a registry extension) and profile_config_dir.
+@(test)
+test_bridge_provider_row_descriptor_fields :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	row :: proc(provider, state, extension_json: string) -> string {
+		view := provider_service.Bridge_Provider_View{
+			catalog = domain.Provider_Catalog_Entry{provider = provider, state = state, extension_json = extension_json},
+		}
+		b := strings.builder_make()
+		write_bridge_provider_view_json(&b, view, "")
+		text := strings.to_string(b)
+		parsed, err := json.parse_string(text)
+		if err != nil do return ""
+		_ = parsed
+		return text
+	}
+	EXT :: `{"plugin_id":"heimdall@x","min_version":"1.0.0","install_hint":"h","capabilities":["activity"]}`
+
+	claude := row("claude", "active", EXT)
+	testing.expect(t, strings.contains(claude, `"capabilities":["activity"],"installable":true}`), claude)
+	testing.expect(t, strings.contains(claude, `"profile_config_dir":{"field":"config_dir","env":"CLAUDE_CONFIG_DIR"}`), claude)
+
+	codex := row("codex", "active", EXT)
+	testing.expect(t, strings.contains(codex, `"installable":true`), codex)
+	testing.expect(t, strings.contains(codex, `"profile_config_dir":{"field":"home_path","env":"CODEX_HOME"}`), codex)
+
+	agy := row("antigravity", "active", EXT)
+	testing.expect(t, strings.contains(agy, `"installable":true`), agy)
+	testing.expect(t, strings.contains(agy, `"profile_config_dir":null`), agy)
+
+	// Extension JSON alone is not enough: the registry has no copilot extension.
+	copilot := row("copilot", "active", EXT)
+	testing.expect(t, strings.contains(copilot, `"installable":false`), copilot)
+	testing.expect(t, strings.contains(copilot, `"profile_config_dir":{"field":"config_dir","env":"COPILOT_HOME"}`), copilot)
+
+	kiro := row("kiro", "active", "")
+	testing.expect(t, strings.contains(kiro, `"extension":null`), kiro)
+	testing.expect(t, strings.contains(kiro, `"profile_config_dir":{"field":"config_dir","env":"KIRO_HOME"}`), kiro)
+
+	retired := row("claude", "retired", EXT)
+	testing.expect(t, strings.contains(retired, `"installable":false`), retired)
+
+	unknown := row("custom-cli", "active", EXT)
+	testing.expect(t, strings.contains(unknown, `"installable":false`), unknown)
+	testing.expect(t, strings.contains(unknown, `"profile_config_dir":null`), unknown)
+	for text in ([]string{claude, codex, agy, copilot, kiro, retired, unknown}) do testing.expect(t, text != "", "row is valid JSON")
+}

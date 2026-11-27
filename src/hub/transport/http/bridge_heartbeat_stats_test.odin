@@ -172,6 +172,12 @@ test_heartbeat_stats_number_parsing :: proc(t: ^testing.T) {
 	testing.expect_value(t, project_service.provider_enum("codex"), "codex")
 	testing.expect_value(t, project_service.provider_enum("CLAUDE"), "other")
 	testing.expect_value(t, project_service.provider_enum(""), "other")
+	// Every registered provider has its own label; gemini is no provider.
+	testing.expect_value(t, project_service.provider_enum("kiro"), "kiro")
+	testing.expect_value(t, project_service.provider_enum("opencode"), "opencode")
+	testing.expect_value(t, project_service.provider_enum("pi"), "pi")
+	testing.expect_value(t, project_service.provider_enum("claude-code"), "claude")
+	testing.expect_value(t, project_service.provider_enum("gemini"), "other")
 }
 
 @(test)

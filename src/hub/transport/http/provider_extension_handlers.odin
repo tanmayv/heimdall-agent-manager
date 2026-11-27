@@ -26,14 +26,12 @@ extension_command_set_state :: proc(
 	command.progress = clamp(progress, 0, 100)
 }
 
+// extension_install_supported: an active catalog row with an extension
+// descriptor, for a provider whose registry entry has a Heimdall extension.
 extension_install_supported :: proc(view: provider_service.Bridge_Provider_View) -> bool {
-	return(
-		view.catalog.state == "active" &&
-		view.catalog.extension_json != "" &&
-		(view.catalog.provider == "antigravity" ||
-				view.catalog.provider == "claude" ||
-				view.catalog.provider == "codex") \
-	)
+	if view.catalog.state != "active" || view.catalog.extension_json == "" do return false
+	d, ok := contracts.provider_descriptor(view.catalog.provider)
+	return ok && d.extension != .None
 }
 
 extension_command_json :: proc(command: domain.Provider_Extension_Command) -> string {
