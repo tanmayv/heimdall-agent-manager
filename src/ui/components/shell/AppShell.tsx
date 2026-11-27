@@ -1949,7 +1949,8 @@ function AuthenticatedShell({ user }: { user: AuthUser }) {
     return (
       <main className="window-gate-pad fixed inset-x-0 top-0 app-viewport-height w-full overflow-hidden bg-canvas text-primary">
         <Suspense fallback={<div className="grid h-full place-items-center"><Spinner size="lg" label="Connecting" /></div>}>
-          <StreamViewerPage key={streamId} streamId={streamId} onBack={() => closeViewer()} />
+          <StreamViewerPage key={streamId} streamId={streamId} onBack={() => closeViewer()}
+            onSwitch={id => { window.location.hash = buildRouteHash('/streams/' + id, ''); }} />
         </Suspense>
       </main>
     );
