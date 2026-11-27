@@ -2,6 +2,7 @@
 // STREAM_CHROMIUM=/path/to/chromium node tests/e2e/stream_viewer_browser.mjs EVIDENCE_DIR
 // Real app, styles and WebSocket framing against an isolated synthetic HTTP/WS peer.
 import assert from 'node:assert/strict';
+import { EventEmitter, once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +22,11 @@ let pendingMetadata;
 let latestSocket;
 let connections = 0;
 let input = [];
+const received = new EventEmitter();
+async function waitForInput(predicate) {
+  const signal = AbortSignal.timeout(3000);
+  while (!predicate(input)) await once(received, 'input', { signal });
+}
 const sockets = new WebSocketServer({ noServer: true });
 const respond = (res, status, data) => {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -90,6 +96,7 @@ const server = await createServer({
             assert.equal(frame.payload.stream_id, id);
             assert.ok(frame.payload.events.length > 0 && frame.payload.events.length <= 32);
             input.push(...frame.payload.events);
+            received.emit('input');
           });
         });
       });
@@ -104,6 +111,7 @@ try {
   browser = await puppeteer.launch({ executablePath: process.env.STREAM_CHROMIUM, headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-background-networking'] });
   for (const [width, height] of [[1440, 900], [390, 780]]) {
+    input = [];
     const page = await browser.newPage();
     const failures = [];
     page.on('pageerror', error => failures.push(error.message));
@@ -122,6 +130,11 @@ try {
       const revoke = URL.revokeObjectURL;
       window.revokedStreamUrls = [];
       URL.revokeObjectURL = url => { window.revokedStreamUrls.push(url); revoke(url); };
+      const bufferedAmount = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'bufferedAmount');
+      Object.defineProperty(WebSocket.prototype, 'bufferedAmount', {
+        ...bufferedAmount,
+        get() { return window.streamInputBackpressure ? 65536 : bufferedAmount.get.call(this); },
+      });
       const timers = new Map();
       let timerId = -1;
       const nativeSet = window.setTimeout.bind(window);
@@ -252,8 +265,10 @@ try {
         await drag(p.x, p.y, -40);
         await page.keyboard.press('A');
         await page.mouse.wheel({ deltaY: 112 });
+        await waitForInput(events => events.some(event => event.kind === 'wheel' && event.dy === 112));
       }
-      // Disable flushes pending events before ending input capture.
+      // The synthetic peer witnesses input before assertions inspect it.
+      if (phone) await waitForInput(events => events.some(event => event.kind === 'text'));
       await page.keyboard.press('Escape');
       await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-pressed') === 'false', {}, control);
       const actions = input.filter(event => event.kind === 'pointer');
@@ -291,6 +306,17 @@ try {
       const attached = connections;
       const original = latestSocket;
 
+      // Hold input through an idle reconnect. Even if the socket is congested,
+      // its final discrete releases should be sent before the old peer closes.
+      input = [];
+      await page.evaluate(() => { window.streamInputBackpressure = true; });
+      await page.focus(control);
+      await page.keyboard.press('Enter');
+      await page.mouse.move(p.x, p.y);
+      await page.mouse.down();
+      await page.mouse.move(p.x + 30, p.y);
+      await page.keyboard.down('Shift');
+
       // Leave the socket open and silent. A transport close must not be what
       // drives this state. Advance only viewer timers, not request/paint clocks.
       await page.evaluate(() => window.advanceStreamTimers());
@@ -298,6 +324,13 @@ try {
       await page.waitForFunction(() => window.streamPendingTimers() > 0);
       assert.equal(connections, attached + 1);
       assert.notEqual(latestSocket, original);
+      await page.mouse.up();
+      await page.keyboard.up('Shift');
+      await page.evaluate(() => { window.streamInputBackpressure = false; });
+      await waitForInput(events => events.some(event => event.kind === 'key' && event.action === 'up'));
+      assert.deepEqual(input.map(({ kind, action }) => [kind, action]), [
+        ['pointer', 'down'], ['key', 'down'], ['pointer', 'up'], ['key', 'up'],
+      ]);
       assert.equal(await page.$eval(image, img => img.src), frameUrl, 'retain last frame during auto-retry');
       assert.ok(await page.$eval('button[aria-label="Reconnect"]', el => el.classList.contains('bg-surface-raised')));
       const advanceWithoutRetry = async () => {

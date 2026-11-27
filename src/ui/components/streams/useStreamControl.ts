@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type RefObject } from 'react';
-import { streamKey, streamPoint, streamText, type StreamInputEvent } from './streamInput.ts';
+import { createStreamInputPacer, streamKey, streamPoint, streamText, type StreamInputEvent } from './streamInput.ts';
 
 type Pointer = Extract<StreamInputEvent, { kind: 'pointer' }>;
 type Key = Extract<StreamInputEvent, { kind: 'key' }>;
@@ -20,31 +20,10 @@ export function useStreamControl(
   const keys = useRef(new Map<string, Key>());
   const composing = useRef(false);
   const touch = useRef(false);
-  const pending = useRef<StreamInputEvent[]>([]);
-  const animation = useRef(0);
   const sender = useRef(send);
   sender.current = send;
-
-  function flush() {
-    cancelAnimationFrame(animation.current);
-    animation.current = 0;
-    const events = pending.current;
-    pending.current = [];
-    if (events.length) sender.current(events);
-  }
-
-  function queue(event: StreamInputEvent) {
-    const events = pending.current;
-    const last = events.at(-1);
-    if (event.kind === 'pointer' && event.action === 'move' &&
-        last?.kind === 'pointer' && last.action === 'move' && last.buttons === event.buttons) {
-      events[events.length - 1] = event;
-    } else {
-      events.push(event);
-    }
-    if (events.length === 32) flush();
-    else if (!animation.current) animation.current = requestAnimationFrame(flush);
-  }
+  const [pacer] = useState(() => createStreamInputPacer(events => sender.current(events)));
+  const { push: queue, flush } = pacer;
 
   function release(e?: PointerEvent<HTMLDivElement>) {
     const current = pointer.current;
@@ -130,16 +109,12 @@ export function useStreamControl(
   useEffect(() => {
     if (!ready) {
       setEnabled(false);
-      pointer.current = undefined;
-      keys.current.clear();
-      composing.current = false;
-      cancelAnimationFrame(animation.current);
-      animation.current = 0;
-      pending.current = [];
+      blur();
+      pacer.clear();
     }
   }, [ready]);
 
-  useEffect(() => () => cancelAnimationFrame(animation.current), []);
+  useEffect(() => () => pacer.clear(), [pacer]);
 
   useEffect(() => {
     const field = input.current;

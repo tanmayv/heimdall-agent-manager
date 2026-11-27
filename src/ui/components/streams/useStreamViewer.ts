@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { apiAbsoluteUrl } from '../../api/apiBase.ts';
 import { createFrameAssembler } from './streamFrames.ts';
 
-import { streamInputMessage, type StreamInputEvent } from './streamInput.ts';
+import { isContinuousInput, streamInputMessage, type StreamInputEvent } from './streamInput.ts';
 
 export type StreamStatus = 'loading' | 'waiting' | 'live' | 'paused' | 'ended' | 'expired' | 'unavailable' | 'unauthorized' | 'error';
 type Metadata = { title: string; expires: number };
@@ -44,7 +44,7 @@ export function streamFailure(status: number | undefined, known: Metadata | unde
   return 'error';
 }
 
-export function useStreamViewer(id: string) {
+export function useStreamViewer(id: string, beforePause?: RefObject<(() => void) | undefined>) {
   const [status, setStatus] = useState<StreamStatus>('loading');
   const [meta, setMeta] = useState<Metadata>();
   const [image, setImage] = useState<string>();
@@ -106,6 +106,8 @@ export function useStreamViewer(id: string) {
 
     const onIdle = () => {
       if (finished || signal.aborted) return;
+      // Flush held input while the old viewer socket is still writable.
+      beforePause?.current?.();
       liveInput.current = undefined;
       setStatus('paused');
       if (retried) return;
@@ -164,9 +166,9 @@ export function useStreamViewer(id: string) {
           setImage(next);
           const peer = socket;
           liveInput.current = events => {
-            if (peer?.readyState === WebSocket.OPEN && peer.bufferedAmount < 64 * 1024 && events.length) {
-              peer.send(streamInputMessage(id, events));
-            }
+            if (peer?.readyState !== WebSocket.OPEN) return;
+            const batch = peer.bufferedAmount < 64 * 1024 ? events : events.filter(event => !isContinuousInput(event));
+            if (batch.length) peer.send(streamInputMessage(id, batch));
           };
           setStatus('live');
           clearTimeout(idle);
@@ -191,7 +193,7 @@ export function useStreamViewer(id: string) {
       }
       clearImage();
     };
-  }, [id, attempt]);
+  }, [id, attempt, beforePause]);
 
   return { status, meta, image, sendInput: (events: StreamInputEvent[]) => liveInput.current?.(events), reconnect: () => setAttempt(value => value + 1) };
 }

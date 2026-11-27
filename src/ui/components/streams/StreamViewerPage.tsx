@@ -21,7 +21,8 @@ const labels = {
 } satisfies Record<StreamStatus, string>;
 
 export default function StreamViewerPage({ streamId, onBack, onSwitch }: { streamId: string; onBack: () => void; onSwitch: (id: string) => void }) {
-  const { status, image, meta, reconnect, sendInput } = useStreamViewer(streamId);
+  const beforePause = useRef<(() => void) | undefined>(undefined);
+  const { status, image, meta, reconnect, sendInput } = useStreamViewer(streamId, beforePause);
   const [formRefresh, setFormRefresh] = useState(0);
   const title = meta?.title || 'Shared tab';
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -33,6 +34,7 @@ export default function StreamViewerPage({ streamId, onBack, onSwitch }: { strea
   const [{ mode, pan }, setView] = useState<{ mode: FitMode; pan: Pan }>({ mode: 'fit-width', pan: centeredPan });
   const frame = image && natural ? fitFrame(mode, natural, viewport) : viewport;
   const control = useStreamControl(status === 'live' && !!natural, viewportRef, imageRef, sendInput);
+  beforePause.current = control.blur;
   const offset = clampPan(pan, frame, viewport);
   const canPan = frame.width > viewport.width || frame.height > viewport.height;
 
