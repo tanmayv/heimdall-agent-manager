@@ -1,6 +1,7 @@
 package provider
 
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:time"
 import domain "odin_test:hub/domain"
@@ -23,12 +24,14 @@ redetect_fake :: proc(ctx: rawptr, bridge_id, provider: string, kind: ACP_Redete
 @(private = "file")
 redetect_setup :: proc(f: ^Redetect_Fixture) {
 	acp_redetector_init(&f.r, redetect_fake, f)
+	f.r.inline = true
 }
 
 @(private = "file")
 redetect_reset :: proc(f: ^Redetect_Fixture) {
 	acp_redetector_destroy(&f.r)
 	acp_redetector_init(&f.r, redetect_fake, f)
+	f.r.inline = true
 }
 
 @(private = "file")
@@ -124,4 +127,28 @@ test_acp_stale_status_read_redetects_once :: proc(t: ^testing.T) {
 	testing.expect_value(t, acp_redetect_kind("kiro", `{"state":"outdated"}`), ACP_Redetect_Kind.Recheck)
 	testing.expect_value(t, acp_redetect_kind("kiro", stale), ACP_Redetect_Kind.Discover)
 	testing.expect_value(t, acp_redetect_kind("claude", `{"state":"missing"}`), ACP_Redetect_Kind.Discover)
+}
+
+@(private = "file") slow_done: int
+
+@(private = "file")
+redetect_slow :: proc(ctx: rawptr, bridge_id, provider: string, kind: ACP_Redetect_Kind) {
+	time.sleep(50 * time.Millisecond)
+	sync.atomic_add(&slow_done, 1)
+}
+
+// Dispatches run on workers the redetector owns; destroy joins them, so no
+// worker outlives the handlers it was given.
+@(test)
+test_acp_redetector_destroy_joins_workers :: proc(t: ^testing.T) {
+	r: ACP_Redetector
+	acp_redetector_init(&r, redetect_slow, nil)
+	sync.atomic_store(&slow_done, 0)
+	started := time.now()
+	testing.expect(t, acp_request_redetect(&r, "b", "claude", .Discover, time.now()))
+	testing.expect(t, acp_request_redetect(&r, "b", "kiro", .Recheck, time.now()))
+	testing.expect(t, time.since(started) < 40 * time.Millisecond, "the caller never waits on the dispatch")
+	acp_redetector_destroy(&r)
+	testing.expect_value(t, sync.atomic_load(&slow_done), 2)
+	testing.expect(t, !acp_request_redetect(&r, "b", "pi", .Discover, time.now()), "a destroyed redetector dispatches nothing")
 }

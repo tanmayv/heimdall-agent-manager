@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:encoding/json"
 import "core:strings"
 import "core:sync"
+import "core:thread"
 import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -25,7 +26,8 @@ ACP_STATUS_STALE_AFTER :: 10 * time.Minute
 
 ACP_Redetect_Kind :: enum u8 { Discover, Recheck }
 
-// Sends the tracked command and returns at once (the transport layer).
+// Creates and sends the command (the transport layer). It runs on a worker
+// thread the redetector owns, never on the gate or read that asked.
 ACP_Redetect_Dispatcher :: proc(ctx: rawptr, bridge_id, provider: string, kind: ACP_Redetect_Kind)
 
 // ACP_Redetector owns the dispatcher and the dedupe window. It lives on the
@@ -37,6 +39,33 @@ ACP_Redetector :: struct {
 	dispatch: ACP_Redetect_Dispatcher,
 	ctx: rawptr,
 	last: map[string]time.Time, // bridge \x1f provider -> last request (heap)
+	// Every dispatch runs on a worker counted here; destroy joins them all, so
+	// no worker outlives the handlers it uses. inline runs dispatches on the
+	// caller instead (unit tests).
+	workers: sync.Wait_Group,
+	inline: bool,
+}
+
+@(private = "file")
+ACP_Redetect_Job :: struct {
+	r: ^ACP_Redetector,
+	dispatch: ACP_Redetect_Dispatcher,
+	ctx: rawptr,
+	bridge_id, provider: string,
+	kind: ACP_Redetect_Kind,
+}
+
+@(private = "file")
+acp_redetect_worker :: proc(data: rawptr) {
+	job := (^ACP_Redetect_Job)(data)
+	heap := runtime.heap_allocator()
+	defer {
+		r := job.r
+		delete(job.bridge_id, heap); delete(job.provider, heap); free(job, heap)
+		free_all(context.temp_allocator)
+		sync.wait_group_done(&r.workers)
+	}
+	job.dispatch(job.ctx, job.bridge_id, job.provider, job.kind)
 }
 
 acp_redetector_init :: proc(r: ^ACP_Redetector, dispatch: ACP_Redetect_Dispatcher, ctx: rawptr) {
@@ -44,11 +73,15 @@ acp_redetector_init :: proc(r: ^ACP_Redetector, dispatch: ACP_Redetect_Dispatche
 	r.dispatch, r.ctx = dispatch, ctx
 }
 
-// acp_redetector_destroy stops dispatching and frees the window.
+// acp_redetector_destroy stops new dispatches, joins the workers in flight,
+// then frees the window. Call it before the dispatcher's context goes away.
 acp_redetector_destroy :: proc(r: ^ACP_Redetector) {
 	if r == nil do return
-	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
+	sync.mutex_lock(&r.mutex)
 	r.dispatch, r.ctx = nil, nil
+	sync.mutex_unlock(&r.mutex)
+	sync.wait_group_wait(&r.workers)
+	sync.mutex_lock(&r.mutex); defer sync.mutex_unlock(&r.mutex)
 	for key in r.last do delete(key, runtime.default_allocator())
 	delete(r.last); r.last = nil
 }
@@ -76,8 +109,16 @@ acp_request_redetect :: proc(r: ^ACP_Redetector, bridge_id, provider: string, ki
 		delete(old, runtime.default_allocator())
 	}
 	r.last[strings.clone(key, runtime.default_allocator())] = now
+	inline := r.inline
+	// Counted under the lock, so destroy cannot miss a worker being started.
+	if !inline do sync.wait_group_add(&r.workers, 1)
 	sync.mutex_unlock(&r.mutex)
-	dispatch(ctx, bridge_id, provider, kind)
+	if inline { dispatch(ctx, bridge_id, provider, kind); return true }
+	heap := runtime.heap_allocator()
+	job := new(ACP_Redetect_Job, heap)
+	job^ = {r = r, dispatch = dispatch, ctx = ctx, bridge_id = strings.clone(bridge_id, heap), provider = strings.clone(provider, heap), kind = kind}
+	context.allocator = heap // the Thread record must outlive a per-request arena
+	thread.run_with_data(rawptr(job), acp_redetect_worker)
 	return true
 }
 

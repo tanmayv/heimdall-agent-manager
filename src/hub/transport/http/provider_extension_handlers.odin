@@ -1,11 +1,9 @@
 package http
 
-import "base:runtime"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
-import "core:thread"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import platform "odin_test:hub/platform"
@@ -130,40 +128,22 @@ provider_acp_install_start :: proc(h: ^Provider_Handlers, bridge_id, provider: s
     return id, {}
 }
 
-// G5 re-detection (provider_service acp_redetect.odin). The gate or status read
-// that asks may run inside a unit of work or on a request thread, so the
-// tracked command is created and sent from a worker thread and never waited
-// on: a Recheck is the ordinary install_acp_adapter command (deduplicated
-// while one is in flight); a Discover is a provider-scoped "acp_redetect"
-// discovery whose report updates the status row.
-@(private = "file")
-Provider_ACP_Redetect_Job :: struct {
-	h: ^Provider_Handlers,
-	bridge_id, provider: string,
-	kind: provider_service.ACP_Redetect_Kind,
-}
-
+// G5 re-detection (provider_service acp_redetect.odin). This runs on the
+// redetector's worker thread (joined at graph shutdown), so the gate or status
+// read that asked never waits: a Recheck is the ordinary install_acp_adapter
+// command (deduplicated while one is in flight); a Discover is a
+// provider-scoped "acp_redetect" discovery whose report updates the row.
 provider_acp_redetect_dispatch :: proc(ctx: rawptr, bridge_id, provider: string, kind: provider_service.ACP_Redetect_Kind) {
-	heap := runtime.heap_allocator()
-	job := new(Provider_ACP_Redetect_Job, heap)
-	job^ = {h = (^Provider_Handlers)(ctx), bridge_id = strings.clone(bridge_id, heap), provider = strings.clone(provider, heap), kind = kind}
-	context.allocator = heap // the Thread record must outlive a per-request arena
-	thread.run_with_data(rawptr(job), provider_acp_redetect_worker)
-}
-
-@(private = "file")
-provider_acp_redetect_worker :: proc(data: rawptr) {
-	job := (^Provider_ACP_Redetect_Job)(data)
-	heap := runtime.heap_allocator()
-	defer { delete(job.bridge_id, heap); delete(job.provider, heap); free(job, heap); free_all(context.temp_allocator) }
-	if job.kind == .Recheck {
-		id, err := provider_acp_install_start(job.h, job.bridge_id, job.provider)
-		if err.code != .None do fmt.eprintfln("acp re-detect: recheck %s on %s not sent: %s", job.provider, job.bridge_id, err.message)
+	h := (^Provider_Handlers)(ctx)
+	if kind == .Recheck {
+		id, err := provider_acp_install_start(h, bridge_id, provider)
+		if err.code != .None do fmt.eprintfln("acp re-detect: recheck %s on %s not sent: %s", provider, bridge_id, err.message)
 		delete(id)
 		return
 	}
-	_, err := provider_acp_redetect_start(job.h, job.bridge_id, job.provider)
-	if err.code != .None do fmt.eprintfln("acp re-detect: discover %s on %s not sent: %s", job.provider, job.bridge_id, err.message)
+	id, err := provider_acp_redetect_start(h, bridge_id, provider)
+	if err.code != .None do fmt.eprintfln("acp re-detect: discover %s on %s not sent: %s", provider, bridge_id, err.message)
+	delete(id)
 }
 
 // provider_acp_redetect_start sends one provider-scoped discovery as a tracked
