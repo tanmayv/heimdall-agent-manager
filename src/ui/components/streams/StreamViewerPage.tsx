@@ -1,53 +1,120 @@
-import { Alert, Button, EmptyState, PageShell, Panel, Spinner, StatusPill, Text } from '@ui';
+import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { IconButton, Spinner, Text } from '@ui';
 import { useStreamViewer, type StreamStatus } from './useStreamViewer.ts';
+import { centeredPan, clampPan, fitFrame, toggleFit, type FitMode, type Pan, type Size } from './streamViewport.ts';
 
-const copy = {
-  loading: ['Connecting', 'Checking access to this shared tab.'],
-  waiting: ['Waiting', 'Connected. The first image will appear here.'],
-  live: ['Live', 'You’re seeing the latest image from the shared tab.'],
-  paused: ['Paused', 'No new images are arriving. Reconnect to check the stream.'],
-  ended: ['Ended', 'The shared tab is no longer streaming. Ask the sender for a new link.'],
-  expired: ['Expired', 'This stream reached its time limit. Ask the sender for a new link.'],
-  unavailable: ['Unavailable', 'This link may have expired or may belong to another account.'],
-  unauthorized: ['Access required', 'Sign in with the account this stream was shared with, then reconnect.'],
-  error: ['Connection error', 'The stream could not be reached. Check your connection and try again.'],
-} as const satisfies Record<StreamStatus, readonly [string, string]>;
+const labels = {
+  loading: 'Connecting',
+  waiting: 'Waiting',
+  live: 'Live',
+  paused: 'Paused',
+  ended: 'Ended',
+  expired: 'Expired',
+  unavailable: 'Unavailable',
+  unauthorized: 'Unauthorized',
+  error: 'Disconnected',
+} satisfies Record<StreamStatus, string>;
 
-export default function StreamViewerPage({ streamId }: { streamId: string }) {
+export default function StreamViewerPage({ streamId, onBack }: { streamId: string; onBack: () => void }) {
   const { status, image, meta, reconnect } = useStreamViewer(streamId);
-  const [label, description] = copy[status];
-  const retry = status === 'paused' || status === 'error' || status === 'unauthorized' || status === 'unavailable';
-  const failure = status === 'error' || status === 'unauthorized';
-  const emptyTitle = { waiting: 'Waiting for the first image', paused: 'No image available',
-    ended: 'The stream has ended', expired: 'The link has expired', unavailable: 'Stream not found' };
-  const tone = status === 'live' ? 'success' : failure ? 'danger' : status === 'paused' ? 'warning' :
-    status === 'loading' || status === 'waiting' ? 'pending' : 'neutral';
+  const title = meta?.title || 'Shared tab';
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ id: number; x: number; y: number }>(undefined);
+  const [dragging, setDragging] = useState(false);
+  const [viewport, setViewport] = useState<Size>({ width: 0, height: 0 });
+  const [natural, setNatural] = useState<Size>();
+  const [{ mode, pan }, setView] = useState<{ mode: FitMode; pan: Pan }>({ mode: 'fit-width', pan: centeredPan });
+  const frame = image && natural ? fitFrame(mode, natural, viewport) : viewport;
+  const offset = clampPan(pan, frame, viewport);
+  const canPan = frame.width > viewport.width || frame.height > viewport.height;
+
+  useEffect(() => {
+    const node = viewportRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setViewport({ width, height });
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  function stopDrag() {
+    const node = viewportRef.current;
+    const id = drag.current?.id;
+    drag.current = undefined;
+    if (id !== undefined && node?.hasPointerCapture(id)) node.releasePointerCapture(id);
+    setDragging(false);
+  }
+
+  function pointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (!canPan || drag.current || event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    setDragging(true);
+  }
+
+  function pointerMove(event: PointerEvent<HTMLDivElement>) {
+    const active = drag.current;
+    if (!active || active.id !== event.pointerId) return;
+    const dx = event.clientX - active.x;
+    const dy = event.clientY - active.y;
+    drag.current = { id: active.id, x: event.clientX, y: event.clientY };
+    setView(previous => {
+      const current = clampPan(previous.pan, frame, viewport);
+      return { ...previous, pan: clampPan({ x: current.x + dx, y: current.y + dy }, frame, viewport) };
+    });
+  }
+
+  function pointerEnd(event: PointerEvent<HTMLDivElement>) {
+    if (drag.current?.id === event.pointerId) stopDrag();
+  }
 
   return (
-    <PageShell
-      title={<span className="break-words">{meta?.title || 'Shared tab'}</span>}
-      eyebrow="Tab stream"
-      description="Watch only. You can’t interact with the shared tab."
-      width="wide"
-      rhythm="banded"
-      actions={retry && <Button variant="primary" onClick={reconnect}>Reconnect</Button>}
-    >
-      <Panel tone="sunken" padding="none" className="overflow-hidden">
-        <div className="flex flex-wrap items-center gap-3 border-b border-subtle p-4" role="status" aria-live="polite">
-          <StatusPill tone={tone}>{label}</StatusPill>
-          {status === 'loading' && <Spinner size="sm" label="Checking access" />}
-          {(image || status === 'loading') && (
-            <Text role="body-sm" tone="muted">{status === 'paused' ? 'Showing the last received image.' : description}</Text>
-          )}
-        </div>
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas">
+      <header className="relative z-10 flex min-h-14 shrink-0 items-center gap-2 bg-canvas/90 px-3 py-2 shadow-sm backdrop-blur-md sm:min-h-12 sm:gap-3 sm:px-4">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 -bottom-6 h-6 bg-gradient-to-b from-canvas/90 via-canvas/50 to-transparent backdrop-blur-sm" />
+        <IconButton icon="arrow-left" label="Back" onClick={onBack} />
+        <h1 className="min-w-0 flex-1 truncate text-base font-semibold text-primary" title={title}>{title}</h1>
+        <IconButton icon="refresh" label="Reconnect" disabled={status === 'loading'} onClick={() => {
+          stopDrag();
+          setNatural(undefined);
+          setView(previous => ({ ...previous, pan: centeredPan }));
+          reconnect();
+        }} />
+        <IconButton icon={mode} label={mode === 'fit-width' ? 'Fit width (current). Switch to fit height' : 'Fit height (current). Switch to fit width'} onClick={() => {
+          stopDrag();
+          setView(previous => toggleFit(previous.mode));
+        }} />
+      </header>
+      <div
+        ref={viewportRef}
+        className={`relative min-h-0 flex-1 touch-none overflow-hidden ${canPan ? dragging ? 'cursor-grabbing' : 'cursor-grab' : ''}`}
+        onPointerDown={pointerDown}
+        onPointerMove={pointerMove}
+        onPointerUp={pointerEnd}
+        onPointerCancel={pointerEnd}
+        onLostPointerCapture={pointerEnd}
+      >
         {image ? (
-          <img className="block h-auto w-full" src={image} alt="Latest image of the shared tab" />
-        ) : failure ? (
-          <div className="p-4"><Alert tone="danger">{description}</Alert></div>
-        ) : status === 'loading' ? null : (
-          <div className="p-4"><EmptyState title={emptyTitle[status as keyof typeof emptyTitle] || label} description={description} /></div>
+          <img
+            className="pointer-events-none absolute left-1/2 top-1/2 block max-w-none select-none"
+            src={image}
+            alt="Latest image of the shared tab"
+            draggable={false}
+            style={{ width: frame.width, height: frame.height, transform: `translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px))`, visibility: natural ? undefined : 'hidden' }}
+            onLoad={({ currentTarget }) => {
+              const { naturalWidth: width, naturalHeight: height } = currentTarget;
+              setNatural(previous => previous?.width === width && previous.height === height ? previous : { width, height });
+            }}
+          />
+        ) : (
+          <div className="grid h-full place-items-center">
+            {status === 'loading' ? <Spinner size="lg" label="Connecting" /> :
+              <Text role="body-sm" tone="muted" aria-live="polite">{labels[status]}</Text>}
+          </div>
         )}
-      </Panel>
-    </PageShell>
+      </div>
+    </div>
   );
 }

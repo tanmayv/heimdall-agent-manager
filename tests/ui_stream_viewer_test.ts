@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createFrameAssembler } from '../src/ui/components/streams/streamFrames.ts';
+import { clampPan, fitFrame, toggleFit } from '../src/ui/components/streams/streamViewport.ts';
 import { streamFailure } from '../src/ui/components/streams/useStreamViewer.ts';
 import { resolveShellRoute } from '../src/ui/components/shell/shellRouting.ts';
 
@@ -59,4 +60,26 @@ test('session errors and 404 do not reveal ownership of an unknown stream', () =
 
 test('shell routing preserves stream deep links', () => {
   assert.equal(resolveShellRoute('/streams/' + id, ''), '/streams/' + id);
+});
+
+test('fitted frames pan only along the overflowing axis, without exposing empty space', () => {
+  const image = { width: 1600, height: 800 };
+  const desktop = { width: 1200, height: 400 };
+  const phone = { width: 400, height: 700 };
+  const wide = fitFrame('fit-width', image, desktop);
+  const tall = fitFrame('fit-height', image, phone);
+  assert.deepEqual(wide, { width: 1200, height: 600 });
+  assert.deepEqual(tall, { width: 1400, height: 700 });
+  assert.deepEqual(clampPan({ x: 2000, y: -2000 }, wide, desktop), { x: 0, y: -100 });
+  assert.deepEqual(clampPan({ x: 2000, y: -2000 }, tall, phone), { x: 500, y: 0 });
+  assert.deepEqual(clampPan({ x: -80, y: -30 }, tall, phone), { x: -80, y: 0 });
+  assert.deepEqual(clampPan({ x: -80, y: 30 }, fitFrame('fit-width', image, phone), phone), { x: 0, y: 0 });
+});
+
+test('switching either fit mode recenters instead of carrying over the previous pan', () => {
+  const initial = { mode: 'fit-width' as const, pan: { x: 0, y: 80 } };
+  const next = toggleFit(initial.mode);
+  assert.deepEqual(next, { mode: 'fit-height', pan: { x: 0, y: 0 } });
+  const moved = { ...next, pan: { x: -250, y: 0 } };
+  assert.deepEqual(toggleFit(moved.mode), { mode: 'fit-width', pan: { x: 0, y: 0 } });
 });
