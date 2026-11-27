@@ -36,10 +36,12 @@ if [[ -n "$rev" ]]; then
   cleanup() { git -C "$root" worktree remove --force "$wt" >/dev/null 2>&1 || true; }
   trap cleanup EXIT
   # The harness, plus the opt-in lock profile when the commit predates it:
-  # the commit that added lock_profile.odin is applied (3-way) to the worktree.
+  # every change since the commit that added lock_profile.odin, limited to the
+  # files that commit instrumented, is applied (3-way) to the worktree.
   if [[ ! -f "$wt/src/hub/platform/dbtelemetry/lock_profile.odin" ]]; then
     profile_commit=$(git -C "$root" log --diff-filter=A --format=%H -1 -- src/hub/platform/dbtelemetry/lock_profile.odin)
-    git -C "$root" show "$profile_commit" | git -C "$wt" apply --3way
+    mapfile -t profile_files < <(git -C "$root" show --format= --name-only "$profile_commit")
+    git -C "$root" diff "$profile_commit^" HEAD -- "${profile_files[@]}" | git -C "$wt" apply --3way
   fi
   cp "$root/src/hub/service/taskv2/scale_harness_test.odin" "$wt/src/hub/service/taskv2/"
   src_root=$wt
