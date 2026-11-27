@@ -18,7 +18,7 @@ export type AcpCopy =
   | { kind: 'problem'; text: string; action: { fix: AcpAvailabilityFix; label: string } | null; titled?: false };
 
 /** The action label when the fix re-detects a prerequisite the user installs. */
-export const ACP_RECHECK_LABEL = 'Check again';
+export const ACP_RECHECK_LABEL = 'Re-check'; // same label as the provider panel
 
 /** The warning alert's lead (design PNGs: "ACP isn't available." then the reason). */
 export const ACP_PROBLEM_TITLE = "ACP isn't available.";

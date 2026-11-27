@@ -128,17 +128,30 @@ ACP_NPM_DIAGNOSTIC_LINE_BYTES :: 240
 @(private = "file")
 acp_npm_secret_markers := [?]string{"token", "_auth", "authorization", "password", "passwd", "secret", "credential", "cookie", "bearer", "npm_config_", "api_key", "apikey", "private"}
 
-acp_adapter_npm_diagnostic :: proc(stderr: string, stdout: string = "", home: string = "\x00") -> string {
+acp_adapter_npm_diagnostic :: proc(stderr: string, stdout: string = "", homes: []string = nil) -> string {
     context.allocator = context.temp_allocator
-    // The bridge user's home directory is shown as ~ (no account name).
-    home := os.get_env("HOME", context.temp_allocator) if home == "\x00" else home
-    home = strings.trim_right(home, "/")
+    // The bridge user's home directory is shown as ~ (no account name): HOME,
+    // and on Windows USERPROFILE, also as JSON-escaped backslashes.
+    homes := homes
+    if homes == nil do homes = {os.get_env("HOME", context.temp_allocator), os.get_env("USERPROFILE", context.temp_allocator)}
+    masks := make([dynamic]string)
+    for home in homes {
+        trimmed := strings.trim_right(home, "/\\")
+        if len(trimmed) <= 3 do continue // never "/" or "C:\\"
+        append(&masks, trimmed)
+        if strings.contains(trimmed, "\\") {
+            escaped, _ := strings.replace_all(trimmed, "\\", "\\\\")
+            append(&masks, escaped)
+        }
+    }
+    // Longest first, so an escaped form is replaced before its plain prefix.
+    for i in 1..<len(masks) do for j := i; j > 0 && len(masks[j]) > len(masks[j-1]); j -= 1 do masks[j], masks[j-1] = masks[j-1], masks[j]
     source := stderr if strings.trim_space(stderr) != "" else stdout
     lines := make([dynamic]string)
     for raw in strings.split_lines(source) {
         line := strings.trim_space(raw)
         if line == "" do continue
-        if len(home) > 1 do line, _ = strings.replace_all(line, home, "~")
+        for mask in masks do line, _ = strings.replace_all(line, mask, "~")
         append(&lines, acp_npm_diagnostic_line(line))
     }
     first := max(0, len(lines) - ACP_NPM_DIAGNOSTIC_MAX_LINES)

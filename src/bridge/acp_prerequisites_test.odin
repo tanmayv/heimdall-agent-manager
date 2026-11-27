@@ -296,7 +296,11 @@ r2_acp_npm_diagnostic_is_bounded_and_redacted :: proc(t: ^testing.T) {
     testing.expect_value(t, acp_adapter_npm_diagnostic("npm error code ETIMEDOUT\x1b[31m"), "npm error code ETIMEDOUT?[31m")
     testing.expect_value(t, acp_adapter_npm_diagnostic("", "npm error from stdout"), "npm error from stdout")
     // Query strings are masked; the home directory reads as ~.
-    testing.expect_value(t, acp_adapter_npm_diagnostic("npm error GET https://registry.example/pkg?sig=abc&x=1 failed", home = ""), "npm error GET https://registry.example/pkg?*** failed")
-    testing.expect_value(t, acp_adapter_npm_diagnostic("npm error path /home/alice/.npm/_cacache\nnpm error see /home/alice/", home = "/home/alice/"), "npm error path ~/.npm/_cacache\nnpm error see ~/")
+    testing.expect_value(t, acp_adapter_npm_diagnostic("npm error GET https://registry.example/pkg?sig=abc&x=1 failed", homes = {""}), "npm error GET https://registry.example/pkg?*** failed")
+    testing.expect_value(t, acp_adapter_npm_diagnostic("npm error path /home/alice/.npm/_cacache\nnpm error see /home/alice/", homes = {"/home/alice/"}), "npm error path ~/.npm/_cacache\nnpm error see ~/")
+    // Windows: USERPROFILE with backslashes, raw and JSON-escaped.
+    testing.expect_value(t, acp_adapter_npm_diagnostic(`npm error path C:\Users\alice\AppData\npm-cache`, homes = {"", `C:\Users\alice`}), `npm error path ~\AppData\npm-cache`)
+    testing.expect_value(t, acp_adapter_npm_diagnostic(`npm error {"path":"C:\\Users\\alice\\x"}`, homes = {`C:\Users\alice`}), `npm error {"path":"~\\x"}`)
+    testing.expect_value(t, acp_adapter_npm_diagnostic("npm error /x", homes = {"/"}), "npm error /x")
     testing.expect_value(t, acp_adapter_npm_diagnostic("  \n"), "")
 }

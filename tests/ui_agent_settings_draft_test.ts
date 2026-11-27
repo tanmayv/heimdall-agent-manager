@@ -134,10 +134,10 @@ test('ACP copy is mapped from acp_availability reason/fix only', async () => {
   }
   // A missing host prerequisite names the tool, not the adapter (G4).
   assert.deepEqual(v('adapter_missing_node', 'install_adapter'), {
-    kind: 'problem', text: 'Node.js is missing or too old on dawnstar.', action: { fix: 'install_adapter', label: 'Check again' },
+    kind: 'problem', text: 'Node.js is missing or too old on dawnstar.', action: { fix: 'install_adapter', label: 'Re-check' },
   });
   assert.deepEqual(v('adapter_missing_npm', 'install_adapter'), {
-    kind: 'problem', text: 'npm is missing on dawnstar.', action: { fix: 'install_adapter', label: 'Check again' },
+    kind: 'problem', text: 'npm is missing on dawnstar.', action: { fix: 'install_adapter', label: 'Re-check' },
   });
   assert.deepEqual(v('installing', null), { kind: 'installing', text: 'Installing the ACP adapter on dawnstar…' });
   assert.deepEqual(v('not_checked', 'check_now'), {
