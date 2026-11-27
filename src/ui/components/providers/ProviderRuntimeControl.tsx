@@ -101,6 +101,10 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
   // The Hub's verdict decides; the bridge's report only supplies display text.
   const verdict = status.acp_availability || ACP_NOT_CHECKED;
   const acpReason = acpDisabledReason(verdict, status.acp_adapter);
+  // A missing host prerequisite is fixed by the user; the action re-detects it.
+  const prerequisite = verdict.reason === 'adapter_missing_node' || verdict.reason === 'adapter_missing_npm';
+  const adapterError = status.acp_adapter?.error || '';
+  const installCommand = status.acp_adapter?.install_command || '';
   const installable = status.transports.includes('acp') && (verdict.fix === 'install_adapter' || verdict.fix === 'check_now');
   const failed = command?.status === 'failed' || command?.status === 'cancelled';
   const system = provider === 'opencode' || acpSystemRuntime(status.acp_adapter);
@@ -125,16 +129,20 @@ export default function ProviderRuntimeControl({ setup, status, disabledReason =
         {installable ? <Button size="sm" variant="secondary" data-debug-id={`providers-acp-install-${provider}`}
           title={disabledReason || acpReason || undefined}
           disabled={Boolean(disabledReason) || !setup.acp_runtime_supported || busy || active}
-          onClick={() => void install()}>{system ? 'Re-check' : 'Install adapter'}</Button> : null}
+          onClick={() => void install()}>{system || prerequisite ? 'Re-check' : 'Install adapter'}</Button> : null}
         {status.transports.includes('acp') ? <Button size="sm" variant="ghost" data-debug-id={`providers-acp-check-${provider}`}
           disabled={busy} onClick={() => void checkStatus()}>Check status</Button> : null}
       </div>
       <Text role="caption" tone="muted">Shared by all {status.display_name} profiles on this bridge. Applies on the next launch; existing instances keep their runtime.</Text>
-      {reason || (status.transports.includes('acp') && acpReason) ? <p className="text-xs text-muted">{reason || acpReason}</p> : null}
+      {/* The bridge's own error is shown once, in the status block below. */}
+      {reason || (status.transports.includes('acp') && acpReason && acpReason !== adapterError) ? <p className="text-xs text-muted">{reason || acpReason}</p> : null}
       {status.transports.includes('acp') ? <div data-debug-id={`providers-acp-status-${provider}`} role="status" className="space-y-1 break-words text-xs text-muted">
         <p>{acpAdapterSummary(status.acp_adapter)}</p>
-        {status.acp_adapter?.error ? <p className="text-danger">{status.acp_adapter.error}</p> : null}
-        {status.acp_adapter?.install_command ? <p data-debug-id={`providers-acp-install-command-${provider}`}>Run on the bridge host: <code className="break-all">{status.acp_adapter.install_command}</code></p> : null}
+        {/* The install command appears once: inline when the message ends with it. */}
+        {adapterError ? <p className="text-danger">{installCommand && adapterError.endsWith(installCommand)
+          ? <>{adapterError.slice(0, -installCommand.length)}<code data-debug-id={`providers-acp-install-command-${provider}`} className="break-all">{installCommand}</code></>
+          : adapterError}</p> : null}
+        {installCommand && !adapterError.endsWith(installCommand) ? <p>Run on the bridge host: <code data-debug-id={`providers-acp-install-command-${provider}`} className="break-all">{installCommand}</code></p> : null}
         {status.acp_adapter?.diagnostic ? <pre data-debug-id={`providers-acp-diagnostic-${provider}`} className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-surface-raised p-2 text-xs">{status.acp_adapter.diagnostic}</pre> : null}
         {command ? <p className={failed ? 'text-danger' : ''}>{system ? 'Check' : 'Installation'}: {command.status}{command.message ? ` · ${command.message}` : ''}</p> : null}
         {active && !timedOut ? <progress aria-label={system ? 'ACP CLI check progress' : 'ACP adapter installation progress'} max={100} value={Math.max(0, Math.min(100, command?.progress_percent || 0))} /> : null}

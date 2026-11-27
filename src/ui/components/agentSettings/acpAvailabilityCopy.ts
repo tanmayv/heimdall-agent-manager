@@ -17,6 +17,9 @@ export type AcpCopy =
    */
   | { kind: 'problem'; text: string; action: { fix: AcpAvailabilityFix; label: string } | null; titled?: false };
 
+/** The action label when the fix re-detects a prerequisite the user installs. */
+export const ACP_RECHECK_LABEL = 'Check again';
+
 /** The warning alert's lead (design PNGs: "ACP isn't available." then the reason). */
 export const ACP_PROBLEM_TITLE = "ACP isn't available.";
 
@@ -44,10 +47,11 @@ export function acpAvailabilityCopy(
       return { kind: 'problem', text: `${names.provider} has no ACP support yet. Use PTY.`, action };
     case 'unsupported_bridge':
       return { kind: 'problem', text: `${names.bridge} runs a bridge version without ACP support. Update it to the latest release.`, action };
+    // The user installs the prerequisite; the action only re-detects it.
     case 'adapter_missing_node':
-      return { kind: 'problem', text: `Node.js is missing or too old on ${names.bridge}.`, action };
+      return { kind: 'problem', text: `Node.js is missing or too old on ${names.bridge}.`, action: action && { ...action, label: ACP_RECHECK_LABEL } };
     case 'adapter_missing_npm':
-      return { kind: 'problem', text: `npm is missing on ${names.bridge}.`, action };
+      return { kind: 'problem', text: `npm is missing on ${names.bridge}.`, action: action && { ...action, label: ACP_RECHECK_LABEL } };
     case 'adapter_missing':
     case 'adapter_outdated':
     case 'adapter_error':

@@ -65,10 +65,13 @@ test('missing npm and a failed npm install show the bridge command and redacted 
     let status = row({ acp_adapter: normalizeProviderRuntime({ acp_adapter: npm }).acp_adapter });
     assert.equal(status.acp_availability.reason, 'adapter_missing_npm');
     await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
-    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-command-claude"] code')?.textContent, 'sudo apt-get install -y npm');
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-command-claude"]')?.textContent, 'sudo apt-get install -y npm');
     assert.equal((h.doc.querySelector('option[value="acp"]') as HTMLOptionElement).disabled, true);
     assert.match(h.doc.body.textContent || '', /npm is required on the bridge host/);
-    assert.ok(h.doc.querySelector('[data-debug-id="providers-acp-install-claude"]'), 'Install adapter re-detects after the user installs npm');
+    // The message and its command are shown once, not repeated.
+    assert.equal((h.doc.body.textContent || '').split('sudo apt-get install -y npm').length - 1, 1);
+    assert.equal((h.doc.body.textContent || '').split('npm is required on the bridge host').length - 1, 1);
+    assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-install-claude"]')?.textContent, 'Re-check', 'the action re-detects after the user installs npm');
     status = row({ acp_adapter: normalizeProviderRuntime({ acp_adapter: failed }).acp_adapter });
     await h.render(React.createElement(ProviderRuntimeControl, { setup: setup({ providers: [status] }), status, onChange() {} }));
     assert.equal(h.doc.querySelector('[data-debug-id="providers-acp-diagnostic-claude"]')?.textContent, failed.diagnostic);
