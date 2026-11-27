@@ -98,7 +98,7 @@ main :: proc() {
 		return
 	}
 
-	if cmd[0] == "agent" || cmd[0] == "secure-form" || has_flag(os.args, "--agent-mode") {
+	if cmd[0] == "agent" || cmd[0] == "secure-form" || cmd[0] == "stream" || has_flag(os.args, "--agent-mode") {
 		ctl_agent_mode(cmd[:], os.args)
 		return
 	}

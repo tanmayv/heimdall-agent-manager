@@ -46,6 +46,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 		return
 	}
 	switch resource {
+	case "stream": ctl_stream(endpoint, token, rest); return
 	case "automations": ctl_v2_automations(endpoint, token, rest, args); return
 	case "context":       ctl_agentmode_context(endpoint, token, args); return
 	case "start-success": ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return
@@ -1872,6 +1873,7 @@ print_agent_help :: proc(cmd: []string) {
 		}
 	}
 	switch resource {
+	case "stream": ctl_stream_usage()
 	case "secure-form":
 		fmt.println("ham-ctl secure-form run --form <form.json> --script <absolute-path> [--timeout 180] [--execution-timeout 60]")
 		fmt.println("ham-ctl secure-form retry --request <request-id> --after-attempt <number>")

@@ -730,6 +730,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection, secure_form_generation := 
 	if sync.atomic_load(&bridge_hub_traffic_stopped) do return
 	defer bridge_tool_live_disconnect()
 	connection_generation := bridge_command_dispatch_begin_connection()
+	stream_connection(true)
+	defer stream_connection(false)
 	secure_form_hub_connected(secure_form_generation)
 	defer secure_form_hub_disconnected(secure_form_generation)
 	// PER-CONNECTION inbound chunk reassembly (REQ-SHELL-36). The hub splits any
@@ -779,11 +781,11 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection, secure_form_generation := 
 				assembled, complete, ok := hub_command_reassemble(&reassemblies, text)
 				if !ok { ws.abort(conn); delete(text); break }
 				if ok && complete {
-					if !secure_form_hub_receive(conn, secure_form_generation, assembled) && !bridge_command_dispatch(conn, assembled, connection_generation) do bridge_hub_handle_command(conn, assembled)
+					if !stream_hub_receive(assembled) && !secure_form_hub_receive(conn, secure_form_generation, assembled) && !bridge_command_dispatch(conn, assembled, connection_generation) do bridge_hub_handle_command(conn, assembled)
 					delete(assembled)
 				}
 			} else {
-				if !secure_form_hub_receive(conn, secure_form_generation, text) && !bridge_command_dispatch(conn, text, connection_generation) do bridge_hub_handle_command(conn, text)
+				if !stream_hub_receive(text) && !secure_form_hub_receive(conn, secure_form_generation, text) && !bridge_command_dispatch(conn, text, connection_generation) do bridge_hub_handle_command(conn, text)
 			}
 			delete(text)
 			if sync.atomic_load(&bridge_hub_traffic_stopped) do break
@@ -851,7 +853,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection, secure_form_generation := 
 		bridge_acp_runtime_probe_tick(now)
 		// Yield after a bounded burst. Idle connections retain the low-wake cadence;
 		// busy connections do not artificially process only 40 frames per second.
-		time.sleep(1 * time.Millisecond if inbound_count > 0 || pty_more || tunnel_more else 25 * time.Millisecond)
+		stream_more := stream_hub_drain(conn)
+		time.sleep(1 * time.Millisecond if inbound_count > 0 || pty_more || tunnel_more || stream_more else 25 * time.Millisecond)
 	}
 }
 

@@ -76,6 +76,7 @@ Bridge_Config :: struct {
 	// enabled-by-default.
 	local_proxy_configured: bool,
 	local_proxy_enabled: bool,
+	browser_cdp_port: u16,
 	auto_update_enabled: bool,
 	auto_update_configured: bool,
 	// REQ-AUP-3: hours an overdue automatic update may wait for a quiet window
@@ -410,6 +411,8 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.fs_read_page_bytes = int(n)
 	case "pty_host_runtime":
 		cfg.pty_host_runtime = parse_bool(value)
+	case "browser_cdp_port":
+		if port, ok := strconv.parse_int(value); ok && port > 0 && port <= 65535 do cfg.browser_cdp_port = u16(port)
 	case "local_proxy_enabled":
 		cfg.local_proxy_enabled = parse_bool(value); cfg.local_proxy_configured = true
 	case "auto_update_enabled":
