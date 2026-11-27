@@ -22,6 +22,12 @@ const profiles: any[] = ['claude', 'codex', 'antigravity', 'copilot', 'pi'].map(
 profiles.push({ ...profiles[0], profile_id: 'claude_work', environment: [
   { name: 'WORK_TOKEN', value: '', sensitive: true, value_redacted: true },
 ], config: { config_dir: '/bridge/work' } });
+// Mirrors the Hub's provider registry (profile_config_dir per provider).
+const profileConfigDirs: Record<string, { field: string; env: string }> = {
+  claude: { field: 'config_dir', env: 'CLAUDE_CONFIG_DIR' },
+  codex: { field: 'home_path', env: 'CODEX_HOME' },
+  copilot: { field: 'config_dir', env: 'COPILOT_HOME' },
+};
 const keyring = await importKeyring(serializeKeyringBytes({ userId: 'usr_test', vaultId: '7e57000000000001',
   currentEpoch: 1, entries: [{ epoch: 1, key: new Uint8Array(32).fill(17) }] }));
 setActiveVaultKey(keyring);
@@ -64,7 +70,9 @@ window.fetch = async (input, init = {}) => {
   if (url.endsWith('/provider-status') || url.endsWith('/providers/discover')) return json({ providers: profiles.map((p) => ({ ...p,
     display_name: p.provider === 'claude' ? 'Claude Code' : p.provider === 'codex' ? 'Codex' : p.provider,
     state: ['claude', 'codex'].includes(p.provider) ? 'present' : 'absent', catalog_state: 'active', version_text: '1.0',
-    models: [{ model_id: 'example-model', label: 'Example model', state: 'active' }], extension: { state: 'absent' },
+    models: [{ model_id: 'example-model', label: 'Example model', state: 'active' }],
+    extension: { state: 'absent', installable: ['claude', 'codex', 'antigravity'].includes(p.provider) },
+    profile_config_dir: profileConfigDirs[p.provider] ?? null,
   })) });
   if (url.endsWith('/experiments')) return json({ flags: [] });
   if (url.endsWith('/me')) return json({ user_id: 'usr_test', display_name: 'Layout test' });

@@ -16,19 +16,26 @@ import type { ProviderExtensionCommand } from '../src/ui/components/extension/ex
 const { heimdallApi } = await import('../src/ui/api/heimdallApi.ts');
 const { ProviderSetupSurface } = await import('../src/ui/components/providers/ProviderSetupSurface.tsx');
 const { default: BridgesPanel } = await import('../src/ui/components/settings/BridgesPanel.tsx');
-const { extensionInstallLabel, extensionInstallProgress, isExtensionInstallTerminal } = await import('../src/ui/components/extension/extensionInstallModel.ts');
+const { extensionInstallLabel, extensionInstallProgress, extensionUninstallable, isExtensionInstallTerminal } = await import('../src/ui/components/extension/extensionInstallModel.ts');
 const { normalizeProviderExtension } = await import('../src/ui/components/extension/extensionBadgeModel.ts');
 
-test('install actions are limited to supported installers and measured absent/outdated states', () => {
-  for (const provider of ['claude', 'codex', 'antigravity']) {
-    assert.equal(extensionInstallLabel(provider, normalizeProviderExtension({ state: 'absent' })), 'Install Extension');
-    assert.equal(extensionInstallLabel(provider, normalizeProviderExtension({ state: 'outdated', min_version: '0.4.31' })), 'Update to v0.4.31');
-    for (const state of ['present', 'disabled', 'error', 'unsupported', '']) {
-      assert.equal(extensionInstallLabel(provider, normalizeProviderExtension({ state })), '');
-    }
+test('install actions follow the Hub-declared installable flag and measured absent/outdated states', () => {
+  const ext = (fields: any) => normalizeProviderExtension({ installable: true, ...fields });
+  assert.equal(extensionInstallLabel(ext({ state: 'absent' })), 'Install Extension');
+  assert.equal(extensionInstallLabel(ext({ state: 'outdated', min_version: '0.4.31' })), 'Update to v0.4.31');
+  for (const state of ['present', 'disabled', 'error', 'unsupported', '']) {
+    assert.equal(extensionInstallLabel(ext({ state })), '');
   }
-  assert.equal(extensionInstallLabel('copilot', normalizeProviderExtension({ state: 'absent' })), '');
-  assert.equal(extensionInstallLabel('codex', null), '');
+  for (const state of ['present', 'outdated', 'disabled']) assert.equal(extensionUninstallable(ext({ state })), true);
+  for (const state of ['absent', 'error', '']) assert.equal(extensionUninstallable(ext({ state })), false);
+  // Not installable (or an older Hub that omits the flag): no install/update/uninstall, whatever the provider.
+  for (const raw of [{ state: 'absent', installable: false }, { state: 'absent' }, { state: 'absent', installable: 'true' }]) {
+    assert.equal(normalizeProviderExtension(raw)?.installable, false);
+    assert.equal(extensionInstallLabel(normalizeProviderExtension(raw)), '');
+    assert.equal(extensionUninstallable(normalizeProviderExtension({ ...raw, state: 'present' })), false);
+  }
+  assert.equal(normalizeProviderExtension({ state: 'absent', installable: true })?.installable, true);
+  assert.equal(extensionInstallLabel(null), '');
   for (const state of ['queued', 'dispatched', 'accepted', 'installing'] as const) assert.equal(isExtensionInstallTerminal(state), false);
   for (const state of ['succeeded', 'failed', 'cancelled'] as const) assert.equal(isExtensionInstallTerminal(state), true);
 });
@@ -45,7 +52,7 @@ test('success text requires present discovery', () => {
   assert.match(extensionInstallProgress(command, normalizeProviderExtension({ state: 'present' })), /installed and verified/);
 });
 
-async function surfaceHarness(options: { state?: string } = {}) {
+async function surfaceHarness(options: { state?: string; installable?: boolean } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.example.test/', pretendToBeVisual: true });
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
@@ -60,7 +67,7 @@ async function surfaceHarness(options: { state?: string } = {}) {
   const bridge = { bridge_id: 'bridge-1', label: 'Test bridge', status: 'online',
     version: '0.4.30', latest_version: '0.4.31', update_available: true, update_artifact_available: true };
   const provider = { provider: 'codex', display_name: 'Test provider', enabled: true, state: 'present', models: [],
-    extension: { state: options.state || 'absent', min_version: '0.4.31', version: '0.1.0' } };
+    extension: { state: options.state || 'absent', min_version: '0.4.31', version: '0.1.0', installable: options.installable ?? true } };
   globalThis.fetch = (async (input: any, init: any = {}) => {
     const path = new URL(String(input), 'https://hub.example.test').pathname;
     const method = init.method || 'GET';
@@ -138,6 +145,19 @@ test('ProviderSetupSurface offers Install/Update for absent or outdated extensio
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     assert.equal(h.requests.filter((r) => r.method === 'POST' && r.path.endsWith('/providers/codex/extension-install')).length, 1);
   } finally { await h.close(); }
+});
+
+test('ProviderSetupSurface offers no install, update, retry or uninstall when the Hub says not installable', async () => {
+  for (const state of ['absent', 'outdated', 'error', 'present']) {
+    const h = await surfaceHarness({ state, installable: false });
+    try {
+      await h.render();
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      for (const id of ['provider-extension-install-btn-codex', 'provider-extension-retry-btn-codex', 'provider-extension-uninstall-btn-codex']) {
+        assert.equal(h.query(id), null, `${id} hidden for ${state}`);
+      }
+    } finally { await h.close(); }
+  }
 });
 
 test('ProviderSetupSurface offers Uninstall for a registered extension, behind a confirmation', async () => {

@@ -243,16 +243,18 @@ export const providerProfilesApi = {
 
 export type ConfigDirectoryMode = 'inherit' | 'random' | 'custom';
 
-/** Providers whose profile can own a private config directory on the bridge. */
-export const configDirectoryProviders = new Set(['claude', 'kiro']);
+// Which providers support a profile config directory comes from the Hub
+// (ProviderStatusRow.profile_config_dir); these helpers are provider-agnostic.
 
 export function configDirectoryMode(value = ''): ConfigDirectoryMode {
   if (!value.trim()) return 'inherit';
-  return /(?:^|[\\/])\.heimdall-(?:claude|kiro)-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
+  return /(?:^|[\\/])\.heimdall-[a-z0-9_-]+-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
     ? 'random'
     : 'custom';
 }
 
-export function generateConfigDirectory(provider = 'claude'): string {
-  return `~/.heimdall-${provider === 'kiro' ? 'kiro' : 'claude'}-` + crypto.randomUUID();
+/** A fresh private directory name: ~/.heimdall-<provider>-<uuid>. */
+export function generateConfigDirectory(provider: string): string {
+  const slug = provider.toLowerCase().replace(/[^a-z0-9_-]/g, '') || 'provider';
+  return `~/.heimdall-${slug}-` + crypto.randomUUID();
 }

@@ -62,8 +62,8 @@ export default function ProviderExtensionInstallAction({ bridgeId, provider, pro
   const [retrying, setRetrying] = useState(false);
   const active = Boolean(tracked && !isExtensionInstallTerminal(tracked.status));
   const notified = useRef('');
-  const label = extensionInstallLabel(provider, extension);
-  const canUninstall = extensionUninstallable(provider, extension);
+  const label = extensionInstallLabel(extension);
+  const canUninstall = extensionUninstallable(extension);
   const requesting = installRequest.isLoading || uninstallRequest.isLoading;
   const uninstalling = active && extensionCommandKind(tracked) === 'uninstall';
 
@@ -107,7 +107,7 @@ export default function ProviderExtensionInstallAction({ bridgeId, provider, pro
     }
   }
 
-  const canRetryDiscovery = ['claude', 'codex', 'antigravity'].includes(provider) && extension?.state === 'error';
+  const canRetryDiscovery = Boolean(extension?.installable) && extension?.state === 'error';
   if (!label && !canUninstall && !tracked && !canRetryDiscovery) return null;
   const failed = tracked?.status === 'failed' || tracked?.status === 'cancelled';
 

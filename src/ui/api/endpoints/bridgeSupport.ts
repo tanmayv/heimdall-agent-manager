@@ -144,10 +144,22 @@ export function normalizeAcpAvailability(raw: any): AcpAvailability | null {
   };
 }
 
+/**
+ * Hub-declared profile config-directory support for a provider: which profile
+ * config field holds the directory and the environment variable it sets.
+ * null = the provider has no profile config directory (or the Hub predates it).
+ */
+export interface ProfileConfigDir { field: 'config_dir' | 'home_path'; env: string }
+export function normalizeProfileConfigDir(raw: any): ProfileConfigDir | null {
+  if (!raw || typeof raw !== 'object' || (raw.field !== 'config_dir' && raw.field !== 'home_path')) return null;
+  return { field: raw.field, env: typeof raw.env === 'string' ? raw.env : '' };
+}
+
 export interface ProviderModelStatus { model_id: string; label: string; state: string; resolved_model?: string }
 export interface ProviderStatusRow extends ModelCatalogMetadata, ProviderRuntimeFields {
   profile_id?: string; label?: string; label_enc?: string; accent?: string; profile_state?: string;
-  provider: 'claude' | 'codex' | 'copilot' | 'antigravity' | 'pi' | 'kiro' | 'opencode';
+  /** Provider id from the Hub's provider registry; open-ended, never a closed UI list. */
+  provider: string;
   display_name: string; icon_url: string; catalog_state: string;
   state: 'absent' | 'present'; binary_path: string; version_text: string; checked_at: string | null;
   enabled: boolean; models: ProviderModelStatus[];
@@ -155,11 +167,13 @@ export interface ProviderStatusRow extends ModelCatalogMetadata, ProviderRuntime
   extension: ProviderExtensionStatus | null;
   /** T2: Hub-computed ACP verdict for this bridge + provider; null from an older Hub. */
   acp_availability: AcpAvailability | null;
+  /** R1: Hub-declared profile config directory (field + env var); null = none or older Hub. */
+  profile_config_dir: ProfileConfigDir | null;
 }
 function normalizeProviderStatusRow(raw: any): ProviderStatusRow {
   return {
     ...raw,
-    provider: String(raw?.provider || '') as ProviderStatusRow['provider'],
+    provider: String(raw?.provider || ''),
     profile_id: String(raw?.profile_id || raw?.provider || ''), label_enc: String(raw?.label_enc || ''), accent: String(raw?.accent || ''), profile_state: String(raw?.profile_state || ''),
     display_name: String(raw?.display_name || raw?.provider || ''), icon_url: String(raw?.icon_url || ''),
     catalog_state: String(raw?.catalog_state || ''),
@@ -170,6 +184,7 @@ function normalizeProviderStatusRow(raw: any): ProviderStatusRow {
     ...normalizeModelCatalog(raw),
     extension: normalizeProviderExtension(raw?.extension),
     acp_availability: normalizeAcpAvailability(raw?.acp_availability),
+    profile_config_dir: normalizeProfileConfigDir(raw?.profile_config_dir),
     models: Array.isArray(raw?.models) ? raw.models.map((model: any) => ({
       ...model,
       model_id: String(model?.model_id || ''), label: String(model?.label || model?.model_id || ''),
