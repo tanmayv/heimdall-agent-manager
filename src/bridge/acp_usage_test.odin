@@ -9,8 +9,8 @@ import "core:testing"
 // per-instance accumulator as ham.ext.v1 extensions (extension_token_usage.odin).
 
 Usage_Test_Snapshot :: struct {
-    found, has_context, has_output: bool,
-    context_tokens, reported_window, output_tokens_total: i64,
+    found, has_context, has_output, pushed: bool,
+    context_tokens, reported_window, output_tokens_total, pushed_context: i64,
     source, session: string,
 }
 usage_test_snapshot :: proc(instance: string) -> (s: Usage_Test_Snapshot) {
@@ -18,7 +18,7 @@ usage_test_snapshot :: proc(instance: string) -> (s: Usage_Test_Snapshot) {
     for e in bridge_ext_states {
         if e.agent_instance_id != instance do continue
         u := e.token_usage
-        return {true, u.has_context, u.has_output_total, u.context_tokens, u.reported_window, u.output_tokens_total,
+        return {true, u.has_context, u.has_output_total, u.has_pushed, u.context_tokens, u.reported_window, u.output_tokens_total, u.last_push_context,
             strings.clone(u.context_source, context.temp_allocator), strings.clone(u.session_id, context.temp_allocator)}
     }
     return
@@ -61,6 +61,8 @@ acp_usage_update_reaches_token_accumulator :: proc(t: ^testing.T) {
     testing.expect_value(t, s.reported_window, i64(200000))
     testing.expect_value(t, s.source, ACP_USAGE_SOURCE)
     testing.expect_value(t, s.session, "s")
+    // The first snapshot goes to the hub at once (throttled push).
+    testing.expect(t, s.pushed && s.pushed_context == 53000)
     // Another session's update and replayed history do not move the snapshot.
     codex_test_frame(t, &f, 2, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"usage_update","used":1,"size":2}}}`)
     cmd := ACP_RPC_Command{kind = .Runtime, a = "on", runtime_work = usage_test_replay, runtime_data = &f}
@@ -73,6 +75,10 @@ acp_usage_update_reaches_token_accumulator :: proc(t: ^testing.T) {
     s = usage_test_snapshot(instance)
     testing.expect_value(t, s.context_tokens, i64(61000))
     testing.expect_value(t, s.reported_window, i64(1000000))
+    // Near-full context does not start a PTY-only context rollover.
+    codex_test_frame(t, &f, 5, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"usage_update","used":950000,"size":1000000}}}`)
+    testing.expect_value(t, usage_test_snapshot(instance).context_tokens, i64(950000))
+    testing.expect_value(t, bridge_rollover_phase_of(instance), Bridge_Rollover_Phase.Normal)
 }
 
 @(test)

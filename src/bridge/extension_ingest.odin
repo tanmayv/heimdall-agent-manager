@@ -172,8 +172,12 @@ bridge_ext_token_fold_locked :: proc(s: ^Bridge_Ext_Instance_State, instance_id:
 
 // bridge_ext_usage_observe feeds a provider usage report that did not arrive
 // as a ham.ext.v1 event (an ACP runtime's protocol usage notification) into
-// the same per-instance accumulator, throttled hub push and context rollover
-// as extension ingest. ev must carry has_usage; it belongs to the main agent.
+// the same per-instance accumulator and throttled hub push as extension
+// ingest. ev must carry has_usage; it belongs to the main agent.
+// Context rollover is deliberately not driven from here: its handoff request
+// is typed into a PTY and its idle signal comes from extension activity, so an
+// ACP runtime would enter a Requested phase it can never leave (which also
+// holds bot deliveries). The shared turn-based runtime brings ACP into it.
 bridge_ext_usage_observe :: proc(instance_id: string, ev: contracts.Ext_Event, now: i64) {
 	context.allocator = bridge_ext_allocator()
 	if strings.trim_space(instance_id) == "" || !ev.has_usage do return
@@ -183,7 +187,6 @@ bridge_ext_usage_observe :: proc(instance_id: string, ev: contracts.Ext_Event, n
 	token_changed := bridge_ext_token_fold_locked(s, instance_id, ev, now)
 	sync.mutex_unlock(&bridge_ext_mutex)
 	if token_changed do bridge_ext_token_enqueue_due(now, instance_id)
-	bridge_rollover_on_ext_event(instance_id, false, now)
 }
 
 bridge_ext_ingest_result_destroy :: proc(res: ^Bridge_Ext_Ingest_Result) {
