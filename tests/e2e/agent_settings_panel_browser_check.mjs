@@ -42,6 +42,8 @@ try {
       await q('conversation-agent-settings-btn').waitFor();
       await q('conversation-agent-settings-btn').click();
       await q('agent-panel-runtime').waitFor();
+      // Let the 200ms slide-in transition/animation settle before measuring bounding boxes.
+      await page.waitForTimeout(260);
       const mode = await q('agent-panel').getAttribute('data-mode');
       assert.equal(mode, expectedMode[width], `${width}: mode`);
       const dismiss = q(mode === 'page' ? 'agent-panel-back' : 'agent-panel-close');
@@ -53,6 +55,27 @@ try {
         box.y + box.height <= toggle.y || toggle.y + toggle.height <= box.y,
         `${width}: panel dismissal ${JSON.stringify(box)} overlaps side-panel toggle ${JSON.stringify(toggle)}`,
       );
+      if (mode !== 'page') {
+        const headerBox = await q('agent-panel-header').boundingBox();
+        const headingBox = await page.locator('[data-debug-id="agent-panel-header"] h2').boundingBox();
+        const subtitleBox = await q('agent-panel-subtitle').boundingBox();
+        const runtimeBox = await q('agent-panel-runtime').boundingBox();
+        assert.ok(headerBox && headingBox, `${width}: panel header and heading have bounding boxes`);
+        assert.ok(subtitleBox && runtimeBox, `${width}: subtitle and runtime section have bounding boxes`);
+        assert.equal(Math.round(headerBox.height), 48, `${width}: panel header height matches 48px top chrome`);
+        assert.ok(headingBox.height >= 26, `${width}: heading line-box height should leave room for descenders, got ${JSON.stringify(headingBox)}`);
+        assert.ok(subtitleBox.height >= 14, `${width}: subtitle should have visible height, got ${JSON.stringify(subtitleBox)}`);
+        assert.ok(
+          subtitleBox.y >= headerBox.y + headerBox.height - 1 && subtitleBox.y + subtitleBox.height <= runtimeBox.y + 1,
+          `${width}: subtitle ${JSON.stringify(subtitleBox)} sits below header ${JSON.stringify(headerBox)} and above runtime ${JSON.stringify(runtimeBox)}`,
+        );
+        const closeCenterY = box.y + box.height / 2;
+        const toggleCenterY = toggle.y + toggle.height / 2;
+        assert.ok(
+          Math.abs(closeCenterY - toggleCenterY) <= 2,
+          `${width}: close center Y (${closeCenterY}) should align with sidebar toggle center Y (${toggleCenterY})`,
+        );
+      }
       if (mode === 'docked') await q('workspace-aux-toggle').click({ trial: true });
       const heading = await page.evaluate(() => document.activeElement?.textContent);
       assert.equal(heading, width === 390 ? 'Agent settings' : 'Agent', 'focus on the panel heading');

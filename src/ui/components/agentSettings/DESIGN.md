@@ -20,9 +20,9 @@ model, its connection protocol (PTY or ACP) and its permissions.
 
 | Viewport            | Mode     | Behaviour |
 | ------------------- | -------- | --------- |
-| >= 1280px (`DOCK_MIN`) | docked | Flex sibling of the transcript in `AgentChatPane` (not an AuxDock tab), `flex-basis` 400px, max 440px, 1px left border. Esc does not close it. Open/closed persists per user (`userScopedStorageKey('agentSettingsPanel.open')`). |
-| 768–1279px          | drawer   | The same column in the `@ui` `Drawer` (right edge, max 440px): modal (`role="dialog"`, `aria-modal`, focus trap), Esc or the backdrop closes it, focus returns to the gear. Always starts closed; opening it is not persisted. |
-| < 768px             | page     | A full-width `Drawer`: 44px back button, title "Agent settings", subtitle "<agent> · <project>". Controls are >= 44px. Modal like the drawer. Starts closed; not persisted. |
+| >= 1280px (`DOCK_MIN`) | docked | Flex sibling of the transcript in `AgentChatPane` (not an AuxDock tab), `400px` wide with a 1px left border, sliding in and out over 200ms (`width` transition with a fixed-width inner column, matching `AuxDock`, and clean post-transition unmount). Esc does not close it. Open/closed persists per user (`userScopedStorageKey('agentSettingsPanel.open')`). |
+| 768–1279px          | drawer   | The same column in the `@ui` `Drawer` (right edge, max 440px, sliding in/out from the right with backdrop fade): modal (`role="dialog"`, `aria-modal`, focus trap), Esc or the backdrop closes it, focus returns to the gear. Always starts closed; opening it is not persisted. |
+| < 768px             | page     | A full-width `Drawer` sliding in/out from the right: 44px back button, `min-h-14` (56px) header with title "Agent settings" and subtitle "<agent> · <project>". Controls are >= 44px. Modal like the drawer. Starts closed; not persisted. |
 
 The gear `IconButton` in the conversation header (`aria-label="Agent settings"`,
 `aria-expanded`) toggles it; the "Agent settings" item in the ⋮ menu and the composer's
@@ -36,8 +36,12 @@ or before the flags load, the old modal opens instead and behaves exactly as bef
 
 Ninjy tokens and `@ui` components only. Panel `bg-surface` (bg-100) with a
 `border-subtle` left border; cards `bg-surface-raised` (bg-200), 1px `border-subtle`,
-radius 12, padding 16, no shadow. Section labels use the `overline` role; the panel title
-"Agent" uses `heading` in the display serif. Machine text (bridge, model, paths) uses
+radius 12, padding 16, no shadow. In `docked` and `drawer` modes, the header is a
+single-row `h-12` (48px) `items-center` bar matching `TOP_CHROME_HEIGHT` and the chat
+header/aux tab strip, holding the display-serif "Agent" heading and the `×` close
+button (so `×` aligns vertically with the right sidebar toggle); the muted
+`<agent> · <project>` subtitle sits at the top of the scrollable body above the Runtime
+card. Section labels use the `overline` role. Machine text (bridge, model, paths) uses
 `code` / `code-sm`. Gold (accent) appears only on Apply, selected checks, the selected
 connection card border and the bypass switch "on". Status words always come with
 colour, never colour alone: Running/Restarting use the info tint, Stopped is neutral.
