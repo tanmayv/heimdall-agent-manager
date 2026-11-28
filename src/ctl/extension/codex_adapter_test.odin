@@ -179,3 +179,64 @@ test_codex_hello_declares_usage_capability :: proc(t: ^testing.T) {
 	testing.expect_value(t, ev.kind, contracts.Ext_Event_Kind.Hello)
 	testing.expect(t, slice.contains(ev.capabilities[:], "usage"), "codex declares the usage capability")
 }
+
+// P26: Codex self-approves the agent's own ham-ctl traffic with the same rule
+// as Claude and Antigravity (is_ham_ctl_command): allowlisted verbs approve
+// locally with no bridge call; shell run|serve, connection-overriding flags,
+// chained commands, other tools and an unknown HEIMDALL_CTL_BIN still relay.
+@(private = "file", thread_local)
+codex_perm_calls: int
+
+@(private = "file")
+codex_perm_send :: proc(endpoint, token, method, params: string, timeout_ms: int) -> (string, bool) {
+	codex_perm_calls += 1
+	return `{"ok":true,"data":{"decision":"deny","message":"relayed"}}`, true
+}
+
+@(test)
+test_codex_permission_self_approves_ham_ctl :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	env := Hook_Env{endpoint = "unix:/tmp/none.sock", token = "hlat_x", ts = TS, ctl_bin = "/run/inst/bin/ham-ctl"}
+	ALLOW :: `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	bash :: proc(command: string) -> string {
+		b := strings.builder_make()
+		strings.write_string(&b, `{"session_id":"s1","turn_id":"t1","cwd":"/run/inst","hook_event_name":"PermissionRequest","permission_mode":"default","tool_name":"Bash","tool_input":{"command":`)
+		json_write_string(&b, command)
+		strings.write_string(&b, `}}`)
+		return strings.to_string(b)
+	}
+	for cmd in ([]string{
+		"./bin/ham-ctl chat read",
+		"/run/inst/bin/ham-ctl lease next",
+		"$HEIMDALL_CTL_BIN task comment t1 --body 'working'",
+		"./bin/ham-ctl agent start-success",
+	}) {
+		codex_perm_calls = 0
+		testing.expectf(t, hook_run("codex", bash(cmd), env, codex_perm_send) == ALLOW, "should self-approve: %s", cmd)
+		testing.expectf(t, codex_perm_calls == 0, "no bridge call for %s", cmd)
+	}
+	for cmd in ([]string{
+		"./bin/ham-ctl shell run --cmd 'rm -rf ~'",
+		"./bin/ham-ctl shell serve --port 8080",
+		"./bin/ham-ctl chat read --agent-token other",
+		"./bin/ham-ctl chat read --bridge-endpoint tcp:evil:1",
+		"./bin/ham-ctl review post t1 --verdict approve --on-behalf-of user",
+		"./bin/ham-ctl chat read && rm -rf /",
+		"ham-ctl chat read",
+	}) {
+		codex_perm_calls = 0
+		out := hook_run("codex", bash(cmd), env, codex_perm_send)
+		testing.expectf(t, codex_perm_calls == 1, "must relay: %s", cmd)
+		testing.expectf(t, strings.contains(out, `"message":"relayed"`), "relay decision for %s: %s", cmd, out)
+	}
+	// Not the shell tool, or no issued ctl binary: always relay.
+	codex_perm_calls = 0
+	_ = hook_run("codex", `{"session_id":"s1","cwd":"/run/inst","hook_event_name":"PermissionRequest","tool_name":"apply_patch","tool_input":{"command":"./bin/ham-ctl chat read"}}`, env, codex_perm_send)
+	testing.expect_value(t, codex_perm_calls, 1)
+	codex_perm_calls = 0
+	no_bin := env
+	no_bin.ctl_bin = ""
+	_ = hook_run("codex", bash("./bin/ham-ctl chat read"), no_bin, codex_perm_send)
+	testing.expect_value(t, codex_perm_calls, 1)
+}

@@ -82,6 +82,11 @@ codex_map_hook :: proc(raw, ts: string, permission_timeout_ms := 0, permission_b
 		if tool_input == nil do tool_input = json.Object{}
 		pb_permission_relay(&p, permission_timeout_ms, permission_blocker_id)
 		pb_str_nonempty(&p, "permission_mode", json_get_string(root, "permission_mode"))
+		// Codex's shell tool: its command feeds the shared ham-ctl self-approve rule.
+		if json_get_string(root, "tool_name") == "Bash" {
+			out.shell_command = json_get_string(json_get_object(root, "tool_input"), "command")
+			out.shell_cwd = json_get_string(root, "cwd")
+		}
 	case "PreCompact", "PostCompact":
 		// No activity transition; the bridge resets context accounting on it.
 		append(&out.events, ext_compaction_event(ts, root, CODEX_PROVIDER, CODEX_EXT_VERSION, "pre" if name == "PreCompact" else "post"))
