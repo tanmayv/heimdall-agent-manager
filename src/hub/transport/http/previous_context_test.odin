@@ -149,3 +149,61 @@ test_previous_context_service_requires_own_instance :: proc(t: ^testing.T) {
 	testing.expect(t, !created, "not created")
 	testing.expect_value(t, err.code, domain.Error_Code.Forbidden)
 }
+
+pctx_set_run :: proc(t: ^testing.T, f: ^MQ_HTTP_Fixture, run_count: int) {
+	inst, found, _ := iface.agent_get_instance(&f.base.ag_repo, "inst_mq")
+	testing.expect(t, found, "fixture instance")
+	inst.run_count = run_count
+	_, saved, e := iface.agent_save_instance(&f.base.ag_repo, inst)
+	testing.expect(t, saved, e.message)
+}
+
+pctx_plain_read :: proc(t: ^testing.T, f: ^MQ_HTTP_Fixture) -> string {
+	// `ham-ctl chat read`: inbox_unread, receiver_only, no outgoing, mark read.
+	req := mq_http_req(f.base, "/api/v1/agent-actions/chat/read", `{"agent_instance_id":"inst_mq","params":{"unread_only":true,"receiver_only":true,"mark_read":true,"include_outgoing":false,"include_debug":false}}`)
+	req.headers = {{name = "Authorization", value = fmt.tprintf("Bearer %s", f.base.bridge_token)}}
+	r := agent_action_chat_read_handler(&f.agent_handlers, req)
+	testing.expect_value(t, r.status, 200)
+	return r.body
+}
+
+// R7: the rollover handoff is for the next process. A read by the run that
+// wrote it (between the handoff and the restart) neither returns nor marks it;
+// after the restart the new run's plain `chat read` returns it exactly once.
+@(test)
+test_previous_context_unread_for_the_restarted_run_only :: proc(t: ^testing.T) {
+	f: MQ_HTTP_Fixture
+	mq_http_open(t, &f, "pctx_next_run")
+	defer mq_http_base_close(f.base)
+	pctx_set_run(t, &f, 3)
+	sealed := mq_http_seal("Goal: R7. Next: verify the handoff.")
+	resp := pctx_post(&f, pctx_body("rq_roll_next", sealed))
+	if !testing.expect_value(t, resp.status, 201) { fmt.println(resp.body); return }
+	id := jsonx.extract_string(resp.body, "message_id", allocator = context.temp_allocator)
+	m, _, _ := iface.content_get_message(&f.repo, id)
+	testing.expect(t, strings.contains(m.metadata_json, `"written_run_count":3`), m.metadata_json)
+	testing.expect(t, strings.contains(m.metadata_json, `"context_pct":82`), "bridge metadata kept")
+
+	// The old run reads its inbox before it is restarted: not returned, still unread.
+	old := pctx_plain_read(t, &f)
+	testing.expect(t, !strings.contains(old, id), old)
+	kept, _, _ := iface.content_get_message(&f.repo, id)
+	testing.expect_value(t, kept.read_at, "")
+
+	// Rollover restart: the Hub's restart starts run 4.
+	pctx_set_run(t, &f, 4)
+	first := pctx_plain_read(t, &f)
+	testing.expect(t, strings.contains(first, id) && strings.contains(first, sealed), first)
+	// Once in messages (the read receipt's through_message_id names it too).
+	testing.expect_value(t, strings.count(first, fmt.tprintf(`"message_id":"%s"`, id)), 1)
+	read, _, _ := iface.content_get_message(&f.repo, id)
+	testing.expect(t, read.read_at != "", "the new run's read marks it read")
+	second := pctx_plain_read(t, &f)
+	testing.expect(t, !strings.contains(second, id), "a second read does not return it again")
+
+	// The stamp is the Hub's: a client-supplied value is replaced.
+	spoof := pctx_post(&f, fmt.tprintf(`{{"agent_instance_id":"inst_mq","params":{{"request_id":"rq_spoof","body":"%s","metadata":{{"written_run_count":99}}}}}}`, sealed))
+	testing.expect_value(t, spoof.status, 201)
+	sm, _, _ := iface.content_get_message(&f.repo, jsonx.extract_string(spoof.body, "message_id", allocator = context.temp_allocator))
+	testing.expect(t, strings.contains(sm.metadata_json, `"written_run_count":4`), sm.metadata_json)
+}

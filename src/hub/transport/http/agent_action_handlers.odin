@@ -393,6 +393,7 @@ agent_action_chat_previous_context_handler :: proc(ctx: rawptr, req: Request) ->
 		request_id = json_string(params, "request_id"),
 		body = json_string(params, "body"),
 		metadata_json = json_object_raw(params, "metadata"),
+		written_run_count = inst.run_count,
 	}
 	msg, created, err := content_service.store_previous_context(h.content, auth, inst.agent_instance_id, input)
 	if err.code != .None do return respond_error(err, req.request_id)
@@ -673,8 +674,15 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 		acp_agent_unread=inst.runtime_transport == "acp" && !bridge_input && target_id == "",
 	}
 
-	rows, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
+	listed, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
 	if err.code != .None do return respond_error(err, req.request_id)
+	// A rollover handoff is for the next process: the run that wrote it never
+	// gets it back, so its reads (and an ACP input drain) leave it unread.
+	rows := make([dynamic]domain.Chat_Message, 0, len(listed), context.temp_allocator)
+	for row in listed {
+		if effective_instance_id == inst.agent_instance_id && content_service.previous_context_hidden_from_run(row, inst.run_count) do continue
+		append(&rows, row)
+	}
 	
 	// In the ACP agent unread view every returned row is unread for the agent.
 	acp_unread_view := filter.acp_agent_unread && unread_only
@@ -736,7 +744,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	next := ""
 	for msg, i in rows { if i > 0 do strings.write_byte(&b, ','); write_message_json(&b, msg, h.content); next = msg.created_at }
 	
-	fmt.sbprintf(&b, "],\"page\":{{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}}", limit, next, len(rows) >= limit)
+	fmt.sbprintf(&b, "],\"page\":{{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}}", limit, next, len(listed) >= limit)
 	
 	fmt.sbprintf(&b, ",\"read\":{{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}}}",
 	    mark_read, marked_count, through_message_id, through_created_at)
