@@ -812,6 +812,8 @@ MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE :: #load("migrations/267_reconfig
 MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT :: #load("migrations/268_bridge_provider_acp_received_at.sql", string)
 MIGRATION_269_PROFILE_TRANSPORT :: #load("migrations/269_profile_transport.sql", string)
 
+MIGRATION_270_EXTENSION_VERSION_SYNC :: #load("migrations/270_extension_version_sync_0_5_96.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1118,6 +1120,7 @@ migration_order :: [?]string {
 	"267_reconfiguration_waiting_for_idle.sql",
 	"268_bridge_provider_acp_received_at.sql",
 	"269_profile_transport.sql",
+	"270_extension_version_sync_0_5_96.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1713,6 +1716,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "270_extension_version_sync_0_5_96.sql" do return strings.clone(MIGRATION_270_EXTENSION_VERSION_SYNC)
 	if name == "269_profile_transport.sql" do return strings.clone(MIGRATION_269_PROFILE_TRANSPORT)
 	if name == "268_bridge_provider_acp_received_at.sql" do return strings.clone(MIGRATION_268_BRIDGE_PROVIDER_ACP_RECEIVED_AT)
 	if name == "267_reconfiguration_waiting_for_idle.sql" do return strings.clone(MIGRATION_267_RECONFIGURATION_WAITING_FOR_IDLE)
