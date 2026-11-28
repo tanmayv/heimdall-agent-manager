@@ -454,10 +454,18 @@ acp_profile_child_env :: proc(pp: ^Provider_Profile) -> ([]string, bool) {
     resolved, found := bridge_provider_resolve_binary(bridge_provider_descriptor(d.provider), pp, env)
     if !found do return nil, false
     defer delete(resolved)
-    plan := Profile_Env_Plan{}
+    return acp_descriptor_child_env(env, d, resolved), true
+}
+
+// The one ACP child environment: a profile child env plus the descriptor's
+// fixed pairs and, for an adapter, the resolved provider CLI under
+// executable_env. Managed launches, install probes and ACP model discovery all
+// build it here (temp-allocated).
+acp_descriptor_child_env :: proc(env: []string, d: contracts.ACP_Provider_Descriptor, binary: string) -> []string {
+    plan := Profile_Env_Plan{set = make([dynamic][2]string, context.temp_allocator)}
     for pair in d.env do append(&plan.set, pair)
-    if d.executable_env != "" do append(&plan.set, [2]string{d.executable_env, resolved})
-    return profile_apply_env_plan(env, plan), true
+    if d.executable_env != "" && binary != "" do append(&plan.set, [2]string{d.executable_env, binary})
+    return profile_apply_env_plan(env, plan)
 }
 
 acp_runtime_build_spawn :: proc(r: ^ACP_Runtime, endpoint, token: string, pp: ^Provider_Profile) -> (Pty_Host_Spawn_Request, bool) {

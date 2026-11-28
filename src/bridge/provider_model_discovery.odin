@@ -432,13 +432,12 @@ bridge_models_acp_argv :: proc(d: contracts.ACP_Provider_Descriptor, binary, roo
 	return acp_provider_launch_argv(d, root, binary)
 }
 
-// The descriptor's fixed environment, plus the resolved provider CLI for an
-// adapter (the same pairs a managed ACP launch sets).
-bridge_models_acp_env_plan :: proc(d: contracts.ACP_Provider_Descriptor, binary: string) -> Profile_Env_Plan {
-	plan := Profile_Env_Plan{}
-	for pair in d.env do append(&plan.set, pair)
-	if d.executable_env != "" && binary != "" do append(&plan.set, [2]string{d.executable_env, binary})
-	return plan
+// An ACP probe child's environment: the same one a managed ACP launch of the
+// profile builds (acp_descriptor_child_env over the profile child env).
+bridge_models_acp_child_env :: proc(profile: ^Provider_Profile, d: contracts.ACP_Provider_Descriptor, binary: string) -> ([]string, bool) {
+	env, ok := profile_child_env(profile)
+	if !ok do return nil, false
+	return acp_descriptor_child_env(env, d, binary), true
 }
 
 // bridge_models_probe_command builds the probe child's argv and its first
@@ -529,9 +528,11 @@ bridge_models_refresh_worker :: proc(th: ^thread.Thread) {
 	previous := job.previous // consumes a heap-owned snapshot; returned in result
 	job.previous = {}
 	remaining := time.Duration(job.deadline_ns - time.to_unix_nanoseconds(time.now()))
-	env, env_ok := profile_child_env(&job.profile)
-	if d, acp := bridge_models_acp_descriptor(job.provider); acp && env_ok {
-		env = profile_apply_env_plan(env, bridge_models_acp_env_plan(d, job.path))
+	env: []string; env_ok: bool
+	if d, acp := bridge_models_acp_descriptor(job.provider); acp {
+		env, env_ok = bridge_models_acp_child_env(&job.profile, d, job.path)
+	} else {
+		env, env_ok = profile_child_env(&job.profile)
 	}
 	models := make([dynamic]Bridge_Discovered_Model)
 	state := "error"

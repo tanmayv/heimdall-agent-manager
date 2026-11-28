@@ -354,6 +354,14 @@ t10_acp_probe_profile_env_and_missing_binary :: proc(t: ^testing.T) {
         if pair[0] == "CLAUDE_CODE_EXECUTABLE" do testing.expect_value(t, pair[1], binary)
         if pair[0] == "PROFILE_MARKER" do testing.expect_value(t, pair[1], "canonical")
     }
+    // ACP model discovery of an adapter starts its probe child with exactly the
+    // managed launch environment.
+    launch_env, launch_ok := acp_profile_child_env(&pp)
+    discoverable := contracts.ACP_CLAUDE_DESCRIPTOR; discoverable.discover_models_via_acp = true
+    discovery_env, discovery_ok := bridge_models_acp_child_env(&pp, discoverable, binary)
+    testing.expect(t, launch_ok && discovery_ok)
+    testing.expect_value(t, len(discovery_env), len(launch_env))
+    for entry, i in launch_env do if i < len(discovery_env) do testing.expect_value(t, discovery_env[i], entry)
     pp.config.binary_path = profile_join(st.dir, "missing")
     _, ok = acp_adapter_probe_env(&pp)
     testing.expect(t, !ok)
@@ -732,13 +740,13 @@ acp_model_discovery_accepts_adapter_launched_descriptor :: proc(t: ^testing.T) {
     testing.expect(t, os.symlink("../@agentclientprotocol/claude-agent-acp/dist/cli.js", bin) == nil)
     argv, ok := bridge_models_acp_argv(d, "/profile/claude", root)
     testing.expect(t, ok && len(argv) == 1 && argv[0] == bin)
-    plan := bridge_models_acp_env_plan(d, "/profile/claude")
-    testing.expect(t, len(plan.set) == 2 && plan.set[0] == [2]string{"CLAUDE_AGENT_ACP_PROTOCOL", "v1"} && plan.set[1] == [2]string{"CLAUDE_CODE_EXECUTABLE", "/profile/claude"})
+    env := acp_descriptor_child_env(nil, d, "/profile/claude")
+    testing.expect(t, len(env) == 2 && env[0] == "CLAUDE_AGENT_ACP_PROTOCOL=v1" && env[1] == "CLAUDE_CODE_EXECUTABLE=/profile/claude")
     // System CLIs keep their plain argv and environment.
     kiro := contracts.ACP_KIRO_DESCRIPTOR
     argv, ok = bridge_models_acp_argv(kiro, "/opt/kiro-cli", "")
     testing.expect(t, ok && len(argv) == 4 && argv[0] == "/opt/kiro-cli")
-    testing.expect_value(t, len(bridge_models_acp_env_plan(kiro, "/opt/kiro-cli").set), 0)
+    testing.expect_value(t, len(acp_descriptor_child_env(nil, kiro, "/opt/kiro-cli")), 0)
     // The registered Claude runtime keeps its bespoke control-protocol probe.
     _, acp := bridge_models_acp_descriptor("claude")
     testing.expect(t, !acp)
