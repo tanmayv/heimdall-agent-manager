@@ -35,6 +35,12 @@ Runtime_Input :: struct {
 	// The body lives in the hub conversation and text is only the notice that
 	// points at it; a runtime that reads the conversation itself fetches it.
 	hub_message: bool,
+	// A notification that must get a turn of its own at the next idle (task
+	// and lease wakes), never only ride along as context.
+	wake:        bool,
+	// Deliver only while the hub task is still in expected_state (checked at
+	// delivery, task_notice_queue.odin). Empty: always relevant.
+	task, expected_state: string,
 }
 
 // Turn lifecycle events every runtime reports through bridge_runtime_emit.
@@ -51,8 +57,8 @@ Runtime_Send_Now :: struct {
 
 // The interface proper is submit / send_now / interrupt / stop / can_steer /
 // usage. The other methods each have a stated need. The durable inbox is not
-// part of it: the inbox drives a runtime (task_notice_queue.odin), not the
-// other way round.
+// part of it: every runtime admits its queued input to the one bridge inbox
+// (bridge_inbox.odin) and drains it at a trusted idle.
 Agent_Runtime :: struct {
 	transport:    string,
 	submit:       proc(instance: string, input: Runtime_Input, mode: Runtime_Mode) -> bool,
@@ -189,7 +195,7 @@ bridge_runtime_emit :: proc(instance: string, event: Runtime_Event) {
 	if bridge_runtime_event_sink != nil && instance != "" do bridge_runtime_event_sink(instance, event)
 }
 
-// A trusted idle drains the durable queue at once instead of at its retry tick.
+// A trusted idle ends the inbox collection window at once (task_notice_queue.odin).
 bridge_runtime_event_default :: proc(instance: string, event: Runtime_Event) {
 	if event == .Idle do bridge_task_notice_kick(instance)
 }

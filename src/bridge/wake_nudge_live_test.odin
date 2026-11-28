@@ -70,9 +70,9 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	}
 	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = id, run_dir = run_dir})
 	defer bridge_runtime_remove_launch(id)
-	// The nudge goes through the durable notice queue (delivered at a trusted idle).
-	prev_q := bridge_task_notices; bridge_task_notices = {}
-	defer { bridge_task_notice_queue_delete(&bridge_task_notices); bridge_task_notices = prev_q }
+	// The nudge goes through the durable inbox (delivered at a trusted idle).
+	bridge_inbox_forget_all()
+	defer bridge_inbox_forget_all()
 	prev_data := bridge_config.data_dir
 	notice_dir := fmt.aprintf("%s/.cache/heimdall-tests/wake-nudge-%d", os.get_env("HOME", context.temp_allocator), os.get_pid())
 	bridge_config.data_dir = notice_dir

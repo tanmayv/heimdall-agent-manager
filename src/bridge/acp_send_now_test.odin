@@ -103,7 +103,7 @@ sn_last_batch :: proc(f: ^T4_Runtime_Test) -> (string, string, i64) {
 sn_queue_ids :: proc(f: ^T4_Runtime_Test) -> string {
     ids := make([dynamic]string, sn_alloc())
     sn_ids_target = &ids
-    sn_do(f, proc(f: ^T4_Runtime_Test) { for q in f.r.d.queue do append(sn_ids_target, strings.clone(q.id, sn_alloc())) })
+    sn_do(f, proc(f: ^T4_Runtime_Test) { for q in f.r.inbox.queue do append(sn_ids_target, strings.clone(q.id, sn_alloc())) })
     return strings.join(ids[:], ",", context.temp_allocator)
 }
 sn_ids_target: ^[dynamic]string
@@ -390,10 +390,10 @@ sn_codex_waits_for_turn_id_instead_of_cancelling :: proc(t: ^testing.T) {
             f.r.driver = &acp_protocol_codex_driver
             f.r.d.steering_supported = true
             acp_runtime_replace(&f.r.d.phase, "prompt")
-            acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = ACP_SEND_NOW_KIND})
+            acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = BRIDGE_INBOX_SEND_NOW_KIND})
         })
         testing.expect(t, !f.r.d.cancelling)
-        testing.expect_value(t, f.r.d.send_now.state, "waiting")
+        testing.expect_value(t, f.r.inbox.send_now.state, "waiting")
         sn_do(f, proc(f: ^T4_Runtime_Test) {
             // Previously rejected input must not wait for a re-steer: cancel.
             acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = "append_next_turn"})
@@ -418,15 +418,15 @@ sn_hold_or_cancel_follows_driver_can_steer :: proc(t: ^testing.T) {
         sn_do(f, proc(f: ^T4_Runtime_Test) {
             f.r.driver = &sn_custom_driver
             f.r.d.steering_supported = true
-            sn_seen[0] = acp_runtime_steer_readiness(f.r, {id = "msg_q", kind = ACP_SEND_NOW_KIND})
+            sn_seen[0] = acp_runtime_steer_readiness(f.r, {id = "msg_q", kind = BRIDGE_INBOX_SEND_NOW_KIND})
             sn_seen[1] = acp_runtime_steer_readiness(f.r, {id = "msg_q", kind = "append_next_turn"})
             acp_runtime_replace(&f.r.d.phase, "prompt")
-            acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = ACP_SEND_NOW_KIND})
+            acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = BRIDGE_INBOX_SEND_NOW_KIND})
         })
         testing.expect(t, !f.r.d.cancelling)
-        testing.expect_value(t, f.r.d.send_now.state, "waiting")
+        testing.expect_value(t, f.r.inbox.send_now.state, "waiting")
         sn_readiness = .Never
-        sn_do(f, proc(f: ^T4_Runtime_Test) { acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = ACP_SEND_NOW_KIND}) })
+        sn_do(f, proc(f: ^T4_Runtime_Test) { acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = BRIDGE_INBOX_SEND_NOW_KIND}) })
         testing.expect(t, f.r.d.cancelling)
         testing.expect_value(t, sn_count_writes(f, "session/cancel"), 1)
         sn_do(f, proc(f: ^T4_Runtime_Test) {
@@ -479,11 +479,17 @@ sn_durable_send_now_round_trips_and_validates :: proc(t: ^testing.T) {
         back: ACP_Runtime_Durable
         testing.expect(t, json.unmarshal(raw, &back, allocator = context.temp_allocator) == nil)
         testing.expect(t, acp_driver_acp_durable_valid(&back))
-        testing.expect_value(t, back.send_now.batch_id, "snb_d")
-        testing.expect_value(t, len(back.send_now.members), 1)
         testing.expect(t, back.report_seq > 0)
-        back.send_now.state = "bogus"
-        testing.expect(t, !acp_driver_acp_durable_valid(&back))
+        // The batch selection is inbox state and round-trips with the inbox.
+        inbox_raw, _ := json.marshal(f.r.inbox^, allocator = context.temp_allocator)
+        inbox: Bridge_Inbox
+        testing.expect(t, bridge_inbox_decode(string(inbox_raw), &inbox))
+        defer bridge_inbox_delete(&inbox)
+        testing.expect(t, bridge_inbox_valid(&inbox, contracts.ACP_SEND_NOW_MAX_MEMBERS+128))
+        testing.expect_value(t, inbox.send_now.batch_id, "snb_d")
+        testing.expect_value(t, len(inbox.send_now.members), 1)
+        bridge_inbox_send_now_set_state(&inbox, "bogus")
+        testing.expect(t, !bridge_inbox_valid(&inbox, contracts.ACP_SEND_NOW_MAX_MEMBERS+128))
         // The outbox (with its reports) restores through chat prepare.
         outbox := acp_event_json(f.r.chat.d)
         r := ACP_Runtime{instance = "inst_c4_chat", epoch = "t4_epoch", saved_outbox = outbox}

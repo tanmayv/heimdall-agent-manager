@@ -7,13 +7,13 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 
-ACP_INBOX_DEBOUNCE_MS :: 2000
-ACP_INBOX_CAP_MS :: 10000
-// Preserve the pre-inbox journal's 128 x 256 KiB restore contract. Limit each
-// prompt's context separately, and reserve admission slots for real input.
-ACP_INBOX_MAX_BYTES :: 128*256*1024
-ACP_INBOX_DIGEST_BYTES :: 512*1024
-ACP_INBOX_NOTICE_SLOTS :: 112
+// The ACP adapter's side of the bridge inbox (bridge_inbox.odin): admission
+// checks that need ACP state (the turn and steer in flight, chat queue ids,
+// bot supersession) and the drain that turns queued input into prompts and
+// steers on the dispatcher. The inbox is committed after the journal that
+// carries the outgoing prompt (acp_runtime_committed).
+// The bot delivery path (out of scope, G10) names the lane by its old name.
+ACP_Input_Lane :: Bridge_Inbox_Lane
 ACP_BOT_KIND :: "bot"
 ACP_BOT_INPUT_PREFIX :: "bot_"
 
@@ -28,7 +28,7 @@ acp_inbox_interval :: proc() -> i64 {
 }
 
 // Use the Hub's origin/trigger, never keywords in human_message.
-acp_inbox_lane :: proc(kind: string, interrupt := false) -> ACP_Input_Lane {
+acp_inbox_lane :: proc(kind: string, interrupt := false) -> Bridge_Inbox_Lane {
     if interrupt do return .Steer
     switch kind {
     case ACP_BOT_KIND: return .Steer
@@ -37,65 +37,46 @@ acp_inbox_lane :: proc(kind: string, interrupt := false) -> ACP_Input_Lane {
     }
 }
 
-acp_inbox_input_delete :: proc(input: ACP_Runtime_Input) {
-    delete(input.id); delete(input.text); delete(input.key); delete(input.kind)
+// Inputs leaving the inbox with the outgoing prompt or steer (see
+// ACP_Runtime_Durable.dispatched). Cleared once the inbox file is committed.
+acp_inbox_dispatched :: proc(r: ^ACP_Runtime, id: string) {
+    heap := runtime.heap_allocator()
+    if r.d.dispatched.allocator.procedure == nil do r.d.dispatched = make([dynamic]string, heap)
+    if len(r.d.dispatched) >= 512 { delete(r.d.dispatched[0], heap); ordered_remove(&r.d.dispatched, 0) }
+    append(&r.d.dispatched, strings.clone(id, heap))
 }
 
-acp_inbox_remember :: proc(r: ^ACP_Runtime, id: string) {
-    for saved in r.d.completed_inputs do if saved == id do return
-    append(&r.d.completed_inputs, strings.clone(id))
-    if len(r.d.completed_inputs) > 256 { delete(r.d.completed_inputs[0]); ordered_remove(&r.d.completed_inputs, 0) }
-}
-
-acp_inbox_input_valid :: proc(input: ACP_Runtime_Input) -> bool {
-    return input.id != "" && len(input.id) <= 1024 && len(input.text) <= 256*1024 && len(input.key) <= 1024 && len(input.kind) <= 256 &&
-        (input.lane == .Steer || input.lane == .Batch || input.lane == .Digest)
+acp_inbox_dispatched_clear :: proc(r: ^ACP_Runtime) {
+    heap := runtime.heap_allocator()
+    for id in r.d.dispatched do delete(id, heap)
+    clear(&r.d.dispatched)
 }
 
 acp_inbox_accept :: proc(r: ^ACP_Runtime, c: ^ACP_RPC_Client, argument: string) -> bool {
     if !acp_runtime_current(r) || r.d.error != "" || r.d.exit_pending || len(argument) > 512*1024 do return false
-    input: ACP_Runtime_Input
-    if json.unmarshal_string(argument, &input) != nil || !acp_inbox_input_valid(input) { acp_inbox_input_delete(input); return false }
-    dispatched := input.id == r.d.current_input
-    for id in r.d.completed_inputs do if id == input.id do dispatched = true
-    duplicate := dispatched || input.id == r.d.steering_input.id
-    for entry in r.d.queue do if entry.id == input.id do duplicate = true
+    input: Bridge_Inbox_Input
+    if json.unmarshal_string(argument, &input, allocator = runtime.heap_allocator()) != nil || !bridge_inbox_input_valid(input) { bridge_inbox_input_delete(input); return false }
+    dispatched := input.id == r.d.current_input || bridge_inbox_completed(r.inbox, input.id)
+    duplicate := dispatched || input.id == r.d.steering_input.id || bridge_inbox_known(r.inbox, input.id)
     for id in c.state.queued_input_message_ids do if id == input.id do duplicate = true
-    // A batch member may live only inside the combined batch input.
-    if acp_send_now_member(r, input.id) do duplicate = true
     if duplicate {
         // A retried worker may have missed the dispatch hook during restart.
         if dispatched && input.kind == ACP_BOT_KIND do bridge_bot_note_dispatch(r.instance, input.id, acp_rpc_now(c))
-        acp_inbox_input_delete(input); return true
+        bridge_inbox_input_delete(input); return true
     }
     // A superseded worker might already be waiting on the runtime dispatcher.
     // It must not replace a newer notice just because its call arrived later.
     if input.kind == ACP_BOT_KIND && bridge_bot_notice_superseded(r.instance, input.id) {
-        acp_inbox_input_delete(input); return false
+        bridge_inbox_input_delete(input); return false
     }
-    replace := -1
-    bytes := len(input.text) + len(r.d.steering_input.text)
-    for entry, i in r.d.queue {
-        if (input.kind == ACP_BOT_KIND || (input.lane != .Steer && entry.lane != .Steer)) &&
-           input.key != "" && entry.key == input.key && entry.kind == input.kind { replace = i }
-        bytes += len(entry.text)
-    }
-    if replace >= 0 do bytes -= len(r.d.queue[replace].text)
-    slots := 128 if input.lane == .Steer else ACP_INBOX_NOTICE_SLOTS
-    if (replace < 0 && len(r.d.queue) + int(r.d.steering_pending) >= slots) || bytes > ACP_INBOX_MAX_BYTES { acp_inbox_input_delete(input); return false }
-    if replace >= 0 {
-        acp_inbox_remember(r, r.d.queue[replace].id)
-        acp_inbox_input_delete(r.d.queue[replace]); r.d.queue[replace] = input
-    } else { append(&r.d.queue, input) }
-    if input.lane == .Batch {
-        now := acp_rpc_now(c)
-        if r.d.batch_first_ms == 0 do r.d.batch_first_ms = now
-        r.d.batch_last_ms = now
-    }
-    if r.chat != nil && strings.has_prefix(input.id, "msg_") {
-        append(&c.state.queued_input_message_ids, strings.clone(input.id))
+    id := strings.clone(input.id, context.temp_allocator)
+    lane := input.lane
+    if bridge_inbox_admit(r.inbox, input, acp_rpc_now(c), coalesce_steer = input.kind == ACP_BOT_KIND,
+        reserved_slots = int(r.d.steering_pending), reserved_bytes = len(r.d.steering_input.text)) != .Added { return false }
+    if r.chat != nil && strings.has_prefix(id, "msg_") {
+        append(&c.state.queued_input_message_ids, strings.clone(id))
         // Admission evidence; the drain below may immediately supersede it.
-        if input.lane == .Steer do acp_delivery_report(r, acp_delivery_entries(r, []string{input.id}, "queued"))
+        if lane == .Steer do acp_delivery_report(r, acp_delivery_entries(r, []string{id}, "queued"))
     }
     // The caller may acknowledge the Hub only after this durable admission.
     if !acp_rpc_checkpoint(c) { acp_runtime_error(r, "acp_state_write_failed"); return false }
@@ -117,30 +98,26 @@ acp_inbox_tick :: proc(data: rawptr) {
 acp_inbox_interrupt_pending :: proc(r: ^ACP_Runtime) {
     // Child-loss recovery explicitly fails the owning turn. Do not replay an
     // ambiguous injected message, or leave its pending flag wedging the inbox.
-    if r.d.steering_input.id != "" do acp_inbox_remember(r, r.d.steering_input.id)
-    acp_inbox_input_delete(r.d.steering_input)
+    if r.d.steering_input.id != "" do bridge_inbox_remember(r.inbox, r.d.steering_input.id)
+    bridge_inbox_input_delete(r.d.steering_input)
     r.d.steering_input = {}; r.d.steering_pending = false
 }
 
 // The dispatcher owns the inbox and its clock. No timer thread or lifecycle
 // mutex is needed, including while the Hub/vault is disconnected.
 acp_runtime_drain :: proc(r: ^ACP_Runtime) {
-    if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending || r.d.steering_pending || len(r.d.queue) == 0 do return
+    if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending || r.d.steering_pending || len(r.inbox.queue) == 0 do return
     if r.chat != nil && (!acp_chat_can_process(r) || acp_chat_bytes(r.chat) > 1536*1024) do return
     steer := -1
-    batch := false
-    for input, i in r.d.queue {
-        if input.lane == .Steer && steer < 0 do steer = i
-        if input.lane == .Batch do batch = true
-    }
+    for input, i in r.inbox.queue do if input.lane == .Steer { steer = i; break }
     if r.d.phase == "prompt" {
         if steer < 0 do return
         // Keep normal input FIFO behind a next-turn-only entry. Explicit
         // Send now may move queued native chat ahead of that entry.
-        front := r.d.queue[steer]
+        front := r.inbox.queue[steer]
         // A pending Send now batch anywhere in the queue owns the decision.
         batch := false
-        for input in r.d.queue do if input.lane == .Steer && acp_send_now_is_input(r, input) do batch = true
+        for input in r.inbox.queue do if input.lane == .Steer && acp_send_now_is_input(r, input) do batch = true
         if batch && !acp_send_now_is_input(r, front) {
             // An older rejected input sits ahead of the batch: it cannot be
             // steered again, so only a cancel lets the batch go next.
@@ -151,10 +128,12 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
             if batch do acp_send_now_hold_or_cancel(r, front)
             return
         }
-        if front.kind == ACP_SEND_NOW_KIND {
+        acp_inbox_dispatched_clear(r)
+        if front.kind == BRIDGE_INBOX_SEND_NOW_KIND {
             r.d.steering_input = acp_send_now_collect(r)
         } else {
-            r.d.steering_input = front; ordered_remove(&r.d.queue, steer)
+            r.d.steering_input = front; ordered_remove(&r.inbox.queue, steer)
+            acp_inbox_dispatched(r, front.id)
         }
         r.d.steering_pending = true
         acp_delivery_steer_started(r)
@@ -162,46 +141,75 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
         return
     }
     now := acp_rpc_now(r.client)
+    // Task notices whose task has moved on are dropped, never delivered;
+    // notices whose relevance is being checked wait (task_notice_queue.odin).
+    pruned := false
+    batch, wake, waiting := false, false, false
+    for i := 0; i < len(r.inbox.queue); {
+        input := r.inbox.queue[i]
+        switch bridge_inbox_relevance(r.instance, input, now) {
+        case .Drop:
+            bridge_inbox_remove(r.inbox, input.id); pruned = true; continue
+        case .Wait:
+            waiting = true
+        case .Deliver:
+            if input.lane == .Batch do batch = true
+            if input.lane == .Wake do wake = true
+        }
+        i += 1
+    }
+    steer = -1 // pruning may have moved entries
+    for input, i in r.inbox.queue do if input.lane == .Steer { steer = i; break }
     if steer < 0 {
-        if !batch do return // FYI is context only, even after its budget refills.
-        if r.d.last_notice_turn_ms != 0 && now-r.d.last_notice_turn_ms < r.notice_interval_ms {
-            for &input in r.d.queue do if input.lane == .Batch do input.lane = .Digest
-            r.d.batch_first_ms = 0; r.d.batch_last_ms = 0
+        // FYI is context only, even after its budget refills. A wake (task
+        // or lease notice) always gets its turn and leaves the budget alone.
+        // Notices go as one turn once every relevance decision is known.
+        if waiting || (!batch && !wake) { acp_inbox_commit_pruned(r, pruned); return }
+        if !wake && r.inbox.last_notice_turn_ms != 0 && now-r.inbox.last_notice_turn_ms < r.notice_interval_ms {
+            for &input in r.inbox.queue do if input.lane == .Batch do input.lane = .Digest
+            bridge_inbox_window_reset(r.inbox)
             if !acp_rpc_checkpoint(r.client) do acp_runtime_error(r, "acp_state_write_failed")
             return
         }
-        if now-r.d.batch_last_ms < ACP_INBOX_DEBOUNCE_MS && now-r.d.batch_first_ms < ACP_INBOX_CAP_MS do return
-        r.d.last_notice_turn_ms = now
+        if !bridge_inbox_window_closed(r.inbox, now) { acp_inbox_commit_pruned(r, pruned); return }
+        if !wake do r.inbox.last_notice_turn_ms = now
     }
     // One real input owns the response. All accumulated notices join that
     // prompt as one context block; their admission identities become receipts
     // in the same checkpoint as the outgoing RPC.
-    primary: ACP_Runtime_Input
-    if steer >= 0 && r.d.queue[steer].kind == ACP_SEND_NOW_KIND { primary = acp_send_now_collect(r) }
-    else if steer >= 0 { primary = r.d.queue[steer]; ordered_remove(&r.d.queue, steer) }
-    else { primary.id = strings.clone(fmt.tprintf("digest_%d", r.client.state.next_rpc_id)) }
-    defer acp_inbox_input_delete(primary)
+    acp_inbox_dispatched_clear(r)
+    primary: Bridge_Inbox_Input
+    if steer >= 0 && r.inbox.queue[steer].kind == BRIDGE_INBOX_SEND_NOW_KIND { primary = acp_send_now_collect(r) }
+    else if steer >= 0 { primary = r.inbox.queue[steer]; ordered_remove(&r.inbox.queue, steer); acp_inbox_dispatched(r, primary.id) }
+    else { primary.id = strings.clone(fmt.tprintf("digest_%d", r.client.state.next_rpc_id), runtime.heap_allocator()) }
+    defer bridge_inbox_input_delete(primary)
     b := strings.builder_make(); defer strings.builder_destroy(&b)
     strings.write_string(&b, primary.text)
     has_notices := false
     digest_bytes := len(primary.text)
-    for i := 0; i < len(r.d.queue); {
-        input := r.d.queue[i]
-        if input.lane == .Steer { i += 1; continue }
-        if digest_bytes+len(input.text) > ACP_INBOX_DIGEST_BYTES {
+    for i := 0; i < len(r.inbox.queue); {
+        input := r.inbox.queue[i]
+        if input.lane == .Steer || bridge_inbox_relevance(r.instance, input, now) != .Deliver { i += 1; continue }
+        if digest_bytes+len(input.text) > BRIDGE_INBOX_DIGEST_BYTES {
             // Retain oversized legacy backlogs as context for later real turns;
             // never fail restoration, evict text, or create N autonomous turns.
-            r.d.queue[i].lane = .Digest; i += 1; continue
+            r.inbox.queue[i].lane = .Digest; i += 1; continue
         }
         digest_bytes += len(input.text)
         if !has_notices { strings.write_string(&b, "\n\n<heimdall_notice_digest>\n"); has_notices = true }
         strings.write_string(&b, input.text); strings.write_string(&b, "\n")
-        acp_inbox_remember(r, input.id)
-        ordered_remove(&r.d.queue, i); acp_inbox_input_delete(input)
+        bridge_inbox_remember(r.inbox, input.id)
+        acp_inbox_dispatched(r, input.id)
+        ordered_remove(&r.inbox.queue, i); bridge_inbox_input_delete(input)
     }
     if has_notices do strings.write_string(&b, "</heimdall_notice_digest>")
-    r.d.batch_first_ms = 0; r.d.batch_last_ms = 0
+    bridge_inbox_window_reset(r.inbox)
     acp_runtime_prompt(r, {id = primary.id, text = strings.to_string(b)})
+}
+
+// Stale notices were dropped without a prompt: commit their removal.
+acp_inbox_commit_pruned :: proc(r: ^ACP_Runtime, pruned: bool) {
+    if pruned && !acp_rpc_checkpoint(r.client) do acp_runtime_error(r, "acp_state_write_failed")
 }
 
 acp_inbox_steering_result :: proc(data: rawptr, result: ACP_RPC_Result) {

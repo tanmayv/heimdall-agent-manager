@@ -919,7 +919,7 @@ bridge_should_debounce_nudge :: proc(instance_id, task_id: string, origin: strin
 	}
 
 	if !record do return false
-	if len(bridge_recent_nudges) >= BRIDGE_TASK_NOTICE_MAX {
+	if len(bridge_recent_nudges) >= 512 {
 		delete(bridge_recent_nudges[0].key)
 		ordered_remove(&bridge_recent_nudges, 0)
 	}
@@ -1391,9 +1391,8 @@ bridge_hub_cmd_notify_task_nudge :: proc(conn: ^ws.Connection, text: string) {
 		if bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line, record = false) {
 			ok = true
 		} else {
-			now := bridge_runtime_now_ms()
-			ok = bridge_task_notice_enqueue({instance = instance_id, task = notice_task, expected_state = expected_state,
-				origin = origin, text = line, queued_ms = now, due_ms = now+BRIDGE_TASK_NOTICE_WINDOW_MS})
+			ok = bridge_task_notice_enqueue(instance_id, {kind = .Notification, id = command_id, text = line, key = notice_task,
+				origin = origin, wake = true, task = notice_task, expected_state = expected_state})
 			if ok do _ = bridge_should_debounce_nudge(instance_id, notice_task, origin, expected_state, line)
 		}
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
@@ -2650,11 +2649,9 @@ bridge_wake_nudge_live_child :: proc(instance_id, task_id, role, lease_id: strin
 	}
 	line := bridge_wake_nudge_line(lease_id, task_id, role)
 	defer delete(line)
-	// The durable notice queue hands the line to the agent's runtime at its
-	// next turn; a lease wake never interrupts a busy agent.
-	now := bridge_runtime_now_ms()
-	delivered := bridge_task_notice_enqueue({instance = instance_id, task = task_id, origin = "lease_wake",
-		text = line, queued_ms = now, due_ms = now})
+	// The instance's durable inbox hands the line to the agent at its next
+	// idle; a lease wake never interrupts a busy agent.
+	delivered := bridge_task_notice_enqueue(instance_id, {kind = .Notification, text = line, key = task_id, origin = "lease_wake", wake = true, task = task_id})
 	if !delivered {
 		fmt.eprintln("bridge wake_agent: nudge delivery failed for live instance", instance_id)
 		return .Delivery_Failed

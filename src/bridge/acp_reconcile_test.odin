@@ -89,11 +89,12 @@ t4_recovery_write_state :: proc(t: ^testing.T, f: ^T4_Recovery_Fixture, error :=
     r.d.phase = strings.clone("prompt"); r.d.current_input = strings.clone("interrupted-input")
     r.d.starter = strings.clone("EXACT starter text"); r.d.starter_sent = true; r.d.ready = error == ""
     r.d.error = strings.clone(error)
-    append(&r.d.queue, ACP_Runtime_Input{id = strings.clone("fresh-input"), text = strings.clone("fresh text")})
+    append(&r.inbox.queue, Bridge_Inbox_Input{id = strings.clone("fresh-input"), text = strings.clone("fresh text")})
     state := ACP_State{schema_version = 1, instance = strings.clone(f.instance), launch_epoch = strings.clone(r.epoch),
         effective_transport = strings.clone("acp"), next_rpc_id = 40, next_delivery_id = 50}
     defer acp_state_delete(&state)
     testing.expect(t, acp_runtime_checkpoint(r, &state))
+    testing.expect(t, bridge_inbox_save(r.inbox)) // queued input lives in the instance's inbox file
     if legacy {
         acp_provider_binding_delete(&state.binding); state.runtime_binding_version = 0; state.schema_version = 1
         manifest, _ := json.marshal(struct { agent_instance_id: string, managed_files: []struct { relative_path, kind: string } }{
@@ -172,7 +173,7 @@ c2_test_reconcile_provider_recovery :: proc(t: ^testing.T, provider: string) {
     testing.expect(t, !old_valid && new_valid && rec.run_count == 9 && rec.instance_token == "assertion~recovery_epoch")
     shim, read_err := os.read_entire_file(strings.concatenate({f.cwd, "/bin/ham-ctl"}, context.temp_allocator), context.temp_allocator)
     testing.expect(t, read_err == nil && strings.contains(string(shim), f.token))
-    testing.expect(t, len(f.rpc.r.d.completed_inputs) == 1 && f.rpc.r.d.completed_inputs[0] == "interrupted-input")
+    testing.expect(t, len(f.rpc.r.inbox.completed_inputs) == 1 && f.rpc.r.inbox.completed_inputs[0] == "interrupted-input")
     t4_runtime_reply(t, &f.rpc, 0, `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"embeddedContext":true}}}`, 1)
     testing.expect(t, f.rpc.r.d.replay_only)
     t4_runtime_reply(t, &f.rpc, 1, T4_CONFIG, 2)

@@ -221,7 +221,7 @@ acp_codex_ready :: proc(r: ^ACP_Runtime) {
     acp_runtime_session_ready(r,starter_links_bootstrap=false)
 }
 
-acp_codex_prompt :: proc(r: ^ACP_Runtime,input: ACP_Runtime_Input,bootstrap: bool) {
+acp_codex_prompt :: proc(r: ^ACP_Runtime,input: Bridge_Inbox_Input,bootstrap: bool) {
     if r.d.phase=="prompt" { acp_runtime_error(r,"acp_protocol_error"); return }
     params := make(json.Object,allocator=context.temp_allocator)
     if !acp_codex_policy(r,&params,false) do return
@@ -334,7 +334,7 @@ acp_codex_finish :: proc(r: ^ACP_Runtime,turn: json.Object) {
     }
     acp_permissions_cancel(r)
     if acp_runtime_events.prompt_finished!=nil do acp_runtime_events.prompt_finished(r,r.d.current_input,acp_event_json(struct{stopReason:string}{reason}),error)
-    acp_inbox_remember(r,r.d.current_input)
+    bridge_inbox_remember(r.inbox, r.d.current_input)
     acp_codex_remember_turn(r,acp_codex(r).turn_id)
     acp_runtime_replace(&r.d.current_input,""); acp_runtime_replace(&acp_codex(r).start_id,"")
     acp_runtime_replace(&acp_codex(r).turn_id,""); acp_runtime_replace(&r.d.phase,"ready")
@@ -505,7 +505,7 @@ acp_codex_steering_result :: proc(data: rawptr,result: ACP_RPC_Result) {
     if injected {
         if r.d.phase=="prompt" do acp_chat_boundary(r)
         acp_delivery_steer_injected(r,input)
-        acp_inbox_remember(r,input.id); acp_inbox_input_delete(input)
+        bridge_inbox_remember(r.inbox, input.id); bridge_inbox_input_delete(input)
     } else {
         // A rejected steer was not injected. Retain it at the FRONT for the
         // next turn (FIFO) and never steer it again.

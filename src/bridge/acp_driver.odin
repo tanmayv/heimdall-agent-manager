@@ -11,7 +11,7 @@ ACP_Protocol_Driver :: struct {
     // Notification/inbound arguments are borrowed; result callbacks own results.
     notification: proc(r: ^ACP_Runtime, method, params: string),
     inbound: proc(r: ^ACP_Runtime, id, method, params: string) -> bool,
-    prompt: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap: bool),
+    prompt: proc(r: ^ACP_Runtime, input: Bridge_Inbox_Input, bootstrap: bool),
     ready: proc(r: ^ACP_Runtime),
     cancel: proc(r: ^ACP_Runtime) -> bool,
     steer: proc(r: ^ACP_Runtime) -> bool,
@@ -51,7 +51,7 @@ ACP_Steer_Readiness :: enum { Now, Later, Never }
 
 // Steering readiness for the input at the front of the steer lane. Shared by
 // the inbox and Send now: inputs that already failed a steer go next turn.
-acp_runtime_steer_readiness :: proc(r: ^ACP_Runtime, front: ACP_Runtime_Input) -> ACP_Steer_Readiness {
+acp_runtime_steer_readiness :: proc(r: ^ACP_Runtime, front: Bridge_Inbox_Input) -> ACP_Steer_Readiness {
     if !r.d.steering_supported || acp_inbox_next_turn_only(front.kind) do return .Never
     driver := acp_runtime_driver(r)
     if driver.can_steer == nil do return .Now

@@ -69,15 +69,21 @@ t4_acp_durable_driver_rejects_unbounded_and_unknown_state :: proc(t: ^testing.T)
     d.phase = "invented"; testing.expect(t, !acp_runtime_durable_valid(&d)); d.phase = "ready"
     d.error = "untrusted diagnostic"; testing.expect(t, !acp_runtime_durable_valid(&d)); d.error = ""
     d.stream_retries = -1; testing.expect(t, !acp_runtime_durable_valid(&d)); d.stream_retries = 0
-    d.queue = make([dynamic]ACP_Runtime_Input, 129, allocator = context.temp_allocator)
-    for &input in d.queue do input = {id = "id", text = "text"}
+    d.dispatched = make([dynamic]string, 513, allocator = context.temp_allocator)
+    for &id in d.dispatched do id = "id"
     testing.expect(t, !acp_runtime_durable_valid(&d))
-    resize(&d.queue, 128); testing.expect(t, acp_runtime_durable_valid(&d))
-    d.queue[0].id = ""; testing.expect(t, !acp_runtime_durable_valid(&d)); d.queue[0].id = "id"
-    d.queue[0].text = string(make([]byte, 256*1024+1, context.temp_allocator)); testing.expect(t, !acp_runtime_durable_valid(&d))
-    d.queue[0].text = "text"
-    d.completed_inputs = make([dynamic]string, 257, allocator = context.temp_allocator)
-    testing.expect(t, !acp_runtime_durable_valid(&d))
+    resize(&d.dispatched, 0); testing.expect(t, acp_runtime_durable_valid(&d))
+    // The queue bounds moved with the queue into the bridge inbox.
+    inbox: Bridge_Inbox
+    inbox.queue = make([dynamic]Bridge_Inbox_Input, 129, allocator = context.temp_allocator)
+    for &input in inbox.queue do input = {id = "id", text = "text"}
+    testing.expect(t, !bridge_inbox_valid(&inbox, 128))
+    resize(&inbox.queue, 128); testing.expect(t, bridge_inbox_valid(&inbox, 128))
+    inbox.queue[0].id = ""; testing.expect(t, !bridge_inbox_valid(&inbox, 128)); inbox.queue[0].id = "id"
+    inbox.queue[0].text = string(make([]byte, 256*1024+1, context.temp_allocator)); testing.expect(t, !bridge_inbox_valid(&inbox, 128))
+    inbox.queue[0].text = "text"
+    inbox.completed_inputs = make([dynamic]string, 257, allocator = context.temp_allocator)
+    testing.expect(t, !bridge_inbox_valid(&inbox, 128))
     testing.expect(t, !acp_adapter_node_compatible("v22.0.secret") && !acp_adapter_node_compatible("v22.0.0\nsecret"))
 }
 

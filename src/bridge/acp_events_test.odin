@@ -69,10 +69,10 @@ t5_acp_input_queue_before_ack_fifo_and_duplicate_notice :: proc(t:^testing.T) {
     t5_input_rows=acp_event_json(struct{data:struct{messages:[]json.Value}}{data={rows[:]}})
     testing.expect(t,!acp_chat_fetch_inputs(f.r.chat),"first ack deliberately fails after durable queueing")
     testing.expect(t,!t5_ack_before_checkpoint)
-    testing.expect_value(t,len(f.r.d.queue),3)
+    testing.expect_value(t,len(f.r.inbox.queue),3)
     testing.expect(t,acp_chat_fetch_inputs(f.r.chat),"same unread rows are retried and acknowledged")
-    testing.expect_value(t,len(f.r.d.queue),3)
-    for input,i in f.r.d.queue {
+    testing.expect_value(t,len(f.r.inbox.queue),3)
+    for input,i in f.r.inbox.queue {
         testing.expect_value(t,input.id,fmt.tprintf("msg_%d",i+1))
         testing.expect(t,strings.contains(input.text,"actual message") && strings.contains(input.text,"chosen answer") && strings.contains(input.text,"selected") && !strings.contains(input.text,"chat read"))
     }

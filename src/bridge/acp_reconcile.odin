@@ -213,11 +213,10 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     if expected != s.run_dir do return nil, false
     r := acp_runtime_new(s.instance, s.launch_epoch, s.run_dir, s.provider, s.profile, s.catalog_etag, s.selected_model, s.selected_mode, rec)
     acp_provider_binding_delete(&r.binding); r.binding = acp_provider_binding_copy(s.binding)
-    if r.driver == nil || !acp_runtime_durable_load(r.driver, s.runtime_json, &r.d) || !r.driver.durable_valid(&r.d) ||
-       (r.d.ready && (!s.initialized || s.sessionId == "")) || (s.sessionId != "" && !s.initialized) {
+    if r.inbox_unreadable || r.driver == nil || !acp_runtime_durable_load(r.driver, s.runtime_json, &r.d) || !r.driver.durable_valid(&r.d) ||
+       (r.d.ready && (!s.initialized || s.sessionId == "")) || (s.sessionId != "" && !s.initialized) || !acp_runtime_inbox_restore(r, s) {
         acp_runtime_destroy(r); return nil, false
     }
-    acp_runtime_merge_saved_queue(&r.d)
     r.initialized = s.initialized; r.load_session = s.loadSession
     r.generation = strings.clone(s.pipe_generation); r.session = strings.clone(s.sessionId)
     r.next_rpc_id = s.next_rpc_id; r.next_delivery_id = s.next_delivery_id
@@ -235,8 +234,8 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
 
 acp_runtime_reclassify_saved_queue :: proc(r: ^ACP_Runtime) {
     first_bot := -1
-    for i := 0; i < len(r.d.queue); {
-        input := &r.d.queue[i]
+    for i := 0; i < len(r.inbox.queue); {
+        input := &r.inbox.queue[i]
         // Old bot delivery used "bot" as the nudge sender, not its kind.
         // Match the exact saved wake, not other untyped legacy notices.
         if input.kind == "" && input.key == "" && strings.has_prefix(input.id, "notice_") && input.text == BOT_NOTICE {
@@ -246,12 +245,12 @@ acp_runtime_reclassify_saved_queue :: proc(r: ^ACP_Runtime) {
             if first_bot >= 0 {
                 // Keep FIFO position, but prefer a stable attempt over a
                 // legacy notice so the live worker can observe dispatch.
-                first := &r.d.queue[first_bot]
+                first := &r.inbox.queue[first_bot]
                 if !strings.has_prefix(first.id, ACP_BOT_INPUT_PREFIX) && strings.has_prefix(input.id, ACP_BOT_INPUT_PREFIX) {
                     first^, input^ = input^, first^
                 }
-                acp_inbox_remember(r, input.id)
-                acp_inbox_input_delete(input^); ordered_remove(&r.d.queue, i)
+                bridge_inbox_remember(r.inbox, input.id)
+                bridge_inbox_input_delete(input^); ordered_remove(&r.inbox.queue, i)
                 continue
             }
             first_bot = i
@@ -260,24 +259,34 @@ acp_runtime_reclassify_saved_queue :: proc(r: ^ACP_Runtime) {
         i += 1
     }
     if first_bot >= 0 {
-        r.d.queue[first_bot].lane = .Steer
-        acp_runtime_replace(&r.d.queue[first_bot].key, ACP_BOT_KIND)
+        r.inbox.queue[first_bot].lane = .Steer
+        acp_runtime_replace(&r.inbox.queue[first_bot].key, ACP_BOT_KIND)
     }
 }
 
-// A saved FIFO may overlap a restored in-flight/completed input or contain a
-// retried enqueue. Keep the first pending identity in FIFO order, never replay it.
-acp_runtime_merge_saved_queue :: proc(d: ^ACP_Runtime_Durable) {
-    i := 0
-    for i < len(d.queue) {
-        input := d.queue[i]
-        duplicate := input.id == d.current_input
-        for id in d.completed_inputs do if id == input.id do duplicate = true
-        for old in d.queue[:i] do if old.id == input.id do duplicate = true
-        if duplicate {
-            acp_inbox_input_delete(input); ordered_remove(&d.queue, i)
-        } else { i += 1 }
+// acp_runtime_inbox_restore reconciles the claimed inbox with the journal:
+//   - upgrade: a journal that still holds the queue, completed ids and Send
+//     now batch moves them into the inbox, which is saved before any journal
+//     rewrite can drop them (repeating this after a crash never duplicates);
+//   - exactly once: inputs the journal's outgoing prompt or steer carries left
+//     the inbox in memory before a crash may have kept the file from saying
+//     so; they are removed again, never replayed.
+acp_runtime_inbox_restore :: proc(r: ^ACP_Runtime, s: ^ACP_State) -> bool {
+    context.allocator = runtime.heap_allocator()
+    // Older journals kept the inbox fields under the same names.
+    legacy: Bridge_Inbox
+    defer bridge_inbox_delete(&legacy)
+    if json.unmarshal_string(s.runtime_json, &legacy) != nil do return false
+    upgraded := len(legacy.queue) > 0 || len(legacy.completed_inputs) > 0 || legacy.send_now.batch_id != ""
+    if upgraded {
+        if !bridge_inbox_valid(&legacy, contracts.ACP_SEND_NOW_MAX_MEMBERS+128) do return false
+        bridge_inbox_merge(r.inbox, &legacy)
     }
+    for id in r.d.dispatched do bridge_inbox_remove(r.inbox, id)
+    for id in ([]string{r.d.current_input, r.d.steering_input.id}) do if id != "" do bridge_inbox_remove(r.inbox, id, remember = false)
+    if !upgraded do return true
+    r.inbox.sealed = r.inbox.sealed || s.seal_journal
+    return bridge_inbox_save(r.inbox)
 }
 
 acp_runtime_publish_restored :: proc(r: ^ACP_Runtime) {
@@ -310,8 +319,7 @@ acp_runtime_recover_lost :: proc(r: ^ACP_Runtime, socket: string) -> bool {
     r.inbox_started = false
     if r.d.current_input != "" {
         if acp_runtime_events.prompt_finished != nil do acp_runtime_events.prompt_finished(r, r.d.current_input, "", "acp_turn_interrupted")
-        append(&r.d.completed_inputs, strings.clone(r.d.current_input))
-        if len(r.d.completed_inputs) > 256 { delete(r.d.completed_inputs[0]); ordered_remove(&r.d.completed_inputs, 0) }
+        bridge_inbox_remember(r.inbox, r.d.current_input)
         acp_runtime_replace(&r.d.current_input, "")
     }
     issue := acp_runtime_reissue_token(r.rec)

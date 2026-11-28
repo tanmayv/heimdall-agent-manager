@@ -48,6 +48,9 @@ ACP_RPC_Callbacks :: struct {
     // with heap-owned copies before the atomic write. Do not change RPC fields.
     // False prevents sends and PipeAck.
     checkpoint: proc(data: rawptr, state: ^ACP_State) -> bool,
+    // After the journal write: commits state kept outside the journal (the
+    // runtime's inbox file). False fails the checkpoint.
+    committed: proc(data: rawptr) -> bool,
     restore_completion: proc(data: rawptr, role: ACP_RPC_Role, id: ACP_RPC_ID) -> ACP_RPC_Completion,
     // At most UNKNOWN_ID_COUNT distinct IDs/UNKNOWN_ID_BYTES of keys, then one
     // UNKNOWN_ID_OVERFLOW marker.
@@ -340,7 +343,8 @@ acp_rpc_checkpoint :: proc(c: ^ACP_RPC_Client) -> bool {
     encoded := base64.encode(c.partial[:], allocator = context.allocator)
     delete(c.state.partial_line_base64); c.state.partial_line_base64 = string(encoded)
     if c.callbacks.checkpoint != nil && !c.callbacks.checkpoint(c.callbacks.data, &c.state) do return false
-    return c.io.state_path == "" || acp_state_write(c.io.state_path, &c.state)
+    if c.io.state_path != "" && !acp_state_write(c.io.state_path, &c.state) do return false
+    return c.callbacks.committed == nil || c.callbacks.committed(c.callbacks.data)
 }
 
 // Serialized outgoing envelope, with JSON raw values validated before use.

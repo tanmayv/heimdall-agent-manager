@@ -50,7 +50,7 @@ acp_driver_acp_ready :: proc(r: ^ACP_Runtime) {
     acp_runtime_session_ready(r, starter_links_bootstrap = !r.d.embedded_context)
 }
 
-acp_driver_acp_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap := false) {
+acp_driver_acp_prompt :: proc(r: ^ACP_Runtime, input: Bridge_Inbox_Input, bootstrap := false) {
     r.d.cancelling = false
     acp_runtime_replace(&r.d.phase, "prompt")
     acp_runtime_replace(&r.d.current_input, input.id)
@@ -154,8 +154,7 @@ acp_driver_acp_result :: proc(data: rawptr, result: ACP_RPC_Result) {
         }
         acp_permissions_cancel(r)
         if acp_runtime_events.prompt_finished != nil do acp_runtime_events.prompt_finished(r, r.d.current_input, result.result_json, "")
-        append(&r.d.completed_inputs, strings.clone(r.d.current_input))
-        if len(r.d.completed_inputs) > 256 { delete(r.d.completed_inputs[0]); ordered_remove(&r.d.completed_inputs, 0) }
+        bridge_inbox_remember(r.inbox, r.d.current_input)
         acp_runtime_replace(&r.d.current_input, ""); acp_runtime_replace(&r.d.phase, "ready")
         bridge_runtime_note_agent_activity(r.instance, "idle", "acp")
         acp_runtime_drain(r)
@@ -203,7 +202,7 @@ acp_driver_acp_steering_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     if outcome == "injected" {
         if input.id!="" && r.d.phase=="prompt" do acp_chat_boundary(r)
         acp_delivery_steer_injected(r, input)
-        acp_inbox_remember(r, input.id); acp_inbox_input_delete(input)
+        bridge_inbox_remember(r.inbox, input.id); bridge_inbox_input_delete(input)
     } else {
         if !result.ok do r.d.steering_supported = false
         // Front reinsertion keeps FIFO; the input is never steered again.
@@ -271,17 +270,13 @@ acp_driver_acp_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
     case "", "acp_auth_required", "acp_pipe_lost", "acp_pipe_write_failed", "acp_adapter_exited", "acp_rpc_timeout", "acp_rpc_failed", "acp_protocol_error", "acp_state_write_failed", "acp_bootstrap_unsupported", "acp_model_unavailable", "acp_permission_mode_unsupported", "acp_chat_publish_rejected":
     case: return false
     }
-    if len(d.config_json) > ACP_RPC_MAX_LINE || len(d.plan_json)>64*1024 || len(d.starter) > ACP_RPC_MAX_LINE || len(d.current_input) > 1024 || len(d.queue) > 128 || len(d.completed_inputs) > 256 || d.stream_retries < 0 || d.stream_retries > 4 do return false
-    bytes := len(d.steering_input.text)
-    for input in d.queue {
-        if !acp_inbox_input_valid(input) do return false
-        bytes += len(input.text)
-    }
-    if bytes > ACP_INBOX_MAX_BYTES || len(d.queue)+int(d.steering_pending) > 128 || d.steering_pending != (d.steering_input.id != "") ||
-       (d.steering_pending && !acp_inbox_input_valid(d.steering_input)) { return false }
-    if d.batch_first_ms < 0 || d.batch_last_ms < d.batch_first_ms || d.last_notice_turn_ms < 0 do return false
-    for id in d.completed_inputs do if id == "" || len(id) > 1024 do return false
-    if d.report_seq < 0 || !acp_send_now_valid(&d.send_now) do return false
+    if len(d.config_json) > ACP_RPC_MAX_LINE || len(d.plan_json)>64*1024 || len(d.starter) > ACP_RPC_MAX_LINE || len(d.current_input) > 1024 || d.stream_retries < 0 || d.stream_retries > 4 do return false
+    // The queue itself is the inbox's (bridge_inbox_valid); here only the
+    // input in flight and the receipts of the outgoing RPC.
+    if d.steering_pending != (d.steering_input.id != "") || (d.steering_pending && !bridge_inbox_input_valid(d.steering_input)) do return false
+    if len(d.dispatched) > 512 do return false
+    for id in d.dispatched do if id == "" || len(id) > 1024 do return false
+    if d.report_seq < 0 do return false
     return true
 }
 

@@ -9,29 +9,23 @@ import "core:time"
 import agent_runtime "odin_test:lib/agent_runtime"
 import contracts "odin_test:contracts"
 
-ACP_Input_Lane :: enum { Steer, Batch, Digest }
-ACP_Runtime_Input :: struct {
-    id, text: string,
-    lane: ACP_Input_Lane,
-    key, kind: string,
-}
 ACP_Runtime_Durable :: struct {
     phase, config_json, plan_json, starter, current_input, error: string,
     starter_sent, ready, stopped, auth_required, replay_only, embedded_context: bool,
-    queue: [dynamic]ACP_Runtime_Input,
-    completed_inputs: [dynamic]string,
     token_reissued: bool,
     exit_pending: bool,
     cancelling: bool,
     stream_retries: int,
     steering_supported, steering_pending: bool,
-    steering_input: ACP_Runtime_Input,
-    batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
+    steering_input: Bridge_Inbox_Input,
+    // Inputs the outgoing prompt or steer carries. They left the inbox in
+    // memory; this journal write commits that, and restore drops them from an
+    // inbox file written before it (the inbox is saved after the journal).
+    dispatched: [dynamic]string,
     // Owned by the protocol driver and opaque here; see the driver state procs.
     driver_state: rawptr `json:"-"`,
     // Delivery evidence sequence for this launch epoch (strictly increasing).
     report_seq: i64,
-    send_now: ACP_Send_Now_Durable,
 }
 
 // T5 attaches telemetry/chat handling here. Hooks execute only on the instance
@@ -58,6 +52,10 @@ ACP_Runtime :: struct {
     saved_tools, saved_outbox: string,
     rec: Bridge_Local_Agent_Token_Record,
     d: ACP_Runtime_Durable,
+    // The instance's durable inbox (bridge_inbox.odin), claimed for the life
+    // of this runtime; only the dispatcher touches it.
+    inbox: ^Bridge_Inbox,
+    inbox_unreadable: bool,
     notice_interval_ms: i64,
     inbox_started: bool, // dispatcher enables ticks only after begin/restore
 }
@@ -114,6 +112,18 @@ acp_runtime_checkpoint :: proc(data: rawptr, state: ^ACP_State) -> bool {
     raw, ok := acp_runtime_durable_json(r)
     if !ok do return false
     delete(state.runtime_json); state.runtime_json = raw
+    return true
+}
+
+// The journal holds the outgoing prompt; only now may the inbox file drop
+// the inputs it carries. A crash between the two writes leaves them in the
+// file, and restore removes them again (acp_runtime_inbox_restore).
+acp_runtime_committed :: proc(data: rawptr) -> bool {
+    r := cast(^ACP_Runtime)data
+    if r.inbox_unreadable do return true
+    r.inbox.sealed = r.inbox.sealed || r.chat != nil
+    if !bridge_inbox_save(r.inbox) do return false
+    acp_inbox_dispatched_clear(r)
     return true
 }
 
@@ -285,19 +295,9 @@ acp_runtime_restore_completion :: proc(data: rawptr, role: ACP_RPC_Role, id: ACP
     return {acp_runtime_result, data}
 }
 
-// Notices never interrupt a busy agent (CONTRACT-07): they wait for a turn.
-ACP_Task_Notice_Input :: struct { text: string }
-
-acp_runtime_notice_ready :: proc(r: ^ACP_Runtime) -> bool {
-    if !acp_runtime_current(r) || !r.d.ready || r.d.error != "" || r.d.exit_pending do return false
-    if r.chat != nil && (!acp_chat_vault_ready() || acp_chat_bytes(r.chat) > 1536*1024) do return false
-    return r.d.phase != "prompt" && len(r.d.queue) == 0
-}
-
 acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> bool {
     r := cast(^ACP_Runtime)data
     if strings.has_prefix(argument,"chat_") do return acp_chat_work(r,argument)
-    if argument == "task_notices_ready" do return acp_runtime_notice_ready(r)
     if argument == "can_steer" {
         // Steering capability of the current turn (CONTRACT-15): the session
         // must support it and the driver must not rule it out.
@@ -317,19 +317,6 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
         if json.unmarshal_string(argument[len("inputs_read:"):], &ids, allocator = context.temp_allocator) != nil || len(ids) > 100 do return false
         if acp_delivery_inputs_read(r, ids) && !acp_rpc_checkpoint(r.client) { acp_runtime_error(r, "acp_state_write_failed"); return false }
         return true
-    }
-    if strings.has_prefix(argument, "task_notices:") {
-        // The notice worker did the hub reads without holding ownership locks.
-        // Only cheap local readiness is rechecked here: stdout and permissions
-        // must keep flowing while the hub is slow or unreachable.
-        input: ACP_Task_Notice_Input
-        if json.unmarshal_string(argument[len("task_notices:"):], &input, allocator = context.temp_allocator) != nil || len(input.text) > 128*1024 do return false
-        if !acp_runtime_notice_ready(r) do return false
-        if input.text == "" do return true
-        decrypted := bridge_decrypt_embedded_vault_tokens(input.text); defer delete(decrypted)
-        id := fmt.tprintf("task_notice_%d", time.tick_now()._nsec)
-        acp_runtime_prompt(r, {id = id, text = decrypted})
-        return r.d.error == ""
     }
     switch argument {
     case "begin":
@@ -384,12 +371,12 @@ acp_runtime_command :: proc(instance, argument: string) -> bool {
     acp_rpc_call(r.client, &cmd); return cmd.ok
 }
 
-acp_runtime_deliver :: proc(instance, text: string, input_id := "", lane: ACP_Input_Lane = .Steer, key := "", kind := "") -> bool {
+acp_runtime_deliver :: proc(instance, text: string, input_id := "", lane: Bridge_Inbox_Lane = .Steer, key := "", kind := "", task := "", expected_state := "") -> bool {
     // Hub command/message identities survive retries. Local raw user input uses
     // a distinct prefix so legacy notice migration preserves its priority.
     id := input_id
     if id == "" do id = fmt.tprintf("%s_%d", "input" if lane == .Steer else "notice", time.tick_now()._nsec)
-    raw, _ := json.marshal(ACP_Runtime_Input{id = id, text = text, lane = lane, key = key, kind = kind}); defer delete(raw)
+    raw, _ := json.marshal(Bridge_Inbox_Input{id = id, text = text, lane = lane, key = key, kind = kind, task = task, expected_state = expected_state}); defer delete(raw)
     return acp_runtime_command(instance, string(raw))
 }
 
@@ -408,12 +395,10 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     delete(r.saved_tools); delete(r.saved_outbox)
     delete(r.rec.token_hash); delete(r.rec.agent_instance_id); delete(r.rec.instance_token)
     delete(r.d.phase); delete(r.d.config_json); delete(r.d.plan_json); delete(r.d.starter); delete(r.d.current_input); delete(r.d.error)
-    for input in r.d.queue do acp_inbox_input_delete(input)
-    delete(r.d.queue)
-    acp_inbox_input_delete(r.d.steering_input)
-    for id in r.d.completed_inputs do delete(id); delete(r.d.completed_inputs)
+    bridge_inbox_input_delete(r.d.steering_input)
+    for id in r.d.dispatched do delete(id); delete(r.d.dispatched)
     acp_runtime_durable_free_driver_state(acp_runtime_driver(r), &r.d)
-    acp_send_now_delete(&r.d.send_now)
+    bridge_inbox_release(r.inbox)
     free(r)
 }
 
@@ -437,6 +422,12 @@ acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model
     r.model = strings.clone(model); r.mode = strings.clone(mode); r.rec = bridge_startup_clone_rec(rec)
     base := bridge_shell_data_dir(); defer delete(base)
     r.state_path, _ = acp_state_path(base, instance, epoch)
+    r.inbox = bridge_inbox_claim(instance)
+    if r.inbox == nil {
+        // An unreadable inbox file is kept untouched; launch and restore refuse.
+        r.inbox = new(Bridge_Inbox)
+        r.inbox_unreadable = true
+    }
     return r
 }
 
@@ -446,7 +437,7 @@ acp_runtime_connect :: proc(r: ^ACP_Runtime, socket: string, after_seq: u64, che
     if !acp_chat_prepare(r) do return false
     io, ok := acp_pipe_io_open(socket, r.instance, r.generation, r.epoch, r.state_path, after_seq)
     if !ok do return false
-    r.client, ok = acp_rpc_open(io, {data = r, checkpoint = acp_runtime_checkpoint, notification = acp_runtime_notification,
+    r.client, ok = acp_rpc_open(io, {data = r, checkpoint = acp_runtime_checkpoint, committed = acp_runtime_committed, notification = acp_runtime_notification,
         inbound_request = acp_runtime_inbound, inbound_timeout = acp_runtime_inbound_timeout, fault = acp_runtime_fault, restore_completion = acp_runtime_restore_completion, can_process = acp_chat_can_process, tick = acp_inbox_tick}, acp_runtime_driver(r).rpc)
     if !ok { io.close(io.data); io.destroy(io.data); return false }
     if checkpoint != "" {
@@ -534,7 +525,13 @@ acp_runtime_launch :: proc(command, instance, epoch, etag, run_dir, endpoint, pr
     r := acp_runtime_new(instance, epoch, run_dir, provider, pp.profile_id, etag, model, mode, rec)
     acp_provider_binding_delete(&r.binding); r.binding = acp_provider_binding_copy(binding)
     r.d.phase = strings.clone("initialize"); r.d.starter = strings.clone(catalog.starter_prompt)
-    if r.state_path == "" { acp_runtime_destroy(r); return false, "acp_state_write_failed", bridge_error(.agent_launch_failed) }
+    if r.state_path == "" || r.inbox_unreadable { acp_runtime_destroy(r); return false, "acp_state_write_failed", bridge_error(.agent_launch_failed) }
+    // The inbox outlives launches. A Send now batch of the replaced launch is
+    // over: its members go back to ordinary queued inputs.
+    if acp_send_now_active(r) {
+        bridge_inbox_send_now_set_state(r.inbox, "failed")
+        for &input in r.inbox.queue do if input.kind == BRIDGE_INBOX_SEND_NOW_KIND do acp_runtime_replace(&input.kind, "")
+    }
     initial := ACP_State{schema_version = 1, instance = strings.clone(instance), launch_epoch = strings.clone(epoch), effective_transport = strings.clone("acp"), next_rpc_id = 1, next_delivery_id = 1}
     acp_runtime_checkpoint(r, &initial)
     written := acp_state_write(r.state_path, &initial); acp_state_delete(&initial)
@@ -597,7 +594,7 @@ acp_runtime_session_ready :: proc(r: ^ACP_Runtime, starter_links_bootstrap: bool
 acp_runtime_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     acp_runtime_driver(cast(^ACP_Runtime)data).result(data, result)
 }
-acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap := false) {
+acp_runtime_prompt :: proc(r: ^ACP_Runtime, input: Bridge_Inbox_Input, bootstrap := false) {
     acp_runtime_driver(r).prompt(r, input, bootstrap)
 }
 acp_runtime_ready :: proc(r: ^ACP_Runtime) {

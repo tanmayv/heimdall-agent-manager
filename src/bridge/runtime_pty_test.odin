@@ -69,17 +69,26 @@ Pty_Test_Env :: struct {
 	daemon:  proc() -> (string, bool),
 	send:    proc(socket: string, frame: []byte) -> bool,
 	sleep:   proc(ms: int),
-	queue:   Bridge_Task_Notice_Queue,
 	data:    string,
 	dir:     string,
 }
 
-// pty_test_begin installs the capture seams, an empty notice queue and a
+// pty_test_queued lists an instance's queued input ids (temp-allocated).
+pty_test_queued :: proc(instance: string) -> []string {
+	ids := make([dynamic]string, context.temp_allocator)
+	inbox := bridge_inbox_lock(instance)
+	if inbox == nil do return nil
+	defer bridge_inbox_unlock()
+	for input in inbox.queue do append(&ids, strings.clone(input.id, context.temp_allocator))
+	return ids[:]
+}
+
+// pty_test_begin installs the capture seams, an empty inbox registry and a
 // private data dir. Hold bridge_test_config_mutex around begin/end.
 pty_test_begin :: proc(name: string) -> Pty_Test_Env {
-	env := Pty_Test_Env{daemon = pty_runtime_daemon, send = pty_runtime_send, sleep = pty_runtime_sleep, queue = bridge_task_notices, data = bridge_config.data_dir}
+	env := Pty_Test_Env{daemon = pty_runtime_daemon, send = pty_runtime_send, sleep = pty_runtime_sleep, data = bridge_config.data_dir}
 	pty_runtime_daemon = pty_test_daemon; pty_runtime_send = pty_test_send; pty_runtime_sleep = pty_test_sleep
-	bridge_task_notices = {}
+	bridge_inbox_forget_all(); bridge_task_states_reset()
 	env.dir = fmt.aprintf("%s/.cache/heimdall-tests/%s-%d", os.get_env("HOME", context.temp_allocator), name, sync.current_thread_id(), allocator = runtime.heap_allocator())
 	bridge_config.data_dir = env.dir
 	pty_test_reset(); pty_test_send_fail = false
@@ -88,7 +97,7 @@ pty_test_begin :: proc(name: string) -> Pty_Test_Env {
 
 pty_test_end :: proc(env: ^Pty_Test_Env) {
 	pty_runtime_daemon = env.daemon; pty_runtime_send = env.send; pty_runtime_sleep = env.sleep
-	bridge_task_notice_queue_delete(&bridge_task_notices); bridge_task_notices = env.queue
+	bridge_inbox_forget_all(); bridge_task_states_reset()
 	bridge_config.data_dir = env.data
 	os.remove_all(env.dir); delete(env.dir, runtime.heap_allocator())
 	pty_test_reset(); pty_test_send_fail = false
@@ -210,7 +219,7 @@ pty_queue_waits_for_trusted_idle_and_never_presses_esc :: proc(t: ^testing.T) {
 	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_q1", text = "New message from User", hub_message = true}))
 	bridge_task_notice_tick(bridge_runtime_now_ms() + 1)
 	testing.expect_value(t, len(pty_test_ops), 0) // busy: nothing typed
-	testing.expect_value(t, len(bridge_task_notices.entries), 1) // admitted durably
+	testing.expect_value(t, len(pty_test_queued(id)), 1) // admitted durably
 	// A launch default "idle" is not a trusted idle.
 	pty_test_activity(id, "idle", "bridge")
 	bridge_task_notice_tick(bridge_runtime_now_ms() + 5000)
@@ -218,7 +227,7 @@ pty_queue_waits_for_trusted_idle_and_never_presses_esc :: proc(t: ^testing.T) {
 	pty_test_activity(id, "idle", "pane_diff")
 	bridge_task_notice_tick(bridge_runtime_now_ms() + 10_000)
 	testing.expect_value(t, pty_test_trace(), `"New message from User" Enter Enter`)
-	testing.expect_value(t, len(bridge_task_notices.entries), 0)
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
 	// The next input waits until the typed turn has been seen.
 	pty_test_reset()
 	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_q2", text = "second"}))
@@ -243,7 +252,7 @@ pty_notifications_never_interrupt :: proc(t: ^testing.T) {
 		testing.expect(t, bridge_runtime_submit(id, {kind = .Notification, id = fmt.tprintf("cmd_%v", mode), text = "Shell run sh_1 exited.", origin = "shell_run"}, mode))
 	}
 	testing.expect_value(t, len(pty_test_ops), 0)
-	testing.expect_value(t, len(bridge_task_notices.entries), 3)
+	testing.expect_value(t, len(pty_test_queued(id)), 3)
 	pty_test_activity(id, "idle", "pane_diff")
 	bridge_task_notice_tick(bridge_runtime_now_ms() + BRIDGE_TASK_NOTICE_WINDOW_MS + 1)
 	// One turn for the batch; the repeated line is typed once; no Esc anywhere.
@@ -263,7 +272,7 @@ pty_steer_and_send_now_follow_key_data :: proc(t: ^testing.T) {
 	testing.expect(t, !bridge_runtime_can_steer(id))
 	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, text = "now please"}, .Steer))
 	testing.expect_value(t, pty_test_trace(), `Esc "now please" Enter Enter`)
-	testing.expect_value(t, len(bridge_task_notices.entries), 0)
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
 	pty_test_reset()
 	testing.expect(t, pty_runtime_execute("s", id, "go", .Steer, contracts.pty_delivery_resolve({interrupt_keys = {"ctrl_c", "esc"}, second_submit = "off", can_steer = "on"})))
 	testing.expect_value(t, pty_test_trace(), `Ctrl_C Esc "go" Enter`)
@@ -273,7 +282,7 @@ pty_steer_and_send_now_follow_key_data :: proc(t: ^testing.T) {
 	// An unreachable terminal keeps the input in the durable inbox.
 	pty_test_reset(); pty_test_send_fail = true
 	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_late", text = "late"}, .Send_Now))
-	testing.expect_value(t, len(bridge_task_notices.entries), 1)
+	testing.expect_value(t, len(pty_test_queued(id)), 1)
 }
 
 @(test)
@@ -296,14 +305,14 @@ pty_send_now_delivers_frozen_fifo_batch_once :: proc(t: ^testing.T) {
 	// The batch is the listed inputs still queued, in FIFO order, as one turn.
 	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1, message_ids = {"msg_c", "msg_a", "cmd_n"}}))
 	testing.expect_value(t, pty_test_trace(), `Esc "text msg_a | text msg_c" Enter Enter`)
-	testing.expect_value(t, len(bridge_task_notices.entries), 2) // msg_b and the notification stay queued
+	testing.expect_value(t, len(pty_test_queued(id)), 2) // msg_b and the notification stay queued
 	pty_test_reset()
 	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 2, message_ids = {"msg_b"}}), "idempotent by batch")
 	testing.expect_value(t, len(pty_test_ops), 0)
 	// Read inputs need no notice any more.
 	testing.expect(t, rt.inputs_read(id, {"msg_b"}))
-	testing.expect_value(t, len(bridge_task_notices.entries), 1)
-	testing.expect_value(t, bridge_task_notices.entries[0].id, "cmd_n")
+	testing.expect_value(t, len(pty_test_queued(id)), 1)
+	testing.expect_value(t, pty_test_queued(id)[0], "cmd_n")
 }
 
 @(test)
@@ -315,13 +324,25 @@ pty_inbox_survives_restart :: proc(t: ^testing.T) {
 	defer bridge_runtime_set_status(id, "stopped", "idle")
 	pty_test_activity(id, "active", "pane_diff")
 	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_d", text = "durable"}))
-	path := bridge_task_notice_path(); defer delete(path)
-	raw, err := os.read_entire_file(path, context.allocator); defer delete(raw)
-	restored: Bridge_Task_Notice_Queue; defer bridge_task_notice_queue_delete(&restored)
-	testing.expect(t, err == nil && bridge_task_notice_restore(&restored, string(raw), bridge_runtime_now_ms()))
-	testing.expect(t, len(restored.entries) == 1 && restored.entries[0].id == "msg_d" && restored.entries[0].kind == BRIDGE_NOTICE_USER_MESSAGE)
-	testing.expect(t, bridge_task_notice_merge(&restored, restored.entries[0]), "a retried admission merges by id")
-	testing.expect_value(t, len(restored.entries), 1)
+	testing.expect(t, bridge_runtime_submit(id, {kind = .Notification, id = "cmd_d", text = "notice", origin = "shell_run"}))
+	// A bridge restart: memory is gone, the inbox file is the truth.
+	bridge_inbox_forget_all()
+	bridge_inbox_restore_all()
+	testing.expect_value(t, len(pty_test_queued(id)), 2)
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_d", text = "durable"}), "a retried admission merges by id")
+	ids := pty_test_queued(id)
+	testing.expect(t, len(ids) == 2 && ids[0] == "msg_d" && ids[1] == "cmd_d")
+	// The restored inputs replay as one turn at the next trusted idle, once.
+	pty_test_forget_typed(id)
+	pty_test_activity(id, "idle", "pane_diff")
+	bridge_task_notice_tick(bridge_runtime_now_ms() + BRIDGE_TASK_NOTICE_WINDOW_MS + 1)
+	testing.expect_value(t, pty_test_trace(), `"durable | notice" Enter Enter`)
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+	bridge_inbox_forget_all()
+	bridge_inbox_restore_all()
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_d", text = "durable"}), "a delivered identity is acknowledged")
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
 }
 
 // ---- shared interface policy -------------------------------------------------------
@@ -403,7 +424,7 @@ runtime_activity_transitions_emit_turn_events :: proc(t: ^testing.T) {
 }
 
 // The interface stays narrow: the core methods plus the justified extras, and
-// the inbox drives runtimes through its own delivery targets.
+// the inbox worker drives a PTY runtime through its delivery target.
 @(test)
 runtime_interface_is_narrow_and_inbox_driven :: proc(t: ^testing.T) {
 	names := reflect.struct_field_names(Agent_Runtime)
@@ -413,6 +434,6 @@ runtime_interface_is_narrow_and_inbox_driven :: proc(t: ^testing.T) {
 	for rt in bridge_agent_runtime_list() {
 		testing.expect(t, rt.submit != nil && rt.send_now != nil && rt.interrupt != nil && rt.can_steer != nil && rt.usage != nil, rt.transport)
 	}
-	testing.expect(t, pty_inbox_target.transport == pty_agent_runtime.transport && acp_inbox_target.transport == acp_agent_runtime.transport)
+	testing.expect(t, pty_inbox_target.transport == pty_agent_runtime.transport)
 	testing.expect(t, bridge_inbox_target("inst_runtime_never_seen") == nil, "no runtime, no delivery")
 }

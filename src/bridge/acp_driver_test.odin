@@ -180,7 +180,7 @@ driver_test_result :: proc(data: rawptr, result: ACP_RPC_Result) {
     r.d.phase = "result"
     acp_rpc_result_delete(result)
 }
-driver_test_prompt :: proc(r: ^ACP_Runtime, input: ACP_Runtime_Input, bootstrap: bool) { r.d.phase = input.text }
+driver_test_prompt :: proc(r: ^ACP_Runtime, input: Bridge_Inbox_Input, bootstrap: bool) { r.d.phase = input.text }
 driver_test_ready :: proc(r: ^ACP_Runtime) { r.d.phase = "ready" }
 driver_test_permissions_cancel :: proc(r: ^ACP_Runtime) { r.d.phase = "cancel_permissions" }
 driver_test_cancel :: proc(r: ^ACP_Runtime) -> bool { r.next_rpc_id += 1; return true }
@@ -195,7 +195,8 @@ acp_driver_runtime_dispatch_is_per_owner :: proc(t: ^testing.T) {
     custom.ready = driver_test_ready
     custom.permissions_cancel = driver_test_permissions_cancel
     custom.cancel = driver_test_cancel
-    r := ACP_Runtime{driver = &custom}
+    inbox: Bridge_Inbox
+    r := ACP_Runtime{driver = &custom, inbox = &inbox}
     c: ACP_RPC_Client
     testing.expect(t, acp_runtime_work(&r, &c, "begin"))
     testing.expect_value(t, r.d.phase, "begin")

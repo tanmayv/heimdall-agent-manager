@@ -31,6 +31,8 @@ c2_acp_copilot_no_steering_serializes_priority_and_deduplicates :: proc(t: ^test
     testing.expect_value(t, t16_writes(&f), 2)
 }
 
+t16_legacy: ACP_State
+
 t16_open :: proc(f: ^T4_Runtime_Test, instance: string) {
     t4_runtime_open(f, instance, "/unused/bootstrap")
     r := f.r
@@ -43,8 +45,8 @@ t16_open :: proc(f: ^T4_Runtime_Test, instance: string) {
 t16_close :: proc(f: ^T4_Runtime_Test) {
     f.r.d.stopped = true; acp_runtime_destroy(f.r); acp_test_delete(&f.f)
 }
-t16_input :: proc(f: ^T4_Runtime_Test, id, text: string, lane: ACP_Input_Lane, key := "task", kind := "ready") -> bool {
-    raw, _ := json.marshal(ACP_Runtime_Input{id = id, text = text, lane = lane, key = key, kind = kind}, allocator = context.temp_allocator)
+t16_input :: proc(f: ^T4_Runtime_Test, id, text: string, lane: Bridge_Inbox_Lane, key := "task", kind := "ready") -> bool {
+    raw, _ := json.marshal(Bridge_Inbox_Input{id = id, text = text, lane = lane, key = key, kind = kind}, allocator = context.temp_allocator)
     return t4_runtime_call(f, string(raw))
 }
 t16_writes :: proc(f: ^T4_Runtime_Test) -> int {
@@ -70,7 +72,7 @@ t16_acp_bot_bypasses_notice_budget_and_does_not_reset_it :: proc(t: ^testing.T) 
     if !acp_test_wait(t, &f.f, .Writes, 1) do return
     t4_runtime_reply(t, &f, 0, `{"stopReason":"end_turn"}`, 1)
     testing.expect(t, t16_input(&f, "event_second", "generic digest context", .Batch))
-    testing.expect(t, len(f.r.d.queue) == 1 && f.r.d.queue[0].lane == .Digest)
+    testing.expect(t, len(f.r.inbox.queue) == 1 && f.r.inbox.queue[0].lane == .Digest)
 
     testing.expect(t, t16_bot_input(&f, "bot_first", "first bot turn"))
     if !acp_test_wait(t, &f.f, .Writes, 2) do return
@@ -80,7 +82,7 @@ t16_acp_bot_bypasses_notice_budget_and_does_not_reset_it :: proc(t: ^testing.T) 
     testing.expect(t, t16_bot_input(&f, "bot_second", "second bot turn"))
     if !acp_test_wait(t, &f.f, .Writes, 3) do return
     testing.expect(t, strings.contains(sn_write(&f, 2), "second bot turn"))
-    testing.expect_value(t, f.r.d.last_notice_turn_ms, 102000)
+    testing.expect_value(t, f.r.inbox.last_notice_turn_ms, 102000)
     t4_runtime_reply(t, &f, 2, `{"stopReason":"end_turn"}`, 3)
 }
 
@@ -96,7 +98,7 @@ t16_acp_bot_burst_waits_for_idle_and_deduplicates :: proc(t: ^testing.T) {
     testing.expect(t, t16_bot_input(&f, "bot_latest", "latest wake"))
     testing.expect(t, t16_bot_input(&f, "bot_latest", "retry while queued"))
     testing.expect(t, t16_bot_input(&f, "bot_oldest", "superseded retry"))
-    testing.expect(t, len(f.r.d.queue) == 1 && f.r.d.queue[0].id == "bot_latest")
+    testing.expect(t, len(f.r.inbox.queue) == 1 && f.r.inbox.queue[0].id == "bot_latest")
     // A write here would be an early prompt, a steer or a cancel.
     testing.expect_value(t, t16_writes(&f), 1)
     t4_runtime_reply(t, &f, 0, `{"stopReason":"end_turn"}`, 1)
@@ -111,6 +113,7 @@ t16_acp_bot_burst_waits_for_idle_and_deduplicates :: proc(t: ^testing.T) {
 @(test)
 t16_acp_bot_restore_promotes_and_coalesces_saved_digest :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    prev_dir, dir := inbox_test_begin("t16-restore"); defer inbox_test_end(prev_dir, dir)
     f: T4_Runtime_Test; t16_open(&f, "inst_bot_restore")
     // The old PTY nudge call passed "bot" as the sender, not the role.
     testing.expect(t, t16_input(&f, "notice_100", BOT_NOTICE, .Digest, "", ""))
@@ -118,6 +121,9 @@ t16_acp_bot_restore_promotes_and_coalesces_saved_digest :: proc(t: ^testing.T) {
     testing.expect(t, t16_input(&f, "notice_102", "ordinary legacy notice", .Digest, "", ""))
     sync.mutex_lock(&f.f.mu); snapshot := strings.clone(f.f.snapshot, runtime.heap_allocator()); sync.mutex_unlock(&f.f.mu)
     defer delete(snapshot, runtime.heap_allocator())
+    // Journals before the bridge inbox kept the queue under these names.
+    legacy, _ := json.marshal(f.r.inbox^, allocator = context.temp_allocator)
+    t16_legacy = ACP_State{runtime_json = string(legacy)}
     t16_close(&f)
 
     state, valid := acp_state_decode(snapshot); defer acp_state_delete(&state)
@@ -127,14 +133,14 @@ t16_acp_bot_restore_promotes_and_coalesces_saved_digest :: proc(t: ^testing.T) {
     if !testing.expect(t, json.unmarshal_string(state.runtime_json, &next.r.d, allocator = runtime.heap_allocator()) == nil) do return
     testing.expect(t, acp_rpc_restore(next.r.client, snapshot))
     sn_do(&next, proc(f: ^T4_Runtime_Test) {
-        acp_runtime_merge_saved_queue(&f.r.d)
+        _ = acp_runtime_inbox_restore(f.r, &t16_legacy)
         acp_runtime_reclassify_saved_queue(f.r)
-        f.r.d.last_notice_turn_ms = acp_rpc_now(f.r.client)
+        f.r.inbox.last_notice_turn_ms = acp_rpc_now(f.r.client)
     })
-    if !testing.expect_value(t, len(next.r.d.queue), 2) do return
-    bot := next.r.d.queue[0]
+    if !testing.expect_value(t, len(next.r.inbox.queue), 2) do return
+    bot := next.r.inbox.queue[0]
     testing.expect(t, bot.id == "notice_100" && bot.kind == ACP_BOT_KIND && bot.key == ACP_BOT_KIND && bot.lane == .Steer)
-    testing.expect(t, next.r.d.queue[1].id == "notice_102" && next.r.d.queue[1].lane == .Batch)
+    testing.expect(t, next.r.inbox.queue[1].id == "notice_102" && next.r.inbox.queue[1].lane == .Batch)
     t4_runtime_call(&next, "resume")
     if !acp_test_wait(t, &next.f, .Writes, 1) do return
     line := sn_write(&next, 0)
@@ -197,11 +203,11 @@ t16_acp_inbox_admission_bounds_and_checkpoint_failure :: proc(t: ^testing.T) {
     f: T4_Runtime_Test; t16_open(&f, "inst_t16_bounds"); defer t16_close(&f)
     // FYI capacity is bounded; rejection lets the Hub retry rather than
     // acknowledging content which was silently evicted.
-    for i in 0..<ACP_INBOX_NOTICE_SLOTS do testing.expect(t, t16_input(&f, fmt.tprintf("fyi%d", i), "bounded", .Digest, key = fmt.tprintf("task%d", i)))
+    for i in 0..<BRIDGE_INBOX_NOTICE_SLOTS do testing.expect(t, t16_input(&f, fmt.tprintf("fyi%d", i), "bounded", .Digest, key = fmt.tprintf("task%d", i)))
     testing.expect(t, !t16_input(&f, "over-cap", "must not be admitted", .Digest, key = "other"))
     testing.expect(t, t16_input(&f, "fyi0", "dedupe succeeds at capacity", .Digest))
     testing.expect(t, t16_input(&f, "replacement", "latest fits at capacity", .Digest, key = "task0"))
-    testing.expect_value(t, len(f.r.d.queue), ACP_INBOX_NOTICE_SLOTS)
+    testing.expect_value(t, len(f.r.inbox.queue), BRIDGE_INBOX_NOTICE_SLOTS)
     testing.expect_value(t, t16_writes(&f), 0)
     testing.expect(t, t16_input(&f, "msg_reserved", "user still gets admitted", .Steer))
     if !acp_test_wait(t, &f.f, .Writes, 1) do return
@@ -224,8 +230,8 @@ t16_acp_inbox_large_backlog_retains_context_without_extra_turns :: proc(t: ^test
     if !acp_test_wait(t, &f.f, .Writes, 1) do return
     // One 256 KiB notice fits alongside the user input. The remaining two are
     // still durable, rather than exceeding RPC bounds or being discarded.
-    testing.expect_value(t, len(f.r.d.queue), 2)
-    testing.expect(t, f.r.d.queue[0].lane == .Digest && f.r.d.queue[1].lane == .Digest)
+    testing.expect_value(t, len(f.r.inbox.queue), 2)
+    testing.expect(t, f.r.inbox.queue[0].lane == .Digest && f.r.inbox.queue[1].lane == .Digest)
     // A 256 KiB prompt occupies five daemon stdin chunks. Reply to its RPC ID,
     // rather than parsing a single chunk as though it were a complete frame.
     if !acp_test_wait(t, &f.f, .Writes, 5) do return
@@ -235,7 +241,7 @@ t16_acp_inbox_large_backlog_retains_context_without_extra_turns :: proc(t: ^test
     testing.expect_value(t, t16_writes(&f), 5)
     testing.expect(t, t16_input(&f, "msg_second", "next real input", .Steer))
     if !acp_test_wait(t, &f.f, .Writes, 10) do return
-    testing.expect_value(t, len(f.r.d.queue), 1)
+    testing.expect_value(t, len(f.r.inbox.queue), 1)
 }
 
 @(test)
@@ -281,7 +287,7 @@ t16_acp_inbox_cap_and_budget_overflow_remains_context :: proc(t: ^testing.T) {
     if !acp_test_wait(t, &f.f, .Writes, 1) do return
     t4_runtime_reply(t, &f, 0, `{"stopReason":"end_turn"}`, 1)
     testing.expect(t, t16_input(&f, "overflow", "save this overflow", .Batch, kind = "shell_run"))
-    testing.expect(t, len(f.r.d.queue) == 1 && f.r.d.queue[0].lane == .Digest)
+    testing.expect(t, len(f.r.inbox.queue) == 1 && f.r.inbox.queue[0].lane == .Digest)
     sync.atomic_store(&f.f.clock, 900000); t4_runtime_call(&f, "inbox_tick")
     testing.expect_value(t, t16_writes(&f), 1)
     testing.expect(t, t16_input(&f, "new_action", "new actionable event", .Batch))
@@ -331,12 +337,14 @@ t16_acp_inbox_steering_idle_race_and_unsupported_fallback :: proc(t: ^testing.T)
 @(test)
 t16_acp_inbox_restore_merges_backlog_preserves_budget_and_receipts :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    prev_dir, dir := inbox_test_begin("t16-restore"); defer inbox_test_end(prev_dir, dir)
     f: T4_Runtime_Test; t16_open(&f, "inst_t16_restore")
     testing.expect(t, t16_input(&f, "notice_ready", "ready before restart", .Batch))
     testing.expect(t, t16_input(&f, "notice_fyi", "FYI before restart", .Digest, kind = "review_requested_from_user"))
     testing.expect(t, t16_input(&f, "notice_shell", "shell before restart", .Batch, kind = "shell_run"))
     sync.mutex_lock(&f.f.mu); snapshot := strings.clone(f.f.snapshot, runtime.heap_allocator()); sync.mutex_unlock(&f.f.mu)
     defer delete(snapshot, runtime.heap_allocator())
+    testing.expect(t, acp_runtime_committed(f.r)) // the checkpoint's inbox commit
     t16_close(&f)
     state, valid := acp_state_decode(snapshot); defer acp_state_delete(&state)
     if !testing.expect(t, valid) do return
@@ -354,15 +362,16 @@ t16_acp_inbox_restore_merges_backlog_preserves_budget_and_receipts :: proc(t: ^t
     t4_runtime_reply(t, &next, 0, `{"stopReason":"end_turn"}`, 1)
     testing.expect(t, t16_input(&next, "notice_ready", "completed duplicate", .Batch))
     testing.expect_value(t, t16_writes(&next), 1)
-    testing.expect_value(t, next.r.d.last_notice_turn_ms, 200000)
+    testing.expect_value(t, next.r.inbox.last_notice_turn_ms, 200000)
 }
 
 @(test)
 t16_acp_inbox_restore_pending_steering_keeps_original_turn :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+    prev_dir, dir := inbox_test_begin("t16-restore"); defer inbox_test_end(prev_dir, dir)
     f: T4_Runtime_Test; t16_open(&f, "inst_t16_pending_restore")
     f.r.d.steering_supported = true
-    f.r.d.last_notice_turn_ms = 95000
+    f.r.inbox.last_notice_turn_ms = 95000
     testing.expect(t, t16_input(&f, "msg_original", "original prompt", .Steer))
     testing.expect(t, t16_input(&f, "msg_steered", "steering content", .Steer))
     if !acp_test_wait(t, &f.f, .Writes, 2) { t16_close(&f); return }
@@ -379,6 +388,7 @@ t16_acp_inbox_restore_pending_steering_keeps_original_turn :: proc(t: ^testing.T
     t4_runtime_call(&f, "inbox_tick")
     sync.mutex_lock(&f.f.mu); snapshot := strings.clone(f.f.snapshot, runtime.heap_allocator()); sync.mutex_unlock(&f.f.mu)
     defer delete(snapshot, runtime.heap_allocator())
+    testing.expect(t, acp_runtime_committed(f.r)) // the checkpoint's inbox commit
     t16_close(&f)
     state, valid := acp_state_decode(snapshot); defer acp_state_delete(&state)
     if !testing.expect(t, valid && len(state.pending_writes) == 0 && len(state.pending_outbound) == 2) do return
@@ -392,11 +402,11 @@ t16_acp_inbox_restore_pending_steering_keeps_original_turn :: proc(t: ^testing.T
     if !acp_test_wait(t, &next.f, .Acks, 1) do return
     next.r.client.io.feed(next.r.client, acp_test_response(ACP_RPC_ID(ids[0]), `{"stopReason":"end_turn"}`), 2)
     if !acp_test_wait(t, &next.f, .Acks, 2) do return
-    testing.expect(t, next.r.d.phase == "ready" && !next.r.d.steering_pending && len(next.r.d.queue) == 0)
+    testing.expect(t, next.r.d.phase == "ready" && !next.r.d.steering_pending && len(next.r.inbox.queue) == 0)
     testing.expect(t, t16_input(&next, "msg_steered", "completed duplicate", .Steer))
     testing.expect_value(t, t16_writes(&next), 0)
-    testing.expect_value(t, next.r.d.last_notice_turn_ms, 95000)
+    testing.expect_value(t, next.r.inbox.last_notice_turn_ms, 95000)
     testing.expect(t, t16_input(&next, "notice_after_restart", "budget must survive restart", .Batch))
-    testing.expect(t, len(next.r.d.queue) == 1 && next.r.d.queue[0].lane == .Digest)
+    testing.expect(t, len(next.r.inbox.queue) == 1 && next.r.inbox.queue[0].lane == .Digest)
     testing.expect_value(t, t16_writes(&next), 0)
 }

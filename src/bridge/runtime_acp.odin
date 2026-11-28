@@ -5,12 +5,10 @@ import "core:strings"
 import "core:sync"
 
 // ACP implementation of the turn-based runtime interface (runtime_iface.odin).
-// It wraps the ACP runtime dispatcher: its durable inbox (acp_inbox.odin), the
+// It wraps the ACP runtime dispatcher, which claims the instance's bridge
+// inbox and drains it (bridge_inbox.odin, acp_inbox.odin), the
 // conversation-level Send now batch (acp_delivery.odin) and the protocol
 // driver's steering readiness and usage (acp_driver.odin).
-
-// The inbox's delivery target for this transport (task_notice_queue.odin).
-acp_inbox_target := Bridge_Inbox_Target{transport = "acp", ready = acp_agent_notices_ready, deliver = acp_agent_deliver_notices}
 
 acp_agent_runtime := Agent_Runtime{
 	transport       = "acp",
@@ -36,7 +34,8 @@ acp_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_M
 	text := bridge_decrypt_embedded_vault_tokens(input.text)
 	defer delete(text)
 	if input.kind == .Notification {
-		return acp_runtime_deliver(instance, text, input.id, acp_inbox_lane(input.origin), input.key, input.origin)
+		lane := Bridge_Inbox_Lane.Wake if input.wake else acp_inbox_lane(input.origin)
+		return acp_runtime_deliver(instance, text, input.id, lane, input.key, input.origin, input.task, input.expected_state)
 	}
 	switch mode {
 	case .Steer:
@@ -84,16 +83,6 @@ acp_agent_can_steer :: proc(instance: string) -> bool {
 acp_agent_raw_input :: proc(instance: string, data: []byte) -> bool {
 	if string(data) == "\x1b" || string(data) == "\x03" do return acp_runtime_command(instance, "interrupt")
 	return acp_runtime_deliver(instance, string(data))
-}
-
-acp_agent_notices_ready :: proc(instance: string) -> bool {
-	return acp_runtime_command(instance, "task_notices_ready")
-}
-
-acp_agent_deliver_notices :: proc(instance, text: string) -> bool {
-	raw, err := json.marshal(ACP_Task_Notice_Input{text = text}, allocator = context.temp_allocator)
-	if err != nil do return false
-	return acp_runtime_command(instance, strings.concatenate({"task_notices:", string(raw)}, context.temp_allocator))
 }
 
 // bridge_runtime_is_acp reports whether the ACP runtime owns an instance.

@@ -1,6 +1,7 @@
 package main
 
 import "base:runtime"
+import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -10,8 +11,9 @@ import contracts "odin_test:contracts"
 //
 // The provider CLI runs in a terminal under ham-pty-host, so inputs are typed.
 // PTY is made to behave like ACP behind the interface (G8):
-//   - every input is admitted to the durable inbox first (the bridge notice
-//     queue, task_notice_queue.odin) and survives bridge and agent restarts;
+//   - every input is admitted to the one durable bridge inbox first
+//     (bridge_inbox.odin) and survives bridge and agent restarts; the inbox
+//     worker (task_notice_queue.odin) drains it through pty_inbox_target;
 //   - queue (the default) types only at a trusted idle (extension hooks first,
 //     pane-diff activity as the fallback), one turn per FIFO batch, and never
 //     presses an interrupt key (CONTRACT-05/18);
@@ -19,7 +21,7 @@ import contracts "odin_test:contracts"
 //     contracts.Pty_Delivery (provider descriptor, then profile; CONTRACT-17);
 //   - notifications always queue (the shared policy in runtime_iface.odin).
 
-// The inbox's delivery target for this transport (task_notice_queue.odin).
+// The inbox worker's delivery target for this transport (task_notice_queue.odin).
 pty_inbox_target := Bridge_Inbox_Target{transport = "pty", ready = pty_agent_notices_ready, deliver = pty_agent_deliver_notices}
 
 pty_agent_runtime := Agent_Runtime{
@@ -216,13 +218,10 @@ pty_runtime_type_now :: proc(instance, text: string, mode: Runtime_Mode) -> bool
 	return true
 }
 
-// Admission to the durable inbox. User messages are due at once (still gated
-// on idle); notifications join the notice collection window.
+// Admission to the durable inbox (bridge_inbox.odin). User messages are due
+// at once (still gated on idle); notifications join the collection window.
 pty_runtime_enqueue :: proc(instance: string, input: Runtime_Input) -> bool {
-	now := bridge_runtime_now_ms()
-	user := input.kind == .User_Message
-	return bridge_task_notice_enqueue({instance = instance, id = input.id, kind = BRIDGE_NOTICE_USER_MESSAGE if user else "",
-		origin = input.origin, text = input.text, queued_ms = now, due_ms = now if user else now + BRIDGE_TASK_NOTICE_WINDOW_MS})
+	return bridge_inbox_admit_shared(instance, input)
 }
 
 pty_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_Mode) -> bool {
@@ -234,56 +233,66 @@ pty_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_M
 	return pty_runtime_enqueue(instance, input)
 }
 
-// Applied Send now batches per instance (idempotent by batch id and attempt).
-pty_runtime_batches: [dynamic]string
-pty_runtime_batches_mu: sync.Mutex
-
-pty_runtime_batch_key :: proc(instance: string, req: Runtime_Send_Now) -> string {
-	return strings.concatenate({instance, "\x00", req.batch_id}, context.temp_allocator)
-}
-
-pty_runtime_batch_done :: proc(key: string) -> bool {
-	sync.mutex_lock(&pty_runtime_batches_mu); defer sync.mutex_unlock(&pty_runtime_batches_mu)
-	for k in pty_runtime_batches do if k == key do return true
-	return false
-}
-
-pty_runtime_batch_remember :: proc(key: string) {
-	heap := runtime.heap_allocator()
-	sync.mutex_lock(&pty_runtime_batches_mu); defer sync.mutex_unlock(&pty_runtime_batches_mu)
-	if pty_runtime_batches.allocator.procedure == nil do pty_runtime_batches = make([dynamic]string, heap)
-	if len(pty_runtime_batches) >= 256 { delete(pty_runtime_batches[0], heap); ordered_remove(&pty_runtime_batches, 0) }
-	append(&pty_runtime_batches, strings.clone(key, heap))
-}
-
 // pty_agent_send_now delivers the frozen FIFO batch of the listed inputs still
 // queued: it steers when the CLI can steer, else interrupts once, waits for
-// idle and types the batch as one turn (CONTRACT-06). An empty batch is a no-op.
+// idle and types the batch as one turn (CONTRACT-06). An empty batch is a
+// no-op. The selection is inbox state (bridge_inbox.odin): it is frozen and
+// committed before typing, so a retry or a restart types the same members,
+// and a repeated batch id is idempotent once delivered.
 pty_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> bool {
-	if !pty_runtime_known(instance) || req.batch_id == "" do return false
-	key := pty_runtime_batch_key(instance, req)
-	if pty_runtime_batch_done(key) do return true
-	batch := bridge_task_notice_select(instance, req.message_ids)
-	if len(batch) == 0 {
-		pty_runtime_batch_remember(key)
-		return true
+	if !pty_runtime_known(instance) || req.batch_id == "" || len(req.batch_id) > 128 do return false
+	texts := make([dynamic]string, context.temp_allocator)
+	members := make([dynamic]string, context.temp_allocator)
+	{
+		sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
+		slot := bridge_inbox_slot_locked(instance)
+		if slot == nil || slot.busy do return false
+		inbox := &slot.inbox
+		s := &inbox.send_now
+		if s.batch_id == req.batch_id && (s.state == "delivered" || s.state == "empty") do return true
+		if s.batch_id != req.batch_id {
+			bridge_inbox_send_now_begin(inbox, req.batch_id, req.attempt)
+			if bridge_inbox_send_now_freeze(inbox, req.message_ids) == 0 {
+				bridge_inbox_send_now_set_state(inbox, "empty")
+				return bridge_inbox_save(inbox)
+			}
+		}
+		s.attempt = max(s.attempt, req.attempt)
+		bridge_inbox_send_now_set_state(inbox, "waiting")
+		if !bridge_inbox_save(inbox) do return false
+		for input in inbox.queue do if input.kind == BRIDGE_INBOX_SEND_NOW_KIND {
+			append(&texts, strings.clone(input.text, context.temp_allocator))
+			append(&members, strings.clone(input.id, context.temp_allocator))
+		}
+		if len(members) == 0 {
+			bridge_inbox_send_now_set_state(inbox, "empty")
+			return bridge_inbox_save(inbox)
+		}
+		slot.busy = true
 	}
-	texts := make([]string, len(batch), context.temp_allocator)
-	ids := make([]string, len(batch), context.temp_allocator)
-	for n, i in batch { texts[i] = n.text; ids[i] = n.id }
-	text := bridge_task_notice_join(texts)
+	text := bridge_task_notice_join(texts[:])
 	defer delete(text)
 	mode := Runtime_Mode.Steer if pty_agent_can_steer(instance) else .Send_Now
-	if !pty_runtime_type_now(instance, text, mode) do return false
-	_ = bridge_task_notice_remove_ids(instance, ids)
-	pty_runtime_batch_remember(key)
+	typed := pty_runtime_type_now(instance, text, mode)
+	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
+	slot := bridge_inbox_slot_locked(instance)
+	if slot == nil do return false
+	slot.busy = false
+	if !typed do return false
+	for id in members do bridge_inbox_remove(&slot.inbox, id)
+	bridge_inbox_send_now_set_state(&slot.inbox, "delivered")
+	if !bridge_inbox_save(&slot.inbox) do fmt.eprintfln("bridge inbox: could not commit Send now for instance=%q; a restart may deliver it again", instance)
 	return true
 }
 
 // Inputs the agent already read (chat read) no longer need a notice.
 pty_agent_inputs_read :: proc(instance: string, ids: []string) -> bool {
-	_ = bridge_task_notice_remove_ids(instance, ids)
-	return true
+	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
+	slot := bridge_inbox_slot_locked(instance)
+	if slot == nil do return false
+	removed := false
+	for id in ids do if bridge_inbox_remove(&slot.inbox, id) do removed = true
+	return !removed || bridge_inbox_save(&slot.inbox)
 }
 
 pty_agent_interrupt :: proc(instance: string) -> bool {
