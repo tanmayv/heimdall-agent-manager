@@ -282,11 +282,11 @@ send_message_delivered :: proc(s:^Content_Service, auth:contracts.Auth_Context,c
  delivery,_:=deliver_user_message(s,auth,cid,m)
  return m,delivery,true,{}
 }
-send_agent_message :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id:string, input:Message_Input)->(domain.Chat_Message,bool,domain.Domain_Error){
-	return send_agent_message_with_id(s, auth, instance_id, input, platform.generate_id(s.ids, "msg_"))
+send_agent_message :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id:string, input:Message_Input, expected:^domain.Agent_Instance=nil)->(domain.Chat_Message,bool,domain.Domain_Error){
+	return send_agent_message_with_id(s, auth, instance_id, input, platform.generate_id(s.ids, "msg_"), expected)
 }
 
-send_agent_message_with_id :: proc(s: ^Content_Service, auth: contracts.Auth_Context, instance_id: string, input: Message_Input, message_id: string) -> (domain.Chat_Message, bool, domain.Domain_Error) {
+send_agent_message_with_id :: proc(s: ^Content_Service, auth: contracts.Auth_Context, instance_id: string, input: Message_Input, message_id: string, expected: ^domain.Agent_Instance = nil) -> (domain.Chat_Message, bool, domain.Domain_Error) {
 	if auth.kind != .Instance_Token || auth.agent_instance_id == "" || auth.agent_instance_id != instance_id do return {}, false, domain.domain_error(.Forbidden, "instance token is required")
 	c, ok, err := get_conversation_by_instance(s, auth, instance_id)
 	if !ok do return {}, false, err
@@ -294,7 +294,7 @@ send_agent_message_with_id :: proc(s: ^Content_Service, auth: contracts.Auth_Con
 	now := platform.clock_now(s.clock)
 	m_type := input.message_type if input.message_type != "" else "text"
 	m := domain.Chat_Message{message_id = message_id, conversation_id = c.conversation_id, owner_user_id = c.owner_user_id, direction = "agent_to_user", sender_agent_id = c.agent_id, sender_agent_instance_id = c.agent_instance_id, body = input.body, artifact_ids_json = artifact_json_or_empty(input.artifact_ids_json), message_type = m_type, metadata_json = input.metadata_json, created_at = now}
-	saved, save_ok, save_err := save_agent_reply(s, c, m, input.reply_to_message_id, now)
+	saved, save_ok, save_err := save_agent_reply(s, c, m, input.reply_to_message_id, now, expected)
 	if !save_ok do return {}, false, save_err
 	c.last_message_preview = input.body
 	c.last_message_at = now
@@ -723,7 +723,35 @@ pane_capture_json_int :: proc(body,key:string,fallback:int)->int{
 notify_agent_message :: proc(s:^Content_Service,c:domain.Chat_Conversation,direction,sender_instance_id,message_id:string,sender_display_name:string="") {
  _,_=notify_agent_message_checked(s,c,direction,sender_instance_id,message_id,sender_display_name)
 }
-notify_agent_message_checked :: proc(s:^Content_Service, c:domain.Chat_Conversation, direction,sender_instance_id,message_id:string, sender_display_name:string="")->(bool,domain.Domain_Error){ if s==nil || s.agents==nil || s.bridge_command_sink.send_runtime_command==nil do return false,domain.domain_error(.Bridge_Offline,"message delivery unavailable"); inst,ok,_:=iface.agent_get_instance(s.agents,c.agent_instance_id); if !ok || inst.bridge_id=="" do return false,domain.domain_error(.Bridge_Offline,"message delivery unavailable"); command_id:=platform.generate_id(s.ids,"cmd_"); sndr_dn:=sender_display_name; if sndr_dn=="" && sender_instance_id!="" && sender_instance_id!="user" { if sndr,sndr_ok,_:=iface.agent_get_instance(s.agents,sender_instance_id); sndr_ok do sndr_dn=sndr.display_name }; if sndr_dn=="" && sender_instance_id=="user" do sndr_dn="User"; b:=strings.builder_make(); strings.write_string(&b,"{\"type\":\"notify_agent_message\",\"command_id\":\""); content_json_write(&b,command_id); strings.write_string(&b,"\",\"bridge_id\":\""); content_json_write(&b,inst.bridge_id); strings.write_string(&b,"\",\"agent_instance_id\":\""); content_json_write(&b,c.agent_instance_id); strings.write_string(&b,"\",\"conversation_id\":\""); content_json_write(&b,c.conversation_id); strings.write_string(&b,"\",\"message_id\":\""); content_json_write(&b,message_id); strings.write_string(&b,"\",\"direction\":\""); content_json_write(&b,direction); strings.write_string(&b,"\",\"sender\":\""); content_json_write(&b,sender_instance_id); strings.write_string(&b,"\",\"sender_agent_instance_id\":\""); content_json_write(&b,sender_instance_id); if sndr_dn!="" { strings.write_string(&b,"\",\"sender_display_name\":\""); content_json_write(&b,sndr_dn) }; strings.write_string(&b,"\",\"unread_count\":"); strings.write_string(&b,fmt.tprintf("%d",c.unread_count)); strings.write_string(&b,"}"); return project_service.bridge_command_send_runtime(s.bridge_command_sink,project_service.Runtime_Command{bridge_id=inst.bridge_id,command_id=command_id,body_json=strings.to_string(b)}) }
+// Compare durable assignment identity, not mutable activity or last-seen data.
+message_delivery_assignment_matches :: proc(a,b: domain.Agent_Instance) -> bool {
+	return a.agent_instance_id==b.agent_instance_id && a.owner_user_id==b.owner_user_id && a.conversation_id==b.conversation_id &&
+		a.bridge_id==b.bridge_id && a.launch_epoch==b.launch_epoch && a.run_count==b.run_count && a.configuration_revision==b.configuration_revision
+}
+
+notify_agent_message_checked :: proc(s:^Content_Service, c:domain.Chat_Conversation, direction,sender_instance_id,message_id:string, sender_display_name:string="", expected:^domain.Agent_Instance=nil)->(bool,domain.Domain_Error) {
+	if s==nil || s.agents==nil || s.bridge_command_sink.send_runtime_command==nil do return false,domain.domain_error(.Bridge_Offline,"message delivery unavailable")
+	inst,ok,_:=iface.agent_get_instance(s.agents,c.agent_instance_id)
+	if !ok || inst.bridge_id=="" do return false,domain.domain_error(.Bridge_Offline,"message delivery unavailable")
+	if expected!=nil && (!message_delivery_assignment_matches(inst, expected^) || inst.startup_status!="ready" || inst.stopped_by!="" || inst.stop_reason!="") do return false,domain.domain_error(.Conflict,"message assignment changed")
+	command_id:=platform.generate_id(s.ids,"cmd_")
+	sndr_dn:=sender_display_name
+	if sndr_dn=="" && sender_instance_id!="" && sender_instance_id!="user" {
+		if sndr,sndr_ok,_:=iface.agent_get_instance(s.agents,sender_instance_id); sndr_ok do sndr_dn=sndr.display_name
+	}
+	if sndr_dn=="" && sender_instance_id=="user" do sndr_dn="User"
+	frame := struct {
+		type, command_id, bridge_id, agent_instance_id, conversation_id, message_id, direction, sender, sender_agent_instance_id: string,
+		sender_display_name: string `json:"sender_display_name,omitempty"`,
+		expected_launch_epoch: string `json:"expected_launch_epoch,omitempty"`,
+		unread_count: int,
+	}{"notify_agent_message",command_id,inst.bridge_id,c.agent_instance_id,c.conversation_id,message_id,direction,
+		sender_instance_id,sender_instance_id,sndr_dn,inst.launch_epoch if expected!=nil else "",c.unread_count}
+	body, encode_err := json.marshal(frame,allocator=context.temp_allocator)
+	if encode_err != nil do return false,domain.domain_error(.Internal_Error,"could not encode message notice")
+	return project_service.bridge_command_send_runtime(s.bridge_command_sink,project_service.Runtime_Command{bridge_id=inst.bridge_id,command_id=command_id,body_json=string(body)})
+}
+
 content_json_write :: proc(b:^strings.Builder, v:string){ contracts.write_json_string(b,v) }
 
 // Indexed lookup for action adapters; legacy conversation paging is unchanged.

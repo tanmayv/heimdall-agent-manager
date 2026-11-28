@@ -77,6 +77,7 @@ validate_runtime_policy :: proc(service: ^Agent_Service, inst: domain.Agent_Inst
 Resource_Event_Hooks :: struct {
 	ctx:                        rawptr,
 	on_reconfiguration_changed: proc(ctx: rawptr, op: domain.Instance_Reconfiguration, change: string, config_committed: bool),
+	on_instance_ready: proc(ctx: rawptr, inst: domain.Agent_Instance),
 }
 
 Lifecycle_Hooks :: struct {
@@ -595,6 +596,7 @@ mark_instance_start_success :: proc(service: ^Agent_Service, auth: contracts.Aut
 	saved, ok, err := mark_instance_start_success_locked(service, auth, expected_run_count)
 	sync.unlock(&service.reconfiguration_mutex)
 	if ok && service.hooks.on_start_success != nil do service.hooks.on_start_success(service.hooks.ctx, saved)
+	if ok && service.resource_events.on_instance_ready != nil do service.resource_events.on_instance_ready(service.resource_events.ctx, saved)
 	return saved, ok, err
 }
 

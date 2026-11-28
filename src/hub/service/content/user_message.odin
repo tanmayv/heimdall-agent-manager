@@ -54,13 +54,16 @@ message_delivery_for :: proc(inst: domain.Agent_Instance, found, notified: bool,
 	return {.Accepted, ""}
 }
 
-deliver_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:string,m:domain.Chat_Message)->(Message_Delivery,domain.Domain_Error) {
+deliver_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:string,m:domain.Chat_Message, pending: Maybe(Message_Delivery) = nil, expected: ^domain.Agent_Instance = nil)->(Message_Delivery,domain.Domain_Error) {
 	c,ok,err:=get_conversation(s,auth,cid)
 	if !ok do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_CONVERSATION_UNAVAILABLE},err
 	notify_message_attention(s,m)
-	notified,nerr:=notify_agent_message_checked(s,c,"user_to_agent","user",m.message_id,"User")
+	notified: bool
+	nerr: domain.Domain_Error
+	if pending==nil do notified,nerr=notify_agent_message_checked(s,c,"user_to_agent","user",m.message_id,"User",expected)
 	record_activity_and_maybe_nudge(s,cid,m.created_at)
 	note_user_activity(s,c.agent_instance_id)
+	if waiting, has_wait := pending.?; has_wait do return waiting, {}
 	if c.agent_instance_id=="" do return {.Accepted, ""},{}
 	inst,found:=domain.Agent_Instance{},false
 	if s.agents!=nil do inst,found,_=iface.agent_get_instance(s.agents,c.agent_instance_id)

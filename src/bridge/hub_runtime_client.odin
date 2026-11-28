@@ -1343,6 +1343,20 @@ bridge_hub_cmd_notify_agent_message :: proc(conn: ^ws.Connection, text: string) 
 		defer delete(command_id)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		defer delete(instance_id)
+		// A re-admission from a ready callback belongs to that launch only.
+		expected_epoch := extract_json_string(text, "expected_launch_epoch", "")
+		defer delete(expected_epoch)
+		if expected_epoch != "" {
+			launch, live := bridge_runtime_get_launch(instance_id)
+			if !live || launch.launch_epoch != expected_epoch {
+				if command_id != "" {
+					reply := bridge_command_result_json(command_id,"failed","")
+					defer delete(reply)
+					_ = bridge_hub_send(conn,reply)
+				}
+				return
+			}
+		}
 		// Deliver the notice directly to the agent via the daemon (host.input+Enter).
 		sender_dn := extract_json_string(text, "sender_display_name", "")
 		defer delete(sender_dn)

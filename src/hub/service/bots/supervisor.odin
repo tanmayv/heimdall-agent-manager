@@ -338,6 +338,7 @@ bots_idle_stop :: proc(s: ^Bots_Service, now: string, ms: i64) {
 	bots, err := iface.bot_list(s.repo)
 	if err.code != .None || s.agents == nil do return
 	for bot in bots {
+		stop_canonical_when_idle(s,bot.owner_user_id,ms)
 		if bot.agent_instance_id == "" || (!bots_gate_on(s.experiments, bot.owner_user_id) || bots_legacy_guard(s, bot.owner_user_id).code != .None) do continue
 		sync.mutex_lock(&s.mutex)
 		_, open, e := iface.delivery_get_open(s.repo, bot.bot_id)

@@ -116,6 +116,44 @@ acp_delivery_report_valid :: proc(report: contracts.ACP_Input_State_Report) -> b
     return true
 }
 
+// Re-open only inputs known not to have been dispatched. Use the same rule
+// whether the destination reports ACP state or switches to PTY after a move.
+reconcile_prior_input_epoch :: proc(repo: ^iface.Content_Repository, instance, epoch, now: string, result: ^Delivery_Apply_Result) -> domain.Domain_Error {
+	open, err := iface.content_list_open_input_deliveries(repo, "", instance)
+	if err.code != .None do return err
+	for row in open {
+		if row.launch_epoch == "" || row.launch_epoch == epoch do continue
+		next := row
+		next.updated_at = now; next.batch_id = ""; next.report_seq = 0
+		if row.state == "queued" {
+			next.state = "sent"; next.launch_epoch = ""; next.hold_reason = ""; next.error = ""
+			if flag_err := iface.content_set_message_delivery_flags(repo, row.message_id, "", true); flag_err.code != .None do return flag_err
+			if result != nil do append(&result.requeued_ids, row.message_id)
+		} else {
+			// Ambiguous in-flight input must not be delivered a second time.
+			next.state = "discarded"; next.error = "agent_restarted"
+		}
+		if save_err := iface.content_save_input_delivery(repo, next); save_err.code != .None do return save_err
+		if result != nil do append(&result.changed_ids, row.message_id)
+	}
+	return {}
+}
+
+// PTY has no input-state report to trigger the old ACP ledger's carryover.
+reconcile_unread_for_pty :: proc(s: ^Content_Service, expected: domain.Agent_Instance) -> domain.Domain_Error {
+	if expected.runtime_transport != "pty" || expected.launch_epoch == "" do return {}
+	uow, begun, err := iface.unit_of_work_begin(s.uow_factory)
+	if !begun do return err
+	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
+	inst, found, read_err := iface.agent_get_instance(&uow.repos.agents,expected.agent_instance_id)
+	if read_err.code!=.None do return read_err
+	if !found || !message_delivery_assignment_matches(inst,expected) || inst.startup_status!="ready" do return domain.domain_error(.Conflict,"message assignment changed")
+	if fix_err := reconcile_prior_input_epoch(&uow.repos.content,inst.agent_instance_id,inst.launch_epoch,platform.clock_now(s.clock),nil); fix_err.code != .None do return fix_err
+	_, commit_err := iface.unit_of_work_commit(&uow)
+	uow.ctx = nil
+	return commit_err
+}
+
 // Applies one bridge report atomically. A report from an epoch other than the
 // instance's current one only touches rows still bound to that epoch. The first
 // report of a new epoch reopens never-dispatched inputs of older epochs (they
@@ -145,24 +183,7 @@ apply_input_state_report :: proc(s: ^Content_Service, auth: contracts.Auth_Conte
         rt, have_rt, rerr := iface.content_get_input_runtime(local.content, instance)
         if rerr.code != .None do return result, false, rerr
         if !have_rt || rt.launch_epoch != report.launch_epoch {
-            open, lerr := iface.content_list_open_input_deliveries(local.content, "", instance)
-            if lerr.code != .None do return result, false, lerr
-            for row in open {
-                if row.launch_epoch == "" || row.launch_epoch == report.launch_epoch do continue
-                next := row
-                next.updated_at = now; next.batch_id = ""; next.report_seq = 0
-                if row.state == "queued" {
-                    // Never dispatched: safe to admit again in the new runtime.
-                    next.state = "sent"; next.launch_epoch = ""; next.hold_reason = ""; next.error = ""
-                    if err := iface.content_set_message_delivery_flags(local.content, row.message_id, "", true); err.code != .None do return result, false, err
-                    append(&result.requeued_ids, row.message_id)
-                } else {
-                    // A steer in flight when the runtime ended is ambiguous; never replay it.
-                    next.state = "discarded"; next.error = "agent_restarted"
-                }
-                if err := iface.content_save_input_delivery(local.content, next); err.code != .None do return result, false, err
-                append(&result.changed_ids, row.message_id)
-            }
+            if prev_err := reconcile_prior_input_epoch(local.content,instance,report.launch_epoch,now,&result); prev_err.code != .None do return result, false, prev_err
             batch, have_batch, berr := iface.content_latest_send_now_batch(local.content, c.conversation_id)
             if berr.code != .None do return result, false, berr
             if have_batch && batch.launch_epoch != report.launch_epoch && acp_batch_open(batch.state) {

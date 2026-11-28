@@ -1,5 +1,6 @@
 import { FloatingComposerDock, FloatingComposerForm, FloatingComposerCard } from '../chat/FloatingComposerDock';
 import { PlainMessageBody } from '../chat/PlainMessageBody';
+import { pendingMessageDeliveryNotice } from '../../api/messageDelivery';
 import { formatMessageTimestamp } from '../chat/formatMessageTimestamp';
 import { ComposerAttachmentTray } from '../chat/ComposerAttachmentTray';
 import { useComposerAttachments } from '../chat/useComposerAttachments';
@@ -2241,6 +2242,10 @@ export function AgentChatPane({
       if (!mountedRef.current || routeGeneration.current !== submittedGeneration || currentTargetRef.current !== submittedTarget) {
         if (canPersistPlainDraft && readComposerDraft(submittedRoute) === submittedDraft) writeComposerDraft(submittedRoute, '');
         return;
+      }
+      if (writePolicy) {
+        const pendingNotice = pendingMessageDeliveryNotice(result);
+        if (pendingNotice) setTrayNotice(pendingNotice);
       }
       // The input was cleared at send; adopt a newer draft another pane stored meanwhile.
       const latestDraft = canPersistPlainDraft ? readComposerDraft(submittedRoute) : updateDraftRef.current;

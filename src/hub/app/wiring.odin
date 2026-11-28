@@ -237,6 +237,12 @@ task_engine_on_instance_changed :: proc(ctx: rawptr, instance_id, change: string
 	else do http.publish_instance_changed(&graph.event_bus, inst, change)
 }
 
+agents_on_instance_ready :: proc(ctx: rawptr, inst: domain.Agent_Instance) {
+	graph := (^App_Graph)(ctx)
+	if graph == nil do return
+	bots_service.replay_canonical_unread(&graph.bots,&graph.content,inst)
+}
+
 // agents_on_reconfiguration_changed publishes the reconfiguration hint and, on
 // the advance that committed the destination (agent_instances bridge/provider/
 // model/configuration_revision rewritten by trigger), the instance hint too.
@@ -244,11 +250,14 @@ agents_on_reconfiguration_changed :: proc(ctx: rawptr, op: domain.Instance_Recon
 	graph := (^App_Graph)(ctx)
 	if graph == nil do return
 	http.publish_reconfiguration_changed(&graph.event_bus, op, change)
-	if !config_committed do return
+	if !config_committed && op.phase != .Ready do return
 	inst, found, _ := iface.agent_get_instance(&graph.repos.agents, op.agent_instance_id)
 	if !found do return
 	defer domain.agent_instance_destroy(&inst)
-	http.publish_instance_changed(&graph.event_bus, inst, "config_changed")
+	if config_committed do http.publish_instance_changed(&graph.event_bus, inst, "config_changed")
+	if op.phase==.Ready && inst.bridge_id==op.destination.bridge_id && inst.launch_epoch==op.launch_epoch {
+		agents_on_instance_ready(ctx,inst)
+	}
 }
 
 // users_on_agent_seeded announces a canonical agent seeded for an owner.
@@ -494,6 +503,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.agents.resource_events = agent_service.Resource_Event_Hooks{
 		ctx                        = rawptr(graph),
 		on_reconfiguration_changed = agents_on_reconfiguration_changed,
+		on_instance_ready = agents_on_instance_ready,
 	}
 	graph.fleet = fleet_application.Service{settings=agent_service.fleet_service(&graph.agents),agents=&graph.agents,factory=&graph.uow_factory,clock=&graph.clock,ids=&graph.ids,event_ctx=graph,on_changed=fleet_on_changed,authority_ctx=graph,authority_check=fleet_authority_check}
 	graph.fleet_handlers = http.Fleet_Handlers{auth=&graph.auth,service=&graph.fleet}
@@ -650,7 +660,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	graph.agent_write_handlers = http.Agent_Write_Handlers{auth = &graph.auth, writes = &graph.agent_write_repo}
 	graph.project_handlers = http.Project_Handlers{agent_writes = &graph.agent_write_repo, auth = &graph.auth, projects = &graph.projects}
-	graph.content_handlers = http.Content_Handlers{write_policy={ctx=&graph.bots, read=http.bot_conversation_write_state}, agent_writes = &graph.agent_write_repo, auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
+	graph.content_handlers = http.Content_Handlers{write_policy={ctx=&graph.bots, read=http.bot_conversation_write_state, deliver=bots_service.deliver_canonical_message}, agent_writes = &graph.agent_write_repo, auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, content = &graph.content, projects = &graph.projects, event_bus = &graph.event_bus, task_engine = &graph.task_engine, shell_sessions = &graph.shell_session_service}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}

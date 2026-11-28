@@ -270,12 +270,12 @@ test_web_bot_policy_fences_runtime_without_restricting_unrelated_instance :: pro
 	off, off_err := set_web_activation(s,"alice",false,state.generation)
 	defer domain.bot_web_activation_destroy(&off)
 	if !testing.expect(t, off_err.code == .None, off_err.message) do return
-	_, started_off, pause_err := agent.start_instance(&f.agent,auth,state.agent_instance_id)
+	_, started_off, pause_err := agent.start_instance(&f.agent,auth,state.agent_instance_id,.User_Start)
 	testing.expect(t, !started_off && strings.contains(pause_err.details_json,"bot_generation_inactive"), pause_err.message)
 	on, on_err := set_web_activation(s,"alice",true,off.generation)
 	defer domain.bot_web_activation_destroy(&on)
 	if !testing.expect(t, on_err.code == .None, on_err.message) do return
 	_, _ = iface.experiment_set(&f.pair.experiments,{owner_user_id="alice",key="bots",enabled=false,updated_at="now"})
-	_, started_revoked, revoked_err := agent.start_instance(&f.agent,auth,state.agent_instance_id)
+	_, started_revoked, revoked_err := agent.start_instance(&f.agent,auth,state.agent_instance_id,.User_Start)
 	testing.expect(t, !started_revoked && strings.contains(revoked_err.details_json,"experimental_feature_disabled"), revoked_err.message)
 }

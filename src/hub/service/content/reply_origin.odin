@@ -5,6 +5,7 @@ import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
+import agent "odin_test:hub/service/agent"
 
 // Reply origin (R7). A reply answers the user->agent inputs the agent consumed
 // after the conversation's reply watermark (the previous reply's consumption
@@ -162,7 +163,7 @@ reply_origin_applies :: proc(message_type: string) -> bool {
 
 // save_agent_reply persists an agent->user message. A reply records its
 // origin and advances the watermark in the same unit of work as the row.
-save_agent_reply :: proc(s: ^Content_Service, c: domain.Chat_Conversation, m: domain.Chat_Message, reply_to, now: string) -> (domain.Chat_Message, bool, domain.Domain_Error) {
+save_agent_reply :: proc(s: ^Content_Service, c: domain.Chat_Conversation, m: domain.Chat_Message, reply_to, now: string, expected: ^domain.Agent_Instance = nil) -> (domain.Chat_Message, bool, domain.Domain_Error) {
 	if !reply_origin_applies(m.message_type) {
 		if reply_to != "" do return {}, false, domain.domain_error(.Validation_Failed, "reply-to applies only to replies")
 		return save_message(s, m)
@@ -177,6 +178,16 @@ save_agent_reply :: proc(s: ^Content_Service, c: domain.Chat_Conversation, m: do
 	defer if !committed do iface.unit_of_work_rollback(&uow)
 	repo := s.content
 	if uow.repos != nil do repo = &uow.repos.content
+	if expected != nil {
+		agents := s.agents
+		if uow.repos != nil do agents = &uow.repos.agents
+		current, found, err := iface.agent_get_instance(agents, c.agent_instance_id)
+		if err.code != .None do return {}, false, err
+		if !found || !message_delivery_assignment_matches(current, expected^) {
+			return {}, false, domain.domain_error(.Conflict, "reply belongs to a superseded assignment")
+		}
+		if idle, phase_err := agent.reconfiguration_require_idle(&agent.Agent_Service{agents=agents}, c.agent_instance_id); !idle do return {}, false, phase_err
+	}
 	origin, oerr := reply_origin_record(repo, c, m.message_id, reply_to, now)
 	if oerr.code != .None do return {}, false, oerr
 	row := m

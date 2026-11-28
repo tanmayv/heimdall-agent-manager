@@ -17,6 +17,7 @@ Conversation_Write_State :: struct {
 Conversation_Write_Policy :: struct {
 	ctx: rawptr,
 	read: proc(ctx: rawptr, auth: contracts.Auth_Context, cid: string) -> (Conversation_Write_State, domain.Domain_Error),
+	deliver: proc(ctx: rawptr, svc: ^content.Content_Service, auth: contracts.Auth_Context, m: domain.Chat_Message, generation: i64) -> content.Message_Delivery,
 }
 conversation_write_state :: proc(h: ^Content_Handlers, auth: contracts.Auth_Context, cid: string) -> (Conversation_Write_State, domain.Domain_Error) {
 	if h.write_policy.read == nil do return {}, {}
@@ -64,9 +65,6 @@ send_generation_message :: proc(h: ^Content_Handlers, auth: contracts.Auth_Conte
 		return saved, {.Pending, contracts.MESSAGE_DELIVERY_REASON_DELIVERY_UNAVAILABLE}, false, {}
 	}
 	if !state.enabled || i64(expected) != state.generation do return {}, {}, false, domain.domain_error(.Conflict, "conversation activation changed; refresh before sending")
-	// R7 owns implicit starts and the disposition of stopped input. Until it
-	// lands, ordinary controls can explicitly start this instance.
-	if live_err := conversation_require_live(&uow.repos.agents, state.instance_id); live_err.code != .None do return {}, {}, false, live_err
 	local := h.content^
 	local.content = repo
 	local.agents = &uow.repos.agents
@@ -76,6 +74,7 @@ send_generation_message :: proc(h: ^Content_Handlers, auth: contracts.Auth_Conte
 	uow.ctx = nil
 	if !committed do return {}, {}, false, commit_err
 	m.message_id = strings.clone(id, context.temp_allocator)
+	if h.write_policy.deliver != nil do return m, h.write_policy.deliver(h.write_policy.ctx,h.content,auth,m,state.generation), true, {}
 	delivery, _ := content.deliver_user_message(h.content, auth, cid, m)
 	return m, delivery, true, {}
 }

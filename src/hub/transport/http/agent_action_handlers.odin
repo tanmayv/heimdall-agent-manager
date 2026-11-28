@@ -255,7 +255,17 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	} else if meta_str := json_string(params, "metadata_json"); meta_str != "" {
 		metadata_json = meta_str
 	}
-	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), message_type = json_string(params, "message_type"), metadata_json = metadata_json, reply_to_message_id = strings.trim_space(json_string(params, "reply_to"))})
+	// Re-read of the assignment after auth must still describe the authenticated
+	// launch. The content transaction checks this same snapshot before saving.
+	if inst.bridge_id != auth.bridge_id do return respond_error(domain.domain_error(.Conflict, "reply belongs to a superseded assignment"), req.request_id)
+	if inst.launch_epoch != "" {
+		assertion := agent_service.instance_assertion_token(inst)
+		defer delete(assertion)
+		if header_value(req.headers, "X-Heimdall-Instance-Token") != assertion {
+			return respond_error(domain.domain_error(.Conflict, "reply belongs to a superseded launch"), req.request_id)
+		}
+	}
+	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), message_type = json_string(params, "message_type"), metadata_json = metadata_json, reply_to_message_id = strings.trim_space(json_string(params, "reply_to"))}, &inst)
 	if !saved do return respond_error(err, req.request_id)
 	// Notify the human's UI so it can toast + raise an OS notification. This is a
 	// metadata event with a SHORT body preview (<=140 chars) — the full body is
