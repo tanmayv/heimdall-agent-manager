@@ -17,6 +17,7 @@ export type ChatMessage = {
   messageType?: string;
   messageStatus?: string;
   metadata?: any;
+  channel?: { provider: string; status: string };
   isLatestMessage?: boolean;
   optionsRevision?: number;
   questionAnswer?: { answer_message_id: string; answered_at: string } | null;

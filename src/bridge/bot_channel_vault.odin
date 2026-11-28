@@ -44,7 +44,7 @@ bridge_bot_channel_vault_reply :: proc(conn: ^ws.Connection, frame, daemon_id: s
 	body, status := channelvault.convert(req, daemon_id, now_ms, keyring, context.temp_allocator)
 	defer channelvault.wipe(body)
 	reply := contracts.Bot_Channel_Vault_Result{type = contracts.BOT_CHANNEL_VAULT_RESULT_FRAME, request_id = req.request_id, status = status}
-	if req.operation == "seal" || req.operation == "open" do reply.operation = req.operation
+	if contracts.bot_channel_vault_seals(req.operation) || req.operation == "open" do reply.operation = req.operation
 	if len(req.scope_digest) == 64 && vault.valid_id_value(req.scope_digest) do reply.scope_digest = req.scope_digest
 	if status == "ok" {
 		encoded, encode_err := base64.encode(transmute([]byte)body, allocator = context.temp_allocator)

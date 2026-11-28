@@ -21,6 +21,7 @@ Hub_Config :: struct {
 	nats_url, nats_creds_file, nats_ca_file: string,
  event_inbox_reconcile_seconds: int, // <=0 defaults to 300 seconds.
 	telegram_bot_token:                     string, // secret; never logged
+	canonical_telegram: bool,
 	telegram_api_base:                      string,
 	whatsapp_access_token:                  string, // secret; never logged
 	whatsapp_app_secret:                    string, // secret; never logged

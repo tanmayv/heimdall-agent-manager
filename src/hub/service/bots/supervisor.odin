@@ -316,6 +316,8 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 		binding, found, _ := bots_notice_binding(s, notice.owner, notice.bot_id, notice.through_message_id)
 		if found do bots_notice(s, binding.provider, binding.external_chat_id, notice.text, notice.owner)
 	}
+	bots_canonical_egress_tick(s,domain.CHANNEL_PROVIDER_TELEGRAM,ms)
+	bots_canonical_feedback_tick(s,domain.CHANNEL_PROVIDER_TELEGRAM)
 	if run_idle {
 		bots_idle_stop(s, now, ms)
 		bots_whatsapp_entitlement_sweep(s)

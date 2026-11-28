@@ -48,3 +48,12 @@ test_chat_send_reply_to_argument_validation :: proc(t: ^testing.T) {
 	testing.expect_value(t, ctl_json_object_add_field("{}", `"a":1`), `{"a":1}`)
 	testing.expect_value(t, ctl_json_object_add_field(`{"b":2}`, `"a":1`), `{"b":2,"a":1}`)
 }
+
+@(test)
+test_chat_prepare_channel_reply_reads_scope_from_bridge_and_hub_envelopes :: proc(t: ^testing.T) {
+	raw := `{"ok":true,"data":{"data":{"scope":{"owner_user_id":"alice","provider":"telegram","binding_id":"chb_x","binding_generation":2,"input_message_id":"msg_input","reply_message_id":"msg_chreply_x"}}}}`
+	s, found := ctl_channel_reply_scope(raw)
+	testing.expect(t,found && s.provider=="telegram" && s.binding_generation==2 && s.input_message_id=="msg_input" && s.reply_message_id=="msg_chreply_x")
+	_, found = ctl_channel_reply_scope(`{"ok":true,"data":{"data":{"route_status":"ambiguous","scope":{}}}}`)
+	testing.expect(t,!found,"an ambiguous route leaves the reply in web chat")
+}

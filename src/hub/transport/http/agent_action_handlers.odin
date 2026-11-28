@@ -12,6 +12,7 @@ import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
+import bots_service "odin_test:hub/service/bots"
 import content_service "odin_test:hub/service/content"
 import taskchain_service "odin_test:hub/service/taskchain"
 import search_service "odin_test:hub/service/search"
@@ -30,6 +31,7 @@ Agent_Action_Handlers :: struct {
 	agents: ^agent_service.Agent_Service,
 	bridges: ^bridge_service.Bridge_Service,
 	content: ^content_service.Content_Service,
+	bots: ^bots_service.Bots_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
 	search: ^search_service.Search_Service,
 	cards: ^card_service.Card_Service,
@@ -235,6 +237,22 @@ agent_action_task_readiness_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	return respond_success(raw, req.request_id, auth_ctx_server_time(req), 200)
 }
 
+agent_action_chat_prepare_reply_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	if inst.bridge_id != auth.bridge_id do return respond_error(domain.domain_error(.Conflict, "reply belongs to a superseded assignment"), req.request_id)
+	params := json_object_raw(req.body, "params")
+	scope, origin, err := bots_service.prepare_canonical_reply(h.bots, inst, strings.trim_space(json_string(params,"reply_to")))
+	if err.code != .None do return respond_error(err,req.request_id)
+	raw, json_err := json.marshal(struct {
+		scope: type_of(scope),
+		route_status: string,
+	}{scope,origin.route_status}, allocator=context.temp_allocator)
+	if json_err!=nil do return respond_error(domain.domain_error(.Internal_Error,"cannot encode reply preparation"),req.request_id)
+	return respond_success(string(raw),req.request_id,auth_ctx_server_time(req),200)
+}
+
 agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
@@ -265,7 +283,21 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 			return respond_error(domain.domain_error(.Conflict, "reply belongs to a superseded launch"), req.request_id)
 		}
 	}
-	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), message_type = json_string(params, "message_type"), metadata_json = metadata_json, reply_to_message_id = strings.trim_space(json_string(params, "reply_to"))}, &inst)
+	input := content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids"), message_type = json_string(params, "message_type"), metadata_json = metadata_json, reply_to_message_id = strings.trim_space(json_string(params, "reply_to"))}
+	proof := content_service.Reply_Source_Proof{input_message_id=json_string(params,"input_message_id"),proof=json_string(params,"source_proof")}
+	reply_id := json_string(params,"channel_reply_id")
+	if (reply_id!="") != (proof.input_message_id!="" && proof.proof!="") ||
+	   (proof.input_message_id!="") != (proof.proof!="") {
+		return respond_error(domain.domain_error(.Validation_Failed, "incomplete channel reply proof"),req.request_id)
+	}
+	msg: domain.Chat_Message
+	saved: bool
+	err: domain.Domain_Error
+	if reply_id == "" {
+		msg,saved,err = content_service.send_agent_message(h.content,auth,inst.agent_instance_id,input,&inst)
+	} else {
+		msg,saved,err = content_service.send_agent_message_with_id(h.content,auth,inst.agent_instance_id,input,reply_id,&inst,proof)
+	}
 	if !saved do return respond_error(err, req.request_id)
 	// Notify the human's UI so it can toast + raise an OS notification. This is a
 	// metadata event with a SHORT body preview (<=140 chars) — the full body is

@@ -13,8 +13,9 @@ BOT_CHANNEL_VAULT_MAX_TOKEN :: 24_576
 BOT_CHANNEL_VAULT_MAX_FRAME :: 40_000
 BOT_CHANNEL_VAULT_MAX_AGE_MS :: 5_000
 
-// Body is padded standard base64. Seal accepts UTF-8 and returns an ordinary
-// vault token. Open requires an ordinary vault token and its author-only proof.
+// Body is padded standard base64. Seal accepts UTF-8 and seal_media accepts
+// bounded provider bytes. Both return ordinary vault tokens. Open requires
+// an ordinary text token and its author-only proof.
 Bot_Channel_Vault_Request :: struct {
 	type, request_id, operation: string,
 	owner_user_id, bridge_id, agent_instance_id, conversation_id: string,
@@ -24,6 +25,10 @@ Bot_Channel_Vault_Request :: struct {
 	provider, provider_event_id, binding_id: string,
 	binding_generation: i64,
 	input_message_id, reply_message_id, source_proof, scope_digest, body: string,
+}
+
+bot_channel_vault_seals :: proc(operation: string) -> bool {
+	return operation=="seal" || operation=="seal_media"
 }
 
 Bot_Channel_Vault_Result :: struct {

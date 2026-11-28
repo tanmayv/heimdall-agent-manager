@@ -87,10 +87,10 @@ metadata_valid :: proc(r: contracts.Bot_Channel_Vault_Request) -> bool {
 	   r.activation_generation < 1 || r.binding_generation < 1 || r.vault_epoch == 0 ||
 	   (r.provider != "telegram" && r.provider != "whatsapp") {return false}
 	switch r.operation {
-	case "seal":
+	case "seal","seal_media":
 		return len(r.provider_event_id) > 0 && len(r.provider_event_id) <= 512 &&
 		       utf8.valid_string(r.provider_event_id) && r.reply_message_id == "" && r.source_proof == "" &&
-		       (r.input_message_id == "" || valid_id(r.input_message_id))
+		       ((r.operation=="seal" && r.input_message_id=="") || valid_id(r.input_message_id))
 	case "open":
 		return r.provider_event_id == "" && len(r.source_proof) == 64 &&
 		       reply_scope_valid(reply_scope(r))
@@ -116,14 +116,16 @@ convert :: proc(r: contracts.Bot_Channel_Vault_Request, daemon_id: string, now_m
 	if kr == nil || !vault.keyring_validate(kr) do return "", "vault_locked"
 	if vault.keyring_user_id(kr) != r.owner_user_id || kr.vault_id != vid do return "", "owner_mismatch"
 	if kr.current_epoch != r.vault_epoch do return "", "key_unavailable"
-	max_body := contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT if r.operation == "seal" else contracts.BOT_CHANNEL_VAULT_MAX_TOKEN
+	max_body := contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT if contracts.bot_channel_vault_seals(r.operation) else contracts.BOT_CHANNEL_VAULT_MAX_TOKEN
 	if len(r.body) == 0 || len(r.body) > ((max_body + 2) / 3) * 4 do return "", "invalid_request"
 	decoded, decode_err := base64.decode(r.body, allocator = context.temp_allocator)
 	defer wipe(string(decoded))
 	if decode_err != nil || len(decoded) == 0 do return "", "invalid_request"
 
-	if r.operation == "seal" {
-		if len(decoded) > contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT || !utf8.valid_string(string(decoded)) do return "", "invalid_request"
+	if contracts.bot_channel_vault_seals(r.operation) {
+		if len(decoded) > contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT || (r.operation=="seal" && !utf8.valid_string(string(decoded))) {
+			return "", "invalid_request"
+		}
 		sealed, ok := vault.seal(decoded, kr, allocator)
 		return sealed, "ok" if ok else "key_unavailable"
 	}

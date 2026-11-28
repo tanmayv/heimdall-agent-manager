@@ -38,14 +38,16 @@ bot_web_activation_destroy :: proc(row: ^Bot_Web_Activation) {
 Bot_Channel_Fresh_Binding :: struct {
 	binding_id: string,
 	activation_generation, binding_generation: i64,
+	pairing_update_key: string,
 }
 Bot_Channel_Origin :: struct {
-	inbound_message_id, binding_id, provider_update_key: string,
+	inbound_message_id, binding_id, provider_update_key, external_message_id: string,
 }
 bot_channel_origin_destroy :: proc(row: ^Bot_Channel_Origin) {
 	delete(row.inbound_message_id)
 	delete(row.binding_id)
 	delete(row.provider_update_key)
+	delete(row.external_message_id)
 	row^ = {}
 }
 
@@ -576,3 +578,7 @@ channel_attachment_destroy :: proc(a: ^Channel_Attachment) {
 	if len(a.updated_at) > 0 do delete(a.updated_at)
 	a^ = {}
 }
+
+Bot_Channel_Reply_Job :: struct {reply_message_id,owner_user_id,provider: string}
+
+Bot_Channel_Feedback :: struct {input_id,binding_id,owner,chat_id,external_message_id,reaction: string}

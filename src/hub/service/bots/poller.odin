@@ -49,6 +49,15 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 	}
 	backoff^ = time.Second
 	now := platform.clock_now(s.clock)
+	legacy := batch
+	if s.canonical_telegram && s.canonical_content!=nil {
+		previous_error: domain.Domain_Error
+		legacy, previous_error = bots_telegram_canonical_batch(s,batch,now)
+		if previous_error.code!=.None {
+			fmt.eprintf("bots: telegram canonical batch held code=%v\n",previous_error.code)
+			return 5*time.Second,false
+		}
+	}
 	rows: []domain.Channel_Message
 	inserted: []string
 	store_err: domain.Domain_Error
@@ -56,7 +65,7 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 		sync.mutex_lock(&s.mutex)
 		defer sync.mutex_unlock(&s.mutex)
 		map_err: domain.Domain_Error
-		rows, map_err = bots_inbound_rows(s, s.adapter, batch, now)
+		rows, map_err = bots_inbound_rows(s, s.adapter, legacy, now)
 		if map_err.code != .None do return 5 * time.Second, false
 		inserted, store_err = iface.inbound_store_batch(s.repo, "telegram", rows, next, now)
 	}
@@ -68,7 +77,7 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 		fmt.eprintln("bots: telegram batch commit failed")
 		return 5 * time.Second, false
 	}
-	for update in batch {
+	for update in legacy {
 		if e := bots_inbound_side_effect(s, s.adapter, update, now); e.code != .None do fmt.eprintf("bots: inbound side effect code=%v\n", e.code)
 	}
 	seen := make(map[string]bool, context.temp_allocator)

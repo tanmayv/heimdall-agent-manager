@@ -5,7 +5,8 @@
 CREATE TABLE IF NOT EXISTS bot_channel_conversion_bindings (
     binding_id TEXT PRIMARY KEY NOT NULL,
     activation_generation INTEGER NOT NULL CHECK (activation_generation > 0),
-    binding_generation INTEGER NOT NULL CHECK (binding_generation > 0)
+    binding_generation INTEGER NOT NULL CHECK (binding_generation > 0),
+    pairing_update_key TEXT NOT NULL DEFAULT ''
 );
 
 -- Written with the canonical inbound by trusted adapter code. Keep the
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS bot_channel_conversion_origins (
     inbound_message_id TEXT PRIMARY KEY NOT NULL,
     binding_id TEXT NOT NULL REFERENCES bot_channel_conversion_bindings(binding_id),
     provider_update_key TEXT NOT NULL CHECK (provider_update_key <> ''),
+    external_message_id TEXT NOT NULL DEFAULT '',
     UNIQUE (provider_update_key)
 );
 
@@ -28,3 +30,39 @@ CREATE TABLE IF NOT EXISTS bot_channel_conversion_replies (
 -- Zero identifies a legacy invitation. Canonical issuance alone sets a
 -- positive generation, and neither consume path accepts the other's codes.
 ALTER TABLE channel_pairings ADD COLUMN activation_generation INTEGER NOT NULL DEFAULT 0 CHECK (activation_generation >= 0);
+
+-- A reply is enqueued only with its immutable conversion proof. Store no
+-- plaintext or attachment data in the outbox. Claimed parts are never resent.
+CREATE TABLE bot_channel_reply_outbox (
+    reply_message_id TEXT PRIMARY KEY REFERENCES bot_channel_conversion_replies(reply_message_id),
+    owner_user_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','failed','unknown','stale')),
+    next_attempt_ms INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX bot_channel_reply_outbox_pending
+    ON bot_channel_reply_outbox(provider, next_attempt_ms, reply_message_id) WHERE status='pending';
+CREATE TABLE bot_channel_reply_parts (
+    reply_message_id TEXT NOT NULL REFERENCES bot_channel_reply_outbox(reply_message_id),
+    part_index INTEGER NOT NULL CHECK (part_index >= 0),
+    status TEXT NOT NULL CHECK (status IN ('sending','sent','failed','unknown')),
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (reply_message_id, part_index)
+);
+
+-- Feedback is a durable, coalescing hint. The shared R7 evidence contains
+-- only actual agent consumption, not a web read or a preview.
+CREATE TABLE bot_channel_feedback (
+    inbound_message_id TEXT PRIMARY KEY REFERENCES bot_channel_conversion_origins(inbound_message_id),
+    reaction TEXT NOT NULL CHECK (reaction IN ('queued','read')),
+    dispatched INTEGER NOT NULL DEFAULT 0 CHECK (dispatched IN (0,1))
+);
+CREATE INDEX bot_channel_feedback_pending ON bot_channel_feedback(inbound_message_id) WHERE dispatched=0;
+CREATE TRIGGER canonical_channel_consumption_feedback AFTER INSERT ON chat_input_consumptions
+BEGIN
+    INSERT INTO bot_channel_feedback(inbound_message_id,reaction)
+    SELECT NEW.message_id,'read' FROM bot_channel_conversion_origins o
+    JOIN channel_bindings b ON b.binding_id=o.binding_id
+    WHERE o.inbound_message_id=NEW.message_id AND o.external_message_id<>'' AND b.owner_user_id=NEW.owner_user_id
+    ON CONFLICT(inbound_message_id) DO UPDATE SET reaction='read',dispatched=0 WHERE reaction='queued';
+END;

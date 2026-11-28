@@ -293,6 +293,7 @@ type Message = {
   metadata?: any;
   metadata_json?: string;
   metadataJson?: string;
+  channel?: ChatMessage['channel'];
   sending?: boolean;
 };
 
@@ -735,6 +736,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string, keyF
             (message as any).message_status || (message as any).messageStatus || 'complete',
           ),
           metadata: parseMessageMetadata(message),
+          channel: message.channel,
           isLatestMessage: (message as any).is_latest_message === true,
           optionsRevision: (message as any).optionsRevision,
           questionAnswer: (message as any).question_answer,
@@ -2575,6 +2577,11 @@ export function AgentChatPane({
             if (ownTargetId !== quoteTargetId) openCurrentChainCoordinator();
           } : undefined}
           quoteDisabledReason={!chainId ? 'This message has no chain coordinator.' : !chainConversationQuery.data?.coordinatorAgentInstanceId ? 'The chain coordinator is unavailable.' : ''} />}>
+        {message.channel && (
+          <div className="mb-1 text-xs text-muted" data-debug-id={`conversation-channel-${message.messageId}`}>
+            {channelMessageLabel(message.channel)}
+          </div>
+        )}
         {message.metadata?.acp && message.messageStatus === 'failed' && (
           <div role="status" data-debug-id={`conversation-assistant-failed-${message.messageId}`} className="mb-1 text-xs text-muted">Response interrupted.</div>
         )}
@@ -4226,6 +4233,21 @@ export function AgentChatPane({
       />
     </div>
   );
+}
+
+function channelMessageLabel(channel: { provider: string; status: string }): string {
+  const name = channel.provider === 'telegram' ? 'Telegram' : channel.provider === 'whatsapp' ? 'WhatsApp' : 'Web';
+  switch (channel.status) {
+    case 'received': return `From ${name}`;
+    case 'pending': return `Waiting to send on ${name}`;
+    case 'sent': return `Sent on ${name}`;
+    case 'unknown': return `${name} delivery could not be confirmed`;
+    case 'failed': return `Could not send on ${name}`;
+    case 'stale': return `Web only · ${name} route is no longer available`;
+    case 'ambiguous': return 'Web only · ambiguous reply destination';
+    case 'no_proof': return 'Web only · no verified channel reply';
+    default: return 'Web only';
+  }
 }
 
 export default AgentChatPane;

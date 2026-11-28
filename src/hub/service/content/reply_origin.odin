@@ -91,19 +91,19 @@ reply_origin_previous :: proc(repo: ^iface.Content_Repository, w: domain.Reply_W
 	return holder.reply_origin, true
 }
 
-// reply_origin_record computes the reply's origin and advances the watermark.
-// It must run inside the reply's unit of work (repo = the uow repository), so
-// two racing replies never both claim the same consumption.
-reply_origin_record :: proc(repo: ^iface.Content_Repository, c: domain.Chat_Conversation, reply_message_id, reply_to, now: string) -> (domain.Reply_Origin, domain.Domain_Error) {
+// Read the same routing decision for bridge authorship preflight and durable
+// replies. The preflight cannot advance the watermark. On save the decision
+// is read again in the reply's unit of work before any external dispatch.
+reply_origin_preview :: proc(repo: ^iface.Content_Repository, c: domain.Chat_Conversation, reply_to: string) -> (domain.Reply_Origin, i64, i64, domain.Domain_Error) {
 	owner := c.owner_user_id
 	w, have_w, werr := iface.content_get_reply_watermark(repo, owner, c.conversation_id)
-	if werr.code != .None do return {}, werr
+	if werr.code != .None do return {},0,0,werr
 	consumed, lerr := iface.content_list_input_consumptions(repo, owner, c.conversation_id, w.through_seq)
-	if lerr.code != .None do return {}, lerr
+	if lerr.code != .None do return {},0,0,lerr
 	result: domain.Reply_Origin
 	if reply_to != "" {
 		origin, verr := reply_origin_validate_reply_to(repo, c, reply_to)
-		if verr.code != .None do return {}, verr
+		if verr.code != .None do return {},0,0,verr
 		ids := make([]string, 1, context.temp_allocator)
 		ids[0] = reply_to
 		result = {answered_message_ids=ids, origin=origin, route_status=domain.REPLY_ROUTE_EXPLICIT, source=domain.REPLY_SOURCE_REPLY_TO}
@@ -114,7 +114,7 @@ reply_origin_record :: proc(repo: ^iface.Content_Repository, c: domain.Chat_Conv
 		has_channel := false
 		if len(consumed) == 0 && !(have_previous && len(previous.answered_message_ids) > 0) {
 			hc, herr := iface.content_conversation_has_channel(repo, owner, c.conversation_id)
-			if herr.code != .None do return {}, herr
+			if herr.code != .None do return {},0,0,herr
 			has_channel = hc
 		}
 		result = reply_origin_resolve(consumed, previous, have_previous, has_channel)
@@ -123,8 +123,16 @@ reply_origin_record :: proc(repo: ^iface.Content_Repository, c: domain.Chat_Conv
 	// an explicit --reply-to: what the agent consumed so far is behind it.
 	through := w.through_seq
 	if len(consumed) > 0 do through = consumed[len(consumed)-1].seq
-	next := domain.Reply_Watermark{conversation_id=c.conversation_id, owner_user_id=string(owner), through_seq=through, reply_message_id=reply_message_id, updated_at=now}
-	if err := iface.content_advance_reply_watermark(repo, next, w.through_seq); err.code != .None do return {}, err
+	return result,w.through_seq,through,{}
+}
+
+// The caller holds the reply's unit of work. The watermark and reply commit
+// together so two replies cannot both claim the same consumption.
+reply_origin_record :: proc(repo: ^iface.Content_Repository, c: domain.Chat_Conversation, reply_message_id, reply_to, now: string) -> (domain.Reply_Origin, domain.Domain_Error) {
+	result, previous, through, err := reply_origin_preview(repo,c,reply_to)
+	if err.code != .None do return {},err
+	next := domain.Reply_Watermark{conversation_id=c.conversation_id, owner_user_id=string(c.owner_user_id), through_seq=through, reply_message_id=reply_message_id, updated_at=now}
+	if err := iface.content_advance_reply_watermark(repo, next, previous); err.code != .None do return {}, err
 	return result, {}
 }
 
@@ -161,9 +169,19 @@ reply_origin_applies :: proc(message_type: string) -> bool {
 	return message_type != "system"
 }
 
+Reply_Source_Proof :: struct { input_message_id, proof: string }
+Reply_Proof_Hook :: struct {
+	ctx: rawptr,
+	commit: proc(ctx: rawptr, repos: ^iface.Repositories, m: domain.Chat_Message, origin: domain.Reply_Origin, proof: Reply_Source_Proof) -> domain.Domain_Error,
+}
+
 // save_agent_reply persists an agent->user message. A reply records its
 // origin and advances the watermark in the same unit of work as the row.
-save_agent_reply :: proc(s: ^Content_Service, c: domain.Chat_Conversation, m: domain.Chat_Message, reply_to, now: string, expected: ^domain.Agent_Instance = nil) -> (domain.Chat_Message, bool, domain.Domain_Error) {
+save_agent_reply :: proc(s: ^Content_Service, c: domain.Chat_Conversation, m: domain.Chat_Message, reply_to, now: string, expected: ^domain.Agent_Instance = nil, proof: Reply_Source_Proof = {}) -> (domain.Chat_Message, bool, domain.Domain_Error) {
+	has_proof := proof.proof!="" || proof.input_message_id!=""
+	if has_proof && (s.reply_proof.commit==nil || s.uow_factory==nil || !iface.content_reply_origin_supported(s.content) || !reply_origin_applies(m.message_type)) {
+		return {},false,domain.domain_error(.Validation_Failed,"channel reply proof is not supported for this message")
+	}
 	if !reply_origin_applies(m.message_type) {
 		if reply_to != "" do return {}, false, domain.domain_error(.Validation_Failed, "reply-to applies only to replies")
 		return save_message(s, m)
@@ -194,6 +212,10 @@ save_agent_reply :: proc(s: ^Content_Service, c: domain.Chat_Conversation, m: do
 	metadata, merr := reply_origin_metadata(m.metadata_json, origin)
 	if merr.code != .None do return {}, false, merr
 	row.metadata_json = metadata
+	if has_proof {
+		if uow.repos == nil do return {},false,domain.domain_error(.Internal_Error,"channel reply repositories unavailable")
+		if proof_err := s.reply_proof.commit(s.reply_proof.ctx,uow.repos,row,origin,proof); proof_err.code!=.None do return {},false,proof_err
+	}
 	saved, ok, err := iface.content_save_message(repo, row)
 	if !ok do return {}, false, err
 	if done, cerr := iface.unit_of_work_commit(&uow); !done do return {}, false, cerr

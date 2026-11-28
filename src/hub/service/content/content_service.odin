@@ -48,7 +48,12 @@ reviewer_template :: proc() -> domain.Template { t, _ := domain.builtin_template
 soloist_template :: proc() -> domain.Template { t, _ := domain.builtin_template(domain.TEMPLATE_SOLOIST_ID); return t }
 empty_template :: proc() -> domain.Template { t, _ := domain.builtin_template(domain.TEMPLATE_EMPTY_ID); return t }
 
-Content_Service :: struct { messages_read: Messages_Read_Hook, uow_factory: ^iface.Unit_Of_Work_Factory, vault_directory: ^iface.Vault_Directory_Repository, agent_configuration_service: ^agent_service.Agent_Service, content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool, attention: ^contracts.Attention_Notifier, user_activity: User_Activity_Hook }
+Channel_Display :: struct {provider, status: string}
+Channel_Display_Hook :: struct {
+	ctx: rawptr,
+	get: proc(ctx: rawptr,m: domain.Chat_Message) -> Channel_Display,
+}
+Content_Service :: struct { channel_display: Channel_Display_Hook, reply_proof: Reply_Proof_Hook, messages_read: Messages_Read_Hook, uow_factory: ^iface.Unit_Of_Work_Factory, vault_directory: ^iface.Vault_Directory_Repository, agent_configuration_service: ^agent_service.Agent_Service, content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool, attention: ^contracts.Attention_Notifier, user_activity: User_Activity_Hook }
 Memory_Input :: struct { title,description,body,evidence,status,expires_at: string, proposed_by_instance_id,proposed_in_chain_id: string, agent_ids,template_ids,bridge_ids: []string, project_ids: []domain.Project_ID, type: domain.Memory_Type }
 Memory_Update_Input :: struct {
 	title:            string,
@@ -286,7 +291,7 @@ send_agent_message :: proc(s:^Content_Service, auth:contracts.Auth_Context, inst
 	return send_agent_message_with_id(s, auth, instance_id, input, platform.generate_id(s.ids, "msg_"), expected)
 }
 
-send_agent_message_with_id :: proc(s: ^Content_Service, auth: contracts.Auth_Context, instance_id: string, input: Message_Input, message_id: string, expected: ^domain.Agent_Instance = nil) -> (domain.Chat_Message, bool, domain.Domain_Error) {
+send_agent_message_with_id :: proc(s: ^Content_Service, auth: contracts.Auth_Context, instance_id: string, input: Message_Input, message_id: string, expected: ^domain.Agent_Instance = nil, proof: Reply_Source_Proof = {}) -> (domain.Chat_Message, bool, domain.Domain_Error) {
 	if auth.kind != .Instance_Token || auth.agent_instance_id == "" || auth.agent_instance_id != instance_id do return {}, false, domain.domain_error(.Forbidden, "instance token is required")
 	c, ok, err := get_conversation_by_instance(s, auth, instance_id)
 	if !ok do return {}, false, err
@@ -294,7 +299,7 @@ send_agent_message_with_id :: proc(s: ^Content_Service, auth: contracts.Auth_Con
 	now := platform.clock_now(s.clock)
 	m_type := input.message_type if input.message_type != "" else "text"
 	m := domain.Chat_Message{message_id = message_id, conversation_id = c.conversation_id, owner_user_id = c.owner_user_id, direction = "agent_to_user", sender_agent_id = c.agent_id, sender_agent_instance_id = c.agent_instance_id, body = input.body, artifact_ids_json = artifact_json_or_empty(input.artifact_ids_json), message_type = m_type, metadata_json = input.metadata_json, created_at = now}
-	saved, save_ok, save_err := save_agent_reply(s, c, m, input.reply_to_message_id, now, expected)
+	saved, save_ok, save_err := save_agent_reply(s, c, m, input.reply_to_message_id, now, expected, proof)
 	if !save_ok do return {}, false, save_err
 	c.last_message_preview = input.body
 	c.last_message_at = now

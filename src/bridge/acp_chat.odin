@@ -556,7 +556,12 @@ acp_chat_input_text :: proc(row:json.Object,kr:^vault.Vault_Keyring) -> (string,
     // G12: assistant text is a live stream only; the reply is an explicit send.
     reply_to:="user"
     if from:=acp_event_string(row,"sender_agent_instance_id");acp_event_string(row,"direction")=="agent_to_agent" && from!="" do reply_to=from
-    return fmt.tprintf("[Heimdall message context]\nsender: %s\nmessage_id: %s\nanswer_metadata: %s\nartifact_refs: %s\nAttachments are fetchable artifact references. Inline images/resources are not supplied in this text prompt.\nReply with `./bin/ham-ctl chat send --to %s --body \"...\"`; your assistant text is not delivered as a message.\n[/Heimdall message context]\n\n%s",sender,acp_event_string(row,"message_id"),decrypted,acp_chat_artifact_refs_text(row),reply_to,body),true
+    origin: string
+    if channel,ok:=row["channel"].(json.Object); ok && acp_event_string(channel,"status")=="received" {
+        provider:=acp_event_string(channel,"provider")
+        if provider=="telegram" || provider=="whatsapp" do origin=fmt.tprintf("\nchannel: %s",provider)
+    }
+    return fmt.tprintf("[Heimdall message context]\nsender: %s\nmessage_id: %s%s\nanswer_metadata: %s\nartifact_refs: %s\nAttachments are fetchable artifact references. Inline images/resources are not supplied in this text prompt.\nReply with `./bin/ham-ctl chat send --to %s --body \"...\"`; your assistant text is not delivered as a message.\n[/Heimdall message context]\n\n%s",sender,acp_event_string(row,"message_id"),origin,decrypted,acp_chat_artifact_refs_text(row),reply_to,body),true
 }
 
 // acp_chat_artifact_refs_text renders the prompt's artifact_refs value as

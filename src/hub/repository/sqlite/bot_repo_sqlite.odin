@@ -16,10 +16,21 @@ Bot_Repo_SQLite :: struct {
 new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Repository {
 	impl.conn = conn
 	return iface.Bot_Repository {
+		channel_queue_feedback = bot_channel_queue_feedback_sqlite,
+		channel_feedback_pending = bot_channel_feedback_pending_sqlite,
+		channel_feedback_claim = bot_channel_feedback_claim_sqlite,
+		channel_reply_enqueue = bot_channel_reply_enqueue_sqlite,
+		channel_reply_recover = bot_channel_reply_recover_sqlite,
+		channel_reply_pending = bot_channel_reply_pending_sqlite,
+		channel_reply_state = bot_channel_reply_state_sqlite,
+		channel_reply_finish = bot_channel_reply_finish_sqlite,
+		channel_reply_part_claim = bot_channel_reply_part_claim_sqlite,
+		channel_reply_part_finish = bot_channel_reply_part_finish_sqlite,
 		pairing_insert_fresh = pairing_insert_fresh_sqlite,
 		binding_activate_fresh = binding_activate_fresh_sqlite,
 		conversion_binding_get = bot_conversion_binding_get_sqlite,
 		conversion_origin_exists = bot_conversion_origin_exists_sqlite,
+		conversion_input_source = bot_conversion_input_source_sqlite,
 		conversion_origin_insert = bot_conversion_origin_insert_sqlite,
 		conversion_reply_insert = bot_conversion_reply_insert_sqlite,
 		conversion_reply_source = bot_conversion_reply_source_sqlite,
@@ -1116,15 +1127,15 @@ binding_activate_sqlite :: proc(
 	return binding_activate_with_conversion_sqlite(ctx,binding,pairing_code_hash,consumed_at)
 }
 
-binding_activate_fresh_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, code_hash, consumed_at: string, activation_generation, binding_generation: i64) -> (domain.Channel_Binding,bool,domain.Domain_Error) {
+binding_activate_fresh_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, code_hash, consumed_at: string, activation_generation, binding_generation: i64,pairing_update_key: string) -> (domain.Channel_Binding,bool,domain.Domain_Error) {
 	if activation_generation < 1 || binding_generation < 1 || binding.state != .Active || binding.binding_id == "" ||
 	   (binding.provider != domain.CHANNEL_PROVIDER_TELEGRAM && binding.provider != domain.CHANNEL_PROVIDER_WHATSAPP) {
 		return {},false,domain.domain_error(.Validation_Failed,"invalid channel conversion generation")
 	}
-	return binding_activate_with_conversion_sqlite(ctx,binding,code_hash,consumed_at,activation_generation,binding_generation)
+	return binding_activate_with_conversion_sqlite(ctx,binding,code_hash,consumed_at,activation_generation,binding_generation,pairing_update_key)
 }
 
-binding_activate_with_conversion_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, pairing_code_hash, consumed_at: string, activation_generation:i64=0,binding_generation:i64=0) -> (domain.Channel_Binding,bool,domain.Domain_Error) {
+binding_activate_with_conversion_sqlite :: proc(ctx: rawptr, binding: domain.Channel_Binding, pairing_code_hash, consumed_at: string, activation_generation:i64=0,binding_generation:i64=0,pairing_update_key:="") -> (domain.Channel_Binding,bool,domain.Domain_Error) {
 	conn := bot_repo_conn(ctx)
 	if conn == nil || conn.db == nil do return {}, false, bot_repo_error(conn)
 	guard := tx_repository_enter()
@@ -1184,7 +1195,7 @@ binding_activate_with_conversion_sqlite :: proc(ctx: rawptr, binding: domain.Cha
 	if insert_err.code != .None do return {}, false, insert_err
 	if activation_generation > 0 {
 		grant_err := bot_conversion_binding_insert_sqlite(ctx,{
-			binding_id=binding.binding_id,activation_generation=activation_generation,binding_generation=binding_generation,
+			binding_id=binding.binding_id,activation_generation=activation_generation,binding_generation=binding_generation,pairing_update_key=pairing_update_key,
 		})
 		if grant_err.code != .None do return {}, false, grant_err
 	}

@@ -335,6 +335,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 			return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chat", "send-to-agent")}
 		}
 		return Bridge_Agent_Route{kind = .Bad_Request, message = "chat send requires --to: `user` for the bound user, or an agent-instance-id"}
+	case "agent.chat.prepare_reply":
+		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chat", "prepare-reply")}
 	case "agent.chat.read":
 		return Bridge_Agent_Route{kind = .Envelope, path = route_path("api", "v1", "agent-actions", "chat", "read")}
 	case "agent.chat.assistant_message":
@@ -449,7 +451,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // chat + self/misc
 	     "agent.channel.read", "agent.channel.send", "agent.channel.history",
 	     "agent.events.next", "agent.events.ack", "agent.events.watch", "agent.events.unwatch", "agent.events.subscriptions",
-	     "agent.chat.send", "agent.chat.read", "agent.chat.assistant_message", "agent.chat.previous_context",
+	     "agent.chat.send", "agent.chat.prepare_reply", "agent.chat.read", "agent.chat.assistant_message", "agent.chat.previous_context",
 	     "agent.context.get", "agent.conversation.set_title",
 	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",
 	     "agent.search",

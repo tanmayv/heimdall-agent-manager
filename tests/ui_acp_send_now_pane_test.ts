@@ -606,3 +606,21 @@ test('Agent settings panel: each ACP fix calls its existing endpoint on the draf
     });
   }
 });
+
+test('shared conversation shows an authenticated channel and an uncertain provider receipt', async () => {
+  const hub: Hub = { transport: 'pty', posts: [], sendNowReply: { status: 200, body: { data: {} } },
+    messages: [
+      userRow('msg_channel_test', 0, null, { channel: { provider: 'telegram', status: 'received' } }),
+      { ...agentRow('msg_bound_test', 1), channel: { provider: 'telegram', status: 'pending' } },
+      { ...agentRow('msg_mixed_test', 2), channel: { provider: 'web', status: 'ambiguous' } },
+    ] };
+  await fixture(hub, async ({ q, wait, delivery }) => {
+    const label = (id: string) => q('conversation-channel-' + id)?.textContent?.trim();
+    await wait(() => label('msg_channel_test') === 'From Telegram');
+    assert.equal(label('msg_bound_test'), 'Waiting to send on Telegram');
+    assert.equal(label('msg_mixed_test'), 'Web only · ambiguous reply destination');
+    hub.messages[1] = { ...hub.messages[1], channel: { provider: 'telegram', status: 'unknown' } };
+    await act(async () => delivery(['msg_bound_test']));
+    await wait(() => label('msg_bound_test') === 'Telegram delivery could not be confirmed');
+  });
+});

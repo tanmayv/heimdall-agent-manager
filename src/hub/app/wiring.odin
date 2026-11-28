@@ -729,6 +729,11 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
  graph.placement_handlers={auth=&graph.auth,placement=&graph.placement}
 	graph.bots = bots_service.Bots_Service{channel_vault_directory=&graph.vault_directory_repo, channel_vault_exchange={ctx=&graph.bridge_runtime_registry, run=exchange_channel_vault}, placement=&graph.placement,ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
 	graph.agents.runtime_policy = {ctx=&graph.bots, check=bots_service.check_web_runtime_policy}
+	graph.bots.canonical_telegram = config.canonical_telegram
+	graph.bots.canonical_content = &graph.content
+	graph.agent_action_handlers.bots = &graph.bots
+	graph.content.channel_display = {ctx=&graph.bots,get=bots_service.channel_message_display}
+	graph.content.reply_proof = {ctx=&graph.bots,commit=bots_service.record_canonical_reply_proof}
 	if config.telegram_bot_token != "" {
 		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
@@ -1147,6 +1152,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "PATCH", "/api/v1/task-chains/*/tasks/*", rawptr(&graph.taskchain_handlers), http.patch_task_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*/comments", rawptr(&graph.taskchain_handlers), http.list_task_comments_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/comments", rawptr(&graph.taskchain_handlers), http.create_task_comment_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/prepare-reply", rawptr(&graph.agent_action_handlers), http.agent_action_chat_prepare_reply_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-user", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_user_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-agent", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/previous-context", rawptr(&graph.agent_action_handlers), http.agent_action_chat_previous_context_handler)

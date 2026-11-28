@@ -1736,6 +1736,16 @@ Token values are secret and must not be logged.
 `HEIMDALL_TELEGRAM_API_BASE` overrides the default `https://api.telegram.org`;
 `--telegram-api-base <url>` overrides that environment setting.
 
+Set `HEIMDALL_CANONICAL_TELEGRAM=true` to make Telegram available in shared
+bot conversations. This is off by default and applies only to owners who
+opt into the shared conversation and pair Telegram again. The Hub and the
+owner's active Bridge must both support scoped channel vault conversion.
+Existing pairings and queued legacy messages never become shared-chat
+inputs. Supported incoming files up to 16 KiB are encrypted as ordinary
+conversation attachments. Larger files keep their caption with a limit
+notice. Outgoing attachments use authenticated links to the web conversation
+artifact viewer.
+
 `HEIMDALL_BOT_TIMERS_JSON` is **for tests only**. It accepts a JSON object of
 `Bot_Timer_Config` field names from the bots slice 1 specification, section 14.1.
 Durations are in milliseconds; count fields are integer counts. Absent fields

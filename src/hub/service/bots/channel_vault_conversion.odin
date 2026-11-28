@@ -1,6 +1,7 @@
 package bots
 
 import "core:strings"
+import "core:crypto"
 import "core:unicode/utf8"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -18,6 +19,7 @@ Channel_Vault_Exchange :: struct {
 Bound_Reply_Consumer :: struct {
 	ctx: rawptr,
 	accept: proc(ctx: rawptr, provider, recipient, text: string),
+	accept_prepared: proc(ctx: rawptr, prepared: Channel_Vault_Prepared, authority: Channel_Vault_Authority, text: string),
 }
 
 // Called by verified channel intake before any message/spool write. The caller
@@ -33,7 +35,7 @@ seal_channel_input :: proc(s: ^Bots_Service, owner, binding_id, input_message_id
 // The originating message and destination are resolved from durable records.
 // No caller-selected ciphertext, recipient or proof enters the open path.
 with_bound_channel_reply :: proc(s: ^Bots_Service, owner, reply_message_id: string, consumer: Bound_Reply_Consumer) -> domain.Domain_Error {
-	if reply_message_id == "" || consumer.accept == nil do return bots_detail_error(.Validation_Failed, "channel_vault_invalid_reply")
+	if reply_message_id == "" || (consumer.accept == nil && consumer.accept_prepared == nil) do return bots_detail_error(.Validation_Failed, "channel_vault_invalid_reply")
 	_, err := convert_channel_text(s, {owner=owner, reply=reply_message_id}, consumer)
 	return err
 }
@@ -42,6 +44,7 @@ with_bound_channel_reply :: proc(s: ^Bots_Service, owner, reply_message_id: stri
 Conversion_Intent :: struct {
 	owner, binding, input, provider, reply: string,
 	event: channel.Inbound,
+	media: []byte,
 }
 
 // Read both authorities in one transaction. Release the transaction before
@@ -72,6 +75,10 @@ convert_channel_text :: proc(s: ^Bots_Service, intent: Conversion_Intent, consum
 	req := initial.request
 	req.vault_id, req.vault_epoch = authority.vault_id, authority.vault_epoch
 	if intent.reply == "" do req.body = intent.event.text
+	if len(intent.media) > 0 {
+		req.operation = "seal_media"
+		req.body = string(intent.media)
+	}
 	if s.channel_vault_exchange.run == nil do return "", bots_detail_error(.Bridge_Offline, "channel_vault_bridge_unavailable")
 	result, received := s.channel_vault_exchange.run(s.channel_vault_exchange.ctx, authority.connection_generation, req)
 	defer contracts.bot_channel_vault_result_destroy(&result)
@@ -92,16 +99,61 @@ convert_channel_text :: proc(s: ^Bots_Service, intent: Conversion_Intent, consum
 	}
 	if intent.reply != "" {
 		if len(result.body) == 0 || len(result.body) > contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT || !utf8.valid_string(result.body) do return "", bots_detail_error(.Validation_Failed, "channel_vault_invalid_response")
-		consumer.accept(consumer.ctx, current.provider, current.recipient, result.body)
+		if consumer.accept_prepared!=nil do consumer.accept_prepared(consumer.ctx,current,now,result.body)
+		else do consumer.accept(consumer.ctx,current.provider,current.recipient,result.body)
 		return "", {}
 	}
 	if len(result.body) > contracts.BOT_CHANNEL_VAULT_MAX_TOKEN do return "", bots_detail_error(.Validation_Failed, "channel_vault_invalid_response")
 	vid, epoch, cipher, parsed := vault.envelope_parse(result.body, context.temp_allocator)
 	defer delete(cipher, context.temp_allocator)
 	expected, valid_id := vault.vault_id_from_hex(authority.vault_id)
-	if parsed != .Ok || !valid_id || vid != expected || epoch != authority.vault_epoch || len(cipher) != len(intent.event.text) + vault.HEADER_BYTES {
+	if parsed != .Ok || !valid_id || vid != expected || epoch != authority.vault_epoch || len(cipher) != len(req.body) + vault.HEADER_BYTES {
 		return "", bots_detail_error(.Validation_Failed, "channel_vault_invalid_envelope")
 	}
 	if snapshot != nil do snapshot^ = current
 	return strings.clone(result.body), {}
+}
+
+Canonical_Media_Seal :: struct {
+	token, mime: string,
+	source: Channel_Vault_Prepared,
+}
+
+// Only the exact verified provider update may fetch its media. We request at
+// most one scoped vault frame and use the normal artifact envelope. No raw
+// file, provider fetch reference, or caption is written to a legacy spool.
+seal_canonical_channel_media :: proc(s: ^Bots_Service, owner, binding, input, provider: string, event: channel.Inbound) -> (Canonical_Media_Seal,string,domain.Domain_Error) {
+	a := bots_adapter(s,provider)
+	if a==nil || a.media_fetch==nil || event.media.file_ref=="" do return {},"Attachment unavailable.",{}
+	max_bytes := i64(contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT)
+	if event.media.size>max_bytes do return {},"Attachment exceeds the current channel upload limit.",{}
+	intent := Conversion_Intent{owner=owner,binding=binding,input=input,provider=provider,event=event}
+	initial, _, auth_err := channel_conversion_snapshot(s,intent)
+	if auth_err.code!=.None do return {},"",auth_err
+	if initial.recipient!=event.external_chat_id || initial.external_user_id!=event.external_user_id do return {},"",channel_conversion_denied()
+	f, provider_err := a.media_fetch(a.ctx,event.media.file_ref,max_bytes)
+	defer {
+		if len(f.bytes)>0 do crypto.zero_explicit(raw_data(f.bytes),len(f.bytes))
+		delete(f.bytes)
+		delete(f.mime)
+	}
+	#partial switch provider_err.kind {
+	case .None:
+	case .Media_Too_Large: return {},"Attachment exceeds the current channel upload limit.",{}
+	case .Media_Unavailable,.Invalid_Request: return {},"Attachment unavailable.",{}
+	case: return {},"",bots_detail_error(.Provider_Unavailable,"channel_media_fetch_pending")
+	}
+	if len(f.bytes)==0 do return {},"Attachment unavailable.",{}
+	if len(f.bytes)>int(max_bytes) do return {},"Attachment exceeds the current channel upload limit.",{}
+	intent.media=f.bytes
+	confirmed: Channel_Vault_Prepared
+	token, conversion_err := convert_channel_text(s,intent,{},&confirmed)
+	if conversion_err.code!=.None do return {},"",conversion_err
+	if initial!=confirmed {
+		delete(token)
+		return {},"",bots_detail_error(.Conflict,"channel_media_source_changed")
+	}
+	mime := bots_media_mime(event.media.kind,f.mime if f.mime!="" else event.media.mime)
+	if event.media.kind==.Image do mime=bots_media_sniff_image(f.bytes,mime)
+	return {token,strings.clone(mime,context.temp_allocator),confirmed},"",{}
 }

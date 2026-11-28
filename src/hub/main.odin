@@ -513,6 +513,7 @@ apply_telegram_env :: proc(config: ^app.Hub_Config) {
 	} else if path := os.get_env_alloc("HEIMDALL_TELEGRAM_BOT_TOKEN_FILE", context.allocator); path != "" {
 		config.telegram_bot_token = read_key_file(path)
 	}
+	config.canonical_telegram = os.get_env_alloc("HEIMDALL_CANONICAL_TELEGRAM", context.temp_allocator) == "true"
 	if base := os.get_env_alloc("HEIMDALL_TELEGRAM_API_BASE", context.allocator); base != "" do config.telegram_api_base = base
 	if raw := os.get_env_alloc("HEIMDALL_BOT_TIMERS_JSON", context.allocator); raw != "" {
 		if !bots.apply_bot_timers_json(&config.bot_timers, raw) {

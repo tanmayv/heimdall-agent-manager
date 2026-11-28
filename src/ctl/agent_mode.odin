@@ -13,6 +13,7 @@ import "core:time"
 import "core:unicode/utf8"
 import local_socket "odin_test:lib/local_socket"
 import vault "odin_test:lib/vault"
+import channelvault "odin_test:lib/channelvault"
 import httpc "odin_test:lib/httpc"
 
 // ── agent mode: local Bridge endpoint client (RTE2E-7) ───────────────────────
@@ -569,7 +570,7 @@ ctl_v2_chat :: proc(endpoint, token: string, tokens, args: []string) {
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
 		if to == "" || body == "" { print_agent_help([]string{"chat"}); return }
 		// to == "user" or an agent-instance-id; the bridge routes accordingly.
-		params := ctl_agentmode_chat_send_params(to, body, args)
+		params := ctl_agentmode_channel_reply_params(endpoint,token,to,body,args)
 		ctl_agent_call_task(endpoint, token, "agent.chat.send", params, args)
 	case "set-title":
 		// DEPRECATED (REQ-TN-E): renames the agent's OWN bound conversation. Kept so
@@ -1606,6 +1607,40 @@ ctl_agentmode_chat_send_params :: proc(to: string, body: string, args: []string)
 	params := ctl_agentmode_chat_send_params_body(to, body, args)
 	if reply_to != "" do params = ctl_json_object_add_field(params, json_kv("reply_to", reply_to))
 	return params
+}
+
+// Request no plaintext in the preflight. If we cannot establish a fresh
+// destination, save through ordinary chat and let R7 report the web outcome.
+ctl_agentmode_channel_reply_params :: proc(endpoint, token, to, body: string, args: []string) -> string {
+	reply_to, invalid := ctl_chat_send_reply_to(to,args)
+	if invalid!="" || to!="user" || is_vault_armored(body) || has_flag(args,"--questions-file") {
+		return ctl_agentmode_chat_send_params(to,body,args)
+	}
+	request := json_object(json_kv("reply_to",reply_to))
+	raw, reachable := ctl_agent_local_call(endpoint,token,"agent.chat.prepare_reply",request)
+	scope, prepared := ctl_channel_reply_scope(raw)
+	if reachable && prepared {
+		kr := ctl_vault_keyring_for_write(args)
+		sealed, proof, authored := channelvault.seal_authored(scope,body,kr)
+		if authored {
+			params := ctl_agentmode_chat_send_params(to,sealed,args)
+			params=ctl_json_object_add_field(params,json_kv("channel_reply_id",scope.reply_message_id))
+			params=ctl_json_object_add_field(params,json_kv("input_message_id",scope.input_message_id))
+			return ctl_json_object_add_field(params,json_kv("source_proof",proof))
+		}
+	}
+	return ctl_agentmode_chat_send_params(to,body,args)
+}
+
+// The JSONL bridge envelope contains the Hub's API envelope as data.
+ctl_channel_reply_scope :: proc(raw: string) -> (channelvault.Reply_Scope,bool) {
+	reply: struct {
+		ok: bool,
+		data: struct {data: struct {scope: channelvault.Reply_Scope}},
+	}
+	if raw=="" || json.unmarshal_string(raw,&reply,allocator=context.temp_allocator)!=nil || !reply.ok do return {},false
+	scope := reply.data.data.scope
+	return scope,scope.reply_message_id!=""
 }
 
 ctl_agentmode_chat_send_params_body :: proc(to: string, body: string, args: []string) -> string {

@@ -27,7 +27,7 @@ bots_pairing_create :: proc(s: ^Bots_Service, owner, provider: string) -> (Bot_P
 	bot, err := bots_get(s, owner)
 	if err.code != .None do return {}, err
 	defer domain.bot_destroy(&bot)
-	if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, fence
+	if _,err := pairing_activation_generation(s,owner,provider); err.code!=.None do return {},err
 	entitled, entitlement_err := bots_channel_entitled(s, provider, owner)
 	if entitlement_err.code != .None do return {}, entitlement_err
 	if !entitled do return {}, bots_whatsapp_invite_only_error()
@@ -45,13 +45,29 @@ bots_pairing_create :: proc(s: ^Bots_Service, owner, provider: string) -> (Bot_P
 	{
 		sync.mutex_lock(&s.mutex)
 		defer sync.mutex_unlock(&s.mutex)
-		if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, fence
+		generation, mode_err := pairing_activation_generation(s,owner,provider)
+		if mode_err.code!=.None do return {},mode_err
 		if e := iface.pairing_delete_for_owner(s.repo, owner, provider); e.code != .None do return {}, e
-		if e := iface.pairing_insert(s.repo, {code_hash = bots_pairing_hash(code), owner_user_id = owner, bot_id = bot.bot_id, provider = provider, created_at = now, expires_at = expires}); e.code != .None do return {}, e
+		p := domain.Channel_Pairing{code_hash=bots_pairing_hash(code),owner_user_id=owner,bot_id=bot.bot_id,
+			provider=provider,created_at=now,expires_at=expires}
+		insert_err: domain.Domain_Error
+		if generation>0 do insert_err=iface.bot_channel_conversion_pairing_insert_fresh(s.repo,p,generation)
+		else do insert_err=iface.pairing_insert(s.repo,p)
+		if insert_err.code!=.None do return {},insert_err
 	}
 	text := ""
 	if a.pairing_text != nil do text = a.pairing_text(a.ctx, code)
 	return {pairing_url = a.pairing_url(a.ctx, identity, code), pairing_text = text, expires_at = strings.clone(expires)}, {}
+}
+
+pairing_activation_generation :: proc(s: ^Bots_Service, owner, provider: string) -> (i64,domain.Domain_Error) {
+	// Allow existing lightweight legacy adapters and fakes without cutover.
+	if s.repo==nil || s.repo.web_activation_get==nil do return 0,{}
+	state, found, err := iface.bot_web_activation_get(s.repo,owner)
+	defer domain.bot_web_activation_destroy(&state)
+	if err.code!=.None || !found do return 0,err
+	if !state.enabled || !canonical_channel_enabled(s,provider) do return 0,bots_legacy_guard(s,owner)
+	return state.generation,{}
 }
 
 bots_publish_changed :: proc(s: ^Bots_Service, owner, bot_id: string) {
@@ -84,7 +100,13 @@ bots_pairing_start :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	reply, previous_chat, owner, bot_id, err := bots_pairing_apply(s, a, update, now)
 	defer {delete(previous_chat); delete(owner); delete(bot_id)}
 	if err.code != .None do return err
-	if reply != "" do bots_notice(s, a.provider, update.external_chat_id, reply, owner)
+	if reply != "" {
+		if generation, _ := pairing_activation_generation(s,owner,a.provider); owner!="" && generation>0 {
+			bots_canonical_pairing_notice(s,a,update,owner,reply)
+		} else {
+			bots_notice(s,a.provider,update.external_chat_id,reply,owner)
+		}
+	}
 	if previous_chat != "" do bots_notice(s, a.provider, previous_chat, bots_channel_copy(a.provider).replaced, owner)
 	if bot_id != "" do bots_publish_changed(s, owner, bot_id)
 	return {}
@@ -96,7 +118,7 @@ bots_pairing_apply :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	binding, bound, binding_err := bots_find_binding(s, a.provider, update.external_chat_id, update.external_user_id)
 	defer domain.channel_binding_destroy(&binding)
 	if binding_err.code != .None do return "", "", "", "", binding_err
-	if bound && bots_legacy_guard(s, binding.owner_user_id).code != .None do return "", "", "", "", {}
+
 	if update.text == "" {
 		return "" if bound else copy.not_connected, "", "", "", {}
 	}
@@ -105,7 +127,9 @@ bots_pairing_apply :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	defer domain.channel_pairing_destroy(&pairing)
 	if get_err.code != .None do return "", "", "", "", get_err
 	if !found || pairing.provider != a.provider || pairing.consumed_at != "" || pairing.expires_at <= now do return copy.pair_invalid, "", "", "", {}
-	if bots_legacy_guard(s, pairing.owner_user_id).code != .None do return "", "", "", "", {}
+	generation, mode_err := pairing_activation_generation(s,pairing.owner_user_id,a.provider)
+	if mode_err.code==.Conflict do return "","","","",{}
+	if mode_err.code!=.None do return "","","","",mode_err
 	if !bots_gate_on(s.experiments, pairing.owner_user_id) do return COPY_PAIR_NOT_ENABLED, "", "", "", {}
 	// A code issued before the account lost WhatsApp access must not pair.
 	entitled, entitlement_err := bots_channel_entitled(s, a.provider, pairing.owner_user_id)
@@ -116,20 +140,36 @@ bots_pairing_apply :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	if bot_err.code != .None do return "", "", "", "", bot_err
 	if !bot_found do return COPY_PAIR_NO_BOT, "", "", "", {}
 	if bound && binding.owner_user_id != pairing.owner_user_id do return copy.chat_taken, "", "", "", {}
-	if bound {
+	if bound && generation==0 {
+		if bots_legacy_guard(s,binding.owner_user_id).code!=.None do return "","","","",{}
 		consumed, consume_err := iface.pairing_consume(s.repo, hash, now)
 		if consume_err.code != .None do return "", "", "", "", consume_err
 		return copy.paired if consumed else copy.pair_invalid, "", "", "", {}
 	}
-	previous, had_previous, activate_err := iface.binding_activate(s.repo, {
+	next := domain.Channel_Binding{
 		binding_id = platform.generate_id(s.ids, "chb_"), owner_user_id = pairing.owner_user_id, bot_id = bot.bot_id,
 		provider = a.provider, external_chat_id = update.external_chat_id, external_user_id = update.external_user_id,
 		external_display = update.sender_display, state = .Active, created_at = now,
 		last_inbound_at = update.provider_time if update.provider_time != "" else now,
-	}, hash, now)
+	}
+	previous: domain.Channel_Binding
+	had_previous: bool
+	activate_err: domain.Domain_Error
+	if generation>0 {
+		if !update.chat_is_private || update.external_chat_id=="" || update.external_user_id=="" ||
+		   (bound && binding.external_user_id!=update.external_user_id) {
+			return copy.pair_invalid,"","","",{}
+		}
+		// The fresh binding's unique ID distinguishes replacements in the same
+		// activation. No old binding is promoted and no history is imported.
+		previous,had_previous,activate_err=iface.bot_channel_conversion_binding_activate_fresh(s.repo,next,hash,now,generation,1,update.update_key)
+	} else {
+		previous,had_previous,activate_err=iface.binding_activate(s.repo,next,hash,now)
+	}
 	defer domain.channel_binding_destroy(&previous)
 	if activate_err.code == .Conflict do return copy.pair_invalid, "", "", "", {}
 	if activate_err.code != .None do return "", "", "", "", activate_err
+	if generation>0 do return copy.paired,"",strings.clone(pairing.owner_user_id),strings.clone(bot.bot_id),{}
 	if had_previous {
 		if e := bots_revoke_contents(s, previous, now); e.code != .None do return "", "", "", "", e
 	}
@@ -167,6 +207,9 @@ bots_disconnect_for_reason :: proc(s: ^Bots_Service, owner_user_id, provider: st
 	sync.mutex_lock(&s.mutex)
 	if fence := bots_legacy_guard(s, owner_user_id); fence.code != .None {
 		sync.mutex_unlock(&s.mutex)
+		if fence.code==.Conflict && canonical_channel_enabled(s,provider) {
+			return bots_disconnect_canonical_owner(s,owner_user_id,provider)
+		}
 		return fence
 	}
 	binding, found, err := bots_disconnect_locked(s, owner_user_id, provider, finish_reason)

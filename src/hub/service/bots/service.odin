@@ -14,10 +14,13 @@ import provider_service "odin_test:hub/service/provider"
 import project_service "odin_test:hub/service/project"
 import events "odin_test:hub/service/events"
 import channel "odin_test:hub/service/channel"
+import content "odin_test:hub/service/content"
 
 Bots_Service :: struct {
 	channel_vault_directory: ^iface.Vault_Directory_Repository,
 	channel_vault_exchange: Channel_Vault_Exchange,
+	canonical_telegram: bool,
+	canonical_content: ^content.Content_Service,
  placement: ^placement.Service,
 	ui_origin: string,
 	media_send_budget_ms, media_min_call_ms: i64,
@@ -46,6 +49,10 @@ Bots_Service :: struct {
 	last_waiting_recheck_ms: i64,
 	last_idle_check_ms, last_retention_ms: i64,
 	notices: [dynamic]Bot_Notice,
+}
+
+canonical_channel_enabled :: proc(s: ^Bots_Service, provider: string) -> bool {
+	return provider==domain.CHANNEL_PROVIDER_TELEGRAM && s.canonical_telegram
 }
 
 bots_adapter :: proc(s: ^Bots_Service, provider: string) -> ^channel.Channel_Adapter {
@@ -145,6 +152,29 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 	if fence := bots_legacy_guard(s, owner); fence.code != .None {
 		if fence.code != .Conflict do return "", fence
 		view.telegram.binding = json.Null(nil)
+		state, live, state_err := iface.bot_web_activation_get(s.repo,owner)
+		defer domain.bot_web_activation_destroy(&state)
+		if state_err.code!=.None do return "",state_err
+		if live && state.enabled && s.canonical_telegram && s.adapter!=nil {
+			view.telegram.configured=true
+			b, bound, bind_err := iface.binding_get_active_by_owner(s.repo,owner,"telegram")
+			defer domain.channel_binding_destroy(&b)
+			if bind_err.code!=.None do return "",bind_err
+			if bound {
+				grant, granted, grant_err := iface.bot_channel_conversion_binding_get(s.repo,b.binding_id)
+				if grant_err.code!=.None do return "",grant_err
+				if granted && grant.activation_generation==state.generation {
+					obj := make(json.Object,context.temp_allocator)
+					obj["state"]="active"
+					obj["display"]=b.external_display
+					obj["connected_at"]=b.created_at
+					view.telegram.binding=obj
+				}
+			}
+			view.whatsapp.binding=json.Null(nil)
+			view.whatsapp.held_replies=make([]Bot_Held_Reply_View,0,context.temp_allocator)
+			return bots_encode_view(view)
+		}
 		view.whatsapp.binding = json.Null(nil)
 		view.whatsapp.held_replies = make([]Bot_Held_Reply_View, 0, context.temp_allocator)
 		return bots_encode_view(view)

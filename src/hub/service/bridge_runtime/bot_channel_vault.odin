@@ -50,7 +50,7 @@ exchange_bot_channel_vault :: proc(registry: ^project.Bridge_Runtime_Registry, g
 exchange_bot_channel_vault_for :: proc(registry: ^project.Bridge_Runtime_Registry, generation: int, request: contracts.Bot_Channel_Vault_Request, budget: i64) -> (contracts.Bot_Channel_Vault_Result, bool) {
 	now := project.bridge_runtime_wall_ms()
 	if registry == nil || generation <= 0 || request.owner_user_id == "" || budget <= 0 || budget > contracts.BOT_CHANNEL_VAULT_MAX_AGE_MS do return {}, false
-	limit := contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT if request.operation == "seal" else contracts.BOT_CHANNEL_VAULT_MAX_TOKEN if request.operation == "open" else 0
+	limit := contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT if contracts.bot_channel_vault_seals(request.operation) else contracts.BOT_CHANNEL_VAULT_MAX_TOKEN if request.operation == "open" else 0
 	if len(request.body) == 0 || len(request.body) > limit do return {}, false
 	c := project.bridge_runtime_connection_acquire(registry, request.bridge_id, generation)
 	if c == nil do return {}, false
@@ -150,7 +150,7 @@ complete_bot_channel_vault :: proc(registry: ^project.Bridge_Runtime_Registry, b
 		a := runtime.default_allocator()
 		out: []byte
 		if status == "ok" {
-			limit := contracts.BOT_CHANNEL_VAULT_MAX_TOKEN if pending.operation == "seal" else contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT
+			limit := contracts.BOT_CHANNEL_VAULT_MAX_TOKEN if contracts.bot_channel_vault_seals(pending.operation) else contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT
 			if len(reply.body) == 0 || len(reply.body) > ((limit+2)/3)*4 do return false
 			decoded, err := base64.decode(reply.body, allocator = a)
 			out = decoded
@@ -160,7 +160,7 @@ complete_bot_channel_vault :: proc(registry: ^project.Bridge_Runtime_Registry, b
 				return false
 			}
 		}
-		operation := "seal" if pending.operation == "seal" else "open"
+		operation := strings.clone(pending.operation,a)
 		pending.result = {
 			type = contracts.BOT_CHANNEL_VAULT_RESULT_FRAME, request_id = strings.clone(reply.request_id, a),
 			operation = operation, scope_digest = strings.clone(reply.scope_digest, a), status = status, body = string(out),
