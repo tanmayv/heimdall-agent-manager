@@ -270,10 +270,16 @@ mark_messages_read_at :: proc(s:^Content_Service, owner:domain.User_ID, ids:[]st
  return n,{}
 }
 send_message :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,input:Message_Input)->(domain.Chat_Message,bool,domain.Domain_Error) {
+ m,_,ok,err:=send_message_delivered(s,auth,cid,input)
+ return m,ok,err
+}
+// send_message_delivered stores a user message and reports its delivery
+// result (D5): a stored message to an agent that is not running is pending.
+send_message_delivered :: proc(s:^Content_Service, auth:contracts.Auth_Context,cid:string,input:Message_Input)->(domain.Chat_Message,Message_Delivery,bool,domain.Domain_Error) {
  m,ok,err:=persist_user_message(s,auth,cid,input)
- if !ok do return {},false,err
- _,_=deliver_user_message(s,auth,cid,m)
- return m,true,{}
+ if !ok do return {},{},false,err
+ delivery,_:=deliver_user_message(s,auth,cid,m)
+ return m,delivery,true,{}
 }
 send_agent_message :: proc(s:^Content_Service, auth:contracts.Auth_Context, instance_id:string, input:Message_Input)->(domain.Chat_Message,bool,domain.Domain_Error){
 	return send_agent_message_with_id(s, auth, instance_id, input, platform.generate_id(s.ids, "msg_"))

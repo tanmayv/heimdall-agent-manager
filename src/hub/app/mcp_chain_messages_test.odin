@@ -126,7 +126,10 @@ mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Han
 	first:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.message",args));if first==nil do return
 	testing.expect_value(t,activity.calls,1)
 	testing.expect(t,activity.coordinator_hits==1,"the reset names the chain coordinator")
-	testing.expect(t,first["coordinator_agent_instance_id"].(json.String)=="inst_message_a" && first["conversation_id"].(json.String)=="chat_message_a" && first["status"].(json.String)=="accepted")
+	testing.expect(t,first["coordinator_agent_instance_id"].(json.String)=="inst_message_a" && first["conversation_id"].(json.String)=="chat_message_a")
+	// D5: accepted only when the coordinator was already running and notified;
+	// a coordinator this call had to launch makes the message pending.
+	testing.expect(t,first["status"].(json.String)==("accepted" if len(sink.commands)==1 else "pending"))
 	rows,_:=iface.content_list_messages(&g.repos.content,"chat_message_a",owner,100,"")
 	if !testing.expect(t,len(rows)==1) do return
 	testing.expect(t,rows[0].direction=="user_to_agent" && rows[0].message_type=="text" && strings.has_prefix(rows[0].body,"vault:v2:") && !strings.contains(rows[0].metadata_json,"Private"))
@@ -163,11 +166,13 @@ mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Han
 	inst,_,_:=iface.agent_get_instance(&g.repos.agents,"inst_message_b");inst.runtime_status="stopped";_,_,_=iface.agent_save_instance(&g.repos.agents,inst)
 	args["request_id"]=json.String("message_stopped")
 	stopped:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.message",args));if stopped==nil do return
-	testing.expect(t,stopped["status"].(json.String)=="accepted" && len(sink.commands)>=3 && !sink.inside_transaction)
-	// Runtime send failure remains accepted with saved IDs and no duplicate retry.
+	// D5: the message to the stopped coordinator is stored and pending until
+	// the restarted process is ready; it is never reported accepted.
+	testing.expect(t,stopped["status"].(json.String)=="pending" && stopped["delivery_warning"].(json.String)=="agent_starting" && len(sink.commands)>=3 && !sink.inside_transaction)
+	// A runtime send failure stays pending with saved IDs and no duplicate retry.
 	sink.fail=true;args["request_id"]=json.String("message_offline")
 	offline:=mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.message",args));if offline==nil do return
-	testing.expect(t,offline["delivery_warning"].(json.String)=="bridge_offline" && offline["message_id"]!=nil)
+	testing.expect(t,offline["status"].(json.String)=="pending" && offline["delivery_warning"].(json.String)=="bridge_offline" && offline["message_id"]!=nil)
 	count:=len(sink.commands);mcp_task_test_output(t,mcp_task_test_call(h,headers,"chains.message",args));testing.expect(t,len(sink.commands)==count)
 	if view.mode=="device" do testing.expect(t,worker.verified>0)
 	// Concurrent identical retries share the native UOW and persist/deliver once.

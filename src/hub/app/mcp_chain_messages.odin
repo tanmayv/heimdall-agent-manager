@@ -45,7 +45,9 @@ mcp_send_chain_message :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,chain_
 	metadata,_:=json.marshal(struct {source,delegated_client_id,delegated_grant_id:string}{"mcp",view.client,view.grant},allocator=context.temp_allocator)
 	m,saved,merr:=content.persist_user_message(&g.content,principal,c.conversation_id,{body=body,message_type="text",metadata_json=string(metadata)})
 	if !saved || merr.code!=.None do return "",mcp_task_error(merr)
-	result:=MCP_Message_Result{chain_id=chain_id,coordinator_agent_instance_id=instance_id,conversation_id=c.conversation_id,message_id=m.message_id,status="accepted"}
+	// The stored receipt records persistence only: a replay says "pending",
+	// never that a later delivery succeeded (D5).
+	result:=MCP_Message_Result{chain_id=chain_id,coordinator_agent_instance_id=instance_id,conversation_id=c.conversation_id,message_id=m.message_id,status="pending"}
 	encoded,eerr:=json.marshal(result,allocator=context.temp_allocator)
 	if eerr!=nil do return "","request_failed"
 	if e:=sqlite.mcp_receipt_put(&g.db,view.owner,view.grant,"chains.message",request_id,digest,m.message_id,string(encoded));e.code!=.None do return "","request_failed"
@@ -55,11 +57,16 @@ mcp_send_chain_message :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,chain_
 	// changes accepted persistence into an error that encourages duplicate sends.
 	http.publish_user_message_created(&g.content_handlers,principal,c.conversation_id,m)
 	restarted,restart_err:=http.restart_stopped_conversation_instance(&g.content_handlers,principal,c.conversation_id,.Chain_Message)
-	delivered,delivery_err:=content.deliver_user_message(&g.content,principal,c.conversation_id,m)
-	if !restarted || !delivered {
-		result.delivery_warning="delivery_unavailable"
-		if restart_err.code==.Bridge_Offline || delivery_err.code==.Bridge_Offline do result.delivery_warning="bridge_offline"
+	delivery,delivery_err:=content.deliver_user_message(&g.content,principal,c.conversation_id,m)
+	// The delivery result is the message's status (D5): accepted only when
+	// the running coordinator was notified; otherwise pending with a reason.
+	result.status=content.message_delivery_state_wire(delivery.state)
+	result.delivery_warning=delivery.reason
+	if !restarted {
+		result.status=content.message_delivery_state_wire(.Pending)
+		result.delivery_warning="agent_start_failed"
 	}
+	if restart_err.code==.Bridge_Offline || delivery_err.code==.Bridge_Offline do result.delivery_warning="bridge_offline"
 	encoded,_=json.marshal(result,allocator=context.temp_allocator)
 	return string(encoded),""
 }
