@@ -323,8 +323,9 @@ hook_mapped_bounded :: proc(out: Hook_Mapped) -> (Hook_Mapped, Hook_Error) {
 //     resolves (against the hook's cwd) to ctl_bin. A bare `ham-ctl` goes through
 //     PATH and never matches; nothing matches when ctl_bin is unknown.
 //   - Shape: no chaining, pipe, background, subshell, substitution, redirect,
-//     brace or newline, and no `$` after the program, so `ham-ctl x && rm -rf ~`
-//     never matches.
+//     brace or newline, no `$` after the program and no unquoted glob
+//     (ham_ctl_has_unquoted_glob), so `ham-ctl x && rm -rf ~` never matches and
+//     the shell cannot expand a word into a flag.
 //   - Verb: HAM_CTL_AUTO_APPROVE_VERBS only. `shell run|serve` (arbitrary command
 //     execution through the hub) and anything that reconfigures agents, bridges or
 //     fleets (hub, agents, bridge, task-chain, ...) always ask.
@@ -344,6 +345,7 @@ is_ham_ctl_command :: proc(command, ctl_bin, cwd: string) -> bool {
 		if strings.contains_rune(f, '$') do return false
 	}
 	if !ham_ctl_head_is_ctl_bin(head, ctl_bin, cwd) do return false
+	if ham_ctl_has_unquoted_glob(cmd) do return false
 	if ham_ctl_args_override_connection(fields[1:]) do return false
 	group := fields[1]
 	verb := fields[2] if len(fields) > 2 else ""
@@ -404,8 +406,8 @@ HAM_CTL_CONNECTION_FLAGS :: [?]string{
 }
 
 // ham_ctl_args_override_connection: bash strips quotes and backslashes before
-// ham-ctl sees argv, so each word is unquoted before comparing; a glob in a
-// flag-like word could expand to one of the flags, so it fails safe too.
+// ham-ctl sees argv, so each word is unquoted before comparing. Globs never
+// reach here (ham_ctl_has_unquoted_glob rejects them first).
 @(private = "file")
 ham_ctl_args_override_connection :: proc(args: []string) -> bool {
 	for f in args {
@@ -413,10 +415,46 @@ ham_ctl_args_override_connection :: proc(args: []string) -> bool {
 		word, _ = strings.remove_all(word, "\"", context.temp_allocator)
 		word, _ = strings.remove_all(word, "\\", context.temp_allocator)
 		if !strings.has_prefix(word, "--") do continue
-		if strings.contains_any(word, "*?[") do return true
 		name := word
 		if eq := strings.index_byte(word, '='); eq >= 0 do name = word[:eq]
 		for flag in HAM_CTL_CONNECTION_FLAGS do if name == flag do return true
 	}
 	return false
+}
+
+// ham_ctl_has_unquoted_glob: bash expands an unquoted `*`, `?` or `[` in ANY
+// word against the cwd's file names before ham-ctl runs, so `chat read
+// ?-bridge-endpoint tcp:evil:1` can become `--bridge-endpoint tcp:evil:1` and
+// the argv ham-ctl sees is unknowable. The scan tracks bash quoting: inside
+// '...' or "..." and after a backslash the characters are literal (a message
+// body may say 'done?'). An unterminated quote or a trailing backslash fails
+// safe, like a glob.
+@(private = "file")
+ham_ctl_has_unquoted_glob :: proc(cmd: string) -> bool {
+	quote: u8
+	escaped := false
+	for i in 0 ..< len(cmd) {
+		c := cmd[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch quote {
+		case '\'':
+			if c == '\'' do quote = 0
+		case '"':
+			if c == '\\' do escaped = true
+			else if c == '"' do quote = 0
+		case:
+			switch c {
+			case '\\':
+				escaped = true
+			case '\'', '"':
+				quote = c
+			case '*', '?', '[':
+				return true
+			}
+		}
+	}
+	return quote != 0 || escaped
 }

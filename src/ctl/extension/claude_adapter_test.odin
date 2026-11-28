@@ -525,6 +525,10 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 		BIN + " extension status",
 		BIN + " task comment task_1 --body done",
 		BIN + " chat send --to user --body \"looks good\"",
+		// Quoted or escaped glob characters are literal: no expansion.
+		BIN + " chat send --to user --body 'done? see [1] and *.odin'",
+		BIN + " chat send --to user --body \"ready?\"",
+		BIN + " chat send --to user --body why\\?",
 	}) {
 		testing.expectf(t, is_ham_ctl_command(cmd, BIN, CWD), "should match: %q", cmd)
 	}
@@ -560,6 +564,17 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 		BIN + " chat read \\--agent-token hlat_x",
 		BIN + " chat read --agent-tok?n hlat_x",
 		BIN + " task show t --hub-url http://e",
+		// Unquoted globs: the shell may expand any word into a flag (B2).
+		BIN + " chat read *",
+		BIN + " chat read ?-bridge-endpoint tcp:evil:1",
+		BIN + " chat read [-]-bridge-endpoint tcp:evil:1",
+		BIN + " task show task_*",
+		BIN + " chat send --to user --body done?",
+		BIN + " chat send --to user --body 'it'\\''s' x*",
+		BIN + " chat send --to user --body \"a\\\"b\" ?",
+		// An unterminated quote or trailing backslash fails safe.
+		BIN + " chat send --to user --body 'unterminated",
+		BIN + " chat send --to user --body x\\",
 		BIN + " verify --config /tmp/c.toml",
 		// The removed verify stub is no longer allowlisted.
 		BIN + " verify",
