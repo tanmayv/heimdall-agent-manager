@@ -114,18 +114,14 @@ acp_chat_recover_journal :: proc(path:string) -> bool {
     if len(r.chat.d.outbox)==0 do return false
     acp_runtime_replace(&saved.chat_outbox_json,acp_event_json(r.chat.d))
     if !acp_state_write(path,&saved) do return false
-    // The Hub's route-specific stale-epoch gate permits only already-bound failed
-    // turns. Local agent credentials are never forwarded to the Hub.
+    // The Hub acknowledges stale-epoch segments without relaying them (G12),
+    // which drains this outbox. Local agent credentials are never forwarded.
     rec.instance_token=strings.concatenate({"hit_",saved.instance,"~",saved.launch_epoch})
     defer delete(rec.instance_token)
     for len(r.chat.d.outbox)>0 {
         entry:=r.chat.d.outbox[0]
         outcome:=acp_chat_publish_entry(acp_event_json(entry),rec)
-        success:=outcome==.Saved
-        // A terminal row from an uncertain earlier completion already satisfies
-        // finalization. It must never be changed back to failed/pending.
-        terminal_conflict:=outcome==.Terminal
-        if !success && !terminal_conflict {
+        if outcome!=.Saved {
             if outcome==.Rejected {
                 r.chat.d.publication_failed=true
                 acp_runtime_replace(&saved.chat_outbox_json,acp_event_json(r.chat.d))

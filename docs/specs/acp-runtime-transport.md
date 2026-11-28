@@ -1,6 +1,6 @@
 # Per-profile runtime transport and Claude ACP MVP
 
-This specification adds ACP (Agent Client Protocol) beside PTY execution. The Hub selects a transport per provider profile per bridge (per provider until R3, below); `ham-pty-host` owns either the existing PTY child or a new child with pipes. The Bridge drives ACP v1, translates events into existing Heimdall surfaces, and streams natural assistant text into durable chat. Coordination remains `./bin/ham-ctl`. Claude keeps `pty` as its catalog default until the real-device acceptance passes.
+This specification adds ACP (Agent Client Protocol) beside PTY execution. The Hub selects a transport per provider profile per bridge (per provider until R3, below); `ham-pty-host` owns either the existing PTY child or a new child with pipes. The Bridge drives ACP v1, translates events into existing Heimdall surfaces, and streams natural assistant text, thoughts and plans live to the UI (G12: streamed, not stored; see the assistant-message section). Coordination remains `./bin/ham-ctl`. Claude keeps `pty` as its catalog default until the real-device acceptance passes.
 
 Status: implementation specification, 2026-11-18. Approved inputs: [plan](artifact://art_18e9124cfc75a9c2), [comparison](artifact://art_18e8badae3e44864), and subsequent chain decisions. Those decisions supersede the plan's deferrals of piped hosting, streaming, adapter status, and login fallback. This document specifies proposed changes; it does not assert they already exist. Existing-source references were read at `7ccd2d909c34e2c6c0d985adeba40d2a4e06442f`; paths and line numbers below are relative to that repository revision.
 
@@ -524,6 +524,8 @@ Persist the input row ID in a FIFO before marking it consumed; completion bookke
 
 ### 9.2 New agent action
 
+> **Superseded by G12 (2026-11-28): agent output is streamed, not stored.** `assistant-message` now only validates a segment and relays it to the owner's UI sockets as a transient `agent_output` / `assistant_segment` event (`kind` text | thought | plan). The Hub writes no chat row, unread count, preview or `acp_assistant_turns` row (the table stays, unused, so earlier rows survive), and a stale-epoch segment is acknowledged without relay. An agent's reply is what it sends with `chat send`, on every transport; losing the stream on reload is accepted. The original design below is kept for history.
+
 Add `POST /api/v1/agent-actions/chat/assistant-message` through the existing instance-action auth envelope and Bridge `httpc` request path. New content service operation `upsert_assistant_message(auth,instance_id,input)` uses a unit of work. Caller is the ACP driver; the model need not invoke ham-ctl chat send. Existing explicit chat send remains available for action cards/questions and other structured control messages.
 
 ```json
@@ -617,6 +619,8 @@ Instance API/state adds `runtime_transport` from the frozen launch snapshot. Add
 The ACP placeholder offers Interrupt (`agent-acp-interrupt-<instance>`); Esc/Ctrl+C while the pane is focused uses the existing pane-input request with Ctrl+C, dispatched by the Bridge to the ACP driver. Stop/restart remain in the existing instance controls. Authentication blockers disable interrupt and show only the bridge-host login instruction.
 
 Required MVP debug IDs: `providers-runtime-select-<provider>`, `providers-runtime-reset-<provider>`, `providers-acp-install-<provider>`, `providers-acp-status-<provider>`, `agent-acp-runtime-placeholder-<instance>`. Check status uses `providers-acp-check-<provider>`. The login-workflow IDs `agent-acp-login-open-<instance>`, `agent-acp-login-retry-<instance>`, `agent-acp-login-cancel-<instance>` are deferred. Preserve keyboard labels, disabled reasons and mobile layout.
+
+> **Superseded by G12:** there is no ACP bootstrap rewrite. Every transport gets the same bootstrap, including the rule to reply with `./bin/ham-ctl chat send`; ACP prompts also name the `chat send` target.
 
 Bootstrap rendering gets an effective_transport argument. For ACP, replace the user-chat instruction with: messages and answers arrive in session prompts; natural assistant text reaches user chat; use ham-ctl for task/lease/artifact/shell/memory and structured questions/actions. Do not require an ACP assistant to echo every answer with chat send. Keep `./bin/ham-ctl`, token env, TASK.md, MEMORY.md, skills and the canonical Claude bootstrap file. The first prompt remains the starter text. Test auto-load using a unique harmless marker in CLAUDE.md. If the exact adapter does not load it, set a Bridge adapter-version capability `bootstrap_resource_required=true` and add an embedded resource to the first prompt (only when initialize advertises embeddedContext):
 

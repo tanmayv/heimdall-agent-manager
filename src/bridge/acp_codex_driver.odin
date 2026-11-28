@@ -394,8 +394,9 @@ acp_codex_notification :: proc(r: ^ACP_Runtime,method,params: string) {
         acp_events_tool(r,update)
     case "item/reasoning/summaryTextDelta","item/reasoning/textDelta":
         bridge_runtime_note_agent_activity(r.instance,"active","acp")
+        acp_chat_thought(r,acp_event_string(obj,"delta"))
     case "turn/plan/updated":
-        if len(params)<=64*1024 do acp_runtime_replace(&r.d.plan_json,params)
+        if len(params)<=64*1024 { acp_runtime_replace(&r.d.plan_json,params); acp_chat_plan(r,params) }
     case "error":
         retry,typed := obj["willRetry"].(json.Boolean)
         if typed && bool(retry) do bridge_runtime_note_agent_activity(r.instance,"active","acp")

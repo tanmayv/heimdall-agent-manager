@@ -12,7 +12,9 @@ ACP_Chat_Input_Fetch :: struct {
     limit: int,
 }
 
-// A revision always replaces the entire sealed body. Retries must reuse the
+// One live ACP assistant segment (G12: streamed, not stored). The Hub relays it
+// to the owner's UI as an `agent_output` event and never persists it. A
+// revision always replaces the entire sealed body. Retries must reuse the
 // original ciphertext, since sealing the same text again changes its nonce.
 ACP_Assistant_Message_Input :: struct {
     launch_epoch, turn_id, message_id: string,

@@ -2,7 +2,6 @@ package http
 
 import "core:encoding/json"
 import "core:strings"
-import "core:fmt"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -52,6 +51,11 @@ agent_action_chat_assistant_message_handler :: proc(ctx: rawptr, req: Request) -
         }
     }
     input := contracts.ACP_Assistant_Message_Input{launch_epoch=json_string(raw,"launch_epoch"),turn_id=json_string(raw,"turn_id"),message_id=json_string(raw,"message_id"),revision=i64(revision),body=json_string(raw,"body"),message_status=json_string(raw,"message_status"),stop_reason=json_string(raw,"stop_reason")}
+    if value, present := obj["kind"]; present {
+        kind, text := value.(json.String)
+        if _, null := value.(json.Null); !text && !null do return respond_error(domain.domain_error(.Validation_Failed,"kind must be a string"),req.request_id)
+        input.kind = string(kind)
+    }
     if value, present := obj["input_ids"]; present {
         if _, null := value.(json.Null); !null {
             ids, array := value.(json.Array)
@@ -66,30 +70,16 @@ agent_action_chat_assistant_message_handler :: proc(ctx: rawptr, req: Request) -
         }
     }
     if input.launch_epoch != identity.asserted_epoch do return respond_error(domain.domain_error(.Forbidden,"bridge instance assertion token is invalid"),req.request_id)
-    if identity.stale {
-        if input.message_status != "failed" do return respond_error(domain.domain_error(.Forbidden,"bridge instance assertion token is invalid"),req.request_id)
-        turn,bound,err := iface.content_get_assistant_turn(h.content.content,inst.agent_instance_id,identity.asserted_epoch,input.turn_id)
-        if !bound || err.code != .None || turn.message_id != input.message_id do return respond_error(domain.domain_error(.Forbidden,"bridge instance assertion token is invalid"),req.request_id)
-    }
     auth := contracts.Auth_Context{kind=.Instance_Token,user_id=string(inst.owner_user_id),bridge_id=inst.bridge_id,agent_instance_id=inst.agent_instance_id}
-    result, saved, err := content.upsert_assistant_message(h.content,auth,inst.agent_instance_id,input)
-    if !saved do return respond_error(err,req.request_id)
-    if identity.stale && result.changed do fmt.println("ACP stale turn finalized",inst.agent_instance_id,identity.asserted_epoch,inst.launch_epoch,input.turn_id)
-    if result.changed && h.event_bus != nil {
-        event, _ := json.marshal(struct {
-            type, event, message_id, conversation_id, agent_instance_id, direction, message_type, message_status: string,
-            revision: i64,
-            fetch_required: bool,
-            fetch_kind, fetch_id: string,
-        }{"chat_event","chat_updated",result.message.message_id,result.message.conversation_id,inst.agent_instance_id,"agent_to_user","text",result.message.message_status,result.revision,true,"chat_message",result.message.message_id},allocator=context.temp_allocator)
-        events.publish_owned(h.event_bus,string(inst.owner_user_id),string(event))
-    }
-    b := strings.builder_make(allocator=context.temp_allocator)
-    strings.write_string(&b,`{"message":`)
-    write_message_json(&b,result.message,h.content)
-    revision_json, _ := json.marshal(result.revision, allocator=context.temp_allocator)
-    strings.write_string(&b,`,"revision":`); strings.write_string(&b,string(revision_json)); strings.write_byte(&b,'}')
-    return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201 if result.created else 200)
+    // G12: streamed, not stored. The segment goes to the owner's UI sockets
+    // and nowhere else; a segment from a replaced launch is acknowledged so the
+    // bridge drops it, but it is not relayed.
+    relay, accepted, err := content.relay_assistant_segment(h.content,auth,inst.agent_instance_id,input)
+    if !accepted do return respond_error(err,req.request_id)
+    relayed := relay.event_json != ""
+    if relayed && h.event_bus != nil do events.publish_raw_to_user(h.event_bus,relay.owner_user_id,relay.event_json)
+    body, _ := json.marshal(struct{relayed:bool,persisted:bool}{relayed,false},allocator=context.temp_allocator)
+    return respond_success(string(body),req.request_id,auth_ctx_server_time(req),200)
 }
 
 // Validate the entire batch before marking anything. No target/filter field is

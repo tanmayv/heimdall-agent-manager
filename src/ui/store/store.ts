@@ -19,6 +19,7 @@ import attentionReducer from './attentionSlice';
 import toastReducer from './toastSlice';
 import notificationsReducer from './notificationsSlice';
 import agentActivityReducer from './agentActivitySlice';
+import agentOutputReducer from './agentOutputSlice';
 import toolActivityReducer from './toolActivitySlice';
 import cardsReducer from './cardsSlice';
 import themeReducer from './themeSlice';
@@ -61,6 +62,8 @@ const appReducer = combineReducers({
   // of client state on user switch via the priorUserClientStateCleared handling
   // in rootReducer below.
   agentActivity: agentActivityReducer,
+  // G12: streamed agent output, UI memory only (never persisted, gone on reload).
+  agentOutput: agentOutputReducer,
   toolActivity: toolActivityReducer,
   [heimdallApi.reducerPath]: heimdallApi.reducer,
 });

@@ -177,7 +177,7 @@ t5_acp_corrupt_tool_restore_reports_protocol_error :: proc(t:^testing.T) {
 t5_buffer_growths:int
 t5_publish_status:int
 t5_publish_relay :: proc(path:[]string,method,params:string,rec:Bridge_Local_Agent_Token_Record,timeout_ms:int) -> Bridge_Local_Relay_Result {
-    return {ok=t5_publish_status==200,status=t5_publish_status,body=strings.clone(`{"error":{"message":"assistant terminal status is immutable"}}`)}
+    return {ok=t5_publish_status==200,status=t5_publish_status,body=strings.clone(`{"error":{"message":"rejected"}}`)}
 }
 
 @(test)
@@ -199,12 +199,14 @@ t5_acp_small_chunks_use_growing_wiped_buffer_and_publish_errors_are_bounded :: p
     testing.expect_value(t,acp_chat_publish(f.r.chat),ACP_Chat_Publication_Result.Retry)
     testing.expect_value(t,len(f.r.chat.d.outbox),1)
     // A newer coalesced terminal revision may arrive while the old HTTP request
-    // is in flight. Terminal conflict settles the message regardless of revision.
+    // is in flight. The old revision's receipt cannot drop the newer one.
     t5_fixture_command(&f,"finish")
-    t5_publish_status=409
-    testing.expect_value(t,acp_chat_publish(f.r.chat),ACP_Chat_Publication_Result.Terminal)
+    t5_publish_status=200
+    testing.expect_value(t,acp_chat_publish(f.r.chat),ACP_Chat_Publication_Result.Saved)
+    testing.expect_value(t,len(f.r.chat.d.outbox),1)
+    t4_runtime_call(&f,"chat_tick")
+    testing.expect_value(t,acp_chat_publish(f.r.chat),ACP_Chat_Publication_Result.Saved)
     testing.expect_value(t,len(f.r.chat.d.outbox),0)
-    testing.expect(t,f.r.chat.d.remote_terminal)
     t5_fixture_command(&f,"start")
     testing.expect_value(t,f.r.chat.d.text,"")
     for b in raw_data(f.r.chat.text_buffer)[:cap(f.r.chat.text_buffer)] do testing.expect_value(t,b,byte(0))

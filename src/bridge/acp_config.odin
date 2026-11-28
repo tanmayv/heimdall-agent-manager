@@ -71,26 +71,3 @@ acp_model_options :: proc(result: json.Object, category: string, models: ^[dynam
     }
     return "success" if count == 1 && len(models) > 0 else "unsupported"
 }
-
-acp_bootstrap_communication :: "Messages and answers arrive in session prompts. Your natural assistant text reaches user chat automatically. Use `./bin/ham-ctl` for task, lease, artifact, shell, memory, agent-to-agent communication, and structured questions/actions. Do not echo ordinary answers with chat send."
-
-// The PTY communication paragraph in src/prompts/bootstrap_agents.md starts with
-// this line and ends at the next blank line. Matching on the start marker (not the
-// whole paragraph text) survives rewording of the paragraph; the real-frame test
-// t7_acp_bootstrap_real_frame_drops_pty_reply_rule fails if the marker drifts.
-acp_bootstrap_communication_marker :: "Messages from the user arrive through Heimdall"
-
-bridge_bootstrap_acp_instructions :: proc(body: string) -> string {
-    rendered := body
-    allocated := false
-    if start := strings.index(body, acp_bootstrap_communication_marker); start >= 0 {
-        end := len(body)
-        if gap := strings.index(body[start:], "\n\n"); gap >= 0 do end = start + gap
-        rendered = strings.concatenate({body[:start], acp_bootstrap_communication, body[end:]})
-        allocated = true
-    }
-    defer if allocated do delete(rendered)
-    // This marker identifies the exact locally generated bootstrap used by the
-    // conservative embedded-resource fallback for adapter 0.108.0.
-    return strings.concatenate({rendered, "\n\n<!-- heimdall-acp-bootstrap-v1 -->\n", acp_bootstrap_communication, "\n"})
-}

@@ -40,8 +40,6 @@ Content_Conversation_By_Instance_Proc :: proc(ctx: rawptr, owner_user_id: domain
 Content_Repository :: struct {
 	conversation_by_instance: Content_Conversation_By_Instance_Proc,
  action_conversation: proc(ctx:rawptr,owner:domain.User_ID,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error),
-	get_assistant_turn: Content_Get_Assistant_Turn_Proc,
-	save_assistant_turn: Content_Save_Assistant_Turn_Proc,
 	get_input_delivery: Content_Get_Input_Delivery_Proc,
 	save_input_delivery: Content_Save_Input_Delivery_Proc,
 	list_open_input_deliveries: Content_List_Open_Input_Deliveries_Proc,

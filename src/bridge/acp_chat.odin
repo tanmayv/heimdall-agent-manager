@@ -23,7 +23,7 @@ ACP_Chat_Durable :: struct {
     revision: i64,
     flushed_bytes: int,
     session_announced: bool,
-    remote_terminal,publication_failed:bool,
+    publication_failed:bool,
     segment_index, turn_bytes: int,
     split_pending: bool,
     deferred_text: string,
@@ -31,6 +31,11 @@ ACP_Chat_Durable :: struct {
     // User inputs the current segment answers; next_input_ids apply to the
     // segment opened after an injected steer.
     input_ids, next_input_ids: [dynamic]string,
+    // G12: the turn's streamed thoughts (bounded tail) and latest plan. Like
+    // the text, they reach the Hub only to be relayed live to the UI.
+    thought_text, plan_text: string,
+    thought_revision, plan_revision: i64,
+    thought_dirty, plan_dirty: bool,
 }
 ACP_Chat :: struct {
     r: ^ACP_Runtime,
@@ -43,6 +48,7 @@ ACP_Chat :: struct {
     // This exchange is owned by worker -> dispatcher -> worker in acp_rpc_call.
     publication: string,
     retry_after: i64,
+    last_aux_flush: i64,
     // Worker-owned failure retry state; fetch itself is an atomic edge latch.
     input_retry_after, input_retry_delay: i64,
     vault_blocked: bool,
@@ -191,11 +197,12 @@ acp_chat_prompt_started :: proc(r:^ACP_Runtime,input_id:string) {
     acp_runtime_replace(&d.turn_id,fmt.tprintf("ham:%s:%d",r.epoch,r.client.state.next_rpc_id))
     d.segment_index=0;d.turn_bytes=0;d.split_pending=false
     acp_chat_message_id(r)
-    acp_chat_reset_text(r.chat);d.remote_terminal=false
+    acp_chat_reset_text(r.chat)
     acp_runtime_replace(&d.flushed_status,""); acp_runtime_replace(&d.status,"pending"); acp_runtime_replace(&d.stop_reason,"")
     d.revision=0;d.flushed_bytes=0;r.chat.last_flush=0
     acp_chat_ids_replace(&d.input_ids,acp_delivery_members(r,input_id))
     acp_chat_ids_replace(&d.next_input_ids,nil)
+    acp_chat_aux_reset(d)
     // Same checkpoint as the outgoing prompt RPC; ahead of any assistant text.
     acp_delivery_prompt_started(r,input_id,d.turn_id)
 }
@@ -219,8 +226,8 @@ acp_chat_boundary :: proc(r:^ACP_Runtime) {
     if r.chat==nil || r.d.replay_only do return
     d:=&r.chat.d
     // Wait for nonempty continuation before terminalizing the previous row.
-    // A tool-only ending must still put the real stop reason on the last row,
-    // whose terminal status the Hub makes immutable.
+    // A tool-only ending must still put the real stop reason on the last
+    // segment, which the UI uses to close the live block.
     if d.status=="pending" && d.text!="" do d.split_pending=true
 }
 
@@ -230,7 +237,7 @@ acp_chat_continue :: proc(r:^ACP_Runtime,text:string) -> bool {
         acp_runtime_replace(&d.status,"complete")
         if !acp_chat_flush(r,true,checkpoint=false) { acp_runtime_replace(&d.status,"pending");return false }
         d.segment_index+=1;acp_chat_message_id(r)
-        acp_chat_reset_text(chat);d.remote_terminal=false;d.split_pending=false
+        acp_chat_reset_text(chat);d.split_pending=false
         d.revision=0;d.flushed_bytes=0;chat.last_flush=0
         acp_runtime_replace(&d.flushed_status,"");acp_runtime_replace(&d.status,"pending")
         if len(d.next_input_ids)>0 { acp_chat_ids_replace(&d.input_ids,d.next_input_ids[:]); acp_chat_ids_replace(&d.next_input_ids,nil) }
@@ -258,7 +265,7 @@ acp_chat_resume_deferred :: proc(r:^ACP_Runtime) -> bool {
 
 acp_chat_chunk :: proc(r:^ACP_Runtime,text:string) {
     if !r.d.replay_only && text!="" do bridge_runtime_emit(r.instance,.Turn_Output)
-    if r.chat==nil || r.d.replay_only || r.chat.d.status!="pending" || r.chat.d.remote_terminal || r.chat.d.publication_failed || text=="" do return
+    if r.chat==nil || r.d.replay_only || r.chat.d.status!="pending" || r.chat.d.publication_failed || text=="" do return
     d:=&r.chat.d
     if d.turn_bytes+len(text)>contracts.ACP_ASSISTANT_MAX_BYTES {
         // Keep the last valid partial snapshot; an oversized turn never succeeds.
@@ -284,6 +291,7 @@ acp_chat_prompt_finished :: proc(r:^ACP_Runtime,input_id,result,error:string) {
         if error!="" do reason=error
         acp_runtime_replace(&d.stop_reason,reason)
     }
+    acp_chat_aux_flush(r,true)
     acp_chat_flush(r,true)
 }
 
@@ -291,7 +299,7 @@ acp_chat_flush :: proc(r:^ACP_Runtime,final:bool,checkpoint:=true) -> bool {
     chat:=r.chat; if chat==nil do return true
     if chat.d.deferred_text!="" do return false
     d:=&chat.d
-    if d.text=="" || d.turn_id=="" || d.remote_terminal || d.publication_failed do return true
+    if d.text=="" || d.turn_id=="" || d.publication_failed do return true
     now:=bridge_runtime_now_ms()
     if !final && d.status==d.flushed_status && (len(d.text)==d.flushed_bytes || (now-chat.last_flush<100 && len(d.text)-d.flushed_bytes<8192)) do return true
     // Once a terminal snapshot exists, periodic ticks must not create revisions.
@@ -334,13 +342,14 @@ acp_chat_prepare :: proc(r:^ACP_Runtime) -> bool {
         d.turn_bytes<len(d.text)+len(d.deferred_text) || d.turn_bytes>contracts.ACP_ASSISTANT_MAX_BYTES ||
         d.segment_index<0 || d.segment_index>d.turn_bytes || len(acp_chat_wire_turn(d))>256 || len(d.message_id)>256 ||
         len(d.outbox)>2*ACP_CHAT_OUTBOX_ITEMS_MAX || acp_chat_assistant_items(chat)>ACP_CHAT_OUTBOX_ITEMS_MAX || acp_chat_bytes(chat)>ACP_CHAT_OUTBOX_MAX || d.revision<0 ||
-        len(d.input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 || len(d.next_input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 { acp_chat_destroy(r);return false }
+        len(d.input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 || len(d.next_input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 ||
+        len(d.thought_text)>ACP_CHAT_THOUGHT_MAX || len(d.plan_text)>ACP_CHAT_PLAN_MAX || d.thought_revision<0 || d.plan_revision<0 { acp_chat_destroy(r);return false }
     for entry in d.outbox {
         if entry.kind==contracts.ACP_OUTBOX_INPUT_STATE {
             if entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || len(entry.body)>256*1024 { acp_chat_destroy(r);return false }
             continue
         }
-        if entry.kind!="" || entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || entry.turn_id=="" || len(entry.turn_id)>256 || len(entry.input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 || (entry.message_status!="pending" && entry.message_status!="complete" && entry.message_status!="failed") { acp_chat_destroy(r);return false }
+        if !acp_chat_kind_streamed(entry.kind) || entry.launch_epoch!=r.epoch || entry.revision<1 || entry.message_id=="" || entry.turn_id=="" || len(entry.turn_id)>256 || len(entry.input_ids)>contracts.ACP_SEND_NOW_MAX_MEMBERS+128 || (entry.message_status!="pending" && entry.message_status!="complete" && entry.message_status!="failed") { acp_chat_destroy(r);return false }
     }
     owned:=d.text;d.text="";chat.text_buffer_ready=true
     acp_chat_append_text(chat,owned)
@@ -364,6 +373,7 @@ acp_chat_destroy :: proc(r:^ACP_Runtime) {
     for id in d.input_ids do delete(id)
     for id in d.next_input_ids do delete(id)
     delete(d.input_ids);delete(d.next_input_ids)
+    delete(d.thought_text);delete(d.plan_text)
     if chat.vault_blocked do bridge_permission_remove(r.instance,chat.blocker_id)
     delete(chat.blocker_id);delete(d.outbox);delete(chat.publication);free(chat);r.chat=nil
 }
@@ -380,16 +390,16 @@ acp_chat_call :: proc(chat:^ACP_Chat,argument:string) -> bool {
     acp_rpc_call(chat.r.client,&cmd);return cmd.ok
 }
 
-ACP_Chat_Publication_Result :: enum { Retry, Saved, Terminal, Rejected }
+ACP_Chat_Publication_Result :: enum { Retry, Saved, Rejected }
 acp_chat_publication_result :: proc(reply:Bridge_Local_Relay_Result) -> ACP_Chat_Publication_Result {
     if reply.ok && (reply.status==200 || reply.status==201) do return .Saved
-    if reply.status==409 && strings.contains(reply.body,"assistant terminal status is immutable") do return .Terminal
     if reply.status>=400 && reply.status<500 && reply.status!=408 && reply.status!=429 do return .Rejected
     return .Retry
 }
 
-// Routes one outbox entry: assistant revisions to assistant-message, delivery
-// reports (body = report JSON) to input-state. A rejected report is dropped
+// Routes one outbox entry: assistant revisions to assistant-message, which the
+// Hub relays to the owner's UI as a live stream and never stores (G12), and
+// delivery reports (body = report JSON) to input-state. A rejected report is dropped
 // rather than failing the runtime: evidence must never stop the agent.
 acp_chat_publish_entry :: proc(publication:string,rec:Bridge_Local_Agent_Token_Record) -> ACP_Chat_Publication_Result {
     obj:=acp_event_object(publication)
@@ -397,7 +407,7 @@ acp_chat_publish_entry :: proc(publication:string,rec:Bridge_Local_Agent_Token_R
         reply:=acp_chat_relay(route_path("api","v1","agent-actions","chat","input-state"),"agent.chat.input_state",acp_event_string(obj,"body"),rec,5000)
         defer delete(reply.body)
         result:=acp_chat_publication_result(reply)
-        if result==.Rejected || result==.Terminal {
+        if result==.Rejected {
             fmt.println("ACP delivery report rejected",reply.status)
             return .Saved
         }
@@ -412,7 +422,6 @@ acp_chat_publish :: proc(chat:^ACP_Chat) -> ACP_Chat_Publication_Result {
     result:=acp_chat_publish_entry(chat.publication,chat.r.rec)
     switch result {
     case .Saved: acp_chat_call(chat,strings.concatenate({"chat_saved:",chat.publication},context.temp_allocator))
-    case .Terminal: acp_chat_call(chat,strings.concatenate({"chat_terminal:",chat.publication},context.temp_allocator))
     case .Rejected: acp_chat_call(chat,"chat_rejected")
     case .Retry:
     }
@@ -466,6 +475,7 @@ acp_chat_work :: proc(r:^ACP_Runtime,argument:string) -> bool {
         if r.quiescing || chat.d.publication_failed do return false
         if !acp_chat_resume_deferred(r) do return false
         if !acp_chat_flush(r,false) do return false
+        if !acp_chat_aux_flush(r,false) do return false
         acp_runtime_replace(&chat.publication,"")
         if len(chat.d.outbox)>0 do acp_runtime_replace(&chat.publication,acp_event_json(chat.d.outbox[0]))
         acp_runtime_drain(r)
@@ -476,17 +486,14 @@ acp_chat_work :: proc(r:^ACP_Runtime,argument:string) -> bool {
         acp_runtime_error(r,"acp_chat_publish_rejected")
         return acp_rpc_checkpoint(r.client)
     }
-    terminal:=strings.has_prefix(argument,"chat_terminal:")
-    if terminal || strings.has_prefix(argument,"chat_saved:") {
-        prefix:="chat_terminal:" if terminal else "chat_saved:"
-        obj:=acp_event_object(argument[len(prefix):])
+    if strings.has_prefix(argument,"chat_saved:") {
+        obj:=acp_event_object(argument[len("chat_saved:"):])
         id:=acp_event_string(obj,"message_id")
         rev,_:=obj["revision"].(json.Float)
         for entry,i in chat.d.outbox {
-            if entry.message_id!=id || (!terminal && entry.revision!=i64(rev)) do continue
+            if entry.message_id!=id || entry.revision!=i64(rev) do continue
             acp_chat_entry_delete(entry);ordered_remove(&chat.d.outbox,i);break
         }
-        if terminal && chat.d.message_id==id do chat.d.remote_terminal=true
         return acp_rpc_checkpoint(r.client)
     }
     return false
@@ -546,7 +553,10 @@ acp_chat_input_text :: proc(row:json.Object,kr:^vault.Vault_Keyring) -> (string,
     sender:=acp_event_string(row,"sender_agent_instance_id")
     if acp_event_string(row,"direction")=="user_to_agent" do sender="user"
     if sender=="" do sender=acp_event_string(row,"direction")
-    return fmt.tprintf("[Heimdall message context]\nsender: %s\nmessage_id: %s\nanswer_metadata: %s\nartifact_refs: %s\nAttachments are fetchable artifact references. Inline images/resources are not supplied in this text prompt.\n[/Heimdall message context]\n\n%s",sender,acp_event_string(row,"message_id"),decrypted,acp_chat_artifact_refs_text(row),body),true
+    // G12: assistant text is a live stream only; the reply is an explicit send.
+    reply_to:="user"
+    if from:=acp_event_string(row,"sender_agent_instance_id");acp_event_string(row,"direction")=="agent_to_agent" && from!="" do reply_to=from
+    return fmt.tprintf("[Heimdall message context]\nsender: %s\nmessage_id: %s\nanswer_metadata: %s\nartifact_refs: %s\nAttachments are fetchable artifact references. Inline images/resources are not supplied in this text prompt.\nReply with `./bin/ham-ctl chat send --to %s --body \"...\"`; your assistant text is not delivered as a message.\n[/Heimdall message context]\n\n%s",sender,acp_event_string(row,"message_id"),decrypted,acp_chat_artifact_refs_text(row),reply_to,body),true
 }
 
 // acp_chat_artifact_refs_text renders the prompt's artifact_refs value as
@@ -587,4 +597,85 @@ acp_chat_artifact_refs_text :: proc(row:json.Object) -> string {
     }
     strings.write_byte(&b,']')
     return strings.to_string(b)
+}
+
+// G12: thoughts and plans stream like assistant text: sealed snapshots in the
+// same outbox, relayed by the Hub to the UI and never stored. One entry per
+// kind is kept: a newer snapshot replaces an undelivered older one, even from
+// an earlier turn, since only the live turn matters to the UI.
+ACP_CHAT_THOUGHT_MAX :: 16*1024
+ACP_CHAT_PLAN_MAX :: 64*1024
+ACP_CHAT_KIND_THOUGHT :: "thought"
+ACP_CHAT_KIND_PLAN :: "plan"
+
+acp_chat_kind_streamed :: proc(kind:string) -> bool {
+    return kind=="" || kind==ACP_CHAT_KIND_THOUGHT || kind==ACP_CHAT_KIND_PLAN
+}
+
+acp_chat_aux_reset :: proc(d:^ACP_Chat_Durable) {
+    acp_runtime_replace(&d.thought_text,"");acp_runtime_replace(&d.plan_text,"")
+    d.thought_revision=0;d.plan_revision=0;d.thought_dirty=false;d.plan_dirty=false
+}
+
+acp_chat_aux_ready :: proc(r:^ACP_Runtime) -> bool {
+    return r.chat!=nil && !r.d.replay_only && r.chat.d.turn_id!="" && r.chat.d.status=="pending" && !r.chat.d.publication_failed
+}
+
+// Keeps the most recent ACP_CHAT_THOUGHT_MAX bytes, cut at a UTF-8 boundary.
+acp_chat_thought :: proc(r:^ACP_Runtime,text:string) {
+    if text=="" || !acp_chat_aux_ready(r) do return
+    d:=&r.chat.d
+    joined:=strings.concatenate({d.thought_text,text},context.temp_allocator)
+    if len(joined)>ACP_CHAT_THOUGHT_MAX {
+        cut:=len(joined)-ACP_CHAT_THOUGHT_MAX
+        for cut<len(joined) && (joined[cut]&0xc0)==0x80 do cut+=1
+        joined=joined[cut:]
+    }
+    acp_runtime_replace(&d.thought_text,joined);d.thought_dirty=true
+}
+
+acp_chat_plan :: proc(r:^ACP_Runtime,raw:string) {
+    if raw=="" || len(raw)>ACP_CHAT_PLAN_MAX || !acp_chat_aux_ready(r) || raw==r.chat.d.plan_text do return
+    acp_runtime_replace(&r.chat.d.plan_text,raw);r.chat.d.plan_dirty=true
+}
+
+// Ticks flush dirty snapshots at most every 250 ms. The final flush at prompt
+// end sends the turn's terminal status on every kind that streamed.
+acp_chat_aux_flush :: proc(r:^ACP_Runtime,final:bool) -> bool {
+    chat:=r.chat;if chat==nil || r.d.replay_only do return true
+    d:=&chat.d
+    if d.turn_id=="" || d.publication_failed do return true
+    now:=bridge_runtime_now_ms()
+    // A terminal snapshot re-sends every kind that streamed; a failed attempt
+    // leaves it dirty, so the next tick retries it with the same status.
+    if final {
+        if d.thought_text!="" && d.thought_revision>0 do d.thought_dirty=true
+        if d.plan_text!="" && d.plan_revision>0 do d.plan_dirty=true
+    } else if now-chat.last_aux_flush<250 do return true
+    if !d.thought_dirty && !d.plan_dirty do return true
+    kr,unlocked:=acp_chat_keyring();defer vault.keyring_wipe(&kr)
+    if !unlocked do return false
+    context.allocator=runtime.heap_allocator()
+    status,reason:=d.status,d.stop_reason
+    for kind in ([]string{ACP_CHAT_KIND_THOUGHT,ACP_CHAT_KIND_PLAN}) {
+        thought:=kind==ACP_CHAT_KIND_THOUGHT
+        text:=d.thought_text if thought else d.plan_text
+        dirty:=&d.thought_dirty if thought else &d.plan_dirty
+        revision:=&d.thought_revision if thought else &d.plan_revision
+        if text=="" || !dirty^ do continue
+        sealed,encrypted:=bridge_encrypt_vault_text(text,&kr);if !encrypted do return false
+        old:=-1
+        for entry,i in d.outbox do if entry.kind==kind do old=i
+        required:=acp_chat_bytes(chat)+len(sealed)
+        if old>=0 do required-=len(d.outbox[old].body)
+        if required>ACP_CHAT_OUTBOX_MAX { delete(sealed);return false }
+        digest:=bridge_local_hash_token(fmt.tprintf("%s:%s:%s",r.instance,d.turn_id,kind));defer delete(digest)
+        revision^+=1
+        entry:=contracts.ACP_Assistant_Message_Input{launch_epoch=strings.clone(r.epoch),turn_id=strings.clone(d.turn_id),message_id=fmt.aprintf("msg_%s",strings.trim_prefix(digest,"sha1:")[:16]),revision=revision^,body=sealed,message_status=strings.clone(status),stop_reason=strings.clone(reason),kind=strings.clone(kind)}
+        if old>=0 { acp_chat_entry_delete(d.outbox[old]);d.outbox[old]=entry } else { append(&d.outbox,entry) }
+        dirty^=false
+    }
+    chat.last_aux_flush=now
+    acp_runtime_replace(&r.saved_outbox,acp_event_json(chat.d))
+    return r.client==nil || r.client.in_frame || acp_rpc_checkpoint(r.client)
 }

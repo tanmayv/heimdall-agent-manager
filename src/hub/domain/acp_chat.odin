@@ -1,10 +1,9 @@
 package domain
 
-ACP_Assistant_Turn :: struct {
-    agent_instance_id, launch_epoch, turn_id, message_id: string,
-    revision: i64,
-    payload_hash: string,
-}
+// G12: agent output is streamed, not stored. The acp_assistant_turns table
+// (migration 211) is no longer read or written: assistant segments are relayed
+// to the UI as transient events. The table and its rows stay so earlier
+// history is not destroyed by a migration.
 
 // One ACP user input's delivery evidence. `state` is bridge-authored dispatch
 // truth (sent -> queued -> dispatching -> delivered, or discarded); a Hub

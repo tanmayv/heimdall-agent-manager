@@ -259,6 +259,8 @@ acp_events_notification :: proc(r: ^ACP_Runtime,method,params: string) {
         // is a lifecycle boundary in the shared PTY tool reducer and settles any
         // orphaned calls. Only prompt_started may emit that boundary for ACP.
         bridge_runtime_note_agent_activity(r.instance,"active",bridge_ext_activity_source(r.provider))
+        thought,_:=update["content"].(json.Object)
+        if acp_event_string(thought,"type")=="text" do acp_chat_thought(r,acp_event_string(thought,"text"))
     case "tool_call","tool_call_update": acp_events_tool(r,update)
     case "agent_message_chunk":
         content,_:=update["content"].(json.Object)
@@ -267,7 +269,7 @@ acp_events_notification :: proc(r: ^ACP_Runtime,method,params: string) {
         acp_events_config(r,update)
     case "plan":
         raw:=acp_event_json(update)
-        if len(raw)<=64*1024 do acp_runtime_replace(&r.d.plan_json,raw)
+        if len(raw)<=64*1024 { acp_runtime_replace(&r.d.plan_json,raw); acp_chat_plan(r,raw) }
     case "user_message_chunk":
     case: // Compatible future updates are intentionally ignored.
     }
