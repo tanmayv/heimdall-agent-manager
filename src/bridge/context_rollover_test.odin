@@ -885,7 +885,11 @@ test_rollover_acp_runtime_ignores_hooks_and_compacts_on_its_own_idle :: proc(t: 
 	// Protocol usage past rollover_pct: pending; the runtime's idle compacts.
 	bridge_ext_usage_observe(id, {has_usage = true, usage = {context_tokens = 180000, has_context_window = true, context_window = 200000, source = ACP_USAGE_SOURCE}}, now + 2)
 	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Pending)
+	// "acp" activity is not a context signal; the runtime's turn idle is.
 	bridge_rollover_on_activity(id, "idle", "acp", now + 3)
+	testing.expect_value(t, len(roll_rec.compacts), 0)
+	acp_turn := ACP_Runtime{instance = id}
+	acp_runtime_turn_idle(&acp_turn)
 	testing.expect_value(t, len(roll_rec.compacts), 1)
 	testing.expect_value(t, len(roll_rec.requests), 0)
 	testing.expect_value(t, len(roll_rec.restarts), 0)
@@ -907,7 +911,7 @@ test_rollover_pty_runtime_context_sources :: proc(t: ^testing.T) {
 	now := bridge_runtime_now_ms()
 	bridge_ext_usage_observe(id, {has_usage = true, usage = {context_tokens = 180000, has_context_window = true, context_window = 200000, source = ACP_USAGE_SOURCE}}, now)
 	testing.expect_value(t, bridge_rollover_phase_of(id), Bridge_Rollover_Phase.Normal)
-	bridge_rollover_on_activity(id, "idle", "acp", now + 1)
+	bridge_context_observe(id, .Protocol, true, now + 1)
 	testing.expect_value(t, len(roll_rec.compacts), 0)
 	// A handoff request is never typed into an agent that is not running.
 	testing.expect(t, !pty_agent_handoff_request("inst_test_roll_pty_absent", "x"))

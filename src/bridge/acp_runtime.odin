@@ -370,6 +370,13 @@ acp_runtime_work :: proc(data: rawptr, c: ^ACP_RPC_Client, argument: string) -> 
     return acp_inbox_accept(r, c, argument)
 }
 
+// A finished turn is the runtime's trusted idle: report it, and feed the
+// instance's context policy with the runtime's own signal source.
+acp_runtime_turn_idle :: proc(r: ^ACP_Runtime) {
+    bridge_runtime_note_agent_activity(r.instance, "idle", "acp")
+    bridge_context_observe(r.instance, .Protocol, true, bridge_runtime_now_ms())
+}
+
 acp_runtime_command :: proc(instance, argument: string) -> bool {
     sync.mutex_lock(&acp_runtime_mu); defer sync.mutex_unlock(&acp_runtime_mu)
     r := acp_runtimes[instance]; if r == nil do return false

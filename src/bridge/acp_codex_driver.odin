@@ -366,7 +366,7 @@ acp_codex_finish :: proc(r: ^ACP_Runtime,turn: json.Object) {
     acp_runtime_replace(&r.d.current_input,""); acp_runtime_replace(&acp_codex(r).start_id,"")
     acp_runtime_replace(&acp_codex(r).turn_id,""); acp_runtime_replace(&r.d.phase,"ready")
     r.d.cancelling=false; acp_codex(r).interrupt_deadline=0; acp_codex(r).interrupt_sent=false
-    bridge_runtime_note_agent_activity(r.instance,"idle","acp")
+    acp_runtime_turn_idle(r)
     acp_runtime_drain(r)
 }
 

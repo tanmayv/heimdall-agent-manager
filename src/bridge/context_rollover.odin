@@ -343,7 +343,8 @@ bridge_rollover_decide_tick :: proc(now: i64, window_for: proc(instance_id: stri
 				text := bridge_rollover_restart_stall_alert_text(s.agent_instance_id) if !s.restart_requested else
 					strings.clone("Context rollover restart has not reported readiness within 5 minutes. Message notifications have resumed; check the instance in Heimdall. No additional restart will be forced.")
 				append(&actions, bridge_rollover_alert_action_locked(&s, text))
-			}		case .Compacting:
+			}
+		case .Compacting:
 			// The compact action never reported back (dropped or fenced): ask
 			// again at the next idle.
 			bridge_rollover_set_phase_locked(&s, .Pending, now)
@@ -536,18 +537,14 @@ bridge_rollover_on_ext_event :: proc(instance_id: string, idle: bool, now: i64) 
 // bridge_rollover_on_activity feeds an activity report that did not come from
 // extension ingest into the state machine: the pane_diff screen detector (for
 // providers without an extension such as Pi; it observes the main pane, so it
-// is always the main agent) and an ACP runtime's own turn reports. Only an
+// is always the main agent), the terminal source. An ACP runtime feeds its
+// protocol source itself at the end of each turn (acp_runtime_turn_idle). Only an
 // explicit "idle" counts as a finished turn: waiting_user / waiting_approval
 // are blocked prompts, not rollover-safe. Repeated idle from several sources
 // is harmless: Requested / restart_requested make the transitions idempotent.
 bridge_rollover_on_activity :: proc(instance_id, activity, source: string, now: i64) {
-	ctx: Runtime_Context_Source
-	switch source {
-	case "pane_diff": ctx = .Terminal
-	case "acp": ctx = .Protocol
-	case: return
-	}
-	bridge_context_observe(instance_id, ctx, activity == "idle", now)
+	if bridge_activity_source_kind(source) != .Pane_Diff do return
+	bridge_context_observe(instance_id, .Terminal, activity == "idle", now)
 }
 
 // bridge_rollover_intercept_chat_send handles agent.chat.send. handled=false

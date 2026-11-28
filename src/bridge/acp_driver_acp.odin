@@ -168,7 +168,7 @@ acp_driver_acp_result :: proc(data: rawptr, result: ACP_RPC_Result) {
         if acp_runtime_events.prompt_finished != nil do acp_runtime_events.prompt_finished(r, r.d.current_input, result.result_json, "")
         bridge_inbox_remember(r.inbox, r.d.current_input)
         acp_runtime_replace(&r.d.current_input, ""); acp_runtime_replace(&r.d.phase, "ready")
-        bridge_runtime_note_agent_activity(r.instance, "idle", "acp")
+        acp_runtime_turn_idle(r)
         acp_runtime_drain(r)
     }
 }
