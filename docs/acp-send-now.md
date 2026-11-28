@@ -1,7 +1,10 @@
 # ACP input delivery and batch Send now
 
-Applies only to user messages sent to an ACP agent (`agent_instances.runtime_transport = 'acp'`).
-PTY and other non-ACP rows have no delivery record and keep today's `read_at` behaviour.
+The delivery evidence applies only to user messages sent to an ACP agent
+(`agent_instances.runtime_transport = 'acp'`). PTY and other non-ACP rows have no
+delivery record and keep today's `read_at` behaviour. Send now itself is available to
+every runtime that declares it; a PTY agent's Send now has no members (see
+[Send now without members (PTY)](#send-now-without-members-pty)).
 
 ## Evidence model
 
@@ -66,7 +69,7 @@ The response is `{"outcome":..., "batch":{batch_id,request_id,launch_epoch,attem
 | 200 | `empty` | Nothing is eligible. Nothing is sent and nothing is cancelled. |
 | 200 | `delivered` | The request was already completed |
 | 503 | `failed` | The bridge is offline. Retry with the same `request_id`. |
-| 409 | error | Stale `launch_epoch`, or not an ACP agent |
+| 409 | error | Stale `launch_epoch`, or the agent's runtime has no Send now |
 
 - **Snapshot:** queued, turn-held, current-epoch, unread rows in FIFO order, limited to
   `message_ids` when that list is given. Rows that arrive later are not included and
@@ -82,8 +85,11 @@ The response is `{"outcome":..., "batch":{batch_id,request_id,launch_epoch,attem
 - A `pending` or `sent` batch with no bridge progress for 30 s becomes `failed`
   (`bridge_no_response`) and can be retried.
 
-`GET /api/v1/chats/{cid}/send-now` returns `{runtime_transport, launch_epoch,
+`GET /api/v1/chats/{cid}/send-now` returns `{runtime_transport, send_now, launch_epoch,
 steering_supported (null until reported), batch}`, for reloads and for the tooltip choice.
+`send_now` is the runtime's declared capability
+(`contracts.runtime_transport_capabilities`): `members` (ACP), `notice` (PTY) or `""`
+(no Send now). The UI decides from it, never from the transport name.
 
 WebSocket: `chat_event` with `event:"messages_delivery"`, `message_ids`, `batch_id` and
 `fetch_required:true`.
@@ -121,3 +127,29 @@ errors: `bridge_offline`, `bridge_no_response`, `cancel_timeout`, `runtime_faile
 - **Agent read:** the Hub sends `acp_inputs_read`, and the bridge drops those inputs
   from its queue and from an unmerged batch. An input already merged into the combined
   batch input is still sent once inside that batch.
+
+## Send now without members (PTY)
+
+A PTY agent is never typed message bodies. Each user message only gives the agent a
+notice that points at `ham-ctl chat read`, and the agent's own `chat read` returns every
+unread message (that read is the read evidence, as `read_at` was before). So a PTY Send
+now needs no batch members:
+
+- **Hub:** `POST /chats/{cid}/send-now` records the request as a batch row without
+  members (`message_ids` in the request is ignored) and sends the bridge the same
+  `acp_send_now_batch` command with a `batch_id`, the attempt and no `message_ids`. The
+  outcome is the bridge's command result: `delivered` (HTTP 200) once the notice was
+  typed, or `failed` (HTTP 503: `bridge_offline`, `bridge_no_response`, `send_failed`).
+  A repeat of the same `request_id` is a no-op; a retry after `failed` bumps the attempt.
+- **Bridge:** queued user messages coalesce into ONE pending unread notice per agent in
+  the shared inbox, typed only at a trusted idle and never with an interrupt key. Send
+  now presses the profile's interrupt keys (Esc by default), types the notice and
+  submits, then consumes the pending notice so nothing is typed twice. The inbox
+  remembers the last applied request id (`send_now_applied`), so a repeat is a no-op
+  also after a bridge restart.
+- **Steer** (when the profile's `pty_delivery.can_steer` is on, the default) stops a
+  running turn with the interrupt keys, or types without them at a trusted idle, then
+  types the notice and submits. With `can_steer` off, steer becomes send now.
+- **UI:** unread PTY rows stay in the transcript; one "Send now" action above the
+  composer (`conversation-unread`, `conversation-queued-send-now`) asks the agent to read
+  them now.
