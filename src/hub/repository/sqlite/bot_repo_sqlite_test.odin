@@ -589,7 +589,7 @@ test_migration_215_allows_whatsapp_and_held :: proc(t: ^testing.T) {
 		t,
 		exec(
 			&conn,
-			"INSERT INTO channel_pairings VALUES ('wa','alice','bot_a','whatsapp','now','later',''); INSERT INTO channel_messages (message_id,binding_id,owner_user_id,bot_id,direction,body,send_state,created_at) VALUES ('held','chb_a','alice','bot_a','outbound','reply','held','now');",
+			"INSERT INTO channel_pairings (code_hash,owner_user_id,bot_id,provider,created_at,expires_at,consumed_at) VALUES ('wa','alice','bot_a','whatsapp','now','later',''); INSERT INTO channel_messages (message_id,binding_id,owner_user_id,bot_id,direction,body,send_state,created_at) VALUES ('held','chb_a','alice','bot_a','outbound','reply','held','now');",
 		),
 	)
 	// The widened schema still refuses unknown providers and send states.
