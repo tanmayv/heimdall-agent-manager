@@ -223,6 +223,9 @@ bridge_agent_instance_reconcile_now :: proc() {
 		restored := !known || !bridge_runtime_status_active(snap.runtime_status)
 		if restored do bridge_runtime_set_status_locked(id, "running", "idle", now, true, .pty_reconcile_live_child)
 		bridge_runtime_set_pty_process_alive_locked(id, true)
+		// A surviving pty-host agent is a PTY runtime; record it so inputs
+		// route to it after a bridge restart (there is no default transport).
+		for &inst in bridge_runtime_instances do if inst.agent_instance_id == id && inst.runtime_transport == "" do inst.runtime_transport = pty_agent_runtime.transport
 		sync.mutex_unlock(&bridge_runtime_mutex)
 		if restored do fmt.println("bridge agent reconcile: preserved live instance", id)
 	}

@@ -203,7 +203,7 @@ bridge_task_notice_deliver :: proc(batch: []Bridge_Task_Notice) -> bool {
     // Notices never interrupt (CONTRACT-07): the runtime says whether a batch
     // can start a turn now, and a busy agent keeps it queued here.
     rt := bridge_runtime_for(instance)
-    if rt.notices_ready == nil || rt.deliver_notices == nil || !rt.notices_ready(instance) do return false
+    if rt == nil || rt.notices_ready == nil || rt.deliver_notices == nil || !rt.notices_ready(instance) do return false
     text := bridge_task_notice_text(batch); defer delete(text)
     if text == "" do return true
     return rt.deliver_notices(instance, text)

@@ -633,7 +633,8 @@ bridge_pty_host_send_oneway :: proc(socket: string, frame: []byte) -> bool {
 // PTY stdin via CtlMsg::Input to the ham-pty-host daemon socket.
 bridge_pty_host_deliver_raw_input_socket_bytes :: proc(socket, instance: string, data: []byte) -> bool {
 	// A runtime that owns its own input (ACP) maps keystrokes to turn input.
-	if rt := bridge_runtime_for(instance); rt.raw_input != nil do return rt.raw_input(instance, data)
+	// Shell sessions and PTY agents have no runtime hook: the bytes are typed.
+	if rt := bridge_runtime_owner(instance); rt != nil && rt.raw_input != nil do return rt.raw_input(instance, data)
 	if strings.trim_space(socket) == "" || strings.trim_space(instance) == "" do return false
 	frame := pty_host_encode_input(instance, data)
 	defer delete(frame)

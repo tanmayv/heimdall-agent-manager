@@ -99,6 +99,7 @@ pty_test_activity :: proc(id, activity, source: string, updated_ms: i64 = 0) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for &inst in bridge_runtime_instances do if inst.agent_instance_id == id {
+		inst.runtime_transport = pty_agent_runtime.transport
 		inst.activity_status = activity
 		inst.activity_source = source
 		inst.activity_updated_unix_ms = updated_ms if updated_ms != 0 else bridge_runtime_now_ms()
@@ -313,24 +314,17 @@ runtime_interface_policy_and_selection :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
 	fake := Agent_Runtime{transport = "fake_transport", submit = runtime_test_submit, can_steer = runtime_test_can_steer}
-	_ = bridge_agent_runtime_list()
-	sync.mutex_lock(&bridge_agent_runtimes_mu); append(&bridge_agent_runtimes, &fake); sync.mutex_unlock(&bridge_agent_runtimes_mu)
-	defer { sync.mutex_lock(&bridge_agent_runtimes_mu); pop(&bridge_agent_runtimes); sync.mutex_unlock(&bridge_agent_runtimes_mu) }
+	runtimes := []^Agent_Runtime{&pty_agent_runtime, &fake}
 	defer { for c in runtime_test_calls do delete(c); clear(&runtime_test_calls) }
 	id := "inst_runtime_fake"
-	bridge_runtime_set_status(id, "running", "idle")
-	defer bridge_runtime_set_status(id, "stopped", "idle")
-	sync.mutex_lock(&bridge_runtime_mutex)
-	for &inst in bridge_runtime_instances do if inst.agent_instance_id == id do inst.runtime_transport = "fake_transport"
-	sync.mutex_unlock(&bridge_runtime_mutex)
-	testing.expect(t, bridge_runtime_for(id) == &fake, "selected by recorded transport")
-	testing.expect(t, bridge_runtime_for("inst_runtime_unknown") == &pty_agent_runtime, "unknown instances are PTY")
+	testing.expect(t, bridge_runtime_lookup(runtimes, "fake_transport") == &fake, "selected by recorded transport")
+	testing.expect(t, bridge_runtime_lookup(runtimes, "pty") == &pty_agent_runtime)
 	runtime_test_steer = false
-	_ = bridge_runtime_submit(id, {kind = .User_Message}, .Steer)
+	_ = bridge_runtime_submit_to(&fake, id, {kind = .User_Message}, .Steer)
 	runtime_test_steer = true
-	_ = bridge_runtime_submit(id, {kind = .User_Message}, .Steer)
-	_ = bridge_runtime_submit(id, {kind = .User_Message})
-	_ = bridge_runtime_submit(id, {kind = .Notification}, .Send_Now)
+	_ = bridge_runtime_submit_to(&fake, id, {kind = .User_Message}, .Steer)
+	_ = bridge_runtime_submit_to(&fake, id, {kind = .User_Message})
+	_ = bridge_runtime_submit_to(&fake, id, {kind = .Notification}, .Send_Now)
 	testing.expect_value(t, len(runtime_test_calls), 4)
 	if len(runtime_test_calls) == 4 {
 		testing.expect_value(t, runtime_test_calls[0], "User_Message:Send_Now") // cannot steer: interrupt + prompt
@@ -338,7 +332,25 @@ runtime_interface_policy_and_selection :: proc(t: ^testing.T) {
 		testing.expect_value(t, runtime_test_calls[2], "User_Message:Queue") // queue is the default
 		testing.expect_value(t, runtime_test_calls[3], "Notification:Queue") // notifications never interrupt
 	}
-	testing.expect(t, !bridge_runtime_interrupt(id), "a runtime without interrupt reports false")
+}
+
+// No silent PTY fallback: an instance without a recognised transport has no
+// runtime, and inputs for it are reported as not delivered.
+@(test)
+runtime_unknown_transport_is_not_routed_to_pty :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	context.allocator = runtime.heap_allocator()
+	list := bridge_agent_runtime_list()
+	testing.expect(t, bridge_runtime_lookup(list[:], "") == nil, "no transport recorded")
+	testing.expect(t, bridge_runtime_lookup(list[:], "tmux") == nil, "unrecognised transport")
+	testing.expect(t, bridge_runtime_for("inst_runtime_never_seen") == nil, "unknown instance")
+	id := "inst_runtime_untyped"
+	bridge_runtime_set_status(id, "running", "idle")
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	testing.expect(t, bridge_runtime_owner(id) == nil, "a known instance without a recorded transport has no runtime")
+	testing.expect(t, !bridge_runtime_submit(id, {kind = .User_Message, text = "hello"}), "not delivered")
+	testing.expect(t, !bridge_runtime_interrupt(id))
+	testing.expect(t, !bridge_runtime_can_steer(id))
 }
 
 runtime_test_events: [dynamic]Runtime_Event

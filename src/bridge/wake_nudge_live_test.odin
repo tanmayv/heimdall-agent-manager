@@ -209,6 +209,7 @@ wake_test_trusted_idle :: proc(id: string) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for &inst in bridge_runtime_instances do if inst.agent_instance_id == id {
+		inst.runtime_transport = pty_agent_runtime.transport
 		inst.activity_status = "idle"
 		inst.activity_source = "pane_diff"
 		// After any typing so far: the typed turn has been seen.

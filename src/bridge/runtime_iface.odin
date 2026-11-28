@@ -1,7 +1,7 @@
 package main
 
-import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:strings"
 import "core:sync"
 import contracts "odin_test:contracts"
@@ -71,38 +71,49 @@ Agent_Runtime :: struct {
 	deliver_notices: proc(instance, text: string) -> bool,
 }
 
-// The registered runtimes, keyed by the transport recorded for an instance.
-// A test may register a fake runtime here.
-bridge_agent_runtimes: [dynamic]^Agent_Runtime
-bridge_agent_runtimes_mu: sync.Mutex
-
-bridge_agent_runtime_list :: proc() -> []^Agent_Runtime {
-	sync.mutex_lock(&bridge_agent_runtimes_mu)
-	defer sync.mutex_unlock(&bridge_agent_runtimes_mu)
-	if len(bridge_agent_runtimes) == 0 {
-		bridge_agent_runtimes = make([dynamic]^Agent_Runtime, runtime.heap_allocator())
-		append(&bridge_agent_runtimes, &pty_agent_runtime, &acp_agent_runtime)
-	}
-	return bridge_agent_runtimes[:]
+// The runtimes, keyed by the transport recorded for an instance. Built per
+// call: no mutable registry is shared between threads.
+bridge_agent_runtime_list :: proc() -> [2]^Agent_Runtime {
+	return {&pty_agent_runtime, &acp_agent_runtime}
 }
 
 // bridge_runtime_transport returns the transport recorded for an instance
-// (temp-allocated; "" when unknown).
-bridge_runtime_transport :: proc(instance: string) -> string {
+// (temp-allocated; "" when none is recorded) and whether the instance is known.
+bridge_runtime_transport :: proc(instance: string) -> (transport: string, known: bool) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for inst in bridge_runtime_instances {
-		if inst.agent_instance_id == instance do return strings.clone(inst.runtime_transport, context.temp_allocator)
+		if inst.agent_instance_id == instance do return strings.clone(inst.runtime_transport, context.temp_allocator), true
 	}
-	return ""
+	return "", false
 }
 
-// bridge_runtime_for selects the runtime that owns an instance. Unknown or
-// unrecorded transports are PTY, the only launch path without a runtime owner.
+// bridge_runtime_lookup finds the runtime for a transport; nil when none matches.
+bridge_runtime_lookup :: proc(runtimes: []^Agent_Runtime, transport: string) -> ^Agent_Runtime {
+	if transport == "" do return nil
+	for rt in runtimes do if rt != nil && rt.transport == transport do return rt
+	return nil
+}
+
+// bridge_runtime_owner selects the runtime that owns an instance, or nil when
+// the instance is unknown or has no recognised transport recorded. There is
+// no default transport: a caller that gets nil reports the input as not
+// delivered instead of typing it into a terminal that may not exist.
+bridge_runtime_owner :: proc(instance: string) -> ^Agent_Runtime {
+	transport, _ := bridge_runtime_transport(instance)
+	list := bridge_agent_runtime_list()
+	return bridge_runtime_lookup(list[:], transport)
+}
+
+// bridge_runtime_for is bridge_runtime_owner for delivery paths: a miss is
+// logged, so an input that cannot be routed is visible, never silently dropped.
 bridge_runtime_for :: proc(instance: string) -> ^Agent_Runtime {
-	transport := bridge_runtime_transport(instance)
-	for rt in bridge_agent_runtime_list() do if rt.transport == transport do return rt
-	return &pty_agent_runtime
+	rt := bridge_runtime_owner(instance)
+	if rt == nil {
+		transport, known := bridge_runtime_transport(instance)
+		fmt.eprintfln("bridge runtime: no agent runtime for instance=%q known=%t transport=%q; input not delivered", instance, known, transport)
+	}
+	return rt
 }
 
 // bridge_runtime_effective_mode applies the shared delivery policy:
@@ -110,7 +121,7 @@ bridge_runtime_for :: proc(instance: string) -> ^Agent_Runtime {
 // runtime reports it can steer; otherwise the input is sent now, which
 // interrupts once and starts a turn with it (CONTRACT-06/15).
 bridge_runtime_effective_mode :: proc(rt: ^Agent_Runtime, instance: string, kind: Runtime_Input_Kind, mode: Runtime_Mode) -> Runtime_Mode {
-	if kind == .Notification do return .Queue
+	if kind == .Notification || rt == nil do return .Queue
 	if mode == .Steer && (rt.can_steer == nil || !rt.can_steer(instance)) do return .Send_Now
 	return mode
 }
@@ -133,32 +144,32 @@ bridge_runtime_notify :: proc(instance: string, input: Runtime_Input) -> bool {
 
 bridge_runtime_interrupt :: proc(instance: string) -> bool {
 	rt := bridge_runtime_for(instance)
-	return rt.interrupt != nil && rt.interrupt(instance)
+	return rt != nil && rt.interrupt != nil && rt.interrupt(instance)
 }
 
 bridge_runtime_stop :: proc(instance: string) {
-	rt := bridge_runtime_for(instance)
-	if rt.stop != nil do rt.stop(instance)
+	rt := bridge_runtime_owner(instance)
+	if rt != nil && rt.stop != nil do rt.stop(instance)
 }
 
 bridge_runtime_release :: proc(instance: string) {
-	rt := bridge_runtime_for(instance)
-	if rt.release != nil do rt.release(instance)
+	rt := bridge_runtime_owner(instance)
+	if rt != nil && rt.release != nil do rt.release(instance)
 }
 
 bridge_runtime_child_exited :: proc(instance: string) {
-	rt := bridge_runtime_for(instance)
-	if rt.child_exited != nil do rt.child_exited(instance)
+	rt := bridge_runtime_owner(instance)
+	if rt != nil && rt.child_exited != nil do rt.child_exited(instance)
 }
 
 bridge_runtime_can_steer :: proc(instance: string) -> bool {
-	rt := bridge_runtime_for(instance)
-	return rt.can_steer != nil && rt.can_steer(instance)
+	rt := bridge_runtime_owner(instance)
+	return rt != nil && rt.can_steer != nil && rt.can_steer(instance)
 }
 
 bridge_runtime_usage :: proc(instance: string) -> (contracts.Ext_Usage, bool) {
-	rt := bridge_runtime_for(instance)
-	if rt.usage == nil do return {}, false
+	rt := bridge_runtime_owner(instance)
+	if rt == nil || rt.usage == nil do return {}, false
 	return rt.usage(instance)
 }
 
@@ -206,13 +217,13 @@ bridge_runtime_delivery_command :: proc(conn: ^ws.Connection, type, text: string
 		cmd: contracts.ACP_Send_Now_Batch_Command
 		if json.unmarshal_string(text, &cmd, allocator = context.temp_allocator) == nil {
 			rt := bridge_runtime_for(cmd.agent_instance_id)
-			ok = rt.send_now != nil && rt.send_now(cmd.agent_instance_id, {launch_epoch = cmd.launch_epoch, batch_id = cmd.batch_id, attempt = cmd.attempt, message_ids = cmd.message_ids})
+			ok = rt != nil && rt.send_now != nil && rt.send_now(cmd.agent_instance_id, {launch_epoch = cmd.launch_epoch, batch_id = cmd.batch_id, attempt = cmd.attempt, message_ids = cmd.message_ids})
 		}
 	} else {
 		cmd: contracts.ACP_Inputs_Read_Command
 		if json.unmarshal_string(text, &cmd, allocator = context.temp_allocator) == nil {
 			rt := bridge_runtime_for(cmd.agent_instance_id)
-			ok = rt.inputs_read != nil && rt.inputs_read(cmd.agent_instance_id, cmd.message_ids)
+			ok = rt != nil && rt.inputs_read != nil && rt.inputs_read(cmd.agent_instance_id, cmd.message_ids)
 		}
 	}
 	if command_id == "" do return
