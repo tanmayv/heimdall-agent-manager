@@ -220,7 +220,7 @@ codex_token_count :: proc(value: json.Value) -> (u: Transcript_Usage, ok: bool) 
 		ctx = in_t + out_t
 	}
 	reasoning, _ := json_get_int(last, "reasoning_output_tokens")
-	u.context_tokens = i64(max(ctx - max(reasoning, 0), 0))
+	u.context_tokens = contracts.codex_context_tokens(i64(ctx), i64(reasoning))
 	if out, has := json_get_int(json_get_object(info, "total_token_usage"), "output_tokens"); has && out >= 0 {
 		u.output_tokens_total = i64(out)
 		u.has_output_tokens_total = true

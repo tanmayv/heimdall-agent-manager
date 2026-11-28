@@ -220,6 +220,18 @@ test_codex_usage_from_tail_uses_last_token_count_with_info :: proc(t: ^testing.T
 	testing.expect(t, !ok, "info:null token_count events carry no usage")
 }
 
+// The app-server reader (bridge acp_codex_usage, acp_usage_test.odin) gets the
+// same breakdown {total 31000, reasoning 500} and must report the same 30500.
+@(test)
+test_codex_usage_context_matches_app_server_formula :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	u, ok := codex_usage_from_tail(`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":10000},"last_token_usage":{"input_tokens":29000,"cached_input_tokens":20000,"output_tokens":2000,"reasoning_output_tokens":500,"total_tokens":31000},"model_context_window":258400}}}`)
+	testing.expect(t, ok)
+	testing.expect_value(t, u.context_tokens, i64(30500))
+	testing.expect_value(t, u.context_tokens, contracts.codex_context_tokens(31000, 500))
+}
+
 @(test)
 test_transcript_tail_reads_only_the_window :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator

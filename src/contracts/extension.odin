@@ -113,6 +113,14 @@ Ext_Usage :: struct {
 	source:                  string, // owned
 }
 
+// codex_context_tokens is Codex's own "tokens in context window" for one
+// request: its total tokens minus the reasoning output, which Codex does not
+// keep in the window. Shared by every Codex usage reader (PTY rollout
+// transcript and app-server thread/tokenUsage/updated) so they agree.
+codex_context_tokens :: proc(total_tokens, reasoning_output_tokens: i64) -> i64 {
+	return max(total_tokens - max(reasoning_output_tokens, 0), 0)
+}
+
 // ext_est_tokens is the byte→token heuristic shared by producer and consumers.
 ext_est_tokens :: proc(input_bytes, response_bytes: i64) -> i64 {
 	total := max(input_bytes, 0) + max(response_bytes, 0)
