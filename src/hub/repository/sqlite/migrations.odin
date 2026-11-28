@@ -698,7 +698,7 @@ MIGRATION_EVENTS_003_SUBSCRIPTIONS :: #load("migrations/events_003_subscriptions
 MIGRATION_EVENTS_002_TOPICS :: #load("migrations/events_002_topics.sql", string)
 
 MIGRATION_223_EXTENSION_VERSION_SYNC :: #load("migrations/223_extension_version_sync_0_5_63.sql", string)
-MIGRATION_BOTS_CHANNELS_001_CONVERSION_SOURCES :: #load("migrations/bots_channels_001_conversion_sources.sql", string)
+MIGRATION_271_BOT_CHANNEL_CONVERSION_SOURCES :: #load("migrations/271_bot_channel_conversion_sources.sql", string)
 MIGRATION_BOTS_WEB_004_ACTIVATION :: #load("migrations/bots_web_004_activation.sql", string)
 MIGRATION_BOTS_WEB_003_ACTION_REFS :: #load("migrations/bots_web_003_action_refs.sql", string)
 MIGRATION_BOTS_WEB_002_ATTACHMENTS :: #load("migrations/bots_web_002_attachments.sql", string)
@@ -1124,7 +1124,7 @@ migration_order :: [?]string {
 	"269_profile_transport.sql",
 	"270_extension_version_sync_0_5_96.sql",
 	"bots_web_004_activation.sql",
-	"bots_channels_001_conversion_sources.sql",
+	"271_bot_channel_conversion_sources.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1151,7 +1151,7 @@ run_migrations :: proc(
 		if stop_before != "" && name == stop_before do return true, domain.Domain_Error{}
 		// The invitation generation column is the final DDL statement in this
 		// migration. Recover a restart after schema commit but before its ledger.
-		if name == "bots_channels_001_conversion_sources.sql" && table_column_exists(conn,"channel_pairings","activation_generation") {
+		if name == "271_bot_channel_conversion_sources.sql" && table_column_exists(conn,"channel_pairings","activation_generation") {
 			mark_migration_applied(conn,name)
 			continue
 		}
@@ -1797,7 +1797,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "224_copilot_acp_transport.sql" do return strings.clone(MIGRATION_224_COPILOT_ACP_TRANSPORT)
 	if name == "223_extension_version_sync_0_5_63.sql" do return strings.clone(MIGRATION_223_EXTENSION_VERSION_SYNC)
 	if name == "222_extension_version_sync_0_5_62.sql" do return strings.clone(MIGRATION_222_EXTENSION_VERSION_SYNC)
-	if name == "bots_channels_001_conversion_sources.sql" do return strings.clone(MIGRATION_BOTS_CHANNELS_001_CONVERSION_SOURCES)
+	if name == "271_bot_channel_conversion_sources.sql" do return strings.clone(MIGRATION_271_BOT_CHANNEL_CONVERSION_SOURCES)
 	if name == "bots_web_004_activation.sql" do return strings.clone(MIGRATION_BOTS_WEB_004_ACTIVATION)
 	if name == "bots_web_003_action_refs.sql" do return strings.clone(MIGRATION_BOTS_WEB_003_ACTION_REFS)
 	if name == "bots_web_002_attachments.sql" do return strings.clone(MIGRATION_BOTS_WEB_002_ATTACHMENTS)

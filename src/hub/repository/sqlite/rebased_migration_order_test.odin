@@ -115,6 +115,8 @@ test_rebased_migration_numbers_after_102_are_unique :: proc(t: ^testing.T) {
 	for name, i in expected do testing.expect_value(t, tail[i], name)
 	prev, events_prev := 0, 0
 	for name in order {
+		// Preserve the approved web-cutover migration's existing ledger identity.
+		if name == "bots_web_004_activation.sql" do continue
 		if name == "pipeline_001_deliveries.sql" || name == "pipeline_002_read_ack.sql" || name == "acp_delivery_001_input_deliveries.sql" do continue
 		if name == "webhooks_002_dedupe_header.sql" || name == "webhooks_001.sql" || name == "actions_011_prompt_expiry.sql" || name == "events_009_incremental_inbox.sql" || name == "actions_010_agent_automation_audit.sql" || name == "actions_007_filter_tree.sql" || name == "events_008_state_heads.sql" || name == "actions_009_batch_history.sql" || name == "actions_008_target_batches.sql" || name == "events_007_entity_versions.sql" || name == "actions_006_template_vars.sql" || name == "actions_001_reset.sql" || name == "actions_002_lookup_indexes.sql" || name == "actions_003_history_performance.sql" || name == "actions_004_bot_activity.sql" || name == "actions_005_settle.sql" || name == "agents_001_start_ref.sql" || name == "native_001_oidc_identities.sql" || name == "whatsapp_001_invite_only.sql" || name == "bots_web_001_channel.sql" || name == "bots_web_002_attachments.sql" || name == "bots_web_003_action_refs.sql" || name == "coordinator_idle_001_user_activity.sql" || name == "coordinator_idle_002_stop_reason.sql" do continue
 		if strings.has_prefix(name, "events_") {
