@@ -56,6 +56,9 @@ Content_Repository :: struct {
 	advance_reply_watermark: Content_Advance_Reply_Watermark_Proc,
 	message_origin: Content_Message_Origin_Proc,
 	conversation_has_channel: Content_Conversation_Has_Channel_Proc,
+	// When the bridge last typed the unread notice (agent_notified.odin).
+	note_agent_notified: Content_Note_Agent_Notified_Proc,
+	agent_notified_at: Content_Agent_Notified_At_Proc,
 	ctx: rawptr,
 	// Atomically insert one answer only while source is the last visible row.
 	// A duplicate returns the original row with inserted=false, before freshness.

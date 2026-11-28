@@ -106,8 +106,10 @@ send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 // GET /api/v1/chats/{cid}/send-now: the latest batch plus the runtime facts the
-// UI needs after a reload (current epoch, steering capability if reported, and
-// send_now: what Send now takes for this runtime, "members" | "notice" | "").
+// UI needs after a reload (current epoch, steering capability if reported,
+// send_now: what Send now takes for this runtime, "members" | "notice" | "",
+// and agent_notified_at: when the agent was last pointed at its unread
+// messages, "" when never).
 get_send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
     h := (^Content_Handlers)(ctx)
     auth, ok, resp := require_auth(h.auth,req)
@@ -125,6 +127,8 @@ get_send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
     strings.write_string(&b,`{"conversation_id":"`); write_handler_json_string(&b,c.conversation_id)
     strings.write_string(&b,`","runtime_transport":"`); write_handler_json_string(&b,transport)
     strings.write_string(&b,`","send_now":"`); strings.write_string(&b,contracts.RUNTIME_SEND_NOW_WIRE[contracts.runtime_transport_capabilities(transport).send_now])
+    notified_at, _ := iface.content_agent_notified_at(h.content.content,c.owner_user_id,c.conversation_id)
+    strings.write_string(&b,`","` + contracts.SEND_NOW_AGENT_NOTIFIED_AT_FIELD + `":"`); write_handler_json_string(&b,notified_at)
     strings.write_string(&b,`","launch_epoch":"`); write_handler_json_string(&b,epoch)
     strings.write_string(&b,`","steering_supported":`); strings.write_string(&b,"null" if !known else ("true" if steering else "false"))
     strings.write_string(&b,`,"batch":`); write_send_now_batch_json(&b,batch); strings.write_byte(&b,'}')
@@ -143,4 +147,17 @@ acp_note_agent_read_rows :: proc(h: ^Agent_Action_Handlers, auth: contracts.Auth
     publish_messages_delivery(h.event_bus,c,changed[:],"")
     content.acp_send_inputs_read(h.content,c,drop[:])
     return changed[:]
+}
+
+// bridge_ws_agent_notice_typed applies a bridge's agent_notice_typed frame
+// (contracts.Agent_Notice_Typed_Frame). bridge_id is the authenticated
+// connection's; a frame for another bridge's instance is dropped. A moved
+// timestamp refreshes the owner's Send now state (messages_delivery, no ids).
+bridge_ws_agent_notice_typed :: proc(h: ^Bridge_Handlers, bridge_id, text: string) {
+    if h == nil || h.content == nil do return
+    frame: contracts.Agent_Notice_Typed_Frame
+    if len(text) > 4096 || json.unmarshal_string(text, &frame, allocator = context.temp_allocator) != nil do return
+    c, moved, err := content.note_agent_notice_typed(h.content, bridge_id, frame.agent_instance_id, frame.typed_at_ms)
+    if err.code != .None || !moved || h.event_bus == nil do return
+    events.publish_owned(h.event_bus, string(c.owner_user_id), messages_delivery_event_json(c, []string{}, ""))
 }
