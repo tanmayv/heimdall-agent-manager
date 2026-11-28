@@ -1026,6 +1026,7 @@ bridge_pty_host_apply_activity :: proc(instance: string, sample: Bridge_Activity
 	if snap, ok := bridge_runtime_instance_snapshot(instance); ok && snap.runtime_transport == "acp" do return
 	if strings.trim_space(instance) == "" do return
 	bridge_runtime_note_agent_activity(instance, bridge_activity_status_string(sample.status), "pane_diff")
+	if sample.status == .Active do bridge_runtime_emit(instance, .Turn_Output)
 }
 
 // bridge_pty_host_reap_superseded implements the restart-reap rule for the

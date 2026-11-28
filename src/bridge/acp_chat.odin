@@ -257,6 +257,7 @@ acp_chat_resume_deferred :: proc(r:^ACP_Runtime) -> bool {
 }
 
 acp_chat_chunk :: proc(r:^ACP_Runtime,text:string) {
+    if !r.d.replay_only && text!="" do bridge_runtime_emit(r.instance,.Turn_Output)
     if r.chat==nil || r.d.replay_only || r.chat.d.status!="pending" || r.chat.d.remote_terminal || r.chat.d.publication_failed || text=="" do return
     d:=&r.chat.d
     if d.turn_bytes+len(text)>contracts.ACP_ASSISTANT_MAX_BYTES {
