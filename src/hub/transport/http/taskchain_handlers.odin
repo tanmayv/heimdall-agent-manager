@@ -2391,7 +2391,7 @@ upsert_chain_fleet_handler :: proc(ctx: rawptr, req: Request) -> Response {
 					continue
 				}
 				// Preserve the fetched snapshot for start admission's expected-state fence.
-				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, launch_provider, launch_model, selected_profile); relaunched {
+				if relaunched_inst, relaunched, relaunch_err := agent_service.relaunch_instance(h.agents, auth_ctx, inst, .Reconfiguration, launch_provider, launch_model, selected_profile); relaunched {
 					append(&restarted_ids, strings.clone(inst.agent_instance_id, context.temp_allocator))
 					append(&restart_results, Fleet_Restart_Result{instance_id = strings.clone(inst.agent_instance_id, context.temp_allocator), outcome = "accepted"})
 					defer domain.agent_instance_destroy(&relaunched_inst)

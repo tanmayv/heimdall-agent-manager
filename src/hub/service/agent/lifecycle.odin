@@ -12,8 +12,11 @@ import domain "odin_test:hub/domain"
 // stop_command_json. Reasons are typed so callers cannot invent new spellings;
 // the wire and the stored stop_reason column carry their string values.
 
-// Why a start was asked for. Logged with each launch.
+// Why a start was asked for. Logged with each launch. The zero value is
+// Unspecified, which start_begin refuses: a start built without naming its
+// reason fails instead of passing as a user start.
 Start_Reason :: enum u8 {
+	Unspecified,          // invalid: every caller names a reason
 	User_Start,           // explicit start (UI, ham-ctl, MCP instances.start)
 	User_Restart,         // explicit restart (composer, instance menu)
 	Instance_Create,      // created and started in one request
@@ -25,9 +28,12 @@ Start_Reason :: enum u8 {
 	Lease_Wake,           // the task engine wakes a lease holder
 	Bridge_Wake,          // the bridge asks for a start (start-begin)
 	Context_Rollover,     // the bridge restarts an agent with a fresh context
+	Reconfiguration,      // a provider/profile/model change relaunches a live agent (instance reconfigure, Fleet Apply)
+	Event_Wake,           // the event inbox wakes an exited agent for a pending event
 }
 
 START_REASON_WIRE := [Start_Reason]string {
+	.Unspecified          = "unspecified",
 	.User_Start           = "user_start",
 	.User_Restart         = "user_restart",
 	.Instance_Create      = "instance_create",
@@ -39,6 +45,8 @@ START_REASON_WIRE := [Start_Reason]string {
 	.Lease_Wake           = "lease_wake",
 	.Bridge_Wake          = "bridge_wake",
 	.Context_Rollover     = "context_rollover",
+	.Reconfiguration      = "reconfiguration",
+	.Event_Wake           = "event_wake",
 }
 
 start_reason_wire :: proc(r: Start_Reason) -> string { return START_REASON_WIRE[r] }
@@ -96,7 +104,9 @@ ensure_running :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, in
 	return start(service, auth, instance_id, {if_live = .Keep, reason = reason, guard = guard, guard_ctx = guard_ctx})
 }
 
-lifecycle_log_start :: proc(inst: domain.Agent_Instance, reason: Start_Reason) {
-	fmt.printfln("agent lifecycle: start instance=%s reason=%s run_count=%d provider=%s profile=%s model=%s transport=%s",
+lifecycle_log_start :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, reason: Start_Reason) {
+	line := fmt.tprintf("agent lifecycle: start instance=%s reason=%s run_count=%d provider=%s profile=%s model=%s transport=%s",
 		inst.agent_instance_id, start_reason_wire(reason), inst.run_count, inst.provider, inst.provider_profile, inst.model, inst.runtime_transport)
+	fmt.println(line)
+	if service != nil && service.fixture_start_log != nil do service.fixture_start_log(service.fixture_start_log_ctx, line)
 }

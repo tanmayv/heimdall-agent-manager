@@ -27,6 +27,9 @@ Agent_Service :: struct {
 	liveness_cache: Agent_Liveness_Cache,
 	// Unit fixtures only. The observer is ignored in non-test builds.
 	fixture_start_fact: proc(domain.Agent_Instance) -> Agent_Liveness,
+	// Unit fixtures only: receives each "agent lifecycle: start" log line.
+	fixture_start_log: proc(ctx: rawptr, line: string),
+	fixture_start_log_ctx: rawptr,
 	agents: ^iface.Agent_Repository,
 	bridges: ^iface.Bridge_Repository,
 	projects: ^iface.Project_Repository,
@@ -1169,7 +1172,7 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	inst.model = resolved.model
 	if input.has_display_name do inst.display_name = input.display_name
 	if fact.state == .Alive {
-  ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Relaunch, provider=resolved.provider, model=resolved.model, profile=inst.provider_profile, expected=&inst})
+  ticket, begin_err := start_begin(service, auth, instance_id, {if_live=.Relaunch, reason=.Reconfiguration, provider=resolved.provider, model=resolved.model, profile=inst.provider_profile, expected=&inst})
   if begin_err.code != .None do return {}, false, begin_err
   defer start_ticket_destroy(&ticket)
   if input.has_display_name {
@@ -1194,9 +1197,9 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	return iface.agent_save_instance(service.agents, inst)
 }
 
-relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, model: string, provider_profile:string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, reason: Start_Reason, provider, model: string, provider_profile:string = "") -> (domain.Agent_Instance, bool, domain.Domain_Error) {
  expected := inst
- next, _, ok, err := start(service, auth, inst.agent_instance_id, {if_live=.Relaunch, provider=provider, model=model, profile=provider_profile, expected=&expected})
+ next, _, ok, err := start(service, auth, inst.agent_instance_id, {if_live=.Relaunch, reason=reason, provider=provider, model=model, profile=provider_profile, expected=&expected})
  return next, ok, err
 }
 

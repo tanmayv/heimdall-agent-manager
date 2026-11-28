@@ -147,18 +147,18 @@ start_bytes_scenario :: proc(t:^testing.T,h:^Start_Test) {
 start_live_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_test_sql(t,h,"UPDATE agent_instances SET runtime_status='running',stopped_by='user';")
 	before:=start_test_row(t,h)
-	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{if_live=.Refuse})
+	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, if_live=.Refuse})
 	testing.expect_value(t,err.code,domain.Error_Code.Conflict)
 	testing.expect(t,strings.contains(err.details_json,"already_running"))
 	start_ticket_destroy(&ticket)
-	ticket,err=start_begin(&h.service,start_test_auth(),"inst",{if_live=.Keep})
+	ticket,err=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, if_live=.Keep})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	testing.expect(t,ticket.kept_live && !ticket.reserved)
 	testing.expect_value(t,start_send(&h.service,&ticket).code,domain.Error_Code.None)
 	start_ticket_destroy(&ticket)
 	testing.expect_value(t,fmt.tprintf("%#v",start_test_row(t,h)),fmt.tprintf("%#v",before))
 	testing.expect_value(t,len(h.commands),0)
-	inst,_,ok,start_err:=start(&h.service,start_test_auth(),"inst",{if_live=.Relaunch})
+	inst,_,ok,start_err:=start(&h.service,start_test_auth(),"inst",{reason=.User_Start, if_live=.Relaunch})
 	testing.expect(t,ok,start_err.message)
 	testing.expect_value(t,inst.run_count,4)
 	testing.expect_value(t,len(h.commands),1)
@@ -168,7 +168,7 @@ start_refusals_scenario :: proc(t:^testing.T,h:^Start_Test) {
 		// Restore all launch gates before each independent refusal.
 		h.registry.limits={}
 		start_test_sql(t,h,"UPDATE agent_instances SET stopped_by='user',runtime_status='stopped'; UPDATE bridges SET status='online',plan_disabled_at=''; UPDATE bridge_provider_settings SET enabled=1;")
-		req:=Start_Request{if_live=.Relaunch}
+		req:=Start_Request{if_live=.Relaunch,reason=.User_Start}
 		auth:=start_test_auth()
 		id:="inst"
 		expected:=start_test_row(t,h)
@@ -238,7 +238,7 @@ start_uow_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	uow,begun,err:=iface.unit_of_work_begin(&factory)
 	if !testing.expect(t,begun,err.message) do return
 	defer if uow.ctx!=nil do iface.unit_of_work_rollback(&uow)
-	ticket,begin_err:=start_begin(&h.service,start_test_auth(),"inst",{ref="transaction"})
+	ticket,begin_err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="transaction"})
 	testing.expect_value(t,begin_err.code,domain.Error_Code.None)
 	testing.expect_value(t,start_test_row(t,h).run_count,4)
 	testing.expect_value(t,len(h.commands),0)
@@ -271,14 +271,14 @@ start_bridge_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect_value(t,count3,5)
 }
 start_reused_live_scenario :: proc(t:^testing.T,h:^Start_Test) {
-	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="same"})
+	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="same"})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	start_cancel(&h.service,&ticket)
 	start_ticket_destroy(&ticket)
 	for status in ([]string{"starting","running","idle","busy","failed","unreachable"}) {
 		start_test_sql(t,h,fmt.tprintf("UPDATE agent_instances SET runtime_status='%s';",status))
 		before:=start_test_row(t,h)
-		ticket,err=start_begin(&h.service,start_test_auth(),"inst",{ref="same",if_live=.Relaunch})
+		ticket,err=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="same",if_live=.Relaunch})
 		testing.expect_value(t,err.code,domain.Error_Code.None)
 		if runtime_expected_active(status) {
 			testing.expect(t,ticket.reused && !ticket.reserved)
@@ -441,7 +441,7 @@ start_test_racing_save :: proc(ctx:rawptr, next:domain.Agent_Instance, count:int
 }
 start_race_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	h.ar.save_instance_guarded=start_test_racing_save
-	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="manual"})
+	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="manual"})
 	testing.expect_value(t,err.code,domain.Error_Code.Conflict)
 	testing.expect(t,strings.contains(err.details_json,"start_raced"))
 	start_ticket_destroy(&ticket)
@@ -452,7 +452,7 @@ start_race_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect_value(t,len(h.commands),0)
 }
 start_status_scenario :: proc(t:^testing.T,h:^Start_Test) {
-	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="status"})
+	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="status"})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	testing.expect_value(t,h.registry.active_instances,1)
 	proof := Process_Exit_Evidence{pid = 42, exit_code = 1, run_count = ticket.instance.run_count}
@@ -467,7 +467,7 @@ start_status_scenario :: proc(t:^testing.T,h:^Start_Test) {
 }
 start_expiry_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	reserved_at:=time.now()._nsec
-	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="expiry"})
+	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="expiry"})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	generation:=project_service.bridge_runtime_registry_generation(&h.registry,"brg")
 	state,found:=project_service.bridge_runtime_instance_get(&h.registry,"brg",generation,"inst")
@@ -482,7 +482,7 @@ start_expiry_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	start_ticket_destroy(&ticket)
 }
 start_success_scenario :: proc(t:^testing.T,h:^Start_Test) {
-	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="success"})
+	ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="success"})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	auth:=contracts.Auth_Context{kind=.Instance_Token,user_id="owner",agent_instance_id="inst"}
 	running,ok,serr:=mark_instance_start_success(&h.service,auth,ticket.instance.run_count)
@@ -502,7 +502,7 @@ start_acp_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	_,err:=iface.bridge_provider_status_upsert(&h.pr,{bridge_id="brg",provider="codex",binary_path="/bin/codex",state="present",checked_at=START_TEST_NOW,acp_adapter_json=`{"installed":true,"state":"ready","version":"0.162.0","runtime_kind":"system","checked_at":"now"}`})
 	testing.expect_value(t,err.code,domain.Error_Code.None)
 	start_test_sql(t,h,"UPDATE agent_instances SET launch_epoch='old_epoch';")
-	ticket,berr:=start_begin(&h.service,start_test_auth(),"inst",{ref="acp"})
+	ticket,berr:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="acp"})
 	testing.expect_value(t,berr.code,domain.Error_Code.None)
 	testing.expect_value(t,ticket.instance.runtime_transport,"acp")
 	testing.expect(t,strings.has_prefix(ticket.instance.launch_epoch,"launch_"))
@@ -525,7 +525,7 @@ start_owned_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	allocator:=mem.tracking_allocator(&track)
 	{
 		context.allocator=allocator
-		ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{ref="owned"},allocator)
+		ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, ref="owned"},allocator)
 		testing.expect_value(t,err.code,domain.Error_Code.None)
 		launch:=start_launch_json(&h.service,ticket,allocator=allocator)
 		delete(launch,allocator)
@@ -677,7 +677,7 @@ start_expected_generation_scenario :: proc(t:^testing.T,h:^Start_Test) {
  selected:=start_test_row(t,h)
  start_test_sql(t,h,"UPDATE agent_instances SET run_count=4,runtime_status='running';")
  for policy in ([]Start_If_Live{.Keep,.Relaunch,.Refuse}) {
-  ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{expected=&selected,if_live=policy})
+  ticket,err:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, expected=&selected,if_live=policy})
   testing.expect_value(t,err.code,domain.Error_Code.Conflict)
   testing.expect(t,strings.contains(err.details_json,"start_raced"),"stale selection is rejected before live policy")
   start_ticket_destroy(&ticket)
@@ -685,11 +685,11 @@ start_expected_generation_scenario :: proc(t:^testing.T,h:^Start_Test) {
  testing.expect_value(t,start_test_row(t,h).run_count,4)
  testing.expect_value(t,h.registry.active_instances,0)
  // A caller with no snapshot keeps the established live policy.
- kept,kerr:=start_begin(&h.service,start_test_auth(),"inst",{if_live=.Keep})
+ kept,kerr:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, if_live=.Keep})
  testing.expect_value(t,kerr.code,domain.Error_Code.None)
  testing.expect(t,kept.kept_live)
  start_settle(&h.service,&kept,true);start_ticket_destroy(&kept)
- relaunched,rerr:=start_begin(&h.service,start_test_auth(),"inst",{if_live=.Relaunch})
+ relaunched,rerr:=start_begin(&h.service,start_test_auth(),"inst",{reason=.User_Start, if_live=.Relaunch})
  testing.expect_value(t,rerr.code,domain.Error_Code.None)
  testing.expect_value(t,relaunched.instance.run_count,5)
  start_settle(&h.service,&relaunched,true);start_ticket_destroy(&relaunched)
@@ -729,7 +729,7 @@ start_rollover_after_user_stop_scenario :: proc(t:^testing.T,h:^Start_Test) {
 	testing.expect_value(t,h.registry.active_instances,0)
 	testing.expect_value(t,len(h.commands),1) // Only the stop, no launch.
 	// The same stop also invalidates an earlier fleet selection snapshot.
-	_, _, stale, stale_err := start(&h.service,start_test_auth(),"inst",{if_live=.Relaunch,expected=&selected})
+	_, _, stale, stale_err := start(&h.service,start_test_auth(),"inst",{reason=.User_Start, if_live=.Relaunch,expected=&selected})
 	testing.expect(t,!stale)
 	testing.expect_value(t,stale_err.code,domain.Error_Code.Conflict)
 	testing.expect_value(t,start_test_row(t,h).run_count,before.run_count)
@@ -830,7 +830,7 @@ test_rollover_duplicate_restart_has_one_generation :: proc(t:^testing.T) {start_
 test_rollover_failed_restart_releases_reservation :: proc(t:^testing.T) {start_test_run(t,start_rollover_failed_send_scenario)}
 
 start_ready_before_send_error_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
-	ticket, err := start_begin(&h.service, start_test_auth(), "inst", {})
+	ticket, err := start_begin(&h.service, start_test_auth(), "inst", {reason=.User_Start})
 	if !testing.expect_value(t, err.code, domain.Error_Code.None) do return
 	defer start_ticket_destroy(&ticket)
 	saved, applied, report_err := apply_bridge_status_report(&h.service, "brg", "inst", 1, "running", "idle", launch_epoch = ticket.instance.launch_epoch)
@@ -957,7 +957,7 @@ test_start_keep_uses_process_fact_not_failed_projection :: proc(t: ^testing.T) {
 	start_test_run(t, proc(t: ^testing.T, h: ^Start_Test) {
 		h.service.fixture_start_fact = nil
 		start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='failed', startup_status='startup_failed';")
-		ticket, waiting := start_begin(&h.service, start_test_auth(), "inst", {if_live = .Keep, ref = "lease"})
+		ticket, waiting := start_begin(&h.service, start_test_auth(), "inst", {reason=.User_Start, if_live = .Keep, ref = "lease"})
 		defer start_ticket_destroy(&ticket)
 		testing.expect_value(t, waiting.code, domain.Error_Code.Bridge_Busy)
 		testing.expect_value(t, start_test_row(t, h).run_count, 3)
@@ -965,7 +965,7 @@ test_start_keep_uses_process_fact_not_failed_projection :: proc(t: ^testing.T) {
 		// The verified live process wins even when the persisted UI cache is
 		// wrong. No generation opens and no other launch is required.
 		proof := Agent_Liveness{state = .Alive, reason = .pty_child_alive, pid = 42}
-		kept, err := start_begin(&h.service, start_test_auth(), "inst", {if_live = .Keep, ref = "lease", process_fact = proof})
+		kept, err := start_begin(&h.service, start_test_auth(), "inst", {reason=.User_Start, if_live = .Keep, ref = "lease", process_fact = proof})
 		defer start_ticket_destroy(&kept)
 		testing.expect_value(t, err.code, domain.Error_Code.None)
 		testing.expect(t, kept.kept_live && !kept.reserved)
@@ -981,7 +981,7 @@ test_automatic_start_relaunches_after_complete_roster_absence :: proc(t: ^testin
 		h.service.bridge_command_sink.send_runtime_command_wait = proc(_: rawptr, command: project_service.Runtime_Command, _: int) -> (string, bool, domain.Domain_Error) {
 			return fmt.aprintf(`{{"ok":true,"command_id":"%s","payload":{{"status":"succeeded","result":{{"agent_instance_id":"inst","state":"absent","source":"os_identity_gone","pid":0,"run_count":3,"launch_epoch":""}}}}}}`, command.command_id), true, {}
 		}
-		row, kept, started, err := start(&h.service, start_test_auth(), "inst", {if_live = .Keep})
+		row, kept, started, err := start(&h.service, start_test_auth(), "inst", {reason=.User_Start, if_live = .Keep})
 		defer domain.agent_instance_destroy(&row)
 		testing.expect(t, started && !kept && err.code == .None, err.message)
 		testing.expect_value(t, row.run_count, 4)

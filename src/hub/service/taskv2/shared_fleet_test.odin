@@ -124,7 +124,7 @@ test_shared_fleet_new_coordinator_and_manual_start_boundary :: proc(t: ^testing.
 		testing.expect_value(t, inst.model, "claude-sonnet-5-5" if scope == "chain" else "claude-fable-5-1")
 		included, ce := iface.fleet_scope_get(&fx.bridges, inst)
 		testing.expect(t, ce.code == .None && included == (scope == "chain"), "new empty task coordinator is distinguished from a manual conversation")
-		ticket, start_err := agent.start_begin(&log.service, auth, inst.agent_instance_id, {})
+		ticket, start_err := agent.start_begin(&log.service, auth, inst.agent_instance_id, {reason=.User_Start})
 		if testing.expect_value(t, start_err.code, domain.Error_Code.None) {
 			testing.expect_value(t, ticket.instance.model, "claude-sonnet-5-5" if scope == "chain" else "claude-fable-5-1")
 			command := agent.start_launch_json(&log.service, ticket)
@@ -238,7 +238,7 @@ test_shared_fleet_inline_and_coordinator_claim_keep_actual_runtime_across_relaun
 			included, ce := iface.fleet_scope_get(&fx.bridges, current)
 			testing.expect(t, ce.code == .None && included, "eligible manual caller promotes transactionally")
 			if solo do testing.expect(t, get_task(fx, string(task.task_id)).requires_user_approval, "the user review listed on the coordinator's task remains required")
-			ticket, te := agent.start_begin(&log.service, {kind=.Internal_User,user_id="u1"}, id, {if_live=.Relaunch})
+			ticket, te := agent.start_begin(&log.service, {kind=.Internal_User,user_id="u1"}, id, {reason=.User_Start, if_live=.Relaunch})
 			testing.expect_value(t, te.code, domain.Error_Code.None)
 			if te.code == .None {
 				// N2: a relaunch keeps the instance's own runtime; only applying

@@ -55,6 +55,7 @@ start_process_fact :: proc(service: ^Agent_Service, inst: domain.Agent_Instance)
 // No mutex and no network: this joins a transaction already open on this thread.
 start_begin :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, req: Start_Request, allocator := context.allocator) -> (t: Start_Ticket, err: domain.Domain_Error) {
 	// Guards run in the caller's context and their errors are returned unchanged.
+	if req.reason == .Unspecified do return {}, domain.domain_error(.Internal_Error, "agent start without a lifecycle reason")
 	if req.guard != nil {
 		if guard_err := req.guard(req.guard_ctx); guard_err.code != .None do return {}, guard_err
 	}
@@ -166,7 +167,7 @@ start_begin_impl :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 		if save_err.code != .None do return {}, save_err
 		return {}, domain.domain_error(.Conflict, "instance changed before start", `{"code":"start_raced"}`)
 	}
-	lifecycle_log_start(saved, req.reason)
+	lifecycle_log_start(service, saved, req.reason)
 	t = start_ticket_for_row(service, saved, req.ref, false, false)
 	t.reservation = generation
 	t.reserved = true

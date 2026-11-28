@@ -16,6 +16,9 @@ test_lifecycle_reasons_are_typed :: proc(t: ^testing.T) {
 	_, ok = restart_reason_parse("lease_wake")
 	testing.expect(t, !ok, "a caller cannot name an internal start reason for a restart")
 	for reason in Start_Reason do testing.expect(t, start_reason_wire(reason) != "", "every start reason has a wire name")
+	testing.expect_value(t, Start_Reason{}, Start_Reason.Unspecified)
+	_, ok = restart_reason_parse("unspecified")
+	testing.expect(t, !ok, "unspecified is never a restart reason")
 	testing.expect_value(t, stop_reason_parse("done for now"), STOP_USER_REQUESTED)
 	testing.expect_value(t, stop_reason_parse("user_force_stop"), STOP_USER_FORCE)
 	testing.expect(t, stop_reason_is_user(stop_reason_parse("")))
@@ -72,3 +75,48 @@ lifecycle_restart_keeps_runtime_scenario :: proc(t: ^testing.T, h: ^Start_Test) 
 
 @(test)
 test_restart_keeps_instance_provider_profile_model_transport :: proc(t: ^testing.T) { start_test_run(t, lifecycle_restart_keeps_runtime_scenario) }
+
+Lifecycle_Log_Capture :: struct { lines: [dynamic]string }
+lifecycle_capture_log :: proc(ctx: rawptr, line: string) {
+	c := (^Lifecycle_Log_Capture)(ctx)
+	// start_begin runs on a call-scoped arena: copy into the capture's own allocator.
+	append(&c.lines, strings.clone(line, c.lines.allocator))
+}
+
+// R7 review: a start that names no reason is refused (the zero value is
+// Unspecified), and the relaunch entry points name theirs.
+lifecycle_reason_required_scenario :: proc(t: ^testing.T, h: ^Start_Test) {
+	capture: Lifecycle_Log_Capture
+	capture.lines = make([dynamic]string, context.temp_allocator)
+	h.service.fixture_start_log = lifecycle_capture_log
+	h.service.fixture_start_log_ctx = &capture
+	defer { h.service.fixture_start_log = nil; h.service.fixture_start_log_ctx = nil }
+
+	start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='stopped' WHERE agent_instance_id='inst';")
+	before := start_test_row(t, h)
+	defer domain.agent_instance_destroy(&before)
+	_, _, ok, err := start(&h.service, start_test_auth(), "inst", {if_live = .Refuse})
+	testing.expect(t, !ok && err.code == .Internal_Error, "a start without a reason is refused")
+	after := start_test_row(t, h)
+	defer domain.agent_instance_destroy(&after)
+	testing.expect_value(t, after.run_count, before.run_count)
+	testing.expect_value(t, len(h.commands), 0)
+	testing.expect_value(t, len(capture.lines), 0)
+
+	// Reconfiguring a live agent relaunches it for reason reconfiguration.
+	start_test_sql(t, h, "UPDATE agent_instances SET runtime_status='running' WHERE agent_instance_id='inst';")
+	relaunched: bool
+	inst, rok, rerr := reconfigure_instance(&h.service, start_test_auth(), "inst", {has_display_name = true, display_name = "renamed"}, &relaunched)
+	if testing.expect(t, rok && relaunched, rerr.message) do domain.agent_instance_destroy(&inst)
+	if testing.expect_value(t, len(capture.lines), 1) do testing.expect(t, strings.contains(capture.lines[0], "reason=reconfiguration"), capture.lines[0])
+
+	// relaunch_instance (Fleet Apply) carries the reason its caller names.
+	row := start_test_row(t, h)
+	defer domain.agent_instance_destroy(&row)
+	next, nok, nerr := relaunch_instance(&h.service, start_test_auth(), row, .Reconfiguration, row.provider, row.model, row.provider_profile)
+	if testing.expect(t, nok, nerr.message) do domain.agent_instance_destroy(&next)
+	if testing.expect_value(t, len(capture.lines), 2) do testing.expect(t, strings.contains(capture.lines[1], "reason=reconfiguration"), capture.lines[1])
+}
+
+@(test)
+test_lifecycle_start_requires_a_typed_reason :: proc(t: ^testing.T) { start_test_run(t, lifecycle_reason_required_scenario) }

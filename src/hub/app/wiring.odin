@@ -1484,7 +1484,7 @@ event_inbox_notice :: proc(
 			&graph.agents,
 			{kind = .Internal_User, user_id = owner},
 			inst.agent_instance_id,
-			{if_live = .Refuse, process_fact = fact, expected = &inst,
+			{if_live = .Refuse, reason = .Event_Wake, process_fact = fact, expected = &inst,
 			 guard_ctx = &guard, guard = event_inbox_wake_guard},
 		)
 		defer domain.agent_instance_destroy(&started_row)
