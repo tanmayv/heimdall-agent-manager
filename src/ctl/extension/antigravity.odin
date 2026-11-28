@@ -84,8 +84,9 @@ antigravity_hook_from_name :: proc(name: string) -> Antigravity_Hook {
 ANTIGRAVITY_UNGATED_TOOLS :: [?]string{"view_file"}
 
 // antigravity_tool_needs_permission: in ask mode, whether agy asks for this tool.
+// A payload with no tool name is not known to be a read, so it asks too.
 antigravity_tool_needs_permission :: proc(tool_name: string) -> bool {
-	if strings.trim_space(tool_name) == "" do return false
+	if strings.trim_space(tool_name) == "" do return true
 	name := antigravity_tool_canonical(tool_name)
 	for t in ANTIGRAVITY_UNGATED_TOOLS do if name == t do return false
 	return true

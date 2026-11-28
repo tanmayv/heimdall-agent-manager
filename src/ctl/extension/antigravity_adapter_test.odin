@@ -1073,6 +1073,12 @@ test_antigravity_ask_mode_gates_every_tool_but_reads :: proc(t: ^testing.T) {
 		testing.expect_value(t, err, Hook_Error.None)
 		testing.expectf(t, !mapped.is_permission, "%s is not gated", tool)
 	}
+	// N1: a payload without a tool name is not known to be a read: it asks.
+	testing.expect(t, antigravity_tool_needs_permission(""))
+	testing.expect(t, antigravity_tool_needs_permission("  "))
+	nameless, nameless_err := antigravity_map_hook(`{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","stepIdx":8}`, TS)
+	testing.expect_value(t, nameless_err, Hook_Error.None)
+	testing.expect(t, nameless.is_permission, "a nameless tool is gated in ask mode")
 	// Outside ask mode nothing is gated.
 	mapped, _ := antigravity_map_hook(`{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"auto","toolCall":{"name":"some_future_mcp_tool"}}`, TS)
 	testing.expect(t, !mapped.is_permission)
