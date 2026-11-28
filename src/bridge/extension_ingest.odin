@@ -97,6 +97,10 @@ bridge_ext_ingest :: proc(rec: Bridge_Local_Agent_Token_Record, params: string, 
 	}
 	defer contracts.ext_split_events_destroy(raws)
 
+	// One usage source per instance (G7): hooks count only for a runtime
+	// whose context comes from its extension (an ACP child that loads the
+	// user's plugin still runs hooks; its protocol owns usage and context).
+	ext_owns_context := bridge_runtime_context_accepts(instance_id, .Extension)
 	for raw, i in raws {
 		ev, perr := contracts.ext_parse_event(raw)
 		if perr != .None {
@@ -148,7 +152,7 @@ bridge_ext_ingest :: proc(rec: Bridge_Local_Agent_Token_Record, params: string, 
 		}
 		s.last_event_at_ms = now
 		s.events_accepted += 1
-		token_changed := bridge_ext_token_fold_locked(s, instance_id, ev, now)
+		token_changed := ext_owns_context && bridge_ext_token_fold_locked(s, instance_id, ev, now)
 		sync.mutex_unlock(&bridge_ext_mutex)
 		// Only the throttled snapshot goes upstream (agent_instance_status.token_usage).
 		if token_changed do bridge_ext_token_enqueue_due(now, instance_id)
@@ -173,14 +177,15 @@ bridge_ext_token_fold_locked :: proc(s: ^Bridge_Ext_Instance_State, instance_id:
 // bridge_ext_usage_observe feeds a provider usage report that did not arrive
 // as a ham.ext.v1 event (an ACP runtime's protocol usage notification) into
 // the same per-instance accumulator and throttled hub push as extension
-// ingest. ev must carry has_usage; it belongs to the main agent.
-// Context rollover is deliberately not driven from here: its handoff request
-// is typed into a PTY and its idle signal comes from extension activity, so an
-// ACP runtime would enter a Requested phase it can never leave (which also
-// holds bot deliveries). The shared turn-based runtime brings ACP into it.
+// ingest. ev must carry has_usage; it belongs to the main agent. The usage is
+// the protocol's, so it counts only for a runtime whose context comes from its
+// protocol; the context policy then sees it (bridge_context_observe), and an
+// ACP runtime compacts instead of rolling over (context_rollover.odin).
 bridge_ext_usage_observe :: proc(instance_id: string, ev: contracts.Ext_Event, now: i64) {
 	context.allocator = bridge_ext_allocator()
 	if strings.trim_space(instance_id) == "" || !ev.has_usage do return
+	if !bridge_runtime_context_accepts(instance_id, .Protocol) do return
+	defer bridge_context_observe(instance_id, .Protocol, false, now)
 	sync.mutex_lock(&bridge_ext_mutex)
 	s := bridge_ext_state_locked(instance_id)
 	if s == nil { sync.mutex_unlock(&bridge_ext_mutex); return }

@@ -31,9 +31,18 @@ package main
 // protected until the rollover completes; task ownership
 // is never inferred from a timeout. Failed wake deliveries are retried.
 //
+// The runtime owns the context policy (runtime_iface.odin, R7): its
+// context_sources decide which signals count (hooks of an ACP child never do),
+// and a runtime that can compact is compacted natively at a trusted idle
+// instead (normal --> compacting --> normal with a cooldown; no handoff, no
+// restart, inbound never held). Only a runtime without compact rolls over.
+// The handoff request goes through the runtime (handoff_request), the restart
+// through the Hub's lifecycle path (restart_instance, reason context_rollover),
+// and the saved handoff reaches the new session as an unread input.
+//
 // Decisions run under bridge_rollover_mutex and return a list of actions; the
-// actions (PTY typing, hub calls) run after the lock is released, on a worker
-// thread unless bridge_rollover_sync_effects is set (tests).
+// actions (runtime calls, hub calls) run after the lock is released, on a
+// worker thread unless bridge_rollover_sync_effects is set (tests).
 
 import "base:runtime"
 import "core:encoding/hex"
@@ -59,6 +68,7 @@ Bridge_Rollover_Phase :: enum {
 	Requested,
 	Persisting,
 	Restarting,
+	Compacting, // a native compaction was asked for; never holds inbound
 }
 
 Bridge_Rollover_State :: struct {
@@ -80,6 +90,9 @@ Bridge_Rollover_State :: struct {
 	// agent went active since). Re-reported when the rollover ends without a
 	// restart so the hub does not keep showing an idle agent as active.
 	withheld_idle_source: string,
+	// The saved previous_context message: delivered to the new session as an
+	// unread input once it is ready (heap-owned).
+	handoff_message_id: string,
 }
 
 Bridge_Rollover_Action_Kind :: enum {
@@ -88,6 +101,8 @@ Bridge_Rollover_Action_Kind :: enum {
 	Alert,
 	Deliver_Notice,
 	Report_Idle,
+	Compact,
+	Deliver_Handoff,
 }
 
 Bridge_Rollover_Action :: struct {
@@ -107,6 +122,8 @@ Bridge_Rollover_Effects :: struct {
 	restart:        proc(instance_id: string, run_count: int) -> bool,
 	alert:          proc(instance_id, coordinator_id, text: string),
 	report_idle:    proc(instance_id, source: string),
+	compact:        proc(instance_id: string) -> bool,
+	deliver_handoff: proc(instance_id, message_id: string) -> bool,
 }
 
 bridge_rollover_mutex: sync.Mutex
@@ -240,7 +257,8 @@ bridge_rollover_phase_in_progress :: proc(phase: Bridge_Rollover_Phase) -> bool 
 
 // bridge_rollover_decide_event folds one main-agent signal into the state:
 // context_pct (-1 = unknown) and whether the main agent just went idle.
-bridge_rollover_decide_event :: proc(instance_id: string, context_pct: i64, idle: bool, rollover_pct: int, window: i64, now: i64) -> [dynamic]Bridge_Rollover_Action {
+// can_compact: the instance's runtime compacts natively (Agent_Runtime.compact).
+bridge_rollover_decide_event :: proc(instance_id: string, context_pct: i64, idle: bool, rollover_pct: int, window: i64, now: i64, can_compact := false) -> [dynamic]Bridge_Rollover_Action {
 	context.allocator = bridge_rollover_heap()
 	actions := make([dynamic]Bridge_Rollover_Action)
 	if strings.trim_space(instance_id) == "" do return actions
@@ -258,6 +276,14 @@ bridge_rollover_decide_event :: proc(instance_id: string, context_pct: i64, idle
 	#partial switch s.phase {
 	case .Pending:
 		cycle_id, ok := bridge_rollover_new_cycle_id()
+		if ok && can_compact {
+			delete(s.cycle_id)
+			s.cycle_id = cycle_id
+			s.run_count = run_count
+			bridge_rollover_set_phase_locked(s, .Compacting, now)
+			append(&actions, Bridge_Rollover_Action{kind = .Compact, instance_id = strings.clone(s.agent_instance_id), cycle_id = strings.clone(s.cycle_id), run_count = s.run_count})
+			return actions
+		}
 		if !ok {
 			append(&actions, bridge_rollover_alert_action_locked(s, strings.clone("Context rollover could not obtain secure randomness; no restart was requested. Retry after the cooldown.")))
 			bridge_rollover_finish_locked(s, now, &actions)
@@ -317,7 +343,10 @@ bridge_rollover_decide_tick :: proc(now: i64, window_for: proc(instance_id: stri
 				text := bridge_rollover_restart_stall_alert_text(s.agent_instance_id) if !s.restart_requested else
 					strings.clone("Context rollover restart has not reported readiness within 5 minutes. Message notifications have resumed; check the instance in Heimdall. No additional restart will be forced.")
 				append(&actions, bridge_rollover_alert_action_locked(&s, text))
-			}
+			}		case .Compacting:
+			// The compact action never reported back (dropped or fenced): ask
+			// again at the next idle.
+			bridge_rollover_set_phase_locked(&s, .Pending, now)
 		}
 	}
 	return actions
@@ -341,12 +370,14 @@ bridge_rollover_begin_persist :: proc(instance_id: string, now: i64) -> (request
 // (restart at the next idle); otherwise back to requested so the agent may retry
 // (the request timer counts from this persistence attempt; notification holding
 // has an independent absolute deadline that retries cannot extend).
-bridge_rollover_end_persist :: proc(instance_id, cycle_id: string, acked: bool, now: i64) {
+bridge_rollover_end_persist :: proc(instance_id, cycle_id: string, acked: bool, now: i64, message_id := "") {
 	sync.mutex_lock(&bridge_rollover_mutex)
 	defer sync.mutex_unlock(&bridge_rollover_mutex)
 	s := bridge_rollover_state_locked(instance_id, create = false)
 	if s == nil || s.phase != .Persisting || s.cycle_id != cycle_id do return
 	if acked {
+		delete(s.handoff_message_id, bridge_rollover_heap())
+		s.handoff_message_id = strings.clone(message_id, bridge_rollover_heap())
 		bridge_rollover_set_phase_locked(s, .Restarting, now)
 		s.restart_requested = false
 		s.stall_alerted = false
@@ -370,6 +401,25 @@ bridge_rollover_decide_restart_result :: proc(instance_id, cycle_id: string, ok:
 	return actions
 }
 
+// bridge_rollover_decide_compact_result: a started compaction ends the cycle
+// with a cooldown; a refused one (the agent turned busy first) waits for the
+// next idle in Pending.
+bridge_rollover_decide_compact_result :: proc(instance_id, cycle_id: string, ok: bool, now: i64) -> [dynamic]Bridge_Rollover_Action {
+	context.allocator = bridge_rollover_heap()
+	actions := make([dynamic]Bridge_Rollover_Action)
+	sync.mutex_lock(&bridge_rollover_mutex)
+	defer sync.mutex_unlock(&bridge_rollover_mutex)
+	s := bridge_rollover_state_locked(instance_id, create = false)
+	if s == nil || s.phase != .Compacting || s.cycle_id != cycle_id do return actions
+	if ok {
+		fmt.println("bridge context: native compaction started", instance_id, s.context_pct)
+		bridge_rollover_finish_locked(s, now, &actions)
+	} else {
+		bridge_rollover_set_phase_locked(s, .Pending, now)
+	}
+	return actions
+}
+
 // bridge_rollover_decide_start_success completes a rollover once the restarted
 // agent reports start-success. Returns whether a rollover completed.
 bridge_rollover_decide_start_success :: proc(instance_id: string, now: i64) -> (actions: [dynamic]Bridge_Rollover_Action, completed: bool) {
@@ -383,6 +433,12 @@ bridge_rollover_decide_start_success :: proc(instance_id: string, now: i64) -> (
 	// withheld idle is stale.
 	delete(s.withheld_idle_source, bridge_rollover_heap())
 	s.withheld_idle_source = ""
+	// The new session gets the saved handoff as an unread input.
+	if s.handoff_message_id != "" {
+		append(&actions, Bridge_Rollover_Action{kind = .Deliver_Handoff, instance_id = strings.clone(s.agent_instance_id), text = strings.clone(s.handoff_message_id)})
+		delete(s.handoff_message_id, bridge_rollover_heap())
+		s.handoff_message_id = ""
+	}
 	bridge_rollover_finish_locked(s, now, &actions)
 	completed = true
 	return
@@ -450,7 +506,7 @@ bridge_rollover_forget :: proc(instance_id: string) {
 	for s, i in bridge_rollover_states {
 		if s.agent_instance_id != instance_id do continue
 		heap := bridge_rollover_heap()
-		delete(s.cycle_id, heap); delete(s.agent_instance_id, heap); delete(s.coordinator_id, heap); delete(s.withheld_idle_source, heap)
+		delete(s.cycle_id, heap); delete(s.agent_instance_id, heap); delete(s.coordinator_id, heap); delete(s.withheld_idle_source, heap); delete(s.handoff_message_id, heap)
 		for q in s.queued_notices do delete(q, heap)
 		delete(s.queued_notices)
 		unordered_remove(&bridge_rollover_states, i)
@@ -460,26 +516,38 @@ bridge_rollover_forget :: proc(instance_id: string) {
 
 // ---- wiring ----------------------------------------------------------------
 
-// bridge_rollover_on_ext_event is called by extension ingest for every
-// main-agent event after the token accumulator has folded it in.
-bridge_rollover_on_ext_event :: proc(instance_id: string, idle: bool, now: i64) {
+// bridge_context_observe feeds one main-agent signal into the instance's
+// context policy, if its runtime takes signals from that source.
+bridge_context_observe :: proc(instance_id: string, source: Runtime_Context_Source, idle: bool, now: i64) {
+	if strings.trim_space(instance_id) == "" || !bridge_runtime_context_accepts(instance_id, source) do return
 	window, _, pct := bridge_ext_context_window_for(instance_id)
 	_, rollover_pct, _ := bridge_context_window_thresholds()
-	actions := bridge_rollover_decide_event(instance_id, pct, idle, rollover_pct, window, now)
+	actions := bridge_rollover_decide_event(instance_id, pct, idle, rollover_pct, window, now, bridge_runtime_can_compact(instance_id))
 	if len(actions) > 0 || bridge_rollover_phase_of(instance_id) != .Normal do bridge_rollover_worker_ensure_started()
 	bridge_rollover_run(actions)
 }
 
+// bridge_rollover_on_ext_event is called by extension ingest for every
+// main-agent event after the token accumulator has folded it in.
+bridge_rollover_on_ext_event :: proc(instance_id: string, idle: bool, now: i64) {
+	bridge_context_observe(instance_id, .Extension, idle, now)
+}
+
 // bridge_rollover_on_activity feeds an activity report that did not come from
-// extension ingest (the pane_diff screen detector, for providers without an
-// extension such as Pi) into the state machine. Only pane_diff is accepted: it
-// observes the instance's main pane, so it is always the main agent. Only an
+// extension ingest into the state machine: the pane_diff screen detector (for
+// providers without an extension such as Pi; it observes the main pane, so it
+// is always the main agent) and an ACP runtime's own turn reports. Only an
 // explicit "idle" counts as a finished turn: waiting_user / waiting_approval
 // are blocked prompts, not rollover-safe. Repeated idle from several sources
 // is harmless: Requested / restart_requested make the transitions idempotent.
 bridge_rollover_on_activity :: proc(instance_id, activity, source: string, now: i64) {
-	if source != "pane_diff" || strings.trim_space(instance_id) == "" do return
-	bridge_rollover_on_ext_event(instance_id, activity == "idle", now)
+	ctx: Runtime_Context_Source
+	switch source {
+	case "pane_diff": ctx = .Terminal
+	case "acp": ctx = .Protocol
+	case: return
+	}
+	bridge_context_observe(instance_id, ctx, activity == "idle", now)
 }
 
 // bridge_rollover_intercept_chat_send handles agent.chat.send. handled=false
@@ -501,7 +569,8 @@ bridge_rollover_intercept_chat_send :: proc(request_id, params: string, rec: Bri
 	persist := bridge_rollover_effects.persist if bridge_rollover_effects.persist != nil else bridge_rollover_persist_default
 	relay := persist(rec, pctx_request_id, body, metadata)
 	acked := relay.ok && relay.status >= 200 && relay.status < 300 && strings.contains(relay.body, `"accepted":true`)
-	bridge_rollover_end_persist(rec.agent_instance_id, pctx_request_id, acked, bridge_runtime_now_ms())
+	message_id := bridge_local_extract_json_string(relay.body, "message_id", "", context.temp_allocator) if acked else ""
+	bridge_rollover_end_persist(rec.agent_instance_id, pctx_request_id, acked, bridge_runtime_now_ms(), message_id)
 	if !acked {
 		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "previous_context was not saved (hub unreachable); send it again"), true
 		return bridge_local_response_error(request_id, "hub_error", relay.body), true
@@ -568,13 +637,14 @@ bridge_rollover_execute :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 	context.allocator = bridge_rollover_heap()
 	defer bridge_rollover_actions_destroy(actions)
 	for a in actions {
-		if a.kind == .Deliver_Request || a.kind == .Restart || a.kind == .Report_Idle {
+		if a.kind == .Deliver_Request || a.kind == .Restart || a.kind == .Report_Idle || a.kind == .Compact {
 			sync.mutex_lock(&bridge_rollover_mutex)
 			s := bridge_rollover_state_locked(a.instance_id, create = false)
 			current := s != nil && s.cycle_id == a.cycle_id &&
 				((a.kind == .Deliver_Request && s.phase == .Requested) ||
 				 (a.kind == .Restart && s.phase == .Restarting && s.restart_requested) ||
-				 (a.kind == .Report_Idle && s.phase == .Normal))
+				 (a.kind == .Report_Idle && s.phase == .Normal) ||
+				 (a.kind == .Compact && s.phase == .Compacting))
 			sync.mutex_unlock(&bridge_rollover_mutex)
 			if !current do continue
 		}
@@ -608,6 +678,13 @@ bridge_rollover_execute :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 		case .Report_Idle:
 			report := bridge_rollover_effects.report_idle if bridge_rollover_effects.report_idle != nil else bridge_rollover_report_idle_default
 			report(a.instance_id, a.text)
+		case .Compact:
+			compact := bridge_rollover_effects.compact if bridge_rollover_effects.compact != nil else bridge_runtime_compact
+			ok := compact(a.instance_id)
+			bridge_rollover_execute(bridge_rollover_decide_compact_result(a.instance_id, a.cycle_id, ok, bridge_runtime_now_ms()))
+		case .Deliver_Handoff:
+			deliver := bridge_rollover_effects.deliver_handoff if bridge_rollover_effects.deliver_handoff != nil else bridge_rollover_deliver_handoff_default
+			if !deliver(a.instance_id, a.text) do fmt.println("bridge context rollover: handoff notice not admitted; the restarted agent reads it from its starter prompt", a.instance_id)
 		}
 	}
 }
@@ -615,9 +692,15 @@ bridge_rollover_execute :: proc(actions: [dynamic]Bridge_Rollover_Action) {
 // ---- default effects -------------------------------------------------------
 
 bridge_rollover_deliver_line_default :: proc(instance_id, text: string) -> bool {
-	socket, ok := bridge_pty_host_ensure_daemon()
-	if !ok do return false
-	return bridge_pty_host_deliver_line(socket, instance_id, text)
+	return bridge_runtime_handoff_request(instance_id, text)
+}
+
+// The saved previous_context message is an unread input of the new session:
+// a hub message notice keyed by the message id, so the agent's chat read
+// (the hub's inputs_read) retires it like any other unread message.
+bridge_rollover_deliver_handoff_default :: proc(instance_id, message_id: string) -> bool {
+	notice := bridge_pty_host_unread_notice()
+	return bridge_runtime_submit(instance_id, {kind = .User_Message, id = message_id, text = notice, hub_message = true, origin = "context_rollover"})
 }
 
 bridge_rollover_report_idle_default :: proc(instance_id, source: string) {
@@ -636,7 +719,10 @@ bridge_rollover_rec_for :: proc(instance_id: string) -> (rec: Bridge_Local_Agent
 		delete(token)
 		return {}, false
 	}
-	return Bridge_Local_Agent_Token_Record{agent_instance_id = instance_id, instance_token = token}, true
+	// The restart is fenced on the generation that asked for it, so the record
+	// carries the stored run_count (task_18ebe1fdc25cfe38 RC1: without it every
+	// rollover restart was refused before the Hub was asked).
+	return Bridge_Local_Agent_Token_Record{agent_instance_id = instance_id, instance_token = token, run_count = bridge_agent_instance_run_count(instance_id)}, true
 }
 
 bridge_rollover_persist_default :: proc(rec: Bridge_Local_Agent_Token_Record, request_id, body, metadata: string) -> Bridge_Local_Relay_Result {
@@ -656,10 +742,16 @@ bridge_rollover_restart_default :: proc(instance_id: string, run_count: int) -> 
 	defer delete(rec.instance_token)
 	if !sync.atomic_load(&bridge_hub_runtime_up) do return false
 	route := bridge_agent_route("agent.agents.instance_restart", fmt.tprintf(`{{"agent_instance_id":"%s"}}`, instance_id))
-	if route.kind != .Raw do return false
-	if run_count <= 0 || rec.run_count != run_count do return false
-	body := fmt.tprintf(`{"expected_run_count":%d}`, run_count)
+	if route.kind != .Raw { fmt.println("bridge context rollover: restart route unavailable", instance_id); return false }
+	if run_count <= 0 || rec.run_count != run_count {
+		fmt.println("bridge context rollover: restart generation changed", instance_id, "asked", run_count, "current", rec.run_count)
+		return false
+	}
+	// The Hub's one lifecycle path stops this session and starts a fresh one
+	// with the instance's own runtime (restart_instance, reason context_rollover).
+	body := fmt.tprintf(`{"expected_run_count":%d,"reason":"context_rollover"}`, run_count)
 	relay := bridge_local_relay_raw(route.http_method, route.path, route.query, body, rec)
+	if !relay.ok || relay.status < 200 || relay.status >= 300 do fmt.println("bridge context rollover: hub restart refused", instance_id, relay.status)
 	return relay.ok && relay.status >= 200 && relay.status < 300
 }
 

@@ -70,6 +70,29 @@ stream (Antigravity-shaped `tool.end` metrics) reaches the pending state
 rollover that is already pending; it does not detect the threshold, so Pi (no
 usage or metrics source) is not rolled over automatically.
 
+### The runtime owns the context policy
+
+Each `Agent_Runtime` (`src/bridge/runtime_iface.odin`) names its
+`context_sources`: the only signals that fold usage and drive the policy. A PTY
+runtime takes extension hooks and `pane_diff`; an ACP runtime takes only its
+protocol (usage notifications and its own turn idle, source `acp`). Hooks of an
+ACP-launched Claude, which loads the user's heimdall plugin, therefore never
+fold usage or start a rollover
+(`test_rollover_acp_runtime_ignores_hooks_and_compacts_on_its_own_idle`).
+
+A runtime with `compact` (ACP) is compacted natively at a trusted idle past
+`rollover_pct`: Claude ACP gets a `/compact` prompt turn, Codex app-server a
+`thread/compact/start` request. No handoff, no restart, inbound is never held,
+and the usual cooldown applies
+(`test_rollover_compacting_runtime_compacts_at_idle_without_restart`,
+`acp_claude_compact_is_a_slash_compact_turn_when_idle`,
+`acp_codex_compact_sends_thread_compact_start_when_idle`). A runtime without
+`compact` (PTY) rolls over: the handoff request goes through
+`handoff_request`, the restart through the Hub's lifecycle path
+(`restart_instance`, reason `context_rollover`, keeping the instance's
+provider, profile, model and transport), and the saved `previous_context`
+message reaches the new session as an unread input.
+
 ### Thresholds: one source
 
 `warn_pct` (40) and `rollover_pct` (70) are defined only in

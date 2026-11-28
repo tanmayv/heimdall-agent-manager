@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -81,6 +82,17 @@ acp_driver_acp_prompt :: proc(r: ^ACP_Runtime, input: Bridge_Inbox_Input, bootst
     if acp_runtime_request(r, "session/prompt", string(raw)) {
         bridge_runtime_note_agent_activity(r.instance, "active", "acp")
     }
+}
+
+// claude-agent-acp runs slash commands sent as a prompt; /compact compacts
+// the session's context in that turn.
+ACP_CLAUDE_COMPACT_PROMPT :: "/compact"
+
+acp_driver_acp_compact :: proc(r: ^ACP_Runtime) -> bool {
+    if r.session == "" do return false
+    id := fmt.tprintf("%s%d", ACP_COMPACT_INPUT_PREFIX, r.client.state.next_rpc_id)
+    acp_driver_acp_prompt(r, Bridge_Inbox_Input{id = id, text = ACP_CLAUDE_COMPACT_PROMPT})
+    return r.d.phase == "prompt" && r.d.error == ""
 }
 
 acp_driver_acp_result :: proc(data: rawptr, result: ACP_RPC_Result) {

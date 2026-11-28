@@ -37,6 +37,7 @@ acp_protocol_codex_driver := ACP_Protocol_Driver{
     permission_result = acp_codex_permission_result, permission_relay = acp_codex_permission_relay,
     tick = acp_codex_tick,
     can_steer = acp_codex_can_steer,
+    compact = acp_codex_compact,
     state_key = ACP_CODEX_STATE_KEY, state_load = acp_codex_state_load,
     state_save = acp_codex_state_save, state_delete = acp_codex_state_delete,
     launch_args = acp_codex_launch_args,
@@ -238,6 +239,23 @@ acp_codex_prompt :: proc(r: ^ACP_Runtime,input: Bridge_Inbox_Input,bootstrap: bo
     if acp_runtime_request(r,"turn/start",acp_event_json(params)) do bridge_runtime_note_agent_activity(r.instance,"active","acp")
 }
 
+// thread/compact/start (codex-schema v2 ThreadCompactStartParams {threadId})
+// answers {} and runs the compaction as a turn on the thread: turn/started,
+// a contextCompaction item, turn/completed. The runtime enters the prompt
+// phase like turn/start does, so that turn binds and finishes normally.
+acp_codex_compact :: proc(r: ^ACP_Runtime) -> bool {
+    if r.d.phase!="ready" || r.session=="" do return false
+    r.d.cancelling=false; acp_codex(r).interrupt_deadline=0; acp_codex(r).interrupt_sent=false
+    acp_runtime_replace(&acp_codex(r).turn_id,""); acp_runtime_replace(&acp_codex(r).start_id,"")
+    acp_runtime_replace(&acp_codex(r).message_id,""); acp_codex(r).message_bytes=0; acp_codex(r).message_done=false
+    id := fmt.tprintf("%s%d",ACP_COMPACT_INPUT_PREFIX,r.client.state.next_rpc_id)
+    acp_runtime_replace(&r.d.phase,"prompt"); acp_runtime_replace(&r.d.current_input,id)
+    if acp_runtime_events.prompt_started!=nil do acp_runtime_events.prompt_started(r,id)
+    if !acp_runtime_request(r,"thread/compact/start",acp_event_json(struct{threadId:string}{r.session})) do return false
+    bridge_runtime_note_agent_activity(r.instance,"active","acp")
+    return true
+}
+
 acp_codex_turn_known :: proc(r: ^ACP_Runtime,id: string) -> bool {
     for prior in acp_codex(r).completed_turns do if prior==id do return true
     return false
@@ -264,6 +282,14 @@ acp_codex_result :: proc(data: rawptr,result: ACP_RPC_Result) {
     if result.method=="turn/start" && string(result.id)!=acp_codex(r).start_id do return
     if !result.ok {
         if result.error.message=="acp_pipe_lost" || result.error.message=="acp_pipe_gap" do return
+        // A refused compaction is not a broken session: end its turn and go on.
+        if result.method=="thread/compact/start" && !strings.has_prefix(result.error.message,"acp_") {
+            if r.d.phase=="prompt" && strings.has_prefix(r.d.current_input,ACP_COMPACT_INPUT_PREFIX) && acp_codex(r).turn_id=="" {
+                fmt.eprintfln("acp codex: thread/compact/start refused for instance=%s: %s", r.instance, result.error.message)
+                acp_codex_finish(r,acp_event_object(`{"status":"failed"}`))
+            }
+            return
+        }
         if result.method=="thread/resume" && !strings.has_prefix(result.error.message,"acp_") {
             message := strings.to_lower(result.error.message,context.temp_allocator)
             if strings.contains(message,"archived") && !acp_codex(r).unarchived {
@@ -320,6 +346,7 @@ acp_codex_result :: proc(data: rawptr,result: ACP_RPC_Result) {
         if r.d.cancelling do acp_codex_cancel(r)
         acp_runtime_drain(r)
     case "turn/interrupt": // Ack only; turn/completed owns completion.
+    case "thread/compact/start": // Ack only; the compaction turn owns completion.
     }
 }
 
