@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS bot_channel_conversion_origins (
     inbound_message_id TEXT PRIMARY KEY NOT NULL,
     binding_id TEXT NOT NULL REFERENCES bot_channel_conversion_bindings(binding_id),
     provider_update_key TEXT NOT NULL CHECK (provider_update_key <> ''),
-    UNIQUE (binding_id, provider_update_key)
+    UNIQUE (provider_update_key)
 );
 
 -- A unique, chosen input, written by the trusted turn-routing service. An

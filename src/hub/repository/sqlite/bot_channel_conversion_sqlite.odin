@@ -65,7 +65,7 @@ bot_conversion_origin_exists_sqlite :: proc(ctx: rawptr, binding_id, event_id, i
 	defer tx_repository_leave(guard)
 	conn := bot_repo_conn(ctx)
 	stmt, err := bot_repo_prepare(conn, `SELECT 1 FROM bot_channel_conversion_origins
-		WHERE inbound_message_id=? OR (binding_id=? AND provider_update_key=?) LIMIT 1;`,{inbound_id,binding_id,event_id})
+		WHERE inbound_message_id=? OR provider_update_key=? LIMIT 1;`,{inbound_id,event_id})
 	if err.code != .None do return false,err
 	defer sqlite3_finalize(stmt)
 	switch sqlite3_step(stmt) {

@@ -55,6 +55,7 @@ Content_Repository :: struct {
 	list_input_consumptions: Content_List_Input_Consumptions_Proc,
 	get_reply_watermark: Content_Get_Reply_Watermark_Proc,
 	advance_reply_watermark: Content_Advance_Reply_Watermark_Proc,
+	set_authenticated_channel_origin: proc(ctx: rawptr, owner: domain.User_ID, conversation_id, message_id, provider, binding_id: string) -> (bool, domain.Domain_Error),
 	message_origin: Content_Message_Origin_Proc,
 	conversation_has_channel: Content_Conversation_Has_Channel_Proc,
 	ctx: rawptr,
@@ -146,4 +147,10 @@ content_list_conversation_project_links :: proc(r: ^Content_Repository, owner: d
 content_latest_user_visible_message :: proc(r: ^Content_Repository, cid: string, owner: domain.User_ID) -> (domain.Chat_Message, bool, domain.Domain_Error) {
 	if r == nil || r.latest_user_visible_message == nil do return {}, false, domain.domain_error(.Internal_Error, "latest visible message repository is not configured")
 	return r.latest_user_visible_message(r.ctx, cid, owner)
+}
+
+// Call only for a verified inbound and its transaction-local binding receipt.
+content_set_authenticated_channel_origin :: proc(r: ^Content_Repository, owner: domain.User_ID, conversation_id, message_id, provider, binding_id: string) -> (bool, domain.Domain_Error) {
+	if r==nil || r.set_authenticated_channel_origin==nil do return false,domain.domain_error(.Internal_Error,"channel origin repository is not configured")
+	return r.set_authenticated_channel_origin(r.ctx,owner,conversation_id,message_id,provider,binding_id)
 }

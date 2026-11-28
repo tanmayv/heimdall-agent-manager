@@ -98,3 +98,19 @@ content_conversation_has_channel_sqlite :: proc(ctx: rawptr, owner: domain.User_
 	if sqlite3_step(stmt) != SQLITE_ROW do return false, domain.domain_error(.Internal_Error, "failed conversation channel lookup")
 	return sqlite3_column_int64(stmt, 0) != 0, {}
 }
+
+// Bind the consumed-input origin to a particular pairing, not just a provider.
+content_set_authenticated_channel_origin_sqlite :: proc(ctx: rawptr, owner: domain.User_ID, conversation_id, message_id, provider, binding_id: string) -> (bool, domain.Domain_Error) {
+	guard := tx_repository_enter()
+	defer tx_repository_leave(guard)
+	if binding_id=="" || (provider!="telegram" && provider!="whatsapp") do return false,domain.domain_error(.Validation_Failed,"invalid channel origin")
+	conn := ((^Content_Repo_SQLite)(ctx)).conn
+	changes, err := bot_repo_write(conn,`UPDATE chat_messages SET origin=? || '/' || ?
+		WHERE owner_user_id=? AND conversation_id=? AND message_id=? AND direction='user_to_agent' AND origin IS NULL
+		AND EXISTS (SELECT 1 FROM bot_channel_conversion_origins o JOIN channel_bindings b ON b.binding_id=o.binding_id
+			WHERE o.inbound_message_id=chat_messages.message_id AND b.binding_id=? AND b.owner_user_id=chat_messages.owner_user_id AND b.provider=?);`,
+		{provider,binding_id,string(owner),conversation_id,message_id,binding_id,provider})
+	if err.code != .None do return false,err
+	if changes != 1 do return false,domain.domain_error(.Conflict,"channel origin was not recorded")
+	return true,{}
+}

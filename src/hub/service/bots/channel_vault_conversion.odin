@@ -22,12 +22,12 @@ Bound_Reply_Consumer :: struct {
 
 // Called by verified channel intake before any message/spool write. The caller
 // owns the returned ordinary vault envelope and its provider-event receipt.
-seal_channel_input :: proc(s: ^Bots_Service, owner, binding_id, input_message_id, provider: string, event: channel.Inbound) -> (string, domain.Domain_Error) {
+seal_channel_input :: proc(s: ^Bots_Service, owner, binding_id, input_message_id, provider: string, event: channel.Inbound, snapshot: ^Channel_Vault_Prepared = nil) -> (string, domain.Domain_Error) {
 	if event.kind != .Text || event.external_chat_id == "" || event.external_user_id == "" ||
 	   len(event.text) == 0 || len(event.text) > contracts.BOT_CHANNEL_VAULT_MAX_PLAINTEXT || !utf8.valid_string(event.text) {
 		return "", bots_detail_error(.Validation_Failed, "channel_vault_invalid_input")
 	}
-	return convert_channel_text(s, {owner=owner, binding=binding_id, input=input_message_id, provider=provider, event=event}, {})
+	return convert_channel_text(s, {owner=owner, binding=binding_id, input=input_message_id, provider=provider, event=event}, {}, snapshot)
 }
 
 // The originating message and destination are resolved from durable records.
@@ -66,7 +66,7 @@ channel_conversion_snapshot :: proc(s: ^Bots_Service, intent: Conversion_Intent)
 }
 
 @(private="file")
-convert_channel_text :: proc(s: ^Bots_Service, intent: Conversion_Intent, consumer: Bound_Reply_Consumer) -> (string, domain.Domain_Error) {
+convert_channel_text :: proc(s: ^Bots_Service, intent: Conversion_Intent, consumer: Bound_Reply_Consumer, snapshot: ^Channel_Vault_Prepared = nil) -> (string, domain.Domain_Error) {
 	initial, authority, ref_err := channel_conversion_snapshot(s, intent)
 	if ref_err.code != .None do return "", ref_err
 	req := initial.request
@@ -102,5 +102,6 @@ convert_channel_text :: proc(s: ^Bots_Service, intent: Conversion_Intent, consum
 	if parsed != .Ok || !valid_id || vid != expected || epoch != authority.vault_epoch || len(cipher) != len(intent.event.text) + vault.HEADER_BYTES {
 		return "", bots_detail_error(.Validation_Failed, "channel_vault_invalid_envelope")
 	}
+	if snapshot != nil do snapshot^ = current
 	return strings.clone(result.body), {}
 }
