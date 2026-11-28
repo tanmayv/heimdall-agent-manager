@@ -11,6 +11,7 @@ import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:time"
+import contracts "odin_test:contracts"
 import vault "odin_test:lib/vault"
 
 PROFILE_ID_MAX :: 32
@@ -45,6 +46,8 @@ Provider_Profile_Config :: struct {
 	api_key_redacted: bool `json:"api_key_redacted"`,
 	gcp_project:      string `json:"gcp_project"`,
 	gcp_location:     string `json:"gcp_location"`,
+	// PTY delivery key data over the provider descriptor's (CONTRACT-17).
+	pty_delivery:     contracts.Pty_Delivery_Spec `json:"pty_delivery"`,
 }
 
 Provider_Profile :: struct {
@@ -314,6 +317,7 @@ profile_validate :: proc(p: ^Provider_Profile) -> Profile_Error {
 	if c.auth_method != "" && !slice.contains(d.profile_auth_methods, c.auth_method) do return .Config_Invalid
 	if c.launch_args != "" && !d.profile_launch_args do return .Config_Invalid
 	if len(c.custom_models) > 0 && !d.profile_custom_models do return .Config_Invalid
+	if !contracts.pty_delivery_spec_valid(c.pty_delivery) do return .Config_Invalid
 	for value in ([]string{c.api_key, c.gcp_project, c.gcp_location}) {
 		if len(value) > PROFILE_ENV_VALUE_MAX || profile_has_nul(value) do return .Config_Invalid
 	}

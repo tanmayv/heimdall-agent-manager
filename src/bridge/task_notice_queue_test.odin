@@ -14,19 +14,16 @@ import vm "core:mem/virtual"
 notice_test_state: string
 notice_test_status: int
 notice_test_reads, notice_test_turns: int
-notice_test_text: string
-notice_test_interrupt: bool
 notice_test_fail: bool
 
 notice_test_relay :: proc(path: []string, method, params: string, rec: Bridge_Local_Agent_Token_Record, timeout_ms: int) -> Bridge_Local_Relay_Result {
     notice_test_reads += 1
     return {ok = true, status = notice_test_status, body = fmt.aprintf("{{\"data\":{{\"state\":\"%s\"}}}}", notice_test_state)}
 }
-notice_test_daemon :: proc() -> (string, bool) { return "test-socket", true }
-notice_test_pty :: proc(socket, instance, task_id, target_role, human_message, task_title: string, interrupt: bool) -> bool {
-    notice_test_turns += 1
-    delete(notice_test_text); notice_test_text = strings.clone(human_message)
-    notice_test_interrupt = interrupt
+// Counts typing attempts (input frames); fails them all while notice_test_fail.
+notice_test_send :: proc(socket: string, frame: []byte) -> bool {
+    if _, captured := pty_test_captured(frame); !captured do return bridge_pty_host_send_oneway(socket, frame)
+    if len(frame) > 4 && frame[4] == PTY_HOST_T_INPUT do notice_test_turns += 1
     return !notice_test_fail
 }
 notice_test_n :: proc(text: string, now: i64 = 1000, instance: string = "inst_notice_test") -> Bridge_Task_Notice {
@@ -95,7 +92,8 @@ notice_queue_relevance_preserves_legacy_and_lookup_failure :: proc(t: ^testing.T
 notice_queue_pty_batches_two_seconds_filters_stale_and_merges_restore :: proc(t: ^testing.T) {
     sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
     context.allocator = runtime.heap_allocator()
-    bridge_runtime_set_status("inst_notice_test", "running", "idle")
+    pty_test_activity("inst_notice_test", "idle", "pane_diff")
+    pty_test_forget_typed("inst_notice_test")
     defer bridge_runtime_set_status("inst_notice_test", "stopped", "idle")
     prev_q := bridge_task_notices; bridge_task_notices = {}
     defer { bridge_task_notice_queue_delete(&bridge_task_notices); bridge_task_notices = prev_q }
@@ -103,9 +101,10 @@ notice_queue_pty_batches_two_seconds_filters_stale_and_merges_restore :: proc(t:
     dir := fmt.aprintf("%s/.cache/heimdall-tests/notice-queue-%d", os.get_env("HOME", context.temp_allocator), sync.current_thread_id())
     bridge_config.data_dir = dir
     defer { bridge_config.data_dir = prev_data; os.remove_all(dir); delete(dir) }
-    prev_daemon := bridge_task_notice_daemon; prev_deliver := bridge_task_notice_pty_deliver
-    bridge_task_notice_daemon = notice_test_daemon; bridge_task_notice_pty_deliver = notice_test_pty
-    defer { bridge_task_notice_daemon = prev_daemon; bridge_task_notice_pty_deliver = prev_deliver; delete(notice_test_text); notice_test_text = "" }
+    prev_daemon, prev_send, prev_sleep := pty_runtime_daemon, pty_runtime_send, pty_runtime_sleep
+    pty_runtime_daemon, pty_runtime_send, pty_runtime_sleep = pty_test_daemon, pty_test_send, pty_test_sleep
+    defer { pty_runtime_daemon, pty_runtime_send, pty_runtime_sleep = prev_daemon, prev_send, prev_sleep; pty_test_reset() }
+    pty_test_reset()
     prev_records := bridge_local_token_records
     bridge_local_token_records = make([dynamic]Bridge_Local_Agent_Token_Record)
     append(&bridge_local_token_records, Bridge_Local_Agent_Token_Record{agent_instance_id = "inst_notice_test", role = .Agent})
@@ -115,7 +114,8 @@ notice_queue_pty_batches_two_seconds_filters_stale_and_merges_restore :: proc(t:
     notice_test_state = "ready"; notice_test_status = 200; notice_test_turns = 0
     testing.expect(t, bridge_task_notice_enqueue(notice_test_n("first")))
     bridge_task_notice_tick(2999)
-    testing.expect_value(t, notice_test_turns, 0)
+    turns0, _ := pty_test_inputs()
+    testing.expect_value(t, turns0, 0)
     second := notice_test_n("second", 2700)
     testing.expect(t, bridge_task_notice_enqueue(second))
     stale := notice_test_n("stale", 2800); stale.expected_state = "in_progress"
@@ -127,11 +127,13 @@ notice_queue_pty_batches_two_seconds_filters_stale_and_merges_restore :: proc(t:
     testing.expect(t, err == nil && bridge_task_notice_restore(&bridge_task_notices, string(raw), 2900))
     testing.expect_value(t, len(bridge_task_notices.entries), 4)
     bridge_task_notice_tick(3000)
-    testing.expect_value(t, notice_test_turns, 1)
-    testing.expect_value(t, notice_test_text, "first | second | legacy")
-    testing.expect(t, !notice_test_interrupt, "notices never interrupt (CONTRACT-07)")
+    turns, text := pty_test_inputs()
+    testing.expect_value(t, turns, 1)
+    testing.expect_value(t, text, "first | second | legacy")
+    testing.expect_value(t, pty_test_trace(), `"first | second | legacy" Enter Enter`) // no Esc: notices never interrupt
     bridge_task_notice_tick(9000)
-    testing.expect_value(t, notice_test_turns, 1)
+    turns, _ = pty_test_inputs()
+    testing.expect_value(t, turns, 1)
     saved, read_err := os.read_entire_file(path, context.allocator); defer delete(saved)
     restored: Bridge_Task_Notice_Queue; defer bridge_task_notice_queue_delete(&restored)
     testing.expect(t, read_err == nil && bridge_task_notice_restore(&restored, string(saved), 9000))
@@ -242,15 +244,16 @@ notice_queue_failed_delivery_retries_and_expiry_never_sends :: proc(t: ^testing.
     dir := fmt.aprintf("%s/.cache/heimdall-tests/notice-retry-%d", os.get_env("HOME", context.temp_allocator), sync.current_thread_id())
     bridge_config.data_dir = dir
     defer { bridge_config.data_dir = prev_data; os.remove_all(dir); delete(dir) }
-    prev_daemon := bridge_task_notice_daemon; prev_deliver := bridge_task_notice_pty_deliver
-    bridge_task_notice_daemon = notice_test_daemon; bridge_task_notice_pty_deliver = notice_test_pty
-    defer { bridge_task_notice_daemon = prev_daemon; bridge_task_notice_pty_deliver = prev_deliver; notice_test_fail = false; delete(notice_test_text); notice_test_text = "" }
+    prev_daemon, prev_send, prev_sleep := pty_runtime_daemon, pty_runtime_send, pty_runtime_sleep
+    pty_runtime_daemon, pty_runtime_send, pty_runtime_sleep = pty_test_daemon, notice_test_send, pty_test_sleep
+    defer { pty_runtime_daemon, pty_runtime_send, pty_runtime_sleep = prev_daemon, prev_send, prev_sleep; notice_test_fail = false }
     notice_test_turns = 0; notice_test_fail = true
     n := notice_test_n("retry", instance = "inst_notice_retry"); n.task = ""
     testing.expect(t, bridge_task_notice_enqueue(n))
     testing.expect(t, !bridge_task_notice_deliver(bridge_task_notices.entries[:]), "unknown restored runtime waits for reconciliation")
     testing.expect_value(t, notice_test_turns, 0)
-    bridge_runtime_set_status(n.instance, "running", "idle")
+    pty_test_activity(n.instance, "idle", "pane_diff")
+    pty_test_forget_typed(n.instance)
     defer bridge_runtime_set_status(n.instance, "stopped", "idle")
     path := bridge_task_notice_path(); defer delete(path)
     before_retry, before_err := os.read_entire_file(path, context.allocator); defer delete(before_retry)

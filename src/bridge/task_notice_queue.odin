@@ -1,6 +1,9 @@
 package main
 
 // Task notices wait here, rather than becoming one provider turn per hub frame.
+// It is also the PTY runtime's durable inbox (runtime_pty.odin): every queued
+// PTY input waits here, FIFO per instance, until the runtime reports a trusted
+// idle, and each delivered batch is one turn (CONTRACT-09/18).
 // The queue owns heap strings; snapshots and HTTP parsing use the worker's arena.
 import "base:runtime"
 import "core:encoding/json"
@@ -18,8 +21,12 @@ BRIDGE_TASK_NOTICE_MAX_AGE_MS :: i64(24*60*60*1000)
 
 Bridge_Task_Notice :: struct {
     instance, task, expected_state, origin, text: string,
+    // Admission identity (hub message/command id) and input kind: "" for a
+    // notification, BRIDGE_NOTICE_USER_MESSAGE for a user message.
+    id, kind: string,
     queued_ms, due_ms: i64,
 }
+BRIDGE_NOTICE_USER_MESSAGE :: "user_message"
 Bridge_Task_Notice_Queue :: struct {
     entries: [dynamic]Bridge_Task_Notice,
 }
@@ -27,34 +34,36 @@ bridge_task_notices: Bridge_Task_Notice_Queue
 bridge_task_notices_mu: sync.Mutex
 bridge_task_notices_stop: bool
 bridge_task_notice_relay := bridge_local_relay_agent_envelope
-bridge_task_notice_daemon := bridge_pty_host_ensure_daemon
-bridge_task_notice_pty_deliver := bridge_pty_host_deliver_task_nudge
 
 bridge_task_notice_same :: proc(a, b: Bridge_Task_Notice) -> bool {
+    // A retried admission (same id) is the same input; distinct ids never merge.
+    if a.id != "" || b.id != "" do return a.instance == b.instance && a.id == b.id
     return a.instance == b.instance && a.task == b.task && a.expected_state == b.expected_state &&
         a.origin == b.origin && a.text == b.text
 }
 
 bridge_task_notice_delete :: proc(n: Bridge_Task_Notice) {
-    delete(n.instance); delete(n.task); delete(n.expected_state); delete(n.origin); delete(n.text)
+    delete(n.instance); delete(n.task); delete(n.expected_state); delete(n.origin); delete(n.text); delete(n.id); delete(n.kind)
 }
 
 bridge_task_notice_clone :: proc(n: Bridge_Task_Notice) -> Bridge_Task_Notice {
     out := n
     out.instance = strings.clone(n.instance); out.task = strings.clone(n.task)
     out.expected_state = strings.clone(n.expected_state); out.origin = strings.clone(n.origin); out.text = strings.clone(n.text)
+    out.id = strings.clone(n.id); out.kind = strings.clone(n.kind)
     return out
 }
 
 bridge_task_notice_bytes :: proc(n: Bridge_Task_Notice) -> int {
-    return len(n.instance)+len(n.task)+len(n.expected_state)+len(n.origin)+len(n.text)
+    return len(n.instance)+len(n.task)+len(n.expected_state)+len(n.origin)+len(n.text)+len(n.id)+len(n.kind)
 }
 
 // Returns false on pressure: the hub receives accepted, not a false delivery receipt.
 // Restores use this same merge, so an entry already queued live is never replayed.
 bridge_task_notice_merge :: proc(q: ^Bridge_Task_Notice_Queue, n: Bridge_Task_Notice) -> bool {
     if n.instance == "" || n.text == "" || len(n.text) > 64*1024 ||
-        len(n.instance) > 1024 || len(n.task) > 1024 || len(n.origin) > 1024 || len(n.expected_state) > 32 { return false }
+        len(n.instance) > 1024 || len(n.task) > 1024 || len(n.origin) > 1024 || len(n.expected_state) > 32 ||
+        len(n.id) > 1024 || len(n.kind) > 32 { return false }
     bytes := bridge_task_notice_bytes(n)
     instance_bytes := bytes
     instance_count := 0
@@ -126,13 +135,59 @@ bridge_task_notice_relevant :: proc(n: Bridge_Task_Notice) -> bool {
 }
 
 bridge_task_notice_text :: proc(batch: []Bridge_Task_Notice) -> string {
-    b := strings.builder_make()
+    texts := make([dynamic]string, context.temp_allocator)
     for n in batch {
         if !bridge_task_notice_relevant(n) do continue
+        append(&texts, n.text)
+    }
+    return bridge_task_notice_join(texts[:])
+}
+
+// One line per batch, FIFO; a repeated line (two message notices from one
+// sender) is typed once. Caller owns the result.
+bridge_task_notice_join :: proc(texts: []string) -> string {
+    b := strings.builder_make()
+    for text, i in texts {
+        repeated := false
+        for prev in texts[:i] do if prev == text do repeated = true
+        if repeated do continue
         if strings.builder_len(b) > 0 do strings.write_string(&b, " | ")
-        strings.write_string(&b, n.text)
+        strings.write_string(&b, text)
     }
     return strings.to_string(b)
+}
+
+// bridge_task_notice_select returns clones (temp-allocated) of an instance's
+// queued user messages whose ids are listed, in queue (FIFO) order.
+bridge_task_notice_select :: proc(instance: string, ids: []string) -> []Bridge_Task_Notice {
+    out := make([dynamic]Bridge_Task_Notice, context.temp_allocator)
+    sync.mutex_lock(&bridge_task_notices_mu); defer sync.mutex_unlock(&bridge_task_notices_mu)
+    for n in bridge_task_notices.entries {
+        if n.instance != instance || n.kind != BRIDGE_NOTICE_USER_MESSAGE || n.id == "" do continue
+        for id in ids do if id == n.id { append(&out, bridge_task_notice_clone_temp(n)); break }
+    }
+    return out[:]
+}
+
+bridge_task_notice_clone_temp :: proc(n: Bridge_Task_Notice) -> Bridge_Task_Notice {
+    context.allocator = context.temp_allocator
+    return bridge_task_notice_clone(n)
+}
+
+// bridge_task_notice_remove_ids drops an instance's queued inputs with these
+// ids (delivered by Send now, or already read). Returns how many were removed.
+bridge_task_notice_remove_ids :: proc(instance: string, ids: []string) -> int {
+    context.allocator = runtime.heap_allocator()
+    sync.mutex_lock(&bridge_task_notices_mu); defer sync.mutex_unlock(&bridge_task_notices_mu)
+    removed := 0
+    for i := 0; i < len(bridge_task_notices.entries); {
+        n := bridge_task_notices.entries[i]
+        listed := false
+        for id in ids do if n.instance == instance && n.id != "" && n.id == id do listed = true
+        if listed { bridge_task_notice_delete(n); ordered_remove(&bridge_task_notices.entries, i); removed += 1 } else { i += 1 }
+    }
+    if removed > 0 do _ = bridge_task_notice_save()
+    return removed
 }
 
 // All hub relevance reads run on the notice worker, outside ACP ownership and

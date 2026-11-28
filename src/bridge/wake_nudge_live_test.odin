@@ -170,6 +170,7 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	})
 	defer delete(wake)
 	bridge_hub_handle_wake_agent(nil, wake)
+	wake_test_trusted_idle(id)
 	bridge_task_notice_tick(bridge_runtime_now_ms()+BRIDGE_TASK_NOTICE_WINDOW_MS)
 	launch, has := bridge_runtime_get_launch(id)
 	testing.expect(t, has && launch.role == "worker", "launch record kept, role refreshed")
@@ -180,6 +181,7 @@ test_wake_nudge_live_child_keeps_process_and_refreshes_task_md :: proc(t: ^testi
 	wake_test_trusted_idle(id)
 	_ = os.remove(task_md)
 	bridge_hub_handle_wake_agent(nil, wake)
+	wake_test_trusted_idle(id)
 	bridge_task_notice_tick(bridge_runtime_now_ms()+BRIDGE_TASK_NOTICE_WINDOW_MS)
 	snapshot, _ := bridge_runtime_instance_snapshot(id)
 	testing.expect(t, snapshot.runtime_status == "running" && snapshot.start_success_seen, "same-generation wake preserves readiness")
@@ -209,7 +211,8 @@ wake_test_trusted_idle :: proc(id: string) {
 	for &inst in bridge_runtime_instances do if inst.agent_instance_id == id {
 		inst.activity_status = "idle"
 		inst.activity_source = "pane_diff"
-		inst.activity_updated_unix_ms = bridge_runtime_now_ms()
+		// After any typing so far: the typed turn has been seen.
+		inst.activity_updated_unix_ms = bridge_runtime_now_ms() + 1
 		inst.pty_process_alive = true
 		inst.start_success_seen = true
 	}

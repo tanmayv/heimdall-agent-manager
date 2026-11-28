@@ -225,7 +225,8 @@ pty_host_deliver_line_gates_bracketed_paste :: proc(t: ^testing.T) {
 			testing.expect_value(t, ctx.payloads[base][0], u8(PTY_HOST_T_INPUT))
 			testing.expect_value(t, string(ctx.payloads[base][5:data_offset]), instance)
 			expected_text := "\x1b[200~line[201~tail\x1b[201~"
-			if i == 1 do expected_text = "raw\r\n\x1bbytes"
+			// Raw delivery is sanitized too: no ESC, CR/LF folded (CONTRACT-17).
+			if i == 1 do expected_text = "raw bytes"
 			testing.expect_value(t, string(ctx.payloads[base][data_offset:]), expected_text)
 			for key_index in 1..=2 {
 				payload := ctx.payloads[base + key_index]
@@ -261,11 +262,10 @@ pty_host_delivery_maps_push_to_input_enter :: proc(t: ^testing.T) {
 	for i in 0..<len(want) do testing.expect_value(t, kp[i], want[i])
 }
 
-// pty_host_user_message_interrupts_with_esc pins the wire shape of the ESC key
-// that bridge_pty_host_deliver_message sends BEFORE typing a user-message notice.
-// Pressing ESC first interrupts the agent's current turn so it drops to an
-// input-ready prompt and picks up the just-arrived user message ASAP. The key
-// tag byte is the Esc discriminant (2), which must stay in sync with proto.rs.
+// pty_host_user_message_interrupts_with_esc pins the wire shape of the ESC key,
+// the default interrupt key that an explicit user steer / send now presses
+// before typing (runtime_pty.odin; plain queued delivery never sends it). The
+// key tag byte is the Esc discriminant (2), which must stay in sync with proto.rs.
 @(test)
 pty_host_user_message_interrupts_with_esc :: proc(t: ^testing.T) {
 	esc := pty_host_encode_key("inst_a", .Esc)
@@ -295,77 +295,9 @@ pty_host_nudge_payload_allocator :: proc() -> runtime.Allocator {
 	return runtime.heap_allocator()
 }
 
-// pty_host_deliver_task_nudge_interrupt_sends_esc verifies that
-// bridge_pty_host_deliver_task_nudge sends the ESC key frame when interrupt is true.
-@(test)
-pty_host_deliver_task_nudge_interrupt_sends_esc :: proc(t: ^testing.T) {
-	sock_path := fmt.tprintf("/tmp/test_nudge_esc_%d.sock", os.get_pid())
-	_ = posix.unlink(cstring(raw_data(sock_path)))
-	defer _ = posix.unlink(cstring(raw_data(sock_path)))
-
-	listener_fd := posix.socket(.UNIX, .STREAM)
-	testing.expect(t, listener_fd >= 0, "socket create failed")
-	defer posix.close(listener_fd)
-
-	addr: posix.sockaddr_un
-	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
-		addr.sun_len = c.uchar(size_of(addr))
-	}
-	addr.sun_family = .UNIX
-	for i in 0..<len(sock_path) do addr.sun_path[i] = c.char(sock_path[i])
-	addr.sun_path[len(sock_path)] = 0
-	bind_res := posix.bind(listener_fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr)))
-	testing.expect_value(t, bind_res, posix.result.OK)
-	listen_res := posix.listen(listener_fd, 8)
-	testing.expect_value(t, listen_res, posix.result.OK)
-
-	Server_Ctx :: struct {
-		listener_fd:       posix.FD,
-		first_payload:     []byte,
-		total_conns:       int,
-		// Named explicitly because frame payloads cross a thread boundary: they
-		// are allocated on the accept thread below and freed on the test thread.
-		// See the note above pty_host_nudge_payload_allocator.
-		payload_allocator: runtime.Allocator,
-	}
-	ctx := Server_Ctx{listener_fd = listener_fd, payload_allocator = pty_host_nudge_payload_allocator()}
-	defer if len(ctx.first_payload) > 0 do delete(ctx.first_payload, ctx.payload_allocator)
-
-	th := thread.create_and_start_with_data(rawptr(&ctx), proc(data: rawptr) {
-		s := (^Server_Ctx)(data)
-		context.allocator = s.payload_allocator
-		for s.total_conns < 3 {
-			client := posix.accept(s.listener_fd, nil, nil)
-			if client < 0 do break
-			s.total_conns += 1
-			payload, ok := pty_host_read_frame(client)
-			if ok && s.total_conns == 1 {
-				s.first_payload = payload
-			} else if ok {
-				delete(payload, s.payload_allocator)
-			}
-			posix.close(client)
-		}
-	})
-	defer thread.destroy(th)
-
-	delivered := bridge_pty_host_deliver_task_nudge(sock_path, "inst_worker", "task_test_1", "worker", "human notice", "Test Title", true)
-	testing.expect(t, delivered, "deliver_task_nudge with interrupt should succeed")
-
-	thread.join(th)
-
-	testing.expect_value(t, ctx.total_conns, 3)
-	want_esc := []byte{PTY_HOST_T_KEY, 0, 0, 0, 11, 'i', 'n', 's', 't', '_', 'w', 'o', 'r', 'k', 'e', 'r', 2}
-	testing.expect_value(t, len(ctx.first_payload), len(want_esc))
-	for i in 0..<len(want_esc) {
-		if i < len(ctx.first_payload) {
-			testing.expect_value(t, ctx.first_payload[i], want_esc[i])
-		}
-	}
-}
-
 // pty_host_deliver_task_nudge_no_interrupt_no_esc verifies that
-// bridge_pty_host_deliver_task_nudge does NOT send ESC when interrupt is false.
+// bridge_pty_host_deliver_task_nudge never sends ESC: notices never interrupt
+// (CONTRACT-07), so there is no interrupt variant any more.
 @(test)
 pty_host_deliver_task_nudge_no_interrupt_no_esc :: proc(t: ^testing.T) {
 	sock_path := fmt.tprintf("/tmp/test_nudge_no_esc_%d.sock", os.get_pid())
@@ -418,7 +350,7 @@ pty_host_deliver_task_nudge_no_interrupt_no_esc :: proc(t: ^testing.T) {
 	})
 	defer thread.destroy(th)
 
-	delivered := bridge_pty_host_deliver_task_nudge(sock_path, "inst_worker", "task_test_1", "worker", "human notice", "Test Title", false)
+	delivered := bridge_pty_host_deliver_task_nudge(sock_path, "inst_worker", "task_test_1", "worker", "human notice", "Test Title")
 	testing.expect(t, delivered, "deliver_task_nudge without interrupt should succeed")
 
 	thread.join(th)

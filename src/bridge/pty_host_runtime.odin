@@ -148,57 +148,61 @@ bridge_pty_host_retire_daemon_process :: proc(p: ^os.Process, has: ^bool, term_g
 	return false
 }
 
-// The delivery path receives only an instance id, so retain the provider chosen
-// while assembling that instance's spawn request. This store uses the process
-// heap explicitly: both strings outlive the request allocator (which is a
-// per-test tracking allocator in the test suite).
+// The delivery path receives only an instance id, so retain the provider and
+// profile chosen while assembling that instance's spawn request. This store
+// uses the process heap explicitly: the strings outlive the request allocator
+// (which is a per-test tracking allocator in the test suite).
+Pty_Host_Instance_Provider :: struct { provider, profile: string }
 pty_host_instance_provider_lock: sync.Mutex
-pty_host_instance_providers:     map[string]string
+pty_host_instance_providers:     map[string]Pty_Host_Instance_Provider
 
-bridge_pty_host_track_instance_provider :: proc(instance, provider: string) {
+bridge_pty_host_track_instance_provider :: proc(instance, provider: string, profile := "") {
 	if strings.trim_space(instance) == "" do return
 	heap := runtime.heap_allocator()
 	sync.mutex_lock(&pty_host_instance_provider_lock)
 	defer sync.mutex_unlock(&pty_host_instance_provider_lock)
 	if pty_host_instance_providers == nil {
-		pty_host_instance_providers = make(map[string]string, allocator = heap)
+		pty_host_instance_providers = make(map[string]Pty_Host_Instance_Provider, allocator = heap)
 	}
-	if old_provider, exists := pty_host_instance_providers[instance]; exists {
-		for old_key in pty_host_instance_providers {
-			if old_key == instance {
-				delete_key(&pty_host_instance_providers, old_key)
-				delete(old_key, heap)
-				break
-			}
-		}
-		delete(old_provider, heap)
-	}
-	pty_host_instance_providers[strings.clone(instance, heap)] = strings.clone(provider, heap)
+	bridge_pty_host_untrack_instance_provider_locked(instance)
+	pty_host_instance_providers[strings.clone(instance, heap)] = {strings.clone(provider, heap), strings.clone(profile, heap)}
 }
 
 bridge_pty_host_untrack_instance_provider :: proc(instance: string) {
-	heap := runtime.heap_allocator()
 	sync.mutex_lock(&pty_host_instance_provider_lock)
 	defer sync.mutex_unlock(&pty_host_instance_provider_lock)
-	if pty_host_instance_providers == nil do return
-	provider, exists := pty_host_instance_providers[instance]
-	if !exists do return
-	for key in pty_host_instance_providers {
-		if key == instance {
-			delete_key(&pty_host_instance_providers, key)
-			delete(key, heap)
-			break
-		}
-	}
-	delete(provider, heap)
+	bridge_pty_host_untrack_instance_provider_locked(instance)
 }
 
-bridge_pty_host_instance_wants_bracketed_paste :: proc(instance: string) -> bool {
+bridge_pty_host_untrack_instance_provider_locked :: proc(instance: string) {
+	heap := runtime.heap_allocator()
+	if pty_host_instance_providers == nil do return
+	key, value, exists := map_entry_lookup(instance)
+	if !exists do return
+	delete_key(&pty_host_instance_providers, key)
+	delete(key, heap); delete(value.provider, heap); delete(value.profile, heap)
+}
+
+@(private = "file")
+map_entry_lookup :: proc(instance: string) -> (key: string, value: Pty_Host_Instance_Provider, ok: bool) {
+	for k, v in pty_host_instance_providers do if k == instance do return k, v, true
+	return "", {}, false
+}
+
+// bridge_pty_host_instance_profile returns the provider and profile an instance
+// was spawned with (temp-allocated; "" when untracked).
+bridge_pty_host_instance_profile :: proc(instance: string) -> (provider, profile: string) {
 	sync.mutex_lock(&pty_host_instance_provider_lock)
 	defer sync.mutex_unlock(&pty_host_instance_provider_lock)
-	if pty_host_instance_providers == nil do return false
-	provider, exists := pty_host_instance_providers[instance]
-	return exists && provider == "codex"
+	if pty_host_instance_providers == nil do return "", ""
+	v, exists := pty_host_instance_providers[instance]
+	if !exists do return "", ""
+	return strings.clone(v.provider, context.temp_allocator), strings.clone(v.profile, context.temp_allocator)
+}
+
+// Bracketed paste is PTY delivery data (provider descriptor, then profile).
+bridge_pty_host_instance_wants_bracketed_paste :: proc(instance: string) -> bool {
+	return pty_runtime_delivery(instance).paste_mode == .Bracketed
 }
 
 // bridge_pty_host_bin resolves the ham-pty-host binary: the HEIMDALL_HAM_PTY_HOST_BIN
@@ -420,7 +424,10 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, model, agent
 	}
 	profile.extension_expected = bridge_provider_launch_extension_expected(profile,pp.profile_id if pp != nil else "")
 	bridge_startup_set_expectation(instance_id, agent_token, profile.extension_expected)
-	return bridge_pty_host_build_spawn_for_profile(instance_id, run_dir, profile, model, agent_token, full_env, display_name, timeout_seconds, permission_mode)
+	req, ok := bridge_pty_host_build_spawn_for_profile(instance_id, run_dir, profile, model, agent_token, full_env, display_name, timeout_seconds, permission_mode)
+	// Delivery key data resolves per profile (CONTRACT-17).
+	if ok && pp != nil do bridge_pty_host_track_instance_provider(instance_id, provider, pp.profile_id)
+	return req, ok
 }
 
 // Args of a launch without a provider profile: for Codex, the overrides that load
@@ -605,31 +612,12 @@ bridge_pty_host_paste_wrap :: proc(text: string) -> string {
 	return strings.to_string(b)
 }
 
-PTY_HOST_NOTICE_SECOND_ENTER_PAUSE :: 150 * time.Millisecond
-
-// Types the notice then presses Enter twice, allowing TUIs that treat the first
-// Enter as a newline to submit it. Returns false if input or either key send fails.
+// Types the line and submits it with the instance's PTY delivery key data
+// (by default Enter twice, for TUIs that take the first Enter as a newline).
+// No interrupt key and no idle gate: callers that must not type into a busy
+// turn go through the runtime interface's queue (runtime_pty.odin).
 bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
-	decrypted := bridge_decrypt_embedded_vault_tokens(text)
-	defer delete(decrypted)
-	delivery_text := decrypted
-	wrapped := ""
-	if bridge_pty_host_instance_wants_bracketed_paste(instance) {
-		wrapped = bridge_pty_host_paste_wrap(decrypted)
-		delivery_text = wrapped
-	}
-	defer if wrapped != "" do delete(wrapped)
-	input := pty_host_encode_input(instance, transmute([]byte)delivery_text)
-	defer delete(input)
-	if !bridge_pty_host_send_oneway(socket, input) do return false
-	// Small settle delay before Enter, matching the wrapper's 300ms pane pause so a
-	// TUI input box registers the pasted text before the submit key.
-	time.sleep(300 * time.Millisecond)
-	key := pty_host_encode_key(instance, .Enter)
-	defer delete(key)
-	if !bridge_pty_host_send_oneway(socket, key) do return false
-	time.sleep(PTY_HOST_NOTICE_SECOND_ENTER_PAUSE)
-	return bridge_pty_host_send_oneway(socket, key)
+	return pty_runtime_execute(socket, instance, text, .Queue, pty_runtime_delivery(instance))
 }
 
 // bridge_pty_host_send_oneway writes a data-plane frame that expects no reply
@@ -784,18 +772,9 @@ bridge_shell_run_notice :: proc(session_id, status, exit_code: string) -> string
 }
 
 // bridge_pty_host_deliver_message renders the same notice the wrapper produced for
-// an agent_message push and delivers it.
-//
-// User-initiated messages press ESC BEFORE typing the notice: this interrupts the
-// agent's current turn (most CLI agents treat ESC as "cancel/stop") so it drops
-// back to an input-ready prompt and picks up the just-arrived user message ASAP
-// instead of finishing a long autonomous run first. The ESC is followed by a
-// short settle so the pane returns to its input box before we paste the notice.
+// an agent_message push and delivers it. Plain delivery never presses an
+// interrupt key (CONTRACT-05): interrupting is an explicit user mode.
 bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> bool {
-	esc := pty_host_encode_key(instance, .Esc)
-	defer delete(esc)
-	if !bridge_pty_host_send_oneway(socket, esc) do return false
-	time.sleep(300 * time.Millisecond)
 	msg := bridge_pty_host_message_notice(sender)
 	defer delete(msg)
 	return bridge_pty_host_deliver_line(socket, instance, msg)
@@ -804,14 +783,8 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 // bridge_pty_host_deliver_task_nudge delivers the task-nudge notice. MEM-6: when
 // the hub supplies a human_message it is delivered verbatim (context-rich line);
 // otherwise we fall back to the legacy generated notice for backwards compat with
-// older hubs that don't populate human_message.
-bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "", interrupt: bool = false) -> bool {
-	if interrupt {
-		esc := pty_host_encode_key(instance, .Esc)
-		defer delete(esc)
-		if !bridge_pty_host_send_oneway(socket, esc) do return false
-		time.sleep(300 * time.Millisecond)
-	}
+// older hubs that don't populate human_message. Notices never interrupt (CONTRACT-07).
+bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "", task_title: string = "") -> bool {
 	msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message, task_title)
 	defer delete(msg)
 	return bridge_pty_host_deliver_line(socket, instance, msg)
@@ -836,14 +809,14 @@ bridge_pty_host_deliver_notice :: proc(socket, instance, notice: string) -> bool
 // in the wrapper-free path: it ensures the daemon is up, then renders+delivers the
 // notice for the given kind ("message" | "task_nudge"). Returns false if the daemon
 // is unavailable or the delivery fails.
-bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string, human_message: string = "", task_title: string = "", interrupt: bool = false) -> bool {
+bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string, human_message: string = "", task_title: string = "") -> bool {
 	socket, ok := bridge_pty_host_ensure_daemon()
 	if !ok do return false
 	switch kind {
 	case "message":
 		return bridge_pty_host_deliver_message(socket, instance, sender)
 	case "task_nudge":
-		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role, human_message, task_title, interrupt)
+		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role, human_message, task_title)
 	}
 	return false
 }

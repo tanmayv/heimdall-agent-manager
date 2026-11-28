@@ -73,6 +73,8 @@ Provider_Descriptor :: struct {
 	model_probe:            Provider_Model_Probe,
 	install_hint:           string,
 	auth_guidance:          string,
+	// PTY delivery key data over the defaults (pty_delivery.odin, CONTRACT-17).
+	pty_delivery:           Pty_Delivery_Spec,
 }
 
 // Persistent backing storage (as in acp_provider.odin): descriptors returned by
@@ -103,6 +105,8 @@ provider_descriptor_table := [?]Provider_Descriptor{
 		profile_launch_args = true, profile_custom_models = true,
 		extension = .Codex_Plugin, extension_dir = "codex", extension_marketplace = "heimdall-codex",
 		model_probe = .Codex_App_Server,
+		// Codex's composer takes a typed body only as a bracketed paste.
+		pty_delivery = {paste_mode = "bracketed"},
 		install_hint = "install Codex CLI",
 		auth_guidance = "Run codex login on the bridge host using the selected provider profile and its CODEX_HOME, then restart this instance.",
 	},
@@ -311,5 +315,6 @@ provider_descriptor_shape_valid :: proc(d: Provider_Descriptor) -> bool {
 	}
 	if !binary_listed do return false
 	for f in d.profile_env_fields do if f.field == "" || f.env == "" do return false
+	if !pty_delivery_spec_valid(d.pty_delivery) do return false
 	return true
 }
