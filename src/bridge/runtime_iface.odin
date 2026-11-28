@@ -21,7 +21,9 @@ import ws "odin_test:lib/ws"
 Runtime_Input_Kind :: enum u8 { User_Message, Notification }
 
 // Queue: strict FIFO, delivered only at trusted idle, never interrupts a turn.
-// Steer: inject into the running turn (only when the runtime can steer).
+// Steer: get the input into the running turn now (only when the runtime can
+// steer). ACP injects it natively; PTY stops a busy turn (no interrupt at a
+// trusted idle) and has the agent read the current message.
 // Send_Now: interrupt the running turn once, then start a turn with the input.
 Runtime_Mode :: enum u8 { Queue, Steer, Send_Now }
 
@@ -46,9 +48,11 @@ Runtime_Input :: struct {
 // Turn lifecycle events every runtime reports through bridge_runtime_emit.
 Runtime_Event :: enum u8 { Turn_Started, Turn_Output, Turn_Ended, Idle }
 
-// A user's Send now over queued unread inputs (CONTRACT-06). The batch is the
-// FIFO subset of message_ids still queued; empty is a no-op; a repeated
-// batch_id/attempt is idempotent.
+// A user's Send now over queued unread inputs (CONTRACT-06). A runtime that
+// delivers message bodies (ACP) sends the FIFO subset of message_ids still
+// queued; empty is a no-op. A runtime whose agent reads its own conversation
+// (PTY) gets no members and types the unread notice. A repeated batch_id is
+// idempotent either way.
 Runtime_Send_Now :: struct {
 	launch_epoch, batch_id: string,
 	attempt:                i64,

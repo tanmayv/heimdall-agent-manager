@@ -733,6 +733,12 @@ bridge_pty_host_message_notice :: proc(sender: string, sender_display_name: stri
 	return strings.concatenate({"New message from ", s, " \u2014 run '" + agent_runtime.CTL_SHIM_INVOCATION + " chat read' to view."})
 }
 
+// bridge_pty_host_unread_notice is the sender-neutral notice a PTY agent gets
+// for its unread messages (coalesced queue notice, Send now). Static text.
+bridge_pty_host_unread_notice :: proc() -> string {
+	return "New messages \u2014 run '" + agent_runtime.CTL_SHIM_INVOCATION + " chat read' to view them."
+}
+
 // bridge_pty_host_task_nudge_notice renders the task-nudge notice text (pure).
 bridge_pty_host_task_nudge_notice :: proc(task_id, target_role: string, task_title: string = "") -> string {
 	tid := task_id

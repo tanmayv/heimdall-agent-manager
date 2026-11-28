@@ -38,8 +38,10 @@ BRIDGE_INBOX_SLOTS :: 128
 BRIDGE_INBOX_NOTICE_SLOTS :: 112
 BRIDGE_INBOX_COMPLETED_MAX :: 256
 BRIDGE_INBOX_TEXT_MAX :: 256*1024
-// An explicit Send now batch is one input standing for its frozen members.
+// An explicit Send now batch is one input standing for its frozen members
+// (ACP only; a PTY Send now has no members).
 BRIDGE_INBOX_SEND_NOW_KIND :: "send_now"
+BRIDGE_INBOX_SEND_NOW_ID_MAX :: 128
 
 // Steer: a user input; it waits for idle and starts (or is steered into) a
 // turn. Batch: a notification that starts a turn after the collection window,
@@ -76,6 +78,9 @@ Bridge_Inbox :: struct {
     // one is acknowledged, never delivered again. Bounded, oldest first.
     completed_inputs: [dynamic]string,
     send_now: Bridge_Inbox_Send_Now,
+    // The last memberless Send now request applied (PTY): a repeat of it is a
+    // no-op, also after a restart.
+    send_now_applied: string,
     // Collection window of the Batch/Wake lanes and the notice rate limit.
     batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
     instance: string `json:"-"`,
@@ -109,6 +114,7 @@ bridge_inbox_delete :: proc(inbox: ^Bridge_Inbox) {
     for id in inbox.completed_inputs do delete(id)
     delete(inbox.completed_inputs)
     bridge_inbox_send_now_delete(&inbox.send_now)
+    delete(inbox.send_now_applied)
     delete(inbox.instance); delete(inbox.saved)
     inbox^ = {}
 }
@@ -119,7 +125,7 @@ bridge_inbox_input_valid :: proc(input: Bridge_Inbox_Input) -> bool {
 }
 
 bridge_inbox_send_now_valid :: proc(s: ^Bridge_Inbox_Send_Now, max_members: int) -> bool {
-    if len(s.batch_id) > 128 || s.attempt < 0 || len(s.members) > max_members do return false
+    if len(s.batch_id) > BRIDGE_INBOX_SEND_NOW_ID_MAX || s.attempt < 0 || len(s.members) > max_members do return false
     switch s.state { case "", "waiting", "steering", "cancelling", "delivered", "failed", "empty": case: return false }
     for id in s.members do if id == "" || len(id) > 1024 do return false
     return true
@@ -136,6 +142,7 @@ bridge_inbox_valid :: proc(inbox: ^Bridge_Inbox, max_members: int) -> bool {
     if bytes > BRIDGE_INBOX_MAX_BYTES do return false
     if inbox.batch_first_ms < 0 || inbox.batch_last_ms < inbox.batch_first_ms || inbox.last_notice_turn_ms < 0 do return false
     for id in inbox.completed_inputs do if id == "" || len(id) > 1024 do return false
+    if len(inbox.send_now_applied) > BRIDGE_INBOX_SEND_NOW_ID_MAX do return false
     return bridge_inbox_send_now_valid(&inbox.send_now, max_members)
 }
 
@@ -257,6 +264,12 @@ bridge_inbox_send_now_begin :: proc(inbox: ^Bridge_Inbox, batch_id: string, atte
     inbox.send_now.batch_id = strings.clone(batch_id); inbox.send_now.attempt = attempt
 }
 
+bridge_inbox_note_send_now_applied :: proc(inbox: ^Bridge_Inbox, id: string) {
+    context.allocator = runtime.heap_allocator()
+    if inbox.send_now_applied == id do return
+    delete(inbox.send_now_applied); inbox.send_now_applied = strings.clone(id)
+}
+
 bridge_inbox_send_now_set_state :: proc(inbox: ^Bridge_Inbox, state: string) {
     context.allocator = runtime.heap_allocator()
     if inbox.send_now.state == state do return
@@ -278,6 +291,9 @@ bridge_inbox_merge :: proc(dst, src: ^Bridge_Inbox) {
     clear(&src.queue)
     if dst.send_now.batch_id == "" && src.send_now.batch_id != "" {
         dst.send_now = src.send_now; src.send_now = {}
+    }
+    if dst.send_now_applied == "" && src.send_now_applied != "" {
+        dst.send_now_applied = src.send_now_applied; src.send_now_applied = ""
     }
     if dst.batch_first_ms == 0 do dst.batch_first_ms = src.batch_first_ms
     dst.batch_last_ms = max(dst.batch_last_ms, src.batch_last_ms, dst.batch_first_ms)

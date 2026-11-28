@@ -1,6 +1,7 @@
 package main
 
 import "base:runtime"
+import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:reflect"
@@ -156,9 +157,9 @@ pty_delivery_modes_are_fixed_step_lists :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(pty_runtime_plan(.Queue)), 2)
 	testing.expect(t, pty_runtime_plan(.Queue)[0] == .Type && pty_runtime_plan(.Queue)[1] == .Submit, "queue = type, submit")
 	sn := pty_runtime_plan(.Send_Now)
-	testing.expect(t, len(sn) == 4 && sn[0] == .Interrupt && sn[1] == .Wait_Idle && sn[2] == .Type && sn[3] == .Submit, "send_now = interrupt, wait idle, type, submit")
+	testing.expect(t, len(sn) == 3 && sn[0] == .Interrupt && sn[1] == .Type && sn[2] == .Submit, "send_now = interrupt, type, submit (no idle wait)")
 	st := pty_runtime_plan(.Steer)
-	testing.expect(t, len(st) == 3 && st[0] == .Interrupt && st[1] == .Type && st[2] == .Submit, "steer = interrupt, type, submit")
+	testing.expect(t, len(st) == 3 && st[0] == .Interrupt_If_Busy && st[1] == .Type && st[2] == .Submit, "steer = interrupt only while busy, type, submit")
 }
 
 @(test)
@@ -166,16 +167,16 @@ pty_delivery_key_data_defaults_descriptor_then_profile :: proc(t: ^testing.T) {
 	d := contracts.pty_delivery_resolve()
 	testing.expect(t, len(d.interrupt_keys) == 1 && d.interrupt_keys[0] == "esc", "interrupt defaults to Esc")
 	testing.expect(t, len(d.submit_keys) == 1 && d.submit_keys[0] == "enter" && d.second_submit, "submit defaults to Enter twice")
-	testing.expect(t, d.paste_mode == .Raw && d.sanitize && !d.can_steer)
+	testing.expect(t, d.paste_mode == .Raw && d.sanitize && d.can_steer, "every PTY runtime can steer by default")
 	codex, _ := contracts.provider_descriptor("codex")
 	testing.expect(t, contracts.pty_delivery_resolve(codex.pty_delivery).paste_mode == .Bracketed, "codex pastes bracketed (descriptor data)")
-	profile := contracts.Pty_Delivery_Spec{interrupt_keys = {"ctrl_c"}, second_submit = "off", can_steer = "on", paste_mode = "raw", submit_delay_ms = -1}
+	profile := contracts.Pty_Delivery_Spec{interrupt_keys = {"ctrl_c"}, second_submit = "off", can_steer = "off", paste_mode = "raw", submit_delay_ms = -1}
 	r := contracts.pty_delivery_resolve(codex.pty_delivery, profile)
-	testing.expect(t, r.interrupt_keys[0] == "ctrl_c" && !r.second_submit && r.can_steer && r.paste_mode == .Raw && r.submit_delay_ms == 0, "profile overrides the descriptor")
+	testing.expect(t, r.interrupt_keys[0] == "ctrl_c" && !r.second_submit && !r.can_steer && r.paste_mode == .Raw && r.submit_delay_ms == 0, "profile overrides the descriptor")
 	testing.expect_value(t, r.submit_keys[0], "enter")
-	bad := contracts.Pty_Delivery_Spec{interrupt_keys = {"rm -rf"}, can_steer = "on"}
+	bad := contracts.Pty_Delivery_Spec{interrupt_keys = {"rm -rf"}, can_steer = "off"}
 	testing.expect(t, !contracts.pty_delivery_spec_valid(bad))
-	testing.expect(t, !contracts.pty_delivery_resolve(bad).can_steer, "an invalid layer is skipped whole")
+	testing.expect(t, contracts.pty_delivery_resolve(bad).can_steer, "an invalid layer is skipped whole")
 	for p in contracts.provider_descriptors() do testing.expect(t, contracts.pty_delivery_spec_valid(p.pty_delivery), p.provider)
 }
 
@@ -261,20 +262,29 @@ pty_notifications_never_interrupt :: proc(t: ^testing.T) {
 }
 
 @(test)
-pty_steer_and_send_now_follow_key_data :: proc(t: ^testing.T) {
+pty_steer_interrupts_only_while_busy :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
-	env := pty_test_begin("pty-modes"); defer pty_test_end(&env)
-	id := "inst_pty_modes"
+	env := pty_test_begin("pty-steer"); defer pty_test_end(&env)
+	id := "inst_pty_steer"
 	defer bridge_runtime_set_status(id, "stopped", "idle")
 	pty_test_activity(id, "active", "pane_diff")
-	// Default key data cannot steer: steer becomes send now (CONTRACT-06/15).
-	testing.expect(t, !bridge_runtime_can_steer(id))
+	// Default key data can steer: steer stays steer (it is not send now).
+	testing.expect(t, bridge_runtime_can_steer(id))
+	testing.expect(t, bridge_runtime_effective_mode(&pty_agent_runtime, id, .User_Message, .Steer) == .Steer)
+	// Busy: stop the turn, then the agent reads the current message.
 	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, text = "now please"}, .Steer))
 	testing.expect_value(t, pty_test_trace(), `Esc "now please" Enter Enter`)
 	testing.expect_value(t, len(pty_test_queued(id)), 0)
+	// At a trusted idle: no interrupt key.
 	pty_test_reset()
-	testing.expect(t, pty_runtime_execute("s", id, "go", .Steer, contracts.pty_delivery_resolve({interrupt_keys = {"ctrl_c", "esc"}, second_submit = "off", can_steer = "on"})))
+	pty_test_activity(id, "idle", "pane_diff")
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, text = "idle steer"}, .Steer))
+	testing.expect_value(t, pty_test_trace(), `"idle steer" Enter Enter`)
+	// The key data decides the interrupt keys and the submit.
+	pty_test_reset()
+	pty_test_activity(id, "active", "pane_diff")
+	testing.expect(t, pty_runtime_execute("s", id, "go", .Steer, contracts.pty_delivery_resolve({interrupt_keys = {"ctrl_c", "esc"}, second_submit = "off"})))
 	testing.expect_value(t, pty_test_trace(), `Ctrl_C Esc "go" Enter`)
 	pty_test_reset()
 	testing.expect(t, bridge_runtime_interrupt(id))
@@ -285,34 +295,102 @@ pty_steer_and_send_now_follow_key_data :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(pty_test_queued(id)), 1)
 }
 
+// A profile that turns steering off makes steer a send now (always Esc).
 @(test)
-pty_send_now_delivers_frozen_fifo_batch_once :: proc(t: ^testing.T) {
+pty_profile_can_steer_off_makes_steer_send_now :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	sync.mutex_lock(&g_profile_test_mu); defer sync.mutex_unlock(&g_profile_test_mu)
+	context.allocator = runtime.heap_allocator()
+	env := pty_test_begin("pty-steer-off"); defer pty_test_end(&env)
+	previous_profiles := g_profile_test_store_path
+	defer g_profile_test_store_path = previous_profiles
+	bridge_make_directory_all(env.dir)
+	g_profile_test_store_path = strings.concatenate({env.dir, "/profiles.json"}, context.temp_allocator)
+	pp := Provider_Profile{profile_id = "claude_nosteer", provider = "claude", enabled = true}
+	pp.config.pty_delivery = {can_steer = "off"}
+	raw, _ := json.marshal(Provider_Profile_Store_Wire{version = PROFILE_STORE_VERSION, profiles = {pp}}, allocator = context.temp_allocator)
+	testing.expect(t, os.write_entire_file(g_profile_test_store_path, raw) == nil)
+	id := "inst_pty_steer_off"
+	bridge_pty_host_track_instance_provider(id, "claude", "claude_nosteer")
+	defer bridge_pty_host_untrack_instance_provider(id)
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	pty_test_activity(id, "idle", "pane_diff")
+	testing.expect(t, !bridge_runtime_can_steer(id), "the profile turned steering off")
+	testing.expect(t, bridge_runtime_effective_mode(&pty_agent_runtime, id, .User_Message, .Steer) == .Send_Now)
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, text = "steer"}, .Steer))
+	testing.expect_value(t, pty_test_trace(), `Esc "steer" Enter Enter`)
+}
+
+// Several queued user messages leave ONE pending unread notice, typed once at
+// the next trusted idle; notifications keep their own lane.
+@(test)
+pty_unread_messages_coalesce_into_one_notice :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	context.allocator = runtime.heap_allocator()
+	env := pty_test_begin("pty-unread"); defer pty_test_end(&env)
+	id := "inst_pty_unread"
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	pty_test_forget_typed(id)
+	pty_test_activity(id, "active", "pane_diff")
+	notice := bridge_pty_host_message_notice("User"); defer delete(notice)
+	for m in ([]string{"msg_u1", "msg_u2", "msg_u3"}) {
+		testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = m, text = notice, hub_message = true}))
+	}
+	bridge_task_notice_tick(bridge_runtime_now_ms() + 1)
+	testing.expect_value(t, len(pty_test_ops), 0) // busy: never typed, never interrupted
+	ids := pty_test_queued(id)
+	testing.expect(t, len(ids) == 1 && ids[0] == "msg_u3", "one coalesced notice")
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_u1", text = notice, hub_message = true}), "a retried admission is acknowledged")
+	testing.expect_value(t, len(pty_test_queued(id)), 1)
+	pty_test_activity(id, "idle", "pane_diff")
+	bridge_task_notice_tick(bridge_runtime_now_ms() + 10_000)
+	testing.expect_value(t, pty_test_trace(), fmt.tprintf("%q Enter Enter", bridge_pty_host_unread_notice()))
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+}
+
+@(test)
+pty_send_now_types_the_notice_once_per_request :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
 	context.allocator = runtime.heap_allocator()
 	env := pty_test_begin("pty-send-now"); defer pty_test_end(&env)
 	id := "inst_pty_send_now"
 	defer bridge_runtime_set_status(id, "stopped", "idle")
 	pty_test_activity(id, "active", "pane_diff")
-	for m in ([]string{"msg_a", "msg_b", "msg_c"}) {
-		testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = m, text = fmt.tprintf("text %s", m)}))
+	for m in ([]string{"msg_a", "msg_b"}) {
+		testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = m, text = "New message from User", hub_message = true}))
 	}
-	testing.expect(t, bridge_runtime_submit(id, {kind = .Notification, id = "cmd_n", text = "notice"}))
+	testing.expect(t, bridge_runtime_submit(id, {kind = .Notification, id = "cmd_n", text = "notice", origin = "shell_run"}))
 	rt := bridge_runtime_for(id)
 	testing.expect(t, rt == &pty_agent_runtime)
-	// Empty selection: a no-op that never interrupts.
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_empty", attempt = 1, message_ids = {"msg_gone"}}))
-	testing.expect_value(t, len(pty_test_ops), 0)
-	// The batch is the listed inputs still queued, in FIFO order, as one turn.
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1, message_ids = {"msg_c", "msg_a", "cmd_n"}}))
-	testing.expect_value(t, pty_test_trace(), `Esc "text msg_a | text msg_c" Enter Enter`)
-	testing.expect_value(t, len(pty_test_queued(id)), 2) // msg_b and the notification stay queued
+	want := fmt.tprintf("Esc %q Enter Enter", bridge_pty_host_unread_notice())
+	// Busy: Esc, the notice, Enter; no members needed. The pending unread
+	// notice is consumed; the notification keeps its own lane.
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1}))
+	testing.expect_value(t, pty_test_trace(), want)
+	ids := pty_test_queued(id)
+	testing.expect(t, len(ids) == 1 && ids[0] == "cmd_n", "the unread notice was consumed")
+	// A repeated request id is a no-op, also after a reload of the inbox.
 	pty_test_reset()
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 2, message_ids = {"msg_b"}}), "idempotent by batch")
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 2}), "idempotent by request")
 	testing.expect_value(t, len(pty_test_ops), 0)
+	bridge_inbox_forget_all()
+	bridge_inbox_restore_all()
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1}), "idempotent after reload")
+	testing.expect_value(t, len(pty_test_ops), 0)
+	// Idle: Send now still presses Esc (no idle wait, no skip).
+	pty_test_activity(id, "idle", "pane_diff")
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_2", attempt = 1}))
+	testing.expect_value(t, pty_test_trace(), want)
+	// A failed write is not remembered: the retry types.
+	pty_test_reset(); pty_test_send_fail = true
+	testing.expect(t, !rt.send_now(id, {batch_id = "snb_3", attempt = 1}))
+	pty_test_send_fail = false
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_3", attempt = 2}))
+	testing.expect_value(t, pty_test_trace(), want)
+	testing.expect(t, !rt.send_now(id, {batch_id = ""}), "a request id is required")
 	// Read inputs need no notice any more.
-	testing.expect(t, rt.inputs_read(id, {"msg_b"}))
-	testing.expect_value(t, len(pty_test_queued(id)), 1)
-	testing.expect_value(t, pty_test_queued(id)[0], "cmd_n")
+	testing.expect(t, rt.inputs_read(id, {"cmd_n"}))
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
 }
 
 @(test)

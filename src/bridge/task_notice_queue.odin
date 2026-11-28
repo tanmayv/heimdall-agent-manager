@@ -60,7 +60,7 @@ bridge_inbox_input_from :: proc(input: Runtime_Input, now: i64) -> Bridge_Inbox_
 
 // bridge_inbox_admit_shared admits to an unclaimed inbox and commits it
 // before returning true; a full, unreadable or claimed inbox refuses.
-bridge_inbox_admit_shared :: proc(instance: string, input: Runtime_Input) -> bool {
+bridge_inbox_admit_shared :: proc(instance: string, input: Runtime_Input, coalesce_steer := false) -> bool {
     if input.text == "" do return false
     now := bridge_runtime_now_ms()
     entry := bridge_inbox_input_from(input, now)
@@ -69,7 +69,7 @@ bridge_inbox_admit_shared :: proc(instance: string, input: Runtime_Input) -> boo
     slot := bridge_inbox_slot_locked(instance)
     if slot == nil { bridge_inbox_input_delete(entry); return false }
     id := strings.clone(entry.id, context.temp_allocator)
-    switch bridge_inbox_admit(&slot.inbox, entry, now) {
+    switch bridge_inbox_admit(&slot.inbox, entry, now, coalesce_steer) {
     case .Duplicate: return true
     case .Full: return false
     case .Added:
@@ -253,7 +253,7 @@ bridge_inbox_expire_locked :: proc(slot: ^Bridge_Inbox_Slot, now: i64) {
 // when their collection window closes or a trusted idle was reported.
 bridge_inbox_due_locked :: proc(slot: ^Bridge_Inbox_Slot, now: i64) -> bool {
     if slot.claimed || slot.busy || len(slot.inbox.queue) == 0 || now < slot.retry_ms do return false
-    for input in slot.inbox.queue do if input.lane == .Steer && input.kind != BRIDGE_INBOX_SEND_NOW_KIND do return true
+    for input in slot.inbox.queue do if input.lane == .Steer do return true
     return slot.kicked || bridge_inbox_window_closed(&slot.inbox, now)
 }
 
@@ -301,7 +301,6 @@ bridge_inbox_drain_shared :: proc(instance: string, now: i64) {
         sync.mutex_unlock(&bridge_inbox_mu); return
     }
     for input in slot.inbox.queue {
-        if input.kind == BRIDGE_INBOX_SEND_NOW_KIND do continue // a Send now batch owns these
         switch bridge_inbox_relevance(instance, input, now) {
         case .Drop: append(&dropped, strings.clone(input.id, context.temp_allocator))
         case .Wait:
