@@ -8,6 +8,7 @@ package extension
 // responses can produce file edits. Hosted tools and notifications are uncovered.
 
 import json "core:encoding/json"
+import "core:path/filepath"
 import "core:strings"
 import contracts "odin_test:contracts"
 
@@ -84,8 +85,9 @@ codex_map_hook :: proc(raw, ts: string, permission_timeout_ms := 0, permission_b
 		pb_str_nonempty(&p, "permission_mode", json_get_string(root, "permission_mode"))
 		// Codex's shell tool: its command feeds the shared ham-ctl self-approve rule.
 		if json_get_string(root, "tool_name") == "Bash" {
-			out.shell_command = json_get_string(json_get_object(root, "tool_input"), "command")
-			out.shell_cwd = json_get_string(root, "cwd")
+			input := json_get_object(root, "tool_input")
+			out.shell_command = json_get_string(input, "command")
+			out.shell_cwd = codex_shell_cwd(root, input)
 		}
 	case "PreCompact", "PostCompact":
 		// No activity transition; the bridge resets context accounting on it.
@@ -107,4 +109,17 @@ codex_map_hook :: proc(raw, ts: string, permission_timeout_ms := 0, permission_b
 	}
 	// Bound aggregate-shaped inputs, not just individual strings.
 	return hook_mapped_bounded(out)
+}
+
+// codex_shell_cwd is the directory Codex runs a shell command in, which the
+// self-approve rule resolves a relative ./bin/ham-ctl against. Codex's shell
+// tool takes a workdir argument: when the model passes one it wins over the
+// session cwd. A workdir that is not an absolute path leaves the directory
+// unknown (""), so only the absolute ctl path or "$HEIMDALL_CTL_BIN" can
+// self-approve, never the relative shim.
+@(private = "file")
+codex_shell_cwd :: proc(root, tool_input: json.Object) -> string {
+	if !json_has(tool_input, "workdir") do return json_get_string(root, "cwd")
+	workdir := json_get_string(tool_input, "workdir")
+	return workdir if filepath.is_abs(workdir) else ""
 }

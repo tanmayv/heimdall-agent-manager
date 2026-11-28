@@ -237,6 +237,32 @@ test_codex_permission_self_approves_ham_ctl :: proc(t: ^testing.T) {
 		testing.expectf(t, codex_perm_calls == 1, "must relay: %s", cmd)
 		testing.expectf(t, strings.contains(out, `"message":"relayed"`), "relay decision for %s: %s", cmd, out)
 	}
+	// S1: Codex runs the command in tool_input.workdir when given, so the
+	// relative shim resolves there; a relative or foreign workdir relays it, the
+	// absolute ctl path and "$HEIMDALL_CTL_BIN" still self-approve.
+	in_workdir :: proc(command, workdir: string) -> string {
+		b := strings.builder_make()
+		strings.write_string(&b, `{"session_id":"s1","cwd":"/run/inst","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":`)
+		json_write_string(&b, command)
+		strings.write_string(&b, `,"workdir":`)
+		json_write_string(&b, workdir)
+		strings.write_string(&b, `}}`)
+		return strings.to_string(b)
+	}
+	Workdir_Case :: struct {command, workdir: string, approved: bool}
+	for c in ([]Workdir_Case{
+		{"./bin/ham-ctl chat read", "/run/inst", true},
+		{"./bin/ham-ctl chat read", "/tmp/evil", false},
+		{"./bin/ham-ctl chat read", "inst", false},
+		{"./bin/ham-ctl chat read", "", false},
+		{"/run/inst/bin/ham-ctl chat read", "/tmp/evil", true},
+		{"/run/inst/bin/ham-ctl chat read", "relative/dir", true},
+	}) {
+		codex_perm_calls = 0
+		out := hook_run("codex", in_workdir(c.command, c.workdir), env, codex_perm_send)
+		testing.expectf(t, (out == ALLOW) == c.approved, "%s in workdir %q: %s", c.command, c.workdir, out)
+		testing.expectf(t, codex_perm_calls == (0 if c.approved else 1), "%s in workdir %q: %d bridge calls", c.command, c.workdir, codex_perm_calls)
+	}
 	// Not the shell tool, or no issued ctl binary: always relay.
 	codex_perm_calls = 0
 	_ = hook_run("codex", `{"session_id":"s1","cwd":"/run/inst","hook_event_name":"PermissionRequest","tool_name":"apply_patch","tool_input":{"command":"./bin/ham-ctl chat read"}}`, env, codex_perm_send)
