@@ -45,8 +45,18 @@ type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: str
   acpAvailability?: any;
   /** When set, POSTs under /bridges/ (the panel's ACP fixes) are recorded here and answered 202. */
   bridgePosts?: Array<{ path: string; body: any }>;
-  /** GET send-now agent_notified_at (PTY: when the bridge typed the unread notice); omitted = ''. */
-  notifiedAt?: string };
+  /** GET send-now agent_notified_through_message_id (PTY: the newest message a typed notice
+   * covered; its created_at is that message's); omitted = '' (never); null = an older hub. */
+  notifiedThrough?: string | null;
+  /** runtime_status of the instance and conversation; omitted = 'running'. */
+  runtimeStatus?: string };
+
+function notifiedFields(hub: Hub): Record<string, string> {
+  if (hub.notifiedThrough === null) return {};
+  const id = hub.notifiedThrough ?? '';
+  const row = hub.messages.find((m) => m.message_id === id);
+  return { agent_notified_through_message_id: id, agent_notified_through_created_at: row?.created_at ?? '' };
+}
 
 async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/#/conversations/worker', pretendToBeVisual: true });
@@ -103,12 +113,12 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
     }
     let data: any = {};
     if (path.endsWith('/me/experiments') && hub.experiments) data = { experiments: hub.experiments };
-    else if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', runtime_status: 'running' };
+    else if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', runtime_status: hub.runtimeStatus ?? 'running' };
     else if (path.endsWith('/messages')) data = [...hub.messages].reverse();
     else if (path.endsWith('/send-now')) data = { conversation_id: 'workerchat', runtime_transport: hub.transport, send_now: hub.transport === 'acp' ? 'members' : 'notice', launch_epoch: 'ep1', steering_supported: false,
-      agent_notified_at: hub.notifiedAt ?? '', batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
+      ...notifiedFields(hub), batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
     else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b',
-      runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
+      runtime_status: hub.runtimeStatus ?? 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
     else if (path.endsWith('/reconfigurations')) data = { operations: hub.configuration?.operations || [] };
     else if (path.endsWith('/provider-status') || path.endsWith('/providers/discover')) data = { providers: [
       { provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }],
@@ -318,16 +328,16 @@ test('PTY pane: unread tray goes from waiting to notified (Interrupt) when the b
   const hub: Hub = { transport: 'pty', posts: [], sendNowReply: { status: 200, body: { data: { outcome: 'delivered', batch: {
     batch_id: 'b1', request_id: 'x', launch_epoch: 'ep1', attempt: 1, state: 'delivered', error: '', message_ids: [], excluded: [] } } } },
     messages: [userRow('msg_p0', 0, null), agentRow('msg_pa', 1), userRow('msg_p1', 2, null, { read_at: '' }), userRow('msg_p2', 3, null, { read_at: '' })],
-    notifiedAt: at(2), // the notice was typed for msg_p1 only
+    notifiedThrough: 'msg_p1', // the notice covered msg_p1 only
   };
   await fixture(hub, async ({ q, wait, delivery }) => {
     const state = () => q('conversation-unread')?.getAttribute('data-unread-state') ?? '';
-    await wait(() => state() === 'waiting', 'msg_p2 is newer than the last notice');
+    await wait(() => state() === 'waiting', 'msg_p2 is after the covered message');
     assert.match(q('conversation-queued-title')!.textContent || '', /Waiting for the current turn/);
     assert.ok(q('conversation-queued-send-now'), 'Send now while waiting');
     assert.equal(q('conversation-queued-interrupt'), null);
     // The bridge typed the notice for both (agent_notice_typed): messages_delivery refetches send-now.
-    hub.notifiedAt = at(3);
+    hub.notifiedThrough = 'msg_p2';
     await delivery([]);
     await wait(() => state() === 'notified', 'notified after the typed notice');
     assert.match(q('conversation-queued-title')!.textContent || '', /Agent notified, not read yet/);
@@ -349,6 +359,20 @@ test('PTY pane: unread tray goes from waiting to notified (Interrupt) when the b
     await wait(() => q('conversation-unread') === null, 'tray gone once read');
   });
 });
+
+for (const [name, over] of [['an older hub without the mark', { notifiedThrough: null }], ['a stopped agent', { runtimeStatus: 'stopped', notifiedThrough: 'msg_p2' }]] as const) {
+  test(`PTY pane: ${name} keeps today's "not read yet" wording with Send now`, async () => {
+    const hub: Hub = { transport: 'pty', posts: [], sendNowReply: { status: 200, body: { data: { outcome: 'delivered', batch: null } } },
+      messages: [userRow('msg_p1', 2, null, { read_at: '' }), userRow('msg_p2', 3, null, { read_at: '' })], ...over };
+    await fixture(hub, async ({ q, wait }) => {
+      await wait(() => q('conversation-unread')?.getAttribute('data-unread-state') === 'pending', 'pending wording');
+      assert.match(q('conversation-queued-title')!.textContent || '', /2 messages not read yet/);
+      assert.doesNotMatch(q('conversation-queued-status')!.textContent || '', /current turn|notified/);
+      assert.ok(q('conversation-queued-send-now'));
+      assert.equal(q('conversation-queued-interrupt'), null);
+    });
+  });
+}
 
 test('ACP pane: a failed batch says so and Retry reuses its request_id for the members still waiting', async () => {
   const failedBatch = (requestId: string) => ({ batch_id: 'b9', request_id: requestId, launch_epoch: 'ep1', attempt: 1, state: 'failed',

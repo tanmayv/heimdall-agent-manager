@@ -48,13 +48,13 @@ import {
   acpDeliveryLabel,
   newSendNowRequestId,
   noticeSendNowPhase,
-  notifiedUnreadCount,
   orderTranscript,
   parseAcpDelivery,
   placementFor,
   sendNowErrorText,
   sendNowTooltip,
   trayView,
+  unreadTrayState,
   unreadUserRows,
   type SendNowBatch,
 } from '../chat/acpDelivery';
@@ -1518,13 +1518,14 @@ export function AgentChatPane({
   const hasAcpDelivery = useMemo(() => chatMessages.some((m) => m.acpDelivery), [chatMessages]);
   const sendNowQuery = useFetchSendNowStateQuery({ conversationId }, { skip: !conversationId });
   const sendNowKind = sendNowQuery.data?.sendNow ?? '';
-  const agentNotifiedUnixMs = sendNowQuery.data?.agentNotifiedUnixMs ?? 0;
-  // Unread rows, and how many of them the bridge already typed the unread notice for.
-  const { agentUnreadCount, agentNotifiedCount } = useMemo(() => {
-    if (sendNowKind !== 'notice') return { agentUnreadCount: 0, agentNotifiedCount: 0 };
+  const notifiedThrough = sendNowQuery.data?.notifiedThrough;
+  const agentRunning = runtimeStateFromStatus(runtimeStatus) === 'live';
+  // Unread rows, and whether the bridge's typed unread notice covered all of them.
+  const { agentUnreadCount, agentUnreadState } = useMemo(() => {
+    if (sendNowKind !== 'notice') return { agentUnreadCount: 0, agentUnreadState: 'pending' as const };
     const unread = unreadUserRows(chatMessages);
-    return { agentUnreadCount: unread.length, agentNotifiedCount: notifiedUnreadCount(unread, agentNotifiedUnixMs) };
-  }, [agentNotifiedUnixMs, chatMessages, sendNowKind]);
+    return { agentUnreadCount: unread.length, agentUnreadState: unreadTrayState(unread, notifiedThrough, agentRunning) };
+  }, [agentRunning, chatMessages, notifiedThrough, sendNowKind]);
   const [sendNowRequest] = useSendNowMutation();
   const aboveComposerMessages = useMemo(
     () => (acpConversation || hasAcpDelivery ? chatMessages.filter((m) => placementFor(m, acpConversation) !== 'transcript') : []),
@@ -3900,7 +3901,7 @@ export function AgentChatPane({
               <div className="mx-auto w-full max-w-4xl">
                 <UnreadSendNow
                   unread={agentUnreadCount}
-                  notified={agentNotifiedCount}
+                  state={agentUnreadState}
                   phase={noticePhase}
                   error={(localBatch ?? serverBatch)?.error ?? ''}
                   tooltip={sendNowTooltip(null, 'notice')}

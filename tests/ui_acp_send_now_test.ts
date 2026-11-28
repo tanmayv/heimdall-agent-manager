@@ -15,11 +15,13 @@ import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import { makeVaultStore } from './helpers/vaultEndpointHarness.ts';
 import {
-  acpDeliveryLabel, noticeSendNowPhase, notifiedUnreadCount, orderTranscript, parseAcpDelivery, parseSendNowState, placementFor, sendNowErrorText,
-  sendNowTooltip, trayView, unreadUserRows, type AcpDelivery, type SendNowBatch,
+  acpDeliveryLabel, noticeSendNowPhase, orderTranscript, parseAcpDelivery, parseSendNowState, placementFor, sendNowErrorText,
+  sendNowTooltip, trayView, unreadTrayState, unreadUserRows, type AcpDelivery, type SendNowBatch,
 } from '../src/ui/components/chat/acpDelivery.ts';
 import type { ChatMessage } from '../src/ui/components/chat/types.ts';
-import { SEND_NOW_AGENT_NOTIFIED_AT_FIELD, agentNotifiedUnixMs } from '../src/ui/api/agentNotified.ts';
+import {
+  SEND_NOW_NOTIFIED_THROUGH_CREATED_AT_FIELD, SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD, agentNotifiedThrough, coveredByNotice,
+} from '../src/ui/api/agentNotified.ts';
 
 const T0 = Date.parse('2026-11-23T17:00:00Z');
 const iso = (sec: number) => new Date(T0 + sec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -162,28 +164,39 @@ test('send-now state parsing and tooltip honesty', () => {
   assert.equal(parseSendNowState({ send_now: 'notice' }).sendNow, 'notice');
   assert.equal(parseSendNowState({ send_now: 'bogus' }).sendNow, '');
   assert.match(sendNowTooltip(null, 'notice'), /read its messages now/);
-  // When the agent was last notified (PTY unread tray); '' or junk = never.
-  assert.equal(s.agentNotifiedUnixMs, 0);
-  assert.equal(parseSendNowState({ agent_notified_at: '' }).agentNotifiedUnixMs, 0);
-  assert.equal(parseSendNowState({ agent_notified_at: 'nope' }).agentNotifiedUnixMs, 0);
-  assert.equal(parseSendNowState({ agent_notified_at: '2026-11-23T17:00:05Z' }).agentNotifiedUnixMs, Date.parse('2026-11-23T17:00:05Z'));
+  // The unread tray's high-water mark: absent (older hub) is not the same as never.
+  assert.equal(s.notifiedThrough, undefined, 'older hub');
+  assert.deepEqual(parseSendNowState({ agent_notified_through_message_id: '' }).notifiedThrough, { messageId: '', createdUnixMs: 0 });
+  assert.deepEqual(parseSendNowState({ agent_notified_through_message_id: 'm1', agent_notified_through_created_at: '2026-11-23T17:00:05Z' }).notifiedThrough,
+    { messageId: 'm1', createdUnixMs: Date.parse('2026-11-23T17:00:05Z') });
 });
 
-test('agent_notified_at: the TS mirror names the same field as the Odin contract', () => {
+test('agent notified: the TS mirror names the same fields as the Odin contract, and bounds what it parses', () => {
   const contract = readFileSync(new URL('../src/contracts/agent_notified.odin', import.meta.url), 'utf8');
-  assert.match(contract, new RegExp(`SEND_NOW_AGENT_NOTIFIED_AT_FIELD :: "${SEND_NOW_AGENT_NOTIFIED_AT_FIELD}"`));
-  assert.equal(agentNotifiedUnixMs({ [SEND_NOW_AGENT_NOTIFIED_AT_FIELD]: '2026-01-01T00:00:30Z' }), Date.parse('2026-01-01T00:00:30Z'));
-  assert.equal(agentNotifiedUnixMs({}), 0, 'older hub');
-  assert.equal(agentNotifiedUnixMs(null), 0);
+  assert.match(contract, new RegExp(`SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD :: "${SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD}"`));
+  assert.match(contract, new RegExp(`SEND_NOW_NOTIFIED_THROUGH_CREATED_AT_FIELD :: "${SEND_NOW_NOTIFIED_THROUGH_CREATED_AT_FIELD}"`));
+  assert.equal(agentNotifiedThrough({}), undefined, 'older hub');
+  assert.equal(agentNotifiedThrough(null), undefined);
+  assert.equal(agentNotifiedThrough({ [SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD]: 7 }), undefined);
+  assert.deepEqual(agentNotifiedThrough({ [SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD]: 'm', [SEND_NOW_NOTIFIED_THROUGH_CREATED_AT_FIELD]: 'nope' }), { messageId: 'm', createdUnixMs: 0 });
+  assert.deepEqual(agentNotifiedThrough({ [SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD]: 'm', [SEND_NOW_NOTIFIED_THROUGH_CREATED_AT_FIELD]: '+275760-09-13T00:00:00.001Z' }), { messageId: 'm', createdUnixMs: 0 }, 'out of range');
+  assert.deepEqual(agentNotifiedThrough({ [SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD]: 'm', [SEND_NOW_NOTIFIED_THROUGH_CREATED_AT_FIELD]: '2026-01-01T00:00:00Z'.repeat(5) }), { messageId: 'm', createdUnixMs: 0 }, 'too long');
+  assert.deepEqual(agentNotifiedThrough({ [SEND_NOW_NOTIFIED_THROUGH_MESSAGE_ID_FIELD]: 'x'.repeat(300) }), { messageId: '', createdUnixMs: 0 });
 });
 
-test('notice Send now (PTY): unread rows count as notified when created at or before the last notice', () => {
-  const rows = [user('p1', 1, null), user('p2', 2, null), user('p3', 3, null)];
-  const created = (i: number) => rows[i].createdUnixMs;
-  assert.equal(notifiedUnreadCount(rows, 0), 0, 'never notified');
-  assert.equal(notifiedUnreadCount(rows, created(0) - 1), 0);
-  assert.equal(notifiedUnreadCount(rows, created(1)), 2, 'inclusive');
-  assert.equal(notifiedUnreadCount(rows, created(2) + 1000), 3);
+test('notice Send now (PTY): the tray state follows the message high-water mark in transcript order, not clocks', () => {
+  const rows = [user('p1', 1, null), user('p2', 2, null), user('p3', 2, null)];
+  const mark = (row: ChatMessage) => ({ messageId: row.messageId, createdUnixMs: row.createdUnixMs });
+  assert.equal(unreadTrayState(rows, undefined, true), 'pending', 'older hub keeps today\'s wording');
+  assert.equal(unreadTrayState(rows, mark(rows[2]), false), 'pending', 'a stopped agent is not waiting for a turn');
+  assert.equal(unreadTrayState(rows, { messageId: '', createdUnixMs: 0 }, true), 'waiting', 'never notified');
+  assert.equal(unreadTrayState(rows, mark(rows[0]), true), 'waiting', 'a message after the covered one');
+  assert.equal(unreadTrayState(rows, mark(rows[1]), true), 'waiting', 'same second: message_id orders p3 after p2');
+  assert.equal(unreadTrayState(rows, mark(rows[2]), true), 'notified');
+  assert.equal(unreadTrayState(rows.slice(0, 2), { messageId: 'p3', createdUnixMs: 0 }, true), 'waiting', 'a mark without a time covers only its id');
+  assert.equal(unreadTrayState([rows[2]], { messageId: 'p3', createdUnixMs: 0 }, true), 'notified');
+  assert.equal(coveredByNotice(rows[0], mark(rows[2])), true);
+  assert.equal(coveredByNotice(rows[2], mark(rows[0])), false);
 });
 
 test('notice Send now (PTY): unread user rows and the batch phase', () => {

@@ -151,13 +151,18 @@ now needs no batch members:
   running turn with the interrupt keys, or types without them at a trusted idle, then
   types the notice and submits. With `can_steer` off, steer becomes send now.
 - **UI:** unread PTY rows stay in the transcript; one action above the composer
-  (`conversation-unread`) asks the agent to read them now. It has two states, keyed off
-  `send_now: "notice"` and `agent_notified_at` on GET send-now
-  (src/contracts/agent_notified.odin): while an unread message is newer than the last
-  typed notice it says "Waiting for the current turn" with **Send now**
-  (`conversation-queued-send-now`); once the bridge typed the unread notice it says
-  "Agent notified, not read yet" with **Interrupt** (`conversation-queued-interrupt`),
-  the same Send now request. The bridge reports `agent_notice_typed` only after the
-  shared inbox drain committed a typed batch with the unread notice; the Hub keeps one
-  monotonic `agent_notified_at` per conversation (migration 272), also stamped by a
-  delivered notice Send now. Read messages leave the tray as before.
+  (`conversation-unread`) asks the agent to read them now. It keys off
+  `send_now: "notice"` and the message high-water mark on GET send-now
+  (`agent_notified_through_message_id` / `_created_at`,
+  src/contracts/agent_notified.odin): while an unread message is after the covered
+  message in transcript order (created_at, then message_id) it says "Waiting for the
+  current turn" with **Send now** (`conversation-queued-send-now`); once the notice
+  covered all of them it says "Agent notified, not read yet" with **Interrupt**
+  (`conversation-queued-interrupt`), the same Send now request. An older hub without
+  the mark, or an agent that is not running, keeps "N not read yet" with Send now. The
+  bridge reports `agent_notice_typed` with the newest message id the unread notice stood
+  for, only after the shared inbox drain committed that typed batch (a pending report
+  is lost on a bridge restart). The Hub keeps one monotonic mark per conversation
+  (migration 272), only for a user->agent message of the reporting instance's
+  conversation; a delivered notice Send now stamps the latest user->agent message. No
+  clocks are compared. Read messages leave the tray as before.

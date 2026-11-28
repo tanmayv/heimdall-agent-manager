@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Button, Icon } from '@ui';
 import type { ChatMessage } from './types';
-import { sendNowErrorText, type TrayView } from './acpDelivery';
+import { sendNowErrorText, type TrayView, type UnreadTrayState } from './acpDelivery';
 
 /**
  * ACP user messages the agent has not received yet, above the composer and outside the
@@ -181,16 +181,16 @@ export function QueuedMessages({
 /**
  * Send now for a runtime without members (GET send-now `send_now: "notice"`, PTY). The
  * agent reads its own conversation, so unread messages stay in the transcript and this
- * one action asks the agent to read them now (the current turn stops first). Two states:
- * while any unread message is newer than the last typed notice (`notified < unread`) the
- * bridge is still waiting for the current turn to end, so Send now is offered; once the
- * bridge typed the notice for all of them the agent was notified and only has not read
- * yet, so the same action is offered as Interrupt (it stops the turn so it reads now).
+ * one action asks the agent to read them now (the current turn stops first). `state`
+ * (unreadTrayState): `waiting` while an unread message is after the last typed notice, so
+ * the bridge waits for the current turn and Send now is offered; `notified` once the
+ * notice covered all of them, when the same action is offered as Interrupt (it stops the
+ * turn so the agent reads now); `pending` keeps today's "N not read yet" with Send now
+ * (an older hub, or an agent that is not running).
  */
-export function UnreadSendNow({ unread, notified, phase, error, tooltip, localError, onSendNow, onRetry }: {
+export function UnreadSendNow({ unread, state, phase, error, tooltip, localError, onSendNow, onRetry }: {
   unread: number;
-  /** How many of the unread messages the bridge already typed the unread notice for. */
-  notified: number;
+  state: UnreadTrayState;
   phase: 'idle' | 'pending' | 'failed';
   error: string;
   tooltip: string;
@@ -199,9 +199,11 @@ export function UnreadSendNow({ unread, notified, phase, error, tooltip, localEr
   onRetry: () => void;
 }) {
   if (!unread) return null;
-  const allNotified = notified >= unread;
-  const label = allNotified ? 'Agent notified, not read yet' : 'Waiting for the current turn';
-  const spoken = allNotified ? `Agent notified, ${count(unread)} not read yet` : `${count(unread)} waiting for the current turn`;
+  const allNotified = state === 'notified';
+  const label = allNotified ? 'Agent notified, not read yet'
+    : state === 'waiting' ? 'Waiting for the current turn' : `${count(unread)} not read yet`;
+  const spoken = allNotified ? `Agent notified, ${count(unread)} not read yet`
+    : state === 'waiting' ? `${count(unread)} waiting for the current turn` : label;
   let action: ReactNode;
   let announcement = `${spoken}.`;
   if (phase === 'pending') {
@@ -240,7 +242,7 @@ export function UnreadSendNow({ unread, notified, phase, error, tooltip, localEr
   }
   const failed = phase === 'failed' || (phase === 'idle' && Boolean(localError));
   return (
-    <section data-debug-id="conversation-unread" data-unread-state={allNotified ? 'notified' : 'waiting'}
+    <section data-debug-id="conversation-unread" data-unread-state={state}
       aria-label="Messages the agent has not read yet" className="mb-2">
       <span data-debug-id="conversation-queued-status" role="status" aria-live="polite" className="sr-only">{announcement}</span>
       <ol className="flex min-w-0 flex-col pl-[6px] pr-1">

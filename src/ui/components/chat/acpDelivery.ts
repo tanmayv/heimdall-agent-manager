@@ -15,7 +15,7 @@
  *   today's behaviour.
  */
 
-import { agentNotifiedUnixMs } from '../../api/agentNotified';
+import { agentNotifiedThrough, coveredByNotice, type AgentNotifiedThrough } from '../../api/agentNotified.ts';
 
 export type AcpDeliveryStatus = 'sent' | 'queued' | 'delivered' | 'read' | 'not_delivered';
 
@@ -165,12 +165,12 @@ export type SendNowState = {
   steeringSupported: boolean | null;
   batch: SendNowBatch | null;
   /**
-   * When the agent was last pointed at its unread messages (GET send-now
-   * `agent_notified_at`, src/ui/api/agentNotified.ts: the bridge typed the unread notice,
-   * or a notice Send now was delivered); 0 when never. Only meaningful for
-   * `sendNow === 'notice'`.
+   * How far the agent was pointed at its unread messages (GET send-now
+   * `agent_notified_through_*`, src/ui/api/agentNotified.ts: the newest user message a
+   * typed unread notice or a delivered notice Send now covered). undefined: an older hub
+   * that does not report it. Only meaningful for `sendNow === 'notice'`.
    */
-  agentNotifiedUnixMs: number;
+  notifiedThrough: AgentNotifiedThrough | undefined;
 };
 
 export function parseSendNowBatch(raw: any): SendNowBatch | null {
@@ -195,7 +195,7 @@ export function parseSendNowState(raw: any): SendNowState {
     launchEpoch: String(raw?.launch_epoch ?? ''),
     steeringSupported: steering === true ? true : steering === false ? false : null,
     batch: parseSendNowBatch(raw?.batch),
-    agentNotifiedUnixMs: agentNotifiedUnixMs(raw),
+    notifiedThrough: agentNotifiedThrough(raw),
   };
 }
 
@@ -253,12 +253,18 @@ export function unreadUserRows<T extends DeliveryRow & { readUnixMs: number }>(r
 }
 
 /**
- * How many unread rows (unreadUserRows) the agent has already been notified about: a row
- * counts once it was created at or before the last notice (`agentNotifiedUnixMs`).
+ * The PTY unread tray's state. `pending`: today's "N not read yet" (an older hub without
+ * the high-water mark, or an agent that is not running, where no turn is in progress);
+ * `waiting`: an unread row is after the last notice in transcript order, so the bridge
+ * waits for the current turn; `notified`: the notice covered every unread row.
  */
-export function notifiedUnreadCount<T extends { createdUnixMs: number }>(unread: readonly T[], agentNotifiedUnixMs: number): number {
-  if (agentNotifiedUnixMs <= 0) return 0;
-  return unread.filter((row) => row.createdUnixMs > 0 && row.createdUnixMs <= agentNotifiedUnixMs).length;
+export type UnreadTrayState = 'pending' | 'waiting' | 'notified';
+
+export function unreadTrayState<T extends { messageId: string; createdUnixMs: number }>(
+  unread: readonly T[], through: AgentNotifiedThrough | undefined, agentRunning: boolean,
+): UnreadTrayState {
+  if (!through || !agentRunning) return 'pending';
+  return unread.every((row) => coveredByNotice(row, through)) ? 'notified' : 'waiting';
 }
 
 /** The phase of the latest memberless Send now: in flight, failed or settled. */
