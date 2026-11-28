@@ -104,11 +104,11 @@ acp_codex_durable :: proc(d: ^ACP_Runtime_Durable) -> ^ACP_Codex_Durable {
 }
 acp_codex :: proc(r: ^ACP_Runtime) -> ^ACP_Codex_Durable { return acp_codex_durable(&r.d) }
 
-acp_codex_state_load :: proc(runtime_json: string) -> (rawptr, bool) {
+acp_codex_state_load :: proc(state_json: string) -> (rawptr, bool) {
     context.allocator = runtime.heap_allocator()
-    saved: struct { codex: ACP_Codex_Durable }
-    if json.unmarshal_string(runtime_json, &saved) != nil { acp_codex_durable_delete(&saved.codex); return nil, false }
-    return new_clone(saved.codex), true
+    saved: ACP_Codex_Durable
+    if json.unmarshal_string(state_json, &saved) != nil { acp_codex_durable_delete(&saved); return nil, false }
+    return new_clone(saved), true
 }
 acp_codex_state_save :: proc(state: rawptr) -> (string, bool) {
     raw, err := json.marshal((cast(^ACP_Codex_Durable)state)^, allocator = context.temp_allocator)

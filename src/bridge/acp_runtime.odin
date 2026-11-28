@@ -139,9 +139,28 @@ acp_runtime_durable_load :: proc(driver: ^ACP_Protocol_Driver, raw: string, d: ^
     if json.unmarshal_string(raw, d, allocator = allocator) != nil do return false
     d.driver_state = nil
     if driver == nil || driver.state_load == nil do return true
-    state, ok := driver.state_load(raw)
+    state_json, present, extracted := acp_runtime_durable_driver_json(raw, driver.state_key)
+    if !extracted do return false
+    if !present do return true // no state saved yet; the driver allocates on first use
+    state, ok := driver.state_load(state_json)
     d.driver_state = state
     return ok
+}
+
+// The JSON value (temp-allocated) a journal holds under the driver's
+// state_key. present is false when the key is absent or null.
+acp_runtime_durable_driver_json :: proc(raw, key: string) -> (state_json: string, present, ok: bool) {
+    value, err := json.parse_string(raw, .JSON, true, context.temp_allocator)
+    if err != nil do return "", false, false
+    root, is_object := value.(json.Object)
+    if !is_object do return "", false, false
+    sub, found := root[key]
+    if !found do return "", false, true
+    if _, is_null := sub.(json.Null); is_null do return "", false, true
+    // Keys sorted so the extracted text is deterministic.
+    out, merr := json.marshal(sub, {sort_maps_by_key = true}, context.temp_allocator)
+    if merr != nil do return "", false, false
+    return string(out), true, true
 }
 
 acp_runtime_durable_free_driver_state :: proc(driver: ^ACP_Protocol_Driver, d: ^ACP_Runtime_Durable) {
