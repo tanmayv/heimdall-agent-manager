@@ -1014,13 +1014,54 @@ test_antigravity_tracking_allocator_clean :: proc(t: ^testing.T) {
 	testing.expect_value(t, resp_out, `{"decision":"allow"}`)
 
 	// Test destructive check
-	testing.expect(t, antigravity_is_destructive("run_command"))
-	testing.expect(t, antigravity_is_destructive("write_to_file"))
-	testing.expect(t, antigravity_is_destructive("replace_file_content"))
-	testing.expect(t, !antigravity_is_destructive("view_file"))
+	testing.expect(t, antigravity_tool_needs_permission("run_command"))
+	testing.expect(t, antigravity_tool_needs_permission("write_to_file"))
+	testing.expect(t, antigravity_tool_needs_permission("replace_file_content"))
+	testing.expect(t, !antigravity_tool_needs_permission("view_file"))
 
 	testing.expectf(t, len(track.allocation_map) == baseline_allocs,
 		"leak detected under tracking allocator: %d live allocations, expected baseline %d",
 		len(track.allocation_map), baseline_allocs)
 	testing.expect_value(t, len(track.bad_free_array), 0)
+}
+
+// P27: the ask-mode relay is not limited to three tool names. Every tool except
+// workspace reads and subagent coordination is gated (unknown tools fail safe
+// to asking), whatever spelling agy uses, and the shared self-approve rule
+// still approves ham-ctl through runCommand.
+@(test)
+test_antigravity_ask_mode_gates_every_tool_but_reads :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	defer free_all(context.temp_allocator)
+	pre :: proc(tool: string) -> string {
+		return fmt.tprintf(`{{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","stepIdx":7,"toolCall":{{"name":"%s","args":{{"Url":"https://example.invalid","Cwd":"/repo"}}}}}}`, tool)
+	}
+	for tool in ([]string{"run_command", "runCommand", "WriteToFile", "replace_file_content", "multi_replace_file_content", "read_url_content", "search_web", "schedule", "some_future_mcp_tool"}) {
+		mapped, err := antigravity_map_hook(pre(tool), TS)
+		testing.expect_value(t, err, Hook_Error.None)
+		testing.expectf(t, mapped.is_permission, "%s must be gated in ask mode", tool)
+		if len(mapped.events) == 1 {
+			ev, _ := contracts.ext_parse_event(mapped.events[0])
+			testing.expect_value(t, ev.kind, contracts.Ext_Event_Kind.Permission_Request)
+		}
+	}
+	for tool in ([]string{"view_file", "viewFile", "list_dir", "grep_search", "find_by_name", "codebase_search", "invokeSubagent", "send_message"}) {
+		mapped, err := antigravity_map_hook(pre(tool), TS)
+		testing.expect_value(t, err, Hook_Error.None)
+		testing.expectf(t, !mapped.is_permission, "%s is not gated", tool)
+	}
+	// Outside ask mode nothing is gated.
+	mapped, _ := antigravity_map_hook(`{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"auto","toolCall":{"name":"some_future_mcp_tool"}}`, TS)
+	testing.expect(t, !mapped.is_permission)
+
+	// An unknown tool goes to the relay; ham-ctl via runCommand self-approves.
+	env := ENV
+	env.ctl_bin = "/repo/bin/ham-ctl"
+	agy_fake_reset(`{"ok":true,"data":{"decision":"deny","message":"no"}}`, true)
+	testing.expect_value(t, hook_run("antigravity", pre("some_future_mcp_tool"), env, agy_fake_send), `{"decision":"deny","reason":"no"}`)
+	testing.expect_value(t, agy_fake_calls, 1)
+	agy_fake_reset(`{"ok":true,"data":{"decision":"deny"}}`, true)
+	camel := `{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","toolCall":{"name":"runCommand","args":{"CommandLine":"./bin/ham-ctl chat read","Cwd":"/repo"}}}`
+	testing.expect_value(t, hook_run("antigravity", camel, env, agy_fake_send), `{"decision":"allow"}`)
+	testing.expect_value(t, agy_fake_calls, 0)
 }

@@ -6,7 +6,8 @@ package extension
 //   PreInvocation   (inv_num > 1)  → activity {state:active}
 //   PostInvocation                 → no events (empty stdout)
 //   PreToolUse      (normal)       → tool.start
-//   PreToolUse      (permission)   → permission.request (sent with agent.extension.permission)
+//   PreToolUse      (ask mode, any tool but ANTIGRAVITY_UNGATED_TOOLS)
+//                                  → permission.request (sent with agent.extension.permission)
 //   PostToolUse                    → tool.end
 //   Stop            (main loop)    → activity {state:idle}
 //   Stop            (agentId set)  → subagent.stop
@@ -62,12 +63,24 @@ antigravity_hook_from_name :: proc(name: string) -> Antigravity_Hook {
 	return .Unknown
 }
 
-antigravity_is_destructive :: proc(tool_name: string) -> bool {
-	switch tool_name {
-	case "run_command", "write_to_file", "replace_file_content", "runCommand", "writeToFile", "replaceFileContent":
-		return true
-	}
-	return false
+// ANTIGRAVITY_UNGATED_TOOLS (canonical snake_case names) are reads of the local
+// workspace and the agent's own subagent coordination; a subagent's tools are
+// gated on their own PreToolUse. In permission_mode "ask" every other tool,
+// including network reads, scheduling and tools this list has never heard of,
+// is relayed for approval: an unknown tool fails safe to asking, it never
+// slips through because a name list is short.
+ANTIGRAVITY_UNGATED_TOOLS :: [?]string{
+	"view_file", "view_file_outline", "view_code_item", "list_dir", "find_by_name",
+	"grep_search", "codebase_search",
+	"invoke_subagent", "define_subagent", "send_message", "manage_task",
+}
+
+// antigravity_tool_needs_permission: in ask mode, whether agy asks for this tool.
+antigravity_tool_needs_permission :: proc(tool_name: string) -> bool {
+	if strings.trim_space(tool_name) == "" do return false
+	name := antigravity_tool_canonical(tool_name)
+	for t in ANTIGRAVITY_UNGATED_TOOLS do if name == t do return false
+	return true
 }
 
 Antigravity_Subagent_Target :: struct {
@@ -243,8 +256,7 @@ antigravity_map_hook :: proc(raw, ts: string, permission_timeout_ms := 0, permis
 	case .Pre_Tool_Use:
 		perm_mode := json_get_string(root, "permissionMode")
 		if perm_mode == "" do perm_mode = json_get_string(root, "permission_mode")
-		is_destructive := antigravity_is_destructive(tool_name)
-		if perm_mode == "ask" && is_destructive {
+		if perm_mode == "ask" && antigravity_tool_needs_permission(tool_name) {
 			out.is_permission = true
 			input := json_clip(tool_args, ANTIGRAVITY_TOOL_STRING_MAX)
 			if input == nil do input = json.Object{}

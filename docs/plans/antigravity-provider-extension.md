@@ -157,7 +157,7 @@ The extension is governed by four core requirements: `REQ-EXT-AGY-1` through `RE
 ### REQ-EXT-AGY-3: Interactive Permission Relay & Blocker Coordination
 
 1. **Permission Interception via `PreToolUse`**:
-   - In `permission_mode: ask`, before executing potentially destructive tools (`run_command`, `write_to_file`, `replace_file_content`), the hook checks whether user approval is required.
+   - In `permission_mode: ask`, before executing any tool except workspace reads and subagent coordination (`ANTIGRAVITY_UNGATED_TOOLS`), the hook requests user approval. Unknown tools fail safe to asking.
 2. **Local Auto-Approval of Coordination Commands**:
    - Agents coordinate with Heimdall via `ham-ctl` (`chat send`, `task comment`, `lease heartbeat`, etc.).
    - If `toolCall.name == "run_command"` and `toolCall.args.CommandLine` is an allowlisted `ham-ctl` command verified by `is_ham_ctl_command`, the hook must approve it locally at once.
