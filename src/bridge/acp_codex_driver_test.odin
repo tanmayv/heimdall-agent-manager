@@ -226,7 +226,7 @@ codex_driver_approval_schemas_relay_yolo_replay_and_cancel :: proc(t: ^testing.T
     old:=bridge_local_token_records; bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
     defer { delete(bridge_local_token_records); bridge_local_token_records=old }
     f:T4_Runtime_Test; codex_test_open(&f); defer codex_test_close(&f)
-    codex_test_active(&f); acp_runtime_replace(&f.r.d.phase,"prompt"); acp_runtime_replace(&f.r.d.codex.turn_id,"t")
+    codex_test_active(&f); acp_runtime_replace(&f.r.d.phase,"prompt"); acp_runtime_replace(&acp_codex(f.r).turn_id,"t")
     methods:=[]string{"item/commandExecution/requestApproval","item/fileChange/requestApproval","item/permissions/requestApproval","execCommandApproval","applyPatchApproval"}
     seq:u64=0; index:=0
     for method,i in methods {
@@ -350,8 +350,9 @@ codex_driver_active_journal_restore_and_reused_turn_rejected :: proc(t: ^testing
     state,valid:=acp_state_decode(raw); defer acp_state_delete(&state)
     testing.expect(t,valid && len(state.pending_outbound)==0 && len(state.pending_writes)==0)
     durable:ACP_Runtime_Durable
-    testing.expect(t,json.unmarshal_string(state.runtime_json,&durable,allocator=context.temp_allocator)==nil)
-    testing.expect(t,acp_codex_durable_valid(&durable) && durable.codex.turn_id=="restored" && durable.current_input=="msg_restore")
+    testing.expect(t,acp_runtime_durable_load(&acp_protocol_codex_driver,state.runtime_json,&durable,context.temp_allocator))
+    testing.expect(t,acp_codex_durable_valid(&durable) && acp_codex_durable(&durable).turn_id=="restored" && durable.current_input=="msg_restore")
+    acp_runtime_durable_free_driver_state(&acp_protocol_codex_driver,&durable)
     acp_rpc_close(f.r.client); acp_test_delete(&f.f); f.f={}
     codex_test_connect(&f)
     testing.expect(t,acp_rpc_restore(f.r.client,raw))
@@ -369,7 +370,7 @@ codex_driver_approval_timeout_wrong_thread_and_replay_only :: proc(t: ^testing.T
     old:=bridge_local_token_records; bridge_local_token_records=make([dynamic]Bridge_Local_Agent_Token_Record,allocator=runtime.heap_allocator())
     defer { delete(bridge_local_token_records); bridge_local_token_records=old }
     f:T4_Runtime_Test; codex_test_open(&f); defer codex_test_close(&f)
-    codex_test_active(&f); acp_runtime_replace(&f.r.d.phase,"prompt"); acp_runtime_replace(&f.r.d.codex.turn_id,"t")
+    codex_test_active(&f); acp_runtime_replace(&f.r.d.phase,"prompt"); acp_runtime_replace(&acp_codex(f.r).turn_id,"t")
     method:="item/permissions/requestApproval"
     params:=`{"threadId":"s","turnId":"t","itemId":"p","cwd":"/work","startedAtMs":1,"permissions":{"network":{"enabled":true}}}`
     codex_test_frame(t,&f,1,strings.trim_space(acp_rpc_envelope("11",method,params,"","",ACP_RPC_POLICY_CODEX.codec)))
@@ -439,9 +440,49 @@ codex_driver_probe_and_missing_thread_fail_without_auth_or_new_thread :: proc(t:
     codex_test_frame(t,&f,1,`{"id":1,"error":{"code":-32000,"message":"thread not found: secret path"}}`)
     testing.expect(t,f.r.d.error=="acp_pipe_lost" && !f.r.d.auth_required && !f.r.d.ready)
     testing.expect_value(t,len(f.f.writes),1)
-    d:=ACP_Runtime_Durable{phase="prompt",codex={turn_id="t"}}
+    state:=ACP_Codex_Durable{turn_id="t"}
+    d:=ACP_Runtime_Durable{phase="prompt",driver_state=&state}
     testing.expect(t,acp_codex_durable_valid(&d))
-    d.codex.resume_attempts=4; testing.expect(t,!acp_codex_durable_valid(&d)); d.codex.resume_attempts=0
-    d.codex.completed_turns=make([dynamic]string,257,allocator=context.temp_allocator)
+    state.resume_attempts=4; testing.expect(t,!acp_codex_durable_valid(&d)); state.resume_attempts=0
+    state.completed_turns=make([dynamic]string,257,allocator=context.temp_allocator)
     testing.expect(t,!acp_codex_durable_valid(&d))
+}
+
+// Durable runtime JSON exactly as written before driver state became opaque
+// (json.marshal of the old ACP_Runtime_Durable with an embedded codex struct).
+CODEX_OLD_FORMAT_DURABLE :: `{"phase":"prompt","config_json":"","plan_json":"","starter":"","current_input":"msg_old","error":"","starter_sent":true,"ready":true,"stopped":false,"auth_required":false,"replay_only":false,"embedded_context":false,"queue":[],"completed_inputs":[],"token_reissued":false,"exit_pending":false,"cancelling":false,"stream_retries":0,"steering_supported":true,"steering_pending":false,"steering_input":{"id":"","text":"","lane":0,"key":"","kind":""},"batch_first_ms":0,"batch_last_ms":0,"last_notice_turn_ms":0,"codex":{"turn_id":"turn_old","start_id":"ham:codex_epoch:3","steering_turn_id":"","completed_turns":["turn_a","turn_b"],"message_id":"item_1","message_bytes":5,"message_done":false,"interrupt_deadline":0,"interrupt_sent":false,"resume_attempts":2,"resume_retry_after":0,"unarchived":true},"report_seq":4,"send_now":{"batch_id":"","state":"","attempt":0,"members":[]}}`
+
+@(test)
+codex_driver_restores_old_format_durable_state :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    instance := "inst_codex_old_format"
+    state := ACP_State{schema_version = 3, runtime_binding_version = 1, provider = "codex", profile = "work", bridge = bridge_config.daemon_id,
+        instance = instance, launch_epoch = "codex_epoch", run_dir = bridge_runtime_default_run_dir(instance), pipe_generation = "saved-generation",
+        adapter_version = contracts.ACP_CODEX_DESCRIPTOR.pkg.version, selected_mode = "ask", initialized = true, sessionId = "thread_old",
+        runtime_json = CODEX_OLD_FORMAT_DURABLE,
+        binding = acp_provider_binding(contracts.ACP_CODEX_DESCRIPTOR, "work", contracts.ACP_CODEX_DESCRIPTOR.pkg.version, "AGENTS.md", 7)}
+    r, valid := acp_runtime_from_state(&state, {})
+    if !testing.expect(t, valid && r != nil) do return
+    defer acp_runtime_destroy(r)
+    testing.expect(t, r.driver == &acp_protocol_codex_driver && r.d.current_input == "msg_old" && r.d.report_seq == 4)
+    c := acp_codex(r)
+    testing.expect(t, c.turn_id == "turn_old" && c.start_id == "ham:codex_epoch:3" && c.message_id == "item_1" && c.message_bytes == 5)
+    testing.expect(t, len(c.completed_turns) == 2 && c.completed_turns[1] == "turn_b" && c.resume_attempts == 2 && c.unarchived)
+    testing.expect_value(t, acp_codex_can_steer(r), ACP_Steer_Readiness.Now)
+    // The new writer keeps the same "codex" object, so the journal round-trips
+    // (and stays readable by the previous reader).
+    raw, saved := acp_runtime_durable_json(r)
+    testing.expect(t, saved && strings.contains(raw, `"codex":{"turn_id":"turn_old"`) && !strings.contains(raw, "driver_state"))
+    again: ACP_Runtime_Durable
+    testing.expect(t, acp_runtime_durable_load(&acp_protocol_codex_driver, raw, &again, context.temp_allocator))
+    defer acp_runtime_durable_free_driver_state(&acp_protocol_codex_driver, &again)
+    testing.expect(t, acp_codex_durable_valid(&again) && acp_codex_durable(&again).completed_turns[0] == "turn_a")
+    // ACP drivers own no state: the legacy zero "codex" object is ignored.
+    plain: ACP_Runtime_Durable
+    testing.expect(t, acp_runtime_durable_load(&acp_protocol_acp_driver, CODEX_OLD_FORMAT_DURABLE, &plain, context.temp_allocator))
+    testing.expect(t, plain.driver_state == nil && plain.current_input == "msg_old")
+    // A malformed driver object fails the restore instead of being dropped.
+    bad: ACP_Runtime_Durable
+    testing.expect(t, !acp_runtime_durable_load(&acp_protocol_codex_driver, `{"phase":"ready","codex":{"turn_id":7}}`, &bad, context.temp_allocator))
+    acp_runtime_durable_free_driver_state(&acp_protocol_codex_driver, &bad)
 }

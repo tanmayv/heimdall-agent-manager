@@ -26,7 +26,8 @@ ACP_Runtime_Durable :: struct {
     steering_supported, steering_pending: bool,
     steering_input: ACP_Runtime_Input,
     batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
-    codex: ACP_Codex_Durable,
+    // Owned by the protocol driver and opaque here; see the driver state procs.
+    driver_state: rawptr `json:"-"`,
     // Delivery evidence sequence for this launch epoch (strictly increasing).
     report_seq: i64,
     send_now: ACP_Send_Now_Durable,
@@ -109,10 +110,42 @@ acp_runtime_checkpoint :: proc(data: rawptr, state: ^ACP_State) -> bool {
         state.seal_journal = true
         acp_runtime_replace(&state.chat_outbox_json, acp_event_json(r.chat.d))
     }
-    raw, err := json.marshal(r.d)
-    if err != nil do return false
-    delete(state.runtime_json); state.runtime_json = string(raw)
+    raw, ok := acp_runtime_durable_json(r)
+    if !ok do return false
+    delete(state.runtime_json); state.runtime_json = raw
     return true
+}
+
+// Shared durable fields plus the driver's opaque state under its key.
+acp_runtime_durable_json :: proc(r: ^ACP_Runtime) -> (string, bool) {
+    raw, err := json.marshal(r.d, allocator = context.temp_allocator)
+    if err != nil do return "", false
+    out := string(raw)
+    driver := acp_runtime_driver(r)
+    if driver != nil && driver.state_save != nil && r.d.driver_state != nil {
+        state, saved := driver.state_save(r.d.driver_state)
+        // A marshalled struct is a non-empty object ending in '}'.
+        if !saved || len(out) < 3 || out[len(out)-1] != '}' do return "", false
+        out = strings.concatenate({out[:len(out)-1], ",", acp_rpc_quote(driver.state_key), ":", state, "}"}, context.temp_allocator)
+    }
+    return strings.clone(out), true
+}
+
+// Inverse of acp_runtime_durable_json. On failure the caller still owns and
+// deletes d (acp_runtime_durable_free_driver_state releases driver state).
+// Shared fields use allocator; driver state is always heap-owned.
+acp_runtime_durable_load :: proc(driver: ^ACP_Protocol_Driver, raw: string, d: ^ACP_Runtime_Durable, allocator := context.allocator) -> bool {
+    if json.unmarshal_string(raw, d, allocator = allocator) != nil do return false
+    d.driver_state = nil
+    if driver == nil || driver.state_load == nil do return true
+    state, ok := driver.state_load(raw)
+    d.driver_state = state
+    return ok
+}
+
+acp_runtime_durable_free_driver_state :: proc(driver: ^ACP_Protocol_Driver, d: ^ACP_Runtime_Durable) {
+    if d.driver_state != nil && driver != nil && driver.state_delete != nil do driver.state_delete(d.driver_state)
+    d.driver_state = nil
 }
 
 acp_runtime_close_child :: proc(r: ^ACP_Runtime) -> bool {
@@ -350,7 +383,7 @@ acp_runtime_destroy :: proc(r: ^ACP_Runtime) {
     delete(r.d.queue)
     acp_inbox_input_delete(r.d.steering_input)
     for id in r.d.completed_inputs do delete(id); delete(r.d.completed_inputs)
-    acp_codex_durable_delete(&r.d.codex)
+    acp_runtime_durable_free_driver_state(acp_runtime_driver(r), &r.d)
     acp_send_now_delete(&r.d.send_now)
     free(r)
 }

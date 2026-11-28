@@ -28,6 +28,13 @@ ACP_Protocol_Driver :: struct {
     // Whether the running turn accepts a steering input. nil means Now
     // whenever the session advertised steering support.
     can_steer: proc(r: ^ACP_Runtime) -> ACP_Steer_Readiness,
+    // Opaque driver-owned durable state (ACP_Runtime_Durable.driver_state).
+    // It persists in the runtime journal JSON under state_key; load reads it
+    // from the whole journal JSON. Drivers without state leave these nil.
+    state_key: string,
+    state_load: proc(runtime_json: string) -> (rawptr, bool),
+    state_save: proc(state: rawptr) -> (string, bool),
+    state_delete: proc(state: rawptr),
 }
 
 // Later: the turn will accept steering once the protocol has admitted it (e.g.

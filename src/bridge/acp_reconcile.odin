@@ -213,7 +213,7 @@ acp_runtime_from_state :: proc(s: ^ACP_State, rec: Bridge_Local_Agent_Token_Reco
     if expected != s.run_dir do return nil, false
     r := acp_runtime_new(s.instance, s.launch_epoch, s.run_dir, s.provider, s.profile, s.catalog_etag, s.selected_model, s.selected_mode, rec)
     acp_provider_binding_delete(&r.binding); r.binding = acp_provider_binding_copy(s.binding)
-    if json.unmarshal_string(s.runtime_json, &r.d) != nil || r.driver == nil || !r.driver.durable_valid(&r.d) ||
+    if r.driver == nil || !acp_runtime_durable_load(r.driver, s.runtime_json, &r.d) || !r.driver.durable_valid(&r.d) ||
        (r.d.ready && (!s.initialized || s.sessionId == "")) || (s.sessionId != "" && !s.initialized) {
         acp_runtime_destroy(r); return nil, false
     }

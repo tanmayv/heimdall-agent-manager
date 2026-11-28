@@ -38,6 +38,8 @@ acp_protocol_codex_driver := ACP_Protocol_Driver{
     permission_result = acp_codex_permission_result, permission_relay = acp_codex_permission_relay,
     tick = acp_codex_tick,
     can_steer = acp_codex_can_steer,
+    state_key = ACP_CODEX_STATE_KEY, state_load = acp_codex_state_load,
+    state_save = acp_codex_state_save, state_delete = acp_codex_state_delete,
 }
 
 // The app-server speaks JSON-RPC without the version header, with signed
@@ -53,6 +55,36 @@ acp_codex_durable_delete :: proc(d: ^ACP_Codex_Durable) {
     delete(d.completed_turns); d^ = {}
 }
 
+// The runtime journal has always stored this state as the "codex" object of
+// the durable runtime JSON; journals written before the state became opaque
+// restore unchanged.
+ACP_CODEX_STATE_KEY :: "codex"
+
+// The driver-owned state of a durable, allocated on first use. Strings inside
+// are heap-owned (acp_runtime_replace); acp_codex_state_delete frees them.
+acp_codex_durable :: proc(d: ^ACP_Runtime_Durable) -> ^ACP_Codex_Durable {
+    if d.driver_state == nil do d.driver_state = new(ACP_Codex_Durable, runtime.heap_allocator())
+    return cast(^ACP_Codex_Durable)d.driver_state
+}
+acp_codex :: proc(r: ^ACP_Runtime) -> ^ACP_Codex_Durable { return acp_codex_durable(&r.d) }
+
+acp_codex_state_load :: proc(runtime_json: string) -> (rawptr, bool) {
+    context.allocator = runtime.heap_allocator()
+    saved: struct { codex: ACP_Codex_Durable }
+    if json.unmarshal_string(runtime_json, &saved) != nil { acp_codex_durable_delete(&saved.codex); return nil, false }
+    return new_clone(saved.codex), true
+}
+acp_codex_state_save :: proc(state: rawptr) -> (string, bool) {
+    raw, err := json.marshal((cast(^ACP_Codex_Durable)state)^, allocator = context.temp_allocator)
+    return string(raw), err == nil
+}
+acp_codex_state_delete :: proc(state: rawptr) {
+    context.allocator = runtime.heap_allocator()
+    if state == nil do return
+    s := cast(^ACP_Codex_Durable)state
+    acp_codex_durable_delete(s); free(s)
+}
+
 acp_codex_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
     common := d^
     // Reuse common input/error/budget checks without widening ACP phases.
@@ -62,7 +94,8 @@ acp_codex_durable_valid :: proc(d: ^ACP_Runtime_Durable) -> bool {
     }
     common.phase = "ready"
     if !acp_driver_acp_durable_valid(&common) do return false
-    c := &d.codex
+    empty: ACP_Codex_Durable
+    c := cast(^ACP_Codex_Durable)d.driver_state if d.driver_state != nil else &empty
     if len(c.turn_id)>1024 || len(c.start_id)>2048 || len(c.steering_turn_id)>1024 || len(c.message_id)>1024 ||
        len(c.completed_turns)>256 || c.message_bytes<0 || c.message_bytes>contracts.ACP_ASSISTANT_MAX_BYTES ||
        c.interrupt_deadline<0 || c.resume_retry_after<0 || c.resume_attempts<0 || c.resume_attempts>3 { return false }
@@ -93,13 +126,13 @@ acp_codex_inbound_timeout :: proc(method: string) -> i64 {
 acp_codex_cancel_timeout :: proc(method: string) -> i64 { return 0 }
 
 acp_codex_begin :: proc(r: ^ACP_Runtime) -> bool {
-    if r.recovering && r.d.codex.turn_id!="" do acp_codex_remember_turn(r,r.d.codex.turn_id)
+    if r.recovering && acp_codex(r).turn_id!="" do acp_codex_remember_turn(r,acp_codex(r).turn_id)
     acp_runtime_replace(&r.d.phase, "initialize")
-    acp_runtime_replace(&r.d.codex.turn_id, "")
-    acp_runtime_replace(&r.d.codex.start_id, "")
-    acp_runtime_replace(&r.d.codex.steering_turn_id, "")
-    r.d.codex.interrupt_deadline = 0
-    r.d.codex.interrupt_sent = false; r.d.codex.resume_retry_after = 0
+    acp_runtime_replace(&acp_codex(r).turn_id, "")
+    acp_runtime_replace(&acp_codex(r).start_id, "")
+    acp_runtime_replace(&acp_codex(r).steering_turn_id, "")
+    acp_codex(r).interrupt_deadline = 0
+    acp_codex(r).interrupt_sent = false; acp_codex(r).resume_retry_after = 0
     return acp_runtime_request(r, "initialize", ACP_CODEX_INITIALIZE)
 }
 
@@ -168,31 +201,31 @@ acp_codex_prompt :: proc(r: ^ACP_Runtime,input: ACP_Runtime_Input,bootstrap: boo
     if !acp_codex_policy(r,&params,false) do return
     params["threadId"] = json.String(r.session)
     params["input"] = acp_event_object(acp_event_json(struct{input:[1]struct{type,text:string}}{input={{"text",input.text}}}))["input"]
-    r.d.cancelling=false; r.d.codex.interrupt_deadline=0; r.d.codex.interrupt_sent=false
-    acp_runtime_replace(&r.d.codex.turn_id,"")
-    acp_runtime_replace(&r.d.codex.message_id,""); r.d.codex.message_bytes=0; r.d.codex.message_done=false
+    r.d.cancelling=false; acp_codex(r).interrupt_deadline=0; acp_codex(r).interrupt_sent=false
+    acp_runtime_replace(&acp_codex(r).turn_id,"")
+    acp_runtime_replace(&acp_codex(r).message_id,""); acp_codex(r).message_bytes=0; acp_codex(r).message_done=false
     acp_runtime_replace(&r.d.phase,"prompt"); acp_runtime_replace(&r.d.current_input,input.id)
     // Predict the dispatcher-owned counter so the start identity is in the
     // same checkpoint as the outgoing RPC, including before a lost receipt.
-    acp_runtime_replace(&r.d.codex.start_id,acp_rpc_internal_id(r.epoch,r.client.state.next_rpc_id))
+    acp_runtime_replace(&acp_codex(r).start_id,acp_rpc_internal_id(r.epoch,r.client.state.next_rpc_id))
     if acp_runtime_events.prompt_started!=nil do acp_runtime_events.prompt_started(r,input.id)
     if acp_runtime_request(r,"turn/start",acp_event_json(params)) do bridge_runtime_note_agent_activity(r.instance,"active","acp")
 }
 
 acp_codex_turn_known :: proc(r: ^ACP_Runtime,id: string) -> bool {
-    for prior in r.d.codex.completed_turns do if prior==id do return true
+    for prior in acp_codex(r).completed_turns do if prior==id do return true
     return false
 }
 acp_codex_remember_turn :: proc(r: ^ACP_Runtime,id: string) {
     if id=="" || acp_codex_turn_known(r,id) do return
-    append(&r.d.codex.completed_turns,strings.clone(id))
-    if len(r.d.codex.completed_turns)>256 { delete(r.d.codex.completed_turns[0]); ordered_remove(&r.d.codex.completed_turns,0) }
+    append(&acp_codex(r).completed_turns,strings.clone(id))
+    if len(acp_codex(r).completed_turns)>256 { delete(acp_codex(r).completed_turns[0]); ordered_remove(&acp_codex(r).completed_turns,0) }
 }
 acp_codex_bind_turn :: proc(r: ^ACP_Runtime,id: string) -> bool {
-    if id=="" || len(id)>1024 || acp_codex_turn_known(r,id) || (r.d.codex.turn_id!="" && r.d.codex.turn_id!=id) {
+    if id=="" || len(id)>1024 || acp_codex_turn_known(r,id) || (acp_codex(r).turn_id!="" && acp_codex(r).turn_id!=id) {
         acp_runtime_error(r,"acp_protocol_error"); return false
     }
-    acp_runtime_replace(&r.d.codex.turn_id,id)
+    acp_runtime_replace(&acp_codex(r).turn_id,id)
     return true
 }
 
@@ -202,18 +235,18 @@ acp_codex_result :: proc(data: rawptr,result: ACP_RPC_Result) {
     if !acp_runtime_current(r) || r.d.error!="" do return
     // A completed notification may precede its admission response. Never bind
     // that late response to a newer queued input.
-    if result.method=="turn/start" && string(result.id)!=r.d.codex.start_id do return
+    if result.method=="turn/start" && string(result.id)!=acp_codex(r).start_id do return
     if !result.ok {
         if result.error.message=="acp_pipe_lost" || result.error.message=="acp_pipe_gap" do return
         if result.method=="thread/resume" && !strings.has_prefix(result.error.message,"acp_") {
             message := strings.to_lower(result.error.message,context.temp_allocator)
-            if strings.contains(message,"archived") && !r.d.codex.unarchived {
-                r.d.codex.unarchived=true; acp_runtime_replace(&r.d.phase,"unarchive")
+            if strings.contains(message,"archived") && !acp_codex(r).unarchived {
+                acp_codex(r).unarchived=true; acp_runtime_replace(&r.d.phase,"unarchive")
                 acp_runtime_request(r,"thread/unarchive",acp_event_json(struct{threadId:string}{r.session})); return
             }
-            if strings.contains(message,"closing") && r.d.codex.resume_attempts<3 {
-                r.d.codex.resume_attempts+=1
-                r.d.codex.resume_retry_after=acp_rpc_now(r.client)+250*i64(r.d.codex.resume_attempts)
+            if strings.contains(message,"closing") && acp_codex(r).resume_attempts<3 {
+                acp_codex(r).resume_attempts+=1
+                acp_codex(r).resume_retry_after=acp_rpc_now(r.client)+250*i64(acp_codex(r).resume_attempts)
                 return
             }
             // Unknown/not-found/archived after one unarchive never creates a
@@ -250,7 +283,7 @@ acp_codex_result :: proc(data: rawptr,result: ACP_RPC_Result) {
         id := acp_event_string(thread_obj,"id")
         if id=="" || len(id)>1024 || (r.recovering && id!=r.session) { acp_runtime_error(r,"acp_protocol_error"); return }
         acp_runtime_replace(&r.session,id)
-        r.d.codex.resume_attempts=0
+        acp_codex(r).resume_attempts=0
         acp_codex_ready(r)
     case "thread/unarchive": acp_codex_thread(r)
     case "turn/start":
@@ -276,10 +309,10 @@ acp_codex_finish :: proc(r: ^ACP_Runtime,turn: json.Object) {
     acp_permissions_cancel(r)
     if acp_runtime_events.prompt_finished!=nil do acp_runtime_events.prompt_finished(r,r.d.current_input,acp_event_json(struct{stopReason:string}{reason}),error)
     acp_inbox_remember(r,r.d.current_input)
-    acp_codex_remember_turn(r,r.d.codex.turn_id)
-    acp_runtime_replace(&r.d.current_input,""); acp_runtime_replace(&r.d.codex.start_id,"")
-    acp_runtime_replace(&r.d.codex.turn_id,""); acp_runtime_replace(&r.d.phase,"ready")
-    r.d.cancelling=false; r.d.codex.interrupt_deadline=0; r.d.codex.interrupt_sent=false
+    acp_codex_remember_turn(r,acp_codex(r).turn_id)
+    acp_runtime_replace(&r.d.current_input,""); acp_runtime_replace(&acp_codex(r).start_id,"")
+    acp_runtime_replace(&acp_codex(r).turn_id,""); acp_runtime_replace(&r.d.phase,"ready")
+    r.d.cancelling=false; acp_codex(r).interrupt_deadline=0; acp_codex(r).interrupt_sent=false
     bridge_runtime_note_agent_activity(r.instance,"idle","acp")
     acp_runtime_drain(r)
 }
@@ -301,16 +334,16 @@ acp_codex_notification :: proc(r: ^ACP_Runtime,method,params: string) {
         return
     }
     id := acp_event_string(obj,"turnId")
-    if id=="" || id!=r.d.codex.turn_id do return
+    if id=="" || id!=acp_codex(r).turn_id do return
     switch method {
     case "item/agentMessage/delta":
         item := acp_event_string(obj,"itemId"); delta := acp_event_string(obj,"delta")
         if item=="" || len(item)>1024 || delta=="" do return
-        if r.d.codex.message_id!=item {
-            acp_runtime_replace(&r.d.codex.message_id,item); r.d.codex.message_bytes=0; r.d.codex.message_done=false
+        if acp_codex(r).message_id!=item {
+            acp_runtime_replace(&acp_codex(r).message_id,item); acp_codex(r).message_bytes=0; acp_codex(r).message_done=false
         }
-        if r.d.codex.message_done do return
-        r.d.codex.message_bytes=min(r.d.codex.message_bytes+len(delta),contracts.ACP_ASSISTANT_MAX_BYTES)
+        if acp_codex(r).message_done do return
+        acp_codex(r).message_bytes=min(acp_codex(r).message_bytes+len(delta),contracts.ACP_ASSISTANT_MAX_BYTES)
         acp_chat_chunk(r,delta)
     case "item/started","item/completed":
         item,_ := obj["item"].(json.Object)
@@ -350,13 +383,13 @@ acp_codex_item :: proc(r: ^ACP_Runtime,item: json.Object,completed: bool) {
     if id=="" || len(id)>1024 do return
     if kind=="agentMessage" {
         if !completed do return
-        if r.d.codex.message_id!=id {
-            acp_runtime_replace(&r.d.codex.message_id,id); r.d.codex.message_bytes=0; r.d.codex.message_done=false
+        if acp_codex(r).message_id!=id {
+            acp_runtime_replace(&acp_codex(r).message_id,id); acp_codex(r).message_bytes=0; acp_codex(r).message_done=false
         }
-        if !r.d.codex.message_done {
+        if !acp_codex(r).message_done {
             text := acp_event_string(item,"text")
-            if len(text)>r.d.codex.message_bytes do acp_chat_chunk(r,text[r.d.codex.message_bytes:])
-            r.d.codex.message_done=true
+            if len(text)>acp_codex(r).message_bytes do acp_chat_chunk(r,text[acp_codex(r).message_bytes:])
+            acp_codex(r).message_done=true
         }
         return
     }
@@ -394,30 +427,30 @@ acp_codex_item :: proc(r: ^ACP_Runtime,item: json.Object,completed: bool) {
 acp_codex_cancel :: proc(r: ^ACP_Runtime) -> bool {
     if r.d.phase!="prompt" do return true
     r.d.cancelling=true
-    if r.d.codex.interrupt_deadline==0 do r.d.codex.interrupt_deadline=acp_rpc_now(r.client)+10000
+    if acp_codex(r).interrupt_deadline==0 do acp_codex(r).interrupt_deadline=acp_rpc_now(r.client)+10000
     // The start response/notification will deliver it once the ID is known.
-    if r.d.codex.turn_id=="" do return acp_rpc_checkpoint(r.client)
-    if r.d.codex.interrupt_sent do return acp_rpc_checkpoint(r.client)
-    r.d.codex.interrupt_sent=true
+    if acp_codex(r).turn_id=="" do return acp_rpc_checkpoint(r.client)
+    if acp_codex(r).interrupt_sent do return acp_rpc_checkpoint(r.client)
+    acp_codex(r).interrupt_sent=true
     // Stop marks the owner stopped before calling the driver. This control
     // request must still reach the live child before its normal Close path.
-    id,sent := acp_rpc_request(r.client,"turn/interrupt",acp_event_json(struct{threadId,turnId:string}{r.session,r.d.codex.turn_id}),0,{acp_runtime_result,r})
+    id,sent := acp_rpc_request(r.client,"turn/interrupt",acp_event_json(struct{threadId,turnId:string}{r.session,acp_codex(r).turn_id}),0,{acp_runtime_result,r})
     delete(string(id),runtime.heap_allocator()); return sent
 }
 acp_codex_tick :: proc(r: ^ACP_Runtime) {
     if r.d.error!="" do return
-    if r.d.codex.resume_retry_after!=0 && acp_rpc_now(r.client)>=r.d.codex.resume_retry_after {
-        r.d.codex.resume_retry_after=0
+    if acp_codex(r).resume_retry_after!=0 && acp_rpc_now(r.client)>=acp_codex(r).resume_retry_after {
+        acp_codex(r).resume_retry_after=0
         acp_codex_thread(r)
     }
-    if r.d.codex.interrupt_deadline!=0 && acp_rpc_now(r.client)>=r.d.codex.interrupt_deadline && r.d.phase=="prompt" {
+    if acp_codex(r).interrupt_deadline!=0 && acp_rpc_now(r.client)>=acp_codex(r).interrupt_deadline && r.d.phase=="prompt" {
         acp_runtime_error(r,"acp_rpc_timeout")
     }
 }
 acp_codex_steer :: proc(r: ^ACP_Runtime) -> bool {
-    acp_runtime_replace(&r.d.codex.steering_turn_id,r.d.codex.turn_id)
+    acp_runtime_replace(&acp_codex(r).steering_turn_id,acp_codex(r).turn_id)
     raw := acp_event_json(struct{threadId,expectedTurnId:string,input:[1]struct{type,text:string}}{
-        r.session,r.d.codex.turn_id,{{"text",r.d.steering_input.text}}})
+        r.session,acp_codex(r).turn_id,{{"text",r.d.steering_input.text}}})
     id,sent := acp_rpc_request(r.client,"turn/steer",raw,0,{acp_inbox_steering_result,r})
     delete(string(id),runtime.heap_allocator()); return sent
 }
@@ -425,7 +458,8 @@ acp_codex_steer :: proc(r: ^ACP_Runtime) -> bool {
 // yields it, an input waits for the id rather than cancelling the turn.
 acp_codex_can_steer :: proc(r: ^ACP_Runtime) -> ACP_Steer_Readiness {
     if r.d.cancelling do return .Never
-    return .Now if r.d.codex.turn_id!="" else .Later
+    state := cast(^ACP_Codex_Durable)r.d.driver_state
+    return .Now if state!=nil && state.turn_id!="" else .Later
 }
 acp_codex_steering_result :: proc(data: rawptr,result: ACP_RPC_Result) {
     defer acp_rpc_result_delete(result)
@@ -436,12 +470,12 @@ acp_codex_steering_result :: proc(data: rawptr,result: ACP_RPC_Result) {
     if !r.d.steering_pending do return
     obj := acp_event_object(result.result_json)
     injected := result.ok && acp_event_string(obj,"turnId")!=""
-    if injected && acp_event_string(obj,"turnId")!=r.d.codex.steering_turn_id {
+    if injected && acp_event_string(obj,"turnId")!=acp_codex(r).steering_turn_id {
         acp_runtime_error(r,"acp_protocol_error"); return
     }
     if result.ok && !injected { acp_runtime_error(r,"acp_protocol_error"); return }
     r.d.steering_input={}; r.d.steering_pending=false
-    acp_runtime_replace(&r.d.codex.steering_turn_id,"")
+    acp_runtime_replace(&acp_codex(r).steering_turn_id,"")
     if injected {
         if r.d.phase=="prompt" do acp_chat_boundary(r)
         acp_delivery_steer_injected(r,input)
@@ -492,7 +526,7 @@ acp_codex_inbound :: proc(r: ^ACP_Runtime,id,method,params: string) -> bool {
     if thread_id=="" do thread_id=acp_event_string(obj,"conversationId")
     turn := acp_event_string(obj,"turnId")
     if thread_id!=r.session || r.session=="" || r.d.phase!="prompt" ||
-       (turn!="" && turn!=r.d.codex.turn_id) {
+       (turn!="" && turn!=acp_codex(r).turn_id) {
         acp_rpc_reply(r.client,id,acp_codex_permission_result(method,params,"none")); return true
     }
     acp_permission_start(r,id,params); return true
