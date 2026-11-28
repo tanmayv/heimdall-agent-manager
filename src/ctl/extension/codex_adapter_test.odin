@@ -211,6 +211,7 @@ test_codex_permission_self_approves_ham_ctl :: proc(t: ^testing.T) {
 		"/run/inst/bin/ham-ctl lease next",
 		"$HEIMDALL_CTL_BIN task comment t1 --body 'working'",
 		"./bin/ham-ctl agent start-success",
+		"./bin/ham-ctl extension status",
 	}) {
 		codex_perm_calls = 0
 		testing.expectf(t, hook_run("codex", bash(cmd), env, codex_perm_send) == ALLOW, "should self-approve: %s", cmd)
@@ -224,6 +225,10 @@ test_codex_permission_self_approves_ham_ctl :: proc(t: ^testing.T) {
 		"./bin/ham-ctl review post t1 --verdict approve --on-behalf-of user",
 		"./bin/ham-ctl chat read && rm -rf /",
 		"ham-ctl chat read",
+		// B1: installing a local plugin runs its hooks; event forges telemetry.
+		"./bin/ham-ctl extension install codex --path /tmp/evil-plugin",
+		"./bin/ham-ctl extension event --stdin",
+		"./bin/ham-ctl extension hook codex",
 	}) {
 		codex_perm_calls = 0
 		out := hook_run("codex", bash(cmd), env, codex_perm_send)

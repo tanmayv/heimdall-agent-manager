@@ -364,12 +364,16 @@ Ham_Ctl_Verb :: struct {
 // only task read/comment verbs are listed (create/update/publish change what
 // other agents are asked to do). `review` always asks:
 // `review post --on-behalf-of user` records a verdict as the user, and shell
-// quoting makes a flag deny-list unreliable.
+// quoting makes a flag deny-list unreliable. Only `extension status` (a read) is
+// listed: `extension install --path <dir>` adds a local plugin marketplace whose
+// hooks run arbitrary code, and `extension event` forges telemetry. The
+// providers' hooks.json run `extension hook` directly, never through the shell
+// tool, so it never needs approval here.
 HAM_CTL_AUTO_APPROVE_VERBS :: [?]Ham_Ctl_Verb{
 	{"chat", "read"}, {"chat", "send"},
 	{"lease", "*"},
 	{"task", "show"}, {"task", "fetch"}, {"task", "list"}, {"task", "comments"}, {"task", "comment"},
-	{"extension", "*"}, {"search", "*"},
+	{"extension", "status"}, {"search", "*"},
 	{"memory", "propose"}, {"memory", "list"}, {"memory", "show"}, {"memory", "content"},
 	{"agent", "start-success"},
 	{"issue", "list"}, {"issue", "show"}, {"issue", "create"}, {"issue", "vote"},

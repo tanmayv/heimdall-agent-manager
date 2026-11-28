@@ -329,6 +329,22 @@ test_hook_run_antigravity_auto_approves_ham_ctl :: proc(t: ^testing.T) {
 	testing.expect_value(t, agy_fake_calls, 1)
 	testing.expect_value(t, agy_fake_method, "agent.extension.permission")
 	testing.expect_value(t, out, `{"decision":"allow"}`)
+
+	// B1: `extension install --path` adds a plugin whose hooks run code, so it
+	// is relayed; `extension status` (a read) self-approves.
+	Case :: struct {cmd: string, approved: bool}
+	for c in ([]Case{
+		{"./bin/ham-ctl extension install antigravity --path /tmp/evil-plugin", false},
+		{"./bin/ham-ctl extension event --stdin", false},
+		{"./bin/ham-ctl extension status", true},
+	}) {
+		cmd, approved := c.cmd, c.approved
+		raw_ext := fmt.tprintf(`{{"hookEventName":"PreToolUse","conversationId":"s1","permissionMode":"ask","toolCall":{{"name":"run_command","args":{{"CommandLine":"%s","Cwd":"/home/tanmay/heimdall-agent-manager"}}}}}}`, cmd)
+		agy_fake_reset(`{"ok":true,"data":{"decision":"deny"}}`, true)
+		out = hook_run("antigravity", raw_ext, env, agy_fake_send)
+		testing.expectf(t, (out == `{"decision":"allow"}`) == approved, "%s: %s", cmd, out)
+		testing.expectf(t, agy_fake_calls == (0 if approved else 1), "%s: bridge calls %d", cmd, agy_fake_calls)
+	}
 }
 
 @(test)
