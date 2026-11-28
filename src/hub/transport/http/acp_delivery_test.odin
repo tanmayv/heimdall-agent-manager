@@ -324,16 +324,23 @@ ad_relaunch_reopens_never_dispatched_and_discards_inflight :: proc(t: ^testing.T
     testing.expect(t, r.status == 200 && strings.contains(r.body, `"steering_supported":true`) && strings.contains(r.body, `"launch_epoch":"epoch2"`), r.body)
 }
 
+// The relayed segment names every user input it answers (one prompt or a
+// steered batch) so the UI can place it causally; nothing is stored.
 @(test)
-ad_assistant_upsert_records_all_batch_input_ids :: proc(t: ^testing.T) {
+ad_assistant_segment_relays_all_batch_input_ids :: proc(t: ^testing.T) {
     arena := ad_arena(); defer virtual.arena_destroy(&arena)
     context.allocator = virtual.arena_allocator(&arena); context.temp_allocator = context.allocator
     f: ACP_Chat_Fixture; ad_open(t, &f); defer mq_http_base_close(f.mq.base)
-    a := ad_send(t, &f, "a"); b := ad_send(t, &f, "b")
-    input := contracts.ACP_Assistant_Message_Input{launch_epoch = "epoch", turn_id = "turn", message_id = "msg_0123456789abcdef", revision = 1, body = acp_chat_seal("answer"), message_status = "pending", input_ids = {a, b}}
-    r := acp_chat_call(&f, input); testing.expect(t, r.status == 201, r.body)
-    row, _, _ := iface.content_get_message(&f.mq.repo, input.message_id)
-    testing.expect(t, strings.contains(row.metadata_json, fmt.tprintf(`"input_ids":["%s","%s"]`, a, b)), row.metadata_json)
+    b: Acp_Chat_Bus; b.slot = -1; defer acp_chat_bus_close(&b)
+    if !acp_chat_bus_open(t, &f, &b) do return
+    a := ad_send(t, &f, "a"); c := ad_send(t, &f, "b")
+    for _ in 0..<2 do _ = acp_chat_bus_frame(&b) // the two sends' own chat events
+    input := contracts.ACP_Assistant_Message_Input{launch_epoch = "epoch", turn_id = "turn", message_id = "msg_0123456789abcdef", revision = 1, body = acp_chat_seal("answer"), message_status = "pending", input_ids = {a, c}}
+    r := acp_chat_call(&f, input); testing.expect(t, r.status == 200, r.body)
+    frame := acp_chat_bus_frame(&b)
+    testing.expect(t, strings.contains(frame, fmt.tprintf(`"input_ids":["%s","%s"]`, a, c)), frame)
+    _, found, _ := iface.content_get_message(&f.mq.repo, input.message_id)
+    testing.expect(t, !found)
     input.revision = 2; input.input_ids = {"bad id"}
     r = acp_chat_call(&f, input); testing.expect_value(t, r.status, 400)
 }

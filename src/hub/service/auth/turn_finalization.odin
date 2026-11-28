@@ -7,7 +7,8 @@ import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 
 // This identity is deliberately not an Instance_Token Auth_Context. Only the
-// assistant-message handler may promote it after checking the durable binding.
+// bridge-authored ACP handlers (assistant segment relay, input state) may
+// promote it, after checking the asserted launch epoch.
 Turn_Finalization_Identity :: struct {
     instance: domain.Agent_Instance,
     asserted_epoch: string,
