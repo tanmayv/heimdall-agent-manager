@@ -84,7 +84,8 @@ Memory_Filter :: struct {
 	template_id: string,
 }
 Chat_Input :: struct { agent_id,agent_instance_id,chain_id,title,initial_body,artifact_ids_json,bridge_id,provider,provider_profile,model: string, project_id: domain.Project_ID }
-Message_Input :: struct { body,artifact_ids_json,message_type,metadata_json: string }
+// reply_to_message_id: an agent reply's explicit answered input (chat send --reply-to).
+Message_Input :: struct { body,artifact_ids_json,message_type,metadata_json,reply_to_message_id: string }
 Pane_Capture_Input :: struct { width, settle_ms, line_limit: int }
 Pane_Capture_Result_Input :: struct { command_id,pane_capture_request_id,conversation_id,message_id,agent_instance_id,output,error_code,message: string, ok,truncated: bool, width,line_count: int }
 // acp_agent_unread: the ACP agent's own read; unread also covers bridge-admitted
@@ -293,7 +294,7 @@ send_agent_message_with_id :: proc(s: ^Content_Service, auth: contracts.Auth_Con
 	now := platform.clock_now(s.clock)
 	m_type := input.message_type if input.message_type != "" else "text"
 	m := domain.Chat_Message{message_id = message_id, conversation_id = c.conversation_id, owner_user_id = c.owner_user_id, direction = "agent_to_user", sender_agent_id = c.agent_id, sender_agent_instance_id = c.agent_instance_id, body = input.body, artifact_ids_json = artifact_json_or_empty(input.artifact_ids_json), message_type = m_type, metadata_json = input.metadata_json, created_at = now}
-	saved, save_ok, save_err := save_message(s, m)
+	saved, save_ok, save_err := save_agent_reply(s, c, m, input.reply_to_message_id, now)
 	if !save_ok do return {}, false, save_err
 	c.last_message_preview = input.body
 	c.last_message_at = now
