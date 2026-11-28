@@ -403,6 +403,47 @@ sn_codex_waits_for_turn_id_instead_of_cancelling :: proc(t: ^testing.T) {
     })
 }
 
+sn_custom_driver: ACP_Protocol_Driver
+sn_readiness: ACP_Steer_Readiness
+sn_seen: [5]ACP_Steer_Readiness
+sn_test_can_steer :: proc(r: ^ACP_Runtime) -> ACP_Steer_Readiness { return sn_readiness }
+
+// Hold-or-cancel follows the driver's can_steer capability, for any driver.
+@(test)
+sn_hold_or_cancel_follows_driver_can_steer :: proc(t: ^testing.T) {
+    sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {
+        sn_custom_driver = acp_protocol_acp_driver
+        sn_custom_driver.can_steer = sn_test_can_steer
+        sn_readiness = .Later
+        sn_do(f, proc(f: ^T4_Runtime_Test) {
+            f.r.driver = &sn_custom_driver
+            f.r.d.steering_supported = true
+            sn_seen[0] = acp_runtime_steer_readiness(f.r, {id = "msg_q", kind = ACP_SEND_NOW_KIND})
+            sn_seen[1] = acp_runtime_steer_readiness(f.r, {id = "msg_q", kind = "append_next_turn"})
+            acp_runtime_replace(&f.r.d.phase, "prompt")
+            acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = ACP_SEND_NOW_KIND})
+        })
+        testing.expect(t, !f.r.d.cancelling)
+        testing.expect_value(t, f.r.d.send_now.state, "waiting")
+        sn_readiness = .Never
+        sn_do(f, proc(f: ^T4_Runtime_Test) { acp_send_now_hold_or_cancel(f.r, {id = "msg_q", kind = ACP_SEND_NOW_KIND}) })
+        testing.expect(t, f.r.d.cancelling)
+        testing.expect_value(t, sn_count_writes(f, "session/cancel"), 1)
+        sn_do(f, proc(f: ^T4_Runtime_Test) {
+            // Without the capability, a steering session is steerable now.
+            f.r.driver = &acp_protocol_acp_driver
+            sn_seen[2] = acp_runtime_steer_readiness(f.r, {id = "msg_q"})
+            f.r.d.steering_supported = false
+            sn_seen[3] = acp_runtime_steer_readiness(f.r, {id = "msg_q"})
+            acp_runtime_replace(&f.r.d.phase, "ready"); f.r.d.cancelling = false
+        })
+        testing.expect_value(t, sn_seen[0], ACP_Steer_Readiness.Later)
+        testing.expect_value(t, sn_seen[1], ACP_Steer_Readiness.Never)
+        testing.expect_value(t, sn_seen[2], ACP_Steer_Readiness.Now)
+        testing.expect_value(t, sn_seen[3], ACP_Steer_Readiness.Never)
+    })
+}
+
 @(test)
 sn_reports_precede_assistant_rows_and_name_inputs :: proc(t: ^testing.T) {
     sn_chat_test(t, proc(t: ^testing.T, f: ^T4_Runtime_Test) {

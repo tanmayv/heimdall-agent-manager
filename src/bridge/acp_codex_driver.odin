@@ -421,7 +421,12 @@ acp_codex_steer :: proc(r: ^ACP_Runtime) -> bool {
     id,sent := acp_rpc_request(r.client,"turn/steer",raw,0,{acp_inbox_steering_result,r})
     delete(string(id),runtime.heap_allocator()); return sent
 }
-acp_codex_can_steer :: proc(r: ^ACP_Runtime) -> bool { return r.d.codex.turn_id!="" && !r.d.cancelling }
+// Steering targets the native turn id; before turn/start or turn/started
+// yields it, an input waits for the id rather than cancelling the turn.
+acp_codex_can_steer :: proc(r: ^ACP_Runtime) -> ACP_Steer_Readiness {
+    if r.d.cancelling do return .Never
+    return .Now if r.d.codex.turn_id!="" else .Later
+}
 acp_codex_steering_result :: proc(data: rawptr,result: ACP_RPC_Result) {
     defer acp_rpc_result_delete(result)
     r := cast(^ACP_Runtime)data

@@ -311,12 +311,13 @@ acp_send_now_collect :: proc(r: ^ACP_Runtime) -> ACP_Runtime_Input {
     return {id = strings.clone(acp_send_now_input_id(r)), text = strings.clone(strings.to_string(b)), lane = .Steer, kind = strings.clone(ACP_SEND_NOW_KIND)}
 }
 
-// Busy and the batch cannot be steered right now. Codex with steering wait for
-// the native turn id (pre-turn-id window) instead of cancelling; otherwise
-// cancel the running turn once, and the batch becomes the next prompt.
+// Busy and the batch cannot be steered right now. When the driver reports the
+// turn will accept steering shortly (e.g. its native turn id is still pending),
+// wait instead of cancelling; otherwise cancel the running turn once, and the
+// batch becomes the next prompt.
 acp_send_now_hold_or_cancel :: proc(r: ^ACP_Runtime, front: ACP_Runtime_Input) {
     if r.d.cancelling do return
-    if r.d.steering_supported && !acp_inbox_next_turn_only(front.kind) && r.driver == &acp_protocol_codex_driver && r.d.codex.turn_id == "" {
+    if acp_runtime_steer_readiness(r, front) == .Later {
         acp_send_now_set_state(r, "waiting")
         return
     }

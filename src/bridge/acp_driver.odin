@@ -25,7 +25,23 @@ ACP_Protocol_Driver :: struct {
     permission_result: proc(method, params, decision: string) -> string,
     permission_relay: proc(method, params, blocker, provider: string, timeout_ms: int) -> Bridge_Ext_Permission_Request,
     tick: proc(r: ^ACP_Runtime),
-    can_steer: proc(r: ^ACP_Runtime) -> bool,
+    // Whether the running turn accepts a steering input. nil means Now
+    // whenever the session advertised steering support.
+    can_steer: proc(r: ^ACP_Runtime) -> ACP_Steer_Readiness,
+}
+
+// Later: the turn will accept steering once the protocol has admitted it (e.g.
+// a native turn id is still pending), so a held input waits instead of
+// cancelling. Never: this turn cannot be steered.
+ACP_Steer_Readiness :: enum { Now, Later, Never }
+
+// Steering readiness for the input at the front of the steer lane. Shared by
+// the inbox and Send now: inputs that already failed a steer go next turn.
+acp_runtime_steer_readiness :: proc(r: ^ACP_Runtime, front: ACP_Runtime_Input) -> ACP_Steer_Readiness {
+    if !r.d.steering_supported || acp_inbox_next_turn_only(front.kind) do return .Never
+    driver := acp_runtime_driver(r)
+    if driver.can_steer == nil do return .Now
+    return driver.can_steer(r)
 }
 
 // RPC policy contains no runtime pointer and can also be used by install probes.

@@ -147,9 +147,7 @@ acp_runtime_drain :: proc(r: ^ACP_Runtime) {
             acp_send_now_hold_or_cancel(r, front)
             return
         }
-        driver := acp_runtime_driver(r)
-        steerable := r.d.steering_supported && !acp_inbox_next_turn_only(front.kind) && (driver.can_steer == nil || driver.can_steer(r))
-        if !steerable {
+        if acp_runtime_steer_readiness(r, front) != .Now {
             if batch do acp_send_now_hold_or_cancel(r, front)
             return
         }
