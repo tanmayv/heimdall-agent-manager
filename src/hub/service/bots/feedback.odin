@@ -48,6 +48,7 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 	total := 0
 	{
 		sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
+		if fence := bots_legacy_guard(s, binding.owner_user_id); fence.code != .None do return nil, 0, fence
 		messages, err := iface.messages_pending(s.repo, bot_id, -1)
 		defer delete(messages)
 		if err.code != .None {
@@ -78,7 +79,7 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 		a := bots_adapter(s, binding.provider)
 		started := time.tick_now()
 		skip_reactions := false
-		if a != nil && a.mark_read != nil {
+		if a != nil && a.mark_read != nil && bots_legacy_provider_admit(s, binding.owner_user_id) {
 			if err := a.mark_read(a.ctx, binding.external_chat_id, newly_read[len(newly_read)-1].external_message_id); err.kind != .None {
 				bots_feedback_error(binding.provider, "mark_read", err)
 				skip_reactions = err.kind == .Transient || err.kind == .Aborted || err.kind == .Rate_Limited
@@ -87,6 +88,7 @@ bots_channel_read :: proc(s: ^Bots_Service, bot_id: string, binding: domain.Chan
 		if !skip_reactions && a != nil && a.react != nil {
 			for m in newly_read {
 				if time.tick_since(started) >= BOT_READ_REACTION_BUDGET do break
+				if !bots_legacy_provider_admit(s, binding.owner_user_id) do break
 				if err := a.react(a.ctx, binding.external_chat_id, m.external_message_id, BOT_READ_REACTION); err.kind != .None {
 					bots_feedback_error(binding.provider, "read_reaction", err)
 					// A provider outage must not multiply latency by the read limit.
@@ -111,6 +113,7 @@ bots_queued_feedback :: proc(s: ^Bots_Service, fresh: []domain.Channel_Message, 
 		a := bots_adapter(s, binding.provider)
 		emoji := bots_queued_reaction(binding.provider)
 		if a == nil || a.react == nil || emoji == "" do continue
+		if !bots_legacy_provider_admit(s, binding.owner_user_id) do continue
 		if e := a.react(a.ctx, binding.external_chat_id, m.external_message_id, emoji); e.kind != .None {
 			bots_feedback_error(binding.provider, "queued_reaction", e, feedback_output)
 			if e.kind == .Transient || e.kind == .Aborted || e.kind == .Rate_Limited do break

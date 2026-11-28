@@ -74,9 +74,11 @@ bots_has_eligible :: proc(s: ^Bots_Service, bot: domain.Bot, d: domain.Bot_Deliv
 	return found && id != ""
 }
 
-// Release mutex around every agent service call; reload attempt before committing.
+// Release s.mutex around agent service calls. Activation serializes old lifecycle
+// admission through web_activation_mutex, which always precedes s.mutex.
 bots_dispatch_locked :: proc(s: ^Bots_Service, bot: domain.Bot, d: domain.Bot_Delivery, bridge_id, now: string) {
 	context.allocator = context.temp_allocator
+	if bots_legacy_guard(s, bot.owner_user_id).code != .None do return
 	policy, err := iface.placement_list(s.repo, bot.bot_id)
 	if err.code != .None do return
 	candidates := bots_expand_candidates(s, bot, policy, bridge_id)
@@ -101,9 +103,16 @@ bots_dispatch_locked :: proc(s: ^Bots_Service, bot: domain.Bot, d: domain.Bot_De
 	instance_id := bot.agent_instance_id
 	if instance_id == "" {
 		sync.mutex_unlock(&s.mutex)
+		sync.mutex_lock(&s.web_activation_mutex)
+		if bots_legacy_guard(s, bot.owner_user_id).code != .None {
+			sync.mutex_unlock(&s.web_activation_mutex)
+			sync.mutex_lock(&s.mutex)
+			return
+		}
 		inst, prepared, prepare_err := agent_service.create_instance_stopped(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id},
 			{fleet_scope = "excluded", agent_id = bot.agent_id, bridge_id = bridge_id, provider = candidate.provider, provider_profile = candidate.provider_profile, model = candidate.model, display_name = bot.display_name})
 		sync.mutex_lock(&s.mutex)
+		sync.mutex_unlock(&s.web_activation_mutex)
 		if !prepared {
 			a.report_json = bots_reason_json("prepare_refused", prepare_err.message)
 			_ = bots_finish_attempt_locked(s, a, .Exhausted, now)
@@ -124,10 +133,18 @@ bots_dispatch_locked :: proc(s: ^Bots_Service, bot: domain.Bot, d: domain.Bot_De
 	current.relocation_key = key
 	if changed, e := iface.attempt_update(s.repo, current, .Relocating); !changed || e.code != .None do return
 	sync.mutex_unlock(&s.mutex)
+	sync.mutex_lock(&s.web_activation_mutex)
+	if bots_legacy_guard(s, bot.owner_user_id).code != .None {
+		sync.mutex_unlock(&s.web_activation_mutex)
+		sync.mutex_lock(&s.mutex)
+		return
+	}
 	_, relocated, relocate_err := agent_service.begin_instance_reconfiguration(s.agents, {kind = .Internal_User, user_id = bot.owner_user_id}, instance_id,
 		{bridge_id = bridge_id, project_id = "", provider = candidate.provider, provider_profile = candidate.provider_profile,
 		model = candidate.model, idempotency_key = key, expected_revision = inst.configuration_revision})
+	sync.mutex_unlock(&s.web_activation_mutex)
 	sync.mutex_lock(&s.mutex)
+	if bots_legacy_guard(s, bot.owner_user_id).code != .None do return
 	current, open, current_err = iface.attempt_get(s.repo, a.attempt_id)
 	if !open || current_err.code != .None || current.state != .Relocating do return
 	if !relocated {
@@ -171,6 +188,7 @@ bots_resolve_blocking_locked :: proc(s: ^Bots_Service, a: domain.Bot_Delivery_At
 
 bots_attempt_tick_locked :: proc(s: ^Bots_Service, a: domain.Bot_Delivery_Attempt, now: string, ms: i64) {
 	context.allocator = context.temp_allocator
+	if bots_legacy_attempt_guard(s, a).code != .None do return
 	if ms - bots_stamp_ms(a.created_at) > s.timers.bot_attempt_total_ms {
 		_ = bots_finish_attempt_locked(s, a, .Deadline, now); return
 	}
@@ -219,7 +237,7 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	deliveries, delivery_err := iface.delivery_list_open(s.repo)
 	if delivery_err.code == .None {
 		for d in deliveries {
-			if d.state != .Pending || !bots_gate_on(s.experiments, d.owner_user_id) do continue
+			if d.state != .Pending || (!bots_gate_on(s.experiments, d.owner_user_id) || bots_legacy_guard(s, d.owner_user_id).code != .None) do continue
 			bot, found, err := iface.bot_get(s.repo, d.bot_id)
 			if !found || err.code != .None do continue
 			bridge_id, selected := bots_select_bridge(s, bot, d, d.round)
@@ -249,7 +267,7 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	deliveries, delivery_err = iface.delivery_list_open(s.repo)
 	if delivery_err.code == .None {
 		for d in deliveries {
-			if d.state != .Waiting || !bots_gate_on(s.experiments, d.owner_user_id) do continue
+			if d.state != .Waiting || (!bots_gate_on(s.experiments, d.owner_user_id) || bots_legacy_guard(s, d.owner_user_id).code != .None) do continue
 			bot, found, err := iface.bot_get(s.repo, d.bot_id)
 			if !found || err.code != .None do continue
 			wake := false
@@ -281,7 +299,7 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	clear(&s.notices)
 	waiting, _ := iface.delivery_list_open(s.repo)
 	for d in waiting {
-		if d.state != .Waiting || d.waiting_notice_at != "" || d.waiting_reason == "busy" do continue
+		if d.state != .Waiting || d.waiting_notice_at != "" || d.waiting_reason == "busy" || bots_legacy_guard(s, d.owner_user_id).code != .None do continue
 		updated := d
 		updated.waiting_notice_at, updated.updated_at = now, now
 		if changed, e := iface.delivery_update(s.repo, updated, .Waiting); changed && e.code == .None {
@@ -296,7 +314,7 @@ bots_supervisor_tick :: proc(s: ^Bots_Service) {
 	for notice in notices {
 		if !bots_gate_on(s.experiments, notice.owner) do continue
 		binding, found, _ := bots_notice_binding(s, notice.owner, notice.bot_id, notice.through_message_id)
-		if found do bots_notice(s, binding.provider, binding.external_chat_id, notice.text)
+		if found do bots_notice(s, binding.provider, binding.external_chat_id, notice.text, notice.owner)
 	}
 	if run_idle {
 		bots_idle_stop(s, now, ms)
@@ -320,7 +338,7 @@ bots_idle_stop :: proc(s: ^Bots_Service, now: string, ms: i64) {
 	bots, err := iface.bot_list(s.repo)
 	if err.code != .None || s.agents == nil do return
 	for bot in bots {
-		if bot.agent_instance_id == "" || !bots_gate_on(s.experiments, bot.owner_user_id) do continue
+		if bot.agent_instance_id == "" || (!bots_gate_on(s.experiments, bot.owner_user_id) || bots_legacy_guard(s, bot.owner_user_id).code != .None) do continue
 		sync.mutex_lock(&s.mutex)
 		_, open, e := iface.delivery_get_open(s.repo, bot.bot_id)
 		recent, recent_err := iface.delivery_list_recent(s.repo, bot.bot_id, 1)

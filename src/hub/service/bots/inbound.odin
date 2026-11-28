@@ -22,6 +22,10 @@ bots_inbound_rows :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, batch: 
 		entitled, entitlement_err := bots_channel_entitled(s, a.provider, binding.owner_user_id)
 		if entitlement_err.code != .None do return nil, entitlement_err
 		if !entitled do continue
+		if fence := bots_legacy_guard(s, binding.owner_user_id); fence.code != .None {
+			if fence.code == .Conflict do continue
+			return nil, fence
+		}
 		limit := bots_media_limit(a)
 		if update.kind == .Media && (limit == 0 || update.media.size > limit && update.text == "") do continue
 		attachment: domain.Channel_Attachment
@@ -66,7 +70,7 @@ bots_inbound_side_effect :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, 
 		bots_notice(s, a.provider, update.external_chat_id, bots_channel_copy(a.provider).not_connected)
 		return {}
 	}
-	if !bots_gate_on(s.experiments, binding.owner_user_id) do return {}
+	if !bots_gate_on(s.experiments, binding.owner_user_id) || bots_legacy_guard(s, binding.owner_user_id).code != .None do return {}
 	entitled, entitlement_err := bots_channel_entitled(s, a.provider, binding.owner_user_id)
 	if entitlement_err.code != .None do return entitlement_err
 	if !entitled {
@@ -75,11 +79,11 @@ bots_inbound_side_effect :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, 
 		return e
 	}
 	if update.kind == .Disconnect do return bots_disconnect(s, binding.owner_user_id, a.provider, true)
-	if update.kind == .Unsupported do bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED)
+	if update.kind == .Unsupported do bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED, binding.owner_user_id)
 	if update.kind == .Media && update.external_user_id == binding.external_user_id {
 		limit := bots_media_limit(a)
-		if limit == 0 {bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED)} else if update.media.size > limit {
-			bots_notice(s, a.provider, update.external_chat_id, COPY_MEDIA_TOO_LARGE)
+		if limit == 0 {bots_notice(s, a.provider, update.external_chat_id, COPY_UNSUPPORTED, binding.owner_user_id)} else if update.media.size > limit {
+			bots_notice(s, a.provider, update.external_chat_id, COPY_MEDIA_TOO_LARGE, binding.owner_user_id)
 		}
 	}
 	return {}
@@ -111,7 +115,7 @@ bots_delivery_on_inbound_locked :: proc(s: ^Bots_Service, bot_id: string, now_ms
 	bot, bot_found, bot_err := iface.bot_get(s.repo, bot_id)
 	defer domain.bot_destroy(&bot)
 	if bot_err.code != .None do return bot_err
-	if !bot_found || !bots_gate_on(s.experiments, bot.owner_user_id) do return {}
+	if !bot_found || !bots_gate_on(s.experiments, bot.owner_user_id) || bots_legacy_guard(s, bot.owner_user_id).code != .None do return {}
 	d, found, get_err := iface.delivery_get_open(s.repo, bot_id)
 	defer domain.bot_delivery_destroy(&d)
 	if get_err.code != .None do return get_err

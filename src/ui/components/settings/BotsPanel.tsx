@@ -1,6 +1,6 @@
 import { Alert, Button, EmptyState, Modal, PageShell, Panel, Spinner, StatusPill, Text } from '@ui';
 import { useRef, useState } from 'react';
-import { useGetBotQuery, useCreateBotMutation, useDeleteBotMutation } from '../../api/endpoints/bots';
+import { useGetBotQuery, useCreateBotMutation, useDeleteBotMutation, useGetBotWebConversationQuery, usePutBotWebConversationMutation } from '../../api/endpoints/bots';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import { apiErrorText, queryErrorStatus } from '../../api/cookieFetch';
 import { BOTS_EXPERIMENT_KEY, resolveExperimentFlag } from './experimentFlags';
@@ -10,11 +10,14 @@ import BotTelegramCard from './BotTelegramCard';
 import BotPlacementEditor from './BotPlacementEditor';
 import BotAdvancedSection from './BotAdvancedSection';
 import BotAgentWritesSection from './BotAgentWritesSection';
+import { buildRouteHash } from '../../utils/appLocation';
 
 export default function BotsPanel({ onOpenTerminal }: { onOpenTerminal?: () => void }) {
   const flags = useFetchExperimentsQuery();
   const enabled = resolveExperimentFlag(flags.data?.flags, BOTS_EXPERIMENT_KEY) === 'enabled';
   const query = useGetBotQuery(undefined, { skip: !enabled, pollingInterval: enabled ? 10000 : 0 });
+  const rollout = useGetBotWebConversationQuery(undefined, { skip: !enabled, refetchOnMountOrArgChange: true });
+  const [setRollout, settingRollout] = usePutBotWebConversationMutation();
   const [create, creating] = useCreateBotMutation();
   const [remove, deleting] = useDeleteBotMutation();
   const [confirm, setConfirm] = useState(false);
@@ -23,6 +26,16 @@ export default function BotsPanel({ onOpenTerminal }: { onOpenTerminal?: () => v
   if (!enabled) return null;
   const bot = query.currentData;
   const absent = queryErrorStatus(query.error) === 404;
+  const fresh = rollout.currentData;
+  async function pause() {
+    if (!fresh?.enabled || rollout.isFetching || settingRollout.isLoading || pending.current) return;
+    pending.current = true;
+    setError('');
+    try { await setRollout({ enabled: false, expected_generation: fresh.generation }).unwrap(); }
+    catch (e) {
+      setError(queryErrorStatus(e) === 409 ? 'Bot settings changed. Check the current settings and try again.' : apiErrorText(e));
+    } finally { pending.current = false; }
+  }
   async function createBot() {
     if (pending.current) return;
     pending.current = true;
@@ -41,7 +54,17 @@ export default function BotsPanel({ onOpenTerminal }: { onOpenTerminal?: () => v
         {query.isLoading ? <div className="flex items-center gap-2 py-6"><Spinner /><Text tone="muted">Loading…</Text></div> : null}
         {query.isError && !absent ? <Alert tone="danger">{apiErrorText(query.error)}</Alert> : null}
         {error ? <Alert tone="danger">{error}</Alert> : null}
-        {absent ? <EmptyState
+        {fresh && <Panel title="Shared web conversation" className="space-y-3">
+          <Text>{fresh.enabled ? 'Your bot uses the shared web conversation. Telegram and WhatsApp are not available for this conversation yet.'
+            : fresh.generation ? 'Your shared conversation is paused. Its messages are kept.'
+            : 'You can choose to start an empty bot conversation in the shared web pane.'}</Text>
+          <a className="text-primary underline" href={buildRouteHash('/bot', '')}>
+            {fresh.enabled ? 'Open conversation' : fresh.generation ? 'Resume in Bot' : 'Review fresh start'}
+          </a>
+          {fresh.enabled && <Button type="button" variant="secondary" data-debug-id="settings-bot-web-pause"
+            disabled={rollout.isFetching} loading={settingRollout.isLoading} onClick={() => void pause()}>Pause shared conversation</Button>}
+        </Panel>}
+        {fresh?.generation ? <BotPlacementEditor /> : absent ? <EmptyState
           description={<Text data-debug-id="settings-bots-empty" tone="muted">You don't have a bot yet. Your bot runs on your machines and answers you on Telegram or WhatsApp.</Text>}
           action={<Button variant="primary" type="button" data-debug-id="settings-bots-create-btn" loading={creating.isLoading} disabled={deleting.isLoading} onClick={createBot}>Create my bot</Button>}
         /> : bot ? <>

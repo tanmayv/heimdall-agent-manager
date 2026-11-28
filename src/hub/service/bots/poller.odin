@@ -49,9 +49,17 @@ bots_poller_iteration :: proc(rt: ^Bots_Runtime, backoff: ^time.Duration) -> (ti
 	}
 	backoff^ = time.Second
 	now := platform.clock_now(s.clock)
-	rows, map_err := bots_inbound_rows(s, s.adapter, batch, now)
-	if map_err.code != .None do return 5 * time.Second, false
-	inserted, store_err := iface.inbound_store_batch(s.repo, "telegram", rows, next, now)
+	rows: []domain.Channel_Message
+	inserted: []string
+	store_err: domain.Domain_Error
+	{
+		sync.mutex_lock(&s.mutex)
+		defer sync.mutex_unlock(&s.mutex)
+		map_err: domain.Domain_Error
+		rows, map_err = bots_inbound_rows(s, s.adapter, batch, now)
+		if map_err.code != .None do return 5 * time.Second, false
+		inserted, store_err = iface.inbound_store_batch(s.repo, "telegram", rows, next, now)
+	}
 	defer {
 		for id in inserted do delete(id)
 		delete(inserted)

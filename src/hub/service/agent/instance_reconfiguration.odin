@@ -192,7 +192,7 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 	next.provider_profile=domain.profile_effective_id(input.provider,input.provider_profile); next.provider = input.provider; next.model = input.model; next.project_path = ""
 	next.permission_mode = permission_mode
 	next.runtime_transport_override = transport_override
-	_, provider_ok, provider_err := validate_pinned_provider_model(service, auth, next, input.provider, input.model)
+	resolved_provider, provider_ok, provider_err := validate_pinned_provider_model(service, auth, next, input.provider, input.model)
 	if !provider_ok do return {}, false, provider_err
 	if err:=freeze_runtime_transport(service,&next);err.code!=.None do return {},false,err
 	if input.project_id != "" {
@@ -258,6 +258,8 @@ begin_instance_reconfiguration :: proc(service: ^Agent_Service, auth: contracts.
 		}
 		return existing, true, {}
 	}
+	// The owner can change the placement policy while path preflight is pending.
+	if denied := validate_runtime_policy(service, inst, next.bridge_id, next.provider, input.model, resolved_provider.model); denied.code != .None do return {}, false, denied
 	// Preflight can wait for a bridge reply; recheck connectivity before stopping source.
 	if eligible,reason:=placement.bridge_eligible(&ps,destination_bridge,{owner=string(inst.owner_user_id),features={"instance_reconfiguration_v1"}}); !eligible do return {},false,agent_placement_error(&ps,destination_bridge,reason,"destination bridge disconnected during preflight; reconnect it before Apply","update source and destination bridges before applying configuration changes")
 	// One active operation per instance: a queued one is superseded only by an
@@ -841,8 +843,10 @@ reconfiguration_validate_live_destination :: proc(service: ^Agent_Service, op: d
 	inst,inst_ok,inst_err:=iface.agent_get_instance(service.agents,op.agent_instance_id)
  if !inst_ok do return false,inst_err
  defer domain.agent_instance_destroy(&inst)
- _,valid,validation_err:=agent_launchable(&ps,inst.agent_id,op.destination.bridge_id,op.destination.provider,op.destination.model,op.destination.provider_profile)
- return valid,validation_err
+	resolved, valid, validation_err := agent_launchable(&ps,inst.agent_id,op.destination.bridge_id,op.destination.provider,op.destination.model,op.destination.provider_profile)
+	if !valid do return false, validation_err
+	if denied := validate_runtime_policy(service, inst, op.destination.bridge_id, op.destination.provider, op.destination.model, resolved.model); denied.code != .None do return false, denied
+	return true, {}
 }
 
 // Called with the operation mutex held. A force stop targets the current routing

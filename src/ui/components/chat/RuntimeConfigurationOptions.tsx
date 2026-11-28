@@ -5,7 +5,7 @@ import { useBridgeProviderStatus } from '../../api/endpoints/bridgeSupport';
 import { COMPOSER_BRIDGE_STATUS_LABEL, composerBridgeOptions } from '../../utils/composerBridgeOptions';
 import { useRuntimeProviderModels, type RuntimeSelection } from './useRuntimeProviderModels';
 export type { RuntimeSelection } from './useRuntimeProviderModels';
-export default function RuntimeConfigurationOptions({ bridges, selection, onChange, disabled, debugPrefix, requireReconfiguration = false }: { bridges: any[]; selection: RuntimeSelection; onChange: (next: RuntimeSelection) => void; disabled?: boolean; debugPrefix: string; requireReconfiguration?: boolean }) {
+export default function RuntimeConfigurationOptions({ bridges, selection, onChange, disabled, debugPrefix, requireReconfiguration = false, allowsModel }: { bridges: any[]; selection: RuntimeSelection; onChange: (next: RuntimeSelection) => void; disabled?: boolean; debugPrefix: string; requireReconfiguration?: boolean; allowsModel?: (bridge: string, provider: string, model: string) => boolean }) {
   // Archived bridges are not offered at all; offline ones are listed but disabled.
   const bridgeOptions = composerBridgeOptions(bridges, requireReconfiguration);
   const bridge = bridgeOptions.find(o => o.id === selection.bridgeId)?.bridge;
@@ -14,7 +14,10 @@ export default function RuntimeConfigurationOptions({ bridges, selection, onChan
   const { capabilities: caps, loaded } = useBridgeProviderStatus(bridge, { live: true });
   // Provider list, per-provider model memory and pick handling are shared with
   // the launcher's provider chip menu (launcher/RuntimeMenu).
-  const { selectedId, providers, capFor, driverFor, modelsFor, rowModel, chooseProvider, chooseModel } = useRuntimeProviderModels(caps, selection, onChange);
+  const eligibleCaps = allowsModel ? caps.map(cap => ({
+    ...cap, models: (cap.models || []).filter(model => allowsModel(selection.bridgeId, cap.provider, model)),
+  })).filter(cap => cap.models.length) : caps;
+  const { selectedId, providers, capFor, driverFor, modelsFor, rowModel, chooseProvider, chooseModel } = useRuntimeProviderModels(eligibleCaps, selection, onChange);
   return <div className="space-y-4">
     <section><h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Bridge</h3><div className="grid gap-2 sm:grid-cols-2">{bridgeOptions.map(({ id, bridge: b, disabledReason }) => {
       const selected = id === selection.bridgeId;

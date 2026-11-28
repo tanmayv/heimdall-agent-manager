@@ -91,8 +91,12 @@ import {
 } from '../../api/endpoints/tasks';
 import { chainTargetId } from '../../utils/paneTarget';
 import { selectActiveVaultKey } from '../../store/vaultSlice';
-import { getExpectedUserId } from '../../utils/expectedUser';
+import { getExpectedUserGeneration, getExpectedUserId } from '../../utils/expectedUser';
 import { vaultSendBlock } from '../../utils/vaultSendGuard';
+import { prepareChatWriteIntent, restoreChatWriteIntent } from '../../utils/chatWriteIntent';
+import { botPlacementAllows } from '../bots/botPlacementEligibility';
+import { useGetBotPlacementQuery } from '../../api/endpoints/bots';
+import { queryErrorStatus } from '../../api/cookieFetch';
 import type { AuxContent } from '../../store/auxTabId';
 import { buildRouteHash } from '../../utils/appLocation';
 import { buildConversationHash } from '../../utils/conversationUrl';
@@ -802,9 +806,9 @@ export function AgentChatPane({
 
   const convQuery = useFetchConversationQuery(
     { conversationId: '', agentInstanceId: routeInstanceId },
-    { skip: !routeInstanceId },
+    { skip: !routeInstanceId, refetchOnMountOrArgChange: 10 },
   );
-  const conversation = convQuery.data?.conversation || null;
+  const conversation = convQuery.currentData?.conversation || null;
   const conversationId = String(
     conversation?.conversation_id || conversation?.conversationId || '',
   );
@@ -821,6 +825,71 @@ export function AgentChatPane({
   const [updateTaskChain, updateChainState] = useUpdateTaskChainMutation();
   const [requestPaneCapture, requestPaneCaptureState] = useRequestPaneCaptureMutation();
   const [sendMessage] = useSendConversationMessageMutation();
+  const writePolicyChecked = Boolean(conversationId);
+  const writePolicyError = convQuery.isError;
+  const writeGeneration = Number(conversation?.write_generation || 0);
+  const writePolicy = writeGeneration > 0 ? {
+    generation: writeGeneration,
+    refresh: convQuery.refetch,
+    readOnlyReason: writePolicyError ? 'Shared bot conversation access could not be verified.'
+      : conversation?.writes_enabled !== true ? 'Shared bot conversation is paused. Resume it from Bot in the sidebar.' : '',
+  } : undefined;
+  const botPlacementQuery = useGetBotPlacementQuery(undefined, { skip: !writePolicy });
+  const botRules = botPlacementQuery.currentData?.candidates;
+  const allowsBotDestination = (bridge: string, provider?: string, model?: string) =>
+    !writePolicy || (botRules !== undefined && botPlacementAllows(botRules, bridge, provider, model));
+  const canPersistPlainDraft = writePolicyChecked && !writePolicy;
+  const writeBlockReason = writePolicy?.readOnlyReason ||
+    (!writePolicyChecked && routeInstanceId
+      ? (writePolicyError ? 'Chat access could not be verified.' : 'Checking chat access…')
+      : '');
+  const [recoveredWrite, setRecoveredWrite] = useState<Awaited<ReturnType<typeof restoreChatWriteIntent>>>(null);
+
+  async function retryRecoveredWrite() {
+    if (!writePolicy || writePolicy.readOnlyReason || !recoveredWrite || sendingRef.current) return;
+    const attempt = recoveredWrite;
+    sendingRef.current = true;
+    setNormalSendBusy(true);
+    setError('');
+    try {
+      await sendMessage({ conversationId, body: attempt.body, artifactIds: attempt.artifactIds,
+        writeIntent: { key: attempt.key, generation: writePolicy.generation } }).unwrap();
+      attempt.confirm();
+      setRecoveredWrite(current => current?.key === attempt.key ? null : current);
+    } catch (err) {
+      if (queryErrorStatus(err) === 409) void writePolicy.refresh();
+      setError(errMsg(err, 'Could not confirm the previous send.'));
+    } finally {
+      sendingRef.current = false;
+      if (mountedRef.current) setNormalSendBusy(false);
+    }
+  }
+
+  async function sendWithPolicy(input: Parameters<typeof sendMessage>[0]) {
+    if (writeBlockReason) throw new Error(writeBlockReason);
+    if (!writePolicy) return sendMessage(input).unwrap();
+    const account = getExpectedUserId();
+    const accountGeneration = getExpectedUserGeneration();
+    const vault = selectActiveVaultKey();
+    if (!vault) throw new Error('Unlock Vault to send messages.');
+    const outgoing = await prepareChatWriteIntent(account, input.conversationId, input.body, input.artifactIds ?? [], vault);
+    if (getExpectedUserGeneration() !== accountGeneration) throw new Error('The signed-in account changed. Refresh before sending.');
+    try {
+      const result = await sendMessage({
+        ...input,
+        body: outgoing.body,
+        writeIntent: { key: outgoing.key, generation: writePolicy.generation },
+      }).unwrap();
+      outgoing.confirm();
+      setRecoveredWrite(current => current?.key === outgoing.key ? null : current);
+      return result;
+    } catch (err) {
+      if (queryErrorStatus(err) === 409) void writePolicy.refresh();
+      const restored = await restoreChatWriteIntent(account, input.conversationId, vault).catch(() => null);
+      if (mountedRef.current && getExpectedUserGeneration() === accountGeneration) setRecoveredWrite(restored);
+      throw err;
+    }
+  }
   const [answerQuestions] = useAnswerConversationQuestionsMutation();
   const [markRead] = useMarkConversationReadMutation();
   const configurationIntent = useRef<{ signature: string; key: string } | null>(null);
@@ -864,6 +933,16 @@ export function AgentChatPane({
   // previous account's key is still installed.
   const deviceVaultState = useSelector((state: any) => state.deviceVault);
   const vaultSendBlocked = vaultSendBlock({ activeKey: quoteVaultKey, isUnlocked: quoteVaultUnlocked, currentUserId: getExpectedUserId(), deviceVault: deviceVaultState });
+  const journalEnabled = Boolean(writePolicy);
+  useEffect(() => {
+    let active = true;
+    setRecoveredWrite(null);
+    if (journalEnabled && quoteVaultKey && quoteVaultUnlocked && conversationId) {
+      void restoreChatWriteIntent(getExpectedUserId(), conversationId, quoteVaultKey)
+        .then(intent => { if (active) setRecoveredWrite(intent); }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [conversationId, journalEnabled, quoteVaultKey, quoteVaultUnlocked]);
   const isMultiPane = !isSinglePane;
   const title = conversationDisplayTitle(
     conversation,
@@ -1045,26 +1124,27 @@ export function AgentChatPane({
 
   // Per-agent composer draft state isolated by routeInstanceId, with fallback to COMPOSER_DRAFT_KEY
   const loadedDraftAgentIdRef = useRef<string>(routeInstanceId);
-  const [draft, setDraft] = useState<string>(() => readComposerDraft(routeInstanceId));
+  const [draft, setDraft] = useState<string>(() => writePolicy ? '' : readComposerDraft(routeInstanceId));
   const updateDraftRef = useRef(draft);
   updateDraftRef.current = draft;
 
   useEffect(() => {
     if (desktopUpdateFrozen()) return;
     if (loadedDraftAgentIdRef.current !== routeInstanceId) {
-      const nextDraft = readComposerDraft(routeInstanceId);
+      const nextDraft = writePolicy ? '' : readComposerDraft(routeInstanceId);
       loadedDraftAgentIdRef.current = routeInstanceId;
       setDraft(nextDraft);
       return;
     }
-    writeComposerDraft(routeInstanceId, draft);
-  }, [routeInstanceId, draft]);
+    if (canPersistPlainDraft) writeComposerDraft(routeInstanceId, draft);
+  }, [routeInstanceId, draft, canPersistPlainDraft, Boolean(writePolicy)]);
 
   const updateDraft = useCallback(
     (value: string) => {
       if (desktopUpdateFrozen()) return;
       updateDraftRef.current = value;
       setDraft(value);
+      if (!canPersistPlainDraft) return;
       if (loadedDraftAgentIdRef.current === routeInstanceId) {
         writeComposerDraft(routeInstanceId, value);
       }
@@ -1080,7 +1160,7 @@ export function AgentChatPane({
         }
       }
     },
-    [routeInstanceId],
+    [routeInstanceId, canPersistPlainDraft],
   );
 
   // REQ-AT-1: task items waiting on the user in this conversation (its chain, or
@@ -1176,15 +1256,17 @@ export function AgentChatPane({
   const updateBlockers = useRef({ attachments, trayDraft, quotes, trayModeItem, voiceActive: voice.active });
   updateBlockers.current = { attachments, trayDraft, quotes, trayModeItem, voiceActive: voice.active };
   useEffect(() => desktopUpdatePreparation.register({
-    blocked: () => sendingRef.current || updateFilePickerPending.current || updateBlockers.current.attachments.length > 0
+    blocked: () => sendingRef.current || (!canPersistPlainDraft && Boolean(updateDraftRef.current.trim()))
+      || updateFilePickerPending.current || updateBlockers.current.attachments.length > 0
       || updateBlockers.current.voiceActive || updateBlockers.current.quotes.length > 0 || Boolean(updateBlockers.current.trayModeItem) || Boolean(updateBlockers.current.trayDraft.trim())
       || [...quotedTrayDrafts.current.values()].some(value => Boolean(value.trim())),
     flush: () => {
+      if (!canPersistPlainDraft) return;
       const latest = textareaRef.current?.value ?? updateDraftRef.current;
       writeComposerDraftChecked(routeInstanceId, latest);
       writeClientStorageChecked(COMPOSER_DRAFT_KEY, latest || null);
     },
-  }), [routeInstanceId]);
+  }), [routeInstanceId, canPersistPlainDraft]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   useEffect(() => { setLocalMessages(current => current.filter(item => !(item as any).hasQuoteContext)); }, [quoteEpoch, quoteVaultKey]);
 
@@ -1475,8 +1557,13 @@ export function AgentChatPane({
     // takes over the pending row's key and the pending row is hidden, so the list never
     // holds both (no second bubble, no double pin, no scroll-back).
     const hidden = new Set<string>();
+    const acknowledgedKeys = new Set(baseMessages.map(row => keys.get(messageIdOf(row))).filter(Boolean));
     for (const local of localMessages) {
       const localId = msgId(local, 0);
+      if (acknowledgedKeys.has(localId)) {
+        hidden.add(localId);
+        continue;
+      }
       const before = pendingSendsRef.current.get(localId);
       if (!before) continue;
       const echo = baseMessages.find((row) => {
@@ -1560,7 +1647,7 @@ export function AgentChatPane({
     if (sendNowLocalError && queuedView.waiting.length === 0 && queuedView.batch.length === 0 && agentUnreadCount === 0) setSendNowError(null);
   }, [agentUnreadCount, queuedView.batch.length, queuedView.waiting.length, sendNowLocalError]);
   const postSendNow = useCallback(async (batch: SendNowBatch) => {
-    if (!conversationId) return;
+    if (!conversationId || writeBlockReason) return;
     const target = conversationId;
     setSendNowError(null);
     setSendNowLocal({ conversationId: target, batch: { ...batch, state: 'pending', error: '' }, settledAt: 0 });
@@ -1577,7 +1664,7 @@ export function AgentChatPane({
       setSendNowError({ conversationId: target, text: stale ? sendNowErrorText('stale_epoch') : sendNowErrorText('') });
       void sendNowQuery.refetch?.();
     }
-  }, [conversationId, sendNowQuery, sendNowRequest]);
+  }, [conversationId, sendNowQuery, sendNowRequest, writeBlockReason]);
   const handleSendNow = useCallback((messageIds: string[]) => {
     if (!messageIds.length) return;
     void postSendNow({
@@ -1817,8 +1904,12 @@ export function AgentChatPane({
     { skip: !destinationBridgeId || !settingsPanel.open },
   );
   const draftProviderOptions = useMemo(
-    () => providerOptionsFromStatus(draftProvidersQuery.currentData),
-    [draftProvidersQuery.currentData],
+    () => providerOptionsFromStatus(draftProvidersQuery.currentData).flatMap(option => {
+      if (!writePolicy) return [option];
+      const models = option.models.filter(model => allowsBotDestination(destinationBridgeId, option.provider, model));
+      return models.length ? [{ ...option, models }] : [];
+    }),
+    [draftProvidersQuery.currentData, Boolean(writePolicy), botRules, destinationBridgeId],
   );
   const draftProvidersLoaded = Boolean(draftProvidersQuery.currentData) || draftProvidersQuery.isError;
   const bridgeLabelOf = (id: string) => {
@@ -1936,6 +2027,11 @@ export function AgentChatPane({
     capabilities: caps,
     capabilitiesLoaded: !destinationBridge || destination.loaded,
   });
+  if (writePolicy && selectionChangesConfig && !allowsBotDestination(destinationBridgeId, effectiveProvider, effectiveModel)) {
+    stagedConfigurationIssues.push(botRules === undefined
+      ? 'Bot placement rules are unavailable. Check placement in Settings before applying.'
+      : 'This machine, provider and model are not allowed by the bot placement rules.');
+  }
   if (
     destinationBridge &&
     destinationBridge.runtime_connected !== true &&
@@ -1978,6 +2074,7 @@ export function AgentChatPane({
       'Configuration operation state could not be verified. Refresh before sending.',
     );
   }
+  if (writePolicy?.readOnlyReason) configurationIssues.push(writePolicy.readOnlyReason);
   const conversationReadOnly = configurationIssues.length > 0;
   const configurationInputBlocked =
     conversationReadOnly ||
@@ -1988,7 +2085,7 @@ export function AgentChatPane({
   configurationInputBlockedRef.current = Boolean(configurationInputBlocked);
   // A borrowed composer (Answer / Request changes) talks to the hub, not the
   // agent runtime, so runtime state does not block it.
-  const sendDisabled = normalSendBusy || Boolean(vaultSendBlocked) || (trayModeItem
+  const sendDisabled = normalSendBusy || Boolean(vaultSendBlocked || writeBlockReason) || (trayModeItem
     ? hasUploadingAttachments || hasFailedAttachments || !trayDraft.trim()
     : configurationInputBlocked ||
       hasUploadingAttachments ||
@@ -2133,20 +2230,20 @@ export function AgentChatPane({
     updateDraft('');
     if (isMobile) textareaRef.current?.blur();
     try {
-      const result = await sendMessage({
+      const result = await sendWithPolicy({
         conversationId,
         body: sendBody,
         artifactIds: attachmentIds,
         ...(submittedQuotes.length ? { quoteTarget: { chainId, coordinatorAgentInstanceId: agentInstanceId, epoch: submittedEpoch } } : {}),
-      }).unwrap();
+      });
       if (submittedQuotes.length && ((reduxStore.getState() as any).composerContext?.epoch !== submittedEpoch || selectActiveVaultKey() !== submittedKey)) return;
       dispatch(consumeComposerQuotes({ target: ownTargetId, ids: submittedQuotes.map(q => q.id), epoch: submittedEpoch }));
       if (!mountedRef.current || routeGeneration.current !== submittedGeneration || currentTargetRef.current !== submittedTarget) {
-        if (readComposerDraft(submittedRoute) === submittedDraft) writeComposerDraft(submittedRoute, '');
+        if (canPersistPlainDraft && readComposerDraft(submittedRoute) === submittedDraft) writeComposerDraft(submittedRoute, '');
         return;
       }
       // The input was cleared at send; adopt a newer draft another pane stored meanwhile.
-      const latestDraft = readComposerDraft(submittedRoute);
+      const latestDraft = canPersistPlainDraft ? readComposerDraft(submittedRoute) : updateDraftRef.current;
       if (latestDraft !== submittedDraft && latestDraft !== updateDraftRef.current) updateDraft(latestDraft);
       setAttachments([]);
       const sent = sentMessageFromResult(result);
@@ -2171,7 +2268,7 @@ export function AgentChatPane({
       if (!mountedRef.current || routeGeneration.current !== submittedGeneration || currentTargetRef.current !== submittedTarget) {
         // The pane moved on: restore the draft to storage for the submitted route
         // unless a newer one was typed there meanwhile.
-        if (!readComposerDraft(submittedRoute)) writeComposerDraft(submittedRoute, submittedDraft);
+        if (canPersistPlainDraft && !readComposerDraft(submittedRoute)) writeComposerDraft(submittedRoute, submittedDraft);
         return;
       }
       if (submittedQuotes.length && ((reduxStore.getState() as any).composerContext?.epoch !== submittedEpoch || selectActiveVaultKey() !== submittedKey)) {
@@ -2188,7 +2285,7 @@ export function AgentChatPane({
   }
 
   async function handleSendReply(text: string) {
-    if (configurationInputBlocked) return;
+    if (configurationInputBlocked || writeBlockReason) return;
     const sendBody = text.trim();
     if (!sendBody || !conversationId) return;
     const local = optimisticUserMessage(conversationId, sendBody);
@@ -2197,11 +2294,11 @@ export function AgentChatPane({
     trackPendingSend(localId);
     setLocalMessages((current) => [...current, local]);
     try {
-      const result = await sendMessage({
+      const result = await sendWithPolicy({
         conversationId,
         body: sendBody,
         artifactIds: [],
-      }).unwrap();
+      });
       const sent = sentMessageFromResult(result);
       settlePendingSend(localId, sent);
       setLocalMessages((current) =>
@@ -2726,7 +2823,8 @@ export function AgentChatPane({
       </div>
       <RuntimeConfigurationOptions
         debugPrefix="conversation"
-        bridges={bridges}
+        bridges={writePolicy ? bridges.filter(b => allowsBotDestination(bridgeId(b))) : bridges}
+        allowsModel={writePolicy ? allowsBotDestination : undefined}
         selection={{ bridgeId: destinationBridgeId, provider, providerProfile: effectiveProfile, model }}
         requireReconfiguration
         disabled={runtimeActionBusy || operationBlocksInput || isStarting}
@@ -2836,7 +2934,7 @@ export function AgentChatPane({
     <>
       <BridgeSection
         view={bridgeRowsView({
-          bridges,
+          bridges: writePolicy ? bridges.filter(b => allowsBotDestination(bridgeId(b))) : bridges,
           currentBridgeId: instanceBridgeId,
           projectId,
           bridgePaths: projectQuery.data?.bridge_paths || [],
@@ -3076,6 +3174,23 @@ export function AgentChatPane({
         data-debug-id="conversation-composer-shell"
 >
         <div className="mx-auto w-full max-w-4xl">
+          {writeBlockReason && (
+            <div data-debug-id="conversation-write-policy-blocked" role="status"
+              className="mb-2 flex flex-wrap gap-2 rounded-xl border border-subtle bg-surface-raised px-3 py-2 text-xs text-secondary">
+              {writeBlockReason}
+              {writePolicyError && <button type="button" data-debug-id="conversation-write-policy-refresh" className="font-medium underline"
+                onClick={() => void convQuery.refetch()}>Check again</button>}
+            </div>
+          )}
+          {writePolicy && recoveredWrite && !vaultSendBlocked && (
+            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-subtle bg-surface-raised px-3 py-2 text-xs text-secondary">
+              <span>The previous send wasn’t confirmed.</span>
+              <button type="button" className="font-medium underline disabled:opacity-50"
+                data-debug-id="conversation-retry-unconfirmed"
+                disabled={normalSendBusy || Boolean(writePolicy.readOnlyReason)}
+                onClick={() => void retryRecoveredWrite()}>Retry previous send</button>
+            </div>
+          )}
           {vaultSendBlocked ? (
             <div
               data-debug-id="conversation-composer-vault-blocked"
@@ -3099,7 +3214,7 @@ export function AgentChatPane({
             onRetry={a => void uploadAttachment(a.file, a.localId)}
             onRemove={localId => setAttachments(prev => prev.filter(item => item.localId !== localId))} />
           <VoiceRecorderPanel recorder={voice.recorder} isMobile={isMobile} debugPrefix="conversation"
-            sendDisabled={normalSendBusy} onSend={voice.send} />
+            sendDisabled={normalSendBusy || Boolean(writeBlockReason)} onSend={voice.send} />
           <input
             ref={fileInputRef}
             data-debug-id="conversation-attach-input"
@@ -3380,6 +3495,7 @@ export function AgentChatPane({
   }
 
   if (!conversation && !convQuery.isFetching) {
+    const verificationFailed = convQuery.isError && ![401, 403, 404, 410].includes(queryErrorStatus(convQuery.error) ?? 0);
     return (
       <div
         data-debug-id={`workbench-agent-chat-pane-${agentInstanceId}`}
@@ -3421,7 +3537,9 @@ export function AgentChatPane({
           </header>
         ) : null}
         <div className="mx-auto mt-6 w-full max-w-4xl rounded-[2rem] border border-subtle bg-surface p-6">
-          <h2 className="text-xl font-semibold text-primary">Conversation not found</h2>
+          <h2 className="text-xl font-semibold text-primary">{verificationFailed ? 'Chat access could not be verified' : 'Conversation not found'}</h2>
+          {verificationFailed ? <button type="button" data-debug-id="conversation-write-policy-refresh"
+            className="mt-4 font-medium underline" onClick={() => void convQuery.refetch()}>Check again</button> : <>
           <p className="mt-2 text-sm text-muted">
             No conversation for instance{' '}
             <span className="font-mono">{routeInstanceId}</span> for this user.
@@ -3433,6 +3551,7 @@ export function AgentChatPane({
           >
             Start a new conversation
           </a>
+          </>}
         </div>
       </div>
     );

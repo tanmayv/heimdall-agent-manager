@@ -102,8 +102,9 @@ update_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if auth_ctx.kind == .Instance_Token && len(agent_write_body_fields(req.body, []string{"template_id"})) > 0 {
 		current, found, get_err := agent_service.get_agent(h.agents, auth_ctx, path_part(req.path, 4))
 		if !found do return respond_error(get_err, req.request_id)
-		if current.template_id == domain.TEMPLATE_BOT_ID ||
-		   strings.trim_space(json_string(req.body, "template_id")) == domain.TEMPLATE_BOT_ID {
+		target := strings.trim_space(json_string(req.body, "template_id"))
+		if current.template_id == domain.TEMPLATE_BOT_ID || current.template_id == domain.TEMPLATE_BOT_WEB_ID ||
+		   target == domain.TEMPLATE_BOT_ID || target == domain.TEMPLATE_BOT_WEB_ID {
 			return respond_error(
 				domain.domain_error(
 					.Forbidden,

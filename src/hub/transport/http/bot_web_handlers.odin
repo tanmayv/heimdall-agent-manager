@@ -11,6 +11,7 @@ bot_web_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bot_Handlers)(ctx)
 	auth, ok, refusal := bot_require_auth(h, req)
 	if !ok do return refusal
+	if fence := bots.bots_legacy_guard(h.bots, auth.user_id); fence.code != .None do return respond_error(fence, req.request_id)
 	value, parse_err := json.parse(req.body, allocator = context.temp_allocator)
 	obj, object_ok := value.(json.Object)
 	text, text_ok := obj["text"].(json.String)
@@ -69,6 +70,7 @@ bot_unified_messages_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bot_Handlers)(ctx)
 	auth, ok, refusal := bot_require_auth(h, req)
 	if !ok do return refusal
+	if fence := bots.bots_legacy_guard(h.bots, auth.user_id); fence.code != .None do return respond_error(fence, req.request_id)
 	bot, err := bots.bots_get(h.bots, auth.user_id)
 	defer domain.bot_destroy(&bot)
 	if err.code != .None do return respond_error(err, req.request_id)

@@ -8,7 +8,9 @@ TEMPLATE_MD_COORDINATOR :: #load("../../templates/coordinator.md", string)
 TEMPLATE_MD_WORKER :: #load("../../templates/worker.md", string)
 TEMPLATE_MD_REVIEWER :: #load("../../templates/reviewer.md", string)
 TEMPLATE_MD_SOLOIST :: #load("../../templates/soloist.md", string)
-TEMPLATE_MD_BOT :: #load("../../templates/bot.md", string)
+TEMPLATE_BOT_OPERATIONS :: #load("../../templates/bot_operations.md", string)
+TEMPLATE_MD_BOT :: #load("../../templates/bot.md", string) + "\n" + TEMPLATE_BOT_OPERATIONS
+TEMPLATE_MD_BOT_WEB :: #load("../../templates/bot_web.md", string) + "\n" + TEMPLATE_BOT_OPERATIONS
 TEMPLATE_MD_EMPTY :: #load("../../templates/empty.md", string)
 
 // builtin_template returns the built-in template for id, or ok = false when id is
@@ -51,13 +53,13 @@ builtin_template :: proc(id: string) -> (Template, bool) {
 			persona = "You are a senior software engineer who owns work end to end. You plan with the user, implement and verify the work yourself, and track every step in tasks.",
 			instructions = TEMPLATE_MD_SOLOIST,
 		}, true
-	case TEMPLATE_BOT_ID:
+	case TEMPLATE_BOT_ID, TEMPLATE_BOT_WEB_ID:
 		return Template{
-			template_id = TEMPLATE_BOT_ID,
+			template_id = id,
 			is_system = true,
 			name = "Ninjy bot",
 			persona = "You are the user's personal assistant and chief of staff on chat. You are their single point of contact: you answer quickly what you can, delegate the rest, and own the outcome of everything you delegate until you have told the user how it ended. You protect their attention: you raise what needs them and keep the rest off their plate.",
-			instructions = TEMPLATE_MD_BOT,
+			instructions = TEMPLATE_MD_BOT_WEB if id == TEMPLATE_BOT_WEB_ID else TEMPLATE_MD_BOT,
 		}, true
 	case TEMPLATE_EMPTY_ID:
 		return Template{

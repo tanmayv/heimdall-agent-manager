@@ -59,6 +59,7 @@ bots_on_command_result :: proc(s: ^Bots_Service, bridge_id, command_id, status, 
 	sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
 	a, found, err := iface.attempt_get(s.repo, command_id[len("cmd_bot_"):])
 	if !found || err.code != .None || a.bridge_id != bridge_id || a.state != .Sent do return
+	if bots_legacy_attempt_guard(s, a).code != .None do return
 	now := platform.clock_now(s.clock)
 	if status == "accepted" || status == "succeeded" {
 		updated := a
@@ -86,6 +87,9 @@ bots_on_report :: proc(s: ^Bots_Service, bridge_id, frame_json: string) -> (repl
 	a, found, get_err := iface.attempt_get(s.repo, report.attempt_id)
 	if get_err.code != .None {delete(ack, caller_allocator); return "", false}
 	if !found || a.bridge_id != bridge_id || !domain.bot_attempt_state_open(a.state) || a.state == .Relocating || report.seq <= a.report_seq do return string(ack), false
+	fence := bots_legacy_attempt_guard(s, a)
+	if fence.code == .Conflict || fence.code == .Not_Found do return string(ack), false
+	if fence.code != .None {delete(ack, caller_allocator); return "", false}
 	uow, ok, begin_err := iface.unit_of_work_begin(s.uow_factory)
 	if !ok || begin_err.code != .None {delete(ack, caller_allocator); return "", false}
 	defer if uow.ctx != nil do iface.unit_of_work_rollback(&uow)
@@ -110,7 +114,7 @@ bots_send_attempt_locked :: proc(s: ^Bots_Service, a: domain.Bot_Delivery_Attemp
 	d, found, err := iface.delivery_get(s.repo, a.delivery_id)
 	if !found || err.code != .None || d.state != .Dispatched do return
 	bot, found_bot, bot_err := iface.bot_get(s.repo, d.bot_id)
-	if !found_bot || bot_err.code != .None || !bots_gate_on(s.experiments, bot.owner_user_id) do return
+	if !found_bot || bot_err.code != .None || (!bots_gate_on(s.experiments, bot.owner_user_id) || bots_legacy_guard(s, bot.owner_user_id).code != .None) do return
 	inst, found_inst, inst_err := iface.agent_get_instance(s.agents.agents, bot.agent_instance_id)
 	if !found_inst || inst_err.code != .None do return
 	candidates: []contracts.Bot_Candidate_Wire
@@ -170,6 +174,7 @@ bots_on_bridge_hello :: proc(s: ^Bots_Service, bridge_id: string) {
 	attempts, e := iface.attempt_list_open_on_bridge(s.repo, bridge_id)
 	if e.code == .None {
 		for a in attempts {
+			if bots_legacy_attempt_guard(s, a).code != .None do continue
 			if a.disconnected_at != "" && now_ms - bots_stamp_ms(a.disconnected_at) > s.timers.bot_disconnect_grace_ms do continue
 			updated := a
 			updated.disconnected_at = ""
@@ -196,7 +201,7 @@ bots_on_bridge_disconnect :: proc(s: ^Bots_Service, bridge_id: string) {
 	attempts, e := iface.attempt_list_open_on_bridge(s.repo, bridge_id)
 	if e.code != .None do return
 	for a in attempts {
-		if a.disconnected_at != "" do continue
+		if a.disconnected_at != "" || bots_legacy_attempt_guard(s, a).code != .None do continue
 		updated := a
 		updated.disconnected_at = platform.clock_now(s.clock)
 		_, _ = iface.attempt_update(s.repo, updated, a.state)
@@ -217,6 +222,10 @@ bots_switch :: proc(s: ^Bots_Service, bridge_id, attempt_id: string, candidate: 
 		sync.mutex_unlock(&s.mutex)
 		return {}, bots_detail_error(.Not_Found, "bot_attempt_not_found")
 	}
+	if fence := bots_legacy_attempt_guard(s, a); fence.code != .None {
+		sync.mutex_unlock(&s.mutex)
+		return {}, fence
+	}
 	candidates: []contracts.Bot_Candidate_Wire
 	allowed := false
 	if json.unmarshal(transmute([]u8)(a.candidates_json), &candidates) == nil {
@@ -229,6 +238,11 @@ bots_switch :: proc(s: ^Bots_Service, bridge_id, attempt_id: string, candidate: 
 	sync.mutex_unlock(&s.mutex)
 	if inst_err.code != .None do return {}, inst_err
 	if !exists || inst.bridge_id != bridge_id do return {}, bots_detail_error(.Conflict, "bot_instance_elsewhere")
+	// Do not let a stale channel worker schedule an old-instance relaunch
+	// after cutover has committed and requested stop. No s.mutex held here.
+	sync.mutex_lock(&s.web_activation_mutex)
+	defer sync.mutex_unlock(&s.web_activation_mutex)
+	if fence := bots_legacy_guard(s, bot.owner_user_id); fence.code != .None do return {}, fence
 	if inst.provider == candidate.provider && inst.model == candidate.model {
 		return {inst.agent_instance_id, inst.provider, inst.provider_profile, inst.model, inst.configuration_revision, false}, {}
 	}

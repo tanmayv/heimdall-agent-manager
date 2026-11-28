@@ -31,6 +31,10 @@ bot_channel_require :: proc(h: ^Bot_Agent_Handlers, req: Request) -> (domain.Bot
 		domain.bot_destroy(&bot)
 		return {}, auth, false, respond_error(bots.bots_detail_error(.Forbidden, "not_a_bot"), req.request_id)
 	}
+	if fence := bots.bots_legacy_guard(h.bots, bot.owner_user_id); fence.code != .None {
+		domain.bot_destroy(&bot)
+		return {}, auth, false, respond_error(fence, req.request_id)
+	}
 	bindings, binding_err := iface.bindings_active_for_owner(h.bots.repo, bot.owner_user_id)
 	defer {for &b in bindings do domain.channel_binding_destroy(&b); delete(bindings)}
 	if binding_err.code != .None || len(bindings) == 0 {

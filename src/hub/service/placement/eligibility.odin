@@ -78,6 +78,17 @@ bridge_status_online :: proc(bridges: ^iface.Bridge_Repository, bridge_id: strin
 	return found && e.code == .None && b.status == .Online
 }
 // On success both strings in the result are caller-owned (context.allocator).
+// A missing per-agent support override leaves a bridge eligible. Both
+// canonical and legacy policy roles must honor explicit disablement.
+agent_bridge_support_check :: proc(s: ^Service, agent_id, bridge_id: string) -> domain.Domain_Error {
+	if agent_id == "" do return {}
+	support, found, err := iface.agent_get_support(s.agents, agent_id, bridge_id)
+	defer support_destroy(support)
+	if err.code != .None && err.code != .Not_Found do return err
+	if found && !support.enabled do return domain.domain_error(.Provider_Unavailable, "agent is disabled on bridge")
+	return {}
+}
+
 launchable :: proc(
 	s: ^Service,
 	agent_id, bridge_id, provider, model, profile: string,
@@ -87,12 +98,7 @@ launchable :: proc(
 ) {
 	if strings.trim_space(provider) == "" || strings.trim_space(model) == "" do return {}, domain.domain_error(.Unprocessable_Entity, "provider and model are required")
 	if s == nil || s.providers == nil || s.providers.repo == nil do return {}, domain.domain_error(.Internal_Error, "provider repository is not configured")
-	if agent_id != "" {
-		support, found, e := iface.agent_get_support(s.agents, agent_id, bridge_id)
-		defer support_destroy(support)
-		if e.code != .None && e.code != .Not_Found do return {}, e
-		if found && !support.enabled do return {}, domain.domain_error(.Provider_Unavailable, "agent is disabled on bridge")
-	}
+	if e := agent_bridge_support_check(s, agent_id, bridge_id); e.code != .None do return {}, e
 	if e := provider_service.validate_profile(s.providers.repo, bridge_id, provider, profile); e.code != .None do return {}, e
 	entry, found, entry_err := iface.provider_catalog_get(s.providers.repo, provider)
 	if entry_err.code != .None do return {}, entry_err

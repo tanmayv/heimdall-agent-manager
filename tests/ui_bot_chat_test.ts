@@ -49,6 +49,7 @@ function hub(initial: Msg[] = []) {
   return {
     enabled: true as boolean,
     bot: bot() as any,
+    rollout: { enabled: false, generation: 0, agent_instance_id: '', conversation_id: '', bot_id: '' },
     messages: [...initial],
     cards: new Map<string, string>(),
     sendStatus: 0,
@@ -111,6 +112,14 @@ async function fixture(state: ReturnType<typeof hub>, view: 'sidebar' | 'chat', 
     if (path === '/me/experiments') return Response.json({ data: { experiments: [{ key: 'bots', enabled: state.enabled }] } });
     if (!state.enabled && path.startsWith('/bots/')) return Response.json({ error: { code: 'forbidden', message: 'Experiment off' } }, { status: 403 });
     if (path === '/bots/me') return state.bot ? Response.json({ data: state.bot }) : Response.json({ error: { code: 'not_found', message: 'No bot' } }, { status: 404 });
+    if (path === '/bots/me/web-conversation') {
+      if (method === 'PUT') {
+        if (body.expected_generation !== state.rollout.generation) return Response.json({ error: { message: 'Stale activation' } }, { status: 409 });
+        state.rollout = { enabled: body.enabled, generation: state.rollout.generation + 1,
+          agent_instance_id: 'inst_fresh_bot', conversation_id: 'chat_fresh_bot', bot_id: 'bot_a' };
+      }
+      return Response.json({ data: state.rollout });
+    }
     if (path === '/bots/me/messages') {
       const ids = url.searchParams.get('message_ids');
       if (ids) {
@@ -225,10 +234,10 @@ test('sidebar: experiment off renders nothing and never requests the bot', async
   });
 });
 
-test('sidebar: no bot yet renders nothing', async () => {
+test('sidebar: an eligible owner can find the fresh bot opt-in without a legacy bot', async () => {
   const state = hub();
   state.bot = null;
-  await fixture(state, 'sidebar', async (h) => { assert.equal(h.get('sidebar-bot'), null); });
+  await fixture(state, 'sidebar', async (h) => { assert.equal(h.get('sidebar-bot-name')!.textContent, 'Bot'); });
 });
 
 test('sidebar: shows display name and bridge/provider placement with accessible running state, and opens the chat', async () => {
@@ -261,10 +270,30 @@ test('chat: experiment off shows a clear notice and fetches no bot data', async 
   });
 });
 
-test('chat: missing bot explains how to create one', async () => {
+test('chat: eligible owner without a legacy bot explicitly opts into an empty shared conversation', async () => {
   const state = hub();
   state.bot = null;
-  await fixture(state, 'chat', async (h) => { assert.match(h.get('bot-chat-load-error')!.textContent!, /Create one in Settings/); });
+  await fixture(state, 'chat', async (h) => {
+    assert.match(h.get('bot-web-activation')!.textContent!, /starts empty.*paired again/);
+    assert.equal(h.requests.some((r: any) => r.method === 'PUT'), false);
+    await h.click('bot-web-activate');
+    assert.equal(h.dom.window.location.hash, '#/conversations/inst_fresh_bot');
+    assert.deepEqual(h.requests.find((r: any) => r.method === 'PUT').body, { enabled: true, expected_generation: 0 });
+    assert.equal(h.requests.some((r: any) => r.path.includes('/channels/web/messages')), false);
+  });
+});
+
+test('chat: paused owner resumes the pinned conversation without reading or sending legacy history', async () => {
+  const state = hub([msg(1)]);
+  state.rollout = { enabled: false, generation: 2, agent_instance_id: 'inst_fresh_bot', conversation_id: 'chat_fresh_bot', bot_id: 'bot_a' };
+  await fixture(state, 'chat', async (h) => {
+    assert.match(h.get('bot-web-activation')!.textContent!, /messages are kept/);
+    assert.equal(h.get('bot-chat-input'), null);
+    await h.click('bot-web-activate');
+    assert.equal(h.dom.window.location.hash, '#/conversations/inst_fresh_bot');
+    assert.deepEqual(h.requests.find((r: any) => r.method === 'PUT').body, { enabled: true, expected_generation: 2 });
+    assert.equal(h.requests.some((r: any) => r.path === '/bots/me/messages'), false);
+  });
 });
 
 test('chat: unified history renders channel labels oldest-first and pages older messages', async () => {

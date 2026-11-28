@@ -38,6 +38,7 @@ Content_List_Conversation_Project_Links_Proc :: proc(ctx: rawptr, owner_user_id:
 Content_Conversation_By_Instance_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, agent_instance_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error)
 
 Content_Repository :: struct {
+	claim_message_request: proc(ctx: rawptr, message_id: string) -> (bool, domain.Domain_Error),
 	conversation_by_instance: Content_Conversation_By_Instance_Proc,
  action_conversation: proc(ctx:rawptr,owner:domain.User_ID,instance_id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error),
 	get_input_delivery: Content_Get_Input_Delivery_Proc,

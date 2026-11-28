@@ -4,6 +4,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:log"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import "core:unicode/utf8"
 import domain "odin_test:hub/domain"
@@ -34,6 +35,7 @@ channel_text_chunks :: proc(text: string, allocator := context.allocator) -> []s
 
 // message_ids and each id belong to the caller, including on an error.
 channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: string, record: bool, action_ids_json := "") -> (message_ids: []string, held: bool, err: domain.Domain_Error) {
+	if fence := bots_legacy_guard(s, binding.owner_user_id); fence.code != .None do return nil, false, fence
 	a := bots_adapter(s, binding.provider)
 	if a == nil do return nil, false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", binding.provider), `{"code":"channel_not_configured"}`)
 	if !utf8.valid_string(text) do return nil, false, domain.domain_error(.Validation_Failed, "text is invalid", `{"code":"text_invalid"}`)
@@ -48,6 +50,9 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 	if record {
 		// Publish after all send-state updates, including partial failures.
 		defer bots_publish_changed(s, binding.owner_user_id, binding.bot_id)
+		sync.mutex_lock(&s.mutex)
+		defer sync.mutex_unlock(&s.mutex)
+		if fence := bots_legacy_guard(s, binding.owner_user_id); fence.code != .None {delete(ids); return nil, false, fence}
 		for chunk, i in chunks {
 			id := strings.clone(platform.generate_id(s.ids, "chm_"))
 			insert_err := iface.message_insert_outbound(s.repo, {
@@ -75,7 +80,7 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 		return ids[:], true, {}
 	}
 	for chunk, index in chunks {
-		external_id, result := bots_send_chunk(s, a, binding.external_chat_id, chunk)
+		external_id, result := bots_send_chunk(s, a, binding.external_chat_id, chunk, binding.owner_user_id)
 		if result.kind == .None {
 			if record {
 				err = iface.message_set_send_result(s.repo, ids[index], .Sent, external_id, "")
@@ -112,11 +117,12 @@ channel_send :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, text: st
 }
 
 // The caller owns external_message_id. Retry limits are shared by fresh and held sends.
-bots_send_chunk :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, chat_id, text: string) -> (external_message_id: string, err: channel.Channel_Error) {
+bots_send_chunk :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, chat_id, text: string, owner := "") -> (external_message_id: string, err: channel.Channel_Error) {
 	result: channel.Channel_Error
 	external_id := ""
 	rate_wait: i64
 	for attempt in 0..<3 {
+		if !bots_legacy_provider_admit(s, owner) do return "", {kind = .Aborted}
 		external_id, result = a.send_text(a.ctx, chat_id, text)
 		if result.kind == .None do break
 		delete(external_id)

@@ -3,6 +3,9 @@ package iface
 import domain "odin_test:hub/domain"
 
 Bot_Repository :: struct {
+	web_activation_get: proc(ctx: rawptr, owner: string) -> (domain.Bot_Web_Activation, bool, domain.Domain_Error),
+	web_activation_insert: proc(ctx: rawptr, row: domain.Bot_Web_Activation) -> domain.Domain_Error,
+	web_activation_set_enabled: proc(ctx: rawptr, owner: string, enabled: bool, expected_generation: i64) -> (bool, domain.Domain_Error),
 	// One indexed query for pending prompts or recently routed actions.
 	action_activity: proc(ctx: rawptr, instance_id, routed_since: string) -> (bool, domain.Domain_Error),
 	// Web intake atomically creates the local binding and deduplicates the message.
@@ -772,4 +775,20 @@ messages_page :: proc(repo: ^Bot_Repository, owner, bot_id, before: string, limi
 bot_action_activity :: proc(repo: ^Bot_Repository, instance_id, routed_since: string) -> (bool, domain.Domain_Error) {
  if repo == nil || repo.action_activity == nil do return false, domain.domain_error(.Internal_Error, "bot action activity lookup is not configured")
  return repo.action_activity(repo.ctx, instance_id, routed_since)
+}
+
+
+// Web activation snapshots belong to the caller. A missing row means no
+// activation has occurred, not just that the current flag is off.
+bot_web_activation_get :: proc(repo: ^Bot_Repository, owner: string) -> (domain.Bot_Web_Activation, bool, domain.Domain_Error) {
+	if repo == nil || repo.web_activation_get == nil do return {}, false, domain.domain_error(.Internal_Error, "bot web activation repository is not configured")
+	return repo.web_activation_get(repo.ctx, owner)
+}
+bot_web_activation_insert :: proc(repo: ^Bot_Repository, row: domain.Bot_Web_Activation) -> domain.Domain_Error {
+	if repo == nil || repo.web_activation_insert == nil do return domain.domain_error(.Internal_Error, "bot web activation repository is not configured")
+	return repo.web_activation_insert(repo.ctx, row)
+}
+bot_web_activation_set_enabled :: proc(repo: ^Bot_Repository, owner: string, enabled: bool, expected_generation: i64) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.web_activation_set_enabled == nil do return false, domain.domain_error(.Internal_Error, "bot web activation repository is not configured")
+	return repo.web_activation_set_enabled(repo.ctx, owner, enabled, expected_generation)
 }

@@ -16,6 +16,9 @@ Bot_Repo_SQLite :: struct {
 new_bot_repository :: proc(impl: ^Bot_Repo_SQLite, conn: ^Conn) -> iface.Bot_Repository {
 	impl.conn = conn
 	return iface.Bot_Repository {
+		web_activation_get = bot_web_activation_get_sqlite,
+		web_activation_insert = bot_web_activation_insert_sqlite,
+		web_activation_set_enabled = bot_web_activation_set_enabled_sqlite,
 		action_activity = bot_action_activity_sqlite,
 		web_message_store = web_message_store_sqlite,
 		messages_page = messages_page_sqlite,

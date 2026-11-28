@@ -5,6 +5,7 @@ import iface "odin_test:hub/repository/iface"
 
 // Return an owned binding snapshot; release every unselected snapshot.
 bots_reply_binding :: proc(s: ^Bots_Service, owner, bot_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+	if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, false, fence
 	active, err := iface.bindings_active_for_owner(s.repo, owner)
 	defer {for &b in active do domain.channel_binding_destroy(&b); delete(active)}
 	if err.code != .None || len(active) == 0 do return {}, false, err
@@ -34,6 +35,7 @@ bots_reply_binding :: proc(s: ^Bots_Service, owner, bot_id: string) -> (domain.C
 }
 
 bots_notice_binding :: proc(s: ^Bots_Service, owner, bot_id, through_message_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+	if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, false, fence
 	history, err := iface.messages_history(s.repo, bot_id, -1)
 	defer {for &m in history do domain.channel_message_destroy(&m); delete(history)}
 	if err.code != .None do return {}, false, err
@@ -50,6 +52,7 @@ bots_notice_binding :: proc(s: ^Bots_Service, owner, bot_id, through_message_id:
 
 // Return the oldest pending active channel, or the first active channel.
 bots_read_binding :: proc(s: ^Bots_Service, owner, bot_id: string) -> (domain.Channel_Binding, bool, domain.Domain_Error) {
+	if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, false, fence
 	active, err := iface.bindings_active_for_owner(s.repo, owner)
 	defer {for &b in active do domain.channel_binding_destroy(&b); delete(active)}
 	if err.code != .None || len(active) == 0 do return {}, false, err

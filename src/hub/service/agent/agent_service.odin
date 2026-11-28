@@ -47,11 +47,23 @@ Agent_Service :: struct {
 	// resource_events: after-write change hints for the owner's UI (REQ-2). Set
 	// by wiring to the user event bus; every field is nil-safe.
 	resource_events: Resource_Event_Hooks,
+	// Optional role-specific restriction, after normal destination validation.
+	runtime_policy: Runtime_Policy_Hook,
 	// event_bus: realtime UI frames (agent_blockers_changed, ...); optional.
 	event_bus: ^events.User_Event_Bus,
 	// blockers: in-memory agent blockers fed by bridge snapshots (agent_blockers.odin).
 	blockers: Agent_Blocker_Store,
 	tool_live: Tool_Live_Store,
+}
+
+Runtime_Policy_Hook :: struct {
+	ctx: rawptr,
+	check: proc(ctx: rawptr, inst: domain.Agent_Instance, bridge_id, provider, requested_model, resolved_model: string) -> domain.Domain_Error,
+}
+
+validate_runtime_policy :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, bridge_id, provider, requested_model, resolved_model: string) -> domain.Domain_Error {
+	if service.runtime_policy.check == nil do return {}
+	return service.runtime_policy.check(service.runtime_policy.ctx, inst, bridge_id, provider, requested_model, resolved_model)
 }
 
 // Resource_Event_Hooks are invoked only after the write they describe returned
@@ -252,7 +264,7 @@ update_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 agent_template_available :: proc(service: ^Agent_Service, owner: domain.User_ID, template_id: string) -> bool {
 	if template_id == "" do return false
 	switch template_id {
-	case domain.TEMPLATE_BOT_ID, domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
+	case domain.TEMPLATE_BOT_WEB_ID, domain.TEMPLATE_BOT_ID, domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_SOLOIST_ID, domain.TEMPLATE_CURATOR_ID:
 		return true
 	}
 	if service.content == nil do return false
@@ -1686,7 +1698,10 @@ validate_pinned_provider_model :: proc(service: ^Agent_Service, auth: contracts.
 	resolved_provider := provider if strings.trim_space(provider) != "" else inst.provider
 	resolved_model := model if strings.trim_space(model) != "" else inst.model
 	ps:=agent_placement(service)
- return agent_launchable(&ps,inst.agent_id,inst.bridge_id,resolved_provider,resolved_model,inst.provider_profile if resolved_provider==inst.provider else "")
+	resolved, eligible, launch_err := agent_launchable(&ps,inst.agent_id,inst.bridge_id,resolved_provider,resolved_model,inst.provider_profile if resolved_provider==inst.provider else "")
+	if !eligible do return {}, false, launch_err
+	if denied := validate_runtime_policy(service, inst, inst.bridge_id, resolved_provider, resolved_model, resolved.model); denied.code != .None do return {}, false, denied
+	return resolved, true, {}
 }
 
 // Transitional wrapper: T4 redirects task consumers and deletes this.

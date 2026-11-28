@@ -27,6 +27,7 @@ bots_reengage :: proc(s: ^Bots_Service, binding_id: string) {
 	if err.code != .None || !found || binding.state != .Active || binding.reengage_sent_at != "" do return
 	a := bots_adapter(s, binding.provider)
 	if a == nil || a.send_reengage == nil || !bots_gate_on(s.experiments, binding.owner_user_id) do return
+	if !bots_legacy_provider_admit(s, binding.owner_user_id) do return
 	id, result := a.send_reengage(a.ctx, binding.external_chat_id)
 	delete(id)
 	sent, failure := "", ""
@@ -48,14 +49,15 @@ bots_release_held :: proc(s: ^Bots_Service, binding_id: string) {
 	if err.code != .None || !found || binding.state != .Active || !bots_gate_on(s.experiments, binding.owner_user_id) do return
 	a := bots_adapter(s, binding.provider)
 	if a == nil || bots_window_closed(a, binding, bots_now_ms(s)) do return
+	if bots_legacy_guard(s, binding.owner_user_id).code != .None do return
 	rows, list_err := iface.messages_held(s.repo, binding_id)
 	defer {for &m in rows do domain.channel_message_destroy(&m); delete(rows)}
 	if list_err.code != .None do return
 	sent, failed := 0, 0
 	for row in rows {
-		id, result := bots_send_chunk(s, a, binding.external_chat_id, row.body)
+		id, result := bots_send_chunk(s, a, binding.external_chat_id, row.body, binding.owner_user_id)
 		defer delete(id)
-		if result.kind == .Window_Closed do break
+		if result.kind == .Window_Closed || result.kind == .Aborted do break
 		if result.kind == .None {
 			if e := iface.message_set_send_result(s.repo, row.message_id, .Sent, id, ""); e.code != .None do break
 			sent += 1

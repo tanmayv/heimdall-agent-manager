@@ -38,6 +38,12 @@ const agentRow = (id: string, sec: number, inputIds: string[] = []) => ({
 });
 
 type Hub = { transport: 'acp' | 'pty'; messages: any[]; posts: Array<{ path: string; body: any }>; sendNowReply: { status: number; body: any }; gets?: string[];
+  freshBot?: { enabled: boolean; generation: number };
+  placement?: { bridge_id: string; provider: string; model: string; tier: 'allowed' | 'preferred' }[];
+  rolloutStatus?: number | Promise<number>;
+  loseNextMessageAck?: boolean;
+  uploads?: any[];
+  runtimeStatus?: 'stopped' | 'running';
   configuration?: { operations: any[]; response?: { status: number; body: any } | 'network' };
   /** /me/experiments rows; omitted keeps the flags unloaded (the old settings modal). */
   experiments?: Array<{ key: string; enabled: boolean }>;
@@ -92,21 +98,46 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
       if (!path.endsWith('/providers/discover')) return respond(202, { data: { command_id: 'cmd_1' } });
     }
     if (method === 'POST' && path.endsWith('/send-now')) { hub.posts.push({ path, body: JSON.parse(init.body) }); return respond(hub.sendNowReply.status, hub.sendNowReply.body); }
+    if (method === 'POST' && path.endsWith('/artifacts') && hub.uploads) {
+      const body = JSON.parse(init.body);
+      hub.uploads.push(body);
+      return respond(201, { data: { artifact_id: 'art_sealed', name: 'sample.txt' } });
+    }
+    if (method === 'POST' && path.endsWith('/agent-instances/worker/start')) {
+      hub.posts.push({ path, body: JSON.parse(init.body) });
+      hub.runtimeStatus = 'running';
+      return respond(200, { data: { agent_instance_id: 'worker', runtime_status: 'running' } });
+    }
     if (method === 'POST' && path.endsWith('/messages')) {
       const body = JSON.parse(init.body);
+      const previous = body.idempotency_key && hub.posts.find((post) => post.body.idempotency_key === body.idempotency_key);
       hub.posts.push({ path, body });
-      const row = userRow('msg_new', 30, hub.transport === 'acp' ? acp('sent') : null, { body: body.body });
+      if (previous) return respond(200, { data: hub.messages.find(message => message.message_id === 'msg_new') });
+      const row = userRow('msg_new', 30, hub.transport === 'acp' ? acp('sent') : null, {
+        body: body.body, artifact_ids_json: JSON.stringify(body.artifact_ids || []),
+      });
       hub.messages.push(row);
+      if (hub.loseNextMessageAck) {
+        hub.loseNextMessageAck = false;
+        return respond(503, { error: { message: 'Acknowledgement unavailable' } });
+      }
       return respond(201, { data: row });
     }
     let data: any = {};
     if (path.endsWith('/me/experiments') && hub.experiments) data = { experiments: hub.experiments };
-    else if (path.includes('/chats/by-instance/')) data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity', runtime_status: 'running' };
+    else if (path.includes('/chats/by-instance/')) {
+      const status = await hub.rolloutStatus;
+      if (status && status !== 200) return respond(status, { error: { message: 'Unable to check bot chat' } });
+      data = { conversation_id: 'workerchat', agent_instance_id: 'worker', agent_id: 'worker-identity',
+        runtime_status: hub.runtimeStatus || 'running',
+        ...(hub.freshBot ? { write_generation: hub.freshBot.generation, writes_enabled: hub.freshBot.enabled } : {}) };
+    }
+    else if (path.endsWith('/bots/me/placement') && hub.freshBot) data = { placement_revision: 1, candidates: hub.placement || [] };
     else if (path.endsWith('/messages')) data = [...hub.messages].reverse();
     else if (path.endsWith('/send-now')) data = { conversation_id: 'workerchat', runtime_transport: hub.transport, send_now: hub.transport === 'acp' ? 'members' : 'notice', launch_epoch: 'ep1', steering_supported: false,
       batch: hub.posts.some((p) => p.path.endsWith('/send-now')) ? hub.sendNowReply.body?.data?.batch ?? null : null };
     else if (/\/agent-instances\/[^/]+$/.test(path)) data = { agent_instance_id: 'worker', agent_id: 'identity', provider: 'claude', model: 'opus', bridge_id: 'b',
-      runtime_status: 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
+      runtime_status: hub.runtimeStatus || 'running', runtime_transport: hub.transport, launch_epoch: 'ep1', configuration_revision: 7 };
     else if (path.endsWith('/reconfigurations')) data = { operations: hub.configuration?.operations || [] };
     else if (path.endsWith('/provider-status') || path.endsWith('/providers/discover')) data = { providers: [
       { provider: 'claude', enabled: true, state: 'present', catalog_state: 'active', models: [{ model_id: 'opus', state: 'active' }],
@@ -133,7 +164,7 @@ async function fixture(hub: Hub, run: (ctx: any) => Promise<void>) {
   resetQueuedInvalidations();
   try {
     await mount();
-    await wait(() => Boolean(q('conversation-composer-card')), 'composer rendered');
+    if (!(hub.rolloutStatus instanceof Promise)) await wait(() => Boolean(q('conversation-composer-card')), 'composer rendered');
     await run({ dom, store, q, wait, transcriptIds, queuedIds, delivery, root, mount });
   } finally {
     await act(async () => { root.unmount(); store.dispatch(heimdallApi.util.resetApiState()); await new Promise(r => setTimeout(r, 60)); });
@@ -169,6 +200,113 @@ test('AgentChatPane Apply starts a new intent after an accepted operation fails 
     assert.equal(second.expected_revision, 7, 'no destination commit changed the revision');
     assert.notEqual(first.idempotency_key, second.idempotency_key, 'accepted operation retires its intent key');
     assert.deepEqual({ ...first, idempotency_key: '' }, { ...second, idempotency_key: '' }, 'same destination is a new explicit attempt');
+  });
+});
+
+test('Fresh bot pane: an ambiguous save reuses its sealed input after reload, pause and resume', async () => {
+  const hub: Hub = { transport: 'pty', posts: [], messages: [], sendNowReply: { status: 200, body: {} },
+    freshBot: { enabled: true, generation: 1 }, loseNextMessageAck: true, uploads: [] };
+  await fixture(hub, async ({ q, wait, store, dom, root, mount }) => {
+    const { Simulate } = await import('react-dom/test-utils');
+    const { botsApi } = await import('../src/ui/api/endpoints/bots.ts');
+    const { chatEndpoints } = await import('../src/ui/api/endpoints/chats.ts');
+    const generation = () => chatEndpoints.endpoints.fetchConversation.select({ conversationId: '', agentInstanceId: 'worker' })(store.getState()).data?.conversation?.write_generation;
+    await wait(() => generation() === 1, 'pinned conversation policy loaded');
+    await act(async () => Simulate.change(q('conversation-composer-input')!, { target: { value: 'retry me' } } as any));
+    const picker = q('conversation-attach-input') as HTMLInputElement;
+    Object.defineProperty(picker, 'files', { value: [new File(['private file'], 'sample.txt', { type: 'text/plain' })] });
+    await act(async () => Simulate.change(picker));
+    await wait(() => hub.uploads?.length === 1, 'shared attachment endpoint called');
+    await wait(() => !(q('conversation-composer-send-btn') as HTMLButtonElement)?.disabled, 'send enabled');
+    await act(async () => q('conversation-composer-send-btn')!.click());
+    await wait(() => !!q('conversation-composer-send-error'), 'ambiguous acknowledgement is visible');
+    assert.equal(hub.posts[0].path, '/api/v1/chats/workerchat/messages');
+    assert.match(hub.posts[0].body.body, /^vault:v2:/);
+    assert.match(hub.posts[0].body.idempotency_key, /^web-/);
+    assert.deepEqual(hub.posts[0].body.artifact_ids, ['art_sealed']);
+    assert.equal(hub.posts[0].body.activation_generation, 1);
+    const storage: Storage = dom.window.localStorage;
+    const privateKeys = Object.keys(storage).filter(key => key.startsWith('heimdall:chat-write:'));
+    assert.equal(privateKeys.length, 1);
+    assert.match(storage.getItem(privateKeys[0]) || '', /^vault:v2:/);
+    assert.ok(!Object.values(storage).some(value => String(value).includes('retry me')), 'plain draft never enters browser storage');
+    hub.freshBot = { enabled: false, generation: 2 };
+    await act(async () => { store.dispatch(botsApi.util.invalidateTags(['Bot'])); });
+    await wait(() => Boolean(q('conversation-write-policy-blocked')), 'paused shared pane is read-only');
+    const pausedSend = q('conversation-composer-send-btn') as HTMLButtonElement | null;
+    assert.ok(!pausedSend || pausedSend.disabled);
+    await act(async () => root.render(null));
+    await mount();
+    await wait(() => q('conversation-retry-unconfirmed') !== null, 'pending send restored from the sealed local journal');
+    assert.equal((q('conversation-retry-unconfirmed') as HTMLButtonElement).disabled, true);
+    hub.freshBot = { enabled: true, generation: 3 };
+    await act(async () => { store.dispatch(botsApi.util.invalidateTags(['Bot'])); });
+    await wait(() => generation() === 3 && (q('conversation-retry-unconfirmed') as HTMLButtonElement)?.disabled === false, 'resumed with retry available');
+    await act(async () => q('conversation-retry-unconfirmed')!.click());
+    await wait(() => hub.posts.length === 2, 'retry on the canonical endpoint');
+    assert.deepEqual(hub.posts[1].body, { ...hub.posts[0].body, activation_generation: 3 });
+    assert.equal(hub.messages.length, 1);
+    await wait(() => storage.getItem(privateKeys[0]) === null, 'acknowledged local journal entry removed');
+  });
+});
+
+test('Fresh bot pane: a stopped runtime starts from the standard chat controls', async () => {
+  const hub: Hub = { transport: 'pty', posts: [], messages: [], sendNowReply: { status: 200, body: {} },
+    freshBot: { enabled: true, generation: 1 }, runtimeStatus: 'stopped' };
+  await fixture(hub, async ({ q, wait }) => {
+    await wait(() => Boolean(q('conversation-runtime-status-chip')), 'runtime control available');
+    await act(async () => q('conversation-runtime-status-chip')!.click());
+    const start = q('conversation-runtime-status-toggle-btn') as HTMLButtonElement | null;
+    assert.ok(start && !start.disabled);
+    assert.match(start.textContent || '', /start/i);
+    await act(async () => start.click());
+    await wait(() => hub.posts.some(post => post.path === '/api/v1/agent-instances/worker/start'), 'standard Start request');
+    const { Simulate } = await import('react-dom/test-utils');
+    await act(async () => Simulate.change(q('conversation-composer-input')!, { target: { value: 'now running' } } as any));
+    await wait(() => (q('conversation-composer-send-btn') as HTMLButtonElement)?.disabled === false, 'composer can send after start');
+    await act(async () => q('conversation-composer-send-btn')!.click());
+    await wait(() => hub.posts.some(post => post.path === '/api/v1/chats/workerchat/messages'), 'canonical new message');
+  });
+});
+
+test('Fresh bot pane: the shared model picker excludes providers outside owner placement', async () => {
+  const hub: Hub = { transport: 'pty', posts: [], messages: [], sendNowReply: { status: 200, body: {} },
+    freshBot: { enabled: true, generation: 1 }, configuration: { operations: [] },
+    experiments: [{ key: 'agent_settings_panel', enabled: true }],
+    placement: [{ bridge_id: 'b', provider: 'claude', model: 'opus', tier: 'allowed' }] };
+  await fixture(hub, async ({ q, wait }) => {
+    await wait(() => Boolean(q('conversation-agent-settings-btn')));
+    await act(async () => q('conversation-agent-settings-btn')!.click());
+    await wait(() => Boolean(q('agent-panel-model-provider-claude')), 'allowed model provider shown');
+    assert.equal(q('agent-panel-model-provider-codex'), null, 'installed but policy-forbidden provider is not selectable');
+  });
+});
+
+test('Agent pane: unresolved first classification never falls back to an unfenced chat send', async () => {
+  let finish!: (status: number) => void;
+  const rolloutStatus = new Promise<number>(resolve => { finish = resolve; });
+  const hub: Hub = { transport: 'pty', posts: [], messages: [], sendNowReply: { status: 200, body: {} },
+    freshBot: { enabled: true, generation: 1 }, rolloutStatus };
+  await fixture(hub, async ({ q, wait, dom }) => {
+    try {
+      const { Simulate } = await import('react-dom/test-utils');
+      await wait(() => Boolean(q('conversation-thread-resolving')));
+      assert.equal(q('conversation-composer-input'), null);
+      await act(async () => finish(503));
+      await wait(() => Boolean(q('conversation-write-policy-refresh')));
+      assert.equal(hub.posts.length, 0);
+      hub.rolloutStatus = 200;
+      await act(async () => q('conversation-write-policy-refresh')!.click());
+      await wait(() => Boolean(q('conversation-composer-input')));
+      await act(async () => Simulate.change(q('conversation-composer-input')!, { target: { value: 'save after verification' } } as any));
+      assert.ok(!Object.values(dom.window.localStorage).some(value => String(value).includes('save after verification')));
+      await wait(() => (q('conversation-composer-send-btn') as HTMLButtonElement)?.disabled === false);
+      await act(async () => q('conversation-composer-send-btn')!.click());
+      await wait(() => hub.posts.length === 1);
+      assert.equal(hub.posts[0].body.activation_generation, 1);
+    } finally {
+      finish(503);
+    }
   });
 });
 

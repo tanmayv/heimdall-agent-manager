@@ -15,9 +15,10 @@ const { default: auxPanes } = await import('../../store/auxPanesSlice.ts');
 function bot(paired = false) {
   return { bot_id: 'bot_loading', display_name: 'Ninjy bot', status: 'ready', status_detail: '',
     telegram: { configured: true, bot_username: 'ninjy_test', binding: paired ? { state: 'active', display: '@alice', connected_at: '2026-11-18' } : null },
+    whatsapp: { configured: false, phone_display: '', binding: null, window_open: false, reengage_sent: false, reengage_error: '', held_replies: [] },
     placement_revision: 3, advanced: { agent_instance_id: '', bridge_id: '', bridge_label: '', provider: '', model: '', runtime_status: '' } };
 }
-async function fixture(run, initial = bot(), holdInitial = '') {
+async function fixture(run, initial = bot(), holdInitial = '', initialRollout = { enabled: false, generation: 0, agent_instance_id: '', conversation_id: '', bot_id: '' }) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'https://hub.test/', pretendToBeVisual: true });
   const saved = new Map();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node,
@@ -29,6 +30,7 @@ async function fixture(run, initial = bot(), holdInitial = '') {
   const previousFetch = globalThis.fetch;
   const requests = [];
   let current = initial;
+  let rollout = initialRollout;
   let held = holdInitial && { method: 'GET', suffix: holdInitial };
   let release;
   let failure = false;
@@ -43,6 +45,11 @@ async function fixture(run, initial = bot(), holdInitial = '') {
     }
     let data;
     if (path.endsWith('/experiments')) data = { experiments: [{ key: 'bots', enabled: true }] };
+    else if (path.endsWith('/agent-writes')) data = [];
+    else if (path.endsWith('/web-conversation')) {
+      if (method === 'PUT') rollout = { ...rollout, enabled: false, generation: rollout.generation + 1 };
+      data = rollout;
+    }
     else if (path.endsWith('/placement/options')) data = { bridges: [{ bridge_id: 'brg_a', label: 'Laptop', providers: [{ provider: 'claude', label: 'Claude', models: ['opus'] }] }] };
     else if (path.endsWith('/placement')) data = { placement_revision: 3, candidates: [{ bridge_id: '*', provider: '*', model: '*', tier: 'allowed' }] };
     else if (path.endsWith('/deliveries')) data = { deliveries: [] };
@@ -79,6 +86,16 @@ async function fixture(run, initial = bot(), holdInitial = '') {
   }
 }
 const prefix = 'settings-bots-';
+
+test('shared bot settings can pause the pinned generation without offering legacy pairings or deletion', async () => {
+  await fixture(async (h) => {
+    assert.equal(h.get(prefix + 'telegram-card'), null);
+    assert.equal(h.get(prefix + 'delete-btn'), null);
+    await h.click('settings-bot-web-pause');
+    assert.deepEqual(h.requests.find(request => request.method === 'PUT').body, { enabled: false, expected_generation: 5 });
+    assert.match(h.dom.window.document.body.textContent, /Your shared conversation is paused/);
+  }, bot(), '', { enabled: true, generation: 5, agent_instance_id: 'inst_new', conversation_id: 'chat_new', bot_id: 'bot_loading' });
+});
 function loading(h, id) {
   const button = h.get(prefix + id);
   assert.equal(button.getAttribute('aria-busy'), 'true');

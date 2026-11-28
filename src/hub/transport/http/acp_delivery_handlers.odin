@@ -88,6 +88,7 @@ send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
     h := (^Content_Handlers)(ctx)
     auth, ok, resp := require_auth(h.auth,req)
     if !ok do return resp
+    if err := conversation_control_allowed(h, auth, path_part(req.path, 4)); err.code != .None do return respond_error(err, req.request_id)
     input: struct { request_id, launch_epoch: string, message_ids: []string }
     if len(req.body) > 64*1024 || json.unmarshal_string(req.body,&input,allocator=context.temp_allocator) != nil do return respond_error(domain.domain_error(.Validation_Failed,"invalid send now request"),req.request_id)
     result, sent, err := content.send_now(h.content,auth,path_part(req.path,4),{request_id=input.request_id,launch_epoch=input.launch_epoch,message_ids=input.message_ids})

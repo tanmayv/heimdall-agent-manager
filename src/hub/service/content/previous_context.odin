@@ -34,14 +34,18 @@ Previous_Context_Input :: struct {
 // instance and the bridge's request id, so a retry after a lost ack finds the
 // original row instead of writing a second one.
 previous_context_message_id :: proc(instance_id, request_id: string) -> string {
-	key := fmt.tprintf("%s\n%s", instance_id, request_id)
+	return scoped_message_id("msg_pctx_", instance_id, request_id)
+}
+
+scoped_message_id :: proc(prefix, scope, request_id: string) -> string {
+	key := fmt.tprintf("%s\n%s", scope, request_id)
 	digest: [32]byte
 	hash: sha2.Context_256
 	sha2.init_256(&hash)
 	sha2.update(&hash, transmute([]byte)key)
 	sha2.final(&hash, digest[:])
 	b := strings.builder_make()
-	strings.write_string(&b, "msg_pctx_")
+	strings.write_string(&b, prefix)
 	for c in digest do strings.write_string(&b, fmt.tprintf("%02x", c))
 	return strings.to_string(b)
 }

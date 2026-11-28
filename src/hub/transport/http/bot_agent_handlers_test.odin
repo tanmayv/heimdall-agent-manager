@@ -648,3 +648,85 @@ test_channel_web_action_refs_route_and_persist :: proc(t: ^testing.T) {
 	testing.expect_value(t, list_err.code, domain.Error_Code.None)
 	for row in rows do testing.expect_value(t, row.action_ids_json, "")
 }
+
+@(test)
+test_legacy_channel_http_refused_after_fresh_web_cutover :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	c := bot_channel_fixture(t)
+	defer bot_channel_destroy(c)
+	f := c.f
+	owner := string(f.wire.owner)
+	bot, found, lookup_err := iface.bot_get_by_owner(&f.bot_repo, owner)
+	defer domain.bot_destroy(&bot)
+	if !testing.expect(t, found && lookup_err.code == .None) do return
+
+	old_message :: "old_private_channel_message"
+	bot_channel_inbound(t, c, old_message)
+	held_text :: "old_private_held_reply"
+	testing.expect_value(t, iface.pairing_insert(&f.bot_repo, {
+		code_hash = "wa_legacy", owner_user_id = owner, bot_id = bot.bot_id, provider = "whatsapp", expires_at = "9999",
+	}).code, domain.Error_Code.None)
+	previous, _, pair_err := iface.binding_activate(&f.bot_repo, {
+		binding_id = "chb_old_wa", owner_user_id = owner, bot_id = bot.bot_id,
+		provider = "whatsapp", external_chat_id = "15550100123", external_user_id = "15550100123", state = .Active,
+	}, "wa_legacy", "2026-11-17T12:00:00Z")
+	defer domain.channel_binding_destroy(&previous)
+	if !testing.expect_value(t, pair_err.code, domain.Error_Code.None) do return
+	testing.expect_value(t, iface.message_insert_outbound(&f.bot_repo, {
+		message_id = "chm_old_held", binding_id = "chb_old_wa", owner_user_id = owner, bot_id = bot.bot_id,
+		direction = .Outbound, send_state = .Held, body = held_text, created_at = "now",
+	}).code, domain.Error_Code.None)
+	me := bot_http_request(f, "GET", "/api/v1/bots/me", "")
+	before := bot_me_handler(&f.handlers, me)
+	testing.expect(t, before.status == 200 && strings.contains(before.body, held_text), before.body)
+	unified := bot_http_request(f, "GET", "/api/v1/bots/me/messages", "")
+	telegram := bot_http_request(f, "GET", "/api/v1/bots/me/channels/telegram/messages", "")
+	agent_history := bot_channel_req(c, "history", `{"params":{}}`)
+	for response in ([]Response{
+		bot_unified_messages_handler(&f.handlers, unified),
+		bot_messages_handler(&f.handlers, telegram),
+		bot_agent_channel_history_handler(&c.h, agent_history),
+	}) {
+		testing.expect(t, response.status == 200 && strings.contains(response.body, old_message), response.body)
+	}
+
+	// The fresh identity has a different instance id. Reuse exactly the old
+	// authenticated requests below, including their still-valid instance token.
+	state := domain.Bot_Web_Activation{
+		owner_user_id = owner, bot_id = bot.bot_id, agent_instance_id = "inst_fresh",
+		conversation_id = "chat_fresh", enabled = true, generation = 1,
+	}
+	if !testing.expect_value(t, iface.bot_web_activation_insert(&f.bot_repo, state).code, domain.Error_Code.None) do return
+	for generation in 1..=3 {
+		after := bot_me_handler(&f.handlers, me)
+		testing.expect(t, after.status == 200 && !strings.contains(after.body, held_text), after.body)
+		testing.expect(t, !strings.contains(after.body, f.wire.instance_id), after.body)
+		for response in ([]Response{
+			bot_unified_messages_handler(&f.handlers, unified),
+			bot_messages_handler(&f.handlers, telegram),
+			bot_agent_channel_history_handler(&c.h, agent_history),
+			bot_channel_read(c),
+			bot_channel_send(c),
+			bot_web_messages_handler(&f.handlers, bot_http_request(f, "POST", "/api/v1/bots/me/messages",
+				`{"text":"stale web text","idempotency_key":"legacy-http-key"}`)),
+		}) {
+			testing.expect(t, response.status == 409 && strings.contains(response.body, "bot_generation_inactive"), response.body)
+			testing.expect(t, !strings.contains(response.body, old_message), response.body)
+		}
+		if generation < 3 {
+			changed, err := iface.bot_web_activation_set_enabled(&f.bot_repo, owner, generation == 2, i64(generation))
+			testing.expect(t, changed && err.code == .None)
+		}
+	}
+	testing.expect_value(t, len(c.sent), 0)
+	rows, history_err := iface.messages_history(&f.bot_repo, bot.bot_id, -1)
+	defer {for &row in rows do domain.channel_message_destroy(&row); delete(rows)}
+	if !testing.expect(t, history_err.code == .None && len(rows) == 2) do return
+	inbound, held := rows[0], rows[1]
+	if inbound.message_id != old_message do inbound, held = held, inbound
+	testing.expect_value(t, inbound.body, old_message)
+	testing.expect_value(t, inbound.read_at, "")
+	testing.expect_value(t, inbound.replied_at, "")
+	testing.expect_value(t, held.body, held_text)
+	testing.expect_value(t, held.send_state, domain.Channel_Send_State.Held)
+}

@@ -138,6 +138,20 @@ rank_before :: proc(a, b: Candidate) -> bool {
 	if a.bridge_created_at != b.bridge_created_at do return a.bridge_created_at < b.bridge_created_at
 	return a.bridge_id < b.bridge_id
 }
+rule_matches :: proc(r: Rule, c: Candidate) -> bool {
+	return (r.bridge_id == ANY || r.bridge_id == c.bridge_id) &&
+	       (r.provider == ANY || r.provider == c.provider) &&
+	       (r.model == ANY || r.model == c.model || (c.resolved_model != "" && r.model == c.resolved_model))
+}
+
+// Explicit user selection uses the same scope predicate as automatic
+// placement, without ranking tiers or collapsing wildcard model choices.
+allows_explicit_destination :: proc(rules: []Rule, candidate: Candidate) -> bool {
+	if len(rules) == 0 do return true
+	for rule in rules do if rule_matches(rule, candidate) do return true
+	return false
+}
+
 // Pure: only the returned slice is owned; strings alias all.
 match :: proc(rules: []Rule, all: []Candidate, allocator: mem.Allocator) -> []Candidate {
 	out := make([dynamic]Candidate, allocator)
@@ -147,9 +161,7 @@ match :: proc(rules: []Rule, all: []Candidate, allocator: mem.Allocator) -> []Ca
 		allowed := len(rules) == 0
 		wildcard := false
 		for r in rules {
-			if (r.bridge_id == ANY || r.bridge_id == c.bridge_id) &&
-			   (r.provider == ANY || r.provider == c.provider) &&
-			   (r.model == ANY || r.model == c.model || (c.resolved_model != "" && r.model == c.resolved_model)) {
+			if rule_matches(r, c) {
 				next.tier = r.tier; next.rule_position = r.position; wildcard = r.model == ANY; allowed = true; break
 			}
 		}

@@ -36,6 +36,8 @@ Bots_Service :: struct {
 	ids: ^platform.ID_Generator,
 	timers: Bot_Timer_Config,
 	mutex: sync.Mutex,
+	web_activation_mutex: sync.Mutex,
+	legacy_fence_mutex: sync.Mutex,
 	reengage_mutex: sync.Mutex,
 	boot_unix_ms: i64,
 	hello_queue: [dynamic]string,
@@ -74,6 +76,8 @@ bots_get :: proc(s: ^Bots_Service, owner: string) -> (domain.Bot, domain.Domain_
 }
 
 bots_create :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Domain_Error {
+	sync.mutex_lock(&s.web_activation_mutex)
+	defer sync.mutex_unlock(&s.web_activation_mutex)
 	// Agent service mutations return mixed borrowed/owned snapshots and use
 	// request-scoped scratch. Keep those allocations in the caller's temp arena.
 	context.allocator = context.temp_allocator
@@ -134,6 +138,15 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 	if err.code != .None do return "", err
 	defer domain.bot_destroy(&bot)
 	view := Bot_View{bot_id = bot.bot_id, display_name = bot.display_name, status = "new", placement_revision = bot.placement_revision}
+	// Settings still reads this resource for bot identity and placement. Once
+	// cut over it must not disclose held text or advertise old pairings/runtime.
+	if fence := bots_legacy_guard(s, owner); fence.code != .None {
+		if fence.code != .Conflict do return "", fence
+		view.telegram.binding = json.Null(nil)
+		view.whatsapp.binding = json.Null(nil)
+		view.whatsapp.held_replies = make([]Bot_Held_Reply_View, 0, context.temp_allocator)
+		return bots_encode_view(view)
+	}
 	identity: channel.Identity
 	identity_err: channel.Channel_Error
 	if s.adapter != nil {
@@ -223,12 +236,23 @@ bots_view_json :: proc(s: ^Bots_Service, owner: string) -> (string, domain.Domai
 			if !new_inbound do view.status_detail = "gave_up"
 		}
 	}
+	return bots_encode_view(view)
+}
+
+bots_encode_view :: proc(view: Bot_View) -> (string, domain.Domain_Error) {
 	data, marshal_err := json.marshal(view)
 	if marshal_err != nil do return "", domain.domain_error(.Internal_Error, "could not encode bot")
 	return string(data), {}
 }
 
 bots_delete :: proc(s: ^Bots_Service, auth: contracts.Auth_Context) -> domain.Domain_Error {
+	sync.mutex_lock(&s.web_activation_mutex)
+	defer sync.mutex_unlock(&s.web_activation_mutex)
+	if gate := bots_gate_error(s.experiments, auth.user_id); gate.code != .None do return gate
+	activation, activated, activation_err := iface.bot_web_activation_get(s.repo, auth.user_id)
+	defer domain.bot_web_activation_destroy(&activation)
+	if activation_err.code != .None do return activation_err
+	if activated do return bots_detail_error(.Conflict, "bot_requires_shared_chat")
 	// stop/archive use the same request-scratch convention as create_agent.
 	context.allocator = context.temp_allocator
 	bot, err := bots_get(s, auth.user_id)

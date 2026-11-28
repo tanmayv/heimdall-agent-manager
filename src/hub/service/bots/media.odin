@@ -3,6 +3,7 @@ package bots
 import "core:fmt"
 import "core:log"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import "core:unicode/utf8"
 import contracts "odin_test:contracts"
@@ -139,6 +140,7 @@ bot_media_fetch_destroy :: proc(f: ^Bot_Media_Fetch) {
 
 // Returns owned snapshots. Validation is shared with storing an artifact.
 bots_media_attachment :: proc(s: ^Bots_Service, bot: domain.Bot, id: string) -> (domain.Channel_Attachment, domain.Channel_Binding, domain.Domain_Error) {
+	if fence := bots_legacy_guard(s, bot.owner_user_id); fence.code != .None do return {}, {}, fence
 	att, found, err := iface.attachment_get(s.repo, id)
 	if err.code != .None do return att, {}, err
 	if !found || att.bot_id != bot.bot_id || att.direction != .Inbound do return att, {}, bots_detail_error(.Not_Found, "media_not_found")
@@ -163,7 +165,12 @@ bots_media_fetch :: proc(s: ^Bots_Service, bot: domain.Bot, attachment_id: strin
 	if limit == 0 do return result, domain.domain_error(.Provider_Unavailable, fmt.tprintf("%s is not configured on this hub", binding.provider), `{"code":"channel_not_configured"}`)
 	f: channel.Fetched_Media
 	e: channel.Channel_Error
-	if att.size_bytes > limit {e.kind = .Media_Too_Large} else {f, e = a.media_fetch(a.ctx, att.file_ref, limit)}
+	if att.size_bytes > limit {
+		e.kind = .Media_Too_Large
+	} else {
+		if !bots_legacy_provider_admit(s, binding.owner_user_id) do return result, bots_detail_error(.Conflict, "bot_generation_inactive")
+		f, e = a.media_fetch(a.ctx, att.file_ref, limit)
+	}
 	defer {delete(f.bytes); delete(f.mime)}
 	#partial switch e.kind {
 	case .None:
@@ -180,7 +187,7 @@ bots_media_fetch :: proc(s: ^Bots_Service, bot: domain.Bot, attachment_id: strin
 		if se.code != .None do return result, se
 		result.attachment.state = state
 		result.outcome = "too_large" if state == .Too_Large else "unavailable"
-		if changed && state == .Too_Large do bots_notice(s, binding.provider, binding.external_chat_id, COPY_MEDIA_TOO_LARGE)
+		if changed && state == .Too_Large do bots_notice(s, binding.provider, binding.external_chat_id, COPY_MEDIA_TOO_LARGE, binding.owner_user_id)
 	case:
 		result.outcome = "failed"
 		result.error_kind = strings.clone(fmt.tprintf("%v", e.kind))
@@ -194,6 +201,9 @@ bots_media_stored :: proc(s: ^Bots_Service, bot: domain.Bot, attachment_id, arti
 	defer domain.channel_attachment_destroy(&att)
 	defer domain.channel_binding_destroy(&binding)
 	if err.code != .None do return "", err
+	sync.mutex_lock(&s.mutex)
+	defer sync.mutex_unlock(&s.mutex)
+	if fence := bots_legacy_guard(s, bot.owner_user_id); fence.code != .None do return "", fence
 	id, se := iface.attachment_store_artifact(s.repo, attachment_id, artifact_id, platform.clock_now(s.clock))
 	if se.code != .None do return id, se
 	if id == "" do return id, bots_detail_error(.Conflict, "media_not_pending")
@@ -222,6 +232,7 @@ bots_media_budget_error :: proc() -> domain.Domain_Error {
 }
 
 channel_send_media :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, caption: string, media: Bot_Outbound_Media) -> (message_ids: []string, held: bool, sent_as: string, unsent: int, err: domain.Domain_Error) {
+	if fence := bots_legacy_guard(s, binding.owner_user_id); fence.code != .None do return nil, false, "", 0, fence
 	budget := s.media_send_budget_ms
 	if budget == 0 do budget = MEDIA_SEND_REQUEST_BUDGET_MS
 	min_call := s.media_min_call_ms
@@ -253,29 +264,34 @@ channel_send_media :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, ca
 	ids := make([]string, len(bodies))
 	message_ids = ids
 	defer bots_publish_changed(s, binding.owner_user_id, binding.bot_id)
-	recorded := 0
-	for body, i in bodies {
-		id := strings.clone(platform.generate_id(s.ids, "chm_"))
-		att: domain.Channel_Attachment
-		if plan.mode == .Native && i == 0 || plan.mode == .Link && i == len(bodies)-1 {
-			att = {attachment_id = platform.generate_id(s.ids, "cha_"), kind = domain.Channel_Media_Kind(kind),
-				name = media.name, mime = media.mime, size_bytes = media.size, artifact_id = media.artifact_id,
-				state = .Native if plan.mode == .Native else .Link}
+	{
+		sync.mutex_lock(&s.mutex)
+		defer sync.mutex_unlock(&s.mutex)
+		if fence := bots_legacy_guard(s, binding.owner_user_id); fence.code != .None {delete(ids); return nil, false, "", 0, fence}
+		recorded := 0
+		for body, i in bodies {
+			id := strings.clone(platform.generate_id(s.ids, "chm_"))
+			att: domain.Channel_Attachment
+			if plan.mode == .Native && i == 0 || plan.mode == .Link && i == len(bodies)-1 {
+				att = {attachment_id = platform.generate_id(s.ids, "cha_"), kind = domain.Channel_Media_Kind(kind),
+					name = media.name, mime = media.mime, size_bytes = media.size, artifact_id = media.artifact_id,
+					state = .Native if plan.mode == .Native else .Link}
+			}
+			e := iface.message_insert_outbound(s.repo, {
+				message_id = id, binding_id = binding.binding_id, owner_user_id = binding.owner_user_id,
+				bot_id = binding.bot_id, direction = .Outbound, body = body, attachment = att,
+				send_state = .Held if plan.reason == "window_closed" else .Pending, created_at = platform.clock_now(s.clock)})
+			if e.code != .None {
+				delete(id)
+				for previous in ids[:recorded] do _ = iface.message_set_send_result(s.repo, previous, .Failed, "", "not_sent")
+				// Keep the returned allocation's exact length for the caller's delete.
+				for previous in ids[:recorded] do delete(previous)
+				delete(ids)
+				return nil, false, "", 0, e
+			}
+			ids[i] = id
+			recorded += 1
 		}
-		e := iface.message_insert_outbound(s.repo, {
-			message_id = id, binding_id = binding.binding_id, owner_user_id = binding.owner_user_id,
-			bot_id = binding.bot_id, direction = .Outbound, body = body, attachment = att,
-			send_state = .Held if plan.reason == "window_closed" else .Pending, created_at = platform.clock_now(s.clock)})
-		if e.code != .None {
-			delete(id)
-			for previous in ids[:recorded] do _ = iface.message_set_send_result(s.repo, previous, .Failed, "", "not_sent")
-			// Keep the returned allocation's exact length for the caller's delete.
-			for previous in ids[:recorded] do delete(previous)
-			delete(ids)
-			return nil, false, "", 0, e
-		}
-		ids[i] = id
-		recorded += 1
 	}
 	if plan.reason == "window_closed" {
 		log.info(fmt.tprintf("bots: reply held binding=%s chunks=%d", binding.binding_id, len(ids)))
@@ -290,7 +306,11 @@ channel_send_media :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, ca
 		for rule in plan.rules {
 			left := int(budget - i64(time.tick_since(started) / time.Millisecond))
 			if i64(left) < min_call {refused = false; break}
-			id, e := a.send_media(a.ctx, binding.external_chat_id, {rule.kind, media.name, media.mime, media.bytes, "" if separate else caption}, left)
+			id: string
+			e: channel.Channel_Error = {kind = .Aborted}
+			if bots_legacy_provider_admit(s, binding.owner_user_id) {
+				id, e = a.send_media(a.ctx, binding.external_chat_id, {rule.kind, media.name, media.mime, media.bytes, "" if separate else caption}, left)
+			}
 			defer delete(id)
 			if e.kind == .None {
 				if se := iface.message_set_send_result(s.repo, ids[0], .Sent, id, ""); se.code != .None do return ids, false, "", 0, se
@@ -337,7 +357,11 @@ channel_send_media :: proc(s: ^Bots_Service, binding: domain.Channel_Binding, ca
 			first_error = bots_media_budget_error()
 			break
 		}
-		id, e := bots_media_send_text(a, binding.external_chat_id, bodies[i], left)
+		id: string
+		e: channel.Channel_Error = {kind = .Aborted}
+		if bots_legacy_provider_admit(s, binding.owner_user_id) {
+			id, e = bots_media_send_text(a, binding.external_chat_id, bodies[i], left)
+		}
 		defer delete(id)
 		if e.kind == .None {
 			if se := iface.message_set_send_result(s.repo, ids[i], .Sent, id, ""); se.code != .None do return ids, false, "", 0, se

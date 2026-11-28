@@ -286,8 +286,12 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       // reconfiguration settling) never reach this entry.
       providesTags: (result, _e, { conversationId }) => {
         const resolvedId = String(result?.conversation?.conversation_id || result?.conversation?.conversationId || '');
-        return [...new Set([conversationId, resolvedId].filter(Boolean))]
-          .map((id) => ({ type: 'ConversationSummaries' as const, id }));
+        return [
+          ...[...new Set([conversationId, resolvedId].filter(Boolean))]
+            .map((id) => ({ type: 'ConversationSummaries' as const, id })),
+          ...(Number(result?.conversation?.write_generation) > 0
+            ? ['Bot' as const, { type: 'Experiments' as const, id: 'ALL' }] : []),
+        ];
       },
       // Cache conversation metadata across switches so the header/runtime chip
       // render instantly on remount; refetchOnMountOrArgChange still refreshes it.
@@ -412,8 +416,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         { type: 'SidebarConversations' as const, id: 'ALL' },
       ],
     }),
-    sendConversationMessage: build.mutation<any, { conversationId: string; body: string; artifactIds?: string[]; quoteTarget?: { chainId: string; coordinatorAgentInstanceId: string; epoch: number } }>({
-      queryFn: async ({ conversationId, body, artifactIds = [], quoteTarget }, api) => {
+    sendConversationMessage: build.mutation<any, { conversationId: string; body: string; artifactIds?: string[]; quoteTarget?: { chainId: string; coordinatorAgentInstanceId: string; epoch: number }; writeIntent?: { key: string; generation: number } }>({
+      queryFn: async ({ conversationId, body, artifactIds = [], quoteTarget, writeIntent }, api) => {
         if (!conversationId || !body.trim()) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation or body' } as any };
         try {
           const state: any = api.getState();
@@ -435,13 +439,17 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
             const latest: any = api.getState();
             if (!latest.vault?.isUnlocked || getActiveVaultKey() !== activeKey || latest.composerContext?.epoch !== quoteTarget.epoch) throw new Error('Vault state changed. Add the quote again.');
           }
-          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/messages`, 'POST', { body: encBody, artifact_ids: artifactIds });
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/messages`, 'POST', {
+            body: encBody,
+            artifact_ids: artifactIds,
+            ...(writeIntent ? { idempotency_key: writeIntent.key, activation_generation: writeIntent.generation } : {}),
+          });
           expireConversationOptions(conversationId);
           // invalidatesTags below refreshes this tab; skip the hub's echo of the same id.
           noteLocalMessageSent(String(data?.message_id || data?.message?.message_id || data?.data?.message_id || ''));
           return { data };
         } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+          return { error: customQueryError(error) as any };
         }
       },
       invalidatesTags: (_r, _e, { conversationId }) => [

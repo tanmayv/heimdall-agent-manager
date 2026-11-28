@@ -17,12 +17,16 @@ BOTS_WHATSAPP_INVITE_ONLY_REASON :: "whatsapp_invite_only"
 bots_whatsapp_invite_only_unbind :: proc(s: ^Bots_Service, owner_user_id: string, inbound: bool) -> (revoked: bool, err: domain.Domain_Error) {
 	provider := domain.CHANNEL_PROVIDER_WHATSAPP
 	sync.mutex_lock(&s.mutex)
+	if bots_legacy_guard(s, owner_user_id).code != .None {
+		sync.mutex_unlock(&s.mutex)
+		return false, {}
+	}
 	binding, found, revoke_err := bots_disconnect_locked(s, owner_user_id, provider, BOTS_WHATSAPP_INVITE_ONLY_REASON)
 	sync.mutex_unlock(&s.mutex)
 	defer domain.channel_binding_destroy(&binding)
 	if revoke_err.code != .None || !found do return false, revoke_err
 	if inbound || !bots_window_closed(bots_adapter(s, provider), binding, bots_stamp_ms(platform.clock_now(s.clock))) {
-		bots_notice(s, provider, binding.external_chat_id, COPY_WA_INVITE_ONLY)
+		bots_notice(s, provider, binding.external_chat_id, COPY_WA_INVITE_ONLY, owner_user_id)
 	}
 	bots_publish_changed(s, owner_user_id, binding.bot_id)
 	return true, {}

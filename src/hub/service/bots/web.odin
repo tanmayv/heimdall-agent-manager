@@ -48,6 +48,7 @@ bots_web_send :: proc(s: ^Bots_Service, owner, text, idempotency_key: string, at
 	fresh: bool
 	{
 		sync.mutex_lock(&s.mutex); defer sync.mutex_unlock(&s.mutex)
+		if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, false, fence
 		stored, fresh, err = iface.web_message_store(s.repo, binding, message, attachments)
 	}
 	if err.code != .None do return stored, fresh, err

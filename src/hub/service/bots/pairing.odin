@@ -27,6 +27,7 @@ bots_pairing_create :: proc(s: ^Bots_Service, owner, provider: string) -> (Bot_P
 	bot, err := bots_get(s, owner)
 	if err.code != .None do return {}, err
 	defer domain.bot_destroy(&bot)
+	if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, fence
 	entitled, entitlement_err := bots_channel_entitled(s, provider, owner)
 	if entitlement_err.code != .None do return {}, entitlement_err
 	if !entitled do return {}, bots_whatsapp_invite_only_error()
@@ -44,6 +45,7 @@ bots_pairing_create :: proc(s: ^Bots_Service, owner, provider: string) -> (Bot_P
 	{
 		sync.mutex_lock(&s.mutex)
 		defer sync.mutex_unlock(&s.mutex)
+		if fence := bots_legacy_guard(s, owner); fence.code != .None do return {}, fence
 		if e := iface.pairing_delete_for_owner(s.repo, owner, provider); e.code != .None do return {}, e
 		if e := iface.pairing_insert(s.repo, {code_hash = bots_pairing_hash(code), owner_user_id = owner, bot_id = bot.bot_id, provider = provider, created_at = now, expires_at = expires}); e.code != .None do return {}, e
 	}
@@ -58,15 +60,19 @@ bots_publish_changed :: proc(s: ^Bots_Service, owner, bot_id: string) {
 	events.publish_owned(s.event_bus, owner, string(data))
 }
 
-bots_notice :: proc(s: ^Bots_Service, provider, chat_id, text: string) {
+bots_notice :: proc(s: ^Bots_Service, provider, chat_id, text: string, owner := "") {
 	a := bots_adapter(s, provider)
-	binding := domain.Channel_Binding{provider = provider, external_chat_id = chat_id, last_inbound_at = platform.clock_now(s.clock)}
-	if a != nil && a.reply_window_ms > 0 {
+	binding := domain.Channel_Binding{owner_user_id = owner, provider = provider, external_chat_id = chat_id, last_inbound_at = platform.clock_now(s.clock)}
+	if a != nil && s.repo != nil && s.repo.binding_get_active_by_chat != nil {
 		active, found, err := iface.binding_get_active_by_chat(s.repo, provider, chat_id)
 		defer domain.channel_binding_destroy(&active)
 		if err.code != .None do return
 		if found && bots_window_closed(a, active, bots_stamp_ms(platform.clock_now(s.clock))) do return
-		if found do binding.last_inbound_at = strings.clone(active.last_inbound_at, context.temp_allocator)
+		if found {
+			if owner != "" && owner != active.owner_user_id do return
+			binding.last_inbound_at = strings.clone(active.last_inbound_at, context.temp_allocator)
+			binding.owner_user_id = strings.clone(active.owner_user_id, context.temp_allocator)
+		}
 	}
 	ids, _, _ := channel_send(s, binding, text, false)
 	for id in ids do delete(id)
@@ -78,8 +84,8 @@ bots_pairing_start :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	reply, previous_chat, owner, bot_id, err := bots_pairing_apply(s, a, update, now)
 	defer {delete(previous_chat); delete(owner); delete(bot_id)}
 	if err.code != .None do return err
-	if reply != "" do bots_notice(s, a.provider, update.external_chat_id, reply)
-	if previous_chat != "" do bots_notice(s, a.provider, previous_chat, bots_channel_copy(a.provider).replaced)
+	if reply != "" do bots_notice(s, a.provider, update.external_chat_id, reply, owner)
+	if previous_chat != "" do bots_notice(s, a.provider, previous_chat, bots_channel_copy(a.provider).replaced, owner)
 	if bot_id != "" do bots_publish_changed(s, owner, bot_id)
 	return {}
 }
@@ -90,6 +96,7 @@ bots_pairing_apply :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	binding, bound, binding_err := bots_find_binding(s, a.provider, update.external_chat_id, update.external_user_id)
 	defer domain.channel_binding_destroy(&binding)
 	if binding_err.code != .None do return "", "", "", "", binding_err
+	if bound && bots_legacy_guard(s, binding.owner_user_id).code != .None do return "", "", "", "", {}
 	if update.text == "" {
 		return "" if bound else copy.not_connected, "", "", "", {}
 	}
@@ -98,6 +105,7 @@ bots_pairing_apply :: proc(s: ^Bots_Service, a: ^channel.Channel_Adapter, update
 	defer domain.channel_pairing_destroy(&pairing)
 	if get_err.code != .None do return "", "", "", "", get_err
 	if !found || pairing.provider != a.provider || pairing.consumed_at != "" || pairing.expires_at <= now do return copy.pair_invalid, "", "", "", {}
+	if bots_legacy_guard(s, pairing.owner_user_id).code != .None do return "", "", "", "", {}
 	if !bots_gate_on(s.experiments, pairing.owner_user_id) do return COPY_PAIR_NOT_ENABLED, "", "", "", {}
 	// A code issued before the account lost WhatsApp access must not pair.
 	entitled, entitlement_err := bots_channel_entitled(s, a.provider, pairing.owner_user_id)
@@ -157,12 +165,16 @@ bots_disconnect :: proc(s: ^Bots_Service, owner_user_id, provider: string, notif
 // DELETE shares disconnect cleanup while preserving its bot_deleted terminal reason.
 bots_disconnect_for_reason :: proc(s: ^Bots_Service, owner_user_id, provider: string, notify: bool, finish_reason: string) -> domain.Domain_Error {
 	sync.mutex_lock(&s.mutex)
+	if fence := bots_legacy_guard(s, owner_user_id); fence.code != .None {
+		sync.mutex_unlock(&s.mutex)
+		return fence
+	}
 	binding, found, err := bots_disconnect_locked(s, owner_user_id, provider, finish_reason)
 	sync.mutex_unlock(&s.mutex)
 	defer domain.channel_binding_destroy(&binding)
 	if err.code != .None do return err
 	if !found do return bots_detail_error(.Not_Found, "binding_not_found")
-	if notify && !bots_window_closed(bots_adapter(s, provider), binding, bots_stamp_ms(platform.clock_now(s.clock))) do bots_notice(s, provider, binding.external_chat_id, COPY_DISCONNECTED)
+	if notify && !bots_window_closed(bots_adapter(s, provider), binding, bots_stamp_ms(platform.clock_now(s.clock))) do bots_notice(s, provider, binding.external_chat_id, COPY_DISCONNECTED, owner_user_id)
 	bots_publish_changed(s, owner_user_id, binding.bot_id)
 	return {}
 }

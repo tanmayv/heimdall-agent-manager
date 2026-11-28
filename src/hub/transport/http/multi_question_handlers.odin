@@ -30,6 +30,7 @@ answer_chat_questions_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Content_Handlers)(ctx)
 	auth, ok, resp := require_auth(h.auth, req)
 	if !ok do return resp
+	if err := conversation_control_allowed(h, auth, path_part(req.path, 4), true); err.code != .None do return respond_error(err, req.request_id)
 	input, invalid := contracts.multi_question_parse_submission(req.body)
 	if invalid != "" do return respond_error(domain.domain_error(.Question_Invalid, invalid), req.request_id)
 	cid, source_id := path_part(req.path, 4), path_part(req.path, 6)
@@ -42,7 +43,10 @@ answer_chat_questions_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		// Wake stopped agents through the same lifecycle path as normal sends.
 		// A restart failure must not turn a committed answer into a failed submit;
 		// its durable inbox record remains available to the next instance wake.
-		_, _ = restart_stopped_conversation_instance(h, auth, cid)
+		policy, policy_err := conversation_write_state(h, auth, cid)
+		if policy_err.code == .None && policy.generation == 0 {
+			_, _ = restart_stopped_conversation_instance(h, auth, cid)
+		}
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"message\":")

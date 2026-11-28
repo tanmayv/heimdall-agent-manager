@@ -41,6 +41,13 @@ async function request<T>(path: string, method?: string, body?: unknown, envelop
   catch (error) { return { error: customQueryError(error) }; }
 }
 const root = '/bots/me';
+export interface BotWebConversation {
+  enabled: boolean;
+  generation: number;
+  agent_instance_id: string;
+  conversation_id: string;
+  bot_id: string;
+}
 export const botsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     getAgentWrites: build.query<{ items: AgentWrite[]; next_cursor: string }, string | void>({
@@ -53,6 +60,14 @@ export const botsApi = heimdallApi.injectEndpoints({
       providesTags: ['Bot'],
     }),
     getBot: build.query<BotView, void>({ queryFn: () => request(root), providesTags: ['Bot'] }),
+    getBotWebConversation: build.query<BotWebConversation, void>({
+      queryFn: () => request(root + '/web-conversation'),
+      providesTags: ['Bot'],
+    }),
+    putBotWebConversation: build.mutation<BotWebConversation, { enabled: boolean; expected_generation: number }>({
+      queryFn: (body) => request(root + '/web-conversation', 'PUT', body),
+      invalidatesTags: ['Bot'],
+    }),
     createBot: build.mutation<BotView, void>({ queryFn: () => request(root, 'POST', {}), invalidatesTags: ['Bot'] }),
     deleteBot: build.mutation<{ deleted: boolean }, void>({ queryFn: () => request(root, 'DELETE'), invalidatesTags: ['Bot'] }),
     getBotPlacement: build.query<BotPlacement, void>({ queryFn: () => request(root + '/placement'), providesTags: ['Bot'] }),
@@ -80,4 +95,5 @@ export const botsApi = heimdallApi.injectEndpoints({
     getBotDeliveries: build.query<{ deliveries: BotDelivery[] }, number | void>({ queryFn: (limit = 20) => request(root + '/deliveries?limit=' + limit), providesTags: ['Bot'] }),
   }),
 });
+export const { useGetBotWebConversationQuery, usePutBotWebConversationMutation } = botsApi;
 export const { useGetUnifiedBotMessagesQuery, useSendBotWebMessageMutation, useGetAgentWritesQuery, useGetBotQuery, useCreateBotMutation, useDeleteBotMutation, useGetBotPlacementQuery, usePutBotPlacementMutation, useGetBotPlacementOptionsQuery, useCreateWhatsAppPairingMutation, useDisconnectWhatsAppMutation, useCreateTelegramPairingMutation, useDisconnectTelegramMutation, useGetBotMessagesQuery, useGetBotDeliveriesQuery } = botsApi;

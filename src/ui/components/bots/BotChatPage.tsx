@@ -7,11 +7,13 @@ import { Alert, Badge, Button, Spinner, Text } from '@ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { shallowEqual, useDispatch, useSelector } from 'react-redux';
 import {
-  botsApi, useGetBotQuery, useGetUnifiedBotMessagesQuery, useSendBotWebMessageMutation,
+  botsApi, useGetBotQuery, useGetBotWebConversationQuery, useGetUnifiedBotMessagesQuery, useSendBotWebMessageMutation,
+  usePutBotWebConversationMutation,
   type BotView, type UnifiedBotMessage,
 } from '../../api/endpoints/bots';
 import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import { apiErrorText, queryErrorStatus } from '../../api/cookieFetch';
+import { buildConversationHash, replaceHash } from '../../utils/conversationUrl';
 
 
 
@@ -45,25 +47,65 @@ export default function BotChatPage({ headerLeading = null }: { headerLeading?: 
   const flags = useFetchExperimentsQuery();
   const flag = resolveExperimentFlag(flags.data?.flags, BOTS_EXPERIMENT_KEY);
   const enabled = flag === 'enabled';
+  const rollout = useGetBotWebConversationQuery(undefined, { skip: !enabled, refetchOnMountOrArgChange: true, pollingInterval: enabled ? 10000 : 0 });
+  const [setRollout, settingRollout] = usePutBotWebConversationMutation();
+  const [rolloutError, setRolloutError] = useState('');
+  const fresh = enabled ? rollout.currentData : undefined;
   // Status changes (starting → ready) publish no event; poll like Settings › Bots.
-  const query = useGetBotQuery(undefined, { skip: !enabled, pollingInterval: enabled ? 10000 : 0 });
+  const legacy = enabled && Boolean(fresh && fresh.generation === 0 && !rollout.isError);
+  const query = useGetBotQuery(undefined, { skip: !legacy, pollingInterval: legacy ? 10000 : 0 });
   const bot = enabled ? query.currentData : undefined;
   const status = queryErrorStatus(query.error);
   const isMobile = useIsMobile();
+  useEffect(() => {
+    if (!rollout.isFetching && !rollout.isError && fresh?.enabled && fresh.agent_instance_id && fresh.conversation_id) {
+      replaceHash(buildConversationHash([fresh.agent_instance_id]));
+    }
+  }, [fresh, rollout.isError, rollout.isFetching]);
+
+  async function activate() {
+    if (!fresh || settingRollout.isLoading) return;
+    setRolloutError('');
+    try {
+      await setRollout({ enabled: true, expected_generation: fresh.generation }).unwrap();
+    } catch (error) {
+      setRolloutError(queryErrorStatus(error) === 409
+        ? 'Your bot settings changed. Check the current settings and try again.'
+        : apiErrorText(error, 'Could not enable the shared conversation.'));
+    }
+  }
+
+  const activation = fresh && !fresh.enabled && (
+    <div className="mx-4 my-2 flex flex-wrap items-center gap-3 rounded-lg border border-subtle p-3" data-debug-id="bot-web-activation">
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">{fresh.generation ? 'Resume your shared bot conversation' : 'Start a fresh bot conversation'}</p>
+        <p className="text-sm text-muted">{fresh.generation
+          ? 'Your shared conversation and its messages are kept while it is paused.'
+          : 'The new conversation starts empty. Old bot messages and pending replies will not move. Telegram and WhatsApp will need to be paired again when available.'}</p>
+        {rolloutError && <p role="alert" className="text-sm">{rolloutError}</p>}
+      </div>
+      <Button type="button" data-debug-id="bot-web-activate" disabled={settingRollout.isLoading || rollout.isFetching} onClick={() => void activate()}>
+        {fresh.generation ? 'Resume conversation' : 'Start fresh conversation'}
+      </Button>
+    </div>
+  );
   // The header is shown before the bot loads so the chrome row (and the
   // sidebar toggle above it) never collapses; the name fills in once known.
   const header = (
     <header data-debug-id="bot-chat-header"
       className={`window-drag flex ${isMobile ? 'h-14' : 'h-12'} min-w-0 shrink-0 items-center gap-2 px-3 sm:px-4`}>
       {headerLeading ? <div data-debug-id="bot-chat-header-leading" className="flex shrink-0 items-center">{headerLeading}</div> : null}
-      <h1 data-debug-id="bot-chat-title" className={`min-w-0 truncate px-1.5 font-medium text-primary ${isMobile ? 'text-[15px]' : 'text-sm'}`}>{bot?.display_name ?? ''}</h1>
+      <h1 data-debug-id="bot-chat-title" className={`min-w-0 truncate px-1.5 font-medium text-primary ${isMobile ? 'text-[15px]' : 'text-sm'}`}>{bot?.display_name ?? (fresh ? 'Bot' : '')}</h1>
     </header>
   );
   let body: React.ReactNode;
   if (flag === 'loading' && !flags.isError) body = <Loading />;
   else if (!enabled) body = <div data-debug-id="bot-chat-disabled" className="m-4 min-w-0"><Alert tone="info">{botChatErrorText(403, '')}</Alert></div>;
-  else if (bot) body = <BotChatView key={bot.bot_id} bot={bot} />;
-  else if (query.isError) body = <div data-debug-id="bot-chat-load-error" className="m-4 min-w-0"><Alert tone="danger">{botChatErrorText(status, apiErrorText(query.error))}</Alert></div>;
+  else if (rollout.isError) body = <div data-debug-id="bot-chat-load-error" className="m-4 min-w-0"><Alert tone="danger">{apiErrorText(rollout.error, 'Could not check bot conversation access.')}</Alert></div>;
+  else if (!fresh || fresh.enabled) body = <Loading />;
+  else if (fresh.generation > 0) body = activation;
+  else if (bot) body = <>{activation}<BotChatView key={bot.bot_id} bot={bot} /></>;
+  else if (query.isError) body = <>{activation}{status !== 404 && <div data-debug-id="bot-chat-load-error" className="m-4 min-w-0"><Alert tone="danger">{botChatErrorText(status, apiErrorText(query.error))}</Alert></div>}</>;
   else body = <Loading />;
   return <div data-debug-id="bot-chat-page" className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col">{header}{body}</div>;
 }

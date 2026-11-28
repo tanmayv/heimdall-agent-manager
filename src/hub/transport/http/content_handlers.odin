@@ -14,7 +14,7 @@ import content_service "odin_test:hub/service/content"
 import events "odin_test:hub/service/events"
 import jsonx "odin_test:lib/jsonx"
 
-Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus, agent_writes: ^iface.Agent_Write_Repository }
+Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus, agent_writes: ^iface.Agent_Write_Repository, write_policy: Conversation_Write_Policy }
 
 list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
@@ -166,7 +166,9 @@ get_chat_by_instance_handler :: proc(ctx:rawptr, req:Request)->Response{
 	if strings.trim_space(instance_id)=="" do return respond_error(domain.domain_error(.Validation_Failed,"agent_instance_id is required"),req.request_id)
 	c,found,find_err:=content_service.get_conversation_by_instance(h.content,auth,instance_id)
 	if !found do return respond_error(find_err,req.request_id)
-	b:=strings.builder_make(); write_chat_json_with_runtime(&b,c,h,auth)
+	policy, policy_err := conversation_write_state(h, auth, c.conversation_id)
+	if policy_err.code != .None do return respond_error(policy_err, req.request_id)
+	b:=strings.builder_make(); write_chat_json_with_runtime(&b,c,h,auth,&policy)
 	return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
 }
 create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
@@ -197,7 +199,29 @@ create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 }
 patch_chat_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; c,saved,err:=content_service.update_conversation_title(h.content,auth,path_part(req.path,4),json_string(req.body,"title")); if !saved do return respond_error(err,req.request_id); publish_conversation_changed(h.event_bus, c, "updated"); b:=strings.builder_make(); write_chat_json(&b,c); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 list_chat_messages_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; limit:=query_int(req.query,"limit",50); cursor:=query_value(req.query,"cursor"); rows,err:=content_service.list_user_visible_messages(h.content,auth,path_part(req.path,4),limit,cursor); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); next:=""; for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_message_json(&b,r,h.content); next=strings.concatenate({r.created_at,"|",r.message_id},context.temp_allocator)}; strings.write_byte(&b,']'); has_more:=len(rows)>=limit; return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req)) }
-send_chat_message_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; cid:=path_part(req.path,4); if restarted,restart_err:=restart_stopped_conversation_instance(h,auth,cid); !restarted do return respond_error(restart_err,req.request_id); m,saved,err:=content_service.send_message(h.content,auth,cid,message_input(req.body)); if !saved do return respond_error(err,req.request_id); publish_user_message_created(h,auth,cid,m); b:=strings.builder_make(); write_message_json(&b,m,h.content); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
+send_chat_message_handler :: proc(ctx: rawptr, req: Request) -> Response {
+    h := (^Content_Handlers)(ctx)
+    auth, ok, refusal := require_auth(h.auth, req)
+    if !ok do return refusal
+    cid := path_part(req.path, 4)
+    policy, err := conversation_write_state(h, auth, cid)
+    if err.code != .None do return respond_error(err, req.request_id)
+    input := message_input(req.body)
+    m: domain.Chat_Message
+    created := true
+    if policy.generation > 0 {
+        m, created, err = send_generation_message(h, auth, cid, input, req.body)
+    } else {
+        if restarted, start_err := restart_stopped_conversation_instance(h, auth, cid); !restarted do return respond_error(start_err, req.request_id)
+        m, ok, err = content_service.send_message(h.content, auth, cid, input)
+        if !ok do return respond_error(err, req.request_id)
+    }
+    if err.code != .None do return respond_error(err, req.request_id)
+    if created do publish_user_message_created(h, auth, cid, m)
+    b := strings.builder_make(allocator=context.temp_allocator)
+    write_message_json(&b, m, h.content)
+    return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201 if created else 200)
+}
 
 // publish_user_message_created tells every socket of the owner (other tabs and
 // devices included) about a user->agent message that send_message persisted.
@@ -209,7 +233,7 @@ publish_user_message_created :: proc(h:^Content_Handlers, auth:contracts.Auth_Co
 	if !got { c=domain.Chat_Conversation{conversation_id=cid,owner_user_id=m.owner_user_id,agent_instance_id=m.sender_agent_instance_id} }
 	publish_chat_message_created(h.event_bus,c,m)
 }
-pane_capture_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; m,saved,err:=content_service.request_pane_capture(h.content,auth,path_part(req.path,4),pane_capture_input(req.body)); if !saved do return respond_error(err,req.request_id); publish_user_message_created(h,auth,path_part(req.path,4),m); b:=strings.builder_make(); strings.write_string(&b,"{\"message\":"); write_message_json(&b,m,h.content); strings.write_string(&b,",\"pane_capture_request_id\":\""); write_handler_json_string(&b,pane_capture_request_id_from_metadata(m.metadata_json)); strings.write_string(&b,"\"}"); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),202) }
+pane_capture_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; if err:=conversation_control_allowed(h,auth,path_part(req.path,4),true); err.code!=.None do return respond_error(err,req.request_id); m,saved,err:=content_service.request_pane_capture(h.content,auth,path_part(req.path,4),pane_capture_input(req.body)); if !saved do return respond_error(err,req.request_id); publish_user_message_created(h,auth,path_part(req.path,4),m); b:=strings.builder_make(); strings.write_string(&b,"{\"message\":"); write_message_json(&b,m,h.content); strings.write_string(&b,",\"pane_capture_request_id\":\""); write_handler_json_string(&b,pane_capture_request_id_from_metadata(m.metadata_json)); strings.write_string(&b,"\"}"); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),202) }
 read_chat_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; c,marked_ids,saved,err:=content_service.mark_read_with_receipts(h.content,auth,path_part(req.path,4)); if !saved do return respond_error(err,req.request_id); publish_messages_read(h,string(c.owner_user_id),c,marked_ids,"user"); delete(marked_ids); b:=strings.builder_make(); write_chat_json(&b,c); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 
 // Publish a `messages_read` WS event to the conversation owner's live clients
@@ -581,7 +605,7 @@ write_memory_json :: proc(b:^strings.Builder,m:domain.Memory,preview:bool){ typ:
 write_memory_id_array :: proc(b:^strings.Builder, values:[]string){ strings.write_byte(b,'['); for v,i in values { if i>0 do strings.write_byte(b,','); strings.write_byte(b,'"'); write_handler_json_string(b,v); strings.write_byte(b,'"') }; strings.write_byte(b,']') }
 write_memory_project_array :: proc(b:^strings.Builder, values:[]domain.Project_ID){ strings.write_byte(b,'['); for v,i in values { if i>0 do strings.write_byte(b,','); strings.write_byte(b,'"'); write_handler_json_string(b,string(v)); strings.write_byte(b,'"') }; strings.write_byte(b,']') }
 write_chat_json :: proc(b:^strings.Builder,c:domain.Chat_Conversation){ strings.write_string(b,"{\"conversation_id\":\""); write_handler_json_string(b,c.conversation_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,c.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.agent_instance_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(c.project_id)); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title); strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count)); strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview); strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,c.last_message_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,c.updated_at); strings.write_string(b,"\"}") }
-write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context){
+write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context, policy:^Conversation_Write_State=nil){
 	bridge_id:=""; runtime_status:=""; activity_status:=""; agent_name:=""; agent_slug:=""; agent_display_name:=""
 	if h!=nil && h.agents!=nil { if c.agent_instance_id!="" { if inst,inst_ok,_:=agent_service.get_instance(h.agents,auth,c.agent_instance_id); inst_ok { bridge_id=inst.bridge_id; runtime_status=inst.runtime_status; activity_status=inst.activity_status; agent_display_name=inst.display_name } }; if c.agent_id!="" { if agent,agent_ok,_:=agent_service.get_agent(h.agents,auth,c.agent_id); agent_ok { agent_name=agent.name; agent_slug=agent.slug } } }
 	last_at:=chat_last_message_at(c)
@@ -603,6 +627,9 @@ write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversati
 	strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id)
 	strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title)
 	strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count))
+	if policy != nil && policy.generation > 0 {
+		strings.write_string(b, fmt.tprintf(",\"write_generation\":%d,\"writes_enabled\":%t", policy.generation, policy.enabled))
+	}
 	strings.write_string(b,",\"message_count\":"); strings.write_string(b,fmt.tprintf("%d",c.message_count))
 	strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview)
 	strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,last_at)

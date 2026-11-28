@@ -18,6 +18,21 @@ Bot :: struct {
 	created_at, updated_at:                                           string,
 }
 
+// The canonical web identity is pinned after the first opt-in.
+Bot_Web_Activation :: struct {
+	owner_user_id, bot_id, agent_instance_id, conversation_id: string,
+	enabled: bool,
+	generation: i64,
+}
+
+bot_web_activation_destroy :: proc(row: ^Bot_Web_Activation) {
+	delete(row.owner_user_id)
+	delete(row.bot_id)
+	delete(row.agent_instance_id)
+	delete(row.conversation_id)
+	row^ = {}
+}
+
 Bot_Placement_Tier :: enum {
 	Preferred,
 	Allowed,

@@ -650,7 +650,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}
 	graph.agent_write_handlers = http.Agent_Write_Handlers{auth = &graph.auth, writes = &graph.agent_write_repo}
 	graph.project_handlers = http.Project_Handlers{agent_writes = &graph.agent_write_repo, auth = &graph.auth, projects = &graph.projects}
-	graph.content_handlers = http.Content_Handlers{agent_writes = &graph.agent_write_repo, auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
+	graph.content_handlers = http.Content_Handlers{write_policy={ctx=&graph.bots, read=http.bot_conversation_write_state}, agent_writes = &graph.agent_write_repo, auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, content = &graph.content, projects = &graph.projects, event_bus = &graph.event_bus, task_engine = &graph.task_engine, shell_sessions = &graph.shell_session_service}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}
@@ -718,6 +718,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.placement=placement.new_service(&graph.repos.bridges,&graph.repos.agents,&graph.providers,&graph.bridge_runtime_registry,billing_service.entitlement_lookup(&graph.billing))
  graph.placement_handlers={auth=&graph.auth,placement=&graph.placement}
 	graph.bots = bots_service.Bots_Service{placement=&graph.placement,ui_origin = config.ui_origin, repo = &graph.bot_repo, uow_factory = &graph.uow_factory, event_bus = &graph.event_bus, experiments = &graph.experiment_repo, entitlements = billing_service.entitlement_lookup(&graph.billing), agents = &graph.agents, providers = &graph.providers, bridges = &graph.repos.bridges, registry = &graph.bridge_runtime_registry, command_sink = &graph.bot_command_sink, adapter = nil, clock = &graph.clock, ids = &graph.ids, timers = config.bot_timers}
+	graph.agents.runtime_policy = {ctx=&graph.bots, check=bots_service.check_web_runtime_policy}
 	if config.telegram_bot_token != "" {
 		graph.telegram = channel.Telegram_Adapter{token = config.telegram_bot_token, api_base = config.telegram_api_base}
 		graph.channel_adapter = channel.telegram_adapter(&graph.telegram)
@@ -974,6 +975,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bots/me", rawptr(&graph.bot_handlers), http.bot_me_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bots/me/web-conversation", rawptr(&graph.bot_handlers), http.bot_web_activation_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/bots/me/web-conversation", rawptr(&graph.bot_handlers), http.bot_web_activation_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/bots/me/placement", rawptr(&graph.bot_handlers), http.bot_placement_handler)
 	http.router_add(&graph.router,"GET","/api/v1/placement/candidates",rawptr(&graph.placement_handlers),http.placement_candidates_handler)
