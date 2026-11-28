@@ -814,7 +814,7 @@ MIGRATION_269_PROFILE_TRANSPORT :: #load("migrations/269_profile_transport.sql",
 
 MIGRATION_270_EXTENSION_VERSION_SYNC :: #load("migrations/270_extension_version_sync_0_5_96.sql", string)
 MIGRATION_271_REPLY_ORIGIN :: #load("migrations/271_reply_origin.sql", string)
-MIGRATION_272_AGENT_NOTIFIED_AT :: #load("migrations/272_agent_notified_at.sql", string)
+MIGRATION_272_AGENT_NOTIFIED_THROUGH :: #load("migrations/272_agent_notified_through.sql", string)
 
 migration_order :: [?]string {
 	"001_foundation.sql",
@@ -1124,7 +1124,7 @@ migration_order :: [?]string {
 	"269_profile_transport.sql",
 	"270_extension_version_sync_0_5_96.sql",
 	"271_reply_origin.sql",
-	"272_agent_notified_at.sql",
+	"272_agent_notified_through.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1645,8 +1645,8 @@ run_migrations :: proc(
 			mark_migration_applied(conn, name)
 			continue
 		}
-		// 272 is one atomic ALTER before its ledger row; its column proves completion.
-		if name == "272_agent_notified_at.sql" && table_column_exists(conn, "chat_conversations", "agent_notified_at") {
+		// 272 runs inside its own BEGIN/COMMIT; its last column proves completion.
+		if name == "272_agent_notified_through.sql" && table_column_exists(conn, "chat_conversations", "agent_notified_message_at") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -1730,7 +1730,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
-	if name == "272_agent_notified_at.sql" do return strings.clone(MIGRATION_272_AGENT_NOTIFIED_AT)
+	if name == "272_agent_notified_through.sql" do return strings.clone(MIGRATION_272_AGENT_NOTIFIED_THROUGH)
 	if name == "271_reply_origin.sql" do return strings.clone(MIGRATION_271_REPLY_ORIGIN)
 	if name == "270_extension_version_sync_0_5_96.sql" do return strings.clone(MIGRATION_270_EXTENSION_VERSION_SYNC)
 	if name == "269_profile_transport.sql" do return strings.clone(MIGRATION_269_PROFILE_TRANSPORT)

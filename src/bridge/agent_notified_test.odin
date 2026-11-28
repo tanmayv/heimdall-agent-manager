@@ -8,8 +8,9 @@ import "core:testing"
 import contracts "odin_test:contracts"
 import ws "odin_test:lib/ws"
 
-// R7 rev 6: the bridge reports agent_notice_typed only after a typed batch with
-// a user-message notice was committed, never when typing failed.
+// The bridge reports agent_notice_typed, with the newest hub message the
+// unread notice stood for, only after that typed batch was committed; never
+// when typing failed.
 
 agent_notified_test_frames: [dynamic]string
 agent_notified_test_fail: bool
@@ -48,14 +49,16 @@ pty_typed_user_notice_is_reported_after_commit_not_on_failure :: proc(t: ^testin
 	testing.expect_value(t, len(pty_test_queued(id)), 1)
 	_, reported := agent_notified_test_pending(id)
 	testing.expect(t, !reported, "a failed delivery is not reported")
-	// Typing succeeds: committed, then reported once with the bridge time.
+	// A second message coalesces into the one pending notice.
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_n2", text = notice, hub_message = true}))
+	testing.expect_value(t, len(pty_test_queued(id)), 1)
+	// Typing succeeds: committed, then reported once with the newest message.
 	pty_test_send_fail = false
-	before := bridge_now_unix_ms()
 	bridge_task_notice_tick(bridge_runtime_now_ms() + 10_000)
 	testing.expect_value(t, len(pty_test_queued(id)), 0)
 	frame, ok := agent_notified_test_pending(id)
 	testing.expect(t, ok, "the typed notice is reported")
-	testing.expect(t, frame.typed_at_ms >= before && frame.typed_at_ms <= bridge_now_unix_ms())
+	testing.expect_value(t, frame.last_message_id, "msg_n2")
 	testing.expect_value(t, frame.type, contracts.AGENT_NOTICE_TYPED_FRAME)
 	_, again := agent_notified_test_pending(id)
 	testing.expect(t, !again, "taken once")
@@ -84,11 +87,16 @@ agent_notified_drain_sends_latest_and_keeps_it_on_failure :: proc(t: ^testing.T)
 	context.allocator = runtime.heap_allocator()
 	bridge_agent_notified_reset(); defer bridge_agent_notified_reset()
 	defer { for f in agent_notified_test_frames do delete(f); clear(&agent_notified_test_frames); agent_notified_test_fail = false }
-	typed := []Bridge_Inbox_Typed{{id = "msg_1", key = PTY_UNREAD_NOTICE_KEY, kind = BRIDGE_NOTICE_USER_MESSAGE}}
-	bridge_agent_notified_note("inst_drain", typed)
+	// A user-message entry under another key (not the unread notice) is not reported.
+	bridge_agent_notified_note("inst_drain", []Bridge_Inbox_Typed{{id = "msg_0", key = "other", kind = BRIDGE_NOTICE_USER_MESSAGE}})
+	_, other := agent_notified_test_pending("inst_drain")
+	testing.expect(t, !other, "only the unread-messages notice")
+	bridge_agent_notified_note("inst_drain", []Bridge_Inbox_Typed{{id = "msg_1", key = PTY_UNREAD_NOTICE_KEY, kind = BRIDGE_NOTICE_USER_MESSAGE}})
 	agent_notified_test_fail = true
 	bridge_agent_notified_drain_via(nil, agent_notified_test_send)
 	testing.expect_value(t, len(agent_notified_test_frames), 0)
+	// A newer note replaces the one still pending after the failed send.
+	bridge_agent_notified_note("inst_drain", []Bridge_Inbox_Typed{{id = "msg_2", key = PTY_UNREAD_NOTICE_KEY, kind = BRIDGE_NOTICE_USER_MESSAGE}})
 	agent_notified_test_fail = false
 	bridge_agent_notified_drain_via(nil, agent_notified_test_send)
 	if !testing.expect_value(t, len(agent_notified_test_frames), 1) do return
@@ -96,6 +104,7 @@ agent_notified_drain_sends_latest_and_keeps_it_on_failure :: proc(t: ^testing.T)
 	testing.expect(t, json.unmarshal_string(agent_notified_test_frames[0], &frame, allocator = context.temp_allocator) == nil)
 	testing.expect_value(t, frame.type, "agent_notice_typed")
 	testing.expect_value(t, frame.agent_instance_id, "inst_drain")
+	testing.expect_value(t, frame.last_message_id, "msg_2")
 	bridge_agent_notified_drain_via(nil, agent_notified_test_send)
 	testing.expect_value(t, len(agent_notified_test_frames), 1) // nothing left
 }

@@ -2685,7 +2685,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 	case "tool_stream_reset", "tool_stream_state", "tool_stream_unavailable":
         bridge_ws_tool_live_frame(h, bridge_id, connection_generation, connection, text)
 	// The bridge typed the unread notice for a Notice runtime (PTY): the Hub
-	// stamps the conversation's agent_notified_at and the UI refetches Send now.
+	// moves the conversation's message high-water mark and the UI refetches Send now.
 	case contracts.AGENT_NOTICE_TYPED_FRAME:
 		bridge_ws_agent_notice_typed(h, bridge_id, text)
 	// REQ-EXT-BLK-2: a full per-instance agent blocker snapshot. Scoped to the

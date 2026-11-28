@@ -519,7 +519,7 @@ send_now_notice_dispatch :: proc(s: ^Content_Service, inst: domain.Agent_Instanc
     }
     updated, applied := acp_batch_advance_local(s, batch.batch_id, batch.attempt, "pending", next, error)
     // A delivered notice Send now pointed the agent at its unread messages.
-    if next == "delivered" do _, _ = iface.content_note_agent_notified(s.content, domain.User_ID(batch.owner_user_id), batch.conversation_id, platform.clock_now(s.clock))
+    if next == "delivered" do _ = note_agent_notified_latest(s, domain.User_ID(batch.owner_user_id), batch.conversation_id)
     result.batch = updated if applied else batch
     if !applied { result.batch.state = next; result.batch.error = error }
     switch next {
