@@ -1042,6 +1042,8 @@ bridge_hub_park_unrenewable_invalid :: proc(msg: string) {
 	fmt.eprintfln("bridge hub refused the access token (%s) and this bridge cannot renew it; re-enrollment is required", msg)
 }
 
+// bridge_hub_handle_command routes one hub JSON command: session, catalog and
+// provider frames first, then the command table by type.
 bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	type := extract_json_string(text, "type", "")
 	defer delete(type)
@@ -1049,11 +1051,91 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if bridge_provider_catalog_handle_frame(conn, type, text) do return
 	if bridge_provider_handle_discover_frame(conn, type, text) do return
 	if bridge_provider_handle_models_frame(conn, type, text) do return
-	if type == "instance.probe" {
-		bridge_hub_handle_instance_probe(conn, text)
+	if handler := bridge_hub_command_handler(type); handler != nil {
+		handler(conn, text)
 		return
 	}
-	if type == "bridge_heartbeat_ack" {
+	if bridge_session_projects_handle_command(conn, type, text) do return
+	if bridge_fs_handle_command(conn, type, text) do return
+	if bridge_vcs_handle_command(conn, type, text) do return
+	if bridge_taskv2_handle_command(conn, type, text) do return
+	if bridge_lsp_handle_command(conn, type, text) do return
+}
+
+Bridge_Hub_Command_Handler :: proc(conn: ^ws.Connection, text: string)
+Bridge_Hub_Command_Route :: struct { type: string, handler: Bridge_Hub_Command_Handler }
+
+// One row per hub command type (the dispatch table). Unknown types are ignored.
+bridge_hub_command_table := [?]Bridge_Hub_Command_Route{
+	{"instance.probe", bridge_hub_handle_instance_probe},
+	{"bridge_heartbeat_ack", bridge_hub_cmd_bridge_heartbeat_ack},
+	{"event_deliver", bridge_event_deliver_handle},
+	{"bot_deliver", bridge_hub_cmd_bot_deliver},
+	{"bot_delivery_report_ack", bridge_hub_cmd_bot_delivery_report_ack},
+	{"agent_instance_status_ack", bridge_hub_cmd_agent_instance_status_ack},
+	{"protocol_error", bridge_hub_cmd_protocol_error},
+	{"connection_replaced", bridge_hub_cmd_connection_replaced},
+	{"bridge_uninstall", bridge_hub_handle_uninstall_command},
+	{"bridge_update", bridge_hub_handle_update_command},
+	{"auto_update_config", bridge_auto_update_handle_config},
+	{"provider_extension_install", bridge_hub_handle_extension_install_command},
+	{"install_acp_adapter", acp_adapter_handle_install},
+	{"provider_profile_op", bridge_hub_handle_provider_profile_op},
+	{"task_chain_search", bridge_task_chain_search_handle_command},
+	{"context_window_op", bridge_hub_handle_context_window_op},
+	{"mcp_transform", bridge_mcp_transform},
+	{"set_telemetry", bridge_hub_cmd_set_telemetry},
+	{"validate_project_path", bridge_hub_cmd_validate_project_path},
+	{contracts.START_AGENT_FRAME, bridge_hub_handle_start_agent},
+	{"launch_agent", bridge_hub_cmd_launch_agent},
+	{"launch_provider_test", bridge_hub_cmd_launch_provider_test},
+	{"stop_agent", bridge_hub_cmd_stop_agent},
+	{contracts.ACP_SEND_NOW_BATCH_COMMAND, bridge_hub_cmd_acp_send_now_batch_command},
+	{contracts.ACP_INPUTS_READ_COMMAND, bridge_hub_cmd_acp_inputs_read_command},
+	{"notify_agent_message", bridge_hub_cmd_notify_agent_message},
+	{"notify_task_nudge", bridge_hub_cmd_notify_task_nudge},
+	{"notify_shell_run", bridge_hub_cmd_notify_shell_run},
+	{"notify_title_nudge", bridge_hub_cmd_notify_title_nudge},
+	{"task_status_changed_notify", bridge_hub_cmd_task_status_changed_notify},
+	{"capture_agent_pane", bridge_hub_handle_pane_capture_command},
+	{"get_agent_pane", bridge_hub_handle_get_agent_pane},
+	{"wake_agent", bridge_hub_handle_wake_agent},
+	{"get_shell_output", bridge_hub_handle_get_shell_output},
+	{"agent_pty_input", bridge_hub_handle_agent_pty_input},
+	{"agent_pty_resize", bridge_hub_handle_agent_pty_resize},
+	{"shell_pty_input", bridge_hub_handle_shell_pty_input},
+	{"shell_pty_resize", bridge_hub_handle_shell_pty_resize},
+	{"shell_stream_attach", bridge_hub_handle_shell_stream_attach},
+	{"shell_stream_detach", bridge_hub_handle_shell_stream_detach},
+	{"tool_stream_batch", bridge_tool_live_handle_batch},
+	{"tool_stream_attach", bridge_tool_live_handle_subscription},
+	{"tool_stream_detach", bridge_tool_live_handle_subscription},
+	{"shell_start", bridge_hub_handle_shell_start},
+	{"shell_background", bridge_hub_cmd_shell_background},
+	{"shell_kill", bridge_hub_cmd_shell_kill},
+	{"shell_signal", bridge_hub_cmd_shell_signal},
+	{"shell_restart", bridge_hub_handle_shell_restart},
+	{"shell_set_port", bridge_hub_handle_shell_set_port},
+	{"shell_list", bridge_hub_handle_shell_list},
+	{"shell_logs", bridge_hub_handle_shell_logs},
+	{"shell_capture", bridge_hub_handle_shell_capture},
+	{"shell_get_pane", bridge_hub_handle_shell_get_pane},
+	{"tunnel_open", bridge_hub_handle_tunnel_open},
+	{"tunnel_data", bridge_hub_cmd_tunnel_data},
+	{"tunnel_close", bridge_hub_cmd_tunnel_close},
+	{"proxy_data", bridge_hub_cmd_proxy_data},
+	{"proxy_close", bridge_hub_cmd_proxy_close},
+	{"bridge_unseal", bridge_hub_cmd_bridge_unseal},
+	{"bridge_enrollment_result", bridge_hub_cmd_bridge_enrollment_result},
+	{"permission_decision", bridge_hub_cmd_permission_decision},
+}
+
+bridge_hub_command_handler :: proc(type: string) -> Bridge_Hub_Command_Handler {
+	for route in bridge_hub_command_table do if route.type == type do return route.handler
+	return nil
+}
+
+bridge_hub_cmd_bridge_heartbeat_ack :: proc(conn: ^ws.Connection, text: string) {
 		// H7 cross-bridge reap: the hub tells us which of the instances we reported
 		// active have actually been relaunched on ANOTHER bridge. We hold a stale old
 		// runtime for each, so invalidate its local tokens: the old ham-wrapper then
@@ -1073,75 +1155,41 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				bridge_runtime_remove_launch(id)
 			}
 		}
-		return
-	}
-	if type == "event_deliver" {
-		bridge_event_deliver_handle(conn, text)
-		return
-	}
-	if type == "bot_deliver" {
+}
+
+bridge_hub_cmd_bot_deliver :: proc(conn: ^ws.Connection, text: string) {
 		result := bridge_bot_handle_deliver(text)
 		defer delete(result)
 		_ = bridge_hub_send(conn, result)
-		return
-	}
-	if type == "bot_delivery_report_ack" {
+}
+
+bridge_hub_cmd_bot_delivery_report_ack :: proc(conn: ^ws.Connection, text: string) {
 		bridge_bot_handle_report_ack(text)
-		return
-	}
-	if type == "agent_instance_status_ack" {
+}
+
+bridge_hub_cmd_agent_instance_status_ack :: proc(conn: ^ws.Connection, text: string) {
 		// The hub acks every agent status report; the bridge relies on periodic
 		// re-reports rather than acks, so this is deliberately a no-op.
-		return
-	}
-	if type == "protocol_error" {
+}
+
+bridge_hub_cmd_protocol_error :: proc(conn: ^ws.Connection, text: string) {
 		// The hub refused a frame it could not process (REQ-ERR-PROTO-A). Never
 		// answered, so two peers cannot bounce refusals; logged for protocol drift.
 		werr, _ := contracts.wire_error_parse(text, context.temp_allocator)
 		frame_type := extract_json_string(text, "frame_type", "", context.temp_allocator)
 		fmt.println("bridge hub runtime: hub refused frame", frame_type, contracts.error_code_string(werr.code), werr.cause)
-		return
-	}
-	if type == "connection_replaced" {
+}
+
+bridge_hub_cmd_connection_replaced :: proc(conn: ^ws.Connection, text: string) {
 		backoff_s, first := bridge_hub_note_connection_replaced()
 		if !first do return
 		reason := extract_json_string(text, "reason", "unknown")
 		defer delete(reason)
 		fmt.printfln("bridge hub runtime: connection replaced by a newer connection for this bridge id (reason=%s); another bridge process may be running with the same identity — backing off %ds", reason, backoff_s)
 		blog_warn(.hub_connection_replaced, blog_sym(.reason, blog_replaced_reason(reason)), blog_int(.duration_ms, i64(backoff_s) * 1000))
-		return
-	}
-	if type == "bridge_uninstall" {
-		bridge_hub_handle_uninstall_command(conn, text)
-		return
-	}
-	if type == "bridge_update" {
-		bridge_hub_handle_update_command(conn, text)
-		return
-	}
-	if type == "auto_update_config" {
-		bridge_auto_update_handle_config(conn, text)
-		return
-	}
-	if type == "provider_extension_install" {
-		bridge_hub_handle_extension_install_command(conn, text)
-		return
-	}
-	if type == "install_acp_adapter" { acp_adapter_handle_install(conn, text); return }
-	if type == "provider_profile_op" {
-		bridge_hub_handle_provider_profile_op(conn, text)
-		return
-	}
-	if type == "task_chain_search" {
-		bridge_task_chain_search_handle_command(conn, text)
-		return
-	}
-	if type == "context_window_op" {
-		bridge_hub_handle_context_window_op(conn, text)
-		return
-	}
-	if type == "mcp_transform" {bridge_mcp_transform(conn,text);return}
-	if type == "set_telemetry" {
+}
+
+bridge_hub_cmd_set_telemetry :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
 		enabled_str := extract_json_string(text, "enabled", "")
@@ -1167,19 +1215,15 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer delete(res)
 			_ = bridge_hub_send(conn, res)
 		}
-		return
-	}
-	if type == "validate_project_path" {
+}
+
+bridge_hub_cmd_validate_project_path :: proc(conn: ^ws.Connection, text: string) {
 		result := bridge_project_path_validation_result_json(text, use_cache = false)
 		defer delete(result)
 		_ = bridge_hub_send(conn, result)
-		return
-	}
-	if type == contracts.START_AGENT_FRAME {
-		bridge_hub_handle_start_agent(conn, text)
-		return
-	}
-	if type == "launch_agent" {
+}
+
+bridge_hub_cmd_launch_agent :: proc(conn: ^ws.Connection, text: string) {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
@@ -1213,9 +1257,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if !ok do fmt.println("bridge launch_agent failed", detail, bridge_error_string(launch_err))
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_start_send_proc(conn, final)
-		return
-	}
-	if type == "launch_provider_test" {
+}
+
+bridge_hub_cmd_launch_provider_test :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
@@ -1233,16 +1277,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(final)
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_hub_send(conn, final)
-		return
-	}
-	if type == "stop_agent" {
+}
+
+bridge_hub_cmd_stop_agent :: proc(conn: ^ws.Connection, text: string) {
 		fmt.println("bridge hub runtime command stop_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
 		previous_op := bridge_runtime_transition_op_id
 		bridge_runtime_transition_op_id = command_id
 		defer bridge_runtime_transition_op_id = previous_op
-		if cached, ok := bridge_runtime_cached_command(command_id); ok && !bridge_failed_fenced_stop_retry(type, text, cached) { _ = bridge_hub_send(conn, cached); return }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok && !bridge_failed_fenced_stop_retry("stop_agent", text, cached) { _ = bridge_hub_send(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		defer delete(accepted)
 		bridge_runtime_cache_command(command_id, accepted)
@@ -1278,13 +1322,17 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_runtime_cache_command(command_id, final)
 		_ = bridge_hub_send(conn, final)
 		_ = bridge_hub_send(conn, st_json)
-		return
-	}
-	if type == contracts.ACP_SEND_NOW_BATCH_COMMAND || type == contracts.ACP_INPUTS_READ_COMMAND {
-		bridge_runtime_delivery_command(conn, type, text)
-		return
-	}
-	if type == "notify_agent_message" {
+}
+
+bridge_hub_cmd_acp_send_now_batch_command :: proc(conn: ^ws.Connection, text: string) {
+	bridge_runtime_delivery_command(conn, contracts.ACP_SEND_NOW_BATCH_COMMAND, text)
+}
+
+bridge_hub_cmd_acp_inputs_read_command :: proc(conn: ^ws.Connection, text: string) {
+	bridge_runtime_delivery_command(conn, contracts.ACP_INPUTS_READ_COMMAND, text)
+}
+
+bridge_hub_cmd_notify_agent_message :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
@@ -1311,9 +1359,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer delete(res)
 			_ = bridge_hub_send(conn, res)
 		}
-		return
-	}
-	if type == "notify_task_nudge" {
+}
+
+bridge_hub_cmd_notify_task_nudge :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
@@ -1353,9 +1401,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer delete(res)
 			_ = bridge_hub_send(conn, res)
 		}
-		return
-	}
-	if type == "notify_shell_run" {
+}
+
+bridge_hub_cmd_notify_shell_run :: proc(conn: ^ws.Connection, text: string) {
 		// REQ-SHELL-5 §1 — a BACKGROUND run of this agent's has finished or been killed.
 		//
 		// Delivered over the SAME gated path as notify_title_nudge: push the notice to a
@@ -1387,9 +1435,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer delete(res)
 			_ = bridge_hub_send(conn, res)
 		}
-		return
-	}
-	if type == "notify_title_nudge" {
+}
+
+bridge_hub_cmd_notify_title_nudge :: proc(conn: ^ws.Connection, text: string) {
 		// Activity-gated title-nudge (REQ-4,5,6). Delivered over the SAME gated
 		// path as notify_task_nudge: push to a live wrapper, else wake the local
 		// agent so it picks up the nudge on boot. Never a new notifier.
@@ -1409,9 +1457,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer delete(res)
 			_ = bridge_hub_send(conn, res)
 		}
-		return
-	}
-	if type == "task_status_changed_notify" {
+}
+
+bridge_hub_cmd_task_status_changed_notify :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
 		task_id := extract_json_string(text, "task_id", "")
@@ -1519,65 +1567,14 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer delete(res)
 			_ = bridge_hub_send(conn, res)
 		}
-		return
-	}
-	if type == "capture_agent_pane" {
-		bridge_hub_handle_pane_capture_command(conn, text)
-		return
-	}
-	if type == "get_agent_pane" {
-		bridge_hub_handle_get_agent_pane(conn, text)
-		return
-	}
-	if type == "wake_agent" {
-		bridge_hub_handle_wake_agent(conn, text)
-		return
-	}
-	if type == "get_shell_output" {
-		bridge_hub_handle_get_shell_output(conn, text)
-		return
-	}
-	if type == "agent_pty_input" {
-		bridge_hub_handle_agent_pty_input(conn, text)
-		return
-	}
-	if type == "agent_pty_resize" {
-		bridge_hub_handle_agent_pty_resize(conn, text)
-		return
-	}
-	if type == "shell_pty_input" {
-		bridge_hub_handle_shell_pty_input(conn, text)
-		return
-	}
-	if type == "shell_pty_resize" {
-		bridge_hub_handle_shell_pty_resize(conn, text)
-		return
-	}
-	if type == "shell_stream_attach" {
-		bridge_hub_handle_shell_stream_attach(conn, text)
-		return
-	}
-	if type == "shell_stream_detach" {
-		bridge_hub_handle_shell_stream_detach(conn, text)
-		return
-	}
-	if type == "tool_stream_batch" {
-        bridge_tool_live_handle_batch(conn, text)
-        return
-    }
-    if type == "tool_stream_attach" || type == "tool_stream_detach" {
-		bridge_tool_live_handle_subscription(conn, text)
-		return
-	}
-	if type == "shell_start" {
-		bridge_hub_handle_shell_start(conn, text)
-		return
-	}
-	if type == "shell_background" {
+}
+
+
+bridge_hub_cmd_shell_background :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_background(text)
-		return
-	}
-	if type == "shell_kill" {
+}
+
+bridge_hub_cmd_shell_kill :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_kill(text)
 		command_id := extract_json_string(text, "command_id", "")
 		defer delete(command_id)
@@ -1587,59 +1584,31 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			bridge_runtime_cache_command(command_id, final)
 			_ = bridge_hub_send(conn, final)
 		}
-		return
-	}
-	if type == "shell_signal" {
+}
+
+bridge_hub_cmd_shell_signal :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_signal(text)
-		return
-	}
-	if type == "shell_restart" {
-		bridge_hub_handle_shell_restart(conn, text)
-		return
-	}
-	if type == "shell_set_port" {
-		bridge_hub_handle_shell_set_port(conn, text)
-		return
-	}
-	if type == "shell_list" {
-		bridge_hub_handle_shell_list(conn, text)
-		return
-	}
-	if type == "shell_logs" {
-		bridge_hub_handle_shell_logs(conn, text)
-		return
-	}
-	if type == "shell_capture" {
-		bridge_hub_handle_shell_capture(conn, text)
-		return
-	}
-	if type == "shell_get_pane" {
-		bridge_hub_handle_shell_get_pane(conn, text)
-		return
-	}
-	if type == "tunnel_open" {
-		bridge_hub_handle_tunnel_open(conn, text)
-		return
-	}
-	if type == "tunnel_data" {
+}
+
+bridge_hub_cmd_tunnel_data :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_tunnel_data(text)
-		return
-	}
-	if type == "tunnel_close" {
+}
+
+bridge_hub_cmd_tunnel_close :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_tunnel_close(text)
-		return
-	}
-	// REQ-XM-4: hub→bridge frames for streams this bridge ORIGINATED (local_proxy.odin).
-	// Distinct from tunnel_* above, which are streams the hub originated toward us.
-	if type == "proxy_data" {
+}
+
+// REQ-XM-4: hub→bridge frames for streams this bridge ORIGINATED (local_proxy.odin).
+// Distinct from tunnel_* above, which are streams the hub originated toward us.
+bridge_hub_cmd_proxy_data :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_proxy_data(text)
-		return
-	}
-	if type == "proxy_close" {
+}
+
+bridge_hub_cmd_proxy_close :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_proxy_close(text)
-		return
-	}
-	if type == "bridge_unseal" {
+}
+
+bridge_hub_cmd_bridge_unseal :: proc(conn: ^ws.Connection, text: string) {
 		command_id := bridge_vault_command_id(text)
 		now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
 		ok: bool
@@ -1668,23 +1637,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// and reporting there would be a no-op the hub would have to filter out.
 		if ok do bridge_hub_send_vault_status(conn)
 		if ok do bridge_task_chain_search_refresh_async()
-		return
-	}
-	if type == "bridge_enrollment_result" {
+}
+
+bridge_hub_cmd_bridge_enrollment_result :: proc(conn: ^ws.Connection, text: string) {
 		// REQ-EA-4: the hub's verdict on an atomic enrollment this process acked.
 		bridge_enroll_atomic_on_result(text)
-		return
-	}
-	if type == "permission_decision" {
+}
+
+bridge_hub_cmd_permission_decision :: proc(conn: ^ws.Connection, text: string) {
 		// REQ-EXT-PERM-1: a user's allow/deny for a pending agent.extension.permission.
 		_ = bridge_ext_permission_handle_decision_frame(text)
-		return
-	}
-	if bridge_session_projects_handle_command(conn, type, text) do return
-	if bridge_fs_handle_command(conn, type, text) do return
-	if bridge_vcs_handle_command(conn, type, text) do return
-	if bridge_taskv2_handle_command(conn, type, text) do return
-	if bridge_lsp_handle_command(conn, type, text) do return
 }
 
 bridge_update_progress_json :: proc(command_id, bridge_id, stage: string, progress_percent: int, message: string) -> string {
