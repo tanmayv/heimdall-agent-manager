@@ -51,6 +51,11 @@ agent_action_chat_assistant_message_handler :: proc(ctx: rawptr, req: Request) -
         }
     }
     input := contracts.ACP_Assistant_Message_Input{launch_epoch=json_string(raw,"launch_epoch"),turn_id=json_string(raw,"turn_id"),message_id=json_string(raw,"message_id"),revision=i64(revision),body=json_string(raw,"body"),message_status=json_string(raw,"message_status"),stop_reason=json_string(raw,"stop_reason")}
+    if value, present := obj["kind"]; present {
+        kind, text := value.(json.String)
+        if _, null := value.(json.Null); !text && !null do return respond_error(domain.domain_error(.Validation_Failed,"kind must be a string"),req.request_id)
+        input.kind = string(kind)
+    }
     if value, present := obj["input_ids"]; present {
         if _, null := value.(json.Null); !null {
             ids, array := value.(json.Array)

@@ -17,6 +17,8 @@ AGENT_OUTPUT_ASSISTANT_SEGMENT :: "assistant_segment"
 
 Assistant_Segment_Event :: struct {
     type, event, conversation_id, agent_instance_id, message_id, turn_id, launch_epoch: string,
+    // text (assistant text) | thought | plan.
+    kind: string,
     revision: i64,
     message_status, stop_reason: string,
     input_ids: []string,
@@ -28,6 +30,15 @@ Assistant_Segment_Relay :: struct {
     owner_user_id: string,
     // "" when the segment is accepted but not relayed (a stale launch epoch).
     event_json: string,
+}
+
+// The bridge outbox kind of a streamed segment: "" is assistant text.
+assistant_segment_kind :: proc(kind: string) -> string {
+    switch kind {
+    case "", "text": return "text"
+    case "thought", "plan": return kind
+    }
+    return ""
 }
 
 assistant_message_id_valid :: proc(id: string) -> bool {
@@ -59,6 +70,8 @@ assistant_envelope_valid :: proc(s: ^Content_Service, owner, body: string) -> bo
 relay_assistant_segment :: proc(s: ^Content_Service, auth: contracts.Auth_Context, instance: string, input: contracts.ACP_Assistant_Message_Input) -> (Assistant_Segment_Relay, bool, domain.Domain_Error) {
     if auth.kind != .Instance_Token || instance == "" || auth.agent_instance_id != instance do return {}, false, domain.domain_error(.Forbidden, "instance token is required")
     if !assistant_message_id_valid(input.message_id) || len(input.launch_epoch) == 0 || len(input.launch_epoch) > 256 || len(input.turn_id) == 0 || len(input.turn_id) > 256 || input.revision < 1 do return {}, false, domain.domain_error(.Validation_Failed, "invalid assistant turn identity or revision")
+    kind := assistant_segment_kind(input.kind)
+    if kind == "" do return {}, false, domain.domain_error(.Validation_Failed, "invalid assistant segment kind")
     if input.message_status != "pending" && input.message_status != "complete" && input.message_status != "failed" do return {}, false, domain.domain_error(.Validation_Failed, "invalid assistant message status")
     // Stop reasons are protocol identifiers, never arbitrary adapter error text.
     if len(input.stop_reason) > 128 do return {}, false, domain.domain_error(.Validation_Failed, "invalid stop reason")
@@ -75,7 +88,7 @@ relay_assistant_segment :: proc(s: ^Content_Service, auth: contracts.Auth_Contex
     if !assistant_envelope_valid(s, string(c.owner_user_id), input.body) do return {}, false, domain.domain_error(.Validation_Failed, "assistant body must be sealed for the owner vault at a known epoch")
     relay := Assistant_Segment_Relay{owner_user_id=string(c.owner_user_id)}
     if inst.launch_epoch != input.launch_epoch do return relay, true, {}
-    event := Assistant_Segment_Event{type=AGENT_OUTPUT_EVENT_TYPE, event=AGENT_OUTPUT_ASSISTANT_SEGMENT, conversation_id=c.conversation_id, agent_instance_id=instance, message_id=input.message_id, turn_id=input.turn_id, launch_epoch=input.launch_epoch, revision=input.revision, message_status=input.message_status, stop_reason=input.stop_reason, input_ids=input.input_ids, body=input.body}
+    event := Assistant_Segment_Event{type=AGENT_OUTPUT_EVENT_TYPE, event=AGENT_OUTPUT_ASSISTANT_SEGMENT, kind=kind, conversation_id=c.conversation_id, agent_instance_id=instance, message_id=input.message_id, turn_id=input.turn_id, launch_epoch=input.launch_epoch, revision=input.revision, message_status=input.message_status, stop_reason=input.stop_reason, input_ids=input.input_ids, body=input.body}
     raw, merr := json.marshal(event, allocator=context.temp_allocator)
     if merr != nil do return {}, false, domain.domain_error(.Internal_Error, "assistant segment could not be encoded")
     relay.event_json = string(raw)

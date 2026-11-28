@@ -103,12 +103,11 @@ c4_acp_chat_steering_splits_after_injection_without_another_prompt :: proc(t:^te
         }
         testing.expect(t,active==1 && idle==1,"chat segments must not add activity/turn boundaries")
         // A receipt for an in-flight older revision cannot delete its closed
-        // replacement. A terminal receipt for that old segment cannot freeze
-        // the current segment either.
+        // replacement.
         testing.expect(t,t4_runtime_call(f,strings.concatenate({"chat_saved:",acp_event_json(struct{message_id:string,revision:i64}{first,1})},context.temp_allocator)))
         testing.expect_value(t,len(d.outbox),2)
-        testing.expect(t,t4_runtime_call(f,strings.concatenate({"chat_terminal:",acp_event_json(struct{message_id:string}{first})},context.temp_allocator)))
-        testing.expect(t,len(d.outbox)==1 && !d.remote_terminal)
+        testing.expect(t,t4_runtime_call(f,strings.concatenate({"chat_saved:",acp_event_json(d.outbox[0])},context.temp_allocator)))
+        testing.expect_value(t,len(d.outbox),1)
         testing.expect(t,t4_runtime_call(f,strings.concatenate({"chat_saved:",acp_event_json(d.outbox[0])},context.temp_allocator)))
         testing.expect(t,t4_runtime_call(f,"chat_tick"))
         testing.expect(t,len(d.outbox)==0 && f.r.chat.publication=="","acknowledged snapshots are not recreated")

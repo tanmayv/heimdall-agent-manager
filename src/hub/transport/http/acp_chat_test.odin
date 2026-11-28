@@ -127,7 +127,15 @@ g12_assistant_segment_streams_to_ui_without_storing :: proc(t:^testing.T) {
     r=acp_chat_call(&f,input); testing.expect(t,r.status==200,r.body)
     frame=acp_chat_bus_frame(&b)
     testing.expect(t,strings.contains(frame,`"revision":2`) && strings.contains(frame,`"message_status":"complete"`) && strings.contains(frame,`"stop_reason":"end_turn"`) && strings.contains(frame,input.body),frame)
-    testing.expect_value(t,b.bus.stream_seqs[b.slot],u64(2))
+    testing.expect(t,strings.contains(frame,`"kind":"text"`),frame)
+    // Thoughts and plans stream the same way, under their own kind.
+    thought:=input; thought.kind="thought"; thought.message_id="msg_00000000000000aa"; thought.revision=1; thought.message_status="pending"; thought.stop_reason=""
+    r=acp_chat_call(&f,thought); testing.expect(t,r.status==200,r.body)
+    frame=acp_chat_bus_frame(&b)
+    testing.expect(t,strings.contains(frame,`"kind":"thought"`) && strings.contains(frame,`"message_id":"msg_00000000000000aa"`),frame)
+    bogus:=thought; bogus.kind="input_state"
+    r=acp_chat_call(&f,bogus); testing.expect_value(t,r.status,400)
+    testing.expect_value(t,b.bus.stream_seqs[b.slot],u64(3))
     // Fresh repository reads: the hub stored nothing about the stream.
     fresh_impl:sqlite.Content_Repo_SQLite; fresh:=sqlite.new_content_repository(&fresh_impl,&f.mq.base.conn)
     _,found,_:=iface.content_get_message(&fresh,input.message_id)
