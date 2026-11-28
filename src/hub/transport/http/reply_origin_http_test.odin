@@ -8,6 +8,7 @@ import "core:testing"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+import jsonx "odin_test:lib/jsonx"
 
 // Reply origin (R7) over the agent-action HTTP API: which reads and deliveries
 // count as consumption, and the reply's metadata.reply_origin in the
@@ -129,4 +130,41 @@ jsonx_reply_id :: proc(body: string) -> string {
 	parsed: Ro_Reply
 	_ = json.unmarshal_string(body, &parsed, allocator = context.temp_allocator)
 	return parsed.data.message_id
+}
+
+// R7 review: a rollover handoff is the agent's note to its next run, not
+// input awaiting a reply. The restarted run's read of it is not consumption,
+// so the first reply after the rollover answers only real user input, and
+// --reply-to cannot name the handoff.
+@(test)
+test_reply_origin_http_rollover_handoff_is_not_reply_input :: proc(t: ^testing.T) {
+	arena := ad_arena(); defer virtual.arena_destroy(&arena)
+	context.allocator = virtual.arena_allocator(&arena); context.temp_allocator = context.allocator
+	f: ACP_Chat_Fixture; ad_open(t, &f); defer mq_http_base_close(f.mq.base)
+	ro_pty(&f)
+	stored := agent_action_chat_previous_context_handler(&f.mq.agent_handlers, ro_agent_req(&f, "/api/v1/agent-actions/chat/previous-context",
+		fmt.tprintf(`{{"request_id":"rq_ro_roll","body":"%s"}}`, mq_http_seal("handoff"))))
+	if !testing.expect(t, stored.status == 201, stored.body) do return
+	handoff := jsonx.extract_string(stored.body, "message_id", allocator = context.temp_allocator)
+	ro_pty(&f) // the rollover restart starts the next run
+	ro_read(t, &f, `{"unread_only":true,"mark_read":true}`)
+	row, _, _ := iface.content_get_message(&f.mq.repo, handoff)
+	testing.expect(t, row.read_at != "", "the restarted run read its handoff")
+	r, got := ro_reply(t, &f)
+	testing.expect(t, r.status == 201, r.body)
+	testing.expect_value(t, len(got.answered_message_ids), 0)
+	testing.expect_value(t, got.route_status, domain.REPLY_ROUTE_NONE)
+	// With real input read alongside the handoff, only the input is answered.
+	id := ad_send(t, &f, "question")
+	ro_read(t, &f, `{"unread_only":true,"mark_read":true}`)
+	r, got = ro_reply(t, &f)
+	testing.expect(t, r.status == 201, r.body)
+	ro_expect_ids(t, got, id)
+	r, _ = ro_reply(t, &f, reply_to = handoff)
+	testing.expect(t, r.status == 400 && strings.contains(r.body, "reply-to must name a message the user sent to this agent"), r.body)	// The repository refuses it too, whatever path records consumption.
+	owner := domain.User_ID(f.mq.base.owner_user_id)
+	before, _ := iface.content_list_input_consumptions(&f.mq.repo, owner, "chat_mq", 0)
+	testing.expect_value(t, iface.content_record_input_consumption(&f.mq.repo, owner, "chat_mq", handoff, domain.INPUT_CONSUMED_READ, "2026-11-28T00:00:00Z").code, domain.Error_Code.None)
+	after, _ := iface.content_list_input_consumptions(&f.mq.repo, owner, "chat_mq", 0)
+	testing.expect_value(t, len(after), len(before))
 }

@@ -75,7 +75,7 @@ reply_origin_validate_reply_to :: proc(repo: ^iface.Content_Repository, c: domai
 	// Another owner's message is reported exactly like an unknown id.
 	if !found || m.owner_user_id != c.owner_user_id do return "", domain.domain_error(.Not_Found, "reply-to message not found")
 	if m.conversation_id != c.conversation_id do return "", domain.domain_error(.Validation_Failed, "reply-to message belongs to another conversation")
-	if m.direction != "user_to_agent" do return "", domain.domain_error(.Validation_Failed, "reply-to must name a message the user sent to this agent")
+	if m.direction != "user_to_agent" || m.message_type == MESSAGE_TYPE_PREVIOUS_CONTEXT do return "", domain.domain_error(.Validation_Failed, "reply-to must name a message the user sent to this agent")
 	return iface.content_message_origin(repo, reply_to)
 }
 

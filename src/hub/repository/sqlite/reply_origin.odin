@@ -8,10 +8,11 @@ content_record_input_consumption_sqlite :: proc(ctx: rawptr, owner: domain.User_
 	guard := tx_repository_enter()
 	defer tx_repository_leave(guard)
 	impl := cast(^Content_Repo_SQLite)ctx
-	// Only a user->agent row of this conversation and owner qualifies; the
-	// first consumption wins (UNIQUE message_id).
+	// Only a user->agent row of this conversation and owner qualifies (never a
+	// rollover handoff: the agent wrote it to itself, nobody awaits a reply);
+	// the first consumption wins (UNIQUE message_id).
 	q := "INSERT OR IGNORE INTO chat_input_consumptions(message_id,owner_user_id,conversation_id,kind,consumed_at) " +
-		"SELECT message_id,owner_user_id,conversation_id,?,? FROM chat_messages WHERE message_id=? AND owner_user_id=? AND conversation_id=? AND direction='user_to_agent';"
+		"SELECT message_id,owner_user_id,conversation_id,?,? FROM chat_messages WHERE message_id=? AND owner_user_id=? AND conversation_id=? AND direction='user_to_agent' AND COALESCE(message_type,'text')<>'previous_context';"
 	stmt: sqlite3_stmt
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return domain.domain_error(.Internal_Error, "failed input consumption save")
 	defer sqlite3_finalize(stmt)

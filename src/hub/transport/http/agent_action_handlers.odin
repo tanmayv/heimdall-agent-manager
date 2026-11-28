@@ -726,7 +726,8 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	// consumes input; --include-read, transcript and mark_read=false do not.
 	if mark_read && unread_only && !bridge_input && target_id == "" && len(rows) > 0 {
 		consumed := make([dynamic]string, context.temp_allocator)
-		for row in rows do if row.direction == "user_to_agent" do append(&consumed, row.message_id)
+		// A rollover handoff is the agent's own note, not input awaiting a reply.
+		for row in rows do if row.direction == "user_to_agent" && row.message_type != content_service.MESSAGE_TYPE_PREVIOUS_CONTEXT do append(&consumed, row.message_id)
 		// The read already committed; a failure here only loses reply routing.
 		if cerr := content_service.note_agent_consumed(h.content, auth, inst.agent_instance_id, consumed[:], domain.INPUT_CONSUMED_READ); cerr.code != .None do fmt.println("reply origin consumption failed", inst.agent_instance_id, cerr.message)
 	}
