@@ -1,4 +1,4 @@
-import { createAssistantFetchQueue } from './acpChatStream';
+import { agentOutputPayloadFromEvent, agentOutputSegmentReceived, agentReplyReceived } from '../store/agentOutputSlice';
 import { secureFormChanged, secureFormEventDetail } from '../utils/secureFormCrypto';
 import { announceTaskChainCreated } from './taskChainCreationEvents';
 import { analytics } from '../analytics/analytics';
@@ -480,8 +480,6 @@ export function resetQueuedInvalidations(): void {
   queuedTimer = null;
   queuedTags.clear();
   queuedDispatch = null;
-  for (const queue of assistantFetchQueues.values()) queue.clear();
-  assistantFetchQueues.clear();
 }
 
 // An API reset (user switch, vault lock/unlock: every resetApiState) ends the previous
@@ -602,17 +600,11 @@ function applyLegacyStatusPatch(dispatch: any, payload: any, agentId: string): v
   }
 }
 
-const assistantFetchQueues = new Map<object, ReturnType<typeof createAssistantFetchQueue>>();
-function queueAssistantFetch(dispatch: any, conversationId: string, messageId: string, revision: number) {
-  let queue = assistantFetchQueues.get(dispatch);
-  if (!queue) {
-    queue = createAssistantFetchQueue(async (conversationId, messageId) => {
-      const request = dispatch(chatEndpoints.endpoints.fetchConversationMessage.initiate({ conversationId, messageId }, { subscribe: false, forceRefetch: true }));
-      try { await request.unwrap(); } finally { request.unsubscribe(); }
-    });
-    assistantFetchQueues.set(dispatch, queue);
-  }
-  queue.enqueue(conversationId, messageId, revision);
+// G12: one streamed ACP assistant segment. UI memory only: never an RTK
+// Query cache entry, never a refetch, never stored.
+function handleAgentOutputEvent(dispatch: any, payload: any) {
+  const segment = agentOutputPayloadFromEvent(payload);
+  if (segment) dispatch(agentOutputSegmentReceived(segment));
 }
 
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -645,15 +637,8 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   const direction = String(payload.direction || payload.message?.direction || '');
   const isStatusOnlyEvent = !message && (direction === 'read' || direction === 'delivered' || direction === 'delivery_failed' || payload.event === 'messages_read');
 
-  if (conversationId && !message && payload.fetch_required && payload.fetch_kind === 'chat_message' && Number(payload.revision) > 0) {
-    const messageId = String(payload.fetch_id || payload.message_id || '');
-    if (messageId) queueAssistantFetch(dispatch, conversationId, messageId, Number(payload.revision));
-    if (Number(payload.revision) === 1 || payload.message_status === 'complete' || payload.message_status === 'failed') {
-      expireConversationOptions(conversationId);
-      queueMessageInvalidation(dispatch, conversationId, []);
-    }
-    return;
-  }
+  // G12: an agent message is its reply; earlier finished streamed turns go.
+  if (conversationId && direction === 'agent_to_user' && !isStatusOnlyEvent) dispatch(agentReplyReceived({ conversationId }));
   // ACP delivery evidence (docs/acp-send-now.md): queued/delivered/read and batch state
   // changed. Only the conversation's newest page and its Send now state refetch; no new
   // message exists, so the sidebar, options and chain views stay as they are.
@@ -1371,6 +1356,9 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
       return;
     case 'agent_action':
       handleAgentActionEvent(dispatch, payload);
+      return;
+    case 'agent_output':
+      handleAgentOutputEvent(dispatch, payload);
       return;
     case 'audit_start':
       dispatch(auditStartedReceived(payload));

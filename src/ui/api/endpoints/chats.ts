@@ -1,5 +1,4 @@
 import { buildRuntimePayload, type RuntimeSelection } from '../runtimePayload';
-import { acceptAssistantSnapshot, assistantRevision, upsertAssistantSnapshot } from '../acpChatStream';
 import { getExpectedUserId } from '../../utils/expectedUser';
 import { guardDesktopUpdateRequest } from '../../utils/desktopUpdatePreparation';
 import { vaultSendBlockFromState } from '../../utils/vaultSendGuard';
@@ -164,7 +163,6 @@ function upsertMessage(messages: ChatMessage[], next: ChatMessage) {
   }
   if (index >= 0) {
     const current = messages[index];
-    if (!acceptAssistantSnapshot(current, next)) return;
     messages[index] = {
       ...current,
       ...next,
@@ -317,21 +315,6 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         } catch (error: any) {
           return { error: customQueryError(error) as any };
         }
-      },
-      merge(current: any, incoming: any, { arg }: any) {
-        for (const row of incoming.messages || []) {
-          const previous = (current.messages || []).find((entry: any) => entry.message_id === row.message_id);
-          if (previous && !acceptAssistantSnapshot(previous, row)) Object.assign(row, previous);
-        }
-        // A list request started before a stream row was created may arrive
-        // after its message-specific fetch. Retain that newer row in this page.
-        if (!arg.cursor) {
-          const oldest = incoming.messages?.at(-1)?.created_at ?? '';
-          for (const previous of current.messages || []) {
-            if (assistantRevision(previous) && (!oldest || previous.created_at >= oldest)) upsertAssistantSnapshot(incoming.messages, previous);
-          }
-        }
-        Object.assign(current, incoming);
       },
       // Only the newest page (no cursor) carries Chat:<conversation>, which a new
       // message invalidates. Older pages never gain messages; their read receipts are
@@ -713,36 +696,6 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           // noop
         }
       },
-    }),
-    fetchConversationMessage: build.query<any, { conversationId: string; messageId: string }>({
-      queryFn: async ({ conversationId, messageId }) => {
-        try {
-          const response = await fetch(apiUrl(`/chats/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`), { credentials: 'include', cache: 'no-store' });
-          if (!response.ok) throw await errorFromResponse(response);
-          const envelope = await response.json();
-          return { data: envelope?.data ?? envelope };
-        } catch (error: any) {
-          return { error: customQueryError(error) as any };
-        }
-      },
-      async onQueryStarted({ conversationId }, { dispatch, getState, queryFulfilled }) {
-        try {
-          const { data: raw } = await queryFulfilled;
-          const state: any = getState();
-          for (const arg of chatEndpoints.util.selectCachedArgsForQuery(state, 'fetchConversationMessages') as any[]) {
-            if (arg?.conversationId !== conversationId) continue;
-            dispatch(chatEndpoints.util.updateQueryData('fetchConversationMessages', arg, (draft: any) => {
-              const rows = draft.messages || (draft.messages = []);
-              const oldest = rows.at(-1)?.created_at ?? '';
-              upsertAssistantSnapshot(rows, raw, !arg.cursor && (!oldest || raw.created_at >= oldest));
-            }));
-          }
-          if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('heimdall:conversation-message-updated', { detail: { conversationId, message: raw } }));
-          const agentId = String(raw.sender_agent_instance_id || raw.agent_instance_id || '');
-          if (agentId) appendChatMessage(dispatch, agentId, raw);
-        } catch { /* reconnect REST reads recover an unavailable snapshot */ }
-      },
-      keepUnusedDataFor: 0,
     }),
     fetchChatMessage: build.query<any, { messageId: string }>({
       queryFn: withSessionQuery(async ({ messageId }, { session }) => {

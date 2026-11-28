@@ -4,7 +4,8 @@ import { formatMessageTimestamp } from '../chat/formatMessageTimestamp';
 import { ComposerAttachmentTray } from '../chat/ComposerAttachmentTray';
 import { useComposerAttachments } from '../chat/useComposerAttachments';
 import { VoiceRecorderPanel, useVoiceMessage } from '../chat/VoiceRecorderPanel';
-import { acceptAssistantSnapshot, hasPendingAcpResponse } from '../../api/acpChatStream';
+import { hasLiveAgentOutput, selectAgentOutputTurns } from '../../store/agentOutputSlice';
+import AgentOutputBlocks from '../chat/AgentOutputBlocks';
 import React, {
   type FormEvent,
   useCallback,
@@ -1492,6 +1493,8 @@ export function AgentChatPane({
     );
   }, [effectiveOlder, baseMessages, localMessages, agentId, agentInstanceId]);
 
+  // G12: streamed output for this conversation, UI memory only.
+  const agentOutputTurns = useSelector((state: any) => selectAgentOutputTurns(state, conversationId));
   const activeVaultKey = useSelector(selectActiveVaultKey);
   const hasLockedVaultMessages = useMemo(
     () =>
@@ -1766,19 +1769,6 @@ export function AgentChatPane({
     };
     window.addEventListener(CONVERSATION_MESSAGES_READ_EVENT, onRead);
     return () => window.removeEventListener(CONVERSATION_MESSAGES_READ_EVENT, onRead);
-  }, [conversationId]);
-
-  useEffect(() => {
-    const onUpdate = (event: Event) => {
-      const update = (event as CustomEvent).detail;
-      if (update?.conversationId !== conversationId) return;
-      setOlderMessages((current) => current.map((row: any) => {
-        if (row.message_id !== update.message?.message_id || !acceptAssistantSnapshot(row, update.message)) return row;
-        return { ...row, ...update.message };
-      }));
-    };
-    window.addEventListener('heimdall:conversation-message-updated', onUpdate);
-    return () => window.removeEventListener('heimdall:conversation-message-updated', onUpdate);
   }, [conversationId]);
 
   const instanceProfile = String(instance?.provider_profile || instanceProvider);
@@ -3798,7 +3788,10 @@ export function AgentChatPane({
           onAnswerQuestions={(sourceMessageId, submission) => answerQuestions({ conversationId, sourceMessageId, submission }).unwrap()}
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
-          agentActivity={<AgentActivityBubbles key={agentInstanceId} instanceId={agentInstanceId} isWorking={isWorking} isResponding={hasPendingAcpResponse(chatMessages)} />}
+          agentActivity={<>
+            <AgentOutputBlocks conversationId={conversationId} />
+            <AgentActivityBubbles key={agentInstanceId} instanceId={agentInstanceId} isWorking={isWorking} isResponding={hasLiveAgentOutput(agentOutputTurns)} />
+          </>}
           bottomInset={composerDockHeight}
           pinOnSend={pinOnSend}
           pinOriginRef={pinOriginRef}
