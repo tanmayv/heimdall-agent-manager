@@ -3,6 +3,7 @@ package main
 import "core:encoding/json"
 import "core:strings"
 import "core:sync"
+import contracts "odin_test:contracts"
 
 // ACP implementation of the turn-based runtime interface (runtime_iface.odin).
 // It wraps the ACP runtime dispatcher, which claims the instance's bridge
@@ -50,10 +51,12 @@ acp_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_M
 	return false
 }
 
-acp_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> bool {
-	if !acp_runtime_owned(instance) do return false
+// The ACP batch reports its own progress (acp_delivery.odin); the command
+// result only says whether the dispatcher took it.
+acp_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> contracts.Runtime_Send_Now_Outcome {
+	if !acp_runtime_owned(instance) do return .Failed
 	raw := acp_event_json(ACP_Send_Now_Request{launch_epoch = req.launch_epoch, batch_id = req.batch_id, attempt = req.attempt, message_ids = req.message_ids})
-	return acp_runtime_command(instance, strings.concatenate({"send_now_batch:", raw}, context.temp_allocator))
+	return .Delivered if acp_runtime_command(instance, strings.concatenate({"send_now_batch:", raw}, context.temp_allocator)) else .Failed
 }
 
 acp_agent_inputs_read :: proc(instance: string, ids: []string) -> bool {

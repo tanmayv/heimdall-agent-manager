@@ -15,7 +15,7 @@ import project_service "odin_test:hub/service/project"
 // Hub-side ACP delivery evidence and conversation-level Send now. Uses the real
 // SQLite schema (including acp_delivery_001), unit of work and HTTP handlers.
 
-Ad_Sink :: struct { commands: [dynamic]string, offline, refuse: bool, allocator: mem.Allocator }
+Ad_Sink :: struct { commands: [dynamic]string, offline, refuse: bool, cause: string, allocator: mem.Allocator }
 ad_sink_send :: proc(ctx: rawptr, command: project_service.Runtime_Command) -> (bool, domain.Domain_Error) {
     sink := (^Ad_Sink)(ctx)
     if sink.offline do return false, domain.domain_error(.Bridge_Offline, "offline")
@@ -27,7 +27,11 @@ ad_sink_wait :: proc(ctx: rawptr, command: project_service.Runtime_Command, time
     sink := (^Ad_Sink)(ctx)
     if sink.offline do return "", false, domain.domain_error(.Bridge_Offline, "offline")
     append(&sink.commands, strings.clone(command.body_json, sink.allocator))
-    if sink.refuse do return "", false, domain.domain_error(.Conflict, "the agent runtime did not accept the command")
+    if sink.refuse {
+        err := domain.domain_error(.Conflict, "the agent runtime did not accept the command")
+        err.cause = sink.cause
+        return "", false, err
+    }
     return strings.clone(`{"type":"command_result","status":"succeeded"}`), true, {}
 }
 ad_cmd :: proc(f: ^ACP_Chat_Fixture, kind: string, n: int) -> string {
@@ -458,4 +462,34 @@ ad_pty_send_now_is_memberless_and_idempotent_per_request :: proc(t: ^testing.T) 
     f.delivery_sink.offline = false
     r = ad_send_now(&f, "req_s", epoch = "old"); testing.expect_value(t, r.status, 409)
     testing.expect_value(t, ad_count(&f, "acp_send_now_batch"), 3)
+}
+
+// A memberless Send now the runtime did not deliver is never recorded as
+// delivered: a stopped agent fails with agent_stopped, and a held-back one
+// (a context rollover) is reported queued with its reason; the bridge
+// keeps the notice, and a retry once it can type delivers.
+@(test)
+ad_pty_send_now_not_delivered_reports_the_runtime_reason :: proc(t: ^testing.T) {
+    arena := ad_arena(); defer virtual.arena_destroy(&arena)
+    context.allocator = virtual.arena_allocator(&arena); context.temp_allocator = context.allocator
+    f: ACP_Chat_Fixture; ad_open(t, &f); defer mq_http_base_close(f.mq.base)
+    f.mq.svc.bridge_command_sink.send_runtime_command_wait = ad_sink_wait
+    inst, _, _ := iface.agent_get_instance(&f.mq.base.ag_repo, "inst_mq")
+    inst.runtime_transport = "pty"; inst.run_count += 1; _, _, _ = iface.agent_save_instance(&f.mq.base.ag_repo, inst)
+    _ = ad_send(t, &f, "a")
+    f.delivery_sink.refuse = true
+    f.delivery_sink.cause = contracts.RUNTIME_SEND_NOW_CAUSE[.Not_Running]
+    r := ad_send_now(&f, "req_dead"); testing.expect_value(t, r.status, 503)
+    outcome, batch, _ := ad_batch_of(r.body); testing.expect_value(t, outcome, "failed")
+    got, _, _ := iface.content_get_send_now_batch(&f.mq.repo, batch)
+    testing.expect(t, got.state == "failed" && got.error == "agent_stopped", got.error)
+    f.delivery_sink.cause = contracts.RUNTIME_SEND_NOW_CAUSE[.Held]
+    r = ad_send_now(&f, "req_held"); testing.expect_value(t, r.status, 202)
+    outcome, batch, _ = ad_batch_of(r.body); testing.expect_value(t, outcome, "queued")
+    got, _, _ = iface.content_get_send_now_batch(&f.mq.repo, batch)
+    testing.expect(t, got.state == "failed" && got.error == "held", got.error)
+    f.delivery_sink.refuse = false; f.delivery_sink.cause = ""
+    attempt: i64
+    r = ad_send_now(&f, "req_held"); outcome, _, attempt = ad_batch_of(r.body)
+    testing.expect_value(t, outcome, "delivered"); testing.expect_value(t, attempt, 2)
 }

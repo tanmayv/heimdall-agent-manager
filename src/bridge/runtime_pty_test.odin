@@ -365,29 +365,29 @@ pty_send_now_types_the_notice_once_per_request :: proc(t: ^testing.T) {
 	want := fmt.tprintf("Esc %q Enter Enter", bridge_pty_host_unread_notice())
 	// Busy: Esc, the notice, Enter; no members needed. The pending unread
 	// notice is consumed; the notification keeps its own lane.
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1}))
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1}) == .Delivered)
 	testing.expect_value(t, pty_test_trace(), want)
 	ids := pty_test_queued(id)
 	testing.expect(t, len(ids) == 1 && ids[0] == "cmd_n", "the unread notice was consumed")
 	// A repeated request id is a no-op, also after a reload of the inbox.
 	pty_test_reset()
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 2}), "idempotent by request")
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 2}) == .Delivered, "idempotent by request")
 	testing.expect_value(t, len(pty_test_ops), 0)
 	bridge_inbox_forget_all()
 	bridge_inbox_restore_all()
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1}), "idempotent after reload")
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_1", attempt = 1}) == .Delivered, "idempotent after reload")
 	testing.expect_value(t, len(pty_test_ops), 0)
 	// Idle: Send now still presses Esc (no idle wait, no skip).
 	pty_test_activity(id, "idle", "pane_diff")
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_2", attempt = 1}))
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_2", attempt = 1}) == .Delivered)
 	testing.expect_value(t, pty_test_trace(), want)
 	// A failed write is not remembered: the retry types.
 	pty_test_reset(); pty_test_send_fail = true
-	testing.expect(t, !rt.send_now(id, {batch_id = "snb_3", attempt = 1}))
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_3", attempt = 1}) == .Failed)
 	pty_test_send_fail = false
-	testing.expect(t, rt.send_now(id, {batch_id = "snb_3", attempt = 2}))
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_3", attempt = 2}) == .Delivered)
 	testing.expect_value(t, pty_test_trace(), want)
-	testing.expect(t, !rt.send_now(id, {batch_id = ""}), "a request id is required")
+	testing.expect(t, rt.send_now(id, {batch_id = ""}) == .Failed, "a request id is required")
 	// Read inputs need no notice any more.
 	testing.expect(t, rt.inputs_read(id, {"cmd_n"}))
 	testing.expect_value(t, len(pty_test_queued(id)), 0)
@@ -553,4 +553,55 @@ pty_explicit_steer_consumes_the_pending_notice_and_respects_busy :: proc(t: ^tes
 	testing.expect_value(t, len(pty_test_ops), 0)
 	testing.expect_value(t, len(pty_test_queued(id)), 1)
 	pty_test_set_busy(id, false)
+}
+
+// pty_test_lifecycle overrides an instance's liveness facts.
+pty_test_lifecycle :: proc(id: string, alive, started: bool, stop_intent: i64 = 0) {
+	sync.mutex_lock(&bridge_runtime_mutex); defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for &inst in bridge_runtime_instances do if inst.agent_instance_id == id {
+		inst.pty_process_alive = alive; inst.start_success_seen = started; inst.stopped_intent_unix_ms = stop_intent
+	}
+}
+
+// B1 (CONTRACT-10): Send now and explicit modes type only into a live,
+// started agent without a stop in flight. Otherwise nothing is typed, the
+// outcome is not delivered and the pending notice survives.
+@(test)
+pty_send_now_to_a_stopped_agent_is_not_delivered_and_keeps_the_notice :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	context.allocator = runtime.heap_allocator()
+	env := pty_test_begin("pty-send-now-dead"); defer pty_test_end(&env)
+	id := "inst_pty_send_now_dead"
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	pty_test_activity(id, "active", "pane_diff")
+	notice := bridge_pty_host_unread_notice()
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_dead", text = notice, hub_message = true}))
+	rt := bridge_runtime_for(id)
+	cases := []struct{ alive, started: bool, stop: i64 }{{false, true, 0}, {true, true, 1}, {true, false, 0}}
+	for c in cases {
+		pty_test_lifecycle(id, c.alive, c.started, c.stop)
+		testing.expect(t, rt.send_now(id, {batch_id = "snb_dead", attempt = 1}) == .Not_Running, fmt.tprintf("%v", c))
+		testing.expect(t, !bridge_runtime_submit(id, {kind = .User_Message, id = "msg_dead_steer", text = notice, hub_message = true}, .Steer), "an explicit steer is not delivered")
+		testing.expect_value(t, len(pty_test_ops), 0)
+		ids := pty_test_queued(id)
+		testing.expect(t, len(ids) == 1, "the pending notice survives (the steer coalesced into it)")
+	}
+	// Not applied: once the agent is back, the same request types.
+	pty_test_lifecycle(id, true, true)
+	testing.expect(t, rt.send_now(id, {batch_id = "snb_dead", attempt = 2}) == .Delivered)
+	testing.expect_value(t, pty_test_trace(), fmt.tprintf("Esc %q Enter Enter", notice))
+	testing.expect_value(t, len(pty_test_queued(id)), 0)
+}
+
+// The hub command reports a not-delivered Send now as a failed result whose
+// cause names the outcome, so the Hub never records it as delivered.
+@(test)
+pty_send_now_command_result_carries_the_outcome_cause :: proc(t: ^testing.T) {
+	for o in contracts.Runtime_Send_Now_Outcome {
+		if o == .Delivered do continue
+		raw := bridge_command_failed_json("cmd_x", bridge_cause_wire_error(contracts.RUNTIME_SEND_NOW_CAUSE[o], bridge_runtime_send_now_message(o)), "")
+		defer delete(raw)
+		werr, found := contracts.wire_error_parse(raw, context.temp_allocator)
+		testing.expect(t, found && contracts.runtime_send_now_outcome_from_cause(werr.cause) == o, raw)
+	}
 }

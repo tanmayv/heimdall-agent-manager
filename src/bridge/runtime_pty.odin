@@ -192,11 +192,39 @@ pty_runtime_last_typed :: proc(instance: string) -> i64 {
 	return pty_runtime_typed[instance] if pty_runtime_typed != nil else 0
 }
 
-// pty_runtime_idle reports a trusted idle for a live, started agent. With
+// ---- deliverable now ----------------------------------------------------------
+
+// Whether anything may be typed into an instance's terminal now. The one check
+// of every PTY delivery: the worker's queue drain (through notices_ready),
+// Send now and the explicit modes (CONTRACT-10).
+//   Not_Running: no snapshot, the child is not alive, a stop is in flight, or
+//                the agent has not reported start success.
+Pty_Deliverable :: enum u8 { Ready, Not_Running }
+
+pty_runtime_deliverable_snapshot :: proc(snap: Bridge_Runtime_Instance, ok: bool) -> Pty_Deliverable {
+	if !ok || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return .Not_Running
+	return .Ready
+}
+
+pty_runtime_deliverable :: proc(instance: string) -> Pty_Deliverable {
+	snap, ok := bridge_runtime_instance_snapshot(instance)
+	return pty_runtime_deliverable_snapshot(snap, ok)
+}
+
+// The Send now outcome of a check that did not pass (the input stays queued).
+pty_runtime_withheld_outcome :: proc(d: Pty_Deliverable) -> contracts.Runtime_Send_Now_Outcome {
+	switch d {
+	case .Ready: return .Delivered
+	case .Not_Running: return .Not_Running
+	}
+	return .Failed
+}
+
+// pty_runtime_idle reports a trusted idle of a deliverable agent. With
 // after_typing, it also requires that the turn we last typed has been seen.
 pty_runtime_idle :: proc(instance: string, after_typing := true) -> bool {
 	snap, ok := bridge_runtime_instance_snapshot(instance)
-	if !ok || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return false
+	if pty_runtime_deliverable_snapshot(snap, ok) != .Ready do return false
 	if snap.activity_status != "idle" || !bridge_activity_source_trusted_idle(snap.activity_source_kind) do return false
 	if !after_typing do return true
 	last := pty_runtime_last_typed(instance)
@@ -246,49 +274,62 @@ pty_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_M
 	if !pty_runtime_known(instance) do return false
 	if mode == .Queue do return pty_runtime_enqueue(instance, input)
 	// Explicit steer / send now types right away through the same section as
-	// Send now; if the terminal is not reachable the input waits in the inbox.
-	// A hub message notice points at chat read, so it also stands for every
-	// pending unread notice.
-	if pty_runtime_deliver_now(instance, input.text, mode, input_id = input.id, consume_unread = input.hub_message) do return true
-	return pty_runtime_enqueue(instance, input)
+	// Send now; otherwise the input waits in the inbox. A hub message notice
+	// points at chat read, so it also stands for every pending unread notice.
+	outcome := pty_runtime_deliver_now(instance, input.text, mode, input_id = input.id, consume_unread = input.hub_message)
+	if outcome == .Delivered do return true
+	queued := pty_runtime_enqueue(instance, input)
+	// A stopped agent was not reached: say so, the input still waits.
+	return queued && outcome != .Not_Running
 }
 
 // pty_runtime_deliver_now is the one consume-and-busy section of explicit
-// deliveries (Send now, explicit steer / send now). It claims the inbox's
-// busy flag, so the worker never types into the same moment, types text with
-// the mode's plan, and only then commits: the pending unread notices it
-// stands for (consume_unread) leave the inbox, input_id becomes a completed
-// identity and request_id the last applied Send now. A request id already
-// applied is a no-op, also after a restart.
-pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, request_id := "", input_id := "", consume_unread := false) -> bool {
+// deliveries (Send now, explicit steer / send now). It types only into a
+// deliverable agent (pty_runtime_deliverable), claims the inbox's busy flag so
+// the worker never types into the same moment, types text with the mode's
+// plan, and only then commits: the pending unread notices it stands for
+// (consume_unread) leave the inbox, input_id becomes a completed identity and
+// request_id the last applied Send now. A request id already applied is a
+// no-op, also after a restart. Any outcome but Delivered leaves the inbox as
+// it was.
+pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, request_id := "", input_id := "", consume_unread := false) -> contracts.Runtime_Send_Now_Outcome {
 	consumed := make([dynamic]string, context.temp_allocator)
+	if request_id != "" && pty_runtime_send_now_applied(instance, request_id) do return .Delivered
+	// Read outside the inbox lock: the runtime registry is never taken under it.
+	if d := pty_runtime_deliverable(instance); d != .Ready do return pty_runtime_withheld_outcome(d)
 	{
 		sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
 		slot := bridge_inbox_slot_locked(instance)
-		if slot == nil || slot.busy do return false
-		if request_id != "" && slot.inbox.send_now_applied == request_id do return true
+		if slot == nil || slot.busy do return .Failed
+		if request_id != "" && slot.inbox.send_now_applied == request_id do return .Delivered
 		if consume_unread do for input in slot.inbox.queue do if pty_runtime_unread(input) do append(&consumed, strings.clone(input.id, context.temp_allocator))
 		slot.busy = true
 	}
 	typed := pty_runtime_type_now(instance, text, mode)
 	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
 	slot := bridge_inbox_slot_locked(instance)
-	if slot == nil do return false
+	if slot == nil do return .Failed
 	slot.busy = false
-	if !typed do return false
+	if !typed do return .Failed
 	for id in consumed do bridge_inbox_remove(&slot.inbox, id)
 	if input_id != "" do bridge_inbox_remember(&slot.inbox, input_id)
 	if request_id != "" do bridge_inbox_note_send_now_applied(&slot.inbox, request_id)
 	if !bridge_inbox_save(&slot.inbox) do fmt.eprintfln("bridge inbox: could not commit an explicit delivery for instance=%q; a restart may deliver it again", instance)
-	return true
+	return .Delivered
+}
+
+pty_runtime_send_now_applied :: proc(instance, request_id: string) -> bool {
+	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
+	slot := bridge_inbox_slot_locked(instance)
+	return slot != nil && slot.inbox.send_now_applied == request_id
 }
 
 // pty_agent_send_now types the unread notice right away: interrupt keys, the
 // notice, submit (CONTRACT-06). The agent's chat read then returns every
 // unread message, so there are no members: req.message_ids is not used. The
 // pending unread notices are consumed so nothing is typed twice.
-pty_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> bool {
-	if !pty_runtime_known(instance) || req.batch_id == "" || len(req.batch_id) > BRIDGE_INBOX_SEND_NOW_ID_MAX do return false
+pty_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> contracts.Runtime_Send_Now_Outcome {
+	if !pty_runtime_known(instance) || req.batch_id == "" || len(req.batch_id) > BRIDGE_INBOX_SEND_NOW_ID_MAX do return .Failed
 	return pty_runtime_deliver_now(instance, bridge_pty_host_unread_notice(), .Send_Now, request_id = req.batch_id, consume_unread = true)
 }
 

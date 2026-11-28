@@ -174,6 +174,9 @@ test('notice Send now (PTY): unread user rows and the batch phase', () => {
   assert.equal(noticeSendNowPhase(b('failed')), 'failed');
   for (const state of ['delivered', 'empty']) assert.equal(noticeSendNowPhase(b(state)), 'idle');
   assert.match(sendNowErrorText('send_failed'), /terminal did not take it/);
+  // A Send now the runtime held back names its reason (never "delivered").
+  assert.match(sendNowErrorText('held'), /restarting/);
+  assert.match(sendNowErrorText('agent_stopped'), /stopped/);
 });
 
 function fakeResponse(status: number, body: any) {

@@ -57,6 +57,45 @@ runtime_transport_capabilities :: proc(transport: string) -> Runtime_Transport_C
 	return {}
 }
 
+// The outcome of an explicit Send now at the agent's runtime. Only Delivered
+// means the agent was asked to read now. Every other outcome keeps the unread
+// notice queued at the bridge; the bridge reports it as the cause of a failed
+// command result, and the Hub records the batch as not delivered with the
+// outcome's batch error (the UI's reason key). A queued outcome is not a
+// failure: the notice goes out at the agent's next trusted idle.
+//   Failed:      the terminal did not take it.
+//   Not_Running: the agent is stopped, dead or not started yet.
+//   Held:        a context rollover is in progress (queued).
+Runtime_Send_Now_Outcome :: enum u8 { Delivered, Failed, Not_Running, Held }
+
+// Failed keeps the bridge's historic generic cause.
+RUNTIME_SEND_NOW_CAUSE := [Runtime_Send_Now_Outcome]string {
+	.Delivered   = "",
+	.Failed      = "acp_runtime_unavailable",
+	.Not_Running = "agent_not_running",
+	.Held        = "runtime_held",
+}
+
+RUNTIME_SEND_NOW_BATCH_ERROR := [Runtime_Send_Now_Outcome]string {
+	.Delivered   = "",
+	.Failed      = "send_failed",
+	.Not_Running = "agent_stopped",
+	.Held        = "held",
+}
+
+// runtime_send_now_outcome_from_cause reads a bridge refusal's cause; an
+// unknown cause is a plain failure.
+runtime_send_now_outcome_from_cause :: proc(cause: string) -> Runtime_Send_Now_Outcome {
+	if cause == "" do return .Failed
+	for c, o in RUNTIME_SEND_NOW_CAUSE do if o != .Delivered && c == cause do return o
+	return .Failed
+}
+
+// runtime_send_now_outcome_queued: the notice waits for the next trusted idle.
+runtime_send_now_outcome_queued :: proc(o: Runtime_Send_Now_Outcome) -> bool {
+	return o == .Held
+}
+
 provider_supports_transport :: proc(raw, transport: string) -> bool {
 	if !runtime_transport_valid(transport) do return false
 	if raw == "" do return transport == "pty"

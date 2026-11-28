@@ -257,6 +257,8 @@ export function sendNowErrorText(error: string): string {
     case 'bridge_offline': return "The agent's bridge is offline. Still waiting.";
     case 'bridge_no_response': return "The agent's bridge did not respond. Still waiting.";
     case 'send_failed': return "The agent's terminal did not take it. Still waiting.";
+    // Not delivered now; the bridge keeps the notice for the agent's next idle.
+    case 'held': return 'The agent is restarting. It reads your messages when it is back.';
     case 'stale_epoch': return 'The agent restarted. Still waiting.';
     default: return "Couldn't send now. Still waiting.";
   }

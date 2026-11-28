@@ -282,14 +282,14 @@ bridge_task_notice_tick :: proc(now: i64) {
 // the submit keys and before the inbox file is rewritten (one atomic write)
 // replays the batch after restart.
 bridge_inbox_drain_shared :: proc(instance: string, now: i64) {
+    // Restore runs before asynchronous runtime reconciliation: an instance
+    // without a runtime has no target, so an unknown pipe is never mistaken for
+    // a PTY and acknowledged by a one-way socket write.
     target := bridge_inbox_target(instance)
-    // Restore runs before asynchronous runtime reconciliation. An unknown pipe
-    // must not be mistaken for a PTY and acknowledged by a one-way socket write.
-    snap, present := bridge_runtime_instance_snapshot(instance)
-    usable := target != nil && present && snap.pty_process_alive && snap.stopped_intent_unix_ms == 0 && snap.start_success_seen
     // Notices never interrupt (CONTRACT-07): the runtime says whether a batch
-    // can start a turn now, and a busy agent keeps it queued.
-    ready := usable && target.ready(instance)
+    // can start a turn now (its one deliverable-now check plus a trusted
+    // idle), and a busy, stopped or held agent keeps it queued.
+    ready := target != nil && target.ready(instance)
     batch := make([dynamic]string, context.temp_allocator)    // ids typed now
     dropped := make([dynamic]string, context.temp_allocator)  // stale task notices
     texts := make([dynamic]string, context.temp_allocator)

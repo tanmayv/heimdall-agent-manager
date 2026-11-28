@@ -31,7 +31,8 @@ bridge_cause_error_code :: proc(cause: string) -> contracts.Error_Code {
 		return .Not_Found
 	case "path_outside_root", "permission_denied", "cannot_delete_root":
 		return .Forbidden
-	case "path_exists", "path_exists_not_dir", "dest_exists", "dir_not_empty", "session_not_running":
+	case "path_exists", "path_exists_not_dir", "dest_exists", "dir_not_empty", "session_not_running",
+	     "agent_not_running", "runtime_held":
 		return .Conflict
 	case "path_not_directory", "path_is_directory", "not_a_file", "unsupported_type", "file_too_large",
 	     "invalid_ref", "missing_message", "missing_file", "untracked_file", "no_server_port", "missing_path", "missing_paths", "missing_branch",

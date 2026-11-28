@@ -36,7 +36,9 @@ Send_Now_Request :: struct {
 Send_Now_Excluded :: struct { message_id, reason: string }
 
 Send_Now_Result :: struct {
-    outcome: string, // accepted | duplicate | empty | delivered | failed
+    // accepted | duplicate | empty | delivered | failed | queued (a memberless
+    // Send now the runtime held back: not delivered, the notice waits for idle)
+    outcome: string,
     batch: domain.ACP_Send_Now_Batch,
     conversation: domain.Chat_Conversation,
     changed_ids: [dynamic]string,
@@ -483,7 +485,8 @@ send_now_notice_record :: proc(local: ^Content_Service, uow: ^iface.Unit_Of_Work
 }
 
 // The bridge's command result is the outcome: delivered once the runtime has
-// typed the notice, failed otherwise. A sink that cannot wait for results
+// typed the notice; otherwise the stored batch is failed with the refusal's
+// reason (send_now_notice_refusal), never delivered. A sink that cannot wait for results
 // leaves the request sent (a stall makes it retryable).
 SEND_NOW_NOTICE_REPLY_TIMEOUT_MS :: 15_000
 
@@ -495,17 +498,18 @@ send_now_notice_dispatch :: proc(s: ^Content_Service, inst: domain.Agent_Instanc
     raw, _ := json.marshal(command, allocator=context.temp_allocator)
     runtime_command := project_service.Runtime_Command{bridge_id=inst.bridge_id, command_id=command.command_id, body_json=string(raw)}
     next, error := "failed", "bridge_offline"
+    queued := false
     if inst.bridge_id != "" && s.bridge_command_sink.send_runtime_command_wait != nil {
         reply, replied, werr := project_service.bridge_command_send_runtime_wait(s.bridge_command_sink, runtime_command, SEND_NOW_NOTICE_REPLY_TIMEOUT_MS)
         if replied {
             defer delete(reply)
-            if typed, _ := project_service.bridge_reply_refusal(reply, inst.bridge_id); typed { next, error = "delivered", "" } else { error = "send_failed" }
+            if typed, rerr := project_service.bridge_reply_refusal(reply, inst.bridge_id); typed { next, error = "delivered", "" } else { error, queued = send_now_notice_refusal(rerr.cause) }
         } else {
             // A failed command_result arrives as a typed refusal.
             #partial switch werr.code {
             case .Bridge_Offline:
             case .Bridge_Timeout: error = "bridge_no_response"
-            case: error = "send_failed"
+            case: error, queued = send_now_notice_refusal(werr.cause)
             }
         }
     } else if inst.bridge_id != "" && s.bridge_command_sink.send_runtime_command != nil {
@@ -516,9 +520,18 @@ send_now_notice_dispatch :: proc(s: ^Content_Service, inst: domain.Agent_Instanc
     if !applied { result.batch.state = next; result.batch.error = error }
     switch next {
     case "delivered": result.outcome = "delivered"
-    case "failed": result.outcome = "failed"
+    case "failed": result.outcome = "queued" if queued else "failed"
     }
     return result
+}
+
+// send_now_notice_refusal maps the bridge's refusal cause to the batch error
+// (contracts.Runtime_Send_Now_Outcome). The batch is never delivered then; a
+// queued outcome (held) is not a failure for the
+// user: the bridge keeps the notice and types it at the next trusted idle.
+send_now_notice_refusal :: proc(cause: string) -> (error: string, queued: bool) {
+    outcome := contracts.runtime_send_now_outcome_from_cause(cause)
+    return contracts.RUNTIME_SEND_NOW_BATCH_ERROR[outcome], contracts.runtime_send_now_outcome_queued(outcome)
 }
 
 // Compare-and-set on (attempt, state) so a racing bridge report wins.

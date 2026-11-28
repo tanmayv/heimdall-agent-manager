@@ -66,7 +66,9 @@ Runtime_Send_Now :: struct {
 Agent_Runtime :: struct {
 	transport:    string,
 	submit:       proc(instance: string, input: Runtime_Input, mode: Runtime_Mode) -> bool,
-	send_now:     proc(instance: string, req: Runtime_Send_Now) -> bool,
+	// Only Delivered means the agent was asked now; any other outcome keeps
+	// the input queued (contracts.Runtime_Send_Now_Outcome).
+	send_now:     proc(instance: string, req: Runtime_Send_Now) -> contracts.Runtime_Send_Now_Outcome,
 	interrupt:    proc(instance: string) -> bool,
 	// Ends the runtime's turn handling before lifecycle closes the process.
 	// nil: nothing to stop.
@@ -228,23 +230,36 @@ bridge_runtime_delivery_command :: proc(conn: ^ws.Connection, type, text: string
 	command_id := extract_json_string(text, "command_id", "")
 	defer delete(command_id)
 	if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
-	ok := false
+	outcome := contracts.Runtime_Send_Now_Outcome.Failed
 	if type == contracts.ACP_SEND_NOW_BATCH_COMMAND {
 		cmd: contracts.ACP_Send_Now_Batch_Command
 		if json.unmarshal_string(text, &cmd, allocator = context.temp_allocator) == nil {
 			rt := bridge_runtime_for(cmd.agent_instance_id)
-			ok = rt != nil && rt.send_now != nil && rt.send_now(cmd.agent_instance_id, {launch_epoch = cmd.launch_epoch, batch_id = cmd.batch_id, attempt = cmd.attempt, message_ids = cmd.message_ids})
+			if rt != nil && rt.send_now != nil do outcome = rt.send_now(cmd.agent_instance_id, {launch_epoch = cmd.launch_epoch, batch_id = cmd.batch_id, attempt = cmd.attempt, message_ids = cmd.message_ids})
 		}
 	} else {
 		cmd: contracts.ACP_Inputs_Read_Command
 		if json.unmarshal_string(text, &cmd, allocator = context.temp_allocator) == nil {
 			rt := bridge_runtime_for(cmd.agent_instance_id)
-			ok = rt != nil && rt.inputs_read != nil && rt.inputs_read(cmd.agent_instance_id, cmd.message_ids)
+			if rt != nil && rt.inputs_read != nil && rt.inputs_read(cmd.agent_instance_id, cmd.message_ids) do outcome = .Delivered
 		}
 	}
 	if command_id == "" do return
-	final := bridge_command_result_json(command_id, "succeeded", "") if ok else bridge_command_failed_json(command_id, bridge_cause_wire_error("acp_runtime_unavailable", "the agent runtime did not accept the command"), "")
+	ok := outcome == .Delivered
+	// A Send now that was not delivered reports why (the Hub never records it
+	// as delivered); the input stays queued at the bridge.
+	final := bridge_command_result_json(command_id, "succeeded", "") if ok else bridge_command_failed_json(command_id, bridge_cause_wire_error(contracts.RUNTIME_SEND_NOW_CAUSE[outcome], bridge_runtime_send_now_message(outcome)), "")
 	defer delete(final)
 	if ok do bridge_runtime_cache_command(command_id, final)
 	_ = bridge_hub_send(conn, final)
+}
+
+bridge_runtime_send_now_message :: proc(outcome: contracts.Runtime_Send_Now_Outcome) -> string {
+	switch outcome {
+	case .Delivered: return ""
+	case .Not_Running: return "the agent is not running; the input stays queued"
+	case .Held: return "the agent is restarting or rolling over its context; the input stays queued"
+	case .Failed:
+	}
+	return "the agent runtime did not accept the command"
 }

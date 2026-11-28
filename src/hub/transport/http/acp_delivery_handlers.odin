@@ -98,7 +98,8 @@ send_now_handler :: proc(ctx: rawptr, req: Request) -> Response {
     write_send_now_batch_json(&b,result.batch); strings.write_byte(&b,'}')
     status := 200
     switch result.outcome {
-    case "accepted", "duplicate": status = 202
+    // queued: not delivered now, the bridge keeps the notice for the next idle.
+    case "accepted", "duplicate", "queued": status = 202
     case "failed": status = 503
     }
     return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),status)
