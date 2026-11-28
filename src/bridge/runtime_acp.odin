@@ -9,6 +9,9 @@ import "core:sync"
 // conversation-level Send now batch (acp_delivery.odin) and the protocol
 // driver's steering readiness and usage (acp_driver.odin).
 
+// The inbox's delivery target for this transport (task_notice_queue.odin).
+acp_inbox_target := Bridge_Inbox_Target{transport = "acp", ready = acp_agent_notices_ready, deliver = acp_agent_deliver_notices}
+
 acp_agent_runtime := Agent_Runtime{
 	transport       = "acp",
 	submit          = acp_agent_submit,
@@ -21,8 +24,6 @@ acp_agent_runtime := Agent_Runtime{
 	can_steer       = acp_agent_can_steer,
 	usage           = bridge_ext_usage_snapshot,
 	raw_input       = acp_agent_raw_input,
-	notices_ready   = acp_agent_notices_ready,
-	deliver_notices = acp_agent_deliver_notices,
 }
 
 // A queued user input waits for the next turn; the inbox never steers it.

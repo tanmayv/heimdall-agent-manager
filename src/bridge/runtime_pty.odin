@@ -19,6 +19,9 @@ import contracts "odin_test:contracts"
 //     contracts.Pty_Delivery (provider descriptor, then profile; CONTRACT-17);
 //   - notifications always queue (the shared policy in runtime_iface.odin).
 
+// The inbox's delivery target for this transport (task_notice_queue.odin).
+pty_inbox_target := Bridge_Inbox_Target{transport = "pty", ready = pty_agent_notices_ready, deliver = pty_agent_deliver_notices}
+
 pty_agent_runtime := Agent_Runtime{
 	transport       = "pty",
 	submit          = pty_agent_submit,
@@ -27,8 +30,6 @@ pty_agent_runtime := Agent_Runtime{
 	interrupt       = pty_agent_interrupt,
 	can_steer       = pty_agent_can_steer,
 	usage           = bridge_ext_usage_snapshot,
-	notices_ready   = pty_agent_notices_ready,
-	deliver_notices = pty_agent_deliver_notices,
 }
 
 // Seams: tests capture frames and skip real delays.

@@ -49,26 +49,32 @@ Runtime_Send_Now :: struct {
 	message_ids:            []string,
 }
 
+// The interface proper is submit / send_now / interrupt / stop / can_steer /
+// usage. The other methods each have a stated need. The durable inbox is not
+// part of it: the inbox drives a runtime (task_notice_queue.odin), not the
+// other way round.
 Agent_Runtime :: struct {
-	transport:       string,
-	submit:          proc(instance: string, input: Runtime_Input, mode: Runtime_Mode) -> bool,
-	send_now:        proc(instance: string, req: Runtime_Send_Now) -> bool,
-	inputs_read:     proc(instance: string, ids: []string) -> bool,
-	interrupt:       proc(instance: string) -> bool,
-	// Ends the runtime's turn handling before the process is closed (lifecycle
-	// owns the process itself). nil: nothing to stop.
-	stop:            proc(instance: string),
-	// Releases transport ownership before a relaunch. nil: nothing owned.
-	release:         proc(instance: string),
-	child_exited:    proc(instance: string),
-	can_steer:       proc(instance: string) -> bool,
-	usage:           proc(instance: string) -> (contracts.Ext_Usage, bool),
-	// Raw viewer keystrokes. nil: the bytes go to the agent's terminal as typed.
-	raw_input:       proc(instance: string, data: []byte) -> bool,
-	// The durable notice queue (task_notice_queue.odin) asks whether a batch can
-	// start a turn now, then hands it over as one text.
-	notices_ready:   proc(instance: string) -> bool,
-	deliver_notices: proc(instance, text: string) -> bool,
+	transport:    string,
+	submit:       proc(instance: string, input: Runtime_Input, mode: Runtime_Mode) -> bool,
+	send_now:     proc(instance: string, req: Runtime_Send_Now) -> bool,
+	interrupt:    proc(instance: string) -> bool,
+	// Ends the runtime's turn handling before lifecycle closes the process.
+	// nil: nothing to stop.
+	stop:         proc(instance: string),
+	can_steer:    proc(instance: string) -> bool,
+	usage:        proc(instance: string) -> (contracts.Ext_Usage, bool),
+	// Why: the hub reports inputs the user has read; their queued notices must
+	// not be delivered afterwards (acp_inputs_read).
+	inputs_read:  proc(instance: string, ids: []string) -> bool,
+	// Why: a relaunch must join the old runtime owner (an ACP dispatcher holds
+	// the pipe) without sending stop into the session being replaced.
+	release:      proc(instance: string),
+	// Why: ham-pty-host reports the child's exit; a runtime with a pending turn
+	// must fail it instead of waiting forever.
+	child_exited: proc(instance: string),
+	// Why: the UI terminal pane sends keystrokes; a runtime without a terminal
+	// (ACP) maps them to interrupt / steer. nil: the bytes are typed as is.
+	raw_input:    proc(instance: string, data: []byte) -> bool,
 }
 
 // The runtimes, keyed by the transport recorded for an instance. Built per

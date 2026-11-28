@@ -3,6 +3,8 @@ package main
 import "base:runtime"
 import "core:fmt"
 import "core:os"
+import "core:reflect"
+import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:testing"
@@ -398,4 +400,19 @@ runtime_activity_transitions_emit_turn_events :: proc(t: ^testing.T) {
 	if len(runtime_test_events) == 3 {
 		testing.expect(t, runtime_test_events[0] == .Turn_Started && runtime_test_events[1] == .Turn_Ended && runtime_test_events[2] == .Idle)
 	}
+}
+
+// The interface stays narrow: the core methods plus the justified extras, and
+// the inbox drives runtimes through its own delivery targets.
+@(test)
+runtime_interface_is_narrow_and_inbox_driven :: proc(t: ^testing.T) {
+	names := reflect.struct_field_names(Agent_Runtime)
+	want := []string{"transport", "submit", "send_now", "interrupt", "stop", "can_steer", "usage", "inputs_read", "release", "child_exited", "raw_input"}
+	testing.expect_value(t, len(names), len(want))
+	for n in want do testing.expect(t, slice.contains(names, n), n)
+	for rt in bridge_agent_runtime_list() {
+		testing.expect(t, rt.submit != nil && rt.send_now != nil && rt.interrupt != nil && rt.can_steer != nil && rt.usage != nil, rt.transport)
+	}
+	testing.expect(t, pty_inbox_target.transport == pty_agent_runtime.transport && acp_inbox_target.transport == acp_agent_runtime.transport)
+	testing.expect(t, bridge_inbox_target("inst_runtime_never_seen") == nil, "no runtime, no delivery")
 }

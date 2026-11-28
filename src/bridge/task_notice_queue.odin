@@ -202,11 +202,11 @@ bridge_task_notice_deliver :: proc(batch: []Bridge_Task_Notice) -> bool {
     if !present || !snap.pty_process_alive || snap.stopped_intent_unix_ms != 0 || !snap.start_success_seen do return false
     // Notices never interrupt (CONTRACT-07): the runtime says whether a batch
     // can start a turn now, and a busy agent keeps it queued here.
-    rt := bridge_runtime_for(instance)
-    if rt == nil || rt.notices_ready == nil || rt.deliver_notices == nil || !rt.notices_ready(instance) do return false
+    target := bridge_inbox_target(instance)
+    if target == nil || !target.ready(instance) do return false
     text := bridge_task_notice_text(batch); defer delete(text)
     if text == "" do return true
-    return rt.deliver_notices(instance, text)
+    return target.deliver(instance, text)
 }
 
 // A runtime reported a trusted idle (runtime_iface.odin): its queued notices
@@ -235,6 +235,24 @@ bridge_task_notice_apply_kicks_locked :: proc(now: i64) {
 }
 
 // One batch per instance; do not hold the producer lock across HTTP or provider I/O.
+// The inbox drives a runtime through its transport's delivery target: ready
+// says whether a batch can start a turn now, deliver hands it over as one text.
+Bridge_Inbox_Target :: struct {
+    transport: string,
+    ready:     proc(instance: string) -> bool,
+    deliver:   proc(instance, text: string) -> bool,
+}
+
+// bridge_inbox_target selects the delivery target by the instance's recorded
+// transport; nil (logged by the runtime lookup) keeps the batch queued.
+bridge_inbox_target :: proc(instance: string) -> ^Bridge_Inbox_Target {
+    rt := bridge_runtime_for(instance)
+    if rt == nil do return nil
+    targets := [?]^Bridge_Inbox_Target{&pty_inbox_target, &acp_inbox_target}
+    for target in targets do if target.transport == rt.transport do return target
+    return nil
+}
+
 bridge_task_notice_tick :: proc(now: i64) {
     batch := make([dynamic]Bridge_Task_Notice, allocator = context.temp_allocator)
     sync.mutex_lock(&bridge_task_notices_mu)
