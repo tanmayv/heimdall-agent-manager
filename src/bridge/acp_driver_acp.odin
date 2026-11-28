@@ -295,3 +295,22 @@ acp_driver_acp_permission_result :: proc(method, params, decision: string) -> st
 acp_driver_acp_permission_relay :: proc(method, params, blocker, provider: string, timeout_ms: int) -> Bridge_Ext_Permission_Request {
     return acp_permission_request(params, blocker, provider, timeout_ms)
 }
+
+// ACP `session/update` with sessionUpdate "usage_update" (UsageUpdate in the
+// ACP schema: used = tokens currently in context, size = context window,
+// optional cumulative cost, which the token snapshot does not carry).
+acp_driver_acp_usage :: proc(r: ^ACP_Runtime, method, params: string) -> (usage: contracts.Ext_Usage, ok: bool) {
+    if method != "session/update" do return
+    obj := acp_event_object(params)
+    if acp_event_string(obj, "sessionId") != r.session do return
+    update, _ := obj["update"].(json.Object)
+    if acp_event_string(update, "sessionUpdate") != "usage_update" do return
+    used, used_ok := acp_event_integer(update, "used")
+    if !used_ok || used < 0 do return
+    usage = {context_tokens = used, source = ACP_USAGE_SOURCE}
+    if size, size_ok := acp_event_integer(update, "size"); size_ok && size > 0 {
+        usage.context_window, usage.has_context_window = size, true
+    }
+    return usage, true
+}
+ACP_USAGE_SOURCE :: "acp_usage_update"

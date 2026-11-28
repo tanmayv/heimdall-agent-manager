@@ -148,18 +148,42 @@ bridge_ext_ingest :: proc(rec: Bridge_Local_Agent_Token_Record, params: string, 
 		}
 		s.last_event_at_ms = now
 		s.events_accepted += 1
-		token_changed := bridge_ext_token_usage_apply(&s.token_usage, ev, now)
-		if ev.usage_unavailable && s.token_usage.usage_supported && ev.session_id != "" && s.usage_dark_logged_session != ev.session_id {
-			delete(s.usage_dark_logged_session)
-			s.usage_dark_logged_session = strings.clone(ev.session_id)
-			fmt.eprintfln("extension: %s transcript usage unavailable for instance %s session %s; context usage will not be reported (logged once per session)", ev.provider, instance_id, ev.session_id)
-		}
+		token_changed := bridge_ext_token_fold_locked(s, instance_id, ev, now)
 		sync.mutex_unlock(&bridge_ext_mutex)
 		// Only the throttled snapshot goes upstream (agent_instance_status.token_usage).
 		if token_changed do bridge_ext_token_enqueue_due(now, instance_id)
 		res.accepted += 1
 	}
 	return
+}
+
+// bridge_ext_token_fold_locked folds one event into the instance's token
+// accumulator. Caller holds bridge_ext_mutex.
+@(private = "file")
+bridge_ext_token_fold_locked :: proc(s: ^Bridge_Ext_Instance_State, instance_id: string, ev: contracts.Ext_Event, now: i64) -> bool {
+	token_changed := bridge_ext_token_usage_apply(&s.token_usage, ev, now)
+	if ev.usage_unavailable && s.token_usage.usage_supported && ev.session_id != "" && s.usage_dark_logged_session != ev.session_id {
+		delete(s.usage_dark_logged_session)
+		s.usage_dark_logged_session = strings.clone(ev.session_id)
+		fmt.eprintfln("extension: %s transcript usage unavailable for instance %s session %s; context usage will not be reported (logged once per session)", ev.provider, instance_id, ev.session_id)
+	}
+	return token_changed
+}
+
+// bridge_ext_usage_observe feeds a provider usage report that did not arrive
+// as a ham.ext.v1 event (an ACP runtime's protocol usage notification) into
+// the same per-instance accumulator, throttled hub push and context rollover
+// as extension ingest. ev must carry has_usage; it belongs to the main agent.
+bridge_ext_usage_observe :: proc(instance_id: string, ev: contracts.Ext_Event, now: i64) {
+	context.allocator = bridge_ext_allocator()
+	if strings.trim_space(instance_id) == "" || !ev.has_usage do return
+	sync.mutex_lock(&bridge_ext_mutex)
+	s := bridge_ext_state_locked(instance_id)
+	if s == nil { sync.mutex_unlock(&bridge_ext_mutex); return }
+	token_changed := bridge_ext_token_fold_locked(s, instance_id, ev, now)
+	sync.mutex_unlock(&bridge_ext_mutex)
+	if token_changed do bridge_ext_token_enqueue_due(now, instance_id)
+	bridge_rollover_on_ext_event(instance_id, false, now)
 }
 
 bridge_ext_ingest_result_destroy :: proc(res: ^Bridge_Ext_Ingest_Result) {

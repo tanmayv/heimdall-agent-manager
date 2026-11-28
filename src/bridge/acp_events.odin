@@ -173,6 +173,14 @@ acp_events_ingest := bridge_ext_ingest
 acp_event_string :: proc(obj: json.Object,key: string) -> string {
     value,_ := obj[key].(json.String); return string(value)
 }
+// A whole number, whether the parser produced an integer or a float.
+acp_event_integer :: proc(obj: json.Object,key: string) -> (i64,bool) {
+    #partial switch v in obj[key] {
+    case json.Integer: return i64(v),true
+    case json.Float: if abs(v)<9e15 && v==f64(i64(v)) do return i64(v),true
+    }
+    return 0,false
+}
 acp_event_object :: proc(raw: string) -> json.Object {
     value,err := json.parse(raw,allocator=context.temp_allocator)
     if err != nil do return nil

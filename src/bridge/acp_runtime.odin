@@ -231,7 +231,19 @@ acp_runtime_notification :: proc(data: rawptr, method, params: string) {
     defer { delete(method); delete(params) }
     r := cast(^ACP_Runtime)data
     if !acp_runtime_current(r) || r.d.error != "" do return
-    acp_runtime_driver(r).notification(r, method, params)
+    driver := acp_runtime_driver(r)
+    acp_runtime_usage(r, driver, method, params)
+    driver.notification(r, method, params)
+}
+
+// Every driver's usage report reaches the extension token accumulator (one
+// usage path for PTY and ACP runtimes). Replayed history is not current usage.
+acp_runtime_usage :: proc(r: ^ACP_Runtime, driver: ^ACP_Protocol_Driver, method, params: string) {
+    if driver.usage == nil || r.d.replay_only || r.session == "" do return
+    usage, ok := driver.usage(r, method, params)
+    if !ok do return
+    ev := contracts.Ext_Event{kind = .Notification, provider = r.provider, session_id = r.session, has_usage = true, usage = usage}
+    bridge_ext_usage_observe(r.instance, ev, bridge_runtime_now_ms())
 }
 
 acp_runtime_inbound :: proc(data: rawptr, id, method, params: string) -> bool {

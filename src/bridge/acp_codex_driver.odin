@@ -40,6 +40,31 @@ acp_protocol_codex_driver := ACP_Protocol_Driver{
     state_key = ACP_CODEX_STATE_KEY, state_load = acp_codex_state_load,
     state_save = acp_codex_state_save, state_delete = acp_codex_state_delete,
     launch_args = acp_codex_launch_args,
+    usage = acp_codex_usage,
+}
+
+// thread/tokenUsage/updated: {threadId, turnId, tokenUsage: {total, last:
+// TokenUsageBreakdown, modelContextWindow: int|null}}. The context size is the
+// last request's totalTokens (what the app-server measures against the
+// window); output_tokens_total is the thread's cumulative output.
+ACP_CODEX_USAGE_SOURCE :: "codex_token_usage"
+acp_codex_usage :: proc(r: ^ACP_Runtime,method,params: string) -> (usage: contracts.Ext_Usage,ok: bool) {
+    if method!="thread/tokenUsage/updated" do return
+    obj := acp_event_object(params)
+    if acp_event_string(obj,"threadId")!=r.session do return
+    token_usage,_ := obj["tokenUsage"].(json.Object)
+    last,_ := token_usage["last"].(json.Object)
+    total,_ := token_usage["total"].(json.Object)
+    context_tokens,context_ok := acp_event_integer(last,"totalTokens")
+    if !context_ok || context_tokens<0 do return
+    usage = {context_tokens=context_tokens,source=ACP_CODEX_USAGE_SOURCE}
+    if output,output_ok := acp_event_integer(total,"outputTokens");output_ok && output>=0 {
+        usage.output_tokens_total,usage.has_output_tokens_total = output,true
+    }
+    if window,window_ok := acp_event_integer(token_usage,"modelContextWindow");window_ok && window>0 {
+        usage.context_window,usage.has_context_window = window,true
+    }
+    return usage,true
 }
 
 // Override only this child. Profile/global config files and other plugins

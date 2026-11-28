@@ -37,6 +37,10 @@ ACP_Protocol_Driver :: struct {
     state_delete: proc(state: rawptr),
     // Appends protocol-specific flags (temp-allocated) to a launch or probe argv.
     launch_args: proc(argv: ^[dynamic]string),
+    // Converts a protocol notification (borrowed) into a usage snapshot for
+    // this runtime's session; ok=false when it carries none. usage.source is
+    // a constant. Called for every notification before `notification`.
+    usage: proc(r: ^ACP_Runtime, method, params: string) -> (usage: contracts.Ext_Usage, ok: bool),
 }
 
 // Later: the turn will accept steering once the protocol has admitted it (e.g.
@@ -93,6 +97,7 @@ acp_protocol_acp_driver := ACP_Protocol_Driver{
     permissions_cancel = acp_permissions_cancel,
     permission_result = acp_driver_acp_permission_result,
     permission_relay = acp_driver_acp_permission_relay,
+    usage = acp_driver_acp_usage,
 }
 
 acp_protocol_driver :: proc(protocol: contracts.ACP_Protocol) -> ^ACP_Protocol_Driver {
