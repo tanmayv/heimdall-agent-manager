@@ -1,7 +1,7 @@
 package contracts
 
 // Keep APP_VERSION in sync with flake.nix appVersion for releases.
-APP_VERSION :: #config(HAM_APP_VERSION, "0.5.96")
+APP_VERSION :: #config(HAM_APP_VERSION, "0.5.97")
 GIT_COMMIT :: #config(HAM_GIT_COMMIT, "aaf135c6")
 BUILD_TIMESTAMP :: #config(HAM_BUILD_TIMESTAMP, "2026-11-28T08:24:34Z")
 PROTOCOL_VERSION :: 1

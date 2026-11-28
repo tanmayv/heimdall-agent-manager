@@ -817,6 +817,8 @@ MIGRATION_269_PROFILE_TRANSPORT :: #load("migrations/269_profile_transport.sql",
 MIGRATION_270_EXTENSION_VERSION_SYNC :: #load("migrations/270_extension_version_sync_0_5_96.sql", string)
 MIGRATION_271_REPLY_ORIGIN :: #load("migrations/271_reply_origin.sql", string)
 
+MIGRATION_273_EXTENSION_VERSION_SYNC :: #load("migrations/273_extension_version_sync_0_5_97.sql", string)
+
 migration_order :: [?]string {
 	"001_foundation.sql",
 	"002_owner_scoped_core.sql",
@@ -1127,6 +1129,7 @@ migration_order :: [?]string {
 	"271_reply_origin.sql",
 	"bots_web_004_activation.sql",
 	"272_bot_channel_conversion_sources.sql",
+	"273_extension_version_sync_0_5_97.sql",
 }
 
 // stop_before is a TEST SEAM: when non-empty, the apply loop stops in front of
@@ -1733,6 +1736,7 @@ run_migrations :: proc(
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
+	if name == "273_extension_version_sync_0_5_97.sql" do return strings.clone(MIGRATION_273_EXTENSION_VERSION_SYNC)
 	if name == "271_reply_origin.sql" do return strings.clone(MIGRATION_271_REPLY_ORIGIN)
 	if name == "270_extension_version_sync_0_5_96.sql" do return strings.clone(MIGRATION_270_EXTENSION_VERSION_SYNC)
 	if name == "269_profile_transport.sql" do return strings.clone(MIGRATION_269_PROFILE_TRANSPORT)
