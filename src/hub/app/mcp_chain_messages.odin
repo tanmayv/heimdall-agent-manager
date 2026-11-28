@@ -1,6 +1,7 @@
 package app
 
 import "core:encoding/json"
+import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
@@ -47,7 +48,7 @@ mcp_send_chain_message :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,chain_
 	if !saved || merr.code!=.None do return "",mcp_task_error(merr)
 	// The stored receipt records persistence only: a replay says "pending",
 	// never that a later delivery succeeded (D5).
-	result:=MCP_Message_Result{chain_id=chain_id,coordinator_agent_instance_id=instance_id,conversation_id=c.conversation_id,message_id=m.message_id,status="pending"}
+	result:=MCP_Message_Result{chain_id=chain_id,coordinator_agent_instance_id=instance_id,conversation_id=c.conversation_id,message_id=m.message_id,status=contracts.MESSAGE_DELIVERY_PENDING}
 	encoded,eerr:=json.marshal(result,allocator=context.temp_allocator)
 	if eerr!=nil do return "","request_failed"
 	if e:=sqlite.mcp_receipt_put(&g.db,view.owner,view.grant,"chains.message",request_id,digest,m.message_id,string(encoded));e.code!=.None do return "","request_failed"
@@ -64,9 +65,9 @@ mcp_send_chain_message :: proc(ctx:rawptr,raw:string,view:mcp.Access_View,chain_
 	result.delivery_warning=delivery.reason
 	if !restarted {
 		result.status=content.message_delivery_state_wire(.Pending)
-		result.delivery_warning="agent_start_failed"
+		result.delivery_warning=contracts.MESSAGE_DELIVERY_REASON_AGENT_START_FAILED
 	}
-	if restart_err.code==.Bridge_Offline || delivery_err.code==.Bridge_Offline do result.delivery_warning="bridge_offline"
+	if restart_err.code==.Bridge_Offline || delivery_err.code==.Bridge_Offline do result.delivery_warning=contracts.MESSAGE_DELIVERY_REASON_BRIDGE_OFFLINE
 	encoded,_=json.marshal(result,allocator=context.temp_allocator)
 	return string(encoded),""
 }

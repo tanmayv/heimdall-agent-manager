@@ -127,9 +127,10 @@ mcp_chain_message_test :: proc(t:^testing.T,g:^App_Graph,h:^http.MCP_Control_Han
 	testing.expect_value(t,activity.calls,1)
 	testing.expect(t,activity.coordinator_hits==1,"the reset names the chain coordinator")
 	testing.expect(t,first["coordinator_agent_instance_id"].(json.String)=="inst_message_a" && first["conversation_id"].(json.String)=="chat_message_a")
-	// D5: accepted only when the coordinator was already running and notified;
-	// a coordinator this call had to launch makes the message pending.
-	testing.expect(t,first["status"].(json.String)==("accepted" if len(sink.commands)==1 else "pending"))
+	// D5: the coordinator is running and was notified (one notify command, no
+	// launch), so the message is accepted with no warning.
+	testing.expect_value(t,first["status"].(json.String),json.String(contracts.MESSAGE_DELIVERY_ACCEPTED))
+	testing.expect_value(t,first["delivery_warning"].(json.String),json.String(""))
 	rows,_:=iface.content_list_messages(&g.repos.content,"chat_message_a",owner,100,"")
 	if !testing.expect(t,len(rows)==1) do return
 	testing.expect(t,rows[0].direction=="user_to_agent" && rows[0].message_type=="text" && strings.has_prefix(rows[0].body,"vault:v2:") && !strings.contains(rows[0].metadata_json,"Private"))

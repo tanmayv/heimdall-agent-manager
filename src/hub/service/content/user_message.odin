@@ -37,7 +37,7 @@ persist_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:
 Message_Delivery_State :: enum u8 { Accepted, Pending }
 Message_Delivery :: struct { state: Message_Delivery_State, reason: string }
 
-MESSAGE_DELIVERY_STATE_WIRE := [Message_Delivery_State]string{.Accepted = "accepted", .Pending = "pending"}
+MESSAGE_DELIVERY_STATE_WIRE := [Message_Delivery_State]string{.Accepted = contracts.MESSAGE_DELIVERY_ACCEPTED, .Pending = contracts.MESSAGE_DELIVERY_PENDING}
 
 message_delivery_state_wire :: proc(state: Message_Delivery_State) -> string { return MESSAGE_DELIVERY_STATE_WIRE[state] }
 
@@ -45,16 +45,16 @@ message_delivery_state_wire :: proc(state: Message_Delivery_State) -> string { r
 // was (or was not) sent. A row in no running state, or one still launching
 // (the notice waits in the bridge inbox for its readiness), is pending.
 message_delivery_for :: proc(inst: domain.Agent_Instance, found, notified: bool, notify_err: domain.Domain_Error) -> Message_Delivery {
-	if !found do return {.Pending, "agent_not_found"}
-	if !agent.runtime_expected_active(inst.runtime_status) || inst.runtime_status == "stopping" do return {.Pending, "agent_not_running"}
-	if !notified do return {.Pending, "bridge_offline" if notify_err.code == .Bridge_Offline else "delivery_unavailable"}
-	if inst.runtime_status == "launching" || inst.runtime_status == "starting" do return {.Pending, "agent_starting"}
+	if !found do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_AGENT_NOT_FOUND}
+	if !agent.runtime_expected_active(inst.runtime_status) || inst.runtime_status == "stopping" do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_AGENT_NOT_RUNNING}
+	if !notified do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_BRIDGE_OFFLINE if notify_err.code == .Bridge_Offline else contracts.MESSAGE_DELIVERY_REASON_DELIVERY_UNAVAILABLE}
+	if inst.runtime_status == "launching" || inst.runtime_status == "starting" do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_AGENT_STARTING}
 	return {.Accepted, ""}
 }
 
 deliver_user_message :: proc(s:^Content_Service,auth:contracts.Auth_Context,cid:string,m:domain.Chat_Message)->(Message_Delivery,domain.Domain_Error) {
 	c,ok,err:=get_conversation(s,auth,cid)
-	if !ok do return {.Pending, "conversation_unavailable"},err
+	if !ok do return {.Pending, contracts.MESSAGE_DELIVERY_REASON_CONVERSATION_UNAVAILABLE},err
 	notify_message_attention(s,m)
 	notified,nerr:=notify_agent_message_checked(s,c,"user_to_agent","user",m.message_id,"User")
 	record_activity_and_maybe_nudge(s,cid,m.created_at)
