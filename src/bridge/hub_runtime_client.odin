@@ -825,6 +825,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection, secure_form_generation := 
 		bridge_shell_output_drain_outgoing(conn)
 		bridge_shell_exited_drain_outgoing(conn)
 		bridge_tool_live_drain(conn)
+		bridge_agent_notified_drain(conn)
 		// REQ-SHELL-10: immediately after the exit drain, so the fast path's exits are
 		// on the wire ahead of the snapshot that is meant to be the safety net for
 		// whatever it lost.

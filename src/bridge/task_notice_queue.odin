@@ -333,6 +333,7 @@ bridge_inbox_drain_shared :: proc(instance: string, now: i64) {
     for id in dropped do bridge_inbox_remove(&slot.inbox, id)
     if delivered {
         bridge_inbox_commit_typed(&slot.inbox, batch[:], slot.typing_from)
+        bridge_agent_notified_note(instance, batch[:]) // reported to the Hub after the commit
         bridge_inbox_window_reset(&slot.inbox)
         slot.kicked = false
     } else if len(batch) > 0 {
