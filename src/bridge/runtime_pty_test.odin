@@ -693,3 +693,70 @@ pty_coalesce_during_typing_keeps_one_notice_only_for_a_new_message :: proc(t: ^t
 	testing.expect(t, inbox != nil && inbox.next_seq >= 4)
 	if inbox != nil do bridge_inbox_unlock()
 }
+
+pty_test_write_inbox :: proc(instance, raw: string) {
+	dir := bridge_inbox_dir(); defer delete(dir)
+	bridge_make_directory_all(dir)
+	path, _ := bridge_inbox_path(instance); defer delete(path)
+	_ = os.write_entire_file(path, transmute([]byte)raw)
+}
+
+// S2: an inbox belongs to one transport. A PTY runtime drops what an ACP
+// runtime left (message bodies are never typed), a locked sealed ACP file
+// never blocks PTY admission, and an ACP claim drops PTY notices (their ids
+// never dedupe the ACP chat admission of the same messages).
+@(test)
+pty_inbox_transport_switch_drops_the_other_adapters_entries :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex); defer sync.mutex_unlock(&bridge_test_config_mutex)
+	context.allocator = runtime.heap_allocator()
+	env := pty_test_begin("pty-switch"); defer pty_test_end(&env)
+	notice := bridge_pty_host_unread_notice()
+	// ACP -> PTY: a readable ACP inbox with a body, a completed id and a batch.
+	id := "inst_pty_from_acp"
+	defer bridge_runtime_set_status(id, "stopped", "idle")
+	pty_test_write_inbox(id, `{"version":1,"transport":"acp","queue":[{"id":"msg_body","text":"SECRET BODY","lane":0}],"completed_inputs":["msg_old"],"send_now":{"batch_id":"snb_acp","state":"waiting","members":["msg_body"]}}`)
+	bridge_inbox_restore_all()
+	testing.expect_value(t, len(pty_test_queued(id)), 1) // loaded, not yet adopted
+	pty_test_forget_typed(id)
+	pty_test_activity(id, "active", "pane_diff")
+	testing.expect(t, bridge_runtime_submit(id, {kind = .User_Message, id = "msg_old", text = notice, hub_message = true}))
+	ids := pty_test_queued(id)
+	testing.expect(t, len(ids) == 1 && ids[0] == "msg_old", "ACP entries and completed ids are dropped; the message is admitted again")
+	{
+		inbox := bridge_inbox_lock(id)
+		testing.expect(t, inbox != nil && inbox.transport == "pty" && inbox.send_now.batch_id == "")
+		if inbox != nil do bridge_inbox_unlock()
+	}
+	pty_test_activity(id, "idle", "pane_diff")
+	bridge_task_notice_tick(bridge_runtime_now_ms() + 10_000)
+	testing.expect_value(t, pty_test_trace(), fmt.tprintf("%q Enter Enter", notice))
+	// A sealed ACP inbox the bridge cannot open never blocks PTY admission.
+	sealed := "inst_pty_sealed"
+	defer bridge_runtime_set_status(sealed, "stopped", "idle")
+	pty_test_write_inbox(sealed, `{"schema_version":2,"instance":"inst_pty_sealed","sealed_state":"not-a-vault-token"}`)
+	bridge_inbox_forget_all()
+	testing.expect(t, bridge_inbox_claim(sealed, "acp") == nil, "ACP keeps refusing an unreadable inbox")
+	bridge_inbox_forget_all()
+	pty_test_activity(sealed, "active", "pane_diff")
+	testing.expect(t, bridge_runtime_submit(sealed, {kind = .User_Message, id = "msg_s", text = notice, hub_message = true}))
+	ids = pty_test_queued(sealed)
+	testing.expect(t, len(ids) == 1 && ids[0] == "msg_s")
+	// PTY -> ACP: the claim drops the PTY notice and its completed ids.
+	testing.expect(t, rt_inputs_read(sealed, "msg_s"))
+	testing.expect(t, bridge_runtime_submit(sealed, {kind = .User_Message, id = "msg_p", text = notice, hub_message = true}))
+	bridge_inbox_forget_all()
+	claimed := bridge_inbox_claim(sealed, "acp")
+	testing.expect(t, claimed != nil)
+	if claimed != nil {
+		testing.expect(t, len(claimed.queue) == 0 && len(claimed.completed_inputs) == 0 && claimed.transport == "acp")
+		testing.expect(t, !bridge_inbox_known(claimed, "msg_s") && !bridge_inbox_known(claimed, "msg_p"), "ACP admits the same messages")
+		bridge_inbox_release(claimed)
+	}
+	again := bridge_inbox_claim(sealed, "acp")
+	testing.expect(t, again != nil && again.transport == "acp", "the owner is recorded in the file")
+	if again != nil do bridge_inbox_release(again)
+}
+
+rt_inputs_read :: proc(instance, id: string) -> bool {
+	return pty_agent_runtime.inputs_read(instance, {id})
+}

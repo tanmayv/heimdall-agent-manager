@@ -251,6 +251,14 @@ pty_runtime_type_now :: proc(instance, text: string, mode: Runtime_Mode) -> bool
 	return true
 }
 
+// pty_inbox_slot_locked is the PTY runtime's view of the shared inbox (call
+// with bridge_inbox_mu held): it adopts entries another transport left (they
+// are dropped), and an unreadable file (a sealed ACP inbox while the vault is
+// locked) never blocks PTY admission: it starts empty.
+pty_inbox_slot_locked :: proc(instance: string) -> ^Bridge_Inbox_Slot {
+	return bridge_inbox_slot_locked(instance, pty_agent_runtime.transport, fresh_if_unreadable = true)
+}
+
 // The coalescing key of the one pending unread-messages notice.
 PTY_UNREAD_NOTICE_KEY :: "unread_messages"
 
@@ -265,14 +273,16 @@ pty_runtime_unread :: proc(input: Bridge_Inbox_Input) -> bool {
 // A hub message notice coalesces into the one pending unread notice: a second
 // arrival replaces it in place with the sender-neutral text.
 pty_runtime_enqueue :: proc(instance: string, input: Runtime_Input) -> bool {
-	if input.kind != .User_Message || !input.hub_message do return bridge_inbox_admit_shared(instance, input)
+	if input.kind != .User_Message || !input.hub_message do return bridge_inbox_admit_shared(instance, input, transport = pty_agent_runtime.transport, fresh_if_unreadable = true)
 	notice := input
 	notice.key = PTY_UNREAD_NOTICE_KEY
-	if inbox := bridge_inbox_lock(instance); inbox != nil {
-		for queued in inbox.queue do if queued.key == PTY_UNREAD_NOTICE_KEY && pty_runtime_unread(queued) && queued.id != input.id do notice.text = bridge_pty_host_unread_notice()
-		bridge_inbox_unlock()
+	{
+		sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
+		if slot := pty_inbox_slot_locked(instance); slot != nil {
+			for queued in slot.inbox.queue do if queued.key == PTY_UNREAD_NOTICE_KEY && pty_runtime_unread(queued) && queued.id != input.id do notice.text = bridge_pty_host_unread_notice()
+		}
 	}
-	return bridge_inbox_admit_shared(instance, notice, coalesce_steer = true)
+	return bridge_inbox_admit_shared(instance, notice, coalesce_steer = true, transport = pty_agent_runtime.transport, fresh_if_unreadable = true)
 }
 
 pty_agent_submit :: proc(instance: string, input: Runtime_Input, mode: Runtime_Mode) -> bool {
@@ -304,7 +314,7 @@ pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, requ
 	if d := pty_runtime_deliverable(instance); d != .Ready do return pty_runtime_withheld_outcome(d)
 	{
 		sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
-		slot := bridge_inbox_slot_locked(instance)
+		slot := pty_inbox_slot_locked(instance)
 		if slot == nil || slot.busy do return .Failed
 		if request_id != "" && slot.inbox.send_now_applied == request_id do return .Delivered
 		if consume_unread do for input in slot.inbox.queue do if pty_runtime_unread(input) do append(&consumed, bridge_inbox_typed_entry(input))
@@ -313,7 +323,7 @@ pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, requ
 	}
 	typed := pty_runtime_type_now(instance, text, mode)
 	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
-	slot := bridge_inbox_slot_locked(instance)
+	slot := pty_inbox_slot_locked(instance)
 	if slot == nil do return .Failed
 	slot.busy = false
 	if !typed do return .Failed
@@ -326,7 +336,7 @@ pty_runtime_deliver_now :: proc(instance, text: string, mode: Runtime_Mode, requ
 
 pty_runtime_send_now_applied :: proc(instance, request_id: string) -> bool {
 	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
-	slot := bridge_inbox_slot_locked(instance)
+	slot := pty_inbox_slot_locked(instance)
 	return slot != nil && slot.inbox.send_now_applied == request_id
 }
 
@@ -342,7 +352,7 @@ pty_agent_send_now :: proc(instance: string, req: Runtime_Send_Now) -> contracts
 // Inputs the agent already read (chat read) no longer need a notice.
 pty_agent_inputs_read :: proc(instance: string, ids: []string) -> bool {
 	sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
-	slot := bridge_inbox_slot_locked(instance)
+	slot := pty_inbox_slot_locked(instance)
 	if slot == nil do return false
 	removed := false
 	for id in ids do if bridge_inbox_remove(&slot.inbox, id) do removed = true

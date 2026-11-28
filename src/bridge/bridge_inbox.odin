@@ -14,6 +14,14 @@ package main
 // vault keyring ({"schema_version":2,"instance":...,"sealed_state":...}), like
 // the ACP journal it used to live in.
 //
+// Transport: the file records the runtime adapter that owns its entries
+// (transport). Entries are adapter-specific: an ACP entry carries a message
+// body, a PTY entry a notice that points at chat read. A runtime of another
+// transport that loads or claims the inbox drops them, with the Send now
+// state and the completed identities (bridge_inbox_adopt): every message is
+// hub-owned and is admitted again (a fresh unread notice for PTY, a chat fetch
+// for ACP). "" (legacy or shared admissions only) is adopted as is.
+//
 // Ownership: an inbox is either in the shared registry (guarded by
 // bridge_inbox_mu; the PTY runtime and the worker use it) or claimed by one
 // ACP runtime, whose dispatcher is then its only user. A claimed instance
@@ -91,6 +99,8 @@ Bridge_Inbox :: struct {
     // Collection window of the Batch/Wake lanes and the notice rate limit.
     batch_first_ms, batch_last_ms, last_notice_turn_ms: i64,
     next_seq: i64,
+    // The runtime transport that owns the entries ("" until one adopts it).
+    transport: string,
     instance: string `json:"-"`,
     sealed: bool `json:"-"`,
     saved: string `json:"-"`, // bytes last written; an unchanged save is skipped
@@ -123,7 +133,7 @@ bridge_inbox_delete :: proc(inbox: ^Bridge_Inbox) {
     for id in inbox.completed_inputs do delete(id)
     delete(inbox.completed_inputs)
     bridge_inbox_send_now_delete(&inbox.send_now)
-    delete(inbox.send_now_applied)
+    delete(inbox.send_now_applied); delete(inbox.transport)
     delete(inbox.instance); delete(inbox.saved)
     inbox^ = {}
 }
@@ -151,7 +161,7 @@ bridge_inbox_valid :: proc(inbox: ^Bridge_Inbox, max_members: int) -> bool {
     if bytes > BRIDGE_INBOX_MAX_BYTES do return false
     if inbox.batch_first_ms < 0 || inbox.batch_last_ms < inbox.batch_first_ms || inbox.last_notice_turn_ms < 0 do return false
     for id in inbox.completed_inputs do if id == "" || len(id) > 1024 do return false
-    if len(inbox.send_now_applied) > BRIDGE_INBOX_SEND_NOW_ID_MAX do return false
+    if len(inbox.send_now_applied) > BRIDGE_INBOX_SEND_NOW_ID_MAX || len(inbox.transport) > 32 do return false
     return bridge_inbox_send_now_valid(&inbox.send_now, max_members)
 }
 
@@ -339,6 +349,29 @@ bridge_inbox_merge :: proc(dst, src: ^Bridge_Inbox) {
     dst.last_notice_turn_ms = max(dst.last_notice_turn_ms, src.last_notice_turn_ms)
 }
 
+// bridge_inbox_adopt makes transport the inbox's owner. Entries another
+// transport left are dropped with its Send now state, completed identities
+// and collection window (see the file comment). Returns whether entries were
+// dropped (the caller saves then); a stamp alone is saved with the next change.
+bridge_inbox_adopt :: proc(inbox: ^Bridge_Inbox, transport: string) -> (dropped: bool) {
+    if transport == "" || inbox.transport == transport do return false
+    context.allocator = runtime.heap_allocator()
+    if inbox.transport != "" {
+        dropped = true
+        fmt.eprintfln("bridge inbox: instance=%q moved from transport %q to %q; dropping %d queued inputs (the hub admits its messages again)", inbox.instance, inbox.transport, transport, len(inbox.queue))
+        for input in inbox.queue do bridge_inbox_input_delete(input)
+        clear(&inbox.queue)
+        for id in inbox.completed_inputs do delete(id)
+        clear(&inbox.completed_inputs)
+        bridge_inbox_send_now_delete(&inbox.send_now)
+        delete(inbox.send_now_applied); inbox.send_now_applied = ""
+        inbox.batch_first_ms = 0; inbox.batch_last_ms = 0
+        inbox.sealed = false
+    }
+    delete(inbox.transport); inbox.transport = strings.clone(transport)
+    return
+}
+
 // ---- persistence ------------------------------------------------------------
 
 // The per-bridge namespace shared with local tokens and retry journals.
@@ -438,14 +471,27 @@ bridge_inbox_mu: sync.Mutex
 bridge_inbox_slots: map[string]^Bridge_Inbox_Slot
 
 // Call with bridge_inbox_mu held. Loads the instance's file on first use; nil
-// when the file is unreadable or the inbox is claimed.
-bridge_inbox_slot_locked :: proc(instance: string) -> ^Bridge_Inbox_Slot {
+// when the file is unreadable or the inbox is claimed. A runtime passes its
+// transport, which adopts the inbox (bridge_inbox_adopt). With
+// fresh_if_unreadable an unreadable file (a sealed one while the vault is
+// locked: only an ACP inbox is ever sealed) starts an empty inbox that
+// replaces it, so it never blocks that runtime's admission.
+bridge_inbox_slot_locked :: proc(instance: string, transport := "", fresh_if_unreadable := false) -> ^Bridge_Inbox_Slot {
     context.allocator = runtime.heap_allocator()
     if bridge_inbox_slots == nil do bridge_inbox_slots = make(map[string]^Bridge_Inbox_Slot)
-    if slot := bridge_inbox_slots[instance]; slot != nil do return nil if slot.claimed else slot
+    if slot := bridge_inbox_slots[instance]; slot != nil {
+        if slot.claimed do return nil
+        if bridge_inbox_adopt(&slot.inbox, transport) && !bridge_inbox_save(&slot.inbox) do fmt.eprintfln("bridge inbox: could not save the transport change for instance=%q", instance)
+        return slot
+    }
     if instance == "" || len(bridge_inbox_slots) >= 4096 do return nil
     inbox, ok := bridge_inbox_load(instance)
-    if !ok do return nil
+    if !ok {
+        if !fresh_if_unreadable || !acp_state_component_ok(instance) do return nil
+        fmt.eprintfln("bridge inbox: instance=%q starts an empty inbox for transport %q; the unreadable file is replaced at the next save", instance, transport)
+        inbox = {instance = strings.clone(instance)}
+    }
+    if bridge_inbox_adopt(&inbox, transport) && !bridge_inbox_save(&inbox) do fmt.eprintfln("bridge inbox: could not save the transport change for instance=%q", instance)
     slot := new(Bridge_Inbox_Slot)
     slot.inbox = inbox
     bridge_inbox_slots[strings.clone(instance)] = slot
@@ -463,9 +509,10 @@ bridge_inbox_lock :: proc(instance: string) -> ^Bridge_Inbox {
 
 bridge_inbox_unlock :: proc() { sync.mutex_unlock(&bridge_inbox_mu) }
 
-// bridge_inbox_claim hands an instance's inbox to one owner (an ACP runtime);
-// nil when it cannot be read. The registry keeps a tombstone until release.
-bridge_inbox_claim :: proc(instance: string) -> ^Bridge_Inbox {
+// bridge_inbox_claim hands an instance's inbox to one owner (an ACP runtime of
+// transport, which adopts it); nil when it cannot be read. The registry keeps
+// a tombstone until release.
+bridge_inbox_claim :: proc(instance: string, transport := "") -> ^Bridge_Inbox {
     context.allocator = runtime.heap_allocator()
     sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
     if bridge_inbox_slots == nil do bridge_inbox_slots = make(map[string]^Bridge_Inbox_Slot)
@@ -483,6 +530,7 @@ bridge_inbox_claim :: proc(instance: string) -> ^Bridge_Inbox {
         bridge_inbox_slots[strings.clone(instance)] = slot
     }
     if slot != nil do slot.claimed = true
+    if bridge_inbox_adopt(inbox, transport) && !bridge_inbox_save(inbox) do fmt.eprintfln("bridge inbox: could not save the transport change for instance=%q", instance)
     return inbox
 }
 

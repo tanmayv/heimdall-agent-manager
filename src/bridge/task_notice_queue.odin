@@ -61,14 +61,15 @@ bridge_inbox_input_from :: proc(input: Runtime_Input, now: i64) -> Bridge_Inbox_
 }
 
 // bridge_inbox_admit_shared admits to an unclaimed inbox and commits it
-// before returning true; a full, unreadable or claimed inbox refuses.
-bridge_inbox_admit_shared :: proc(instance: string, input: Runtime_Input, coalesce_steer := false) -> bool {
+// before returning true; a full, unreadable or claimed inbox refuses. A
+// runtime passes its transport and unreadable policy (bridge_inbox_slot_locked).
+bridge_inbox_admit_shared :: proc(instance: string, input: Runtime_Input, coalesce_steer := false, transport := "", fresh_if_unreadable := false) -> bool {
     if input.text == "" do return false
     now := bridge_runtime_now_ms()
     entry := bridge_inbox_input_from(input, now)
     if !bridge_inbox_input_valid(entry) { bridge_inbox_input_delete(entry); return false }
     sync.mutex_lock(&bridge_inbox_mu); defer sync.mutex_unlock(&bridge_inbox_mu)
-    slot := bridge_inbox_slot_locked(instance)
+    slot := bridge_inbox_slot_locked(instance, transport, fresh_if_unreadable)
     if slot == nil { bridge_inbox_input_delete(entry); return false }
     id := strings.clone(entry.id, context.temp_allocator)
     switch bridge_inbox_admit(&slot.inbox, entry, now, coalesce_steer) {
@@ -301,6 +302,11 @@ bridge_inbox_drain_shared :: proc(instance: string, now: i64) {
     if !ready {
         slot.retry_ms = now+BRIDGE_TASK_NOTICE_WINDOW_MS
         sync.mutex_unlock(&bridge_inbox_mu); return
+    }
+    // A runtime of another transport never delivers the entries it left.
+    if bridge_inbox_adopt(&slot.inbox, target.transport) {
+        if !bridge_inbox_save(&slot.inbox) do fmt.eprintfln("bridge inbox: could not save the transport change for instance=%q", instance)
+        if !bridge_inbox_due_locked(slot, now) { sync.mutex_unlock(&bridge_inbox_mu); return }
     }
     for input in slot.inbox.queue {
         switch bridge_inbox_relevance(instance, input, now) {

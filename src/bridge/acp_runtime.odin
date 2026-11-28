@@ -422,7 +422,7 @@ acp_runtime_new :: proc(instance, epoch, run_dir, provider, profile, etag, model
     r.model = strings.clone(model); r.mode = strings.clone(mode); r.rec = bridge_startup_clone_rec(rec)
     base := bridge_shell_data_dir(); defer delete(base)
     r.state_path, _ = acp_state_path(base, instance, epoch)
-    r.inbox = bridge_inbox_claim(instance)
+    r.inbox = bridge_inbox_claim(instance, acp_agent_runtime.transport)
     if r.inbox == nil {
         // An unreadable inbox file is kept untouched; launch and restore refuse.
         r.inbox = new(Bridge_Inbox)
