@@ -486,3 +486,28 @@ codex_driver_restores_old_format_durable_state :: proc(t: ^testing.T) {
     testing.expect(t, !acp_runtime_durable_load(&acp_protocol_codex_driver, `{"phase":"ready","codex":{"turn_id":7}}`, &bad, context.temp_allocator))
     acp_runtime_durable_free_driver_state(&acp_protocol_codex_driver, &bad)
 }
+
+// Shared code hands state_load only the value under the driver's state_key.
+@(private = "file") state_key_test_seen: string
+@(test)
+acp_runtime_durable_load_passes_only_the_state_key_value :: proc(t: ^testing.T) {
+    context.allocator = context.temp_allocator
+    driver := ACP_Protocol_Driver{state_key = "probe_state",
+        state_load = proc(state_json: string) -> (rawptr, bool) {
+            state_key_test_seen = strings.clone(state_json, context.temp_allocator)
+            return nil, true
+        }}
+    d: ACP_Runtime_Durable
+    state_key_test_seen = ""
+    testing.expect(t, acp_runtime_durable_load(&driver, `{"phase":"ready","codex":{"turn_id":"x"},"probe_state":{"s":"a","n":7}}`, &d, context.temp_allocator))
+    testing.expect_value(t, state_key_test_seen, `{"n":7,"s":"a"}`)
+    // Absent or null: no saved state, state_load is not called.
+    state_key_test_seen = "unset"
+    testing.expect(t, acp_runtime_durable_load(&driver, `{"phase":"ready","probe_state":null}`, &d, context.temp_allocator))
+    testing.expect(t, acp_runtime_durable_load(&driver, `{"phase":"ready"}`, &d, context.temp_allocator))
+    testing.expect_value(t, state_key_test_seen, "unset")
+    // A Codex journal without its object restores with lazily allocated state.
+    plain: ACP_Runtime_Durable
+    testing.expect(t, acp_runtime_durable_load(&acp_protocol_codex_driver, `{"phase":"ready"}`, &plain, context.temp_allocator))
+    testing.expect(t, plain.driver_state == nil && acp_codex_durable_valid(&plain))
+}

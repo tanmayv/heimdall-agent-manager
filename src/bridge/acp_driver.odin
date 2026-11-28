@@ -29,10 +29,11 @@ ACP_Protocol_Driver :: struct {
     // whenever the session advertised steering support.
     can_steer: proc(r: ^ACP_Runtime) -> ACP_Steer_Readiness,
     // Opaque driver-owned durable state (ACP_Runtime_Durable.driver_state).
-    // It persists in the runtime journal JSON under state_key; load reads it
-    // from the whole journal JSON. Drivers without state leave these nil.
+    // It persists in the runtime journal JSON under state_key; shared code
+    // extracts that value and passes only it (borrowed) to state_load, which is
+    // not called when the key is absent. Drivers without state leave these nil.
     state_key: string,
-    state_load: proc(runtime_json: string) -> (rawptr, bool),
+    state_load: proc(state_json: string) -> (rawptr, bool),
     state_save: proc(state: rawptr) -> (string, bool),
     state_delete: proc(state: rawptr),
     // Appends protocol-specific flags (temp-allocated) to a launch or probe argv.

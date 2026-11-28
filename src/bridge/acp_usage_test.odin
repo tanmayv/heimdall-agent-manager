@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import contracts "odin_test:contracts"
 
 // ACP runtimes report token usage through their protocol driver into the same
 // per-instance accumulator as ham.ext.v1 extensions (extension_token_usage.odin).
@@ -95,7 +96,9 @@ acp_codex_token_usage_reaches_token_accumulator :: proc(t: ^testing.T) {
         `"last":{"totalTokens":31000,"inputTokens":29000,"cachedInputTokens":20000,"outputTokens":2000,"reasoningOutputTokens":500},"modelContextWindow":258400}}}`)
     s := usage_test_snapshot(f.r.instance)
     testing.expect(t, s.found && s.has_context && s.has_output)
-    testing.expect_value(t, s.context_tokens, i64(31000))
+    // Same formula as the PTY rollout reader: last total minus reasoning output.
+    testing.expect_value(t, s.context_tokens, i64(30500))
+    testing.expect_value(t, s.context_tokens, contracts.codex_context_tokens(31000, 500))
     testing.expect_value(t, s.output_tokens_total, i64(10000))
     testing.expect_value(t, s.reported_window, i64(258400))
     testing.expect_value(t, s.source, ACP_CODEX_USAGE_SOURCE)

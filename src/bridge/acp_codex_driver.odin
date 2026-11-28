@@ -45,8 +45,9 @@ acp_protocol_codex_driver := ACP_Protocol_Driver{
 
 // thread/tokenUsage/updated: {threadId, turnId, tokenUsage: {total, last:
 // TokenUsageBreakdown, modelContextWindow: int|null}}. The context size is the
-// last request's totalTokens (what the app-server measures against the
-// window); output_tokens_total is the thread's cumulative output.
+// last request's totalTokens minus its reasoningOutputTokens, the same formula
+// as the PTY rollout reader (contracts.codex_context_tokens);
+// output_tokens_total is the thread's cumulative output.
 ACP_CODEX_USAGE_SOURCE :: "codex_token_usage"
 acp_codex_usage :: proc(r: ^ACP_Runtime,method,params: string) -> (usage: contracts.Ext_Usage,ok: bool) {
     if method!="thread/tokenUsage/updated" do return
@@ -55,9 +56,10 @@ acp_codex_usage :: proc(r: ^ACP_Runtime,method,params: string) -> (usage: contra
     token_usage,_ := obj["tokenUsage"].(json.Object)
     last,_ := token_usage["last"].(json.Object)
     total,_ := token_usage["total"].(json.Object)
-    context_tokens,context_ok := acp_event_integer(last,"totalTokens")
-    if !context_ok || context_tokens<0 do return
-    usage = {context_tokens=context_tokens,source=ACP_CODEX_USAGE_SOURCE}
+    last_total,total_ok := acp_event_integer(last,"totalTokens")
+    if !total_ok || last_total<0 do return
+    reasoning,_ := acp_event_integer(last,"reasoningOutputTokens")
+    usage = {context_tokens=contracts.codex_context_tokens(last_total,reasoning),source=ACP_CODEX_USAGE_SOURCE}
     if output,output_ok := acp_event_integer(total,"outputTokens");output_ok && output>=0 {
         usage.output_tokens_total,usage.has_output_tokens_total = output,true
     }
@@ -102,11 +104,11 @@ acp_codex_durable :: proc(d: ^ACP_Runtime_Durable) -> ^ACP_Codex_Durable {
 }
 acp_codex :: proc(r: ^ACP_Runtime) -> ^ACP_Codex_Durable { return acp_codex_durable(&r.d) }
 
-acp_codex_state_load :: proc(runtime_json: string) -> (rawptr, bool) {
+acp_codex_state_load :: proc(state_json: string) -> (rawptr, bool) {
     context.allocator = runtime.heap_allocator()
-    saved: struct { codex: ACP_Codex_Durable }
-    if json.unmarshal_string(runtime_json, &saved) != nil { acp_codex_durable_delete(&saved.codex); return nil, false }
-    return new_clone(saved.codex), true
+    saved: ACP_Codex_Durable
+    if json.unmarshal_string(state_json, &saved) != nil { acp_codex_durable_delete(&saved); return nil, false }
+    return new_clone(saved), true
 }
 acp_codex_state_save :: proc(state: rawptr) -> (string, bool) {
     raw, err := json.marshal((cast(^ACP_Codex_Durable)state)^, allocator = context.temp_allocator)
